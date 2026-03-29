@@ -117,6 +117,43 @@ pub fn merge_inferred(
   AssayFile(lines: list.append(list.reverse(new_lines), remaining))
 }
 
+/// Format an AssayFile: normalize spacing, sort annotations, ensure trailing newline.
+///
+/// Output order:
+/// 1. Leading comments (file header)
+/// 2. `check` lines, sorted alphabetically by function name
+/// 3. Blank line separator (if both check and effects lines exist)
+/// 4. `effects` lines, sorted alphabetically by function name
+/// 5. Single trailing newline
+pub fn format_sorted(file: AssayFile) -> String {
+  let comments = collect_comments(file.lines)
+  let annotations = extract_annotations(file)
+
+  let check_lines =
+    annotations
+    |> list.filter(fn(annotation) { annotation.kind == Check })
+    |> list.sort(fn(left, right) { string.compare(left.function, right.function) })
+    |> list.map(format_annotation)
+
+  let effects_lines =
+    annotations
+    |> list.filter(fn(annotation) { annotation.kind == Effects })
+    |> list.sort(fn(left, right) { string.compare(left.function, right.function) })
+    |> list.map(format_annotation)
+
+  let sections = [
+    comments,
+    check_lines,
+    effects_lines,
+  ]
+
+  sections
+  |> list.filter(fn(section) { section != [] })
+  |> list.map(fn(section) { string.join(section, "\n") })
+  |> string.join("\n\n")
+  |> fn(content) { content <> "\n" }
+}
+
 // PRIVATE
 
 fn parse_structured_line(
@@ -196,6 +233,16 @@ fn parse_effect_set(input: String) -> Result(set.Set(String), Nil) {
       |> set.from_list()
       |> Ok()
   }
+}
+
+fn collect_comments(lines: List(AssayLine)) -> List(String) {
+  list.filter_map(lines, fn(line) {
+    case line {
+      CommentLine(text) -> Ok(text)
+      AnnotationLine(_) -> Error(Nil)
+      BlankLine -> Error(Nil)
+    }
+  })
 }
 
 fn format_effect_set(effect_set: set.Set(String)) -> String {

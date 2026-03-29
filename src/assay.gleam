@@ -22,6 +22,7 @@ pub type AssayError {
   DirectoryCreateError(path: String, cause: simplifile.FileError)
   GleamParseError(path: String, cause: glance.Error)
   AssayParseError(path: String, cause: annotation.ParseError)
+  FormatCheckFailed(paths: List(String))
 }
 
 pub fn main() -> Nil {
@@ -30,6 +31,32 @@ pub fn main() -> Nil {
     ["infer", ..rest] ->
       case run_infer(target_directory(rest)) {
         Ok(Nil) -> io.println("assay: inferred effects written")
+        Error(error) -> {
+          io.println_error("assay: error: " <> format_error(error))
+          halt(1)
+        }
+      }
+    ["format", "--stdin"] -> {
+      let input = read_stdin()
+      case annotation.parse_file(input) {
+        Ok(file) -> io.print(annotation.format_sorted(file))
+        Error(_) -> {
+          io.println_error("assay: error: could not parse stdin")
+          halt(1)
+        }
+      }
+    }
+    ["format", "--check", ..rest] ->
+      case run_format_check(target_directory(rest)) {
+        Ok(Nil) -> Nil
+        Error(error) -> {
+          io.println_error("assay: error: " <> format_error(error))
+          halt(1)
+        }
+      }
+    ["format", ..rest] ->
+      case run_format(target_directory(rest)) {
+        Ok(Nil) -> Nil
         Error(error) -> {
           io.println_error("assay: error: " <> format_error(error))
           halt(1)
@@ -98,6 +125,41 @@ pub fn run_infer(directory: String) -> Result(Nil, AssayError) {
   })
 }
 
+/// Format all .assay files in priv/assay/ for a given source directory.
+pub fn run_format(directory: String) -> Result(Nil, AssayError) {
+  use assay_files <- result.try(find_assay_files(directory))
+  list.try_each(assay_files, fn(assay_path) {
+    use formatted <- result.try(read_and_format(assay_path))
+    simplifile.write(assay_path, formatted)
+    |> result.map_error(FileWriteError(assay_path, _))
+  })
+}
+
+/// Check that all .assay files are already formatted. Returns error with
+/// the list of unformatted file paths. Exit code 1 in CI.
+pub fn run_format_check(directory: String) -> Result(Nil, AssayError) {
+  use assay_files <- result.try(find_assay_files(directory))
+  let unformatted =
+    list.filter_map(assay_files, fn(assay_path) {
+      case read_and_format(assay_path) {
+        Error(_) -> Error(Nil)
+        Ok(formatted) ->
+          case simplifile.read(assay_path) {
+            Error(_) -> Error(Nil)
+            Ok(content) ->
+              case content == formatted {
+                True -> Error(Nil)
+                False -> Ok(assay_path)
+              }
+          }
+      }
+    })
+  case unformatted {
+    [] -> Ok(Nil)
+    paths -> Error(FormatCheckFailed(paths:))
+  }
+}
+
 /// Convert a .gleam source path to its .assay path in priv/assay/.
 pub fn gleam_to_assay_path(gleam_path: String, source_directory: String) -> String {
   let prefix = source_directory <> "/"
@@ -114,6 +176,30 @@ pub fn gleam_to_assay_path(gleam_path: String, source_directory: String) -> Stri
 }
 
 // PRIVATE
+
+fn find_assay_files(directory: String) -> Result(List(String), AssayError) {
+  let priv_directory = case directory {
+    "src" -> "priv/assay"
+    _ -> directory <> "/priv/assay"
+  }
+  let files = case simplifile.get_files(priv_directory) {
+    Ok(found) -> found
+    Error(_) -> []
+  }
+  Ok(list.filter(files, fn(path) { string.ends_with(path, ".assay") }))
+}
+
+fn read_and_format(assay_path: String) -> Result(String, AssayError) {
+  use content <- result.try(
+    simplifile.read(assay_path)
+    |> result.map_error(FileReadError(assay_path, _)),
+  )
+  use assay_file <- result.try(
+    annotation.parse_file(content)
+    |> result.map_error(AssayParseError(assay_path, _)),
+  )
+  Ok(annotation.format_sorted(assay_file))
+}
 
 fn target_directory(arguments: List(String)) -> String {
   case arguments {
@@ -195,6 +281,9 @@ fn format_error(error: AssayError) -> String {
     DirectoryCreateError(path, _) -> "Could not create directory: " <> path
     GleamParseError(path, _) -> "Could not parse: " <> path
     AssayParseError(path, _) -> "Parse error in .assay file for: " <> path
+    FormatCheckFailed(paths:) ->
+      "Unformatted .assay files:\n"
+      <> string.join(list.map(paths, fn(path) { "  " <> path }), "\n")
   }
 }
 
@@ -222,3 +311,6 @@ fn print_violation(file: String, violation: Violation) -> Nil {
 
 @external(erlang, "erlang", "halt")
 fn halt(code: Int) -> Nil
+
+@external(erlang, "assay_ffi", "read_stdin")
+fn read_stdin() -> String
