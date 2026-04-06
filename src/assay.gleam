@@ -168,7 +168,10 @@ pub fn run_format_check(directory: String) -> Result(Nil, AssayError) {
 }
 
 /// Convert a .gleam source path to its .assay path in priv/assay/.
-pub fn gleam_to_assay_path(gleam_path: String, source_directory: String) -> String {
+pub fn gleam_to_assay_path(
+  gleam_path: String,
+  source_directory: String,
+) -> String {
   let prefix = source_directory <> "/"
   let relative = case string.starts_with(gleam_path, prefix) {
     True -> string.drop_start(gleam_path, string.length(prefix))

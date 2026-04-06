@@ -64,18 +64,30 @@ pub fn format_annotation(annotation: EffectAnnotation) -> String {
     params ->
       "("
       <> string.join(
-        list.map(params, fn(p) { p.name <> ": " <> format_effect_set(p.effects) }),
+        list.map(params, fn(p) {
+          p.name <> ": " <> format_effect_set(p.effects)
+        }),
         ", ",
       )
       <> ")"
   }
   let effects_string = format_effect_set(annotation.effects)
-  prefix <> " " <> annotation.function <> params_string <> " : " <> effects_string
+  prefix
+  <> " "
+  <> annotation.function
+  <> params_string
+  <> " : "
+  <> effects_string
 }
 
 /// Render a TypeFieldAnnotation back to its .assay line format.
 pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
-  "type " <> tf.type_name <> "." <> tf.field <> " : " <> format_effect_set(tf.effects)
+  "type "
+  <> tf.type_name
+  <> "."
+  <> tf.field
+  <> " : "
+  <> format_effect_set(tf.effects)
 }
 
 /// Extract type field annotations from a parsed file.
@@ -184,26 +196,36 @@ pub fn format_sorted(file: AssayFile) -> String {
   let check_lines =
     annotations
     |> list.filter(fn(annotation) { annotation.kind == Check })
-    |> list.sort(fn(left, right) { string.compare(left.function, right.function) })
+    |> list.sort(fn(left, right) {
+      string.compare(left.function, right.function)
+    })
     |> list.map(format_annotation)
 
   let effects_lines =
     annotations
     |> list.filter(fn(annotation) { annotation.kind == Effects })
-    |> list.sort(fn(left, right) { string.compare(left.function, right.function) })
+    |> list.sort(fn(left, right) {
+      string.compare(left.function, right.function)
+    })
     |> list.map(format_annotation)
 
   let type_field_lines =
     extract_type_fields(file)
     |> list.sort(fn(left, right) {
-      string.compare(left.type_name <> "." <> left.field, right.type_name <> "." <> right.field)
+      string.compare(
+        left.type_name <> "." <> left.field,
+        right.type_name <> "." <> right.field,
+      )
     })
     |> list.map(format_type_field)
 
   let extern_lines =
     extract_externs(file)
     |> list.sort(fn(left, right) {
-      string.compare(left.module <> "." <> left.function, right.module <> "." <> right.function)
+      string.compare(
+        left.module <> "." <> left.function,
+        right.module <> "." <> right.function,
+      )
     })
     |> list.map(format_extern)
 
@@ -299,9 +321,17 @@ fn parse_annotation_rest(
                 True -> {
                   let effects_str =
                     string.trim(string.drop_start(suffix_trimmed, 1))
-                  case parse_effect_set(effects_str), parse_params_section(params_str) {
+                  case
+                    parse_effect_set(effects_str),
+                    parse_params_section(params_str)
+                  {
                     Ok(effects), Ok(params) ->
-                      Ok(EffectAnnotation(kind:, function: name, params:, effects:))
+                      Ok(EffectAnnotation(
+                        kind:,
+                        function: name,
+                        params:,
+                        effects:,
+                      ))
                     _, _ -> err
                   }
                 }
@@ -344,7 +374,8 @@ fn parse_extern_line(rest: String) -> Result(ExternAnnotation, Nil) {
 fn parse_params_section(input: String) -> Result(List(ParamBound), Nil) {
   case string.trim(input) {
     "" -> Ok([])
-    trimmed -> list.try_map(split_at_top_level_commas(trimmed), parse_single_param)
+    trimmed ->
+      list.try_map(split_at_top_level_commas(trimmed), parse_single_param)
   }
 }
 
@@ -354,7 +385,9 @@ fn parse_single_param(input: String) -> Result(ParamBound, Nil) {
 }
 
 // Shared helper: parse "name : [effects]" returning the trimmed name and effect set.
-fn parse_name_colon_effects(input: String) -> Result(#(String, set.Set(String)), Nil) {
+fn parse_name_colon_effects(
+  input: String,
+) -> Result(#(String, set.Set(String)), Nil) {
   case string.split(string.trim(input), ":") {
     [name_part, effects_part] -> {
       let name = string.trim(name_part)

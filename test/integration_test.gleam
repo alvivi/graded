@@ -57,9 +57,18 @@ pub fn infer_then_check_round_trip_test() {
 
   // Restore fixture files
   let assert Ok(Nil) =
-    simplifile.write("test/fixtures/priv/assay/pure_view.assay", "check view : []\n")
+    simplifile.write(
+      "test/fixtures/priv/assay/pure_view.assay",
+      "check view : []\n",
+    )
   let assert Ok(Nil) =
-    simplifile.write("test/fixtures/priv/assay/impure_view.assay", "check view : []\n")
+    simplifile.write(
+      "test/fixtures/priv/assay/impure_view.assay",
+      "check view : []\n",
+    )
   let assert Ok(Nil) =
-    simplifile.write("test/fixtures/priv/assay/transitive.assay", "check view : []\n")
+    simplifile.write(
+      "test/fixtures/priv/assay/transitive.assay",
+      "check view : []\n",
+    )
 }

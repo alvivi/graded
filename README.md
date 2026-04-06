@@ -1,5 +1,7 @@
 # assay
 
+[![CI](https://github.com/alvivi/assay/actions/workflows/ci.yml/badge.svg)](https://github.com/alvivi/assay/actions/workflows/ci.yml)
+
 > Effect checking for Gleam via sidecar annotations.
 
 **assay** verifies that your Gleam functions respect their declared effect budgets. Annotations live in `.assay` sidecar files alongside your source — your Gleam code stays clean.

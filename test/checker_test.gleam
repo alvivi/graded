@@ -160,7 +160,12 @@ pub fn infer_uses_param_bounds_test() {
   let source = "pub fn apply(f, x) { f(x) }"
   let assert Ok(module) = glance.module(source)
   let existing_checks = [
-    EffectAnnotation(Check, "apply", [ParamBound("f", set.from_list(["Stdout"]))], set.from_list(["Stdout"])),
+    EffectAnnotation(
+      Check,
+      "apply",
+      [ParamBound("f", set.from_list(["Stdout"]))],
+      set.from_list(["Stdout"]),
+    ),
   ]
   let inferred = checker.infer(module, knowledge_base(), existing_checks)
   let assert [annotation] = inferred
@@ -204,12 +209,7 @@ pub fn param_bound_pure_passes_test() {
     "import gleam/list
 pub fn safe_map(items, f) { list.map(items, f) }"
   let annotation =
-    EffectAnnotation(
-      Check,
-      "safe_map",
-      [ParamBound("f", set.new())],
-      set.new(),
-    )
+    EffectAnnotation(Check, "safe_map", [ParamBound("f", set.new())], set.new())
   check_source(source, [annotation]) |> should.equal([])
 }
 
@@ -221,13 +221,7 @@ import gleam/list
 pub fn run(items) {
   list.map(items, fn(x) { io.println(x) })
 }"
-  let annotation =
-    EffectAnnotation(
-      Check,
-      "run",
-      [],
-      set.from_list(["Stdout"]),
-    )
+  let annotation = EffectAnnotation(Check, "run", [], set.from_list(["Stdout"]))
   check_source(source, [annotation]) |> should.equal([])
 }
 
@@ -262,8 +256,7 @@ pub fn field_call_typed_with_registry_test() {
   let type_fields = [
     types.TypeFieldAnnotation("Handler", "on_click", set.from_list(["Dom"])),
   ]
-  let annotation =
-    EffectAnnotation(Check, "view", [], set.from_list(["Dom"]))
+  let annotation = EffectAnnotation(Check, "view", [], set.from_list(["Dom"]))
   check_source_with_type_fields(source, [annotation], type_fields)
   |> should.equal([])
 }
@@ -318,8 +311,7 @@ pub fn fetch() { httpc.send(request) }"
   let externs = [
     types.ExternAnnotation("gleam/httpc", "send", set.from_list(["Http"])),
   ]
-  let annotation =
-    EffectAnnotation(Check, "fetch", [], set.from_list(["Http"]))
+  let annotation = EffectAnnotation(Check, "fetch", [], set.from_list(["Http"]))
   check_source_with_externs(source, [annotation], externs)
   |> should.equal([])
 }

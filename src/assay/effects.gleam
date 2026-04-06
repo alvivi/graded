@@ -86,13 +86,24 @@ pub fn with_externs(
   externs: List(ExternAnnotation),
 ) -> KnowledgeBase {
   let #(effects, pure) =
-    list.fold(externs, #(knowledge_base.all_effects, knowledge_base.pure_modules), fn(acc, ext) {
-      let #(eff_map, pure_set) = acc
-      case ext.function {
-        "" -> #(eff_map, set.insert(pure_set, ext.module))
-        _ -> #(dict.insert(eff_map, QualifiedName(ext.module, ext.function), ext.effects), pure_set)
-      }
-    })
+    list.fold(
+      externs,
+      #(knowledge_base.all_effects, knowledge_base.pure_modules),
+      fn(acc, ext) {
+        let #(eff_map, pure_set) = acc
+        case ext.function {
+          "" -> #(eff_map, set.insert(pure_set, ext.module))
+          _ -> #(
+            dict.insert(
+              eff_map,
+              QualifiedName(ext.module, ext.function),
+              ext.effects,
+            ),
+            pure_set,
+          )
+        }
+      },
+    )
   KnowledgeBase(..knowledge_base, all_effects: effects, pure_modules: pure)
 }
 
@@ -156,7 +167,10 @@ fn load_dependency_effects(
 }
 
 fn load_assay_file(
-  maps: #(Dict(QualifiedName, Set(String)), Dict(QualifiedName, List(ParamBound))),
+  maps: #(
+    Dict(QualifiedName, Set(String)),
+    Dict(QualifiedName, List(ParamBound)),
+  ),
   file_path: String,
   assay_directory: String,
 ) -> #(Dict(QualifiedName, Set(String)), Dict(QualifiedName, List(ParamBound))) {
@@ -230,12 +244,13 @@ fn load_catalog(
     })
 
   // Reuse the same extern dispatch logic as with_externs
-  let empty_kb = KnowledgeBase(
-    all_effects: dict.new(),
-    param_bounds: dict.new(),
-    type_fields: dict.new(),
-    pure_modules: set.new(),
-  )
+  let empty_kb =
+    KnowledgeBase(
+      all_effects: dict.new(),
+      param_bounds: dict.new(),
+      type_fields: dict.new(),
+      pure_modules: set.new(),
+    )
   let merged = with_externs(empty_kb, all_externs)
   #(merged.all_effects, merged.pure_modules)
 }
@@ -322,10 +337,7 @@ fn semver_lte(a: #(Int, Int, Int), b: #(Int, Int, Int)) -> Bool {
   compare_semver(a, b) != order.Gt
 }
 
-fn compare_semver(
-  a: #(Int, Int, Int),
-  b: #(Int, Int, Int),
-) -> order.Order {
+fn compare_semver(a: #(Int, Int, Int), b: #(Int, Int, Int)) -> order.Order {
   case int.compare(a.0, b.0) {
     order.Eq ->
       case int.compare(a.1, b.1) {
@@ -347,16 +359,21 @@ fn parse_manifest_versions(manifest_path: String) -> Dict(String, String) {
     use packages <- result.try(
       tom.get_array(toml, ["packages"]) |> result.map_error(fn(_) { Nil }),
     )
-    Ok(list.fold(packages, dict.new(), fn(acc, pkg) {
-      case pkg {
-        tom.InlineTable(table) ->
-          case tom.get_string(table, ["name"]), tom.get_string(table, ["version"]) {
-            Ok(name), Ok(version) -> dict.insert(acc, name, version)
-            _, _ -> acc
-          }
-        _ -> acc
-      }
-    }))
+    Ok(
+      list.fold(packages, dict.new(), fn(acc, pkg) {
+        case pkg {
+          tom.InlineTable(table) ->
+            case
+              tom.get_string(table, ["name"]),
+              tom.get_string(table, ["version"])
+            {
+              Ok(name), Ok(version) -> dict.insert(acc, name, version)
+              _, _ -> acc
+            }
+          _ -> acc
+        }
+      }),
+    )
   }
   result.unwrap(parsed, dict.new())
 }

@@ -74,13 +74,9 @@ pub fn extract_calls(
   statements: List(Statement),
   context: ImportContext,
 ) -> ExtractResult {
-  list.fold(
-    statements,
-    empty(),
-    fn(accumulated, statement) {
-      merge(accumulated, extract_from_statement(statement, context))
-    },
-  )
+  list.fold(statements, empty(), fn(accumulated, statement) {
+    merge(accumulated, extract_from_statement(statement, context))
+  })
 }
 
 // PRIVATE
@@ -142,11 +138,9 @@ fn extract_from_expression(
             field: [],
           )
         Error(Nil) ->
-          ExtractResult(
-            resolved: [],
-            local: [],
-            field: [FieldCall(alias, function_name, span)],
-          )
+          ExtractResult(resolved: [], local: [], field: [
+            FieldCall(alias, function_name, span),
+          ])
       }
       merge(call_result, extract_from_arguments(arguments, context))
     }
@@ -274,11 +268,9 @@ fn extract_pipe_target(
             field: [],
           )
         Error(Nil) ->
-          ExtractResult(
-            resolved: [],
-            local: [],
-            field: [FieldCall(alias, function_name, span)],
-          )
+          ExtractResult(resolved: [], local: [], field: [
+            FieldCall(alias, function_name, span),
+          ])
       }
 
     glance.Variable(location: span, name:) ->

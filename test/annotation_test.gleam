@@ -33,8 +33,9 @@ pub fn multiple_effects_test() {
 
 pub fn check_line_test() {
   let input = "check view : []"
-  let assert Ok([EffectAnnotation(kind: Check, function: "view", params: _, effects: eff)]) =
-    annotation.parse(input)
+  let assert Ok([
+    EffectAnnotation(kind: Check, function: "view", params: _, effects: eff),
+  ]) = annotation.parse(input)
   set.size(eff) |> should.equal(0)
 }
 
@@ -137,7 +138,12 @@ check handle_click : [Http]"
 
 pub fn format_annotation_effects_test() {
   let ann =
-    EffectAnnotation(kind: Effects, function: "view", params: [], effects: set.new())
+    EffectAnnotation(
+      kind: Effects,
+      function: "view",
+      params: [],
+      effects: set.new(),
+    )
   annotation.format_annotation(ann) |> should.equal("effects view : []")
 }
 
@@ -331,7 +337,11 @@ pub fn type_field_round_trip_test() {
 pub fn merge_preserves_type_fields_test() {
   let file =
     AssayFile(lines: [
-      TypeFieldLine(TypeFieldAnnotation("Handler", "on_click", set.from_list(["Dom"]))),
+      TypeFieldLine(TypeFieldAnnotation(
+        "Handler",
+        "on_click",
+        set.from_list(["Dom"]),
+      )),
       AnnotationLine(EffectAnnotation(Effects, "view", [], set.new())),
     ])
   let inferred = [
@@ -404,7 +414,11 @@ pub fn extern_round_trip_test() {
 pub fn merge_preserves_externs_test() {
   let file =
     AssayFile(lines: [
-      ExternLine(ExternAnnotation("gleam/httpc", "send", set.from_list(["Http"]))),
+      ExternLine(ExternAnnotation(
+        "gleam/httpc",
+        "send",
+        set.from_list(["Http"]),
+      )),
       AnnotationLine(EffectAnnotation(Effects, "view", [], set.new())),
     ])
   let inferred = [

@@ -5,9 +5,9 @@ import assay/types.{
   Effects, QualifiedName, Violation,
 }
 import glance.{type Definition, type Function, type Module}
-import gleam/option.{Some}
 import gleam/dict
 import gleam/list
+import gleam/option.{Some}
 import gleam/result
 import gleam/set.{type Set}
 
@@ -212,7 +212,9 @@ fn resolve_field_call(
       type_: Some(glance.NamedType(name: type_name, ..)),
       ..,
     )) ->
-      case effects.lookup_type_field(knowledge_base, type_name, field_call.label) {
+      case
+        effects.lookup_type_field(knowledge_base, type_name, field_call.label)
+      {
         effects.Known(effect_set) -> effect_set
         effects.Unknown -> unknown
       }
