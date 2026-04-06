@@ -1,7 +1,7 @@
 import assay/types.{
   type AnnotationKind, type AssayFile, type AssayLine, type EffectAnnotation,
-  AnnotationLine, AssayFile, BlankLine, Check, CommentLine, EffectAnnotation,
-  Effects,
+  type ParamBound, AnnotationLine, AssayFile, BlankLine, Check, CommentLine,
+  EffectAnnotation, Effects, ParamBound,
 }
 import gleam/bool
 import gleam/dict
@@ -55,8 +55,18 @@ pub fn format_annotation(annotation: EffectAnnotation) -> String {
     Effects -> "effects"
     Check -> "check"
   }
+  let params_string = case annotation.params {
+    [] -> ""
+    params ->
+      "("
+      <> string.join(
+        list.map(params, fn(p) { p.name <> ": " <> format_effect_set(p.effects) }),
+        ", ",
+      )
+      <> ")"
+  }
   let effects_string = format_effect_set(annotation.effects)
-  prefix <> " " <> annotation.function <> " : " <> effects_string
+  prefix <> " " <> annotation.function <> params_string <> " : " <> effects_string
 }
 
 /// Render a full AssayFile back to a string, preserving structure.
@@ -196,21 +206,84 @@ fn parse_annotation_rest(
   line_number: Int,
   original: String,
 ) -> Result(EffectAnnotation, ParseError) {
-  case string.split(rest, ":") {
-    [name_part, effects_part] -> {
+  let err = Error(InvalidLine(line_number, original))
+  case string.split(rest, "(") {
+    [] -> err
+    [no_params] ->
+      case parse_name_colon_effects(no_params) {
+        Error(Nil) -> err
+        Ok(#(name, effects)) ->
+          Ok(EffectAnnotation(kind:, function: name, params: [], effects:))
+      }
+
+    // Has parameter bounds: "name(params) : effects"
+    // Effect sets use '[]' not '()', so the first ')' closes the params list
+    [name_part, ..rest_parts] -> {
       let name = string.trim(name_part)
       case name == "" {
-        True -> Error(InvalidLine(line_number, original))
+        True -> err
         False ->
-          case parse_effect_set(string.trim(effects_part)) {
-            Error(Nil) -> Error(InvalidLine(line_number, original))
-            Ok(effect_set) ->
-              Ok(EffectAnnotation(kind:, function: name, effects: effect_set))
+          case string.split(string.join(rest_parts, "("), ")") {
+            [params_str, suffix, ..] -> {
+              let suffix_trimmed = string.trim(suffix)
+              case string.starts_with(suffix_trimmed, ":") {
+                False -> err
+                True -> {
+                  let effects_str =
+                    string.trim(string.drop_start(suffix_trimmed, 1))
+                  case parse_effect_set(effects_str), parse_params_section(params_str) {
+                    Ok(effects), Ok(params) ->
+                      Ok(EffectAnnotation(kind:, function: name, params:, effects:))
+                    _, _ -> err
+                  }
+                }
+              }
+            }
+            _ -> err
           }
       }
     }
-    _ -> Error(InvalidLine(line_number, original))
   }
+}
+
+fn parse_params_section(input: String) -> Result(List(ParamBound), Nil) {
+  case string.trim(input) {
+    "" -> Ok([])
+    trimmed -> list.try_map(split_at_top_level_commas(trimmed), parse_single_param)
+  }
+}
+
+fn parse_single_param(input: String) -> Result(ParamBound, Nil) {
+  use #(name, effects) <- result.try(parse_name_colon_effects(input))
+  Ok(ParamBound(name:, effects:))
+}
+
+// Shared helper: parse "name : [effects]" returning the trimmed name and effect set.
+fn parse_name_colon_effects(input: String) -> Result(#(String, set.Set(String)), Nil) {
+  case string.split(string.trim(input), ":") {
+    [name_part, effects_part] -> {
+      let name = string.trim(name_part)
+      use <- bool.guard(when: name == "", return: Error(Nil))
+      use effects <- result.try(parse_effect_set(string.trim(effects_part)))
+      Ok(#(name, effects))
+    }
+    _ -> Error(Nil)
+  }
+}
+
+// Split a string by ',' only at bracket depth 0 (ignoring commas inside [...]).
+fn split_at_top_level_commas(input: String) -> List(String) {
+  let #(segments, current, _depth) =
+    list.fold(string.to_graphemes(input), #([], "", 0), fn(state, char) {
+      let #(segs, cur, depth) = state
+      case char {
+        "," if depth == 0 -> #([cur, ..segs], "", depth)
+        "[" -> #(segs, cur <> char, depth + 1)
+        "]" -> #(segs, cur <> char, depth - 1)
+        _ -> #(segs, cur <> char, depth)
+      }
+    })
+  list.reverse([current, ..segments])
 }
 
 fn parse_effect_set(input: String) -> Result(set.Set(String), Nil) {

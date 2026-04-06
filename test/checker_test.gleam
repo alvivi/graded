@@ -1,7 +1,8 @@
 import assay/checker
 import assay/effects
 import assay/types.{
-  type EffectAnnotation, Check, EffectAnnotation, Effects, QualifiedName,
+  type EffectAnnotation, Check, EffectAnnotation, Effects, ParamBound,
+  QualifiedName,
 }
 import glance
 import gleam/list
@@ -24,7 +25,7 @@ pub fn pure_function_passes_test() {
   let source =
     "import gleam/list
 pub fn view(items) { list.map(items, fn(x) { x }) }"
-  check_source(source, [EffectAnnotation(Check, "view", set.new())])
+  check_source(source, [EffectAnnotation(Check, "view", [], set.new())])
   |> should.equal([])
 }
 
@@ -33,7 +34,7 @@ pub fn effectful_call_in_pure_function_fails_test() {
     "import gleam/io
 pub fn view() { io.println(\"oops\") }"
   let violations =
-    check_source(source, [EffectAnnotation(Check, "view", set.new())])
+    check_source(source, [EffectAnnotation(Check, "view", [], set.new())])
   violations |> list.length() |> should.equal(1)
   let assert [violation] = violations
   violation.function |> should.equal("view")
@@ -45,7 +46,7 @@ pub fn declared_effects_pass_test() {
     "import gleam/io
 pub fn log(msg) { io.println(msg) }"
   check_source(source, [
-    EffectAnnotation(Check, "log", set.from_list(["Stdout"])),
+    EffectAnnotation(Check, "log", [], set.from_list(["Stdout"])),
   ])
   |> should.equal([])
 }
@@ -56,7 +57,7 @@ pub fn transitive_violation_test() {
 pub fn view() { helper() }
 fn helper() { io.println(\"sneaky\") }"
   let violations =
-    check_source(source, [EffectAnnotation(Check, "view", set.new())])
+    check_source(source, [EffectAnnotation(Check, "view", [], set.new())])
   violations |> list.length() |> should.equal(1)
   let assert [violation] = violations
   violation.call |> should.equal(QualifiedName("gleam/io", "println"))
@@ -72,7 +73,7 @@ pub fn do_stuff() {
 }"
   let violations =
     check_source(source, [
-      EffectAnnotation(Check, "do_stuff", set.from_list(["Stdout"])),
+      EffectAnnotation(Check, "do_stuff", [], set.from_list(["Stdout"])),
     ])
   violations
   |> list.any(fn(violation) { violation.call.function == "sleep" })
@@ -81,7 +82,7 @@ pub fn do_stuff() {
 
 pub fn missing_function_ignored_test() {
   let source = "pub fn other() { Nil }"
-  check_source(source, [EffectAnnotation(Check, "nonexistent", set.new())])
+  check_source(source, [EffectAnnotation(Check, "nonexistent", [], set.new())])
   |> should.equal([])
 }
 
@@ -93,7 +94,7 @@ pub fn view(items) {
   list.map(items, fn(x) { io.println(x) })
 }"
   let violations =
-    check_source(source, [EffectAnnotation(Check, "view", set.new())])
+    check_source(source, [EffectAnnotation(Check, "view", [], set.new())])
   { violations != [] } |> should.be_true()
 }
 
@@ -102,7 +103,7 @@ pub fn mutual_recursion_cycle_test() {
     "pub fn a() { b() }
 fn b() { a() }"
   let violations =
-    check_source(source, [EffectAnnotation(Check, "a", set.new())])
+    check_source(source, [EffectAnnotation(Check, "a", [], set.new())])
   // Should not infinite loop. Both are local with no external calls, so pure.
   violations |> should.equal([])
 }
@@ -111,7 +112,7 @@ pub fn unknown_local_function_test() {
   // Function "missing" is referenced but not defined in the module
   let source = "pub fn view() { missing() }"
   let violations =
-    check_source(source, [EffectAnnotation(Check, "view", set.new())])
+    check_source(source, [EffectAnnotation(Check, "view", [], set.new())])
   // Should flag as Unknown effect
   { violations != [] } |> should.be_true()
   let assert [violation] = violations
@@ -151,4 +152,73 @@ fn helper() { io.println(\"x\") }"
   let inferred = checker.infer(module, knowledge_base())
   let assert [annotation] = inferred
   annotation.function |> should.equal("view")
+}
+
+// Higher-order / parameter bound tests
+
+// Case 1: function that calls a parameter — effects come from the declared bound
+pub fn param_call_uses_bound_test() {
+  let source = "pub fn apply(f, x) { f(x) }"
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "apply",
+      [ParamBound("f", set.from_list(["Stdout"]))],
+      set.from_list(["Stdout"]),
+    )
+  check_source(source, [annotation]) |> should.equal([])
+}
+
+// Case 1b: undeclared param call treated as Unknown, violates pure bound
+pub fn param_call_without_bound_is_unknown_test() {
+  let source = "pub fn apply(f, x) { f(x) }"
+  check_source(source, [EffectAnnotation(Check, "apply", [], set.new())])
+  |> { fn(vs) { vs != [] } }
+  |> should.be_true()
+}
+
+// Case 2: declared bound of [] means param must be pure — pure arg passes
+pub fn param_bound_pure_passes_test() {
+  let source =
+    "import gleam/list
+pub fn safe_map(items, f) { list.map(items, f) }"
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "safe_map",
+      [ParamBound("f", set.new())],
+      set.new(),
+    )
+  check_source(source, [annotation]) |> should.equal([])
+}
+
+// Case 3: inline closure effects propagate to enclosing function via flattening
+pub fn inline_closure_effects_propagate_test() {
+  let source =
+    "import gleam/io
+import gleam/list
+pub fn run(items) {
+  list.map(items, fn(x) { io.println(x) })
+}"
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      set.from_list(["Stdout"]),
+    )
+  check_source(source, [annotation]) |> should.equal([])
+}
+
+// Case 3b: inline closure with effects violates a pure check
+pub fn inline_closure_effects_violate_pure_check_test() {
+  let source =
+    "import gleam/io
+import gleam/list
+pub fn run(items) {
+  list.map(items, fn(x) { io.println(x) })
+}"
+  check_source(source, [EffectAnnotation(Check, "run", [], set.new())])
+  |> { fn(vs) { vs != [] } }
+  |> should.be_true()
 }

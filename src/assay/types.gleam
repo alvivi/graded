@@ -14,9 +14,19 @@ pub type AnnotationKind {
   Check
 }
 
+/// An effect bound on a function-typed parameter.
+pub type ParamBound {
+  ParamBound(name: String, effects: Set(String))
+}
+
 /// An effect annotation from a .assay sidecar file.
 pub type EffectAnnotation {
-  EffectAnnotation(kind: AnnotationKind, function: String, effects: Set(String))
+  EffectAnnotation(
+    kind: AnnotationKind,
+    function: String,
+    params: List(ParamBound),
+    effects: Set(String),
+  )
 }
 
 /// A single line in an .assay file, preserving structure for round-trip rewrites.

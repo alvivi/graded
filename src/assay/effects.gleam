@@ -1,5 +1,5 @@
 import assay/annotation
-import assay/types.{type QualifiedName, Effects, QualifiedName}
+import assay/types.{type ParamBound, type QualifiedName, Effects, QualifiedName}
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/result
@@ -16,6 +16,7 @@ pub type EffectLookup {
 pub type KnowledgeBase {
   KnowledgeBase(
     all_effects: Dict(QualifiedName, Set(String)),
+    param_bounds: Dict(QualifiedName, List(ParamBound)),
     pure_modules: Set(String),
   )
 }
@@ -23,16 +24,21 @@ pub type KnowledgeBase {
 /// Build a knowledge base by scanning dependency .assay files,
 /// merged with the hardcoded catalog.
 pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
-  let dependency = load_dependency_effects(packages_directory)
+  let #(dep_effects, dep_params) = load_dependency_effects(packages_directory)
   let catalog = catalog_effectful_functions()
-  let merged = dict.merge(dependency, catalog)
-  KnowledgeBase(all_effects: merged, pure_modules: catalog_pure_modules())
+  let merged = dict.merge(dep_effects, catalog)
+  KnowledgeBase(
+    all_effects: merged,
+    param_bounds: dep_params,
+    pure_modules: catalog_pure_modules(),
+  )
 }
 
 /// Build a knowledge base from the hardcoded catalog only.
 pub fn empty_knowledge_base() -> KnowledgeBase {
   KnowledgeBase(
     all_effects: catalog_effectful_functions(),
+    param_bounds: dict.new(),
     pure_modules: catalog_pure_modules(),
   )
 }
@@ -75,32 +81,32 @@ pub fn format_effect_set(effect_set: Set(String)) -> String {
 
 fn load_dependency_effects(
   packages_directory: String,
-) -> Dict(QualifiedName, Set(String)) {
+) -> #(Dict(QualifiedName, Set(String)), Dict(QualifiedName, List(ParamBound))) {
   let entries = case simplifile.read_directory(packages_directory) {
     Ok(found) -> found
     Error(_) -> []
   }
-  list.fold(entries, dict.new(), fn(effect_map, package_name) {
+  list.fold(entries, #(dict.new(), dict.new()), fn(maps, package_name) {
     let assay_directory =
       packages_directory <> "/" <> package_name <> "/priv/assay"
     let files = case simplifile.get_files(assay_directory) {
       Ok(found) -> found
       Error(_) -> []
     }
-    list.fold(files, effect_map, fn(inner_map, file_path) {
+    list.fold(files, maps, fn(inner_maps, file_path) {
       case string.ends_with(file_path, ".assay") {
-        True -> load_assay_file(inner_map, file_path, assay_directory)
-        False -> inner_map
+        True -> load_assay_file(inner_maps, file_path, assay_directory)
+        False -> inner_maps
       }
     })
   })
 }
 
 fn load_assay_file(
-  effect_map: Dict(QualifiedName, Set(String)),
+  maps: #(Dict(QualifiedName, Set(String)), Dict(QualifiedName, List(ParamBound))),
   file_path: String,
   assay_directory: String,
-) -> Dict(QualifiedName, Set(String)) {
+) -> #(Dict(QualifiedName, Set(String)), Dict(QualifiedName, List(ParamBound))) {
   let parsed =
     simplifile.read(file_path)
     |> result.map_error(fn(_) { Nil })
@@ -108,22 +114,22 @@ fn load_assay_file(
       annotation.parse_file(content) |> result.map_error(fn(_) { Nil })
     })
   case parsed {
-    Error(_) -> effect_map
+    Error(_) -> maps
     Ok(assay_file) -> {
       let module_path = file_path_to_module(file_path, assay_directory)
+      let #(effect_map, param_map) = maps
       annotation.extract_annotations(assay_file)
-      |> list.filter_map(fn(ann) {
+      |> list.fold(#(effect_map, param_map), fn(acc, ann) {
+        let #(eff_map, par_map) = acc
+        let qname = QualifiedName(module: module_path, function: ann.function)
         case ann.kind {
-          Effects ->
-            Ok(#(
-              QualifiedName(module: module_path, function: ann.function),
-              ann.effects,
-            ))
-          _ -> Error(Nil)
+          Effects -> #(dict.insert(eff_map, qname, ann.effects), par_map)
+          _ ->
+            case ann.params {
+              [] -> acc
+              params -> #(eff_map, dict.insert(par_map, qname, params))
+            }
         }
-      })
-      |> list.fold(effect_map, fn(map, pair) {
-        dict.insert(map, pair.0, pair.1)
       })
     }
   }

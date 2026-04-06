@@ -1,7 +1,7 @@
 import assay/annotation
 import assay/types.{
   AnnotationLine, AssayFile, BlankLine, Check, CommentLine, EffectAnnotation,
-  Effects,
+  Effects, ParamBound,
 }
 import gleam/set
 import gleeunit/should
@@ -9,7 +9,7 @@ import gleeunit/should
 pub fn empty_effects_test() {
   let input = "effects view : []"
   let assert Ok([
-    EffectAnnotation(kind: Effects, function: "view", effects: eff),
+    EffectAnnotation(kind: Effects, function: "view", params: _, effects: eff),
   ]) = annotation.parse(input)
   set.size(eff) |> should.equal(0)
 }
@@ -17,7 +17,7 @@ pub fn empty_effects_test() {
 pub fn single_effect_test() {
   let input = "effects update : [Http]"
   let assert Ok([
-    EffectAnnotation(kind: Effects, function: "update", effects: eff),
+    EffectAnnotation(kind: Effects, function: "update", params: _, effects: eff),
   ]) = annotation.parse(input)
   eff |> should.equal(set.from_list(["Http"]))
 }
@@ -25,14 +25,14 @@ pub fn single_effect_test() {
 pub fn multiple_effects_test() {
   let input = "effects update : [Http, Dom]"
   let assert Ok([
-    EffectAnnotation(kind: Effects, function: "update", effects: eff),
+    EffectAnnotation(kind: Effects, function: "update", params: _, effects: eff),
   ]) = annotation.parse(input)
   eff |> should.equal(set.from_list(["Http", "Dom"]))
 }
 
 pub fn check_line_test() {
   let input = "check view : []"
-  let assert Ok([EffectAnnotation(kind: Check, function: "view", effects: eff)]) =
+  let assert Ok([EffectAnnotation(kind: Check, function: "view", params: _, effects: eff)]) =
     annotation.parse(input)
   set.size(eff) |> should.equal(0)
 }
@@ -40,7 +40,7 @@ pub fn check_line_test() {
 pub fn check_with_effects_test() {
   let input = "check update : [Http, Dom]"
   let assert Ok([
-    EffectAnnotation(kind: Check, function: "update", effects: eff),
+    EffectAnnotation(kind: Check, function: "update", params: _, effects: eff),
   ]) = annotation.parse(input)
   eff |> should.equal(set.from_list(["Http", "Dom"]))
 }
@@ -136,7 +136,7 @@ check handle_click : [Http]"
 
 pub fn format_annotation_effects_test() {
   let ann =
-    EffectAnnotation(kind: Effects, function: "view", effects: set.new())
+    EffectAnnotation(kind: Effects, function: "view", params: [], effects: set.new())
   annotation.format_annotation(ann) |> should.equal("effects view : []")
 }
 
@@ -145,6 +145,7 @@ pub fn format_annotation_check_test() {
     EffectAnnotation(
       kind: Check,
       function: "update",
+      params: [],
       effects: set.from_list(["Http", "Dom"]),
     )
   annotation.format_annotation(ann)
@@ -168,10 +169,10 @@ check view : []
 pub fn merge_updates_existing_test() {
   let file =
     AssayFile(lines: [
-      AnnotationLine(EffectAnnotation(Effects, "view", set.new())),
+      AnnotationLine(EffectAnnotation(Effects, "view", [], set.new())),
     ])
   let inferred = [
-    EffectAnnotation(Effects, "view", set.from_list(["Stdout"])),
+    EffectAnnotation(Effects, "view", [], set.from_list(["Stdout"])),
   ]
   let merged = annotation.merge_inferred(file, inferred)
   let assert [AnnotationLine(ann)] = merged.lines
@@ -181,15 +182,16 @@ pub fn merge_updates_existing_test() {
 pub fn merge_preserves_checks_test() {
   let file =
     AssayFile(lines: [
-      AnnotationLine(EffectAnnotation(Check, "view", set.new())),
+      AnnotationLine(EffectAnnotation(Check, "view", [], set.new())),
       AnnotationLine(EffectAnnotation(
         Effects,
         "update",
+        [],
         set.from_list(["Http"]),
       )),
     ])
   let inferred = [
-    EffectAnnotation(Effects, "update", set.from_list(["Http", "Dom"])),
+    EffectAnnotation(Effects, "update", [], set.from_list(["Http", "Dom"])),
   ]
   let merged = annotation.merge_inferred(file, inferred)
   let assert [AnnotationLine(check_ann), AnnotationLine(effects_ann)] =
@@ -202,10 +204,10 @@ pub fn merge_preserves_checks_test() {
 pub fn merge_removes_stale_test() {
   let file =
     AssayFile(lines: [
-      AnnotationLine(EffectAnnotation(Effects, "deleted_fn", set.new())),
-      AnnotationLine(EffectAnnotation(Effects, "view", set.new())),
+      AnnotationLine(EffectAnnotation(Effects, "deleted_fn", [], set.new())),
+      AnnotationLine(EffectAnnotation(Effects, "view", [], set.new())),
     ])
-  let inferred = [EffectAnnotation(Effects, "view", set.new())]
+  let inferred = [EffectAnnotation(Effects, "view", [], set.new())]
   let merged = annotation.merge_inferred(file, inferred)
   let assert [AnnotationLine(ann)] = merged.lines
   ann.function |> should.equal("view")
@@ -214,11 +216,11 @@ pub fn merge_removes_stale_test() {
 pub fn merge_appends_new_test() {
   let file =
     AssayFile(lines: [
-      AnnotationLine(EffectAnnotation(Effects, "view", set.new())),
+      AnnotationLine(EffectAnnotation(Effects, "view", [], set.new())),
     ])
   let inferred = [
-    EffectAnnotation(Effects, "view", set.new()),
-    EffectAnnotation(Effects, "update", set.from_list(["Http"])),
+    EffectAnnotation(Effects, "view", [], set.new()),
+    EffectAnnotation(Effects, "update", [], set.from_list(["Http"])),
   ]
   let merged = annotation.merge_inferred(file, inferred)
   let assert [AnnotationLine(first), AnnotationLine(second)] = merged.lines
@@ -226,18 +228,86 @@ pub fn merge_appends_new_test() {
   second.function |> should.equal("update")
 }
 
+// --- Parameter bounds ---
+
+pub fn parse_single_param_bound_test() {
+  let input = "effects apply(f: [Stdout]) : []"
+  let assert Ok([ann]) = annotation.parse(input)
+  ann.function |> should.equal("apply")
+  ann.params |> should.equal([ParamBound("f", set.from_list(["Stdout"]))])
+  set.size(ann.effects) |> should.equal(0)
+}
+
+pub fn parse_multiple_param_bounds_test() {
+  let input = "effects transform(f: [], g: [Http]) : [Http]"
+  let assert Ok([ann]) = annotation.parse(input)
+  ann.params
+  |> should.equal([
+    ParamBound("f", set.new()),
+    ParamBound("g", set.from_list(["Http"])),
+  ])
+  ann.effects |> should.equal(set.from_list(["Http"]))
+}
+
+pub fn parse_empty_param_list_is_invalid_test() {
+  // "()" with no params inside is not a valid annotation
+  let input = "effects apply() : []"
+  let assert Ok([ann]) = annotation.parse(input)
+  ann.params |> should.equal([])
+}
+
+pub fn parse_param_bound_check_test() {
+  let input = "check safe_map(f: []) : []"
+  let assert Ok([ann]) = annotation.parse(input)
+  ann.kind |> should.equal(Check)
+  ann.params |> should.equal([ParamBound("f", set.new())])
+}
+
+pub fn format_annotation_with_params_test() {
+  let ann =
+    EffectAnnotation(
+      kind: Effects,
+      function: "apply",
+      params: [ParamBound("f", set.from_list(["Stdout"]))],
+      effects: set.new(),
+    )
+  annotation.format_annotation(ann)
+  |> should.equal("effects apply(f: [Stdout]) : []")
+}
+
+pub fn format_annotation_with_multiple_params_test() {
+  let ann =
+    EffectAnnotation(
+      kind: Check,
+      function: "transform",
+      params: [
+        ParamBound("f", set.new()),
+        ParamBound("g", set.from_list(["Http"])),
+      ],
+      effects: set.from_list(["Http"]),
+    )
+  annotation.format_annotation(ann)
+  |> should.equal("check transform(f: [], g: [Http]) : [Http]")
+}
+
+pub fn param_bound_round_trip_test() {
+  let input = "effects apply(f: [Stdout]) : []\n"
+  let assert Ok(file) = annotation.parse_file(input)
+  annotation.format_file(file) |> should.equal(input)
+}
+
 pub fn merge_preserves_comments_test() {
   let file =
     AssayFile(lines: [
       CommentLine("// header"),
       BlankLine,
-      AnnotationLine(EffectAnnotation(Effects, "view", set.new())),
+      AnnotationLine(EffectAnnotation(Effects, "view", [], set.new())),
       BlankLine,
       CommentLine("// invariants"),
-      AnnotationLine(EffectAnnotation(Check, "view", set.new())),
+      AnnotationLine(EffectAnnotation(Check, "view", [], set.new())),
     ])
   let inferred = [
-    EffectAnnotation(Effects, "view", set.from_list(["Stdout"])),
+    EffectAnnotation(Effects, "view", [], set.from_list(["Stdout"])),
   ]
   let merged = annotation.merge_inferred(file, inferred)
   let assert [
