@@ -36,7 +36,7 @@ Six modules, no circular dependencies:
 ```
 // Function effect annotations
 effects view : []
-effects update : [Http, Dom]
+effects handle_request : [Http, Stdout]
 check view : []
 
 // Parameter bounds for higher-order functions

@@ -18,22 +18,46 @@ gleam run -m assay infer
 
 This scans `src/`, analyzes every public function, and writes effect annotations to `priv/assay/`.
 
-Add an invariant — say your Lustre `view` must be pure:
+### Lustre example
+
+In a [Lustre](https://hexdocs.pm/lustre/) app, `view` must be pure — it builds HTML from the model without side effects. Enforce this with assay:
+
+```gleam
+// src/app.gleam
+import gleam/io
+import lustre/element.{type Element}
+import lustre/element/html
+
+pub fn view(model: Model) -> Element(Msg) {
+  io.println("rendering")  // oops — side effect in view!
+  html.div([], [html.text(model.name)])
+}
+```
 
 ```
 // priv/assay/app.assay
-effects view : []
-effects update : [Http, Dom]
 check view : []
 ```
 
-Check it:
-
 ```sh
-gleam run -m assay check
+$ gleam run -m assay check
+src/app.gleam: view calls gleam/io.println with effects [Stdout] but declared []
+
+assay: 1 violation(s) found
 ```
 
-If `view` calls anything with effects, assay reports the violation with the call site.
+Remove the `io.println` and the check passes. Lustre's `init` and `update` functions are also pure — they return `#(Model, Effect(Msg))` where `Effect` is a data description, not an executed side effect.
+
+### General example
+
+Constrain any function's effect budget:
+
+```
+// priv/assay/api.assay
+check handle_request : [Http, Stdout]
+```
+
+If `handle_request` does something outside its budget (like writing to a database), assay reports the violation with the call site.
 
 ## How it works
 
@@ -82,11 +106,12 @@ When checking `handler.on_click(event)`, assay looks up the parameter's type ann
 // Comments use Gleam-style //
 type Handler.on_click : [Dom]
 
-check view : []
+check render_page : []
+check handle_request : [Http, Stdout]
 check safe_map(f: []) : []
 
-effects view : []
-effects update : [Http, Dom]
+effects render_page : []
+effects handle_request : [Http, Stdout]
 effects apply(f: [Stdout]) : [Stdout]
 ```
 

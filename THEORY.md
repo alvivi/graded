@@ -93,14 +93,14 @@ If `view` only calls pure functions:
 A more permissive annotation works too:
 
 ```
-check update : [Http, Dom]
+check handle_request : [Http, Stdout]
 ```
 
-This allows `update` to perform Http and Dom effects, but nothing else:
+This allows `handle_request` to perform Http and Stdout effects, but nothing else:
 
 ```
-{Http} ⊆ {Http, Dom}  →  true  →  OK
-{Http, Stdout} ⊆ {Http, Dom}  →  false  →  VIOLATION (Stdout not allowed)
+{Http} ⊆ {Http, Stdout}  →  true  →  OK
+{Http, Db} ⊆ {Http, Stdout}  →  false  →  VIOLATION (Db not allowed)
 ```
 
 ## Step 4: Why this is a semiring
