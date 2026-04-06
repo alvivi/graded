@@ -1,0 +1,3 @@
+// gleam_regexp — pure regex matching
+
+extern gleam/regexp : []

@@ -1,0 +1,3 @@
+// gleam_yielder — pure lazy iterators
+
+extern gleam/yielder : []

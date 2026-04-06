@@ -1,0 +1,3 @@
+// gleam_crypto — pure cryptographic functions
+
+extern gleam/crypto : []
