@@ -130,26 +130,38 @@ fn check_annotation(
       let extract_result =
         extract.extract_calls(function_definition.definition.body, context)
       let warnings =
-        list.filter_map(extract_result.references, fn(ref) {
-          case effects.lookup(knowledge_base, ref.name) {
-            effects.Known(effect_set) ->
-              case effect_set == types.empty() {
-                True -> Error(Nil)
-                False ->
-                  Ok(UntrackedEffectWarning(
-                    function: annotation.function,
-                    reference: ref.name,
-                    span: ref.span,
-                    effects: effect_set,
-                  ))
-              }
-            effects.Unknown -> Error(Nil)
-          }
-        })
+        collect_reference_warnings(
+          annotation.function,
+          extract_result.references,
+          knowledge_base,
+        )
 
       #(violations, warnings)
     }
   }
+}
+
+fn collect_reference_warnings(
+  function_name: String,
+  references: List(types.ResolvedCall),
+  knowledge_base: KnowledgeBase,
+) -> List(Warning) {
+  list.filter_map(references, fn(ref) {
+    case effects.lookup(knowledge_base, ref.name) {
+      effects.Known(effect_set) ->
+        case effect_set == types.empty() {
+          True -> Error(Nil)
+          False ->
+            Ok(UntrackedEffectWarning(
+              function: function_name,
+              reference: ref.name,
+              span: ref.span,
+              effects: effect_set,
+            ))
+        }
+      effects.Unknown -> Error(Nil)
+    }
+  })
 }
 
 // Collect all (call, effect_set) pairs reachable from a function body.
