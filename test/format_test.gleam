@@ -1,5 +1,5 @@
-import assay/internal/annotation
-import assay/internal/types.{
+import graded/internal/annotation
+import graded/internal/types.{
   AnnotationLine, BlankLine, Check, CommentLine, Effects, ExternalLine,
   TypeFieldLine,
 }
@@ -74,7 +74,7 @@ pub fn sorts_effect_labels_test() {
 // ──── format_sorted Ordering Invariants (property) ────
 
 pub fn format_sorted_section_order_test() {
-  use file <- qcheck.given(generators.assay_file_gen())
+  use file <- qcheck.given(generators.graded_file_gen())
   let sorted = annotation.format_sorted(file)
   let assert Ok(parsed) = annotation.parse_file(sorted)
   let indices =
@@ -84,7 +84,7 @@ pub fn format_sorted_section_order_test() {
   check_non_decreasing(indices)
 }
 
-fn section_index(line: types.AssayLine) -> Int {
+fn section_index(line: types.GradedLine) -> Int {
   case line {
     CommentLine(_) -> 0
     ExternalLine(_) -> 1
@@ -109,7 +109,7 @@ fn check_non_decreasing(xs: List(Int)) -> Nil {
 }
 
 pub fn format_sorted_checks_alphabetical_test() {
-  use file <- qcheck.given(generators.assay_file_gen())
+  use file <- qcheck.given(generators.graded_file_gen())
   let sorted = annotation.format_sorted(file)
   let assert Ok(parsed) = annotation.parse_file(sorted)
   let check_names =
@@ -120,7 +120,7 @@ pub fn format_sorted_checks_alphabetical_test() {
 }
 
 pub fn format_sorted_effects_alphabetical_test() {
-  use file <- qcheck.given(generators.assay_file_gen())
+  use file <- qcheck.given(generators.graded_file_gen())
   let sorted = annotation.format_sorted(file)
   let assert Ok(parsed) = annotation.parse_file(sorted)
   let effects_names =
@@ -131,7 +131,7 @@ pub fn format_sorted_effects_alphabetical_test() {
 }
 
 pub fn format_sorted_trailing_newline_test() {
-  use file <- qcheck.given(generators.assay_file_gen())
+  use file <- qcheck.given(generators.graded_file_gen())
   let sorted = annotation.format_sorted(file)
   string.ends_with(sorted, "\n") |> should.be_true()
 }

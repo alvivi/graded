@@ -1,5 +1,5 @@
-import assay/internal/annotation
-import assay/internal/types.{
+import graded/internal/annotation
+import graded/internal/types.{
   type EffectAnnotation, type EffectSet, type ExternalAnnotation,
   type ParamBound, type QualifiedName, type TypeFieldAnnotation, Check, Effects,
   FunctionExternal, ModuleExternal, QualifiedName, Specific, Wildcard,
@@ -29,7 +29,7 @@ pub type KnowledgeBase {
   )
 }
 
-/// Build a knowledge base by scanning dependency .assay files
+/// Build a knowledge base by scanning dependency .graded files
 /// and loading versioned catalog files from priv/catalog/.
 pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
   let #(dep_effects, dep_params) = load_dependency_effects(packages_directory)
@@ -171,25 +171,25 @@ fn load_dependency_effects(
     Error(_) -> []
   }
   list.fold(entries, #(dict.new(), dict.new()), fn(maps, package_name) {
-    let assay_directory =
-      packages_directory <> "/" <> package_name <> "/priv/assay"
-    let files = case simplifile.get_files(assay_directory) {
+    let graded_directory =
+      packages_directory <> "/" <> package_name <> "/priv/graded"
+    let files = case simplifile.get_files(graded_directory) {
       Ok(found) -> found
       Error(_) -> []
     }
     list.fold(files, maps, fn(inner_maps, file_path) {
-      case string.ends_with(file_path, ".assay") {
-        True -> load_assay_file(inner_maps, file_path, assay_directory)
+      case string.ends_with(file_path, ".graded") {
+        True -> load_graded_file(inner_maps, file_path, graded_directory)
         False -> inner_maps
       }
     })
   })
 }
 
-fn load_assay_file(
+fn load_graded_file(
   maps: #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))),
   file_path: String,
-  assay_directory: String,
+  graded_directory: String,
 ) -> #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))) {
   let parsed =
     simplifile.read(file_path)
@@ -199,10 +199,10 @@ fn load_assay_file(
     })
   case parsed {
     Error(_) -> maps
-    Ok(assay_file) -> {
-      let module_path = file_path_to_module(file_path, assay_directory)
+    Ok(graded_file) -> {
+      let module_path = file_path_to_module(file_path, graded_directory)
       let #(effect_map, param_map) = maps
-      annotation.extract_annotations(assay_file)
+      annotation.extract_annotations(graded_file)
       |> list.fold(#(effect_map, param_map), fn(accumulator, annotation) {
         fold_annotation(accumulator, annotation, module_path)
       })
@@ -234,17 +234,17 @@ fn fold_annotation(
   }
 }
 
-fn file_path_to_module(path: String, assay_directory: String) -> String {
-  let prefix = assay_directory <> "/"
+fn file_path_to_module(path: String, graded_directory: String) -> String {
+  let prefix = graded_directory <> "/"
   let relative = case string.starts_with(path, prefix) {
     True -> string.drop_start(path, string.length(prefix))
     False -> path
   }
-  string.replace(relative, ".assay", "")
+  string.replace(relative, ".graded", "")
 }
 
 fn find_catalog_directory() -> String {
-  let installed = "build/packages/assay/priv/catalog"
+  let installed = "build/packages/graded/priv/catalog"
   case simplifile.is_directory(installed) {
     Ok(True) -> installed
     _ -> "priv/catalog"
@@ -258,7 +258,7 @@ fn load_catalog(
   let installed_versions = parse_manifest_versions(manifest_path)
   let catalog_files = case simplifile.get_files(catalog_dir) {
     Ok(files) ->
-      list.filter(files, fn(file) { string.ends_with(file, ".assay") })
+      list.filter(files, fn(file) { string.ends_with(file, ".graded") })
     Error(_) -> []
   }
 
@@ -271,7 +271,7 @@ fn load_catalog(
         Ok(content) ->
           case annotation.parse_file(content) {
             Error(_) -> []
-            Ok(assay_file) -> annotation.extract_externals(assay_file)
+            Ok(graded_file) -> annotation.extract_externals(graded_file)
           }
       }
     })
@@ -292,7 +292,7 @@ fn resolve_catalog_files(
   catalog_files: List(String),
   installed_versions: Dict(String, String),
 ) -> List(String) {
-  // Parse filenames: "path/to/gleam_stdlib@0.70.0.assay" → #("gleam_stdlib", #(0,70,0), path)
+  // Parse filenames: "path/to/gleam_stdlib@0.70.0.graded" → #("gleam_stdlib", #(0,70,0), path)
   let parsed =
     list.filter_map(catalog_files, fn(path) {
       let filename =
@@ -300,7 +300,7 @@ fn resolve_catalog_files(
         |> string.split("/")
         |> list.last()
         |> result.unwrap("")
-        |> string.replace(".assay", "")
+        |> string.replace(".graded", "")
       case string.split(filename, "@") {
         [package, version] -> Ok(#(package, parse_semver(version), path))
         _ -> Error(Nil)

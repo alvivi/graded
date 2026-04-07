@@ -2,7 +2,7 @@
 
 ## Problem
 
-assay performs syntax-level analysis. When a function reference is passed as a value to a higher-order function, its effects are lost:
+graded performs syntax-level analysis. When a function reference is passed as a value to a higher-order function, its effects are lost:
 
 ```gleam
 import gleam/io
@@ -21,7 +21,7 @@ Inline closures work correctly because the call appears in the AST:
 list.map(names, fn(n) { io.println(n) })  // io.println call is visible -- [Stdout] tracked
 ```
 
-As of the current implementation, assay emits a **warning** when a function reference with known non-pure effects is passed as a value. This document describes how to close the gap entirely.
+As of the current implementation, graded emits a **warning** when a function reference with known non-pure effects is passed as a value. This document describes how to close the gap entirely.
 
 ## Proposed Approach
 

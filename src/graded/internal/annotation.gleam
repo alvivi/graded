@@ -1,7 +1,7 @@
-import assay/internal/types.{
-  type AnnotationKind, type AssayFile, type AssayLine, type EffectAnnotation,
+import graded/internal/types.{
+  type AnnotationKind, type GradedFile, type GradedLine, type EffectAnnotation,
   type EffectSet, type ExternalAnnotation, type ParamBound,
-  type TypeFieldAnnotation, AnnotationLine, AssayFile, BlankLine, Check,
+  type TypeFieldAnnotation, AnnotationLine, GradedFile, BlankLine, Check,
   CommentLine, EffectAnnotation, Effects, ExternalAnnotation, ExternalLine,
   FunctionExternal, ModuleExternal, ParamBound, Specific, TypeFieldAnnotation,
   TypeFieldLine, Wildcard,
@@ -17,8 +17,8 @@ pub type ParseError {
   InvalidLine(line_number: Int, content: String)
 }
 
-/// Parse an .assay file preserving full structure (comments, blanks, annotations).
-pub fn parse_file(input: String) -> Result(AssayFile, ParseError) {
+/// Parse an .graded file preserving full structure (comments, blanks, annotations).
+pub fn parse_file(input: String) -> Result(GradedFile, ParseError) {
   input
   |> string.split("\n")
   |> list.index_map(fn(line, index) { #(index + 1, line) })
@@ -26,17 +26,17 @@ pub fn parse_file(input: String) -> Result(AssayFile, ParseError) {
     let #(line_number, line) = pair
     parse_structured_line(line, line_number)
   })
-  |> result.map(fn(lines) { AssayFile(lines:) })
+  |> result.map(fn(lines) { GradedFile(lines:) })
 }
 
-/// Parse an .assay file returning only the annotations (discards structure).
+/// Parse an .graded file returning only the annotations (discards structure).
 pub fn parse(input: String) -> Result(List(EffectAnnotation), ParseError) {
   use file <- result.try(parse_file(input))
   Ok(extract_annotations(file))
 }
 
 /// Extract all annotations from a parsed file.
-pub fn extract_annotations(file: AssayFile) -> List(EffectAnnotation) {
+pub fn extract_annotations(file: GradedFile) -> List(EffectAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
       AnnotationLine(annotation) -> Ok(annotation)
@@ -49,12 +49,12 @@ pub fn extract_annotations(file: AssayFile) -> List(EffectAnnotation) {
 }
 
 /// Extract only `check` annotations (enforced invariants).
-pub fn extract_checks(file: AssayFile) -> List(EffectAnnotation) {
+pub fn extract_checks(file: GradedFile) -> List(EffectAnnotation) {
   extract_annotations(file)
   |> list.filter(fn(annotation) { annotation.kind == Check })
 }
 
-/// Render an EffectAnnotation back to its .assay line format.
+/// Render an EffectAnnotation back to its .graded line format.
 pub fn format_annotation(annotation: EffectAnnotation) -> String {
   let prefix = case annotation.kind {
     Effects -> "effects"
@@ -81,7 +81,7 @@ pub fn format_annotation(annotation: EffectAnnotation) -> String {
   <> effects_string
 }
 
-/// Render a TypeFieldAnnotation back to its .assay line format.
+/// Render a TypeFieldAnnotation back to its .graded line format.
 pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
   "type "
   <> tf.type_name
@@ -92,7 +92,7 @@ pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
 }
 
 /// Extract type field annotations from a parsed file.
-pub fn extract_type_fields(file: AssayFile) -> List(TypeFieldAnnotation) {
+pub fn extract_type_fields(file: GradedFile) -> List(TypeFieldAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
       TypeFieldLine(tf) -> Ok(tf)
@@ -101,7 +101,7 @@ pub fn extract_type_fields(file: AssayFile) -> List(TypeFieldAnnotation) {
   })
 }
 
-/// Render an ExternalAnnotation back to its .assay line format.
+/// Render an ExternalAnnotation back to its .graded line format.
 fn external_sort_key(external_annotation: ExternalAnnotation) -> String {
   case external_annotation.target {
     ModuleExternal -> external_annotation.module
@@ -121,7 +121,7 @@ pub fn format_external(external_annotation: ExternalAnnotation) -> String {
 }
 
 /// Extract external annotations from a parsed file.
-pub fn extract_externals(file: AssayFile) -> List(ExternalAnnotation) {
+pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
       ExternalLine(external_annotation) -> Ok(external_annotation)
@@ -130,8 +130,8 @@ pub fn extract_externals(file: AssayFile) -> List(ExternalAnnotation) {
   })
 }
 
-/// Render a full AssayFile back to a string, preserving structure.
-pub fn format_file(file: AssayFile) -> String {
+/// Render a full GradedFile back to a string, preserving structure.
+pub fn format_file(file: GradedFile) -> String {
   file.lines
   |> list.map(fn(line) {
     case line {
@@ -145,7 +145,7 @@ pub fn format_file(file: AssayFile) -> String {
   |> string.join("\n")
 }
 
-/// Merge inferred effects into an existing AssayFile, preserving structure.
+/// Merge inferred effects into an existing GradedFile, preserving structure.
 ///
 /// - `check` lines: kept exactly where they are, unchanged
 /// - Comments and blank lines: kept exactly where they are
@@ -153,9 +153,9 @@ pub fn format_file(file: AssayFile) -> String {
 /// - Stale `effects` lines (function no longer exists): removed
 /// - New functions not yet in file: `effects` lines appended at end
 pub fn merge_inferred(
-  file: AssayFile,
+  file: GradedFile,
   inferred: List(EffectAnnotation),
-) -> AssayFile {
+) -> GradedFile {
   let inferred_map =
     inferred
     |> list.map(fn(annotation) { #(annotation.function, annotation) })
@@ -189,10 +189,10 @@ pub fn merge_inferred(
     |> list.filter(fn(annotation) { !set.contains(placed, annotation.function) })
     |> list.map(AnnotationLine)
 
-  AssayFile(lines: list.append(list.reverse(new_lines), remaining))
+  GradedFile(lines: list.append(list.reverse(new_lines), remaining))
 }
 
-/// Format an AssayFile: normalize spacing, sort annotations, ensure trailing newline.
+/// Format an GradedFile: normalize spacing, sort annotations, ensure trailing newline.
 ///
 /// Output order:
 /// 1. Leading comments (file header)
@@ -200,7 +200,7 @@ pub fn merge_inferred(
 /// 3. Blank line separator (if both check and effects lines exist)
 /// 4. `effects` lines, sorted alphabetically by function name
 /// 5. Single trailing newline
-pub fn format_sorted(file: AssayFile) -> String {
+pub fn format_sorted(file: GradedFile) -> String {
   let comments = collect_comments(file.lines)
   let annotations = extract_annotations(file)
 
@@ -257,7 +257,7 @@ pub fn format_sorted(file: AssayFile) -> String {
 fn parse_structured_line(
   line: String,
   line_number: Int,
-) -> Result(AssayLine, ParseError) {
+) -> Result(GradedLine, ParseError) {
   let trimmed = string.trim(line)
   case trimmed {
     "" -> Ok(BlankLine)
@@ -456,7 +456,7 @@ fn parse_effect_set(input: String) -> Result(EffectSet, Nil) {
   }
 }
 
-fn collect_comments(lines: List(AssayLine)) -> List(String) {
+fn collect_comments(lines: List(GradedLine)) -> List(String) {
   list.filter_map(lines, fn(line) {
     case line {
       CommentLine(text) -> Ok(text)

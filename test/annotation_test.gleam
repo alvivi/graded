@@ -1,5 +1,5 @@
-import assay/internal/annotation
-import assay/internal/types.{
+import graded/internal/annotation
+import graded/internal/types.{
   AnnotationLine, BlankLine, Check, CommentLine, EffectAnnotation, Effects,
   ExternalAnnotation, ExternalLine, FunctionExternal, ParamBound, Specific,
   TypeFieldAnnotation, TypeFieldLine, Wildcard,
@@ -343,14 +343,14 @@ pub fn external_roundtrip_test() {
 }
 
 pub fn file_roundtrip_test() {
-  use file <- qcheck.given(generators.assay_file_gen())
+  use file <- qcheck.given(generators.graded_file_gen())
   let formatted = annotation.format_file(file)
   let assert Ok(parsed) = annotation.parse_file(formatted)
   parsed |> should.equal(file)
 }
 
 pub fn format_sorted_idempotence_test() {
-  use file <- qcheck.given(generators.assay_file_gen())
+  use file <- qcheck.given(generators.graded_file_gen())
   let s1 = annotation.format_sorted(file)
   let assert Ok(parsed) = annotation.parse_file(s1)
   let s2 = annotation.format_sorted(parsed)
@@ -362,7 +362,7 @@ pub fn format_sorted_idempotence_test() {
 pub fn merge_inferred_invariants_test() {
   use #(file, inferred) <- qcheck.given(
     qcheck.map2(
-      generators.assay_file_gen(),
+      generators.graded_file_gen(),
       generators.inferred_list_gen(),
       fn(f, i) { #(f, i) },
     ),
@@ -373,7 +373,7 @@ pub fn merge_inferred_invariants_test() {
     |> list.filter(fn(a) { a.kind == Effects })
 
   // Non-effects lines preserved in order
-  let non_effects = fn(f: types.AssayFile) {
+  let non_effects = fn(f: types.GradedFile) {
     list.filter(f.lines, fn(line) {
       case line {
         AnnotationLine(a) -> a.kind != Effects

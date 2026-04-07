@@ -1,5 +1,5 @@
-import assay/internal/extract
-import assay/internal/types.{QualifiedName}
+import graded/internal/extract
+import graded/internal/types.{QualifiedName}
 import glance
 import gleam/list
 import gleeunit/should

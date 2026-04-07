@@ -1,5 +1,5 @@
-import assay/internal/types.{
-  type EffectSet, AnnotationLine, AssayFile, BlankLine, Check, CommentLine,
+import graded/internal/types.{
+  type EffectSet, AnnotationLine, GradedFile, BlankLine, Check, CommentLine,
   EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
   ModuleExternal, ParamBound, Specific, TypeFieldAnnotation, TypeFieldLine,
   Wildcard,
@@ -117,7 +117,7 @@ pub fn external_gen() -> qcheck.Generator(types.ExternalAnnotation) {
   qcheck.from_generators(module_ext, [function_ext])
 }
 
-pub fn assay_file_gen() -> qcheck.Generator(types.AssayFile) {
+pub fn graded_file_gen() -> qcheck.Generator(types.GradedFile) {
   let comment_gen =
     qcheck.from_generators(qcheck.return("// TODO"), [
       qcheck.return("// Effect annotations"),
@@ -134,7 +134,7 @@ pub fn assay_file_gen() -> qcheck.Generator(types.AssayFile) {
       ],
     )
   qcheck.map2(line_gen, qcheck.list_from(line_gen), fn(first, rest) {
-    AssayFile(lines: [first, ..rest])
+    GradedFile(lines: [first, ..rest])
   })
 }
 

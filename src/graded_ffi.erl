@@ -1,4 +1,4 @@
--module(assay_ffi).
+-module(graded_ffi).
 -export([read_stdin/0]).
 
 read_stdin() ->

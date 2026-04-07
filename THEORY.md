@@ -1,6 +1,6 @@
-# Theory behind assay
+# Theory behind graded
 
-This document explains the mathematical foundations that assay uses to check effects in Gleam programs. No prior knowledge of type theory is assumed — we build up from simple ideas to the full picture.
+This document explains the mathematical foundations that graded uses to check effects in Gleam programs. No prior knowledge of type theory is assumed — we build up from simple ideas to the full picture.
 
 ## The core question
 
@@ -201,7 +201,7 @@ Secret > Confidential > Internal > Public
 The rule: data at level L must not flow to a context at level < L.
 
 ```
-// priv/assay/app.assay
+// priv/graded/app.graded
 privacy user.email : Confidential
 privacy io.println : Public
 ```
@@ -214,7 +214,7 @@ Confidential ≤ Public  →  false  →  VIOLATION
 
 Unlike effect checking (which walks the call graph), privacy checking requires **data flow analysis** — tracking which variables carry sensitive data and where those values end up. This is a meaningful step up in complexity but uses the same algebra-parametric framework.
 
-## What assay implements today
+## What graded implements today
 
 Assay implements **effect checking** with higher-order and type-aware resolution:
 
@@ -248,7 +248,7 @@ The focus is on effects and privacy as the two checkers with clear, distinct val
 
 ### Core papers
 
-- **Quantitative program reasoning with graded modal types** (Orchard, Liepelt, Eades, ICFP 2019) — The foundational paper for Granule. Introduces the graded modal type system that assay's theory is based on. [(PDF)](https://www.cs.kent.ac.uk/people/staff/dao7/publ/granule-icfp19.pdf)
+- **Quantitative program reasoning with graded modal types** (Orchard, Liepelt, Eades, ICFP 2019) — The foundational paper for Granule. Introduces the graded modal type system that graded's theory is based on. [(PDF)](https://www.cs.kent.ac.uk/people/staff/dao7/publ/granule-icfp19.pdf)
 - **Combining effects and coeffects via grading** (Gaboardi, Katsumata, Orchard, Breuvart, Uustalu, ICFP 2016) — Shows how effects and coeffects can live in the same system via graded modalities. [(PDF)](https://www.cs.kent.ac.uk/people/staff/dao7/publ/combining-effects-and-coeffects-icfp16.pdf)
 - **Coeffects: Unified static analysis of context-dependence** (Petricek, Orchard, Mycroft, ICALP 2013) — The original coeffect paper. [(PDF)](http://tomasp.net/academic/papers/structural/coeffects-icalp.pdf)
 

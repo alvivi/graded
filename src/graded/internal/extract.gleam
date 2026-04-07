@@ -1,4 +1,4 @@
-import assay/internal/types.{
+import graded/internal/types.{
   type FieldCall, type LocalCall, type QualifiedName, type ResolvedCall,
   FieldCall, LocalCall, QualifiedName, ResolvedCall,
 }

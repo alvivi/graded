@@ -1,11 +1,11 @@
-import assay
-import assay/internal/annotation
+import graded
+import graded/internal/annotation
 import gleam/list
 import gleeunit/should
 import simplifile
 
 pub fn pure_view_passes_test() {
-  let assert Ok(results) = assay.run("test/fixtures")
+  let assert Ok(results) = graded.run("test/fixtures")
   let pure_result =
     list.find(results, fn(r) { r.file == "test/fixtures/pure_view.gleam" })
   let assert Ok(r) = pure_result
@@ -13,7 +13,7 @@ pub fn pure_view_passes_test() {
 }
 
 pub fn impure_view_fails_test() {
-  let assert Ok(results) = assay.run("test/fixtures")
+  let assert Ok(results) = graded.run("test/fixtures")
   let impure_result =
     list.find(results, fn(r) { r.file == "test/fixtures/impure_view.gleam" })
   let assert Ok(r) = impure_result
@@ -24,7 +24,7 @@ pub fn impure_view_fails_test() {
 }
 
 pub fn transitive_violation_detected_test() {
-  let assert Ok(results) = assay.run("test/fixtures")
+  let assert Ok(results) = graded.run("test/fixtures")
   let trans_result =
     list.find(results, fn(r) { r.file == "test/fixtures/transitive.gleam" })
   let assert Ok(r) = trans_result
@@ -33,11 +33,11 @@ pub fn transitive_violation_detected_test() {
 
 pub fn infer_then_check_round_trip_test() {
   // Infer writes effects lines, check still enforces check lines
-  let assert Ok(Nil) = assay.run_infer("test/fixtures")
+  let assert Ok(Nil) = graded.run_infer("test/fixtures")
 
   // Verify the inferred file was written and preserves check lines
   let assert Ok(content) =
-    simplifile.read("test/fixtures/priv/assay/impure_view.assay")
+    simplifile.read("test/fixtures/priv/graded/impure_view.graded")
   let assert Ok(file) = annotation.parse_file(content)
 
   // check line should still be there
@@ -49,7 +49,7 @@ pub fn infer_then_check_round_trip_test() {
   { list.length(all) > list.length(checks) } |> should.be_true()
 
   // Check still catches violations via check lines
-  let assert Ok(results) = assay.run("test/fixtures")
+  let assert Ok(results) = graded.run("test/fixtures")
   let impure_result =
     list.find(results, fn(r) { r.file == "test/fixtures/impure_view.gleam" })
   let assert Ok(r) = impure_result
@@ -58,17 +58,17 @@ pub fn infer_then_check_round_trip_test() {
   // Restore fixture files
   let assert Ok(Nil) =
     simplifile.write(
-      "test/fixtures/priv/assay/pure_view.assay",
+      "test/fixtures/priv/graded/pure_view.graded",
       "check view : []\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
-      "test/fixtures/priv/assay/impure_view.assay",
+      "test/fixtures/priv/graded/impure_view.graded",
       "check view : []\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
-      "test/fixtures/priv/assay/transitive.assay",
+      "test/fixtures/priv/graded/transitive.graded",
       "check view : []\n",
     )
 }

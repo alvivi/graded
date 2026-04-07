@@ -60,7 +60,7 @@ Combine **glance** (source-level AST, call sites, control flow) with **package-i
 
 ### Effect Inference for Set-Based Systems
 
-For assay's model (effects are sets, composition is union), inference is a forward dataflow problem:
+For graded's model (effects are sets, composition is union), inference is a forward dataflow problem:
 - Walk the call graph bottom-up
 - At each function, union the effects of all callees
 - At branches, union both sides
@@ -70,7 +70,7 @@ This is simple and decidable. The complication is effect polymorphism.
 
 ### Effect Polymorphism Is Critical
 
-Without it, higher-order functions like `map` can't be annotated. Java checked exceptions failed precisely because of this. Options for assay:
+Without it, higher-order functions like `map` can't be annotated. Java checked exceptions failed precisely because of this. Options for graded:
 
 1. **Effect variables**: `map : forall e. (List(a), fn(a) -e-> b) -e-> List(b)` — expressive, small syntax cost
 2. **Transparent functions**: declare certain stdlib functions inherit callback effects — simpler but ad-hoc
@@ -102,7 +102,7 @@ Recommendation: support effect variables. Instantiation is just set substitution
 
 ### Key Design Lessons
 
-**Filesystem mirroring works.** `src/foo.gleam` → `src/foo.assay`. No configuration needed. Proven by Python stubs.
+**Filesystem mirroring works.** `src/foo.gleam` → `src/foo.graded`. No configuration needed. Proven by Python stubs.
 
 **Reference by qualified name.** Module path + function name. Gleam has no overloading, so names are unambiguous within a module.
 
@@ -113,13 +113,13 @@ Recommendation: support effect variables. Instantiation is just set substitution
 
 **Partial annotations are critical for adoption.** Unannotated modules are ignored entirely. This is how Python type stubs achieved adoption.
 
-**Auto-generation of skeletons is essential.** Generate initial `.assay` files from Gleam source, then refine. Humans won't maintain sidecar files without tooling support.
+**Auto-generation of skeletons is essential.** Generate initial `.graded` files from Gleam source, then refine. Humans won't maintain sidecar files without tooling support.
 
 **Inline comments don't scale.** JML, ACSL, and Liquid Haskell all suffer from annotation clutter. Sidecar files are the right choice.
 
 **Per-function granularity is consensus.** Every successful spec tool operates at the function level.
 
-**Incremental checking:** Module-level with content-addressed hashing (hash of `.gleam` + `.assay` + imported module interfaces). Good balance of simplicity and performance.
+**Incremental checking:** Module-level with content-addressed hashing (hash of `.gleam` + `.graded` + imported module interfaces). Good balance of simplicity and performance.
 
 ---
 
@@ -183,10 +183,10 @@ Recommendation: start with direct computation for set effects. Add Z3 via SMT-LI
 
 For set-based effect checking, the entire checker reduces to:
 
-1. Parse `.assay` sidecar → extract `function_name: {Effect1, Effect2, ...}` annotations
+1. Parse `.graded` sidecar → extract `function_name: {Effect1, Effect2, ...}` annotations
 2. Parse `.gleam` source via glance → extract function bodies and call sites
 3. For each annotated function, walk the AST:
-   - At each function call, look up the callee's declared effects (from `.assay` files or a built-in stdlib table)
+   - At each function call, look up the callee's declared effects (from `.graded` files or a built-in stdlib table)
    - Accumulate effects via set union
    - At branches (case/if), take the union of both branches
 4. Check: accumulated effects ⊆ declared effects
@@ -198,17 +198,17 @@ No SMT solver. No bidirectional type inference. No graded modalities. Just set o
 
 - **glance** for parsing Gleam source
 - **gleam_package_interface** for typed signatures of dependencies
-- **Filesystem mirroring** for `.assay` file placement
+- **Filesystem mirroring** for `.graded` file placement
 - **Qualified names** for referencing Gleam constructs
 - **Effect variables** for polymorphism in annotations
 
 ### What to build first
 
 1. A Gleam project that parses a `.gleam` file with glance and extracts its call graph
-2. A parser for `.assay` annotation files (minimal grammar: function name → effect set)
+2. A parser for `.graded` annotation files (minimal grammar: function name → effect set)
 3. The subset checker: inferred effects ⊆ declared effects
 4. Stdlib effect annotations for `gleam/io`, `gleam/http`, `gleam/otp`
-5. A `assay check` CLI command
+5. A `graded check` CLI command
 
 ### What to defer
 

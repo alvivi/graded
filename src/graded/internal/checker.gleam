@@ -1,6 +1,6 @@
-import assay/internal/effects.{type KnowledgeBase}
-import assay/internal/extract.{type ImportContext}
-import assay/internal/types.{
+import graded/internal/effects.{type KnowledgeBase}
+import graded/internal/extract.{type ImportContext}
+import graded/internal/types.{
   type EffectAnnotation, type EffectSet, type LocalCall, type ParamBound,
   type ResolvedCall, type Violation, type Warning, EffectAnnotation, Effects,
   QualifiedName, UntrackedEffectWarning, Violation,

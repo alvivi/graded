@@ -1,6 +1,6 @@
-import assay/internal/checker
-import assay/internal/effects
-import assay/internal/types.{
+import graded/internal/checker
+import graded/internal/effects
+import graded/internal/types.{
   type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
   ParamBound, QualifiedName, Specific, UntrackedEffectWarning, Wildcard,
 }

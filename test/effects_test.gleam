@@ -1,5 +1,5 @@
-import assay/internal/effects
-import assay/internal/types.{QualifiedName, Specific, Wildcard}
+import graded/internal/effects
+import graded/internal/types.{QualifiedName, Specific, Wildcard}
 import generators
 import gleam/int
 import gleam/list
