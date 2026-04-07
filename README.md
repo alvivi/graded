@@ -78,8 +78,9 @@ Effect knowledge is resolved in priority order:
 
 1. **Your `.graded` files** — `external effects` declarations you write for your project
 2. **Dependency `.graded` files** — shipped by libraries in `build/packages/*/priv/graded/`
-3. **Bundled catalog** — versioned catalog files shipped with graded (see below)
-4. **Conservative default** — unknown functions get `[Unknown]`
+3. **Path dependencies** — local deps declared with `path = "..."` in `gleam.toml` are inferred from source automatically
+4. **Bundled catalog** — versioned catalog files shipped with graded (see below)
+5. **Conservative default** — unknown functions get `[Unknown]`
 
 ## Higher-order functions
 
@@ -160,6 +161,7 @@ Effect labels are plain strings — you can use any name. The bundled catalog us
 | `Http` | Network HTTP requests | `gleam/httpc.send`, `lustre_http.get` |
 | `FileSystem` | Reads or writes the filesystem | `simplifile.read`, `simplifile.write` |
 | `Dom` | Browser DOM manipulation | `lustre.start`, `lustre.register` |
+| `Time` | Reads system clock or timezone | `gleam/time/timestamp.system_time`, `gleam/time/calendar.local_offset` |
 
 You can define your own labels for project-specific effects:
 
@@ -196,6 +198,8 @@ For example, if you have `gleam_stdlib@0.71.0` installed and the catalog has `gl
 | **gleam_regexp** | (pure) | — |
 | **gleam_yielder** | (pure) | — |
 | **gleam_crypto** | (pure) | — |
+| **gleam_time** | `gleam/time/timestamp.system_time`, `gleam/time/calendar.local_offset`, `.utc_offset` | `Time` |
+| **houdini** | (pure) | — |
 | **tom** | (pure) | — |
 
 Module-level declarations like `external effects gleam/list : []` mark an entire module as pure — any function from that module resolves as effect-free.
@@ -236,6 +240,8 @@ The effect checker handles:
 - Parameter effect bounds for higher-order functions
 - Type field effect annotations with type-aware resolution
 - Dependency effect loading from `priv/graded/`
+- Automatic inference for path dependencies in monorepo setups
+- Record constructor detection (uppercase-initial names are always pure)
 - Structure-preserving `.graded` file merging
 
 ## Limitations

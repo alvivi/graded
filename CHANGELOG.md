@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-07
+
 ### Added
 
 - Catalog entry for `gleam_time` (all modules pure; `system_time`, `local_offset`, `utc_offset` marked `[Time]`).
@@ -35,5 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Versioned catalog system resolved against `manifest.toml`.
 - Catalog entries for `gleam_stdlib`, `gleam_erlang`, `gleam_otp`, `gleam_http`, `gleam_httpc`, `gleam_json`, `gleam_regexp`, `gleam_yielder`, `gleam_crypto`, `lustre`, `lustre_http`, `simplifile`, `filepath`, `tom`.
 
-[Unreleased]: https://github.com/alvivi/graded/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/alvivi/graded/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/alvivi/graded/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/alvivi/graded/releases/tag/v0.1.0
