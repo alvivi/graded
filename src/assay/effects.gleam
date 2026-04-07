@@ -194,7 +194,10 @@ fn load_assay_file(
 }
 
 fn fold_annotation(
-  acc: #(Dict(QualifiedName, Set(String)), Dict(QualifiedName, List(ParamBound))),
+  acc: #(
+    Dict(QualifiedName, Set(String)),
+    Dict(QualifiedName, List(ParamBound)),
+  ),
   ann: EffectAnnotation,
   module_path: String,
 ) -> #(Dict(QualifiedName, Set(String)), Dict(QualifiedName, List(ParamBound))) {
