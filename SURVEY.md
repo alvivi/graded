@@ -37,7 +37,7 @@ Written in Rust. Not exposed as a reusable library. Pipeline: Source → Untyped
 
 ### Existing Static Analysis
 
-**None exist.** The compiler does exhaustiveness checking and unused variable warnings. No linters, no CodeQL/Semgrep support. Assay would be the first significant static analysis tool for Gleam.
+**None exist.** The compiler does exhaustiveness checking and unused variable warnings. No linters, no CodeQL/Semgrep support. graded would be the first significant static analysis tool for Gleam.
 
 ### Recommended Approach
 
@@ -157,7 +157,7 @@ From Granule's own `Effects.hs`:
 - `effectUpperBound` (branches): union
 - `isEffUnit` (purity): emptiness check
 
-**All of these are trivial set operations.** No constraint solver, no SMT, no Z3. Assay's first version needs none of that machinery.
+**All of these are trivial set operations.** No constraint solver, no SMT, no Z3. graded's first version needs none of that machinery.
 
 ### When Would You Need SMT?
 
@@ -177,7 +177,7 @@ Recommendation: start with direct computation for set effects. Add Z3 via SMT-LI
 
 ---
 
-## Summary: What This Means for Assay
+## Summary: What This Means for graded
 
 ### The core algorithm is simpler than expected
 

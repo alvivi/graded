@@ -146,7 +146,7 @@ effects(render_header) = {Stdout}
 effects(view) = effects(render_header) = {Stdout}
 ```
 
-Assay follows local function calls recursively, with cycle detection (via a visited set) to handle mutual recursion:
+graded follows local function calls recursively, with cycle detection (via a visited set) to handle mutual recursion:
 
 ```gleam
 fn a() { b() }
@@ -216,7 +216,7 @@ Unlike effect checking (which walks the call graph), privacy checking requires *
 
 ## What graded implements today
 
-Assay implements **effect checking** with higher-order and type-aware resolution:
+graded implements **effect checking** with higher-order and type-aware resolution:
 
 - Effects are sets of string labels
 - Composition is set union
