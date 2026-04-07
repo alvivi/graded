@@ -118,7 +118,7 @@ The mathematical structure underneath is a **semiring** — a set with two opera
 The semiring laws guarantee that effect composition is well-behaved:
 
 - **Union is associative**: `(A ∪ B) ∪ C = A ∪ (B ∪ C)` — grouping doesn't matter
-- **Union is commutative**: `A ∪ B = B ∪ A` ��� order doesn't matter
+- **Union is commutative**: `A ∪ B = B ∪ A` — order doesn't matter
 - **Empty set is identity**: `A ∪ {} = A` — calling a pure function adds no effects
 - **Union is idempotent**: `A ∪ A = A` — calling the same effect twice doesn't create a new kind of effect
 
