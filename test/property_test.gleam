@@ -5,7 +5,10 @@ import assay/internal/types.{
   ModuleExternal, ParamBound, Specific, TypeFieldAnnotation, TypeFieldLine,
   Wildcard,
 }
+import gleam/dict
+import gleam/list
 import gleam/set
+import gleam/string
 import gleeunit/should
 import qcheck
 
@@ -277,4 +280,156 @@ pub fn format_sorted_idempotence_test() {
   let assert Ok(parsed) = annotation.parse_file(s1)
   let s2 = annotation.format_sorted(parsed)
   s1 |> should.equal(s2)
+}
+
+// ──── Generators (Cluster 3) ────
+
+fn inferred_list_gen() -> qcheck.Generator(List(types.EffectAnnotation)) {
+  let effects_ann_gen =
+    qcheck.map2(function_name_gen(), effect_set_gen(), fn(function, effects) {
+      EffectAnnotation(kind: Effects, function:, params: [], effects:)
+    })
+  qcheck.map(
+    qcheck.map2(
+      effects_ann_gen,
+      qcheck.list_from(effects_ann_gen),
+      fn(first, rest) { [first, ..rest] },
+    ),
+    fn(anns) {
+      // Deduplicate by function name (last wins, matching dict.from_list)
+      anns
+      |> list.map(fn(a) { #(a.function, a) })
+      |> dict.from_list()
+      |> dict.values()
+    },
+  )
+}
+
+// ──── Cluster 3: merge_inferred Preservation ────
+
+pub fn merge_preserves_non_effects_lines_test() {
+  use #(file, inferred) <- qcheck.given(
+    qcheck.map2(assay_file_gen(), inferred_list_gen(), fn(f, i) { #(f, i) }),
+  )
+  let non_effects = fn(f: types.AssayFile) {
+    list.filter(f.lines, fn(line) {
+      case line {
+        AnnotationLine(a) -> a.kind != Effects
+        _ -> True
+      }
+    })
+  }
+  let merged = annotation.merge_inferred(file, inferred)
+  non_effects(merged) |> should.equal(non_effects(file))
+}
+
+pub fn merge_includes_all_inferred_test() {
+  use #(file, inferred) <- qcheck.given(
+    qcheck.map2(assay_file_gen(), inferred_list_gen(), fn(f, i) { #(f, i) }),
+  )
+  let merged = annotation.merge_inferred(file, inferred)
+  let merged_effect_names =
+    annotation.extract_annotations(merged)
+    |> list.filter(fn(a) { a.kind == Effects })
+    |> list.map(fn(a) { a.function })
+    |> set.from_list()
+  list.each(inferred, fn(a) {
+    set.contains(merged_effect_names, a.function) |> should.be_true()
+  })
+}
+
+pub fn merge_no_stale_effects_test() {
+  use #(file, inferred) <- qcheck.given(
+    qcheck.map2(assay_file_gen(), inferred_list_gen(), fn(f, i) { #(f, i) }),
+  )
+  let inferred_names =
+    inferred |> list.map(fn(a) { a.function }) |> set.from_list()
+  let merged = annotation.merge_inferred(file, inferred)
+  annotation.extract_annotations(merged)
+  |> list.filter(fn(a) { a.kind == Effects })
+  |> list.each(fn(a) {
+    set.contains(inferred_names, a.function) |> should.be_true()
+  })
+}
+
+pub fn merge_effects_match_inferred_test() {
+  use #(file, inferred) <- qcheck.given(
+    qcheck.map2(assay_file_gen(), inferred_list_gen(), fn(f, i) { #(f, i) }),
+  )
+  let inferred_map =
+    inferred
+    |> list.map(fn(a) { #(a.function, a) })
+    |> dict.from_list()
+  let merged = annotation.merge_inferred(file, inferred)
+  annotation.extract_annotations(merged)
+  |> list.filter(fn(a) { a.kind == Effects })
+  |> list.each(fn(a) {
+    let assert Ok(expected) = dict.get(inferred_map, a.function)
+    a |> should.equal(expected)
+  })
+}
+
+// ──── Cluster 4: format_sorted Ordering Invariants ────
+
+pub fn format_sorted_section_order_test() {
+  use file <- qcheck.given(assay_file_gen())
+  let sorted = annotation.format_sorted(file)
+  let assert Ok(parsed) = annotation.parse_file(sorted)
+  let indices =
+    parsed.lines
+    |> list.filter(fn(line) { line != BlankLine })
+    |> list.map(section_index)
+  check_non_decreasing(indices)
+}
+
+fn section_index(line: types.AssayLine) -> Int {
+  case line {
+    CommentLine(_) -> 0
+    ExternalLine(_) -> 1
+    TypeFieldLine(_) -> 2
+    AnnotationLine(a) ->
+      case a.kind {
+        Check -> 3
+        Effects -> 4
+      }
+    BlankLine -> -1
+  }
+}
+
+fn check_non_decreasing(xs: List(Int)) -> Nil {
+  case xs {
+    [] | [_] -> Nil
+    [a, b, ..rest] -> {
+      { a <= b } |> should.be_true()
+      check_non_decreasing([b, ..rest])
+    }
+  }
+}
+
+pub fn format_sorted_checks_alphabetical_test() {
+  use file <- qcheck.given(assay_file_gen())
+  let sorted = annotation.format_sorted(file)
+  let assert Ok(parsed) = annotation.parse_file(sorted)
+  let check_names =
+    annotation.extract_annotations(parsed)
+    |> list.filter(fn(a) { a.kind == Check })
+    |> list.map(fn(a) { a.function })
+  check_names |> should.equal(list.sort(check_names, string.compare))
+}
+
+pub fn format_sorted_effects_alphabetical_test() {
+  use file <- qcheck.given(assay_file_gen())
+  let sorted = annotation.format_sorted(file)
+  let assert Ok(parsed) = annotation.parse_file(sorted)
+  let effects_names =
+    annotation.extract_annotations(parsed)
+    |> list.filter(fn(a) { a.kind == Effects })
+    |> list.map(fn(a) { a.function })
+  effects_names |> should.equal(list.sort(effects_names, string.compare))
+}
+
+pub fn format_sorted_trailing_newline_test() {
+  use file <- qcheck.given(assay_file_gen())
+  let sorted = annotation.format_sorted(file)
+  string.ends_with(sorted, "\n") |> should.be_true()
 }
