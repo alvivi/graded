@@ -1,5 +1,7 @@
 # graded
 
+[![Package Version](https://img.shields.io/hexpm/v/graded)](https://hex.pm/packages/graded)
+[![Hex Docs](https://img.shields.io/badge/hex-docs-ffaff3)](https://hexdocs.pm/graded/)
 [![CI](https://github.com/alvivi/graded/actions/workflows/ci.yml/badge.svg)](https://github.com/alvivi/graded/actions/workflows/ci.yml)
 
 > Effect checking for Gleam via sidecar annotations.
