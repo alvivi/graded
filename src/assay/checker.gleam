@@ -1,8 +1,8 @@
 import assay/effects.{type KnowledgeBase}
 import assay/extract.{type ImportContext}
 import assay/types.{
-  type EffectAnnotation, type ParamBound, type Violation, EffectAnnotation,
-  Effects, QualifiedName, Violation,
+  type EffectAnnotation, type LocalCall, type ParamBound, type ResolvedCall,
+  type Violation, EffectAnnotation, Effects, QualifiedName, Violation,
 }
 import glance.{type Definition, type Function, type Module}
 import gleam/dict
@@ -146,34 +146,13 @@ fn collect_effects(
           [#(synthetic_call, bound.effects)]
         }
         Error(Nil) ->
-          case set.contains(visited, local_call.function) {
-            True -> []
-            False ->
-              case dict.get(function_map, local_call.function) {
-                Error(Nil) -> {
-                  let synthetic_call =
-                    types.ResolvedCall(
-                      name: QualifiedName(
-                        module: "<local>",
-                        function: local_call.function,
-                      ),
-                      span: local_call.span,
-                    )
-                  [#(synthetic_call, set.from_list(["Unknown"]))]
-                }
-                Ok(local_definition) -> {
-                  let new_visited = set.insert(visited, local_call.function)
-                  collect_effects(
-                    local_definition.definition,
-                    function_map,
-                    context,
-                    knowledge_base,
-                    new_visited,
-                    [],
-                  )
-                }
-              }
-          }
+          resolve_unknown_local(
+            local_call,
+            visited,
+            function_map,
+            context,
+            knowledge_base,
+          )
       }
     })
 
@@ -192,6 +171,43 @@ fn collect_effects(
     })
 
   list.flatten([resolved_effects, local_effects, field_effects])
+}
+
+fn resolve_unknown_local(
+  local_call: LocalCall,
+  visited: Set(String),
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+) -> List(#(ResolvedCall, Set(String))) {
+  case set.contains(visited, local_call.function) {
+    True -> []
+    False ->
+      case dict.get(function_map, local_call.function) {
+        Error(Nil) -> {
+          let synthetic_call =
+            types.ResolvedCall(
+              name: QualifiedName(
+                module: "<local>",
+                function: local_call.function,
+              ),
+              span: local_call.span,
+            )
+          [#(synthetic_call, set.from_list(["Unknown"]))]
+        }
+        Ok(local_definition) -> {
+          let new_visited = set.insert(visited, local_call.function)
+          collect_effects(
+            local_definition.definition,
+            function_map,
+            context,
+            knowledge_base,
+            new_visited,
+            [],
+          )
+        }
+      }
+  }
 }
 
 fn resolve_field_call(

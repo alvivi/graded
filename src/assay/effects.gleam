@@ -1,7 +1,7 @@
 import assay/annotation
 import assay/types.{
-  type ExternAnnotation, type ParamBound, type QualifiedName,
-  type TypeFieldAnnotation, Effects, QualifiedName,
+  type EffectAnnotation, type ExternAnnotation, type ParamBound,
+  type QualifiedName, type TypeFieldAnnotation, Effects, QualifiedName,
 }
 import gleam/dict.{type Dict}
 import gleam/int
@@ -187,18 +187,26 @@ fn load_assay_file(
       let #(effect_map, param_map) = maps
       annotation.extract_annotations(assay_file)
       |> list.fold(#(effect_map, param_map), fn(acc, ann) {
-        let #(eff_map, par_map) = acc
-        let qname = QualifiedName(module: module_path, function: ann.function)
-        case ann.kind {
-          Effects -> #(dict.insert(eff_map, qname, ann.effects), par_map)
-          _ ->
-            case ann.params {
-              [] -> acc
-              params -> #(eff_map, dict.insert(par_map, qname, params))
-            }
-        }
+        fold_annotation(acc, ann, module_path)
       })
     }
+  }
+}
+
+fn fold_annotation(
+  acc: #(Dict(QualifiedName, Set(String)), Dict(QualifiedName, List(ParamBound))),
+  ann: EffectAnnotation,
+  module_path: String,
+) -> #(Dict(QualifiedName, Set(String)), Dict(QualifiedName, List(ParamBound))) {
+  let #(eff_map, par_map) = acc
+  let qname = QualifiedName(module: module_path, function: ann.function)
+  case ann.kind {
+    Effects -> #(dict.insert(eff_map, qname, ann.effects), par_map)
+    _ ->
+      case ann.params {
+        [] -> acc
+        params -> #(eff_map, dict.insert(par_map, qname, params))
+      }
   }
 }
 

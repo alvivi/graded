@@ -29,3 +29,6 @@ jobs:
 
       - name: Run tests
         run: gleam test
+
+      - name: Lint
+        run: gleam run -m glinter

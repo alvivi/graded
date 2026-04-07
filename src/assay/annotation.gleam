@@ -308,37 +308,44 @@ fn parse_annotation_rest(
 
     // Has parameter bounds: "name(params) : effects"
     // Effect sets use '[]' not '()', so the first ')' closes the params list
-    [name_part, ..rest_parts] -> {
-      let name = string.trim(name_part)
-      case name == "" {
-        True -> err
-        False ->
-          case string.split(string.join(rest_parts, "("), ")") {
-            [params_str, suffix, ..] -> {
-              let suffix_trimmed = string.trim(suffix)
-              case string.starts_with(suffix_trimmed, ":") {
-                False -> err
-                True -> {
-                  let effects_str =
-                    string.trim(string.drop_start(suffix_trimmed, 1))
-                  case
-                    parse_effect_set(effects_str),
-                    parse_params_section(params_str)
-                  {
-                    Ok(effects), Ok(params) ->
-                      Ok(EffectAnnotation(
-                        kind:,
-                        function: name,
-                        params:,
-                        effects:,
-                      ))
-                    _, _ -> err
-                  }
-                }
-              }
-            }
-            _ -> err
-          }
+    [name_part, ..rest_parts] ->
+      parse_params_annotation(kind, name_part, rest_parts)
+      |> result.replace_error(InvalidLine(line_number, original))
+  }
+}
+
+// Parse a "name(params) : effects" annotation where params is a non-empty bound list.
+fn parse_params_annotation(
+  kind: AnnotationKind,
+  name_part: String,
+  rest_parts: List(String),
+) -> Result(EffectAnnotation, Nil) {
+  let name = string.trim(name_part)
+  use <- bool.guard(name == "", Error(Nil))
+  let rejoined = string.join(rest_parts, "(")
+  case string.split(rejoined, ")") {
+    [params_str, suffix, ..] ->
+      parse_params_suffix(kind, name, params_str, suffix)
+    _ -> Error(Nil)
+  }
+}
+
+// Parse ") : [effects]" suffix and build the final annotation.
+fn parse_params_suffix(
+  kind: AnnotationKind,
+  name: String,
+  params_str: String,
+  suffix: String,
+) -> Result(EffectAnnotation, Nil) {
+  let suffix_trimmed = string.trim(suffix)
+  case string.starts_with(suffix_trimmed, ":") {
+    False -> Error(Nil)
+    True -> {
+      let effects_str = string.trim(string.drop_start(suffix_trimmed, 1))
+      case parse_effect_set(effects_str), parse_params_section(params_str) {
+        Ok(effects), Ok(params) ->
+          Ok(EffectAnnotation(kind:, function: name, params:, effects:))
+        _, _ -> Error(Nil)
       }
     }
   }
@@ -364,7 +371,7 @@ fn parse_extern_line(rest: String) -> Result(ExternAnnotation, Nil) {
   case len {
     1 -> Ok(ExternAnnotation(module: qualified, function: "", effects:))
     _ -> {
-      let assert Ok(function) = list.last(segments)
+      use function <- result.try(list.last(segments))
       let module = segments |> list.take(len - 1) |> string.join(".")
       Ok(ExternAnnotation(module:, function:, effects:))
     }
