@@ -1,11 +1,4 @@
 import argv
-import graded/internal/annotation
-import graded/internal/checker
-import graded/internal/effects.{type KnowledgeBase}
-import graded/internal/types.{
-  type GradedFile, type CheckResult, type Violation, type Warning, AnnotationLine,
-  GradedFile, CheckResult,
-}
 import filepath
 import glance
 import gleam/int
@@ -13,6 +6,13 @@ import gleam/io
 import gleam/list
 import gleam/result
 import gleam/string
+import graded/internal/annotation
+import graded/internal/checker
+import graded/internal/effects.{type KnowledgeBase}
+import graded/internal/types.{
+  type CheckResult, type GradedFile, type Violation, type Warning,
+  AnnotationLine, CheckResult, GradedFile,
+}
 import simplifile
 
 pub type GradedError {
@@ -281,7 +281,9 @@ fn find_gleam_files(directory: String) -> Result(List(String), GradedError) {
   |> result.map(list.filter(_, fn(path) { string.ends_with(path, ".gleam") }))
 }
 
-fn read_and_parse_gleam(gleam_path: String) -> Result(glance.Module, GradedError) {
+fn read_and_parse_gleam(
+  gleam_path: String,
+) -> Result(glance.Module, GradedError) {
   use source <- result.try(
     simplifile.read(gleam_path)
     |> result.map_error(FileReadError(gleam_path, _)),

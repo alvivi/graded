@@ -1,9 +1,3 @@
-import graded/internal/annotation
-import graded/internal/types.{
-  type EffectAnnotation, type EffectSet, type ExternalAnnotation,
-  type ParamBound, type QualifiedName, type TypeFieldAnnotation, Check, Effects,
-  FunctionExternal, ModuleExternal, QualifiedName, Specific, Wildcard,
-}
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -11,6 +5,12 @@ import gleam/order
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
+import graded/internal/annotation
+import graded/internal/types.{
+  type EffectAnnotation, type EffectSet, type ExternalAnnotation,
+  type ParamBound, type QualifiedName, type TypeFieldAnnotation, Check, Effects,
+  FunctionExternal, ModuleExternal, QualifiedName, Specific, Wildcard,
+}
 import simplifile
 import tom
 

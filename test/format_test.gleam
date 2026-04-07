@@ -1,12 +1,12 @@
+import generators
+import gleam/list
+import gleam/string
+import gleeunit/should
 import graded/internal/annotation
 import graded/internal/types.{
   AnnotationLine, BlankLine, Check, CommentLine, Effects, ExternalLine,
   TypeFieldLine,
 }
-import generators
-import gleam/list
-import gleam/string
-import gleeunit/should
 import qcheck
 
 pub fn preserves_comments_test() {

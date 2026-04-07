@@ -1,12 +1,12 @@
-import graded/internal/types.{
-  type EffectSet, AnnotationLine, GradedFile, BlankLine, Check, CommentLine,
-  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
-  ModuleExternal, ParamBound, Specific, TypeFieldAnnotation, TypeFieldLine,
-  Wildcard,
-}
 import gleam/dict
 import gleam/list
 import gleam/set
+import graded/internal/types.{
+  type EffectSet, AnnotationLine, BlankLine, Check, CommentLine,
+  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
+  GradedFile, ModuleExternal, ParamBound, Specific, TypeFieldAnnotation,
+  TypeFieldLine, Wildcard,
+}
 import qcheck
 
 pub fn effect_set_gen() -> qcheck.Generator(EffectSet) {

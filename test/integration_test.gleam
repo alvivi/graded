@@ -1,7 +1,7 @@
-import graded
-import graded/internal/annotation
 import gleam/list
 import gleeunit/should
+import graded
+import graded/internal/annotation
 import simplifile
 
 pub fn pure_view_passes_test() {

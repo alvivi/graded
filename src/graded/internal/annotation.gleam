@@ -1,17 +1,17 @@
-import graded/internal/types.{
-  type AnnotationKind, type GradedFile, type GradedLine, type EffectAnnotation,
-  type EffectSet, type ExternalAnnotation, type ParamBound,
-  type TypeFieldAnnotation, AnnotationLine, GradedFile, BlankLine, Check,
-  CommentLine, EffectAnnotation, Effects, ExternalAnnotation, ExternalLine,
-  FunctionExternal, ModuleExternal, ParamBound, Specific, TypeFieldAnnotation,
-  TypeFieldLine, Wildcard,
-}
 import gleam/bool
 import gleam/dict
 import gleam/list
 import gleam/result
 import gleam/set
 import gleam/string
+import graded/internal/types.{
+  type AnnotationKind, type EffectAnnotation, type EffectSet,
+  type ExternalAnnotation, type GradedFile, type GradedLine, type ParamBound,
+  type TypeFieldAnnotation, AnnotationLine, BlankLine, Check, CommentLine,
+  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
+  GradedFile, ModuleExternal, ParamBound, Specific, TypeFieldAnnotation,
+  TypeFieldLine, Wildcard,
+}
 
 pub type ParseError {
   InvalidLine(line_number: Int, content: String)

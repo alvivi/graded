@@ -1,9 +1,3 @@
-import graded/internal/checker
-import graded/internal/effects
-import graded/internal/types.{
-  type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
-  ParamBound, QualifiedName, Specific, UntrackedEffectWarning, Wildcard,
-}
 import generators
 import glance
 import gleam/dict
@@ -12,6 +6,12 @@ import gleam/result
 import gleam/set
 import gleam/string
 import gleeunit/should
+import graded/internal/checker
+import graded/internal/effects
+import graded/internal/types.{
+  type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
+  ParamBound, QualifiedName, Specific, UntrackedEffectWarning, Wildcard,
+}
 import qcheck
 
 fn knowledge_base() -> effects.KnowledgeBase {

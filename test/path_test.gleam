@@ -1,5 +1,5 @@
-import graded
 import gleeunit/should
+import graded
 
 pub fn simple_path_test() {
   graded.gleam_to_graded_path("src/app.gleam", "src")

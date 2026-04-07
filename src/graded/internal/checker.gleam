@@ -1,3 +1,9 @@
+import glance.{type Definition, type Function, type Module}
+import gleam/dict
+import gleam/list
+import gleam/option.{Some}
+import gleam/result
+import gleam/set.{type Set}
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract.{type ImportContext}
 import graded/internal/types.{
@@ -5,12 +11,6 @@ import graded/internal/types.{
   type ResolvedCall, type Violation, type Warning, EffectAnnotation, Effects,
   QualifiedName, UntrackedEffectWarning, Violation,
 }
-import glance.{type Definition, type Function, type Module}
-import gleam/dict
-import gleam/list
-import gleam/option.{Some}
-import gleam/result
-import gleam/set.{type Set}
 
 /// Check a parsed module against its effect annotations.
 pub fn check(

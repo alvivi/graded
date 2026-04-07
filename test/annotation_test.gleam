@@ -1,14 +1,14 @@
+import generators
+import gleam/dict
+import gleam/list
+import gleam/set
+import gleeunit/should
 import graded/internal/annotation
 import graded/internal/types.{
   AnnotationLine, BlankLine, Check, CommentLine, EffectAnnotation, Effects,
   ExternalAnnotation, ExternalLine, FunctionExternal, ParamBound, Specific,
   TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
-import generators
-import gleam/dict
-import gleam/list
-import gleam/set
-import gleeunit/should
 import qcheck
 
 // --- Parse ---

@@ -1,8 +1,8 @@
-import graded/internal/extract
-import graded/internal/types.{QualifiedName}
 import glance
 import gleam/list
 import gleeunit/should
+import graded/internal/extract
+import graded/internal/types.{QualifiedName}
 
 fn parse_and_extract(src: String) -> extract.ExtractResult {
   let assert Ok(module) = glance.module(src)

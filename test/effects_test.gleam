@@ -1,11 +1,11 @@
-import graded/internal/effects
-import graded/internal/types.{QualifiedName, Specific, Wildcard}
 import generators
 import gleam/int
 import gleam/list
 import gleam/order
 import gleam/set
 import gleeunit/should
+import graded/internal/effects
+import graded/internal/types.{QualifiedName, Specific, Wildcard}
 import qcheck
 
 fn knowledge_base() -> effects.KnowledgeBase {

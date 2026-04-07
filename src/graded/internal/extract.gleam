@@ -1,7 +1,3 @@
-import graded/internal/types.{
-  type FieldCall, type LocalCall, type QualifiedName, type ResolvedCall,
-  FieldCall, LocalCall, QualifiedName, ResolvedCall,
-}
 import glance.{
   type Clause, type Expression, type Field, type Module, type Statement,
 }
@@ -10,6 +6,10 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import graded/internal/types.{
+  type FieldCall, type LocalCall, type QualifiedName, type ResolvedCall,
+  FieldCall, LocalCall, QualifiedName, ResolvedCall,
+}
 
 /// Import context built from a module's import list.
 pub type ImportContext {
