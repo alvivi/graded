@@ -57,6 +57,51 @@ pub fn format_wildcard_set_test() {
   effects.format_effect_set(Wildcard) |> should.equal("[_]")
 }
 
+// ──── Project Effects ────
+
+pub fn load_project_effects_test() {
+  // Write temporary .graded files
+  let dir = "test/tmp_project_effects"
+  let graded_dir = dir <> "/priv/graded"
+  let assert Ok(Nil) = simplifile.create_directory_all(graded_dir <> "/myapp")
+  let assert Ok(Nil) =
+    simplifile.write(
+      graded_dir <> "/myapp/currency.graded",
+      "effects from_string : []\neffects to_string : []\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      graded_dir <> "/myapp/api.graded",
+      "effects handle : [Http]\ncheck handle : [Http]\n",
+    )
+
+  let project_effects = effects.load_project_effects(dir)
+
+  // Should load effects annotations
+  dict.get(project_effects, QualifiedName("myapp/currency", "from_string"))
+  |> should.equal(Ok(Specific(set.new())))
+
+  dict.get(project_effects, QualifiedName("myapp/currency", "to_string"))
+  |> should.equal(Ok(Specific(set.new())))
+
+  dict.get(project_effects, QualifiedName("myapp/api", "handle"))
+  |> should.equal(Ok(Specific(set.from_list(["Http"]))))
+
+  // Should NOT load check annotations as effects
+  // (check annotations are loaded separately per-file)
+  let size = dict.size(project_effects)
+  size |> should.equal(3)
+
+  // Clean up
+  let assert Ok(Nil) = simplifile.delete_all([dir])
+}
+
+pub fn load_project_effects_empty_test() {
+  effects.load_project_effects("nonexistent_dir")
+  |> dict.size()
+  |> should.equal(0)
+}
+
 // ──── EffectSet Lattice Laws ────
 
 pub fn subset_reflexivity_test() {

@@ -192,6 +192,44 @@ pub fn parse_path_dependencies(
   result.unwrap(parsed, [])
 }
 
+/// Load inferred effects from the project's own .graded files.
+/// Returns a dict of function effects for use with `with_inferred`.
+pub fn load_project_effects(
+  source_directory: String,
+) -> Dict(QualifiedName, EffectSet) {
+  let graded_directory = case source_directory {
+    "src" -> "priv/graded"
+    _ -> source_directory <> "/priv/graded"
+  }
+  let files = case simplifile.get_files(graded_directory) {
+    Ok(found) -> list.filter(found, fn(f) { string.ends_with(f, ".graded") })
+    Error(_) -> []
+  }
+  list.fold(files, dict.new(), fn(acc, file_path) {
+    let parsed =
+      simplifile.read(file_path)
+      |> result.map_error(fn(_) { Nil })
+      |> result.try(fn(content) {
+        annotation.parse_file(content) |> result.map_error(fn(_) { Nil })
+      })
+    case parsed {
+      Error(_) -> acc
+      Ok(graded_file) -> {
+        let module_path = file_path_to_module(file_path, graded_directory)
+        annotation.extract_annotations(graded_file)
+        |> list.filter(fn(a) { a.kind == Effects })
+        |> list.fold(acc, fn(inner_acc, ann) {
+          dict.insert(
+            inner_acc,
+            QualifiedName(module: module_path, function: ann.function),
+            ann.effects,
+          )
+        })
+      }
+    }
+  })
+}
+
 /// Merge inferred effects into a knowledge base.
 /// Existing entries in the knowledge base take priority.
 pub fn with_inferred(

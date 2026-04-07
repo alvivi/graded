@@ -102,9 +102,11 @@ pub fn main() -> Nil {
 /// Run the checker on all .gleam files in a directory.
 /// Only enforces `check` annotations.
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
+  let project_effects = effects.load_project_effects(directory)
   let knowledge_base =
     effects.load_knowledge_base("build/packages")
     |> enrich_with_path_deps()
+    |> effects.with_inferred(project_effects)
   use gleam_files <- result.try(find_gleam_files(directory))
 
   // Incremental adoption: files with no .graded sidecar are silently skipped,
@@ -128,51 +130,18 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
 
 /// Infer effects for all .gleam files and write/merge .graded files.
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
-  let knowledge_base =
+  let base_kb =
     effects.load_knowledge_base("build/packages")
     |> enrich_with_path_deps()
   use gleam_files <- result.try(find_gleam_files(directory))
 
-  list.try_each(gleam_files, fn(gleam_path) {
-    let graded_path = gleam_to_graded_path(gleam_path, directory)
-    use module <- result.try(read_and_parse_gleam(gleam_path))
+  // Pass 1: infer with base KB and write .graded files
+  use Nil <- result.try(infer_files(gleam_files, directory, base_kb))
 
-    let existing_file =
-      simplifile.read(graded_path)
-      |> result.map_error(fn(_) { Nil })
-      |> result.try(fn(content) {
-        annotation.parse_file(content) |> result.map_error(fn(_) { Nil })
-      })
-
-    let #(knowledge_base, existing_checks) = case existing_file {
-      Ok(file) -> enrich_knowledge_base(file, knowledge_base)
-      Error(Nil) -> #(knowledge_base, [])
-    }
-
-    let inferred = checker.infer(module, knowledge_base, existing_checks)
-
-    let parent_directory = filepath.directory_name(graded_path)
-    use Nil <- result.try(
-      simplifile.create_directory_all(parent_directory)
-      |> result.map_error(DirectoryCreateError(parent_directory, _)),
-    )
-
-    case inferred, existing_file {
-      // Nothing inferred and no existing file — nothing to write.
-      [], Error(Nil) -> Ok(Nil)
-      // Existing file present — merge inferred effects, preserving comments,
-      // blank lines, check annotations, and their ordering.
-      _, Ok(file) -> {
-        let merged = annotation.merge_inferred(file, inferred)
-        write_graded_file(graded_path, merged)
-      }
-      // No existing file — create a fresh one from inferred effects.
-      _, Error(Nil) -> {
-        let graded_file = GradedFile(lines: list.map(inferred, AnnotationLine))
-        write_graded_file(graded_path, graded_file)
-      }
-    }
-  })
+  // Pass 2: re-infer using pass 1 results so cross-module calls resolve
+  let project_effects = effects.load_project_effects(directory)
+  let enriched_kb = effects.with_inferred(base_kb, project_effects)
+  infer_files(gleam_files, directory, enriched_kb)
 }
 
 /// Format all .graded files in priv/graded/ for a given source directory.
@@ -229,6 +198,49 @@ pub fn gleam_to_graded_path(
 }
 
 // PRIVATE
+
+fn infer_files(
+  gleam_files: List(String),
+  directory: String,
+  knowledge_base: KnowledgeBase,
+) -> Result(Nil, GradedError) {
+  list.try_each(gleam_files, fn(gleam_path) {
+    let graded_path = gleam_to_graded_path(gleam_path, directory)
+    use module <- result.try(read_and_parse_gleam(gleam_path))
+
+    let existing_file =
+      simplifile.read(graded_path)
+      |> result.map_error(fn(_) { Nil })
+      |> result.try(fn(content) {
+        annotation.parse_file(content) |> result.map_error(fn(_) { Nil })
+      })
+
+    let #(knowledge_base, existing_checks) = case existing_file {
+      Ok(file) -> enrich_knowledge_base(file, knowledge_base)
+      Error(Nil) -> #(knowledge_base, [])
+    }
+
+    let inferred = checker.infer(module, knowledge_base, existing_checks)
+
+    let parent_directory = filepath.directory_name(graded_path)
+    use Nil <- result.try(
+      simplifile.create_directory_all(parent_directory)
+      |> result.map_error(DirectoryCreateError(parent_directory, _)),
+    )
+
+    case inferred, existing_file {
+      [], Error(Nil) -> Ok(Nil)
+      _, Ok(file) -> {
+        let merged = annotation.merge_inferred(file, inferred)
+        write_graded_file(graded_path, merged)
+      }
+      _, Error(Nil) -> {
+        let graded_file = GradedFile(lines: list.map(inferred, AnnotationLine))
+        write_graded_file(graded_path, graded_file)
+      }
+    }
+  })
+}
 
 fn enrich_with_path_deps(knowledge_base: KnowledgeBase) -> KnowledgeBase {
   let path_deps = effects.parse_path_dependencies("gleam.toml")
