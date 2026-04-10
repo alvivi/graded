@@ -22,16 +22,18 @@
 import argv
 import filepath
 import glance
-import gleam/dict
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/io
 import gleam/list
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import gleam/yielder
 import graded/internal/annotation
 import graded/internal/checker
 import graded/internal/effects.{type KnowledgeBase}
+import graded/internal/extract
 import graded/internal/types.{
   type CheckResult, type GradedFile, type QualifiedName, type Violation,
   type Warning, AnnotationLine, CheckResult, GradedFile, QualifiedName,
@@ -55,6 +57,11 @@ pub type GradedError {
   GradedParseError(path: String, cause: annotation.ParseError)
   /// One or more `.graded` files are not formatted (returned by `run_format_check`).
   FormatCheckFailed(paths: List(String))
+  /// The project's import graph contains a cycle. Gleam disallows circular
+  /// imports at the language level, so this should be unreachable in
+  /// practice — if it ever fires it indicates a bug in the dependency edge
+  /// extraction rather than user code.
+  CyclicImports(modules: List(String))
 }
 
 pub fn main() -> Nil {
@@ -129,19 +136,22 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
 }
 
 /// Infer effects for all .gleam files and write/merge .graded files.
+///
+/// Walks the project's import graph in topological order (leaves first), so
+/// each module is analysed *after* every other project module it imports has
+/// already had its effects inferred and merged into the knowledge base. A
+/// single pass is sufficient regardless of import-chain depth — there is no
+/// "run it twice" workaround any more.
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   let base_kb =
     effects.load_knowledge_base("build/packages")
     |> enrich_with_path_deps()
   use gleam_files <- result.try(find_gleam_files(directory))
-
-  // Pass 1: infer with base KB and write .graded files
-  use Nil <- result.try(infer_files(gleam_files, directory, base_kb))
-
-  // Pass 2: re-infer using pass 1 results so cross-module calls resolve
-  let project_effects = effects.load_project_effects(directory)
-  let enriched_kb = effects.with_inferred(base_kb, project_effects)
-  infer_files(gleam_files, directory, enriched_kb)
+  use parsed <- result.try(parse_all_files(gleam_files))
+  let index = build_module_index(parsed, directory)
+  let graph = build_dependency_graph(index)
+  use sorted <- result.try(topological_sort(graph))
+  infer_in_topo_order(sorted, index, directory, base_kb)
 }
 
 /// Format all .graded files in priv/graded/ for a given source directory.
@@ -199,47 +209,203 @@ pub fn gleam_to_graded_path(
 
 // PRIVATE
 
-fn infer_files(
+/// Parse every project source file once, returning `(path, parsed module)`
+/// pairs. Used by `run_infer` so the topo sort can read each module's
+/// imports without re-parsing on the inference pass.
+fn parse_all_files(
   gleam_files: List(String),
+) -> Result(List(#(String, glance.Module)), GradedError) {
+  list.try_map(gleam_files, fn(gleam_path) {
+    use module <- result.try(read_and_parse_gleam(gleam_path))
+    Ok(#(gleam_path, module))
+  })
+}
+
+/// Build an index from dotted module name (`app/router`) to the parsed file.
+/// This is the set of *project* modules — every module name in this dict is
+/// a candidate dependency-graph node.
+fn build_module_index(
+  parsed: List(#(String, glance.Module)),
+  directory: String,
+) -> Dict(String, #(String, glance.Module)) {
+  list.fold(parsed, dict.new(), fn(acc, entry) {
+    let #(gleam_path, module) = entry
+    let module_path = extract.module_path_for_source(gleam_path, directory)
+    dict.insert(acc, module_path, #(gleam_path, module))
+  })
+}
+
+/// For every project module, derive its set of project-internal imports.
+/// Imports of stdlib/dep modules (anything not in `index`) are filtered out
+/// — those are leaves with effects already resolved via the knowledge base
+/// and don't belong in the topological sort.
+fn build_dependency_graph(
+  index: Dict(String, #(String, glance.Module)),
+) -> Dict(String, Set(String)) {
+  dict.map_values(index, fn(_module_path, entry) {
+    let #(_path, module) = entry
+    let context = extract.build_import_context(module)
+    context.aliases
+    |> dict.values()
+    |> list.filter(fn(imported) { dict.has_key(index, imported) })
+    |> set.from_list()
+  })
+}
+
+/// Kahn's algorithm: produce a leaves-first ordering of the project module
+/// graph. Returns `CyclicImports` if a cycle is detected (which Gleam's own
+/// module system should already prevent — this is a defensive guard).
+fn topological_sort(
+  graph: Dict(String, Set(String)),
+) -> Result(List(String), GradedError) {
+  let in_degrees =
+    dict.map_values(graph, fn(_node, deps) { set.size(deps) })
+  let reverse = build_reverse_graph(graph)
+  let initial_queue =
+    in_degrees
+    |> dict.filter(fn(_node, degree) { degree == 0 })
+    |> dict.keys()
+  kahn_loop(initial_queue, in_degrees, reverse, [])
+}
+
+fn kahn_loop(
+  queue: List(String),
+  in_degrees: Dict(String, Int),
+  reverse: Dict(String, Set(String)),
+  acc: List(String),
+) -> Result(List(String), GradedError) {
+  case queue {
+    [] -> {
+      let remaining =
+        dict.filter(in_degrees, fn(_node, degree) { degree > 0 })
+      case dict.is_empty(remaining) {
+        True -> Ok(list.reverse(acc))
+        False -> Error(CyclicImports(modules: dict.keys(remaining)))
+      }
+    }
+    [node, ..rest] -> {
+      let dependents = case dict.get(reverse, node) {
+        Ok(s) -> set.to_list(s)
+        Error(_) -> []
+      }
+      let #(new_in_degrees, newly_zero) =
+        list.fold(dependents, #(in_degrees, []), fn(state, dependent) {
+          let #(degrees, zero_acc) = state
+          let current = case dict.get(degrees, dependent) {
+            Ok(d) -> d
+            Error(_) -> 0
+          }
+          let updated = current - 1
+          let new_degrees = dict.insert(degrees, dependent, updated)
+          case updated {
+            0 -> #(new_degrees, [dependent, ..zero_acc])
+            _ -> #(new_degrees, zero_acc)
+          }
+        })
+      kahn_loop(
+        list.append(rest, newly_zero),
+        new_in_degrees,
+        reverse,
+        [node, ..acc],
+      )
+    }
+  }
+}
+
+/// Invert a forward dependency graph (`node -> deps of node`) into a
+/// dependents graph (`node -> things that depend on node`). Used by Kahn's
+/// algorithm to find which nodes are unblocked when a leaf is processed.
+fn build_reverse_graph(
+  graph: Dict(String, Set(String)),
+) -> Dict(String, Set(String)) {
+  dict.fold(graph, dict.new(), fn(reverse, node, deps) {
+    set.fold(deps, reverse, fn(rev, dep) {
+      let existing = case dict.get(rev, dep) {
+        Ok(s) -> s
+        Error(_) -> set.new()
+      }
+      dict.insert(rev, dep, set.insert(existing, node))
+    })
+  })
+}
+
+/// Process modules in topological order. Each module is inferred against a
+/// knowledge base that already contains every other project module it
+/// imports, so transitive effects propagate fully in a single pass.
+fn infer_in_topo_order(
+  sorted_modules: List(String),
+  index: Dict(String, #(String, glance.Module)),
+  directory: String,
+  base_kb: KnowledgeBase,
+) -> Result(Nil, GradedError) {
+  use _final_kb <- result.map(
+    list.try_fold(sorted_modules, base_kb, fn(kb, module_path) {
+      case dict.get(index, module_path) {
+        Error(_) -> Ok(kb)
+        Ok(#(gleam_path, module)) ->
+          infer_one_file(gleam_path, module, module_path, directory, kb)
+      }
+    }),
+  )
+  Nil
+}
+
+/// Infer effects for a single module, write/merge its `.graded` file, and
+/// return the knowledge base extended with that module's inferred effects so
+/// dependent modules can resolve calls into it.
+fn infer_one_file(
+  gleam_path: String,
+  module: glance.Module,
+  module_path: String,
   directory: String,
   knowledge_base: KnowledgeBase,
-) -> Result(Nil, GradedError) {
-  list.try_each(gleam_files, fn(gleam_path) {
-    let graded_path = gleam_to_graded_path(gleam_path, directory)
-    use module <- result.try(read_and_parse_gleam(gleam_path))
+) -> Result(KnowledgeBase, GradedError) {
+  let graded_path = gleam_to_graded_path(gleam_path, directory)
 
-    let existing_file =
-      simplifile.read(graded_path)
-      |> result.map_error(fn(_) { Nil })
-      |> result.try(fn(content) {
-        annotation.parse_file(content) |> result.map_error(fn(_) { Nil })
-      })
+  let existing_file =
+    simplifile.read(graded_path)
+    |> result.map_error(fn(_) { Nil })
+    |> result.try(fn(content) {
+      annotation.parse_file(content) |> result.map_error(fn(_) { Nil })
+    })
 
-    let #(knowledge_base, existing_checks) = case existing_file {
-      Ok(file) -> enrich_knowledge_base(file, knowledge_base)
-      Error(Nil) -> #(knowledge_base, [])
+  let #(per_file_kb, existing_checks) = case existing_file {
+    Ok(file) -> enrich_knowledge_base(file, knowledge_base)
+    Error(Nil) -> #(knowledge_base, [])
+  }
+
+  let inferred = checker.infer(module, per_file_kb, existing_checks)
+
+  let parent_directory = filepath.directory_name(graded_path)
+  use Nil <- result.try(
+    simplifile.create_directory_all(parent_directory)
+    |> result.map_error(DirectoryCreateError(parent_directory, _)),
+  )
+
+  use Nil <- result.try(case inferred, existing_file {
+    [], Error(Nil) -> Ok(Nil)
+    _, Ok(file) -> {
+      let merged = annotation.merge_inferred(file, inferred)
+      write_graded_file(graded_path, merged)
     }
-
-    let inferred = checker.infer(module, knowledge_base, existing_checks)
-
-    let parent_directory = filepath.directory_name(graded_path)
-    use Nil <- result.try(
-      simplifile.create_directory_all(parent_directory)
-      |> result.map_error(DirectoryCreateError(parent_directory, _)),
-    )
-
-    case inferred, existing_file {
-      [], Error(Nil) -> Ok(Nil)
-      _, Ok(file) -> {
-        let merged = annotation.merge_inferred(file, inferred)
-        write_graded_file(graded_path, merged)
-      }
-      _, Error(Nil) -> {
-        let graded_file = GradedFile(lines: list.map(inferred, AnnotationLine))
-        write_graded_file(graded_path, graded_file)
-      }
+    _, Error(Nil) -> {
+      let graded_file = GradedFile(lines: list.map(inferred, AnnotationLine))
+      write_graded_file(graded_path, graded_file)
     }
   })
+
+  // Merge this module's freshly inferred effects into the running knowledge
+  // base so any module that imports it (and is processed later in the topo
+  // order) can resolve calls into it without re-inferring.
+  let inferred_dict =
+    list.fold(inferred, dict.new(), fn(acc, annotation) {
+      dict.insert(
+        acc,
+        QualifiedName(module: module_path, function: annotation.function),
+        annotation.effects,
+      )
+    })
+  Ok(effects.with_inferred(knowledge_base, inferred_dict))
 }
 
 fn enrich_with_path_deps(knowledge_base: KnowledgeBase) -> KnowledgeBase {
@@ -469,6 +635,9 @@ fn format_error(error: GradedError) -> String {
     FormatCheckFailed(paths:) ->
       "Unformatted .graded files:\n"
       <> string.join(list.map(paths, fn(path) { "  " <> path }), "\n")
+    CyclicImports(modules:) ->
+      "Cyclic project imports detected (this should be unreachable — Gleam disallows circular imports):\n"
+      <> string.join(list.map(modules, fn(m) { "  " <> m }), "\n")
   }
 }
 
