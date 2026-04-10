@@ -1,6 +1,7 @@
 import gleam/bool
 import gleam/dict
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/set
 import gleam/string
@@ -81,9 +82,16 @@ pub fn format_annotation(annotation: EffectAnnotation) -> String {
   <> effects_string
 }
 
-/// Render a TypeFieldAnnotation back to its .graded line format.
+/// Render a TypeFieldAnnotation back to its .graded line format. Includes
+/// the module prefix when present (qualified form, used in spec files);
+/// emits the bare form otherwise (cache files).
 pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
+  let prefix = case tf.module {
+    Some(module) -> module <> "."
+    None -> ""
+  }
   "type "
+  <> prefix
   <> tf.type_name
   <> "."
   <> tf.field
@@ -359,14 +367,42 @@ fn parse_params_suffix(
   }
 }
 
-// Parse "TypeName.field_name : [effects]"
+// Parse a type field annotation. Two forms are accepted:
+//
+//   `TypeName.field_name : [effects]`               (bare — implicit module)
+//   `module/path.TypeName.field_name : [effects]`   (qualified — spec file)
+//
+// The bare form is used in per-module cache files where the type's module is
+// implied by the file's location. The qualified form is used in spec files
+// where annotations from many modules share one file. The dot is the
+// boundary between module path and `TypeName.field`; module path itself uses
+// slashes (matching the `external effects` convention).
 fn parse_type_field_line(rest: String) -> Result(TypeFieldAnnotation, Nil) {
   use #(qualified, effects) <- result.try(parse_name_colon_effects(rest))
-  // qualified is already trimmed by parse_name_colon_effects
   case string.split(qualified, ".") {
     [type_name, field] if type_name != "" && field != "" ->
-      Ok(TypeFieldAnnotation(type_name:, field:, effects:))
-    _ -> Error(Nil)
+      Ok(TypeFieldAnnotation(module: None, type_name:, field:, effects:))
+    segments -> {
+      // 3+ segments → qualified form. Last two are TypeName and field; the
+      // rest joined back with `.` is the module path.
+      let count = list.length(segments)
+      use <- bool.guard(count < 3, Error(Nil))
+      let module_segments = list.take(segments, count - 2)
+      let trailing = list.drop(segments, count - 2)
+      case trailing {
+        [type_name, field] if type_name != "" && field != "" -> {
+          let module = string.join(module_segments, ".")
+          use <- bool.guard(module == "", Error(Nil))
+          Ok(TypeFieldAnnotation(
+            module: Some(module),
+            type_name:,
+            field:,
+            effects:,
+          ))
+        }
+        _ -> Error(Nil)
+      }
+    }
   }
 }
 
