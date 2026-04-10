@@ -113,10 +113,9 @@ pub fn main() -> Nil {
 /// Run the checker on all .gleam files in a directory.
 ///
 /// Reads the project's single spec file (default `<package_name>.graded`)
-/// to find `check` invariants, `external` hints, and `type` field
-/// annotations. Loads inferred effects from the per-module cache files
-/// under `cache_dir` (default `build/.graded`). Reports violations per
-/// source file.
+/// to find inferred public-API effects, `check` invariants, `external`
+/// hints, and `type` field annotations, then reports violations per source
+/// file.
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   let cfg = read_config(directory)
   let spec = read_spec(cfg.spec_file)
@@ -124,12 +123,10 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   let knowledge_base =
     effects.load_knowledge_base("build/packages")
     |> enrich_with_path_deps()
-    |> effects.with_inferred(effects.load_spec_effects(cfg.spec_file))
+    |> effects.with_inferred(effects.load_spec_effects_from_file(spec))
     |> effects.with_externals(annotation.extract_externals(spec))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
 
-  // Group the spec file's check annotations by their module so we can
-  // hand each source file only the checks that apply to it.
   let checks_by_module = checks_grouped_by_module(spec)
 
   use gleam_files <- result.try(find_gleam_files(directory))
@@ -180,10 +177,6 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     }),
   )
 
-  // Topo-fold: walk modules in dependency order, inferring each one against
-  // a knowledge base that already contains every dependency it imports.
-  // The fold accumulates the public-function annotations in qualified form
-  // for the spec file write that follows.
   use #(_kb, public_annotations) <- result.try(
     list.try_fold(sorted, #(base_kb, []), fn(state, module_path) {
       let #(kb, acc) = state
@@ -196,7 +189,10 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
             cfg.cache_dir,
             kb,
           ))
-          Ok(#(new_kb, list.append(acc, new_public)))
+          // Prepend new_public so each iteration is O(|new_public|) instead
+          // of O(|acc|); final order doesn't matter, merge_inferred keys by
+          // function name.
+          Ok(#(new_kb, list.append(new_public, acc)))
         }
       }
     }),
@@ -302,12 +298,9 @@ fn infer_one_module(
   cache_dir: String,
   knowledge_base: KnowledgeBase,
 ) -> Result(#(KnowledgeBase, List(EffectAnnotation)), GradedError) {
-  // existing_checks come from the spec file and were already merged into
-  // the KB at the start of run_infer; per-module inference doesn't need
-  // them again.
   let inferred = checker.infer(module, knowledge_base, [])
 
-  let cache_path = cache_dir <> "/" <> module_path <> ".graded"
+  let cache_path = filepath.join(cache_dir, module_path <> ".graded")
 
   // Skip the cache write when there's nothing to record. Saves an mkdir
   // syscall per stdlib-only module.
@@ -324,8 +317,6 @@ fn infer_one_module(
     }
   })
 
-  // Merge this module's inferred effects into the running KB so dependent
-  // modules processed later in the topo order can resolve calls into it.
   let inferred_dict =
     list.fold(inferred, dict.new(), fn(acc, ann) {
       dict.insert(
@@ -336,18 +327,12 @@ fn infer_one_module(
     })
   let new_kb = effects.with_inferred(knowledge_base, inferred_dict)
 
-  // Filter to public functions and qualify their names for the spec file.
   let public_names = public_function_names(module)
   let public_annotations =
     inferred
     |> list.filter(fn(ann) { set.contains(public_names, ann.function) })
     |> list.map(fn(ann) {
-      EffectAnnotation(
-        kind: ann.kind,
-        function: module_path <> "." <> ann.function,
-        params: ann.params,
-        effects: ann.effects,
-      )
+      EffectAnnotation(..ann, function: module_path <> "." <> ann.function)
     })
 
   Ok(#(new_kb, public_annotations))
@@ -371,15 +356,7 @@ fn write_spec_file(
   spec_path: String,
   inferred: List(EffectAnnotation),
 ) -> Result(Nil, GradedError) {
-  let existing = case simplifile.read(spec_path) {
-    Error(_) -> GradedFile(lines: [])
-    Ok(content) ->
-      case annotation.parse_file(content) {
-        Ok(file) -> file
-        Error(_) -> GradedFile(lines: [])
-      }
-  }
-  let merged = annotation.merge_inferred(existing, inferred)
+  let merged = annotation.merge_inferred(read_spec(spec_path), inferred)
 
   // create_directory_all is a no-op when the parent already exists, so it's
   // safe to call unconditionally — and necessary when the user has
@@ -396,6 +373,8 @@ fn write_spec_file(
 
 /// Group a parsed spec file's `check` annotations by their module path. Used
 /// during `run` to hand each source file only the checks that apply to it.
+/// The checker expects bare function names per module, so we strip the
+/// module qualifier from the grouped annotations.
 fn checks_grouped_by_module(
   spec: GradedFile,
 ) -> Dict(String, List(EffectAnnotation)) {
@@ -403,15 +382,7 @@ fn checks_grouped_by_module(
     case annotation.split_qualified_name(ann.function) {
       Error(_) -> acc
       Ok(#(module, function)) -> {
-        // Strip the module qualifier from the function name so the existing
-        // checker (which expects bare names per module) can match it.
-        let bare =
-          EffectAnnotation(
-            kind: ann.kind,
-            function:,
-            params: ann.params,
-            effects: ann.effects,
-          )
+        let bare = EffectAnnotation(..ann, function:)
         let existing = case dict.get(acc, module) {
           Ok(list) -> list
           Error(_) -> []
@@ -429,10 +400,9 @@ fn check_one_file(
   module_checks: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
 ) -> Result(CheckResult, Nil) {
-  use module <- result.try(case read_and_parse_gleam(gleam_path) {
-    Ok(m) -> Ok(m)
-    Error(_) -> Error(Nil)
-  })
+  use module <- result.try(
+    read_and_parse_gleam(gleam_path) |> result.replace_error(Nil),
+  )
   let #(violations, warnings) =
     checker.check(module, module_checks, knowledge_base)
   Ok(CheckResult(file: gleam_path, violations:, warnings:))
@@ -478,11 +448,11 @@ fn resolve_path(root: String, path: String) -> String {
 }
 
 fn default_package_name(directory: String) -> String {
-  // Best-effort: use the last path segment as the package name. This is
-  // only used as a fallback when no gleam.toml is found.
-  case list.reverse(string.split(directory, "/")) {
-    [last, ..] if last != "" -> last
-    _ -> "graded"
+  // Fallback used only when no gleam.toml is found. Best-effort — uses the
+  // last path segment, then "graded" if the directory is empty or "/".
+  case filepath.base_name(directory) {
+    "" | "/" -> "graded"
+    name -> name
   }
 }
 
@@ -513,11 +483,11 @@ fn enrich_with_path_deps(knowledge_base: KnowledgeBase) -> KnowledgeBase {
   let path_deps = effects.parse_path_dependencies("gleam.toml")
   list.fold(path_deps, knowledge_base, fn(kb, dep) {
     let #(name, dep_path) = dep
-    let spec_file = case config.read(dep_path <> "/gleam.toml") {
+    let spec_file = case config.read(filepath.join(dep_path, "gleam.toml")) {
       Ok(cfg) -> cfg.spec_file
       Error(_) -> config.default_spec_file(name)
     }
-    let spec_path = dep_path <> "/" <> spec_file
+    let spec_path = filepath.join(dep_path, spec_file)
     case simplifile.is_file(spec_path) {
       Ok(True) ->
         effects.with_inferred(kb, effects.load_spec_effects(spec_path))

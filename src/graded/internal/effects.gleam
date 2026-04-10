@@ -197,23 +197,37 @@ pub fn parse_path_dependencies(
 /// module-qualified function names (e.g. `myapp/router.handle`) so each
 /// `effects` annotation maps directly to a `QualifiedName` without needing
 /// to know which file it came from. Returns an empty dict when the spec
-/// file is missing or unparseable — same fail-soft semantics as before.
+/// file is missing or unparseable.
 pub fn load_spec_effects(spec_path: String) -> Dict(QualifiedName, EffectSet) {
   case read_spec_annotations(spec_path) {
     Error(_) -> dict.new()
-    Ok(annotations) ->
-      list.fold(annotations, dict.new(), fn(acc, ann) {
-        case ann.kind {
-          Effects ->
-            case annotation.split_qualified_name(ann.function) {
-              Ok(#(module, function)) ->
-                dict.insert(acc, QualifiedName(module:, function:), ann.effects)
-              Error(_) -> acc
-            }
-          Check -> acc
-        }
-      })
+    Ok(annotations) -> fold_spec_effects(annotations)
   }
+}
+
+/// Same as `load_spec_effects` but takes an already-parsed GradedFile,
+/// avoiding a second read+parse when the caller already has the spec file
+/// in hand.
+pub fn load_spec_effects_from_file(
+  file: types.GradedFile,
+) -> Dict(QualifiedName, EffectSet) {
+  fold_spec_effects(annotation.extract_annotations(file))
+}
+
+fn fold_spec_effects(
+  annotations: List(EffectAnnotation),
+) -> Dict(QualifiedName, EffectSet) {
+  list.fold(annotations, dict.new(), fn(acc, ann) {
+    case ann.kind {
+      Effects ->
+        case annotation.split_qualified_name(ann.function) {
+          Ok(#(module, function)) ->
+            dict.insert(acc, QualifiedName(module:, function:), ann.effects)
+          Error(_) -> acc
+        }
+      Check -> acc
+    }
+  })
 }
 
 fn read_spec_annotations(
