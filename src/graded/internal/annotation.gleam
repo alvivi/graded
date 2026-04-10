@@ -82,6 +82,28 @@ pub fn format_annotation(annotation: EffectAnnotation) -> String {
   <> effects_string
 }
 
+/// Split a qualified function name like `myapp/router.handle` into its
+/// module path and function name parts. Returns `Error(Nil)` for bare
+/// names with no `.` separator.
+///
+/// The qualified format uses slashes within the module path
+/// (`gleam/io`, `myapp/web/handlers`) and a `.` to separate the module
+/// path from the function name. The split happens on the LAST `.` since
+/// function names cannot contain dots.
+pub fn split_qualified_name(qualified: String) -> Result(#(String, String), Nil) {
+  case list.reverse(string.split(qualified, ".")) {
+    [] -> Error(Nil)
+    [_only_one] -> Error(Nil)
+    [function, ..rest_reversed] -> {
+      let module = string.join(list.reverse(rest_reversed), ".")
+      case module == "" || function == "" {
+        True -> Error(Nil)
+        False -> Ok(#(module, function))
+      }
+    }
+  }
+}
+
 /// Render a TypeFieldAnnotation back to its .graded line format. Includes
 /// the module prefix when present (qualified form, used in spec files);
 /// emits the bare form otherwise (cache files).

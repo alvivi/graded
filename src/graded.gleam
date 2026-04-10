@@ -22,6 +22,7 @@
 import argv
 import filepath
 import glance
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/io
@@ -32,12 +33,14 @@ import gleam/string
 import gleam/yielder
 import graded/internal/annotation
 import graded/internal/checker
+import graded/internal/config
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
 import graded/internal/topo
 import graded/internal/types.{
-  type CheckResult, type GradedFile, type QualifiedName, type Violation,
-  type Warning, AnnotationLine, CheckResult, GradedFile, QualifiedName,
+  type CheckResult, type EffectAnnotation, type GradedFile, type QualifiedName,
+  type Violation, type Warning, AnnotationLine, CheckResult, EffectAnnotation,
+  GradedFile, QualifiedName,
 }
 import simplifile
 import stdin
@@ -108,45 +111,63 @@ pub fn main() -> Nil {
 }
 
 /// Run the checker on all .gleam files in a directory.
-/// Only enforces `check` annotations.
+///
+/// Reads the project's single spec file (default `<package_name>.graded`)
+/// to find `check` invariants, `external` hints, and `type` field
+/// annotations. Loads inferred effects from the per-module cache files
+/// under `cache_dir` (default `build/.graded`). Reports violations per
+/// source file.
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
-  let project_effects = effects.load_project_effects(directory)
+  let cfg = read_config(directory)
+  let spec = read_spec(cfg.spec_file)
+
   let knowledge_base =
     effects.load_knowledge_base("build/packages")
     |> enrich_with_path_deps()
-    |> effects.with_inferred(project_effects)
+    |> effects.with_inferred(effects.load_spec_effects(cfg.spec_file))
+    |> effects.with_externals(annotation.extract_externals(spec))
+    |> effects.with_type_fields(annotation.extract_type_fields(spec))
+
+  // Group the spec file's check annotations by their module so we can
+  // hand each source file only the checks that apply to it.
+  let checks_by_module = checks_grouped_by_module(spec)
+
   use gleam_files <- result.try(find_gleam_files(directory))
 
-  // Incremental adoption: files with no .graded sidecar are silently skipped,
-  // not treated as errors. Files whose .graded fails to parse are also skipped
-  // so a bad annotation in one file doesn't block checking the rest.
   let results =
-    list.filter_map(gleam_files, fn(gleam_path) {
-      let graded_path = gleam_to_graded_path(gleam_path, directory)
-      case simplifile.read(graded_path) {
-        Error(_no_graded_file) -> Error(Nil)
-        Ok(graded_content) ->
-          case check_file(gleam_path, graded_content, knowledge_base) {
-            Ok(check_result) -> Ok(check_result)
-            Error(_check_error) -> Error(Nil)
-          }
+    list.map(gleam_files, fn(gleam_path) {
+      let module_path = extract.module_path_for_source(gleam_path, directory)
+      let module_checks = case dict.get(checks_by_module, module_path) {
+        Ok(list) -> list
+        Error(_) -> []
       }
+      check_one_file(gleam_path, module_checks, knowledge_base)
     })
+    |> list.filter_map(fn(result) { result })
 
   Ok(results)
 }
 
-/// Infer effects for all .gleam files and write/merge .graded files.
+/// Infer effects for all `.gleam` files in `directory`. Writes two outputs:
 ///
-/// Walks the project's import graph in topological order (leaves first), so
-/// each module is analysed *after* every other project module it imports has
-/// already had its effects inferred and merged into the knowledge base. A
-/// single pass is sufficient regardless of import-chain depth — there is no
-/// "run it twice" workaround any more.
+/// 1. **Per-module cache files** under `<cache_dir>/<module_path>.graded`,
+///    containing the inferred effects of every function in the module
+///    (public + private). Regenerated freely; not shipped.
+///
+/// 2. **One spec file** at `<spec_file>` containing the inferred effects of
+///    every *public* function across all modules, plus any hand-written
+///    `check`, `external effects`, or `type` annotations the user already
+///    had in the spec file (those lines are preserved verbatim).
+///
+/// Walks the project's import graph in topological order so each module is
+/// analysed after every other project module it imports — a single pass
+/// resolves transitive chains of any depth.
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
+  let cfg = read_config(directory)
   let base_kb =
     effects.load_knowledge_base("build/packages")
     |> enrich_with_path_deps()
+
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.try(parse_all_files(gleam_files))
   let index = build_module_index(parsed, directory)
@@ -158,60 +179,72 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
       CyclicImports(modules: nodes)
     }),
   )
-  infer_in_topo_order(sorted, index, directory, base_kb)
+
+  // Topo-fold: walk modules in dependency order, inferring each one against
+  // a knowledge base that already contains every dependency it imports.
+  // The fold accumulates the public-function annotations in qualified form
+  // for the spec file write that follows.
+  use #(_kb, public_annotations) <- result.try(
+    list.try_fold(sorted, #(base_kb, []), fn(state, module_path) {
+      let #(kb, acc) = state
+      case dict.get(index, module_path) {
+        Error(_) -> Ok(state)
+        Ok(#(_gleam_path, module)) -> {
+          use #(new_kb, new_public) <- result.try(infer_one_module(
+            module,
+            module_path,
+            cfg.cache_dir,
+            kb,
+          ))
+          Ok(#(new_kb, list.append(acc, new_public)))
+        }
+      }
+    }),
+  )
+
+  write_spec_file(cfg.spec_file, public_annotations)
 }
 
-/// Format all .graded files in priv/graded/ for a given source directory.
+/// Format the project's spec file in place. The spec file is the single
+/// source of truth for hand-written `check`/`external`/`type` lines and
+/// the inferred public-API effects.
 pub fn run_format(directory: String) -> Result(Nil, GradedError) {
-  use graded_files <- result.try(find_graded_files(directory))
-  list.try_each(graded_files, fn(graded_path) {
-    use formatted <- result.try(read_and_format(graded_path))
-    simplifile.write(graded_path, formatted)
-    |> result.map_error(FileWriteError(graded_path, _))
-  })
+  let cfg = read_config(directory)
+  case format_one_spec(cfg.spec_file) {
+    Error(_) -> Ok(Nil)
+    Ok(formatted) ->
+      simplifile.write(cfg.spec_file, formatted)
+      |> result.map_error(FileWriteError(cfg.spec_file, _))
+  }
 }
 
-/// Check that all .graded files are already formatted. Returns error with
-/// the list of unformatted file paths. Exit code 1 in CI.
+/// Check that the project's spec file is already formatted. Returns error
+/// with the file path if it isn't. Used by CI as `format --check`.
 pub fn run_format_check(directory: String) -> Result(Nil, GradedError) {
-  use graded_files <- result.try(find_graded_files(directory))
-  let unformatted =
-    list.filter_map(graded_files, fn(graded_path) {
-      case read_and_format(graded_path) {
-        Error(_) -> Error(Nil)
-        Ok(formatted) ->
-          case simplifile.read(graded_path) {
-            Error(_) -> Error(Nil)
-            Ok(content) ->
-              case content == formatted {
-                True -> Error(Nil)
-                False -> Ok(graded_path)
-              }
+  let cfg = read_config(directory)
+  case format_one_spec(cfg.spec_file) {
+    Error(_) -> Ok(Nil)
+    Ok(formatted) ->
+      case simplifile.read(cfg.spec_file) {
+        Error(_) -> Ok(Nil)
+        Ok(content) ->
+          case content == formatted {
+            True -> Ok(Nil)
+            False -> Error(FormatCheckFailed(paths: [cfg.spec_file]))
           }
       }
-    })
-  case unformatted {
-    [] -> Ok(Nil)
-    paths -> Error(FormatCheckFailed(paths:))
   }
 }
 
-/// Convert a .gleam source path to its .graded path in priv/graded/.
-pub fn gleam_to_graded_path(
-  gleam_path: String,
-  source_directory: String,
-) -> String {
-  let prefix = source_directory <> "/"
-  let relative = case string.starts_with(gleam_path, prefix) {
-    True -> string.drop_start(gleam_path, string.length(prefix))
-    False -> gleam_path
-  }
-  let graded_relative = filepath.strip_extension(relative) <> ".graded"
-  let priv_directory = case source_directory {
-    "src" -> "priv/graded"
-    _ -> source_directory <> "/priv/graded"
-  }
-  priv_directory <> "/" <> graded_relative
+fn format_one_spec(spec_path: String) -> Result(String, GradedError) {
+  use content <- result.try(
+    simplifile.read(spec_path) |> result.map_error(FileReadError(spec_path, _)),
+  )
+  use file <- result.try(
+    annotation.parse_file(content)
+    |> result.map_error(GradedParseError(spec_path, _)),
+  )
+  Ok(annotation.format_sorted(file))
 }
 
 // PRIVATE
@@ -259,89 +292,209 @@ fn build_dependency_graph(
   })
 }
 
-/// Process modules in topological order. Each module is inferred against a
-/// knowledge base that already contains every other project module it
-/// imports, so transitive effects propagate fully in a single pass.
-fn infer_in_topo_order(
-  sorted_modules: List(String),
-  index: Dict(String, #(String, glance.Module)),
-  directory: String,
-  base_kb: KnowledgeBase,
-) -> Result(Nil, GradedError) {
-  use _final_kb <- result.map(
-    list.try_fold(sorted_modules, base_kb, fn(kb, module_path) {
-      case dict.get(index, module_path) {
-        Error(_) -> Ok(kb)
-        Ok(#(gleam_path, module)) ->
-          infer_one_file(gleam_path, module, module_path, directory, kb)
-      }
-    }),
-  )
-  Nil
-}
-
-/// Infer effects for a single module, write/merge its `.graded` file, and
-/// return the knowledge base extended with that module's inferred effects so
-/// dependent modules can resolve calls into it.
-fn infer_one_file(
-  gleam_path: String,
+/// Infer effects for a single module, write its cache file (with bare
+/// names), and return the new knowledge base + the module's *public*
+/// inferred annotations qualified with the module path. The caller
+/// accumulates the public annotations for the eventual spec file write.
+fn infer_one_module(
   module: glance.Module,
   module_path: String,
-  directory: String,
+  cache_dir: String,
   knowledge_base: KnowledgeBase,
-) -> Result(KnowledgeBase, GradedError) {
-  let graded_path = gleam_to_graded_path(gleam_path, directory)
+) -> Result(#(KnowledgeBase, List(EffectAnnotation)), GradedError) {
+  // existing_checks come from the spec file and were already merged into
+  // the KB at the start of run_infer; per-module inference doesn't need
+  // them again.
+  let inferred = checker.infer(module, knowledge_base, [])
 
-  let existing_file =
-    simplifile.read(graded_path)
-    |> result.map_error(fn(_) { Nil })
-    |> result.try(fn(content) {
-      annotation.parse_file(content) |> result.map_error(fn(_) { Nil })
-    })
+  let cache_path = cache_dir <> "/" <> module_path <> ".graded"
 
-  let #(per_file_kb, existing_checks) = case existing_file {
-    Ok(file) -> enrich_knowledge_base(file, knowledge_base)
-    Error(Nil) -> #(knowledge_base, [])
-  }
-
-  let inferred = checker.infer(module, per_file_kb, existing_checks)
-
-  // Skip the parent-dir create when there's nothing to write — saves an
-  // mkdir syscall per module that has no inferred effects and no prior
-  // .graded file (a common case for modules that only call stdlib).
-  use Nil <- result.try(case inferred, existing_file {
-    [], Error(Nil) -> Ok(Nil)
-    _, _ -> {
-      let parent_directory = filepath.directory_name(graded_path)
-      simplifile.create_directory_all(parent_directory)
-      |> result.map_error(DirectoryCreateError(parent_directory, _))
+  // Skip the cache write when there's nothing to record. Saves an mkdir
+  // syscall per stdlib-only module.
+  use Nil <- result.try(case inferred {
+    [] -> Ok(Nil)
+    _ -> {
+      let parent_directory = filepath.directory_name(cache_path)
+      use Nil <- result.try(
+        simplifile.create_directory_all(parent_directory)
+        |> result.map_error(DirectoryCreateError(parent_directory, _)),
+      )
+      let cache_file = GradedFile(lines: list.map(inferred, AnnotationLine))
+      write_graded_file(cache_path, cache_file)
     }
   })
 
-  use Nil <- result.try(case inferred, existing_file {
-    [], Error(Nil) -> Ok(Nil)
-    _, Ok(file) -> {
-      let merged = annotation.merge_inferred(file, inferred)
-      write_graded_file(graded_path, merged)
-    }
-    _, Error(Nil) -> {
-      let graded_file = GradedFile(lines: list.map(inferred, AnnotationLine))
-      write_graded_file(graded_path, graded_file)
-    }
-  })
-
-  // Merge this module's freshly inferred effects into the running knowledge
-  // base so any module that imports it (and is processed later in the topo
-  // order) can resolve calls into it without re-inferring.
+  // Merge this module's inferred effects into the running KB so dependent
+  // modules processed later in the topo order can resolve calls into it.
   let inferred_dict =
-    list.fold(inferred, dict.new(), fn(acc, annotation) {
+    list.fold(inferred, dict.new(), fn(acc, ann) {
       dict.insert(
         acc,
-        QualifiedName(module: module_path, function: annotation.function),
-        annotation.effects,
+        QualifiedName(module: module_path, function: ann.function),
+        ann.effects,
       )
     })
-  Ok(effects.with_inferred(knowledge_base, inferred_dict))
+  let new_kb = effects.with_inferred(knowledge_base, inferred_dict)
+
+  // Filter to public functions and qualify their names for the spec file.
+  let public_names = public_function_names(module)
+  let public_annotations =
+    inferred
+    |> list.filter(fn(ann) { set.contains(public_names, ann.function) })
+    |> list.map(fn(ann) {
+      EffectAnnotation(
+        kind: ann.kind,
+        function: module_path <> "." <> ann.function,
+        params: ann.params,
+        effects: ann.effects,
+      )
+    })
+
+  Ok(#(new_kb, public_annotations))
+}
+
+/// Build a set of public function names from a parsed Gleam module.
+fn public_function_names(module: glance.Module) -> set.Set(String) {
+  list.fold(module.functions, set.new(), fn(acc, def) {
+    case def.definition.publicity {
+      glance.Public -> set.insert(acc, def.definition.name)
+      glance.Private -> acc
+    }
+  })
+}
+
+/// Write the project's spec file. Reads the existing spec (if any),
+/// preserves all `check`/`external`/`type` lines plus comments and blank
+/// lines, replaces the inferred `effects` lines with the freshly inferred
+/// public-function annotations, and writes the result back.
+fn write_spec_file(
+  spec_path: String,
+  inferred: List(EffectAnnotation),
+) -> Result(Nil, GradedError) {
+  let existing = case simplifile.read(spec_path) {
+    Error(_) -> GradedFile(lines: [])
+    Ok(content) ->
+      case annotation.parse_file(content) {
+        Ok(file) -> file
+        Error(_) -> GradedFile(lines: [])
+      }
+  }
+  let merged = annotation.merge_inferred(existing, inferred)
+
+  // create_directory_all is a no-op when the parent already exists, so it's
+  // safe to call unconditionally — and necessary when the user has
+  // configured a non-default spec_file in a subdirectory.
+  let parent = filepath.directory_name(spec_path)
+  use Nil <- result.try(case parent == "" || parent == "." {
+    True -> Ok(Nil)
+    False ->
+      simplifile.create_directory_all(parent)
+      |> result.map_error(DirectoryCreateError(parent, _))
+  })
+  write_graded_file(spec_path, merged)
+}
+
+/// Group a parsed spec file's `check` annotations by their module path. Used
+/// during `run` to hand each source file only the checks that apply to it.
+fn checks_grouped_by_module(
+  spec: GradedFile,
+) -> Dict(String, List(EffectAnnotation)) {
+  list.fold(annotation.extract_checks(spec), dict.new(), fn(acc, ann) {
+    case annotation.split_qualified_name(ann.function) {
+      Error(_) -> acc
+      Ok(#(module, function)) -> {
+        // Strip the module qualifier from the function name so the existing
+        // checker (which expects bare names per module) can match it.
+        let bare =
+          EffectAnnotation(
+            kind: ann.kind,
+            function:,
+            params: ann.params,
+            effects: ann.effects,
+          )
+        let existing = case dict.get(acc, module) {
+          Ok(list) -> list
+          Error(_) -> []
+        }
+        dict.insert(acc, module, [bare, ..existing])
+      }
+    }
+  })
+}
+
+/// Run the checker against one source file using the slice of `check`
+/// annotations from the spec file that mention this file's module.
+fn check_one_file(
+  gleam_path: String,
+  module_checks: List(EffectAnnotation),
+  knowledge_base: KnowledgeBase,
+) -> Result(CheckResult, Nil) {
+  use module <- result.try(case read_and_parse_gleam(gleam_path) {
+    Ok(m) -> Ok(m)
+    Error(_) -> Error(Nil)
+  })
+  let #(violations, warnings) =
+    checker.check(module, module_checks, knowledge_base)
+  Ok(CheckResult(file: gleam_path, violations:, warnings:))
+}
+
+/// Read the project's `[tools.graded]` config and return spec/cache paths
+/// already resolved relative to the project root. The "project root" is
+/// the directory containing `gleam.toml`:
+///
+/// - When `directory == "src"` (the production case), project root is `.`
+///   and gleam.toml lives at `./gleam.toml`.
+/// - Otherwise (tests against ad-hoc directories), the source directory
+///   itself acts as the project root and gleam.toml is looked up there.
+///
+/// Resolved paths are returned in the same `GradedConfig` shape so callers
+/// can use them as-is for I/O without further joining.
+fn read_config(directory: String) -> config.GradedConfig {
+  let project_root = case directory {
+    "src" -> "."
+    _ -> directory
+  }
+  let toml_path = filepath.join(project_root, "gleam.toml")
+  let raw = case config.read(toml_path) {
+    Ok(cfg) -> cfg
+    Error(_) -> config.defaults_for(default_package_name(directory))
+  }
+  config.GradedConfig(
+    package_name: raw.package_name,
+    spec_file: resolve_path(project_root, raw.spec_file),
+    cache_dir: resolve_path(project_root, raw.cache_dir),
+  )
+}
+
+/// Join a path against a root, but leave it untouched if it's already
+/// absolute (starts with `/`) or if the root is `.` (so production paths
+/// stay short and unprefixed).
+fn resolve_path(root: String, path: String) -> String {
+  use <- bool.guard(
+    when: string.starts_with(path, "/") || root == ".",
+    return: path,
+  )
+  filepath.join(root, path)
+}
+
+fn default_package_name(directory: String) -> String {
+  // Best-effort: use the last path segment as the package name. This is
+  // only used as a fallback when no gleam.toml is found.
+  case list.reverse(string.split(directory, "/")) {
+    [last, ..] if last != "" -> last
+    _ -> "graded"
+  }
+}
+
+fn read_spec(spec_path: String) -> GradedFile {
+  case simplifile.read(spec_path) {
+    Error(_) -> GradedFile(lines: [])
+    Ok(content) ->
+      case annotation.parse_file(content) {
+        Ok(file) -> file
+        Error(_) -> GradedFile(lines: [])
+      }
+  }
 }
 
 /// Infer effects for every path dependency declared in `gleam.toml` and
@@ -457,45 +610,6 @@ fn load_path_dep_checks(
   }
 }
 
-fn enrich_knowledge_base(
-  graded_file: GradedFile,
-  knowledge_base: KnowledgeBase,
-) -> #(KnowledgeBase, List(types.EffectAnnotation)) {
-  let checks = annotation.extract_checks(graded_file)
-  let type_fields = annotation.extract_type_fields(graded_file)
-  let externs = annotation.extract_externals(graded_file)
-  let knowledge_base =
-    effects.with_type_fields(knowledge_base, type_fields)
-    |> effects.with_externals(externs)
-  #(knowledge_base, checks)
-}
-
-fn find_graded_files(directory: String) -> Result(List(String), GradedError) {
-  let priv_directory = case directory {
-    "src" -> "priv/graded"
-    _ -> directory <> "/priv/graded"
-  }
-  // A missing priv/graded/ directory is not an error — it just means
-  // `graded infer` hasn't been run yet. Treat it as an empty file list.
-  let files = case simplifile.get_files(priv_directory) {
-    Ok(found) -> found
-    Error(_) -> []
-  }
-  Ok(list.filter(files, fn(path) { string.ends_with(path, ".graded") }))
-}
-
-fn read_and_format(graded_path: String) -> Result(String, GradedError) {
-  use content <- result.try(
-    simplifile.read(graded_path)
-    |> result.map_error(FileReadError(graded_path, _)),
-  )
-  use graded_file <- result.try(
-    annotation.parse_file(content)
-    |> result.map_error(GradedParseError(graded_path, _)),
-  )
-  Ok(annotation.format_sorted(graded_file))
-}
-
 fn target_directory(arguments: List(String)) -> String {
   case arguments {
     [directory, ..] -> directory
@@ -553,25 +667,6 @@ fn read_and_parse_gleam(
   )
   glance.module(source)
   |> result.map_error(GleamParseError(gleam_path, _))
-}
-
-fn check_file(
-  gleam_path: String,
-  graded_content: String,
-  knowledge_base: KnowledgeBase,
-) -> Result(CheckResult, GradedError) {
-  use graded_file <- result.try(
-    annotation.parse_file(graded_content)
-    |> result.map_error(GradedParseError(gleam_path, _)),
-  )
-  let #(knowledge_base, check_annotations) =
-    enrich_knowledge_base(graded_file, knowledge_base)
-
-  use module <- result.try(read_and_parse_gleam(gleam_path))
-
-  let #(violations, warnings) =
-    checker.check(module, check_annotations, knowledge_base)
-  Ok(CheckResult(file: gleam_path, violations:, warnings:))
 }
 
 fn write_graded_file(
