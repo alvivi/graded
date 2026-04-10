@@ -11,6 +11,24 @@ import graded/internal/types.{
   FieldCall, LocalCall, QualifiedName, ResolvedCall,
 }
 
+/// Compute the dotted module name (as it appears in `import` statements) for
+/// a `.gleam` file under a given source directory. For example,
+/// `module_path_for_source("src/app/router.gleam", "src")` returns
+/// `"app/router"`. The returned string is what `build_import_context` will
+/// produce for any module that imports this file — the project's dependency
+/// graph is built by intersecting the two.
+pub fn module_path_for_source(
+  gleam_path: String,
+  source_directory: String,
+) -> String {
+  let prefix = source_directory <> "/"
+  let relative = case string.starts_with(gleam_path, prefix) {
+    True -> string.drop_start(gleam_path, string.length(prefix))
+    False -> gleam_path
+  }
+  string.replace(relative, ".gleam", "")
+}
+
 /// Import context built from a module's import list.
 pub type ImportContext {
   ImportContext(
