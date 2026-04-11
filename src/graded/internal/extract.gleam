@@ -135,6 +135,77 @@ fn resolve_unqualified_call(
   }
 }
 
+/// Resolve a qualified `alias.label` call or pipe target. Constructor
+/// labels short-circuit to empty (pure value creation). Known aliases
+/// produce a cross-module ResolvedCall; unknown aliases fall back to a
+/// FieldCall on a local variable.
+fn resolve_qualified_call(
+  alias: String,
+  function_name: String,
+  span: glance.Span,
+  context: ImportContext,
+) -> ExtractResult {
+  case is_constructor_name(function_name) {
+    True -> empty()
+    False -> qualified_call_lookup(alias, function_name, span, context)
+  }
+}
+
+fn qualified_call_lookup(
+  alias: String,
+  function_name: String,
+  span: glance.Span,
+  context: ImportContext,
+) -> ExtractResult {
+  case dict.get(context.aliases, alias) {
+    Ok(module_path) ->
+      ExtractResult(
+        resolved: [
+          ResolvedCall(QualifiedName(module_path, function_name), span),
+        ],
+        local: [],
+        field: [],
+        references: [],
+      )
+    Error(Nil) ->
+      ExtractResult(
+        resolved: [],
+        local: [],
+        field: [FieldCall(alias, function_name, span)],
+        references: [],
+      )
+  }
+}
+
+/// Resolve a qualified `alias.label` used as a value (not called).
+/// Constructors short-circuit to empty; unknown aliases are dropped.
+fn resolve_qualified_reference(
+  alias: String,
+  function_name: String,
+  span: glance.Span,
+  context: ImportContext,
+) -> ExtractResult {
+  case is_constructor_name(function_name) {
+    True -> empty()
+    False -> qualified_reference_lookup(alias, function_name, span, context)
+  }
+}
+
+fn qualified_reference_lookup(
+  alias: String,
+  function_name: String,
+  span: glance.Span,
+  context: ImportContext,
+) -> ExtractResult {
+  case dict.get(context.aliases, alias) {
+    Ok(module_path) ->
+      ExtractResult(resolved: [], local: [], field: [], references: [
+        ResolvedCall(QualifiedName(module_path, function_name), span),
+      ])
+    Error(Nil) -> empty()
+  }
+}
+
 fn last_segment(module_path: String) -> String {
   module_path
   |> string.split("/")
@@ -172,7 +243,9 @@ fn extract_from_expression(
   context: ImportContext,
 ) -> ExtractResult {
   case expression {
-    // Qualified call: io.println(x), or qualified type constructor: types.NotFound(id)
+    // Qualified call: io.println(x), or qualified type constructor: types.NotFound(id).
+    // The argument walk is unconditional so side-effecting sub-expressions
+    // inside a constructor's args (e.g. NotFound(io.println(x))) still propagate.
     glance.Call(
       location: span,
       function: glance.FieldAccess(
@@ -181,37 +254,11 @@ fn extract_from_expression(
         ..,
       ),
       arguments:,
-    ) -> {
-      case is_constructor_name(function_name) {
-        // Type constructor — pure value creation. Skip the lookup but
-        // still walk the arguments so any side-effecting sub-expressions
-        // (e.g. NotFound(io.println(x))) are still counted.
-        True -> extract_from_arguments(arguments, context)
-        False -> {
-          let call_result = case dict.get(context.aliases, alias) {
-            Ok(module_path) ->
-              ExtractResult(
-                resolved: [
-                  ResolvedCall(QualifiedName(module_path, function_name), span),
-                ],
-                local: [],
-                field: [],
-                references: [],
-              )
-            Error(Nil) ->
-              ExtractResult(
-                resolved: [],
-                local: [],
-                field: [
-                  FieldCall(alias, function_name, span),
-                ],
-                references: [],
-              )
-          }
-          merge(call_result, extract_from_arguments(arguments, context))
-        }
-      }
-    }
+    ) ->
+      merge(
+        resolve_qualified_call(alias, function_name, span, context),
+        extract_from_arguments(arguments, context),
+      )
 
     // Unqualified or local call: println(x) or helper(x)
     glance.Call(location: span, function: glance.Variable(_, name), arguments:) ->
@@ -271,23 +318,11 @@ fn extract_from_expression(
     glance.RecordUpdate(record:, ..) -> extract_from_expression(record, context)
 
     // Function reference: qualified name used as a value (not called).
-    // Qualified type constructors used as values are pure and not tracked.
     glance.FieldAccess(
       location: span,
       container: glance.Variable(_, alias),
       label: function_name,
-    ) ->
-      case is_constructor_name(function_name) {
-        True -> empty()
-        False ->
-          case dict.get(context.aliases, alias) {
-            Ok(module_path) ->
-              ExtractResult(resolved: [], local: [], field: [], references: [
-                ResolvedCall(QualifiedName(module_path, function_name), span),
-              ])
-            Error(Nil) -> empty()
-          }
-      }
+    ) -> resolve_qualified_reference(alias, function_name, span, context)
 
     // Other field access (not a call — just traversing)
     glance.FieldAccess(container:, ..) ->
@@ -345,31 +380,7 @@ fn extract_pipe_target(
       location: span,
       container: glance.Variable(_, alias),
       label: function_name,
-    ) ->
-      case is_constructor_name(function_name) {
-        True -> empty()
-        False ->
-          case dict.get(context.aliases, alias) {
-            Ok(module_path) ->
-              ExtractResult(
-                resolved: [
-                  ResolvedCall(QualifiedName(module_path, function_name), span),
-                ],
-                local: [],
-                field: [],
-                references: [],
-              )
-            Error(Nil) ->
-              ExtractResult(
-                resolved: [],
-                local: [],
-                field: [
-                  FieldCall(alias, function_name, span),
-                ],
-                references: [],
-              )
-          }
-      }
+    ) -> resolve_qualified_call(alias, function_name, span, context)
 
     glance.Variable(location: span, name:) ->
       resolve_unqualified_call(name, span, context)
