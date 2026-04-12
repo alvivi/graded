@@ -19,8 +19,8 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/set.{type Set}
+import gleam/string
 import graded/internal/types.{type QualifiedName, QualifiedName}
 import simplifile
 
@@ -263,68 +263,70 @@ fn assignment_name(name: glance.AssignmentName) -> Option(String) {
   }
 }
 
-// ──── Dependency package-interface loading ────
+// ──── Dependency loading via glance source parsing ────
 
-/// Load signature registries for every dependency in `packages_dir`.
+/// Load signature registries for every dependency in `packages_dir`
+/// by parsing each dep's `src/` directory with glance.
 ///
-/// For each subdirectory of `packages_dir`, exports the dependency's
-/// `gleam export package-interface` JSON to a cache file in
-/// `cache_dir/<dep>-package-interface.json`, then loads that JSON
-/// into the registry. Cached files are reused on subsequent runs.
+/// For each `<packages_dir>/<dep>/src/` subtree, walks every `.gleam`
+/// file and folds it into the registry via `from_glance_module`,
+/// using the path under `src/` as the module path (e.g.
+/// `gleam_stdlib/src/gleam/list.gleam` → `gleam/list`).
 ///
-/// Failures (missing `gleam` binary, malformed JSON, unbuildable dep)
-/// are silently skipped — the result is best-effort. Deps that fail
-/// to load contribute no entries to the registry, so calls into them
-/// fall back to the existing label-only matching path.
-pub fn load_for_packages(
-  packages_dir: String,
-  cache_dir: String,
-) -> SignatureRegistry {
+/// Failures (missing `src/`, parse errors from version mismatches,
+/// FFI-only Erlang packages) are silently skipped — affected deps
+/// contribute no entries and calls into them fall back to label-only
+/// argument matching at polymorphic call sites.
+pub fn load_from_packages_dir(packages_dir: String) -> SignatureRegistry {
   case simplifile.read_directory(packages_dir) {
     Error(_) -> empty()
     Ok(entries) ->
       list.fold(entries, empty(), fn(acc, dep) {
-        let dep_path = filepath.join(packages_dir, dep)
-        let cache_path =
-          filepath.join(cache_dir, dep <> "-package-interface.json")
-        let json_string = read_or_export(dep_path, cache_path)
-        case json_string {
-          Error(_) -> acc
-          Ok(content) ->
-            case from_json_string(content) {
-              Error(_) -> acc
-              Ok(registry) -> merge(acc, registry)
-            }
-        }
+        let src_dir = filepath.join(filepath.join(packages_dir, dep), "src")
+        merge(acc, registry_from_source_dir(src_dir))
       })
   }
 }
 
-/// Read a cached package-interface JSON file, or run `gleam export` in
-/// the dep directory to produce one. Returns the JSON string.
-fn read_or_export(dep_path: String, cache_path: String) -> Result(String, Nil) {
-  case simplifile.read(cache_path) {
-    Ok(content) -> Ok(content)
-    Error(_) -> {
-      // Best-effort directory creation — if it fails, the gleam export
-      // call below will fail too and we'll bail out.
-      let _mkdir =
-        simplifile.create_directory_all(filepath.directory_name(cache_path))
-      let cmd =
-        "cd "
-        <> shell_quote(dep_path)
-        <> " && gleam export package-interface --out "
-        <> shell_quote(cache_path)
-        <> " 2>/dev/null"
-      let _output = shell_exec(cmd)
-      simplifile.read(cache_path) |> result.replace_error(Nil)
-    }
+fn registry_from_source_dir(source_dir: String) -> SignatureRegistry {
+  case simplifile.get_files(source_dir) {
+    Error(_) -> empty()
+    Ok(files) ->
+      files
+      |> list.filter(fn(p) { string.ends_with(p, ".gleam") })
+      |> list.fold(empty(), fn(acc, gleam_path) {
+        merge(acc, registry_from_gleam_file(gleam_path, source_dir))
+      })
   }
 }
 
-fn shell_quote(s: String) -> String {
-  "'" <> s <> "'"
+fn registry_from_gleam_file(
+  gleam_path: String,
+  source_dir: String,
+) -> SignatureRegistry {
+  use source <- bool_or_default(simplifile.read(gleam_path), empty())
+  use module <- bool_or_default(glance.module(source), empty())
+  from_glance_module(module_path_for(gleam_path, source_dir), module)
 }
 
-@external(erlang, "graded_ffi", "shell_exec")
-fn shell_exec(command: String) -> String
+/// Continuation-style result-or-default: runs `next` with the Ok value,
+/// or returns `default` on Error. Lets callers chain reads/parses
+/// without nested case expressions.
+fn bool_or_default(result: Result(a, b), default: c, next: fn(a) -> c) -> c {
+  case result {
+    Ok(v) -> next(v)
+    Error(_) -> default
+  }
+}
+
+/// Compute the dotted module name for a gleam file under a dep's
+/// `src/` directory. Mirrors `extract.module_path_for_source` but
+/// kept inline to avoid a circular dep between modules.
+fn module_path_for(gleam_path: String, source_dir: String) -> String {
+  let prefix = source_dir <> "/"
+  let relative = case string.starts_with(gleam_path, prefix) {
+    True -> string.drop_start(gleam_path, string.length(prefix))
+    False -> gleam_path
+  }
+  filepath.strip_extension(relative)
+}
