@@ -189,7 +189,16 @@ external effects gleam/otp/actor.start : [Process]
 
 Externals are merged into the knowledge base before both `infer` and `check`, so calls to these functions resolve with the declared effects instead of `[Unknown]`. This is also the right mechanism for **FFI functions** — declare their effects so callers propagate correctly.
 
-Effect sets use `[]` for pure (no effects) and `[Http, Dom]` for specific permitted effects.
+## Effect set syntax
+
+Four shapes appear inside brackets:
+
+- **`[]`** — pure; no effects. The bottom of the effect lattice.
+- **`[Label1, Label2, ...]`** — a specific set of effect labels.
+- **`[_]`** — wildcard; the top of the effect lattice. When used as a declared budget, `[_]` means "any effects are permitted here" and matches anything. Useful for entrypoints (`main`) or for deliberately un-restricted parameter bounds (`check run(f: [_]) : [_]`).
+- **`[e]`, `[e1, e2]`** (lowercase-initial tokens) — effect variables for polymorphic signatures. See [Effect polymorphism](#effect-polymorphism).
+
+Note on wildcards: because `[_]` is lattice top, it absorbs everything in unions. If a function's inferred effects would be `[Stdout, e]` (polymorphic) but its declared type is `[_]`, the variable info is subsumed. That's correct but can be surprising — if you want polymorphism, avoid declaring wildcard bounds.
 
 ## Effect labels
 
