@@ -332,20 +332,18 @@ fn fold_qualified_annotation(
     Error(_) -> accumulator
     Ok(#(module, function)) -> {
       let qualified_name = QualifiedName(module:, function:)
-      case ann.kind {
-        Effects -> #(
-          dict.insert(effect_map, qualified_name, ann.effects),
-          param_map,
-        )
-        Check ->
-          case ann.params {
-            [] -> accumulator
-            params -> #(
-              effect_map,
-              dict.insert(param_map, qualified_name, params),
-            )
-          }
+      let new_effect_map = case ann.kind {
+        Effects -> dict.insert(effect_map, qualified_name, ann.effects)
+        Check -> effect_map
       }
+      // Both `effects` (auto-inferred polymorphic) and `check`
+      // (user-declared) annotations can carry param bounds; store
+      // them all so call-site substitution can resolve variables.
+      let new_param_map = case ann.params {
+        [] -> param_map
+        params -> dict.insert(param_map, qualified_name, params)
+      }
+      #(new_effect_map, new_param_map)
     }
   }
 }

@@ -328,7 +328,25 @@ fn infer_one_module(
         ann.effects,
       )
     })
-  let new_kb = effects.with_inferred(knowledge_base, inferred_dict)
+  // Also thread polymorphic param bounds into the KB so later
+  // modules in the topo-sort pass can bind variables at call sites
+  // that target this module's functions.
+  let params_dict =
+    list.fold(inferred, dict.new(), fn(acc, ann) {
+      case ann.params {
+        [] -> acc
+        _ ->
+          dict.insert(
+            acc,
+            QualifiedName(module: module_path, function: ann.function),
+            ann.params,
+          )
+      }
+    })
+  let new_kb =
+    knowledge_base
+    |> effects.with_inferred(inferred_dict)
+    |> effects.with_inferred_params(params_dict)
 
   let public_names = public_function_names(module)
   let public_annotations =
