@@ -145,6 +145,27 @@ effects myapp.apply(f: [Stdout]) : [Stdout]
 
 When checking, calls to bounded parameters (like `f(x)` inside `apply`) use the declared bound instead of `[Unknown]`.
 
+### Effect polymorphism
+
+For functions whose effects depend on their callback, use lowercase effect variables:
+
+```
+// validate_range's effects are whatever to_error's effects are
+effects myapp.validate_range(to_error: [e]) : [e]
+
+// map_with_log carries [Stdout] on top of f's effects
+effects myapp.map_with_log(f: [e]) : [Stdout, e]
+```
+
+`graded infer` produces these automatically when it sees a function calling a parameter with a `fn(...) -> ...` type annotation — the variable is named after the parameter. At each call site, graded binds the variable to the concrete effects of the argument passed:
+
+- A function reference (`io.println`) → its effects from the knowledge base
+- A type constructor (`OutOfRange`) → pure `[]`
+- The caller's own bounded parameter → that bound's effects
+- Anything else (inline closure, computed expression) → `[Unknown]`
+
+Both labeled (`validate_range(42, to_error: OutOfRange)`) and positional (`validate_range(42, OutOfRange)`) arguments resolve.
+
 ## Type field effects
 
 For types with function-typed fields, declare their effects at the type level. Type names use the same module-qualified form as function names — module path with slashes, then `.TypeName.field`:
@@ -233,39 +254,57 @@ gleam run -m graded format --stdin            # format from stdin (editor integr
 
 ## Limitations
 
-graded performs **syntax-level analysis** using [glance](https://hexdocs.pm/glance/) — it walks the AST without type information. This keeps the tool simple and avoids depending on compiler internals, but comes with trade-offs:
+graded performs **syntax-level analysis** using [glance](https://hexdocs.pm/glance/) — it walks the AST without type inference and without inter-procedural value flow. This keeps the tool simple and avoids depending on compiler internals, but leaves a few patterns unresolved:
 
-- **Function references passed as values are not tracked.** If you write `list.map(items, io.println)`, graded sees `list.map` (pure) but doesn't recognize that `io.println` carries `[Stdout]` — it's passed as a value, not called. The effect is lost. Inline anonymous functions (`list.map(items, fn(x) { io.println(x) })`) work correctly because graded sees the `io.println` call directly in the function body.
+- **Field calls on locally-constructed records don't substitute.** `type Validator { Validator(to_error: fn(Int) -> err) }` — if you construct `let v = Validator(to_error: MyError)` and then call `v.to_error(42)`, graded can't yet bind `to_error` to `MyError` at the field-call site. Field effects come from type-level annotations (`type myapp.Validator.to_error : [...]`), which are declared once per type rather than per value.
 
-- **No effect polymorphism.** You can't express "this function has whatever effects its argument has." Each `check` annotation declares a specific combination of parameter bounds. There's no way to write a generic `map(f: [e]) : [e]` — you'd need separate annotations for each concrete effect set.
+- **No second-order polymorphism.** Effect variables are flat — `apply(f: [e]) : [e]` works, but a function whose callback itself takes a callback can't propagate effects transitively. Nested effect variables would require unification/fixpoint machinery (full effect inference, à la Koka or Granule), which is outside graded's deliberately lightweight design.
 
-- **Cross-module resolution requires `graded infer` first.** If module A calls module B, B's effects are only available after `graded infer` writes B's `.graded` file. Once `graded infer` has been run, transitive chains of any depth resolve in a single pass — modules are processed in topological order over the import graph, so each module sees its dependencies' effects before being analysed itself.
+- **Unusual pipe target shapes aren't tracked.** `x |> foo`, `x |> foo.bar`, `x |> foo(args)`, and `x |> foo.bar(args)` all work, including with positional argument substitution for polymorphic callees. Less common shapes like `x |> { let f = bar(); f }` don't have a static callee name for the extractor to hang argument tracking off.
+
+- **Cross-module resolution requires `graded infer` first.** If module A calls module B, B's effects are only available after `graded infer` writes B's entry in the spec file and cache. Once `graded infer` has been run, transitive chains of any depth resolve in a single pass — modules are processed in topological order over the import graph.
 
 - **External code is opaque.** Erlang/JavaScript FFI implementations, pre-compiled dependencies without `.graded` files, and dynamically dispatched calls cannot be analyzed. Use `external effects` declarations to annotate these manually.
 
-In practice, the common patterns (inline callbacks, direct calls, pipe chains) are handled correctly. The main gap is function references passed to higher-order functions — a pattern that can be worked around by inlining the callback or adding explicit annotations.
+In practice, idiomatic Gleam code (inline callbacks, direct calls, pipe chains, higher-order functions passing functions by name) is handled correctly. Function references passed to higher-order functions — previously the main gap — are now tracked: graded infers polymorphic signatures like `effects map(f: [e]) : [e]` and binds `e` at each call site from the concrete argument.
 
 ## Future work
 
-### Effect polymorphism
+The following features would progressively close the remaining limitations. Ordered by incrementality — earlier items are smaller, later items push into different territory.
 
-The current parameter bounds system requires concrete effect sets. A polymorphic system would allow effect variables:
+### Hand-written field bounds
+
+Extend parameter bounds to accept a path expression, so users can declare a field's effects at the function boundary when graded can't figure it out on its own:
 
 ```
-effects map(f: [e]) : [e]
+check myapp.view(handler.on_click: [Dom]) : [Dom]
 ```
 
-This would let one signature express that `map` propagates whatever effects its callback has, eliminating the need for per-use-case annotations. The checker would need effect unification — at each call site, bind `e` to the concrete effects of the argument and propagate upward.
+This is a syntax extension to `ParamBound` (path instead of identifier), no analysis required — the user declares what a record field's effects are, and substitution works exactly like first-order param bounds. Covers the escape-hatch case for field calls and for any other value flow graded can't trace.
+
+### Same-function value flow
+
+A small dataflow pass over each function body tracking three kinds of local bindings:
+
+1. **Function-ref alias** — `let f = io.println` → `f` is a callable with `[Stdout]`
+2. **Record construction** — `let v = Validator(to_error: MyError)` → `v`'s fields map to values
+3. **Transitive alias** — `let g = f` → chain lookup
+
+With this, field calls on locally-constructed records resolve automatically (closing most of the field-call limitation), and pipe targets like `let f = bar; x |> f` also resolve. Doesn't cross function boundaries — construction sites that happen in another function remain opaque.
+
+### Effect unification
+
+Full effect inference with nested variables — `apply(f: fn(cb) -> x) : ?` where the result depends on what `f` does with `cb`. Requires a unification pass and a fixpoint over effect variables. This pushes graded across the line from "syntax-level subset checker" to "real effect-inference system" — probably better served by a separate tool (or adopting one like Granule) than by extending graded.
 
 ### Typed AST integration
 
-The root cause of most limitations is the lack of type information. If the Gleam compiler exposed typed AST metadata (expression types, resolved function references), graded could:
+If the Gleam compiler exposed typed AST metadata (expression types, resolved function references), graded could:
 
-- Track effects of function references passed as values (knowing that `io.println` in `list.map(items, io.println)` is a function with `[Stdout]`)
+- Eliminate the remaining positional/label heuristics by reading actual parameter positions from types
 - Resolve field calls without requiring explicit type annotations on parameters
-- Eliminate false `[Unknown]` results from indirect calls
+- Track function references through value flow without ad-hoc AST pattern matching
 
-These two features — effect polymorphism and typed AST access — together would close the remaining soundness gaps and bring graded from syntax-level approximation to a complete effect system.
+Not feasible until the Gleam compiler exposes type info to third-party tools.
 
 ### Privacy and information flow checking
 
