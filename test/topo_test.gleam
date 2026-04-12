@@ -645,3 +645,54 @@ pub fn new(value: Int) -> List(MyError) {
   let _ = simplifile.delete(dir)
   Nil
 }
+
+/// Same shape as `polymorphic_constructor_resolves_to_pure_test` but
+/// the caller passes the constructor positionally — no `to_error:`
+/// label. The signature registry tells the checker that parameter 1
+/// of `validate_range` is named `to_error`, so positional argument 1
+/// still binds the effect variable.
+pub fn polymorphic_constructor_resolves_positional_test() {
+  let dir =
+    make_fixture("polymorphic_positional", [
+      #("gleam.toml", "name = \"polyproj_pos\"\nversion = \"0.0.0\"\n"),
+      #(
+        "validation.gleam",
+        "pub fn validate_range(
+  value: Int,
+  to_error: fn(Int) -> error,
+) -> List(error) {
+  case value < 0 {
+    True -> [to_error(value)]
+    False -> []
+  }
+}
+",
+      ),
+      #(
+        "entity.gleam",
+        "import validation
+
+pub type MyError {
+  OutOfRange(value: Int)
+}
+
+pub fn new(value: Int) -> List(MyError) {
+  validation.validate_range(value, OutOfRange)
+}
+",
+      ),
+    ])
+
+  let assert Ok(Nil) = graded.run_infer(dir)
+
+  let assert Ok(content) = simplifile.read(dir <> "/polyproj_pos.graded")
+  let assert Ok(file) = annotation.parse_file(content)
+  let annotations = annotation.extract_annotations(file)
+
+  let new_fn = list.find(annotations, fn(ann) { ann.function == "entity.new" })
+  let assert Ok(n) = new_fn
+  n.effects |> should.equal(Specific(set.new()))
+
+  let _ = simplifile.delete(dir)
+  Nil
+}

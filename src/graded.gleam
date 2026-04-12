@@ -36,6 +36,7 @@ import graded/internal/checker
 import graded/internal/config
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
+import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/topo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type GradedFile, type QualifiedName,
@@ -130,6 +131,9 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   let checks_by_module = checks_grouped_by_module(spec)
 
   use gleam_files <- result.try(find_gleam_files(directory))
+  use parsed <- result.try(parse_all_files(gleam_files))
+  let index = build_module_index(parsed, directory)
+  let registry = build_project_registry(index)
 
   let results =
     list.map(gleam_files, fn(gleam_path) {
@@ -138,7 +142,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
         Ok(list) -> list
         Error(_) -> []
       }
-      check_one_file(gleam_path, module_checks, knowledge_base)
+      check_one_file(gleam_path, module_checks, knowledge_base, registry)
     })
     |> list.filter_map(fn(result) { result })
 
@@ -180,6 +184,11 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     }),
   )
 
+  // Build a signature registry covering every project module so the
+  // checker can do positional argument matching for cross-module
+  // polymorphic calls.
+  let registry = build_project_registry(index)
+
   use #(_kb, public_annotations) <- result.try(
     list.try_fold(sorted, #(base_kb, []), fn(state, module_path) {
       let #(kb, acc) = state
@@ -191,6 +200,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
             module_path,
             cfg.cache_dir,
             kb,
+            registry,
           ))
           // Prepend new_public so each iteration is O(|new_public|) instead
           // of O(|acc|); final order doesn't matter, merge_inferred keys by
@@ -260,6 +270,18 @@ fn parse_all_files(
   })
 }
 
+/// Build a signature registry covering every project module. Used by
+/// the checker's call-site substitution to resolve effect variables
+/// when the caller passes positional (unlabeled) arguments.
+fn build_project_registry(
+  index: Dict(String, #(String, glance.Module)),
+) -> SignatureRegistry {
+  dict.fold(index, signatures.empty(), fn(acc, module_path, entry) {
+    let #(_gleam_path, module) = entry
+    signatures.merge(acc, signatures.from_glance_module(module_path, module))
+  })
+}
+
 /// Build an index from dotted module name (`app/router`) to the parsed file.
 /// This is the set of *project* modules — every module name in this dict is
 /// a candidate dependency-graph node.
@@ -300,8 +322,9 @@ fn infer_one_module(
   module_path: String,
   cache_dir: String,
   knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
 ) -> Result(#(KnowledgeBase, List(EffectAnnotation)), GradedError) {
-  let inferred = checker.infer(module, knowledge_base, [])
+  let inferred = checker.infer(module, knowledge_base, [], registry)
 
   let cache_path = filepath.join(cache_dir, module_path <> ".graded")
 
@@ -421,12 +444,13 @@ fn check_one_file(
   gleam_path: String,
   module_checks: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
 ) -> Result(CheckResult, Nil) {
   use module <- result.try(
     read_and_parse_gleam(gleam_path) |> result.replace_error(Nil),
   )
   let #(violations, warnings) =
-    checker.check(module, module_checks, knowledge_base)
+    checker.check(module, module_checks, knowledge_base, registry)
   Ok(CheckResult(file: gleam_path, violations:, warnings:))
 }
 
@@ -589,7 +613,7 @@ fn infer_path_dep_module(
   case dict.get(index, module_path) {
     Error(_) -> #(acc, kb)
     Ok(#(module, checks)) -> {
-      let annotations = checker.infer(module, kb, checks)
+      let annotations = checker.infer(module, kb, checks, signatures.empty())
       let module_dict =
         list.fold(annotations, dict.new(), fn(d, annotation) {
           dict.insert(

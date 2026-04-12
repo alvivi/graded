@@ -25,6 +25,7 @@ pub fn parse_named_type_param_is_not_fn_typed_test() {
     signatures.ParameterInfo(
       position: 0,
       label: Some("name"),
+      name: None,
       is_fn_typed: False,
     ),
   ])
@@ -38,8 +39,18 @@ pub fn parse_fn_typed_param_test() {
     signatures.lookup(registry, QualifiedName("gleam/list", "map"))
   params
   |> should.equal([
-    signatures.ParameterInfo(position: 0, label: None, is_fn_typed: False),
-    signatures.ParameterInfo(position: 1, label: None, is_fn_typed: True),
+    signatures.ParameterInfo(
+      position: 0,
+      label: None,
+      name: None,
+      is_fn_typed: False,
+    ),
+    signatures.ParameterInfo(
+      position: 1,
+      label: None,
+      name: None,
+      is_fn_typed: True,
+    ),
   ])
 }
 

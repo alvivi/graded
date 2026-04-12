@@ -12,7 +12,7 @@
 //// parameters on locally-defined functions without type info from the
 //// package interface (e.g. private functions not in the exported JSON).
 
-import glance.{type Function, FunctionType}
+import glance.{type Function, type Module, FunctionType}
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/json
@@ -22,8 +22,22 @@ import gleam/set.{type Set}
 import graded/internal/types.{type QualifiedName, QualifiedName}
 
 /// One parameter of a function's signature.
+///
+/// `label` is the Gleam argument label (e.g. `by` in `fn foo(by name: X)`).
+/// `name` is the in-body parameter name when we have source access via
+/// glance (`None` when the info was loaded from `gleam export
+/// package-interface` JSON, which doesn't expose in-body names).
+///
+/// Auto-inferred param bounds key off the in-body name (because it's
+/// what appears at call sites in the body), so matching at a call site
+/// tries `name` before `label`.
 pub type ParameterInfo {
-  ParameterInfo(position: Int, label: Option(String), is_fn_typed: Bool)
+  ParameterInfo(
+    position: Int,
+    label: Option(String),
+    name: Option(String),
+    is_fn_typed: Bool,
+  )
 }
 
 /// Maps qualified function names to their parameter signatures.
@@ -147,6 +161,7 @@ fn parameter_decoder_indexed() -> decode.Decoder(ParameterInfo) {
   decode.success(ParameterInfo(
     position: 0,
     label: label,
+    name: None,
     is_fn_typed: type_kind == "fn",
   ))
 }
@@ -162,6 +177,7 @@ pub fn renumber_positions(registry: SignatureRegistry) -> SignatureRegistry {
         ParameterInfo(
           position: i,
           label: param.label,
+          name: param.name,
           is_fn_typed: param.is_fn_typed,
         )
       })
@@ -178,6 +194,41 @@ pub fn from_json_string(
     Ok(registry) -> Ok(renumber_positions(registry))
     Error(e) -> Error(e)
   }
+}
+
+// ──── Glance AST → SignatureRegistry ────
+
+/// Build a SignatureRegistry from a parsed project module. Used during
+/// `run_infer` / `run` to give the checker position information for
+/// every public function in the project — which powers positional
+/// argument matching at polymorphic call sites without needing a
+/// `gleam export package-interface` export.
+pub fn from_glance_module(
+  module_path: String,
+  module: Module,
+) -> SignatureRegistry {
+  let signatures =
+    list.fold(module.functions, dict.new(), fn(acc, definition) {
+      let function = definition.definition
+      let params =
+        list.index_map(function.parameters, fn(param, i) {
+          ParameterInfo(
+            position: i,
+            label: param.label,
+            name: assignment_name(param.name),
+            is_fn_typed: case param.type_ {
+              Some(FunctionType(_, _, _)) -> True
+              _ -> False
+            },
+          )
+        })
+      dict.insert(
+        acc,
+        QualifiedName(module: module_path, function: function.name),
+        params,
+      )
+    })
+  SignatureRegistry(signatures:)
 }
 
 // ──── Glance AST detection ────

@@ -7,7 +7,7 @@ import gleam/set.{type Set}
 import gleam/string
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract.{type ImportContext}
-import graded/internal/signatures
+import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, type LocalCall, type ParamBound,
   type ResolvedCall, type Violation, type Warning, EffectAnnotation, Effects,
@@ -19,13 +19,20 @@ pub fn check(
   module: Module,
   annotations: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
 ) -> #(List(Violation), List(Warning)) {
   let context = extract.build_import_context(module)
   let function_map = build_function_map(module)
 
   let results =
     list.map(annotations, fn(annotation) {
-      check_annotation(annotation, function_map, context, knowledge_base)
+      check_annotation(
+        annotation,
+        function_map,
+        context,
+        knowledge_base,
+        registry,
+      )
     })
   let violations = list.flat_map(results, fn(r) { r.0 })
   let warnings = list.flat_map(results, fn(r) { r.1 })
@@ -38,6 +45,7 @@ pub fn infer(
   module: Module,
   knowledge_base: KnowledgeBase,
   existing_checks: List(EffectAnnotation),
+  registry: SignatureRegistry,
 ) -> List(EffectAnnotation) {
   let context = extract.build_import_context(module)
   let function_map = build_function_map(module)
@@ -77,6 +85,7 @@ pub fn infer(
         set.new(),
         param_bounds,
         fn_typed_params,
+        registry,
       )
     let effect_set =
       list.fold(all_effects, types.empty(), fn(combined, pair) {
@@ -129,6 +138,7 @@ fn check_annotation(
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
 ) -> #(List(Violation), List(Warning)) {
   case dict.get(function_map, annotation.function) {
     // Silently skip: the annotation may be stale or apply to a different
@@ -144,6 +154,7 @@ fn check_annotation(
           set.new(),
           annotation.params,
           set.new(),
+          registry,
         )
       // A call is a violation when its effect set is not a subset of the
       // declared budget — i.e. it performs effects the caller didn't allow.
@@ -216,6 +227,7 @@ fn collect_effects(
   visited: Set(String),
   param_bounds: List(ParamBound),
   fn_typed_params: Set(String),
+  registry: SignatureRegistry,
 ) -> List(#(types.ResolvedCall, EffectSet)) {
   let result = extract.extract_calls(function.body, context)
 
@@ -233,6 +245,7 @@ fn collect_effects(
           result.call_args,
           knowledge_base,
           param_bounds,
+          registry,
         )
       #(call, concrete)
     })
@@ -282,6 +295,7 @@ fn collect_effects(
                 function_map,
                 context,
                 knowledge_base,
+                registry,
               )
           }
       }
@@ -317,6 +331,7 @@ fn substitute_at_call_site(
   call_args: dict.Dict(Int, List(types.CallArgument)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
 ) -> EffectSet {
   case types.has_variables(effect_set) {
     False -> effect_set
@@ -327,7 +342,14 @@ fn substitute_at_call_site(
         Error(Nil) -> []
       }
       let bindings =
-        bind_variables(callee_bounds, args, knowledge_base, caller_param_bounds)
+        bind_variables(
+          call.name,
+          callee_bounds,
+          args,
+          knowledge_base,
+          caller_param_bounds,
+          registry,
+        )
       types.substitute(effect_set, bindings)
     }
   }
@@ -338,16 +360,20 @@ fn substitute_at_call_site(
 /// argument at its label (preferred) or position, and resolve the
 /// argument's effects.
 fn bind_variables(
+  callee_name: types.QualifiedName,
   callee_bounds: List(ParamBound),
   args: List(types.CallArgument),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
 ) -> dict.Dict(String, EffectSet) {
   list.fold(callee_bounds, dict.new(), fn(acc, bound) {
     // Find the argument matching this parameter: first by label,
-    // then by position (the bound's name corresponds to the labeled
-    // parameter; positional fallback uses the bound's index).
-    let matched = find_matching_arg(bound, callee_bounds, args)
+    // then by real parameter position (via the signature registry),
+    // and finally by the bound's index within the bounds list as a
+    // last-resort fallback for callees we have no registry entry for.
+    let matched =
+      find_matching_arg(callee_name, bound, callee_bounds, args, registry)
     case matched {
       Some(arg) -> {
         let arg_effects =
@@ -375,11 +401,14 @@ fn variables_in(effect_set: EffectSet) -> List(String) {
 /// match; falls back to positional match using the bound's index in
 /// the bound list (which mirrors the parameter order).
 fn find_matching_arg(
+  callee_name: types.QualifiedName,
   bound: ParamBound,
   all_bounds: List(ParamBound),
   args: List(types.CallArgument),
+  registry: SignatureRegistry,
 ) -> option.Option(types.CallArgument) {
-  // Label-based match first.
+  // Label-based match first — works whenever the caller used the
+  // parameter label explicitly.
   case
     list.find(args, fn(arg) {
       case arg.label {
@@ -390,22 +419,78 @@ fn find_matching_arg(
   {
     Ok(arg) -> Some(arg)
     Error(Nil) -> {
-      // Positional: bound's index in the ParamBound list. But
-      // `callee_bounds` only lists bound params (subset of all
-      // parameters), so positional fallback isn't meaningful without
-      // knowing the full parameter list. For now, match by name
-      // against unlabeled arguments at the same index.
-      case find_bound_index(bound, all_bounds, 0) {
-        Some(i) ->
+      // Positional: if the callee is in the signature registry, use
+      // the parameter's real position in the full signature. This
+      // correctly handles callers that pass the argument without a
+      // label, e.g. `validate_range(42, OutOfRange)`.
+      case position_from_registry(callee_name, bound.name, registry) {
+        Some(pos) ->
           case
-            list.find(args, fn(arg) { arg.position == i && arg.label == None })
+            list.find(args, fn(arg) { arg.position == pos && arg.label == None })
           {
             Ok(arg) -> Some(arg)
             Error(Nil) -> None
           }
-        None -> None
+        None ->
+          // Fallback for callees without a registry entry (e.g. deps
+          // with only a spec file, no package-interface JSON loaded).
+          // Use the bound's index within the bounds list — correct
+          // only when every parameter has a bound, but preserves the
+          // pre-registry behavior.
+          case find_bound_index(bound, all_bounds, 0) {
+            Some(i) ->
+              case
+                list.find(args, fn(arg) {
+                  arg.position == i && arg.label == None
+                })
+              {
+                Ok(arg) -> Some(arg)
+                Error(Nil) -> None
+              }
+            None -> None
+          }
       }
     }
+  }
+}
+
+/// Look up the real parameter position of a named parameter in the
+/// callee's signature. Returns `None` when the callee is not in the
+/// registry or the parameter name doesn't match any labeled parameter.
+fn position_from_registry(
+  callee_name: types.QualifiedName,
+  param_name: String,
+  registry: SignatureRegistry,
+) -> option.Option(Int) {
+  case signatures.lookup(registry, callee_name) {
+    Some(params) ->
+      // Try matching the in-body parameter name first (auto-inferred
+      // bounds key off the name, not the Gleam argument label). Fall
+      // back to label matching for JSON-sourced signatures where name
+      // info isn't available.
+      case
+        list.find(params, fn(p) {
+          case p.name {
+            Some(n) -> n == param_name
+            None -> False
+          }
+        })
+      {
+        Ok(p) -> Some(p.position)
+        Error(Nil) ->
+          case
+            list.find(params, fn(p) {
+              case p.label {
+                Some(l) -> l == param_name
+                None -> False
+              }
+            })
+          {
+            Ok(p) -> Some(p.position)
+            Error(Nil) -> None
+          }
+      }
+    None -> None
   }
 }
 
@@ -450,6 +535,7 @@ fn resolve_unknown_local(
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
 ) -> List(#(ResolvedCall, EffectSet)) {
   case set.contains(visited, local_call.function) {
     // Cycle detected — already analysing this function up the call stack.
@@ -486,6 +572,7 @@ fn resolve_unknown_local(
             new_visited,
             [],
             nested_fn_typed,
+            registry,
           )
         }
       }
