@@ -11,7 +11,8 @@ import graded/internal/checker
 import graded/internal/effects
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
-  ParamBound, QualifiedName, Specific, UntrackedEffectWarning, Wildcard,
+  ParamBound, Polymorphic, QualifiedName, Specific, UntrackedEffectWarning,
+  Wildcard,
 }
 import qcheck
 
@@ -717,4 +718,100 @@ pub fn check_terminates_with_cycles_test() {
       violations |> should.equal([])
     }
   }
+}
+
+// ──── Polymorphic auto-inference ────
+
+fn infer_single(source: String) -> EffectAnnotation {
+  let assert Ok(module) = glance.module(source)
+  let assert [ann] = checker.infer(module, knowledge_base(), [])
+  ann
+}
+
+pub fn infer_fn_typed_param_emits_variable_test() {
+  let source =
+    "
+pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+"
+  let ann = infer_single(source)
+  ann.function |> should.equal("apply")
+  ann.effects
+  |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
+  ann.params
+  |> should.equal([
+    ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
+  ])
+}
+
+pub fn infer_fn_typed_param_with_concrete_effect_test() {
+  let source =
+    "
+import gleam/io
+pub fn log_and_apply(f: fn(Int) -> Int, x: Int) -> Int {
+  io.println(\"start\")
+  f(x)
+}
+"
+  let ann = infer_single(source)
+  ann.effects
+  |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["f"])))
+  ann.params
+  |> should.equal([
+    ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
+  ])
+}
+
+pub fn infer_multiple_fn_typed_params_test() {
+  let source =
+    "
+pub fn apply2(f: fn(Int) -> Int, g: fn(Int) -> Int, x: Int) -> Int {
+  g(f(x))
+}
+"
+  let ann = infer_single(source)
+  ann.effects
+  |> should.equal(Polymorphic(set.new(), set.from_list(["f", "g"])))
+  ann.params
+  |> should.equal([
+    ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
+    ParamBound("g", Polymorphic(set.new(), set.from_list(["g"]))),
+  ])
+}
+
+pub fn infer_existing_check_bound_takes_priority_test() {
+  // User wrote a concrete check bound; auto-inference should not
+  // produce a variable for the same parameter.
+  let source =
+    "
+pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let existing =
+    EffectAnnotation(
+      Check,
+      "apply",
+      [ParamBound("f", Specific(set.from_list(["Stdout"])))],
+      Specific(set.from_list(["Stdout"])),
+    )
+  let assert [ann] = checker.infer(module, knowledge_base(), [existing])
+  ann.effects |> should.equal(Specific(set.from_list(["Stdout"])))
+  ann.params |> should.equal([])
+}
+
+pub fn infer_unannotated_param_remains_unknown_test() {
+  // Without a type annotation on `f`, glance can't tell it's fn-typed.
+  // Should still fall back to [Unknown] rather than auto-generating a var.
+  let source =
+    "
+pub fn apply(f, x) {
+  f(x)
+}
+"
+  let ann = infer_single(source)
+  ann.effects |> should.equal(Specific(set.from_list(["Unknown"])))
+  ann.params |> should.equal([])
 }

@@ -4,12 +4,14 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/result
 import gleam/set.{type Set}
+import gleam/string
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract.{type ImportContext}
+import graded/internal/signatures
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, type LocalCall, type ParamBound,
   type ResolvedCall, type Violation, type Warning, EffectAnnotation, Effects,
-  QualifiedName, UntrackedEffectWarning, Violation,
+  ParamBound, Polymorphic, QualifiedName, UntrackedEffectWarning, Violation,
 }
 
 /// Check a parsed module against its effect annotations.
@@ -57,6 +59,15 @@ pub fn infer(
     let param_bounds =
       dict.get(bounds_map, definition.definition.name)
       |> result.unwrap([])
+    // Auto-detect fn-typed parameters from glance type annotations so
+    // calls to them produce effect variables instead of [Unknown].
+    // Parameters that already have a user-declared bound take priority
+    // and are excluded from auto-detection.
+    let declared_bound_names =
+      param_bounds |> list.map(fn(b) { b.name }) |> set.from_list()
+    let fn_typed_params =
+      signatures.fn_typed_params_from_function(definition.definition)
+      |> set.filter(fn(name) { !set.contains(declared_bound_names, name) })
     let all_effects =
       collect_effects(
         definition.definition,
@@ -65,18 +76,44 @@ pub fn infer(
         knowledge_base,
         set.new(),
         param_bounds,
+        fn_typed_params,
       )
     let effect_set =
       list.fold(all_effects, types.empty(), fn(combined, pair) {
         types.union(combined, pair.1)
       })
+    // If the function's inferred effects reference effect variables
+    // (because it calls fn-typed params), emit ParamBound entries so
+    // the polymorphic annotation round-trips correctly.
+    let inferred_params = polymorphic_param_bounds(effect_set, fn_typed_params)
     EffectAnnotation(
       kind: Effects,
       function: definition.definition.name,
-      params: [],
+      params: inferred_params,
       effects: effect_set,
     )
   })
+}
+
+/// Build ParamBound entries for each effect variable in `effect_set`
+/// whose name is in `fn_typed_params`. The bound's effects are
+/// `Polymorphic({}, {var_name})` — the variable refers to itself,
+/// resolved later by substitution at call sites.
+fn polymorphic_param_bounds(
+  effect_set: EffectSet,
+  fn_typed_params: Set(String),
+) -> List(ParamBound) {
+  case effect_set {
+    Polymorphic(_, variables) ->
+      variables
+      |> set.to_list()
+      |> list.filter(fn(v) { set.contains(fn_typed_params, v) })
+      |> list.sort(string.compare)
+      |> list.map(fn(v) {
+        ParamBound(name: v, effects: Polymorphic(set.new(), set.from_list([v])))
+      })
+    _ -> []
+  }
 }
 
 // PRIVATE
@@ -106,6 +143,7 @@ fn check_annotation(
           knowledge_base,
           set.new(),
           annotation.params,
+          set.new(),
         )
       // A call is a violation when its effect set is not a subset of the
       // declared budget — i.e. it performs effects the caller didn't allow.
@@ -177,6 +215,7 @@ fn collect_effects(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   param_bounds: List(ParamBound),
+  fn_typed_params: Set(String),
 ) -> List(#(types.ResolvedCall, EffectSet)) {
   let result = extract.extract_calls(function.body, context)
 
@@ -186,8 +225,10 @@ fn collect_effects(
       #(call, effects.lookup_effects(knowledge_base, call.name))
     })
 
-  // Local calls: check param bounds first (higher-order function parameters),
-  // then fall back to transitive analysis of local definitions.
+  // Local calls: check param bounds first (user-declared higher-order
+  // constraints), then auto-detect fn-typed parameters and emit an
+  // effect variable, then fall back to transitive analysis of local
+  // definitions.
   let local_effects =
     list.flat_map(result.local, fn(local_call) {
       case
@@ -205,13 +246,32 @@ fn collect_effects(
           [#(synthetic_call, bound.effects)]
         }
         Error(Nil) ->
-          resolve_unknown_local(
-            local_call,
-            visited,
-            function_map,
-            context,
-            knowledge_base,
-          )
+          case set.contains(fn_typed_params, local_call.function) {
+            True -> {
+              let synthetic_call =
+                types.ResolvedCall(
+                  name: QualifiedName(
+                    module: "<param>",
+                    function: local_call.function,
+                  ),
+                  span: local_call.span,
+                )
+              [
+                #(
+                  synthetic_call,
+                  Polymorphic(set.new(), set.from_list([local_call.function])),
+                ),
+              ]
+            }
+            False ->
+              resolve_unknown_local(
+                local_call,
+                visited,
+                function_map,
+                context,
+                knowledge_base,
+              )
+          }
       }
     })
 
@@ -260,6 +320,13 @@ fn resolve_unknown_local(
         }
         Ok(local_definition) -> {
           let new_visited = set.insert(visited, local_call.function)
+          // Auto-detect fn-typed params for the local callee so its
+          // body can produce effect variables too (nested higher-order
+          // calls stay polymorphic through the transitive analysis).
+          let nested_fn_typed =
+            signatures.fn_typed_params_from_function(
+              local_definition.definition,
+            )
           collect_effects(
             local_definition.definition,
             function_map,
@@ -267,6 +334,7 @@ fn resolve_unknown_local(
             knowledge_base,
             new_visited,
             [],
+            nested_fn_typed,
           )
         }
       }
