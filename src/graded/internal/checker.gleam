@@ -1,7 +1,7 @@
 import glance.{type Definition, type Function, type Module}
 import gleam/dict
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
@@ -219,10 +219,22 @@ fn collect_effects(
 ) -> List(#(types.ResolvedCall, EffectSet)) {
   let result = extract.extract_calls(function.body, context)
 
-  // Resolved calls: qualified names looked up directly in the knowledge base.
+  // Resolved calls: qualified names looked up directly in the knowledge
+  // base. If the callee's effects are polymorphic (contain effect
+  // variables), bind the variables by matching arguments at fn-typed
+  // parameter positions and substitute for concrete effects.
   let resolved_effects =
     list.map(result.resolved, fn(call) {
-      #(call, effects.lookup_effects(knowledge_base, call.name))
+      let effect_set = effects.lookup_effects(knowledge_base, call.name)
+      let concrete =
+        substitute_at_call_site(
+          call,
+          effect_set,
+          result.call_args,
+          knowledge_base,
+          param_bounds,
+        )
+      #(call, concrete)
     })
 
   // Local calls: check param bounds first (user-declared higher-order
@@ -291,6 +303,145 @@ fn collect_effects(
     })
 
   list.flatten([resolved_effects, local_effects, field_effects])
+}
+
+/// Resolve effect variables at a call site. If the callee's effects
+/// carry variables, match arguments to the callee's param bounds and
+/// bind each variable to the concrete effect set of the corresponding
+/// argument. `caller_param_bounds` lets us propagate effect bounds
+/// from the caller's own parameters (when a fn-typed arg is itself
+/// the caller's parameter).
+fn substitute_at_call_site(
+  call: types.ResolvedCall,
+  effect_set: EffectSet,
+  call_args: dict.Dict(Int, List(types.CallArgument)),
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+) -> EffectSet {
+  case types.has_variables(effect_set) {
+    False -> effect_set
+    True -> {
+      let callee_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
+      let args = case dict.get(call_args, call.span.start) {
+        Ok(a) -> a
+        Error(Nil) -> []
+      }
+      let bindings =
+        bind_variables(callee_bounds, args, knowledge_base, caller_param_bounds)
+      types.substitute(effect_set, bindings)
+    }
+  }
+}
+
+/// Match arguments against a callee's param bounds and produce a
+/// variable-to-effect-set binding map. For each param bound, find the
+/// argument at its label (preferred) or position, and resolve the
+/// argument's effects.
+fn bind_variables(
+  callee_bounds: List(ParamBound),
+  args: List(types.CallArgument),
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+) -> dict.Dict(String, EffectSet) {
+  list.fold(callee_bounds, dict.new(), fn(acc, bound) {
+    // Find the argument matching this parameter: first by label,
+    // then by position (the bound's name corresponds to the labeled
+    // parameter; positional fallback uses the bound's index).
+    let matched = find_matching_arg(bound, callee_bounds, args)
+    case matched {
+      Some(arg) -> {
+        let arg_effects =
+          resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
+        // Extract the variable name(s) from this bound — typically the
+        // bound was `param: [var_name]`, so `var_name` == bound.name.
+        let var_names = variables_in(bound.effects)
+        list.fold(var_names, acc, fn(d, var) {
+          dict.insert(d, var, arg_effects)
+        })
+      }
+      None -> acc
+    }
+  })
+}
+
+fn variables_in(effect_set: EffectSet) -> List(String) {
+  case effect_set {
+    Polymorphic(_, variables) -> set.to_list(variables)
+    _ -> []
+  }
+}
+
+/// Find the argument that matches a given param bound. Prefers label
+/// match; falls back to positional match using the bound's index in
+/// the bound list (which mirrors the parameter order).
+fn find_matching_arg(
+  bound: ParamBound,
+  all_bounds: List(ParamBound),
+  args: List(types.CallArgument),
+) -> option.Option(types.CallArgument) {
+  // Label-based match first.
+  case
+    list.find(args, fn(arg) {
+      case arg.label {
+        Some(l) -> l == bound.name
+        None -> False
+      }
+    })
+  {
+    Ok(arg) -> Some(arg)
+    Error(Nil) -> {
+      // Positional: bound's index in the ParamBound list. But
+      // `callee_bounds` only lists bound params (subset of all
+      // parameters), so positional fallback isn't meaningful without
+      // knowing the full parameter list. For now, match by name
+      // against unlabeled arguments at the same index.
+      case find_bound_index(bound, all_bounds, 0) {
+        Some(i) ->
+          case
+            list.find(args, fn(arg) { arg.position == i && arg.label == None })
+          {
+            Ok(arg) -> Some(arg)
+            Error(Nil) -> None
+          }
+        None -> None
+      }
+    }
+  }
+}
+
+fn find_bound_index(
+  target: ParamBound,
+  bounds: List(ParamBound),
+  acc: Int,
+) -> option.Option(Int) {
+  case bounds {
+    [] -> None
+    [first, ..rest] ->
+      case first.name == target.name {
+        True -> Some(acc)
+        False -> find_bound_index(target, rest, acc + 1)
+      }
+  }
+}
+
+/// Look up the effects of an argument value. Function references →
+/// KB lookup; constructors → pure; local refs matching a caller's
+/// param bound → that bound's effects; otherwise [Unknown].
+fn resolve_argument_effects(
+  arg: types.CallArgument,
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+) -> EffectSet {
+  case arg.value {
+    types.FunctionRef(name) -> effects.lookup_effects(knowledge_base, name)
+    types.ConstructorRef -> types.empty()
+    types.LocalRef(name) ->
+      case list.find(caller_param_bounds, fn(b) { b.name == name }) {
+        Ok(bound) -> bound.effects
+        Error(Nil) -> types.from_labels(["Unknown"])
+      }
+    types.OtherExpression -> types.from_labels(["Unknown"])
+  }
 }
 
 fn resolve_unknown_local(

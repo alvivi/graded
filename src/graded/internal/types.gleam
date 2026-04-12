@@ -165,6 +165,32 @@ pub type ResolvedCall {
   ResolvedCall(name: QualifiedName, span: Span)
 }
 
+/// What kind of value is at a call-site argument position? Used for
+/// binding effect variables during call-site substitution.
+pub type ArgumentValue {
+  /// A qualified function reference, e.g. `io.println` or `types.OutOfRange`.
+  /// Effects are looked up in the knowledge base.
+  FunctionRef(name: QualifiedName)
+  /// A bare identifier — a local function, a parameter, or an unbound
+  /// local variable. Resolved against the caller's param bounds or
+  /// local function map.
+  LocalRef(name: String)
+  /// A record constructor (uppercase-initial qualified or bare name).
+  /// Pure by Gleam's semantics.
+  ConstructorRef
+  /// Anything else (inline closure, computed expression, literal, etc.).
+  /// Effects come from the enclosing walk; at the argument level we
+  /// have no concrete function to propagate.
+  OtherExpression
+}
+
+/// One argument at a call site. `position` respects pipes (the piped
+/// expression is implicitly position 0 and explicit arguments shift up).
+/// `label` is `Some(name)` for labeled arguments, `None` otherwise.
+pub type CallArgument {
+  CallArgument(position: Int, label: Option(String), value: ArgumentValue)
+}
+
 /// A local (unresolved) call — needs transitive analysis.
 pub type LocalCall {
   LocalCall(function: String, span: Span)

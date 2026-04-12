@@ -8,8 +8,9 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import graded/internal/types.{
-  type FieldCall, type LocalCall, type QualifiedName, type ResolvedCall,
-  FieldCall, LocalCall, QualifiedName, ResolvedCall,
+  type CallArgument, type FieldCall, type LocalCall, type QualifiedName,
+  type ResolvedCall, CallArgument, ConstructorRef, FieldCall, FunctionRef,
+  LocalCall, LocalRef, OtherExpression, QualifiedName, ResolvedCall,
 }
 
 /// Compute the dotted module name (as it appears in `import` statements) for
@@ -39,12 +40,17 @@ pub type ImportContext {
 }
 
 /// Result of extracting calls from a function body.
+///
+/// `call_args` maps a resolved call's span start (unique per AST node)
+/// to the call's arguments. Only populated for resolved calls — local
+/// and field calls don't need argument tracking for substitution yet.
 pub type ExtractResult {
   ExtractResult(
     resolved: List(ResolvedCall),
     local: List(LocalCall),
     field: List(FieldCall),
     references: List(ResolvedCall),
+    call_args: Dict(Int, List(CallArgument)),
   )
 }
 
@@ -123,6 +129,7 @@ fn resolve_unqualified_call(
             local: [],
             field: [],
             references: [],
+            call_args: dict.new(),
           )
         Error(Nil) ->
           ExtractResult(
@@ -130,6 +137,7 @@ fn resolve_unqualified_call(
             local: [LocalCall(name, span)],
             field: [],
             references: [],
+            call_args: dict.new(),
           )
       }
   }
@@ -166,6 +174,7 @@ fn qualified_call_lookup(
         local: [],
         field: [],
         references: [],
+        call_args: dict.new(),
       )
     Error(Nil) ->
       ExtractResult(
@@ -173,6 +182,7 @@ fn qualified_call_lookup(
         local: [],
         field: [FieldCall(alias, function_name, span)],
         references: [],
+        call_args: dict.new(),
       )
   }
 }
@@ -199,9 +209,15 @@ fn qualified_reference_lookup(
 ) -> ExtractResult {
   case dict.get(context.aliases, alias) {
     Ok(module_path) ->
-      ExtractResult(resolved: [], local: [], field: [], references: [
-        ResolvedCall(QualifiedName(module_path, function_name), span),
-      ])
+      ExtractResult(
+        resolved: [],
+        local: [],
+        field: [],
+        references: [
+          ResolvedCall(QualifiedName(module_path, function_name), span),
+        ],
+        call_args: dict.new(),
+      )
     Error(Nil) -> empty()
   }
 }
@@ -255,16 +271,20 @@ fn extract_from_expression(
       ),
       arguments:,
     ) ->
-      merge(
+      merge_with_args(
         resolve_qualified_call(alias, function_name, span, context),
         extract_from_arguments(arguments, context),
+        span,
+        classify_arguments(arguments, context, 0),
       )
 
     // Unqualified or local call: println(x) or helper(x)
     glance.Call(location: span, function: glance.Variable(_, name), arguments:) ->
-      merge(
+      merge_with_args(
         resolve_unqualified_call(name, span, context),
         extract_from_arguments(arguments, context),
+        span,
+        classify_arguments(arguments, context, 0),
       )
 
     // Other call shapes (e.g., result of another call being called)
@@ -274,12 +294,20 @@ fn extract_from_expression(
         extract_from_arguments(arguments, context),
       )
 
-    // Pipe: left |> right
-    glance.BinaryOperator(name: glance.Pipe, left:, right:, ..) ->
+    // Pipe: left |> right. The piped value becomes implicit argument 0
+    // of the right-hand call; explicit arguments shift up by one.
+    glance.BinaryOperator(name: glance.Pipe, left:, right:, ..) -> {
+      let pipe_arg =
+        CallArgument(
+          position: 0,
+          label: None,
+          value: classify_expression(left, context),
+        )
       merge(
         extract_from_expression(left, context),
-        extract_pipe_target(right, context),
+        extract_pipe_target(right, context, [pipe_arg]),
       )
+    }
 
     // Other binary operators
     glance.BinaryOperator(left:, right:, ..) ->
@@ -355,9 +383,13 @@ fn extract_from_expression(
     glance.Variable(location: span, name:) ->
       case dict.get(context.unqualified, name) {
         Ok(qualified_name) ->
-          ExtractResult(resolved: [], local: [], field: [], references: [
-            ResolvedCall(qualified_name, span),
-          ])
+          ExtractResult(
+            resolved: [],
+            local: [],
+            field: [],
+            references: [ResolvedCall(qualified_name, span)],
+            call_args: dict.new(),
+          )
         Error(Nil) -> empty()
       }
 
@@ -374,18 +406,56 @@ fn extract_from_expression(
 fn extract_pipe_target(
   expression: Expression,
   context: ImportContext,
+  pipe_args: List(CallArgument),
 ) -> ExtractResult {
   case expression {
     glance.FieldAccess(
       location: span,
       container: glance.Variable(_, alias),
       label: function_name,
-    ) -> resolve_qualified_call(alias, function_name, span, context)
+    ) -> {
+      let base = resolve_qualified_call(alias, function_name, span, context)
+      ExtractResult(
+        ..base,
+        call_args: dict.insert(base.call_args, span.start, pipe_args),
+      )
+    }
 
-    glance.Variable(location: span, name:) ->
-      resolve_unqualified_call(name, span, context)
+    glance.Variable(location: span, name:) -> {
+      let base = resolve_unqualified_call(name, span, context)
+      ExtractResult(
+        ..base,
+        call_args: dict.insert(base.call_args, span.start, pipe_args),
+      )
+    }
 
-    // Call with extra args or other expression — handle normally
+    // `left |> right(args)` — the piped value is the first argument
+    // and the explicit args shift up by one.
+    glance.Call(
+      location: span,
+      function: glance.FieldAccess(
+        container: glance.Variable(_, alias),
+        label: function_name,
+        ..,
+      ),
+      arguments:,
+    ) ->
+      merge_with_args(
+        resolve_qualified_call(alias, function_name, span, context),
+        extract_from_arguments(arguments, context),
+        span,
+        list.append(pipe_args, classify_arguments(arguments, context, 1)),
+      )
+
+    glance.Call(location: span, function: glance.Variable(_, name), arguments:) ->
+      merge_with_args(
+        resolve_unqualified_call(name, span, context),
+        extract_from_arguments(arguments, context),
+        span,
+        list.append(pipe_args, classify_arguments(arguments, context, 1)),
+      )
+
+    // Any other shape — handle normally; no arg tracking.
     _ -> extract_from_expression(expression, context)
   }
 }
@@ -396,6 +466,77 @@ fn extract_from_clause(clause: Clause, context: ImportContext) -> ExtractResult 
     Some(guard) -> merge(body_result, extract_from_expression(guard, context))
     None -> body_result
   }
+}
+
+/// Build a CallArgument list from glance fields, starting at a given
+/// position offset (used by pipes to leave position 0 for the piped value).
+fn classify_arguments(
+  arguments: List(Field(Expression)),
+  context: ImportContext,
+  position_offset: Int,
+) -> List(CallArgument) {
+  list.index_map(arguments, fn(field, i) {
+    let #(label, expression) = case field {
+      glance.LabelledField(label:, item:, ..) -> #(Some(label), Some(item))
+      glance.ShorthandField(label:, ..) -> #(Some(label), None)
+      glance.UnlabelledField(item:) -> #(None, Some(item))
+    }
+    let value = case expression {
+      None -> OtherExpression
+      Some(expr) -> classify_expression(expr, context)
+    }
+    CallArgument(position: i + position_offset, label:, value:)
+  })
+}
+
+/// Classify a single argument expression. Determines whether it's a
+/// function reference (qualified or unqualified import), a local
+/// identifier, a constructor (uppercase), or something else.
+fn classify_expression(
+  expression: Expression,
+  context: ImportContext,
+) -> types.ArgumentValue {
+  case expression {
+    glance.FieldAccess(
+      container: glance.Variable(_, alias),
+      label: function_name,
+      ..,
+    ) ->
+      case is_constructor_name(function_name) {
+        True -> ConstructorRef
+        False ->
+          case dict.get(context.aliases, alias) {
+            Ok(module_path) ->
+              FunctionRef(name: QualifiedName(module_path, function_name))
+            Error(Nil) -> OtherExpression
+          }
+      }
+    glance.Variable(_, name) ->
+      case is_constructor_name(name) {
+        True -> ConstructorRef
+        False ->
+          case dict.get(context.unqualified, name) {
+            Ok(qualified_name) -> FunctionRef(name: qualified_name)
+            Error(Nil) -> LocalRef(name:)
+          }
+      }
+    _ -> OtherExpression
+  }
+}
+
+/// Merge an extraction result with a call's sub-expression walk, and
+/// record the call's argument list keyed by span start.
+fn merge_with_args(
+  call_result: ExtractResult,
+  inner: ExtractResult,
+  span: glance.Span,
+  args: List(CallArgument),
+) -> ExtractResult {
+  let merged = merge(call_result, inner)
+  ExtractResult(
+    ..merged,
+    call_args: dict.insert(merged.call_args, span.start, args),
+  )
 }
 
 fn extract_from_arguments(
@@ -437,7 +578,13 @@ fn merge_optional(
 }
 
 fn empty() -> ExtractResult {
-  ExtractResult(resolved: [], local: [], field: [], references: [])
+  ExtractResult(
+    resolved: [],
+    local: [],
+    field: [],
+    references: [],
+    call_args: dict.new(),
+  )
 }
 
 fn merge(left: ExtractResult, right: ExtractResult) -> ExtractResult {
@@ -446,5 +593,6 @@ fn merge(left: ExtractResult, right: ExtractResult) -> ExtractResult {
     local: list.append(left.local, right.local),
     field: list.append(left.field, right.field),
     references: list.append(left.references, right.references),
+    call_args: dict.merge(left.call_args, right.call_args),
   )
 }

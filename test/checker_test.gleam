@@ -815,3 +815,103 @@ pub fn apply(f, x) {
   ann.effects |> should.equal(Specific(set.from_list(["Unknown"])))
   ann.params |> should.equal([])
 }
+
+// ──── Call-site substitution ────
+
+// KB pre-seeded with a polymorphic callee: `validate_range(to_error: [to_error]) : [to_error]`.
+fn polymorphic_kb() -> effects.KnowledgeBase {
+  let polymorphic = Polymorphic(set.new(), set.from_list(["to_error"]))
+  let effects_map =
+    dict.from_list([
+      #(QualifiedName("validation", "validate_range"), polymorphic),
+    ])
+  let params_map =
+    dict.from_list([
+      #(QualifiedName("validation", "validate_range"), [
+        ParamBound(
+          "to_error",
+          Polymorphic(set.new(), set.from_list(["to_error"])),
+        ),
+      ]),
+    ])
+  effects.empty_knowledge_base()
+  |> effects.with_inferred(effects_map)
+  |> effects.with_inferred_params(params_map)
+}
+
+pub fn substitute_constructor_at_call_site_test() {
+  // Caller passes a type constructor (pure) to the fn-typed param.
+  let source =
+    "
+import validation
+pub fn new() {
+  validation.validate_range(42, to_error: MyError)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(violations, _) =
+    checker.check(
+      module,
+      [EffectAnnotation(Check, "new", [], Specific(set.new()))],
+      polymorphic_kb(),
+    )
+  violations |> should.equal([])
+}
+
+pub fn substitute_effectful_function_ref_test() {
+  // Caller passes io.println (has [Stdout]) to the fn-typed param.
+  // The check declares budget [Stdout], so no violation.
+  let source =
+    "
+import gleam/io
+import validation
+pub fn new() {
+  validation.validate_range(42, to_error: io.println)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(violations, _) =
+    checker.check(
+      module,
+      [
+        EffectAnnotation(Check, "new", [], Specific(set.from_list(["Stdout"]))),
+      ],
+      polymorphic_kb(),
+    )
+  violations |> should.equal([])
+}
+
+pub fn substitute_effectful_function_ref_violates_pure_budget_test() {
+  // io.println → [Stdout] → violates [] budget.
+  let source =
+    "
+import gleam/io
+import validation
+pub fn new() {
+  validation.validate_range(42, to_error: io.println)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(violations, _) =
+    checker.check(
+      module,
+      [EffectAnnotation(Check, "new", [], Specific(set.new()))],
+      polymorphic_kb(),
+    )
+  list.length(violations) |> should.equal(1)
+}
+
+pub fn substitute_infer_resolves_polymorphic_call_test() {
+  // Infer a caller that uses validate_range with a constructor —
+  // the caller's effects should be [] (not [Unknown] or [to_error]).
+  let source =
+    "
+import validation
+pub fn new() {
+  validation.validate_range(42, to_error: MyError)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let assert [ann] = checker.infer(module, polymorphic_kb(), [])
+  ann.effects |> should.equal(Specific(set.new()))
+}

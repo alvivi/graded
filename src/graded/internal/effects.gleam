@@ -151,6 +151,19 @@ pub fn lookup_effects(
   }
 }
 
+/// Look up a function's parameter bounds. Used during call-site
+/// substitution to know which parameters of the callee are effect-typed
+/// so arguments at those positions can bind effect variables.
+pub fn lookup_param_bounds(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> List(types.ParamBound) {
+  case dict.get(knowledge_base.param_bounds, name) {
+    Ok(bounds) -> bounds
+    Error(Nil) -> []
+  }
+}
+
 /// Format an effect set for display: [] for empty, [_] for wildcard, [A, B] sorted.
 pub fn format_effect_set(effect_set: EffectSet) -> String {
   case effect_set {
@@ -258,6 +271,18 @@ pub fn with_inferred(
 ) -> KnowledgeBase {
   let merged = dict.merge(inferred, knowledge_base.all_effects)
   KnowledgeBase(..knowledge_base, all_effects: merged)
+}
+
+/// Merge inferred param bounds into a knowledge base. Used so that
+/// call-site substitution can resolve effect variables for functions
+/// inferred earlier in the topo-sort pass.
+/// Existing entries take priority.
+pub fn with_inferred_params(
+  knowledge_base: KnowledgeBase,
+  inferred: Dict(QualifiedName, List(types.ParamBound)),
+) -> KnowledgeBase {
+  let merged = dict.merge(inferred, knowledge_base.param_bounds)
+  KnowledgeBase(..knowledge_base, param_bounds: merged)
 }
 
 // PRIVATE
