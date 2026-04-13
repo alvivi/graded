@@ -10,7 +10,8 @@ import graded/internal/config
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, type ExternalAnnotation,
   type ParamBound, type QualifiedName, type TypeFieldAnnotation, Check, Effects,
-  FunctionExternal, ModuleExternal, QualifiedName, Specific, Wildcard,
+  FunctionExternal, ModuleExternal, Polymorphic, QualifiedName, Specific,
+  Wildcard,
 }
 import simplifile
 import tom
@@ -150,6 +151,19 @@ pub fn lookup_effects(
   }
 }
 
+/// Look up a function's parameter bounds. Used during call-site
+/// substitution to know which parameters of the callee are effect-typed
+/// so arguments at those positions can bind effect variables.
+pub fn lookup_param_bounds(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> List(types.ParamBound) {
+  case dict.get(knowledge_base.param_bounds, name) {
+    Ok(bounds) -> bounds
+    Error(Nil) -> []
+  }
+}
+
 /// Format an effect set for display: [] for empty, [_] for wildcard, [A, B] sorted.
 pub fn format_effect_set(effect_set: EffectSet) -> String {
   case effect_set {
@@ -159,6 +173,13 @@ pub fn format_effect_set(effect_set: EffectSet) -> String {
         [] -> "[]"
         sorted -> "[" <> string.join(sorted, ", ") <> "]"
       }
+    Polymorphic(labels, variables) -> {
+      let sorted_labels = set.to_list(labels) |> list.sort(string.compare)
+      let sorted_variables = set.to_list(variables) |> list.sort(string.compare)
+      "["
+      <> string.join(list.append(sorted_labels, sorted_variables), ", ")
+      <> "]"
+    }
   }
 }
 
@@ -252,6 +273,18 @@ pub fn with_inferred(
   KnowledgeBase(..knowledge_base, all_effects: merged)
 }
 
+/// Merge inferred param bounds into a knowledge base. Used so that
+/// call-site substitution can resolve effect variables for functions
+/// inferred earlier in the topo-sort pass.
+/// Existing entries take priority.
+pub fn with_inferred_params(
+  knowledge_base: KnowledgeBase,
+  inferred: Dict(QualifiedName, List(types.ParamBound)),
+) -> KnowledgeBase {
+  let merged = dict.merge(inferred, knowledge_base.param_bounds)
+  KnowledgeBase(..knowledge_base, param_bounds: merged)
+}
+
 // PRIVATE
 
 /// For each installed package, locate its spec file via the package's own
@@ -299,20 +332,18 @@ fn fold_qualified_annotation(
     Error(_) -> accumulator
     Ok(#(module, function)) -> {
       let qualified_name = QualifiedName(module:, function:)
-      case ann.kind {
-        Effects -> #(
-          dict.insert(effect_map, qualified_name, ann.effects),
-          param_map,
-        )
-        Check ->
-          case ann.params {
-            [] -> accumulator
-            params -> #(
-              effect_map,
-              dict.insert(param_map, qualified_name, params),
-            )
-          }
+      let new_effect_map = case ann.kind {
+        Effects -> dict.insert(effect_map, qualified_name, ann.effects)
+        Check -> effect_map
       }
+      // Both `effects` (auto-inferred polymorphic) and `check`
+      // (user-declared) annotations can carry param bounds; store
+      // them all so call-site substitution can resolve variables.
+      let new_param_map = case ann.params {
+        [] -> param_map
+        params -> dict.insert(param_map, qualified_name, params)
+      }
+      #(new_effect_map, new_param_map)
     }
   }
 }

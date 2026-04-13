@@ -36,6 +36,7 @@ import graded/internal/checker
 import graded/internal/config
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
+import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/topo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type GradedFile, type QualifiedName,
@@ -130,17 +131,27 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   let checks_by_module = checks_grouped_by_module(spec)
 
   use gleam_files <- result.try(find_gleam_files(directory))
+  use parsed <- result.try(parse_all_files(gleam_files))
+  let index = build_module_index(parsed, directory)
+  let dep_registry = signatures.load_from_packages_dir("build/packages")
+  let registry = signatures.merge(dep_registry, build_project_registry(index))
 
   let results =
-    list.map(gleam_files, fn(gleam_path) {
+    list.map(parsed, fn(entry) {
+      let #(gleam_path, module) = entry
       let module_path = extract.module_path_for_source(gleam_path, directory)
       let module_checks = case dict.get(checks_by_module, module_path) {
         Ok(list) -> list
         Error(_) -> []
       }
-      check_one_file(gleam_path, module_checks, knowledge_base)
+      check_one_file(
+        gleam_path,
+        module,
+        module_checks,
+        knowledge_base,
+        registry,
+      )
     })
-    |> list.filter_map(fn(result) { result })
 
   Ok(results)
 }
@@ -180,6 +191,12 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     }),
   )
 
+  // Build a signature registry covering every project module so the
+  // checker can do positional argument matching for cross-module
+  // polymorphic calls.
+  let dep_registry = signatures.load_from_packages_dir("build/packages")
+  let registry = signatures.merge(dep_registry, build_project_registry(index))
+
   use #(_kb, public_annotations) <- result.try(
     list.try_fold(sorted, #(base_kb, []), fn(state, module_path) {
       let #(kb, acc) = state
@@ -191,6 +208,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
             module_path,
             cfg.cache_dir,
             kb,
+            registry,
           ))
           // Prepend new_public so each iteration is O(|new_public|) instead
           // of O(|acc|); final order doesn't matter, merge_inferred keys by
@@ -260,6 +278,18 @@ fn parse_all_files(
   })
 }
 
+/// Build a signature registry covering every project module. Used by
+/// the checker's call-site substitution to resolve effect variables
+/// when the caller passes positional (unlabeled) arguments.
+fn build_project_registry(
+  index: Dict(String, #(String, glance.Module)),
+) -> SignatureRegistry {
+  dict.fold(index, signatures.empty(), fn(acc, module_path, entry) {
+    let #(_gleam_path, module) = entry
+    signatures.merge(acc, signatures.from_glance_module(module_path, module))
+  })
+}
+
 /// Build an index from dotted module name (`app/router`) to the parsed file.
 /// This is the set of *project* modules — every module name in this dict is
 /// a candidate dependency-graph node.
@@ -300,8 +330,9 @@ fn infer_one_module(
   module_path: String,
   cache_dir: String,
   knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
 ) -> Result(#(KnowledgeBase, List(EffectAnnotation)), GradedError) {
-  let inferred = checker.infer(module, knowledge_base, [])
+  let inferred = checker.infer(module, knowledge_base, [], registry)
 
   let cache_path = filepath.join(cache_dir, module_path <> ".graded")
 
@@ -328,7 +359,25 @@ fn infer_one_module(
         ann.effects,
       )
     })
-  let new_kb = effects.with_inferred(knowledge_base, inferred_dict)
+  // Also thread polymorphic param bounds into the KB so later
+  // modules in the topo-sort pass can bind variables at call sites
+  // that target this module's functions.
+  let params_dict =
+    list.fold(inferred, dict.new(), fn(acc, ann) {
+      case ann.params {
+        [] -> acc
+        _ ->
+          dict.insert(
+            acc,
+            QualifiedName(module: module_path, function: ann.function),
+            ann.params,
+          )
+      }
+    })
+  let new_kb =
+    knowledge_base
+    |> effects.with_inferred(inferred_dict)
+    |> effects.with_inferred_params(params_dict)
 
   let public_names = public_function_names(module)
   let public_annotations =
@@ -401,15 +450,14 @@ fn checks_grouped_by_module(
 /// annotations from the spec file that mention this file's module.
 fn check_one_file(
   gleam_path: String,
+  module: glance.Module,
   module_checks: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
-) -> Result(CheckResult, Nil) {
-  use module <- result.try(
-    read_and_parse_gleam(gleam_path) |> result.replace_error(Nil),
-  )
+  registry: SignatureRegistry,
+) -> CheckResult {
   let #(violations, warnings) =
-    checker.check(module, module_checks, knowledge_base)
-  Ok(CheckResult(file: gleam_path, violations:, warnings:))
+    checker.check(module, module_checks, knowledge_base, registry)
+  CheckResult(file: gleam_path, violations:, warnings:)
 }
 
 /// Read the project's `[tools.graded]` config and return spec/cache paths
@@ -571,7 +619,7 @@ fn infer_path_dep_module(
   case dict.get(index, module_path) {
     Error(_) -> #(acc, kb)
     Ok(#(module, checks)) -> {
-      let annotations = checker.infer(module, kb, checks)
+      let annotations = checker.infer(module, kb, checks, signatures.empty())
       let module_dict =
         list.fold(annotations, dict.new(), fn(d, annotation) {
           dict.insert(
@@ -676,7 +724,7 @@ fn print_violations(check_result: CheckResult) -> Nil {
 }
 
 fn print_violation(file: String, violation: Violation) -> Nil {
-  io.println(
+  let base =
     file
     <> ": "
     <> violation.function
@@ -687,8 +735,19 @@ fn print_violation(file: String, violation: Violation) -> Nil {
     <> " with effects "
     <> effects.format_effect_set(violation.actual)
     <> " but declared "
-    <> effects.format_effect_set(violation.declared),
-  )
+    <> effects.format_effect_set(violation.declared)
+  // When the actual set still contains effect variables, the substitution
+  // couldn't bind them (e.g. caller's own param has no declared bound).
+  // Hint at the fix instead of letting the user puzzle over `[e_xxx]`.
+  let hint = case types.has_variables(violation.actual) {
+    True ->
+      "\n  hint: actual effects contain unresolved variables; add a `check "
+      <> violation.function
+      <> "(<param>: [...])` bound, or pass a function reference / constructor"
+      <> " whose effects are known"
+    False -> ""
+  }
+  io.println(base <> hint)
 }
 
 fn print_warnings(check_result: CheckResult) -> Nil {

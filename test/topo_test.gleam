@@ -19,7 +19,7 @@ import graded
 import graded/internal/annotation
 import graded/internal/effects
 import graded/internal/types.{
-  type EffectAnnotation, type EffectSet, QualifiedName, Specific,
+  type EffectAnnotation, type EffectSet, Polymorphic, QualifiedName, Specific,
 }
 import simplifile
 
@@ -579,5 +579,120 @@ pub fn run(value: String) -> Nil {
   a_effects |> should.equal(Specific(set.from_list(["Stdout"])))
 
   let _ = simplifile.delete(dep_path)
+  Nil
+}
+
+// ----- polymorphic end-to-end -----
+
+/// Caller passes a pure type constructor to a fn-typed parameter.
+/// `validation.validate_range` should infer as polymorphic over its
+/// callback's effects, and `entity.new` should resolve to pure when
+/// the callback is a constructor.
+pub fn polymorphic_constructor_resolves_to_pure_test() {
+  let dir =
+    make_fixture("polymorphic_constructor", [
+      #("gleam.toml", "name = \"polyproj\"\nversion = \"0.0.0\"\n"),
+      #(
+        "validation.gleam",
+        "pub fn validate_range(
+  value: Int,
+  to_error: fn(Int) -> error,
+) -> List(error) {
+  case value < 0 {
+    True -> [to_error(value)]
+    False -> []
+  }
+}
+",
+      ),
+      #(
+        "entity.gleam",
+        "import validation
+
+pub type MyError {
+  OutOfRange(value: Int)
+}
+
+pub fn new(value: Int) -> List(MyError) {
+  validation.validate_range(value, to_error: OutOfRange)
+}
+",
+      ),
+    ])
+
+  let assert Ok(Nil) = graded.run_infer(dir)
+
+  // Read the spec file and verify both annotations.
+  let assert Ok(content) = simplifile.read(dir <> "/polyproj.graded")
+  let assert Ok(file) = annotation.parse_file(content)
+  let annotations = annotation.extract_annotations(file)
+
+  // `validation.validate_range` should be polymorphic over `to_error`.
+  let validate =
+    list.find(annotations, fn(ann) {
+      ann.function == "validation.validate_range"
+    })
+  let assert Ok(v) = validate
+  v.effects
+  |> should.equal(Polymorphic(set.new(), set.from_list(["to_error"])))
+
+  // `entity.new` should have resolved the variable — OutOfRange is a
+  // constructor, so the substitution yields [].
+  let new_fn = list.find(annotations, fn(ann) { ann.function == "entity.new" })
+  let assert Ok(n) = new_fn
+  n.effects |> should.equal(Specific(set.new()))
+
+  let _ = simplifile.delete(dir)
+  Nil
+}
+
+/// Same shape as `polymorphic_constructor_resolves_to_pure_test` but
+/// the caller passes the constructor positionally — no `to_error:`
+/// label. The signature registry tells the checker that parameter 1
+/// of `validate_range` is named `to_error`, so positional argument 1
+/// still binds the effect variable.
+pub fn polymorphic_constructor_resolves_positional_test() {
+  let dir =
+    make_fixture("polymorphic_positional", [
+      #("gleam.toml", "name = \"polyproj_pos\"\nversion = \"0.0.0\"\n"),
+      #(
+        "validation.gleam",
+        "pub fn validate_range(
+  value: Int,
+  to_error: fn(Int) -> error,
+) -> List(error) {
+  case value < 0 {
+    True -> [to_error(value)]
+    False -> []
+  }
+}
+",
+      ),
+      #(
+        "entity.gleam",
+        "import validation
+
+pub type MyError {
+  OutOfRange(value: Int)
+}
+
+pub fn new(value: Int) -> List(MyError) {
+  validation.validate_range(value, OutOfRange)
+}
+",
+      ),
+    ])
+
+  let assert Ok(Nil) = graded.run_infer(dir)
+
+  let assert Ok(content) = simplifile.read(dir <> "/polyproj_pos.graded")
+  let assert Ok(file) = annotation.parse_file(content)
+  let annotations = annotation.extract_annotations(file)
+
+  let new_fn = list.find(annotations, fn(ann) { ann.function == "entity.new" })
+  let assert Ok(n) = new_fn
+  n.effects |> should.equal(Specific(set.new()))
+
+  let _ = simplifile.delete(dir)
   Nil
 }
