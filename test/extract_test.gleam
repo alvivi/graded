@@ -401,6 +401,38 @@ pub fn target() {
   |> should.equal([#("v", "to_error")])
 }
 
+pub fn constructor_positional_arg_matches_label_test() {
+  let src =
+    "import gleam/io
+pub type Validator { Validator(to_error: fn(Int) -> Nil) }
+pub fn target() {
+  let v = Validator(io.println)
+  v.to_error(1)
+}"
+  let result = parse_and_extract(src)
+  result.resolved
+  |> list.map(fn(r) { r.name })
+  |> should.equal([QualifiedName("gleam/io", "println")])
+}
+
+pub fn constructor_mixed_positional_and_labelled_test() {
+  let src =
+    "import gleam/io
+pub type Handler {
+  Handler(on_click: fn() -> Nil, on_hover: fn() -> Nil)
+}
+pub fn target() {
+  let h = Handler(io.println, on_hover: fn() { Nil })
+  h.on_click()
+}"
+  let result = parse_and_extract(src)
+  // Positional fills on_click (first field); labelled on_hover is a
+  // closure so field resolution picks up only the on_click call.
+  result.resolved
+  |> list.map(fn(r) { r.name })
+  |> should.equal([QualifiedName("gleam/io", "println")])
+}
+
 pub fn qualified_constructor_field_call_resolves_test() {
   let src =
     "import gleam/io

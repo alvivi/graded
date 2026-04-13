@@ -43,10 +43,16 @@ pub fn module_path_for_source(
 }
 
 /// Import context built from a module's import list.
+///
+/// `constructors` maps a same-module custom-type constructor name to
+/// the ordered labels of its fields (`None` for unlabelled positions).
+/// Used to route positional arguments (`Validator(x)`) to the right
+/// field label when building a `BoundConstructor`.
 pub type ImportContext {
   ImportContext(
     aliases: Dict(String, String),
     unqualified: Dict(String, QualifiedName),
+    constructors: Dict(String, List(Option(String))),
   )
 }
 
@@ -103,7 +109,27 @@ pub fn build_import_context(module: Module) -> ImportContext {
       #(new_aliases, new_unqualified)
     })
 
-  ImportContext(aliases:, unqualified:)
+  let constructors = build_constructor_registry(module)
+  ImportContext(aliases:, unqualified:, constructors:)
+}
+
+/// Collect the ordered labels of every constructor declared in this
+/// module. `None` means the field is unlabelled at that position.
+fn build_constructor_registry(
+  module: Module,
+) -> Dict(String, List(Option(String))) {
+  list.fold(module.custom_types, dict.new(), fn(acc, definition) {
+    list.fold(definition.definition.variants, acc, fn(acc2, variant) {
+      let labels =
+        list.map(variant.fields, fn(field) {
+          case field {
+            glance.LabelledVariantField(label:, ..) -> Some(label)
+            glance.UnlabelledVariantField(..) -> None
+          }
+        })
+      dict.insert(acc2, variant.name, labels)
+    })
+  })
 }
 
 /// Extract all calls from a list of statements.
@@ -480,9 +506,17 @@ fn classify_constructor(
   context context: ImportContext,
   env env: Env,
 ) -> LocalBinding {
-  let #(fields, positional) =
-    list.fold(arguments, #(dict.new(), []), fn(acc, field) {
-      let #(fields_acc, positional_acc) = acc
+  // Same-module constructor labels, if known. Cross-module constructors
+  // aren't indexed yet — their unlabelled args stay in `positional`.
+  let declared_labels = case module {
+    None ->
+      dict.get(context.constructors, type_name)
+      |> result.unwrap([])
+    Some(_) -> []
+  }
+  let #(fields, positional, _) =
+    list.fold(arguments, #(dict.new(), [], declared_labels), fn(acc, field) {
+      let #(fields_acc, positional_acc, remaining_labels) = acc
       case field {
         glance.LabelledField(label:, item:, ..) -> #(
           dict.insert(
@@ -491,15 +525,25 @@ fn classify_constructor(
             classify_expression(item, context, env),
           ),
           positional_acc,
+          remaining_labels,
         )
         glance.ShorthandField(label:, ..) -> #(
           dict.insert(fields_acc, label, OtherExpression),
           positional_acc,
+          remaining_labels,
         )
-        glance.UnlabelledField(item:) -> #(fields_acc, [
-          classify_expression(item, context, env),
-          ..positional_acc
-        ])
+        glance.UnlabelledField(item:) -> {
+          let value = classify_expression(item, context, env)
+          case remaining_labels {
+            [Some(label), ..rest] -> #(
+              dict.insert(fields_acc, label, value),
+              positional_acc,
+              rest,
+            )
+            [None, ..rest] -> #(fields_acc, [value, ..positional_acc], rest)
+            [] -> #(fields_acc, [value, ..positional_acc], [])
+          }
+        }
       }
     })
   BoundConstructor(
