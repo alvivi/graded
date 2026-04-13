@@ -19,31 +19,31 @@ The milestones below address these progressively.
 
 ---
 
-## 0.6.0 — Same-function value flow
+## 0.6.0 — Same-function value flow ✅
 
-**Goal:** close the biggest real-world gap (field calls on
+**Shipped.** Closed the biggest real-world gap (field calls on
 locally-constructed records) with a targeted extractor addition. No
 change to the effect representation.
 
-**Scope:**
+**Delivered:**
 
 - Local binding environment threaded through function-body walks.
-- Three binding kinds tracked:
-  1. Function-ref alias — `let f = io.println`
-  2. Record construction — `let v = Validator(to_error: MyError)`
-  3. Transitive alias — `let g = f`
-- Field calls on locally-constructed records resolve via the env.
-- Pipe targets `x |> f` where `f` is a local binding resolve.
-- Does **not** cross function boundaries — construction in a caller
-  remains opaque.
+- Four binding classifications: `BoundFunctionRef`, `BoundAlias`,
+  `BoundConstructor`, `BoundOpaque`.
+- Env-aware resolution at `Variable` callees, pipe targets, and
+  argument classification.
+- Same-module constructor label registry so positional arguments
+  (`Validator(io.println)`) resolve the same as labelled
+  (`Validator(to_error: io.println)`).
+- Shadowing handled by env overwrite; block and fn-closure bodies
+  walk a child scope whose bindings don't leak out.
+- Pattern destructuring, `use`-bound names, record updates → tracked
+  as `BoundOpaque` (explicit follow-ups).
 
-**Unlocks:** idiomatic patterns using validator/handler/config records
-stop requiring type-level annotations for every field.
-
-**Risks:** shadowing and scope boundaries (blocks, pattern bindings).
-Mitigated with property tests over random let-chains.
-
-**Estimate:** 1–2 weeks focused.
+**Does not cross function boundaries** — construction in a caller
+remains opaque. Cross-module constructor labels are also not yet
+indexed; unlabelled cross-module constructor args fall into
+`positional`.
 
 ---
 
@@ -125,9 +125,9 @@ annotator itself is the long pole.
 
 ## Summary table
 
-| Milestone | What it closes | Blocker | Effort |
+| Milestone | What it closes | Blocker | Status |
 |---|---|---|---|
-| 0.6.0 | Field calls on same-function records | None | 1–2 wk |
-| 0.7.0 | Nested higher-order polymorphism | None | 3–4 wk |
-| 3b | Full propagation through record types | Expression-level type info | 2–3 wk + annotator |
-| Privacy | New checker on the same foundation | Dedicated design | TBD |
+| 0.6.0 | Field calls on same-function records | — | ✅ shipped |
+| 0.7.0 | Nested higher-order polymorphism | — | next |
+| 3b | Full propagation through record types | Expression-level type info | blocked |
+| Privacy | New checker on the same foundation | Dedicated design | future |
