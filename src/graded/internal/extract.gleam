@@ -8,10 +8,19 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import graded/internal/types.{
-  type CallArgument, type FieldCall, type LocalCall, type QualifiedName,
-  type ResolvedCall, CallArgument, ConstructorRef, FieldCall, FunctionRef,
-  LocalCall, LocalRef, OtherExpression, QualifiedName, ResolvedCall,
+  type CallArgument, type FieldCall, type LocalBinding, type LocalCall,
+  type QualifiedName, type ResolvedCall, BoundOpaque, CallArgument,
+  ConstructorRef, FieldCall, FunctionRef, LocalCall, LocalRef, OtherExpression,
+  QualifiedName, ResolvedCall,
 }
+
+/// Binding environment: local names introduced by `let` bindings inside
+/// a function body, mapped to their classification. Threaded through
+/// statement walks so subsequent statements see earlier bindings. Block
+/// and `fn(...)` bodies inherit the outer env but their own bindings do
+/// not leak back out.
+pub type Env =
+  Dict(String, LocalBinding)
 
 /// Compute the dotted module name (as it appears in `import` statements) for
 /// a `.gleam` file under a given source directory. For example,
@@ -96,13 +105,40 @@ pub fn build_import_context(module: Module) -> ImportContext {
 }
 
 /// Extract all calls from a list of statements.
+///
+/// Public entry: starts with an empty binding env and discards the
+/// final env. Internally `walk_statements` threads env through so
+/// assignments can be resolved by later statements.
 pub fn extract_calls(
   statements: List(Statement),
   context: ImportContext,
 ) -> ExtractResult {
-  list.fold(statements, empty(), fn(accumulated, statement) {
-    merge(accumulated, extract_from_statement(statement, context))
+  let #(result, _env) = walk_statements(statements, context, dict.new())
+  result
+}
+
+fn walk_statements(
+  statements: List(Statement),
+  context: ImportContext,
+  env: Env,
+) -> #(ExtractResult, Env) {
+  list.fold(statements, #(empty(), env), fn(state, statement) {
+    let #(accumulated, current_env) = state
+    let #(result, next_env) =
+      extract_from_statement(statement, context, current_env)
+    #(merge(accumulated, result), next_env)
   })
+}
+
+/// Walk a child scope (block or fn body): inherits the outer env but
+/// discards its own bindings on exit so they don't leak out.
+fn walk_child_scope(
+  statements: List(Statement),
+  context: ImportContext,
+  env: Env,
+) -> ExtractResult {
+  let #(result, _env) = walk_statements(statements, context, env)
+  result
 }
 
 // PRIVATE
@@ -232,31 +268,114 @@ fn last_segment(module_path: String) -> String {
 fn extract_from_statement(
   statement: Statement,
   context: ImportContext,
-) -> ExtractResult {
+  env: Env,
+) -> #(ExtractResult, Env) {
   case statement {
-    glance.Expression(expression) ->
-      extract_from_expression(expression, context)
-    glance.Assignment(value: expression, ..) ->
-      extract_from_expression(expression, context)
-    glance.Use(function: expression, ..) ->
-      extract_from_expression(expression, context)
+    glance.Expression(expression) -> #(
+      extract_from_expression(expression, context, env),
+      env,
+    )
+    glance.Assignment(pattern:, value: expression, ..) -> {
+      let result = extract_from_expression(expression, context, env)
+      let next_env = bind_assignment(pattern, expression, context, env)
+      #(result, next_env)
+    }
+    glance.Use(patterns:, function: expression, ..) -> {
+      let result = extract_from_expression(expression, context, env)
+      let next_env = bind_use_patterns(patterns, env)
+      #(result, next_env)
+    }
     glance.Assert(expression:, message:, ..) -> {
-      let expression_result = extract_from_expression(expression, context)
-      case message {
+      let expression_result = extract_from_expression(expression, context, env)
+      let combined = case message {
         Some(message_expression) ->
           merge(
             expression_result,
-            extract_from_expression(message_expression, context),
+            extract_from_expression(message_expression, context, env),
           )
         None -> expression_result
       }
+      #(combined, env)
     }
+  }
+}
+
+/// Record the names introduced by a `let` pattern. For commit 1 every
+/// bound name is stored as `BoundOpaque` — shadowing still works (later
+/// `let`s overwrite earlier bindings) but no classification happens yet.
+fn bind_assignment(
+  pattern: glance.Pattern,
+  _value: glance.Expression,
+  _context: ImportContext,
+  env: Env,
+) -> Env {
+  list.fold(pattern_bound_names(pattern), env, fn(acc, name) {
+    dict.insert(acc, name, BoundOpaque)
+  })
+}
+
+/// Names introduced by a `use` expression (`use a, b <- cont`) are
+/// opaque — the values come from the callback callsite which we can't
+/// trace syntactically.
+fn bind_use_patterns(patterns: List(glance.UsePattern), env: Env) -> Env {
+  list.fold(patterns, env, fn(acc, use_pattern) {
+    list.fold(pattern_bound_names(use_pattern.pattern), acc, fn(acc2, name) {
+      dict.insert(acc2, name, BoundOpaque)
+    })
+  })
+}
+
+/// Collect every variable name a pattern introduces into scope.
+/// Destructuring patterns contribute all nested variable names.
+fn pattern_bound_names(pattern: glance.Pattern) -> List(String) {
+  case pattern {
+    glance.PatternVariable(name:, ..) -> [name]
+    glance.PatternAssignment(pattern: inner, name:, ..) -> [
+      name,
+      ..pattern_bound_names(inner)
+    ]
+    glance.PatternTuple(elements:, ..) ->
+      list.flat_map(elements, pattern_bound_names)
+    glance.PatternList(elements:, tail:, ..) -> {
+      let head_names = list.flat_map(elements, pattern_bound_names)
+      case tail {
+        Some(tail_pattern) ->
+          list.append(head_names, pattern_bound_names(tail_pattern))
+        None -> head_names
+      }
+    }
+    glance.PatternVariant(arguments:, ..) ->
+      list.flat_map(arguments, fn(field) {
+        case field {
+          glance.LabelledField(item:, ..) -> pattern_bound_names(item)
+          glance.ShorthandField(label:, ..) -> [label]
+          glance.UnlabelledField(item:) -> pattern_bound_names(item)
+        }
+      })
+    glance.PatternConcatenate(prefix_name:, rest_name:, ..) -> {
+      let prefix_names = case prefix_name {
+        Some(glance.Named(n)) -> [n]
+        _ -> []
+      }
+      let rest_names = case rest_name {
+        glance.Named(n) -> [n]
+        glance.Discarded(_) -> []
+      }
+      list.append(prefix_names, rest_names)
+    }
+    glance.PatternBitString(segments:, ..) ->
+      list.flat_map(segments, fn(segment) { pattern_bound_names(segment.0) })
+    glance.PatternInt(..)
+    | glance.PatternFloat(..)
+    | glance.PatternString(..)
+    | glance.PatternDiscard(..) -> []
   }
 }
 
 fn extract_from_expression(
   expression: Expression,
   context: ImportContext,
+  env: Env,
 ) -> ExtractResult {
   case expression {
     // Qualified call: io.println(x), or qualified type constructor: types.NotFound(id).
@@ -273,25 +392,25 @@ fn extract_from_expression(
     ) ->
       merge_with_args(
         resolve_qualified_call(alias, function_name, span, context),
-        extract_from_arguments(arguments, context),
+        extract_from_arguments(arguments, context, env),
         span,
-        classify_arguments(arguments, context, 0),
+        classify_arguments(arguments, context, env, 0),
       )
 
     // Unqualified or local call: println(x) or helper(x)
     glance.Call(location: span, function: glance.Variable(_, name), arguments:) ->
       merge_with_args(
         resolve_unqualified_call(name, span, context),
-        extract_from_arguments(arguments, context),
+        extract_from_arguments(arguments, context, env),
         span,
-        classify_arguments(arguments, context, 0),
+        classify_arguments(arguments, context, env, 0),
       )
 
     // Other call shapes (e.g., result of another call being called)
     glance.Call(function: function_expression, arguments:, ..) ->
       merge(
-        extract_from_expression(function_expression, context),
-        extract_from_arguments(arguments, context),
+        extract_from_expression(function_expression, context, env),
+        extract_from_arguments(arguments, context, env),
       )
 
     // Pipe: left |> right. The piped value becomes implicit argument 0
@@ -301,49 +420,57 @@ fn extract_from_expression(
         CallArgument(
           position: 0,
           label: None,
-          value: classify_expression(left, context),
+          value: classify_expression(left, context, env),
         )
       merge(
-        extract_from_expression(left, context),
-        extract_pipe_target(right, context, [pipe_arg]),
+        extract_from_expression(left, context, env),
+        extract_pipe_target(right, context, env, [pipe_arg]),
       )
     }
 
     // Other binary operators
     glance.BinaryOperator(left:, right:, ..) ->
       merge(
-        extract_from_expression(left, context),
-        extract_from_expression(right, context),
+        extract_from_expression(left, context, env),
+        extract_from_expression(right, context, env),
       )
 
     // Closure: effects in body contribute to enclosing function
-    glance.Fn(body: statements, ..) -> extract_calls(statements, context)
+    glance.Fn(body: statements, ..) ->
+      walk_child_scope(statements, context, env)
 
     // Block
-    glance.Block(statements:, ..) -> extract_calls(statements, context)
+    glance.Block(statements:, ..) -> walk_child_scope(statements, context, env)
 
     // Case expression
     glance.Case(subjects:, clauses:, ..) ->
       merge(
-        fold_expressions(subjects, context),
+        fold_expressions(subjects, context, env),
         list.fold(clauses, empty(), fn(accumulated, clause) {
-          merge(accumulated, extract_from_clause(clause, context))
+          merge(accumulated, extract_from_clause(clause, context, env))
         }),
       )
 
     // Tuple
-    glance.Tuple(elements:, ..) -> fold_expressions(elements, context)
+    glance.Tuple(elements:, ..) -> fold_expressions(elements, context, env)
 
     // List
     glance.List(elements:, rest:, ..) ->
-      merge_optional(fold_expressions(elements, context), rest, context)
+      merge_optional(
+        fold_expressions(elements, context, env),
+        rest,
+        context,
+        env,
+      )
 
     // Negate
-    glance.NegateInt(value:, ..) -> extract_from_expression(value, context)
-    glance.NegateBool(value:, ..) -> extract_from_expression(value, context)
+    glance.NegateInt(value:, ..) -> extract_from_expression(value, context, env)
+    glance.NegateBool(value:, ..) ->
+      extract_from_expression(value, context, env)
 
     // Record update
-    glance.RecordUpdate(record:, ..) -> extract_from_expression(record, context)
+    glance.RecordUpdate(record:, ..) ->
+      extract_from_expression(record, context, env)
 
     // Function reference: qualified name used as a value (not called).
     glance.FieldAccess(
@@ -354,10 +481,11 @@ fn extract_from_expression(
 
     // Other field access (not a call — just traversing)
     glance.FieldAccess(container:, ..) ->
-      extract_from_expression(container, context)
+      extract_from_expression(container, context, env)
 
     // Tuple index
-    glance.TupleIndex(tuple:, ..) -> extract_from_expression(tuple, context)
+    glance.TupleIndex(tuple:, ..) ->
+      extract_from_expression(tuple, context, env)
 
     // FnCapture: function reference with partial application
     glance.FnCapture(
@@ -367,16 +495,16 @@ fn extract_from_expression(
       ..,
     ) ->
       merge(
-        extract_from_expression(function_expression, context),
+        extract_from_expression(function_expression, context, env),
         merge(
-          extract_from_arguments(arguments_before, context),
-          extract_from_arguments(arguments_after, context),
+          extract_from_arguments(arguments_before, context, env),
+          extract_from_arguments(arguments_after, context, env),
         ),
       )
 
     // Echo
     glance.Echo(expression: Some(inner), ..) ->
-      extract_from_expression(inner, context)
+      extract_from_expression(inner, context, env)
     glance.Echo(expression: None, ..) -> empty()
 
     // Unqualified function reference used as a value (not called)
@@ -406,6 +534,7 @@ fn extract_from_expression(
 fn extract_pipe_target(
   expression: Expression,
   context: ImportContext,
+  env: Env,
   pipe_args: List(CallArgument),
 ) -> ExtractResult {
   case expression {
@@ -440,28 +569,33 @@ fn extract_pipe_target(
     ) ->
       merge_with_args(
         resolve_qualified_call(alias, function_name, span, context),
-        extract_from_arguments(arguments, context),
+        extract_from_arguments(arguments, context, env),
         span,
-        list.append(pipe_args, classify_arguments(arguments, context, 1)),
+        list.append(pipe_args, classify_arguments(arguments, context, env, 1)),
       )
 
     glance.Call(location: span, function: glance.Variable(_, name), arguments:) ->
       merge_with_args(
         resolve_unqualified_call(name, span, context),
-        extract_from_arguments(arguments, context),
+        extract_from_arguments(arguments, context, env),
         span,
-        list.append(pipe_args, classify_arguments(arguments, context, 1)),
+        list.append(pipe_args, classify_arguments(arguments, context, env, 1)),
       )
 
     // Any other shape — handle normally; no arg tracking.
-    _ -> extract_from_expression(expression, context)
+    _ -> extract_from_expression(expression, context, env)
   }
 }
 
-fn extract_from_clause(clause: Clause, context: ImportContext) -> ExtractResult {
-  let body_result = extract_from_expression(clause.body, context)
+fn extract_from_clause(
+  clause: Clause,
+  context: ImportContext,
+  env: Env,
+) -> ExtractResult {
+  let body_result = extract_from_expression(clause.body, context, env)
   case clause.guard {
-    Some(guard) -> merge(body_result, extract_from_expression(guard, context))
+    Some(guard) ->
+      merge(body_result, extract_from_expression(guard, context, env))
     None -> body_result
   }
 }
@@ -471,6 +605,7 @@ fn extract_from_clause(clause: Clause, context: ImportContext) -> ExtractResult 
 fn classify_arguments(
   arguments: List(Field(Expression)),
   context: ImportContext,
+  env: Env,
   position_offset: Int,
 ) -> List(CallArgument) {
   list.index_map(arguments, fn(field, i) {
@@ -481,7 +616,7 @@ fn classify_arguments(
     }
     let value = case expression {
       None -> OtherExpression
-      Some(expr) -> classify_expression(expr, context)
+      Some(expr) -> classify_expression(expr, context, env)
     }
     CallArgument(position: i + position_offset, label:, value:)
   })
@@ -493,6 +628,7 @@ fn classify_arguments(
 fn classify_expression(
   expression: Expression,
   context: ImportContext,
+  _env: Env,
 ) -> types.ArgumentValue {
   case expression {
     glance.FieldAccess(
@@ -554,6 +690,7 @@ fn merge_with_args(
 fn extract_from_arguments(
   arguments: List(Field(Expression)),
   context: ImportContext,
+  env: Env,
 ) -> ExtractResult {
   list.fold(arguments, empty(), fn(accumulated, field) {
     let expression = case field {
@@ -562,7 +699,8 @@ fn extract_from_arguments(
       glance.UnlabelledField(item:) -> Some(item)
     }
     case expression {
-      Some(inner) -> merge(accumulated, extract_from_expression(inner, context))
+      Some(inner) ->
+        merge(accumulated, extract_from_expression(inner, context, env))
       None -> accumulated
     }
   })
@@ -571,9 +709,10 @@ fn extract_from_arguments(
 fn fold_expressions(
   expressions: List(Expression),
   context: ImportContext,
+  env: Env,
 ) -> ExtractResult {
   list.fold(expressions, empty(), fn(accumulated, expression) {
-    merge(accumulated, extract_from_expression(expression, context))
+    merge(accumulated, extract_from_expression(expression, context, env))
   })
 }
 
@@ -581,10 +720,11 @@ fn merge_optional(
   base: ExtractResult,
   optional_expression: Option(Expression),
   context: ImportContext,
+  env: Env,
 ) -> ExtractResult {
   case optional_expression {
     Some(expression) ->
-      merge(base, extract_from_expression(expression, context))
+      merge(base, extract_from_expression(expression, context, env))
     None -> base
   }
 }
