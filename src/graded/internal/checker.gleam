@@ -246,6 +246,7 @@ fn collect_effects(
           result.call_args,
           knowledge_base,
           param_bounds,
+          fn_typed_params,
           registry,
         )
       #(call, concrete)
@@ -304,6 +305,7 @@ fn collect_effects(
                 function_map,
                 knowledge_base,
                 param_bounds,
+                fn_typed_params,
                 registry,
               )
           }
@@ -344,6 +346,7 @@ fn substitute_local_call_effects(
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  caller_fn_typed_params: Set(String),
   registry: SignatureRegistry,
 ) -> List(#(types.ResolvedCall, EffectSet)) {
   let any_polymorphic = list.any(recursive, fn(p) { types.has_variables(p.1) })
@@ -377,6 +380,7 @@ fn substitute_local_call_effects(
           args,
           knowledge_base,
           caller_param_bounds,
+          caller_fn_typed_params,
           merged_registry,
         )
       list.map(recursive, fn(pair) {
@@ -403,28 +407,103 @@ fn local_polymorphic_bounds(function: Function) -> List(ParamBound) {
 /// bind each variable to the concrete effect set of the corresponding
 /// argument. `caller_param_bounds` lets us propagate effect bounds
 /// from the caller's own parameters (when a fn-typed arg is itself
-/// the caller's parameter).
+/// the caller's parameter). `caller_fn_typed_params` covers auto-detected
+/// fn-typed params that don't yet have declared bounds (inference path only).
+///
+/// When the KB has no param bounds for the callee but the registry shows
+/// it has fn-typed parameters, auto-generates polymorphic bounds from the
+/// registry. This handles stdlib higher-order functions (e.g., list.map)
+/// whose catalog entries don't record callback param bounds.
 fn substitute_at_call_site(
   call: types.ResolvedCall,
   effect_set: EffectSet,
   call_args: dict.Dict(Int, List(types.CallArgument)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  caller_fn_typed_params: Set(String),
   registry: SignatureRegistry,
 ) -> EffectSet {
-  use <- bool.guard(when: !types.has_variables(effect_set), return: effect_set)
-  let callee_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
+  let callee_kb_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
   let args = dict.get(call_args, call.span.start) |> result.unwrap([])
+  // When KB has no param bounds, check if the registry shows fn-typed params.
+  // If so, auto-generate polymorphic effects and bounds so that fn-typed args
+  // (e.g. a caller's own fn-typed param) can propagate through the call.
+  //
+  // Guard: only activate auto-bounds when at least one fn-typed arg is a
+  // tracked value (LocalRef or FunctionRef), not an inline closure
+  // (OtherExpression). Inline closure effects are already tracked by direct
+  // extraction of the closure body; using auto-bounds for them would produce
+  // [Unknown] instead of the correct [].
+  let #(effective_effects, effective_bounds) = case callee_kb_bounds {
+    [_, ..] -> #(effect_set, callee_kb_bounds)
+    [] -> {
+      let #(poly_effects, auto_bounds) =
+        auto_bounds_from_registry(call.name, effect_set, registry)
+      let has_tracked_fn_arg =
+        list.any(auto_bounds, fn(bound) {
+          case find_matching_arg(call.name, bound, args, registry) {
+            None -> False
+            Some(arg) ->
+              case arg.value {
+                types.OtherExpression -> False
+                _ -> True
+              }
+          }
+        })
+      case has_tracked_fn_arg {
+        True -> #(poly_effects, auto_bounds)
+        False -> #(effect_set, [])
+      }
+    }
+  }
+  use <- bool.guard(
+    when: !types.has_variables(effective_effects),
+    return: effective_effects,
+  )
   let bindings =
     bind_variables(
       call.name,
-      callee_bounds,
+      effective_bounds,
       args,
       knowledge_base,
       caller_param_bounds,
+      caller_fn_typed_params,
       registry,
     )
-  types.substitute(effect_set, bindings)
+  types.substitute(effective_effects, bindings)
+}
+
+/// When a callee has no KB param bounds but the registry shows fn-typed
+/// parameters, synthesise a polymorphic effect set and param bounds so that
+/// fn-typed caller arguments can propagate through the call.
+///
+/// This covers stdlib higher-order functions like `list.map`, `list.fold`,
+/// `list.filter`, etc., whose catalog entries mark the whole module as pure
+/// but don't record the callback's variable-effect relationship.
+fn auto_bounds_from_registry(
+  callee_name: types.QualifiedName,
+  existing_effects: EffectSet,
+  registry: SignatureRegistry,
+) -> #(EffectSet, List(ParamBound)) {
+  let fn_labels = signatures.fn_typed_param_names(registry, callee_name)
+  case set.is_empty(fn_labels) {
+    True -> #(existing_effects, [])
+    False -> {
+      let poly_effects = case existing_effects {
+        types.Wildcard -> types.Wildcard
+        types.Specific(labels) -> Polymorphic(labels, fn_labels)
+        Polymorphic(labels, vars) -> Polymorphic(labels, set.union(vars, fn_labels))
+      }
+      let bounds =
+        fn_labels
+        |> set.to_list()
+        |> list.sort(string.compare)
+        |> list.map(fn(label) {
+          ParamBound(label, Polymorphic(set.new(), set.from_list([label])))
+        })
+      #(poly_effects, bounds)
+    }
+  }
 }
 
 /// Match arguments against a callee's param bounds and produce a
@@ -437,6 +516,7 @@ fn bind_variables(
   args: List(types.CallArgument),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  caller_fn_typed_params: Set(String),
   registry: SignatureRegistry,
 ) -> dict.Dict(String, EffectSet) {
   list.fold(callee_bounds, dict.new(), fn(acc, bound) {
@@ -447,7 +527,12 @@ fn bind_variables(
     case matched {
       Some(arg) -> {
         let arg_effects =
-          resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
+          resolve_argument_effects(
+            arg,
+            knowledge_base,
+            caller_param_bounds,
+            caller_fn_typed_params,
+          )
         // Extract the variable name(s) from this bound — typically the
         // bound was `param: [var_name]`, so `var_name` == bound.name.
         let var_names = variables_in(bound.effects)
@@ -536,11 +621,15 @@ fn find_param_position(
 
 /// Look up the effects of an argument value. Function references →
 /// KB lookup; constructors → pure; local refs matching a caller's
-/// param bound → that bound's effects; otherwise [Unknown].
+/// param bound → that bound's effects; local refs matching an
+/// auto-detected fn-typed param → a polymorphic variable for that
+/// param (so the variable propagates through higher-order chains);
+/// otherwise [Unknown].
 fn resolve_argument_effects(
   arg: types.CallArgument,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  caller_fn_typed_params: Set(String),
 ) -> EffectSet {
   case arg.value {
     types.FunctionRef(name) -> effects.lookup_effects(knowledge_base, name)
@@ -548,7 +637,11 @@ fn resolve_argument_effects(
     types.LocalRef(name) ->
       case list.find(caller_param_bounds, fn(b) { b.name == name }) {
         Ok(bound) -> bound.effects
-        Error(Nil) -> types.from_labels(["Unknown"])
+        Error(Nil) ->
+          case set.contains(caller_fn_typed_params, name) {
+            True -> Polymorphic(set.new(), set.from_list([name]))
+            False -> types.from_labels(["Unknown"])
+          }
       }
     types.OtherExpression -> types.from_labels(["Unknown"])
   }

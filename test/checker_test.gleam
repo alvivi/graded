@@ -1012,3 +1012,129 @@ pub fn run() {
     checker.infer(module, two_callback_kb(), [], signatures.empty())
   ann.effects |> should.equal(Specific(set.from_list(["Http", "Stdout"])))
 }
+
+// ──── Two-hop effect unification ────
+// Verifies that fn-typed params forwarded to higher-order callees
+// produce polymorphic effects instead of [Unknown].
+
+/// Build a registry with gleam/list.map so auto-bounds can detect its
+/// fn-typed callback parameter. Used only in two-hop tests.
+fn list_registry() -> signatures.SignatureRegistry {
+  // Minimal glance source declaring list.map's callback as fn-typed.
+  let source =
+    "pub fn map(over l: List(a), with fun: fn(a) -> b) -> List(b) { l }"
+  let assert Ok(module) = glance.module(source)
+  signatures.from_glance_module("gleam/list", module)
+}
+
+fn infer_single_with_list(source: String) -> types.EffectAnnotation {
+  let assert Ok(module) = glance.module(source)
+  let assert [ann] =
+    checker.infer(module, knowledge_base(), [], list_registry())
+  ann
+}
+
+pub fn two_hop_infer_polymorphic_test() {
+  // apply_twice forwards its fn-typed param `f` as the callback to list.map.
+  // Before the fix this inferred [Unknown]; now it should infer [f].
+  let source =
+    "
+import gleam/list
+pub fn apply_twice(f: fn(Int) -> Int, x: Int) -> List(Int) {
+  list.map([x], f)
+}
+"
+  let ann = infer_single_with_list(source)
+  ann.function |> should.equal("apply_twice")
+  ann.effects
+  |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
+}
+
+pub fn two_hop_check_with_effectful_arg_passes_test() {
+  // When apply_twice is called with io.println the checker should see [Stdout].
+  // The declared budget of [Stdout] must be satisfied.
+  // We pre-seed apply_twice's polymorphic signature into the KB, and provide
+  // a registry entry so positional arg matching can find `f` at position 0.
+  let kb =
+    effects.empty_knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(
+          QualifiedName("mymod", "apply_twice"),
+          Polymorphic(set.new(), set.from_list(["f"])),
+        ),
+      ]),
+    )
+    |> effects.with_inferred_params(
+      dict.from_list([
+        #(QualifiedName("mymod", "apply_twice"), [
+          ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
+        ]),
+      ]),
+    )
+  // Registry so positional arg 0 maps to `f` for mymod.apply_twice.
+  let apply_twice_src =
+    "pub fn apply_twice(f: fn(Int) -> Int, x: Int) -> List(Int) { [] }"
+  let assert Ok(at_module) = glance.module(apply_twice_src)
+  let reg =
+    signatures.merge(
+      list_registry(),
+      signatures.from_glance_module("mymod", at_module),
+    )
+  let source =
+    "
+import gleam/io
+import mymod
+pub fn run(x: Int) {
+  mymod.apply_twice(io.println, x)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(violations, _) =
+    checker.check(
+      module,
+      [EffectAnnotation(Check, "run", [], Specific(set.from_list(["Stdout"])))],
+      kb,
+      reg,
+    )
+  violations |> should.equal([])
+}
+
+pub fn three_hop_local_chain_infers_polymorphic_test() {
+  // outer → middle → inner → list.map; all local functions.
+  // Each level should propagate its fn-typed param's variable upward.
+  let source =
+    "
+import gleam/list
+fn inner(h: fn(Int) -> Int, x: Int) -> List(Int) {
+  list.map([x], h)
+}
+fn middle(g: fn(Int) -> Int, x: Int) -> List(Int) {
+  inner(g, x)
+}
+pub fn outer(f: fn(Int) -> Int, x: Int) -> List(Int) {
+  middle(f, x)
+}
+"
+  let ann = infer_single_with_list(source)
+  ann.function |> should.equal("outer")
+  ann.effects
+  |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
+}
+
+pub fn two_hop_mixed_forwarder_test() {
+  // Forwards its callback AND performs a concrete effect.
+  // Inferred effects should include both the variable and Stdout.
+  let source =
+    "
+import gleam/io
+import gleam/list
+pub fn log_and_map(f: fn(Int) -> Int, x: Int) -> List(Int) {
+  io.println(\"mapping\")
+  list.map([x], f)
+}
+"
+  let ann = infer_single_with_list(source)
+  ann.effects
+  |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["f"])))
+}

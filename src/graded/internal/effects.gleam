@@ -36,10 +36,11 @@ pub type KnowledgeBase {
 pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
   let #(dep_effects, dep_params) = load_dependency_effects(packages_directory)
   let catalog_dir = find_catalog_directory()
-  let #(cat_effects, cat_pure) = load_catalog(catalog_dir, "manifest.toml")
+  let #(cat_effects, cat_pure, cat_params) =
+    load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
     all_effects: dict.merge(dep_effects, cat_effects),
-    param_bounds: dep_params,
+    param_bounds: dict.merge(dep_params, cat_params),
     type_fields: dict.new(),
     pure_modules: cat_pure,
   )
@@ -48,10 +49,11 @@ pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
 /// Build a knowledge base from the catalog only (no dependency scanning).
 pub fn empty_knowledge_base() -> KnowledgeBase {
   let catalog_dir = find_catalog_directory()
-  let #(cat_effects, cat_pure) = load_catalog(catalog_dir, "manifest.toml")
+  let #(cat_effects, cat_pure, cat_params) =
+    load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
     all_effects: cat_effects,
-    param_bounds: dict.new(),
+    param_bounds: cat_params,
     type_fields: dict.new(),
     pure_modules: cat_pure,
   )
@@ -359,7 +361,7 @@ fn find_catalog_directory() -> String {
 fn load_catalog(
   catalog_dir: String,
   manifest_path: String,
-) -> #(Dict(QualifiedName, EffectSet), Set(String)) {
+) -> #(Dict(QualifiedName, EffectSet), Set(String), Dict(QualifiedName, List(ParamBound))) {
   let installed_versions = parse_manifest_versions(manifest_path)
   let catalog_files = case simplifile.get_files(catalog_dir) {
     Ok(files) ->
@@ -369,28 +371,50 @@ fn load_catalog(
 
   let selected = resolve_catalog_files(catalog_files, installed_versions)
 
-  let all_externals =
-    list.flat_map(selected, fn(file_path) {
-      case simplifile.read(file_path) {
-        Error(_) -> []
-        Ok(content) ->
-          case annotation.parse_file(content) {
-            Error(_) -> []
-            Ok(graded_file) -> annotation.extract_externals(graded_file)
-          }
-      }
-    })
-
-  // Reuse the same external dispatch logic as with_externals
-  let empty_kb =
-    KnowledgeBase(
-      all_effects: dict.new(),
-      param_bounds: dict.new(),
-      type_fields: dict.new(),
-      pure_modules: set.new(),
+  // Process each selected catalog file: collect both `external effects` lines
+  // (for module-level pure markers and specific function effects) and
+  // `effects` lines with param bounds (for polymorphic higher-order functions).
+  let #(ext_effects, pure_mods, poly_effects, poly_params) =
+    list.fold(
+      selected,
+      #(dict.new(), set.new(), dict.new(), dict.new()),
+      fn(acc, file_path) {
+        case simplifile.read(file_path) {
+          Error(_) -> acc
+          Ok(content) ->
+            case annotation.parse_file(content) {
+              Error(_) -> acc
+              Ok(graded_file) -> {
+                let #(ext_effs, pure_ms, poly_effs, poly_ps) = acc
+                // Externals: module-level purity and specific function effects.
+                let externals = annotation.extract_externals(graded_file)
+                let ext_kb =
+                  with_externals(
+                    KnowledgeBase(
+                      all_effects: ext_effs,
+                      param_bounds: dict.new(),
+                      type_fields: dict.new(),
+                      pure_modules: pure_ms,
+                    ),
+                    externals,
+                  )
+                // Effects with param bounds: polymorphic higher-order entries.
+                let annotations = annotation.extract_annotations(graded_file)
+                let #(new_poly_effs, new_poly_ps) =
+                  list.fold(annotations, #(poly_effs, poly_ps), fn(maps, ann) {
+                    fold_qualified_annotation(maps, ann)
+                  })
+                #(ext_kb.all_effects, ext_kb.pure_modules, new_poly_effs, new_poly_ps)
+              }
+            }
+        }
+      },
     )
-  let merged = with_externals(empty_kb, all_externals)
-  #(merged.all_effects, merged.pure_modules)
+
+  // Explicit `effects` annotations in the catalog take precedence over the
+  // module-level `external effects` pure markers.
+  let all_effects = dict.merge(ext_effects, poly_effects)
+  #(all_effects, pure_mods, poly_params)
 }
 
 fn resolve_catalog_files(
