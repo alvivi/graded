@@ -407,13 +407,7 @@ fn local_polymorphic_bounds(function: Function) -> List(ParamBound) {
 /// bind each variable to the concrete effect set of the corresponding
 /// argument. `caller_param_bounds` lets us propagate effect bounds
 /// from the caller's own parameters (when a fn-typed arg is itself
-/// the caller's parameter). `caller_fn_typed_params` covers auto-detected
-/// fn-typed params that don't yet have declared bounds (inference path only).
-///
-/// When the KB has no param bounds for the callee but the registry shows
-/// it has fn-typed parameters, auto-generates polymorphic bounds from the
-/// registry. This handles stdlib higher-order functions (e.g., list.map)
-/// whose catalog entries don't record callback param bounds.
+/// the caller's parameter).
 fn substitute_at_call_site(
   call: types.ResolvedCall,
   effect_set: EffectSet,
@@ -424,37 +418,17 @@ fn substitute_at_call_site(
   registry: SignatureRegistry,
 ) -> EffectSet {
   let callee_kb_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
+  // Fast path: concrete effect set with declared bounds — nothing to
+  // substitute. With no declared bounds we still need to fall through
+  // in case the registry flags auto-injectable fn-typed params.
+  use <- bool.guard(
+    when: !types.has_variables(effect_set) && callee_kb_bounds != [],
+    return: effect_set,
+  )
   let args = dict.get(call_args, call.span.start) |> result.unwrap([])
-  // When KB has no param bounds, check if the registry shows fn-typed params.
-  // If so, auto-generate polymorphic effects and bounds so that fn-typed args
-  // (e.g. a caller's own fn-typed param) can propagate through the call.
-  //
-  // Guard: only activate auto-bounds when at least one fn-typed arg is a
-  // tracked value (LocalRef or FunctionRef), not an inline closure
-  // (OtherExpression). Inline closure effects are already tracked by direct
-  // extraction of the closure body; using auto-bounds for them would produce
-  // [Unknown] instead of the correct [].
   let #(effective_effects, effective_bounds) = case callee_kb_bounds {
     [_, ..] -> #(effect_set, callee_kb_bounds)
-    [] -> {
-      let #(poly_effects, auto_bounds) =
-        auto_bounds_from_registry(call.name, effect_set, registry)
-      let has_tracked_fn_arg =
-        list.any(auto_bounds, fn(bound) {
-          case find_matching_arg(call.name, bound, args, registry) {
-            None -> False
-            Some(arg) ->
-              case arg.value {
-                types.OtherExpression -> False
-                _ -> True
-              }
-          }
-        })
-      case has_tracked_fn_arg {
-        True -> #(poly_effects, auto_bounds)
-        False -> #(effect_set, [])
-      }
-    }
+    [] -> auto_bounds_from_registry(call.name, effect_set, args, registry)
   }
   use <- bool.guard(
     when: !types.has_variables(effective_effects),
@@ -473,36 +447,50 @@ fn substitute_at_call_site(
   types.substitute(effective_effects, bindings)
 }
 
-/// When a callee has no KB param bounds but the registry shows fn-typed
-/// parameters, synthesise a polymorphic effect set and param bounds so that
-/// fn-typed caller arguments can propagate through the call.
+/// When the KB has no bounds but the registry reports fn-typed params,
+/// synthesise polymorphic bounds so caller fn-typed args propagate through
+/// the call. Covers stdlib higher-order functions whose catalog entries
+/// mark the module pure but don't record callback param bounds.
 ///
-/// This covers stdlib higher-order functions like `list.map`, `list.fold`,
-/// `list.filter`, etc., whose catalog entries mark the whole module as pure
-/// but don't record the callback's variable-effect relationship.
+/// Returns `(existing_effects, [])` when all fn-typed args are inline
+/// closures: closure bodies are walked separately by the extractor, so
+/// binding them here would double-count and spuriously mark the call
+/// `[Unknown]`.
 fn auto_bounds_from_registry(
   callee_name: types.QualifiedName,
   existing_effects: EffectSet,
+  args: List(types.CallArgument),
   registry: SignatureRegistry,
 ) -> #(EffectSet, List(ParamBound)) {
   let fn_labels = signatures.fn_typed_param_names(registry, callee_name)
-  case set.is_empty(fn_labels) {
-    True -> #(existing_effects, [])
-    False -> {
-      let poly_effects = case existing_effects {
-        types.Wildcard -> types.Wildcard
-        types.Specific(labels) -> Polymorphic(labels, fn_labels)
-        Polymorphic(labels, vars) -> Polymorphic(labels, set.union(vars, fn_labels))
+  use <- bool.guard(
+    when: set.is_empty(fn_labels),
+    return: #(existing_effects, []),
+  )
+  let bounds =
+    fn_labels
+    |> set.to_list()
+    |> list.sort(string.compare)
+    |> list.map(fn(label) {
+      ParamBound(label, Polymorphic(set.new(), set.from_list([label])))
+    })
+  let has_tracked_fn_arg =
+    list.any(bounds, fn(bound) {
+      case find_matching_arg(callee_name, bound, args, registry) {
+        Some(arg) ->
+          case arg.value {
+            types.OtherExpression -> False
+            _ -> True
+          }
+        None -> False
       }
-      let bounds =
-        fn_labels
-        |> set.to_list()
-        |> list.sort(string.compare)
-        |> list.map(fn(label) {
-          ParamBound(label, Polymorphic(set.new(), set.from_list([label])))
-        })
-      #(poly_effects, bounds)
-    }
+    })
+  case has_tracked_fn_arg {
+    True -> #(
+      types.union(existing_effects, Polymorphic(set.new(), fn_labels)),
+      bounds,
+    )
+    False -> #(existing_effects, [])
   }
 }
 
@@ -621,10 +609,8 @@ fn find_param_position(
 
 /// Look up the effects of an argument value. Function references →
 /// KB lookup; constructors → pure; local refs matching a caller's
-/// param bound → that bound's effects; local refs matching an
-/// auto-detected fn-typed param → a polymorphic variable for that
-/// param (so the variable propagates through higher-order chains);
-/// otherwise [Unknown].
+/// param bound or an auto-detected fn-typed param → the corresponding
+/// bound or a self-referential polymorphic variable; otherwise [Unknown].
 fn resolve_argument_effects(
   arg: types.CallArgument,
   knowledge_base: KnowledgeBase,

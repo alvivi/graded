@@ -1,6 +1,5 @@
 import glance.{type Span}
 import gleam/dict.{type Dict}
-import gleam/list
 import gleam/option.{type Option}
 import gleam/set.{type Set}
 
@@ -228,65 +227,6 @@ pub type ExternalTarget {
 /// Effect declaration for an external function (e.g., `external effects gleam/httpc.send : [Http]`).
 pub type ExternalAnnotation {
   ExternalAnnotation(module: String, target: ExternalTarget, effects: EffectSet)
-}
-
-// ──── EffectTerm: intermediate representation for inference ────
-
-/// Intermediate effect representation used inside the inference pipeline.
-/// Unlike EffectSet, it can carry symbolic variable references that are
-/// resolved by the constraint solver before being flattened back to EffectSet.
-pub type EffectTerm {
-  /// A concrete set of named effects.
-  TConcrete(labels: Set(String))
-  /// A symbolic variable reference — resolved by the solver.
-  TVariable(name: String)
-  /// Union of multiple terms.
-  TUnion(terms: List(EffectTerm))
-  /// The universal set — absorbs everything.
-  TWildcard
-}
-
-/// A subset constraint produced at each call site: `lhs ⊇ rhs`.
-/// `lhs` is the qualified variable name (e.g. `"myapp/foo.apply_twice#f"`).
-/// `origin` is a short human string used in error messages.
-pub type Constraint {
-  Superset(lhs: String, rhs: EffectTerm, span: Span, origin: String)
-}
-
-/// Lift an EffectSet to an EffectTerm. Used when seeding constraint terms
-/// from knowledge-base entries.
-pub fn lift_effect_set(effect_set: EffectSet) -> EffectTerm {
-  case effect_set {
-    Wildcard -> TWildcard
-    Specific(labels) -> TConcrete(labels)
-    Polymorphic(labels, variables) -> {
-      let var_terms = set.to_list(variables) |> list.map(TVariable)
-      case var_terms {
-        [] -> TConcrete(labels)
-        _ -> TUnion([TConcrete(labels), ..var_terms])
-      }
-    }
-  }
-}
-
-/// Flatten an EffectTerm to an EffectSet by substituting variables from
-/// the solver's solution dict. Variables absent from the solution remain
-/// as free (polymorphic) variables in the output.
-pub fn flatten_term(
-  term: EffectTerm,
-  solution: Dict(String, EffectSet),
-) -> EffectSet {
-  case term {
-    TWildcard -> Wildcard
-    TConcrete(labels) -> Specific(labels)
-    TVariable(name) ->
-      case dict.get(solution, name) {
-        Ok(effect_set) -> effect_set
-        Error(Nil) -> Polymorphic(set.new(), set.from_list([name]))
-      }
-    TUnion(terms) ->
-      list.fold(terms, empty(), fn(acc, t) { union(acc, flatten_term(t, solution)) })
-  }
 }
 
 /// A single effect violation: an annotated function called something
