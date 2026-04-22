@@ -77,6 +77,8 @@ pub fn infer(
     let fn_typed_params =
       signatures.fn_typed_params_from_function(definition.definition)
       |> set.filter(fn(name) { !set.contains(declared_bound_names, name) })
+    let effective_bounds =
+      list.append(param_bounds, synthetic_fn_typed_bounds(fn_typed_params))
     let all_effects =
       collect_effects(
         definition.definition,
@@ -84,8 +86,7 @@ pub fn infer(
         context,
         knowledge_base,
         set.new(),
-        param_bounds,
-        fn_typed_params,
+        effective_bounds,
         registry,
       )
     let effect_set =
@@ -102,6 +103,18 @@ pub fn infer(
       params: inferred_params,
       effects: effect_set,
     )
+  })
+}
+
+/// Synthesise a self-referential polymorphic bound for each auto-detected
+/// fn-typed parameter. Seeding these into `param_bounds` lets the body
+/// walker treat direct calls to, and forwarded uses of, the param
+/// uniformly with user-declared bounds.
+fn synthetic_fn_typed_bounds(fn_typed_params: Set(String)) -> List(ParamBound) {
+  fn_typed_params
+  |> set.to_list()
+  |> list.map(fn(name) {
+    ParamBound(name, Polymorphic(set.new(), set.from_list([name])))
   })
 }
 
@@ -154,7 +167,6 @@ fn check_annotation(
           knowledge_base,
           set.new(),
           annotation.params,
-          set.new(),
           registry,
         )
       // A call is a violation when its effect set is not a subset of the
@@ -227,7 +239,6 @@ fn collect_effects(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   param_bounds: List(ParamBound),
-  fn_typed_params: Set(String),
   registry: SignatureRegistry,
 ) -> List(#(types.ResolvedCall, EffectSet)) {
   let result = extract.extract_calls(function.body, context)
@@ -246,16 +257,14 @@ fn collect_effects(
           result.call_args,
           knowledge_base,
           param_bounds,
-          fn_typed_params,
           registry,
         )
       #(call, concrete)
     })
 
-  // Local calls: check param bounds first (user-declared higher-order
-  // constraints), then auto-detect fn-typed parameters and emit an
-  // effect variable, then fall back to transitive analysis of local
-  // definitions.
+  // Local calls: check param bounds first (user-declared and auto-detected
+  // fn-typed bounds both live here), then fall back to transitive analysis
+  // of local definitions.
   let local_effects =
     list.flat_map(result.local, fn(local_call) {
       case
@@ -273,42 +282,22 @@ fn collect_effects(
           [#(synthetic_call, bound.effects)]
         }
         Error(Nil) ->
-          case set.contains(fn_typed_params, local_call.function) {
-            True -> {
-              let synthetic_call =
-                types.ResolvedCall(
-                  name: QualifiedName(
-                    module: "<param>",
-                    function: local_call.function,
-                  ),
-                  span: local_call.span,
-                )
-              [
-                #(
-                  synthetic_call,
-                  Polymorphic(set.new(), set.from_list([local_call.function])),
-                ),
-              ]
-            }
-            False ->
-              resolve_unknown_local(
-                local_call,
-                visited,
-                function_map,
-                context,
-                knowledge_base,
-                registry,
-              )
-              |> substitute_local_call_effects(
-                local_call,
-                result.call_args,
-                function_map,
-                knowledge_base,
-                param_bounds,
-                fn_typed_params,
-                registry,
-              )
-          }
+          resolve_unknown_local(
+            local_call,
+            visited,
+            function_map,
+            context,
+            knowledge_base,
+            registry,
+          )
+          |> substitute_local_call_effects(
+            local_call,
+            result.call_args,
+            function_map,
+            knowledge_base,
+            param_bounds,
+            registry,
+          )
       }
     })
 
@@ -346,7 +335,6 @@ fn substitute_local_call_effects(
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
-  caller_fn_typed_params: Set(String),
   registry: SignatureRegistry,
 ) -> List(#(types.ResolvedCall, EffectSet)) {
   let any_polymorphic = list.any(recursive, fn(p) { types.has_variables(p.1) })
@@ -380,7 +368,6 @@ fn substitute_local_call_effects(
           args,
           knowledge_base,
           caller_param_bounds,
-          caller_fn_typed_params,
           merged_registry,
         )
       list.map(recursive, fn(pair) {
@@ -414,7 +401,6 @@ fn substitute_at_call_site(
   call_args: dict.Dict(Int, List(types.CallArgument)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
-  caller_fn_typed_params: Set(String),
   registry: SignatureRegistry,
 ) -> EffectSet {
   let callee_kb_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
@@ -441,7 +427,6 @@ fn substitute_at_call_site(
       args,
       knowledge_base,
       caller_param_bounds,
-      caller_fn_typed_params,
       registry,
     )
   types.substitute(effective_effects, bindings)
@@ -452,10 +437,12 @@ fn substitute_at_call_site(
 /// the call. Covers stdlib higher-order functions whose catalog entries
 /// mark the module pure but don't record callback param bounds.
 ///
-/// Returns `(existing_effects, [])` when all fn-typed args are inline
-/// closures: closure bodies are walked separately by the extractor, so
-/// binding them here would double-count and spuriously mark the call
-/// `[Unknown]`.
+/// Bounds are synthesised per fn-typed param, and only when the matching
+/// argument is a tracked value (FunctionRef / LocalRef / ConstructorRef).
+/// Inline-closure args are skipped: their bodies are walked separately by
+/// the extractor, so binding them here would double-count — mixing tracked
+/// refs and closures in the same call works correctly because each param
+/// is decided independently.
 fn auto_bounds_from_registry(
   callee_name: types.QualifiedName,
   existing_effects: EffectSet,
@@ -467,30 +454,32 @@ fn auto_bounds_from_registry(
     when: set.is_empty(fn_labels),
     return: #(existing_effects, []),
   )
-  let bounds =
+  let tracked_bounds =
     fn_labels
     |> set.to_list()
     |> list.sort(string.compare)
-    |> list.map(fn(label) {
-      ParamBound(label, Polymorphic(set.new(), set.from_list([label])))
-    })
-  let has_tracked_fn_arg =
-    list.any(bounds, fn(bound) {
+    |> list.filter_map(fn(label) {
+      let bound =
+        ParamBound(label, Polymorphic(set.new(), set.from_list([label])))
       case find_matching_arg(callee_name, bound, args, registry) {
         Some(arg) ->
           case arg.value {
-            types.OtherExpression -> False
-            _ -> True
+            types.OtherExpression -> Error(Nil)
+            _ -> Ok(bound)
           }
-        None -> False
+        None -> Error(Nil)
       }
     })
-  case has_tracked_fn_arg {
-    True -> #(
-      types.union(existing_effects, Polymorphic(set.new(), fn_labels)),
-      bounds,
-    )
-    False -> #(existing_effects, [])
+  case tracked_bounds {
+    [] -> #(existing_effects, [])
+    _ -> {
+      let tracked_labels =
+        tracked_bounds |> list.map(fn(b) { b.name }) |> set.from_list
+      #(
+        types.union(existing_effects, Polymorphic(set.new(), tracked_labels)),
+        tracked_bounds,
+      )
+    }
   }
 }
 
@@ -504,7 +493,6 @@ fn bind_variables(
   args: List(types.CallArgument),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
-  caller_fn_typed_params: Set(String),
   registry: SignatureRegistry,
 ) -> dict.Dict(String, EffectSet) {
   list.fold(callee_bounds, dict.new(), fn(acc, bound) {
@@ -515,12 +503,7 @@ fn bind_variables(
     case matched {
       Some(arg) -> {
         let arg_effects =
-          resolve_argument_effects(
-            arg,
-            knowledge_base,
-            caller_param_bounds,
-            caller_fn_typed_params,
-          )
+          resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
         // Extract the variable name(s) from this bound — typically the
         // bound was `param: [var_name]`, so `var_name` == bound.name.
         let var_names = variables_in(bound.effects)
@@ -608,14 +591,13 @@ fn find_param_position(
 }
 
 /// Look up the effects of an argument value. Function references →
-/// KB lookup; constructors → pure; local refs matching a caller's
-/// param bound or an auto-detected fn-typed param → the corresponding
-/// bound or a self-referential polymorphic variable; otherwise [Unknown].
+/// KB lookup; constructors → pure; local refs matching a caller param
+/// bound (user-declared or auto-detected fn-typed) → that bound's
+/// effects; otherwise [Unknown].
 fn resolve_argument_effects(
   arg: types.CallArgument,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
-  caller_fn_typed_params: Set(String),
 ) -> EffectSet {
   case arg.value {
     types.FunctionRef(name) -> effects.lookup_effects(knowledge_base, name)
@@ -623,11 +605,7 @@ fn resolve_argument_effects(
     types.LocalRef(name) ->
       case list.find(caller_param_bounds, fn(b) { b.name == name }) {
         Ok(bound) -> bound.effects
-        Error(Nil) ->
-          case set.contains(caller_fn_typed_params, name) {
-            True -> Polymorphic(set.new(), set.from_list([name]))
-            False -> types.from_labels(["Unknown"])
-          }
+        Error(Nil) -> types.from_labels(["Unknown"])
       }
     types.OtherExpression -> types.from_labels(["Unknown"])
   }
@@ -661,12 +639,15 @@ fn resolve_unknown_local(
         }
         Ok(local_definition) -> {
           let new_visited = set.insert(visited, local_call.function)
-          // Auto-detect fn-typed params for the local callee so its
-          // body can produce effect variables too (nested higher-order
-          // calls stay polymorphic through the transitive analysis).
-          let nested_fn_typed =
-            signatures.fn_typed_params_from_function(
-              local_definition.definition,
+          // Seed synthetic bounds for the local callee's own fn-typed
+          // params so its body can produce effect variables too (nested
+          // higher-order calls stay polymorphic through the transitive
+          // analysis).
+          let nested_bounds =
+            synthetic_fn_typed_bounds(
+              signatures.fn_typed_params_from_function(
+                local_definition.definition,
+              ),
             )
           collect_effects(
             local_definition.definition,
@@ -674,8 +655,7 @@ fn resolve_unknown_local(
             context,
             knowledge_base,
             new_visited,
-            [],
-            nested_fn_typed,
+            nested_bounds,
             registry,
           )
         }

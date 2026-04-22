@@ -40,7 +40,9 @@ pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
     load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
     all_effects: dict.merge(dep_effects, cat_effects),
-    param_bounds: dict.merge(dep_params, cat_params),
+    // Deps take priority over catalog per the knowledge-base priority
+    // ordering in CLAUDE.md — dict.merge lets the second arg win.
+    param_bounds: dict.merge(cat_params, dep_params),
     type_fields: dict.new(),
     pure_modules: cat_pure,
   )
@@ -358,6 +360,15 @@ fn find_catalog_directory() -> String {
   }
 }
 
+type CatalogAcc {
+  CatalogAcc(
+    ext_effects: Dict(QualifiedName, EffectSet),
+    pure_mods: Set(String),
+    poly_effects: Dict(QualifiedName, EffectSet),
+    poly_params: Dict(QualifiedName, List(ParamBound)),
+  )
+}
+
 fn load_catalog(
   catalog_dir: String,
   manifest_path: String,
@@ -368,53 +379,51 @@ fn load_catalog(
       list.filter(files, fn(file) { string.ends_with(file, ".graded") })
     Error(_) -> []
   }
-
   let selected = resolve_catalog_files(catalog_files, installed_versions)
-
-  // Process each selected catalog file: collect both `external effects` lines
-  // (for module-level pure markers and specific function effects) and
-  // `effects` lines with param bounds (for polymorphic higher-order functions).
-  let #(ext_effects, pure_mods, poly_effects, poly_params) =
-    list.fold(
-      selected,
-      #(dict.new(), set.new(), dict.new(), dict.new()),
-      fn(acc, file_path) {
-        case simplifile.read(file_path) {
-          Error(_) -> acc
-          Ok(content) ->
-            case annotation.parse_file(content) {
-              Error(_) -> acc
-              Ok(graded_file) -> {
-                let #(ext_effs, pure_ms, poly_effs, poly_ps) = acc
-                // Externals: module-level purity and specific function effects.
-                let externals = annotation.extract_externals(graded_file)
-                let ext_kb =
-                  with_externals(
-                    KnowledgeBase(
-                      all_effects: ext_effs,
-                      param_bounds: dict.new(),
-                      type_fields: dict.new(),
-                      pure_modules: pure_ms,
-                    ),
-                    externals,
-                  )
-                // Effects with param bounds: polymorphic higher-order entries.
-                let annotations = annotation.extract_annotations(graded_file)
-                let #(new_poly_effs, new_poly_ps) =
-                  list.fold(annotations, #(poly_effs, poly_ps), fn(maps, ann) {
-                    fold_qualified_annotation(maps, ann)
-                  })
-                #(ext_kb.all_effects, ext_kb.pure_modules, new_poly_effs, new_poly_ps)
-              }
-            }
-        }
-      },
-    )
-
+  let initial = CatalogAcc(dict.new(), set.new(), dict.new(), dict.new())
+  let acc = list.fold(selected, initial, fold_catalog_file)
   // Explicit `effects` annotations in the catalog take precedence over the
   // module-level `external effects` pure markers.
-  let all_effects = dict.merge(ext_effects, poly_effects)
-  #(all_effects, pure_mods, poly_params)
+  let all_effects = dict.merge(acc.ext_effects, acc.poly_effects)
+  #(all_effects, acc.pure_mods, acc.poly_params)
+}
+
+/// Fold one catalog file into the accumulator. `external effects` lines
+/// feed module-level pure markers and specific function effects; `effects`
+/// lines with param bounds feed polymorphic higher-order entries. Files
+/// that fail to read or parse are silently skipped.
+fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
+  case simplifile.read(file_path) {
+    Error(_) -> acc
+    Ok(content) ->
+      case annotation.parse_file(content) {
+        Error(_) -> acc
+        Ok(graded_file) -> {
+          let kb =
+            with_externals(
+              KnowledgeBase(
+                all_effects: acc.ext_effects,
+                param_bounds: dict.new(),
+                type_fields: dict.new(),
+                pure_modules: acc.pure_mods,
+              ),
+              annotation.extract_externals(graded_file),
+            )
+          let #(poly_effects, poly_params) =
+            list.fold(
+              annotation.extract_annotations(graded_file),
+              #(acc.poly_effects, acc.poly_params),
+              fold_qualified_annotation,
+            )
+          CatalogAcc(
+            ext_effects: kb.all_effects,
+            pure_mods: kb.pure_modules,
+            poly_effects:,
+            poly_params:,
+          )
+        }
+      }
+  }
 }
 
 fn resolve_catalog_files(

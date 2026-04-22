@@ -1043,7 +1043,10 @@ pub fn apply_twice(f: fn(Int) -> Int, x: Int) -> List(Int) {
   |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
 }
 
-pub fn two_hop_check_with_effectful_arg_passes_test() {
+fn apply_twice_kb_and_registry() -> #(
+  effects.KnowledgeBase,
+  signatures.SignatureRegistry,
+) {
   let kb =
     effects.empty_knowledge_base()
     |> effects.with_inferred(
@@ -1069,6 +1072,11 @@ pub fn two_hop_check_with_effectful_arg_passes_test() {
       list_registry(),
       signatures.from_glance_module("mymod", at_module),
     )
+  #(kb, reg)
+}
+
+fn check_run_against_budget(budget: EffectSet) -> List(types.Violation) {
+  let #(kb, reg) = apply_twice_kb_and_registry()
   let source =
     "
 import gleam/io
@@ -1079,13 +1087,23 @@ pub fn run(x: Int) {
 "
   let assert Ok(module) = glance.module(source)
   let #(violations, _) =
-    checker.check(
-      module,
-      [EffectAnnotation(Check, "run", [], Specific(set.from_list(["Stdout"])))],
-      kb,
-      reg,
-    )
-  violations |> should.equal([])
+    checker.check(module, [EffectAnnotation(Check, "run", [], budget)], kb, reg)
+  violations
+}
+
+pub fn two_hop_check_with_effectful_arg_passes_test() {
+  check_run_against_budget(Specific(set.from_list(["Stdout"])))
+  |> should.equal([])
+}
+
+pub fn two_hop_check_with_empty_budget_violates_test() {
+  // Dual of the passes-test: with [] budget, the observed [Stdout] must
+  // surface as a violation — proves the polymorphic call site actually
+  // resolved io.println's effects rather than inferring [].
+  let violations = check_run_against_budget(Specific(set.new()))
+  let assert [v, ..] = violations
+  v.function |> should.equal("run")
+  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 pub fn three_hop_local_chain_infers_polymorphic_test() {
@@ -1121,4 +1139,65 @@ pub fn log_and_map(f: fn(Int) -> Int, x: Int) -> List(Int) {
   let ann = infer_single_with_list(source)
   ann.effects
   |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["f"])))
+}
+
+pub fn pure_forward_infers_polymorphic_test() {
+  let source =
+    "
+import gleam/list
+pub fn pure_forward(f: fn(Int) -> Int, items: List(Int)) -> List(Int) {
+  list.map(items, f)
+}
+"
+  let ann = infer_single_with_list(source)
+  ann.function |> should.equal("pure_forward")
+  ann.effects
+  |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
+}
+
+pub fn inline_closure_does_not_trigger_auto_bounds_test() {
+  // Passing an inline closure should NOT activate auto-bounds — the
+  // closure's body is walked separately by the extractor, and binding
+  // the synthesised effect variable would spuriously add [Unknown].
+  let source =
+    "
+import gleam/list
+pub fn with_closure(items: List(Int)) -> List(Int) {
+  list.map(items, fn(x) { x + 1 })
+}
+"
+  let ann = infer_single_with_list(source)
+  ann.effects |> should.equal(types.empty())
+}
+
+pub fn mixed_tracked_and_closure_args_test() {
+  // A callee with two fn-typed params, one passed a tracked ref and the
+  // other an inline closure. Only the tracked param produces an auto-bound
+  // — the closure's body is walked separately. `helpers.do_both` is seeded
+  // as pure so the result isolates the auto-bounds contribution.
+  let do_both_src =
+    "pub fn do_both(f: fn(Int) -> Int, g: fn(Int) -> Int, x: Int) -> Int { x }"
+  let assert Ok(db_module) = glance.module(do_both_src)
+  let reg =
+    signatures.merge(
+      list_registry(),
+      signatures.from_glance_module("helpers", db_module),
+    )
+  let kb =
+    effects.empty_knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([#(QualifiedName("helpers", "do_both"), types.empty())]),
+    )
+  let source =
+    "
+import helpers
+pub fn run(h: fn(Int) -> Int, x: Int) -> Int {
+  helpers.do_both(h, fn(y) { y + 1 }, x)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let assert [ann] = checker.infer(module, kb, [], reg)
+  ann.function |> should.equal("run")
+  ann.effects
+  |> should.equal(Polymorphic(set.new(), set.from_list(["h"])))
 }
