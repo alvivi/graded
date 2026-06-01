@@ -15,6 +15,7 @@
 import girard
 import girard/types.{Fn, Named}
 import glance
+import gleam/dict
 import gleam/io
 import gleam/list
 import gleam/set
@@ -44,7 +45,7 @@ pub fn run(msg: String) -> Nil {
 pub fn girard_infers_opaque_receiver_type_test() {
   let assert Ok(module) = glance.module(fixture)
   let assert Ok(annotated) =
-    girard.annotate_module(module, girard.disk_resolver())
+    girard.annotate_module(module, girard.default_options())
 
   // The whole point: somewhere in `run`, the value flowing into the field call
   // is typed `Validator` even though graded can only see `let v = make()`.
@@ -121,6 +122,37 @@ pub fn graded_is_imprecise_today_test() {
     }
     Error(_) -> should.fail()
   }
+}
+
+/// Proves the two entry points girard shipped for us:
+///   - `annotate_package` (batch, best-effort per definition), and
+///   - `ModuleResult.skipped` — the identifiable skipped-set we asked for.
+/// A module mixing a well-typed function with an ill-typed one annotates the
+/// good one and reports the bad one in `skipped` with its error, instead of
+/// failing the whole module. This is exactly the per-function fallback boundary
+/// graded routes to its syntax-level analysis.
+pub fn girard_package_best_effort_reports_skipped_test() {
+  let src =
+    "
+pub fn good(x: Int) -> Int { x + 1 }
+pub fn bad() -> Int { 1 + \"not an int\" }
+"
+  let assert Ok(module) = glance.module(src)
+  let results =
+    girard.annotate_package([#("m", module)], girard.default_options())
+  let assert Ok(result) = dict.get(results, "m")
+
+  // The good function is still typed...
+  list.key_find(result.annotated.functions, "good") |> should.be_ok()
+  // ...the bad one is reported as skipped (with its error), not silently absent,
+  // and not crashing the module.
+  list.key_find(result.skipped, "bad") |> should.be_ok()
+  list.key_find(result.annotated.functions, "bad") |> should.be_error()
+
+  let skipped_names = result.skipped |> list.map(fn(pair) { pair.0 })
+  io.println(
+    "girard: skipped = " <> string_of_labels(set.from_list(skipped_names)),
+  )
 }
 
 fn string_of_labels(labels: set.Set(String)) -> String {
