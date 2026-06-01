@@ -106,6 +106,13 @@ pub fn infer(
   })
 }
 
+/// A bound whose effects are the single variable named after the param
+/// itself — `Polymorphic({}, {name})`. The variable refers to itself,
+/// resolved later by substitution at call sites.
+fn self_referential_bound(name: String) -> ParamBound {
+  ParamBound(name, Polymorphic(set.new(), set.from_list([name])))
+}
+
 /// Synthesise a self-referential polymorphic bound for each auto-detected
 /// fn-typed parameter. Seeding these into `param_bounds` lets the body
 /// walker treat direct calls to, and forwarded uses of, the param
@@ -113,9 +120,7 @@ pub fn infer(
 fn synthetic_fn_typed_bounds(fn_typed_params: Set(String)) -> List(ParamBound) {
   fn_typed_params
   |> set.to_list()
-  |> list.map(fn(name) {
-    ParamBound(name, Polymorphic(set.new(), set.from_list([name])))
-  })
+  |> list.map(self_referential_bound)
 }
 
 /// Build ParamBound entries for each effect variable in `effect_set`
@@ -132,9 +137,7 @@ fn polymorphic_param_bounds(
       |> set.to_list()
       |> list.filter(fn(v) { set.contains(fn_typed_params, v) })
       |> list.sort(string.compare)
-      |> list.map(fn(v) {
-        ParamBound(name: v, effects: Polymorphic(set.new(), set.from_list([v])))
-      })
+      |> list.map(self_referential_bound)
     _ -> []
   }
 }
@@ -382,11 +385,7 @@ fn substitute_local_call_effects(
 /// after auto-inference: one bound per fn-typed parameter, with an
 /// effect variable matching the parameter name.
 fn local_polymorphic_bounds(function: Function) -> List(ParamBound) {
-  signatures.fn_typed_params_from_function(function)
-  |> set.to_list
-  |> list.map(fn(name) {
-    ParamBound(name, Polymorphic(set.new(), set.from_list([name])))
-  })
+  synthetic_fn_typed_bounds(signatures.fn_typed_params_from_function(function))
 }
 
 /// Resolve effect variables at a call site. If the callee's effects
@@ -459,8 +458,7 @@ fn auto_bounds_from_registry(
     |> set.to_list()
     |> list.sort(string.compare)
     |> list.filter_map(fn(label) {
-      let bound =
-        ParamBound(label, Polymorphic(set.new(), set.from_list([label])))
+      let bound = self_referential_bound(label)
       case find_matching_arg(callee_name, bound, args, registry) {
         Some(arg) ->
           case arg.value {
