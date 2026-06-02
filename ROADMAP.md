@@ -7,14 +7,15 @@ Current state: **milestone 3b is closed** — graded integrates
 [girard](https://hexdocs.pm/girard), a Hindley-Milner type annotator, to resolve
 field calls through real receiver types and to infer field effects from
 construction sites (the hand-written `type` line is no longer required in the
-common case). girard's inferred signatures also let graded detect higher-order
-parameters that carry no `fn(...)` annotation, so an unannotated
+common case). Field effects are keyed by the type's defining module so same-named
+types don't conflate, a field wired to a polymorphic function binds its variables
+at the call site, and girard's inferred signatures also let graded detect
+higher-order parameters that carry no `fn(...)` annotation, so an unannotated
 `pub fn apply(f, x) { f(x) }` infers the polymorphic `apply(f: [f]) : [f]`
 instead of `[Unknown]`. This subsumes 0.6.0's same-function value-flow hack and
 removes the "expression-level type info isn't available" gap. **0.7.0** shipped
-nested
-higher-order effect unification. **0.6.0** shipped same-function value flow.
-**0.5.0** shipped first-order effect polymorphism.
+nested higher-order effect unification. **0.6.0** shipped same-function value
+flow. **0.5.0** shipped first-order effect polymorphism.
 
 The gaps that remain are documented in [README.md](./README.md#limitations):
 
