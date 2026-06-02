@@ -218,6 +218,20 @@ pub type TypeFieldAnnotation {
   )
 }
 
+/// A type field's resolved effect in the knowledge base. `effects` is the field
+/// call's effect set. When the field was inferred from a constructor site that
+/// wired an effect-polymorphic function, `bounds` and `source` carry that
+/// function's parameter bounds and qualified name, so a field call can bind the
+/// effect variables to its arguments (the same substitution resolved calls do).
+/// Both are empty/`None` for hand-written annotations and concrete field values.
+pub type TypeFieldEffect {
+  TypeFieldEffect(
+    effects: EffectSet,
+    bounds: List(ParamBound),
+    source: Option(QualifiedName),
+  )
+}
+
 /// Whether an external targets a whole module or a specific function.
 pub type ExternalTarget {
   /// `external effects gleam/list : []` — the entire module is pure.

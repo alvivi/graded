@@ -334,7 +334,15 @@ fn collect_effects(
           span: field_call.span,
         )
       let effect_set =
-        resolve_field_call(field_call, function, knowledge_base, module_types)
+        resolve_field_call(
+          field_call,
+          function,
+          knowledge_base,
+          module_types,
+          result.call_args,
+          param_bounds,
+          registry,
+        )
       #(synthetic_call, effect_set)
     })
 
@@ -685,41 +693,78 @@ fn resolve_field_call(
   function: Function,
   knowledge_base: KnowledgeBase,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  call_args: dict.Dict(Int, List(types.CallArgument)),
+  caller_param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
 ) -> EffectSet {
-  let unknown = types.from_labels(["Unknown"])
-  // 1. girard's inferred nominal type for the receiver expression, looked up by
-  //    its span. Works for any receiver (let-bound from a call, pipe, return),
-  //    not just directly-annotated parameters. girard can only upgrade
-  //    [Unknown] here; an absent span (function girard skipped) falls through.
-  let from_types = case
+  // Resolve the receiver's nominal type: girard's inferred type for the receiver
+  // expression first (any receiver — let-bound from a call, pipe, return), then
+  // the receiver's syntactic parameter annotation as the fallback.
+  let receiver_type =
     typeinfo.receiver_type(
       module_types,
       field_call.receiver_span.start,
       field_call.receiver_span.end,
     )
-  {
+    |> option.lazy_or(fn() { syntactic_param_type(function, field_call.object) })
+  case receiver_type {
+    None -> types.from_labels(["Unknown"])
     Some(type_name) ->
-      effects.lookup_type_field(knowledge_base, type_name, field_call.label)
-    None -> effects.Unknown
-  }
-  case from_types {
-    effects.Known(effect_set) -> effect_set
-    effects.Unknown ->
-      // 2. Fall back to the receiver's syntactic parameter type annotation.
-      case syntactic_param_type(function, field_call.object) {
-        Some(type_name) ->
-          case
-            effects.lookup_type_field(
-              knowledge_base,
-              type_name,
-              field_call.label,
-            )
-          {
-            effects.Known(effect_set) -> effect_set
-            effects.Unknown -> unknown
-          }
-        None -> unknown
+      case
+        effects.lookup_type_field(knowledge_base, type_name, field_call.label)
+      {
+        Error(Nil) -> types.from_labels(["Unknown"])
+        Ok(field_effect) ->
+          resolve_field_effect(
+            field_effect,
+            field_call,
+            call_args,
+            knowledge_base,
+            caller_param_bounds,
+            registry,
+          )
       }
+  }
+}
+
+/// Resolve a type field's effect. When it carries effect variables and a
+/// polymorphic source (a function wired into the field), bind those variables to
+/// the field call's arguments — the same call-site substitution resolved calls
+/// use. Any variable left unbound collapses to `[Unknown]`.
+fn resolve_field_effect(
+  field_effect: types.TypeFieldEffect,
+  field_call: types.FieldCall,
+  call_args: dict.Dict(Int, List(types.CallArgument)),
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
+) -> EffectSet {
+  case types.has_variables(field_effect.effects), field_effect.source {
+    False, _ -> field_effect.effects
+    True, None -> concretize(field_effect.effects)
+    True, Some(source) -> {
+      let args = dict.get(call_args, field_call.span.start) |> result.unwrap([])
+      let bindings =
+        bind_variables(
+          source,
+          field_effect.bounds,
+          args,
+          knowledge_base,
+          caller_param_bounds,
+          registry,
+        )
+      concretize(types.substitute(field_effect.effects, bindings))
+    }
+  }
+}
+
+/// Replace any effect variables left after substitution with `Unknown`, so an
+/// unbound field effect never surfaces with free variables.
+fn concretize(effect_set: EffectSet) -> EffectSet {
+  case effect_set {
+    Polymorphic(labels, _variables) ->
+      types.Specific(set.insert(labels, "Unknown"))
+    _ -> effect_set
   }
 }
 

@@ -4,7 +4,7 @@ import girard/types as girard_types
 import glance
 import gleam/dict
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/set
 import gleam/string
@@ -14,8 +14,8 @@ import graded/internal/effects
 import graded/internal/signatures
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
-  ParamBound, Polymorphic, QualifiedName, Specific, UntrackedEffectWarning,
-  Wildcard,
+  ParamBound, Polymorphic, QualifiedName, Specific, TypeFieldEffect,
+  UntrackedEffectWarning, Wildcard,
 }
 import qcheck
 
@@ -1511,4 +1511,74 @@ pub fn run(h: fn(Int) -> Int, x: Int) -> Int {
   ann.function |> should.equal("run")
   ann.effects
   |> should.equal(Polymorphic(set.new(), set.from_list(["h"])))
+}
+
+// ──── Polymorphic field-call substitution (review issue #8) ────
+
+/// A KB whose `Task.go` field is wired to a polymorphic function `helper.run_it`
+/// (effect variable `action`), plus a registry giving run_it's parameter
+/// positions so the field call's arguments bind that variable.
+fn polymorphic_field_kb_and_registry() -> #(
+  effects.KnowledgeBase,
+  signatures.SignatureRegistry,
+) {
+  let action_var = Polymorphic(set.new(), set.from_list(["action"]))
+  let kb =
+    effects.with_inferred_type_fields(knowledge_base(), [
+      #(
+        #("Task", "go"),
+        TypeFieldEffect(
+          effects: action_var,
+          bounds: [ParamBound("action", action_var)],
+          source: Some(QualifiedName("helper", "run_it")),
+        ),
+      ),
+    ])
+  let run_it_src =
+    "pub fn run_it(action: fn(String) -> Nil, msg: String) -> Nil { action(msg) }"
+  let assert Ok(run_it_module) = glance.module(run_it_src)
+  let registry = signatures.from_glance_module("helper", run_it_module)
+  #(kb, registry)
+}
+
+fn check_field_call(arg: String) -> List(types.Violation) {
+  let #(kb, registry) = polymorphic_field_kb_and_registry()
+  let source = "
+import gleam/io
+pub fn main(t: Task, msg: String) {
+  t.go(" <> arg <> ", msg)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(violations, _warnings) =
+    checker.check(
+      module,
+      [EffectAnnotation(Check, "main", [], Specific(set.new()))],
+      kb,
+      registry,
+      dict.new(),
+    )
+  violations
+}
+
+pub fn field_call_binds_effectful_argument_test() {
+  // t.go(io.println, msg): the field's `action` variable binds to io.println's
+  // [Stdout], so the [] budget fails with the precise [Stdout] — not a leaked
+  // free variable.
+  let assert [v, ..] = check_field_call("io.println")
+  v.function |> should.equal("main")
+  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn field_call_binds_pure_argument_test() {
+  // A constructor argument is pure, so `action` binds to [] and the field call
+  // has no effect — no violation against the [] budget.
+  check_field_call("Wrapper") |> should.equal([])
+}
+
+pub fn field_call_unbound_argument_concretizes_to_unknown_test() {
+  // An inline closure is OtherExpression — `action` can't bind, so the leftover
+  // variable collapses to [Unknown] rather than surfacing free.
+  let assert [v, ..] = check_field_call("fn(s) { s }")
+  v.actual |> should.equal(Specific(set.from_list(["Unknown"])))
 }

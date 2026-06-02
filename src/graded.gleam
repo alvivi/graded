@@ -29,7 +29,7 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
@@ -141,7 +141,10 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     |> effects.with_externals(annotation.extract_externals(spec))
   let knowledge_base =
     kb_base
-    |> effects.with_type_fields(build_constructor_field_index(index, kb_base))
+    |> effects.with_inferred_type_fields(build_constructor_field_index(
+      index,
+      kb_base,
+    ))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
 
   let results =
@@ -200,7 +203,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     effects.with_inferred(kb_base, effects.load_spec_effects_from_file(spec))
   let base_kb =
     kb_base
-    |> effects.with_type_fields(build_constructor_field_index(
+    |> effects.with_inferred_type_fields(build_constructor_field_index(
       index,
       construction_kb,
     ))
@@ -326,7 +329,7 @@ fn build_project_registry(
 fn build_constructor_field_index(
   index: Dict(String, #(String, glance.Module)),
   knowledge_base: KnowledgeBase,
-) -> List(types.TypeFieldAnnotation) {
+) -> List(#(#(String, String), types.TypeFieldEffect)) {
   // Global constructor-name -> type-name map across the whole package, so
   // cross-module constructors key by the type girard reports for a receiver.
   let constructor_to_type =
@@ -335,56 +338,86 @@ fn build_constructor_field_index(
       dict.merge(acc, extract.build_constructor_type_map(module))
     })
 
-  // Accumulate (type_name, field) -> effects, unioning across every site.
-  let accumulated =
-    dict.fold(index, dict.new(), fn(acc, _path, entry) {
-      let #(_gleam_path, module) = entry
-      let context = extract.build_import_context(module)
-      extract.collect_constructor_bindings(module, context)
-      |> list.fold(acc, fn(inner, binding) {
-        accumulate_constructor_binding(
-          inner,
-          binding,
-          constructor_to_type,
-          knowledge_base,
-        )
-      })
+  // Accumulate (type_name, field) -> effect, unioning across every site.
+  dict.fold(index, dict.new(), fn(acc, _path, entry) {
+    let #(_gleam_path, module) = entry
+    let context = extract.build_import_context(module)
+    extract.collect_constructor_bindings(module, context)
+    |> list.fold(acc, fn(inner, binding) {
+      accumulate_constructor_binding(
+        inner,
+        binding,
+        constructor_to_type,
+        knowledge_base,
+      )
     })
-
-  dict.to_list(accumulated)
-  |> list.map(fn(pair) {
-    let #(#(type_name, field), effect_set) = pair
-    types.TypeFieldAnnotation(
-      module: None,
-      type_name:,
-      field:,
-      effects: effect_set,
-    )
   })
+  |> dict.to_list()
 }
 
 /// Fold one constructor call's field bindings into the (type, field) -> effect
 /// accumulator, unioning with any effect already recorded for that field.
 fn accumulate_constructor_binding(
-  acc: Dict(#(String, String), types.EffectSet),
+  acc: Dict(#(String, String), types.TypeFieldEffect),
   binding: #(String, Dict(String, types.ArgumentValue)),
   constructor_to_type: Dict(String, String),
   knowledge_base: KnowledgeBase,
-) -> Dict(#(String, String), types.EffectSet) {
+) -> Dict(#(String, String), types.TypeFieldEffect) {
   let #(constructor, fields) = binding
   case dict.get(constructor_to_type, constructor) {
     Error(Nil) -> acc
     Ok(type_name) ->
       dict.fold(fields, acc, fn(inner, label, value) {
-        let effect = effects.argument_value_effects(knowledge_base, value)
+        let field_effect = field_effect_of(knowledge_base, value)
         let key = #(type_name, label)
         let merged = case dict.get(inner, key) {
-          Ok(existing) -> types.union(existing, effect)
-          Error(Nil) -> effect
+          Ok(existing) -> merge_field_effect(existing, field_effect)
+          Error(Nil) -> field_effect
         }
         dict.insert(inner, key, merged)
       })
   }
+}
+
+/// The effect a constructor field's value contributes. For a function reference
+/// with effect variables, also capture the wired function's param bounds and
+/// identity, so a field call can bind those variables to its arguments.
+fn field_effect_of(
+  knowledge_base: KnowledgeBase,
+  value: types.ArgumentValue,
+) -> types.TypeFieldEffect {
+  let field_effects = effects.argument_value_effects(knowledge_base, value)
+  case value {
+    types.FunctionRef(name:) ->
+      case types.has_variables(field_effects) {
+        True ->
+          types.TypeFieldEffect(
+            field_effects,
+            effects.lookup_param_bounds(knowledge_base, name),
+            Some(name),
+          )
+        False -> types.TypeFieldEffect(field_effects, [], None)
+      }
+    _ -> types.TypeFieldEffect(field_effects, [], None)
+  }
+}
+
+/// Union two field-effect contributions for the same field across sites. Keeps
+/// the first polymorphic source — conflicting polymorphism across sites is rare,
+/// and unbound variables collapse to `[Unknown]` at the call site.
+fn merge_field_effect(
+  existing: types.TypeFieldEffect,
+  new: types.TypeFieldEffect,
+) -> types.TypeFieldEffect {
+  let #(bounds, source) = case existing.source {
+    Some(_) -> #(existing.bounds, existing.source)
+    None -> #(new.bounds, new.source)
+  }
+  types.TypeFieldEffect(
+    types.union(existing.effects, new.effects),
+    bounds,
+    source,
+  )
 }
 
 /// Run girard's whole-package type inference once over every project module
