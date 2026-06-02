@@ -568,3 +568,13 @@ pub fn roundtrip_application_multiple_args_test() {
   let assert Ok([ann]) = annotation.parse(line)
   annotation.format_annotation(ann) |> should.equal(line)
 }
+
+pub fn second_order_roundtrip_property_test() {
+  // P-SER-2: parse ∘ format is identity on normalized serializable terms.
+  use term <- qcheck.given(generators.serializable_effect_term_gen())
+  let normalized = effect_term.normalize(term)
+  let ann = EffectAnnotation(Effects, "f", [], normalized)
+  let assert Ok([parsed]) =
+    annotation.parse(annotation.format_annotation(ann))
+  parsed.effects |> should.equal(normalized)
+}

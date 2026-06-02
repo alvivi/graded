@@ -76,6 +76,52 @@ pub fn first_order_term_gen() -> qcheck.Generator(EffectTerm) {
   qcheck.map(effect_set_gen(), effect_term.from_effect_set)
 }
 
+/// A generator for *serializable* effect terms: labels, variables, operator
+/// applications `f(args)`, and unions of those. Excludes operators (`TAbs`)
+/// and the wildcard, which don't appear as inferred result effects — so
+/// `parse ∘ format` round-trips (P-SER-2).
+pub fn serializable_effect_term_gen() -> qcheck.Generator(EffectTerm) {
+  use depth <- qcheck.bind(qcheck.bounded_int(0, 2))
+  serializable_sized(depth)
+}
+
+fn serializable_atom_gen() -> qcheck.Generator(EffectTerm) {
+  qcheck.from_weighted_generators(
+    #(
+      3,
+      qcheck.map(one_of(effect_labels), fn(l) { TLabels(set.from_list([l])) }),
+    ),
+    [#(2, qcheck.map(one_of(effect_var_names), TVar))],
+  )
+}
+
+fn serializable_sized(depth: Int) -> qcheck.Generator(EffectTerm) {
+  case depth <= 0 {
+    True -> serializable_atom_gen()
+    False -> {
+      let arg_gen = serializable_atom_gen()
+      let app_gen =
+        qcheck.map3(
+          one_of(effect_var_names),
+          arg_gen,
+          qcheck.fixed_length_list_from(arg_gen, 1),
+          fn(name, first, rest) { TApp(TVar(name), TUnion([first, ..rest])) },
+        )
+      let union_gen = {
+        use n <- qcheck.bind(qcheck.bounded_int(1, 3))
+        qcheck.map(
+          qcheck.fixed_length_list_from(serializable_atom_gen(), n),
+          TUnion,
+        )
+      }
+      qcheck.from_weighted_generators(#(3, serializable_atom_gen()), [
+        #(2, app_gen),
+        #(2, union_gen),
+      ])
+    }
+  }
+}
+
 /// A generator for variable→term substitutions over the standard variable
 /// pool, so substitution domains actually overlap term variables.
 pub fn effect_binding_gen() -> qcheck.Generator(dict.Dict(String, EffectTerm)) {
