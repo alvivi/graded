@@ -65,6 +65,21 @@ pub fn opaque_receiver_violation_detected_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn inferred_field_effect_from_construction_test() {
+  // Stage C: inferred_field has NO `type Logger.emit` annotation. graded
+  // derives the field's effect from the construction `Logger(emit: io.println)`
+  // and girard types the receiver, so the [] check budget fails with the
+  // precise [Stdout] — no hand-written type annotation needed.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let inferred_result =
+    list.find(results, fn(r) { r.file == "test/fixtures/inferred_field.gleam" })
+  let assert Ok(r) = inferred_result
+  { r.violations != [] } |> should.be_true()
+  let assert [v, ..] = r.violations
+  v.function |> should.equal("run")
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn infer_then_check_round_trip_test() {
   // Infer regenerates the public-effects portion of the spec file while
   // preserving the hand-written check lines.
@@ -99,6 +114,7 @@ check pure_view.view : []
 check transitive.view : []
 check validator_flow.run : []
 check opaque_receiver.run : []
+check inferred_field.run : []
 
 // Type field annotations (the effect source for type-directed field calls).
 type opaque_receiver.Validator.to_error : [Stdout]
@@ -109,6 +125,7 @@ effects pure_view.view : []
 effects transitive.view : [Stdout]
 effects validator_flow.run : [Stdout]
 effects opaque_receiver.run : [Stdout]
+effects inferred_field.run : [Stdout]
 ",
     )
 }

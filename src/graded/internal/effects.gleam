@@ -8,10 +8,10 @@ import gleam/string
 import graded/internal/annotation
 import graded/internal/config
 import graded/internal/types.{
-  type EffectAnnotation, type EffectSet, type ExternalAnnotation,
-  type ParamBound, type QualifiedName, type TypeFieldAnnotation, Check, Effects,
-  FunctionExternal, ModuleExternal, Polymorphic, QualifiedName, Specific,
-  Wildcard,
+  type ArgumentValue, type EffectAnnotation, type EffectSet,
+  type ExternalAnnotation, type ParamBound, type QualifiedName,
+  type TypeFieldAnnotation, Check, ConstructorRef, Effects, FunctionExternal,
+  FunctionRef, ModuleExternal, Polymorphic, QualifiedName, Specific, Wildcard,
 }
 import simplifile
 import tom
@@ -152,6 +152,21 @@ pub fn lookup_effects(
   case lookup(knowledge_base, name) {
     Known(effect_set) -> effect_set
     Unknown -> types.from_labels(["Unknown"])
+  }
+}
+
+/// The effect of a value wired into a constructor field (Stage C). A function
+/// reference resolves via the knowledge base; a nested constructor is pure;
+/// anything else (a local identifier, an inline expression) is `[Unknown]`,
+/// since we can't statically resolve it here.
+pub fn argument_value_effects(
+  knowledge_base: KnowledgeBase,
+  value: ArgumentValue,
+) -> EffectSet {
+  case value {
+    FunctionRef(name:) -> lookup_effects(knowledge_base, name)
+    ConstructorRef -> types.empty()
+    _ -> types.from_labels(["Unknown"])
   }
 }
 

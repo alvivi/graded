@@ -133,6 +133,179 @@ fn build_constructor_registry(
   })
 }
 
+/// Map each same-module constructor (variant) name to the custom type it
+/// belongs to. Stage C keys inferred field effects by *type* name — matching
+/// the nominal type girard reports for a receiver — but construction sites name
+/// the *constructor*, which can differ (`pub type Shape { Circle(..) }`).
+pub fn build_constructor_type_map(module: Module) -> Dict(String, String) {
+  list.fold(module.custom_types, dict.new(), fn(acc, definition) {
+    let type_name = definition.definition.name
+    list.fold(definition.definition.variants, acc, fn(acc2, variant) {
+      dict.insert(acc2, variant.name, type_name)
+    })
+  })
+}
+
+/// Collect every constructor call in a module's function bodies, paired with
+/// its field -> argument-value map. Feeds the Stage C constructor-field effect
+/// index: a field wired to a known function (`Validator(to_error: io.println)`)
+/// lets graded infer that field's effect without a hand-written annotation.
+pub fn collect_constructor_bindings(
+  module: Module,
+  context: ImportContext,
+) -> List(#(String, Dict(String, ArgumentValue))) {
+  list.flat_map(module.functions, fn(definition) {
+    ctor_in_statements(definition.definition.body, context)
+  })
+}
+
+fn ctor_in_statements(
+  statements: List(Statement),
+  context: ImportContext,
+) -> List(#(String, Dict(String, ArgumentValue))) {
+  list.flat_map(statements, fn(statement) {
+    case statement {
+      glance.Expression(expression) -> ctor_in_expression(expression, context)
+      glance.Assignment(value:, ..) -> ctor_in_expression(value, context)
+      glance.Use(function:, ..) -> ctor_in_expression(function, context)
+      glance.Assert(expression:, message:, ..) ->
+        list.append(
+          ctor_in_expression(expression, context),
+          ctor_in_optional(message, context),
+        )
+    }
+  })
+}
+
+fn ctor_in_optional(
+  expression: Option(Expression),
+  context: ImportContext,
+) -> List(#(String, Dict(String, ArgumentValue))) {
+  case expression {
+    Some(e) -> ctor_in_expression(e, context)
+    None -> []
+  }
+}
+
+fn ctor_in_fields(
+  fields: List(Field(Expression)),
+  context: ImportContext,
+) -> List(#(String, Dict(String, ArgumentValue))) {
+  list.flat_map(fields, fn(field) {
+    case field {
+      glance.LabelledField(item:, ..) -> ctor_in_expression(item, context)
+      glance.UnlabelledField(item:) -> ctor_in_expression(item, context)
+      glance.ShorthandField(..) -> []
+    }
+  })
+}
+
+fn ctor_in_expression(
+  expression: Expression,
+  context: ImportContext,
+) -> List(#(String, Dict(String, ArgumentValue))) {
+  case expression {
+    glance.Call(function: glance.Variable(_, name), arguments:, ..) ->
+      case is_constructor_name(name) {
+        True -> [
+          ctor_binding(name, None, arguments, context),
+          ..ctor_in_fields(arguments, context)
+        ]
+        False -> ctor_in_fields(arguments, context)
+      }
+    glance.Call(
+      function: glance.FieldAccess(
+        container: glance.Variable(_, alias),
+        label: ctor,
+        ..,
+      ),
+      arguments:,
+      ..,
+    ) ->
+      case is_constructor_name(ctor) {
+        True -> {
+          let module = dict.get(context.aliases, alias) |> option.from_result
+          [
+            ctor_binding(ctor, module, arguments, context),
+            ..ctor_in_fields(arguments, context)
+          ]
+        }
+        False -> ctor_in_fields(arguments, context)
+      }
+    glance.Call(function:, arguments:, ..) ->
+      list.append(
+        ctor_in_expression(function, context),
+        ctor_in_fields(arguments, context),
+      )
+    glance.Block(statements:, ..) -> ctor_in_statements(statements, context)
+    glance.Fn(body:, ..) -> ctor_in_statements(body, context)
+    glance.Tuple(elements:, ..) ->
+      list.flat_map(elements, ctor_in_expression(_, context))
+    glance.List(elements:, rest:, ..) ->
+      list.append(
+        list.flat_map(elements, ctor_in_expression(_, context)),
+        ctor_in_optional(rest, context),
+      )
+    glance.BinaryOperator(left:, right:, ..) ->
+      list.append(
+        ctor_in_expression(left, context),
+        ctor_in_expression(right, context),
+      )
+    glance.Case(subjects:, clauses:, ..) ->
+      list.append(
+        list.flat_map(subjects, ctor_in_expression(_, context)),
+        list.flat_map(clauses, fn(clause) {
+          ctor_in_expression(clause.body, context)
+        }),
+      )
+    glance.FieldAccess(container:, ..) -> ctor_in_expression(container, context)
+    glance.TupleIndex(tuple:, ..) -> ctor_in_expression(tuple, context)
+    glance.NegateInt(value:, ..) -> ctor_in_expression(value, context)
+    glance.NegateBool(value:, ..) -> ctor_in_expression(value, context)
+    glance.Echo(expression:, message:, ..) ->
+      list.append(
+        ctor_in_optional(expression, context),
+        ctor_in_optional(message, context),
+      )
+    glance.Panic(message:, ..) -> ctor_in_optional(message, context)
+    glance.Todo(message:, ..) -> ctor_in_optional(message, context)
+    glance.FnCapture(function:, arguments_before:, arguments_after:, ..) ->
+      list.append(
+        ctor_in_expression(function, context),
+        list.append(
+          ctor_in_fields(arguments_before, context),
+          ctor_in_fields(arguments_after, context),
+        ),
+      )
+    glance.RecordUpdate(record:, fields:, ..) ->
+      list.append(
+        ctor_in_expression(record, context),
+        list.flat_map(fields, fn(field) {
+          ctor_in_optional(field.item, context)
+        }),
+      )
+    glance.BitString(segments:, ..) ->
+      list.flat_map(segments, fn(segment) {
+        ctor_in_expression(segment.0, context)
+      })
+    _ -> []
+  }
+}
+
+fn ctor_binding(
+  constructor: String,
+  module: Option(String),
+  arguments: List(Field(Expression)),
+  context: ImportContext,
+) -> #(String, Dict(String, ArgumentValue)) {
+  case
+    classify_constructor(constructor, module, arguments, context, dict.new())
+  {
+    BoundConstructor(fields:) -> #(constructor, fields)
+    _ -> #(constructor, dict.new())
+  }
+}
+
 /// Extract all calls from a list of statements.
 pub fn extract_calls(
   statements: List(Statement),

@@ -29,6 +29,7 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/option.{None}
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
@@ -123,14 +124,6 @@ pub fn main() -> Nil {
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   let cfg = read_config(directory)
   let spec = read_spec(cfg.spec_file)
-
-  let knowledge_base =
-    effects.load_knowledge_base("build/packages")
-    |> enrich_with_path_deps()
-    |> effects.with_inferred(effects.load_spec_effects_from_file(spec))
-    |> effects.with_externals(annotation.extract_externals(spec))
-    |> effects.with_type_fields(annotation.extract_type_fields(spec))
-
   let checks_by_module = checks_grouped_by_module(spec)
 
   use gleam_files <- result.try(find_gleam_files(directory))
@@ -139,6 +132,17 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   let dep_registry = signatures.load_from_packages_dir("build/packages")
   let registry = signatures.merge(dep_registry, build_project_registry(index))
   let type_info = build_type_index(index)
+
+  // Hand-written `type` lines (last) win over the inferred construction index.
+  let kb_base =
+    effects.load_knowledge_base("build/packages")
+    |> enrich_with_path_deps()
+    |> effects.with_inferred(effects.load_spec_effects_from_file(spec))
+    |> effects.with_externals(annotation.extract_externals(spec))
+  let knowledge_base =
+    kb_base
+    |> effects.with_type_fields(build_constructor_field_index(index, kb_base))
+    |> effects.with_type_fields(annotation.extract_type_fields(spec))
 
   let results =
     list.map(parsed, fn(entry) {
@@ -178,15 +182,20 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   let cfg = read_config(directory)
   let spec = read_spec(cfg.spec_file)
-  let base_kb =
-    effects.load_knowledge_base("build/packages")
-    |> enrich_with_path_deps()
-    |> effects.with_externals(annotation.extract_externals(spec))
-    |> effects.with_type_fields(annotation.extract_type_fields(spec))
 
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.try(parse_all_files(gleam_files))
   let index = build_module_index(parsed, directory)
+
+  let kb_base =
+    effects.load_knowledge_base("build/packages")
+    |> enrich_with_path_deps()
+    |> effects.with_externals(annotation.extract_externals(spec))
+  let base_kb =
+    kb_base
+    |> effects.with_type_fields(build_constructor_field_index(index, kb_base))
+    |> effects.with_type_fields(annotation.extract_type_fields(spec))
+
   let graph = build_dependency_graph(index)
   use sorted <- result.try(
     topo.sort(graph)
@@ -295,6 +304,76 @@ fn build_project_registry(
     let #(_gleam_path, module) = entry
     signatures.merge(acc, signatures.from_glance_module(module_path, module))
   })
+}
+
+/// Stage C: derive `type Foo.field : [...]` annotations from constructor call
+/// sites across the package. `Validator(to_error: io.println)` anywhere makes
+/// `Validator.to_error` carry io.println's effects (unioned across all sites),
+/// so a field call resolves without a hand-written annotation. Resolved via
+/// girard's receiver typing at the use site; hand-written `type` lines still
+/// win, since they are merged over these.
+fn build_constructor_field_index(
+  index: Dict(String, #(String, glance.Module)),
+  knowledge_base: KnowledgeBase,
+) -> List(types.TypeFieldAnnotation) {
+  // Global constructor-name -> type-name map across the whole package, so
+  // cross-module constructors key by the type girard reports for a receiver.
+  let constructor_to_type =
+    dict.fold(index, dict.new(), fn(acc, _path, entry) {
+      let #(_gleam_path, module) = entry
+      dict.merge(acc, extract.build_constructor_type_map(module))
+    })
+
+  // Accumulate (type_name, field) -> effects, unioning across every site.
+  let accumulated =
+    dict.fold(index, dict.new(), fn(acc, _path, entry) {
+      let #(_gleam_path, module) = entry
+      let context = extract.build_import_context(module)
+      extract.collect_constructor_bindings(module, context)
+      |> list.fold(acc, fn(inner, binding) {
+        accumulate_constructor_binding(
+          inner,
+          binding,
+          constructor_to_type,
+          knowledge_base,
+        )
+      })
+    })
+
+  dict.to_list(accumulated)
+  |> list.map(fn(pair) {
+    let #(#(type_name, field), effect_set) = pair
+    types.TypeFieldAnnotation(
+      module: None,
+      type_name:,
+      field:,
+      effects: effect_set,
+    )
+  })
+}
+
+/// Fold one constructor call's field bindings into the (type, field) -> effect
+/// accumulator, unioning with any effect already recorded for that field.
+fn accumulate_constructor_binding(
+  acc: Dict(#(String, String), types.EffectSet),
+  binding: #(String, Dict(String, types.ArgumentValue)),
+  constructor_to_type: Dict(String, String),
+  knowledge_base: KnowledgeBase,
+) -> Dict(#(String, String), types.EffectSet) {
+  let #(constructor, fields) = binding
+  case dict.get(constructor_to_type, constructor) {
+    Error(Nil) -> acc
+    Ok(type_name) ->
+      dict.fold(fields, acc, fn(inner, label, value) {
+        let effect = effects.argument_value_effects(knowledge_base, value)
+        let key = #(type_name, label)
+        let merged = case dict.get(inner, key) {
+          Ok(existing) -> types.union(existing, effect)
+          Error(Nil) -> effect
+        }
+        dict.insert(inner, key, merged)
+      })
+  }
 }
 
 /// Run girard's whole-package type inference once over every project module

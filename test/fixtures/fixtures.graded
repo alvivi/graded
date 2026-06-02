@@ -4,6 +4,7 @@ check pure_view.view : []
 check transitive.view : []
 check validator_flow.run : []
 check opaque_receiver.run : []
+check inferred_field.run : []
 
 // Type field annotations (the effect source for type-directed field calls).
 type opaque_receiver.Validator.to_error : [Stdout]
@@ -14,3 +15,4 @@ effects pure_view.view : []
 effects transitive.view : [Stdout]
 effects validator_flow.run : [Stdout]
 effects opaque_receiver.run : [Stdout]
+effects inferred_field.run : [Stdout]
