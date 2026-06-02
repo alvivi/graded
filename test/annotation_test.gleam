@@ -574,7 +574,6 @@ pub fn second_order_roundtrip_property_test() {
   use term <- qcheck.given(generators.serializable_effect_term_gen())
   let normalized = effect_term.normalize(term)
   let ann = EffectAnnotation(Effects, "f", [], normalized)
-  let assert Ok([parsed]) =
-    annotation.parse(annotation.format_annotation(ann))
+  let assert Ok([parsed]) = annotation.parse(annotation.format_annotation(ann))
   parsed.effects |> should.equal(normalized)
 }
