@@ -9,7 +9,7 @@ import graded/internal/effect_term
 import graded/internal/types.{
   AnnotationLine, BlankLine, Check, CommentLine, EffectAnnotation, Effects,
   ExternalAnnotation, ExternalLine, FunctionExternal, ParamBound, Polymorphic,
-  Specific, TypeFieldAnnotation, TypeFieldLine, Wildcard,
+  Specific, TApp, TLabels, TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 import qcheck
 
@@ -533,4 +533,38 @@ pub fn merge_inferred_invariants_test() {
     let assert Ok(expected) = dict.get(inferred_map, a.function)
     a |> should.equal(expected)
   })
+}
+
+// ──── Second-order serialization (operator applications) ────
+
+pub fn format_second_order_application_test() {
+  let ann =
+    EffectAnnotation(
+      Effects,
+      "with_logger",
+      [ParamBound("action", TVar("action"))],
+      TApp(TVar("action"), TLabels(set.from_list(["Stdout"]))),
+    )
+  annotation.format_annotation(ann)
+  |> should.equal("effects with_logger(action: [action]) : [action(Stdout)]")
+}
+
+pub fn parse_second_order_application_test() {
+  let assert Ok([ann]) =
+    annotation.parse("effects with_logger(action: [action]) : [action(Stdout)]")
+  ann.effects
+  |> should.equal(TApp(TVar("action"), TLabels(set.from_list(["Stdout"]))))
+  ann.params |> should.equal([ParamBound("action", TVar("action"))])
+}
+
+pub fn roundtrip_application_with_label_test() {
+  let line = "effects run(action: [action]) : [Http, action(Stdout)]"
+  let assert Ok([ann]) = annotation.parse(line)
+  annotation.format_annotation(ann) |> should.equal(line)
+}
+
+pub fn roundtrip_application_multiple_args_test() {
+  let line = "check run(f: [f]) : [f(Db, Http)]"
+  let assert Ok([ann]) = annotation.parse(line)
+  annotation.format_annotation(ann) |> should.equal(line)
 }
