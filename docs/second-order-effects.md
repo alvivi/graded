@@ -3,9 +3,13 @@
 Status: **implemented** (branch `nested-effect-vars`). This closes the "no
 nested (second-order) effect variables" limitation that was documented in
 [README.md](../README.md#limitations) and the corresponding ROADMAP item. All
-six phases below shipped; the one residual is an inference caveat (operator
-arguments that are inline closures or opaque locals collapse to `[Unknown]`),
-noted in the README limitations.
+six phases below shipped. Operator arguments are lifted to reducible operators
+from both **named function references** and **inline closures** (the closure's
+body is analysed and abstracted over its first parameter, with its parameters
+bound during the enclosing walk so callback calls don't surface as `[Unknown]`).
+The one residual is an inference caveat — an *opaque local* operator argument
+(a value graded can't trace to a function or closure) has no callback parameter
+to abstract over and collapses to `[Unknown]` — noted in the README limitations.
 
 ## Goal
 

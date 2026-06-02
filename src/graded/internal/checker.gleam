@@ -1,5 +1,8 @@
 import girard/types as girard_types
-import glance.{type Definition, type Function, type Module}
+import glance.{
+  type Definition, type Function, type Module, type Statement, Function, Private,
+  Span,
+}
 import gleam/bool
 import gleam/dict
 import gleam/list
@@ -293,6 +296,25 @@ fn collect_effects(
 ) -> List(#(types.ResolvedCall, EffectTerm)) {
   let result = extract.extract_calls(function.body, context)
   let operator_params = signatures.operator_params_from_function(function)
+  // Lifts an inline-closure argument to an effect operator, in this function's
+  // analysis context. Passed down to the substitution path so operator
+  // parameters bound to a closure beta-reduce instead of going `[Unknown]`.
+  let lift_closure = fn(value: types.ArgumentValue) -> Result(EffectTerm, Nil) {
+    case value {
+      types.Closure(params, body) ->
+        Ok(analyze_closure(
+          params,
+          body,
+          context,
+          function_map,
+          knowledge_base,
+          visited,
+          registry,
+          module_types,
+        ))
+      _ -> Error(Nil)
+    }
+  }
 
   // Resolved calls: qualified names looked up directly in the knowledge
   // base. If the callee's effects are polymorphic (contain effect
@@ -309,6 +331,7 @@ fn collect_effects(
           knowledge_base,
           param_bounds,
           registry,
+          lift_closure,
         )
       #(call, concrete)
     })
@@ -367,6 +390,7 @@ fn collect_effects(
             knowledge_base,
             param_bounds,
             registry,
+            lift_closure,
           )
       }
     })
@@ -391,6 +415,7 @@ fn collect_effects(
           result.call_args,
           param_bounds,
           registry,
+          lift_closure,
         )
       #(synthetic_call, effect_set)
     })
@@ -415,6 +440,7 @@ fn substitute_local_call_effects(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
+  lift_closure: fn(types.ArgumentValue) -> Result(EffectTerm, Nil),
 ) -> List(#(types.ResolvedCall, EffectTerm)) {
   let any_polymorphic = list.any(recursive, fn(p) { has_vars(p.1) })
   use <- bool.guard(when: !any_polymorphic, return: recursive)
@@ -448,6 +474,7 @@ fn substitute_local_call_effects(
           knowledge_base,
           caller_param_bounds,
           merged_registry,
+          lift_closure,
         )
       list.map(recursive, fn(pair) {
         let #(call, term) = pair
@@ -477,6 +504,7 @@ fn substitute_at_call_site(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
+  lift_closure: fn(types.ArgumentValue) -> Result(EffectTerm, Nil),
 ) -> EffectTerm {
   let callee_kb_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
   // Fast path: concrete effect with declared bounds — nothing to
@@ -503,6 +531,7 @@ fn substitute_at_call_site(
       knowledge_base,
       caller_param_bounds,
       registry,
+      lift_closure,
     )
   effect_term.normalize(effect_term.subst(effective_effects, bindings))
 }
@@ -538,7 +567,9 @@ fn auto_bounds_from_registry(
       case find_matching_arg(callee_name, bound, args, registry) {
         Some(arg) ->
           case arg.value {
-            types.OtherExpression -> Error(Nil)
+            // Closures and other inline expressions are walked separately by
+            // the extractor; binding them here would double-count.
+            types.Closure(_, _) | types.OtherExpression -> Error(Nil)
             _ -> Ok(bound)
           }
         None -> Error(Nil)
@@ -567,6 +598,7 @@ fn bind_variables(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
+  lift_closure: fn(types.ArgumentValue) -> Result(EffectTerm, Nil),
 ) -> dict.Dict(String, EffectTerm) {
   let operator_params = signatures.operator_param_names(registry, callee_name)
   list.fold(callee_bounds, dict.new(), fn(acc, bound) {
@@ -587,6 +619,7 @@ fn bind_variables(
               knowledge_base,
               caller_param_bounds,
               registry,
+              lift_closure,
             )
           False ->
             resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
@@ -606,15 +639,17 @@ fn bind_variables(
 }
 
 /// Lift a call argument bound to an *operator* parameter into an effect
-/// operator (`TAbs`). A function reference `g` becomes `λcb. <g's effect>`,
-/// abstracting over `g`'s own callback parameter so that applying it to a
-/// concrete callback effect beta-reduces. Non-function arguments fall back to
-/// their flat effect (which leaves the application stuck → `[Unknown]`).
+/// operator (`TAbs`) so the callee's `op(callback)` application beta-reduces.
+/// A function reference `g` becomes `λcb. <g's effect>`, abstracting over `g`'s
+/// callback parameter; an inline closure is analysed by `lift_closure` and
+/// abstracted over its first parameter. Anything else falls back to its flat
+/// effect (leaving the application stuck → `[Unknown]`).
 fn operator_term_for_argument(
   arg: types.CallArgument,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
+  lift_closure: fn(types.ArgumentValue) -> Result(EffectTerm, Nil),
 ) -> EffectTerm {
   case arg.value {
     types.FunctionRef(name) -> {
@@ -624,7 +659,59 @@ fn operator_term_for_argument(
         [] -> body
       }
     }
+    types.Closure(_, _) ->
+      case lift_closure(arg.value) {
+        Ok(operator) -> operator
+        Error(Nil) ->
+          resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
+      }
     _ -> resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
+  }
+}
+
+/// Analyse an inline closure's body as if it were a function whose parameters
+/// are fn-typed, then abstract over its first parameter — turning
+/// `fn(cb) { cb(x) }` into the operator `λcb. [cb]`. This lets a closure passed
+/// to an operator parameter beta-reduce just like a named function reference.
+fn analyze_closure(
+  params: List(String),
+  body: List(Statement),
+  context: ImportContext,
+  function_map: dict.Dict(String, Definition(Function)),
+  knowledge_base: KnowledgeBase,
+  visited: Set(String),
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+) -> EffectTerm {
+  let synthetic =
+    Function(
+      location: Span(0, 0),
+      name: "<closure>",
+      publicity: Private,
+      parameters: [],
+      return: None,
+      body:,
+    )
+  // Seed every closure parameter as a self-referential fn-typed bound so calls
+  // to the callback inside the body resolve to its effect variable.
+  let bounds = list.map(params, self_referential_bound)
+  let body_term =
+    collect_effects(
+      synthetic,
+      function_map,
+      context,
+      knowledge_base,
+      visited,
+      bounds,
+      registry,
+      module_types,
+    )
+    |> list.fold(effect_term.pure(), fn(acc, pair) {
+      effect_term.normalize(TUnion([acc, pair.1]))
+    })
+  case params {
+    [callback, ..] -> types.TAbs(callback, body_term)
+    [] -> body_term
   }
 }
 
@@ -712,6 +799,10 @@ fn resolve_argument_effects(
         Ok(bound) -> bound.effects
         Error(Nil) -> effect_term.unknown()
       }
+    // A closure in a first-order position contributes nothing here — its body
+    // is walked by the enclosing extractor. (Operator positions are handled by
+    // `operator_term_for_argument`, which lifts the closure to an operator.)
+    types.Closure(_, _) -> effect_term.unknown()
     types.OtherExpression -> effect_term.unknown()
   }
 }
@@ -776,6 +867,7 @@ fn resolve_field_call(
   call_args: dict.Dict(Int, List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
+  lift_closure: fn(types.ArgumentValue) -> Result(EffectTerm, Nil),
 ) -> EffectTerm {
   // Resolve the receiver's nominal type, qualified by its defining module:
   // girard's inferred type for the receiver expression first (any receiver, and
@@ -811,6 +903,7 @@ fn resolve_field_call(
             knowledge_base,
             caller_param_bounds,
             registry,
+            lift_closure,
           )
       }
   }
@@ -827,6 +920,7 @@ fn resolve_field_effect(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
+  lift_closure: fn(types.ArgumentValue) -> Result(EffectTerm, Nil),
 ) -> EffectTerm {
   case has_vars(field_effect.effects), field_effect.source {
     False, _ -> field_effect.effects
@@ -841,6 +935,7 @@ fn resolve_field_effect(
           knowledge_base,
           caller_param_bounds,
           registry,
+          lift_closure,
         )
       concretize(effect_term.subst(field_effect.effects, bindings))
     }

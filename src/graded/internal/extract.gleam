@@ -21,6 +21,11 @@ import graded/internal/types.{
 type LocalBinding {
   BoundFunctionRef(name: QualifiedName)
   BoundConstructor(fields: Dict(String, ArgumentValue))
+  /// A closure's own parameter, bound while walking the closure body. A call
+  /// to it is a callback invocation whose effect is accounted where the
+  /// closure is applied (operator lifting), so it contributes nothing to the
+  /// enclosing function's direct effect — rather than surfacing as `[Unknown]`.
+  BoundParam
   BoundOpaque
 }
 
@@ -404,8 +409,21 @@ fn resolve_variable_call(
         references: [],
         call_args: dict.new(),
       )
+    // A closure parameter called inside its own body — its effect is the
+    // callback's, accounted where the closure is applied, not here.
+    BoundParam -> empty()
     _ -> resolve_unqualified_call(name, span, context)
   }
+}
+
+/// Bind a closure's parameters as `BoundParam` in a child scope.
+fn bind_closure_params(env: Env, parameters: List(glance.FnParameter)) -> Env {
+  list.fold(parameters, env, fn(accumulator, parameter) {
+    case parameter.name {
+      glance.Named(name) -> dict.insert(accumulator, name, BoundParam)
+      glance.Discarded(_) -> accumulator
+    }
+  })
 }
 
 fn resolve_unqualified_call(
@@ -530,7 +548,7 @@ fn resolve_constructor_field_call(
         call_args: dict.new(),
       )
     Ok(ConstructorRef) -> empty()
-    Ok(OtherExpression) | Error(Nil) ->
+    Ok(types.Closure(_, _)) | Ok(OtherExpression) | Error(Nil) ->
       ExtractResult(
         resolved: [],
         local: [],
@@ -686,7 +704,7 @@ fn classify_rhs_ref(
   case classify_expression(expression, context, env) {
     FunctionRef(name:) -> BoundFunctionRef(name:)
     LocalRef(name:) -> dict.get(env, name) |> result.unwrap(BoundOpaque)
-    ConstructorRef | OtherExpression -> BoundOpaque
+    ConstructorRef | types.Closure(_, _) | OtherExpression -> BoundOpaque
   }
 }
 
@@ -878,8 +896,11 @@ fn extract_from_expression(
         extract_from_expression(right, context, env),
       )
 
-    // Closure: effects in body contribute to enclosing function
-    glance.Fn(body: statements, ..) -> walk_scope(statements, context, env)
+    // Closure: effects in body contribute to enclosing function. The closure's
+    // own parameters are bound (as `BoundParam`) so calls to them aren't
+    // mistaken for unresolved local calls.
+    glance.Fn(arguments:, body: statements, ..) ->
+      walk_scope(statements, context, bind_closure_params(env, arguments))
 
     // Block
     glance.Block(statements:, ..) -> walk_scope(statements, context, env)
@@ -1115,6 +1136,19 @@ fn classify_expression(
               }
           }
       }
+    // An inline closure argument: capture its parameter names and body so the
+    // checker can lift it to an effect operator when it's passed to an operator
+    // parameter.
+    glance.Fn(arguments:, body:, ..) ->
+      types.Closure(
+        list.map(arguments, fn(parameter) {
+          case parameter.name {
+            glance.Named(name) -> name
+            glance.Discarded(_) -> "_"
+          }
+        }),
+        body,
+      )
     _ -> OtherExpression
   }
 }

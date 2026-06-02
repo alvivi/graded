@@ -1,4 +1,4 @@
-import glance.{type Span}
+import glance.{type Span, type Statement}
 import gleam/dict.{type Dict}
 import gleam/option.{type Option}
 import gleam/set.{type Set}
@@ -213,9 +213,15 @@ pub type ArgumentValue {
   /// A record constructor (uppercase-initial qualified or bare name).
   /// Pure by Gleam's semantics.
   ConstructorRef
-  /// Anything else (inline closure, computed expression, literal, etc.).
-  /// Effects come from the enclosing walk; at the argument level we
-  /// have no concrete function to propagate.
+  /// An inline closure `fn(params) { body }`. `params` are its parameter names
+  /// (`_` for discarded), `body` its statements. When passed to an operator
+  /// parameter, the checker analyses the body — treating the first parameter as
+  /// the callback — and lifts it to an effect operator so the application
+  /// beta-reduces (rather than collapsing to `[Unknown]`).
+  Closure(params: List(String), body: List(Statement))
+  /// Anything else (a computed expression, literal, etc.). Effects come from
+  /// the enclosing walk; at the argument level we have no concrete function to
+  /// propagate.
   OtherExpression
 }
 

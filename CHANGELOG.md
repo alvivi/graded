@@ -11,13 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Second-order (higher-kinded) effect variables.** The effect representation moved from a flat `Polymorphic(labels, variables)` set to an `EffectTerm` — a small lambda-calculus-with-union (labels, union, variables, abstraction, application), with `EffectSet` as its ground normal form. This lets graded express and resolve effect variables of kind `Eff → Eff` (operators), not just flat `Eff`:
   - A parameter whose own type takes a function (`action: fn(fn() -> Nil) -> a`) is detected as an *operator* parameter; a call `action(cb)` infers an effect-operator **application** `[action(Stdout)]`.
-  - At a call site, an operator-typed argument is lifted to an operator and the application **beta-reduces** to the concrete effect.
+  - At a call site, an operator-typed argument is lifted to an operator and the application **beta-reduces** to the concrete effect. Both a **named function reference** (abstracting over its callback parameter) and an **inline closure** (analysing its body) are lifted; an inline closure's parameters are bound while walking it, so calls to them aren't mistaken for unresolved local calls.
   - The `.graded` syntax gained operator applications `[action(Stdout)]` and operator bounds `fn(cb) -> [cb]`; first-order lines are byte-identical to before.
 - Resolution is pure-Gleam term reduction — capture-avoiding substitution, beta, and union normalization, fuel-guarded — with no external solver. The reduction laws, capture-avoidance, soundness (over-approximation), and termination are property-tested with qcheck. See [docs/second-order-effects.md](docs/second-order-effects.md).
 
 ### Notes
 
-- Lifting an operator argument needs the argument *function* to be resolvable (in the knowledge base — already inferred via the topological pass, or in the catalog). An operator argument that is an inline closure or opaque local leaves the application stuck and collapses to `[Unknown]`.
+- An operator argument that is an *opaque local* (a value graded can't trace to a function or closure) has no callback parameter to abstract over, so its application stays stuck and collapses to `[Unknown]`. A named-function operator argument also needs that function already in the knowledge base (inferred earlier in the topological pass, or in the catalog).
 
 ## [0.6.0] - 2026-04-21
 

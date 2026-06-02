@@ -1931,3 +1931,23 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
   let #(violations, _) = checker.check(module, [ann], kb, reg, dict.new())
   { violations != [] } |> should.be_true()
 }
+
+pub fn second_order_inline_closure_resolves_test() {
+  // The operator argument is now an inline closure rather than a named
+  // function. It is analysed and lifted to `λlogger. [logger]`, so the
+  // `action(Stdout)` application still beta-reduces to `[Stdout]`.
+  let #(kb, reg) = second_order_kb_and_registry()
+  let source =
+    "import app
+pub fn caller() -> Nil { app.with_logger(fn(logger) { logger(\"hi\") }) }"
+  let assert Ok(module) = glance.module(source)
+  let ann =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
+  let #(violations, _) = checker.check(module, [ann], kb, reg, dict.new())
+  violations |> should.equal([])
+}
