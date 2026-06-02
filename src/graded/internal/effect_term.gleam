@@ -9,6 +9,7 @@
 //// argument effect and `normalize` beta-reduces. See
 //// docs/second-order-effects.md for the design and the property suite.
 
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -46,8 +47,10 @@ pub fn from_effect_set(effect_set: EffectSet) -> EffectTerm {
     Wildcard -> TTop
     Specific(labels) -> TLabels(labels)
     Polymorphic(labels, variables) -> {
+      // Already flat (one label set + bare variables, no redexes) — canonicalise
+      // directly rather than running the full reduce pipeline.
       let var_terms = variables |> set.to_list() |> list.map(TVar)
-      normalize(TUnion([TLabels(labels), ..var_terms]))
+      flatten_union([TLabels(labels), ..var_terms])
     }
   }
 }
@@ -122,6 +125,9 @@ fn subst_abs(
 ) -> EffectTerm {
   // The bound parameter shadows any binding of the same name inside the body.
   let inner = dict.delete(bindings, param)
+  // Nothing left to substitute (the common case for a beta-step's singleton
+  // binding of the bound parameter) — return unchanged.
+  use <- bool.guard(when: dict.is_empty(inner), return: TAbs(param, body))
   // Free variables that the substitution could drag into the body — these are
   // the ones at risk of capture by `param`.
   let body_fv = free_vars(body)
@@ -256,10 +262,16 @@ fn flatten_union(members: List(EffectTerm)) -> EffectTerm {
             _ -> acc
           }
         })
+      // Decorate each member with its structural key once, then sort and drop
+      // adjacent duplicates — `term_key` (a full recursive render) is computed
+      // exactly once per member rather than on every comparison and again to
+      // dedup.
       let others =
         other_members
-        |> dedup_by_key()
-        |> list.sort(fn(a, b) { string.compare(term_key(a), term_key(b)) })
+        |> list.map(fn(m) { #(term_key(m), m) })
+        |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+        |> dedup_adjacent()
+        |> list.map(fn(pair) { pair.1 })
       let label_part = case set.is_empty(merged_labels) {
         True -> []
         False -> [TLabels(merged_labels)]
@@ -273,17 +285,18 @@ fn flatten_union(members: List(EffectTerm)) -> EffectTerm {
   }
 }
 
-fn dedup_by_key(terms: List(EffectTerm)) -> List(EffectTerm) {
-  let #(_seen, kept) =
-    list.fold(terms, #(set.new(), []), fn(state, t) {
-      let #(seen, kept) = state
-      let key = term_key(t)
-      case set.contains(seen, key) {
-        True -> #(seen, kept)
-        False -> #(set.insert(seen, key), [t, ..kept])
-      }
-    })
-  list.reverse(kept)
+/// Drop adjacent duplicates (by key) from a key-sorted list.
+fn dedup_adjacent(
+  keyed: List(#(String, EffectTerm)),
+) -> List(#(String, EffectTerm)) {
+  keyed
+  |> list.fold([], fn(acc, pair) {
+    case acc {
+      [#(previous, _), ..] if previous == pair.0 -> acc
+      _ -> [pair, ..acc]
+    }
+  })
+  |> list.reverse
 }
 
 /// A canonical structural key, used to order and dedup union members so that

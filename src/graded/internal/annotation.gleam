@@ -462,8 +462,7 @@ fn parse_external_line(rest: String) -> Result(ExternalAnnotation, Nil) {
 fn parse_params_section(input: String) -> Result(List(ParamBound), Nil) {
   case string.trim(input) {
     "" -> Ok([])
-    trimmed ->
-      list.try_map(split_at_top_level_commas(trimmed), parse_single_param)
+    trimmed -> list.try_map(split_commas(trimmed, "[", "]"), parse_single_param)
   }
 }
 
@@ -486,16 +485,18 @@ fn parse_name_colon_effects(input: String) -> Result(#(String, EffectTerm), Nil)
   Ok(#(name, effects))
 }
 
-// Split a string by ',' only at bracket depth 0 (ignoring commas inside [...]).
-fn split_at_top_level_commas(input: String) -> List(String) {
+/// Split a string on commas at nesting depth 0, tracking the `open`/`close`
+/// bracketing graphemes so commas inside them aren't split. Used with `[`/`]`
+/// for parameter lists and `(`/`)` for operator-application argument lists.
+fn split_commas(input: String, open: String, close: String) -> List(String) {
   let #(segments, current, _depth) =
     list.fold(string.to_graphemes(input), #([], "", 0), fn(state, char) {
-      let #(segs, cur, depth) = state
+      let #(segments, current, depth) = state
       case char {
-        "," if depth == 0 -> #([cur, ..segs], "", depth)
-        "[" -> #(segs, cur <> char, depth + 1)
-        "]" -> #(segs, cur <> char, depth - 1)
-        _ -> #(segs, cur <> char, depth)
+        "," if depth == 0 -> #([current, ..segments], "", depth)
+        _ if char == open -> #(segments, current <> char, depth + 1)
+        _ if char == close -> #(segments, current <> char, depth - 1)
+        _ -> #(segments, current <> char, depth)
       }
     })
   list.reverse([current, ..segments])
@@ -528,16 +529,20 @@ fn parse_effect_term(input: String) -> Result(EffectTerm, Nil) {
     "_" -> Ok(TTop)
     "" -> Ok(TLabels(set.new()))
     _ -> {
-      use atoms <- result.try(
-        inner
-        |> split_top_level()
-        |> list.map(string.trim)
-        |> list.filter(fn(t) { t != "" })
-        |> list.try_map(parse_atom),
-      )
+      use atoms <- result.try(parse_atoms(inner))
       Ok(effect_term.normalize(TUnion(atoms)))
     }
   }
+}
+
+/// Parse the comma-separated atoms of an effect term body (paren-aware split,
+/// trimmed, empties dropped).
+fn parse_atoms(inner: String) -> Result(List(EffectTerm), Nil) {
+  inner
+  |> split_commas("(", ")")
+  |> list.map(string.trim)
+  |> list.filter(fn(token) { token != "" })
+  |> list.try_map(parse_atom)
 }
 
 /// Parse one comma-separated atom of an effect term: a label, a variable, or
@@ -548,14 +553,7 @@ fn parse_atom(token: String) -> Result(EffectTerm, Nil) {
       use <- bool.guard(when: !string.ends_with(rest, ")"), return: Error(Nil))
       let callee = string.trim(name)
       use <- bool.guard(when: callee == "", return: Error(Nil))
-      use arg_atoms <- result.try(
-        rest
-        |> string.drop_end(1)
-        |> split_top_level()
-        |> list.map(string.trim)
-        |> list.filter(fn(t) { t != "" })
-        |> list.try_map(parse_atom),
-      )
+      use arg_atoms <- result.try(parse_atoms(string.drop_end(rest, 1)))
       Ok(TApp(TVar(callee), effect_term.normalize(TUnion(arg_atoms))))
     }
     Error(Nil) ->
@@ -581,24 +579,6 @@ fn parse_bound_effect(input: String) -> Result(EffectTerm, Nil) {
       Ok(TAbs(cb, body))
     }
   }
-}
-
-/// Split a comma-separated string at paren depth 0, so an application's
-/// argument list stays intact.
-fn split_top_level(input: String) -> List(String) {
-  let #(parts, current, _depth) =
-    input
-    |> string.to_graphemes()
-    |> list.fold(#([], "", 0), fn(state, ch) {
-      let #(parts, current, depth) = state
-      case ch {
-        "(" -> #(parts, current <> ch, depth + 1)
-        ")" -> #(parts, current <> ch, depth - 1)
-        "," if depth == 0 -> #([current, ..parts], "", depth)
-        _ -> #(parts, current <> ch, depth)
-      }
-    })
-  list.reverse([current, ..parts])
 }
 
 fn collect_comments(lines: List(GradedLine)) -> List(String) {

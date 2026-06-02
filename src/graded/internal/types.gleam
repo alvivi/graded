@@ -1,5 +1,4 @@
 import glance.{type Span, type Statement}
-import gleam/dict.{type Dict}
 import gleam/option.{type Option}
 import gleam/set.{type Set}
 
@@ -78,56 +77,11 @@ pub fn from_labels(labels: List(String)) -> EffectSet {
   Specific(set.from_list(labels))
 }
 
-/// Construct a Polymorphic effect set from lists of labels and variables.
-/// If `variables` is empty, collapses to `Specific`.
-pub fn from_labels_and_variables(
-  labels: List(String),
-  variables: List(String),
-) -> EffectSet {
-  case variables {
-    [] -> Specific(set.from_list(labels))
-    _ -> Polymorphic(set.from_list(labels), set.from_list(variables))
-  }
-}
-
 /// True iff this effect set contains unresolved effect variables.
 pub fn has_variables(effect_set: EffectSet) -> Bool {
   case effect_set {
     Polymorphic(_, variables) -> !set.is_empty(variables)
     _ -> False
-  }
-}
-
-/// Substitute effect variables with their bound effect sets. Variables
-/// not in the bindings dict are kept as-is (still unresolved).
-pub fn substitute(
-  effect_set: EffectSet,
-  bindings: Dict(String, EffectSet),
-) -> EffectSet {
-  case effect_set {
-    Wildcard -> Wildcard
-    Specific(_) -> effect_set
-    Polymorphic(labels, variables) -> {
-      let base = Specific(labels)
-      let #(resolved, unresolved) =
-        set.fold(variables, #(base, []), fn(state, var) {
-          let #(acc, leftover) = state
-          case dict.get(bindings, var) {
-            Ok(bound) -> #(union(acc, bound), leftover)
-            Error(Nil) -> #(acc, [var, ..leftover])
-          }
-        })
-      case unresolved {
-        [] -> resolved
-        _ ->
-          case resolved {
-            Wildcard -> Wildcard
-            Specific(l) -> Polymorphic(l, set.from_list(unresolved))
-            Polymorphic(l, v) ->
-              Polymorphic(l, set.union(v, set.from_list(unresolved)))
-          }
-      }
-    }
   }
 }
 

@@ -107,10 +107,7 @@ pub fn infer(
         registry,
         module_types,
       )
-    let effects_term =
-      list.fold(all_effects, effect_term.pure(), fn(combined, pair) {
-        effect_term.normalize(TUnion([combined, pair.1]))
-      })
+    let effects_term = union_of(all_effects)
     // If the function's inferred effects reference effect variables
     // (because it calls fn-typed params), emit ParamBound entries so
     // the polymorphic annotation round-trips correctly.
@@ -155,6 +152,11 @@ fn self_referential_bound(name: String) -> ParamBound {
 /// True iff a term still carries unresolved (free) effect variables.
 fn has_vars(term: EffectTerm) -> Bool {
   !set.is_empty(effect_term.free_vars(term))
+}
+
+/// Union the effect terms of a list of `(call, term)` pairs, normalizing once.
+fn union_of(pairs: List(#(types.ResolvedCall, EffectTerm))) -> EffectTerm {
+  effect_term.normalize(TUnion(list.map(pairs, fn(pair) { pair.1 })))
 }
 
 /// Synthesise a self-referential polymorphic bound for each auto-detected
@@ -706,9 +708,7 @@ fn analyze_closure(
       registry,
       module_types,
     )
-    |> list.fold(effect_term.pure(), fn(acc, pair) {
-      effect_term.normalize(TUnion([acc, pair.1]))
-    })
+    |> union_of()
   case params {
     [callback, ..] -> types.TAbs(callback, body_term)
     [] -> body_term
