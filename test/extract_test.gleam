@@ -1,6 +1,7 @@
 import glance
 import gleam/dict
 import gleam/list
+import gleam/option.{Some}
 import gleeunit/should
 import graded/internal/extract
 import graded/internal/types.{FunctionRef, QualifiedName}
@@ -466,4 +467,92 @@ pub fn target(xs) {
   let assert Ok(second_arg) = list.find(args, fn(a) { a.position == 1 })
   second_arg.value
   |> should.equal(FunctionRef(QualifiedName("gleam/io", "println")))
+}
+
+// Stage C: constructor-field harvesting
+
+pub fn constructor_type_map_distinguishes_constructor_from_type_test() {
+  // A type whose constructor name differs from the type name. The index must
+  // key by the *type* (Shape), since that is what girard reports for a value.
+  let src =
+    "pub type Shape {
+  Circle(radius: Int)
+  Square(side: Int)
+}"
+  let assert Ok(module) = glance.module(src)
+  let map = extract.build_constructor_type_map(module)
+  dict.get(map, "Circle") |> should.equal(Ok("Shape"))
+  dict.get(map, "Square") |> should.equal(Ok("Shape"))
+}
+
+pub fn collect_constructor_bindings_finds_field_value_test() {
+  let src =
+    "import gleam/io
+pub type Logger {
+  Logger(emit: fn(String) -> Nil)
+}
+pub fn make() {
+  Logger(emit: io.println)
+}"
+  let assert Ok(module) = glance.module(src)
+  let ctx = extract.build_import_context(module)
+  let bindings = extract.collect_constructor_bindings(module, ctx)
+  let assert Ok(binding) =
+    list.find(bindings, fn(b) { b.constructor == "Logger" })
+  dict.get(binding.fields, "emit")
+  |> should.equal(Ok(FunctionRef(QualifiedName("gleam/io", "println"))))
+}
+
+pub fn collect_constructor_bindings_finds_nested_construction_test() {
+  // Construction nested inside a case clause body must still be found.
+  let src =
+    "import gleam/io
+pub type Logger {
+  Logger(emit: fn(String) -> Nil)
+}
+pub fn pick(flag) {
+  case flag {
+    True -> Logger(emit: io.println)
+    False -> Logger(emit: io.print)
+  }
+}"
+  let assert Ok(module) = glance.module(src)
+  let ctx = extract.build_import_context(module)
+  let bindings = extract.collect_constructor_bindings(module, ctx)
+  list.length(bindings) |> should.equal(2)
+}
+
+// Cross-module positional constructor args (limitation 1b)
+
+const cross_module_ctor = "import gleam/io
+import app/validator
+pub fn target() {
+  validator.Validator(io.println)
+}"
+
+pub fn cross_module_positional_constructor_resolves_test() {
+  // `validator.Validator(io.println)` is positional, and Validator is defined
+  // in another module — with the package-wide label map, the positional arg
+  // still routes to the `to_error` field.
+  let assert Ok(module) = glance.module(cross_module_ctor)
+  let context =
+    extract.build_import_context(module)
+    |> extract.with_cross_constructors(
+      dict.from_list([#(#("app/validator", "Validator"), [Some("to_error")])]),
+    )
+  let assert Ok(binding) =
+    extract.collect_constructor_bindings(module, context)
+    |> list.find(fn(binding) { binding.constructor == "Validator" })
+  dict.get(binding.fields, "to_error")
+  |> should.equal(Ok(FunctionRef(QualifiedName("gleam/io", "println"))))
+}
+
+pub fn cross_module_positional_unresolved_without_labels_test() {
+  // Without the label map (the old behaviour) the positional arg is dropped.
+  let assert Ok(module) = glance.module(cross_module_ctor)
+  let context = extract.build_import_context(module)
+  let assert Ok(binding) =
+    extract.collect_constructor_bindings(module, context)
+    |> list.find(fn(binding) { binding.constructor == "Validator" })
+  dict.get(binding.fields, "to_error") |> should.equal(Error(Nil))
 }

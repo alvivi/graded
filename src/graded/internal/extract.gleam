@@ -51,12 +51,37 @@ pub fn module_path_for_source(
 /// the ordered labels of its fields (`None` for unlabelled positions).
 /// Used to route positional arguments (`Validator(x)`) to the right
 /// field label when building a `BoundConstructor`.
+///
+/// `cross_constructors` does the same for *other* modules' constructors,
+/// keyed by `#(defining module, constructor)`. It is empty by default and
+/// populated (via [`with_cross_constructors`](#with_cross_constructors)) only
+/// for the package-wide constructor-field walk, so a cross-module positional
+/// call (`a.Validator(x)`) can still route `x` to the right field.
 pub type ImportContext {
   ImportContext(
     aliases: Dict(String, String),
     unqualified: Dict(String, QualifiedName),
     constructors: Dict(String, List(Option(String))),
+    cross_constructors: Dict(#(String, String), List(Option(String))),
   )
+}
+
+/// Attach a package-wide `#(defining module, constructor) -> field labels` map
+/// to a context, so cross-module positional constructor calls resolve.
+pub fn with_cross_constructors(
+  context: ImportContext,
+  cross_constructors: Dict(#(String, String), List(Option(String))),
+) -> ImportContext {
+  ImportContext(..context, cross_constructors:)
+}
+
+/// A module's `constructor -> field labels` map (the same labels
+/// `build_import_context` records for same-module constructors), for building
+/// the package-wide cross-module constructor map.
+pub fn constructor_label_map(
+  module: Module,
+) -> Dict(String, List(Option(String))) {
+  build_constructor_registry(module)
 }
 
 /// Result of extracting calls from a function body.
@@ -113,7 +138,12 @@ pub fn build_import_context(module: Module) -> ImportContext {
     })
 
   let constructors = build_constructor_registry(module)
-  ImportContext(aliases:, unqualified:, constructors:)
+  ImportContext(
+    aliases:,
+    unqualified:,
+    constructors:,
+    cross_constructors: dict.new(),
+  )
 }
 
 fn build_constructor_registry(
@@ -131,6 +161,198 @@ fn build_constructor_registry(
       dict.insert(acc2, variant.name, labels)
     })
   })
+}
+
+/// Map each same-module constructor (variant) name to the custom type it
+/// belongs to. Stage C keys inferred field effects by *type* name — matching
+/// the nominal type girard reports for a receiver — but construction sites name
+/// the *constructor*, which can differ (`pub type Shape { Circle(..) }`).
+pub fn build_constructor_type_map(module: Module) -> Dict(String, String) {
+  list.fold(module.custom_types, dict.new(), fn(acc, definition) {
+    let type_name = definition.definition.name
+    list.fold(definition.definition.variants, acc, fn(acc2, variant) {
+      dict.insert(acc2, variant.name, type_name)
+    })
+  })
+}
+
+/// One constructor call found in a function body. `module` is the constructor's
+/// resolved module path for a qualified call (`a.Validator(..)`), or `None` for
+/// an unqualified call (resolved against the current module). `fields` maps each
+/// field label to its argument value.
+pub type ConstructorBinding {
+  ConstructorBinding(
+    module: Option(String),
+    constructor: String,
+    fields: Dict(String, ArgumentValue),
+  )
+}
+
+/// Collect every constructor call in a module's function bodies. Feeds the Stage
+/// C constructor-field effect index: a field wired to a known function
+/// (`Validator(to_error: io.println)`) lets graded infer that field's effect
+/// without a hand-written annotation.
+pub fn collect_constructor_bindings(
+  module: Module,
+  context: ImportContext,
+) -> List(ConstructorBinding) {
+  list.flat_map(module.functions, fn(definition) {
+    ctor_in_statements(definition.definition.body, context)
+  })
+}
+
+fn ctor_in_statements(
+  statements: List(Statement),
+  context: ImportContext,
+) -> List(ConstructorBinding) {
+  list.flat_map(statements, fn(statement) {
+    case statement {
+      glance.Expression(expression) -> ctor_in_expression(expression, context)
+      glance.Assignment(value:, ..) -> ctor_in_expression(value, context)
+      glance.Use(function:, ..) -> ctor_in_expression(function, context)
+      glance.Assert(expression:, message:, ..) ->
+        list.append(
+          ctor_in_expression(expression, context),
+          ctor_in_optional(message, context),
+        )
+    }
+  })
+}
+
+fn ctor_in_each(
+  expressions: List(Expression),
+  context: ImportContext,
+) -> List(ConstructorBinding) {
+  list.flat_map(expressions, ctor_in_expression(_, context))
+}
+
+fn ctor_in_optional(
+  expression: Option(Expression),
+  context: ImportContext,
+) -> List(ConstructorBinding) {
+  case expression {
+    Some(e) -> ctor_in_expression(e, context)
+    None -> []
+  }
+}
+
+fn ctor_in_fields(
+  fields: List(Field(Expression)),
+  context: ImportContext,
+) -> List(ConstructorBinding) {
+  list.flat_map(fields, fn(field) {
+    case field {
+      glance.LabelledField(item:, ..) -> ctor_in_expression(item, context)
+      glance.UnlabelledField(item:) -> ctor_in_expression(item, context)
+      glance.ShorthandField(..) -> []
+    }
+  })
+}
+
+fn ctor_in_expression(
+  expression: Expression,
+  context: ImportContext,
+) -> List(ConstructorBinding) {
+  case expression {
+    glance.Call(function: glance.Variable(_, name), arguments:, ..) ->
+      case is_constructor_name(name) {
+        True -> [
+          ctor_binding(name, None, arguments, context),
+          ..ctor_in_fields(arguments, context)
+        ]
+        False -> ctor_in_fields(arguments, context)
+      }
+    glance.Call(
+      function: glance.FieldAccess(
+        container: glance.Variable(_, alias),
+        label: ctor,
+        ..,
+      ),
+      arguments:,
+      ..,
+    ) ->
+      case is_constructor_name(ctor) {
+        True -> {
+          let module = dict.get(context.aliases, alias) |> option.from_result
+          [
+            ctor_binding(ctor, module, arguments, context),
+            ..ctor_in_fields(arguments, context)
+          ]
+        }
+        False -> ctor_in_fields(arguments, context)
+      }
+    glance.Call(function:, arguments:, ..) ->
+      list.append(
+        ctor_in_expression(function, context),
+        ctor_in_fields(arguments, context),
+      )
+    glance.Block(statements:, ..) -> ctor_in_statements(statements, context)
+    glance.Fn(body:, ..) -> ctor_in_statements(body, context)
+    glance.Tuple(elements:, ..) -> ctor_in_each(elements, context)
+    glance.List(elements:, rest:, ..) ->
+      list.append(
+        ctor_in_each(elements, context),
+        ctor_in_optional(rest, context),
+      )
+    glance.BinaryOperator(left:, right:, ..) ->
+      list.append(
+        ctor_in_expression(left, context),
+        ctor_in_expression(right, context),
+      )
+    glance.Case(subjects:, clauses:, ..) ->
+      list.append(
+        ctor_in_each(subjects, context),
+        list.flat_map(clauses, fn(clause) {
+          ctor_in_expression(clause.body, context)
+        }),
+      )
+    glance.FieldAccess(container:, ..) -> ctor_in_expression(container, context)
+    glance.TupleIndex(tuple:, ..) -> ctor_in_expression(tuple, context)
+    glance.NegateInt(value:, ..) -> ctor_in_expression(value, context)
+    glance.NegateBool(value:, ..) -> ctor_in_expression(value, context)
+    glance.Echo(expression:, message:, ..) ->
+      list.append(
+        ctor_in_optional(expression, context),
+        ctor_in_optional(message, context),
+      )
+    glance.Panic(message:, ..) -> ctor_in_optional(message, context)
+    glance.Todo(message:, ..) -> ctor_in_optional(message, context)
+    glance.FnCapture(function:, arguments_before:, arguments_after:, ..) ->
+      list.append(
+        ctor_in_expression(function, context),
+        list.append(
+          ctor_in_fields(arguments_before, context),
+          ctor_in_fields(arguments_after, context),
+        ),
+      )
+    glance.RecordUpdate(record:, fields:, ..) ->
+      list.append(
+        ctor_in_expression(record, context),
+        list.flat_map(fields, fn(field) {
+          ctor_in_optional(field.item, context)
+        }),
+      )
+    glance.BitString(segments:, ..) ->
+      list.flat_map(segments, fn(segment) {
+        ctor_in_expression(segment.0, context)
+      })
+    _ -> []
+  }
+}
+
+fn ctor_binding(
+  constructor: String,
+  module: Option(String),
+  arguments: List(Field(Expression)),
+  context: ImportContext,
+) -> ConstructorBinding {
+  let fields = case
+    classify_constructor(constructor, module, arguments, context, dict.new())
+  {
+    BoundConstructor(fields:) -> fields
+    _ -> dict.new()
+  }
+  ConstructorBinding(module:, constructor:, fields:)
 }
 
 /// Extract all calls from a list of statements.
@@ -222,12 +444,21 @@ fn resolve_qualified_call(
   alias: String,
   function_name: String,
   span: glance.Span,
+  receiver_span: glance.Span,
   context: ImportContext,
   env: Env,
 ) -> ExtractResult {
   case is_constructor_name(function_name) {
     True -> empty()
-    False -> qualified_call_lookup(alias, function_name, span, context, env)
+    False ->
+      qualified_call_lookup(
+        alias,
+        function_name,
+        span,
+        receiver_span,
+        context,
+        env,
+      )
   }
 }
 
@@ -235,6 +466,7 @@ fn qualified_call_lookup(
   alias: String,
   function_name: String,
   span: glance.Span,
+  receiver_span: glance.Span,
   context: ImportContext,
   env: Env,
 ) -> ExtractResult {
@@ -252,12 +484,18 @@ fn qualified_call_lookup(
     Error(Nil) ->
       case resolve_env(alias, env) {
         BoundConstructor(fields:) ->
-          resolve_constructor_field_call(alias, function_name, span, fields)
+          resolve_constructor_field_call(
+            alias,
+            function_name,
+            span,
+            receiver_span,
+            fields,
+          )
         _ ->
           ExtractResult(
             resolved: [],
             local: [],
-            field: [FieldCall(alias, function_name, span)],
+            field: [FieldCall(alias, function_name, span, receiver_span)],
             references: [],
             call_args: dict.new(),
           )
@@ -271,6 +509,7 @@ fn resolve_constructor_field_call(
   alias: String,
   label: String,
   span: glance.Span,
+  receiver_span: glance.Span,
   fields: Dict(String, ArgumentValue),
 ) -> ExtractResult {
   case dict.get(fields, label) {
@@ -295,7 +534,7 @@ fn resolve_constructor_field_call(
       ExtractResult(
         resolved: [],
         local: [],
-        field: [FieldCall(alias, label, span)],
+        field: [FieldCall(alias, label, span, receiver_span)],
         references: [],
         call_args: dict.new(),
       )
@@ -465,7 +704,9 @@ fn classify_constructor(
 ) -> LocalBinding {
   let declared_labels = case module {
     None -> dict.get(context.constructors, type_name) |> result.unwrap([])
-    Some(_) -> []
+    Some(module) ->
+      dict.get(context.cross_constructors, #(module, type_name))
+      |> result.unwrap([])
   }
   let #(fields, _remaining) =
     list.fold(arguments, #(dict.new(), declared_labels), fn(acc, field) {
@@ -579,14 +820,21 @@ fn extract_from_expression(
     glance.Call(
       location: span,
       function: glance.FieldAccess(
-        container: glance.Variable(_, alias),
+        container: glance.Variable(receiver_span, alias),
         label: function_name,
         ..,
       ),
       arguments:,
     ) ->
       merge_with_args(
-        resolve_qualified_call(alias, function_name, span, context, env),
+        resolve_qualified_call(
+          alias,
+          function_name,
+          span,
+          receiver_span,
+          context,
+          env,
+        ),
         extract_from_arguments(arguments, context, env),
         span,
         classify_arguments(arguments, context, env, 0),
@@ -734,11 +982,18 @@ fn extract_pipe_target(
   case expression {
     glance.FieldAccess(
       location: span,
-      container: glance.Variable(_, alias),
+      container: glance.Variable(receiver_span, alias),
       label: function_name,
     ) ->
       attach_pipe_args(
-        resolve_qualified_call(alias, function_name, span, context, env),
+        resolve_qualified_call(
+          alias,
+          function_name,
+          span,
+          receiver_span,
+          context,
+          env,
+        ),
         span,
         pipe_args,
       )
@@ -755,14 +1010,21 @@ fn extract_pipe_target(
     glance.Call(
       location: span,
       function: glance.FieldAccess(
-        container: glance.Variable(_, alias),
+        container: glance.Variable(receiver_span, alias),
         label: function_name,
         ..,
       ),
       arguments:,
     ) ->
       merge_with_args(
-        resolve_qualified_call(alias, function_name, span, context, env),
+        resolve_qualified_call(
+          alias,
+          function_name,
+          span,
+          receiver_span,
+          context,
+          env,
+        ),
         extract_from_arguments(arguments, context, env),
         span,
         list.append(pipe_args, classify_arguments(arguments, context, env, 1)),

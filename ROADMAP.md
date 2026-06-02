@@ -3,20 +3,30 @@
 The big picture for closing graded's remaining analysis gaps. Ordered by
 sequencing, not by size.
 
-Current state: **0.6.0** shipped same-function value flow — function-ref
-aliases, locally-constructed record field resolution, and positional
-constructor arg mapping. **0.5.0** shipped first-order effect polymorphism —
-effect variables at function boundaries, call-site substitution for
-higher-order functions, dependency parameter positions via glance.
+Current state: **milestone 3b is closed** — graded integrates
+[girard](https://hexdocs.pm/girard), a Hindley-Milner type annotator, to resolve
+field calls through real receiver types and to infer field effects from
+construction sites (the hand-written `type` line is no longer required in the
+common case). Field effects are keyed by the type's defining module so same-named
+types don't conflate, a field wired to a polymorphic function binds its variables
+at the call site, and girard's inferred signatures also let graded detect
+higher-order parameters that carry no `fn(...)` annotation, so an unannotated
+`pub fn apply(f, x) { f(x) }` infers the polymorphic `apply(f: [f]) : [f]`
+instead of `[Unknown]`. This subsumes 0.6.0's same-function value-flow hack and
+removes the "expression-level type info isn't available" gap. **0.7.0** shipped
+nested higher-order effect unification. **0.6.0** shipped same-function value
+flow. **0.5.0** shipped first-order effect polymorphism.
 
 The gaps that remain are documented in [README.md](./README.md#limitations):
 
-- Nested (second-order) polymorphism — callbacks that take callbacks —
-  isn't tracked.
-- Expression-level type info isn't available, which forces label/position
-  heuristics for argument matching.
-
-The milestones below address these progressively.
+- Inferred field effects fall back to `[Unknown]` only for values graded can't
+  statically resolve — an inline closure or a non-function local. Named function
+  references (same- or cross-module) and cross-module positional constructor args
+  resolve; type-field keys and the constructor->type map are qualified by the
+  defining module, so same-named types/constructors across modules don't conflate.
+- The label/position argument-matching heuristics remain (deliberately not
+  retired — they drive polymorphic call-site substitution, a subsystem girard's
+  expression types don't cleanly replace).
 
 ---
 
@@ -48,31 +58,25 @@ indexed; unlabelled cross-module constructor args fall into
 
 ---
 
-## 0.7.0 — Function-argument effect unification (#3a)
+## 0.7.0 — Function-argument effect unification (#3a) ✅
 
-**Goal:** propagate effect variables through nested higher-order calls.
-A function taking a callback that itself takes a callback resolves
-transitively instead of bottoming out at `[Unknown]`.
+**Shipped.** Effect variables now propagate through nested higher-order
+calls: a callback forwarded through a chain of functions
+(`outer(f) → middle(f) → inner(f)`) resolves transitively instead of
+bottoming out at `[Unknown]`, and a function with several fn-typed
+parameters binds each independently (`apply2(f, g) : [f, g]`).
 
-**Scope:**
+**Delivered via** the existing `Polymorphic(labels, variables)` effect set
+plus call-site substitution — binding happens by matching arguments at
+fn-typed parameter positions; unsolved variables surface as polymorphic
+signatures. The heavier route first sketched here (a dedicated `EffectTerm`
+representation with a fixpoint solver) proved unnecessary and was dropped.
 
-- New effect term representation:
-  `EffectTerm = Concrete(Set(String)) | Variable(String) | Union(...)`
-- Two-phase analysis: collect subset constraints, solve by fixpoint
-  iteration, then check against declared bounds.
-- Substitute solved variables back into inferred specs; unsolved
-  variables surface as polymorphic signatures (syntax already exists).
-- Error messages redesigned: a violation means "no assignment to free
-  vars makes `A ⊇ B` hold." Needs explicit UX work.
-
-**Architectural cost:** medium refactor — every place that returns
-`Set(String)` in the analysis pipeline gains the richer term type. The
-solver algorithm itself is ~150 lines; the refactor is the real cost.
-
-**Estimate:** 3–4 weeks focused.
-
-**Risk:** error-message usability. Technically-correct violations that
-users can't act on. Budget design time for this.
+**Not covered:** *nested* effect variables — an effect that is itself
+parameterized by a callback passed to a higher-order parameter (true
+second-order polymorphism). Effect variables stay flat; see the README
+limitation. Closing that would need the fixpoint machinery, and isn't
+currently planned.
 
 ---
 
@@ -129,6 +133,6 @@ annotator itself is the long pole.
 | Milestone | What it closes | Blocker | Status |
 |---|---|---|---|
 | 0.6.0 | Field calls on same-function records | — | ✅ shipped |
-| 0.7.0 | Nested higher-order polymorphism | — | next |
-| 3b | Full propagation through record types | Expression-level type info | blocked |
+| 0.7.0 | Nested higher-order polymorphism | — | ✅ shipped |
+| 3b | Field calls through record types (via girard) | ~~Expression-level type info~~ (unblocked by girard) | ✅ shipped |
 | Privacy | New checker on the same foundation | Dedicated design | future |

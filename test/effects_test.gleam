@@ -2,13 +2,15 @@ import generators
 import gleam/dict
 import gleam/int
 import gleam/list
+import gleam/option.{None}
 import gleam/order
 import gleam/set
 import gleam/string
 import gleeunit/should
 import graded/internal/effects
 import graded/internal/types.{
-  type EffectSet, Polymorphic, QualifiedName, Specific, Wildcard,
+  type EffectSet, ConstructorRef, FunctionRef, OtherExpression, Polymorphic,
+  QualifiedName, Specific, TypeFieldEffect, Wildcard,
 }
 import qcheck
 import simplifile
@@ -465,4 +467,58 @@ pub fn pick_best_version_eligible_test() {
     }
     Error(Nil) -> Nil
   }
+}
+
+// argument_value_effects (Stage C construction-index value resolution)
+
+pub fn argument_value_effects_resolves_function_ref_test() {
+  // A FunctionRef resolves against the KB, including inferred project effects.
+  // This is what lets `run` and `run_infer` agree on a constructor field wired
+  // to a qualified project function once the spec carries its effects.
+  let kb =
+    effects.with_inferred(
+      knowledge_base(),
+      dict.from_list([
+        #(
+          QualifiedName("myapp/log", "emit"),
+          Specific(set.from_list(["Stdout"])),
+        ),
+      ]),
+    )
+  effects.argument_value_effects(
+    kb,
+    FunctionRef(QualifiedName("myapp/log", "emit")),
+  )
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn argument_value_effects_constructor_is_pure_test() {
+  effects.argument_value_effects(knowledge_base(), ConstructorRef)
+  |> should.equal(Specific(set.new()))
+}
+
+pub fn argument_value_effects_other_is_unknown_test() {
+  effects.argument_value_effects(knowledge_base(), OtherExpression)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+// Type-field keys are qualified by the defining module (no cross-module collision)
+
+pub fn type_fields_distinguish_modules_test() {
+  // Two `Validator` types in different modules, same field — must NOT conflate.
+  let kb =
+    effects.with_inferred_type_fields(knowledge_base(), [
+      #(
+        #("app/a", "Validator", "f"),
+        TypeFieldEffect(Specific(set.from_list(["Http"])), [], None),
+      ),
+      #(
+        #("app/b", "Validator", "f"),
+        TypeFieldEffect(Specific(set.from_list(["Stdout"])), [], None),
+      ),
+    ])
+  let assert Ok(a) = effects.lookup_type_field(kb, "app/a", "Validator", "f")
+  a.effects |> should.equal(Specific(set.from_list(["Http"])))
+  let assert Ok(b) = effects.lookup_type_field(kb, "app/b", "Validator", "f")
+  b.effects |> should.equal(Specific(set.from_list(["Stdout"])))
 }

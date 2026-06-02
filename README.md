@@ -263,11 +263,11 @@ gleam run -m graded format --stdin            # format from stdin (editor integr
 
 ## Limitations
 
-graded performs **syntax-level analysis** using [glance](https://hexdocs.pm/glance/) — it walks the AST without type inference and without inter-procedural value flow. This keeps the tool simple and avoids depending on compiler internals, but leaves a few patterns unresolved:
+graded combines **syntax-level analysis** using [glance](https://hexdocs.pm/glance/) with **type information** from [girard](https://hexdocs.pm/girard), a Hindley-Milner type annotator for Gleam that graded runs over the whole package. Types are an enhancement layer applied per function: a function girard can't type falls back to the syntax-level path, so types only ever sharpen a result, never change a resolved one. A few patterns remain unresolved:
 
-- **Cross-function record construction is opaque.** When `let v = Validator(to_error: MyError)` and the field call `v.to_error(42)` happen in the same function, graded binds the field to `MyError` and resolves the call. When the record is constructed in one function and passed to another (`foo(v)`), the receiving function only sees `v` as an opaque parameter. Use the type-level annotation (`type myapp.Validator.to_error : [...]`) for cross-function cases, or refactor the construction into the consuming function.
+- **Field calls resolve through real types, with limits on the inferred effect.** A field call `v.to_error(42)` resolves regardless of how `v` was obtained — a function parameter, a value returned from another function, an alias chain — because girard supplies `v`'s nominal type. The field's *effect* comes from a hand-written `type myapp.Validator.to_error : [...]` line, or is inferred automatically from the constructor call site (`Validator(to_error: io.println)` ⟹ `to_error : [Stdout]`, unioned across all sites in the package). If the wired function is effect-polymorphic, its variables are bound to the field call's own arguments, the same way resolved calls are. The inferred effect falls back to `[Unknown]` only when a field is wired to a value graded can't statically resolve — an inline closure, or a parameter/local variable rather than a named function. For those, add the `type` annotation. Named function references resolve whether same-module or cross-module, and cross-module constructors called with positional arguments are routed to their fields via the package-wide constructor-label map. Field effects are keyed by the type's defining module (from girard's inferred type), so two different types named `Validator` in different modules stay distinct.
 
-- **No second-order polymorphism.** Effect variables are flat — `apply(f: [e]) : [e]` works, but a function whose callback itself takes a callback can't propagate effects transitively. Nested effect variables would require unification/fixpoint machinery (full effect inference, à la Koka or Granule), which is outside graded's deliberately lightweight design.
+- **No nested (second-order) effect variables.** Effect variables are flat. Transitive propagation through call chains *does* work — a callback forwarded `outer(f) → middle(f) → inner(f)` resolves to `[f]`, and several fn-typed parameters each bind independently (`apply2(f, g) : [f, g]`). What graded can't express is an effect variable that is itself parameterized by a callback passed to a higher-order parameter — e.g. `with(action: fn(fn() -> Nil) -> a)` whose result effect depends on the callback `action` is applied to. That needs nested effect variables (unification/fixpoint machinery, à la Koka or Granule), outside graded's deliberately lightweight design.
 
 - **Unusual pipe target shapes aren't tracked.** `x |> foo`, `x |> foo.bar`, `x |> foo(args)`, and `x |> foo.bar(args)` all work, including with positional argument substitution for polymorphic callees. Less common shapes like `x |> { let f = bar(); f }` don't have a static callee name for the extractor to hang argument tracking off.
 
@@ -275,7 +275,7 @@ graded performs **syntax-level analysis** using [glance](https://hexdocs.pm/glan
 
 - **External code is opaque.** Erlang/JavaScript FFI implementations, pre-compiled dependencies without `.graded` files, and dynamically dispatched calls cannot be analyzed. Use `external effects` declarations to annotate these manually.
 
-In practice, idiomatic Gleam code (inline callbacks, direct calls, pipe chains, higher-order functions passing functions by name, validator/handler/config records constructed and used in the same function) is handled correctly. Function references passed to higher-order functions are tracked via auto-inferred polymorphic signatures (`effects map(f: [e]) : [e]`) and bound at each call site; locally-bound function-ref aliases (`let f = io.println; f(x)`), transitive aliases (`let g = f`), and field calls on same-function record constructions (`let v = Validator(to_error: E); v.to_error(x)`) also resolve.
+In practice, idiomatic Gleam code (inline callbacks, direct calls, pipe chains, higher-order functions passing functions by name, validator/handler/config records) is handled correctly. Function references passed to higher-order functions are tracked via auto-inferred polymorphic signatures (`effects map(f: [e]) : [e]`) and bound at each call site; locally-bound function-ref aliases (`let f = io.println; f(x)`), transitive aliases (`let g = f`), and field calls on records — whether constructed in the same function or returned from another — resolve through girard's inferred receiver types.
 
 ## Future work
 
@@ -291,29 +291,13 @@ check myapp.view(handler.on_click: [Dom]) : [Dom]
 
 This is a syntax extension to `ParamBound` (path instead of identifier), no analysis required — the user declares what a record field's effects are, and substitution works exactly like first-order param bounds. Covers the escape-hatch case for field calls and for any other value flow graded can't trace.
 
-### Same-function value flow
+### Nested (second-order) effect variables
 
-A small dataflow pass over each function body tracking three kinds of local bindings:
+Full effect inference where an effect variable is itself parameterized — `apply(f: fn(cb) -> x) : ?` where the result depends on what `f` does with `cb`. Requires a unification pass and a fixpoint over effect variables. (Transitive propagation through call *chains* already works — see 0.7.0; this is the remaining nested case.) This pushes graded across the line from "syntax-level subset checker" to "real effect-inference system" — probably better served by a separate tool (or adopting one like Granule) than by extending graded.
 
-1. **Function-ref alias** — `let f = io.println` → `f` is a callable with `[Stdout]`
-2. **Record construction** — `let v = Validator(to_error: MyError)` → `v`'s fields map to values
-3. **Transitive alias** — `let g = f` → chain lookup
+### Retiring the positional/label heuristics
 
-With this, field calls on locally-constructed records resolve automatically (closing most of the field-call limitation), and pipe targets like `let f = bar; x |> f` also resolve. Doesn't cross function boundaries — construction sites that happen in another function remain opaque.
-
-### Effect unification
-
-Full effect inference with nested variables — `apply(f: fn(cb) -> x) : ?` where the result depends on what `f` does with `cb`. Requires a unification pass and a fixpoint over effect variables. This pushes graded across the line from "syntax-level subset checker" to "real effect-inference system" — probably better served by a separate tool (or adopting one like Granule) than by extending graded.
-
-### Typed AST integration
-
-If the Gleam compiler exposed typed AST metadata (expression types, resolved function references), graded could:
-
-- Eliminate the remaining positional/label heuristics by reading actual parameter positions from types
-- Resolve field calls without requiring explicit type annotations on parameters
-- Track function references through value flow without ad-hoc AST pattern matching
-
-Not feasible until the Gleam compiler exposes type info to third-party tools.
+graded reads expression types from [girard](https://hexdocs.pm/girard), which already resolves field calls without explicit parameter annotations and detects fn-typed parameters. The one piece not taken: replacing the positional/label argument-matching heuristics (`find_matching_arg`/`position_from_registry`). They drive polymorphic call-site substitution — a subsystem girard's expression types don't cleanly map onto — so they were kept deliberately. Revisit only if a concrete imprecision surfaces.
 
 ### Privacy and information flow checking
 
