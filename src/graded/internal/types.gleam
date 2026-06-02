@@ -131,6 +131,36 @@ pub fn substitute(
   }
 }
 
+/// A richer effect representation: a small lambda-calculus-with-union over
+/// effects. `EffectSet` is its ground normal form — anything an `EffectSet`
+/// can express, a variable-free, application-free `EffectTerm` can too.
+///
+/// Effect variables come in two kinds, kept implicit in structure:
+///   - `Eff`       — a flat effect (a bare `TVar`, e.g. `e`)
+///   - `Eff -> Eff` — an effect *operator* (a `TAbs`, used under `TApp`,
+///                    e.g. a higher-order parameter `action`)
+///
+/// This is what lets graded express *second-order* effect polymorphism: an
+/// effect variable that is itself parameterized by a callback. See
+/// docs/second-order-effects.md.
+pub type EffectTerm {
+  /// Ground labels. `TLabels(∅)` is pure. Kind `Eff`.
+  TLabels(labels: Set(String))
+  /// The wildcard `[_]`, absorbing under union. Kind `Eff`.
+  TTop
+  /// A free effect variable. Kind `Eff` when bare.
+  TVar(name: String)
+  /// Operator application: `operator` applied to `argument`, e.g.
+  /// `action(Stdout)`. Stuck (left symbolic) when `operator` is an unresolved
+  /// variable. Kind `Eff`.
+  TApp(operator: EffectTerm, argument: EffectTerm)
+  /// An effect operator `λparam. body` — a higher-order parameter's latent
+  /// effect as a function of its callback. Kind `Eff -> Eff`.
+  TAbs(param: String, body: EffectTerm)
+  /// Composition of effects (set union). Kind `Eff`.
+  TUnion(terms: List(EffectTerm))
+}
+
 /// An effect bound on a function-typed parameter.
 pub type ParamBound {
   ParamBound(name: String, effects: EffectSet)

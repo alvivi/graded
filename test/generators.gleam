@@ -3,12 +3,80 @@ import gleam/list
 import gleam/option.{None}
 import gleam/set
 import graded/internal/types.{
-  type EffectSet, AnnotationLine, BlankLine, Check, CommentLine,
+  type EffectSet, type EffectTerm, AnnotationLine, BlankLine, Check, CommentLine,
   EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
-  GradedFile, ModuleExternal, ParamBound, Polymorphic, Specific,
-  TypeFieldAnnotation, TypeFieldLine, Wildcard,
+  GradedFile, ModuleExternal, ParamBound, Polymorphic, Specific, TAbs, TApp,
+  TLabels, TTop, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 import qcheck
+
+const effect_labels = ["Http", "Dom", "Stdout", "Db", "FileSystem", "Time"]
+
+const effect_var_names = ["e", "e1", "e2", "a", "cb"]
+
+fn one_of(items: List(String)) -> qcheck.Generator(String) {
+  case items {
+    [] -> qcheck.return("")
+    [first, ..rest] ->
+      qcheck.from_generators(
+        qcheck.return(first),
+        list.map(rest, qcheck.return),
+      )
+  }
+}
+
+/// A generator for arbitrary `EffectTerm`s, depth-bounded so reduction stays
+/// cheap. Produces every constructor, including stuck applications and
+/// operators, so the property suite exercises the interesting reduction paths.
+pub fn effect_term_gen() -> qcheck.Generator(EffectTerm) {
+  use depth <- qcheck.bind(qcheck.bounded_int(0, 3))
+  effect_term_sized(depth)
+}
+
+fn effect_term_sized(depth: Int) -> qcheck.Generator(EffectTerm) {
+  case depth <= 0 {
+    True -> effect_term_leaf_gen()
+    False -> {
+      let sub = effect_term_sized(depth - 1)
+      qcheck.from_weighted_generators(#(3, effect_term_leaf_gen()), [
+        #(3, effect_union_gen(sub)),
+        #(2, qcheck.map2(sub, sub, fn(o, a) { TApp(o, a) })),
+        #(
+          2,
+          qcheck.map2(one_of(effect_var_names), sub, fn(p, b) { TAbs(p, b) }),
+        ),
+      ])
+    }
+  }
+}
+
+fn effect_term_leaf_gen() -> qcheck.Generator(EffectTerm) {
+  let labels_gen =
+    qcheck.map(qcheck.list_from(one_of(effect_labels)), fn(labels) {
+      TLabels(set.from_list(labels))
+    })
+  qcheck.from_weighted_generators(#(3, labels_gen), [
+    #(1, qcheck.return(TTop)),
+    #(2, qcheck.map(one_of(effect_var_names), TVar)),
+  ])
+}
+
+fn effect_union_gen(
+  sub: qcheck.Generator(EffectTerm),
+) -> qcheck.Generator(EffectTerm) {
+  use n <- qcheck.bind(qcheck.bounded_int(0, 3))
+  qcheck.map(qcheck.fixed_length_list_from(sub, n), TUnion)
+}
+
+/// A generator for variable→term substitutions over the standard variable
+/// pool, so substitution domains actually overlap term variables.
+pub fn effect_binding_gen() -> qcheck.Generator(dict.Dict(String, EffectTerm)) {
+  let pair_gen =
+    qcheck.map2(one_of(effect_var_names), effect_term_gen(), fn(name, term) {
+      #(name, term)
+    })
+  qcheck.map(qcheck.list_from(pair_gen), dict.from_list)
+}
 
 pub fn effect_set_gen() -> qcheck.Generator(EffectSet) {
   let label_gen =
