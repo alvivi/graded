@@ -1,8 +1,11 @@
 # Design: second-order effect variables via a uniform `EffectTerm` model
 
-Status: **planned** (branch `nested-effect-vars`). This closes the "no nested
-(second-order) effect variables" limitation documented in
-[README.md](../README.md#limitations) and the corresponding ROADMAP item.
+Status: **implemented** (branch `nested-effect-vars`). This closes the "no
+nested (second-order) effect variables" limitation that was documented in
+[README.md](../README.md#limitations) and the corresponding ROADMAP item. All
+six phases below shipped; the one residual is an inference caveat (operator
+arguments that are inline closures or opaque locals collapse to `[Unknown]`),
+noted in the README limitations.
 
 ## Goal
 

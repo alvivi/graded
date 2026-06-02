@@ -72,11 +72,31 @@ fn-typed parameter positions; unsolved variables surface as polymorphic
 signatures. The heavier route first sketched here (a dedicated `EffectTerm`
 representation with a fixpoint solver) proved unnecessary and was dropped.
 
-**Not covered:** *nested* effect variables — an effect that is itself
-parameterized by a callback passed to a higher-order parameter (true
-second-order polymorphism). Effect variables stay flat; see the README
-limitation. Closing that would need the fixpoint machinery, and isn't
-currently planned.
+**Not covered (at 0.7.0):** *nested* effect variables — an effect that is
+itself parameterized by a callback passed to a higher-order parameter (true
+second-order polymorphism). This is now closed — see below.
+
+---
+
+## Second-order effect variables ✅
+
+**Shipped.** The flat `Polymorphic(labels, variables)` representation was
+replaced by an `EffectTerm` — a small lambda-calculus-with-union over effects,
+with `EffectSet` as its ground normal form. Effect variables can now be
+*higher-kinded* (operators, `Eff → Eff`), not just flat (`Eff`): a parameter
+whose own type takes a function (`action: fn(fn() -> Nil) -> a`) is an operator,
+a call `action(cb)` infers an effect-operator application `[action(Stdout)]`,
+and at a call site the operator argument is lifted and the application
+**beta-reduces** to the concrete effect.
+
+**Delivered via** pure-Gleam term reduction (capture-avoiding substitution +
+beta + union normalization, fuel-guarded) — the "`EffectTerm` + fixpoint
+solver" route sketched at 0.7.0, but without needing an external solver or a
+fixpoint (finite, non-recursive terms). The reduction laws, capture-avoidance,
+soundness (over-approximation), and termination are property-tested. See
+[docs/second-order-effects.md](./docs/second-order-effects.md). The one residual
+is an *inference* caveat (operator arguments that are inline closures / opaque
+locals), documented in the README limitations.
 
 ---
 
@@ -135,4 +155,5 @@ annotator itself is the long pole.
 | 0.6.0 | Field calls on same-function records | — | ✅ shipped |
 | 0.7.0 | Nested higher-order polymorphism | — | ✅ shipped |
 | 3b | Field calls through record types (via girard) | ~~Expression-level type info~~ (unblocked by girard) | ✅ shipped |
+| Second-order | Higher-kinded (operator) effect variables, via `EffectTerm` | ~~Unification/fixpoint machinery~~ (pure-Gleam term reduction) | ✅ shipped |
 | Privacy | New checker on the same foundation | Dedicated design | future |

@@ -26,18 +26,20 @@ Tests use **gleeunit** with **qcheck** property generators in `test/generators.g
 
 ## Architecture
 
-Eight modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
+Eleven modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
 
 | File | Responsibility |
 |---|---|
 | `src/graded.gleam` | CLI entry point + public API: orchestrate `run_infer` (write spec + cache) and `run` (check the spec against source); run girard type inference + build the constructor-field index |
-| `src/graded/internal/types.gleam` | Shared types: QualifiedName, EffectAnnotation, ParamBound, FieldCall, TypeFieldAnnotation, Violation |
+| `src/graded/internal/types.gleam` | Shared types: QualifiedName, EffectSet, EffectTerm, EffectAnnotation, ParamBound, FieldCall, TypeFieldAnnotation, Violation |
+| `src/graded/internal/effect_term.gleam` | `EffectTerm` operations: normalize (beta + union laws), capture-avoiding substitution, free vars, `EffectSet`↔`EffectTerm` bridges (second-order resolution) |
 | `src/graded/internal/config.gleam` | Read `[tools.graded]` from `gleam.toml`, resolve `spec_file` and `cache_dir` paths |
 | `src/graded/internal/annotation.gleam` | Parse/format `.graded` files; split qualified names |
 | `src/graded/internal/effects.gleam` | Knowledge base: function/type field -> effect set lookup; load spec files from deps |
 | `src/graded/internal/extract.gleam` | Walk glance AST, resolve imports, extract calls (resolved, local, field) + collect constructor bindings |
 | `src/graded/internal/checker.gleam` | Collect effects, check subset inclusion, resolve param bounds and field calls (type-directed via girard) |
 | `src/graded/internal/typeinfo.gleam` | Hold girard's per-expression inferred types, keyed by `#(start, end)` span, for receiver-type lookup |
+| `src/graded/internal/signatures.gleam` | Glance-backed parameter signatures: fn-typed and operator (second-order) parameter detection, positions, for call-site substitution |
 | `src/graded/internal/topo.gleam` | Kahn's-algorithm topological sort over a string-keyed dependency graph |
 
 ## .graded Annotation Syntax
@@ -103,4 +105,4 @@ Three call categories in the extractor:
 
 ## Theoretical Foundations
 
-Effects are sets of string labels. Composition is set union. Checking is subset inclusion. See THEORY.md for the full mathematical grounding (semirings, graded modal type theory).
+Effects are sets of string labels. Composition is set union. Checking is subset inclusion. Effect *variables* can be higher-kinded (operators, `Eff → Eff`) for second-order polymorphism: the internal `EffectTerm` is a small lambda-calculus-with-union and `EffectSet` is its ground normal form, reached by beta + union normalization (`effect_term.gleam`). See THEORY.md and docs/second-order-effects.md for the full grounding (semirings, graded modal type theory, higher-kinded effect variables).
