@@ -387,6 +387,7 @@ fn field_effect_of(
   value: types.ArgumentValue,
 ) -> types.TypeFieldEffect {
   let field_effects = effects.argument_value_effects(knowledge_base, value)
+  let concrete = types.TypeFieldEffect(field_effects, [], None)
   case value {
     types.FunctionRef(name:) ->
       case types.has_variables(field_effects) {
@@ -396,9 +397,9 @@ fn field_effect_of(
             effects.lookup_param_bounds(knowledge_base, name),
             Some(name),
           )
-        False -> types.TypeFieldEffect(field_effects, [], None)
+        False -> concrete
       }
-    _ -> types.TypeFieldEffect(field_effects, [], None)
+    _ -> concrete
   }
 }
 

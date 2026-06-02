@@ -103,11 +103,13 @@ pub fn with_inferred_type_fields(
   knowledge_base: KnowledgeBase,
   inferred: List(#(#(String, String), TypeFieldEffect)),
 ) -> KnowledgeBase {
-  let merged =
-    list.fold(inferred, knowledge_base.type_fields, fn(accumulator, entry) {
-      dict.insert(accumulator, entry.0, entry.1)
-    })
-  KnowledgeBase(..knowledge_base, type_fields: merged)
+  KnowledgeBase(
+    ..knowledge_base,
+    type_fields: dict.merge(
+      knowledge_base.type_fields,
+      dict.from_list(inferred),
+    ),
+  )
 }
 
 /// Merge external annotations into a knowledge base.
