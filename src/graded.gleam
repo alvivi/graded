@@ -329,16 +329,20 @@ fn build_project_registry(
 fn build_constructor_field_index(
   index: Dict(String, #(String, glance.Module)),
   knowledge_base: KnowledgeBase,
-) -> List(#(#(String, String), types.TypeFieldEffect)) {
-  // Global constructor-name -> type-name map across the whole package, so
-  // cross-module constructors key by the type girard reports for a receiver.
+) -> List(#(#(String, String, String), types.TypeFieldEffect)) {
+  // Global constructor-name -> #(defining module, type name) map across the
+  // whole package, so a field keys by the same qualified type girard reports
+  // for a receiver — same-named types in different modules stay distinct.
   let constructor_to_type =
-    dict.fold(index, dict.new(), fn(acc, _path, entry) {
+    dict.fold(index, dict.new(), fn(acc, path, entry) {
       let #(_gleam_path, module) = entry
-      dict.merge(acc, extract.build_constructor_type_map(module))
+      let qualified =
+        extract.build_constructor_type_map(module)
+        |> dict.map_values(fn(_constructor, type_name) { #(path, type_name) })
+      dict.merge(acc, qualified)
     })
 
-  // Accumulate (type_name, field) -> effect, unioning across every site.
+  // Accumulate (module, type_name, field) -> effect, unioning across sites.
   dict.fold(index, dict.new(), fn(acc, _path, entry) {
     let #(_gleam_path, module) = entry
     let context = extract.build_import_context(module)
@@ -355,21 +359,21 @@ fn build_constructor_field_index(
   |> dict.to_list()
 }
 
-/// Fold one constructor call's field bindings into the (type, field) -> effect
-/// accumulator, unioning with any effect already recorded for that field.
+/// Fold one constructor call's field bindings into the (module, type, field) ->
+/// effect accumulator, unioning with any effect already recorded for that field.
 fn accumulate_constructor_binding(
-  acc: Dict(#(String, String), types.TypeFieldEffect),
+  acc: Dict(#(String, String, String), types.TypeFieldEffect),
   binding: #(String, Dict(String, types.ArgumentValue)),
-  constructor_to_type: Dict(String, String),
+  constructor_to_type: Dict(String, #(String, String)),
   knowledge_base: KnowledgeBase,
-) -> Dict(#(String, String), types.TypeFieldEffect) {
+) -> Dict(#(String, String, String), types.TypeFieldEffect) {
   let #(constructor, fields) = binding
   case dict.get(constructor_to_type, constructor) {
     Error(Nil) -> acc
-    Ok(type_name) ->
+    Ok(#(module, type_name)) ->
       dict.fold(fields, acc, fn(inner, label, value) {
         let field_effect = field_effect_of(knowledge_base, value)
-        let key = #(type_name, label)
+        let key = #(module, type_name, label)
         let merged = case dict.get(inner, key) {
           Ok(existing) -> merge_field_effect(existing, field_effect)
           Error(Nil) -> field_effect

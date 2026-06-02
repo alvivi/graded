@@ -697,21 +697,30 @@ fn resolve_field_call(
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
 ) -> EffectSet {
-  // Resolve the receiver's nominal type: girard's inferred type for the receiver
-  // expression first (any receiver — let-bound from a call, pipe, return), then
-  // the receiver's syntactic parameter annotation as the fallback.
+  // Resolve the receiver's nominal type, qualified by its defining module:
+  // girard's inferred type for the receiver expression first (any receiver, and
+  // girard reports the defining module), then the receiver's syntactic parameter
+  // annotation (no module available, so keyed unqualified as "").
   let receiver_type =
     typeinfo.receiver_type(
       module_types,
       field_call.receiver_span.start,
       field_call.receiver_span.end,
     )
-    |> option.lazy_or(fn() { syntactic_param_type(function, field_call.object) })
+    |> option.lazy_or(fn() {
+      syntactic_param_type(function, field_call.object)
+      |> option.map(fn(type_name) { #("", type_name) })
+    })
   case receiver_type {
     None -> types.from_labels(["Unknown"])
-    Some(type_name) ->
+    Some(#(module, type_name)) ->
       case
-        effects.lookup_type_field(knowledge_base, type_name, field_call.label)
+        effects.lookup_type_field(
+          knowledge_base,
+          module,
+          type_name,
+          field_call.label,
+        )
       {
         Error(Nil) -> types.from_labels(["Unknown"])
         Ok(field_effect) ->

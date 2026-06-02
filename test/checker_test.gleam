@@ -1526,7 +1526,7 @@ fn polymorphic_field_kb_and_registry() -> #(
   let kb =
     effects.with_inferred_type_fields(knowledge_base(), [
       #(
-        #("Task", "go"),
+        #("", "Task", "go"),
         TypeFieldEffect(
           effects: action_var,
           bounds: [ParamBound("action", action_var)],

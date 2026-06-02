@@ -1,7 +1,7 @@
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/order
 import gleam/result
 import gleam/set.{type Set}
@@ -28,7 +28,11 @@ pub type KnowledgeBase {
   KnowledgeBase(
     all_effects: Dict(QualifiedName, EffectSet),
     param_bounds: Dict(QualifiedName, List(ParamBound)),
-    type_fields: Dict(#(String, String), TypeFieldEffect),
+    // Keyed by #(defining module, type name, field). The module qualifies the
+    // type so same-named types in different modules don't collide. Bare
+    // (cache/unqualified) annotations use "" — matched by the syntactic-receiver
+    // fallback, which can't determine the module.
+    type_fields: Dict(#(String, String, String), TypeFieldEffect),
     pure_modules: Set(String),
   )
 }
@@ -64,18 +68,21 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
 }
 
 /// Look up a type field's resolved effect (with any polymorphic bounds/source).
+/// `module` is the type's defining module (or "" for an unqualified lookup).
 /// `Error(Nil)` when the field is not in the registry.
 pub fn lookup_type_field(
   knowledge_base: KnowledgeBase,
+  module: String,
   type_name: String,
   field: String,
 ) -> Result(TypeFieldEffect, Nil) {
-  dict.get(knowledge_base.type_fields, #(type_name, field))
+  dict.get(knowledge_base.type_fields, #(module, type_name, field))
 }
 
 /// Merge hand-written type field annotations into a knowledge base. These carry
 /// no polymorphic bounds (a hand-written `type Foo.field : [...]` is a concrete
-/// budget), so they store empty bounds and no source.
+/// budget), so they store empty bounds and no source. A spec-qualified
+/// annotation (`type myapp.Foo.field`) keys by its module; a bare one by "".
 pub fn with_type_fields(
   knowledge_base: KnowledgeBase,
   type_fields: List(TypeFieldAnnotation),
@@ -85,9 +92,13 @@ pub fn with_type_fields(
       type_fields,
       knowledge_base.type_fields,
       fn(accumulator, type_field) {
+        let module = case type_field.module {
+          Some(module) -> module
+          None -> ""
+        }
         dict.insert(
           accumulator,
-          #(type_field.type_name, type_field.field),
+          #(module, type_field.type_name, type_field.field),
           TypeFieldEffect(type_field.effects, [], None),
         )
       },
@@ -96,12 +107,12 @@ pub fn with_type_fields(
 }
 
 /// Merge inferred type fields (from constructor sites) into a knowledge base.
-/// Each entry is `#(#(type_name, field), TypeFieldEffect)` and may carry the
-/// wired function's bounds + source for variable substitution at field calls.
-/// Applied before `with_type_fields(spec)` so hand-written lines still win.
+/// Each entry is `#(#(module, type_name, field), TypeFieldEffect)` and may carry
+/// the wired function's bounds + source for variable substitution at field
+/// calls. Applied before `with_type_fields(spec)` so hand-written lines win.
 pub fn with_inferred_type_fields(
   knowledge_base: KnowledgeBase,
-  inferred: List(#(#(String, String), TypeFieldEffect)),
+  inferred: List(#(#(String, String, String), TypeFieldEffect)),
 ) -> KnowledgeBase {
   KnowledgeBase(
     ..knowledge_base,

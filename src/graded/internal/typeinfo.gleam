@@ -82,17 +82,19 @@ pub fn fn_typed_params(
   }
 }
 
-/// The nominal type name of the expression spanning `#(start, end)`, if girard
-/// inferred it as a `Named` type (a record / custom type — exactly what the
-/// type-field registry is keyed by). `None` when the span is absent (girard
-/// skipped the enclosing function) or the expression is not a named type.
+/// The `#(defining module, type name)` of the expression spanning
+/// `#(start, end)`, if girard inferred it as a `Named` type (a record / custom
+/// type — exactly what the type-field registry is keyed by). The module
+/// qualifies the type so same-named types in different modules don't collide.
+/// `None` when the span is absent (girard skipped the enclosing function) or the
+/// expression is not a named type.
 pub fn receiver_type(
   module_types: Dict(#(Int, Int), Type),
   start: Int,
   end: Int,
-) -> Option(String) {
+) -> Option(#(String, String)) {
   case dict.get(module_types, #(start, end)) {
-    Ok(Named(_module, name, _arguments)) -> Some(name)
+    Ok(Named(module, name, _arguments)) -> Some(#(module, name))
     _ -> None
   }
 }

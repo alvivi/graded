@@ -20,8 +20,8 @@ The gaps that remain are documented in [README.md](./README.md#limitations):
 
 - Inferred field effects fall back to `[Unknown]` for values graded can't
   statically resolve (local function values, cross-module unlabelled positional
-  constructor args); type-name keying is bare, so same-named types across
-  modules are conflated.
+  constructor args). Type-field keys are qualified by the type's defining module,
+  so same-named types in different modules no longer conflate.
 - The label/position argument-matching heuristics remain (deliberately not
   retired — they drive polymorphic call-site substitution, a subsystem girard's
   expression types don't cleanly replace).
