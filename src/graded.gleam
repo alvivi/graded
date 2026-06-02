@@ -21,6 +21,8 @@
 
 import argv
 import filepath
+import girard
+import girard/types as girard_types
 import glance
 import gleam/bool
 import gleam/dict.{type Dict}
@@ -38,6 +40,7 @@ import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
 import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/topo
+import graded/internal/typeinfo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type GradedFile, type QualifiedName,
   type Violation, type Warning, AnnotationLine, CheckResult, EffectAnnotation,
@@ -135,6 +138,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   let index = build_module_index(parsed, directory)
   let dep_registry = signatures.load_from_packages_dir("build/packages")
   let registry = signatures.merge(dep_registry, build_project_registry(index))
+  let type_info = build_type_index(index)
 
   let results =
     list.map(parsed, fn(entry) {
@@ -150,6 +154,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
         module_checks,
         knowledge_base,
         registry,
+        typeinfo.for_module(type_info, module_path),
       )
     })
 
@@ -196,6 +201,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   // polymorphic calls.
   let dep_registry = signatures.load_from_packages_dir("build/packages")
   let registry = signatures.merge(dep_registry, build_project_registry(index))
+  let type_info = build_type_index(index)
 
   use #(_kb, public_annotations) <- result.try(
     list.try_fold(sorted, #(base_kb, []), fn(state, module_path) {
@@ -209,6 +215,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
             cfg.cache_dir,
             kb,
             registry,
+            typeinfo.for_module(type_info, module_path),
           ))
           // Prepend new_public so each iteration is O(|new_public|) instead
           // of O(|acc|); final order doesn't matter, merge_inferred keys by
@@ -290,6 +297,57 @@ fn build_project_registry(
   })
 }
 
+/// Run girard's whole-package type inference once over every project module
+/// and fold the result into a `TypeInfo` (module path -> span start -> type).
+/// girard is best-effort: a function it can't type contributes no expressions,
+/// so the checker silently falls back to syntax-level resolution for it.
+fn build_type_index(
+  index: Dict(String, #(String, glance.Module)),
+) -> typeinfo.TypeInfo {
+  let options =
+    girard.default_options()
+    |> girard.with_resolver(build_girard_resolver(index))
+  let entries =
+    dict.to_list(index)
+    |> list.map(fn(pair) {
+      let #(module_path, #(_gleam_path, module)) = pair
+      #(module_path, module)
+    })
+  let modules =
+    girard.annotate_package(entries, options)
+    |> dict.to_list()
+    |> list.map(fn(pair) {
+      let #(module_path, module_result) = pair
+      let span_types =
+        list.fold(
+          module_result.annotated.expressions,
+          dict.new(),
+          fn(acc, annotation) {
+            dict.insert(acc, annotation.span.start, annotation.type_)
+          },
+        )
+      #(module_path, span_types)
+    })
+  typeinfo.from_modules(modules)
+}
+
+/// A girard `Resolver` that resolves graded's own project modules from `index`
+/// first (so non-`src` layouts like `test/fixtures` work), then falls through
+/// to girard's stock disk resolver for dependencies and stdlib under
+/// `build/packages`.
+fn build_girard_resolver(
+  index: Dict(String, #(String, glance.Module)),
+) -> fn(String) -> Result(String, Nil) {
+  let disk = girard.disk_resolver()
+  fn(module_path) {
+    case dict.get(index, module_path) {
+      Ok(#(gleam_path, _module)) ->
+        simplifile.read(gleam_path) |> result.replace_error(Nil)
+      Error(Nil) -> disk(module_path)
+    }
+  }
+}
+
 /// Build an index from dotted module name (`app/router`) to the parsed file.
 /// This is the set of *project* modules — every module name in this dict is
 /// a candidate dependency-graph node.
@@ -331,8 +389,10 @@ fn infer_one_module(
   cache_dir: String,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
+  module_types: Dict(Int, girard_types.Type),
 ) -> Result(#(KnowledgeBase, List(EffectAnnotation)), GradedError) {
-  let inferred = checker.infer(module, knowledge_base, [], registry)
+  let inferred =
+    checker.infer(module, knowledge_base, [], registry, module_types)
 
   let cache_path = filepath.join(cache_dir, module_path <> ".graded")
 
@@ -454,9 +514,10 @@ fn check_one_file(
   module_checks: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
+  module_types: Dict(Int, girard_types.Type),
 ) -> CheckResult {
   let #(violations, warnings) =
-    checker.check(module, module_checks, knowledge_base, registry)
+    checker.check(module, module_checks, knowledge_base, registry, module_types)
   CheckResult(file: gleam_path, violations:, warnings:)
 }
 
@@ -619,7 +680,9 @@ fn infer_path_dep_module(
   case dict.get(index, module_path) {
     Error(_) -> #(acc, kb)
     Ok(#(module, checks)) -> {
-      let annotations = checker.infer(module, kb, checks, signatures.empty())
+      // Path-dep inference skips girard in v1 (cost/benefit): pass no types.
+      let annotations =
+        checker.infer(module, kb, checks, signatures.empty(), dict.new())
       let module_dict =
         list.fold(annotations, dict.new(), fn(d, annotation) {
           dict.insert(

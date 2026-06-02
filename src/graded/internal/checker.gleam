@@ -1,3 +1,4 @@
+import girard/types as girard_types
 import glance.{type Definition, type Function, type Module}
 import gleam/bool
 import gleam/dict
@@ -21,6 +22,7 @@ pub fn check(
   annotations: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
+  module_types: dict.Dict(Int, girard_types.Type),
 ) -> #(List(Violation), List(Warning)) {
   let context = extract.build_import_context(module)
   let function_map = build_function_map(module)
@@ -33,6 +35,7 @@ pub fn check(
         context,
         knowledge_base,
         registry,
+        module_types,
       )
     })
   let violations = list.flat_map(results, fn(r) { r.0 })
@@ -47,6 +50,7 @@ pub fn infer(
   knowledge_base: KnowledgeBase,
   existing_checks: List(EffectAnnotation),
   registry: SignatureRegistry,
+  module_types: dict.Dict(Int, girard_types.Type),
 ) -> List(EffectAnnotation) {
   let context = extract.build_import_context(module)
   let function_map = build_function_map(module)
@@ -88,6 +92,7 @@ pub fn infer(
         set.new(),
         effective_bounds,
         registry,
+        module_types,
       )
     let effect_set =
       list.fold(all_effects, types.empty(), fn(combined, pair) {
@@ -156,6 +161,7 @@ fn check_annotation(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
+  module_types: dict.Dict(Int, girard_types.Type),
 ) -> #(List(Violation), List(Warning)) {
   case dict.get(function_map, annotation.function) {
     // Silently skip: the annotation may be stale or apply to a different
@@ -171,6 +177,7 @@ fn check_annotation(
           set.new(),
           annotation.params,
           registry,
+          module_types,
         )
       // A call is a violation when its effect set is not a subset of the
       // declared budget — i.e. it performs effects the caller didn't allow.
@@ -243,6 +250,7 @@ fn collect_effects(
   visited: Set(String),
   param_bounds: List(ParamBound),
   registry: SignatureRegistry,
+  module_types: dict.Dict(Int, girard_types.Type),
 ) -> List(#(types.ResolvedCall, EffectSet)) {
   let result = extract.extract_calls(function.body, context)
 
@@ -292,6 +300,7 @@ fn collect_effects(
             context,
             knowledge_base,
             registry,
+            module_types,
           )
           |> substitute_local_call_effects(
             local_call,
@@ -315,7 +324,8 @@ fn collect_effects(
           ),
           span: field_call.span,
         )
-      let effect_set = resolve_field_call(field_call, function, knowledge_base)
+      let effect_set =
+        resolve_field_call(field_call, function, knowledge_base, module_types)
       #(synthetic_call, effect_set)
     })
 
@@ -616,6 +626,7 @@ fn resolve_unknown_local(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
+  module_types: dict.Dict(Int, girard_types.Type),
 ) -> List(#(ResolvedCall, EffectSet)) {
   case set.contains(visited, local_call.function) {
     // Cycle detected — already analysing this function up the call stack.
@@ -653,6 +664,7 @@ fn resolve_unknown_local(
             new_visited,
             nested_bounds,
             registry,
+            module_types,
           )
         }
       }
@@ -663,6 +675,8 @@ fn resolve_field_call(
   field_call: types.FieldCall,
   function: Function,
   knowledge_base: KnowledgeBase,
+  // Threaded for Stage A (type-directed receiver resolution); unread in A0.
+  _module_types: dict.Dict(Int, girard_types.Type),
 ) -> EffectSet {
   let unknown = types.from_labels(["Unknown"])
   let param =
