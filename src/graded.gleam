@@ -335,28 +335,12 @@ fn build_constructor_field_index(
   // site's resolved module (or the current module for an unqualified call)
   // picks the right entry.
   let constructor_types =
-    dict.fold(index, dict.new(), fn(acc, path, entry) {
-      let #(_gleam_path, module) = entry
-      let qualified =
-        extract.build_constructor_type_map(module)
-        |> dict.to_list()
-        |> list.map(fn(pair) { #(#(path, pair.0), pair.1) })
-        |> dict.from_list()
-      dict.merge(acc, qualified)
-    })
+    qualify_by_module(index, extract.build_constructor_type_map)
 
   // Package-wide #(defining module, constructor) -> field labels, so a
   // cross-module positional constructor call routes its arguments to fields.
   let cross_constructors =
-    dict.fold(index, dict.new(), fn(acc, path, entry) {
-      let #(_gleam_path, module) = entry
-      let qualified =
-        extract.constructor_label_map(module)
-        |> dict.to_list()
-        |> list.map(fn(pair) { #(#(path, pair.0), pair.1) })
-        |> dict.from_list()
-      dict.merge(acc, qualified)
-    })
+    qualify_by_module(index, extract.constructor_label_map)
 
   // Accumulate (module, type_name, field) -> effect, unioning across sites.
   // `path` is the module being walked — used to qualify same-module function
@@ -378,6 +362,20 @@ fn build_constructor_field_index(
     })
   })
   |> dict.to_list()
+}
+
+/// Build a package-wide map keyed by `#(defining module, name)` from a per-module
+/// `name -> value` map, qualifying each entry with the module it came from.
+fn qualify_by_module(
+  index: Dict(String, #(String, glance.Module)),
+  per_module: fn(glance.Module) -> Dict(String, value),
+) -> Dict(#(String, String), value) {
+  dict.fold(index, dict.new(), fn(acc, path, entry) {
+    let #(_gleam_path, module) = entry
+    dict.fold(per_module(module), acc, fn(inner, name, value) {
+      dict.insert(inner, #(path, name), value)
+    })
+  })
 }
 
 /// Fold one constructor call's field bindings into the (module, type, field) ->
