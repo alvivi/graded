@@ -58,31 +58,25 @@ indexed; unlabelled cross-module constructor args fall into
 
 ---
 
-## 0.7.0 — Function-argument effect unification (#3a)
+## 0.7.0 — Function-argument effect unification (#3a) ✅
 
-**Goal:** propagate effect variables through nested higher-order calls.
-A function taking a callback that itself takes a callback resolves
-transitively instead of bottoming out at `[Unknown]`.
+**Shipped.** Effect variables now propagate through nested higher-order
+calls: a callback forwarded through a chain of functions
+(`outer(f) → middle(f) → inner(f)`) resolves transitively instead of
+bottoming out at `[Unknown]`, and a function with several fn-typed
+parameters binds each independently (`apply2(f, g) : [f, g]`).
 
-**Scope:**
+**Delivered via** the existing `Polymorphic(labels, variables)` effect set
+plus call-site substitution — binding happens by matching arguments at
+fn-typed parameter positions; unsolved variables surface as polymorphic
+signatures. The heavier route first sketched here (a dedicated `EffectTerm`
+representation with a fixpoint solver) proved unnecessary and was dropped.
 
-- New effect term representation:
-  `EffectTerm = Concrete(Set(String)) | Variable(String) | Union(...)`
-- Two-phase analysis: collect subset constraints, solve by fixpoint
-  iteration, then check against declared bounds.
-- Substitute solved variables back into inferred specs; unsolved
-  variables surface as polymorphic signatures (syntax already exists).
-- Error messages redesigned: a violation means "no assignment to free
-  vars makes `A ⊇ B` hold." Needs explicit UX work.
-
-**Architectural cost:** medium refactor — every place that returns
-`Set(String)` in the analysis pipeline gains the richer term type. The
-solver algorithm itself is ~150 lines; the refactor is the real cost.
-
-**Estimate:** 3–4 weeks focused.
-
-**Risk:** error-message usability. Technically-correct violations that
-users can't act on. Budget design time for this.
+**Not covered:** *nested* effect variables — an effect that is itself
+parameterized by a callback passed to a higher-order parameter (true
+second-order polymorphism). Effect variables stay flat; see the README
+limitation. Closing that would need the fixpoint machinery, and isn't
+currently planned.
 
 ---
 
