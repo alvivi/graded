@@ -159,6 +159,11 @@ pub fn lookup_effects(
 /// reference resolves via the knowledge base; a nested constructor is pure;
 /// anything else (a local identifier, an inline expression) is `[Unknown]`,
 /// since we can't statically resolve it here.
+///
+/// If the referenced function is itself effect-polymorphic, this returns a
+/// `Polymorphic` set whose variables aren't bound — field calls don't perform
+/// call-site substitution — so the field's effect surfaces with free variables.
+/// Rare in practice, and only a loss of precision, not soundness.
 pub fn argument_value_effects(
   knowledge_base: KnowledgeBase,
   value: ArgumentValue,

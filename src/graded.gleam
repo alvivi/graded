@@ -191,9 +191,19 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     effects.load_knowledge_base("build/packages")
     |> enrich_with_path_deps()
     |> effects.with_externals(annotation.extract_externals(spec))
+  // Resolve constructor-field values against the same view `run` uses — catalog
+  // + externals + the spec's *existing* inferred effects — so `infer` and
+  // `check` agree on a field wired to a qualified project function, converging
+  // across runs. The inferred effects are NOT seeded into `base_kb` below: the
+  // topo loop recomputes them fresh, threading each module's result forward.
+  let construction_kb =
+    effects.with_inferred(kb_base, effects.load_spec_effects_from_file(spec))
   let base_kb =
     kb_base
-    |> effects.with_type_fields(build_constructor_field_index(index, kb_base))
+    |> effects.with_type_fields(build_constructor_field_index(
+      index,
+      construction_kb,
+    ))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
 
   let graph = build_dependency_graph(index)
@@ -452,6 +462,13 @@ fn fn_typed_names(
   function: glance.Function,
   argument_types: List(girard_types.Type),
 ) -> Set(String) {
+  // Positional mapping is only sound when girard's `Fn` arity matches glance's
+  // parameter count. `list.zip` would silently truncate a mismatch, so skip the
+  // function entirely rather than map parameters to the wrong types.
+  use <- bool.guard(
+    when: list.length(function.parameters) != list.length(argument_types),
+    return: set.new(),
+  )
   list.zip(function.parameters, argument_types)
   |> list.filter_map(fn(pair) {
     let #(parameter, argument_type) = pair
