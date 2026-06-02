@@ -161,18 +161,23 @@ pub type EffectTerm {
   TUnion(terms: List(EffectTerm))
 }
 
-/// An effect bound on a function-typed parameter.
+/// An effect bound on a function-typed parameter. The `effects` is an
+/// `EffectTerm`: a flat `Eff` term for a first-order callback (`f: [e]`), or
+/// an operator `TAbs` for a higher-order one (`action: fn(cb) -> [cb]`).
 pub type ParamBound {
-  ParamBound(name: String, effects: EffectSet)
+  ParamBound(name: String, effects: EffectTerm)
 }
 
-/// An effect annotation from a .graded sidecar file.
+/// An effect annotation from a .graded sidecar file. `effects` is an
+/// `EffectTerm` — for the common first-order case a variable-free or flat-
+/// variable term equivalent to an `EffectSet`, but it may carry operator
+/// applications (`[action(Stdout)]`) for second-order signatures.
 pub type EffectAnnotation {
   EffectAnnotation(
     kind: AnnotationKind,
     function: String,
     params: List(ParamBound),
-    effects: EffectSet,
+    effects: EffectTerm,
   )
 }
 
@@ -244,7 +249,7 @@ pub type TypeFieldAnnotation {
     module: Option(String),
     type_name: String,
     field: String,
-    effects: EffectSet,
+    effects: EffectTerm,
   )
 }
 
@@ -256,7 +261,7 @@ pub type TypeFieldAnnotation {
 /// Both are empty/`None` for hand-written annotations and concrete field values.
 pub type TypeFieldEffect {
   TypeFieldEffect(
-    effects: EffectSet,
+    effects: EffectTerm,
     bounds: List(ParamBound),
     source: Option(QualifiedName),
   )

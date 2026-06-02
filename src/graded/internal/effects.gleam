@@ -8,8 +8,9 @@ import gleam/set.{type Set}
 import gleam/string
 import graded/internal/annotation
 import graded/internal/config
+import graded/internal/effect_term
 import graded/internal/types.{
-  type ArgumentValue, type EffectAnnotation, type EffectSet,
+  type ArgumentValue, type EffectAnnotation, type EffectSet, type EffectTerm,
   type ExternalAnnotation, type ParamBound, type QualifiedName,
   type TypeFieldAnnotation, type TypeFieldEffect, Check, ConstructorRef, Effects,
   FunctionExternal, FunctionRef, ModuleExternal, Polymorphic, QualifiedName,
@@ -19,14 +20,14 @@ import simplifile
 import tom
 
 pub type EffectLookup {
-  Known(EffectSet)
+  Known(EffectTerm)
   Unknown
 }
 
 /// Bundles all effect knowledge: dependency + catalog, precomputed for fast lookup.
 pub type KnowledgeBase {
   KnowledgeBase(
-    all_effects: Dict(QualifiedName, EffectSet),
+    all_effects: Dict(QualifiedName, EffectTerm),
     param_bounds: Dict(QualifiedName, List(ParamBound)),
     // Keyed by #(defining module, type name, field). The module qualifies the
     // type so same-named types in different modules don't collide. Bare
@@ -145,7 +146,7 @@ pub fn with_externals(
             dict.insert(
               effect_map,
               QualifiedName(external_annotation.module, function),
-              external_annotation.effects,
+              effect_term.from_effect_set(external_annotation.effects),
             ),
             pure_set,
           )
@@ -168,20 +169,22 @@ pub fn lookup(
     Ok(effect_set) -> Known(effect_set)
     Error(Nil) ->
       case set.contains(knowledge_base.pure_modules, name.module) {
-        True -> Known(types.empty())
+        True -> Known(effect_term.pure())
         False -> Unknown
       }
   }
 }
 
-/// Look up effects, returning [Unknown] for unrecognized functions.
+/// Look up effects as an `EffectTerm`, returning `[Unknown]` for unrecognized
+/// functions. The term may be second-order (carry operator applications) for
+/// higher-order functions; callers reduce it at the resolution boundary.
 pub fn lookup_effects(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
-) -> EffectSet {
+) -> EffectTerm {
   case lookup(knowledge_base, name) {
-    Known(effect_set) -> effect_set
-    Unknown -> types.from_labels(["Unknown"])
+    Known(effect_term) -> effect_term
+    Unknown -> effect_term.unknown()
   }
 }
 
@@ -197,11 +200,11 @@ pub fn lookup_effects(
 pub fn argument_value_effects(
   knowledge_base: KnowledgeBase,
   value: ArgumentValue,
-) -> EffectSet {
+) -> EffectTerm {
   case value {
     FunctionRef(name:) -> lookup_effects(knowledge_base, name)
-    ConstructorRef -> types.empty()
-    _ -> types.from_labels(["Unknown"])
+    ConstructorRef -> effect_term.pure()
+    _ -> effect_term.unknown()
   }
 }
 
@@ -273,7 +276,7 @@ pub fn parse_path_dependencies(
 /// `effects` annotation maps directly to a `QualifiedName` without needing
 /// to know which file it came from. Returns an empty dict when the spec
 /// file is missing or unparseable.
-pub fn load_spec_effects(spec_path: String) -> Dict(QualifiedName, EffectSet) {
+pub fn load_spec_effects(spec_path: String) -> Dict(QualifiedName, EffectTerm) {
   case read_spec_annotations(spec_path) {
     Error(_) -> dict.new()
     Ok(annotations) -> fold_spec_effects(annotations)
@@ -285,13 +288,13 @@ pub fn load_spec_effects(spec_path: String) -> Dict(QualifiedName, EffectSet) {
 /// in hand.
 pub fn load_spec_effects_from_file(
   file: types.GradedFile,
-) -> Dict(QualifiedName, EffectSet) {
+) -> Dict(QualifiedName, EffectTerm) {
   fold_spec_effects(annotation.extract_annotations(file))
 }
 
 fn fold_spec_effects(
   annotations: List(EffectAnnotation),
-) -> Dict(QualifiedName, EffectSet) {
+) -> Dict(QualifiedName, EffectTerm) {
   list.fold(annotations, dict.new(), fn(acc, ann) {
     case ann.kind {
       Effects ->
@@ -321,7 +324,7 @@ fn read_spec_annotations(
 /// Existing entries in the knowledge base take priority.
 pub fn with_inferred(
   knowledge_base: KnowledgeBase,
-  inferred: Dict(QualifiedName, EffectSet),
+  inferred: Dict(QualifiedName, EffectTerm),
 ) -> KnowledgeBase {
   let merged = dict.merge(inferred, knowledge_base.all_effects)
   KnowledgeBase(..knowledge_base, all_effects: merged)
@@ -349,7 +352,7 @@ pub fn with_inferred_params(
 /// per-module reader.
 fn load_dependency_effects(
   packages_directory: String,
-) -> #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))) {
+) -> #(Dict(QualifiedName, EffectTerm), Dict(QualifiedName, List(ParamBound))) {
   let entries = case simplifile.read_directory(packages_directory) {
     Ok(found) -> found
     Error(_) -> []
@@ -365,9 +368,12 @@ fn load_dependency_effects(
 }
 
 fn load_spec_into_maps(
-  maps: #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))),
+  maps: #(
+    Dict(QualifiedName, EffectTerm),
+    Dict(QualifiedName, List(ParamBound)),
+  ),
   spec_path: String,
-) -> #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))) {
+) -> #(Dict(QualifiedName, EffectTerm), Dict(QualifiedName, List(ParamBound))) {
   case read_spec_annotations(spec_path) {
     Error(_) -> maps
     Ok(annotations) -> list.fold(annotations, maps, fold_qualified_annotation)
@@ -376,11 +382,11 @@ fn load_spec_into_maps(
 
 fn fold_qualified_annotation(
   accumulator: #(
-    Dict(QualifiedName, EffectSet),
+    Dict(QualifiedName, EffectTerm),
     Dict(QualifiedName, List(ParamBound)),
   ),
   ann: EffectAnnotation,
-) -> #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))) {
+) -> #(Dict(QualifiedName, EffectTerm), Dict(QualifiedName, List(ParamBound))) {
   let #(effect_map, param_map) = accumulator
   case annotation.split_qualified_name(ann.function) {
     Error(_) -> accumulator
@@ -412,9 +418,9 @@ fn find_catalog_directory() -> String {
 
 type CatalogAcc {
   CatalogAcc(
-    ext_effects: Dict(QualifiedName, EffectSet),
+    ext_effects: Dict(QualifiedName, EffectTerm),
     pure_mods: Set(String),
-    poly_effects: Dict(QualifiedName, EffectSet),
+    poly_effects: Dict(QualifiedName, EffectTerm),
     poly_params: Dict(QualifiedName, List(ParamBound)),
   )
 }
@@ -423,7 +429,7 @@ fn load_catalog(
   catalog_dir: String,
   manifest_path: String,
 ) -> #(
-  Dict(QualifiedName, EffectSet),
+  Dict(QualifiedName, EffectTerm),
   Set(String),
   Dict(QualifiedName, List(ParamBound)),
 ) {

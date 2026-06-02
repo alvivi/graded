@@ -37,6 +37,7 @@ import gleam/yielder
 import graded/internal/annotation
 import graded/internal/checker
 import graded/internal/config
+import graded/internal/effect_term
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
 import graded/internal/signatures.{type SignatureRegistry}
@@ -419,7 +420,7 @@ fn field_effect_of(
   case field_value_function(value, module_path) {
     Some(name) -> {
       let field_effects = effects.lookup_effects(knowledge_base, name)
-      case types.has_variables(field_effects) {
+      case !set.is_empty(effect_term.free_vars(field_effects)) {
         True ->
           types.TypeFieldEffect(
             field_effects,
@@ -464,7 +465,7 @@ fn merge_field_effect(
     None -> #(new.bounds, new.source)
   }
   types.TypeFieldEffect(
-    types.union(existing.effects, new.effects),
+    effect_term.normalize(types.TUnion([existing.effects, new.effects])),
     bounds,
     source,
   )
@@ -867,7 +868,7 @@ fn enrich_with_path_deps(knowledge_base: KnowledgeBase) -> KnowledgeBase {
 pub fn infer_path_dep(
   dep_path: String,
   base_kb: KnowledgeBase,
-) -> Result(Dict(QualifiedName, types.EffectSet), Nil) {
+) -> Result(Dict(QualifiedName, types.EffectTerm), Nil) {
   let source_dir = dep_path <> "/src"
   let gleam_files = case simplifile.get_files(source_dir) {
     Ok(found) ->
@@ -912,10 +913,10 @@ pub fn infer_path_dep(
 }
 
 fn infer_path_dep_module(
-  state: #(Dict(QualifiedName, types.EffectSet), KnowledgeBase),
+  state: #(Dict(QualifiedName, types.EffectTerm), KnowledgeBase),
   module_path: String,
   index: Dict(String, #(glance.Module, List(types.EffectAnnotation))),
-) -> #(Dict(QualifiedName, types.EffectSet), KnowledgeBase) {
+) -> #(Dict(QualifiedName, types.EffectTerm), KnowledgeBase) {
   let #(acc, kb) = state
   case dict.get(index, module_path) {
     Error(_) -> #(acc, kb)

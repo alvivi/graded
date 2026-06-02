@@ -7,14 +7,15 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
+import graded/internal/effect_term
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract.{type ImportContext}
 import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/typeinfo
 import graded/internal/types.{
-  type EffectAnnotation, type EffectSet, type LocalCall, type ParamBound,
+  type EffectAnnotation, type EffectTerm, type LocalCall, type ParamBound,
   type ResolvedCall, type Violation, type Warning, EffectAnnotation, Effects,
-  ParamBound, Polymorphic, QualifiedName, UntrackedEffectWarning, Violation,
+  ParamBound, QualifiedName, TUnion, TVar, UntrackedEffectWarning, Violation,
 }
 
 /// Check a parsed module against its effect annotations.
@@ -103,28 +104,36 @@ pub fn infer(
         registry,
         module_types,
       )
-    let effect_set =
-      list.fold(all_effects, types.empty(), fn(combined, pair) {
-        types.union(combined, pair.1)
+    let effects_term =
+      list.fold(all_effects, effect_term.pure(), fn(combined, pair) {
+        effect_term.normalize(TUnion([combined, pair.1]))
       })
     // If the function's inferred effects reference effect variables
     // (because it calls fn-typed params), emit ParamBound entries so
     // the polymorphic annotation round-trips correctly.
-    let inferred_params = polymorphic_param_bounds(effect_set, fn_typed_params)
+    let inferred_params =
+      polymorphic_param_bounds(effects_term, fn_typed_params)
     EffectAnnotation(
       kind: Effects,
       function: definition.definition.name,
       params: inferred_params,
-      effects: effect_set,
+      effects: effects_term,
     )
   })
 }
 
-/// A bound whose effects are the single variable named after the param
-/// itself — `Polymorphic({}, {name})`. The variable refers to itself,
-/// resolved later by substitution at call sites.
+/// A bound whose effect is the single variable named after the param
+/// itself — `TVar(name)`. The variable refers to itself, resolved later by
+/// substitution at call sites. When the matching argument is an effect
+/// *operator* (a `TAbs`), binding `name` to it and beta-reducing is exactly
+/// what resolves a second-order call.
 fn self_referential_bound(name: String) -> ParamBound {
-  ParamBound(name, Polymorphic(set.new(), set.from_list([name])))
+  ParamBound(name, TVar(name))
+}
+
+/// True iff a term still carries unresolved (free) effect variables.
+fn has_vars(term: EffectTerm) -> Bool {
+  !set.is_empty(effect_term.free_vars(term))
 }
 
 /// Synthesise a self-referential polymorphic bound for each auto-detected
@@ -142,18 +151,15 @@ fn synthetic_fn_typed_bounds(fn_typed_params: Set(String)) -> List(ParamBound) {
 /// `Polymorphic({}, {var_name})` — the variable refers to itself,
 /// resolved later by substitution at call sites.
 fn polymorphic_param_bounds(
-  effect_set: EffectSet,
+  effect_term: EffectTerm,
   fn_typed_params: Set(String),
 ) -> List(ParamBound) {
-  case effect_set {
-    Polymorphic(_, variables) ->
-      variables
-      |> set.to_list()
-      |> list.filter(fn(v) { set.contains(fn_typed_params, v) })
-      |> list.sort(string.compare)
-      |> list.map(self_referential_bound)
-    _ -> []
-  }
+  effect_term
+  |> effect_term.free_vars()
+  |> set.to_list()
+  |> list.filter(fn(v) { set.contains(fn_typed_params, v) })
+  |> list.sort(string.compare)
+  |> list.map(self_referential_bound)
 }
 
 // PRIVATE
@@ -190,21 +196,24 @@ fn check_annotation(
         )
       // A call is a violation when its effect set is not a subset of the
       // declared budget — i.e. it performs effects the caller didn't allow.
+      // Both sides are reduced to their ground normal form first.
+      let declared = effect_term.to_effect_set(annotation.effects)
       let violations =
         body_effects
-        |> list.filter(fn(pair) {
-          let #(_, call_effects) = pair
-          !types.is_subset(call_effects, annotation.effects)
-        })
-        |> list.map(fn(pair) {
-          let #(call, call_effects) = pair
-          Violation(
-            function: annotation.function,
-            call: call.name,
-            span: call.span,
-            declared: annotation.effects,
-            actual: call_effects,
-          )
+        |> list.filter_map(fn(pair) {
+          let #(call, call_term) = pair
+          let actual = effect_term.to_effect_set(call_term)
+          case types.is_subset(actual, declared) {
+            True -> Error(Nil)
+            False ->
+              Ok(Violation(
+                function: annotation.function,
+                call: call.name,
+                span: call.span,
+                declared:,
+                actual:,
+              ))
+          }
         })
 
       // Warn about function references passed as values with known non-pure effects.
@@ -229,7 +238,8 @@ fn collect_reference_warnings(
 ) -> List(Warning) {
   list.filter_map(references, fn(ref) {
     case effects.lookup(knowledge_base, ref.name) {
-      effects.Known(effect_set) ->
+      effects.Known(term) -> {
+        let effect_set = effect_term.to_effect_set(term)
         case effect_set == types.empty() {
           True -> Error(Nil)
           False ->
@@ -240,12 +250,15 @@ fn collect_reference_warnings(
               effects: effect_set,
             ))
         }
+      }
       effects.Unknown -> Error(Nil)
     }
   })
 }
 
-// Collect all (call, effect_set) pairs reachable from a function body.
+// Collect all (call, effect_term) pairs reachable from a function body. Each
+// effect is an `EffectTerm` — possibly still carrying free variables or operator
+// applications — reduced to an `EffectSet` only at the subset-check boundary.
 // Calls fall into three categories:
 //   resolved — qualified module.function calls, looked up in the knowledge base
 //   local    — unqualified calls, resolved via param bounds or transitive analysis
@@ -260,7 +273,7 @@ fn collect_effects(
   param_bounds: List(ParamBound),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-) -> List(#(types.ResolvedCall, EffectSet)) {
+) -> List(#(types.ResolvedCall, EffectTerm)) {
   let result = extract.extract_calls(function.body, context)
 
   // Resolved calls: qualified names looked up directly in the knowledge
@@ -359,15 +372,15 @@ fn collect_effects(
 /// `[<var>]` upward — only cross-module calls (which go through
 /// `substitute_at_call_site`) would get bound.
 fn substitute_local_call_effects(
-  recursive: List(#(types.ResolvedCall, EffectSet)),
+  recursive: List(#(types.ResolvedCall, EffectTerm)),
   local_call: LocalCall,
   call_args: dict.Dict(Int, List(types.CallArgument)),
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-) -> List(#(types.ResolvedCall, EffectSet)) {
-  let any_polymorphic = list.any(recursive, fn(p) { types.has_variables(p.1) })
+) -> List(#(types.ResolvedCall, EffectTerm)) {
+  let any_polymorphic = list.any(recursive, fn(p) { has_vars(p.1) })
   use <- bool.guard(when: !any_polymorphic, return: recursive)
   case dict.get(function_map, local_call.function) {
     Error(Nil) -> recursive
@@ -401,8 +414,8 @@ fn substitute_local_call_effects(
           merged_registry,
         )
       list.map(recursive, fn(pair) {
-        let #(call, effects) = pair
-        #(call, types.substitute(effects, bindings))
+        let #(call, term) = pair
+        #(call, effect_term.normalize(effect_term.subst(term, bindings)))
       })
     }
   }
@@ -423,27 +436,27 @@ fn local_polymorphic_bounds(function: Function) -> List(ParamBound) {
 /// the caller's parameter).
 fn substitute_at_call_site(
   call: types.ResolvedCall,
-  effect_set: EffectSet,
+  effect: EffectTerm,
   call_args: dict.Dict(Int, List(types.CallArgument)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-) -> EffectSet {
+) -> EffectTerm {
   let callee_kb_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
-  // Fast path: concrete effect set with declared bounds — nothing to
+  // Fast path: concrete effect with declared bounds — nothing to
   // substitute. With no declared bounds we still need to fall through
   // in case the registry flags auto-injectable fn-typed params.
   use <- bool.guard(
-    when: !types.has_variables(effect_set) && callee_kb_bounds != [],
-    return: effect_set,
+    when: !has_vars(effect) && callee_kb_bounds != [],
+    return: effect,
   )
   let args = dict.get(call_args, call.span.start) |> result.unwrap([])
   let #(effective_effects, effective_bounds) = case callee_kb_bounds {
-    [_, ..] -> #(effect_set, callee_kb_bounds)
-    [] -> auto_bounds_from_registry(call.name, effect_set, args, registry)
+    [_, ..] -> #(effect, callee_kb_bounds)
+    [] -> auto_bounds_from_registry(call.name, effect, args, registry)
   }
   use <- bool.guard(
-    when: !types.has_variables(effective_effects),
+    when: !has_vars(effective_effects),
     return: effective_effects,
   )
   let bindings =
@@ -455,7 +468,7 @@ fn substitute_at_call_site(
       caller_param_bounds,
       registry,
     )
-  types.substitute(effective_effects, bindings)
+  effect_term.normalize(effect_term.subst(effective_effects, bindings))
 }
 
 /// When the KB has no bounds but the registry reports fn-typed params,
@@ -471,10 +484,10 @@ fn substitute_at_call_site(
 /// is decided independently.
 fn auto_bounds_from_registry(
   callee_name: types.QualifiedName,
-  existing_effects: EffectSet,
+  existing_effects: EffectTerm,
   args: List(types.CallArgument),
   registry: SignatureRegistry,
-) -> #(EffectSet, List(ParamBound)) {
+) -> #(EffectTerm, List(ParamBound)) {
   let fn_labels = signatures.fn_typed_param_names(registry, callee_name)
   use <- bool.guard(
     when: set.is_empty(fn_labels),
@@ -498,10 +511,9 @@ fn auto_bounds_from_registry(
   case tracked_bounds {
     [] -> #(existing_effects, [])
     _ -> {
-      let tracked_labels =
-        tracked_bounds |> list.map(fn(b) { b.name }) |> set.from_list
+      let tracked_vars = list.map(tracked_bounds, fn(b) { TVar(b.name) })
       #(
-        types.union(existing_effects, Polymorphic(set.new(), tracked_labels)),
+        effect_term.normalize(TUnion([existing_effects, ..tracked_vars])),
         tracked_bounds,
       )
     }
@@ -519,7 +531,7 @@ fn bind_variables(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-) -> dict.Dict(String, EffectSet) {
+) -> dict.Dict(String, EffectTerm) {
   list.fold(callee_bounds, dict.new(), fn(acc, bound) {
     // Find the argument matching this parameter by label (caller used
     // an explicit label) or by real parameter position from the
@@ -529,9 +541,13 @@ fn bind_variables(
       Some(arg) -> {
         let arg_effects =
           resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
-        // Extract the variable name(s) from this bound — typically the
-        // bound was `param: [var_name]`, so `var_name` == bound.name.
-        let var_names = variables_in(bound.effects)
+        // Bind the bound's free variable(s) to the argument's effect. For a
+        // first-order bound `param: [e]` that's the variable `e`; for a self-
+        // referential fn-typed bound it's the parameter name itself, which
+        // (when the argument is an operator) carries an operator term and
+        // beta-reduces at the call site.
+        let var_names =
+          bound.effects |> effect_term.free_vars() |> set.to_list()
         list.fold(var_names, acc, fn(d, var) {
           dict.insert(d, var, arg_effects)
         })
@@ -539,13 +555,6 @@ fn bind_variables(
       None -> acc
     }
   })
-}
-
-fn variables_in(effect_set: EffectSet) -> List(String) {
-  case effect_set {
-    Polymorphic(_, variables) -> set.to_list(variables)
-    _ -> []
-  }
 }
 
 /// Find the argument that matches a given param bound. Prefers label
@@ -623,16 +632,16 @@ fn resolve_argument_effects(
   arg: types.CallArgument,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
-) -> EffectSet {
+) -> EffectTerm {
   case arg.value {
     types.FunctionRef(name) -> effects.lookup_effects(knowledge_base, name)
-    types.ConstructorRef -> types.empty()
+    types.ConstructorRef -> effect_term.pure()
     types.LocalRef(name) ->
       case list.find(caller_param_bounds, fn(b) { b.name == name }) {
         Ok(bound) -> bound.effects
-        Error(Nil) -> types.from_labels(["Unknown"])
+        Error(Nil) -> effect_term.unknown()
       }
-    types.OtherExpression -> types.from_labels(["Unknown"])
+    types.OtherExpression -> effect_term.unknown()
   }
 }
 
@@ -644,7 +653,7 @@ fn resolve_unknown_local(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-) -> List(#(ResolvedCall, EffectSet)) {
+) -> List(#(ResolvedCall, EffectTerm)) {
   case set.contains(visited, local_call.function) {
     // Cycle detected — already analysing this function up the call stack.
     // Return empty rather than looping; the effects will be captured by the
@@ -661,7 +670,7 @@ fn resolve_unknown_local(
               ),
               span: local_call.span,
             )
-          [#(synthetic_call, types.from_labels(["Unknown"]))]
+          [#(synthetic_call, effect_term.unknown())]
         }
         Ok(local_definition) -> {
           let new_visited = set.insert(visited, local_call.function)
@@ -696,7 +705,7 @@ fn resolve_field_call(
   call_args: dict.Dict(Int, List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-) -> EffectSet {
+) -> EffectTerm {
   // Resolve the receiver's nominal type, qualified by its defining module:
   // girard's inferred type for the receiver expression first (any receiver, and
   // girard reports the defining module), then the receiver's syntactic parameter
@@ -712,7 +721,7 @@ fn resolve_field_call(
       |> option.map(fn(type_name) { #("", type_name) })
     })
   case receiver_type {
-    None -> types.from_labels(["Unknown"])
+    None -> effect_term.unknown()
     Some(#(module, type_name)) ->
       case
         effects.lookup_type_field(
@@ -722,7 +731,7 @@ fn resolve_field_call(
           field_call.label,
         )
       {
-        Error(Nil) -> types.from_labels(["Unknown"])
+        Error(Nil) -> effect_term.unknown()
         Ok(field_effect) ->
           resolve_field_effect(
             field_effect,
@@ -747,8 +756,8 @@ fn resolve_field_effect(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-) -> EffectSet {
-  case types.has_variables(field_effect.effects), field_effect.source {
+) -> EffectTerm {
+  case has_vars(field_effect.effects), field_effect.source {
     False, _ -> field_effect.effects
     True, None -> concretize(field_effect.effects)
     True, Some(source) -> {
@@ -762,19 +771,23 @@ fn resolve_field_effect(
           caller_param_bounds,
           registry,
         )
-      concretize(types.substitute(field_effect.effects, bindings))
+      concretize(effect_term.subst(field_effect.effects, bindings))
     }
   }
 }
 
-/// Replace any effect variables left after substitution with `Unknown`, so an
-/// unbound field effect never surfaces with free variables.
-fn concretize(effect_set: EffectSet) -> EffectSet {
-  case effect_set {
-    Polymorphic(labels, _variables) ->
-      types.Specific(set.insert(labels, "Unknown"))
-    _ -> effect_set
-  }
+/// Collapse any effect variables left after substitution to `Unknown`, so an
+/// unbound field effect never surfaces with free variables. (Unlike a regular
+/// call, a field whose variables can't be bound has no caller to propagate them
+/// to, so the conservative `[Unknown]` is the right answer.)
+fn concretize(term: EffectTerm) -> EffectTerm {
+  let bindings =
+    term
+    |> effect_term.free_vars()
+    |> set.fold(dict.new(), fn(d, var) {
+      dict.insert(d, var, effect_term.unknown())
+    })
+  effect_term.normalize(effect_term.subst(term, bindings))
 }
 
 /// The nominal type name declared on the function parameter named `object`, if

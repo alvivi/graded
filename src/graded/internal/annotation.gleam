@@ -5,6 +5,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/set
 import gleam/string
+import graded/internal/effect_term
 import graded/internal/types.{
   type AnnotationKind, type EffectAnnotation, type EffectSet,
   type ExternalAnnotation, type GradedFile, type GradedLine, type ParamBound,
@@ -67,13 +68,13 @@ pub fn format_annotation(annotation: EffectAnnotation) -> String {
       "("
       <> string.join(
         list.map(params, fn(param) {
-          param.name <> ": " <> format_effect_set(param.effects)
+          param.name <> ": " <> format_effect_term(param.effects)
         }),
         ", ",
       )
       <> ")"
   }
-  let effects_string = format_effect_set(annotation.effects)
+  let effects_string = format_effect_term(annotation.effects)
   prefix
   <> " "
   <> annotation.function
@@ -118,7 +119,7 @@ pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
   <> "."
   <> tf.field
   <> " : "
-  <> format_effect_set(tf.effects)
+  <> format_effect_term(tf.effects)
 }
 
 /// Extract type field annotations from a parsed file.
@@ -341,7 +342,12 @@ fn parse_annotation_rest(
       case parse_name_colon_effects(no_params) {
         Error(Nil) -> err
         Ok(#(name, effects)) ->
-          Ok(EffectAnnotation(kind:, function: name, params: [], effects:))
+          Ok(EffectAnnotation(
+            kind:,
+            function: name,
+            params: [],
+            effects: effect_term.from_effect_set(effects),
+          ))
       }
 
     // Has parameter bounds: "name(params) : effects"
@@ -382,7 +388,12 @@ fn parse_params_suffix(
       let effects_str = string.trim(string.drop_start(suffix_trimmed, 1))
       case parse_effect_set(effects_str), parse_params_section(params_str) {
         Ok(effects), Ok(params) ->
-          Ok(EffectAnnotation(kind:, function: name, params:, effects:))
+          Ok(EffectAnnotation(
+            kind:,
+            function: name,
+            params:,
+            effects: effect_term.from_effect_set(effects),
+          ))
         _, _ -> Error(Nil)
       }
     }
@@ -403,7 +414,12 @@ fn parse_type_field_line(rest: String) -> Result(TypeFieldAnnotation, Nil) {
   use #(qualified, effects) <- result.try(parse_name_colon_effects(rest))
   case string.split(qualified, ".") {
     [type_name, field] if type_name != "" && field != "" ->
-      Ok(TypeFieldAnnotation(module: None, type_name:, field:, effects:))
+      Ok(TypeFieldAnnotation(
+        module: None,
+        type_name:,
+        field:,
+        effects: effect_term.from_effect_set(effects),
+      ))
     segments -> {
       // 3+ segments → qualified form. Last two are TypeName and field; the
       // rest joined back with `.` is the module path.
@@ -419,7 +435,7 @@ fn parse_type_field_line(rest: String) -> Result(TypeFieldAnnotation, Nil) {
             module: Some(module),
             type_name:,
             field:,
-            effects:,
+            effects: effect_term.from_effect_set(effects),
           ))
         }
         _ -> Error(Nil)
@@ -459,7 +475,7 @@ fn parse_params_section(input: String) -> Result(List(ParamBound), Nil) {
 
 fn parse_single_param(input: String) -> Result(ParamBound, Nil) {
   use #(name, effects) <- result.try(parse_name_colon_effects(input))
-  Ok(ParamBound(name:, effects:))
+  Ok(ParamBound(name:, effects: effect_term.from_effect_set(effects)))
 }
 
 // Shared helper: parse "name : [effects]" returning the trimmed name and effect set.
@@ -536,6 +552,13 @@ fn collect_comments(lines: List(GradedLine)) -> List(String) {
       _ -> Error(Nil)
     }
   })
+}
+
+/// Format an `EffectTerm`. Phase 1 only serializes first-order terms — those
+/// reduce to an `EffectSet` losslessly, so we format via the ground form.
+/// (Phase 2 adds native syntax for operator bounds and applications.)
+fn format_effect_term(term: types.EffectTerm) -> String {
+  format_effect_set(effect_term.to_effect_set(term))
 }
 
 fn format_effect_set(effect_set: EffectSet) -> String {

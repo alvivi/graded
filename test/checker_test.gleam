@@ -10,6 +10,7 @@ import gleam/set
 import gleam/string
 import gleeunit/should
 import graded/internal/checker
+import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/signatures
 import graded/internal/types.{
@@ -44,7 +45,12 @@ pub fn pure_function_passes_test() {
     "import gleam/list
 pub fn view(items) { list.map(items, fn(x) { x }) }"
   check_source(source, [
-    EffectAnnotation(Check, "view", [], Specific(set.new())),
+    EffectAnnotation(
+      Check,
+      "view",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
   ])
   |> should.equal([])
 }
@@ -55,7 +61,12 @@ pub fn effectful_call_in_pure_function_fails_test() {
 pub fn view() { io.println(\"oops\") }"
   let violations =
     check_source(source, [
-      EffectAnnotation(Check, "view", [], Specific(set.new())),
+      EffectAnnotation(
+        Check,
+        "view",
+        [],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
     ])
   violations |> list.length() |> should.equal(1)
   let assert [violation] = violations
@@ -68,7 +79,12 @@ pub fn declared_effects_pass_test() {
     "import gleam/io
 pub fn log(msg) { io.println(msg) }"
   check_source(source, [
-    EffectAnnotation(Check, "log", [], Specific(set.from_list(["Stdout"]))),
+    EffectAnnotation(
+      Check,
+      "log",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    ),
   ])
   |> should.equal([])
 }
@@ -80,7 +96,12 @@ pub fn view() { helper() }
 fn helper() { io.println(\"sneaky\") }"
   let violations =
     check_source(source, [
-      EffectAnnotation(Check, "view", [], Specific(set.new())),
+      EffectAnnotation(
+        Check,
+        "view",
+        [],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
     ])
   violations |> list.length() |> should.equal(1)
   let assert [violation] = violations
@@ -101,7 +122,7 @@ pub fn do_stuff() {
         Check,
         "do_stuff",
         [],
-        Specific(set.from_list(["Stdout"])),
+        effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       ),
     ])
   violations
@@ -112,7 +133,12 @@ pub fn do_stuff() {
 pub fn missing_function_ignored_test() {
   let source = "pub fn other() { Nil }"
   check_source(source, [
-    EffectAnnotation(Check, "nonexistent", [], Specific(set.new())),
+    EffectAnnotation(
+      Check,
+      "nonexistent",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
   ])
   |> should.equal([])
 }
@@ -126,7 +152,12 @@ pub fn view(items) {
 }"
   let violations =
     check_source(source, [
-      EffectAnnotation(Check, "view", [], Specific(set.new())),
+      EffectAnnotation(
+        Check,
+        "view",
+        [],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
     ])
   { violations != [] } |> should.be_true()
 }
@@ -136,7 +167,12 @@ pub fn unknown_local_function_test() {
   let source = "pub fn view() { missing() }"
   let violations =
     check_source(source, [
-      EffectAnnotation(Check, "view", [], Specific(set.new())),
+      EffectAnnotation(
+        Check,
+        "view",
+        [],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
     ])
   // Should flag as Unknown effect
   { violations != [] } |> should.be_true()
@@ -163,7 +199,8 @@ pub fn view(items) { list.map(items, fn(x) { x }) }"
   let assert [annotation] = inferred
   annotation.kind |> should.equal(Effects)
   annotation.function |> should.equal("view")
-  annotation.effects |> should.equal(Specific(set.new()))
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Specific(set.new()))
 }
 
 pub fn infer_effectful_function_test() {
@@ -181,7 +218,8 @@ pub fn greet() { io.println(\"hi\") }"
       dict.new(),
     )
   let assert [annotation] = inferred
-  annotation.effects |> should.equal(Specific(set.from_list(["Stdout"])))
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 pub fn infer_only_public_functions_test() {
@@ -212,8 +250,13 @@ pub fn infer_uses_param_bounds_test() {
     EffectAnnotation(
       Check,
       "apply",
-      [ParamBound("f", Specific(set.from_list(["Stdout"])))],
-      Specific(set.from_list(["Stdout"])),
+      [
+        ParamBound(
+          "f",
+          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        ),
+      ],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     ),
   ]
   let inferred =
@@ -226,7 +269,8 @@ pub fn infer_uses_param_bounds_test() {
       dict.new(),
     )
   let assert [annotation] = inferred
-  annotation.effects |> should.equal(Specific(set.from_list(["Stdout"])))
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 pub fn infer_without_bounds_gets_unknown_test() {
@@ -244,7 +288,8 @@ pub fn infer_without_bounds_gets_unknown_test() {
       dict.new(),
     )
   let assert [annotation] = inferred
-  annotation.effects |> should.equal(Specific(set.from_list(["Unknown"])))
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
 /// Build the fn-typed-param map girard supplies, the way build_type_index does:
@@ -294,7 +339,7 @@ pub fn infer_girard_detects_unannotated_fn_typed_param_test() {
       girard_fn_typed_for(module),
     )
   let assert [annotation] = inferred
-  annotation.effects
+  effect_term.to_effect_set(annotation.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
 }
 
@@ -307,8 +352,13 @@ pub fn param_call_uses_bound_test() {
     EffectAnnotation(
       Check,
       "apply",
-      [ParamBound("f", Specific(set.from_list(["Stdout"])))],
-      Specific(set.from_list(["Stdout"])),
+      [
+        ParamBound(
+          "f",
+          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        ),
+      ],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
   check_source(source, [annotation]) |> should.equal([])
 }
@@ -317,7 +367,12 @@ pub fn param_call_uses_bound_test() {
 pub fn param_call_without_bound_is_unknown_test() {
   let source = "pub fn apply(f, x) { f(x) }"
   check_source(source, [
-    EffectAnnotation(Check, "apply", [], Specific(set.new())),
+    EffectAnnotation(
+      Check,
+      "apply",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
   ])
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
@@ -332,8 +387,8 @@ pub fn safe_map(items, f) { list.map(items, f) }"
     EffectAnnotation(
       Check,
       "safe_map",
-      [ParamBound("f", Specific(set.new()))],
-      Specific(set.new()),
+      [ParamBound("f", effect_term.from_effect_set(Specific(set.new())))],
+      effect_term.from_effect_set(Specific(set.new())),
     )
   check_source(source, [annotation]) |> should.equal([])
 }
@@ -347,7 +402,12 @@ pub fn run(items) {
   list.map(items, fn(x) { io.println(x) })
 }"
   let annotation =
-    EffectAnnotation(Check, "run", [], Specific(set.from_list(["Stdout"])))
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
   check_source(source, [annotation]) |> should.equal([])
 }
 
@@ -359,7 +419,14 @@ import gleam/list
 pub fn run(items) {
   list.map(items, fn(x) { io.println(x) })
 }"
-  check_source(source, [EffectAnnotation(Check, "run", [], Specific(set.new()))])
+  check_source(source, [
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
+  ])
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
 }
@@ -386,11 +453,16 @@ pub fn field_call_typed_with_registry_test() {
       module: None,
       type_name: "Handler",
       field: "on_click",
-      effects: Specific(set.from_list(["Dom"])),
+      effects: effect_term.from_effect_set(Specific(set.from_list(["Dom"]))),
     ),
   ]
   let annotation =
-    EffectAnnotation(Check, "view", [], Specific(set.from_list(["Dom"])))
+    EffectAnnotation(
+      Check,
+      "view",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Dom"]))),
+    )
   check_source_with_type_fields(source, [annotation], type_fields)
   |> should.equal([])
 }
@@ -451,7 +523,7 @@ fn validator_to_error_stdout() -> List(types.TypeFieldAnnotation) {
       module: None,
       type_name: "Validator",
       field: "to_error",
-      effects: Specific(set.from_list(["Stdout"])),
+      effects: effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     ),
   ]
 }
@@ -459,7 +531,12 @@ fn validator_to_error_stdout() -> List(types.TypeFieldAnnotation) {
 pub fn field_call_opaque_receiver_resolves_via_girard_test() {
   // With girard's type + the type annotation, the [Stdout] budget passes.
   let annotation =
-    EffectAnnotation(Check, "run", [], Specific(set.from_list(["Stdout"])))
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
   check_source_with_girard(
     opaque_receiver_source,
     [annotation],
@@ -471,7 +548,13 @@ pub fn field_call_opaque_receiver_resolves_via_girard_test() {
 pub fn field_call_opaque_receiver_violates_pure_test() {
   // Dual: against a [] budget the recovered [Stdout] surfaces as a violation,
   // proving the field call actually resolved (vs. silently inferring []).
-  let annotation = EffectAnnotation(Check, "run", [], Specific(set.new()))
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
   let violations =
     check_source_with_girard(
       opaque_receiver_source,
@@ -504,7 +587,12 @@ pub fn run(msg: String) -> Nil {
 }
 "
   let annotation =
-    EffectAnnotation(Check, "run", [], Specific(set.from_list(["Stdout"])))
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
   check_source_with_girard(source, [annotation], validator_to_error_stdout())
   |> should.equal([])
 }
@@ -513,7 +601,13 @@ pub fn field_call_girard_without_annotation_still_unknown_test() {
   // girard types the receiver, but no `type Validator.to_error` annotation
   // exists, so the effect is still [Unknown] — documents the A/C boundary:
   // Stage A needs the annotation for the effect; Stage C removes that need.
-  let annotation = EffectAnnotation(Check, "run", [], Specific(set.new()))
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
   let violations =
     check_source_with_girard(opaque_receiver_source, [annotation], [])
   let assert [violation] = violations
@@ -528,10 +622,16 @@ pub fn field_call_violates_check_test() {
       module: None,
       type_name: "Handler",
       field: "on_click",
-      effects: Specific(set.from_list(["Dom"])),
+      effects: effect_term.from_effect_set(Specific(set.from_list(["Dom"]))),
     ),
   ]
-  let annotation = EffectAnnotation(Check, "view", [], Specific(set.new()))
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "view",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
   check_source_with_type_fields(source, [annotation], type_fields)
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
@@ -540,7 +640,13 @@ pub fn field_call_violates_check_test() {
 // Typed param but no registry entry → Unknown
 pub fn field_call_typed_no_registry_is_unknown_test() {
   let source = "pub fn view(handler: Handler) { handler.on_click(event) }"
-  let annotation = EffectAnnotation(Check, "view", [], Specific(set.new()))
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "view",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
   check_source_with_type_fields(source, [annotation], [])
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
@@ -549,7 +655,13 @@ pub fn field_call_typed_no_registry_is_unknown_test() {
 // Untyped param → Unknown
 pub fn field_call_untyped_is_unknown_test() {
   let source = "pub fn view(handler) { handler.on_click(event) }"
-  let annotation = EffectAnnotation(Check, "view", [], Specific(set.new()))
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "view",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
   check_source(source, [annotation])
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
@@ -582,7 +694,12 @@ pub fn fetch() { httpc.send(request) }"
     ),
   ]
   let annotation =
-    EffectAnnotation(Check, "fetch", [], Specific(set.from_list(["Http"])))
+    EffectAnnotation(
+      Check,
+      "fetch",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
+    )
   check_source_with_externals(source, [annotation], externals)
   |> should.equal([])
 }
@@ -599,7 +716,13 @@ pub fn fetch() { httpc.send(request) }"
       Specific(set.from_list(["Http"])),
     ),
   ]
-  let annotation = EffectAnnotation(Check, "fetch", [], Specific(set.new()))
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "fetch",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
   check_source_with_externals(source, [annotation], externals)
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
@@ -611,14 +734,26 @@ pub fn wildcard_declared_passes_all_effects_test() {
   let source =
     "import gleam/io
 pub fn handler() { io.println(\"hi\") }"
-  check_source(source, [EffectAnnotation(Check, "handler", [], Wildcard)])
+  check_source(source, [
+    EffectAnnotation(
+      Check,
+      "handler",
+      [],
+      effect_term.from_effect_set(Wildcard),
+    ),
+  ])
   |> should.equal([])
 }
 
 pub fn wildcard_param_bound_passes_test() {
   let source = "pub fn apply(f, x) { f(x) }"
   let annotation =
-    EffectAnnotation(Check, "apply", [ParamBound("f", Wildcard)], Wildcard)
+    EffectAnnotation(
+      Check,
+      "apply",
+      [ParamBound("f", effect_term.from_effect_set(Wildcard))],
+      effect_term.from_effect_set(Wildcard),
+    )
   check_source(source, [annotation]) |> should.equal([])
 }
 
@@ -629,8 +764,8 @@ pub fn wildcard_param_bound_in_pure_function_violates_test() {
     EffectAnnotation(
       Check,
       "apply",
-      [ParamBound("f", Wildcard)],
-      Specific(set.new()),
+      [ParamBound("f", effect_term.from_effect_set(Wildcard))],
+      effect_term.from_effect_set(Specific(set.new())),
     )
   check_source(source, [annotation])
   |> { fn(vs) { vs != [] } }
@@ -663,7 +798,12 @@ import gleam/list
 pub fn greet_all(names) { list.map(names, io.println) }"
   let warnings =
     check_warnings(source, [
-      EffectAnnotation(Check, "greet_all", [], Specific(set.new())),
+      EffectAnnotation(
+        Check,
+        "greet_all",
+        [],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
     ])
   warnings |> list.length() |> should.equal(1)
   let assert [warning] = warnings
@@ -681,7 +821,12 @@ import gleam/list
 pub fn greet_all(names) { list.map(names, println) }"
   let warnings =
     check_warnings(source, [
-      EffectAnnotation(Check, "greet_all", [], Specific(set.new())),
+      EffectAnnotation(
+        Check,
+        "greet_all",
+        [],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
     ])
   warnings |> list.length() |> should.equal(1)
   let assert [warning] = warnings
@@ -696,7 +841,12 @@ pub fn function_ref_pure_no_warning_test() {
 import gleam/string
 pub fn upper_all(items) { list.map(items, string.uppercase) }"
   check_warnings(source, [
-    EffectAnnotation(Check, "upper_all", [], Specific(set.new())),
+    EffectAnnotation(
+      Check,
+      "upper_all",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
   ])
   |> should.equal([])
 }
@@ -708,7 +858,12 @@ pub fn function_ref_unknown_no_warning_test() {
 import gleam/list
 pub fn run(items) { list.map(items, unknown.do_thing) }"
   check_warnings(source, [
-    EffectAnnotation(Check, "run", [], Specific(set.new())),
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
   ])
   |> should.equal([])
 }
@@ -724,7 +879,7 @@ pub fn greet_all(names) { list.map(names, fn(n) { io.println(n) }) }"
       Check,
       "greet_all",
       [],
-      Specific(set.from_list(["Stdout"])),
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     ),
   ])
   |> should.equal([])
@@ -781,7 +936,7 @@ fn build_kb(calls: List(#(String, String, String))) -> effects.KnowledgeBase {
     |> list.map(fn(c) {
       #(
         types.QualifiedName(module: c.0, function: c.1),
-        types.from_labels([c.2]),
+        effect_term.from_effect_set(types.from_labels([c.2])),
       )
     })
     |> dict.from_list()
@@ -805,7 +960,13 @@ pub fn check_no_false_positives_test() {
     Ok(module) -> {
       let kb = build_kb(calls)
       let declared = actual_effects(calls)
-      let ann = EffectAnnotation(Check, "test_fn", [], declared)
+      let ann =
+        EffectAnnotation(
+          Check,
+          "test_fn",
+          [],
+          effect_term.from_effect_set(declared),
+        )
       let #(violations, _) =
         checker.check(module, [ann], kb, signatures.empty(), dict.new())
       violations |> should.equal([])
@@ -820,7 +981,13 @@ pub fn check_wildcard_never_violates_test() {
     Error(Nil) -> Nil
     Ok(module) -> {
       let kb = build_kb(calls)
-      let ann = EffectAnnotation(Check, "test_fn", [], Wildcard)
+      let ann =
+        EffectAnnotation(
+          Check,
+          "test_fn",
+          [],
+          effect_term.from_effect_set(Wildcard),
+        )
       let #(violations, _) =
         checker.check(module, [ann], kb, signatures.empty(), dict.new())
       violations |> should.equal([])
@@ -838,7 +1005,13 @@ pub fn check_empty_budget_detects_effects_test() {
         Error(Nil) -> Nil
         Ok(module) -> {
           let kb = build_kb(calls)
-          let ann = EffectAnnotation(Check, "test_fn", [], types.empty())
+          let ann =
+            EffectAnnotation(
+              Check,
+              "test_fn",
+              [],
+              effect_term.from_effect_set(types.empty()),
+            )
           let #(violations, _) =
             checker.check(module, [ann], kb, signatures.empty(), dict.new())
           { violations != [] } |> should.be_true()
@@ -858,7 +1031,13 @@ pub fn check_violations_iff_not_subset_test() {
     Error(Nil) -> Nil
     Ok(module) -> {
       let kb = build_kb(calls)
-      let ann = EffectAnnotation(Check, "test_fn", [], declared)
+      let ann =
+        EffectAnnotation(
+          Check,
+          "test_fn",
+          [],
+          effect_term.from_effect_set(declared),
+        )
       let #(violations, _) =
         checker.check(module, [ann], kb, signatures.empty(), dict.new())
       let has_violations = violations != []
@@ -887,7 +1066,8 @@ pub fn infer_matches_actual_effects_test() {
         )
       let assert [ann] = inferred
       ann.function |> should.equal("test_fn")
-      ann.effects |> should.equal(actual_effects(calls))
+      effect_term.to_effect_set(ann.effects)
+      |> should.equal(actual_effects(calls))
     }
   }
 }
@@ -968,7 +1148,13 @@ pub fn check_terminates_with_cycles_test() {
   case glance.module(source) {
     Error(_) -> Nil
     Ok(module) -> {
-      let ann = EffectAnnotation(Check, "a", [], types.empty())
+      let ann =
+        EffectAnnotation(
+          Check,
+          "a",
+          [],
+          effect_term.from_effect_set(types.empty()),
+        )
       let #(violations, _) =
         checker.check(
           module,
@@ -1007,11 +1193,14 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
 "
   let ann = infer_single(source)
   ann.function |> should.equal("apply")
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
   ann.params
   |> should.equal([
-    ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
+    ParamBound(
+      "f",
+      effect_term.from_effect_set(Polymorphic(set.new(), set.from_list(["f"]))),
+    ),
   ])
 }
 
@@ -1025,11 +1214,14 @@ pub fn log_and_apply(f: fn(Int) -> Int, x: Int) -> Int {
 }
 "
   let ann = infer_single(source)
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["f"])))
   ann.params
   |> should.equal([
-    ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
+    ParamBound(
+      "f",
+      effect_term.from_effect_set(Polymorphic(set.new(), set.from_list(["f"]))),
+    ),
   ])
 }
 
@@ -1041,12 +1233,18 @@ pub fn apply2(f: fn(Int) -> Int, g: fn(Int) -> Int, x: Int) -> Int {
 }
 "
   let ann = infer_single(source)
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["f", "g"])))
   ann.params
   |> should.equal([
-    ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
-    ParamBound("g", Polymorphic(set.new(), set.from_list(["g"]))),
+    ParamBound(
+      "f",
+      effect_term.from_effect_set(Polymorphic(set.new(), set.from_list(["f"]))),
+    ),
+    ParamBound(
+      "g",
+      effect_term.from_effect_set(Polymorphic(set.new(), set.from_list(["g"]))),
+    ),
   ])
 }
 
@@ -1064,8 +1262,13 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
     EffectAnnotation(
       Check,
       "apply",
-      [ParamBound("f", Specific(set.from_list(["Stdout"])))],
-      Specific(set.from_list(["Stdout"])),
+      [
+        ParamBound(
+          "f",
+          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        ),
+      ],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
   let assert [ann] =
     checker.infer(
@@ -1076,7 +1279,8 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
       dict.new(),
       dict.new(),
     )
-  ann.effects |> should.equal(Specific(set.from_list(["Stdout"])))
+  effect_term.to_effect_set(ann.effects)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
   ann.params |> should.equal([])
 }
 
@@ -1090,7 +1294,8 @@ pub fn apply(f, x) {
 }
 "
   let ann = infer_single(source)
-  ann.effects |> should.equal(Specific(set.from_list(["Unknown"])))
+  effect_term.to_effect_set(ann.effects)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
   ann.params |> should.equal([])
 }
 
@@ -1108,12 +1313,17 @@ fn polymorphic_kb() -> effects.KnowledgeBase {
       #(QualifiedName("validation", "validate_range"), [
         ParamBound(
           "to_error",
-          Polymorphic(set.new(), set.from_list(["to_error"])),
+          effect_term.from_effect_set(Polymorphic(
+            set.new(),
+            set.from_list(["to_error"]),
+          )),
         ),
       ]),
     ])
   effects.empty_knowledge_base()
-  |> effects.with_inferred(effects_map)
+  |> effects.with_inferred(
+    dict.map_values(effects_map, fn(_, v) { effect_term.from_effect_set(v) }),
+  )
   |> effects.with_inferred_params(params_map)
 }
 
@@ -1130,7 +1340,14 @@ pub fn new() {
   let #(violations, _) =
     checker.check(
       module,
-      [EffectAnnotation(Check, "new", [], Specific(set.new()))],
+      [
+        EffectAnnotation(
+          Check,
+          "new",
+          [],
+          effect_term.from_effect_set(Specific(set.new())),
+        ),
+      ],
       polymorphic_kb(),
       signatures.empty(),
       dict.new(),
@@ -1154,7 +1371,12 @@ pub fn new() {
     checker.check(
       module,
       [
-        EffectAnnotation(Check, "new", [], Specific(set.from_list(["Stdout"]))),
+        EffectAnnotation(
+          Check,
+          "new",
+          [],
+          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        ),
       ],
       polymorphic_kb(),
       signatures.empty(),
@@ -1177,7 +1399,14 @@ pub fn new() {
   let #(violations, _) =
     checker.check(
       module,
-      [EffectAnnotation(Check, "new", [], Specific(set.new()))],
+      [
+        EffectAnnotation(
+          Check,
+          "new",
+          [],
+          effect_term.from_effect_set(Specific(set.new())),
+        ),
+      ],
       polymorphic_kb(),
       signatures.empty(),
       dict.new(),
@@ -1205,7 +1434,7 @@ pub fn new() {
       dict.new(),
       dict.new(),
     )
-  ann.effects |> should.equal(Specific(set.new()))
+  effect_term.to_effect_set(ann.effects) |> should.equal(Specific(set.new()))
 }
 
 pub fn substitute_unresolvable_argument_keeps_variable_test() {
@@ -1231,7 +1460,8 @@ pub fn new() {
       dict.new(),
       dict.new(),
     )
-  ann.effects |> should.equal(Specific(set.from_list(["Unknown"])))
+  effect_term.to_effect_set(ann.effects)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
 // KB with a two-callback polymorphic function:
@@ -1247,12 +1477,26 @@ fn two_callback_kb() -> effects.KnowledgeBase {
   let params_map =
     dict.from_list([
       #(QualifiedName("combo", "apply2"), [
-        ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
-        ParamBound("g", Polymorphic(set.new(), set.from_list(["g"]))),
+        ParamBound(
+          "f",
+          effect_term.from_effect_set(Polymorphic(
+            set.new(),
+            set.from_list(["f"]),
+          )),
+        ),
+        ParamBound(
+          "g",
+          effect_term.from_effect_set(Polymorphic(
+            set.new(),
+            set.from_list(["g"]),
+          )),
+        ),
       ]),
     ])
   effects.empty_knowledge_base()
-  |> effects.with_inferred(effects_map)
+  |> effects.with_inferred(
+    dict.map_values(effects_map, fn(_, v) { effect_term.from_effect_set(v) }),
+  )
   |> effects.with_inferred_params(params_map)
 }
 
@@ -1284,7 +1528,7 @@ pub fn outer() -> MyError {
       dict.new(),
     )
   let assert Ok(outer) = list.find(inferred, fn(a) { a.function == "outer" })
-  outer.effects |> should.equal(Specific(set.new()))
+  effect_term.to_effect_set(outer.effects) |> should.equal(Specific(set.new()))
 }
 
 pub fn substitute_two_fn_typed_params_different_effects_test() {
@@ -1308,7 +1552,8 @@ pub fn run() {
       dict.new(),
       dict.new(),
     )
-  ann.effects |> should.equal(Specific(set.from_list(["Http", "Stdout"])))
+  effect_term.to_effect_set(ann.effects)
+  |> should.equal(Specific(set.from_list(["Http", "Stdout"])))
 }
 
 // ──── Two-hop effect unification ────
@@ -1344,7 +1589,7 @@ pub fn apply_twice(f: fn(Int) -> Int, x: Int) -> List(Int) {
 "
   let ann = infer_single_with_list(source)
   ann.function |> should.equal("apply_twice")
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
 }
 
@@ -1358,14 +1603,23 @@ fn apply_twice_kb_and_registry() -> #(
       dict.from_list([
         #(
           QualifiedName("mymod", "apply_twice"),
-          Polymorphic(set.new(), set.from_list(["f"])),
+          effect_term.from_effect_set(Polymorphic(
+            set.new(),
+            set.from_list(["f"]),
+          )),
         ),
       ]),
     )
     |> effects.with_inferred_params(
       dict.from_list([
         #(QualifiedName("mymod", "apply_twice"), [
-          ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
+          ParamBound(
+            "f",
+            effect_term.from_effect_set(Polymorphic(
+              set.new(),
+              set.from_list(["f"]),
+            )),
+          ),
         ]),
       ]),
     )
@@ -1394,7 +1648,7 @@ pub fn run(x: Int) {
   let #(violations, _) =
     checker.check(
       module,
-      [EffectAnnotation(Check, "run", [], budget)],
+      [EffectAnnotation(Check, "run", [], effect_term.from_effect_set(budget))],
       kb,
       reg,
       dict.new(),
@@ -1433,7 +1687,7 @@ pub fn outer(f: fn(Int) -> Int, x: Int) -> List(Int) {
 "
   let ann = infer_single_with_list(source)
   ann.function |> should.equal("outer")
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
 }
 
@@ -1448,7 +1702,7 @@ pub fn log_and_map(f: fn(Int) -> Int, x: Int) -> List(Int) {
 }
 "
   let ann = infer_single_with_list(source)
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["f"])))
 }
 
@@ -1462,7 +1716,7 @@ pub fn pure_forward(f: fn(Int) -> Int, items: List(Int)) -> List(Int) {
 "
   let ann = infer_single_with_list(source)
   ann.function |> should.equal("pure_forward")
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
 }
 
@@ -1478,7 +1732,7 @@ pub fn with_closure(items: List(Int)) -> List(Int) {
 }
 "
   let ann = infer_single_with_list(source)
-  ann.effects |> should.equal(types.empty())
+  effect_term.to_effect_set(ann.effects) |> should.equal(types.empty())
 }
 
 pub fn mixed_tracked_and_closure_args_test() {
@@ -1497,7 +1751,12 @@ pub fn mixed_tracked_and_closure_args_test() {
   let kb =
     effects.empty_knowledge_base()
     |> effects.with_inferred(
-      dict.from_list([#(QualifiedName("helpers", "do_both"), types.empty())]),
+      dict.from_list([
+        #(
+          QualifiedName("helpers", "do_both"),
+          effect_term.from_effect_set(types.empty()),
+        ),
+      ]),
     )
   let source =
     "
@@ -1509,7 +1768,7 @@ pub fn run(h: fn(Int) -> Int, x: Int) -> Int {
   let assert Ok(module) = glance.module(source)
   let assert [ann] = checker.infer(module, kb, [], reg, dict.new(), dict.new())
   ann.function |> should.equal("run")
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["h"])))
 }
 
@@ -1522,7 +1781,11 @@ fn polymorphic_field_kb_and_registry() -> #(
   effects.KnowledgeBase,
   signatures.SignatureRegistry,
 ) {
-  let action_var = Polymorphic(set.new(), set.from_list(["action"]))
+  let action_var =
+    effect_term.from_effect_set(Polymorphic(
+      set.new(),
+      set.from_list(["action"]),
+    ))
   let kb =
     effects.with_inferred_type_fields(knowledge_base(), [
       #(
@@ -1553,7 +1816,14 @@ pub fn main(t: Task, msg: String) {
   let #(violations, _warnings) =
     checker.check(
       module,
-      [EffectAnnotation(Check, "main", [], Specific(set.new()))],
+      [
+        EffectAnnotation(
+          Check,
+          "main",
+          [],
+          effect_term.from_effect_set(Specific(set.new())),
+        ),
+      ],
       kb,
       registry,
       dict.new(),

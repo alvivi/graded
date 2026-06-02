@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None}
 import gleam/set
+import graded/internal/effect_term
 import graded/internal/types.{
   type EffectSet, type EffectTerm, AnnotationLine, BlankLine, Check, CommentLine,
   EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
@@ -66,6 +67,13 @@ fn effect_union_gen(
 ) -> qcheck.Generator(EffectTerm) {
   use n <- qcheck.bind(qcheck.bounded_int(0, 3))
   qcheck.map(qcheck.fixed_length_list_from(sub, n), TUnion)
+}
+
+/// A first-order effect *term* — the lift of an arbitrary `EffectSet`. Used
+/// where an annotation field (now an `EffectTerm`) must still round-trip
+/// through the first-order serializer.
+pub fn first_order_term_gen() -> qcheck.Generator(EffectTerm) {
+  qcheck.map(effect_set_gen(), effect_term.from_effect_set)
 }
 
 /// A generator for variable→term substitutions over the standard variable
@@ -134,13 +142,13 @@ pub fn annotation_gen() -> qcheck.Generator(types.EffectAnnotation) {
       qcheck.return("handler"),
     ])
   let param_bound_gen =
-    qcheck.map2(param_name_gen, effect_set_gen(), fn(name, effects) {
+    qcheck.map2(param_name_gen, first_order_term_gen(), fn(name, effects) {
       ParamBound(name:, effects:)
     })
   let no_params =
     qcheck.map2(
       qcheck.map2(kind_gen, function_name_gen(), fn(k, f) { #(k, f) }),
-      effect_set_gen(),
+      first_order_term_gen(),
       fn(kf, effects) {
         let #(kind, function) = kf
         EffectAnnotation(kind:, function:, params: [], effects:)
@@ -149,7 +157,7 @@ pub fn annotation_gen() -> qcheck.Generator(types.EffectAnnotation) {
   let with_param =
     qcheck.map2(
       qcheck.map2(kind_gen, function_name_gen(), fn(k, f) { #(k, f) }),
-      qcheck.map2(param_bound_gen, effect_set_gen(), fn(p, e) { #(p, e) }),
+      qcheck.map2(param_bound_gen, first_order_term_gen(), fn(p, e) { #(p, e) }),
       fn(kf, pe) {
         let #(kind, function) = kf
         let #(param, effects) = pe
@@ -172,7 +180,7 @@ pub fn type_field_gen() -> qcheck.Generator(types.TypeFieldAnnotation) {
     ])
   qcheck.map2(
     qcheck.map2(type_name_gen, field_name_gen, fn(t, f) { #(t, f) }),
-    effect_set_gen(),
+    first_order_term_gen(),
     fn(tf, effects) {
       let #(type_name, field) = tf
       TypeFieldAnnotation(module: None, type_name:, field:, effects:)
@@ -226,9 +234,13 @@ pub fn graded_file_gen() -> qcheck.Generator(types.GradedFile) {
 
 pub fn inferred_list_gen() -> qcheck.Generator(List(types.EffectAnnotation)) {
   let effects_ann_gen =
-    qcheck.map2(function_name_gen(), effect_set_gen(), fn(function, effects) {
-      EffectAnnotation(kind: Effects, function:, params: [], effects:)
-    })
+    qcheck.map2(
+      function_name_gen(),
+      first_order_term_gen(),
+      fn(function, effects) {
+        EffectAnnotation(kind: Effects, function:, params: [], effects:)
+      },
+    )
   qcheck.map(
     qcheck.map2(
       effects_ann_gen,

@@ -17,6 +17,7 @@ import gleam/string
 import gleeunit/should
 import graded
 import graded/internal/annotation
+import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, Polymorphic, QualifiedName, Specific,
@@ -148,7 +149,7 @@ fn effects_of(
 ) -> EffectSet {
   let assert Ok(annotation) =
     list.find(annotations, fn(a) { a.function == function })
-  annotation.effects
+  effect_term.to_effect_set(annotation.effects)
 }
 
 fn pure() -> EffectSet {
@@ -571,12 +572,14 @@ pub fn run(value: String) -> Nil {
 
   let assert Ok(d_effects) =
     dict.get(inferred, QualifiedName(module: "dep/d", function: "shout"))
-  d_effects |> should.equal(Specific(set.from_list(["Stdout"])))
+  effect_term.to_effect_set(d_effects)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
 
   // Stdout propagates all the way through c -> b -> a in a single pass.
   let assert Ok(a_effects) =
     dict.get(inferred, QualifiedName(module: "dep/a", function: "run"))
-  a_effects |> should.equal(Specific(set.from_list(["Stdout"])))
+  effect_term.to_effect_set(a_effects)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
 
   let _ = simplifile.delete(dep_path)
   Nil
@@ -633,14 +636,14 @@ pub fn new(value: Int) -> List(MyError) {
       ann.function == "validation.validate_range"
     })
   let assert Ok(v) = validate
-  v.effects
+  effect_term.to_effect_set(v.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["to_error"])))
 
   // `entity.new` should have resolved the variable — OutOfRange is a
   // constructor, so the substitution yields [].
   let new_fn = list.find(annotations, fn(ann) { ann.function == "entity.new" })
   let assert Ok(n) = new_fn
-  n.effects |> should.equal(Specific(set.new()))
+  effect_term.to_effect_set(n.effects) |> should.equal(Specific(set.new()))
 
   let _ = simplifile.delete(dir)
   Nil
@@ -691,7 +694,7 @@ pub fn new(value: Int) -> List(MyError) {
 
   let new_fn = list.find(annotations, fn(ann) { ann.function == "entity.new" })
   let assert Ok(n) = new_fn
-  n.effects |> should.equal(Specific(set.new()))
+  effect_term.to_effect_set(n.effects) |> should.equal(Specific(set.new()))
 
   let _ = simplifile.delete(dir)
   Nil
