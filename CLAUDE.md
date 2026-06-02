@@ -99,7 +99,7 @@ Three call categories in the extractor:
 
 1. **Resolved calls** — qualified module.function calls, looked up in knowledge base
 2. **Local calls** — unresolved names, checked against param bounds, then local function definitions, then flagged Unknown
-3. **Field calls** — `object.field(args)` on local variables, resolved by looking up the receiver's nominal type (girard's inferred type first, then a syntactic parameter annotation) in the type field registry. The registry is populated from hand-written `type` lines and, when absent, from effects inferred at constructor call sites (`Validator(to_error: io.println)` ⟹ `Validator.to_error : [Stdout]`).
+3. **Field calls** — `object.field(args)` on local variables, resolved by looking up the receiver's nominal type (girard's inferred type first, then a syntactic parameter annotation) in the type field registry. The registry is keyed by `(defining module, type name, field)` — girard reports the defining module, so same-named types in different modules don't collide. It is populated from hand-written `type` lines and, when absent, from effects inferred at constructor call sites (`Validator(to_error: io.println)` ⟹ `Validator.to_error : [Stdout]`). If the wired function is effect-polymorphic, its variables are bound to the field call's arguments via the same substitution resolved calls use.
 
 ## Theoretical Foundations
 
