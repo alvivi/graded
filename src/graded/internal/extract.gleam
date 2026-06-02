@@ -51,12 +51,37 @@ pub fn module_path_for_source(
 /// the ordered labels of its fields (`None` for unlabelled positions).
 /// Used to route positional arguments (`Validator(x)`) to the right
 /// field label when building a `BoundConstructor`.
+///
+/// `cross_constructors` does the same for *other* modules' constructors,
+/// keyed by `#(defining module, constructor)`. It is empty by default and
+/// populated (via [`with_cross_constructors`](#with_cross_constructors)) only
+/// for the package-wide constructor-field walk, so a cross-module positional
+/// call (`a.Validator(x)`) can still route `x` to the right field.
 pub type ImportContext {
   ImportContext(
     aliases: Dict(String, String),
     unqualified: Dict(String, QualifiedName),
     constructors: Dict(String, List(Option(String))),
+    cross_constructors: Dict(#(String, String), List(Option(String))),
   )
+}
+
+/// Attach a package-wide `#(defining module, constructor) -> field labels` map
+/// to a context, so cross-module positional constructor calls resolve.
+pub fn with_cross_constructors(
+  context: ImportContext,
+  cross_constructors: Dict(#(String, String), List(Option(String))),
+) -> ImportContext {
+  ImportContext(..context, cross_constructors:)
+}
+
+/// A module's `constructor -> field labels` map (the same labels
+/// `build_import_context` records for same-module constructors), for building
+/// the package-wide cross-module constructor map.
+pub fn constructor_label_map(
+  module: Module,
+) -> Dict(String, List(Option(String))) {
+  build_constructor_registry(module)
 }
 
 /// Result of extracting calls from a function body.
@@ -113,7 +138,12 @@ pub fn build_import_context(module: Module) -> ImportContext {
     })
 
   let constructors = build_constructor_registry(module)
-  ImportContext(aliases:, unqualified:, constructors:)
+  ImportContext(
+    aliases:,
+    unqualified:,
+    constructors:,
+    cross_constructors: dict.new(),
+  )
 }
 
 fn build_constructor_registry(
@@ -661,7 +691,9 @@ fn classify_constructor(
 ) -> LocalBinding {
   let declared_labels = case module {
     None -> dict.get(context.constructors, type_name) |> result.unwrap([])
-    Some(_) -> []
+    Some(module) ->
+      dict.get(context.cross_constructors, #(module, type_name))
+      |> result.unwrap([])
   }
   let #(fields, _remaining) =
     list.fold(arguments, #(dict.new(), declared_labels), fn(acc, field) {

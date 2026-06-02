@@ -19,9 +19,10 @@ higher-order effect unification. **0.6.0** shipped same-function value flow.
 The gaps that remain are documented in [README.md](./README.md#limitations):
 
 - Inferred field effects fall back to `[Unknown]` for values graded can't
-  statically resolve (local function values, cross-module unlabelled positional
-  constructor args). Type-field keys are qualified by the type's defining module,
-  so same-named types in different modules no longer conflate.
+  statically resolve — a local (same-module) function value. Type-field keys are
+  qualified by the type's defining module, so same-named types in different
+  modules no longer conflate; cross-module positional constructor args route to
+  their fields via the package-wide constructor-label map.
 - The label/position argument-matching heuristics remain (deliberately not
   retired — they drive polymorphic call-site substitution, a subsystem girard's
   expression types don't cleanly replace).

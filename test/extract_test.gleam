@@ -1,6 +1,7 @@
 import glance
 import gleam/dict
 import gleam/list
+import gleam/option.{Some}
 import gleeunit/should
 import graded/internal/extract
 import graded/internal/types.{FunctionRef, QualifiedName}
@@ -519,4 +520,39 @@ pub fn pick(flag) {
   let ctx = extract.build_import_context(module)
   let bindings = extract.collect_constructor_bindings(module, ctx)
   list.length(bindings) |> should.equal(2)
+}
+
+// Cross-module positional constructor args (limitation 1b)
+
+const cross_module_ctor = "import gleam/io
+import app/validator
+pub fn target() {
+  validator.Validator(io.println)
+}"
+
+pub fn cross_module_positional_constructor_resolves_test() {
+  // `validator.Validator(io.println)` is positional, and Validator is defined
+  // in another module — with the package-wide label map, the positional arg
+  // still routes to the `to_error` field.
+  let assert Ok(module) = glance.module(cross_module_ctor)
+  let context =
+    extract.build_import_context(module)
+    |> extract.with_cross_constructors(
+      dict.from_list([#(#("app/validator", "Validator"), [Some("to_error")])]),
+    )
+  let assert Ok(#(_constructor, fields)) =
+    extract.collect_constructor_bindings(module, context)
+    |> list.find(fn(binding) { binding.0 == "Validator" })
+  dict.get(fields, "to_error")
+  |> should.equal(Ok(FunctionRef(QualifiedName("gleam/io", "println"))))
+}
+
+pub fn cross_module_positional_unresolved_without_labels_test() {
+  // Without the label map (the old behaviour) the positional arg is dropped.
+  let assert Ok(module) = glance.module(cross_module_ctor)
+  let context = extract.build_import_context(module)
+  let assert Ok(#(_constructor, fields)) =
+    extract.collect_constructor_bindings(module, context)
+    |> list.find(fn(binding) { binding.0 == "Validator" })
+  dict.get(fields, "to_error") |> should.equal(Error(Nil))
 }

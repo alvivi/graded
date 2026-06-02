@@ -342,10 +342,25 @@ fn build_constructor_field_index(
       dict.merge(acc, qualified)
     })
 
+  // Package-wide #(defining module, constructor) -> field labels, so a
+  // cross-module positional constructor call routes its arguments to fields.
+  let cross_constructors =
+    dict.fold(index, dict.new(), fn(acc, path, entry) {
+      let #(_gleam_path, module) = entry
+      let qualified =
+        extract.constructor_label_map(module)
+        |> dict.to_list()
+        |> list.map(fn(pair) { #(#(path, pair.0), pair.1) })
+        |> dict.from_list()
+      dict.merge(acc, qualified)
+    })
+
   // Accumulate (module, type_name, field) -> effect, unioning across sites.
   dict.fold(index, dict.new(), fn(acc, _path, entry) {
     let #(_gleam_path, module) = entry
-    let context = extract.build_import_context(module)
+    let context =
+      extract.build_import_context(module)
+      |> extract.with_cross_constructors(cross_constructors)
     extract.collect_constructor_bindings(module, context)
     |> list.fold(acc, fn(inner, binding) {
       accumulate_constructor_binding(
