@@ -497,9 +497,9 @@ pub fn make() {
   let assert Ok(module) = glance.module(src)
   let ctx = extract.build_import_context(module)
   let bindings = extract.collect_constructor_bindings(module, ctx)
-  let assert Ok(#(_constructor, fields)) =
-    list.find(bindings, fn(b) { b.0 == "Logger" })
-  dict.get(fields, "emit")
+  let assert Ok(binding) =
+    list.find(bindings, fn(b) { b.constructor == "Logger" })
+  dict.get(binding.fields, "emit")
   |> should.equal(Ok(FunctionRef(QualifiedName("gleam/io", "println"))))
 }
 
@@ -540,10 +540,10 @@ pub fn cross_module_positional_constructor_resolves_test() {
     |> extract.with_cross_constructors(
       dict.from_list([#(#("app/validator", "Validator"), [Some("to_error")])]),
     )
-  let assert Ok(#(_constructor, fields)) =
+  let assert Ok(binding) =
     extract.collect_constructor_bindings(module, context)
-    |> list.find(fn(binding) { binding.0 == "Validator" })
-  dict.get(fields, "to_error")
+    |> list.find(fn(binding) { binding.constructor == "Validator" })
+  dict.get(binding.fields, "to_error")
   |> should.equal(Ok(FunctionRef(QualifiedName("gleam/io", "println"))))
 }
 
@@ -551,8 +551,8 @@ pub fn cross_module_positional_unresolved_without_labels_test() {
   // Without the label map (the old behaviour) the positional arg is dropped.
   let assert Ok(module) = glance.module(cross_module_ctor)
   let context = extract.build_import_context(module)
-  let assert Ok(#(_constructor, fields)) =
+  let assert Ok(binding) =
     extract.collect_constructor_bindings(module, context)
-    |> list.find(fn(binding) { binding.0 == "Validator" })
-  dict.get(fields, "to_error") |> should.equal(Error(Nil))
+    |> list.find(fn(binding) { binding.constructor == "Validator" })
+  dict.get(binding.fields, "to_error") |> should.equal(Error(Nil))
 }

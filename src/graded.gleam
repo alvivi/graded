@@ -330,15 +330,18 @@ fn build_constructor_field_index(
   index: Dict(String, #(String, glance.Module)),
   knowledge_base: KnowledgeBase,
 ) -> List(#(#(String, String, String), types.TypeFieldEffect)) {
-  // Global constructor-name -> #(defining module, type name) map across the
-  // whole package, so a field keys by the same qualified type girard reports
-  // for a receiver — same-named types in different modules stay distinct.
-  let constructor_to_type =
+  // Package-wide #(defining module, constructor) -> type name. Keyed by module
+  // so same-named constructors in different modules stay distinct; the call
+  // site's resolved module (or the current module for an unqualified call)
+  // picks the right entry.
+  let constructor_types =
     dict.fold(index, dict.new(), fn(acc, path, entry) {
       let #(_gleam_path, module) = entry
       let qualified =
         extract.build_constructor_type_map(module)
-        |> dict.map_values(fn(_constructor, type_name) { #(path, type_name) })
+        |> dict.to_list()
+        |> list.map(fn(pair) { #(#(path, pair.0), pair.1) })
+        |> dict.from_list()
       dict.merge(acc, qualified)
     })
 
@@ -356,7 +359,9 @@ fn build_constructor_field_index(
     })
 
   // Accumulate (module, type_name, field) -> effect, unioning across sites.
-  dict.fold(index, dict.new(), fn(acc, _path, entry) {
+  // `path` is the module being walked — used to qualify same-module function
+  // values wired into fields.
+  dict.fold(index, dict.new(), fn(acc, path, entry) {
     let #(_gleam_path, module) = entry
     let context =
       extract.build_import_context(module)
@@ -366,8 +371,9 @@ fn build_constructor_field_index(
       accumulate_constructor_binding(
         inner,
         binding,
-        constructor_to_type,
+        constructor_types,
         knowledge_base,
+        path,
       )
     })
   })
@@ -376,18 +382,23 @@ fn build_constructor_field_index(
 
 /// Fold one constructor call's field bindings into the (module, type, field) ->
 /// effect accumulator, unioning with any effect already recorded for that field.
+/// The defining module is the call's resolved module (qualified) or the current
+/// module (unqualified) — so same-named constructors in different modules don't
+/// collide.
 fn accumulate_constructor_binding(
   acc: Dict(#(String, String, String), types.TypeFieldEffect),
-  binding: #(String, Dict(String, types.ArgumentValue)),
-  constructor_to_type: Dict(String, #(String, String)),
+  binding: extract.ConstructorBinding,
+  constructor_types: Dict(#(String, String), String),
   knowledge_base: KnowledgeBase,
+  module_path: String,
 ) -> Dict(#(String, String, String), types.TypeFieldEffect) {
-  let #(constructor, fields) = binding
-  case dict.get(constructor_to_type, constructor) {
+  let extract.ConstructorBinding(binding_module, constructor, fields) = binding
+  let module = option.unwrap(binding_module, module_path)
+  case dict.get(constructor_types, #(module, constructor)) {
     Error(Nil) -> acc
-    Ok(#(module, type_name)) ->
+    Ok(type_name) ->
       dict.fold(fields, acc, fn(inner, label, value) {
-        let field_effect = field_effect_of(knowledge_base, value)
+        let field_effect = field_effect_of(knowledge_base, value, module_path)
         let key = #(module, type_name, label)
         let merged = case dict.get(inner, key) {
           Ok(existing) -> merge_field_effect(existing, field_effect)
@@ -398,17 +409,18 @@ fn accumulate_constructor_binding(
   }
 }
 
-/// The effect a constructor field's value contributes. For a function reference
-/// with effect variables, also capture the wired function's param bounds and
-/// identity, so a field call can bind those variables to its arguments.
+/// The effect a constructor field's value contributes. A function reference (or
+/// a same-module function, qualified by `module_path`) resolves via the
+/// knowledge base — capturing its param bounds + identity when it is
+/// effect-polymorphic. A constructor is pure; anything else is `[Unknown]`.
 fn field_effect_of(
   knowledge_base: KnowledgeBase,
   value: types.ArgumentValue,
+  module_path: String,
 ) -> types.TypeFieldEffect {
-  let field_effects = effects.argument_value_effects(knowledge_base, value)
-  let concrete = types.TypeFieldEffect(field_effects, [], None)
-  case value {
-    types.FunctionRef(name:) ->
+  case field_value_function(value, module_path) {
+    Some(name) -> {
+      let field_effects = effects.lookup_effects(knowledge_base, name)
       case types.has_variables(field_effects) {
         True ->
           types.TypeFieldEffect(
@@ -416,9 +428,29 @@ fn field_effect_of(
             effects.lookup_param_bounds(knowledge_base, name),
             Some(name),
           )
-        False -> concrete
+        False -> types.TypeFieldEffect(field_effects, [], None)
       }
-    _ -> concrete
+    }
+    None ->
+      types.TypeFieldEffect(
+        effects.argument_value_effects(knowledge_base, value),
+        [],
+        None,
+      )
+  }
+}
+
+/// The qualified function a field value refers to, if any: a `FunctionRef`
+/// directly, or a `LocalRef` (a bare same-module name) qualified by the current
+/// module. `None` for constructors and inline expressions.
+fn field_value_function(
+  value: types.ArgumentValue,
+  module_path: String,
+) -> option.Option(QualifiedName) {
+  case value {
+    types.FunctionRef(name:) -> Some(name)
+    types.LocalRef(name:) -> Some(QualifiedName(module_path, name))
+    _ -> None
   }
 }
 

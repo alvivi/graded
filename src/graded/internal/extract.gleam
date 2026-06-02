@@ -176,14 +176,26 @@ pub fn build_constructor_type_map(module: Module) -> Dict(String, String) {
   })
 }
 
-/// Collect every constructor call in a module's function bodies, paired with
-/// its field -> argument-value map. Feeds the Stage C constructor-field effect
-/// index: a field wired to a known function (`Validator(to_error: io.println)`)
-/// lets graded infer that field's effect without a hand-written annotation.
+/// One constructor call found in a function body. `module` is the constructor's
+/// resolved module path for a qualified call (`a.Validator(..)`), or `None` for
+/// an unqualified call (resolved against the current module). `fields` maps each
+/// field label to its argument value.
+pub type ConstructorBinding {
+  ConstructorBinding(
+    module: Option(String),
+    constructor: String,
+    fields: Dict(String, ArgumentValue),
+  )
+}
+
+/// Collect every constructor call in a module's function bodies. Feeds the Stage
+/// C constructor-field effect index: a field wired to a known function
+/// (`Validator(to_error: io.println)`) lets graded infer that field's effect
+/// without a hand-written annotation.
 pub fn collect_constructor_bindings(
   module: Module,
   context: ImportContext,
-) -> List(#(String, Dict(String, ArgumentValue))) {
+) -> List(ConstructorBinding) {
   list.flat_map(module.functions, fn(definition) {
     ctor_in_statements(definition.definition.body, context)
   })
@@ -192,7 +204,7 @@ pub fn collect_constructor_bindings(
 fn ctor_in_statements(
   statements: List(Statement),
   context: ImportContext,
-) -> List(#(String, Dict(String, ArgumentValue))) {
+) -> List(ConstructorBinding) {
   list.flat_map(statements, fn(statement) {
     case statement {
       glance.Expression(expression) -> ctor_in_expression(expression, context)
@@ -210,14 +222,14 @@ fn ctor_in_statements(
 fn ctor_in_each(
   expressions: List(Expression),
   context: ImportContext,
-) -> List(#(String, Dict(String, ArgumentValue))) {
+) -> List(ConstructorBinding) {
   list.flat_map(expressions, ctor_in_expression(_, context))
 }
 
 fn ctor_in_optional(
   expression: Option(Expression),
   context: ImportContext,
-) -> List(#(String, Dict(String, ArgumentValue))) {
+) -> List(ConstructorBinding) {
   case expression {
     Some(e) -> ctor_in_expression(e, context)
     None -> []
@@ -227,7 +239,7 @@ fn ctor_in_optional(
 fn ctor_in_fields(
   fields: List(Field(Expression)),
   context: ImportContext,
-) -> List(#(String, Dict(String, ArgumentValue))) {
+) -> List(ConstructorBinding) {
   list.flat_map(fields, fn(field) {
     case field {
       glance.LabelledField(item:, ..) -> ctor_in_expression(item, context)
@@ -240,7 +252,7 @@ fn ctor_in_fields(
 fn ctor_in_expression(
   expression: Expression,
   context: ImportContext,
-) -> List(#(String, Dict(String, ArgumentValue))) {
+) -> List(ConstructorBinding) {
   case expression {
     glance.Call(function: glance.Variable(_, name), arguments:, ..) ->
       case is_constructor_name(name) {
@@ -333,13 +345,14 @@ fn ctor_binding(
   module: Option(String),
   arguments: List(Field(Expression)),
   context: ImportContext,
-) -> #(String, Dict(String, ArgumentValue)) {
-  case
+) -> ConstructorBinding {
+  let fields = case
     classify_constructor(constructor, module, arguments, context, dict.new())
   {
-    BoundConstructor(fields:) -> #(constructor, fields)
-    _ -> #(constructor, dict.new())
+    BoundConstructor(fields:) -> fields
+    _ -> dict.new()
   }
+  ConstructorBinding(module:, constructor:, fields:)
 }
 
 /// Extract all calls from a list of statements.

@@ -80,6 +80,23 @@ pub fn inferred_field_effect_from_construction_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn local_field_value_resolved_test() {
+  // local_field.run wires a *same-module* function (my_logger : [Stdout]) into a
+  // record field and calls it. graded qualifies the bare reference by the module
+  // and resolves its effect, so the [] check budget fails with the precise
+  // [Stdout] — the case that previously fell back to [Unknown]. local_field also
+  // defines a `Logger` type, same as inferred_field, so a pass here also proves
+  // same-named constructors in different modules aren't conflated.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let local_result =
+    list.find(results, fn(r) { r.file == "test/fixtures/local_field.gleam" })
+  let assert Ok(r) = local_result
+  { r.violations != [] } |> should.be_true()
+  let assert [v, ..] = r.violations
+  v.function |> should.equal("run")
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn infer_then_check_round_trip_test() {
   // `run_infer` rewrites the spec file in place, so capture the canonical
   // fixture content up front and restore it at the end — keeping the test
