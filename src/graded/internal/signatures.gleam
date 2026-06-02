@@ -36,6 +36,10 @@ pub type ParameterInfo {
     label: Option(String),
     name: Option(String),
     is_fn_typed: Bool,
+    /// True when the parameter is *second-order* — its own type takes a
+    /// function (`fn(fn(..) -> _) -> _`). Calls to it are effect-operator
+    /// applications, and arguments bound to it are lifted to operators.
+    is_operator: Bool,
   )
 }
 
@@ -93,6 +97,24 @@ pub fn fn_typed_param_names(
   }
 }
 
+/// Names (label or in-body) of a callee's *operator* parameters — those whose
+/// type takes a function. Empty when the callee isn't in the registry.
+pub fn operator_param_names(
+  registry: SignatureRegistry,
+  name: QualifiedName,
+) -> Set(String) {
+  case lookup(registry, name) {
+    None -> set.new()
+    Some(params) ->
+      params
+      |> list.filter(fn(p) { p.is_operator })
+      |> list.filter_map(fn(p) {
+        option.to_result(option.or(p.label, p.name), Nil)
+      })
+      |> set.from_list()
+  }
+}
+
 // ──── Glance AST → SignatureRegistry ────
 
 /// Build a SignatureRegistry from a parsed project module. Used during
@@ -114,6 +136,11 @@ pub fn from_glance_module(
             name: assignment_name(param.name),
             is_fn_typed: case param.type_ {
               Some(FunctionType(_, _, _)) -> True
+              _ -> False
+            },
+            is_operator: case param.type_ {
+              Some(FunctionType(_, param_types, _)) ->
+                list.any(param_types, is_function_type)
               _ -> False
             },
           )
@@ -149,6 +176,37 @@ pub fn fn_typed_params_from_function(function: Function) -> Set(String) {
     }
   })
   |> set.from_list()
+}
+
+/// Names of a function's *operator* parameters — fn-typed parameters whose own
+/// type takes a function, i.e. `fn(fn(..) -> _) -> _`. These are second-order:
+/// their effect depends on the callback they're applied to, so a call to one
+/// (`action(cb)`) becomes an effect-operator *application* rather than a flat
+/// variable. (A subset of `fn_typed_params_from_function`.)
+pub fn operator_params_from_function(function: Function) -> Set(String) {
+  function.parameters
+  |> list.filter_map(fn(param) {
+    case param.type_ {
+      Some(FunctionType(_, param_types, _)) ->
+        case list.any(param_types, is_function_type) {
+          True ->
+            case assignment_name(param.name) {
+              Some(name) -> Ok(name)
+              None -> Error(Nil)
+            }
+          False -> Error(Nil)
+        }
+      _ -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+}
+
+fn is_function_type(t: glance.Type) -> Bool {
+  case t {
+    FunctionType(_, _, _) -> True
+    _ -> False
+  }
 }
 
 fn assignment_name(name: glance.AssignmentName) -> Option(String) {

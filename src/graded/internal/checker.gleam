@@ -122,6 +122,24 @@ pub fn infer(
   })
 }
 
+/// The effect of the callback an operator parameter is applied to. Operators
+/// take their callback as the first argument, so resolve the effect of the
+/// argument at position 0 (pipes shift explicit args up, leaving position 0 the
+/// receiver/first). A missing argument is pure.
+fn operator_argument_effect(
+  call_args: dict.Dict(Int, List(types.CallArgument)),
+  span_start: Int,
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+) -> EffectTerm {
+  let args = dict.get(call_args, span_start) |> result.unwrap([])
+  case list.find(args, fn(a) { a.position == 0 }) {
+    Ok(arg) ->
+      resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
+    Error(Nil) -> effect_term.pure()
+  }
+}
+
 /// A bound whose effect is the single variable named after the param
 /// itself — `TVar(name)`. The variable refers to itself, resolved later by
 /// substitution at call sites. When the matching argument is an effect
@@ -146,15 +164,14 @@ fn synthetic_fn_typed_bounds(fn_typed_params: Set(String)) -> List(ParamBound) {
   |> list.map(self_referential_bound)
 }
 
-/// Build ParamBound entries for each effect variable in `effect_set`
-/// whose name is in `fn_typed_params`. The bound's effects are
-/// `Polymorphic({}, {var_name})` — the variable refers to itself,
-/// resolved later by substitution at call sites.
+/// Build a `ParamBound` for each free effect variable in `term` whose name is
+/// a fn-typed parameter. Each is self-referential (`TVar(name)`), resolved by
+/// substitution at call sites — so the polymorphic signature round-trips.
 fn polymorphic_param_bounds(
-  effect_term: EffectTerm,
+  term: EffectTerm,
   fn_typed_params: Set(String),
 ) -> List(ParamBound) {
-  effect_term
+  term
   |> effect_term.free_vars()
   |> set.to_list()
   |> list.filter(fn(v) { set.contains(fn_typed_params, v) })
@@ -275,6 +292,7 @@ fn collect_effects(
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
 ) -> List(#(types.ResolvedCall, EffectTerm)) {
   let result = extract.extract_calls(function.body, context)
+  let operator_params = signatures.operator_params_from_function(function)
 
   // Resolved calls: qualified names looked up directly in the knowledge
   // base. If the callee's effects are polymorphic (contain effect
@@ -312,7 +330,25 @@ fn collect_effects(
               ),
               span: local_call.span,
             )
-          [#(synthetic_call, bound.effects)]
+          // A call to a fn-typed parameter contributes that parameter's effect
+          // variable. If the parameter is *second-order* (an operator — its own
+          // type takes a function), the call is an effect-operator application
+          // `op(callback)`: emit `TApp(op_var, callback_effect)` so it
+          // beta-reduces once the operator is bound at a call site.
+          let effect = case set.contains(operator_params, local_call.function) {
+            False -> bound.effects
+            True ->
+              types.TApp(
+                bound.effects,
+                operator_argument_effect(
+                  result.call_args,
+                  local_call.span.start,
+                  knowledge_base,
+                  param_bounds,
+                ),
+              )
+          }
+          [#(synthetic_call, effect)]
         }
         Error(Nil) ->
           resolve_unknown_local(
@@ -532,6 +568,7 @@ fn bind_variables(
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
 ) -> dict.Dict(String, EffectTerm) {
+  let operator_params = signatures.operator_param_names(registry, callee_name)
   list.fold(callee_bounds, dict.new(), fn(acc, bound) {
     // Find the argument matching this parameter by label (caller used
     // an explicit label) or by real parameter position from the
@@ -539,13 +576,24 @@ fn bind_variables(
     let matched = find_matching_arg(callee_name, bound, args, registry)
     case matched {
       Some(arg) -> {
-        let arg_effects =
-          resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
+        // For an *operator* parameter the argument is lifted to an effect
+        // operator (a `TAbs`) so the callee's `op(callback)` application
+        // beta-reduces. A first-order parameter just takes the argument's
+        // flat effect.
+        let arg_effects = case set.contains(operator_params, bound.name) {
+          True ->
+            operator_term_for_argument(
+              arg,
+              knowledge_base,
+              caller_param_bounds,
+              registry,
+            )
+          False ->
+            resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
+        }
         // Bind the bound's free variable(s) to the argument's effect. For a
         // first-order bound `param: [e]` that's the variable `e`; for a self-
-        // referential fn-typed bound it's the parameter name itself, which
-        // (when the argument is an operator) carries an operator term and
-        // beta-reduces at the call site.
+        // referential fn-typed bound it's the parameter name itself.
         let var_names =
           bound.effects |> effect_term.free_vars() |> set.to_list()
         list.fold(var_names, acc, fn(d, var) {
@@ -555,6 +603,29 @@ fn bind_variables(
       None -> acc
     }
   })
+}
+
+/// Lift a call argument bound to an *operator* parameter into an effect
+/// operator (`TAbs`). A function reference `g` becomes `λcb. <g's effect>`,
+/// abstracting over `g`'s own callback parameter so that applying it to a
+/// concrete callback effect beta-reduces. Non-function arguments fall back to
+/// their flat effect (which leaves the application stuck → `[Unknown]`).
+fn operator_term_for_argument(
+  arg: types.CallArgument,
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
+) -> EffectTerm {
+  case arg.value {
+    types.FunctionRef(name) -> {
+      let body = effects.lookup_effects(knowledge_base, name)
+      case signatures.fn_typed_param_names(registry, name) |> set.to_list() {
+        [callback_var, ..] -> types.TAbs(callback_var, body)
+        [] -> body
+      }
+    }
+    _ -> resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
+  }
 }
 
 /// Find the argument that matches a given param bound. Prefers label

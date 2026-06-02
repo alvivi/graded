@@ -1852,3 +1852,82 @@ pub fn field_call_unbound_argument_concretizes_to_unknown_test() {
   let assert [v, ..] = check_field_call("fn(s) { s }")
   v.actual |> should.equal(Specific(set.from_list(["Unknown"])))
 }
+
+// ──── Second-order (nested) effect variables: end-to-end ────
+
+/// Registry + KB modelling the realistic post-topological-inference state:
+/// `with_logger(action)` is second-order — its inferred effect is the operator
+/// application `action(Stdout)` (it applies `action` to a [Stdout] callback),
+/// and `runner(cb)` runs its callback (effect `[cb]`).
+fn second_order_kb_and_registry() -> #(
+  effects.KnowledgeBase,
+  signatures.SignatureRegistry,
+) {
+  let sig_src =
+    "pub fn with_logger(action: fn(fn(String) -> Nil) -> Nil) -> Nil { Nil }
+pub fn runner(cb: fn(String) -> Nil) -> Nil { Nil }"
+  let assert Ok(sig_mod) = glance.module(sig_src)
+  let reg = signatures.from_glance_module("app", sig_mod)
+  let kb =
+    knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(
+          QualifiedName("app", "with_logger"),
+          types.TApp(
+            types.TVar("action"),
+            effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+          ),
+        ),
+        #(QualifiedName("app", "runner"), types.TVar("cb")),
+      ]),
+    )
+    |> effects.with_inferred_params(
+      dict.from_list([
+        #(QualifiedName("app", "with_logger"), [
+          ParamBound("action", types.TVar("action")),
+        ]),
+        #(QualifiedName("app", "runner"), [ParamBound("cb", types.TVar("cb"))]),
+      ]),
+    )
+  #(kb, reg)
+}
+
+pub fn second_order_call_site_resolves_test() {
+  // `caller` passes `runner` (an operator argument) to the second-order
+  // `with_logger`. The operator application `action(Stdout)` must beta-reduce
+  // with `action := λcb. [cb]` to `[Stdout]` — so a `[Stdout]` budget passes.
+  let #(kb, reg) = second_order_kb_and_registry()
+  let source =
+    "import app
+pub fn caller() -> Nil { app.with_logger(app.runner) }"
+  let assert Ok(module) = glance.module(source)
+  let ann =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
+  let #(violations, _) = checker.check(module, [ann], kb, reg, dict.new())
+  violations |> should.equal([])
+}
+
+pub fn second_order_call_site_detects_violation_test() {
+  // Same call, but a pure budget `[]` must flag a violation: the resolved
+  // effect is genuinely `[Stdout]`, not empty.
+  let #(kb, reg) = second_order_kb_and_registry()
+  let source =
+    "import app
+pub fn caller() -> Nil { app.with_logger(app.runner) }"
+  let assert Ok(module) = glance.module(source)
+  let ann =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(types.empty()),
+    )
+  let #(violations, _) = checker.check(module, [ann], kb, reg, dict.new())
+  { violations != [] } |> should.be_true()
+}
