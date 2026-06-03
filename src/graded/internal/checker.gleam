@@ -186,6 +186,33 @@ fn operator_argument_effect(
   }
 }
 
+/// Build a call to a second-order parameter as a *curried* effect-operator
+/// application over all its callback arguments, in order: `action(cb1, cb2)` ⟹
+/// `((action e1) e2)`. Left-nesting matches the binder order of the lifted
+/// operator, so each callback beta-reduces against the right binder once the
+/// operator is bound at a call site.
+fn curried_operator_application(
+  operator: EffectTerm,
+  callback_positions: List(Int),
+  call_args: dict.Dict(Int, List(types.CallArgument)),
+  span_start: Int,
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+) -> EffectTerm {
+  list.fold(callback_positions, operator, fn(acc, position) {
+    types.TApp(
+      acc,
+      operator_argument_effect(
+        call_args,
+        span_start,
+        position,
+        knowledge_base,
+        caller_param_bounds,
+      ),
+    )
+  })
+}
+
 /// A bound whose effect is the single variable named after the param
 /// itself — `TVar(name)`. The variable refers to itself, resolved later by
 /// substitution at call sites. When the matching argument is an effect
@@ -439,18 +466,14 @@ fn collect_effects(
           let effect = case dict.get(operator_params, local_call.function) {
             Error(Nil) -> bound.effects
             Ok(positions) ->
-              list.fold(positions, bound.effects, fn(acc, position) {
-                types.TApp(
-                  acc,
-                  operator_argument_effect(
-                    result.call_args,
-                    local_call.span.start,
-                    position,
-                    knowledge_base,
-                    param_bounds,
-                  ),
-                )
-              })
+              curried_operator_application(
+                bound.effects,
+                positions,
+                result.call_args,
+                local_call.span.start,
+                knowledge_base,
+                param_bounds,
+              )
           }
           [#(synthetic_call, effect)]
         }
@@ -799,34 +822,34 @@ fn join_operators(terms: List(EffectTerm)) -> EffectTerm {
             _ -> Error(Nil)
           }
         })
+      let all_abstractions = list.length(abstractions) == list.length(terms)
       case abstractions {
-        // At least one operator: descend under the first's binder, renaming the
-        // rest — but only if *all* terms are operators (same arity).
-        [#(binder, _), ..] -> {
-          case list.length(abstractions) == list.length(terms) {
-            True -> {
-              let bodies =
-                list.map(abstractions, fn(pair) {
-                  let #(param, body) = pair
-                  case param == binder {
-                    True -> body
-                    False ->
-                      effect_term.subst(
-                        body,
-                        dict.from_list([#(param, types.TVar(binder))]),
-                      )
-                  }
-                })
-              types.TAbs(binder, join_operators(bodies))
-            }
-            // Mixed operators and non-operators — arity mismatch, be safe.
-            False -> effect_term.unknown()
-          }
+        // All operators (same arity): descend under the first's binder, renaming
+        // the rest to it, and recurse on the bodies.
+        [#(binder, _), ..] if all_abstractions -> {
+          let bodies = list.map(abstractions, rename_binder(binder, _))
+          types.TAbs(binder, join_operators(bodies))
         }
+        // At least one operator but not all — arity mismatch, be safe.
+        [_, ..] -> effect_term.unknown()
         // All leaves: union the ground effects.
-        _ -> effect_term.normalize(types.TUnion(terms))
+        [] -> effect_term.normalize(types.TUnion(terms))
       }
     }
+  }
+}
+
+/// Alpha-rename an abstraction's body to use `binder` in place of its own
+/// parameter, so several operators can be joined under one shared binder.
+fn rename_binder(
+  binder: String,
+  abstraction: #(String, EffectTerm),
+) -> EffectTerm {
+  let #(param, body) = abstraction
+  case param == binder {
+    True -> body
+    False ->
+      effect_term.subst(body, dict.from_list([#(param, types.TVar(binder))]))
   }
 }
 
@@ -1077,10 +1100,8 @@ fn ordered_fn_typed_param_names(function: Function) -> List(String) {
 
 /// The element at `index` (0-based) of a list, or `Error` when out of range.
 fn list_at(items: List(a), index: Int) -> Result(a, Nil) {
-  case index < 0 {
-    True -> Error(Nil)
-    False -> items |> list.drop(index) |> list.first()
-  }
+  use <- bool.guard(when: index < 0, return: Error(Nil))
+  items |> list.drop(index) |> list.first()
 }
 
 /// Find the argument that matches a given param bound. Prefers label

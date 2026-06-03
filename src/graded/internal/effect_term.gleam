@@ -188,38 +188,40 @@ pub fn normalize_bounded(term: EffectTerm, fuel: Int) -> Result(EffectTerm, Nil)
 }
 
 fn reduce(term: EffectTerm, fuel: Int) -> #(EffectTerm, Int) {
-  case fuel <= 0 {
-    // Negative remaining is the exhaustion sentinel; it propagates because
-    // any further `reduce` call sees `fuel <= 0` and stays negative.
-    True -> #(unknown(), -1)
-    False ->
-      case term {
-        TLabels(_) -> #(term, fuel)
-        TTop -> #(term, fuel)
-        TVar(_) -> #(term, fuel)
-        TAbs(param, body) -> {
-          let #(reduced_body, fuel1) = reduce(body, fuel)
-          #(TAbs(param, reduced_body), fuel1)
-        }
-        TApp(operator, arg) -> {
-          let #(reduced_fn, fuel1) = reduce(operator, fuel - 1)
-          let #(reduced_arg, fuel2) = reduce(arg, fuel1)
-          case reduced_fn {
-            // Beta-redex: substitute and keep reducing.
-            TAbs(param, body) -> {
-              let substituted =
-                subst(body, dict.from_list([#(param, reduced_arg)]))
-              reduce(substituted, fuel2 - 1)
-            }
-            // Stuck (operator is a free variable) or otherwise irreducible.
-            _ -> #(TApp(reduced_fn, reduced_arg), fuel2)
-          }
-        }
-        TUnion(terms) -> {
-          let #(reduced, fuel1) = reduce_each(terms, fuel)
-          #(flatten_union(reduced), fuel1)
-        }
-      }
+  // Negative remaining is the exhaustion sentinel; it propagates because any
+  // further `reduce` call sees `fuel <= 0` and stays negative.
+  use <- bool.guard(when: fuel <= 0, return: #(unknown(), -1))
+  case term {
+    TLabels(_) -> #(term, fuel)
+    TTop -> #(term, fuel)
+    TVar(_) -> #(term, fuel)
+    TAbs(param, body) -> {
+      let #(reduced_body, fuel1) = reduce(body, fuel)
+      #(TAbs(param, reduced_body), fuel1)
+    }
+    TApp(operator, arg) -> reduce_app(operator, arg, fuel)
+    TUnion(terms) -> {
+      let #(reduced, fuel1) = reduce_each(terms, fuel)
+      #(flatten_union(reduced), fuel1)
+    }
+  }
+}
+
+/// Reduce an application: reduce both sides, then beta-reduce if the operator
+/// became an abstraction, else leave it stuck.
+fn reduce_app(
+  operator: EffectTerm,
+  arg: EffectTerm,
+  fuel: Int,
+) -> #(EffectTerm, Int) {
+  let #(reduced_fn, fuel1) = reduce(operator, fuel - 1)
+  let #(reduced_arg, fuel2) = reduce(arg, fuel1)
+  case reduced_fn {
+    // Beta-redex: substitute and keep reducing.
+    TAbs(param, body) ->
+      reduce(subst(body, dict.from_list([#(param, reduced_arg)])), fuel2 - 1)
+    // Stuck (operator is a free variable) or otherwise irreducible.
+    _ -> #(TApp(reduced_fn, reduced_arg), fuel2)
   }
 }
 

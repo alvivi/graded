@@ -761,42 +761,52 @@ fn infer_project_in_memory(
       list.fold(sorted, base_kb, fn(kb, module_path) {
         case dict.get(index, module_path) {
           Error(_) -> kb
-          Ok(#(_gleam_path, module)) -> {
-            let #(inferred, returned_operators) =
-              checker.infer_with_returns(
-                module,
-                kb,
-                [],
-                registry,
-                typeinfo.for_module(type_info, module_path),
-                typeinfo.fn_typed_for_module(type_info, module_path),
-              )
-            let qualify = fn(function) {
-              QualifiedName(module: module_path, function:)
-            }
-            let effects_dict =
-              list.fold(inferred, dict.new(), fn(acc, ann) {
-                dict.insert(acc, qualify(ann.function), ann.effects)
-              })
-            let params_dict =
-              list.fold(inferred, dict.new(), fn(acc, ann) {
-                case ann.params {
-                  [] -> acc
-                  params -> dict.insert(acc, qualify(ann.function), params)
-                }
-              })
-            let returns_dict =
-              dict.fold(returned_operators, dict.new(), fn(acc, function, op) {
-                dict.insert(acc, qualify(function), op)
-              })
-            kb
-            |> effects.with_inferred(effects_dict)
-            |> effects.with_inferred_params(params_dict)
-            |> effects.with_inferred_returned_operators(returns_dict)
-          }
+          Ok(#(_gleam_path, module)) ->
+            fold_inferred_module(kb, module, module_path, registry, type_info)
         }
       })
   }
+}
+
+/// Infer one module against `kb` and fold its effects, param bounds, and
+/// returned operators (qualified by `module_path`) into the knowledge base, with
+/// existing entries winning. The per-module step of `infer_project_in_memory`.
+fn fold_inferred_module(
+  kb: KnowledgeBase,
+  module: glance.Module,
+  module_path: String,
+  registry: SignatureRegistry,
+  type_info: typeinfo.TypeInfo,
+) -> KnowledgeBase {
+  let #(inferred, returned_operators) =
+    checker.infer_with_returns(
+      module,
+      kb,
+      [],
+      registry,
+      typeinfo.for_module(type_info, module_path),
+      typeinfo.fn_typed_for_module(type_info, module_path),
+    )
+  let qualify = fn(function) { QualifiedName(module: module_path, function:) }
+  let effects_dict =
+    list.fold(inferred, dict.new(), fn(acc, ann) {
+      dict.insert(acc, qualify(ann.function), ann.effects)
+    })
+  let params_dict =
+    list.fold(inferred, dict.new(), fn(acc, ann) {
+      case ann.params {
+        [] -> acc
+        params -> dict.insert(acc, qualify(ann.function), params)
+      }
+    })
+  let returns_dict =
+    dict.fold(returned_operators, dict.new(), fn(acc, function, op) {
+      dict.insert(acc, qualify(function), op)
+    })
+  kb
+  |> effects.with_inferred(effects_dict)
+  |> effects.with_inferred_params(params_dict)
+  |> effects.with_inferred_returned_operators(returns_dict)
 }
 
 /// Build a set of public function names from a parsed Gleam module.
