@@ -2497,6 +2497,41 @@ pub fn caller() -> Nil {
   |> should.be_true()
 }
 
+pub fn second_order_decorator_return_resolves_test() {
+  // A decorator returns a closure that *wraps* its operator parameter. The
+  // returned operator `λcb. ([Stdout] ∪ inner(cb))` binds `inner` to `reader` at
+  // `traced(reader)`; the producer call no longer over-approximates the returned
+  // closure's body, so the result is the clean union — no spurious `[Unknown]`.
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn reader(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+  fs.read(\"f\")
+}
+fn traced(
+  inner: fn(fn(String) -> Nil) -> Nil,
+) -> fn(fn(String) -> Nil) -> Nil {
+  fn(cb) {
+    io.println(\"trace\")
+    inner(cb)
+  }
+}
+pub fn caller() -> Nil {
+  let h = traced(reader)
+  run(h)
+}
+"
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["FileSystem"]) != [] }
+  |> should.be_true()
+}
+
 /// A `fs.read : [FileSystem]` external for second-order operator tests.
 fn fs_read_external() -> types.ExternalAnnotation {
   types.ExternalAnnotation(

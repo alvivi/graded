@@ -24,14 +24,16 @@ and loaded from the project and dependency specs, so it resolves across module
 is resolved from the closure body (including an **operator-typed field** whose
 closure calls its callback — lifted to `λnext. [next]` and applied at the field
 call); `check` **auto-infers** project modules missing from the spec; and a
-returned operator may be **polymorphic in the producer's parameters** (a producer
-returning one of its operator parameters, `fn wrap(base) { base }`, binds it to
-the producer call's argument). The remaining residuals, all sound (`[Unknown]`),
-are: a **decorator** returning a closure that *wraps* its parameter — the returned
-operator resolves, but a producer that returns a closure over-approximates that
-closure's body into its own direct call-effect; a field wired to a constructor
-parameter; a function value reached through arbitrary computation; and `use`-tailed
-returns — noted in the README limitations.
+returned operator may be **polymorphic in the producer's parameters** — a producer
+returning one of its operator parameters (`fn wrap(base) { base }`) or **wrapping**
+it in a closure (a decorator, `fn traced(action) { fn(cb) { log(); action(cb) } }`)
+binds the parameter to the producer call's argument. A returned closure is lazy, so
+it's excluded from the producer's own direct call-effect (accounted only when
+applied), keeping decorators precise. The remaining residuals, all sound
+(`[Unknown]`), are: a producer that selects a parameter through a *branch* (a union
+of operators, not beta-reducible); a field wired to a constructor parameter; a
+function value reached through arbitrary computation; and `use`-tailed returns —
+noted in the README limitations.
 
 ## Goal
 

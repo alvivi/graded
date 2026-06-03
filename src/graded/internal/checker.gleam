@@ -140,7 +140,7 @@ pub fn infer_with_returns(
         list.append(param_bounds, synthetic_fn_typed_bounds(fn_typed_params))
       let all_effects =
         collect_effects(
-          definition.definition,
+          without_returned_closure(definition.definition),
           function_map,
           context,
           knowledge_base,
@@ -261,6 +261,22 @@ fn polymorphic_param_bounds(
 
 // PRIVATE
 
+/// A function's body with a trailing *returned closure* dropped. A closure is
+/// lazy: a function that returns one runs nothing of that closure when *called* —
+/// its effects happen when the returned closure is later applied, and are
+/// accounted there (via the returned operator, or the conservative `[Unknown]`
+/// for an untracked application). Excluding it from the direct call-effect
+/// removes a spurious over-approximation (e.g. a decorator's `io.println` leaking
+/// into the producer call) while staying sound. Only a bare tail `Fn` is trimmed;
+/// other returned-closure shapes keep the conservative behaviour.
+fn without_returned_closure(function: Function) -> Function {
+  case list.reverse(function.body) {
+    [glance.Expression(glance.Fn(..)), ..rest] ->
+      Function(..function, body: list.reverse(rest))
+    _ -> function
+  }
+}
+
 /// Map a module's functions by name — for transitive same-module resolution.
 pub fn build_function_map(
   module: Module,
@@ -316,7 +332,7 @@ fn check_annotation(
     Ok(function_definition) -> {
       let body_effects =
         collect_effects(
-          function_definition.definition,
+          without_returned_closure(function_definition.definition),
           function_map,
           context,
           knowledge_base,
@@ -1195,7 +1211,7 @@ fn lift_local_function(
   let bounds = list.map(fn_param_names, self_referential_bound)
   let body_term =
     collect_effects(
-      function,
+      without_returned_closure(function),
       function_map,
       context,
       knowledge_base,
@@ -1362,7 +1378,7 @@ fn resolve_unknown_local(
               local_definition.definition,
             ))
           collect_effects(
-            local_definition.definition,
+            without_returned_closure(local_definition.definition),
             function_map,
             context,
             knowledge_base,
