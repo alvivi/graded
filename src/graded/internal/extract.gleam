@@ -35,9 +35,9 @@ type LocalBinding {
   /// A later use of `h` as an operator argument lifts and joins the options.
   BoundChoice(options: List(ArgumentValue))
   /// A let-bound result of calling a function that returns a function
-  /// (`let h = pick_handler()`). A later use of `h` as an operator argument
-  /// resolves the producer's returned operator.
-  BoundReturnedOperator(callee: QualifiedName)
+  /// (`let h = pick_handler(args)`). A later use of `h` as an operator argument
+  /// resolves the producer's returned operator, binding `args` to its params.
+  BoundReturnedOperator(callee: QualifiedName, args: List(CallArgument))
   BoundOpaque
 }
 
@@ -573,7 +573,7 @@ fn resolve_constructor_field_call(
     Ok(ConstructorRef) -> empty()
     Ok(types.Closure(_, _))
     | Ok(types.Choice(_))
-    | Ok(types.ReturnedOperator(_))
+    | Ok(types.ReturnedOperator(_, _))
     | Ok(OtherExpression)
     | Error(Nil) ->
       ExtractResult(
@@ -733,7 +733,7 @@ fn classify_rhs_ref(
     LocalRef(name:) -> dict.get(env, name) |> result.unwrap(BoundOpaque)
     types.Closure(params, body) -> BoundClosure(params, body)
     types.Choice(options) -> BoundChoice(options)
-    types.ReturnedOperator(callee) -> BoundReturnedOperator(callee)
+    types.ReturnedOperator(callee, args) -> BoundReturnedOperator(callee, args)
     ConstructorRef | OtherExpression -> BoundOpaque
   }
 }
@@ -1199,7 +1199,8 @@ fn classify_expression(
                 BoundChoice(options) -> types.Choice(options)
                 // A let-bound producer call resolves to its returned operator
                 // at the use site.
-                BoundReturnedOperator(callee) -> types.ReturnedOperator(callee)
+                BoundReturnedOperator(callee, args) ->
+                  types.ReturnedOperator(callee, args)
                 _ -> LocalRef(name:)
               }
           }
@@ -1225,7 +1226,8 @@ fn classify_expression(
     // A call to a function (not a constructor) is a *returned operator* if that
     // function returns a function — captured here, resolved at the use site
     // against the producer's inferred returned operator.
-    glance.Call(function:, ..) -> classify_call_producer(function, context, env)
+    glance.Call(function:, arguments:, ..) ->
+      classify_call_producer(function, arguments, context, env)
     // A block evaluates to its tail expression: classify that, with the block's
     // own `let`s in scope. Lets `{ let f = io.println; f }` and a function/branch
     // body that ends in a block resolve instead of going opaque.
@@ -1265,13 +1267,15 @@ fn classify_block(
 /// call is a `ReturnedOperator`; a constructor call or anything else is opaque.
 fn classify_call_producer(
   function: glance.Expression,
+  arguments: List(Field(Expression)),
   context: ImportContext,
   env: Env,
 ) -> types.ArgumentValue {
+  let args = classify_arguments(arguments, context, env, 0)
   case classify_expression(function, context, env) {
-    FunctionRef(name: callee) -> types.ReturnedOperator(callee)
+    FunctionRef(name: callee) -> types.ReturnedOperator(callee, args)
     // Same-module bare name: `""` module is the resolved-on-demand sentinel.
-    LocalRef(name:) -> types.ReturnedOperator(QualifiedName("", name))
+    LocalRef(name:) -> types.ReturnedOperator(QualifiedName("", name), args)
     ConstructorRef
     | types.Closure(..)
     | types.Choice(..)

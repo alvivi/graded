@@ -2464,13 +2464,14 @@ pub fn pick() -> fn(fn(String) -> Nil) -> Nil {
   |> should.equal(Ok(types.TAbs("cb", types.TVar("cb"))))
 }
 
-pub fn second_order_returns_parameter_stays_unknown_test() {
-  // The genuine residual: a producer that returns its own parameter is
-  // return-polymorphic and can't be lifted, so it stays `[Unknown]` — flagged
-  // even against the budget that would otherwise pass.
+pub fn second_order_returns_parameter_resolves_test() {
+  // Return-polymorphism: `wrap` returns its own operator parameter, bound at the
+  // producer call to `reader` ([FileSystem]); the result resolves rather than
+  // collapsing to `[Unknown]`.
   let source =
     "
 import gleam/io
+import fs
 pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
   action(io.println)
 }
@@ -2479,14 +2480,19 @@ fn wrap(
 ) -> fn(fn(String) -> Nil) -> Nil {
   base
 }
-fn quiet(cb: fn(String) -> Nil) -> Nil {
+fn reader(cb: fn(String) -> Nil) -> Nil {
   cb(\"x\")
+  fs.read(\"f\")
 }
 pub fn caller() -> Nil {
-  let h = wrap(quiet)
+  let h = wrap(reader)
   run(h)
 }
 "
+  // wrap(reader) ⟹ reader's operator; run applies it to io.println ⟹
+  // [Stdout] (the callback) ∪ [FileSystem] (reader's own effect).
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
   { second_order_violations(source, "caller", ["Stdout"]) != [] }
   |> should.be_true()
 }

@@ -193,9 +193,11 @@ pub type ArgumentValue {
   /// (`let h = pick_handler()`). `callee` names the producer; a `""` module is
   /// the same-module sentinel (resolved on-demand via the function map),
   /// otherwise it's resolved from the producer's inferred returned-operator in
-  /// the knowledge base. Lets `with_logger(pick_handler())` resolve instead of
-  /// collapsing to `[Unknown]`.
-  ReturnedOperator(callee: QualifiedName)
+  /// the knowledge base. `args` are the producer call's arguments, bound to the
+  /// producer's parameters when its returned operator is *polymorphic* in them
+  /// (a decorator, `fn traced(action) { fn(cb) { action(cb) } }`). Lets
+  /// `with_logger(pick_handler())` resolve instead of `[Unknown]`.
+  ReturnedOperator(callee: QualifiedName, args: List(CallArgument))
   /// Anything else (a computed expression, literal, etc.). Effects come from
   /// the enclosing walk; at the argument level we have no concrete function to
   /// propagate.

@@ -20,10 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Returned operators cross modules and packages.** They're serialized into the spec file as `returns mod.fn : fn(cb) -> [cb]` lines and loaded from the project spec and dependency specs — so `check` (not just `infer`) resolves a `let h = producer(); with(h)` across module and package boundaries.
   - **Record fields wired to an inline closure** (`Validator(to_error: fn(m) { io.println(m) })`) infer the field's effect from the closure body, with no hand-written `type` annotation.
   - **`check` auto-infers project modules missing from the spec**, in memory and in topological order, so a call into a not-yet-inferred module resolves instead of `[Unknown]`. Committed `effects` lines still take priority and nothing is written to disk.
+  - **Operator-typed record fields** — a field wired to a closure that calls its own callback (`Middleware(wrap: fn(next) { next() })`) is lifted to an operator `λnext. [next]` and applied at the field call, so `m.wrap(io.println)` resolves to `[Stdout]`.
+  - **Return-effect polymorphism** — a returned operator may be polymorphic in the producer's parameters; a producer that returns one of its own operator parameters (`fn wrap(base) { base }`) resolves, binding the parameter to the producer call's argument.
 
 ### Notes
 
-- The remaining inference residuals — all sound, collapsing to the conservative `[Unknown]` — are: **return/field-effect polymorphism** (a producer that returns or wraps its own parameter, `fn traced(action) { fn(cb) { action(cb) } }`, or a field wired to a constructor parameter — the effect is a function of a parameter, not yet resolved); a function value reached through **arbitrary computation** (`handlers |> list.first |> unwrap`); a **`use`-tailed** return (the continuation's value isn't statically recoverable); and **external/FFI** code (use `external effects`). Annotate explicitly or widen the budget where needed.
+- The remaining inference residuals — all sound, collapsing to the conservative `[Unknown]` — are: a **decorator** that returns a closure *wrapping* its parameter (`fn traced(action) { fn(cb) { action(cb) } }`) — the returned operator resolves at the consumer, but a producer that returns a closure has that closure's body over-approximated into its own direct call-effect, which may add `[Unknown]`; a field wired to a **constructor parameter** (inter-procedural value flow); a function value reached through **arbitrary computation** (`handlers |> list.first |> unwrap`); a **`use`-tailed** return; and **external/FFI** code (use `external effects`). Annotate explicitly or widen the budget where needed.
 
 ## [0.6.0] - 2026-04-21
 

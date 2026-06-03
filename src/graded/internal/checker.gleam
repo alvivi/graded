@@ -148,6 +148,7 @@ pub fn infer_with_returns(
           effective_bounds,
           registry,
           module_types,
+          dict.new(),
         )
       let effects_term = union_of(all_effects)
       // If the function's inferred effects reference effect variables
@@ -296,6 +297,7 @@ pub fn closure_field_operator(
     set.new(),
     signatures.empty(),
     dict.new(),
+    dict.new(),
   )
 }
 
@@ -322,6 +324,7 @@ fn check_annotation(
           annotation.params,
           registry,
           module_types,
+          dict.new(),
         )
       // A call is a violation when its effect set is not a subset of the
       // declared budget — i.e. it performs effects the caller didn't allow.
@@ -402,9 +405,17 @@ fn collect_effects(
   param_bounds: List(ParamBound),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  // Operator parameters in scope from an *enclosing* function (a producer whose
+  // returned closure we're analysing), so a call to one becomes a curried
+  // operator application rather than `[Unknown]`. Empty for an ordinary function.
+  ambient_operators: dict.Dict(String, List(Int)),
 ) -> List(#(types.ResolvedCall, EffectTerm)) {
   let result = extract.extract_calls(function.body, context)
-  let operator_params = signatures.operator_params_from_function(function)
+  let operator_params =
+    dict.merge(
+      ambient_operators,
+      signatures.operator_params_from_function(function),
+    )
   let lift_operator_arg =
     build_lift_operator_arg(
       context,
@@ -413,6 +424,7 @@ fn collect_effects(
       visited,
       registry,
       module_types,
+      ambient_operators,
     )
 
   // Resolved calls: qualified names looked up directly in the knowledge
@@ -865,6 +877,7 @@ fn build_lift_operator_arg(
   visited: Set(String),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  ambient_operators: dict.Dict(String, List(Int)),
 ) -> fn(types.ArgumentValue, List(Int)) -> Result(EffectTerm, Nil) {
   fn(value: types.ArgumentValue, positions: List(Int)) {
     case value {
@@ -879,6 +892,7 @@ fn build_lift_operator_arg(
           visited,
           registry,
           module_types,
+          ambient_operators,
         ))
       types.LocalRef(name) ->
         // Guard against a function passed as an operator argument to itself:
@@ -897,9 +911,10 @@ fn build_lift_operator_arg(
             ))
           _, _ -> Error(Nil)
         }
-      types.ReturnedOperator(callee) ->
+      types.ReturnedOperator(callee, args) ->
         resolve_returned_operator(
           callee,
+          args,
           context,
           function_map,
           knowledge_base,
@@ -914,10 +929,13 @@ fn build_lift_operator_arg(
 
 /// Resolve the operator a producer returns. A qualified callee is looked up in
 /// the KB (computed at the producer's inference time, available downstream by
-/// topological order). A same-module callee (`""` module) is computed on-demand
-/// from its definition, guarded against cycles by `visited`.
+/// topological order); a same-module callee (`""` module) is computed on-demand
+/// (cycle-guarded by `visited`). When the returned operator is *polymorphic* in
+/// the producer's parameters, `args` (the producer call's arguments) are bound to
+/// them — so a decorator `traced(real)` substitutes its `action` with `real`.
 fn resolve_returned_operator(
   callee: types.QualifiedName,
+  args: List(types.CallArgument),
   context: ImportContext,
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
@@ -925,7 +943,7 @@ fn resolve_returned_operator(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
 ) -> Result(EffectTerm, Nil) {
-  case callee.module {
+  let lookup = case callee.module {
     "" ->
       case
         set.contains(visited, callee.function),
@@ -945,13 +963,104 @@ fn resolve_returned_operator(
       }
     _ -> effects.lookup_returned_operator(knowledge_base, callee)
   }
+  use operator <- result.map(lookup)
+  // Concrete operator (no free vars): nothing to bind. Polymorphic in the
+  // producer's params: bind them to the producer call's arguments.
+  case set.is_empty(effect_term.free_vars(operator)) {
+    True -> operator
+    False ->
+      bind_producer_params(
+        operator,
+        callee,
+        args,
+        context,
+        function_map,
+        knowledge_base,
+        visited,
+        registry,
+        module_types,
+      )
+  }
+}
+
+/// Bind a polymorphic returned operator's free producer-parameter variables to
+/// the producer call's arguments, reusing the call-site substitution machinery.
+/// The producer's parameter bounds + a registry that knows its operator params
+/// come from the KB/project registry (cross-module) or its glance signature
+/// (same-module, keyed by the `""` module so the synthetic callee name matches).
+fn bind_producer_params(
+  operator: EffectTerm,
+  callee: types.QualifiedName,
+  args: List(types.CallArgument),
+  context: ImportContext,
+  function_map: dict.Dict(String, Definition(Function)),
+  knowledge_base: KnowledgeBase,
+  visited: Set(String),
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+) -> EffectTerm {
+  let #(bounds, effective_registry) = case callee.module {
+    "" ->
+      case dict.get(function_map, callee.function) {
+        Ok(definition) -> {
+          // Build a single-entry registry keyed by `""` so operator detection in
+          // `bind_variables` lifts operator args (not first-order).
+          let local_registry =
+            signatures.from_glance_module(
+              "",
+              glance.Module(
+                imports: [],
+                custom_types: [],
+                type_aliases: [],
+                constants: [],
+                functions: [definition],
+              ),
+            )
+          let bounds =
+            definition.definition
+            |> ordered_fn_typed_param_names()
+            |> list.map(self_referential_bound)
+          #(bounds, signatures.merge(registry, local_registry))
+        }
+        Error(Nil) -> #([], registry)
+      }
+    _ -> #(effects.lookup_param_bounds(knowledge_base, callee), registry)
+  }
+  let lift =
+    build_lift_operator_arg(
+      context,
+      function_map,
+      knowledge_base,
+      visited,
+      registry,
+      module_types,
+      dict.new(),
+    )
+  let bindings =
+    bind_variables(
+      callee,
+      bounds,
+      args,
+      knowledge_base,
+      [],
+      effective_registry,
+      lift,
+    )
+  effect_term.normalize(effect_term.subst(operator, bindings))
 }
 
 /// Compute the operator a function returns, for the returned-operator KB and for
 /// same-module on-demand resolution: classify its return expression and lift it
 /// with the callback positions of its declared return type. `Error` when the
 /// function doesn't return an operator-shaped value (no return-type annotation,
-/// non-function tail, or a tail that doesn't resolve to a function).
+/// non-function tail, or a tail that doesn't resolve to a function/operator).
+///
+/// The producer's own operator parameters are seeded both as caller bounds (so a
+/// returned bare parameter, `fn wrap(base) { base }`, resolves to its variable)
+/// and as *ambient operators* (so a returned closure that calls a parameter,
+/// `fn traced(action) { fn(cb) { action(cb) } }`, builds `action(cb)`). The
+/// result may therefore be **polymorphic** in those parameters — they're bound to
+/// the producer call's arguments at `resolve_returned_operator`.
 fn compute_returned_operator(
   function: Function,
   context: ImportContext,
@@ -965,6 +1074,11 @@ fn compute_returned_operator(
   let positions = signatures.operator_callback_positions_of_type(return_type)
   use <- bool.guard(when: positions == [], return: Error(Nil))
   use value <- result.try(extract.return_value(function, context))
+  let producer_operators = signatures.operator_params_from_function(function)
+  let producer_bounds =
+    function
+    |> ordered_fn_typed_param_names()
+    |> list.map(self_referential_bound)
   let lift =
     build_lift_operator_arg(
       context,
@@ -973,20 +1087,23 @@ fn compute_returned_operator(
       visited,
       registry,
       module_types,
+      producer_operators,
     )
   let operator =
     operator_term_for_argument(
       types.CallArgument(position: 0, label: None, value:),
       positions,
       knowledge_base,
-      [],
+      producer_bounds,
       registry,
       lift,
     )
-  // Only a genuine operator (an abstraction) is worth recording; a tail that
-  // didn't resolve to one collapses to a non-abstraction we decline to store.
+  // Record an operator: an abstraction (`λcb. …`, possibly polymorphic in the
+  // producer's params) or a bare operator parameter returned directly
+  // (`TVar`, the identity `fn wrap(base) { base }`). A ground effect or a
+  // union/application of vars isn't a usable returned operator.
   case operator {
-    types.TAbs(_, _) -> Ok(operator)
+    types.TAbs(_, _) | types.TVar(_) -> Ok(operator)
     _ -> Error(Nil)
   }
 }
@@ -1008,6 +1125,7 @@ fn analyze_closure(
   visited: Set(String),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  ambient_operators: dict.Dict(String, List(Int)),
 ) -> EffectTerm {
   let synthetic =
     Function(
@@ -1018,9 +1136,15 @@ fn analyze_closure(
       return: None,
       body:,
     )
-  // Seed every closure parameter as a self-referential fn-typed bound so calls
-  // to the callback inside the body resolve to its effect variable.
-  let bounds = list.map(params, self_referential_bound)
+  // Seed every closure parameter — and every ambient operator parameter from an
+  // enclosing producer — as a self-referential bound, so calls to them inside the
+  // body resolve to their effect variable (the local-call branch matches on
+  // `param_bounds`, and the ambient ones are also flagged as operators).
+  let bounds =
+    list.append(
+      list.map(params, self_referential_bound),
+      list.map(dict.keys(ambient_operators), self_referential_bound),
+    )
   let body_term =
     collect_effects(
       synthetic,
@@ -1031,6 +1155,7 @@ fn analyze_closure(
       bounds,
       registry,
       module_types,
+      ambient_operators,
     )
     |> union_of()
   // Which closure parameters to abstract over: those at the operator's callback
@@ -1078,6 +1203,7 @@ fn lift_local_function(
       bounds,
       registry,
       module_types,
+      dict.new(),
     )
     |> union_of()
   list.fold_right(fn_param_names, body_term, fn(acc, param) {
@@ -1193,7 +1319,7 @@ fn resolve_argument_effects(
     // position (handled by `operator_term_for_argument`); first-order, they're
     // conservative.
     types.Choice(_) -> effect_term.unknown()
-    types.ReturnedOperator(_) -> effect_term.unknown()
+    types.ReturnedOperator(_, _) -> effect_term.unknown()
     types.OtherExpression -> effect_term.unknown()
   }
 }
@@ -1244,6 +1370,7 @@ fn resolve_unknown_local(
             nested_bounds,
             registry,
             module_types,
+            dict.new(),
           )
         }
       }

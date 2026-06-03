@@ -20,14 +20,18 @@ computed where the producer is defined — so its module's private callees are i
 scope — **serialized into the spec** as a `returns mod.fn : fn(cb) -> [cb]` line
 and loaded from the project and dependency specs, so it resolves across module
 *and package* boundaries during `check`, not only `infer`). A value that is a
-**block** resolves to its tail expression, a record **field wired to a closure**
-is resolved from the closure body, and `check` **auto-infers** project modules
-missing from the spec (in memory, topological order, committed entries winning).
-The remaining residuals, all sound (`[Unknown]`), are **return/field-effect
-polymorphism** (a producer that returns or wraps its own parameter; a field wired
-to a constructor parameter — the effect is a function of a parameter), a function
-value reached through arbitrary computation, and `use`-tailed returns — noted in
-the README limitations.
+**block** resolves to its tail expression; a record **field wired to a closure**
+is resolved from the closure body (including an **operator-typed field** whose
+closure calls its callback — lifted to `λnext. [next]` and applied at the field
+call); `check` **auto-infers** project modules missing from the spec; and a
+returned operator may be **polymorphic in the producer's parameters** (a producer
+returning one of its operator parameters, `fn wrap(base) { base }`, binds it to
+the producer call's argument). The remaining residuals, all sound (`[Unknown]`),
+are: a **decorator** returning a closure that *wraps* its parameter — the returned
+operator resolves, but a producer that returns a closure over-approximates that
+closure's body into its own direct call-effect; a field wired to a constructor
+parameter; a function value reached through arbitrary computation; and `use`-tailed
+returns — noted in the README limitations.
 
 ## Goal
 
