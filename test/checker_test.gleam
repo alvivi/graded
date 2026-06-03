@@ -944,6 +944,7 @@ fn build_kb(calls: List(#(String, String, String))) -> effects.KnowledgeBase {
     all_effects:,
     param_bounds: dict.new(),
     type_fields: dict.new(),
+    returned_operators: dict.new(),
     pure_modules: set.new(),
   )
 }
@@ -1117,6 +1118,7 @@ fn bare_knowledge_base() -> effects.KnowledgeBase {
     all_effects: dict.new(),
     param_bounds: dict.new(),
     type_fields: dict.new(),
+    returned_operators: dict.new(),
     pure_modules: set.new(),
   )
 }
@@ -2159,6 +2161,262 @@ fn make() {
 }
 pub fn caller() -> Nil {
   let h = make()
+  run(h)
+}
+"
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn second_order_branch_closures_unions_effects_test() {
+  // An operator argument selected by `case` over two closures resolves to the
+  // *union* of the branches' effects (over-approximating both).
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller(flag: Bool) -> Nil {
+  run(case flag {
+    True -> fn(log) { log(\"x\") }
+    False -> fn(log) {
+      log(\"y\")
+      fs.read(\"f\")
+    }
+  })
+}
+"
+  // First branch ⟹ [Stdout] (log := io.println); second ⟹ [Stdout, FileSystem].
+  // The join is their union.
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn second_order_branch_same_module_fns_test() {
+  // Branch over two same-module named functions (resolved via the function map).
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn quiet(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+fn loud(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+  fs.read(\"f\")
+}
+pub fn caller(flag: Bool) -> Nil {
+  run(case flag {
+    True -> quiet
+    False -> loud
+  })
+}
+"
+  // quiet ⟹ [Stdout]; loud ⟹ [Stdout, FileSystem]; union is both.
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn second_order_let_bound_branch_test() {
+  // A let-bound branch resolves the same way at its later use site.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller(flag: Bool) -> Nil {
+  let h = case flag {
+    True -> fn(log) { log(\"x\") }
+    False -> fn(_log) { Nil }
+  }
+  run(h)
+}
+"
+  // True branch ⟹ [Stdout], False branch ⟹ []; union is [Stdout].
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn second_order_branch_non_function_arm_is_unknown_test() {
+  // If any arm isn't a bare function-like value (here a block expression), the
+  // whole branch is opaque and the operator application stays the conservative
+  // `[Unknown]` — flagged even against the budget that would otherwise pass.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller(flag: Bool) -> Nil {
+  run(case flag {
+    True -> fn(log) { log(\"x\") }
+    False -> {
+      let _ = 1
+      fn(log) { log(\"y\") }
+    }
+  })
+}
+"
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn second_order_returned_function_same_module_test() {
+  // A same-module producer `pick` returns a function; `let h = pick(); run(h)`
+  // resolves to the returned function's effect (computed on-demand).
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn logger(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+fn pick() -> fn(fn(String) -> Nil) -> Nil {
+  logger
+}
+pub fn caller() -> Nil {
+  let h = pick()
+  run(h)
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn second_order_returned_function_inline_test() {
+  // The inline form `run(pick())` resolves the same way as the let-bound form.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn logger(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+fn pick() -> fn(fn(String) -> Nil) -> Nil {
+  logger
+}
+pub fn caller() -> Nil {
+  run(pick())
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn second_order_returned_function_cross_module_test() {
+  // A cross-module producer whose returned operator is in the knowledge base
+  // (as the topological pass would have folded it).
+  let source =
+    "
+import gleam/io
+import dep
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller() -> Nil {
+  let h = dep.pick()
+  run(h)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  // The topological pass folds both the producer's own effect (it's pure — it
+  // just returns a function) and its returned operator into the KB.
+  let kb =
+    knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(
+          QualifiedName("dep", "pick"),
+          effect_term.from_effect_set(types.empty()),
+        ),
+      ]),
+    )
+    |> effects.with_inferred_returned_operators(
+      dict.from_list([
+        #(QualifiedName("dep", "pick"), types.TAbs("cb", types.TVar("cb"))),
+      ]),
+    )
+  let registry = signatures.from_glance_module("app", module)
+  let pass =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
+  let #(violations, _) = checker.check(module, [pass], kb, registry, dict.new())
+  violations |> should.equal([])
+  let fail =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(types.empty()),
+    )
+  let #(fail_violations, _) =
+    checker.check(module, [fail], kb, registry, dict.new())
+  { fail_violations != [] } |> should.be_true()
+}
+
+pub fn infer_returned_operator_entry_test() {
+  // Inferring a producer that returns a function records its returned operator.
+  let source =
+    "
+pub fn logger(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+pub fn pick() -> fn(fn(String) -> Nil) -> Nil {
+  logger
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(_annotations, returns) =
+    checker.infer_with_returns(
+      module,
+      knowledge_base(),
+      [],
+      signatures.from_glance_module("app", module),
+      dict.new(),
+      dict.new(),
+    )
+  dict.get(returns, "pick")
+  |> should.equal(Ok(types.TAbs("cb", types.TVar("cb"))))
+}
+
+pub fn second_order_returns_parameter_stays_unknown_test() {
+  // The genuine residual: a producer that returns its own parameter is
+  // return-polymorphic and can't be lifted, so it stays `[Unknown]` — flagged
+  // even against the budget that would otherwise pass.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn wrap(
+  base: fn(fn(String) -> Nil) -> Nil,
+) -> fn(fn(String) -> Nil) -> Nil {
+  base
+}
+fn quiet(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+pub fn caller() -> Nil {
+  let h = wrap(quiet)
   run(h)
 }
 "

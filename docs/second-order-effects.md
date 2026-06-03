@@ -11,11 +11,17 @@ callbacks in order — the unary `TApp`/`TAbs` need no change because `reduce`
 already walks spines. Operator arguments are lifted from **named function
 references** (cross-module via the knowledge base, same-module via on-demand
 transitive analysis, since siblings aren't in the KB during their module's
-inference pass), **inline closures**, and **let-bound closures**
-(`let h = fn(cb) { … }`). The one residual is an inference caveat — an operator
-argument that is a function *returned from a call* (`let h = pick_handler()`), or
-selected in a `case`/`if` branch, can't be traced to a concrete function and
-collapses to the conservative `[Unknown]` — noted in the README limitations.
+inference pass), **inline closures**, **let-bound closures**
+(`let h = fn(cb) { … }`), **`case`/`if` branches over function-like options**
+(each branch lifted and the operators **joined** by descending their `TAbs`
+spines in lockstep — `(f ⊔ g)(cb) = f(cb) ⊔ g(cb)`), and **functions returned
+from a call** (`let h = pick_handler()`; the producer's returned operator is
+computed where the producer is defined — so its module's private callees are in
+scope — and threaded through the knowledge base by the topological pass, exactly
+like `all_effects`). The remaining residuals, all sound (`[Unknown]`), are a
+producer that returns *its own parameter* (return-polymorphic), cross-*package*
+returned operators (in-memory only), and block/`use`-tailed returns — noted in
+the README limitations.
 
 ## Goal
 

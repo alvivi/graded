@@ -31,6 +31,13 @@ type LocalBinding {
   /// lifted to an effect operator, just like an inline closure passed directly,
   /// rather than collapsing to `[Unknown]`.
   BoundClosure(params: List(String), body: List(glance.Statement))
+  /// A let-bound `case`/`if` over function-like options (`let h = case c { … }`).
+  /// A later use of `h` as an operator argument lifts and joins the options.
+  BoundChoice(options: List(ArgumentValue))
+  /// A let-bound result of calling a function that returns a function
+  /// (`let h = pick_handler()`). A later use of `h` as an operator argument
+  /// resolves the producer's returned operator.
+  BoundReturnedOperator(callee: QualifiedName)
   BoundOpaque
 }
 
@@ -553,7 +560,11 @@ fn resolve_constructor_field_call(
         call_args: dict.new(),
       )
     Ok(ConstructorRef) -> empty()
-    Ok(types.Closure(_, _)) | Ok(OtherExpression) | Error(Nil) ->
+    Ok(types.Closure(_, _))
+    | Ok(types.Choice(_))
+    | Ok(types.ReturnedOperator(_))
+    | Ok(OtherExpression)
+    | Error(Nil) ->
       ExtractResult(
         resolved: [],
         local: [],
@@ -691,7 +702,7 @@ fn classify_rhs(
           let module = dict.get(context.aliases, alias) |> option.from_result
           classify_constructor(ctor, module, arguments, context, env)
         }
-        False -> BoundOpaque
+        False -> classify_rhs_ref(expression, context, env)
       }
     _ -> classify_rhs_ref(expression, context, env)
   }
@@ -710,6 +721,8 @@ fn classify_rhs_ref(
     FunctionRef(name:) -> BoundFunctionRef(name:)
     LocalRef(name:) -> dict.get(env, name) |> result.unwrap(BoundOpaque)
     types.Closure(params, body) -> BoundClosure(params, body)
+    types.Choice(options) -> BoundChoice(options)
+    types.ReturnedOperator(callee) -> BoundReturnedOperator(callee)
     ConstructorRef | OtherExpression -> BoundOpaque
   }
 }
@@ -1141,6 +1154,12 @@ fn classify_expression(
                 // A let-bound closure used by name resolves to the closure
                 // itself, so it can be lifted to an operator at the use site.
                 BoundClosure(params, body) -> types.Closure(params, body)
+                // A let-bound branch resolves to its options, lifted and joined
+                // at the use site.
+                BoundChoice(options) -> types.Choice(options)
+                // A let-bound producer call resolves to its returned operator
+                // at the use site.
+                BoundReturnedOperator(callee) -> types.ReturnedOperator(callee)
                 _ -> LocalRef(name:)
               }
           }
@@ -1158,7 +1177,85 @@ fn classify_expression(
         }),
         body,
       )
+    // A `case`/`if` whose every clause body is a bare function-like value is a
+    // selection among known operators: capture them as a `Choice` so the checker
+    // can lift and join them. Any non-function (or block) clause body, or no
+    // clauses, makes the whole thing opaque.
+    glance.Case(clauses:, ..) -> classify_case_options(clauses, context, env)
+    // A call to a function (not a constructor) is a *returned operator* if that
+    // function returns a function — captured here, resolved at the use site
+    // against the producer's inferred returned operator.
+    glance.Call(function:, ..) -> classify_call_producer(function, context, env)
     _ -> OtherExpression
+  }
+}
+
+/// Classify a call's *callee* as the producer of a returned operator. When the
+/// callee is a function reference (cross-module) or a same-module bare name, the
+/// call is a `ReturnedOperator`; a constructor call or anything else is opaque.
+fn classify_call_producer(
+  function: glance.Expression,
+  context: ImportContext,
+  env: Env,
+) -> types.ArgumentValue {
+  case classify_expression(function, context, env) {
+    FunctionRef(name: callee) -> types.ReturnedOperator(callee)
+    // Same-module bare name: `""` module is the resolved-on-demand sentinel.
+    LocalRef(name:) -> types.ReturnedOperator(QualifiedName("", name))
+    ConstructorRef
+    | types.Closure(..)
+    | types.Choice(..)
+    | types.ReturnedOperator(..)
+    | OtherExpression -> OtherExpression
+  }
+}
+
+/// The value a function evaluates to, for returned-operator inference: the tail
+/// statement's expression classified with only the import context in scope
+/// (parameters and prior `let`s are deliberately not threaded — v1 handles a
+/// directly-returned ref/closure/branch/producer-call). `Error` when the body's
+/// tail isn't a bare expression.
+pub fn return_value(
+  function: glance.Function,
+  context: ImportContext,
+) -> Result(ArgumentValue, Nil) {
+  case list.last(function.body) {
+    Ok(glance.Expression(expression)) ->
+      Ok(classify_expression(expression, context, dict.new()))
+    _ -> Error(Nil)
+  }
+}
+
+/// Classify the clause bodies of a `case` as a `Choice` of function-like
+/// options, or `OtherExpression` if any body isn't a bare function/closure/
+/// branch (or there are no clauses).
+fn classify_case_options(
+  clauses: List(glance.Clause),
+  context: ImportContext,
+  env: Env,
+) -> types.ArgumentValue {
+  let options =
+    list.map(clauses, fn(clause) {
+      classify_expression(clause.body, context, env)
+    })
+  // `LocalRef` is admitted: a same-module function resolves via the function
+  // map at the use site, and a genuinely opaque local just lifts to `[Unknown]`
+  // (sound). Only constructors and unclassifiable expressions disqualify a branch.
+  let all_function_like =
+    options != []
+    && list.all(options, fn(option) {
+      case option {
+        FunctionRef(..)
+        | LocalRef(..)
+        | types.Closure(..)
+        | types.Choice(..)
+        | types.ReturnedOperator(..) -> True
+        ConstructorRef | OtherExpression -> False
+      }
+    })
+  case all_function_like {
+    True -> types.Choice(options)
+    False -> OtherExpression
   }
 }
 

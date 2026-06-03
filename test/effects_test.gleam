@@ -397,6 +397,23 @@ pub fn with_inferred_does_not_overwrite_test() {
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
+pub fn returned_operators_round_trip_test() {
+  let kb = knowledge_base()
+  let operator = types.TAbs("cb", types.TVar("cb"))
+  let enriched =
+    effects.with_inferred_returned_operators(
+      kb,
+      dict.from_list([#(QualifiedName("mylib/foo", "pick"), operator)]),
+    )
+  effects.lookup_returned_operator(enriched, QualifiedName("mylib/foo", "pick"))
+  |> should.equal(Ok(operator))
+  effects.lookup_returned_operator(
+    enriched,
+    QualifiedName("mylib/foo", "absent"),
+  )
+  |> should.equal(Error(Nil))
+}
+
 pub fn with_inferred_adds_new_entries_test() {
   let kb = knowledge_base()
   let inferred =

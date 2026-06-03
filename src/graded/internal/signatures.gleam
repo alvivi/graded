@@ -256,6 +256,17 @@ pub fn operator_params_from_function(
   |> dict.from_list()
 }
 
+/// The callback positions of an operator-shaped *type* — the function-typed
+/// argument indices of a `fn(.., fn(..) -> _, ..) -> _`, in order. Empty when
+/// the type isn't a function type that takes a function (i.e. not an operator).
+/// Used to lift a function *returned* by a producer (its declared return type).
+pub fn operator_callback_positions_of_type(type_: glance.Type) -> List(Int) {
+  case type_ {
+    FunctionType(_, param_types, _) -> all_function_indices(param_types)
+    _ -> []
+  }
+}
+
 /// The indices of the function-typed arguments in a type list, in order. These
 /// are the callback positions for an operator parameter's own argument list.
 fn all_function_indices(types: List(glance.Type)) -> List(Int) {

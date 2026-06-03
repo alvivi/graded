@@ -625,8 +625,8 @@ fn infer_one_module(
   module_types: Dict(#(Int, Int), girard_types.Type),
   girard_fn_typed: Dict(String, Set(String)),
 ) -> Result(#(KnowledgeBase, List(EffectAnnotation)), GradedError) {
-  let inferred =
-    checker.infer(
+  let #(inferred, returned_operators) =
+    checker.infer_with_returns(
       module,
       knowledge_base,
       [],
@@ -675,10 +675,17 @@ fn infer_one_module(
           )
       }
     })
+  // Returned-operator signatures (qualified by module) so a downstream module's
+  // `let h = this_module.producer(); with(h)` resolves the returned operator.
+  let returned_dict =
+    dict.fold(returned_operators, dict.new(), fn(acc, function, operator) {
+      dict.insert(acc, QualifiedName(module: module_path, function:), operator)
+    })
   let new_kb =
     knowledge_base
     |> effects.with_inferred(inferred_dict)
     |> effects.with_inferred_params(params_dict)
+    |> effects.with_inferred_returned_operators(returned_dict)
 
   let public_names = public_function_names(module)
   let public_annotations =

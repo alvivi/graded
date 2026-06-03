@@ -173,6 +173,19 @@ pub type ArgumentValue {
   /// the callback — and lifts it to an effect operator so the application
   /// beta-reduces (rather than collapsing to `[Unknown]`).
   Closure(params: List(String), body: List(Statement))
+  /// A value selected among several function-like options by a `case`/`if`
+  /// (`case c { True -> f  False -> g }`). When passed to an operator parameter,
+  /// each option is lifted and the results are joined (`(f ⊔ g)(cb) = f(cb) ⊔
+  /// g(cb)`), so the effect over-approximates every branch. Any non-function
+  /// branch makes the whole expression `OtherExpression` instead.
+  Choice(options: List(ArgumentValue))
+  /// A value produced by *calling* a function that returns a function
+  /// (`let h = pick_handler()`). `callee` names the producer; a `""` module is
+  /// the same-module sentinel (resolved on-demand via the function map),
+  /// otherwise it's resolved from the producer's inferred returned-operator in
+  /// the knowledge base. Lets `with_logger(pick_handler())` resolve instead of
+  /// collapsing to `[Unknown]`.
+  ReturnedOperator(callee: QualifiedName)
   /// Anything else (a computed expression, literal, etc.). Effects come from
   /// the enclosing walk; at the argument level we have no concrete function to
   /// propagate.

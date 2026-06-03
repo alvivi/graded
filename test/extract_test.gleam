@@ -4,7 +4,9 @@ import gleam/list
 import gleam/option.{Some}
 import gleeunit/should
 import graded/internal/extract
-import graded/internal/types.{FunctionRef, QualifiedName}
+import graded/internal/types.{
+  Choice, FunctionRef, OtherExpression, QualifiedName,
+}
 
 fn parse_and_extract(src: String) -> extract.ExtractResult {
   let assert Ok(module) = glance.module(src)
@@ -264,6 +266,47 @@ pub fn target() { io.println(\"hi\") }"
 }
 
 // ──── Local binding resolution (same-function value flow) ────
+
+pub fn case_of_function_refs_is_choice_arg_test() {
+  // A `case` whose arms are all function references becomes a `Choice` argument.
+  let src =
+    "import gleam/io
+pub fn target(flag) {
+  print_with(case flag {
+    True -> io.println
+    False -> io.print
+  })
+}"
+  let result = parse_and_extract(src)
+  result.call_args
+  |> dict.values
+  |> list.flatten
+  |> list.map(fn(arg) { arg.value })
+  |> should.equal([
+    Choice([
+      FunctionRef(QualifiedName("gleam/io", "println")),
+      FunctionRef(QualifiedName("gleam/io", "print")),
+    ]),
+  ])
+}
+
+pub fn case_with_non_function_arm_is_not_choice_test() {
+  // A `case` with a non-function arm (a literal) is opaque, not a `Choice`.
+  let src =
+    "import gleam/io
+pub fn target(flag) {
+  print_with(case flag {
+    True -> io.println
+    False -> 42
+  })
+}"
+  let result = parse_and_extract(src)
+  result.call_args
+  |> dict.values
+  |> list.flatten
+  |> list.map(fn(arg) { arg.value })
+  |> should.equal([OtherExpression])
+}
 
 pub fn function_ref_alias_call_test() {
   let src =

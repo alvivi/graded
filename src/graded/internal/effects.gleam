@@ -34,6 +34,12 @@ pub type KnowledgeBase {
     // (cache/unqualified) annotations use "" — matched by the syntactic-receiver
     // fallback, which can't determine the module.
     type_fields: Dict(#(String, String, String), TypeFieldEffect),
+    // For a function that *returns a function* (an operator-shaped result), the
+    // lifted effect-operator of its return value — so a consumer
+    // `let h = f(); with(h)` resolves `h` instead of going `[Unknown]`. Computed
+    // at the producer's inference time (where its module's private callees are
+    // in scope) and threaded forward by the topological pass.
+    returned_operators: Dict(QualifiedName, EffectTerm),
     pure_modules: Set(String),
   )
 }
@@ -51,6 +57,7 @@ pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
     // ordering in CLAUDE.md — dict.merge lets the second arg win.
     param_bounds: dict.merge(cat_params, dep_params),
     type_fields: dict.new(),
+    returned_operators: dict.new(),
     pure_modules: cat_pure,
   )
 }
@@ -64,6 +71,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     all_effects: cat_effects,
     param_bounds: cat_params,
     type_fields: dict.new(),
+    returned_operators: dict.new(),
     pure_modules: cat_pure,
   )
 }
@@ -342,6 +350,26 @@ pub fn with_inferred_params(
   KnowledgeBase(..knowledge_base, param_bounds: merged)
 }
 
+/// Merge inferred returned-operator signatures into a knowledge base, so a
+/// downstream module's `let h = producer(); with(h)` can resolve `h` to the
+/// operator the producer returns. Existing entries take priority.
+pub fn with_inferred_returned_operators(
+  knowledge_base: KnowledgeBase,
+  inferred: Dict(QualifiedName, EffectTerm),
+) -> KnowledgeBase {
+  let merged = dict.merge(inferred, knowledge_base.returned_operators)
+  KnowledgeBase(..knowledge_base, returned_operators: merged)
+}
+
+/// Look up the operator a function returns, if known. `Error(Nil)` when the
+/// callee doesn't return a (tracked) operator.
+pub fn lookup_returned_operator(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Result(EffectTerm, Nil) {
+  dict.get(knowledge_base.returned_operators, name)
+}
+
 // PRIVATE
 
 /// For each installed package, locate its spec file via the package's own
@@ -465,6 +493,7 @@ fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
                 all_effects: acc.ext_effects,
                 param_bounds: dict.new(),
                 type_fields: dict.new(),
+                returned_operators: dict.new(),
                 pure_modules: acc.pure_mods,
               ),
               annotation.extract_externals(graded_file),
