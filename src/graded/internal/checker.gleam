@@ -5,6 +5,7 @@ import glance.{
 }
 import gleam/bool
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -268,38 +269,34 @@ pub fn build_function_map(
   |> dict.from_list()
 }
 
-/// The (flat) effect of an inline closure's body, for a record field wired to a
-/// closure at construction (`Validator(to_error: fn(m) { io.println(m) })`).
-/// Analysed like a function body whose parameters are ordinary values — calls to
-/// a closure parameter (a higher-order field) stay conservative. `function_map`
-/// resolves same-module calls; a minimal registry/types is enough for the common
-/// case of a closure calling library/qualified functions.
-pub fn closure_body_effect(
+/// Lift a record field wired to an inline closure into an effect *operator*,
+/// abstracting over every closure parameter. A first-order field
+/// (`to_error: fn(m) { io.println(m) }`) becomes `λm. [Stdout]` (applying it to
+/// the field call's argument gives `[Stdout]` back); a higher-order field
+/// (`run: fn(next) { next() }`) becomes `λnext. [next]` (applying it gives the
+/// callback's effect). `resolve_field_effect` applies the operator at the field
+/// call. `function_map` resolves same-module calls; a minimal registry/types is
+/// enough for the common case of a closure calling library/qualified functions.
+pub fn closure_field_operator(
+  params: List(String),
   body: List(Statement),
   context: ImportContext,
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
 ) -> EffectTerm {
-  let synthetic =
-    Function(
-      location: Span(0, 0),
-      name: "<closure-field>",
-      publicity: Private,
-      parameters: [],
-      return: None,
-      body:,
-    )
-  collect_effects(
-    synthetic,
-    function_map,
+  // Abstract over every parameter (positions 0..n-1), in order.
+  let positions = list.index_map(params, fn(_, index) { index })
+  analyze_closure(
+    params,
+    body,
+    positions,
     context,
+    function_map,
     knowledge_base,
     set.new(),
-    [],
     signatures.empty(),
     dict.new(),
   )
-  |> union_of()
 }
 
 fn check_annotation(
@@ -1318,24 +1315,59 @@ fn resolve_field_effect(
   lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
     Result(EffectTerm, Nil),
 ) -> EffectTerm {
-  case has_vars(field_effect.effects), field_effect.source {
-    False, _ -> field_effect.effects
-    True, None -> concretize(field_effect.effects)
-    True, Some(source) -> {
-      let args = dict.get(call_args, field_call.span.start) |> result.unwrap([])
-      let bindings =
-        bind_variables(
-          source,
-          field_effect.bounds,
-          args,
-          knowledge_base,
-          caller_param_bounds,
-          registry,
-          lift_operator_arg,
-        )
-      concretize(effect_term.subst(field_effect.effects, bindings))
-    }
+  case field_effect.effects {
+    // An *operator*-valued field (a closure field that calls its own callback,
+    // lifted to `λp. …`): apply it to the field call's arguments.
+    types.TAbs(_, _) ->
+      apply_field_operator(
+        field_effect.effects,
+        dict.get(call_args, field_call.span.start) |> result.unwrap([]),
+        knowledge_base,
+        caller_param_bounds,
+      )
+    _ ->
+      case has_vars(field_effect.effects), field_effect.source {
+        False, _ -> field_effect.effects
+        True, None -> concretize(field_effect.effects)
+        True, Some(source) -> {
+          let args =
+            dict.get(call_args, field_call.span.start) |> result.unwrap([])
+          let bindings =
+            bind_variables(
+              source,
+              field_effect.bounds,
+              args,
+              knowledge_base,
+              caller_param_bounds,
+              registry,
+              lift_operator_arg,
+            )
+          concretize(effect_term.subst(field_effect.effects, bindings))
+        }
+      }
   }
+}
+
+/// Apply an operator-valued field to a field call's arguments, in position
+/// order: `λp0. λp1. body` applied to `(a0, a1)` β-reduces to `body[p0:=a0]
+/// [p1:=a1]`. A first-order field's binder is unused, so the result is just its
+/// body. Leftover binders (fewer args than params) leave the operator partially
+/// applied → `[Unknown]` (the conservative collapse in `to_effect_set`).
+fn apply_field_operator(
+  operator: EffectTerm,
+  args: List(types.CallArgument),
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+) -> EffectTerm {
+  args
+  |> list.sort(fn(a, b) { int.compare(a.position, b.position) })
+  |> list.fold(operator, fn(acc, arg) {
+    types.TApp(
+      acc,
+      resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
+    )
+  })
+  |> effect_term.normalize
 }
 
 /// Collapse any effect variables left after substitution to `Unknown`, so an

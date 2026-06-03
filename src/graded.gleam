@@ -366,8 +366,14 @@ fn build_constructor_field_index(
     // closure body in this module's context (same-module calls via its
     // function map), instead of collapsing to `[Unknown]`.
     let function_map = checker.build_function_map(module)
-    let closure_effect = fn(body) {
-      checker.closure_body_effect(body, context, function_map, knowledge_base)
+    let closure_effect = fn(params, body) {
+      checker.closure_field_operator(
+        params,
+        body,
+        context,
+        function_map,
+        knowledge_base,
+      )
     }
     extract.collect_constructor_bindings(module, context)
     |> list.fold(acc, fn(inner, binding) {
@@ -409,7 +415,7 @@ fn accumulate_constructor_binding(
   constructor_types: Dict(#(String, String), String),
   knowledge_base: KnowledgeBase,
   module_path: String,
-  closure_effect: fn(List(glance.Statement)) -> types.EffectTerm,
+  closure_effect: fn(List(String), List(glance.Statement)) -> types.EffectTerm,
 ) -> Dict(#(String, String, String), types.TypeFieldEffect) {
   let extract.ConstructorBinding(binding_module, constructor, fields) = binding
   let module = option.unwrap(binding_module, module_path)
@@ -437,7 +443,7 @@ fn field_effect_of(
   knowledge_base: KnowledgeBase,
   value: types.ArgumentValue,
   module_path: String,
-  closure_effect: fn(List(glance.Statement)) -> types.EffectTerm,
+  closure_effect: fn(List(String), List(glance.Statement)) -> types.EffectTerm,
 ) -> types.TypeFieldEffect {
   case field_value_function(value, module_path) {
     Some(name) -> {
@@ -456,8 +462,8 @@ fn field_effect_of(
     // field's effect instead of collapsing to `[Unknown]`.
     None ->
       case value {
-        types.Closure(_params, body) ->
-          types.TypeFieldEffect(closure_effect(body), [], None)
+        types.Closure(params, body) ->
+          types.TypeFieldEffect(closure_effect(params, body), [], None)
         _ ->
           types.TypeFieldEffect(
             effects.argument_value_effects(knowledge_base, value),

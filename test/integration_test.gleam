@@ -79,6 +79,20 @@ pub fn closure_field_effect_from_construction_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn operator_typed_closure_field_test() {
+  // An *operator-typed* field (a closure that calls its own callback) is lifted
+  // to `λnext. [next]` and applied at the field call `m.wrap(io.println)`,
+  // resolving to the supplied callback's [Stdout] — previously [Unknown].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let operator_result =
+    list.find(results, fn(r) { r.file == "test/fixtures/operator_field.gleam" })
+  let assert Ok(r) = operator_result
+  { r.violations != [] } |> should.be_true()
+  let assert [v, ..] = r.violations
+  v.function |> should.equal("run")
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn inferred_field_effect_from_construction_test() {
   // Stage C: inferred_field has NO `type Logger.emit` annotation. graded
   // derives the field's effect from the construction `Logger(emit: io.println)`
