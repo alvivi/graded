@@ -327,6 +327,24 @@ pub fn target() {
   |> should.equal([FunctionRef(QualifiedName("gleam/io", "println"))])
 }
 
+pub fn pipe_into_block_resolves_tail_test() {
+  // Piping into a block re-targets the pipe at the block's tail expression
+  // (with the block's lets in scope), so `x |> { let f = io.println; f }`
+  // resolves the call to io.println.
+  let src =
+    "import gleam/io
+pub fn target(x) {
+  x |> {
+    let f = io.println
+    f
+  }
+}"
+  let result = parse_and_extract(src)
+  result.resolved
+  |> list.map(fn(r) { r.name })
+  |> should.equal([QualifiedName("gleam/io", "println")])
+}
+
 pub fn function_ref_alias_call_test() {
   let src =
     "import gleam/io

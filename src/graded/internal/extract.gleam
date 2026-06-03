@@ -388,12 +388,23 @@ fn walk_scope(
   context: ImportContext,
   env: Env,
 ) -> ExtractResult {
+  walk_scope_with_env(statements, context, env).0
+}
+
+/// Like `walk_scope` but also returns the environment after the statements —
+/// needed to classify a block's tail expression with its preceding `let`s in
+/// scope.
+fn walk_scope_with_env(
+  statements: List(Statement),
+  context: ImportContext,
+  env: Env,
+) -> #(ExtractResult, Env) {
   list.fold(statements, #(empty(), env), fn(state, statement) {
     let #(accumulated, current_env) = state
     let #(result, next_env) =
       extract_from_statement(statement, context, current_env)
     #(merge(accumulated, result), next_env)
-  }).0
+  })
 }
 
 // PRIVATE
@@ -1078,8 +1089,37 @@ fn extract_pipe_target(
         list.append(pipe_args, classify_arguments(arguments, context, env, 1)),
       )
 
+    // A block pipe target (`x |> { let f = bar(); f }`): collect the block's
+    // own statement effects and re-target the pipe at its tail expression, with
+    // the block's `let`s in scope.
+    glance.Block(statements:, ..) ->
+      pipe_into_block(statements, context, env, pipe_args)
+
     // Any other shape — handle normally; no arg tracking.
     _ -> extract_from_expression(expression, context, env)
+  }
+}
+
+/// Pipe into a block: walk its leading statements (their effects + the `let`
+/// bindings they introduce), then re-dispatch the pipe at the block's tail
+/// expression. A block whose tail isn't a bare expression has no callee to
+/// attach the piped argument to, so it's walked without arg tracking.
+fn pipe_into_block(
+  statements: List(Statement),
+  context: ImportContext,
+  env: Env,
+  pipe_args: List(CallArgument),
+) -> ExtractResult {
+  case list.reverse(statements) {
+    [glance.Expression(tail), ..init_reversed] -> {
+      let #(init_result, inner_env) =
+        walk_scope_with_env(list.reverse(init_reversed), context, env)
+      merge(
+        init_result,
+        extract_pipe_target(tail, context, inner_env, pipe_args),
+      )
+    }
+    _ -> walk_scope(statements, context, env)
   }
 }
 
