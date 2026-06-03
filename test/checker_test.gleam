@@ -1951,3 +1951,79 @@ pub fn caller() -> Nil { app.with_logger(fn(logger) { logger(\"hi\") }) }"
   let #(violations, _) = checker.check(module, [ann], kb, reg, dict.new())
   violations |> should.equal([])
 }
+
+pub fn infer_operator_param_resolves_non_first_callback_test() {
+  // `action`'s callback is its SECOND argument (`fn(Int, fn(String) -> Nil)`).
+  // The call `action(1, io.println)` must build the operator application
+  // `action(Stdout)` — resolving the position-1 argument (io.println), not the
+  // position-0 Int literal. Reading position 0 would yield `action([Unknown])`.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(Int, fn(String) -> Nil) -> Nil) -> Nil {
+  action(1, io.println)
+}
+"
+  let ann = infer_single(source)
+  ann.function |> should.equal("run")
+  ann.effects
+  |> effect_term.normalize
+  |> should.equal(types.TApp(
+    types.TVar("action"),
+    types.TLabels(set.from_list(["Stdout"])),
+  ))
+}
+
+pub fn infer_operator_param_non_first_callback_via_pipe_test() {
+  // `1 |> action(io.println)` desugars to `action(1, io.println)`: the piped
+  // receiver takes position 0 and the callback stays at position 1, so the
+  // pipe-adjusted positions still align with the operator's argument list and
+  // the callback resolves to [Stdout].
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(Int, fn(String) -> Nil) -> Nil) -> Nil {
+  1 |> action(io.println)
+}
+"
+  let ann = infer_single(source)
+  ann.effects
+  |> effect_term.normalize
+  |> should.equal(types.TApp(
+    types.TVar("action"),
+    types.TLabels(set.from_list(["Stdout"])),
+  ))
+}
+
+pub fn infer_operator_param_picks_first_function_typed_arg_test() {
+  // When an operator parameter takes more than one function-typed argument, the
+  // callback is the *first* one — that is the documented tie-break. Here both
+  // arguments are functions, so position 0 (`io.println`, [Stdout]) is the
+  // callback and position 1 (`fs.read`, [FileSystem]) does not contribute to
+  // the application.
+  let externals = [
+    types.ExternalAnnotation(
+      "fs",
+      types.FunctionExternal("read"),
+      Specific(set.from_list(["FileSystem"])),
+    ),
+  ]
+  let kb = effects.with_externals(knowledge_base(), externals)
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(action: fn(fn(String) -> Nil, fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println, fs.read)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let assert [ann] =
+    checker.infer(module, kb, [], signatures.empty(), dict.new(), dict.new())
+  ann.effects
+  |> effect_term.normalize
+  |> should.equal(types.TApp(
+    types.TVar("action"),
+    types.TLabels(set.from_list(["Stdout"])),
+  ))
+}

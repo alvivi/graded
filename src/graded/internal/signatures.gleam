@@ -15,6 +15,7 @@ import glance.{type Function, type Module, FunctionType}
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import graded/internal/types.{type QualifiedName, QualifiedName}
@@ -178,28 +179,38 @@ pub fn fn_typed_params_from_function(function: Function) -> Set(String) {
   |> set.from_list()
 }
 
-/// Names of a function's *operator* parameters — fn-typed parameters whose own
-/// type takes a function, i.e. `fn(fn(..) -> _) -> _`. These are second-order:
-/// their effect depends on the callback they're applied to, so a call to one
-/// (`action(cb)`) becomes an effect-operator *application* rather than a flat
-/// variable. (A subset of `fn_typed_params_from_function`.)
-pub fn operator_params_from_function(function: Function) -> Set(String) {
+/// A function's *operator* parameters — fn-typed parameters whose own type
+/// takes a function, i.e. `fn(fn(..) -> _) -> _` — mapped to the argument
+/// position of the callback *within the operator's own parameter list*. For
+/// `action: fn(Config, fn() -> _) -> _` the entry is `action -> 1`, so a call
+/// `action(config, cb)` knows the callback is the position-1 argument rather
+/// than blindly resolving position 0. These are second-order: their effect
+/// depends on the callback they're applied to, so a call to one
+/// (`action(.., cb, ..)`) becomes an effect-operator *application* rather than a
+/// flat variable. (Keys are a subset of `fn_typed_params_from_function`.)
+pub fn operator_params_from_function(function: Function) -> Dict(String, Int) {
   function.parameters
   |> list.filter_map(fn(param) {
     case param.type_ {
       Some(FunctionType(_, param_types, _)) ->
-        case list.any(param_types, is_function_type) {
-          True ->
-            case assignment_name(param.name) {
-              Some(name) -> Ok(name)
-              None -> Error(Nil)
-            }
-          False -> Error(Nil)
+        case first_function_index(param_types), assignment_name(param.name) {
+          Ok(index), Some(name) -> Ok(#(name, index))
+          _, _ -> Error(Nil)
         }
       _ -> Error(Nil)
     }
   })
-  |> set.from_list()
+  |> dict.from_list()
+}
+
+/// The index of the first function-typed argument in a type list, or `Error`
+/// when none is function-typed. This is the callback position for an operator
+/// parameter's own argument list.
+fn first_function_index(types: List(glance.Type)) -> Result(Int, Nil) {
+  types
+  |> list.index_map(fn(t, i) { #(i, is_function_type(t)) })
+  |> list.find(fn(pair) { pair.1 })
+  |> result.map(fn(pair) { pair.0 })
 }
 
 fn is_function_type(t: glance.Type) -> Bool {

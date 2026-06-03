@@ -122,18 +122,22 @@ pub fn infer(
   })
 }
 
-/// The effect of the callback an operator parameter is applied to. Operators
-/// take their callback as the first argument, so resolve the effect of the
-/// argument at position 0 (pipes shift explicit args up, leaving position 0 the
-/// receiver/first). A missing argument is pure.
+/// The effect of the callback an operator parameter is applied to. The callback
+/// isn't assumed to be first: `callback_position` is the operator parameter's
+/// own callback argument index (from its type signature, see
+/// `signatures.operator_params_from_function`), so `action(config, cb)` resolves
+/// `cb` and not `config`. Pipe-adjusted call positions already align with the
+/// operator's logical argument positions (the piped receiver takes position 0),
+/// so the index applies directly. A missing argument is pure.
 fn operator_argument_effect(
   call_args: dict.Dict(Int, List(types.CallArgument)),
   span_start: Int,
+  callback_position: Int,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
 ) -> EffectTerm {
   let args = dict.get(call_args, span_start) |> result.unwrap([])
-  case list.find(args, fn(a) { a.position == 0 }) {
+  case list.find(args, fn(a) { a.position == callback_position }) {
     Ok(arg) ->
       resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
     Error(Nil) -> effect_term.pure()
@@ -360,14 +364,15 @@ fn collect_effects(
           // type takes a function), the call is an effect-operator application
           // `op(callback)`: emit `TApp(op_var, callback_effect)` so it
           // beta-reduces once the operator is bound at a call site.
-          let effect = case set.contains(operator_params, local_call.function) {
-            False -> bound.effects
-            True ->
+          let effect = case dict.get(operator_params, local_call.function) {
+            Error(Nil) -> bound.effects
+            Ok(callback_position) ->
               types.TApp(
                 bound.effects,
                 operator_argument_effect(
                   result.call_args,
                   local_call.span.start,
+                  callback_position,
                   knowledge_base,
                   param_bounds,
                 ),
