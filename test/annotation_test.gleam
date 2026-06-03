@@ -7,9 +7,10 @@ import gleeunit/should
 import graded/internal/annotation
 import graded/internal/effect_term
 import graded/internal/types.{
-  AnnotationLine, BlankLine, Check, CommentLine, EffectAnnotation, Effects,
-  ExternalAnnotation, ExternalLine, FunctionExternal, ParamBound, Polymorphic,
-  Specific, TApp, TLabels, TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
+  type EffectTerm, AnnotationLine, BlankLine, Check, CommentLine,
+  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
+  ParamBound, Polymorphic, Specific, TAbs, TApp, TLabels, TUnion, TVar,
+  TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 import qcheck
 
@@ -546,27 +547,74 @@ pub fn format_second_order_application_test() {
       TApp(TVar("action"), TLabels(set.from_list(["Stdout"]))),
     )
   annotation.format_annotation(ann)
-  |> should.equal("effects with_logger(action: [action]) : [action(Stdout)]")
+  |> should.equal("effects with_logger(action: [action]) : [action([Stdout])]")
 }
 
 pub fn parse_second_order_application_test() {
   let assert Ok([ann]) =
-    annotation.parse("effects with_logger(action: [action]) : [action(Stdout)]")
+    annotation.parse(
+      "effects with_logger(action: [action]) : [action([Stdout])]",
+    )
   ann.effects
   |> should.equal(TApp(TVar("action"), TLabels(set.from_list(["Stdout"]))))
   ann.params |> should.equal([ParamBound("action", TVar("action"))])
 }
 
 pub fn roundtrip_application_with_label_test() {
-  let line = "effects run(action: [action]) : [Http, action(Stdout)]"
+  let line = "effects run(action: [action]) : [Http, action([Stdout])]"
   let assert Ok([ann]) = annotation.parse(line)
   annotation.format_annotation(ann) |> should.equal(line)
 }
 
 pub fn roundtrip_application_multiple_args_test() {
-  let line = "check run(f: [f]) : [f(Db, Http)]"
+  // A curried two-argument application: each callback is its own bracketed
+  // effect term, distinct from a single multi-label argument `f([Db, Http])`.
+  let line = "check run(f: [f]) : [f([Db], [Http])]"
   let assert Ok([ann]) = annotation.parse(line)
+  ann.effects
+  |> should.equal(TApp(
+    TApp(TVar("f"), TLabels(set.from_list(["Db"]))),
+    TLabels(set.from_list(["Http"])),
+  ))
   annotation.format_annotation(ann) |> should.equal(line)
+}
+
+pub fn application_arg_order_is_significant_test() {
+  // Currying is positional: `f([Http], [Db])` and `f([Db], [Http])` are
+  // different terms, and each round-trips with its argument order preserved
+  // (application arguments are not sorted, unlike union members).
+  let assert Ok([a]) = annotation.parse("check run(f: [f]) : [f([Http], [Db])]")
+  let assert Ok([b]) = annotation.parse("check run(f: [f]) : [f([Db], [Http])]")
+  { a.effects == b.effects } |> should.be_false()
+  annotation.format_annotation(a)
+  |> should.equal("check run(f: [f]) : [f([Http], [Db])]")
+  annotation.format_annotation(b)
+  |> should.equal("check run(f: [f]) : [f([Db], [Http])]")
+}
+
+pub fn single_multi_label_application_arg_test() {
+  // A single argument carrying several labels stays one argument.
+  let line = "check run(f: [f]) : [f([Db, Http])]"
+  let assert Ok([ann]) = annotation.parse(line)
+  ann.effects
+  |> should.equal(TApp(TVar("f"), TLabels(set.from_list(["Db", "Http"]))))
+  annotation.format_annotation(ann) |> should.equal(line)
+}
+
+pub fn roundtrip_multi_param_operator_bound_test() {
+  // A curried operator bound `fn(a, b) -> [a, b]` round-trips.
+  let line =
+    "check run(action: fn(a, b) -> [a, b]) : [action([Stdout], [Http])]"
+  let assert Ok([ann]) = annotation.parse(line)
+  ann.params
+  |> should.equal([
+    ParamBound("action", TAbs("a", TAbs("b", TVar("a") |> union_vars("b")))),
+  ])
+  annotation.format_annotation(ann) |> should.equal(line)
+}
+
+fn union_vars(first: EffectTerm, second: String) -> EffectTerm {
+  effect_term.normalize(TUnion([first, TVar(second)]))
 }
 
 pub fn second_order_roundtrip_property_test() {

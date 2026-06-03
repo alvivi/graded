@@ -26,6 +26,11 @@ type LocalBinding {
   /// closure is applied (operator lifting), so it contributes nothing to the
   /// enclosing function's direct effect — rather than surfacing as `[Unknown]`.
   BoundParam
+  /// A let-bound inline closure (`let h = fn(cb) { ... }`). Keeping its
+  /// parameters and body lets a later use of `h` as an operator argument be
+  /// lifted to an effect operator, just like an inline closure passed directly,
+  /// rather than collapsing to `[Unknown]`.
+  BoundClosure(params: List(String), body: List(glance.Statement))
   BoundOpaque
 }
 
@@ -704,7 +709,8 @@ fn classify_rhs_ref(
   case classify_expression(expression, context, env) {
     FunctionRef(name:) -> BoundFunctionRef(name:)
     LocalRef(name:) -> dict.get(env, name) |> result.unwrap(BoundOpaque)
-    ConstructorRef | types.Closure(_, _) | OtherExpression -> BoundOpaque
+    types.Closure(params, body) -> BoundClosure(params, body)
+    ConstructorRef | OtherExpression -> BoundOpaque
   }
 }
 
@@ -1132,6 +1138,9 @@ fn classify_expression(
               case resolve_env(name, env) {
                 BoundFunctionRef(name: qualified) ->
                   FunctionRef(name: qualified)
+                // A let-bound closure used by name resolves to the closure
+                // itself, so it can be lifted to an operator at the use site.
+                BoundClosure(params, body) -> types.Closure(params, body)
                 _ -> LocalRef(name:)
               }
           }

@@ -3,13 +3,19 @@
 Status: **implemented** (branch `nested-effect-vars`). This closes the "no
 nested (second-order) effect variables" limitation that was documented in
 [README.md](../README.md#limitations) and the corresponding ROADMAP item. All
-six phases below shipped. Operator arguments are lifted to reducible operators
-from both **named function references** and **inline closures** (the closure's
-body is analysed and abstracted over its first parameter, with its parameters
-bound during the enclosing walk so callback calls don't surface as `[Unknown]`).
-The one residual is an inference caveat — an *opaque local* operator argument
-(a value graded can't trace to a function or closure) has no callback parameter
-to abstract over and collapses to `[Unknown]` — noted in the README limitations.
+six phases below shipped. Operators are **n-ary** via currying: an operator
+parameter whose type takes several functions (`fn(fn() -> _, fn() -> _) -> _`)
+threads *all* its callbacks as a curried application `((action e1) e2)`, and an
+operator argument is lifted to a curried operator `λp1. λp2. body` over the same
+callbacks in order — the unary `TApp`/`TAbs` need no change because `reduce`
+already walks spines. Operator arguments are lifted from **named function
+references** (cross-module via the knowledge base, same-module via on-demand
+transitive analysis, since siblings aren't in the KB during their module's
+inference pass), **inline closures**, and **let-bound closures**
+(`let h = fn(cb) { … }`). The one residual is an inference caveat — an operator
+argument that is a function *returned from a call* (`let h = pick_handler()`), or
+selected in a `case`/`if` branch, can't be traced to a concrete function and
+collapses to the conservative `[Unknown]` — noted in the README limitations.
 
 ## Goal
 
@@ -26,12 +32,18 @@ pub fn with_logger(action: fn(fn(String) -> Nil) -> a) -> a {
 Target inferred signature, and its resolution at a concrete call site:
 
 ```
-effects myapp.with_logger(action: fn(cb) -> [cb]) : [action(Stdout)]
+effects myapp.with_logger(action: fn(cb) -> [cb]) : [action([Stdout])]
 
 // at  with_logger(run)  where  run : fn(cb) -> [Http, cb]
 //   action := λcb. [Http, cb]
-//   action(Stdout)  ──β──►  [Http, Stdout]
+//   action([Stdout])  ──β──►  [Http, Stdout]
 ```
+
+In `.graded` syntax an operator application's arguments are each a bracketed
+effect term and are **curried** (order-significant): `action([Stdout])` is one
+callback, `action([Stdout], [FileSystem])` is two. A single multi-label callback
+is `action([Stdout, FileSystem])`. Operator bounds may take several parameters:
+`fn(a, b) -> [a, b]`.
 
 First-order effect polymorphism (a variable standing for a flat set, e.g.
 `map(f: [e]) : [e]`) already works. What's new is that the quantified variable
@@ -132,9 +144,13 @@ soundness effect and is out of scope for the initial implementation.)
 
 The effect grammar gains two productions; existing lines are unaffected:
 
-- **Operator bound:** `action: fn(cb) -> [cb]` → `ParamBound("action", TAbs("cb", …))`.
-- **Application in any effect position:** `[action(Stdout)]` →
-  `TApp(TVar("action"), TLabels({Stdout}))`; `[Http, action(Stdout)]` unions them.
+- **Operator bound:** `action: fn(cb) -> [cb]` → `ParamBound("action", TAbs("cb", …))`,
+  and curried `fn(a, b) -> [a, b]` → `TAbs("a", TAbs("b", …))`.
+- **Application in any effect position:** `[action([Stdout])]` →
+  `TApp(TVar("action"), TLabels({Stdout}))`; arguments are bracketed effect terms
+  and curried, so `[action([Stdout], [FileSystem])]` →
+  `TApp(TApp(TVar("action"), TLabels({Stdout})), TLabels({FileSystem}))`;
+  `[Http, action([Stdout])]` unions the application with the label.
 
 **Invariant to protect:** a term with no `TAbs` / `TApp` and no higher-kinded
 free variables must format to **byte-identical** text vs. today

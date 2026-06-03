@@ -302,15 +302,24 @@ fn collect_effects(
 ) -> List(#(types.ResolvedCall, EffectTerm)) {
   let result = extract.extract_calls(function.body, context)
   let operator_params = signatures.operator_params_from_function(function)
-  // Lifts an inline-closure argument to an effect operator, in this function's
-  // analysis context. Passed down to the substitution path so operator
-  // parameters bound to a closure beta-reduce instead of going `[Unknown]`.
-  let lift_closure = fn(value: types.ArgumentValue) -> Result(EffectTerm, Nil) {
+  // Lifts an operator argument we can only resolve with this function's analysis
+  // context — an inline closure (analyse its body) or a same-module named
+  // function (transitively analyse its definition, since siblings aren't in the
+  // KB during their module's inference pass) — to an effect operator. `positions`
+  // are the operator parameter's callback argument indices, used to abstract a
+  // closure over exactly the right parameters. Passed down to the substitution
+  // path so operator parameters bound to these beta-reduce instead of going
+  // `[Unknown]`.
+  let lift_operator_arg = fn(value: types.ArgumentValue, positions: List(Int)) -> Result(
+    EffectTerm,
+    Nil,
+  ) {
     case value {
       types.Closure(params, body) ->
         Ok(analyze_closure(
           params,
           body,
+          positions,
           context,
           function_map,
           knowledge_base,
@@ -318,6 +327,23 @@ fn collect_effects(
           registry,
           module_types,
         ))
+      types.LocalRef(name) ->
+        // Guard against a function passed as an operator argument to itself:
+        // `visited` already carries the call stack, so a name on it would loop.
+        case set.contains(visited, name), dict.get(function_map, name) {
+          False, Ok(definition) ->
+            Ok(lift_local_function(
+              name,
+              definition,
+              context,
+              function_map,
+              knowledge_base,
+              visited,
+              registry,
+              module_types,
+            ))
+          _, _ -> Error(Nil)
+        }
       _ -> Error(Nil)
     }
   }
@@ -337,7 +363,7 @@ fn collect_effects(
           knowledge_base,
           param_bounds,
           registry,
-          lift_closure,
+          lift_operator_arg,
         )
       #(call, concrete)
     })
@@ -361,22 +387,27 @@ fn collect_effects(
             )
           // A call to a fn-typed parameter contributes that parameter's effect
           // variable. If the parameter is *second-order* (an operator — its own
-          // type takes a function), the call is an effect-operator application
-          // `op(callback)`: emit `TApp(op_var, callback_effect)` so it
-          // beta-reduces once the operator is bound at a call site.
+          // type takes one or more functions), the call is a *curried*
+          // effect-operator application over all its callback arguments, in
+          // order: `action(cb1, cb2)` ⟹ `((action e1) e2)`. Folding left-nests
+          // the applications so each binder of the lifted operator (abstracted
+          // in the same order) beta-reduces against the matching callback once
+          // the operator is bound at a call site.
           let effect = case dict.get(operator_params, local_call.function) {
             Error(Nil) -> bound.effects
-            Ok(callback_position) ->
-              types.TApp(
-                bound.effects,
-                operator_argument_effect(
-                  result.call_args,
-                  local_call.span.start,
-                  callback_position,
-                  knowledge_base,
-                  param_bounds,
-                ),
-              )
+            Ok(positions) ->
+              list.fold(positions, bound.effects, fn(acc, position) {
+                types.TApp(
+                  acc,
+                  operator_argument_effect(
+                    result.call_args,
+                    local_call.span.start,
+                    position,
+                    knowledge_base,
+                    param_bounds,
+                  ),
+                )
+              })
           }
           [#(synthetic_call, effect)]
         }
@@ -397,7 +428,7 @@ fn collect_effects(
             knowledge_base,
             param_bounds,
             registry,
-            lift_closure,
+            lift_operator_arg,
           )
       }
     })
@@ -422,7 +453,7 @@ fn collect_effects(
           result.call_args,
           param_bounds,
           registry,
-          lift_closure,
+          lift_operator_arg,
         )
       #(synthetic_call, effect_set)
     })
@@ -447,7 +478,8 @@ fn substitute_local_call_effects(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  lift_closure: fn(types.ArgumentValue) -> Result(EffectTerm, Nil),
+  lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
+    Result(EffectTerm, Nil),
 ) -> List(#(types.ResolvedCall, EffectTerm)) {
   let any_polymorphic = list.any(recursive, fn(p) { has_vars(p.1) })
   use <- bool.guard(when: !any_polymorphic, return: recursive)
@@ -481,7 +513,7 @@ fn substitute_local_call_effects(
           knowledge_base,
           caller_param_bounds,
           merged_registry,
-          lift_closure,
+          lift_operator_arg,
         )
       list.map(recursive, fn(pair) {
         let #(call, term) = pair
@@ -511,7 +543,8 @@ fn substitute_at_call_site(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  lift_closure: fn(types.ArgumentValue) -> Result(EffectTerm, Nil),
+  lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
+    Result(EffectTerm, Nil),
 ) -> EffectTerm {
   let callee_kb_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
   // Fast path: concrete effect with declared bounds — nothing to
@@ -538,7 +571,7 @@ fn substitute_at_call_site(
       knowledge_base,
       caller_param_bounds,
       registry,
-      lift_closure,
+      lift_operator_arg,
     )
   effect_term.normalize(effect_term.subst(effective_effects, bindings))
 }
@@ -605,7 +638,8 @@ fn bind_variables(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  lift_closure: fn(types.ArgumentValue) -> Result(EffectTerm, Nil),
+  lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
+    Result(EffectTerm, Nil),
 ) -> dict.Dict(String, EffectTerm) {
   let operator_params = signatures.operator_param_names(registry, callee_name)
   list.fold(callee_bounds, dict.new(), fn(acc, bound) {
@@ -616,17 +650,24 @@ fn bind_variables(
     case matched {
       Some(arg) -> {
         // For an *operator* parameter the argument is lifted to an effect
-        // operator (a `TAbs`) so the callee's `op(callback)` application
-        // beta-reduces. A first-order parameter just takes the argument's
-        // flat effect.
+        // operator (a `TAbs`, possibly curried over several callbacks) so the
+        // callee's `op(cb1, cb2)` application beta-reduces. The callback
+        // positions come from the operator parameter's own signature so a
+        // closure argument is abstracted over exactly the right parameters. A
+        // first-order parameter just takes the argument's flat effect.
         let arg_effects = case set.contains(operator_params, bound.name) {
           True ->
             operator_term_for_argument(
               arg,
+              signatures.operator_callback_positions(
+                registry,
+                callee_name,
+                bound.name,
+              ),
               knowledge_base,
               caller_param_bounds,
               registry,
-              lift_closure,
+              lift_operator_arg,
             )
           False ->
             resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
@@ -645,44 +686,53 @@ fn bind_variables(
   })
 }
 
-/// Lift a call argument bound to an *operator* parameter into an effect
-/// operator (`TAbs`) so the callee's `op(callback)` application beta-reduces.
-/// A function reference `g` becomes `λcb. <g's effect>`, abstracting over `g`'s
-/// callback parameter; an inline closure is analysed by `lift_closure` and
-/// abstracted over its first parameter. Anything else falls back to its flat
-/// effect (leaving the application stuck → `[Unknown]`).
+/// Lift a call argument bound to an *operator* parameter into an effect operator
+/// (`TAbs`, curried when the operator takes several callbacks) so the callee's
+/// `op(cb1, cb2)` application beta-reduces. A function reference `g` becomes
+/// `λp1. λp2. <g's effect>`, abstracting over all of `g`'s callback parameters in
+/// order; an inline closure or a same-module named function is lifted by
+/// `lift_operator_arg` (which has the analysis context). `positions` are the
+/// operator parameter's callback argument indices, used to abstract a closure
+/// over exactly those parameters. Anything else falls back to its flat effect
+/// (leaving the application stuck → `[Unknown]`).
 fn operator_term_for_argument(
   arg: types.CallArgument,
+  positions: List(Int),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  lift_closure: fn(types.ArgumentValue) -> Result(EffectTerm, Nil),
+  lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
+    Result(EffectTerm, Nil),
 ) -> EffectTerm {
   case arg.value {
     types.FunctionRef(name) -> {
       let body = effects.lookup_effects(knowledge_base, name)
-      case signatures.fn_typed_param_names(registry, name) |> set.to_list() {
-        [callback_var, ..] -> types.TAbs(callback_var, body)
-        [] -> body
-      }
+      // Abstract over `g`'s fn-typed params in declaration order. The outermost
+      // binder is the first param, matching the left-nested application spine
+      // built at the definition site.
+      signatures.fn_typed_param_names_ordered(registry, name)
+      |> list.fold_right(body, fn(acc, param) { types.TAbs(param, acc) })
     }
-    types.Closure(_, _) ->
-      case lift_closure(arg.value) {
+    _ ->
+      case lift_operator_arg(arg.value, positions) {
         Ok(operator) -> operator
         Error(Nil) ->
           resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
       }
-    _ -> resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
   }
 }
 
-/// Analyse an inline closure's body as if it were a function whose parameters
-/// are fn-typed, then abstract over its first parameter — turning
-/// `fn(cb) { cb(x) }` into the operator `λcb. [cb]`. This lets a closure passed
-/// to an operator parameter beta-reduce just like a named function reference.
+/// Analyse an inline closure's body as if its parameters were fn-typed, then
+/// abstract over the parameters at the operator's callback `positions`, in
+/// order — turning `fn(cb) { cb(x) }` (position `[0]`) into the operator
+/// `λcb. [cb]`, and `fn(f, g) { f(); g() }` (positions `[0, 1]`) into
+/// `λf. λg. [f, g]`. This lets a closure passed to an operator parameter
+/// beta-reduce just like a named function reference. With no positions (operator
+/// info missing) it falls back to abstracting over the first parameter.
 fn analyze_closure(
   params: List(String),
   body: List(Statement),
+  positions: List(Int),
   context: ImportContext,
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
@@ -714,9 +764,73 @@ fn analyze_closure(
       module_types,
     )
     |> union_of()
-  case params {
-    [callback, ..] -> types.TAbs(callback, body_term)
-    [] -> body_term
+  // Which closure parameters to abstract over: those at the operator's callback
+  // positions (in order). Fall back to the first parameter when positions are
+  // unknown, preserving the previous single-callback behaviour.
+  let callback_params = case positions {
+    [] ->
+      case params {
+        [first, ..] -> [first]
+        [] -> []
+      }
+    _ -> list.filter_map(positions, fn(position) { list_at(params, position) })
+  }
+  list.fold_right(callback_params, body_term, fn(acc, param) {
+    types.TAbs(param, acc)
+  })
+}
+
+/// Lift a same-module named function passed as an operator argument into an
+/// effect operator. Sibling functions aren't in the knowledge base during their
+/// module's inference pass, so this transitively analyses the definition (its
+/// fn-typed params seeded as self-referential variables) and abstracts over
+/// those params in order — the `function_map` analogue of the `FunctionRef`/KB
+/// path in `operator_term_for_argument`.
+fn lift_local_function(
+  name: String,
+  definition: Definition(Function),
+  context: ImportContext,
+  function_map: dict.Dict(String, Definition(Function)),
+  knowledge_base: KnowledgeBase,
+  visited: Set(String),
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+) -> EffectTerm {
+  let function = definition.definition
+  let fn_param_names = ordered_fn_typed_param_names(function)
+  let bounds = list.map(fn_param_names, self_referential_bound)
+  let body_term =
+    collect_effects(
+      function,
+      function_map,
+      context,
+      knowledge_base,
+      set.insert(visited, name),
+      bounds,
+      registry,
+      module_types,
+    )
+    |> union_of()
+  list.fold_right(fn_param_names, body_term, fn(acc, param) {
+    types.TAbs(param, acc)
+  })
+}
+
+/// In-body names of a function's fn-typed parameters, in declaration order.
+fn ordered_fn_typed_param_names(function: Function) -> List(String) {
+  list.filter_map(function.parameters, fn(param) {
+    case param.type_, param.name {
+      Some(glance.FunctionType(..)), glance.Named(name) -> Ok(name)
+      _, _ -> Error(Nil)
+    }
+  })
+}
+
+/// The element at `index` (0-based) of a list, or `Error` when out of range.
+fn list_at(items: List(a), index: Int) -> Result(a, Nil) {
+  case index < 0 {
+    True -> Error(Nil)
+    False -> items |> list.drop(index) |> list.first()
   }
 }
 
@@ -872,7 +986,8 @@ fn resolve_field_call(
   call_args: dict.Dict(Int, List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  lift_closure: fn(types.ArgumentValue) -> Result(EffectTerm, Nil),
+  lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
+    Result(EffectTerm, Nil),
 ) -> EffectTerm {
   // Resolve the receiver's nominal type, qualified by its defining module:
   // girard's inferred type for the receiver expression first (any receiver, and
@@ -908,7 +1023,7 @@ fn resolve_field_call(
             knowledge_base,
             caller_param_bounds,
             registry,
-            lift_closure,
+            lift_operator_arg,
           )
       }
   }
@@ -925,7 +1040,8 @@ fn resolve_field_effect(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  lift_closure: fn(types.ArgumentValue) -> Result(EffectTerm, Nil),
+  lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
+    Result(EffectTerm, Nil),
 ) -> EffectTerm {
   case has_vars(field_effect.effects), field_effect.source {
     False, _ -> field_effect.effects
@@ -940,7 +1056,7 @@ fn resolve_field_effect(
           knowledge_base,
           caller_param_bounds,
           registry,
-          lift_closure,
+          lift_operator_arg,
         )
       concretize(effect_term.subst(field_effect.effects, bindings))
     }

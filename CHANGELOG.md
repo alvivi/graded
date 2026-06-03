@@ -10,14 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Second-order (higher-kinded) effect variables.** The effect representation moved from a flat `Polymorphic(labels, variables)` set to an `EffectTerm` — a small lambda-calculus-with-union (labels, union, variables, abstraction, application), with `EffectSet` as its ground normal form. This lets graded express and resolve effect variables of kind `Eff → Eff` (operators), not just flat `Eff`:
-  - A parameter whose own type takes a function (`action: fn(fn() -> Nil) -> a`) is detected as an *operator* parameter; a call `action(cb)` infers an effect-operator **application** `[action(Stdout)]`.
-  - At a call site, an operator-typed argument is lifted to an operator and the application **beta-reduces** to the concrete effect. Both a **named function reference** (abstracting over its callback parameter) and an **inline closure** (analysing its body) are lifted; an inline closure's parameters are bound while walking it, so calls to them aren't mistaken for unresolved local calls.
-  - The `.graded` syntax gained operator applications `[action(Stdout)]` and operator bounds `fn(cb) -> [cb]`; first-order lines are byte-identical to before.
+  - A parameter whose own type takes one or more functions (`action: fn(fn() -> Nil) -> a`, or `fn(fn() -> _, fn() -> _) -> _`) is detected as an *operator* parameter; a call `action(cb1, cb2)` infers a **curried** effect-operator **application** `[action([Stdout], [FileSystem])]` over every callback, in order — none is dropped.
+  - At a call site, an operator-typed argument is lifted to an operator (curried over its callbacks) and the application **beta-reduces** to the concrete effect. **Named function references** (abstracting over their callback parameters), **inline closures** (analysing their bodies), and **let-bound closures** (`let h = fn(cb) { … }; with(h)`) are all lifted; an inline closure's parameters are bound while walking it, so calls to them aren't mistaken for unresolved local calls.
+  - **Same-module** named functions passed as operator arguments resolve too — sibling functions aren't yet in the knowledge base during their module's inference pass, so they're analysed transitively (mirroring how same-module *calls* already resolve), rather than collapsing to `[Unknown]`.
+  - The `.graded` syntax gained operator applications `[action([Stdout], [FileSystem])]` (each argument a bracketed effect term; arguments are curried and order-significant) and operator bounds `fn(a, b) -> [a, b]`; first-order lines are byte-identical to before.
 - Resolution is pure-Gleam term reduction — capture-avoiding substitution, beta, and union normalization, fuel-guarded — with no external solver. The reduction laws, capture-avoidance, soundness (over-approximation), and termination are property-tested with qcheck. See [docs/second-order-effects.md](docs/second-order-effects.md).
 
 ### Notes
 
-- An operator argument that is an *opaque local* (a value graded can't trace to a function or closure) has no callback parameter to abstract over, so its application stays stuck and collapses to `[Unknown]`. A named-function operator argument also needs that function already in the knowledge base (inferred earlier in the topological pass, or in the catalog).
+- The one remaining inference caveat is an operator argument that is a function **returned from a call** (`let h = pick_handler(); with(h)`): graded can't trace it to a concrete function or closure, so its application stays stuck and collapses to the conservative `[Unknown]`. Annotate explicitly if needed. (A function passed through a `case`/`if` branch is likewise conservative.)
 
 ## [0.6.0] - 2026-04-21
 

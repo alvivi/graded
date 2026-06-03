@@ -100,13 +100,19 @@ fn serializable_sized(depth: Int) -> qcheck.Generator(EffectTerm) {
     True -> serializable_atom_gen()
     False -> {
       let arg_gen = serializable_atom_gen()
-      let app_gen =
-        qcheck.map3(
+      // A *curried* operator application `((f a0) a1 ...)` over one to three
+      // bracketed arguments — exercises the order-significant multi-argument
+      // serialization, not just the single-argument case.
+      let app_gen = {
+        use n <- qcheck.bind(qcheck.bounded_int(1, 3))
+        qcheck.map2(
           one_of(effect_var_names),
-          arg_gen,
-          qcheck.fixed_length_list_from(arg_gen, 1),
-          fn(name, first, rest) { TApp(TVar(name), TUnion([first, ..rest])) },
+          qcheck.fixed_length_list_from(arg_gen, n),
+          fn(name, args) {
+            list.fold(args, TVar(name), fn(acc, arg) { TApp(acc, arg) })
+          },
         )
+      }
       let union_gen = {
         use n <- qcheck.bind(qcheck.bounded_int(1, 3))
         qcheck.map(

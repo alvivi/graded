@@ -462,7 +462,7 @@ fn parse_external_line(rest: String) -> Result(ExternalAnnotation, Nil) {
 fn parse_params_section(input: String) -> Result(List(ParamBound), Nil) {
   case string.trim(input) {
     "" -> Ok([])
-    trimmed -> list.try_map(split_commas(trimmed, "[", "]"), parse_single_param)
+    trimmed -> list.try_map(split_top_level_commas(trimmed), parse_single_param)
   }
 }
 
@@ -483,23 +483,6 @@ fn parse_name_colon_effects(input: String) -> Result(#(String, EffectTerm), Nil)
   use <- bool.guard(when: name == "", return: Error(Nil))
   use effects <- result.try(parse_bound_effect(string.trim(effects_part)))
   Ok(#(name, effects))
-}
-
-/// Split a string on commas at nesting depth 0, tracking the `open`/`close`
-/// bracketing graphemes so commas inside them aren't split. Used with `[`/`]`
-/// for parameter lists and `(`/`)` for operator-application argument lists.
-fn split_commas(input: String, open: String, close: String) -> List(String) {
-  let #(segments, current, _depth) =
-    list.fold(string.to_graphemes(input), #([], "", 0), fn(state, char) {
-      let #(segments, current, depth) = state
-      case char {
-        "," if depth == 0 -> #([current, ..segments], "", depth)
-        _ if char == open -> #(segments, current <> char, depth + 1)
-        _ if char == close -> #(segments, current <> char, depth - 1)
-        _ -> #(segments, current <> char, depth)
-      }
-    })
-  list.reverse([current, ..segments])
 }
 
 /// A token is an effect label if its first character is uppercase.
@@ -539,22 +522,25 @@ fn parse_effect_term(input: String) -> Result(EffectTerm, Nil) {
 /// trimmed, empties dropped).
 fn parse_atoms(inner: String) -> Result(List(EffectTerm), Nil) {
   inner
-  |> split_commas("(", ")")
+  |> split_top_level_commas()
   |> list.map(string.trim)
   |> list.filter(fn(token) { token != "" })
   |> list.try_map(parse_atom)
 }
 
 /// Parse one comma-separated atom of an effect term: a label, a variable, or
-/// an operator application `name(args)`.
+/// an operator application `name([arg], ...)`. An application's arguments are
+/// each a full bracketed effect term, and multiple arguments are *curried*:
+/// `f([A], [B])` ⟹ `TApp(TApp(TVar(f), A), B)`, so the comma form is
+/// unambiguous (a single multi-label argument is `f([A, B])`).
 fn parse_atom(token: String) -> Result(EffectTerm, Nil) {
   case string.split_once(token, "(") {
     Ok(#(name, rest)) -> {
       use <- bool.guard(when: !string.ends_with(rest, ")"), return: Error(Nil))
       let callee = string.trim(name)
       use <- bool.guard(when: callee == "", return: Error(Nil))
-      use arg_atoms <- result.try(parse_atoms(string.drop_end(rest, 1)))
-      Ok(TApp(TVar(callee), effect_term.normalize(TUnion(arg_atoms))))
+      use args <- result.try(parse_application_args(string.drop_end(rest, 1)))
+      Ok(list.fold(args, TVar(callee), fn(acc, arg) { TApp(acc, arg) }))
     }
     Error(Nil) ->
       case is_label_token(token) {
@@ -564,19 +550,55 @@ fn parse_atom(token: String) -> Result(EffectTerm, Nil) {
   }
 }
 
-/// Parse a parameter bound's effect: an operator `fn(cb) -> [body]` (a `TAbs`)
-/// or an ordinary effect term `[...]`.
+/// Parse an operator application's argument list — comma-separated, each a full
+/// bracketed effect term — splitting at top-level commas only (bracket- and
+/// paren-aware, so a nested application or a multi-label argument isn't split).
+fn parse_application_args(inner: String) -> Result(List(EffectTerm), Nil) {
+  case string.trim(inner) {
+    "" -> Ok([])
+    trimmed ->
+      trimmed
+      |> split_top_level_commas()
+      |> list.map(string.trim)
+      |> list.try_map(parse_effect_term)
+  }
+}
+
+/// Split on commas at nesting depth 0, counting both `[`/`]` and `(`/`)` toward
+/// depth. Used for operator-application argument lists, whose arguments are
+/// bracketed effect terms that may themselves contain nested applications.
+fn split_top_level_commas(input: String) -> List(String) {
+  let #(segments, current, _depth) =
+    list.fold(string.to_graphemes(input), #([], "", 0), fn(state, char) {
+      let #(segments, current, depth) = state
+      case char {
+        "," if depth == 0 -> #([current, ..segments], "", depth)
+        "[" | "(" -> #(segments, current <> char, depth + 1)
+        "]" | ")" -> #(segments, current <> char, depth - 1)
+        _ -> #(segments, current <> char, depth)
+      }
+    })
+  list.reverse([current, ..segments])
+}
+
+/// Parse a parameter bound's effect: an operator `fn(a, b) -> [body]` (a curried
+/// `TAbs`) or an ordinary effect term `[...]`.
 fn parse_bound_effect(input: String) -> Result(EffectTerm, Nil) {
   let trimmed = string.trim(input)
   case string.starts_with(trimmed, "fn(") {
     False -> parse_effect_term(trimmed)
     True -> {
-      use #(cb_part, after) <- result.try(string.split_once(trimmed, ")"))
-      let cb = cb_part |> string.drop_start(3) |> string.trim()
-      use <- bool.guard(when: cb == "", return: Error(Nil))
+      use #(params_part, after) <- result.try(string.split_once(trimmed, ")"))
+      let params =
+        params_part
+        |> string.drop_start(3)
+        |> split_top_level_commas()
+        |> list.map(string.trim)
+        |> list.filter(fn(param) { param != "" })
+      use <- bool.guard(when: params == [], return: Error(Nil))
       use #(_, body_str) <- result.try(string.split_once(after, "->"))
       use body <- result.try(parse_effect_term(string.trim(body_str)))
-      Ok(TAbs(cb, body))
+      Ok(list.fold_right(params, body, fn(acc, param) { TAbs(param, acc) }))
     }
   }
 }
@@ -591,12 +613,11 @@ fn collect_comments(lines: List(GradedLine)) -> List(String) {
 }
 
 /// Format a parameter bound. A first-order bound renders as `name: [effects]`;
-/// a second-order *operator* bound (a `TAbs`) renders as
-/// `name: fn(cb) -> [body]`.
+/// a second-order *operator* bound (a curried `TAbs`) renders as
+/// `name: fn(a, b) -> [body]`.
 fn format_param_bound(param: ParamBound) -> String {
   case param.effects {
-    TAbs(cb, body) ->
-      param.name <> ": fn(" <> cb <> ") -> " <> format_effect_term(body)
+    TAbs(_, _) -> param.name <> ": " <> render_abstraction(param.effects)
     other -> param.name <> ": " <> format_effect_term(other)
   }
 }
@@ -623,21 +644,57 @@ fn term_atoms(term: EffectTerm) -> List(String) {
     TLabels(labels) -> set.to_list(labels)
     TVar(name) -> [name]
     TTop -> ["_"]
-    TApp(operator, argument) -> [render_application(operator, argument)]
+    TApp(_, _) -> [render_application(term)]
     TUnion(members) -> list.flat_map(members, term_atoms)
-    TAbs(cb, body) -> ["fn(" <> cb <> ") -> " <> format_effect_term(body)]
+    TAbs(_, _) -> [render_abstraction(term)]
   }
 }
 
-fn render_application(operator: EffectTerm, argument: EffectTerm) -> String {
-  let callee = case operator {
+/// Render an operator application `head([arg0], [arg1], ...)`. Walks the whole
+/// (possibly curried) application spine and renders arguments **in spine order**
+/// — currying is positional, so argument order is significant and must not be
+/// sorted (unlike union members). Each argument is a bracketed effect term.
+fn render_application(term: EffectTerm) -> String {
+  let #(head, args) = application_spine(term)
+  let callee = case head {
     TVar(name) -> name
     other -> string.join(term_atoms(other) |> list.sort(string.compare), " ")
   }
   callee
   <> "("
-  <> { term_atoms(argument) |> list.sort(string.compare) |> string.join(", ") }
+  <> { args |> list.map(format_effect_term) |> string.join(", ") }
   <> ")"
+}
+
+/// Collect an application spine `((head a0) a1 ...)` into its head and the
+/// argument list in application order.
+fn application_spine(term: EffectTerm) -> #(EffectTerm, List(EffectTerm)) {
+  case term {
+    TApp(operator, argument) -> {
+      let #(head, args) = application_spine(operator)
+      #(head, list.append(args, [argument]))
+    }
+    other -> #(other, [])
+  }
+}
+
+/// Render an operator abstraction `fn(a, b) -> [body]`. Walks the curried
+/// `TAbs` spine to collect all binders in order.
+fn render_abstraction(term: EffectTerm) -> String {
+  let #(binders, body) = abstraction_spine(term)
+  "fn(" <> string.join(binders, ", ") <> ") -> " <> format_effect_term(body)
+}
+
+/// Collect a curried abstraction `λa. λb. body` into its binders (in order) and
+/// the innermost body.
+fn abstraction_spine(term: EffectTerm) -> #(List(String), EffectTerm) {
+  case term {
+    TAbs(param, body) -> {
+      let #(rest, inner) = abstraction_spine(body)
+      #([param, ..rest], inner)
+    }
+    other -> #([], other)
+  }
 }
 
 fn format_effect_set(effect_set: EffectSet) -> String {

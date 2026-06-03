@@ -1995,20 +1995,11 @@ pub fn run(action: fn(Int, fn(String) -> Nil) -> Nil) -> Nil {
   ))
 }
 
-pub fn infer_operator_param_picks_first_function_typed_arg_test() {
-  // When an operator parameter takes more than one function-typed argument, the
-  // callback is the *first* one — that is the documented tie-break. Here both
-  // arguments are functions, so position 0 (`io.println`, [Stdout]) is the
-  // callback and position 1 (`fs.read`, [FileSystem]) does not contribute to
-  // the application.
-  let externals = [
-    types.ExternalAnnotation(
-      "fs",
-      types.FunctionExternal("read"),
-      Specific(set.from_list(["FileSystem"])),
-    ),
-  ]
-  let kb = effects.with_externals(knowledge_base(), externals)
+pub fn infer_operator_param_threads_all_callbacks_test() {
+  // An operator parameter taking two function arguments threads BOTH callbacks
+  // as a curried application `((action [Stdout]) [FileSystem])` — neither is
+  // dropped (the previous single-callback behaviour lost `fs.read`).
+  let kb = effects.with_externals(knowledge_base(), [fs_read_external()])
   let source =
     "
 import gleam/io
@@ -2023,7 +2014,185 @@ pub fn run(action: fn(fn(String) -> Nil, fn(String) -> Nil) -> Nil) -> Nil {
   ann.effects
   |> effect_term.normalize
   |> should.equal(types.TApp(
-    types.TVar("action"),
-    types.TLabels(set.from_list(["Stdout"])),
+    types.TApp(types.TVar("action"), types.TLabels(set.from_list(["Stdout"]))),
+    types.TLabels(set.from_list(["FileSystem"])),
   ))
+}
+
+pub fn infer_operator_param_non_adjacent_callbacks_test() {
+  // Callbacks interleaved with non-function arguments (positions 1 and 3) still
+  // thread in order.
+  let kb = effects.with_externals(knowledge_base(), [fs_read_external()])
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(
+  action: fn(Int, fn(String) -> Nil, String, fn(String) -> Nil) -> Nil,
+) -> Nil {
+  action(0, io.println, \"x\", fs.read)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let assert [ann] =
+    checker.infer(module, kb, [], signatures.empty(), dict.new(), dict.new())
+  ann.effects
+  |> effect_term.normalize
+  |> should.equal(types.TApp(
+    types.TApp(types.TVar("action"), types.TLabels(set.from_list(["Stdout"]))),
+    types.TLabels(set.from_list(["FileSystem"])),
+  ))
+}
+
+pub fn second_order_two_callback_closure_resolves_test() {
+  // The previously-false-positive case: a closure that invokes BOTH callbacks
+  // resolves to the union of their effects, with no dangling variable. An
+  // in-budget check passes; a too-tight budget is flagged.
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(action: fn(fn(String) -> Nil, fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println, fs.read)
+}
+pub fn caller() -> Nil {
+  run(fn(log, read) {
+    log(\"x\")
+    read(\"y\")
+  })
+}
+"
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn second_order_second_callback_only_closure_test() {
+  // A closure that invokes only its second callback contributes exactly that
+  // callback's effect — the first contributes nothing.
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(action: fn(fn(String) -> Nil, fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println, fs.read)
+}
+pub fn caller() -> Nil {
+  run(fn(_log, read) { read(\"y\") })
+}
+"
+  second_order_violations(source, "caller", ["FileSystem"]) |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn second_order_same_module_named_fn_resolves_test() {
+  // `logger` is a sibling top-level function — NOT in the knowledge base during
+  // this module's inference pass. Passing it to the second-order `run` must
+  // still resolve to its effect rather than collapsing to `[Unknown]`.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn logger(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+pub fn caller() -> Nil {
+  run(logger)
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn second_order_let_bound_closure_resolves_test() {
+  // A let-bound closure used by name resolves through the operator just like an
+  // inline closure, rather than going `[Unknown]`.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller() -> Nil {
+  let h = fn(cb) { cb(\"x\") }
+  run(h)
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+}
+
+pub fn second_order_let_bound_closure_shadowing_test() {
+  // A later binding shadows an earlier one: the pure first `h` is replaced by
+  // the effectful second, so the effect is [Stdout].
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller() -> Nil {
+  let h = fn(_cb) { Nil }
+  let h = fn(cb) { cb(\"x\") }
+  run(h)
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+}
+
+pub fn second_order_returned_function_stays_unknown_test() {
+  // The genuine residual: `h` is a function *returned from a call*, which graded
+  // can't trace to a concrete function. It stays the sound `[Unknown]`, so even
+  // a wildcard budget is the only thing that passes; a concrete budget is
+  // flagged.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn make() {
+  run
+}
+pub fn caller() -> Nil {
+  let h = make()
+  run(h)
+}
+"
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+/// A `fs.read : [FileSystem]` external for second-order operator tests.
+fn fs_read_external() -> types.ExternalAnnotation {
+  types.ExternalAnnotation(
+    "fs",
+    types.FunctionExternal("read"),
+    Specific(set.from_list(["FileSystem"])),
+  )
+}
+
+/// Check `function` in a single-module source against a `[budget]` and return
+/// the violations. The registry is built from the module so same-module operator
+/// parameters resolve; the `fs.read` external is always available.
+fn second_order_violations(
+  source: String,
+  function: String,
+  budget: List(String),
+) -> List(types.Violation) {
+  let assert Ok(module) = glance.module(source)
+  let kb = effects.with_externals(knowledge_base(), [fs_read_external()])
+  let registry = signatures.from_glance_module("app", module)
+  let ann =
+    EffectAnnotation(
+      Check,
+      function,
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(budget))),
+    )
+  let #(violations, _) = checker.check(module, [ann], kb, registry, dict.new())
+  violations
 }
