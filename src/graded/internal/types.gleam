@@ -135,11 +135,21 @@ pub type EffectAnnotation {
   )
 }
 
+/// The operator a function *returns*, for a function whose result is itself a
+/// function (`fn pick() -> fn(fn() -> _) -> _`). Serialized into the spec file so
+/// the signature crosses module and package boundaries — a downstream
+/// `let h = pick(); with(h)` resolves `h` to this operator. `function` is
+/// module-qualified in the spec.
+pub type ReturnsAnnotation {
+  ReturnsAnnotation(function: String, operator: EffectTerm)
+}
+
 /// A single line in an .graded file, preserving structure for round-trip rewrites.
 pub type GradedLine {
   AnnotationLine(annotation: EffectAnnotation)
   TypeFieldLine(type_field: TypeFieldAnnotation)
   ExternalLine(external: ExternalAnnotation)
+  ReturnsLine(returns: ReturnsAnnotation)
   CommentLine(text: String)
   BlankLine
 }

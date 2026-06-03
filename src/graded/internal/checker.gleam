@@ -232,10 +232,47 @@ fn polymorphic_param_bounds(
 
 // PRIVATE
 
-fn build_function_map(module: Module) -> dict.Dict(String, Definition(Function)) {
+/// Map a module's functions by name — for transitive same-module resolution.
+pub fn build_function_map(
+  module: Module,
+) -> dict.Dict(String, Definition(Function)) {
   module.functions
   |> list.map(fn(definition) { #(definition.definition.name, definition) })
   |> dict.from_list()
+}
+
+/// The (flat) effect of an inline closure's body, for a record field wired to a
+/// closure at construction (`Validator(to_error: fn(m) { io.println(m) })`).
+/// Analysed like a function body whose parameters are ordinary values — calls to
+/// a closure parameter (a higher-order field) stay conservative. `function_map`
+/// resolves same-module calls; a minimal registry/types is enough for the common
+/// case of a closure calling library/qualified functions.
+pub fn closure_body_effect(
+  body: List(Statement),
+  context: ImportContext,
+  function_map: dict.Dict(String, Definition(Function)),
+  knowledge_base: KnowledgeBase,
+) -> EffectTerm {
+  let synthetic =
+    Function(
+      location: Span(0, 0),
+      name: "<closure-field>",
+      publicity: Private,
+      parameters: [],
+      return: None,
+      body:,
+    )
+  collect_effects(
+    synthetic,
+    function_map,
+    context,
+    knowledge_base,
+    set.new(),
+    [],
+    signatures.empty(),
+    dict.new(),
+  )
+  |> union_of()
 }
 
 fn check_annotation(

@@ -9,10 +9,11 @@ import graded/internal/effect_term
 import graded/internal/types.{
   type AnnotationKind, type EffectAnnotation, type EffectSet, type EffectTerm,
   type ExternalAnnotation, type GradedFile, type GradedLine, type ParamBound,
-  type TypeFieldAnnotation, AnnotationLine, BlankLine, Check, CommentLine,
-  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
-  GradedFile, ModuleExternal, ParamBound, Polymorphic, Specific, TAbs, TApp,
-  TLabels, TTop, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
+  type ReturnsAnnotation, type TypeFieldAnnotation, AnnotationLine, BlankLine,
+  Check, CommentLine, EffectAnnotation, Effects, ExternalAnnotation,
+  ExternalLine, FunctionExternal, GradedFile, ModuleExternal, ParamBound,
+  Polymorphic, ReturnsAnnotation, ReturnsLine, Specific, TAbs, TApp, TLabels,
+  TTop, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 
 pub type ParseError {
@@ -44,10 +45,35 @@ pub fn extract_annotations(file: GradedFile) -> List(EffectAnnotation) {
       AnnotationLine(annotation) -> Ok(annotation)
       TypeFieldLine(_) -> Error(Nil)
       ExternalLine(_) -> Error(Nil)
+      ReturnsLine(_) -> Error(Nil)
       CommentLine(_) -> Error(Nil)
       BlankLine -> Error(Nil)
     }
   })
+}
+
+/// Extract all `returns` annotations from a parsed file.
+pub fn extract_returns(file: GradedFile) -> List(ReturnsAnnotation) {
+  list.filter_map(file.lines, fn(line) {
+    case line {
+      ReturnsLine(returns) -> Ok(returns)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+/// Render a ReturnsAnnotation back to its .graded line format.
+pub fn format_returns(returns: ReturnsAnnotation) -> String {
+  "returns " <> returns.function <> " : " <> format_operator(returns.operator)
+}
+
+/// Format an operator term — a `TAbs` as `fn(cb) -> [body]`, anything else as a
+/// plain effect term (e.g. a polymorphic returned operator that's a bare `[v]`).
+fn format_operator(term: EffectTerm) -> String {
+  case term {
+    TAbs(_, _) -> render_abstraction(term)
+    other -> format_effect_term(other)
+  }
 }
 
 /// Extract only `check` annotations (enforced invariants).
@@ -162,6 +188,7 @@ pub fn format_file(file: GradedFile) -> String {
       AnnotationLine(annotation) -> format_annotation(annotation)
       TypeFieldLine(tf) -> format_type_field(tf)
       ExternalLine(ext) -> format_external(ext)
+      ReturnsLine(returns) -> format_returns(returns)
       CommentLine(text) -> text
       BlankLine -> ""
     }
@@ -169,25 +196,29 @@ pub fn format_file(file: GradedFile) -> String {
   |> string.join("\n")
 }
 
-/// Merge inferred effects into an existing GradedFile, preserving structure.
+/// Merge inferred effects and returned-operator signatures into an existing
+/// GradedFile, preserving structure.
 ///
-/// - `check` lines: kept exactly where they are, unchanged
-/// - Comments and blank lines: kept exactly where they are
-/// - Existing `effects` lines: updated in-place with new effect set
-/// - Stale `effects` lines (function no longer exists): removed
-/// - New functions not yet in file: `effects` lines appended at end
+/// - `check` / `type` / `external` lines, comments, blanks: kept in place
+/// - Existing `effects` and `returns` lines: updated in-place; removed if stale
+/// - New functions not yet in file: `effects` / `returns` lines appended at end
 pub fn merge_inferred(
   file: GradedFile,
   inferred: List(EffectAnnotation),
+  inferred_returns: List(ReturnsAnnotation),
 ) -> GradedFile {
   let inferred_map =
     inferred
     |> list.map(fn(annotation) { #(annotation.function, annotation) })
     |> dict.from_list()
+  let returns_map =
+    inferred_returns
+    |> list.map(fn(returns) { #(returns.function, returns) })
+    |> dict.from_list()
 
-  let #(new_lines, placed) =
-    list.fold(file.lines, #([], set.new()), fn(state, line) {
-      let #(lines, placed_set) = state
+  let #(new_lines, placed, placed_returns) =
+    list.fold(file.lines, #([], set.new(), set.new()), fn(state, line) {
+      let #(lines, placed_set, placed_returns_set) = state
       case line {
         AnnotationLine(annotation) ->
           case annotation.kind {
@@ -196,24 +227,47 @@ pub fn merge_inferred(
                 Ok(new_annotation) -> #(
                   [AnnotationLine(new_annotation), ..lines],
                   set.insert(placed_set, annotation.function),
+                  placed_returns_set,
                 )
-                Error(Nil) -> #(lines, placed_set)
+                Error(Nil) -> #(lines, placed_set, placed_returns_set)
               }
-            Check -> #([line, ..lines], placed_set)
+            Check -> #([line, ..lines], placed_set, placed_returns_set)
           }
-        TypeFieldLine(_) -> #([line, ..lines], placed_set)
-        ExternalLine(_) -> #([line, ..lines], placed_set)
-        CommentLine(_) -> #([line, ..lines], placed_set)
-        BlankLine -> #([line, ..lines], placed_set)
+        ReturnsLine(returns) ->
+          case dict.get(returns_map, returns.function) {
+            Ok(new_returns) -> #(
+              [ReturnsLine(new_returns), ..lines],
+              placed_set,
+              set.insert(placed_returns_set, returns.function),
+            )
+            Error(Nil) -> #(lines, placed_set, placed_returns_set)
+          }
+        TypeFieldLine(_) | ExternalLine(_) | CommentLine(_) | BlankLine -> #(
+          [line, ..lines],
+          placed_set,
+          placed_returns_set,
+        )
       }
     })
 
-  let remaining =
+  let remaining_effects =
     inferred
     |> list.filter(fn(annotation) { !set.contains(placed, annotation.function) })
     |> list.map(AnnotationLine)
+  let remaining_returns =
+    inferred_returns
+    |> list.filter(fn(returns) {
+      !set.contains(placed_returns, returns.function)
+    })
+    |> list.map(ReturnsLine)
 
-  GradedFile(lines: list.append(list.reverse(new_lines), remaining))
+  GradedFile(
+    lines: list.flatten([
+      list.reverse(new_lines),
+      remaining_effects,
+      remaining_returns,
+    ]),
+  )
 }
 
 /// Format an GradedFile: normalize spacing, sort annotations, ensure trailing newline.
@@ -261,12 +315,20 @@ pub fn format_sorted(file: GradedFile) -> String {
     })
     |> list.map(format_external)
 
+  let returns_lines =
+    extract_returns(file)
+    |> list.sort(fn(left, right) {
+      string.compare(left.function, right.function)
+    })
+    |> list.map(format_returns)
+
   let sections = [
     comments,
     external_lines,
     type_field_lines,
     check_lines,
     effects_lines,
+    returns_lines,
   ]
 
   sections
@@ -301,8 +363,20 @@ fn parse_structured_line(
         Ok(ext) -> Ok(ExternalLine(ext))
         Error(Nil) -> Error(InvalidLine(line_number, line))
       }
+    "returns " <> rest ->
+      case parse_returns_line(rest) {
+        Ok(returns) -> Ok(ReturnsLine(returns))
+        Error(Nil) -> Error(InvalidLine(line_number, line))
+      }
     _ -> Error(InvalidLine(line_number, line))
   }
+}
+
+/// Parse a `returns mod.fn : fn(cb) -> [body]` line. The operator reuses the
+/// same `fn(..) -> [..]` syntax as an operator parameter bound.
+fn parse_returns_line(rest: String) -> Result(ReturnsAnnotation, Nil) {
+  use #(name, operator) <- result.try(parse_name_colon_effects(rest))
+  Ok(ReturnsAnnotation(function: name, operator:))
 }
 
 fn parse_annotation_line(

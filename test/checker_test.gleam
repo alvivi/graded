@@ -9,6 +9,7 @@ import gleam/result
 import gleam/set
 import gleam/string
 import gleeunit/should
+import graded/internal/annotation
 import graded/internal/checker
 import graded/internal/effect_term
 import graded/internal/effects
@@ -2247,10 +2248,10 @@ pub fn caller(flag: Bool) -> Nil {
   { second_order_violations(source, "caller", []) != [] } |> should.be_true()
 }
 
-pub fn second_order_branch_non_function_arm_is_unknown_test() {
-  // If any arm isn't a bare function-like value (here a block expression), the
-  // whole branch is opaque and the operator application stays the conservative
-  // `[Unknown]` — flagged even against the budget that would otherwise pass.
+pub fn second_order_branch_block_arm_resolves_test() {
+  // A branch arm that is a *block* ending in a function resolves through its
+  // tail expression (block descent), so the whole branch still resolves rather
+  // than going opaque.
   let source =
     "
 import gleam/io
@@ -2267,8 +2268,30 @@ pub fn caller(flag: Bool) -> Nil {
   })
 }
 "
-  { second_order_violations(source, "caller", ["Stdout"]) != [] }
-  |> should.be_true()
+  // Both arms are [Stdout] (log := io.println); the budget passes, [] fails.
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn second_order_let_bound_block_resolves_test() {
+  // A let-bound block evaluating to a function resolves at the use site via its
+  // tail expression, with the block's own lets in scope.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller() -> Nil {
+  let h = {
+    let chosen = fn(log) { log(\"x\") }
+    chosen
+  }
+  run(h)
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
 }
 
 pub fn second_order_returned_function_same_module_test() {
@@ -2370,6 +2393,50 @@ pub fn caller() -> Nil {
   let #(fail_violations, _) =
     checker.check(module, [fail], kb, registry, dict.new())
   { fail_violations != [] } |> should.be_true()
+}
+
+pub fn second_order_returned_function_from_spec_test() {
+  // A `returns` line in the spec (as `infer` writes it) lets `check` resolve a
+  // cross-module producer — exercising the parse + load path, not a hand-built
+  // KB.
+  let assert Ok(spec) =
+    annotation.parse_file("returns dep.pick : fn(cb) -> [cb]")
+  let source =
+    "
+import gleam/io
+import dep
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller() -> Nil {
+  let h = dep.pick()
+  run(h)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let kb =
+    knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(
+          QualifiedName("dep", "pick"),
+          effect_term.from_effect_set(types.empty()),
+        ),
+      ]),
+    )
+    |> effects.with_inferred_returned_operators(
+      effects.load_spec_returns_from_file(spec),
+    )
+  let registry = signatures.from_glance_module("app", module)
+  let pass =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
+  let #(violations, _) = checker.check(module, [pass], kb, registry, dict.new())
+  violations |> should.equal([])
 }
 
 pub fn infer_returned_operator_entry_test() {

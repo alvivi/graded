@@ -15,10 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Same-module** named functions passed as operator arguments resolve too — sibling functions aren't yet in the knowledge base during their module's inference pass, so they're analysed transitively (mirroring how same-module *calls* already resolve), rather than collapsing to `[Unknown]`.
   - The `.graded` syntax gained operator applications `[action([Stdout], [FileSystem])]` (each argument a bracketed effect term; arguments are curried and order-significant) and operator bounds `fn(a, b) -> [a, b]`; first-order lines are byte-identical to before.
 - Resolution is pure-Gleam term reduction — capture-avoiding substitution, beta, and union normalization, fuel-guarded — with no external solver. The reduction laws, capture-avoidance, soundness (over-approximation), and termination are property-tested with qcheck. See [docs/second-order-effects.md](docs/second-order-effects.md).
+- **More value flow resolves instead of `[Unknown]`.** Several shapes that previously degraded now carry effects precisely:
+  - **Blocks resolve to their tail.** A returned, let-bound, branch-arm, or argument value that is a block (`{ let f = io.println; f }`) is classified by the expression it evaluates to.
+  - **Returned operators cross modules and packages.** They're serialized into the spec file as `returns mod.fn : fn(cb) -> [cb]` lines and loaded from the project spec and dependency specs — so `check` (not just `infer`) resolves a `let h = producer(); with(h)` across module and package boundaries.
+  - **Record fields wired to an inline closure** (`Validator(to_error: fn(m) { io.println(m) })`) infer the field's effect from the closure body, with no hand-written `type` annotation.
+  - **`check` auto-infers project modules missing from the spec**, in memory and in topological order, so a call into a not-yet-inferred module resolves instead of `[Unknown]`. Committed `effects` lines still take priority and nothing is written to disk.
 
 ### Notes
 
-- The remaining inference residuals — all sound, collapsing to the conservative `[Unknown]` — are: a producer that returns *its own parameter* (`fn wrap(base) { base }`, return-polymorphic); a returned operator whose producer lives in another *package* (returned operators are in-memory only this release, not serialized into `.graded`); and values reached through block- or `use`-tailed returns. Annotate explicitly if needed.
+- The remaining inference residuals — all sound, collapsing to the conservative `[Unknown]` — are: **return/field-effect polymorphism** (a producer that returns or wraps its own parameter, `fn traced(action) { fn(cb) { action(cb) } }`, or a field wired to a constructor parameter — the effect is a function of a parameter, not yet resolved); a function value reached through **arbitrary computation** (`handlers |> list.first |> unwrap`); a **`use`-tailed** return (the continuation's value isn't statically recoverable); and **external/FFI** code (use `external effects`). Annotate explicitly or widen the budget where needed.
 
 ## [0.6.0] - 2026-04-21
 

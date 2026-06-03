@@ -17,10 +17,16 @@ inference pass), **inline closures**, **let-bound closures**
 spines in lockstep — `(f ⊔ g)(cb) = f(cb) ⊔ g(cb)`), and **functions returned
 from a call** (`let h = pick_handler()`; the producer's returned operator is
 computed where the producer is defined — so its module's private callees are in
-scope — and threaded through the knowledge base by the topological pass, exactly
-like `all_effects`). The remaining residuals, all sound (`[Unknown]`), are a
-producer that returns *its own parameter* (return-polymorphic), cross-*package*
-returned operators (in-memory only), and block/`use`-tailed returns — noted in
+scope — **serialized into the spec** as a `returns mod.fn : fn(cb) -> [cb]` line
+and loaded from the project and dependency specs, so it resolves across module
+*and package* boundaries during `check`, not only `infer`). A value that is a
+**block** resolves to its tail expression, a record **field wired to a closure**
+is resolved from the closure body, and `check` **auto-infers** project modules
+missing from the spec (in memory, topological order, committed entries winning).
+The remaining residuals, all sound (`[Unknown]`), are **return/field-effect
+polymorphism** (a producer that returns or wraps its own parameter; a field wired
+to a constructor parameter — the effect is a function of a parameter), a function
+value reached through arbitrary computation, and `use`-tailed returns — noted in
 the README limitations.
 
 ## Goal

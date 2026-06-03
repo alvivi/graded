@@ -65,6 +65,20 @@ pub fn opaque_receiver_violation_detected_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn closure_field_effect_from_construction_test() {
+  // A record field wired to an *inline closure* at construction resolves to the
+  // closure body's effect ([Stdout]) without a hand-written `type` annotation —
+  // previously this fell back to [Unknown].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let closure_result =
+    list.find(results, fn(r) { r.file == "test/fixtures/closure_field.gleam" })
+  let assert Ok(r) = closure_result
+  { r.violations != [] } |> should.be_true()
+  let assert [v, ..] = r.violations
+  v.function |> should.equal("run")
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn inferred_field_effect_from_construction_test() {
   // Stage C: inferred_field has NO `type Logger.emit` annotation. graded
   // derives the field's effect from the construction `Logger(emit: io.println)`

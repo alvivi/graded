@@ -139,7 +139,15 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     effects.load_knowledge_base("build/packages")
     |> enrich_with_path_deps()
     |> effects.with_inferred(effects.load_spec_effects_from_file(spec))
+    |> effects.with_inferred_returned_operators(
+      effects.load_spec_returns_from_file(spec),
+    )
     |> effects.with_externals(annotation.extract_externals(spec))
+    // Fill gaps for project modules not (yet) in the spec by inferring them
+    // in memory, so `check` resolves cross-module calls without a prior
+    // `graded infer`. Spec entries above take priority — committed effects are
+    // never overridden — and nothing is written to disk.
+    |> infer_project_in_memory(index, registry, type_info)
   let knowledge_base =
     kb_base
     |> effects.with_inferred_type_fields(build_constructor_field_index(
@@ -226,13 +234,13 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   let registry = signatures.merge(dep_registry, build_project_registry(index))
   let type_info = build_type_index(index)
 
-  use #(_kb, public_annotations) <- result.try(
-    list.try_fold(sorted, #(base_kb, []), fn(state, module_path) {
-      let #(kb, acc) = state
+  use #(_kb, public_annotations, public_returns) <- result.try(
+    list.try_fold(sorted, #(base_kb, [], []), fn(state, module_path) {
+      let #(kb, acc, returns_acc) = state
       case dict.get(index, module_path) {
         Error(_) -> Ok(state)
         Ok(#(_gleam_path, module)) -> {
-          use #(new_kb, new_public) <- result.try(infer_one_module(
+          use #(new_kb, new_public, new_returns) <- result.try(infer_one_module(
             module,
             module_path,
             cfg.cache_dir,
@@ -241,16 +249,19 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
             typeinfo.for_module(type_info, module_path),
             typeinfo.fn_typed_for_module(type_info, module_path),
           ))
-          // Prepend new_public so each iteration is O(|new_public|) instead
-          // of O(|acc|); final order doesn't matter, merge_inferred keys by
-          // function name.
-          Ok(#(new_kb, list.append(new_public, acc)))
+          // Prepend new entries so each iteration is O(|new|) instead of
+          // O(|acc|); final order doesn't matter, merge_inferred keys by name.
+          Ok(#(
+            new_kb,
+            list.append(new_public, acc),
+            list.append(new_returns, returns_acc),
+          ))
         }
       }
     }),
   )
 
-  write_spec_file(cfg.spec_file, spec, public_annotations)
+  write_spec_file(cfg.spec_file, spec, public_annotations, public_returns)
 }
 
 /// Format the project's spec file in place. The spec file is the single
@@ -351,6 +362,13 @@ fn build_constructor_field_index(
     let context =
       extract.build_import_context(module)
       |> extract.with_cross_constructors(cross_constructors)
+    // Resolve a field wired to an inline/let-bound closure by analysing the
+    // closure body in this module's context (same-module calls via its
+    // function map), instead of collapsing to `[Unknown]`.
+    let function_map = checker.build_function_map(module)
+    let closure_effect = fn(body) {
+      checker.closure_body_effect(body, context, function_map, knowledge_base)
+    }
     extract.collect_constructor_bindings(module, context)
     |> list.fold(acc, fn(inner, binding) {
       accumulate_constructor_binding(
@@ -359,6 +377,7 @@ fn build_constructor_field_index(
         constructor_types,
         knowledge_base,
         path,
+        closure_effect,
       )
     })
   })
@@ -390,6 +409,7 @@ fn accumulate_constructor_binding(
   constructor_types: Dict(#(String, String), String),
   knowledge_base: KnowledgeBase,
   module_path: String,
+  closure_effect: fn(List(glance.Statement)) -> types.EffectTerm,
 ) -> Dict(#(String, String, String), types.TypeFieldEffect) {
   let extract.ConstructorBinding(binding_module, constructor, fields) = binding
   let module = option.unwrap(binding_module, module_path)
@@ -397,7 +417,8 @@ fn accumulate_constructor_binding(
     Error(Nil) -> acc
     Ok(type_name) ->
       dict.fold(fields, acc, fn(inner, label, value) {
-        let field_effect = field_effect_of(knowledge_base, value, module_path)
+        let field_effect =
+          field_effect_of(knowledge_base, value, module_path, closure_effect)
         let key = #(module, type_name, label)
         let merged = case dict.get(inner, key) {
           Ok(existing) -> merge_field_effect(existing, field_effect)
@@ -416,6 +437,7 @@ fn field_effect_of(
   knowledge_base: KnowledgeBase,
   value: types.ArgumentValue,
   module_path: String,
+  closure_effect: fn(List(glance.Statement)) -> types.EffectTerm,
 ) -> types.TypeFieldEffect {
   case field_value_function(value, module_path) {
     Some(name) -> {
@@ -430,12 +452,19 @@ fn field_effect_of(
         False -> types.TypeFieldEffect(field_effects, [], None)
       }
     }
+    // A field wired to an inline/let-bound closure: analyse its body for the
+    // field's effect instead of collapsing to `[Unknown]`.
     None ->
-      types.TypeFieldEffect(
-        effects.argument_value_effects(knowledge_base, value),
-        [],
-        None,
-      )
+      case value {
+        types.Closure(_params, body) ->
+          types.TypeFieldEffect(closure_effect(body), [], None)
+        _ ->
+          types.TypeFieldEffect(
+            effects.argument_value_effects(knowledge_base, value),
+            [],
+            None,
+          )
+      }
   }
 }
 
@@ -624,7 +653,10 @@ fn infer_one_module(
   registry: SignatureRegistry,
   module_types: Dict(#(Int, Int), girard_types.Type),
   girard_fn_typed: Dict(String, Set(String)),
-) -> Result(#(KnowledgeBase, List(EffectAnnotation)), GradedError) {
+) -> Result(
+  #(KnowledgeBase, List(EffectAnnotation), List(types.ReturnsAnnotation)),
+  GradedError,
+) {
   let #(inferred, returned_operators) =
     checker.infer_with_returns(
       module,
@@ -694,8 +726,77 @@ fn infer_one_module(
     |> list.map(fn(ann) {
       EffectAnnotation(..ann, function: module_path <> "." <> ann.function)
     })
+  // Public functions that return an operator — serialized as `returns` lines so
+  // the signature crosses module/package boundaries.
+  let public_returns =
+    returned_operators
+    |> dict.to_list()
+    |> list.filter(fn(pair) { set.contains(public_names, pair.0) })
+    |> list.map(fn(pair) {
+      types.ReturnsAnnotation(
+        function: module_path <> "." <> pair.0,
+        operator: pair.1,
+      )
+    })
 
-  Ok(#(new_kb, public_annotations))
+  Ok(#(new_kb, public_annotations, public_returns))
+}
+
+/// Infer project modules in topological order, in memory, folding their
+/// effects, param bounds, and returned operators into `base_kb` — with existing
+/// (spec / dependency) entries taking priority, so committed effects are never
+/// overridden. This lets `check` resolve calls into project modules that haven't
+/// been `graded infer`-ed yet, without writing the cache. Falls back to
+/// `base_kb` unchanged when the import graph has a cycle (the real
+/// `graded infer` reports that error; `check` just degrades to spec-only).
+fn infer_project_in_memory(
+  base_kb: KnowledgeBase,
+  index: Dict(String, #(String, glance.Module)),
+  registry: SignatureRegistry,
+  type_info: typeinfo.TypeInfo,
+) -> KnowledgeBase {
+  case topo.sort(build_dependency_graph(index)) {
+    Error(_) -> base_kb
+    Ok(sorted) ->
+      list.fold(sorted, base_kb, fn(kb, module_path) {
+        case dict.get(index, module_path) {
+          Error(_) -> kb
+          Ok(#(_gleam_path, module)) -> {
+            let #(inferred, returned_operators) =
+              checker.infer_with_returns(
+                module,
+                kb,
+                [],
+                registry,
+                typeinfo.for_module(type_info, module_path),
+                typeinfo.fn_typed_for_module(type_info, module_path),
+              )
+            let qualify = fn(function) {
+              QualifiedName(module: module_path, function:)
+            }
+            let effects_dict =
+              list.fold(inferred, dict.new(), fn(acc, ann) {
+                dict.insert(acc, qualify(ann.function), ann.effects)
+              })
+            let params_dict =
+              list.fold(inferred, dict.new(), fn(acc, ann) {
+                case ann.params {
+                  [] -> acc
+                  params -> dict.insert(acc, qualify(ann.function), params)
+                }
+              })
+            let returns_dict =
+              dict.fold(returned_operators, dict.new(), fn(acc, function, op) {
+                dict.insert(acc, qualify(function), op)
+              })
+            kb
+            |> effects.with_inferred(effects_dict)
+            |> effects.with_inferred_params(params_dict)
+            |> effects.with_inferred_returned_operators(returns_dict)
+          }
+        }
+      })
+  }
 }
 
 /// Build a set of public function names from a parsed Gleam module.
@@ -716,8 +817,9 @@ fn write_spec_file(
   spec_path: String,
   existing: GradedFile,
   inferred: List(EffectAnnotation),
+  inferred_returns: List(types.ReturnsAnnotation),
 ) -> Result(Nil, GradedError) {
-  let merged = annotation.merge_inferred(existing, inferred)
+  let merged = annotation.merge_inferred(existing, inferred, inferred_returns)
 
   // create_directory_all is a no-op when the parent already exists, so it's
   // safe to call unconditionally — and necessary when the user has

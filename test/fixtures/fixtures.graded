@@ -6,6 +6,7 @@ check validator_flow.run : []
 check opaque_receiver.run : []
 check inferred_field.run : []
 check local_field.run : []
+check closure_field.run : []
 
 // Type field annotations (the effect source for type-directed field calls).
 type opaque_receiver.Validator.to_error : [Stdout]

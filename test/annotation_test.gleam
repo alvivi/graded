@@ -497,7 +497,7 @@ pub fn merge_inferred_invariants_test() {
       fn(f, i) { #(f, i) },
     ),
   )
-  let merged = annotation.merge_inferred(file, inferred)
+  let merged = annotation.merge_inferred(file, inferred, [])
   let merged_effects =
     annotation.extract_annotations(merged)
     |> list.filter(fn(a) { a.kind == Effects })
@@ -615,6 +615,24 @@ pub fn roundtrip_multi_param_operator_bound_test() {
 
 fn union_vars(first: EffectTerm, second: String) -> EffectTerm {
   effect_term.normalize(TUnion([first, TVar(second)]))
+}
+
+pub fn returns_line_round_trip_test() {
+  let line = "returns app/dep.pick : fn(cb) -> [cb]"
+  let assert Ok(file) = annotation.parse_file(line)
+  let assert [returns] = annotation.extract_returns(file)
+  returns.function |> should.equal("app/dep.pick")
+  returns.operator |> should.equal(TAbs("cb", TVar("cb")))
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn returns_line_multi_callback_round_trip_test() {
+  let line = "returns m.pick : fn(a, b) -> [a, b]"
+  let assert Ok(file) = annotation.parse_file(line)
+  let assert [returns] = annotation.extract_returns(file)
+  returns.operator
+  |> should.equal(TAbs("a", TAbs("b", union_vars(TVar("a"), "b"))))
+  annotation.format_file(file) |> should.equal(line)
 }
 
 pub fn second_order_roundtrip_property_test() {

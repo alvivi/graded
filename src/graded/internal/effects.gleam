@@ -57,7 +57,7 @@ pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
     // ordering in CLAUDE.md — dict.merge lets the second arg win.
     param_bounds: dict.merge(cat_params, dep_params),
     type_fields: dict.new(),
-    returned_operators: dict.new(),
+    returned_operators: load_dependency_returns(packages_directory),
     pure_modules: cat_pure,
   )
 }
@@ -319,13 +319,57 @@ fn fold_spec_effects(
 fn read_spec_annotations(
   spec_path: String,
 ) -> Result(List(EffectAnnotation), Nil) {
+  use file <- result.try(read_spec_file(spec_path))
+  Ok(annotation.extract_annotations(file))
+}
+
+fn read_spec_file(spec_path: String) -> Result(types.GradedFile, Nil) {
   use content <- result.try(
     simplifile.read(spec_path) |> result.replace_error(Nil),
   )
-  use file <- result.try(
-    annotation.parse_file(content) |> result.replace_error(Nil),
-  )
-  Ok(annotation.extract_annotations(file))
+  annotation.parse_file(content) |> result.replace_error(Nil)
+}
+
+/// Build a returned-operator map (qualified name → operator) from a parsed
+/// spec's `returns` lines. Used to load the project spec during `check`.
+pub fn load_spec_returns_from_file(
+  file: types.GradedFile,
+) -> Dict(QualifiedName, EffectTerm) {
+  fold_spec_returns(annotation.extract_returns(file))
+}
+
+fn fold_spec_returns(
+  returns: List(types.ReturnsAnnotation),
+) -> Dict(QualifiedName, EffectTerm) {
+  list.fold(returns, dict.new(), fn(acc, returns) {
+    case annotation.split_qualified_name(returns.function) {
+      Ok(#(module, function)) ->
+        dict.insert(acc, QualifiedName(module:, function:), returns.operator)
+      Error(_) -> acc
+    }
+  })
+}
+
+/// Scan dependency `.graded` specs for `returns` lines so a returned operator a
+/// dependency declares crosses the package boundary.
+fn load_dependency_returns(
+  packages_directory: String,
+) -> Dict(QualifiedName, EffectTerm) {
+  let entries = case simplifile.read_directory(packages_directory) {
+    Ok(found) -> found
+    Error(_) -> []
+  }
+  list.fold(entries, dict.new(), fn(acc, package_name) {
+    let dep_root = packages_directory <> "/" <> package_name
+    let spec_file = case config.read(dep_root <> "/gleam.toml") {
+      Ok(cfg) -> cfg.spec_file
+      Error(_) -> config.default_spec_file(package_name)
+    }
+    case read_spec_file(dep_root <> "/" <> spec_file) {
+      Ok(file) -> dict.merge(acc, load_spec_returns_from_file(file))
+      Error(_) -> acc
+    }
+  })
 }
 
 /// Merge inferred effects into a knowledge base.

@@ -308,6 +308,25 @@ pub fn target(flag) {
   |> should.equal([OtherExpression])
 }
 
+pub fn block_classifies_to_tail_expression_test() {
+  // A block argument resolves to its tail expression (with the block's own lets
+  // in scope) — here a function reference.
+  let src =
+    "import gleam/io
+pub fn target() {
+  call_with({
+    let g = io.println
+    g
+  })
+}"
+  let result = parse_and_extract(src)
+  result.call_args
+  |> dict.values
+  |> list.flatten
+  |> list.map(fn(arg) { arg.value })
+  |> should.equal([FunctionRef(QualifiedName("gleam/io", "println"))])
+}
+
 pub fn function_ref_alias_call_test() {
   let src =
     "import gleam/io

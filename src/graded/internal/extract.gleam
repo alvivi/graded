@@ -1186,6 +1186,36 @@ fn classify_expression(
     // function returns a function — captured here, resolved at the use site
     // against the producer's inferred returned operator.
     glance.Call(function:, ..) -> classify_call_producer(function, context, env)
+    // A block evaluates to its tail expression: classify that, with the block's
+    // own `let`s in scope. Lets `{ let f = io.println; f }` and a function/branch
+    // body that ends in a block resolve instead of going opaque.
+    glance.Block(statements:, ..) -> classify_block(statements, context, env)
+    _ -> OtherExpression
+  }
+}
+
+/// Classify the value a block evaluates to — its tail expression, with the
+/// block's preceding `let`/`use` bindings threaded into scope. A block whose
+/// tail isn't a bare expression is opaque.
+fn classify_block(
+  statements: List(glance.Statement),
+  context: ImportContext,
+  env: Env,
+) -> types.ArgumentValue {
+  case list.reverse(statements) {
+    [glance.Expression(tail), ..init_reversed] -> {
+      let inner_env =
+        list.fold(list.reverse(init_reversed), env, fn(accumulator, statement) {
+          case statement {
+            glance.Assignment(pattern:, value:, ..) ->
+              bind_assignment(pattern, value, context, accumulator)
+            glance.Use(patterns:, ..) ->
+              bind_use_patterns(patterns, accumulator)
+            _ -> accumulator
+          }
+        })
+      classify_expression(tail, context, inner_env)
+    }
     _ -> OtherExpression
   }
 }
