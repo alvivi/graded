@@ -267,6 +267,15 @@ pub fn operator_callback_positions_of_type(type_: glance.Type) -> List(Int) {
   }
 }
 
+/// Whether a type is itself a function type (`fn(..) -> _`). A producer whose
+/// return type satisfies this *returns a function*, so the effect of calling
+/// that function is worth recording — even when it isn't operator-shaped (takes
+/// no callback). Distinguishes `fn make() -> fn() -> Nil` (record its latent
+/// effect) from `fn make() -> Int` (nothing to record).
+pub fn is_function_return_type(type_: glance.Type) -> Bool {
+  is_function_type(type_)
+}
+
 /// The indices of the function-typed arguments in a type list, in order. These
 /// are the callback positions for an operator parameter's own argument list.
 fn all_function_indices(types: List(glance.Type)) -> List(Int) {

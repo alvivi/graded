@@ -1244,8 +1244,15 @@ fn compute_returned_operator(
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
 ) -> Result(EffectTerm, Nil) {
   use return_type <- result.try(option.to_result(function.return, Nil))
+  // Gate on the return type being *a function* (so there's something to record
+  // when called), not specifically operator-shaped — a first-order returned
+  // function (`fn make() -> fn() -> Nil`) carries a latent effect too. The
+  // callback positions may be empty (a first-order return has no callbacks).
+  use <- bool.guard(
+    when: !signatures.is_function_return_type(return_type),
+    return: Error(Nil),
+  )
   let positions = signatures.operator_callback_positions_of_type(return_type)
-  use <- bool.guard(when: positions == [], return: Error(Nil))
   use value <- result.try(extract.return_value(function, context))
   let producer_operators = signatures.operator_params_from_function(function)
   let producer_bounds =
@@ -1271,20 +1278,27 @@ fn compute_returned_operator(
       registry,
       lift,
     )
-  // Record an operator: an abstraction (`λcb. …`, possibly polymorphic in the
-  // producer's params), a bare operator parameter returned directly (`TVar`,
-  // the identity `fn wrap(base) { base }`), or a *union* of these — a producer
-  // that returns one of several operators through a branch,
-  // `case … { _ -> a  _ -> b }`. The union's free variables are bound to the
-  // producer call's arguments by `resolve_returned_operator`, and applying the
-  // bound union distributes over its operators (`effect_term` β + union laws).
-  // A ground effect or a bare stuck application isn't a usable returned
-  // operator. (A normalized `TUnion` always has a non-label member, and the
-  // operator-shaped return type — checked above — means that member is an
-  // operator, not a first-order effect.)
+  // Record the operator a producer returns:
+  //   - an abstraction (`λcb. …`, possibly polymorphic in the producer's
+  //     params), a bare operator parameter returned directly (`TVar`, the
+  //     identity `fn wrap(base) { base }`), or a *union* of these (a producer
+  //     that returns one of several operators through a branch). Their free
+  //     vars are bound to the producer call's arguments by
+  //     `resolve_returned_operator`, and a bound union distributes on application.
+  //   - a ground *latent effect* (`TLabels`/`TTop`) — a first-order returned
+  //     function, whose effect of *being called* is its body. Applying it (with
+  //     no callback arguments) yields this effect directly. A pure-[Unknown]
+  //     latent is dropped: it carries no information and resolution falls back
+  //     to [Unknown] anyway.
+  // A bare stuck application isn't usable.
   case operator {
     types.TAbs(_, _) | types.TVar(_) | types.TUnion(_) -> Ok(operator)
-    _ -> Error(Nil)
+    types.TLabels(_) | types.TTop ->
+      case operator == effect_term.unknown() {
+        True -> Error(Nil)
+        False -> Ok(operator)
+      }
+    types.TApp(_, _) -> Error(Nil)
   }
 }
 

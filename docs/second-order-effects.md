@@ -19,7 +19,11 @@ from a call** (`let h = pick_handler()`; the producer's returned operator is
 computed where the producer is defined — so its module's private callees are in
 scope — **serialized into the spec** as a `returns mod.fn : fn(cb) -> [cb]` line
 and loaded from the project and dependency specs, so it resolves across module
-*and package* boundaries during `check`, not only `infer`). A value that is a
+*and package* boundaries during `check`, not only `infer`). The returned value
+is resolved whether it is **passed to an operator parameter** (`with(h)`) or
+**applied directly** (`h(cb)`); a returned **first-order** function carries a
+**latent effect** instead of an operator (`fn make() -> fn() -> Nil`, serialized
+as `returns make : [Stdout]`), so `let f = make(); f()` yields that effect. A value that is a
 **block** resolves to its tail expression; a record **field wired to a closure**
 is resolved from the closure body (including an **operator-typed field** whose
 closure calls its callback — lifted to `λnext. [next]` and applied at the field
@@ -29,11 +33,16 @@ returning one of its operator parameters (`fn wrap(base) { base }`) or **wrappin
 it in a closure (a decorator, `fn traced(action) { fn(cb) { log(); action(cb) } }`)
 binds the parameter to the producer call's argument. A returned closure is lazy, so
 it's excluded from the producer's own direct call-effect (accounted only when
-applied), keeping decorators precise. The remaining residuals, all sound
-(`[Unknown]`), are: a producer that selects a parameter through a *branch* (a union
-of operators, not beta-reducible); a field wired to a constructor parameter; a
-function value reached through arbitrary computation; and `use`-tailed returns —
-noted in the README limitations.
+applied), keeping decorators precise. A producer that selects one of its operator
+parameters through a *branch* (`case … { _ -> a  _ -> b }`) resolves too — the
+union of operators beta-reduces by distributing application over the union. A
+record **field wired to a parameter** resolves through a **factory** (a function
+whose tail constructs the record from its parameters): `let v = make(io.println)`
+binds the result's fields like a direct construction. The remaining residuals,
+all sound (`[Unknown]`), are: a function value reached through *arbitrary
+computation* (needs whole-program control-flow analysis); a record receiver from
+an untraceable source (no provenance to a factory or construction); and a
+`use`-tailed *returned operator* — noted in the README limitations.
 
 ## Goal
 

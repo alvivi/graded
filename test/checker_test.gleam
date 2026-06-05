@@ -2291,6 +2291,81 @@ pub fn caller() -> Nil {
   |> should.be_true()
 }
 
+pub fn first_order_returned_function_applied_test() {
+  // C2: a producer returns a *first-order* function (no callback parameter); its
+  // latent effect (the returned closure's body) resolves when the let-bound
+  // result is applied. `let f = make_printer(); f()` ⟹ [Stdout].
+  let source =
+    "
+import gleam/io
+fn make_printer() -> fn() -> Nil {
+  fn() { io.println(\"x\") }
+}
+pub fn caller() -> Nil {
+  let f = make_printer()
+  f()
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn first_order_returned_named_function_applied_test() {
+  // C2 with a *named* returned function rather than an inline closure.
+  let source =
+    "
+import gleam/io
+fn printer() -> Nil {
+  io.println(\"x\")
+}
+fn make() -> fn() -> Nil {
+  printer
+}
+pub fn caller() -> Nil {
+  let f = make()
+  f()
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn first_order_returned_function_with_value_param_test() {
+  // C2: the returned function takes a (value) parameter. Its latent effect still
+  // resolves when applied: `let f = make(); f(\"x\")` ⟹ [Stdout].
+  let source =
+    "
+import gleam/io
+fn make() -> fn(String) -> Nil {
+  io.println
+}
+pub fn caller() -> Nil {
+  let f = make()
+  f(\"x\")
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn first_order_returned_function_unapplied_is_pure_test() {
+  // Soundness/precision: binding the result without applying it carries no
+  // effect — the returned closure's body only runs when `f` is called. So
+  // `let f = make_printer()` alone leaves `caller` pure.
+  let source =
+    "
+import gleam/io
+fn make_printer() -> fn() -> Nil {
+  fn() { io.println(\"x\") }
+}
+pub fn caller() -> Nil {
+  let _f = make_printer()
+  Nil
+}
+"
+  second_order_violations(source, "caller", []) |> should.equal([])
+}
+
 pub fn second_order_returned_operator_applied_directly_test() {
   // C1: a let-bound returned operator applied *directly* — `h(io.println)` —
   // resolves the producer's returned operator and applies it, rather than
@@ -2806,6 +2881,87 @@ pub fn pick() -> fn(fn(String) -> Nil) -> Nil {
     )
   dict.get(returns, "pick")
   |> should.equal(Ok(types.TAbs("cb", types.TVar("cb"))))
+}
+
+pub fn infer_first_order_returned_function_entry_test() {
+  // C2: inferring a producer that returns a *first-order* function records its
+  // latent effect (a ground set), and that round-trips through the spec syntax.
+  let source =
+    "
+import gleam/io
+pub fn make_printer() -> fn() -> Nil {
+  fn() { io.println(\"x\") }
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(_annotations, returns) =
+    checker.infer_with_returns(
+      module,
+      knowledge_base(),
+      [],
+      signatures.from_glance_module("app", module),
+      dict.new(),
+      dict.new(),
+    )
+  let assert Ok(operator) = dict.get(returns, "make_printer")
+  operator
+  |> should.equal(
+    effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+  )
+  // Round-trips through `format_returns` / parse (a plain effect term).
+  let line =
+    annotation.format_returns(types.ReturnsAnnotation("make_printer", operator))
+  let assert Ok(spec) = annotation.parse_file(line)
+  let assert [reparsed] = annotation.extract_returns(spec)
+  effect_term.normalize(reparsed.operator)
+  |> should.equal(effect_term.normalize(operator))
+}
+
+pub fn first_order_returned_function_from_spec_test() {
+  // C2 cross-module: a `returns dep.make : [Stdout]` spec line (as `infer`
+  // writes it) lets `let f = dep.make(); f()` resolve in a downstream module.
+  let assert Ok(spec) = annotation.parse_file("returns dep.make : [Stdout]")
+  let source =
+    "
+import dep
+pub fn caller() -> Nil {
+  let f = dep.make()
+  f()
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let kb =
+    knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(
+          QualifiedName("dep", "make"),
+          effect_term.from_effect_set(types.empty()),
+        ),
+      ]),
+    )
+    |> effects.with_inferred_returned_operators(
+      effects.load_spec_returns_from_file(spec),
+    )
+  let registry = signatures.from_glance_module("app", module)
+  let pass =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
+  let #(violations, _) = checker.check(module, [pass], kb, registry, dict.new())
+  violations |> should.equal([])
+  let fail =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(types.empty()),
+    )
+  let #(failed, _) = checker.check(module, [fail], kb, registry, dict.new())
+  { failed != [] } |> should.be_true()
 }
 
 pub fn infer_returned_branch_of_params_entry_test() {
