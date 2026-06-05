@@ -1849,11 +1849,19 @@ pub fn field_call_binds_pure_argument_test() {
   check_field_call("Wrapper") |> should.equal([])
 }
 
-pub fn field_call_unbound_argument_concretizes_to_unknown_test() {
-  // An inline closure is OtherExpression — `action` can't bind, so the leftover
-  // variable collapses to [Unknown] rather than surfacing free.
-  let assert [v, ..] = check_field_call("fn(s) { s }")
-  v.actual |> should.equal(Specific(set.from_list(["Unknown"])))
+pub fn field_call_binds_identity_closure_test() {
+  // An inline closure bound to a (first-order) field parameter resolves to its
+  // body effect. The identity closure `fn(s) { s }` is pure, so the field call
+  // has no effect — no violation. (Previously a closure here couldn't bind and
+  // collapsed conservatively to [Unknown].)
+  check_field_call("fn(s) { s }") |> should.equal([])
+}
+
+pub fn field_call_binds_effectful_closure_test() {
+  // An effectful inline closure bound to a field parameter resolves to its body
+  // effect: `fn(s) { io.println(s) }` ⟹ [Stdout].
+  let assert [v, ..] = check_field_call("fn(s) { io.println(s) }")
+  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 // ──── Second-order (nested) effect variables: end-to-end ────
@@ -2292,6 +2300,62 @@ pub fn caller(flag: Bool) -> Int {
 "
   { second_order_violations(source, "caller", []) != [] } |> should.be_true()
   second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+}
+
+pub fn use_with_operator_callee_resolves_callback_test() {
+  // C3: `use r <- with_thing()` desugars to `with_thing(fn(r) { io.println(r) })`.
+  // The operator callee binds its callback to the continuation, so its callback
+  // variable resolves instead of leaving a spurious unbound effect — so
+  // `check caller : [Stdout]` no longer false-positives.
+  let source =
+    "
+import gleam/io
+fn with_thing(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+pub fn caller() -> Nil {
+  use r <- with_thing()
+  io.println(r)
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn use_tail_depends_on_binding_test() {
+  // C3: the continuation's effect comes from what the callee passes to the
+  // binding. `with_logger` hands `io.println` to `log`; `log(\"hello\")` in the
+  // continuation therefore carries [Stdout].
+  let source =
+    "
+import gleam/io
+fn with_logger(cb: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  cb(io.println)
+}
+pub fn caller() -> Nil {
+  use log <- with_logger()
+  log(\"hello\")
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn use_with_unknown_callee_still_counts_continuation_test() {
+  // Soundness: a non-operator (unknown/external) callee must not drop the
+  // continuation's effects — they're still walked from the closure body.
+  let source =
+    "
+import gleam/io
+import fs
+pub fn caller() -> Nil {
+  use _ <- fs.with_file()
+  io.println(\"x\")
+}
+"
+  // Effect is {Unknown (fs.with_file), Stdout (io.println)} — the empty budget
+  // is violated, confirming the continuation effect survived desugaring.
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
 }
 
 pub fn second_order_branch_closures_unions_effects_test() {

@@ -402,12 +402,62 @@ fn walk_scope_with_env(
   context: ImportContext,
   env: Env,
 ) -> #(ExtractResult, Env) {
-  list.fold(statements, #(empty(), env), fn(state, statement) {
-    let #(accumulated, current_env) = state
-    let #(result, next_env) =
-      extract_from_statement(statement, context, current_env)
-    #(merge(accumulated, result), next_env)
-  })
+  case statements {
+    [] -> #(empty(), env)
+    // `use p <- callee(args)` consumes the rest of the scope as its callback.
+    // Desugar to Gleam's own `callee(args, fn(p) { rest })` and walk that, so an
+    // operator callee binds its callback to the continuation (resolving the
+    // callback's effect variable) while the continuation's own effects are
+    // still extracted from the closure body. The scope ends here — `rest` lives
+    // inside the closure.
+    [glance.Use(patterns:, function:, location:), ..rest] -> #(
+      extract_from_expression(
+        desugar_use(location, patterns, function, rest),
+        context,
+        env,
+      ),
+      env,
+    )
+    [statement, ..rest] -> {
+      let #(result, next_env) = extract_from_statement(statement, context, env)
+      let #(rest_result, final_env) =
+        walk_scope_with_env(rest, context, next_env)
+      #(merge(result, rest_result), final_env)
+    }
+  }
+}
+
+/// Desugar `use p1, p2 <- callee(args)` followed by `rest` into the call
+/// `callee(args, fn(p1, p2) { rest })` — Gleam's own desugaring. Reusing the
+/// normal call walk binds an operator callee's callback to the continuation
+/// closure, while the continuation's effects are still extracted from the
+/// closure body (so a non-operator callee doesn't drop them).
+fn desugar_use(
+  location: glance.Span,
+  patterns: List(glance.UsePattern),
+  function: Expression,
+  rest: List(Statement),
+) -> Expression {
+  let params = list.map(patterns, use_pattern_to_fn_param)
+  let closure =
+    glance.Fn(location:, arguments: params, return_annotation: None, body: rest)
+  let closure_arg = glance.UnlabelledField(closure)
+  case function {
+    glance.Call(location: call_location, function: callee, arguments: args) ->
+      glance.Call(call_location, callee, list.append(args, [closure_arg]))
+    other -> glance.Call(location, other, [closure_arg])
+  }
+}
+
+/// Turn a `use` pattern into the synthetic closure's parameter. A simple
+/// variable binds by name; a destructuring pattern can't be a bare parameter,
+/// so it's discarded (its names stay unbound — the conservative behaviour).
+fn use_pattern_to_fn_param(pattern: glance.UsePattern) -> glance.FnParameter {
+  let name = case pattern.pattern {
+    glance.PatternVariable(name:, ..) -> glance.Named(name)
+    _ -> glance.Discarded("use")
+  }
+  glance.FnParameter(name:, type_: None)
 }
 
 // PRIVATE

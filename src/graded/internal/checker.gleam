@@ -645,6 +645,48 @@ fn positions_up_to(n: Int) -> List(Int) {
   }
 }
 
+/// The effect of an argument bound to a *first-order* fn-typed parameter. A
+/// closure's effect is the effect of *calling* it — its body — recovered by
+/// lifting and discharging the (value) parameters, rather than collapsing to
+/// [Unknown]. Covers a `use` callback (`use r <- with_thing()`) and any inline
+/// closure passed to a first-order higher-order function. Anything else takes
+/// its flat effect.
+fn first_order_arg_effect(
+  arg: types.CallArgument,
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+  lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
+    Result(EffectTerm, Nil),
+) -> EffectTerm {
+  case arg.value {
+    types.Closure(_, _) ->
+      case lift_operator_arg(arg.value, []) {
+        Ok(operator) -> discharge_operator(operator)
+        Error(Nil) ->
+          resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
+      }
+    _ -> resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
+  }
+}
+
+/// Recover a first-order closure's body effect from its lifted operator by
+/// discharging each value parameter to `pure` (`λr. body ↦ body`). Used when a
+/// closure is bound to a first-order fn-typed parameter — the effect of calling
+/// it. A first-order parameter never contributes to the body's *effect*, so the
+/// substitution is exact.
+fn discharge_operator(operator: EffectTerm) -> EffectTerm {
+  case operator {
+    types.TAbs(param, body) ->
+      discharge_operator(
+        effect_term.normalize(effect_term.subst(
+          body,
+          dict.from_list([#(param, effect_term.pure())]),
+        )),
+      )
+    other -> other
+  }
+}
+
 fn operator_spine_arity(term: EffectTerm) -> Int {
   case term {
     types.TAbs(_, body) -> 1 + operator_spine_arity(body)
@@ -866,7 +908,12 @@ fn bind_variables(
               lift_operator_arg,
             )
           False ->
-            resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
+            first_order_arg_effect(
+              arg,
+              knowledge_base,
+              caller_param_bounds,
+              lift_operator_arg,
+            )
         }
         // Bind the bound's free variable(s) to the argument's effect. For a
         // first-order bound `param: [e]` that's the variable `e`; for a self-
