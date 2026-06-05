@@ -1361,7 +1361,7 @@ fn analyze_closure(
         [first, ..] -> [first]
         [] -> []
       }
-    _ -> list.filter_map(positions, fn(position) { list_at(params, position) })
+    _ -> list.filter_map(positions, fn(position) { extract.at(params, position) })
   }
   list.fold_right(callback_params, body_term, fn(acc, param) {
     types.TAbs(param, acc)
@@ -1413,12 +1413,6 @@ fn ordered_fn_typed_param_names(function: Function) -> List(String) {
       _, _ -> Error(Nil)
     }
   })
-}
-
-/// The element at `index` (0-based) of a list, or `Error` when out of range.
-fn list_at(items: List(a), index: Int) -> Result(a, Nil) {
-  use <- bool.guard(when: index < 0, return: Error(Nil))
-  items |> list.drop(index) |> list.first()
 }
 
 /// Find the argument that matches a given param bound. Prefers label

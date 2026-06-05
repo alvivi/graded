@@ -973,8 +973,9 @@ fn positional_arg_values(
   })
 }
 
-/// The element at `index` (0-based) of a list, or `Error` when out of range.
-fn at(items: List(a), index: Int) -> Result(a, Nil) {
+/// The element at `index` (0-based, non-negative) of a list, or `Error` when out
+/// of range.
+pub fn at(items: List(a), index: Int) -> Result(a, Nil) {
   items |> list.drop(index) |> list.first()
 }
 
