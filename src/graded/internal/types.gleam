@@ -239,6 +239,16 @@ pub type DirectOperatorCall {
   )
 }
 
+/// An inline function-like value used as a *pipe target* and thereby applied to
+/// the piped value: `x |> fn(f) { f() }` or `x |> case c { _ -> a  _ -> b }`.
+/// `value` is the lifted operator source (a `Closure` or `Choice`); the piped
+/// value is recorded in `call_args` under `span.start` as argument 0. Without
+/// this the closure/branch body's use of the piped value is dropped — an
+/// *understatement*, so resolving it is a soundness fix, not just precision.
+pub type DirectPipeOp {
+  DirectPipeOp(value: ArgumentValue, span: Span)
+}
+
 /// Effect annotation for a type's field (e.g., `type Handler.on_click : [Dom]`).
 ///
 /// `module` is `Some(...)` when the annotation comes from a spec file (one

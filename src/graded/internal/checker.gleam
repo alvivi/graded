@@ -591,11 +591,44 @@ fn collect_effects(
       #(synthetic_call, effect)
     })
 
+  // Pipe into an inline closure / case of functions (`x |> fn(f) { f() }`):
+  // lift the target to an operator over its first parameter and apply the piped
+  // value (argument 0). Resolving this fixes an understatement — walking the
+  // target as a value dropped its use of the piped value.
+  let direct_pipe_effects =
+    list.map(result.direct_pipe_ops, fn(op) {
+      let synthetic_call =
+        types.ResolvedCall(
+          name: QualifiedName(module: "<pipe>", function: "<operator>"),
+          span: op.span,
+        )
+      let operator =
+        operator_term_for_argument(
+          types.CallArgument(position: 0, label: None, value: op.value),
+          [0],
+          knowledge_base,
+          param_bounds,
+          registry,
+          lift_operator_arg,
+        )
+      let effect =
+        curried_operator_application(
+          operator,
+          [0],
+          result.call_args,
+          op.span.start,
+          knowledge_base,
+          param_bounds,
+        )
+      #(synthetic_call, effect)
+    })
+
   list.flatten([
     resolved_effects,
     local_effects,
     field_effects,
     direct_op_effects,
+    direct_pipe_effects,
   ])
 }
 

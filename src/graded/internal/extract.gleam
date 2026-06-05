@@ -8,10 +8,10 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import graded/internal/types.{
-  type ArgumentValue, type CallArgument, type DirectOperatorCall, type FieldCall,
-  type LocalCall, type QualifiedName, type ResolvedCall, CallArgument,
-  ConstructorRef, FieldCall, FunctionRef, LocalCall, LocalRef, OtherExpression,
-  QualifiedName, ResolvedCall,
+  type ArgumentValue, type CallArgument, type DirectOperatorCall,
+  type DirectPipeOp, type FieldCall, type LocalCall, type QualifiedName,
+  type ResolvedCall, CallArgument, ConstructorRef, DirectPipeOp, FieldCall,
+  FunctionRef, LocalCall, LocalRef, OtherExpression, QualifiedName, ResolvedCall,
 }
 
 /// Classification of a `let`-bound name inside a function body so that
@@ -114,6 +114,7 @@ pub type ExtractResult {
     field: List(FieldCall),
     references: List(ResolvedCall),
     direct_ops: List(DirectOperatorCall),
+    direct_pipe_ops: List(DirectPipeOp),
     call_args: Dict(Int, List(CallArgument)),
   )
 }
@@ -1052,6 +1053,16 @@ fn extract_pipe_target(
     glance.Block(statements:, ..) ->
       pipe_into_block(statements, context, env, pipe_args)
 
+    // An inline closure or `case` of functions used as a pipe target
+    // (`x |> fn(f) { f() }`, `x |> case c { _ -> a  _ -> b }`): the target is a
+    // function applied to the piped value. Lift it to an operator and apply the
+    // piped argument, rather than walking it as a value (which drops the body's
+    // use of the piped value — an understatement).
+    glance.Fn(location: span, ..) ->
+      pipe_into_operator_value(expression, span, context, env, pipe_args)
+    glance.Case(location: span, ..) ->
+      pipe_into_operator_value(expression, span, context, env, pipe_args)
+
     // Any other shape — handle normally; no arg tracking.
     _ -> extract_from_expression(expression, context, env)
   }
@@ -1077,6 +1088,31 @@ fn pipe_into_block(
       )
     }
     _ -> walk_scope(statements, context, env)
+  }
+}
+
+/// Pipe into an inline closure or `case`-of-functions: classify the target as a
+/// function-like value and emit a `DirectPipeOp` so the checker lifts it to an
+/// operator and applies the piped value (recorded as argument 0 via
+/// `attach_pipe_args`). A target that isn't function-like (a `case` with a
+/// non-function branch) has nothing to apply, so it falls back to the normal
+/// value walk.
+fn pipe_into_operator_value(
+  expression: Expression,
+  span: glance.Span,
+  context: ImportContext,
+  env: Env,
+  pipe_args: List(CallArgument),
+) -> ExtractResult {
+  let value = classify_expression(expression, context, env)
+  case value {
+    types.Closure(..) | types.Choice(..) ->
+      attach_pipe_args(
+        ExtractResult(..empty(), direct_pipe_ops: [DirectPipeOp(value, span)]),
+        span,
+        pipe_args,
+      )
+    _ -> extract_from_expression(expression, context, env)
   }
 }
 
@@ -1368,6 +1404,7 @@ fn empty() -> ExtractResult {
     field: [],
     references: [],
     direct_ops: [],
+    direct_pipe_ops: [],
     call_args: dict.new(),
   )
 }
@@ -1379,6 +1416,7 @@ fn merge(left: ExtractResult, right: ExtractResult) -> ExtractResult {
     field: list.append(left.field, right.field),
     references: list.append(left.references, right.references),
     direct_ops: list.append(left.direct_ops, right.direct_ops),
+    direct_pipe_ops: list.append(left.direct_pipe_ops, right.direct_pipe_ops),
     call_args: dict.merge(left.call_args, right.call_args),
   )
 }

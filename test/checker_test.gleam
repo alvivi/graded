@@ -2221,6 +2221,79 @@ pub fn caller() -> Nil {
   |> should.be_true()
 }
 
+pub fn pipe_into_closure_operator_resolves_test() {
+  // D2 (soundness): `x |> fn(f) { f("x") }` applies the closure to the piped
+  // value. Previously the closure body's use of `f` was dropped and the effect
+  // understated to []. Now it resolves to [Stdout].
+  let source =
+    "
+import gleam/io
+pub fn caller() -> Nil {
+  io.println |> fn(f) { f(\"x\") }
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn pipe_into_first_order_closure_test() {
+  // A first-order closure pipe target stays correct: the body's own effects are
+  // accounted (the piped value is just bound, not applied).
+  let source =
+    "
+import gleam/io
+pub fn caller(msg: String) -> Nil {
+  msg |> fn(m) { io.println(m) }
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn pipe_into_case_of_functions_test() {
+  // D2 (soundness): `x |> case flag { True -> a  False -> b }` applies the
+  // selected operator to the piped value; the effect is the join of branches.
+  let source =
+    "
+import gleam/io
+import fs
+fn a(cb: fn(String) -> Nil) -> Nil {
+  io.println(\"x\")
+}
+fn b(cb: fn(String) -> Nil) -> Nil {
+  fs.read(\"f\")
+}
+pub fn caller(flag: Bool) -> Nil {
+  io.println |> case flag {
+    True -> a
+    False -> b
+  }
+}
+"
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn pipe_into_non_function_case_stays_walked_test() {
+  // A `case` pipe target with a non-function branch isn't an operator: fall
+  // back to the normal walk (the piped expression's own effects still count).
+  let source =
+    "
+import gleam/io
+pub fn caller(flag: Bool) -> Int {
+  io.println(\"x\")
+  1 |> case flag {
+    True -> 2
+    False -> 3
+  }
+}
+"
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+}
+
 pub fn second_order_branch_closures_unions_effects_test() {
   // An operator argument selected by `case` over two closures resolves to the
   // *union* of the branches' effects (over-approximating both).
