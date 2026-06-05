@@ -220,8 +220,36 @@ fn reduce_app(
     // Beta-redex: substitute and keep reducing.
     TAbs(param, body) ->
       reduce(subst(body, dict.from_list([#(param, reduced_arg)])), fuel2 - 1)
+    // Application distributes over a union *of operators*:
+    // `(f ⊔ g)(x) → f(x) ⊔ g(x)`, exact when every member is an abstraction.
+    // This is what lets a producer that returns one of several operators —
+    // `case … { _ -> f  _ -> g }` — resolve when its result is applied.
+    //
+    // We only distribute when *all* members are abstractions. A mixed union
+    // (a label set or free variable alongside an operator) is ill-kinded as an
+    // operator; distributing would push the non-operator member into operator
+    // position, where it goes stuck and collapses to `[Unknown]` — silently
+    // dropping its concrete labels (unsound). So a mixed union stays stuck as a
+    // whole, exactly the conservative `[Unknown]` the old code produced. (A
+    // `TTop` member can't occur: `flatten_union` absorbs the union to `TTop`
+    // before we apply it, so `reduced_fn` would be `TTop`, not a union.)
+    TUnion(members) ->
+      case list.all(members, is_abstraction) {
+        True -> {
+          let applied = TUnion(list.map(members, fn(m) { TApp(m, reduced_arg) }))
+          reduce(applied, fuel2 - 1)
+        }
+        False -> #(TApp(reduced_fn, reduced_arg), fuel2)
+      }
     // Stuck (operator is a free variable) or otherwise irreducible.
     _ -> #(TApp(reduced_fn, reduced_arg), fuel2)
+  }
+}
+
+fn is_abstraction(term: EffectTerm) -> Bool {
+  case term {
+    TAbs(_, _) -> True
+    _ -> False
   }
 }
 

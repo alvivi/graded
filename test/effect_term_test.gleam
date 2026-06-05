@@ -201,6 +201,48 @@ pub fn union_upper_bound_property_test() {
   |> should.be_true()
 }
 
+// ──── P-DIST: application distributes over union ────
+
+pub fn app_distributes_over_union_property_test() {
+  // P-DIST-1: (f ⊔ g)(x) normalizes to the same term as f(x) ⊔ g(x), for
+  // arbitrary operator bodies — the distribution law itself.
+  use #(a, b, x) <- qcheck.given(qcheck.tuple3(
+    generators.effect_term_gen(),
+    generators.effect_term_gen(),
+    generators.effect_term_gen(),
+  ))
+  let f = TAbs("p", a)
+  let g = TAbs("p", b)
+  normalize(TApp(TUnion([f, g]), x))
+  |> should.equal(normalize(TUnion([TApp(f, x), TApp(g, x)])))
+}
+
+pub fn app_distribution_over_approximates_property_test() {
+  // P-DIST-2: distributing application over a union keeps every branch's
+  // effect (the `Unknown` placeholder exempt, as in P-SOUND-1). A branch that
+  // is top forces the whole union to top.
+  use #(a, b, x) <- qcheck.given(qcheck.tuple3(
+    generators.effect_term_gen(),
+    generators.effect_term_gen(),
+    generators.effect_term_gen(),
+  ))
+  let f = TAbs("p", a)
+  let g = TAbs("p", b)
+  let combined = to_effect_set(TApp(TUnion([f, g]), x))
+  [TApp(f, x), TApp(g, x)]
+  |> list.each(fn(branch) {
+    case definite_labels(to_effect_set(branch)), definite_labels(combined) {
+      Error(Nil), Error(Nil) -> Nil
+      // A top branch must keep the union top.
+      Error(Nil), Ok(_) -> should.fail()
+      Ok(_), Error(Nil) -> Nil
+      Ok(branch_labels), Ok(combined_labels) ->
+        set.is_subset(set.delete(branch_labels, "Unknown"), of: combined_labels)
+        |> should.be_true()
+    }
+  })
+}
+
 // ──── P-TERM: termination ────
 
 pub fn normalize_terminates_property_test() {
@@ -232,6 +274,33 @@ pub fn nested_second_order_unit_test() {
   let runner = TAbs("cb", TUnion([labels(["Http"]), TVar("cb")]))
   normalize(TApp(with_logger, runner))
   |> should.equal(labels(["Http", "Stdout"]))
+}
+
+pub fn app_distributes_over_union_unit_test() {
+  // (λcb. [Http, cb]  ⊔  λcb. [Dom, cb])(Stdout)  ──►  [Http, Dom, Stdout]
+  // A producer returning one of two operators, applied: both branches fire.
+  let f = TAbs("cb", TUnion([labels(["Http"]), TVar("cb")]))
+  let g = TAbs("cb", TUnion([labels(["Dom"]), TVar("cb")]))
+  normalize(TApp(TUnion([f, g]), labels(["Stdout"])))
+  |> should.equal(labels(["Dom", "Http", "Stdout"]))
+}
+
+pub fn app_distribution_identity_branch_unit_test() {
+  // (λx. x  ⊔  λx. [A])([B])  ──►  [A, B] — the identity branch keeps the arg.
+  let identity = TAbs("x", TVar("x"))
+  let const_a = TAbs("x", labels(["A"]))
+  normalize(TApp(TUnion([identity, const_a]), labels(["B"])))
+  |> should.equal(labels(["A", "B"]))
+}
+
+pub fn app_distribution_mixed_union_stays_stuck_unit_test() {
+  // A *mixed* union (an operator alongside a bare variable) is ill-kinded as an
+  // operator: distributing would push `g` into operator position and drop the
+  // `[A]` branch's labels. So the whole application stays stuck → [Unknown],
+  // the conservative (sound) collapse. Only all-abstraction unions distribute.
+  let const_a = TAbs("x", labels(["A"]))
+  to_effect_set(TApp(TUnion([const_a, TVar("g")]), labels(["B"])))
+  |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
 pub fn free_variable_preserved_unit_test() {
