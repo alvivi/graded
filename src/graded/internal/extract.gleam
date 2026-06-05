@@ -81,6 +81,11 @@ pub type ImportContext {
     unqualified: Dict(String, QualifiedName),
     constructors: Dict(String, List(Option(String))),
     cross_constructors: Dict(#(String, String), List(Option(String))),
+    // Same-module factory functions (bare name -> signature) and other modules'
+    // factories (keyed by `#(defining module, function)`), so a let-bound
+    // factory call resolves the result's fields like a direct construction.
+    factories: Dict(String, FactorySignature),
+    cross_factories: Dict(#(String, String), FactorySignature),
   )
 }
 
@@ -91,6 +96,23 @@ pub fn with_cross_constructors(
   cross_constructors: Dict(#(String, String), List(Option(String))),
 ) -> ImportContext {
   ImportContext(..context, cross_constructors:)
+}
+
+/// Attach a module's own factory signatures (bare-keyed) to its context.
+pub fn with_factories(
+  context: ImportContext,
+  factories: Dict(String, FactorySignature),
+) -> ImportContext {
+  ImportContext(..context, factories:)
+}
+
+/// Attach the package-wide `#(defining module, function) -> factory signature`
+/// map, so a let-bound *cross-module* factory call resolves its result's fields.
+pub fn with_cross_factories(
+  context: ImportContext,
+  cross_factories: Dict(#(String, String), FactorySignature),
+) -> ImportContext {
+  ImportContext(..context, cross_factories:)
 }
 
 /// A module's `constructor -> field labels` map (the same labels
@@ -163,6 +185,8 @@ pub fn build_import_context(module: Module) -> ImportContext {
     unqualified:,
     constructors:,
     cross_constructors: dict.new(),
+    factories: dict.new(),
+    cross_factories: dict.new(),
   )
 }
 
@@ -193,6 +217,119 @@ pub fn build_constructor_type_map(module: Module) -> Dict(String, String) {
     list.fold(definition.definition.variants, acc, fn(acc2, variant) {
       dict.insert(acc2, variant.name, type_name)
     })
+  })
+}
+
+/// A *factory* function's signature: each constructor field it wires to one of
+/// its own parameters, mapped to that parameter's position. A call
+/// `make(io.println)` to a factory `fn make(logger) { Validator(to_error: logger) }`
+/// therefore binds the result's `to_error` field to argument 0 — so a later
+/// `v.to_error(..)` resolves like a direct construction instead of `[Unknown]`.
+pub type FactorySignature =
+  Dict(String, Int)
+
+/// Detect each function in a module that is a *factory*: its body's tail is a
+/// constructor call with at least one field wired to a bare parameter. Purely
+/// syntactic — no knowledge base — so the whole package's factories can be
+/// precomputed up front (like the constructor-label map). Keyed by bare
+/// function name.
+pub fn factory_map(module: Module) -> Dict(String, FactorySignature) {
+  let context = build_import_context(module)
+  list.fold(module.functions, dict.new(), fn(acc, definition) {
+    let function = definition.definition
+    case factory_signature(function, context) {
+      Ok(signature) -> dict.insert(acc, function.name, signature)
+      Error(Nil) -> acc
+    }
+  })
+}
+
+/// The factory signature of a single function, or `Error` when it isn't a
+/// factory (tail isn't a bare constructor call, or no field is wired to a
+/// parameter).
+fn factory_signature(
+  function: glance.Function,
+  context: ImportContext,
+) -> Result(FactorySignature, Nil) {
+  use tail <- result.try(case list.last(function.body) {
+    Ok(glance.Expression(expression)) -> Ok(expression)
+    _ -> Error(Nil)
+  })
+  use #(constructor, alias, arguments) <- result.try(constructor_call_parts(
+    tail,
+  ))
+  // Resolve a qualified constructor's alias to its module path (so cross-module
+  // field-label routing matches), exactly as `classify_rhs` does.
+  let module = case alias {
+    Some(alias) -> dict.get(context.aliases, alias) |> option.from_result
+    None -> None
+  }
+  // Reuse the constructor field-routing: classify the call (empty env, so a
+  // bare parameter reference classifies as `LocalRef(name)`), then keep the
+  // fields whose value is one of the function's parameters.
+  let fields = case
+    classify_constructor(constructor, module, arguments, context, dict.new())
+  {
+    BoundConstructor(fields:) -> fields
+    _ -> dict.new()
+  }
+  let param_positions = param_position_map(function)
+  let field_to_param =
+    dict.fold(fields, dict.new(), fn(acc, label, value) {
+      case value {
+        LocalRef(name) ->
+          case dict.get(param_positions, name) {
+            Ok(position) -> dict.insert(acc, label, position)
+            Error(Nil) -> acc
+          }
+        _ -> acc
+      }
+    })
+  case dict.is_empty(field_to_param) {
+    True -> Error(Nil)
+    False -> Ok(field_to_param)
+  }
+}
+
+/// A constructor call's `#(constructor, module alias, arguments)` — the alias is
+/// `Some` for a qualified call (`a.Validator(..)`), `None` otherwise. `Error`
+/// when the expression isn't a constructor call.
+fn constructor_call_parts(
+  expression: Expression,
+) -> Result(#(String, Option(String), List(Field(Expression))), Nil) {
+  case expression {
+    glance.Call(function: glance.Variable(_, name), arguments:, ..) ->
+      case is_constructor_name(name) {
+        True -> Ok(#(name, None, arguments))
+        False -> Error(Nil)
+      }
+    glance.Call(
+      function: glance.FieldAccess(
+        container: glance.Variable(_, alias),
+        label: constructor,
+        ..,
+      ),
+      arguments:,
+      ..,
+    ) ->
+      case is_constructor_name(constructor) {
+        True -> Ok(#(constructor, Some(alias), arguments))
+        False -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+/// Each named parameter's position (0-based) in a function's parameter list.
+fn param_position_map(function: glance.Function) -> Dict(String, Int) {
+  function.parameters
+  |> list.index_map(fn(parameter, index) { #(parameter, index) })
+  |> list.fold(dict.new(), fn(acc, pair) {
+    let #(parameter, index) = pair
+    case parameter.name {
+      glance.Named(name) -> dict.insert(acc, name, index)
+      glance.Discarded(_) -> acc
+    }
   })
 }
 
@@ -709,7 +846,16 @@ fn classify_rhs(
     glance.Call(function: glance.Variable(_, name), arguments:, ..) ->
       case is_constructor_name(name) {
         True -> classify_constructor(name, None, arguments, context, env)
-        False -> classify_rhs_ref(expression, context, env)
+        // A factory call (`let v = make(io.println)`) binds its result like a
+        // direct construction; otherwise fall through to the generic ref path.
+        False ->
+          factory_or_ref(
+            lookup_factory_bare(name, context),
+            expression,
+            arguments,
+            context,
+            env,
+          )
       }
     glance.Call(
       function: glance.FieldAccess(
@@ -725,10 +871,111 @@ fn classify_rhs(
           let module = dict.get(context.aliases, alias) |> option.from_result
           classify_constructor(ctor, module, arguments, context, env)
         }
-        False -> classify_rhs_ref(expression, context, env)
+        False ->
+          factory_or_ref(
+            lookup_factory_qualified(alias, ctor, context),
+            expression,
+            arguments,
+            context,
+            env,
+          )
       }
     _ -> classify_rhs_ref(expression, context, env)
   }
+}
+
+/// Bind a factory call's result as a `BoundConstructor` (so later field calls
+/// resolve like a direct construction), or fall back to the generic ref path
+/// when the callee isn't a factory or the call can't be routed.
+fn factory_or_ref(
+  signature: Result(FactorySignature, Nil),
+  expression: glance.Expression,
+  arguments: List(Field(Expression)),
+  context: ImportContext,
+  env: Env,
+) -> LocalBinding {
+  case signature {
+    Ok(signature) ->
+      case factory_construction(signature, arguments, context, env) {
+        Ok(binding) -> binding
+        Error(Nil) -> classify_rhs_ref(expression, context, env)
+      }
+    Error(Nil) -> classify_rhs_ref(expression, context, env)
+  }
+}
+
+/// The factory signature for a bare callee — a same-module factory, or an
+/// unqualified-imported one resolved through the cross-module map.
+fn lookup_factory_bare(
+  name: String,
+  context: ImportContext,
+) -> Result(FactorySignature, Nil) {
+  case dict.get(context.factories, name) {
+    Ok(signature) -> Ok(signature)
+    Error(Nil) ->
+      case dict.get(context.unqualified, name) {
+        Ok(QualifiedName(module:, function:)) ->
+          dict.get(context.cross_factories, #(module, function))
+        Error(Nil) -> Error(Nil)
+      }
+  }
+}
+
+/// The factory signature for a qualified callee `alias.name`.
+fn lookup_factory_qualified(
+  alias: String,
+  name: String,
+  context: ImportContext,
+) -> Result(FactorySignature, Nil) {
+  case dict.get(context.aliases, alias) {
+    Ok(module) -> dict.get(context.cross_factories, #(module, name))
+    Error(Nil) -> Error(Nil)
+  }
+}
+
+/// Build a `BoundConstructor` from a *positionally-called* factory: route each
+/// wired field to the call argument at the factory parameter's position. A
+/// labeled or shorthand argument can't be routed by position here, so the whole
+/// call falls back (conservative). `Error` when no field could be routed.
+fn factory_construction(
+  signature: FactorySignature,
+  arguments: List(Field(Expression)),
+  context: ImportContext,
+  env: Env,
+) -> Result(LocalBinding, Nil) {
+  use values <- result.try(positional_arg_values(arguments, context, env))
+  let fields =
+    dict.fold(signature, dict.new(), fn(acc, label, position) {
+      case at(values, position) {
+        Ok(value) -> dict.insert(acc, label, value)
+        Error(Nil) -> acc
+      }
+    })
+  case dict.is_empty(fields) {
+    True -> Error(Nil)
+    False -> Ok(BoundConstructor(fields:))
+  }
+}
+
+/// Classify a call's arguments by position, requiring them all unlabelled.
+/// `Error` if any is labelled/shorthand (position-based routing would be unsafe).
+fn positional_arg_values(
+  arguments: List(Field(Expression)),
+  context: ImportContext,
+  env: Env,
+) -> Result(List(ArgumentValue), Nil) {
+  list.try_map(arguments, fn(field) {
+    case field {
+      glance.UnlabelledField(item:) ->
+        Ok(classify_expression(item, context, env))
+      _ -> Error(Nil)
+    }
+  })
+}
+
+/// The element at `index` (0-based) of a list, or `Error` when out of range.
+fn at(items: List(a), index: Int) -> Result(a, Nil) {
+  items |> list.drop(index) |> list.first()
 }
 
 /// For RHS expressions that aren't constructor calls, reuse

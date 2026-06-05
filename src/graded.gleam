@@ -155,6 +155,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
       kb_base,
     ))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
+    |> effects.with_factories(qualify_by_module(index, extract.factory_map))
 
   let results =
     list.map(parsed, fn(entry) {
@@ -217,6 +218,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
       construction_kb,
     ))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
+    |> effects.with_factories(qualify_by_module(index, extract.factory_map))
 
   let graph = build_dependency_graph(index)
   use sorted <- result.try(

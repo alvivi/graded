@@ -8,6 +8,7 @@ check inferred_field.run : []
 check local_field.run : []
 check closure_field.run : []
 check operator_field.run : []
+check factory_field.run : []
 
 // Type field annotations (the effect source for type-directed field calls).
 type opaque_receiver.Validator.to_error : [Stdout]
@@ -21,3 +22,4 @@ effects opaque_receiver.run : [Stdout]
 effects inferred_field.run : [Stdout]
 effects local_field.my_logger : [Stdout]
 effects local_field.run : [Stdout]
+effects factory_field.run : [Stdout]

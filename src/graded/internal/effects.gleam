@@ -40,6 +40,12 @@ pub type KnowledgeBase {
     // at the producer's inference time (where its module's private callees are
     // in scope) and threaded forward by the topological pass.
     returned_operators: Dict(QualifiedName, EffectTerm),
+    // Package-wide factory signatures, keyed by `#(defining module, function)`:
+    // each constructor field a function wires to one of its parameters, mapped
+    // to that parameter's position. Lets a let-bound *cross-module* factory call
+    // bind its result's fields like a direct construction. (Same-module
+    // factories are derived locally from the module, like constructors.)
+    factories: Dict(#(String, String), Dict(String, Int)),
     pure_modules: Set(String),
   )
 }
@@ -58,6 +64,7 @@ pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
     param_bounds: dict.merge(cat_params, dep_params),
     type_fields: dict.new(),
     returned_operators: load_dependency_returns(packages_directory),
+    factories: dict.new(),
     pure_modules: cat_pure,
   )
 }
@@ -72,6 +79,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     param_bounds: cat_params,
     type_fields: dict.new(),
     returned_operators: dict.new(),
+    factories: dict.new(),
     pure_modules: cat_pure,
   )
 }
@@ -405,6 +413,24 @@ pub fn with_inferred_returned_operators(
   KnowledgeBase(..knowledge_base, returned_operators: merged)
 }
 
+/// Attach the package-wide factory map (keyed by `#(module, function)`), so a
+/// let-bound cross-module factory call binds its result's fields. Replaces any
+/// existing map (it's computed once per run).
+pub fn with_factories(
+  knowledge_base: KnowledgeBase,
+  factories: Dict(#(String, String), Dict(String, Int)),
+) -> KnowledgeBase {
+  KnowledgeBase(..knowledge_base, factories:)
+}
+
+/// The package-wide factory map, for threading into a module's extraction
+/// context as its cross-module factories.
+pub fn factories(
+  knowledge_base: KnowledgeBase,
+) -> Dict(#(String, String), Dict(String, Int)) {
+  knowledge_base.factories
+}
+
 /// Look up the operator a function returns, if known. `Error(Nil)` when the
 /// callee doesn't return a (tracked) operator.
 pub fn lookup_returned_operator(
@@ -538,6 +564,7 @@ fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
                 param_bounds: dict.new(),
                 type_fields: dict.new(),
                 returned_operators: dict.new(),
+                factories: dict.new(),
                 pure_modules: acc.pure_mods,
               ),
               annotation.extract_externals(graded_file),

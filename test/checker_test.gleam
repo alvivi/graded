@@ -946,6 +946,7 @@ fn build_kb(calls: List(#(String, String, String))) -> effects.KnowledgeBase {
     param_bounds: dict.new(),
     type_fields: dict.new(),
     returned_operators: dict.new(),
+    factories: dict.new(),
     pure_modules: set.new(),
   )
 }
@@ -1120,6 +1121,7 @@ fn bare_knowledge_base() -> effects.KnowledgeBase {
     param_bounds: dict.new(),
     type_fields: dict.new(),
     returned_operators: dict.new(),
+    factories: dict.new(),
     pure_modules: set.new(),
   )
 }
@@ -1862,6 +1864,118 @@ pub fn field_call_binds_effectful_closure_test() {
   // effect: `fn(s) { io.println(s) }` ⟹ [Stdout].
   let assert [v, ..] = check_field_call("fn(s) { io.println(s) }")
   v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// ──── B1: factory field provenance ────
+
+pub fn factory_field_resolves_same_module_test() {
+  // A same-module factory wires a field to its parameter; a let-bound factory
+  // call binds the result's field, so `v.to_error` resolves to the argument's
+  // effect ([Stdout]) instead of [Unknown].
+  let source =
+    "
+import gleam/io
+pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+fn make(logger: fn(String) -> Nil) -> Validator {
+  Validator(to_error: logger)
+}
+pub fn caller() -> Nil {
+  let v = make(io.println)
+  v.to_error(\"x\")
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn factory_field_resolves_cross_module_test() {
+  // The package-wide factory map records a cross-module factory's signature, so
+  // a let-bound `dep.make(io.println)` binds the result's field.
+  let source =
+    "
+import gleam/io
+import dep
+pub fn caller() -> Nil {
+  let v = dep.make(io.println)
+  v.to_error(\"x\")
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let kb =
+    knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(
+          QualifiedName("dep", "make"),
+          effect_term.from_effect_set(types.empty()),
+        ),
+      ]),
+    )
+    |> effects.with_factories(
+      dict.from_list([
+        #(#("dep", "make"), dict.from_list([#("to_error", 0)])),
+      ]),
+    )
+  let registry = signatures.from_glance_module("app", module)
+  let pass =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
+  let #(violations, _) = checker.check(module, [pass], kb, registry, dict.new())
+  violations |> should.equal([])
+  let fail =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(types.empty()),
+    )
+  let #(failed, _) = checker.check(module, [fail], kb, registry, dict.new())
+  { failed != [] } |> should.be_true()
+}
+
+pub fn factory_untraceable_receiver_stays_unknown_test() {
+  // A receiver with no traceable construction (here a parameter) can't use
+  // factory provenance; with no type-field annotation it stays the sound
+  // [Unknown] — so the [Stdout] budget is still flagged (no resolution, no
+  // understatement).
+  let source =
+    "
+pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+pub fn caller(v: Validator) -> Nil {
+  v.to_error(\"x\")
+}
+"
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn factory_labeled_call_falls_back_test() {
+  // v1 routes positional factory calls only; a labeled call falls back
+  // conservatively (no BoundConstructor), so it does not resolve to [Stdout].
+  let source =
+    "
+import gleam/io
+pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+fn make(logger: fn(String) -> Nil) -> Validator {
+  Validator(to_error: logger)
+}
+pub fn caller() -> Nil {
+  let v = make(logger: io.println)
+  v.to_error(\"x\")
+}
+"
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
 }
 
 // ──── Second-order (nested) effect variables: end-to-end ────

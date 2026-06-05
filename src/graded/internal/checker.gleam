@@ -30,7 +30,10 @@ pub fn check(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
 ) -> #(List(Violation), List(Warning)) {
-  let context = extract.build_import_context(module)
+  let context =
+    extract.build_import_context(module)
+    |> extract.with_factories(extract.factory_map(module))
+    |> extract.with_cross_factories(effects.factories(knowledge_base))
   let function_map = build_function_map(module)
 
   let results =
@@ -81,7 +84,10 @@ pub fn infer_with_returns(
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
 ) -> #(List(EffectAnnotation), dict.Dict(String, EffectTerm)) {
-  let context = extract.build_import_context(module)
+  let context =
+    extract.build_import_context(module)
+    |> extract.with_factories(extract.factory_map(module))
+    |> extract.with_cross_factories(effects.factories(knowledge_base))
   let function_map = build_function_map(module)
 
   let public_functions =

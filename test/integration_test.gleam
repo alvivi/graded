@@ -47,6 +47,21 @@ pub fn validator_flow_violation_detected_test() {
   v.call.function |> should.equal("println")
 }
 
+pub fn factory_field_violation_detected_test() {
+  // factory_field.run binds its Validator from make(io.println), a *factory*
+  // that wires the field to its parameter. With no `type` annotation, factory
+  // field provenance resolves v.to_error to io.println's [Stdout], so the []
+  // check budget must fail. (B1: the escape-hatch annotation is unnecessary.)
+  let assert Ok(results) = graded.run("test/fixtures")
+  let factory_result =
+    list.find(results, fn(r) { r.file == "test/fixtures/factory_field.gleam" })
+  let assert Ok(r) = factory_result
+  { r.violations != [] } |> should.be_true()
+  let assert [v, ..] = r.violations
+  v.function |> should.equal("run")
+  v.call.function |> should.equal("println")
+}
+
 pub fn opaque_receiver_violation_detected_test() {
   // opaque_receiver.run binds its Validator from make() — a *cross-function*
   // construction the syntax-level path can't see. girard types the receiver,
