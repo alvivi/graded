@@ -236,7 +236,8 @@ fn reduce_app(
     TUnion(members) ->
       case list.all(members, is_abstraction) {
         True -> {
-          let applied = TUnion(list.map(members, fn(m) { TApp(m, reduced_arg) }))
+          let applied =
+            TUnion(list.map(members, fn(m) { TApp(m, reduced_arg) }))
           reduce(applied, fuel2 - 1)
         }
         False -> #(TApp(reduced_fn, reduced_arg), fuel2)

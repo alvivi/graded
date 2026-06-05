@@ -8,9 +8,10 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import graded/internal/types.{
-  type ArgumentValue, type CallArgument, type FieldCall, type LocalCall,
-  type QualifiedName, type ResolvedCall, CallArgument, ConstructorRef, FieldCall,
-  FunctionRef, LocalCall, LocalRef, OtherExpression, QualifiedName, ResolvedCall,
+  type ArgumentValue, type CallArgument, type DirectOperatorCall, type FieldCall,
+  type LocalCall, type QualifiedName, type ResolvedCall, CallArgument,
+  ConstructorRef, FieldCall, FunctionRef, LocalCall, LocalRef, OtherExpression,
+  QualifiedName, ResolvedCall,
 }
 
 /// Classification of a `let`-bound name inside a function body so that
@@ -112,6 +113,7 @@ pub type ExtractResult {
     local: List(LocalCall),
     field: List(FieldCall),
     references: List(ResolvedCall),
+    direct_ops: List(DirectOperatorCall),
     call_args: Dict(Int, List(CallArgument)),
   )
 }
@@ -425,16 +427,18 @@ fn resolve_variable_call(
 ) -> ExtractResult {
   case resolve_env(name, env) {
     BoundFunctionRef(name: qualified) ->
-      ExtractResult(
-        resolved: [ResolvedCall(qualified, span)],
-        local: [],
-        field: [],
-        references: [],
-        call_args: dict.new(),
-      )
+      ExtractResult(..empty(), resolved: [ResolvedCall(qualified, span)])
     // A closure parameter called inside its own body — its effect is the
     // callback's, accounted where the closure is applied, not here.
     BoundParam -> empty()
+    // A let-bound returned operator applied directly: `let h = pick(); h(cb)`.
+    // Emit a direct-operator call so the checker resolves the producer's
+    // returned operator and applies it to this call's arguments (captured in
+    // `call_args` under `span.start` by `merge_with_args`).
+    BoundReturnedOperator(callee, producer_args) ->
+      ExtractResult(..empty(), direct_ops: [
+        types.DirectOperatorCall(callee, producer_args, span),
+      ])
     _ -> resolve_unqualified_call(name, span, context)
   }
 }
@@ -459,21 +463,10 @@ fn resolve_unqualified_call(
     False ->
       case dict.get(context.unqualified, name) {
         Ok(qualified_name) ->
-          ExtractResult(
-            resolved: [ResolvedCall(qualified_name, span)],
-            local: [],
-            field: [],
-            references: [],
-            call_args: dict.new(),
-          )
-        Error(Nil) ->
-          ExtractResult(
-            resolved: [],
-            local: [LocalCall(name, span)],
-            field: [],
-            references: [],
-            call_args: dict.new(),
-          )
+          ExtractResult(..empty(), resolved: [
+            ResolvedCall(qualified_name, span),
+          ])
+        Error(Nil) -> ExtractResult(..empty(), local: [LocalCall(name, span)])
       }
   }
 }
@@ -513,15 +506,9 @@ fn qualified_call_lookup(
 ) -> ExtractResult {
   case dict.get(context.aliases, alias) {
     Ok(module_path) ->
-      ExtractResult(
-        resolved: [
-          ResolvedCall(QualifiedName(module_path, function_name), span),
-        ],
-        local: [],
-        field: [],
-        references: [],
-        call_args: dict.new(),
-      )
+      ExtractResult(..empty(), resolved: [
+        ResolvedCall(QualifiedName(module_path, function_name), span),
+      ])
     Error(Nil) ->
       case resolve_env(alias, env) {
         BoundConstructor(fields:) ->
@@ -533,13 +520,9 @@ fn qualified_call_lookup(
             fields,
           )
         _ ->
-          ExtractResult(
-            resolved: [],
-            local: [],
-            field: [FieldCall(alias, function_name, span, receiver_span)],
-            references: [],
-            call_args: dict.new(),
-          )
+          ExtractResult(..empty(), field: [
+            FieldCall(alias, function_name, span, receiver_span),
+          ])
       }
   }
 }
@@ -555,34 +538,18 @@ fn resolve_constructor_field_call(
 ) -> ExtractResult {
   case dict.get(fields, label) {
     Ok(FunctionRef(name: qualified)) ->
-      ExtractResult(
-        resolved: [ResolvedCall(qualified, span)],
-        local: [],
-        field: [],
-        references: [],
-        call_args: dict.new(),
-      )
+      ExtractResult(..empty(), resolved: [ResolvedCall(qualified, span)])
     Ok(LocalRef(name: local_name)) ->
-      ExtractResult(
-        resolved: [],
-        local: [LocalCall(local_name, span)],
-        field: [],
-        references: [],
-        call_args: dict.new(),
-      )
+      ExtractResult(..empty(), local: [LocalCall(local_name, span)])
     Ok(ConstructorRef) -> empty()
     Ok(types.Closure(_, _))
     | Ok(types.Choice(_))
     | Ok(types.ReturnedOperator(_, _))
     | Ok(OtherExpression)
     | Error(Nil) ->
-      ExtractResult(
-        resolved: [],
-        local: [],
-        field: [FieldCall(alias, label, span, receiver_span)],
-        references: [],
-        call_args: dict.new(),
-      )
+      ExtractResult(..empty(), field: [
+        FieldCall(alias, label, span, receiver_span),
+      ])
   }
 }
 
@@ -608,15 +575,9 @@ fn qualified_reference_lookup(
 ) -> ExtractResult {
   case dict.get(context.aliases, alias) {
     Ok(module_path) ->
-      ExtractResult(
-        resolved: [],
-        local: [],
-        field: [],
-        references: [
-          ResolvedCall(QualifiedName(module_path, function_name), span),
-        ],
-        call_args: dict.new(),
-      )
+      ExtractResult(..empty(), references: [
+        ResolvedCall(QualifiedName(module_path, function_name), span),
+      ])
     Error(Nil) -> empty()
   }
 }
@@ -1004,13 +965,9 @@ fn extract_from_expression(
     glance.Variable(location: span, name:) ->
       case dict.get(context.unqualified, name) {
         Ok(qualified_name) ->
-          ExtractResult(
-            resolved: [],
-            local: [],
-            field: [],
-            references: [ResolvedCall(qualified_name, span)],
-            call_args: dict.new(),
-          )
+          ExtractResult(..empty(), references: [
+            ResolvedCall(qualified_name, span),
+          ])
         Error(Nil) -> empty()
       }
 
@@ -1410,6 +1367,7 @@ fn empty() -> ExtractResult {
     local: [],
     field: [],
     references: [],
+    direct_ops: [],
     call_args: dict.new(),
   )
 }
@@ -1420,6 +1378,7 @@ fn merge(left: ExtractResult, right: ExtractResult) -> ExtractResult {
     local: list.append(left.local, right.local),
     field: list.append(left.field, right.field),
     references: list.append(left.references, right.references),
+    direct_ops: list.append(left.direct_ops, right.direct_ops),
     call_args: dict.merge(left.call_args, right.call_args),
   )
 }

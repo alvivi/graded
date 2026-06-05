@@ -223,6 +223,22 @@ pub type FieldCall {
   FieldCall(object: String, label: String, span: Span, receiver_span: Span)
 }
 
+/// A *returned operator applied directly*: `let h = pick_handler(); h(cb)`.
+/// `callee` names the producer (with the `""` same-module sentinel, as in
+/// `ReturnedOperator`) and `producer_args` are the producer call's arguments;
+/// together they resolve the operator the producer returns. The direct call's
+/// own arguments (`cb`) are recorded in `call_args` under `span.start`, so the
+/// resolved operator is applied to them. Lets a let-bound returned operator
+/// resolve when *applied directly*, not only when passed to an operator
+/// parameter.
+pub type DirectOperatorCall {
+  DirectOperatorCall(
+    callee: QualifiedName,
+    producer_args: List(CallArgument),
+    span: Span,
+  )
+}
+
 /// Effect annotation for a type's field (e.g., `type Handler.on_click : [Dom]`).
 ///
 /// `module` is `Some(...)` when the annotation comes from a spec file (one

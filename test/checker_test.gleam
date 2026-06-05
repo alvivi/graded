@@ -2169,6 +2169,58 @@ pub fn caller() -> Nil {
   |> should.be_true()
 }
 
+pub fn second_order_returned_operator_applied_directly_test() {
+  // C1: a let-bound returned operator applied *directly* — `h(io.println)` —
+  // resolves the producer's returned operator and applies it, rather than
+  // staying [Unknown]. (Previously only `run(h)` — h passed as an operator
+  // argument — resolved.)
+  let source =
+    "
+import gleam/io
+fn logger(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+fn pick() -> fn(fn(String) -> Nil) -> Nil {
+  logger
+}
+pub fn caller() -> Nil {
+  let h = pick()
+  h(io.println)
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn second_order_returned_decorator_applied_directly_test() {
+  // C1 with a *polymorphic* returned operator: `traced` wraps its operator
+  // parameter. Applying the let-bound result directly binds `action := reader`
+  // and unions the decorator's own effect with the wrapped operator's.
+  let source =
+    "
+import gleam/io
+import fs
+fn traced(action: fn(fn(String) -> Nil) -> Nil) -> fn(fn(String) -> Nil) -> Nil {
+  fn(cb) {
+    io.println(\"trace\")
+    action(cb)
+  }
+}
+fn reader(cb: fn(String) -> Nil) -> Nil {
+  fs.read(\"f\")
+  cb(\"x\")
+}
+pub fn caller() -> Nil {
+  let h = traced(reader)
+  h(io.println)
+}
+"
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
 pub fn second_order_branch_closures_unions_effects_test() {
   // An operator argument selected by `case` over two closures resolves to the
   // *union* of the branches' effects (over-approximating both).

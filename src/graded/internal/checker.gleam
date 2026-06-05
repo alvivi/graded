@@ -549,7 +549,78 @@ fn collect_effects(
       #(synthetic_call, effect_set)
     })
 
-  list.flatten([resolved_effects, local_effects, field_effects])
+  // Direct applications of a let-bound returned operator: `let h = pick(); h(cb)`.
+  // Resolve the producer's returned operator, then apply it to this call's own
+  // arguments (curried over the operator's binders). Untraceable producers
+  // resolve to [Unknown], exactly as the previous local-call path did.
+  let direct_op_effects =
+    list.map(result.direct_ops, fn(op) {
+      let synthetic_call =
+        types.ResolvedCall(
+          name: QualifiedName(
+            module: "<returned>",
+            function: op.callee.function,
+          ),
+          span: op.span,
+        )
+      let effect = case
+        resolve_returned_operator(
+          op.callee,
+          op.producer_args,
+          context,
+          function_map,
+          knowledge_base,
+          visited,
+          registry,
+          module_types,
+        )
+      {
+        Ok(operator) -> {
+          let positions = positions_up_to(operator_spine_arity(operator))
+          curried_operator_application(
+            operator,
+            positions,
+            result.call_args,
+            op.span.start,
+            knowledge_base,
+            param_bounds,
+          )
+        }
+        Error(Nil) -> effect_term.unknown()
+      }
+      #(synthetic_call, effect)
+    })
+
+  list.flatten([
+    resolved_effects,
+    local_effects,
+    field_effects,
+    direct_op_effects,
+  ])
+}
+
+/// The number of leading operator binders a (resolved) returned operator takes
+/// — its arity, so a direct application `h(cb1, cb2)` can be curried over the
+/// right number of callback positions. A union of operators shares one arity;
+/// take the max so a partial member can't shorten the spine.
+/// `[0, 1, …, n-1]` — the callback positions of an `n`-ary operator, applied
+/// in order. Empty for `n <= 0`.
+fn positions_up_to(n: Int) -> List(Int) {
+  case n <= 0 {
+    True -> []
+    False -> list.append(positions_up_to(n - 1), [n - 1])
+  }
+}
+
+fn operator_spine_arity(term: EffectTerm) -> Int {
+  case term {
+    types.TAbs(_, body) -> 1 + operator_spine_arity(body)
+    types.TUnion(members) ->
+      list.fold(members, 0, fn(max, member) {
+        int.max(max, operator_spine_arity(member))
+      })
+    _ -> 0
+  }
 }
 
 /// Substitute effect variables in the recursive analysis of a local
