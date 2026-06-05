@@ -2340,6 +2340,47 @@ pub fn caller() -> Nil {
   { second_order_violations(source, "caller", []) != [] } |> should.be_true()
 }
 
+pub fn second_order_returned_branch_of_params_test() {
+  // A producer returns one of its *operator* parameters through a branch:
+  // `pick(a, b, flag) -> case flag { True -> a  False -> b }`. The returned
+  // operator is the join `a ⊔ b`; binding `a := stdout_op`, `b := fs_op` and
+  // applying it (in `run(h)`) distributes over the union, so `caller` carries
+  // both branches' effects: [Stdout, FileSystem].
+  let source =
+    "
+import gleam/io
+import simplifile
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn stdout_op(cb: fn(String) -> Nil) -> Nil {
+  io.println(\"x\")
+}
+fn fs_op(cb: fn(String) -> Nil) -> Nil {
+  let _ = simplifile.read(\"f\")
+  Nil
+}
+fn pick(
+  a: fn(fn(String) -> Nil) -> Nil,
+  b: fn(fn(String) -> Nil) -> Nil,
+  flag: Bool,
+) -> fn(fn(String) -> Nil) -> Nil {
+  case flag {
+    True -> a
+    False -> b
+  }
+}
+pub fn caller() -> Nil {
+  let h = pick(stdout_op, fs_op, True)
+  run(h)
+}
+"
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
 pub fn second_order_returned_function_cross_module_test() {
   // A cross-module producer whose returned operator is in the knowledge base
   // (as the topological pass would have folded it).
@@ -2462,6 +2503,45 @@ pub fn pick() -> fn(fn(String) -> Nil) -> Nil {
     )
   dict.get(returns, "pick")
   |> should.equal(Ok(types.TAbs("cb", types.TVar("cb"))))
+}
+
+pub fn infer_returned_branch_of_params_entry_test() {
+  // A producer that returns one of its operator parameters through a branch
+  // records the *union* as its returned operator, and that union round-trips
+  // through the spec-file syntax (a polymorphic effect set `[a, b]`).
+  let source =
+    "
+pub fn pick(
+  a: fn(fn(String) -> Nil) -> Nil,
+  b: fn(fn(String) -> Nil) -> Nil,
+  flag: Bool,
+) -> fn(fn(String) -> Nil) -> Nil {
+  case flag {
+    True -> a
+    False -> b
+  }
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(_annotations, returns) =
+    checker.infer_with_returns(
+      module,
+      knowledge_base(),
+      [],
+      signatures.from_glance_module("app", module),
+      dict.new(),
+      dict.new(),
+    )
+  let assert Ok(operator) = dict.get(returns, "pick")
+  operator
+  |> should.equal(types.TUnion([types.TVar("a"), types.TVar("b")]))
+  // Round-trips through `format_returns` / parse.
+  let line =
+    annotation.format_returns(types.ReturnsAnnotation("pick", operator))
+  let assert Ok(spec) = annotation.parse_file(line)
+  let assert [reparsed] = annotation.extract_returns(spec)
+  effect_term.normalize(reparsed.operator)
+  |> should.equal(effect_term.normalize(operator))
 }
 
 pub fn second_order_returns_parameter_resolves_test() {

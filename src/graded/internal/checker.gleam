@@ -1115,11 +1115,18 @@ fn compute_returned_operator(
       lift,
     )
   // Record an operator: an abstraction (`λcb. …`, possibly polymorphic in the
-  // producer's params) or a bare operator parameter returned directly
-  // (`TVar`, the identity `fn wrap(base) { base }`). A ground effect or a
-  // union/application of vars isn't a usable returned operator.
+  // producer's params), a bare operator parameter returned directly (`TVar`,
+  // the identity `fn wrap(base) { base }`), or a *union* of these — a producer
+  // that returns one of several operators through a branch,
+  // `case … { _ -> a  _ -> b }`. The union's free variables are bound to the
+  // producer call's arguments by `resolve_returned_operator`, and applying the
+  // bound union distributes over its operators (`effect_term` β + union laws).
+  // A ground effect or a bare stuck application isn't a usable returned
+  // operator. (A normalized `TUnion` always has a non-label member, and the
+  // operator-shaped return type — checked above — means that member is an
+  // operator, not a first-order effect.)
   case operator {
-    types.TAbs(_, _) | types.TVar(_) -> Ok(operator)
+    types.TAbs(_, _) | types.TVar(_) | types.TUnion(_) -> Ok(operator)
     _ -> Error(Nil)
   }
 }
