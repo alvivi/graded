@@ -1361,7 +1361,8 @@ fn analyze_closure(
         [first, ..] -> [first]
         [] -> []
       }
-    _ -> list.filter_map(positions, fn(position) { extract.at(params, position) })
+    _ ->
+      list.filter_map(positions, fn(position) { extract.at(params, position) })
   }
   list.fold_right(callback_params, body_term, fn(acc, param) {
     types.TAbs(param, acc)
