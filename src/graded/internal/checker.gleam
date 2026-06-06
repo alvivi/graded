@@ -178,7 +178,10 @@ pub fn infer_with_returns(
 /// `signatures.operator_params_from_function`), so `action(config, cb)` resolves
 /// `cb` and not `config`. Pipe-adjusted call positions already align with the
 /// operator's logical argument positions (the piped receiver takes position 0),
-/// so the index applies directly. A missing argument is pure.
+/// so the index applies directly. A missing argument at a callback position means
+/// the operator is under-applied (a partial application whose deferred effect we
+/// can't resolve here), so it collapses to `[Unknown]` rather than `pure()` — the
+/// effect must never be silently dropped.
 fn operator_argument_effect(
   call_args: dict.Dict(Int, List(types.CallArgument)),
   span_start: Int,
@@ -190,7 +193,7 @@ fn operator_argument_effect(
   case list.find(args, fn(a) { a.position == callback_position }) {
     Ok(arg) ->
       resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
-    Error(Nil) -> effect_term.pure()
+    Error(Nil) -> effect_term.unknown()
   }
 }
 
@@ -1668,7 +1671,9 @@ fn resolve_field_effect(
 /// order: `λp0. λp1. body` applied to `(a0, a1)` β-reduces to `body[p0:=a0]
 /// [p1:=a1]`. A first-order field's binder is unused, so the result is just its
 /// body. Leftover binders (fewer args than params) leave the operator partially
-/// applied → `[Unknown]` (the conservative collapse in `to_effect_set`).
+/// applied → `[Unknown]` (the conservative collapse in `to_effect_set`). Any
+/// variable still free after application is `concretize`d to `[Unknown]`, as in
+/// the non-operator branch — a field call has no caller to propagate vars to.
 fn apply_field_operator(
   operator: EffectTerm,
   args: List(types.CallArgument),
@@ -1683,7 +1688,7 @@ fn apply_field_operator(
       resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
     )
   })
-  |> effect_term.normalize
+  |> concretize
 }
 
 /// Collapse any effect variables left after substitution to `Unknown`, so an
