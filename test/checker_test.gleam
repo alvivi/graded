@@ -9,7 +9,9 @@ import gleam/result
 import gleam/set
 import gleam/string
 import gleeunit/should
+import graded/internal/annotation
 import graded/internal/checker
+import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/signatures
 import graded/internal/types.{
@@ -44,7 +46,12 @@ pub fn pure_function_passes_test() {
     "import gleam/list
 pub fn view(items) { list.map(items, fn(x) { x }) }"
   check_source(source, [
-    EffectAnnotation(Check, "view", [], Specific(set.new())),
+    EffectAnnotation(
+      Check,
+      "view",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
   ])
   |> should.equal([])
 }
@@ -55,7 +62,12 @@ pub fn effectful_call_in_pure_function_fails_test() {
 pub fn view() { io.println(\"oops\") }"
   let violations =
     check_source(source, [
-      EffectAnnotation(Check, "view", [], Specific(set.new())),
+      EffectAnnotation(
+        Check,
+        "view",
+        [],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
     ])
   violations |> list.length() |> should.equal(1)
   let assert [violation] = violations
@@ -68,7 +80,12 @@ pub fn declared_effects_pass_test() {
     "import gleam/io
 pub fn log(msg) { io.println(msg) }"
   check_source(source, [
-    EffectAnnotation(Check, "log", [], Specific(set.from_list(["Stdout"]))),
+    EffectAnnotation(
+      Check,
+      "log",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    ),
   ])
   |> should.equal([])
 }
@@ -80,7 +97,12 @@ pub fn view() { helper() }
 fn helper() { io.println(\"sneaky\") }"
   let violations =
     check_source(source, [
-      EffectAnnotation(Check, "view", [], Specific(set.new())),
+      EffectAnnotation(
+        Check,
+        "view",
+        [],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
     ])
   violations |> list.length() |> should.equal(1)
   let assert [violation] = violations
@@ -101,7 +123,7 @@ pub fn do_stuff() {
         Check,
         "do_stuff",
         [],
-        Specific(set.from_list(["Stdout"])),
+        effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       ),
     ])
   violations
@@ -112,7 +134,12 @@ pub fn do_stuff() {
 pub fn missing_function_ignored_test() {
   let source = "pub fn other() { Nil }"
   check_source(source, [
-    EffectAnnotation(Check, "nonexistent", [], Specific(set.new())),
+    EffectAnnotation(
+      Check,
+      "nonexistent",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
   ])
   |> should.equal([])
 }
@@ -126,7 +153,12 @@ pub fn view(items) {
 }"
   let violations =
     check_source(source, [
-      EffectAnnotation(Check, "view", [], Specific(set.new())),
+      EffectAnnotation(
+        Check,
+        "view",
+        [],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
     ])
   { violations != [] } |> should.be_true()
 }
@@ -136,7 +168,12 @@ pub fn unknown_local_function_test() {
   let source = "pub fn view() { missing() }"
   let violations =
     check_source(source, [
-      EffectAnnotation(Check, "view", [], Specific(set.new())),
+      EffectAnnotation(
+        Check,
+        "view",
+        [],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
     ])
   // Should flag as Unknown effect
   { violations != [] } |> should.be_true()
@@ -163,7 +200,8 @@ pub fn view(items) { list.map(items, fn(x) { x }) }"
   let assert [annotation] = inferred
   annotation.kind |> should.equal(Effects)
   annotation.function |> should.equal("view")
-  annotation.effects |> should.equal(Specific(set.new()))
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Specific(set.new()))
 }
 
 pub fn infer_effectful_function_test() {
@@ -181,7 +219,8 @@ pub fn greet() { io.println(\"hi\") }"
       dict.new(),
     )
   let assert [annotation] = inferred
-  annotation.effects |> should.equal(Specific(set.from_list(["Stdout"])))
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 pub fn infer_only_public_functions_test() {
@@ -212,8 +251,13 @@ pub fn infer_uses_param_bounds_test() {
     EffectAnnotation(
       Check,
       "apply",
-      [ParamBound("f", Specific(set.from_list(["Stdout"])))],
-      Specific(set.from_list(["Stdout"])),
+      [
+        ParamBound(
+          "f",
+          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        ),
+      ],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     ),
   ]
   let inferred =
@@ -226,7 +270,8 @@ pub fn infer_uses_param_bounds_test() {
       dict.new(),
     )
   let assert [annotation] = inferred
-  annotation.effects |> should.equal(Specific(set.from_list(["Stdout"])))
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 pub fn infer_without_bounds_gets_unknown_test() {
@@ -244,7 +289,8 @@ pub fn infer_without_bounds_gets_unknown_test() {
       dict.new(),
     )
   let assert [annotation] = inferred
-  annotation.effects |> should.equal(Specific(set.from_list(["Unknown"])))
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
 /// Build the fn-typed-param map girard supplies, the way build_type_index does:
@@ -294,7 +340,7 @@ pub fn infer_girard_detects_unannotated_fn_typed_param_test() {
       girard_fn_typed_for(module),
     )
   let assert [annotation] = inferred
-  annotation.effects
+  effect_term.to_effect_set(annotation.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
 }
 
@@ -307,8 +353,13 @@ pub fn param_call_uses_bound_test() {
     EffectAnnotation(
       Check,
       "apply",
-      [ParamBound("f", Specific(set.from_list(["Stdout"])))],
-      Specific(set.from_list(["Stdout"])),
+      [
+        ParamBound(
+          "f",
+          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        ),
+      ],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
   check_source(source, [annotation]) |> should.equal([])
 }
@@ -317,7 +368,12 @@ pub fn param_call_uses_bound_test() {
 pub fn param_call_without_bound_is_unknown_test() {
   let source = "pub fn apply(f, x) { f(x) }"
   check_source(source, [
-    EffectAnnotation(Check, "apply", [], Specific(set.new())),
+    EffectAnnotation(
+      Check,
+      "apply",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
   ])
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
@@ -332,8 +388,8 @@ pub fn safe_map(items, f) { list.map(items, f) }"
     EffectAnnotation(
       Check,
       "safe_map",
-      [ParamBound("f", Specific(set.new()))],
-      Specific(set.new()),
+      [ParamBound("f", effect_term.from_effect_set(Specific(set.new())))],
+      effect_term.from_effect_set(Specific(set.new())),
     )
   check_source(source, [annotation]) |> should.equal([])
 }
@@ -347,7 +403,12 @@ pub fn run(items) {
   list.map(items, fn(x) { io.println(x) })
 }"
   let annotation =
-    EffectAnnotation(Check, "run", [], Specific(set.from_list(["Stdout"])))
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
   check_source(source, [annotation]) |> should.equal([])
 }
 
@@ -359,7 +420,14 @@ import gleam/list
 pub fn run(items) {
   list.map(items, fn(x) { io.println(x) })
 }"
-  check_source(source, [EffectAnnotation(Check, "run", [], Specific(set.new()))])
+  check_source(source, [
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
+  ])
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
 }
@@ -386,11 +454,16 @@ pub fn field_call_typed_with_registry_test() {
       module: None,
       type_name: "Handler",
       field: "on_click",
-      effects: Specific(set.from_list(["Dom"])),
+      effects: effect_term.from_effect_set(Specific(set.from_list(["Dom"]))),
     ),
   ]
   let annotation =
-    EffectAnnotation(Check, "view", [], Specific(set.from_list(["Dom"])))
+    EffectAnnotation(
+      Check,
+      "view",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Dom"]))),
+    )
   check_source_with_type_fields(source, [annotation], type_fields)
   |> should.equal([])
 }
@@ -451,7 +524,7 @@ fn validator_to_error_stdout() -> List(types.TypeFieldAnnotation) {
       module: None,
       type_name: "Validator",
       field: "to_error",
-      effects: Specific(set.from_list(["Stdout"])),
+      effects: effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     ),
   ]
 }
@@ -459,7 +532,12 @@ fn validator_to_error_stdout() -> List(types.TypeFieldAnnotation) {
 pub fn field_call_opaque_receiver_resolves_via_girard_test() {
   // With girard's type + the type annotation, the [Stdout] budget passes.
   let annotation =
-    EffectAnnotation(Check, "run", [], Specific(set.from_list(["Stdout"])))
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
   check_source_with_girard(
     opaque_receiver_source,
     [annotation],
@@ -471,7 +549,13 @@ pub fn field_call_opaque_receiver_resolves_via_girard_test() {
 pub fn field_call_opaque_receiver_violates_pure_test() {
   // Dual: against a [] budget the recovered [Stdout] surfaces as a violation,
   // proving the field call actually resolved (vs. silently inferring []).
-  let annotation = EffectAnnotation(Check, "run", [], Specific(set.new()))
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
   let violations =
     check_source_with_girard(
       opaque_receiver_source,
@@ -504,7 +588,12 @@ pub fn run(msg: String) -> Nil {
 }
 "
   let annotation =
-    EffectAnnotation(Check, "run", [], Specific(set.from_list(["Stdout"])))
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
   check_source_with_girard(source, [annotation], validator_to_error_stdout())
   |> should.equal([])
 }
@@ -513,7 +602,13 @@ pub fn field_call_girard_without_annotation_still_unknown_test() {
   // girard types the receiver, but no `type Validator.to_error` annotation
   // exists, so the effect is still [Unknown] — documents the A/C boundary:
   // Stage A needs the annotation for the effect; Stage C removes that need.
-  let annotation = EffectAnnotation(Check, "run", [], Specific(set.new()))
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
   let violations =
     check_source_with_girard(opaque_receiver_source, [annotation], [])
   let assert [violation] = violations
@@ -528,10 +623,16 @@ pub fn field_call_violates_check_test() {
       module: None,
       type_name: "Handler",
       field: "on_click",
-      effects: Specific(set.from_list(["Dom"])),
+      effects: effect_term.from_effect_set(Specific(set.from_list(["Dom"]))),
     ),
   ]
-  let annotation = EffectAnnotation(Check, "view", [], Specific(set.new()))
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "view",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
   check_source_with_type_fields(source, [annotation], type_fields)
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
@@ -540,7 +641,13 @@ pub fn field_call_violates_check_test() {
 // Typed param but no registry entry → Unknown
 pub fn field_call_typed_no_registry_is_unknown_test() {
   let source = "pub fn view(handler: Handler) { handler.on_click(event) }"
-  let annotation = EffectAnnotation(Check, "view", [], Specific(set.new()))
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "view",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
   check_source_with_type_fields(source, [annotation], [])
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
@@ -549,7 +656,13 @@ pub fn field_call_typed_no_registry_is_unknown_test() {
 // Untyped param → Unknown
 pub fn field_call_untyped_is_unknown_test() {
   let source = "pub fn view(handler) { handler.on_click(event) }"
-  let annotation = EffectAnnotation(Check, "view", [], Specific(set.new()))
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "view",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
   check_source(source, [annotation])
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
@@ -582,7 +695,12 @@ pub fn fetch() { httpc.send(request) }"
     ),
   ]
   let annotation =
-    EffectAnnotation(Check, "fetch", [], Specific(set.from_list(["Http"])))
+    EffectAnnotation(
+      Check,
+      "fetch",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
+    )
   check_source_with_externals(source, [annotation], externals)
   |> should.equal([])
 }
@@ -599,7 +717,13 @@ pub fn fetch() { httpc.send(request) }"
       Specific(set.from_list(["Http"])),
     ),
   ]
-  let annotation = EffectAnnotation(Check, "fetch", [], Specific(set.new()))
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "fetch",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
   check_source_with_externals(source, [annotation], externals)
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
@@ -611,14 +735,26 @@ pub fn wildcard_declared_passes_all_effects_test() {
   let source =
     "import gleam/io
 pub fn handler() { io.println(\"hi\") }"
-  check_source(source, [EffectAnnotation(Check, "handler", [], Wildcard)])
+  check_source(source, [
+    EffectAnnotation(
+      Check,
+      "handler",
+      [],
+      effect_term.from_effect_set(Wildcard),
+    ),
+  ])
   |> should.equal([])
 }
 
 pub fn wildcard_param_bound_passes_test() {
   let source = "pub fn apply(f, x) { f(x) }"
   let annotation =
-    EffectAnnotation(Check, "apply", [ParamBound("f", Wildcard)], Wildcard)
+    EffectAnnotation(
+      Check,
+      "apply",
+      [ParamBound("f", effect_term.from_effect_set(Wildcard))],
+      effect_term.from_effect_set(Wildcard),
+    )
   check_source(source, [annotation]) |> should.equal([])
 }
 
@@ -629,8 +765,8 @@ pub fn wildcard_param_bound_in_pure_function_violates_test() {
     EffectAnnotation(
       Check,
       "apply",
-      [ParamBound("f", Wildcard)],
-      Specific(set.new()),
+      [ParamBound("f", effect_term.from_effect_set(Wildcard))],
+      effect_term.from_effect_set(Specific(set.new())),
     )
   check_source(source, [annotation])
   |> { fn(vs) { vs != [] } }
@@ -663,7 +799,12 @@ import gleam/list
 pub fn greet_all(names) { list.map(names, io.println) }"
   let warnings =
     check_warnings(source, [
-      EffectAnnotation(Check, "greet_all", [], Specific(set.new())),
+      EffectAnnotation(
+        Check,
+        "greet_all",
+        [],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
     ])
   warnings |> list.length() |> should.equal(1)
   let assert [warning] = warnings
@@ -681,7 +822,12 @@ import gleam/list
 pub fn greet_all(names) { list.map(names, println) }"
   let warnings =
     check_warnings(source, [
-      EffectAnnotation(Check, "greet_all", [], Specific(set.new())),
+      EffectAnnotation(
+        Check,
+        "greet_all",
+        [],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
     ])
   warnings |> list.length() |> should.equal(1)
   let assert [warning] = warnings
@@ -696,7 +842,12 @@ pub fn function_ref_pure_no_warning_test() {
 import gleam/string
 pub fn upper_all(items) { list.map(items, string.uppercase) }"
   check_warnings(source, [
-    EffectAnnotation(Check, "upper_all", [], Specific(set.new())),
+    EffectAnnotation(
+      Check,
+      "upper_all",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
   ])
   |> should.equal([])
 }
@@ -708,7 +859,12 @@ pub fn function_ref_unknown_no_warning_test() {
 import gleam/list
 pub fn run(items) { list.map(items, unknown.do_thing) }"
   check_warnings(source, [
-    EffectAnnotation(Check, "run", [], Specific(set.new())),
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
   ])
   |> should.equal([])
 }
@@ -724,7 +880,7 @@ pub fn greet_all(names) { list.map(names, fn(n) { io.println(n) }) }"
       Check,
       "greet_all",
       [],
-      Specific(set.from_list(["Stdout"])),
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     ),
   ])
   |> should.equal([])
@@ -781,7 +937,7 @@ fn build_kb(calls: List(#(String, String, String))) -> effects.KnowledgeBase {
     |> list.map(fn(c) {
       #(
         types.QualifiedName(module: c.0, function: c.1),
-        types.from_labels([c.2]),
+        effect_term.from_effect_set(types.from_labels([c.2])),
       )
     })
     |> dict.from_list()
@@ -789,6 +945,8 @@ fn build_kb(calls: List(#(String, String, String))) -> effects.KnowledgeBase {
     all_effects:,
     param_bounds: dict.new(),
     type_fields: dict.new(),
+    returned_operators: dict.new(),
+    factories: dict.new(),
     pure_modules: set.new(),
   )
 }
@@ -805,7 +963,13 @@ pub fn check_no_false_positives_test() {
     Ok(module) -> {
       let kb = build_kb(calls)
       let declared = actual_effects(calls)
-      let ann = EffectAnnotation(Check, "test_fn", [], declared)
+      let ann =
+        EffectAnnotation(
+          Check,
+          "test_fn",
+          [],
+          effect_term.from_effect_set(declared),
+        )
       let #(violations, _) =
         checker.check(module, [ann], kb, signatures.empty(), dict.new())
       violations |> should.equal([])
@@ -820,7 +984,13 @@ pub fn check_wildcard_never_violates_test() {
     Error(Nil) -> Nil
     Ok(module) -> {
       let kb = build_kb(calls)
-      let ann = EffectAnnotation(Check, "test_fn", [], Wildcard)
+      let ann =
+        EffectAnnotation(
+          Check,
+          "test_fn",
+          [],
+          effect_term.from_effect_set(Wildcard),
+        )
       let #(violations, _) =
         checker.check(module, [ann], kb, signatures.empty(), dict.new())
       violations |> should.equal([])
@@ -838,7 +1008,13 @@ pub fn check_empty_budget_detects_effects_test() {
         Error(Nil) -> Nil
         Ok(module) -> {
           let kb = build_kb(calls)
-          let ann = EffectAnnotation(Check, "test_fn", [], types.empty())
+          let ann =
+            EffectAnnotation(
+              Check,
+              "test_fn",
+              [],
+              effect_term.from_effect_set(types.empty()),
+            )
           let #(violations, _) =
             checker.check(module, [ann], kb, signatures.empty(), dict.new())
           { violations != [] } |> should.be_true()
@@ -858,7 +1034,13 @@ pub fn check_violations_iff_not_subset_test() {
     Error(Nil) -> Nil
     Ok(module) -> {
       let kb = build_kb(calls)
-      let ann = EffectAnnotation(Check, "test_fn", [], declared)
+      let ann =
+        EffectAnnotation(
+          Check,
+          "test_fn",
+          [],
+          effect_term.from_effect_set(declared),
+        )
       let #(violations, _) =
         checker.check(module, [ann], kb, signatures.empty(), dict.new())
       let has_violations = violations != []
@@ -887,7 +1069,8 @@ pub fn infer_matches_actual_effects_test() {
         )
       let assert [ann] = inferred
       ann.function |> should.equal("test_fn")
-      ann.effects |> should.equal(actual_effects(calls))
+      effect_term.to_effect_set(ann.effects)
+      |> should.equal(actual_effects(calls))
     }
   }
 }
@@ -937,6 +1120,8 @@ fn bare_knowledge_base() -> effects.KnowledgeBase {
     all_effects: dict.new(),
     param_bounds: dict.new(),
     type_fields: dict.new(),
+    returned_operators: dict.new(),
+    factories: dict.new(),
     pure_modules: set.new(),
   )
 }
@@ -968,7 +1153,13 @@ pub fn check_terminates_with_cycles_test() {
   case glance.module(source) {
     Error(_) -> Nil
     Ok(module) -> {
-      let ann = EffectAnnotation(Check, "a", [], types.empty())
+      let ann =
+        EffectAnnotation(
+          Check,
+          "a",
+          [],
+          effect_term.from_effect_set(types.empty()),
+        )
       let #(violations, _) =
         checker.check(
           module,
@@ -1007,11 +1198,14 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
 "
   let ann = infer_single(source)
   ann.function |> should.equal("apply")
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
   ann.params
   |> should.equal([
-    ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
+    ParamBound(
+      "f",
+      effect_term.from_effect_set(Polymorphic(set.new(), set.from_list(["f"]))),
+    ),
   ])
 }
 
@@ -1025,11 +1219,14 @@ pub fn log_and_apply(f: fn(Int) -> Int, x: Int) -> Int {
 }
 "
   let ann = infer_single(source)
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["f"])))
   ann.params
   |> should.equal([
-    ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
+    ParamBound(
+      "f",
+      effect_term.from_effect_set(Polymorphic(set.new(), set.from_list(["f"]))),
+    ),
   ])
 }
 
@@ -1041,12 +1238,18 @@ pub fn apply2(f: fn(Int) -> Int, g: fn(Int) -> Int, x: Int) -> Int {
 }
 "
   let ann = infer_single(source)
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["f", "g"])))
   ann.params
   |> should.equal([
-    ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
-    ParamBound("g", Polymorphic(set.new(), set.from_list(["g"]))),
+    ParamBound(
+      "f",
+      effect_term.from_effect_set(Polymorphic(set.new(), set.from_list(["f"]))),
+    ),
+    ParamBound(
+      "g",
+      effect_term.from_effect_set(Polymorphic(set.new(), set.from_list(["g"]))),
+    ),
   ])
 }
 
@@ -1064,8 +1267,13 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
     EffectAnnotation(
       Check,
       "apply",
-      [ParamBound("f", Specific(set.from_list(["Stdout"])))],
-      Specific(set.from_list(["Stdout"])),
+      [
+        ParamBound(
+          "f",
+          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        ),
+      ],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
   let assert [ann] =
     checker.infer(
@@ -1076,7 +1284,8 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
       dict.new(),
       dict.new(),
     )
-  ann.effects |> should.equal(Specific(set.from_list(["Stdout"])))
+  effect_term.to_effect_set(ann.effects)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
   ann.params |> should.equal([])
 }
 
@@ -1090,7 +1299,8 @@ pub fn apply(f, x) {
 }
 "
   let ann = infer_single(source)
-  ann.effects |> should.equal(Specific(set.from_list(["Unknown"])))
+  effect_term.to_effect_set(ann.effects)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
   ann.params |> should.equal([])
 }
 
@@ -1108,12 +1318,17 @@ fn polymorphic_kb() -> effects.KnowledgeBase {
       #(QualifiedName("validation", "validate_range"), [
         ParamBound(
           "to_error",
-          Polymorphic(set.new(), set.from_list(["to_error"])),
+          effect_term.from_effect_set(Polymorphic(
+            set.new(),
+            set.from_list(["to_error"]),
+          )),
         ),
       ]),
     ])
   effects.empty_knowledge_base()
-  |> effects.with_inferred(effects_map)
+  |> effects.with_inferred(
+    dict.map_values(effects_map, fn(_, v) { effect_term.from_effect_set(v) }),
+  )
   |> effects.with_inferred_params(params_map)
 }
 
@@ -1130,7 +1345,14 @@ pub fn new() {
   let #(violations, _) =
     checker.check(
       module,
-      [EffectAnnotation(Check, "new", [], Specific(set.new()))],
+      [
+        EffectAnnotation(
+          Check,
+          "new",
+          [],
+          effect_term.from_effect_set(Specific(set.new())),
+        ),
+      ],
       polymorphic_kb(),
       signatures.empty(),
       dict.new(),
@@ -1154,7 +1376,12 @@ pub fn new() {
     checker.check(
       module,
       [
-        EffectAnnotation(Check, "new", [], Specific(set.from_list(["Stdout"]))),
+        EffectAnnotation(
+          Check,
+          "new",
+          [],
+          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        ),
       ],
       polymorphic_kb(),
       signatures.empty(),
@@ -1177,7 +1404,14 @@ pub fn new() {
   let #(violations, _) =
     checker.check(
       module,
-      [EffectAnnotation(Check, "new", [], Specific(set.new()))],
+      [
+        EffectAnnotation(
+          Check,
+          "new",
+          [],
+          effect_term.from_effect_set(Specific(set.new())),
+        ),
+      ],
       polymorphic_kb(),
       signatures.empty(),
       dict.new(),
@@ -1205,7 +1439,7 @@ pub fn new() {
       dict.new(),
       dict.new(),
     )
-  ann.effects |> should.equal(Specific(set.new()))
+  effect_term.to_effect_set(ann.effects) |> should.equal(Specific(set.new()))
 }
 
 pub fn substitute_unresolvable_argument_keeps_variable_test() {
@@ -1231,7 +1465,8 @@ pub fn new() {
       dict.new(),
       dict.new(),
     )
-  ann.effects |> should.equal(Specific(set.from_list(["Unknown"])))
+  effect_term.to_effect_set(ann.effects)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
 // KB with a two-callback polymorphic function:
@@ -1247,12 +1482,26 @@ fn two_callback_kb() -> effects.KnowledgeBase {
   let params_map =
     dict.from_list([
       #(QualifiedName("combo", "apply2"), [
-        ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
-        ParamBound("g", Polymorphic(set.new(), set.from_list(["g"]))),
+        ParamBound(
+          "f",
+          effect_term.from_effect_set(Polymorphic(
+            set.new(),
+            set.from_list(["f"]),
+          )),
+        ),
+        ParamBound(
+          "g",
+          effect_term.from_effect_set(Polymorphic(
+            set.new(),
+            set.from_list(["g"]),
+          )),
+        ),
       ]),
     ])
   effects.empty_knowledge_base()
-  |> effects.with_inferred(effects_map)
+  |> effects.with_inferred(
+    dict.map_values(effects_map, fn(_, v) { effect_term.from_effect_set(v) }),
+  )
   |> effects.with_inferred_params(params_map)
 }
 
@@ -1284,7 +1533,7 @@ pub fn outer() -> MyError {
       dict.new(),
     )
   let assert Ok(outer) = list.find(inferred, fn(a) { a.function == "outer" })
-  outer.effects |> should.equal(Specific(set.new()))
+  effect_term.to_effect_set(outer.effects) |> should.equal(Specific(set.new()))
 }
 
 pub fn substitute_two_fn_typed_params_different_effects_test() {
@@ -1308,7 +1557,8 @@ pub fn run() {
       dict.new(),
       dict.new(),
     )
-  ann.effects |> should.equal(Specific(set.from_list(["Http", "Stdout"])))
+  effect_term.to_effect_set(ann.effects)
+  |> should.equal(Specific(set.from_list(["Http", "Stdout"])))
 }
 
 // ──── Two-hop effect unification ────
@@ -1344,7 +1594,7 @@ pub fn apply_twice(f: fn(Int) -> Int, x: Int) -> List(Int) {
 "
   let ann = infer_single_with_list(source)
   ann.function |> should.equal("apply_twice")
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
 }
 
@@ -1358,14 +1608,23 @@ fn apply_twice_kb_and_registry() -> #(
       dict.from_list([
         #(
           QualifiedName("mymod", "apply_twice"),
-          Polymorphic(set.new(), set.from_list(["f"])),
+          effect_term.from_effect_set(Polymorphic(
+            set.new(),
+            set.from_list(["f"]),
+          )),
         ),
       ]),
     )
     |> effects.with_inferred_params(
       dict.from_list([
         #(QualifiedName("mymod", "apply_twice"), [
-          ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
+          ParamBound(
+            "f",
+            effect_term.from_effect_set(Polymorphic(
+              set.new(),
+              set.from_list(["f"]),
+            )),
+          ),
         ]),
       ]),
     )
@@ -1394,7 +1653,7 @@ pub fn run(x: Int) {
   let #(violations, _) =
     checker.check(
       module,
-      [EffectAnnotation(Check, "run", [], budget)],
+      [EffectAnnotation(Check, "run", [], effect_term.from_effect_set(budget))],
       kb,
       reg,
       dict.new(),
@@ -1433,7 +1692,7 @@ pub fn outer(f: fn(Int) -> Int, x: Int) -> List(Int) {
 "
   let ann = infer_single_with_list(source)
   ann.function |> should.equal("outer")
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
 }
 
@@ -1448,7 +1707,7 @@ pub fn log_and_map(f: fn(Int) -> Int, x: Int) -> List(Int) {
 }
 "
   let ann = infer_single_with_list(source)
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["f"])))
 }
 
@@ -1462,7 +1721,7 @@ pub fn pure_forward(f: fn(Int) -> Int, items: List(Int)) -> List(Int) {
 "
   let ann = infer_single_with_list(source)
   ann.function |> should.equal("pure_forward")
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
 }
 
@@ -1478,7 +1737,7 @@ pub fn with_closure(items: List(Int)) -> List(Int) {
 }
 "
   let ann = infer_single_with_list(source)
-  ann.effects |> should.equal(types.empty())
+  effect_term.to_effect_set(ann.effects) |> should.equal(types.empty())
 }
 
 pub fn mixed_tracked_and_closure_args_test() {
@@ -1497,7 +1756,12 @@ pub fn mixed_tracked_and_closure_args_test() {
   let kb =
     effects.empty_knowledge_base()
     |> effects.with_inferred(
-      dict.from_list([#(QualifiedName("helpers", "do_both"), types.empty())]),
+      dict.from_list([
+        #(
+          QualifiedName("helpers", "do_both"),
+          effect_term.from_effect_set(types.empty()),
+        ),
+      ]),
     )
   let source =
     "
@@ -1509,7 +1773,7 @@ pub fn run(h: fn(Int) -> Int, x: Int) -> Int {
   let assert Ok(module) = glance.module(source)
   let assert [ann] = checker.infer(module, kb, [], reg, dict.new(), dict.new())
   ann.function |> should.equal("run")
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["h"])))
 }
 
@@ -1522,7 +1786,11 @@ fn polymorphic_field_kb_and_registry() -> #(
   effects.KnowledgeBase,
   signatures.SignatureRegistry,
 ) {
-  let action_var = Polymorphic(set.new(), set.from_list(["action"]))
+  let action_var =
+    effect_term.from_effect_set(Polymorphic(
+      set.new(),
+      set.from_list(["action"]),
+    ))
   let kb =
     effects.with_inferred_type_fields(knowledge_base(), [
       #(
@@ -1553,7 +1821,14 @@ pub fn main(t: Task, msg: String) {
   let #(violations, _warnings) =
     checker.check(
       module,
-      [EffectAnnotation(Check, "main", [], Specific(set.new()))],
+      [
+        EffectAnnotation(
+          Check,
+          "main",
+          [],
+          effect_term.from_effect_set(Specific(set.new())),
+        ),
+      ],
       kb,
       registry,
       dict.new(),
@@ -1576,9 +1851,1253 @@ pub fn field_call_binds_pure_argument_test() {
   check_field_call("Wrapper") |> should.equal([])
 }
 
-pub fn field_call_unbound_argument_concretizes_to_unknown_test() {
-  // An inline closure is OtherExpression — `action` can't bind, so the leftover
-  // variable collapses to [Unknown] rather than surfacing free.
-  let assert [v, ..] = check_field_call("fn(s) { s }")
-  v.actual |> should.equal(Specific(set.from_list(["Unknown"])))
+pub fn field_call_binds_identity_closure_test() {
+  // An inline closure bound to a (first-order) field parameter resolves to its
+  // body effect. The identity closure `fn(s) { s }` is pure, so the field call
+  // has no effect — no violation. (Previously a closure here couldn't bind and
+  // collapsed conservatively to [Unknown].)
+  check_field_call("fn(s) { s }") |> should.equal([])
+}
+
+pub fn field_call_binds_effectful_closure_test() {
+  // An effectful inline closure bound to a field parameter resolves to its body
+  // effect: `fn(s) { io.println(s) }` ⟹ [Stdout].
+  let assert [v, ..] = check_field_call("fn(s) { io.println(s) }")
+  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// ──── B1: factory field provenance ────
+
+pub fn factory_field_resolves_same_module_test() {
+  // A same-module factory wires a field to its parameter; a let-bound factory
+  // call binds the result's field, so `v.to_error` resolves to the argument's
+  // effect ([Stdout]) instead of [Unknown].
+  let source =
+    "
+import gleam/io
+pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+fn make(logger: fn(String) -> Nil) -> Validator {
+  Validator(to_error: logger)
+}
+pub fn caller() -> Nil {
+  let v = make(io.println)
+  v.to_error(\"x\")
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn factory_field_resolves_cross_module_test() {
+  // The package-wide factory map records a cross-module factory's signature, so
+  // a let-bound `dep.make(io.println)` binds the result's field.
+  let source =
+    "
+import gleam/io
+import dep
+pub fn caller() -> Nil {
+  let v = dep.make(io.println)
+  v.to_error(\"x\")
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let kb =
+    knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(
+          QualifiedName("dep", "make"),
+          effect_term.from_effect_set(types.empty()),
+        ),
+      ]),
+    )
+    |> effects.with_factories(
+      dict.from_list([
+        #(#("dep", "make"), dict.from_list([#("to_error", 0)])),
+      ]),
+    )
+  let registry = signatures.from_glance_module("app", module)
+  let pass =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
+  let #(violations, _) = checker.check(module, [pass], kb, registry, dict.new())
+  violations |> should.equal([])
+  let fail =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(types.empty()),
+    )
+  let #(failed, _) = checker.check(module, [fail], kb, registry, dict.new())
+  { failed != [] } |> should.be_true()
+}
+
+pub fn factory_untraceable_receiver_stays_unknown_test() {
+  // A receiver with no traceable construction (here a parameter) can't use
+  // factory provenance; with no type-field annotation it stays the sound
+  // [Unknown] — so the [Stdout] budget is still flagged (no resolution, no
+  // understatement).
+  let source =
+    "
+pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+pub fn caller(v: Validator) -> Nil {
+  v.to_error(\"x\")
+}
+"
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn factory_labeled_call_falls_back_test() {
+  // v1 routes positional factory calls only; a labeled call falls back
+  // conservatively (no BoundConstructor), so it does not resolve to [Stdout].
+  let source =
+    "
+import gleam/io
+pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+fn make(logger: fn(String) -> Nil) -> Validator {
+  Validator(to_error: logger)
+}
+pub fn caller() -> Nil {
+  let v = make(logger: io.println)
+  v.to_error(\"x\")
+}
+"
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+// ──── Second-order (nested) effect variables: end-to-end ────
+
+/// Registry + KB modelling the realistic post-topological-inference state:
+/// `with_logger(action)` is second-order — its inferred effect is the operator
+/// application `action(Stdout)` (it applies `action` to a [Stdout] callback),
+/// and `runner(cb)` runs its callback (effect `[cb]`).
+fn second_order_kb_and_registry() -> #(
+  effects.KnowledgeBase,
+  signatures.SignatureRegistry,
+) {
+  let sig_src =
+    "pub fn with_logger(action: fn(fn(String) -> Nil) -> Nil) -> Nil { Nil }
+pub fn runner(cb: fn(String) -> Nil) -> Nil { Nil }"
+  let assert Ok(sig_mod) = glance.module(sig_src)
+  let reg = signatures.from_glance_module("app", sig_mod)
+  let kb =
+    knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(
+          QualifiedName("app", "with_logger"),
+          types.TApp(
+            types.TVar("action"),
+            effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+          ),
+        ),
+        #(QualifiedName("app", "runner"), types.TVar("cb")),
+      ]),
+    )
+    |> effects.with_inferred_params(
+      dict.from_list([
+        #(QualifiedName("app", "with_logger"), [
+          ParamBound("action", types.TVar("action")),
+        ]),
+        #(QualifiedName("app", "runner"), [ParamBound("cb", types.TVar("cb"))]),
+      ]),
+    )
+  #(kb, reg)
+}
+
+pub fn second_order_call_site_resolves_test() {
+  // `caller` passes `runner` (an operator argument) to the second-order
+  // `with_logger`. The operator application `action(Stdout)` must beta-reduce
+  // with `action := λcb. [cb]` to `[Stdout]` — so a `[Stdout]` budget passes.
+  let #(kb, reg) = second_order_kb_and_registry()
+  let source =
+    "import app
+pub fn caller() -> Nil { app.with_logger(app.runner) }"
+  let assert Ok(module) = glance.module(source)
+  let ann =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
+  let #(violations, _) = checker.check(module, [ann], kb, reg, dict.new())
+  violations |> should.equal([])
+}
+
+pub fn second_order_call_site_detects_violation_test() {
+  // Same call, but a pure budget `[]` must flag a violation: the resolved
+  // effect is genuinely `[Stdout]`, not empty.
+  let #(kb, reg) = second_order_kb_and_registry()
+  let source =
+    "import app
+pub fn caller() -> Nil { app.with_logger(app.runner) }"
+  let assert Ok(module) = glance.module(source)
+  let ann =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(types.empty()),
+    )
+  let #(violations, _) = checker.check(module, [ann], kb, reg, dict.new())
+  { violations != [] } |> should.be_true()
+}
+
+pub fn second_order_inline_closure_resolves_test() {
+  // The operator argument is now an inline closure rather than a named
+  // function. It is analysed and lifted to `λlogger. [logger]`, so the
+  // `action(Stdout)` application still beta-reduces to `[Stdout]`.
+  let #(kb, reg) = second_order_kb_and_registry()
+  let source =
+    "import app
+pub fn caller() -> Nil { app.with_logger(fn(logger) { logger(\"hi\") }) }"
+  let assert Ok(module) = glance.module(source)
+  let ann =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
+  let #(violations, _) = checker.check(module, [ann], kb, reg, dict.new())
+  violations |> should.equal([])
+}
+
+pub fn infer_operator_param_resolves_non_first_callback_test() {
+  // `action`'s callback is its SECOND argument (`fn(Int, fn(String) -> Nil)`).
+  // The call `action(1, io.println)` must build the operator application
+  // `action(Stdout)` — resolving the position-1 argument (io.println), not the
+  // position-0 Int literal. Reading position 0 would yield `action([Unknown])`.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(Int, fn(String) -> Nil) -> Nil) -> Nil {
+  action(1, io.println)
+}
+"
+  let ann = infer_single(source)
+  ann.function |> should.equal("run")
+  ann.effects
+  |> effect_term.normalize
+  |> should.equal(types.TApp(
+    types.TVar("action"),
+    types.TLabels(set.from_list(["Stdout"])),
+  ))
+}
+
+pub fn infer_operator_param_non_first_callback_via_pipe_test() {
+  // `1 |> action(io.println)` desugars to `action(1, io.println)`: the piped
+  // receiver takes position 0 and the callback stays at position 1, so the
+  // pipe-adjusted positions still align with the operator's argument list and
+  // the callback resolves to [Stdout].
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(Int, fn(String) -> Nil) -> Nil) -> Nil {
+  1 |> action(io.println)
+}
+"
+  let ann = infer_single(source)
+  ann.effects
+  |> effect_term.normalize
+  |> should.equal(types.TApp(
+    types.TVar("action"),
+    types.TLabels(set.from_list(["Stdout"])),
+  ))
+}
+
+pub fn infer_operator_param_threads_all_callbacks_test() {
+  // An operator parameter taking two function arguments threads BOTH callbacks
+  // as a curried application `((action [Stdout]) [FileSystem])` — neither is
+  // dropped (the previous single-callback behaviour lost `fs.read`).
+  let kb = effects.with_externals(knowledge_base(), [fs_read_external()])
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(action: fn(fn(String) -> Nil, fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println, fs.read)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let assert [ann] =
+    checker.infer(module, kb, [], signatures.empty(), dict.new(), dict.new())
+  ann.effects
+  |> effect_term.normalize
+  |> should.equal(types.TApp(
+    types.TApp(types.TVar("action"), types.TLabels(set.from_list(["Stdout"]))),
+    types.TLabels(set.from_list(["FileSystem"])),
+  ))
+}
+
+pub fn infer_operator_param_non_adjacent_callbacks_test() {
+  // Callbacks interleaved with non-function arguments (positions 1 and 3) still
+  // thread in order.
+  let kb = effects.with_externals(knowledge_base(), [fs_read_external()])
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(
+  action: fn(Int, fn(String) -> Nil, String, fn(String) -> Nil) -> Nil,
+) -> Nil {
+  action(0, io.println, \"x\", fs.read)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let assert [ann] =
+    checker.infer(module, kb, [], signatures.empty(), dict.new(), dict.new())
+  ann.effects
+  |> effect_term.normalize
+  |> should.equal(types.TApp(
+    types.TApp(types.TVar("action"), types.TLabels(set.from_list(["Stdout"]))),
+    types.TLabels(set.from_list(["FileSystem"])),
+  ))
+}
+
+pub fn second_order_two_callback_closure_resolves_test() {
+  // The previously-false-positive case: a closure that invokes BOTH callbacks
+  // resolves to the union of their effects, with no dangling variable. An
+  // in-budget check passes; a too-tight budget is flagged.
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(action: fn(fn(String) -> Nil, fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println, fs.read)
+}
+pub fn caller() -> Nil {
+  run(fn(log, read) {
+    log(\"x\")
+    read(\"y\")
+  })
+}
+"
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn second_order_second_callback_only_closure_test() {
+  // A closure that invokes only its second callback contributes exactly that
+  // callback's effect — the first contributes nothing.
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(action: fn(fn(String) -> Nil, fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println, fs.read)
+}
+pub fn caller() -> Nil {
+  run(fn(_log, read) { read(\"y\") })
+}
+"
+  second_order_violations(source, "caller", ["FileSystem"]) |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn second_order_same_module_named_fn_resolves_test() {
+  // `logger` is a sibling top-level function — NOT in the knowledge base during
+  // this module's inference pass. Passing it to the second-order `run` must
+  // still resolve to its effect rather than collapsing to `[Unknown]`.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn logger(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+pub fn caller() -> Nil {
+  run(logger)
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn second_order_let_bound_closure_resolves_test() {
+  // A let-bound closure used by name resolves through the operator just like an
+  // inline closure, rather than going `[Unknown]`.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller() -> Nil {
+  let h = fn(cb) { cb(\"x\") }
+  run(h)
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+}
+
+pub fn second_order_let_bound_closure_shadowing_test() {
+  // A later binding shadows an earlier one: the pure first `h` is replaced by
+  // the effectful second, so the effect is [Stdout].
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller() -> Nil {
+  let h = fn(_cb) { Nil }
+  let h = fn(cb) { cb(\"x\") }
+  run(h)
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+}
+
+pub fn second_order_returned_function_stays_unknown_test() {
+  // The genuine residual: `h` is a function *returned from a call*, which graded
+  // can't trace to a concrete function. It stays the sound `[Unknown]`, so even
+  // a wildcard budget is the only thing that passes; a concrete budget is
+  // flagged.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn make() {
+  run
+}
+pub fn caller() -> Nil {
+  let h = make()
+  run(h)
+}
+"
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn first_order_returned_function_applied_test() {
+  // C2: a producer returns a *first-order* function (no callback parameter); its
+  // latent effect (the returned closure's body) resolves when the let-bound
+  // result is applied. `let f = make_printer(); f()` ⟹ [Stdout].
+  let source =
+    "
+import gleam/io
+fn make_printer() -> fn() -> Nil {
+  fn() { io.println(\"x\") }
+}
+pub fn caller() -> Nil {
+  let f = make_printer()
+  f()
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn first_order_returned_named_function_applied_test() {
+  // C2 with a *named* returned function rather than an inline closure.
+  let source =
+    "
+import gleam/io
+fn printer() -> Nil {
+  io.println(\"x\")
+}
+fn make() -> fn() -> Nil {
+  printer
+}
+pub fn caller() -> Nil {
+  let f = make()
+  f()
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn first_order_returned_function_with_value_param_test() {
+  // C2: the returned function takes a (value) parameter. Its latent effect still
+  // resolves when applied: `let f = make(); f(\"x\")` ⟹ [Stdout].
+  let source =
+    "
+import gleam/io
+fn make() -> fn(String) -> Nil {
+  io.println
+}
+pub fn caller() -> Nil {
+  let f = make()
+  f(\"x\")
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn first_order_returned_function_unapplied_is_pure_test() {
+  // Soundness/precision: binding the result without applying it carries no
+  // effect — the returned closure's body only runs when `f` is called. So
+  // `let f = make_printer()` alone leaves `caller` pure.
+  let source =
+    "
+import gleam/io
+fn make_printer() -> fn() -> Nil {
+  fn() { io.println(\"x\") }
+}
+pub fn caller() -> Nil {
+  let _f = make_printer()
+  Nil
+}
+"
+  second_order_violations(source, "caller", []) |> should.equal([])
+}
+
+pub fn second_order_returned_operator_applied_directly_test() {
+  // C1: a let-bound returned operator applied *directly* — `h(io.println)` —
+  // resolves the producer's returned operator and applies it, rather than
+  // staying [Unknown]. (Previously only `run(h)` — h passed as an operator
+  // argument — resolved.)
+  let source =
+    "
+import gleam/io
+fn logger(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+fn pick() -> fn(fn(String) -> Nil) -> Nil {
+  logger
+}
+pub fn caller() -> Nil {
+  let h = pick()
+  h(io.println)
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn second_order_returned_decorator_applied_directly_test() {
+  // C1 with a *polymorphic* returned operator: `traced` wraps its operator
+  // parameter. Applying the let-bound result directly binds `action := reader`
+  // and unions the decorator's own effect with the wrapped operator's.
+  let source =
+    "
+import gleam/io
+import fs
+fn traced(action: fn(fn(String) -> Nil) -> Nil) -> fn(fn(String) -> Nil) -> Nil {
+  fn(cb) {
+    io.println(\"trace\")
+    action(cb)
+  }
+}
+fn reader(cb: fn(String) -> Nil) -> Nil {
+  fs.read(\"f\")
+  cb(\"x\")
+}
+pub fn caller() -> Nil {
+  let h = traced(reader)
+  h(io.println)
+}
+"
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn pipe_into_closure_operator_resolves_test() {
+  // D2 (soundness): `x |> fn(f) { f("x") }` applies the closure to the piped
+  // value. Previously the closure body's use of `f` was dropped and the effect
+  // understated to []. Now it resolves to [Stdout].
+  let source =
+    "
+import gleam/io
+pub fn caller() -> Nil {
+  io.println |> fn(f) { f(\"x\") }
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn pipe_into_first_order_closure_test() {
+  // A first-order closure pipe target stays correct: the body's own effects are
+  // accounted (the piped value is just bound, not applied).
+  let source =
+    "
+import gleam/io
+pub fn caller(msg: String) -> Nil {
+  msg |> fn(m) { io.println(m) }
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn pipe_into_case_of_functions_test() {
+  // D2 (soundness): `x |> case flag { True -> a  False -> b }` applies the
+  // selected operator to the piped value; the effect is the join of branches.
+  let source =
+    "
+import gleam/io
+import fs
+fn a(cb: fn(String) -> Nil) -> Nil {
+  io.println(\"x\")
+}
+fn b(cb: fn(String) -> Nil) -> Nil {
+  fs.read(\"f\")
+}
+pub fn caller(flag: Bool) -> Nil {
+  io.println |> case flag {
+    True -> a
+    False -> b
+  }
+}
+"
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn pipe_into_non_function_case_stays_walked_test() {
+  // A `case` pipe target with a non-function branch isn't an operator: fall
+  // back to the normal walk (the piped expression's own effects still count).
+  let source =
+    "
+import gleam/io
+pub fn caller(flag: Bool) -> Int {
+  io.println(\"x\")
+  1 |> case flag {
+    True -> 2
+    False -> 3
+  }
+}
+"
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+}
+
+pub fn use_with_operator_callee_resolves_callback_test() {
+  // C3: `use r <- with_thing()` desugars to `with_thing(fn(r) { io.println(r) })`.
+  // The operator callee binds its callback to the continuation, so its callback
+  // variable resolves instead of leaving a spurious unbound effect — so
+  // `check caller : [Stdout]` no longer false-positives.
+  let source =
+    "
+import gleam/io
+fn with_thing(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+pub fn caller() -> Nil {
+  use r <- with_thing()
+  io.println(r)
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn use_tail_depends_on_binding_test() {
+  // C3: the continuation's effect comes from what the callee passes to the
+  // binding. `with_logger` hands `io.println` to `log`; `log(\"hello\")` in the
+  // continuation therefore carries [Stdout].
+  let source =
+    "
+import gleam/io
+fn with_logger(cb: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  cb(io.println)
+}
+pub fn caller() -> Nil {
+  use log <- with_logger()
+  log(\"hello\")
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn use_with_unknown_callee_still_counts_continuation_test() {
+  // Soundness: a non-operator (unknown/external) callee must not drop the
+  // continuation's effects — they're still walked from the closure body.
+  let source =
+    "
+import gleam/io
+import fs
+pub fn caller() -> Nil {
+  use _ <- fs.with_file()
+  io.println(\"x\")
+}
+"
+  // Effect is {Unknown (fs.with_file), Stdout (io.println)} — the empty budget
+  // is violated, confirming the continuation effect survived desugaring.
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn second_order_branch_closures_unions_effects_test() {
+  // An operator argument selected by `case` over two closures resolves to the
+  // *union* of the branches' effects (over-approximating both).
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller(flag: Bool) -> Nil {
+  run(case flag {
+    True -> fn(log) { log(\"x\") }
+    False -> fn(log) {
+      log(\"y\")
+      fs.read(\"f\")
+    }
+  })
+}
+"
+  // First branch ⟹ [Stdout] (log := io.println); second ⟹ [Stdout, FileSystem].
+  // The join is their union.
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn second_order_branch_same_module_fns_test() {
+  // Branch over two same-module named functions (resolved via the function map).
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn quiet(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+fn loud(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+  fs.read(\"f\")
+}
+pub fn caller(flag: Bool) -> Nil {
+  run(case flag {
+    True -> quiet
+    False -> loud
+  })
+}
+"
+  // quiet ⟹ [Stdout]; loud ⟹ [Stdout, FileSystem]; union is both.
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn second_order_let_bound_branch_test() {
+  // A let-bound branch resolves the same way at its later use site.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller(flag: Bool) -> Nil {
+  let h = case flag {
+    True -> fn(log) { log(\"x\") }
+    False -> fn(_log) { Nil }
+  }
+  run(h)
+}
+"
+  // True branch ⟹ [Stdout], False branch ⟹ []; union is [Stdout].
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn second_order_branch_block_arm_resolves_test() {
+  // A branch arm that is a *block* ending in a function resolves through its
+  // tail expression (block descent), so the whole branch still resolves rather
+  // than going opaque.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller(flag: Bool) -> Nil {
+  run(case flag {
+    True -> fn(log) { log(\"x\") }
+    False -> {
+      let _ = 1
+      fn(log) { log(\"y\") }
+    }
+  })
+}
+"
+  // Both arms are [Stdout] (log := io.println); the budget passes, [] fails.
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn second_order_let_bound_block_resolves_test() {
+  // A let-bound block evaluating to a function resolves at the use site via its
+  // tail expression, with the block's own lets in scope.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller() -> Nil {
+  let h = {
+    let chosen = fn(log) { log(\"x\") }
+    chosen
+  }
+  run(h)
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn second_order_returned_function_same_module_test() {
+  // A same-module producer `pick` returns a function; `let h = pick(); run(h)`
+  // resolves to the returned function's effect (computed on-demand).
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn logger(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+fn pick() -> fn(fn(String) -> Nil) -> Nil {
+  logger
+}
+pub fn caller() -> Nil {
+  let h = pick()
+  run(h)
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn second_order_returned_function_inline_test() {
+  // The inline form `run(pick())` resolves the same way as the let-bound form.
+  let source =
+    "
+import gleam/io
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn logger(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+fn pick() -> fn(fn(String) -> Nil) -> Nil {
+  logger
+}
+pub fn caller() -> Nil {
+  run(pick())
+}
+"
+  second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
+  { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+pub fn second_order_returned_branch_of_params_test() {
+  // A producer returns one of its *operator* parameters through a branch:
+  // `pick(a, b, flag) -> case flag { True -> a  False -> b }`. The returned
+  // operator is the join `a ⊔ b`; binding `a := stdout_op`, `b := fs_op` and
+  // applying it (in `run(h)`) distributes over the union, so `caller` carries
+  // both branches' effects: [Stdout, FileSystem].
+  let source =
+    "
+import gleam/io
+import simplifile
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn stdout_op(cb: fn(String) -> Nil) -> Nil {
+  io.println(\"x\")
+}
+fn fs_op(cb: fn(String) -> Nil) -> Nil {
+  let _ = simplifile.read(\"f\")
+  Nil
+}
+fn pick(
+  a: fn(fn(String) -> Nil) -> Nil,
+  b: fn(fn(String) -> Nil) -> Nil,
+  flag: Bool,
+) -> fn(fn(String) -> Nil) -> Nil {
+  case flag {
+    True -> a
+    False -> b
+  }
+}
+pub fn caller() -> Nil {
+  let h = pick(stdout_op, fs_op, True)
+  run(h)
+}
+"
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn second_order_returned_function_cross_module_test() {
+  // A cross-module producer whose returned operator is in the knowledge base
+  // (as the topological pass would have folded it).
+  let source =
+    "
+import gleam/io
+import dep
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller() -> Nil {
+  let h = dep.pick()
+  run(h)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  // The topological pass folds both the producer's own effect (it's pure — it
+  // just returns a function) and its returned operator into the KB.
+  let kb =
+    knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(
+          QualifiedName("dep", "pick"),
+          effect_term.from_effect_set(types.empty()),
+        ),
+      ]),
+    )
+    |> effects.with_inferred_returned_operators(
+      dict.from_list([
+        #(QualifiedName("dep", "pick"), types.TAbs("cb", types.TVar("cb"))),
+      ]),
+    )
+  let registry = signatures.from_glance_module("app", module)
+  let pass =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
+  let #(violations, _) = checker.check(module, [pass], kb, registry, dict.new())
+  violations |> should.equal([])
+  let fail =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(types.empty()),
+    )
+  let #(fail_violations, _) =
+    checker.check(module, [fail], kb, registry, dict.new())
+  { fail_violations != [] } |> should.be_true()
+}
+
+pub fn second_order_returned_function_from_spec_test() {
+  // A `returns` line in the spec (as `infer` writes it) lets `check` resolve a
+  // cross-module producer — exercising the parse + load path, not a hand-built
+  // KB.
+  let assert Ok(spec) =
+    annotation.parse_file("returns dep.pick : fn(cb) -> [cb]")
+  let source =
+    "
+import gleam/io
+import dep
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+pub fn caller() -> Nil {
+  let h = dep.pick()
+  run(h)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let kb =
+    knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(
+          QualifiedName("dep", "pick"),
+          effect_term.from_effect_set(types.empty()),
+        ),
+      ]),
+    )
+    |> effects.with_inferred_returned_operators(
+      effects.load_spec_returns_from_file(spec),
+    )
+  let registry = signatures.from_glance_module("app", module)
+  let pass =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
+  let #(violations, _) = checker.check(module, [pass], kb, registry, dict.new())
+  violations |> should.equal([])
+}
+
+pub fn infer_returned_operator_entry_test() {
+  // Inferring a producer that returns a function records its returned operator.
+  let source =
+    "
+pub fn logger(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+pub fn pick() -> fn(fn(String) -> Nil) -> Nil {
+  logger
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(_annotations, returns) =
+    checker.infer_with_returns(
+      module,
+      knowledge_base(),
+      [],
+      signatures.from_glance_module("app", module),
+      dict.new(),
+      dict.new(),
+    )
+  dict.get(returns, "pick")
+  |> should.equal(Ok(types.TAbs("cb", types.TVar("cb"))))
+}
+
+pub fn infer_first_order_returned_function_entry_test() {
+  // C2: inferring a producer that returns a *first-order* function records its
+  // latent effect (a ground set), and that round-trips through the spec syntax.
+  let source =
+    "
+import gleam/io
+pub fn make_printer() -> fn() -> Nil {
+  fn() { io.println(\"x\") }
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(_annotations, returns) =
+    checker.infer_with_returns(
+      module,
+      knowledge_base(),
+      [],
+      signatures.from_glance_module("app", module),
+      dict.new(),
+      dict.new(),
+    )
+  let assert Ok(operator) = dict.get(returns, "make_printer")
+  operator
+  |> should.equal(
+    effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+  )
+  // Round-trips through `format_returns` / parse (a plain effect term).
+  let line =
+    annotation.format_returns(types.ReturnsAnnotation("make_printer", operator))
+  let assert Ok(spec) = annotation.parse_file(line)
+  let assert [reparsed] = annotation.extract_returns(spec)
+  effect_term.normalize(reparsed.operator)
+  |> should.equal(effect_term.normalize(operator))
+}
+
+pub fn first_order_returned_function_from_spec_test() {
+  // C2 cross-module: a `returns dep.make : [Stdout]` spec line (as `infer`
+  // writes it) lets `let f = dep.make(); f()` resolve in a downstream module.
+  let assert Ok(spec) = annotation.parse_file("returns dep.make : [Stdout]")
+  let source =
+    "
+import dep
+pub fn caller() -> Nil {
+  let f = dep.make()
+  f()
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let kb =
+    knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(
+          QualifiedName("dep", "make"),
+          effect_term.from_effect_set(types.empty()),
+        ),
+      ]),
+    )
+    |> effects.with_inferred_returned_operators(
+      effects.load_spec_returns_from_file(spec),
+    )
+  let registry = signatures.from_glance_module("app", module)
+  let pass =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    )
+  let #(violations, _) = checker.check(module, [pass], kb, registry, dict.new())
+  violations |> should.equal([])
+  let fail =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(types.empty()),
+    )
+  let #(failed, _) = checker.check(module, [fail], kb, registry, dict.new())
+  { failed != [] } |> should.be_true()
+}
+
+pub fn infer_returned_branch_of_params_entry_test() {
+  // A producer that returns one of its operator parameters through a branch
+  // records the *union* as its returned operator, and that union round-trips
+  // through the spec-file syntax (a polymorphic effect set `[a, b]`).
+  let source =
+    "
+pub fn pick(
+  a: fn(fn(String) -> Nil) -> Nil,
+  b: fn(fn(String) -> Nil) -> Nil,
+  flag: Bool,
+) -> fn(fn(String) -> Nil) -> Nil {
+  case flag {
+    True -> a
+    False -> b
+  }
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(_annotations, returns) =
+    checker.infer_with_returns(
+      module,
+      knowledge_base(),
+      [],
+      signatures.from_glance_module("app", module),
+      dict.new(),
+      dict.new(),
+    )
+  let assert Ok(operator) = dict.get(returns, "pick")
+  operator
+  |> should.equal(types.TUnion([types.TVar("a"), types.TVar("b")]))
+  // Round-trips through `format_returns` / parse.
+  let line =
+    annotation.format_returns(types.ReturnsAnnotation("pick", operator))
+  let assert Ok(spec) = annotation.parse_file(line)
+  let assert [reparsed] = annotation.extract_returns(spec)
+  effect_term.normalize(reparsed.operator)
+  |> should.equal(effect_term.normalize(operator))
+}
+
+pub fn second_order_returns_parameter_resolves_test() {
+  // Return-polymorphism: `wrap` returns its own operator parameter, bound at the
+  // producer call to `reader` ([FileSystem]); the result resolves rather than
+  // collapsing to `[Unknown]`.
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn wrap(
+  base: fn(fn(String) -> Nil) -> Nil,
+) -> fn(fn(String) -> Nil) -> Nil {
+  base
+}
+fn reader(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+  fs.read(\"f\")
+}
+pub fn caller() -> Nil {
+  let h = wrap(reader)
+  run(h)
+}
+"
+  // wrap(reader) ⟹ reader's operator; run applies it to io.println ⟹
+  // [Stdout] (the callback) ∪ [FileSystem] (reader's own effect).
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["Stdout"]) != [] }
+  |> should.be_true()
+}
+
+pub fn second_order_decorator_return_resolves_test() {
+  // A decorator returns a closure that *wraps* its operator parameter. The
+  // returned operator `λcb. ([Stdout] ∪ inner(cb))` binds `inner` to `reader` at
+  // `traced(reader)`; the producer call no longer over-approximates the returned
+  // closure's body, so the result is the clean union — no spurious `[Unknown]`.
+  let source =
+    "
+import gleam/io
+import fs
+pub fn run(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+fn reader(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+  fs.read(\"f\")
+}
+fn traced(
+  inner: fn(fn(String) -> Nil) -> Nil,
+) -> fn(fn(String) -> Nil) -> Nil {
+  fn(cb) {
+    io.println(\"trace\")
+    inner(cb)
+  }
+}
+pub fn caller() -> Nil {
+  let h = traced(reader)
+  run(h)
+}
+"
+  second_order_violations(source, "caller", ["Stdout", "FileSystem"])
+  |> should.equal([])
+  { second_order_violations(source, "caller", ["FileSystem"]) != [] }
+  |> should.be_true()
+}
+
+/// A `fs.read : [FileSystem]` external for second-order operator tests.
+fn fs_read_external() -> types.ExternalAnnotation {
+  types.ExternalAnnotation(
+    "fs",
+    types.FunctionExternal("read"),
+    Specific(set.from_list(["FileSystem"])),
+  )
+}
+
+/// Check `function` in a single-module source against a `[budget]` and return
+/// the violations. The registry is built from the module so same-module operator
+/// parameters resolve; the `fs.read` external is always available.
+fn second_order_violations(
+  source: String,
+  function: String,
+  budget: List(String),
+) -> List(types.Violation) {
+  let assert Ok(module) = glance.module(source)
+  let kb = effects.with_externals(knowledge_base(), [fs_read_external()])
+  let registry = signatures.from_glance_module("app", module)
+  let ann =
+    EffectAnnotation(
+      Check,
+      function,
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(budget))),
+    )
+  let #(violations, _) = checker.check(module, [ann], kb, registry, dict.new())
+  violations
 }

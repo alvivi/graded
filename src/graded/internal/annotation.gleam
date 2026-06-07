@@ -5,13 +5,15 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/set
 import gleam/string
+import graded/internal/effect_term
 import graded/internal/types.{
-  type AnnotationKind, type EffectAnnotation, type EffectSet,
+  type AnnotationKind, type EffectAnnotation, type EffectSet, type EffectTerm,
   type ExternalAnnotation, type GradedFile, type GradedLine, type ParamBound,
-  type TypeFieldAnnotation, AnnotationLine, BlankLine, Check, CommentLine,
-  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
-  GradedFile, ModuleExternal, ParamBound, Polymorphic, Specific,
-  TypeFieldAnnotation, TypeFieldLine, Wildcard,
+  type ReturnsAnnotation, type TypeFieldAnnotation, AnnotationLine, BlankLine,
+  Check, CommentLine, EffectAnnotation, Effects, ExternalAnnotation,
+  ExternalLine, FunctionExternal, GradedFile, ModuleExternal, ParamBound,
+  Polymorphic, ReturnsAnnotation, ReturnsLine, Specific, TAbs, TApp, TLabels,
+  TTop, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 
 pub type ParseError {
@@ -43,10 +45,35 @@ pub fn extract_annotations(file: GradedFile) -> List(EffectAnnotation) {
       AnnotationLine(annotation) -> Ok(annotation)
       TypeFieldLine(_) -> Error(Nil)
       ExternalLine(_) -> Error(Nil)
+      ReturnsLine(_) -> Error(Nil)
       CommentLine(_) -> Error(Nil)
       BlankLine -> Error(Nil)
     }
   })
+}
+
+/// Extract all `returns` annotations from a parsed file.
+pub fn extract_returns(file: GradedFile) -> List(ReturnsAnnotation) {
+  list.filter_map(file.lines, fn(line) {
+    case line {
+      ReturnsLine(returns) -> Ok(returns)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+/// Render a ReturnsAnnotation back to its .graded line format.
+pub fn format_returns(returns: ReturnsAnnotation) -> String {
+  "returns " <> returns.function <> " : " <> format_operator(returns.operator)
+}
+
+/// Format an operator term — a `TAbs` as `fn(cb) -> [body]`, anything else as a
+/// plain effect term (e.g. a polymorphic returned operator that's a bare `[v]`).
+fn format_operator(term: EffectTerm) -> String {
+  case term {
+    TAbs(_, _) -> render_abstraction(term)
+    other -> format_effect_term(other)
+  }
 }
 
 /// Extract only `check` annotations (enforced invariants).
@@ -64,16 +91,9 @@ pub fn format_annotation(annotation: EffectAnnotation) -> String {
   let params_string = case annotation.params {
     [] -> ""
     params ->
-      "("
-      <> string.join(
-        list.map(params, fn(param) {
-          param.name <> ": " <> format_effect_set(param.effects)
-        }),
-        ", ",
-      )
-      <> ")"
+      "(" <> string.join(list.map(params, format_param_bound), ", ") <> ")"
   }
-  let effects_string = format_effect_set(annotation.effects)
+  let effects_string = format_effect_term(annotation.effects)
   prefix
   <> " "
   <> annotation.function
@@ -118,7 +138,7 @@ pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
   <> "."
   <> tf.field
   <> " : "
-  <> format_effect_set(tf.effects)
+  <> format_effect_term(tf.effects)
 }
 
 /// Extract type field annotations from a parsed file.
@@ -168,6 +188,7 @@ pub fn format_file(file: GradedFile) -> String {
       AnnotationLine(annotation) -> format_annotation(annotation)
       TypeFieldLine(tf) -> format_type_field(tf)
       ExternalLine(ext) -> format_external(ext)
+      ReturnsLine(returns) -> format_returns(returns)
       CommentLine(text) -> text
       BlankLine -> ""
     }
@@ -175,25 +196,29 @@ pub fn format_file(file: GradedFile) -> String {
   |> string.join("\n")
 }
 
-/// Merge inferred effects into an existing GradedFile, preserving structure.
+/// Merge inferred effects and returned-operator signatures into an existing
+/// GradedFile, preserving structure.
 ///
-/// - `check` lines: kept exactly where they are, unchanged
-/// - Comments and blank lines: kept exactly where they are
-/// - Existing `effects` lines: updated in-place with new effect set
-/// - Stale `effects` lines (function no longer exists): removed
-/// - New functions not yet in file: `effects` lines appended at end
+/// - `check` / `type` / `external` lines, comments, blanks: kept in place
+/// - Existing `effects` and `returns` lines: updated in-place; removed if stale
+/// - New functions not yet in file: `effects` / `returns` lines appended at end
 pub fn merge_inferred(
   file: GradedFile,
   inferred: List(EffectAnnotation),
+  inferred_returns: List(ReturnsAnnotation),
 ) -> GradedFile {
   let inferred_map =
     inferred
     |> list.map(fn(annotation) { #(annotation.function, annotation) })
     |> dict.from_list()
+  let returns_map =
+    inferred_returns
+    |> list.map(fn(returns) { #(returns.function, returns) })
+    |> dict.from_list()
 
-  let #(new_lines, placed) =
-    list.fold(file.lines, #([], set.new()), fn(state, line) {
-      let #(lines, placed_set) = state
+  let #(new_lines, placed, placed_returns) =
+    list.fold(file.lines, #([], set.new(), set.new()), fn(state, line) {
+      let #(lines, placed_set, placed_returns_set) = state
       case line {
         AnnotationLine(annotation) ->
           case annotation.kind {
@@ -202,24 +227,47 @@ pub fn merge_inferred(
                 Ok(new_annotation) -> #(
                   [AnnotationLine(new_annotation), ..lines],
                   set.insert(placed_set, annotation.function),
+                  placed_returns_set,
                 )
-                Error(Nil) -> #(lines, placed_set)
+                Error(Nil) -> #(lines, placed_set, placed_returns_set)
               }
-            Check -> #([line, ..lines], placed_set)
+            Check -> #([line, ..lines], placed_set, placed_returns_set)
           }
-        TypeFieldLine(_) -> #([line, ..lines], placed_set)
-        ExternalLine(_) -> #([line, ..lines], placed_set)
-        CommentLine(_) -> #([line, ..lines], placed_set)
-        BlankLine -> #([line, ..lines], placed_set)
+        ReturnsLine(returns) ->
+          case dict.get(returns_map, returns.function) {
+            Ok(new_returns) -> #(
+              [ReturnsLine(new_returns), ..lines],
+              placed_set,
+              set.insert(placed_returns_set, returns.function),
+            )
+            Error(Nil) -> #(lines, placed_set, placed_returns_set)
+          }
+        TypeFieldLine(_) | ExternalLine(_) | CommentLine(_) | BlankLine -> #(
+          [line, ..lines],
+          placed_set,
+          placed_returns_set,
+        )
       }
     })
 
-  let remaining =
+  let remaining_effects =
     inferred
     |> list.filter(fn(annotation) { !set.contains(placed, annotation.function) })
     |> list.map(AnnotationLine)
+  let remaining_returns =
+    inferred_returns
+    |> list.filter(fn(returns) {
+      !set.contains(placed_returns, returns.function)
+    })
+    |> list.map(ReturnsLine)
 
-  GradedFile(lines: list.append(list.reverse(new_lines), remaining))
+  GradedFile(
+    lines: list.flatten([
+      list.reverse(new_lines),
+      remaining_effects,
+      remaining_returns,
+    ]),
+  )
 }
 
 /// Format an GradedFile: normalize spacing, sort annotations, ensure trailing newline.
@@ -267,12 +315,20 @@ pub fn format_sorted(file: GradedFile) -> String {
     })
     |> list.map(format_external)
 
+  let returns_lines =
+    extract_returns(file)
+    |> list.sort(fn(left, right) {
+      string.compare(left.function, right.function)
+    })
+    |> list.map(format_returns)
+
   let sections = [
     comments,
     external_lines,
     type_field_lines,
     check_lines,
     effects_lines,
+    returns_lines,
   ]
 
   sections
@@ -307,8 +363,20 @@ fn parse_structured_line(
         Ok(ext) -> Ok(ExternalLine(ext))
         Error(Nil) -> Error(InvalidLine(line_number, line))
       }
+    "returns " <> rest ->
+      case parse_returns_line(rest) {
+        Ok(returns) -> Ok(ReturnsLine(returns))
+        Error(Nil) -> Error(InvalidLine(line_number, line))
+      }
     _ -> Error(InvalidLine(line_number, line))
   }
+}
+
+/// Parse a `returns mod.fn : fn(cb) -> [body]` line. The operator reuses the
+/// same `fn(..) -> [..]` syntax as an operator parameter bound.
+fn parse_returns_line(rest: String) -> Result(ReturnsAnnotation, Nil) {
+  use #(name, operator) <- result.try(parse_name_colon_effects(rest))
+  Ok(ReturnsAnnotation(function: name, operator:))
 }
 
 fn parse_annotation_line(
@@ -335,36 +403,50 @@ fn parse_annotation_rest(
   original: String,
 ) -> Result(EffectAnnotation, ParseError) {
   let err = Error(InvalidLine(line_number, original))
-  case string.split(rest, "(") {
-    [] -> err
-    [no_params] ->
-      case parse_name_colon_effects(no_params) {
+  // A params list opens with the `(` immediately after the function name. An
+  // application's `(` inside the effect set is preceded by `[`, so a `[` before
+  // the first `(` means there are no params (the `(` belongs to the result).
+  case split_call(rest) {
+    Error(Nil) ->
+      case parse_name_colon_effects(rest) {
         Error(Nil) -> err
         Ok(#(name, effects)) ->
           Ok(EffectAnnotation(kind:, function: name, params: [], effects:))
       }
-
-    // Has parameter bounds: "name(params) : effects"
-    // Effect sets use '[]' not '()', so the first ')' closes the params list
-    [name_part, ..rest_parts] ->
-      parse_params_annotation(kind, name_part, rest_parts)
+    Ok(#(name, params_str, suffix)) ->
+      parse_params_suffix(kind, string.trim(name), params_str, suffix)
       |> result.replace_error(InvalidLine(line_number, original))
   }
 }
 
-// Parse a "name(params) : effects" annotation where params is a non-empty bound list.
-fn parse_params_annotation(
-  kind: AnnotationKind,
-  name_part: String,
-  rest_parts: List(String),
-) -> Result(EffectAnnotation, Nil) {
-  let name = string.trim(name_part)
-  use <- bool.guard(name == "", Error(Nil))
-  let rejoined = string.join(rest_parts, "(")
-  case string.split(rejoined, ")") {
-    [params_str, suffix, ..] ->
-      parse_params_suffix(kind, name, params_str, suffix)
-    _ -> Error(Nil)
+/// Split `name(params)suffix` at the params parens, matching nested parens so
+/// operator bounds (`fn(cb)`) and result applications don't confuse it.
+/// `Error(Nil)` when there's no params list (no `(`, or the first `(` is inside
+/// the effect brackets).
+fn split_call(s: String) -> Result(#(String, String, String), Nil) {
+  use #(before, rest) <- result.try(string.split_once(s, "("))
+  use <- bool.guard(when: string.contains(before, "["), return: Error(Nil))
+  use #(params, suffix) <- result.try(
+    match_paren(string.to_graphemes(rest), 0, []),
+  )
+  Ok(#(before, params, suffix))
+}
+
+/// Walk graphemes after an opening paren, returning the contents up to the
+/// matching close and the remaining suffix.
+fn match_paren(
+  graphemes: List(String),
+  depth: Int,
+  acc: List(String),
+) -> Result(#(String, String), Nil) {
+  case graphemes {
+    [] -> Error(Nil)
+    [")", ..rest] if depth == 0 ->
+      #(acc |> list.reverse() |> string.concat(), string.concat(rest))
+      |> Ok()
+    ["(", ..rest] -> match_paren(rest, depth + 1, ["(", ..acc])
+    [")", ..rest] -> match_paren(rest, depth - 1, [")", ..acc])
+    [grapheme, ..rest] -> match_paren(rest, depth, [grapheme, ..acc])
   }
 }
 
@@ -380,7 +462,7 @@ fn parse_params_suffix(
     False -> Error(Nil)
     True -> {
       let effects_str = string.trim(string.drop_start(suffix_trimmed, 1))
-      case parse_effect_set(effects_str), parse_params_section(params_str) {
+      case parse_effect_term(effects_str), parse_params_section(params_str) {
         Ok(effects), Ok(params) ->
           Ok(EffectAnnotation(kind:, function: name, params:, effects:))
         _, _ -> Error(Nil)
@@ -431,7 +513,9 @@ fn parse_type_field_line(rest: String) -> Result(TypeFieldAnnotation, Nil) {
 // No "." → module-level external (e.g., `external effects gleam/list : []`)
 // Has "." → function-level external (e.g., `external effects gleam/io.println : [Stdout]`)
 fn parse_external_line(rest: String) -> Result(ExternalAnnotation, Nil) {
-  use #(qualified, effects) <- result.try(parse_name_colon_effects(rest))
+  use #(qualified, term) <- result.try(parse_name_colon_effects(rest))
+  // External declarations are first-order by construction — reduce to a set.
+  let effects = effect_term.to_effect_set(term)
   let segments = string.split(qualified, ".")
   let len = list.length(segments)
   case len {
@@ -452,8 +536,7 @@ fn parse_external_line(rest: String) -> Result(ExternalAnnotation, Nil) {
 fn parse_params_section(input: String) -> Result(List(ParamBound), Nil) {
   case string.trim(input) {
     "" -> Ok([])
-    trimmed ->
-      list.try_map(split_at_top_level_commas(trimmed), parse_single_param)
+    trimmed -> list.try_map(split_top_level_commas(trimmed), parse_single_param)
   }
 }
 
@@ -462,61 +545,18 @@ fn parse_single_param(input: String) -> Result(ParamBound, Nil) {
   Ok(ParamBound(name:, effects:))
 }
 
-// Shared helper: parse "name : [effects]" returning the trimmed name and effect set.
-fn parse_name_colon_effects(input: String) -> Result(#(String, EffectSet), Nil) {
-  case string.split(string.trim(input), ":") {
-    [name_part, effects_part] -> {
-      let name = string.trim(name_part)
-      use <- bool.guard(when: name == "", return: Error(Nil))
-      use effects <- result.try(parse_effect_set(string.trim(effects_part)))
-      Ok(#(name, effects))
-    }
-    _ -> Error(Nil)
-  }
-}
-
-// Split a string by ',' only at bracket depth 0 (ignoring commas inside [...]).
-fn split_at_top_level_commas(input: String) -> List(String) {
-  let #(segments, current, _depth) =
-    list.fold(string.to_graphemes(input), #([], "", 0), fn(state, char) {
-      let #(segs, cur, depth) = state
-      case char {
-        "," if depth == 0 -> #([cur, ..segs], "", depth)
-        "[" -> #(segs, cur <> char, depth + 1)
-        "]" -> #(segs, cur <> char, depth - 1)
-        _ -> #(segs, cur <> char, depth)
-      }
-    })
-  list.reverse([current, ..segments])
-}
-
-fn parse_effect_set(input: String) -> Result(EffectSet, Nil) {
-  let trimmed = string.trim(input)
-  let has_brackets =
-    string.starts_with(trimmed, "[") && string.ends_with(trimmed, "]")
-  use <- bool.guard(when: !has_brackets, return: Error(Nil))
-  let inner =
-    trimmed
-    |> string.drop_start(1)
-    |> string.drop_end(1)
-    |> string.trim()
-  case inner {
-    "_" -> Ok(Wildcard)
-    "" -> Ok(Specific(set.new()))
-    _ -> {
-      let tokens =
-        inner
-        |> string.split(",")
-        |> list.map(string.trim)
-        |> list.filter(fn(tok) { tok != "" })
-      let #(labels, variables) =
-        list.partition(tokens, fn(tok) { is_label_token(tok) })
-      case variables {
-        [] -> Ok(Specific(set.from_list(labels)))
-        _ -> Ok(Polymorphic(set.from_list(labels), set.from_list(variables)))
-      }
-    }
-  }
+// Shared helper: parse "name : <bound>" returning the trimmed name and the
+// bound's effect term (which may be an operator `fn(cb) -> [..]`). Split on the
+// FIRST colon only, so an operator body's contents are left intact.
+fn parse_name_colon_effects(input: String) -> Result(#(String, EffectTerm), Nil) {
+  use #(name_part, effects_part) <- result.try(string.split_once(
+    string.trim(input),
+    ":",
+  ))
+  let name = string.trim(name_part)
+  use <- bool.guard(when: name == "", return: Error(Nil))
+  use effects <- result.try(parse_bound_effect(string.trim(effects_part)))
+  Ok(#(name, effects))
 }
 
 /// A token is an effect label if its first character is uppercase.
@@ -529,6 +569,114 @@ fn is_label_token(token: String) -> Bool {
   }
 }
 
+/// Parse an effect term `[...]`. Beyond labels and variables, supports
+/// second-order *operator applications* `name(arg, ...)`; comma splitting is
+/// paren-aware so an application's own argument list isn't split.
+fn parse_effect_term(input: String) -> Result(EffectTerm, Nil) {
+  let trimmed = string.trim(input)
+  use <- bool.guard(
+    when: !{
+      string.starts_with(trimmed, "[") && string.ends_with(trimmed, "]")
+    },
+    return: Error(Nil),
+  )
+  let inner =
+    trimmed |> string.drop_start(1) |> string.drop_end(1) |> string.trim()
+  case inner {
+    "_" -> Ok(TTop)
+    "" -> Ok(TLabels(set.new()))
+    _ -> {
+      use atoms <- result.try(parse_atoms(inner))
+      Ok(effect_term.normalize(TUnion(atoms)))
+    }
+  }
+}
+
+/// Parse the comma-separated atoms of an effect term body (paren-aware split,
+/// trimmed, empties dropped).
+fn parse_atoms(inner: String) -> Result(List(EffectTerm), Nil) {
+  inner
+  |> split_top_level_commas()
+  |> list.map(string.trim)
+  |> list.filter(fn(token) { token != "" })
+  |> list.try_map(parse_atom)
+}
+
+/// Parse one comma-separated atom of an effect term: a label, a variable, or
+/// an operator application `name([arg], ...)`. An application's arguments are
+/// each a full bracketed effect term, and multiple arguments are *curried*:
+/// `f([A], [B])` ⟹ `TApp(TApp(TVar(f), A), B)`, so the comma form is
+/// unambiguous (a single multi-label argument is `f([A, B])`).
+fn parse_atom(token: String) -> Result(EffectTerm, Nil) {
+  case string.split_once(token, "(") {
+    Ok(#(name, rest)) -> {
+      use <- bool.guard(when: !string.ends_with(rest, ")"), return: Error(Nil))
+      let callee = string.trim(name)
+      use <- bool.guard(when: callee == "", return: Error(Nil))
+      use args <- result.try(parse_application_args(string.drop_end(rest, 1)))
+      Ok(list.fold(args, TVar(callee), fn(acc, arg) { TApp(acc, arg) }))
+    }
+    Error(Nil) ->
+      case is_label_token(token) {
+        True -> Ok(TLabels(set.from_list([token])))
+        False -> Ok(TVar(token))
+      }
+  }
+}
+
+/// Parse an operator application's argument list — comma-separated, each a full
+/// bracketed effect term — splitting at top-level commas only (bracket- and
+/// paren-aware, so a nested application or a multi-label argument isn't split).
+fn parse_application_args(inner: String) -> Result(List(EffectTerm), Nil) {
+  case string.trim(inner) {
+    "" -> Ok([])
+    trimmed ->
+      trimmed
+      |> split_top_level_commas()
+      |> list.map(string.trim)
+      |> list.try_map(parse_effect_term)
+  }
+}
+
+/// Split on commas at nesting depth 0, counting both `[`/`]` and `(`/`)` toward
+/// depth. Used for operator-application argument lists, whose arguments are
+/// bracketed effect terms that may themselves contain nested applications.
+fn split_top_level_commas(input: String) -> List(String) {
+  let #(segments, current, _depth) =
+    list.fold(string.to_graphemes(input), #([], "", 0), fn(state, char) {
+      let #(segments, current, depth) = state
+      case char {
+        "," if depth == 0 -> #([current, ..segments], "", depth)
+        "[" | "(" -> #(segments, current <> char, depth + 1)
+        "]" | ")" -> #(segments, current <> char, depth - 1)
+        _ -> #(segments, current <> char, depth)
+      }
+    })
+  list.reverse([current, ..segments])
+}
+
+/// Parse a parameter bound's effect: an operator `fn(a, b) -> [body]` (a curried
+/// `TAbs`) or an ordinary effect term `[...]`.
+fn parse_bound_effect(input: String) -> Result(EffectTerm, Nil) {
+  let trimmed = string.trim(input)
+  case string.starts_with(trimmed, "fn(") {
+    False -> parse_effect_term(trimmed)
+    True -> {
+      use #(params_part, after) <- result.try(string.split_once(trimmed, ")"))
+      let params =
+        params_part
+        |> string.drop_start(3)
+        |> split_top_level_commas()
+        |> list.map(string.trim)
+        |> list.filter(fn(param) { param != "" })
+      use <- bool.guard(when: params == [], return: Error(Nil))
+      use #(_, body_str) <- result.try(string.split_once(after, "->"))
+      use body <- result.try(parse_effect_term(string.trim(body_str)))
+      Ok(list.fold_right(params, body, fn(acc, param) { TAbs(param, acc) }))
+    }
+  }
+}
+
 fn collect_comments(lines: List(GradedLine)) -> List(String) {
   list.filter_map(lines, fn(line) {
     case line {
@@ -536,6 +684,91 @@ fn collect_comments(lines: List(GradedLine)) -> List(String) {
       _ -> Error(Nil)
     }
   })
+}
+
+/// Format a parameter bound. A first-order bound renders as `name: [effects]`;
+/// a second-order *operator* bound (a curried `TAbs`) renders as
+/// `name: fn(a, b) -> [body]`.
+fn format_param_bound(param: ParamBound) -> String {
+  case param.effects {
+    TAbs(_, _) -> param.name <> ": " <> render_abstraction(param.effects)
+    other -> param.name <> ": " <> format_effect_term(other)
+  }
+}
+
+/// Format an `EffectTerm` as `[...]`. Free variables render as bare lowercase
+/// names, operator applications as `name(arg, ...)`, and a wildcard as `[_]`.
+/// Atoms are sorted; since labels are upper-initial and variables lower-initial
+/// (so labels sort first), a first-order term formats byte-identically to its
+/// `EffectSet`.
+fn format_effect_term(term: EffectTerm) -> String {
+  case effect_term.normalize(term) {
+    TTop -> "[_]"
+    normalized ->
+      "["
+      <> {
+        term_atoms(normalized) |> list.sort(string.compare) |> string.join(", ")
+      }
+      <> "]"
+  }
+}
+
+fn term_atoms(term: EffectTerm) -> List(String) {
+  case term {
+    TLabels(labels) -> set.to_list(labels)
+    TVar(name) -> [name]
+    TTop -> ["_"]
+    TApp(_, _) -> [render_application(term)]
+    TUnion(members) -> list.flat_map(members, term_atoms)
+    TAbs(_, _) -> [render_abstraction(term)]
+  }
+}
+
+/// Render an operator application `head([arg0], [arg1], ...)`. Walks the whole
+/// (possibly curried) application spine and renders arguments **in spine order**
+/// — currying is positional, so argument order is significant and must not be
+/// sorted (unlike union members). Each argument is a bracketed effect term.
+fn render_application(term: EffectTerm) -> String {
+  let #(head, args) = application_spine(term)
+  let callee = case head {
+    TVar(name) -> name
+    other -> string.join(term_atoms(other) |> list.sort(string.compare), " ")
+  }
+  callee
+  <> "("
+  <> { args |> list.map(format_effect_term) |> string.join(", ") }
+  <> ")"
+}
+
+/// Collect an application spine `((head a0) a1 ...)` into its head and the
+/// argument list in application order.
+fn application_spine(term: EffectTerm) -> #(EffectTerm, List(EffectTerm)) {
+  case term {
+    TApp(operator, argument) -> {
+      let #(head, args) = application_spine(operator)
+      #(head, list.append(args, [argument]))
+    }
+    other -> #(other, [])
+  }
+}
+
+/// Render an operator abstraction `fn(a, b) -> [body]`. Walks the curried
+/// `TAbs` spine to collect all binders in order.
+fn render_abstraction(term: EffectTerm) -> String {
+  let #(binders, body) = abstraction_spine(term)
+  "fn(" <> string.join(binders, ", ") <> ") -> " <> format_effect_term(body)
+}
+
+/// Collect a curried abstraction `λa. λb. body` into its binders (in order) and
+/// the innermost body.
+fn abstraction_spine(term: EffectTerm) -> #(List(String), EffectTerm) {
+  case term {
+    TAbs(param, body) -> {
+      let #(rest, inner) = abstraction_spine(body)
+      #([param, ..rest], inner)
+    }
+    other -> #([], other)
+  }
 }
 
 fn format_effect_set(effect_set: EffectSet) -> String {

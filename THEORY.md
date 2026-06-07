@@ -171,6 +171,14 @@ The checker algorithm is the same shape for both:
 
 This is what makes the theory powerful — the checker is parameterized by the algebra. The same infrastructure that walks the AST and follows transitive calls works for both effects and privacy.
 
+### Higher-kinded effect variables (second-order polymorphism)
+
+Effect *polymorphism* lets a grade contain variables: `map(f: [e]) : [e]` says "`map`'s effect is whatever `f`'s effect `e` turns out to be." Here `e` ranges over effects — in kind terms, `e :: Eff`.
+
+A higher-order parameter whose own type takes a function is *second-order*: its effect is not a set but a **function of a set**. Writing `Eff → Eff` for "effect operator," the parameter `action` in `with(action: fn(fn() -> Nil) -> a)` has kind `Eff → Eff`, and `with`'s effect is `action` *applied to* the effect of the callback it is handed — an **application** `action(Stdout)`, not a flat variable. This is exactly the type-level `*` vs `* → *` (kind) distinction lifted from types to effects: first-order effect polymorphism quantifies over `Eff`-kinded variables; second-order quantifies over `Eff → Eff`-kinded ones (System F-ω, transplanted to the effect algebra).
+
+graded represents this with a small term language (`EffectTerm`): labels and union (the set semiring above), plus variables, abstraction (`λcb. body`, an operator), and application (`op(arg)`). `EffectSet` is the **ground normal form** — a term with no abstractions, no applications, and no free higher-kinded variables. Resolution is **beta-reduction**: at a call site the operator argument is substituted for the variable and `op(arg)` reduces. Because the terms are finite and non-recursive (call-graph recursion is handled separately, by topological ordering and a cycle guard), reduction terminates without the unification/fixpoint machinery a full effect-inference system (Koka, Granule) would need — keeping graded a lightweight checker over the same semiring foundation. See [docs/second-order-effects.md](./docs/second-order-effects.md).
+
 ## Step 7: Privacy — the next checker
 
 Effects answer "what *kind* of side effect does this function perform?" Privacy answers "where does sensitive data *flow*?"

@@ -4,7 +4,9 @@ import gleam/list
 import gleam/option.{Some}
 import gleeunit/should
 import graded/internal/extract
-import graded/internal/types.{FunctionRef, QualifiedName}
+import graded/internal/types.{
+  Choice, FunctionRef, OtherExpression, QualifiedName,
+}
 
 fn parse_and_extract(src: String) -> extract.ExtractResult {
   let assert Ok(module) = glance.module(src)
@@ -264,6 +266,84 @@ pub fn target() { io.println(\"hi\") }"
 }
 
 // ──── Local binding resolution (same-function value flow) ────
+
+pub fn case_of_function_refs_is_choice_arg_test() {
+  // A `case` whose arms are all function references becomes a `Choice` argument.
+  let src =
+    "import gleam/io
+pub fn target(flag) {
+  print_with(case flag {
+    True -> io.println
+    False -> io.print
+  })
+}"
+  let result = parse_and_extract(src)
+  result.call_args
+  |> dict.values
+  |> list.flatten
+  |> list.map(fn(arg) { arg.value })
+  |> should.equal([
+    Choice([
+      FunctionRef(QualifiedName("gleam/io", "println")),
+      FunctionRef(QualifiedName("gleam/io", "print")),
+    ]),
+  ])
+}
+
+pub fn case_with_non_function_arm_is_not_choice_test() {
+  // A `case` with a non-function arm (a literal) is opaque, not a `Choice`.
+  let src =
+    "import gleam/io
+pub fn target(flag) {
+  print_with(case flag {
+    True -> io.println
+    False -> 42
+  })
+}"
+  let result = parse_and_extract(src)
+  result.call_args
+  |> dict.values
+  |> list.flatten
+  |> list.map(fn(arg) { arg.value })
+  |> should.equal([OtherExpression])
+}
+
+pub fn block_classifies_to_tail_expression_test() {
+  // A block argument resolves to its tail expression (with the block's own lets
+  // in scope) — here a function reference.
+  let src =
+    "import gleam/io
+pub fn target() {
+  call_with({
+    let g = io.println
+    g
+  })
+}"
+  let result = parse_and_extract(src)
+  result.call_args
+  |> dict.values
+  |> list.flatten
+  |> list.map(fn(arg) { arg.value })
+  |> should.equal([FunctionRef(QualifiedName("gleam/io", "println"))])
+}
+
+pub fn pipe_into_block_resolves_tail_test() {
+  // Piping into a block re-targets the pipe at the block's tail expression
+  // (with the block's lets in scope), so `x |> { let f = io.println; f }`
+  // resolves the call to io.println.
+  let src =
+    "import gleam/io
+pub fn target(x) {
+  x |> {
+    let f = io.println
+    f
+  }
+}"
+  let result = parse_and_extract(src)
+  result.resolved
+  |> list.map(fn(r) { r.name })
+  |> should.equal([QualifiedName("gleam/io", "println")])
+}
 
 pub fn function_ref_alias_call_test() {
   let src =

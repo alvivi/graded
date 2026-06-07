@@ -8,8 +8,9 @@ import gleam/set.{type Set}
 import gleam/string
 import graded/internal/annotation
 import graded/internal/config
+import graded/internal/effect_term
 import graded/internal/types.{
-  type ArgumentValue, type EffectAnnotation, type EffectSet,
+  type ArgumentValue, type EffectAnnotation, type EffectSet, type EffectTerm,
   type ExternalAnnotation, type ParamBound, type QualifiedName,
   type TypeFieldAnnotation, type TypeFieldEffect, Check, ConstructorRef, Effects,
   FunctionExternal, FunctionRef, ModuleExternal, Polymorphic, QualifiedName,
@@ -19,20 +20,32 @@ import simplifile
 import tom
 
 pub type EffectLookup {
-  Known(EffectSet)
+  Known(EffectTerm)
   Unknown
 }
 
 /// Bundles all effect knowledge: dependency + catalog, precomputed for fast lookup.
 pub type KnowledgeBase {
   KnowledgeBase(
-    all_effects: Dict(QualifiedName, EffectSet),
+    all_effects: Dict(QualifiedName, EffectTerm),
     param_bounds: Dict(QualifiedName, List(ParamBound)),
     // Keyed by #(defining module, type name, field). The module qualifies the
     // type so same-named types in different modules don't collide. Bare
     // (cache/unqualified) annotations use "" — matched by the syntactic-receiver
     // fallback, which can't determine the module.
     type_fields: Dict(#(String, String, String), TypeFieldEffect),
+    // For a function that *returns a function* (an operator-shaped result), the
+    // lifted effect-operator of its return value — so a consumer
+    // `let h = f(); with(h)` resolves `h` instead of going `[Unknown]`. Computed
+    // at the producer's inference time (where its module's private callees are
+    // in scope) and threaded forward by the topological pass.
+    returned_operators: Dict(QualifiedName, EffectTerm),
+    // Package-wide factory signatures, keyed by `#(defining module, function)`:
+    // each constructor field a function wires to one of its parameters, mapped
+    // to that parameter's position. Lets a let-bound *cross-module* factory call
+    // bind its result's fields like a direct construction. (Same-module
+    // factories are derived locally from the module, like constructors.)
+    factories: Dict(#(String, String), Dict(String, Int)),
     pure_modules: Set(String),
   )
 }
@@ -50,6 +63,8 @@ pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
     // ordering in CLAUDE.md — dict.merge lets the second arg win.
     param_bounds: dict.merge(cat_params, dep_params),
     type_fields: dict.new(),
+    returned_operators: load_dependency_returns(packages_directory),
+    factories: dict.new(),
     pure_modules: cat_pure,
   )
 }
@@ -63,6 +78,8 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     all_effects: cat_effects,
     param_bounds: cat_params,
     type_fields: dict.new(),
+    returned_operators: dict.new(),
+    factories: dict.new(),
     pure_modules: cat_pure,
   )
 }
@@ -145,7 +162,7 @@ pub fn with_externals(
             dict.insert(
               effect_map,
               QualifiedName(external_annotation.module, function),
-              external_annotation.effects,
+              effect_term.from_effect_set(external_annotation.effects),
             ),
             pure_set,
           )
@@ -168,20 +185,22 @@ pub fn lookup(
     Ok(effect_set) -> Known(effect_set)
     Error(Nil) ->
       case set.contains(knowledge_base.pure_modules, name.module) {
-        True -> Known(types.empty())
+        True -> Known(effect_term.pure())
         False -> Unknown
       }
   }
 }
 
-/// Look up effects, returning [Unknown] for unrecognized functions.
+/// Look up effects as an `EffectTerm`, returning `[Unknown]` for unrecognized
+/// functions. The term may be second-order (carry operator applications) for
+/// higher-order functions; callers reduce it at the resolution boundary.
 pub fn lookup_effects(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
-) -> EffectSet {
+) -> EffectTerm {
   case lookup(knowledge_base, name) {
-    Known(effect_set) -> effect_set
-    Unknown -> types.from_labels(["Unknown"])
+    Known(effect_term) -> effect_term
+    Unknown -> effect_term.unknown()
   }
 }
 
@@ -197,11 +216,11 @@ pub fn lookup_effects(
 pub fn argument_value_effects(
   knowledge_base: KnowledgeBase,
   value: ArgumentValue,
-) -> EffectSet {
+) -> EffectTerm {
   case value {
     FunctionRef(name:) -> lookup_effects(knowledge_base, name)
-    ConstructorRef -> types.empty()
-    _ -> types.from_labels(["Unknown"])
+    ConstructorRef -> effect_term.pure()
+    _ -> effect_term.unknown()
   }
 }
 
@@ -273,7 +292,7 @@ pub fn parse_path_dependencies(
 /// `effects` annotation maps directly to a `QualifiedName` without needing
 /// to know which file it came from. Returns an empty dict when the spec
 /// file is missing or unparseable.
-pub fn load_spec_effects(spec_path: String) -> Dict(QualifiedName, EffectSet) {
+pub fn load_spec_effects(spec_path: String) -> Dict(QualifiedName, EffectTerm) {
   case read_spec_annotations(spec_path) {
     Error(_) -> dict.new()
     Ok(annotations) -> fold_spec_effects(annotations)
@@ -285,13 +304,13 @@ pub fn load_spec_effects(spec_path: String) -> Dict(QualifiedName, EffectSet) {
 /// in hand.
 pub fn load_spec_effects_from_file(
   file: types.GradedFile,
-) -> Dict(QualifiedName, EffectSet) {
+) -> Dict(QualifiedName, EffectTerm) {
   fold_spec_effects(annotation.extract_annotations(file))
 }
 
 fn fold_spec_effects(
   annotations: List(EffectAnnotation),
-) -> Dict(QualifiedName, EffectSet) {
+) -> Dict(QualifiedName, EffectTerm) {
   list.fold(annotations, dict.new(), fn(acc, ann) {
     case ann.kind {
       Effects ->
@@ -308,20 +327,64 @@ fn fold_spec_effects(
 fn read_spec_annotations(
   spec_path: String,
 ) -> Result(List(EffectAnnotation), Nil) {
+  use file <- result.try(read_spec_file(spec_path))
+  Ok(annotation.extract_annotations(file))
+}
+
+fn read_spec_file(spec_path: String) -> Result(types.GradedFile, Nil) {
   use content <- result.try(
     simplifile.read(spec_path) |> result.replace_error(Nil),
   )
-  use file <- result.try(
-    annotation.parse_file(content) |> result.replace_error(Nil),
-  )
-  Ok(annotation.extract_annotations(file))
+  annotation.parse_file(content) |> result.replace_error(Nil)
+}
+
+/// Build a returned-operator map (qualified name → operator) from a parsed
+/// spec's `returns` lines. Used to load the project spec during `check`.
+pub fn load_spec_returns_from_file(
+  file: types.GradedFile,
+) -> Dict(QualifiedName, EffectTerm) {
+  fold_spec_returns(annotation.extract_returns(file))
+}
+
+fn fold_spec_returns(
+  returns: List(types.ReturnsAnnotation),
+) -> Dict(QualifiedName, EffectTerm) {
+  list.fold(returns, dict.new(), fn(acc, returns) {
+    case annotation.split_qualified_name(returns.function) {
+      Ok(#(module, function)) ->
+        dict.insert(acc, QualifiedName(module:, function:), returns.operator)
+      Error(_) -> acc
+    }
+  })
+}
+
+/// Scan dependency `.graded` specs for `returns` lines so a returned operator a
+/// dependency declares crosses the package boundary.
+fn load_dependency_returns(
+  packages_directory: String,
+) -> Dict(QualifiedName, EffectTerm) {
+  let entries = case simplifile.read_directory(packages_directory) {
+    Ok(found) -> found
+    Error(_) -> []
+  }
+  list.fold(entries, dict.new(), fn(acc, package_name) {
+    let dep_root = packages_directory <> "/" <> package_name
+    let spec_file = case config.read(dep_root <> "/gleam.toml") {
+      Ok(cfg) -> cfg.spec_file
+      Error(_) -> config.default_spec_file(package_name)
+    }
+    case read_spec_file(dep_root <> "/" <> spec_file) {
+      Ok(file) -> dict.merge(acc, load_spec_returns_from_file(file))
+      Error(_) -> acc
+    }
+  })
 }
 
 /// Merge inferred effects into a knowledge base.
 /// Existing entries in the knowledge base take priority.
 pub fn with_inferred(
   knowledge_base: KnowledgeBase,
-  inferred: Dict(QualifiedName, EffectSet),
+  inferred: Dict(QualifiedName, EffectTerm),
 ) -> KnowledgeBase {
   let merged = dict.merge(inferred, knowledge_base.all_effects)
   KnowledgeBase(..knowledge_base, all_effects: merged)
@@ -339,6 +402,44 @@ pub fn with_inferred_params(
   KnowledgeBase(..knowledge_base, param_bounds: merged)
 }
 
+/// Merge inferred returned-operator signatures into a knowledge base, so a
+/// downstream module's `let h = producer(); with(h)` can resolve `h` to the
+/// operator the producer returns. Existing entries take priority.
+pub fn with_inferred_returned_operators(
+  knowledge_base: KnowledgeBase,
+  inferred: Dict(QualifiedName, EffectTerm),
+) -> KnowledgeBase {
+  let merged = dict.merge(inferred, knowledge_base.returned_operators)
+  KnowledgeBase(..knowledge_base, returned_operators: merged)
+}
+
+/// Attach the package-wide factory map (keyed by `#(module, function)`), so a
+/// let-bound cross-module factory call binds its result's fields. Replaces any
+/// existing map (it's computed once per run).
+pub fn with_factories(
+  knowledge_base: KnowledgeBase,
+  factories: Dict(#(String, String), Dict(String, Int)),
+) -> KnowledgeBase {
+  KnowledgeBase(..knowledge_base, factories:)
+}
+
+/// The package-wide factory map, for threading into a module's extraction
+/// context as its cross-module factories.
+pub fn factories(
+  knowledge_base: KnowledgeBase,
+) -> Dict(#(String, String), Dict(String, Int)) {
+  knowledge_base.factories
+}
+
+/// Look up the operator a function returns, if known. `Error(Nil)` when the
+/// callee doesn't return a (tracked) operator.
+pub fn lookup_returned_operator(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Result(EffectTerm, Nil) {
+  dict.get(knowledge_base.returned_operators, name)
+}
+
 // PRIVATE
 
 /// For each installed package, locate its spec file via the package's own
@@ -349,7 +450,7 @@ pub fn with_inferred_params(
 /// per-module reader.
 fn load_dependency_effects(
   packages_directory: String,
-) -> #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))) {
+) -> #(Dict(QualifiedName, EffectTerm), Dict(QualifiedName, List(ParamBound))) {
   let entries = case simplifile.read_directory(packages_directory) {
     Ok(found) -> found
     Error(_) -> []
@@ -365,9 +466,12 @@ fn load_dependency_effects(
 }
 
 fn load_spec_into_maps(
-  maps: #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))),
+  maps: #(
+    Dict(QualifiedName, EffectTerm),
+    Dict(QualifiedName, List(ParamBound)),
+  ),
   spec_path: String,
-) -> #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))) {
+) -> #(Dict(QualifiedName, EffectTerm), Dict(QualifiedName, List(ParamBound))) {
   case read_spec_annotations(spec_path) {
     Error(_) -> maps
     Ok(annotations) -> list.fold(annotations, maps, fold_qualified_annotation)
@@ -376,11 +480,11 @@ fn load_spec_into_maps(
 
 fn fold_qualified_annotation(
   accumulator: #(
-    Dict(QualifiedName, EffectSet),
+    Dict(QualifiedName, EffectTerm),
     Dict(QualifiedName, List(ParamBound)),
   ),
   ann: EffectAnnotation,
-) -> #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))) {
+) -> #(Dict(QualifiedName, EffectTerm), Dict(QualifiedName, List(ParamBound))) {
   let #(effect_map, param_map) = accumulator
   case annotation.split_qualified_name(ann.function) {
     Error(_) -> accumulator
@@ -412,9 +516,9 @@ fn find_catalog_directory() -> String {
 
 type CatalogAcc {
   CatalogAcc(
-    ext_effects: Dict(QualifiedName, EffectSet),
+    ext_effects: Dict(QualifiedName, EffectTerm),
     pure_mods: Set(String),
-    poly_effects: Dict(QualifiedName, EffectSet),
+    poly_effects: Dict(QualifiedName, EffectTerm),
     poly_params: Dict(QualifiedName, List(ParamBound)),
   )
 }
@@ -423,7 +527,7 @@ fn load_catalog(
   catalog_dir: String,
   manifest_path: String,
 ) -> #(
-  Dict(QualifiedName, EffectSet),
+  Dict(QualifiedName, EffectTerm),
   Set(String),
   Dict(QualifiedName, List(ParamBound)),
 ) {
@@ -459,6 +563,8 @@ fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
                 all_effects: acc.ext_effects,
                 param_bounds: dict.new(),
                 type_fields: dict.new(),
+                returned_operators: dict.new(),
+                factories: dict.new(),
                 pure_modules: acc.pure_mods,
               ),
               annotation.extract_externals(graded_file),

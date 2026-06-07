@@ -17,6 +17,7 @@ import gleam/string
 import gleeunit/should
 import graded
 import graded/internal/annotation
+import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, Polymorphic, QualifiedName, Specific,
@@ -148,7 +149,7 @@ fn effects_of(
 ) -> EffectSet {
   let assert Ok(annotation) =
     list.find(annotations, fn(a) { a.function == function })
-  annotation.effects
+  effect_term.to_effect_set(annotation.effects)
 }
 
 fn pure() -> EffectSet {
@@ -390,6 +391,103 @@ pub fn run_infer_is_idempotent_test() {
   cleanup(directory)
 }
 
+// ----- returned operators cross module/package via the spec (D2) -----
+
+pub fn returns_operator_cross_module_end_to_end_test() {
+  // A producer that returns a function, consumed in another module. After
+  // `infer`, the spec carries a `returns` line for the producer; `check` then
+  // resolves the consumer's `let h = factory.pick(); with_logger(h)` to the
+  // precise [Stdout] (not [Unknown]) by loading that line.
+  let directory =
+    make_fixture("returns_e2e", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "app/factory.gleam",
+        "pub fn pick() -> fn(fn(String) -> Nil) -> Nil {
+  logger
+}
+
+fn logger(cb: fn(String) -> Nil) -> Nil {
+  cb(\"x\")
+}
+",
+      ),
+      #(
+        "app/main.gleam",
+        "import gleam/io
+import app/factory
+
+pub fn run() -> Nil {
+  let h = factory.pick()
+  with_logger(h)
+}
+
+fn with_logger(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+",
+      ),
+      #("app.graded", "check app/main.run : []\n"),
+    ])
+
+  let assert Ok(Nil) = graded.run_infer(directory)
+
+  // The producer's returned operator is serialized into the spec.
+  let assert Ok(spec) = simplifile.read(directory <> "/app.graded")
+  string.contains(spec, "returns app/factory.pick : fn(cb) -> [cb]")
+  |> should.be_true()
+
+  // `check` re-resolves the consumer by loading that line, flagging main.run's
+  // precise [Stdout] against the [] budget (it would be [Unknown] without it).
+  let assert Ok(results) = graded.run(directory)
+  let assert Ok(main_result) =
+    list.find(results, fn(r) { string.ends_with(r.file, "app/main.gleam") })
+  let assert [violation, ..] = main_result.violations
+  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+
+  cleanup(directory)
+}
+
+// ----- check auto-infers project modules missing from the spec (D4) -----
+
+pub fn check_auto_infers_missing_module_test() {
+  // No prior `graded infer`: the spec has only a `check` line and no `effects`
+  // for module `b`. `check` infers `b` in memory (topological order) so
+  // `a.run`'s call into `b` resolves to the precise [Stdout] — not the
+  // [Unknown] it would be if `check` trusted only the (empty) spec.
+  let directory =
+    make_fixture("check_autoinfer", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "app/b.gleam",
+        "import gleam/io
+
+pub fn shout() -> Nil {
+  io.println(\"x\")
+}
+",
+      ),
+      #(
+        "app/a.gleam",
+        "import app/b
+
+pub fn run() -> Nil {
+  b.shout()
+}
+",
+      ),
+      #("app.graded", "check app/a.run : []\n"),
+    ])
+
+  let assert Ok(results) = graded.run(directory)
+  let assert Ok(a_result) =
+    list.find(results, fn(r) { string.ends_with(r.file, "app/a.gleam") })
+  let assert [violation, ..] = a_result.violations
+  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+
+  cleanup(directory)
+}
+
 fn read_all_graded(directory: String) -> List(#(String, String)) {
   // Snapshot every .graded file under the test directory: the spec file
   // at the root plus all the per-module cache files under build/.graded/.
@@ -571,12 +669,14 @@ pub fn run(value: String) -> Nil {
 
   let assert Ok(d_effects) =
     dict.get(inferred, QualifiedName(module: "dep/d", function: "shout"))
-  d_effects |> should.equal(Specific(set.from_list(["Stdout"])))
+  effect_term.to_effect_set(d_effects)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
 
   // Stdout propagates all the way through c -> b -> a in a single pass.
   let assert Ok(a_effects) =
     dict.get(inferred, QualifiedName(module: "dep/a", function: "run"))
-  a_effects |> should.equal(Specific(set.from_list(["Stdout"])))
+  effect_term.to_effect_set(a_effects)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
 
   let _ = simplifile.delete(dep_path)
   Nil
@@ -633,14 +733,14 @@ pub fn new(value: Int) -> List(MyError) {
       ann.function == "validation.validate_range"
     })
   let assert Ok(v) = validate
-  v.effects
+  effect_term.to_effect_set(v.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["to_error"])))
 
   // `entity.new` should have resolved the variable — OutOfRange is a
   // constructor, so the substitution yields [].
   let new_fn = list.find(annotations, fn(ann) { ann.function == "entity.new" })
   let assert Ok(n) = new_fn
-  n.effects |> should.equal(Specific(set.new()))
+  effect_term.to_effect_set(n.effects) |> should.equal(Specific(set.new()))
 
   let _ = simplifile.delete(dir)
   Nil
@@ -691,7 +791,7 @@ pub fn new(value: Int) -> List(MyError) {
 
   let new_fn = list.find(annotations, fn(ann) { ann.function == "entity.new" })
   let assert Ok(n) = new_fn
-  n.effects |> should.equal(Specific(set.new()))
+  effect_term.to_effect_set(n.effects) |> should.equal(Specific(set.new()))
 
   let _ = simplifile.delete(dir)
   Nil

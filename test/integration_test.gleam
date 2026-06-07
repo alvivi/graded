@@ -47,6 +47,21 @@ pub fn validator_flow_violation_detected_test() {
   v.call.function |> should.equal("println")
 }
 
+pub fn factory_field_violation_detected_test() {
+  // factory_field.run binds its Validator from make(io.println), a *factory*
+  // that wires the field to its parameter. With no `type` annotation, factory
+  // field provenance resolves v.to_error to io.println's [Stdout], so the []
+  // check budget must fail. (B1: the escape-hatch annotation is unnecessary.)
+  let assert Ok(results) = graded.run("test/fixtures")
+  let factory_result =
+    list.find(results, fn(r) { r.file == "test/fixtures/factory_field.gleam" })
+  let assert Ok(r) = factory_result
+  { r.violations != [] } |> should.be_true()
+  let assert [v, ..] = r.violations
+  v.function |> should.equal("run")
+  v.call.function |> should.equal("println")
+}
+
 pub fn opaque_receiver_violation_detected_test() {
   // opaque_receiver.run binds its Validator from make() — a *cross-function*
   // construction the syntax-level path can't see. girard types the receiver,
@@ -62,6 +77,34 @@ pub fn opaque_receiver_violation_detected_test() {
   v.function |> should.equal("run")
   // Crucially the effect is the precise [Stdout] (resolved via the type
   // annotation), not the [Unknown] graded would fall back to without girard.
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn closure_field_effect_from_construction_test() {
+  // A record field wired to an *inline closure* at construction resolves to the
+  // closure body's effect ([Stdout]) without a hand-written `type` annotation —
+  // previously this fell back to [Unknown].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let closure_result =
+    list.find(results, fn(r) { r.file == "test/fixtures/closure_field.gleam" })
+  let assert Ok(r) = closure_result
+  { r.violations != [] } |> should.be_true()
+  let assert [v, ..] = r.violations
+  v.function |> should.equal("run")
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn operator_typed_closure_field_test() {
+  // An *operator-typed* field (a closure that calls its own callback) is lifted
+  // to `λnext. [next]` and applied at the field call `m.wrap(io.println)`,
+  // resolving to the supplied callback's [Stdout] — previously [Unknown].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let operator_result =
+    list.find(results, fn(r) { r.file == "test/fixtures/operator_field.gleam" })
+  let assert Ok(r) = operator_result
+  { r.violations != [] } |> should.be_true()
+  let assert [v, ..] = r.violations
+  v.function |> should.equal("run")
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 

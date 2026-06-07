@@ -13,8 +13,10 @@
 import filepath
 import glance.{type Function, type Module, FunctionType}
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import graded/internal/types.{type QualifiedName, QualifiedName}
@@ -36,6 +38,16 @@ pub type ParameterInfo {
     label: Option(String),
     name: Option(String),
     is_fn_typed: Bool,
+    /// True when the parameter is *second-order* — its own type takes a
+    /// function (`fn(fn(..) -> _) -> _`). Calls to it are effect-operator
+    /// applications, and arguments bound to it are lifted to operators.
+    /// Equivalent to `callback_positions != []`.
+    is_operator: Bool,
+    /// For an operator parameter, the argument indices (within its own type's
+    /// argument list) that are themselves function-typed — its callbacks, in
+    /// order. Empty for first-order parameters. Lets the call site curry an
+    /// argument's abstraction over exactly the right positions.
+    callback_positions: List(Int),
   )
 }
 
@@ -93,6 +105,66 @@ pub fn fn_typed_param_names(
   }
 }
 
+/// Names (label or in-body) of a callee's *operator* parameters — those whose
+/// type takes a function. Empty when the callee isn't in the registry.
+pub fn operator_param_names(
+  registry: SignatureRegistry,
+  name: QualifiedName,
+) -> Set(String) {
+  case lookup(registry, name) {
+    None -> set.new()
+    Some(params) ->
+      params
+      |> list.filter(fn(p) { p.is_operator })
+      |> list.filter_map(fn(p) {
+        option.to_result(option.or(p.label, p.name), Nil)
+      })
+      |> set.from_list()
+  }
+}
+
+/// In-body parameter names of a callee's fn-typed parameters, **in declaration
+/// order** (label preferred, then in-body name). Unlike `fn_typed_param_names`
+/// (a `Set`), this preserves order — needed to curry an operator argument's
+/// abstraction so its binders line up with the application spine. Empty when the
+/// callee isn't in the registry.
+pub fn fn_typed_param_names_ordered(
+  registry: SignatureRegistry,
+  name: QualifiedName,
+) -> List(String) {
+  case lookup(registry, name) {
+    None -> []
+    Some(params) ->
+      params
+      |> list.filter(fn(p) { p.is_fn_typed })
+      |> list.sort(fn(a, b) { int.compare(a.position, b.position) })
+      |> list.filter_map(fn(p) {
+        option.to_result(option.or(p.label, p.name), Nil)
+      })
+  }
+}
+
+/// The argument positions of the callbacks of one *operator* parameter — the
+/// function-typed argument indices within that parameter's own type, in order.
+/// For `action: fn(Config, fn() -> _, fn() -> _) -> _` this is `[1, 2]`. Empty
+/// when the callee or parameter isn't a known operator. The registry-backed twin
+/// of `operator_params_from_function`, used at the call site to curry a closure
+/// argument's abstraction over the right parameters.
+pub fn operator_callback_positions(
+  registry: SignatureRegistry,
+  callee_name: QualifiedName,
+  param_name: String,
+) -> List(Int) {
+  case lookup(registry, callee_name) {
+    None -> []
+    Some(params) ->
+      params
+      |> list.find(fn(p) { option.or(p.label, p.name) == Some(param_name) })
+      |> result.map(fn(p) { p.callback_positions })
+      |> result.unwrap([])
+  }
+}
+
 // ──── Glance AST → SignatureRegistry ────
 
 /// Build a SignatureRegistry from a parsed project module. Used during
@@ -108,6 +180,11 @@ pub fn from_glance_module(
       let function = definition.definition
       let params =
         list.index_map(function.parameters, fn(param, i) {
+          let callback_positions = case param.type_ {
+            Some(FunctionType(_, param_types, _)) ->
+              all_function_indices(param_types)
+            _ -> []
+          }
           ParameterInfo(
             position: i,
             label: param.label,
@@ -116,6 +193,8 @@ pub fn from_glance_module(
               Some(FunctionType(_, _, _)) -> True
               _ -> False
             },
+            is_operator: callback_positions != [],
+            callback_positions:,
           )
         })
       dict.insert(
@@ -149,6 +228,68 @@ pub fn fn_typed_params_from_function(function: Function) -> Set(String) {
     }
   })
   |> set.from_list()
+}
+
+/// A function's *operator* parameters — fn-typed parameters whose own type
+/// takes a function, i.e. `fn(fn(..) -> _) -> _` — mapped to the argument
+/// positions of their callbacks *within the operator's own parameter list*, in
+/// order. For `action: fn(Config, fn() -> _, fn() -> _) -> _` the entry is
+/// `action -> [1, 2]`, so a call `action(config, cb1, cb2)` knows its callbacks
+/// are the position-1 and position-2 arguments. These are second-order: their
+/// effect depends on the callbacks they're applied to, so a call to one becomes
+/// a curried effect-operator *application* rather than a flat variable. (Keys
+/// are a subset of `fn_typed_params_from_function`.)
+pub fn operator_params_from_function(
+  function: Function,
+) -> Dict(String, List(Int)) {
+  function.parameters
+  |> list.filter_map(fn(param) {
+    case param.type_, assignment_name(param.name) {
+      Some(FunctionType(_, param_types, _)), Some(name) ->
+        case all_function_indices(param_types) {
+          [] -> Error(Nil)
+          positions -> Ok(#(name, positions))
+        }
+      _, _ -> Error(Nil)
+    }
+  })
+  |> dict.from_list()
+}
+
+/// The callback positions of an operator-shaped *type* — the function-typed
+/// argument indices of a `fn(.., fn(..) -> _, ..) -> _`, in order. Empty when
+/// the type isn't a function type that takes a function (i.e. not an operator).
+/// Used to lift a function *returned* by a producer (its declared return type).
+pub fn operator_callback_positions_of_type(type_: glance.Type) -> List(Int) {
+  case type_ {
+    FunctionType(_, param_types, _) -> all_function_indices(param_types)
+    _ -> []
+  }
+}
+
+/// Whether a type is itself a function type (`fn(..) -> _`). A producer whose
+/// return type satisfies this *returns a function*, so the effect of calling
+/// that function is worth recording — even when it isn't operator-shaped (takes
+/// no callback). Distinguishes `fn make() -> fn() -> Nil` (record its latent
+/// effect) from `fn make() -> Int` (nothing to record).
+pub fn is_function_return_type(type_: glance.Type) -> Bool {
+  is_function_type(type_)
+}
+
+/// The indices of the function-typed arguments in a type list, in order. These
+/// are the callback positions for an operator parameter's own argument list.
+fn all_function_indices(types: List(glance.Type)) -> List(Int) {
+  types
+  |> list.index_map(fn(t, i) { #(i, is_function_type(t)) })
+  |> list.filter(fn(pair) { pair.1 })
+  |> list.map(fn(pair) { pair.0 })
+}
+
+fn is_function_type(t: glance.Type) -> Bool {
+  case t {
+    FunctionType(_, _, _) -> True
+    _ -> False
+  }
 }
 
 fn assignment_name(name: glance.AssignmentName) -> Option(String) {

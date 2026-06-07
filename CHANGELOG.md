@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Second-order (higher-kinded) effect variables.** The effect representation moved from a flat `Polymorphic(labels, variables)` set to an `EffectTerm` — a small lambda-calculus-with-union (labels, union, variables, abstraction, application), with `EffectSet` as its ground normal form. This lets graded express and resolve effect variables of kind `Eff → Eff` (operators), not just flat `Eff`:
+  - A parameter whose own type takes one or more functions (`action: fn(fn() -> Nil) -> a`, or `fn(fn() -> _, fn() -> _) -> _`) is detected as an *operator* parameter; a call `action(cb1, cb2)` infers a **curried** effect-operator **application** `[action([Stdout], [FileSystem])]` over every callback, in order — none is dropped.
+  - At a call site, an operator-typed argument is lifted to an operator (curried over its callbacks) and the application **beta-reduces** to the concrete effect. **Named function references** (abstracting over their callback parameters), **inline closures** (analysing their bodies), **let-bound closures** (`let h = fn(cb) { … }; with(h)`), **`case`/`if` branches over function-like options** (`with(case c { True -> f  False -> g })`, lifted per-branch and **joined** — `(f ⊔ g)(cb) = f(cb) ⊔ g(cb)`), and **functions returned from a call** (`let h = pick_handler(); with(h)` — the producer's returned operator is inferred where the producer is defined and threaded through the knowledge base by the topological pass) are all lifted; an inline closure's parameters are bound while walking it, so calls to them aren't mistaken for unresolved local calls.
+  - **Same-module** named functions passed as operator arguments resolve too — sibling functions aren't yet in the knowledge base during their module's inference pass, so they're analysed transitively (mirroring how same-module *calls* already resolve), rather than collapsing to `[Unknown]`.
+  - The `.graded` syntax gained operator applications `[action([Stdout], [FileSystem])]` (each argument a bracketed effect term; arguments are curried and order-significant) and operator bounds `fn(a, b) -> [a, b]`; first-order lines are byte-identical to before.
+- Resolution is pure-Gleam term reduction — capture-avoiding substitution, beta, and union normalization, fuel-guarded — with no external solver. The reduction laws, capture-avoidance, soundness (over-approximation), and termination are property-tested with qcheck. See [docs/second-order-effects.md](docs/second-order-effects.md).
+- **More value flow resolves instead of `[Unknown]`.** Several shapes that previously degraded now carry effects precisely:
+  - **Blocks resolve to their tail.** A returned, let-bound, branch-arm, or argument value that is a block (`{ let f = io.println; f }`) is classified by the expression it evaluates to.
+  - **Returned operators cross modules and packages.** They're serialized into the spec file as `returns mod.fn : fn(cb) -> [cb]` lines and loaded from the project spec and dependency specs — so `check` (not just `infer`) resolves a `let h = producer(); with(h)` across module and package boundaries.
+  - **Record fields wired to an inline closure** (`Validator(to_error: fn(m) { io.println(m) })`) infer the field's effect from the closure body, with no hand-written `type` annotation.
+  - **`check` auto-infers project modules missing from the spec**, in memory and in topological order, so a call into a not-yet-inferred module resolves instead of `[Unknown]`. Committed `effects` lines still take priority and nothing is written to disk.
+  - **Operator-typed record fields** — a field wired to a closure that calls its own callback (`Middleware(wrap: fn(next) { next() })`) is lifted to an operator `λnext. [next]` and applied at the field call, so `m.wrap(io.println)` resolves to `[Stdout]`.
+  - **Return-effect polymorphism** — a returned operator may be polymorphic in the producer's parameters; a producer that returns one of its operator parameters (`fn wrap(base) { base }`) or **wraps** it in a closure (a decorator, `fn traced(action) { fn(cb) { log(); action(cb) } }`) resolves, binding the parameter to the producer call's argument. A returned closure is lazy, so it's excluded from the producer's own direct call-effect (counted only when applied) — which keeps the decorator's result precise rather than over-approximated.
+
+### Notes
+
+- The remaining inference residuals — all sound, collapsing to the conservative `[Unknown]` — are: a producer that selects a parameter through a **branch** (`case … { _ -> a  _ -> b }`, a union of operators, which isn't beta-reducible); a field wired to a **constructor parameter** (inter-procedural value flow); a function value reached through **arbitrary computation** (`handlers |> list.first |> unwrap`); a **`use`-tailed** return; and **external/FFI** code (use `external effects`). Annotate explicitly or widen the budget where needed.
+
 ## [0.6.0] - 2026-04-21
 
 ### Added

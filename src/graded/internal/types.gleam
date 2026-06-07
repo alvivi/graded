@@ -1,5 +1,4 @@
-import glance.{type Span}
-import gleam/dict.{type Dict}
+import glance.{type Span, type Statement}
 import gleam/option.{type Option}
 import gleam/set.{type Set}
 
@@ -78,18 +77,6 @@ pub fn from_labels(labels: List(String)) -> EffectSet {
   Specific(set.from_list(labels))
 }
 
-/// Construct a Polymorphic effect set from lists of labels and variables.
-/// If `variables` is empty, collapses to `Specific`.
-pub fn from_labels_and_variables(
-  labels: List(String),
-  variables: List(String),
-) -> EffectSet {
-  case variables {
-    [] -> Specific(set.from_list(labels))
-    _ -> Polymorphic(set.from_list(labels), set.from_list(variables))
-  }
-}
-
 /// True iff this effect set contains unresolved effect variables.
 pub fn has_variables(effect_set: EffectSet) -> Bool {
   case effect_set {
@@ -98,52 +85,63 @@ pub fn has_variables(effect_set: EffectSet) -> Bool {
   }
 }
 
-/// Substitute effect variables with their bound effect sets. Variables
-/// not in the bindings dict are kept as-is (still unresolved).
-pub fn substitute(
-  effect_set: EffectSet,
-  bindings: Dict(String, EffectSet),
-) -> EffectSet {
-  case effect_set {
-    Wildcard -> Wildcard
-    Specific(_) -> effect_set
-    Polymorphic(labels, variables) -> {
-      let base = Specific(labels)
-      let #(resolved, unresolved) =
-        set.fold(variables, #(base, []), fn(state, var) {
-          let #(acc, leftover) = state
-          case dict.get(bindings, var) {
-            Ok(bound) -> #(union(acc, bound), leftover)
-            Error(Nil) -> #(acc, [var, ..leftover])
-          }
-        })
-      case unresolved {
-        [] -> resolved
-        _ ->
-          case resolved {
-            Wildcard -> Wildcard
-            Specific(l) -> Polymorphic(l, set.from_list(unresolved))
-            Polymorphic(l, v) ->
-              Polymorphic(l, set.union(v, set.from_list(unresolved)))
-          }
-      }
-    }
-  }
+/// A richer effect representation: a small lambda-calculus-with-union over
+/// effects. `EffectSet` is its ground normal form — anything an `EffectSet`
+/// can express, a variable-free, application-free `EffectTerm` can too.
+///
+/// Effect variables come in two kinds, kept implicit in structure:
+///   - `Eff`       — a flat effect (a bare `TVar`, e.g. `e`)
+///   - `Eff -> Eff` — an effect *operator* (a `TAbs`, used under `TApp`,
+///                    e.g. a higher-order parameter `action`)
+///
+/// This is what lets graded express *second-order* effect polymorphism: an
+/// effect variable that is itself parameterized by a callback. See
+/// docs/second-order-effects.md.
+pub type EffectTerm {
+  /// Ground labels. `TLabels(∅)` is pure. Kind `Eff`.
+  TLabels(labels: Set(String))
+  /// The wildcard `[_]`, absorbing under union. Kind `Eff`.
+  TTop
+  /// A free effect variable. Kind `Eff` when bare.
+  TVar(name: String)
+  /// Operator application: `operator` applied to `argument`, e.g.
+  /// `action(Stdout)`. Stuck (left symbolic) when `operator` is an unresolved
+  /// variable. Kind `Eff`.
+  TApp(operator: EffectTerm, argument: EffectTerm)
+  /// An effect operator `λparam. body` — a higher-order parameter's latent
+  /// effect as a function of its callback. Kind `Eff -> Eff`.
+  TAbs(param: String, body: EffectTerm)
+  /// Composition of effects (set union). Kind `Eff`.
+  TUnion(terms: List(EffectTerm))
 }
 
-/// An effect bound on a function-typed parameter.
+/// An effect bound on a function-typed parameter. The `effects` is an
+/// `EffectTerm`: a flat `Eff` term for a first-order callback (`f: [e]`), or
+/// an operator `TAbs` for a higher-order one (`action: fn(cb) -> [cb]`).
 pub type ParamBound {
-  ParamBound(name: String, effects: EffectSet)
+  ParamBound(name: String, effects: EffectTerm)
 }
 
-/// An effect annotation from a .graded sidecar file.
+/// An effect annotation from a .graded sidecar file. `effects` is an
+/// `EffectTerm` — for the common first-order case a variable-free or flat-
+/// variable term equivalent to an `EffectSet`, but it may carry operator
+/// applications (`[action(Stdout)]`) for second-order signatures.
 pub type EffectAnnotation {
   EffectAnnotation(
     kind: AnnotationKind,
     function: String,
     params: List(ParamBound),
-    effects: EffectSet,
+    effects: EffectTerm,
   )
+}
+
+/// The operator a function *returns*, for a function whose result is itself a
+/// function (`fn pick() -> fn(fn() -> _) -> _`). Serialized into the spec file so
+/// the signature crosses module and package boundaries — a downstream
+/// `let h = pick(); with(h)` resolves `h` to this operator. `function` is
+/// module-qualified in the spec.
+pub type ReturnsAnnotation {
+  ReturnsAnnotation(function: String, operator: EffectTerm)
 }
 
 /// A single line in an .graded file, preserving structure for round-trip rewrites.
@@ -151,6 +149,7 @@ pub type GradedLine {
   AnnotationLine(annotation: EffectAnnotation)
   TypeFieldLine(type_field: TypeFieldAnnotation)
   ExternalLine(external: ExternalAnnotation)
+  ReturnsLine(returns: ReturnsAnnotation)
   CommentLine(text: String)
   BlankLine
 }
@@ -178,9 +177,30 @@ pub type ArgumentValue {
   /// A record constructor (uppercase-initial qualified or bare name).
   /// Pure by Gleam's semantics.
   ConstructorRef
-  /// Anything else (inline closure, computed expression, literal, etc.).
-  /// Effects come from the enclosing walk; at the argument level we
-  /// have no concrete function to propagate.
+  /// An inline closure `fn(params) { body }`. `params` are its parameter names
+  /// (`_` for discarded), `body` its statements. When passed to an operator
+  /// parameter, the checker analyses the body — treating the first parameter as
+  /// the callback — and lifts it to an effect operator so the application
+  /// beta-reduces (rather than collapsing to `[Unknown]`).
+  Closure(params: List(String), body: List(Statement))
+  /// A value selected among several function-like options by a `case`/`if`
+  /// (`case c { True -> f  False -> g }`). When passed to an operator parameter,
+  /// each option is lifted and the results are joined (`(f ⊔ g)(cb) = f(cb) ⊔
+  /// g(cb)`), so the effect over-approximates every branch. Any non-function
+  /// branch makes the whole expression `OtherExpression` instead.
+  Choice(options: List(ArgumentValue))
+  /// A value produced by *calling* a function that returns a function
+  /// (`let h = pick_handler()`). `callee` names the producer; a `""` module is
+  /// the same-module sentinel (resolved on-demand via the function map),
+  /// otherwise it's resolved from the producer's inferred returned-operator in
+  /// the knowledge base. `args` are the producer call's arguments, bound to the
+  /// producer's parameters when its returned operator is *polymorphic* in them
+  /// (a decorator, `fn traced(action) { fn(cb) { action(cb) } }`). Lets
+  /// `with_logger(pick_handler())` resolve instead of `[Unknown]`.
+  ReturnedOperator(callee: QualifiedName, args: List(CallArgument))
+  /// Anything else (a computed expression, literal, etc.). Effects come from
+  /// the enclosing walk; at the argument level we have no concrete function to
+  /// propagate.
   OtherExpression
 }
 
@@ -203,6 +223,32 @@ pub type FieldCall {
   FieldCall(object: String, label: String, span: Span, receiver_span: Span)
 }
 
+/// A *returned operator applied directly*: `let h = pick_handler(); h(cb)`.
+/// `callee` names the producer (with the `""` same-module sentinel, as in
+/// `ReturnedOperator`) and `producer_args` are the producer call's arguments;
+/// together they resolve the operator the producer returns. The direct call's
+/// own arguments (`cb`) are recorded in `call_args` under `span.start`, so the
+/// resolved operator is applied to them. Lets a let-bound returned operator
+/// resolve when *applied directly*, not only when passed to an operator
+/// parameter.
+pub type DirectOperatorCall {
+  DirectOperatorCall(
+    callee: QualifiedName,
+    producer_args: List(CallArgument),
+    span: Span,
+  )
+}
+
+/// An inline function-like value used as a *pipe target* and thereby applied to
+/// the piped value: `x |> fn(f) { f() }` or `x |> case c { _ -> a  _ -> b }`.
+/// `value` is the lifted operator source (a `Closure` or `Choice`); the piped
+/// value is recorded in `call_args` under `span.start` as argument 0. Without
+/// this the closure/branch body's use of the piped value is dropped — an
+/// *understatement*, so resolving it is a soundness fix, not just precision.
+pub type DirectPipeOp {
+  DirectPipeOp(value: ArgumentValue, span: Span)
+}
+
 /// Effect annotation for a type's field (e.g., `type Handler.on_click : [Dom]`).
 ///
 /// `module` is `Some(...)` when the annotation comes from a spec file (one
@@ -214,7 +260,7 @@ pub type TypeFieldAnnotation {
     module: Option(String),
     type_name: String,
     field: String,
-    effects: EffectSet,
+    effects: EffectTerm,
   )
 }
 
@@ -226,7 +272,7 @@ pub type TypeFieldAnnotation {
 /// Both are empty/`None` for hand-written annotations and concrete field values.
 pub type TypeFieldEffect {
   TypeFieldEffect(
-    effects: EffectSet,
+    effects: EffectTerm,
     bounds: List(ParamBound),
     source: Option(QualifiedName),
   )

@@ -2,13 +2,141 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None}
 import gleam/set
+import graded/internal/effect_term
 import graded/internal/types.{
-  type EffectSet, AnnotationLine, BlankLine, Check, CommentLine,
+  type EffectSet, type EffectTerm, AnnotationLine, BlankLine, Check, CommentLine,
   EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
-  GradedFile, ModuleExternal, ParamBound, Polymorphic, Specific,
-  TypeFieldAnnotation, TypeFieldLine, Wildcard,
+  GradedFile, ModuleExternal, ParamBound, Polymorphic, Specific, TAbs, TApp,
+  TLabels, TTop, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 import qcheck
+
+const effect_labels = ["Http", "Dom", "Stdout", "Db", "FileSystem", "Time"]
+
+const effect_var_names = ["e", "e1", "e2", "a", "cb"]
+
+fn one_of(items: List(String)) -> qcheck.Generator(String) {
+  case items {
+    [] -> qcheck.return("")
+    [first, ..rest] ->
+      qcheck.from_generators(
+        qcheck.return(first),
+        list.map(rest, qcheck.return),
+      )
+  }
+}
+
+/// A generator for arbitrary `EffectTerm`s, depth-bounded so reduction stays
+/// cheap. Produces every constructor, including stuck applications and
+/// operators, so the property suite exercises the interesting reduction paths.
+pub fn effect_term_gen() -> qcheck.Generator(EffectTerm) {
+  use depth <- qcheck.bind(qcheck.bounded_int(0, 3))
+  effect_term_sized(depth)
+}
+
+fn effect_term_sized(depth: Int) -> qcheck.Generator(EffectTerm) {
+  case depth <= 0 {
+    True -> effect_term_leaf_gen()
+    False -> {
+      let sub = effect_term_sized(depth - 1)
+      qcheck.from_weighted_generators(#(3, effect_term_leaf_gen()), [
+        #(3, effect_union_gen(sub)),
+        #(2, qcheck.map2(sub, sub, fn(o, a) { TApp(o, a) })),
+        #(
+          2,
+          qcheck.map2(one_of(effect_var_names), sub, fn(p, b) { TAbs(p, b) }),
+        ),
+      ])
+    }
+  }
+}
+
+fn effect_term_leaf_gen() -> qcheck.Generator(EffectTerm) {
+  let labels_gen =
+    qcheck.map(qcheck.list_from(one_of(effect_labels)), fn(labels) {
+      TLabels(set.from_list(labels))
+    })
+  qcheck.from_weighted_generators(#(3, labels_gen), [
+    #(1, qcheck.return(TTop)),
+    #(2, qcheck.map(one_of(effect_var_names), TVar)),
+  ])
+}
+
+fn effect_union_gen(
+  sub: qcheck.Generator(EffectTerm),
+) -> qcheck.Generator(EffectTerm) {
+  use n <- qcheck.bind(qcheck.bounded_int(0, 3))
+  qcheck.map(qcheck.fixed_length_list_from(sub, n), TUnion)
+}
+
+/// A first-order effect *term* — the lift of an arbitrary `EffectSet`. Used
+/// where an annotation field (now an `EffectTerm`) must still round-trip
+/// through the first-order serializer.
+pub fn first_order_term_gen() -> qcheck.Generator(EffectTerm) {
+  qcheck.map(effect_set_gen(), effect_term.from_effect_set)
+}
+
+/// A generator for *serializable* effect terms: labels, variables, operator
+/// applications `f(args)`, and unions of those. Excludes operators (`TAbs`)
+/// and the wildcard, which don't appear as inferred result effects — so
+/// `parse ∘ format` round-trips (P-SER-2).
+pub fn serializable_effect_term_gen() -> qcheck.Generator(EffectTerm) {
+  use depth <- qcheck.bind(qcheck.bounded_int(0, 2))
+  serializable_sized(depth)
+}
+
+fn serializable_atom_gen() -> qcheck.Generator(EffectTerm) {
+  qcheck.from_weighted_generators(
+    #(
+      3,
+      qcheck.map(one_of(effect_labels), fn(l) { TLabels(set.from_list([l])) }),
+    ),
+    [#(2, qcheck.map(one_of(effect_var_names), TVar))],
+  )
+}
+
+fn serializable_sized(depth: Int) -> qcheck.Generator(EffectTerm) {
+  case depth <= 0 {
+    True -> serializable_atom_gen()
+    False -> {
+      let arg_gen = serializable_atom_gen()
+      // A *curried* operator application `((f a0) a1 ...)` over one to three
+      // bracketed arguments — exercises the order-significant multi-argument
+      // serialization, not just the single-argument case.
+      let app_gen = {
+        use n <- qcheck.bind(qcheck.bounded_int(1, 3))
+        qcheck.map2(
+          one_of(effect_var_names),
+          qcheck.fixed_length_list_from(arg_gen, n),
+          fn(name, args) {
+            list.fold(args, TVar(name), fn(acc, arg) { TApp(acc, arg) })
+          },
+        )
+      }
+      let union_gen = {
+        use n <- qcheck.bind(qcheck.bounded_int(1, 3))
+        qcheck.map(
+          qcheck.fixed_length_list_from(serializable_atom_gen(), n),
+          TUnion,
+        )
+      }
+      qcheck.from_weighted_generators(#(3, serializable_atom_gen()), [
+        #(2, app_gen),
+        #(2, union_gen),
+      ])
+    }
+  }
+}
+
+/// A generator for variable→term substitutions over the standard variable
+/// pool, so substitution domains actually overlap term variables.
+pub fn effect_binding_gen() -> qcheck.Generator(dict.Dict(String, EffectTerm)) {
+  let pair_gen =
+    qcheck.map2(one_of(effect_var_names), effect_term_gen(), fn(name, term) {
+      #(name, term)
+    })
+  qcheck.map(qcheck.list_from(pair_gen), dict.from_list)
+}
 
 pub fn effect_set_gen() -> qcheck.Generator(EffectSet) {
   let label_gen =
@@ -66,13 +194,13 @@ pub fn annotation_gen() -> qcheck.Generator(types.EffectAnnotation) {
       qcheck.return("handler"),
     ])
   let param_bound_gen =
-    qcheck.map2(param_name_gen, effect_set_gen(), fn(name, effects) {
+    qcheck.map2(param_name_gen, first_order_term_gen(), fn(name, effects) {
       ParamBound(name:, effects:)
     })
   let no_params =
     qcheck.map2(
       qcheck.map2(kind_gen, function_name_gen(), fn(k, f) { #(k, f) }),
-      effect_set_gen(),
+      first_order_term_gen(),
       fn(kf, effects) {
         let #(kind, function) = kf
         EffectAnnotation(kind:, function:, params: [], effects:)
@@ -81,7 +209,7 @@ pub fn annotation_gen() -> qcheck.Generator(types.EffectAnnotation) {
   let with_param =
     qcheck.map2(
       qcheck.map2(kind_gen, function_name_gen(), fn(k, f) { #(k, f) }),
-      qcheck.map2(param_bound_gen, effect_set_gen(), fn(p, e) { #(p, e) }),
+      qcheck.map2(param_bound_gen, first_order_term_gen(), fn(p, e) { #(p, e) }),
       fn(kf, pe) {
         let #(kind, function) = kf
         let #(param, effects) = pe
@@ -104,7 +232,7 @@ pub fn type_field_gen() -> qcheck.Generator(types.TypeFieldAnnotation) {
     ])
   qcheck.map2(
     qcheck.map2(type_name_gen, field_name_gen, fn(t, f) { #(t, f) }),
-    effect_set_gen(),
+    first_order_term_gen(),
     fn(tf, effects) {
       let #(type_name, field) = tf
       TypeFieldAnnotation(module: None, type_name:, field:, effects:)
@@ -158,9 +286,13 @@ pub fn graded_file_gen() -> qcheck.Generator(types.GradedFile) {
 
 pub fn inferred_list_gen() -> qcheck.Generator(List(types.EffectAnnotation)) {
   let effects_ann_gen =
-    qcheck.map2(function_name_gen(), effect_set_gen(), fn(function, effects) {
-      EffectAnnotation(kind: Effects, function:, params: [], effects:)
-    })
+    qcheck.map2(
+      function_name_gen(),
+      first_order_term_gen(),
+      fn(function, effects) {
+        EffectAnnotation(kind: Effects, function:, params: [], effects:)
+      },
+    )
   qcheck.map(
     qcheck.map2(
       effects_ann_gen,

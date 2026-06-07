@@ -26,18 +26,20 @@ Tests use **gleeunit** with **qcheck** property generators in `test/generators.g
 
 ## Architecture
 
-Eight modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
+Eleven modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
 
 | File | Responsibility |
 |---|---|
 | `src/graded.gleam` | CLI entry point + public API: orchestrate `run_infer` (write spec + cache) and `run` (check the spec against source); run girard type inference + build the constructor-field index |
-| `src/graded/internal/types.gleam` | Shared types: QualifiedName, EffectAnnotation, ParamBound, FieldCall, TypeFieldAnnotation, Violation |
+| `src/graded/internal/types.gleam` | Shared types: QualifiedName, EffectSet, EffectTerm, EffectAnnotation, ParamBound, FieldCall, TypeFieldAnnotation, Violation |
+| `src/graded/internal/effect_term.gleam` | `EffectTerm` operations: normalize (beta + union laws), capture-avoiding substitution, free vars, `EffectSet`↔`EffectTerm` bridges (second-order resolution) |
 | `src/graded/internal/config.gleam` | Read `[tools.graded]` from `gleam.toml`, resolve `spec_file` and `cache_dir` paths |
 | `src/graded/internal/annotation.gleam` | Parse/format `.graded` files; split qualified names |
 | `src/graded/internal/effects.gleam` | Knowledge base: function/type field -> effect set lookup; load spec files from deps |
 | `src/graded/internal/extract.gleam` | Walk glance AST, resolve imports, extract calls (resolved, local, field) + collect constructor bindings |
 | `src/graded/internal/checker.gleam` | Collect effects, check subset inclusion, resolve param bounds and field calls (type-directed via girard) |
 | `src/graded/internal/typeinfo.gleam` | Hold girard's per-expression inferred types, keyed by `#(start, end)` span, for receiver-type lookup |
+| `src/graded/internal/signatures.gleam` | Glance-backed parameter signatures: fn-typed and operator (second-order) parameter detection, positions, for call-site substitution |
 | `src/graded/internal/topo.gleam` | Kahn's-algorithm topological sort over a string-keyed dependency graph |
 
 ## .graded Annotation Syntax
@@ -101,6 +103,8 @@ Three call categories in the extractor:
 2. **Local calls** — unresolved names, checked against param bounds, then local function definitions, then flagged Unknown
 3. **Field calls** — `object.field(args)` on local variables, resolved by looking up the receiver's nominal type (girard's inferred type first, then a syntactic parameter annotation) in the type field registry. The registry is keyed by `(defining module, type name, field)` — girard reports the defining module, so same-named types in different modules don't collide. It is populated from hand-written `type` lines and, when absent, from effects inferred at constructor call sites (`Validator(to_error: io.println)` ⟹ `Validator.to_error : [Stdout]`). If the wired function is effect-polymorphic, its variables are bound to the field call's arguments via the same substitution resolved calls use.
 
+   **Factory field provenance.** When a receiver is bound from a *factory* call (`let v = make(io.println)`, where `make(logger) { Validator(to_error: logger) }` wires a field to its own parameter), the field call resolves through value provenance rather than the type registry: the result is bound as if directly constructed, so `v.to_error` resolves to `io.println`'s effect with no hand-written annotation. Factory detection is purely syntactic and package-wide (every same-package module's source is in the index), so same- and cross-module factories both resolve; v1 routes positional factory calls. A receiver from an untraceable source (a parameter, a value threaded through data) has no provenance and falls back to the type registry / `[Unknown]` — the hand-written `type` line remains the escape hatch there.
+
 ## Theoretical Foundations
 
-Effects are sets of string labels. Composition is set union. Checking is subset inclusion. See THEORY.md for the full mathematical grounding (semirings, graded modal type theory).
+Effects are sets of string labels. Composition is set union. Checking is subset inclusion. Effect *variables* can be higher-kinded (operators, `Eff → Eff`) for second-order polymorphism: the internal `EffectTerm` is a small lambda-calculus-with-union and `EffectSet` is its ground normal form, reached by beta + union normalization (`effect_term.gleam`). See THEORY.md and docs/second-order-effects.md for the full grounding (semirings, graded modal type theory, higher-kinded effect variables).

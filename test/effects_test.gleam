@@ -7,6 +7,7 @@ import gleam/order
 import gleam/set
 import gleam/string
 import gleeunit/should
+import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/types.{
   type EffectSet, ConstructorRef, FunctionRef, OtherExpression, Polymorphic,
@@ -21,11 +22,13 @@ fn knowledge_base() -> effects.KnowledgeBase {
 
 pub fn known_effectful_test() {
   effects.lookup_effects(knowledge_base(), QualifiedName("gleam/io", "println"))
+  |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 pub fn known_pure_module_test() {
   effects.lookup_effects(knowledge_base(), QualifiedName("gleam/list", "map"))
+  |> effect_term.to_effect_set
   |> should.equal(Specific(set.new()))
 }
 
@@ -34,12 +37,17 @@ pub fn unknown_function_test() {
     knowledge_base(),
     QualifiedName("some/unknown", "thing"),
   )
+  |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
 pub fn lookup_known_variant_test() {
   effects.lookup(knowledge_base(), QualifiedName("gleam/io", "debug"))
-  |> should.equal(effects.Known(Specific(set.from_list(["Stdout"]))))
+  |> should.equal(
+    effects.Known(
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    ),
+  )
 }
 
 pub fn lookup_unknown_variant_test() {
@@ -79,13 +87,15 @@ check myapp/api.handle : [Http]
   let spec_effects = effects.load_spec_effects(spec_path)
 
   dict.get(spec_effects, QualifiedName("myapp/currency", "from_string"))
-  |> should.equal(Ok(Specific(set.new())))
+  |> should.equal(Ok(effect_term.from_effect_set(Specific(set.new()))))
 
   dict.get(spec_effects, QualifiedName("myapp/currency", "to_string"))
-  |> should.equal(Ok(Specific(set.new())))
+  |> should.equal(Ok(effect_term.from_effect_set(Specific(set.new()))))
 
   dict.get(spec_effects, QualifiedName("myapp/api", "handle"))
-  |> should.equal(Ok(Specific(set.from_list(["Http"]))))
+  |> should.equal(
+    Ok(effect_term.from_effect_set(Specific(set.from_list(["Http"])))),
+  )
 
   // `check` lines are NOT loaded as effects — only `effects` lines are.
   dict.size(spec_effects) |> should.equal(3)
@@ -230,45 +240,6 @@ pub fn has_variables_polymorphic_is_true_test() {
   types.has_variables(set) |> should.be_true()
 }
 
-pub fn substitute_resolves_single_variable_test() {
-  let poly: EffectSet = Polymorphic(set.new(), set.from_list(["e"]))
-  let bindings = dict.from_list([#("e", types.from_labels(["Stdout"]))])
-  types.substitute(poly, bindings)
-  |> should.equal(types.from_labels(["Stdout"]))
-}
-
-pub fn substitute_merges_labels_and_binding_test() {
-  let poly: EffectSet =
-    Polymorphic(set.from_list(["Http"]), set.from_list(["e"]))
-  let bindings = dict.from_list([#("e", types.from_labels(["Stdout"]))])
-  types.substitute(poly, bindings)
-  |> should.equal(types.from_labels(["Http", "Stdout"]))
-}
-
-pub fn substitute_multiple_variables_test() {
-  let poly: EffectSet = Polymorphic(set.new(), set.from_list(["e1", "e2"]))
-  let bindings =
-    dict.from_list([
-      #("e1", types.from_labels(["Stdout"])),
-      #("e2", types.from_labels(["Http"])),
-    ])
-  types.substitute(poly, bindings)
-  |> should.equal(types.from_labels(["Http", "Stdout"]))
-}
-
-pub fn substitute_unresolved_variables_remain_test() {
-  let poly: EffectSet = Polymorphic(set.new(), set.from_list(["e1", "e2"]))
-  let bindings = dict.from_list([#("e1", types.from_labels(["Stdout"]))])
-  types.substitute(poly, bindings)
-  |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["e2"])))
-}
-
-pub fn substitute_on_specific_is_identity_test() {
-  let s = types.from_labels(["Stdout"])
-  types.substitute(s, dict.from_list([#("e", types.from_labels(["Http"]))]))
-  |> should.equal(s)
-}
-
 pub fn union_polymorphic_merges_both_test() {
   let a: EffectSet = Polymorphic(set.from_list(["Http"]), set.from_list(["e1"]))
   let b: EffectSet =
@@ -284,16 +255,6 @@ pub fn union_polymorphic_and_specific_test() {
   let a: EffectSet = Polymorphic(set.new(), set.from_list(["e"]))
   let b: EffectSet = types.from_labels(["Stdout"])
   types.union(a, b)
-  |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["e"])))
-}
-
-pub fn from_labels_and_variables_collapses_when_no_vars_test() {
-  types.from_labels_and_variables(["Stdout"], [])
-  |> should.equal(types.from_labels(["Stdout"]))
-}
-
-pub fn from_labels_and_variables_produces_polymorphic_test() {
-  types.from_labels_and_variables(["Stdout"], ["e"])
   |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["e"])))
 }
 
@@ -424,22 +385,47 @@ pub fn with_inferred_does_not_overwrite_test() {
   let kb = knowledge_base()
   let inferred =
     dict.from_list([
-      #(QualifiedName("gleam/io", "println"), types.empty()),
+      #(
+        QualifiedName("gleam/io", "println"),
+        effect_term.from_effect_set(types.empty()),
+      ),
     ])
   let enriched = effects.with_inferred(kb, inferred)
   // Existing KB entry should take priority (Stdout), not be overwritten to []
   effects.lookup_effects(enriched, QualifiedName("gleam/io", "println"))
+  |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn returned_operators_round_trip_test() {
+  let kb = knowledge_base()
+  let operator = types.TAbs("cb", types.TVar("cb"))
+  let enriched =
+    effects.with_inferred_returned_operators(
+      kb,
+      dict.from_list([#(QualifiedName("mylib/foo", "pick"), operator)]),
+    )
+  effects.lookup_returned_operator(enriched, QualifiedName("mylib/foo", "pick"))
+  |> should.equal(Ok(operator))
+  effects.lookup_returned_operator(
+    enriched,
+    QualifiedName("mylib/foo", "absent"),
+  )
+  |> should.equal(Error(Nil))
 }
 
 pub fn with_inferred_adds_new_entries_test() {
   let kb = knowledge_base()
   let inferred =
     dict.from_list([
-      #(QualifiedName("mylib/foo", "bar"), Specific(set.from_list(["Http"]))),
+      #(
+        QualifiedName("mylib/foo", "bar"),
+        effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
+      ),
     ])
   let enriched = effects.with_inferred(kb, inferred)
   effects.lookup_effects(enriched, QualifiedName("mylib/foo", "bar"))
+  |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Http"])))
 }
 
@@ -481,7 +467,7 @@ pub fn argument_value_effects_resolves_function_ref_test() {
       dict.from_list([
         #(
           QualifiedName("myapp/log", "emit"),
-          Specific(set.from_list(["Stdout"])),
+          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
         ),
       ]),
     )
@@ -489,16 +475,19 @@ pub fn argument_value_effects_resolves_function_ref_test() {
     kb,
     FunctionRef(QualifiedName("myapp/log", "emit")),
   )
+  |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 pub fn argument_value_effects_constructor_is_pure_test() {
   effects.argument_value_effects(knowledge_base(), ConstructorRef)
+  |> effect_term.to_effect_set
   |> should.equal(Specific(set.new()))
 }
 
 pub fn argument_value_effects_other_is_unknown_test() {
   effects.argument_value_effects(knowledge_base(), OtherExpression)
+  |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
@@ -510,15 +499,25 @@ pub fn type_fields_distinguish_modules_test() {
     effects.with_inferred_type_fields(knowledge_base(), [
       #(
         #("app/a", "Validator", "f"),
-        TypeFieldEffect(Specific(set.from_list(["Http"])), [], None),
+        TypeFieldEffect(
+          effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
+          [],
+          None,
+        ),
       ),
       #(
         #("app/b", "Validator", "f"),
-        TypeFieldEffect(Specific(set.from_list(["Stdout"])), [], None),
+        TypeFieldEffect(
+          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+          [],
+          None,
+        ),
       ),
     ])
   let assert Ok(a) = effects.lookup_type_field(kb, "app/a", "Validator", "f")
-  a.effects |> should.equal(Specific(set.from_list(["Http"])))
+  effect_term.to_effect_set(a.effects)
+  |> should.equal(Specific(set.from_list(["Http"])))
   let assert Ok(b) = effects.lookup_type_field(kb, "app/b", "Validator", "f")
-  b.effects |> should.equal(Specific(set.from_list(["Stdout"])))
+  effect_term.to_effect_set(b.effects)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
 }

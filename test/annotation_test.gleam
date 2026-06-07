@@ -5,10 +5,12 @@ import gleam/option.{None, Some}
 import gleam/set
 import gleeunit/should
 import graded/internal/annotation
+import graded/internal/effect_term
 import graded/internal/types.{
-  AnnotationLine, BlankLine, Check, CommentLine, EffectAnnotation, Effects,
-  ExternalAnnotation, ExternalLine, FunctionExternal, ParamBound, Polymorphic,
-  Specific, TypeFieldAnnotation, TypeFieldLine, Wildcard,
+  type EffectTerm, AnnotationLine, BlankLine, Check, CommentLine,
+  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
+  ParamBound, Polymorphic, Specific, TAbs, TApp, TLabels, TUnion, TVar,
+  TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 import qcheck
 
@@ -19,7 +21,7 @@ pub fn empty_effects_test() {
   let assert Ok([
     EffectAnnotation(kind: Effects, function: "view", params: _, effects: eff),
   ]) = annotation.parse(input)
-  eff |> should.equal(Specific(set.new()))
+  effect_term.to_effect_set(eff) |> should.equal(Specific(set.new()))
 }
 
 pub fn single_effect_test() {
@@ -27,7 +29,8 @@ pub fn single_effect_test() {
   let assert Ok([
     EffectAnnotation(kind: Effects, function: "update", params: _, effects: eff),
   ]) = annotation.parse(input)
-  eff |> should.equal(Specific(set.from_list(["Http"])))
+  effect_term.to_effect_set(eff)
+  |> should.equal(Specific(set.from_list(["Http"])))
 }
 
 pub fn multiple_effects_test() {
@@ -35,7 +38,8 @@ pub fn multiple_effects_test() {
   let assert Ok([
     EffectAnnotation(kind: Effects, function: "update", params: _, effects: eff),
   ]) = annotation.parse(input)
-  eff |> should.equal(Specific(set.from_list(["Http", "Dom"])))
+  effect_term.to_effect_set(eff)
+  |> should.equal(Specific(set.from_list(["Http", "Dom"])))
 }
 
 pub fn check_line_test() {
@@ -43,7 +47,7 @@ pub fn check_line_test() {
   let assert Ok([
     EffectAnnotation(kind: Check, function: "view", params: _, effects: eff),
   ]) = annotation.parse(input)
-  eff |> should.equal(Specific(set.new()))
+  effect_term.to_effect_set(eff) |> should.equal(Specific(set.new()))
 }
 
 pub fn check_with_effects_test() {
@@ -51,7 +55,8 @@ pub fn check_with_effects_test() {
   let assert Ok([
     EffectAnnotation(kind: Check, function: "update", params: _, effects: eff),
   ]) = annotation.parse(input)
-  eff |> should.equal(Specific(set.from_list(["Http", "Dom"])))
+  effect_term.to_effect_set(eff)
+  |> should.equal(Specific(set.from_list(["Http", "Dom"])))
 }
 
 pub fn mixed_file_test() {
@@ -149,7 +154,7 @@ pub fn format_annotation_effects_test() {
       kind: Effects,
       function: "view",
       params: [],
-      effects: Specific(set.new()),
+      effects: effect_term.from_effect_set(Specific(set.new())),
     )
   annotation.format_annotation(ann) |> should.equal("effects view : []")
 }
@@ -160,7 +165,9 @@ pub fn format_annotation_check_test() {
       kind: Check,
       function: "update",
       params: [],
-      effects: Specific(set.from_list(["Http", "Dom"])),
+      effects: effect_term.from_effect_set(
+        Specific(set.from_list(["Http", "Dom"])),
+      ),
     )
   annotation.format_annotation(ann)
   |> should.equal("check update : [Dom, Http]")
@@ -173,8 +180,13 @@ pub fn parse_single_param_bound_test() {
   let assert Ok([ann]) = annotation.parse(input)
   ann.function |> should.equal("apply")
   ann.params
-  |> should.equal([ParamBound("f", Specific(set.from_list(["Stdout"])))])
-  ann.effects |> should.equal(Specific(set.new()))
+  |> should.equal([
+    ParamBound(
+      "f",
+      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    ),
+  ])
+  effect_term.to_effect_set(ann.effects) |> should.equal(Specific(set.new()))
 }
 
 pub fn parse_multiple_param_bounds_test() {
@@ -182,10 +194,14 @@ pub fn parse_multiple_param_bounds_test() {
   let assert Ok([ann]) = annotation.parse(input)
   ann.params
   |> should.equal([
-    ParamBound("f", Specific(set.new())),
-    ParamBound("g", Specific(set.from_list(["Http"]))),
+    ParamBound("f", effect_term.from_effect_set(Specific(set.new()))),
+    ParamBound(
+      "g",
+      effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
+    ),
   ])
-  ann.effects |> should.equal(Specific(set.from_list(["Http"])))
+  effect_term.to_effect_set(ann.effects)
+  |> should.equal(Specific(set.from_list(["Http"])))
 }
 
 pub fn parse_empty_param_list_is_invalid_test() {
@@ -198,7 +214,10 @@ pub fn parse_param_bound_check_test() {
   let input = "check safe_map(f: []) : []"
   let assert Ok([ann]) = annotation.parse(input)
   ann.kind |> should.equal(Check)
-  ann.params |> should.equal([ParamBound("f", Specific(set.new()))])
+  ann.params
+  |> should.equal([
+    ParamBound("f", effect_term.from_effect_set(Specific(set.new()))),
+  ])
 }
 
 pub fn format_annotation_with_params_test() {
@@ -206,8 +225,13 @@ pub fn format_annotation_with_params_test() {
     EffectAnnotation(
       kind: Effects,
       function: "apply",
-      params: [ParamBound("f", Specific(set.from_list(["Stdout"])))],
-      effects: Specific(set.new()),
+      params: [
+        ParamBound(
+          "f",
+          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        ),
+      ],
+      effects: effect_term.from_effect_set(Specific(set.new())),
     )
   annotation.format_annotation(ann)
   |> should.equal("effects apply(f: [Stdout]) : []")
@@ -219,10 +243,13 @@ pub fn format_annotation_with_multiple_params_test() {
       kind: Check,
       function: "transform",
       params: [
-        ParamBound("f", Specific(set.new())),
-        ParamBound("g", Specific(set.from_list(["Http"]))),
+        ParamBound("f", effect_term.from_effect_set(Specific(set.new()))),
+        ParamBound(
+          "g",
+          effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
+        ),
       ],
-      effects: Specific(set.from_list(["Http"])),
+      effects: effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
     )
   annotation.format_annotation(ann)
   |> should.equal("check transform(f: [], g: [Http]) : [Http]")
@@ -237,14 +264,16 @@ pub fn parse_type_field_test() {
   let assert [tf] = tfs
   tf.type_name |> should.equal("Handler")
   tf.field |> should.equal("on_click")
-  tf.effects |> should.equal(Specific(set.from_list(["Dom"])))
+  effect_term.to_effect_set(tf.effects)
+  |> should.equal(Specific(set.from_list(["Dom"])))
 }
 
 pub fn parse_type_field_multiple_effects_test() {
   let input = "type Request.send : [Http, Io]"
   let assert Ok(file) = annotation.parse_file(input)
   let assert [tf] = annotation.extract_type_fields(file)
-  tf.effects |> should.equal(Specific(set.from_list(["Http", "Io"])))
+  effect_term.to_effect_set(tf.effects)
+  |> should.equal(Specific(set.from_list(["Http", "Io"])))
 }
 
 pub fn format_type_field_test() {
@@ -253,7 +282,7 @@ pub fn format_type_field_test() {
       module: None,
       type_name: "Handler",
       field: "on_click",
-      effects: Specific(set.from_list(["Dom"])),
+      effects: effect_term.from_effect_set(Specific(set.from_list(["Dom"]))),
     )
   annotation.format_type_field(tf)
   |> should.equal("type Handler.on_click : [Dom]")
@@ -265,7 +294,7 @@ pub fn format_type_field_qualified_test() {
       module: Some("myapp/router"),
       type_name: "Handler",
       field: "on_click",
-      effects: Specific(set.from_list(["Dom"])),
+      effects: effect_term.from_effect_set(Specific(set.from_list(["Dom"]))),
     )
   annotation.format_type_field(tf)
   |> should.equal("type myapp/router.Handler.on_click : [Dom]")
@@ -325,21 +354,22 @@ pub fn format_external_test() {
 pub fn parse_wildcard_effects_test() {
   let input = "effects handler : [_]"
   let assert Ok([ann]) = annotation.parse(input)
-  ann.effects |> should.equal(Wildcard)
+  effect_term.to_effect_set(ann.effects) |> should.equal(Wildcard)
 }
 
 pub fn parse_wildcard_check_test() {
   let input = "check handler : [_]"
   let assert Ok([ann]) = annotation.parse(input)
   ann.kind |> should.equal(Check)
-  ann.effects |> should.equal(Wildcard)
+  effect_term.to_effect_set(ann.effects) |> should.equal(Wildcard)
 }
 
 pub fn parse_wildcard_param_bound_test() {
   let input = "effects apply(f: [_]) : [_]"
   let assert Ok([ann]) = annotation.parse(input)
-  ann.params |> should.equal([ParamBound("f", Wildcard)])
-  ann.effects |> should.equal(Wildcard)
+  ann.params
+  |> should.equal([ParamBound("f", effect_term.from_effect_set(Wildcard))])
+  effect_term.to_effect_set(ann.effects) |> should.equal(Wildcard)
 }
 
 pub fn format_wildcard_annotation_test() {
@@ -348,7 +378,7 @@ pub fn format_wildcard_annotation_test() {
       kind: Effects,
       function: "handler",
       params: [],
-      effects: Wildcard,
+      effects: effect_term.from_effect_set(Wildcard),
     )
   annotation.format_annotation(ann) |> should.equal("effects handler : [_]")
 }
@@ -360,16 +390,19 @@ pub fn parse_polymorphic_single_variable_test() {
   let assert Ok([ann]) = annotation.parse(input)
   ann.params
   |> should.equal([
-    ParamBound("f", Polymorphic(set.new(), set.from_list(["e"]))),
+    ParamBound(
+      "f",
+      effect_term.from_effect_set(Polymorphic(set.new(), set.from_list(["e"]))),
+    ),
   ])
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["e"])))
 }
 
 pub fn parse_polymorphic_mixed_labels_and_variables_test() {
   let input = "effects map(f: [e]) : [Stdout, e]"
   let assert Ok([ann]) = annotation.parse(input)
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["e"])))
 }
 
@@ -378,10 +411,16 @@ pub fn parse_polymorphic_multiple_variables_test() {
   let assert Ok([ann]) = annotation.parse(input)
   ann.params
   |> should.equal([
-    ParamBound("f", Polymorphic(set.new(), set.from_list(["e1"]))),
-    ParamBound("g", Polymorphic(set.new(), set.from_list(["e2"]))),
+    ParamBound(
+      "f",
+      effect_term.from_effect_set(Polymorphic(set.new(), set.from_list(["e1"]))),
+    ),
+    ParamBound(
+      "g",
+      effect_term.from_effect_set(Polymorphic(set.new(), set.from_list(["e2"]))),
+    ),
   ])
-  ann.effects
+  effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["e1", "e2"])))
 }
 
@@ -390,8 +429,19 @@ pub fn format_polymorphic_annotation_test() {
     EffectAnnotation(
       kind: Effects,
       function: "apply",
-      params: [ParamBound("f", Polymorphic(set.new(), set.from_list(["e"])))],
-      effects: Polymorphic(set.from_list(["Stdout"]), set.from_list(["e"])),
+      params: [
+        ParamBound(
+          "f",
+          effect_term.from_effect_set(Polymorphic(
+            set.new(),
+            set.from_list(["e"]),
+          )),
+        ),
+      ],
+      effects: effect_term.from_effect_set(Polymorphic(
+        set.from_list(["Stdout"]),
+        set.from_list(["e"]),
+      )),
     )
   annotation.format_annotation(ann)
   |> should.equal("effects apply(f: [e]) : [Stdout, e]")
@@ -447,7 +497,7 @@ pub fn merge_inferred_invariants_test() {
       fn(f, i) { #(f, i) },
     ),
   )
-  let merged = annotation.merge_inferred(file, inferred)
+  let merged = annotation.merge_inferred(file, inferred, [])
   let merged_effects =
     annotation.extract_annotations(merged)
     |> list.filter(fn(a) { a.kind == Effects })
@@ -484,4 +534,112 @@ pub fn merge_inferred_invariants_test() {
     let assert Ok(expected) = dict.get(inferred_map, a.function)
     a |> should.equal(expected)
   })
+}
+
+// ──── Second-order serialization (operator applications) ────
+
+pub fn format_second_order_application_test() {
+  let ann =
+    EffectAnnotation(
+      Effects,
+      "with_logger",
+      [ParamBound("action", TVar("action"))],
+      TApp(TVar("action"), TLabels(set.from_list(["Stdout"]))),
+    )
+  annotation.format_annotation(ann)
+  |> should.equal("effects with_logger(action: [action]) : [action([Stdout])]")
+}
+
+pub fn parse_second_order_application_test() {
+  let assert Ok([ann]) =
+    annotation.parse(
+      "effects with_logger(action: [action]) : [action([Stdout])]",
+    )
+  ann.effects
+  |> should.equal(TApp(TVar("action"), TLabels(set.from_list(["Stdout"]))))
+  ann.params |> should.equal([ParamBound("action", TVar("action"))])
+}
+
+pub fn roundtrip_application_with_label_test() {
+  let line = "effects run(action: [action]) : [Http, action([Stdout])]"
+  let assert Ok([ann]) = annotation.parse(line)
+  annotation.format_annotation(ann) |> should.equal(line)
+}
+
+pub fn roundtrip_application_multiple_args_test() {
+  // A curried two-argument application: each callback is its own bracketed
+  // effect term, distinct from a single multi-label argument `f([Db, Http])`.
+  let line = "check run(f: [f]) : [f([Db], [Http])]"
+  let assert Ok([ann]) = annotation.parse(line)
+  ann.effects
+  |> should.equal(TApp(
+    TApp(TVar("f"), TLabels(set.from_list(["Db"]))),
+    TLabels(set.from_list(["Http"])),
+  ))
+  annotation.format_annotation(ann) |> should.equal(line)
+}
+
+pub fn application_arg_order_is_significant_test() {
+  // Currying is positional: `f([Http], [Db])` and `f([Db], [Http])` are
+  // different terms, and each round-trips with its argument order preserved
+  // (application arguments are not sorted, unlike union members).
+  let assert Ok([a]) = annotation.parse("check run(f: [f]) : [f([Http], [Db])]")
+  let assert Ok([b]) = annotation.parse("check run(f: [f]) : [f([Db], [Http])]")
+  { a.effects == b.effects } |> should.be_false()
+  annotation.format_annotation(a)
+  |> should.equal("check run(f: [f]) : [f([Http], [Db])]")
+  annotation.format_annotation(b)
+  |> should.equal("check run(f: [f]) : [f([Db], [Http])]")
+}
+
+pub fn single_multi_label_application_arg_test() {
+  // A single argument carrying several labels stays one argument.
+  let line = "check run(f: [f]) : [f([Db, Http])]"
+  let assert Ok([ann]) = annotation.parse(line)
+  ann.effects
+  |> should.equal(TApp(TVar("f"), TLabels(set.from_list(["Db", "Http"]))))
+  annotation.format_annotation(ann) |> should.equal(line)
+}
+
+pub fn roundtrip_multi_param_operator_bound_test() {
+  // A curried operator bound `fn(a, b) -> [a, b]` round-trips.
+  let line =
+    "check run(action: fn(a, b) -> [a, b]) : [action([Stdout], [Http])]"
+  let assert Ok([ann]) = annotation.parse(line)
+  ann.params
+  |> should.equal([
+    ParamBound("action", TAbs("a", TAbs("b", TVar("a") |> union_vars("b")))),
+  ])
+  annotation.format_annotation(ann) |> should.equal(line)
+}
+
+fn union_vars(first: EffectTerm, second: String) -> EffectTerm {
+  effect_term.normalize(TUnion([first, TVar(second)]))
+}
+
+pub fn returns_line_round_trip_test() {
+  let line = "returns app/dep.pick : fn(cb) -> [cb]"
+  let assert Ok(file) = annotation.parse_file(line)
+  let assert [returns] = annotation.extract_returns(file)
+  returns.function |> should.equal("app/dep.pick")
+  returns.operator |> should.equal(TAbs("cb", TVar("cb")))
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn returns_line_multi_callback_round_trip_test() {
+  let line = "returns m.pick : fn(a, b) -> [a, b]"
+  let assert Ok(file) = annotation.parse_file(line)
+  let assert [returns] = annotation.extract_returns(file)
+  returns.operator
+  |> should.equal(TAbs("a", TAbs("b", union_vars(TVar("a"), "b"))))
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn second_order_roundtrip_property_test() {
+  // P-SER-2: parse ∘ format is identity on normalized serializable terms.
+  use term <- qcheck.given(generators.serializable_effect_term_gen())
+  let normalized = effect_term.normalize(term)
+  let ann = EffectAnnotation(Effects, "f", [], normalized)
+  let assert Ok([parsed]) = annotation.parse(annotation.format_annotation(ann))
+  parsed.effects |> should.equal(normalized)
 }

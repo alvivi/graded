@@ -5,7 +5,7 @@ import gleeunit/should
 import graded/internal/annotation
 import graded/internal/types.{
   AnnotationLine, BlankLine, Check, CommentLine, Effects, ExternalLine,
-  TypeFieldLine,
+  ReturnsLine, TypeFieldLine,
 }
 import qcheck
 
@@ -94,6 +94,7 @@ fn section_index(line: types.GradedLine) -> Int {
         Check -> 3
         Effects -> 4
       }
+    ReturnsLine(_) -> 5
     BlankLine -> -1
   }
 }
