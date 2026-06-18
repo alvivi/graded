@@ -80,7 +80,7 @@ pub fn field_union_operator_reduces_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
-pub fn bodyless_external_is_unknown_test() {
+pub fn external_is_unknown_test() {
   // A bodyless `@external` (opaque FFI) is inferred `[Unknown]`, not `[]`, and
   // `run` — which calls it — inherits that. Against a `[]` budget this must be a
   // violation with actual `[Unknown]`. Without the fix the FFI (and its caller)

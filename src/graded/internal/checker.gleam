@@ -299,17 +299,16 @@ pub fn build_function_map(
   |> dict.from_list()
 }
 
-/// A function declared `@external(...)` with no Gleam body is opaque FFI: it can
-/// perform any effect, so its inferred effect is the conservative `[Unknown]`
-/// rather than the `[]` an empty body would otherwise yield (and propagate to
-/// callers). A catalog entry or a user `external effects … : []` line narrows it
-/// back at resolution time; an `@external` that also has a Gleam fallback body is
-/// analysed from that body as usual.
+/// A function declared `@external(...)` is opaque foreign code: graded cannot see
+/// what the native implementation does, so its effect is the conservative
+/// `[Unknown]` by default — never the `[]` an empty (or pure-looking fallback)
+/// body might suggest. Authors opt in to a precise effect by annotating it with
+/// an `external effects … : [...]` line (or via the versioned catalog), which
+/// wins at resolution time. This holds even when the `@external` also carries a
+/// Gleam fallback body: that body only runs on the *other* compile target, where
+/// the foreign function may still differ, so trusting it would be unsound.
 fn is_opaque_external(definition: Definition(Function)) -> Bool {
-  definition.definition.body == []
-  && list.any(definition.attributes, fn(attribute) {
-    attribute.name == "external"
-  })
+  list.any(definition.attributes, fn(attribute) { attribute.name == "external" })
 }
 
 /// Lift a record field wired to an inline closure into an effect *operator*,
