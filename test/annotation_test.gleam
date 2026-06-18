@@ -536,6 +536,35 @@ pub fn merge_inferred_invariants_test() {
   })
 }
 
+// ──── merge_inferred drops effects shadowed by an external declaration ────
+
+pub fn merge_inferred_drops_effect_for_external_test() {
+  // An author-written `external effects app.ffi : [...]` is authoritative: the
+  // inferred `effects app.ffi` line (the opaque-FFI `[Unknown]` default) is
+  // dropped so it neither duplicates nor shadows the declaration. Other inferred
+  // functions are kept.
+  let file =
+    types.GradedFile(lines: [
+      ExternalLine(ExternalAnnotation(
+        module: "app",
+        target: FunctionExternal("ffi"),
+        effects: types.Specific(set.new()),
+      )),
+    ])
+  let inferred = [
+    EffectAnnotation(Effects, "app.ffi", [], effect_term.unknown()),
+    EffectAnnotation(Effects, "app.other", [], effect_term.pure()),
+  ]
+  let effects_fns =
+    annotation.merge_inferred(file, inferred, [])
+    |> annotation.extract_annotations
+    |> list.filter(fn(a) { a.kind == Effects })
+    |> list.map(fn(a) { a.function })
+    |> set.from_list()
+  set.contains(effects_fns, "app.ffi") |> should.be_false()
+  set.contains(effects_fns, "app.other") |> should.be_true()
+}
+
 // ──── Second-order serialization (operator applications) ────
 
 pub fn format_second_order_application_test() {

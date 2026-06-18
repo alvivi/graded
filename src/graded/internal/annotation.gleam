@@ -207,6 +207,28 @@ pub fn merge_inferred(
   inferred: List(EffectAnnotation),
   inferred_returns: List(ReturnsAnnotation),
 ) -> GradedFile {
+  // A function the author declared with `external effects mod.fn : [...]` is
+  // authoritative — that line is their opt-in to a precise FFI effect. Drop any
+  // inferred `effects mod.fn` line for it so the opaque-FFI `[Unknown]` default
+  // neither shadows nor duplicates the author's declaration (and a stale prior
+  // inferred line is cleaned up on re-infer).
+  let external_functions =
+    list.filter_map(file.lines, fn(line) {
+      case line {
+        ExternalLine(ext) ->
+          case ext.target {
+            FunctionExternal(name) -> Ok(ext.module <> "." <> name)
+            ModuleExternal -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+    })
+    |> set.from_list()
+  let inferred =
+    list.filter(inferred, fn(annotation) {
+      !set.contains(external_functions, annotation.function)
+    })
+
   let inferred_map =
     inferred
     |> list.map(fn(annotation) { #(annotation.function, annotation) })

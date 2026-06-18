@@ -144,19 +144,23 @@ pub fn infer_with_returns(
         |> set.filter(fn(name) { !set.contains(declared_bound_names, name) })
       let effective_bounds =
         list.append(param_bounds, synthetic_fn_typed_bounds(fn_typed_params))
-      let all_effects =
-        collect_effects(
-          without_returned_closure(definition.definition),
-          function_map,
-          context,
-          knowledge_base,
-          set.new(),
-          effective_bounds,
-          registry,
-          module_types,
-          dict.new(),
-        )
-      let effects_term = union_of(all_effects)
+      // A bodyless `@external` is opaque FFI — conservatively `[Unknown]`, not
+      // the `[]` its empty body would otherwise infer.
+      let effects_term = case is_opaque_external(definition) {
+        True -> effect_term.unknown()
+        False ->
+          union_of(collect_effects(
+            without_returned_closure(definition.definition),
+            function_map,
+            context,
+            knowledge_base,
+            set.new(),
+            effective_bounds,
+            registry,
+            module_types,
+            dict.new(),
+          ))
+      }
       // If the function's inferred effects reference effect variables
       // (because it calls fn-typed params), emit ParamBound entries so
       // the polymorphic annotation round-trips correctly.
@@ -293,6 +297,18 @@ pub fn build_function_map(
   module.functions
   |> list.map(fn(definition) { #(definition.definition.name, definition) })
   |> dict.from_list()
+}
+
+/// A function declared `@external(...)` is opaque foreign code: graded cannot see
+/// what the native implementation does, so its effect is the conservative
+/// `[Unknown]` by default — never the `[]` an empty (or pure-looking fallback)
+/// body might suggest. Authors opt in to a precise effect by annotating it with
+/// an `external effects … : [...]` line (or via the versioned catalog), which
+/// wins at resolution time. This holds even when the `@external` also carries a
+/// Gleam fallback body: that body only runs on the *other* compile target, where
+/// the foreign function may still differ, so trusting it would be unsound.
+fn is_opaque_external(definition: Definition(Function)) -> Bool {
+  list.any(definition.attributes, fn(attribute) { attribute.name == "external" })
 }
 
 /// Lift a record field wired to an inline closure into an effect *operator*,
@@ -1543,28 +1559,47 @@ fn resolve_unknown_local(
             )
           [#(synthetic_call, effect_term.unknown())]
         }
-        Ok(local_definition) -> {
-          let new_visited = set.insert(visited, local_call.function)
-          // Seed synthetic bounds for the local callee's own fn-typed
-          // params so its body can produce effect variables too (nested
-          // higher-order calls stay polymorphic through the transitive
-          // analysis).
-          let nested_bounds =
-            synthetic_fn_typed_bounds(signatures.fn_typed_params_from_function(
-              local_definition.definition,
-            ))
-          collect_effects(
-            without_returned_closure(local_definition.definition),
-            function_map,
-            context,
-            knowledge_base,
-            new_visited,
-            nested_bounds,
-            registry,
-            module_types,
-            dict.new(),
-          )
-        }
+        Ok(local_definition) ->
+          case is_opaque_external(local_definition) {
+            // A same-module call into a bodyless `@external` resolves to the
+            // conservative `[Unknown]`, not the `[]` its empty body would yield.
+            True -> [
+              #(
+                types.ResolvedCall(
+                  name: QualifiedName(
+                    module: "<local>",
+                    function: local_call.function,
+                  ),
+                  span: local_call.span,
+                ),
+                effect_term.unknown(),
+              ),
+            ]
+            False -> {
+              let new_visited = set.insert(visited, local_call.function)
+              // Seed synthetic bounds for the local callee's own fn-typed
+              // params so its body can produce effect variables too (nested
+              // higher-order calls stay polymorphic through the transitive
+              // analysis).
+              let nested_bounds =
+                synthetic_fn_typed_bounds(
+                  signatures.fn_typed_params_from_function(
+                    local_definition.definition,
+                  ),
+                )
+              collect_effects(
+                without_returned_closure(local_definition.definition),
+                function_map,
+                context,
+                knowledge_base,
+                new_visited,
+                nested_bounds,
+                registry,
+                module_types,
+                dict.new(),
+              )
+            }
+          }
       }
   }
 }

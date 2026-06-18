@@ -10,6 +10,7 @@ check closure_field.run : []
 check operator_field.run : []
 check factory_field.run : []
 check field_union.run : []
+check ffi_external.run : []
 
 // Type field annotations (the effect source for type-directed field calls).
 type opaque_receiver.Validator.to_error : [Stdout]
