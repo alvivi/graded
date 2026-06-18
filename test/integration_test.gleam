@@ -80,6 +80,21 @@ pub fn field_union_operator_reduces_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn bodyless_external_is_unknown_test() {
+  // A bodyless `@external` (opaque FFI) is inferred `[Unknown]`, not `[]`, and
+  // `run` — which calls it — inherits that. Against a `[]` budget this must be a
+  // violation with actual `[Unknown]`. Without the fix the FFI (and its caller)
+  // would be `[]` and the check would pass — a soundness hole.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let ffi_result =
+    list.find(results, fn(r) { r.file == "test/fixtures/ffi_external.gleam" })
+  let assert Ok(r) = ffi_result
+  { r.violations != [] } |> should.be_true()
+  let assert [v, ..] = r.violations
+  v.function |> should.equal("run")
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
 pub fn opaque_receiver_violation_detected_test() {
   // opaque_receiver.run binds its Validator from make() — a *cross-function*
   // construction the syntax-level path can't see. girard types the receiver,
