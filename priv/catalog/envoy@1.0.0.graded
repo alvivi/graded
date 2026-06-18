@@ -1,0 +1,6 @@
+// envoy — read and write process environment variables
+
+external effects envoy.all : [Environment]
+external effects envoy.get : [Environment]
+external effects envoy.set : [Environment]
+external effects envoy.unset : [Environment]
