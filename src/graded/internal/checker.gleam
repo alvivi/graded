@@ -1634,17 +1634,21 @@ fn resolve_field_effect(
   lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
     Result(EffectTerm, Nil),
 ) -> EffectTerm {
-  case field_effect.effects {
-    // An *operator*-valued field (a closure field that calls its own callback,
-    // lifted to `λp. …`): apply it to the field call's arguments.
-    types.TAbs(_, _) ->
+  case is_operator_valued(field_effect.effects) {
+    // An *operator*-valued field — a single closure field lifted to `λp. …`, or
+    // a *union* of such operators from several construction sites (`pure` wires
+    // `λ_. []`, `do` wires `λin. [Unknown]`, …). Apply it to the field call's
+    // arguments so the application β-reduces — the reducer distributes over a
+    // union of operators, `(f ⊔ g)(x) → f(x) ⊔ g(x)` — instead of leaving the
+    // raw operator bounds in the caller's ground effect set.
+    True ->
       apply_field_operator(
         field_effect.effects,
         dict.get(call_args, field_call.span.start) |> result.unwrap([]),
         knowledge_base,
         caller_param_bounds,
       )
-    _ ->
+    False ->
       case has_vars(field_effect.effects), field_effect.source {
         False, _ -> field_effect.effects
         True, None -> concretize(field_effect.effects)
@@ -1667,6 +1671,22 @@ fn resolve_field_effect(
   }
 }
 
+/// Is this field effect operator-valued — an effect operator (`TAbs`) or a
+/// union of them? A field constructed at several sites (each wiring a closure)
+/// has a `TUnion` of operators; it must be *applied* to the field call's
+/// arguments, not returned raw. A non-operator effect (ground labels, or a
+/// polymorphic variable bound from a wired function) is handled by the
+/// `has_vars` path instead. A mixed union (an operator alongside a label set or
+/// free variable) still counts: applying it goes stuck in the reducer and
+/// collapses to the conservative `[Unknown]`, which is sound.
+fn is_operator_valued(term: EffectTerm) -> Bool {
+  case term {
+    types.TAbs(_, _) -> True
+    types.TUnion(members) -> list.any(members, is_operator_valued)
+    _ -> False
+  }
+}
+
 /// Apply an operator-valued field to a field call's arguments, in position
 /// order: `λp0. λp1. body` applied to `(a0, a1)` β-reduces to `body[p0:=a0]
 /// [p1:=a1]`. A first-order field's binder is unused, so the result is just its
@@ -1674,21 +1694,43 @@ fn resolve_field_effect(
 /// applied → `[Unknown]` (the conservative collapse in `to_effect_set`). Any
 /// variable still free after application is `concretize`d to `[Unknown]`, as in
 /// the non-operator branch — a field call has no caller to propagate vars to.
+///
+/// A field built at several construction sites is a *union* of operators
+/// (possibly mixed with ground members — a site that wired an opaque value
+/// contributes a bare label set). Distribute the application over the union,
+/// `(L ⊔ f ⊔ g)(args) = L ⊔ f(args) ⊔ g(args)`: each operator member is applied
+/// to the arguments, each ground member passes through unchanged. (Wrapping the
+/// whole mixed union in a single `TApp` would instead go stuck in the reducer
+/// and surface as a malformed applied-union term.)
 fn apply_field_operator(
   operator: EffectTerm,
   args: List(types.CallArgument),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
 ) -> EffectTerm {
-  args
-  |> list.sort(fn(a, b) { int.compare(a.position, b.position) })
-  |> list.fold(operator, fn(acc, arg) {
-    types.TApp(
-      acc,
-      resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
-    )
-  })
-  |> concretize
+  let arg_terms =
+    args
+    |> list.sort(fn(a, b) { int.compare(a.position, b.position) })
+    |> list.map(resolve_argument_effects(_, knowledge_base, caller_param_bounds))
+  case operator {
+    types.TUnion(members) ->
+      members
+      |> list.map(fn(member) {
+        case is_operator_valued(member) {
+          True -> apply_args(member, arg_terms)
+          False -> member
+        }
+      })
+      |> types.TUnion
+      |> concretize
+    _ -> concretize(apply_args(operator, arg_terms))
+  }
+}
+
+/// Apply an operator to argument effect terms in order, building the curried
+/// `TApp` spine the reducer β-reduces.
+fn apply_args(operator: EffectTerm, arg_terms: List(EffectTerm)) -> EffectTerm {
+  list.fold(arg_terms, operator, fn(acc, arg) { types.TApp(acc, arg) })
 }
 
 /// Collapse any effect variables left after substitution to `Unknown`, so an
