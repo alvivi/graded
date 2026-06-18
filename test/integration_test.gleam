@@ -62,6 +62,24 @@ pub fn factory_field_violation_detected_test() {
   v.call.function |> should.equal("println")
 }
 
+pub fn field_union_operator_reduces_test() {
+  // field_union.run calls a function-typed field built at two *distinct*
+  // construction sites (pure + printing), so the field's inferred effect is a
+  // *union* of operators (`λ_. [] ⊔ λ_. [Stdout]`). Calling it with a
+  // non-function argument must apply and β-reduce that union to the precise
+  // [Stdout] — not leak the raw operator bounds into run's effect set, which
+  // would ground to [Unknown]. Regression for the union-of-operators field-call
+  // leak surfaced across the parser-combinator idiom (atto, bitty, automata).
+  let assert Ok(results) = graded.run("test/fixtures")
+  let union_result =
+    list.find(results, fn(r) { r.file == "test/fixtures/field_union.gleam" })
+  let assert Ok(r) = union_result
+  { r.violations != [] } |> should.be_true()
+  let assert [v, ..] = r.violations
+  v.function |> should.equal("run")
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn opaque_receiver_violation_detected_test() {
   // opaque_receiver.run binds its Validator from make() — a *cross-function*
   // construction the syntax-level path can't see. girard types the receiver,
