@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-19
+
 ### Added
 
 - **Second-order (higher-kinded) effect variables.** The effect representation moved from a flat `Polymorphic(labels, variables)` set to an `EffectTerm` (a lambda-calculus-with-union), letting graded express and resolve effect variables of kind `Eff → Eff` (operators), not just flat `Eff`.
