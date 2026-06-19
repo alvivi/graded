@@ -7,6 +7,7 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/set.{type Set}
+import gleam/string
 import gleeunit/should
 import graded/internal/topo
 import qcheck
@@ -190,4 +191,83 @@ pub fn topo_sort_partial_cycle_returns_only_cyclic_nodes_test() {
     }
     Ok(_) -> should.fail()
   }
+}
+
+// ----- scc_order (Tarjan strongly-connected components) -----
+
+/// Find the component containing `name`, sorted for stable comparison.
+fn component_of(components: List(List(String)), name: String) -> List(String) {
+  let assert Ok(component) =
+    list.find(components, fn(c) { list.contains(c, name) })
+  list.sort(component, string.compare)
+}
+
+pub fn scc_order_singletons_are_callee_first_test() {
+  // a -> b -> c (a depends on b depends on c). Each is its own component, and
+  // a callee appears before the caller that points at it.
+  let graph =
+    dict.from_list([
+      #("a", set.from_list(["b"])),
+      #("b", set.from_list(["c"])),
+      #("c", set.new()),
+    ])
+  let order = topo.scc_order(graph)
+  order |> list.length() |> should.equal(3)
+  // Every component is a singleton.
+  list.each(order, fn(c) { list.length(c) |> should.equal(1) })
+  // Callee-first: c before b before a.
+  let position = fn(name) {
+    let assert Ok(index) =
+      list.index_map(order, fn(c, i) { #(c, i) })
+      |> list.find(fn(pair) { list.contains(pair.0, name) })
+    index.1
+  }
+  { position("c") < position("b") } |> should.be_true()
+  { position("b") < position("a") } |> should.be_true()
+}
+
+pub fn scc_order_groups_a_cycle_test() {
+  // a <-> b is one component; c (which a calls) is a separate singleton.
+  let graph =
+    dict.from_list([
+      #("a", set.from_list(["b", "c"])),
+      #("b", set.from_list(["a"])),
+      #("c", set.new()),
+    ])
+  let order = topo.scc_order(graph)
+  component_of(order, "a") |> should.equal(["a", "b"])
+  component_of(order, "c") |> should.equal(["c"])
+  // The cyclic component must come after its callee `c`.
+  list.length(order) |> should.equal(2)
+}
+
+pub fn scc_order_self_loop_is_singleton_test() {
+  // A self-recursive function is its own size-1 component (not merged with
+  // anything) — the property the memo relies on to treat it by name alone.
+  let graph = dict.from_list([#("a", set.from_list(["a"]))])
+  topo.scc_order(graph) |> should.equal([["a"]])
+}
+
+pub fn scc_order_disjoint_components_test() {
+  let graph =
+    dict.from_list([
+      #("a", set.from_list(["b"])),
+      #("b", set.from_list(["a"])),
+      #("x", set.from_list(["y"])),
+      #("y", set.from_list(["x"])),
+    ])
+  let order = topo.scc_order(graph)
+  list.length(order) |> should.equal(2)
+  component_of(order, "a") |> should.equal(["a", "b"])
+  component_of(order, "x") |> should.equal(["x", "y"])
+}
+
+/// Every node appears in exactly one component, and components partition the
+/// graph — a basic invariant of any SCC decomposition.
+pub fn scc_order_partitions_all_nodes_test() {
+  use graph <- qcheck.given(random_dag_gen())
+  let order = topo.scc_order(graph)
+  let all_nodes = order |> list.flatten() |> list.sort(string.compare)
+  let expected = dict.keys(graph) |> list.sort(string.compare)
+  all_nodes |> should.equal(expected)
 }

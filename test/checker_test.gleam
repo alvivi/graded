@@ -13,6 +13,7 @@ import graded/internal/annotation
 import graded/internal/checker
 import graded/internal/effect_term
 import graded/internal/effects
+import graded/internal/extract
 import graded/internal/signatures
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
@@ -36,6 +37,7 @@ fn check_source(
       annotations,
       knowledge_base(),
       signatures.empty(),
+      dict.new(),
       dict.new(),
     )
   violations
@@ -442,7 +444,14 @@ fn check_source_with_type_fields(
   let assert Ok(module) = glance.module(source)
   let kb = effects.with_type_fields(knowledge_base(), type_fields)
   let #(violations, _warnings) =
-    checker.check(module, annotations, kb, signatures.empty(), dict.new())
+    checker.check(
+      module,
+      annotations,
+      kb,
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   violations
 }
 
@@ -494,7 +503,14 @@ fn check_source_with_girard(
   }
   let kb = effects.with_type_fields(knowledge_base(), type_fields)
   let #(violations, _warnings) =
-    checker.check(module, annotations, kb, signatures.empty(), module_types)
+    checker.check(
+      module,
+      annotations,
+      kb,
+      signatures.empty(),
+      module_types,
+      dict.new(),
+    )
   violations
 }
 
@@ -678,7 +694,14 @@ fn check_source_with_externals(
   let assert Ok(module) = glance.module(source)
   let kb = effects.with_externals(knowledge_base(), externals)
   let #(violations, _warnings) =
-    checker.check(module, annotations, kb, signatures.empty(), dict.new())
+    checker.check(
+      module,
+      annotations,
+      kb,
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   violations
 }
 
@@ -786,6 +809,7 @@ fn check_warnings(
       annotations,
       knowledge_base(),
       signatures.empty(),
+      dict.new(),
       dict.new(),
     )
   warnings
@@ -971,7 +995,14 @@ pub fn check_no_false_positives_test() {
           effect_term.from_effect_set(declared),
         )
       let #(violations, _) =
-        checker.check(module, [ann], kb, signatures.empty(), dict.new())
+        checker.check(
+          module,
+          [ann],
+          kb,
+          signatures.empty(),
+          dict.new(),
+          dict.new(),
+        )
       violations |> should.equal([])
     }
   }
@@ -992,7 +1023,14 @@ pub fn check_wildcard_never_violates_test() {
           effect_term.from_effect_set(Wildcard),
         )
       let #(violations, _) =
-        checker.check(module, [ann], kb, signatures.empty(), dict.new())
+        checker.check(
+          module,
+          [ann],
+          kb,
+          signatures.empty(),
+          dict.new(),
+          dict.new(),
+        )
       violations |> should.equal([])
     }
   }
@@ -1016,7 +1054,14 @@ pub fn check_empty_budget_detects_effects_test() {
               effect_term.from_effect_set(types.empty()),
             )
           let #(violations, _) =
-            checker.check(module, [ann], kb, signatures.empty(), dict.new())
+            checker.check(
+              module,
+              [ann],
+              kb,
+              signatures.empty(),
+              dict.new(),
+              dict.new(),
+            )
           { violations != [] } |> should.be_true()
         }
       }
@@ -1042,7 +1087,14 @@ pub fn check_violations_iff_not_subset_test() {
           effect_term.from_effect_set(declared),
         )
       let #(violations, _) =
-        checker.check(module, [ann], kb, signatures.empty(), dict.new())
+        checker.check(
+          module,
+          [ann],
+          kb,
+          signatures.empty(),
+          dict.new(),
+          dict.new(),
+        )
       let has_violations = violations != []
       let actual = actual_effects(calls)
       let not_subset = !types.is_subset(actual, declared)
@@ -1166,6 +1218,7 @@ pub fn check_terminates_with_cycles_test() {
           [ann],
           bare_knowledge_base(),
           signatures.empty(),
+          dict.new(),
           dict.new(),
         )
       violations |> should.equal([])
@@ -1356,6 +1409,7 @@ pub fn new() {
       polymorphic_kb(),
       signatures.empty(),
       dict.new(),
+      dict.new(),
     )
   violations |> should.equal([])
 }
@@ -1386,6 +1440,7 @@ pub fn new() {
       polymorphic_kb(),
       signatures.empty(),
       dict.new(),
+      dict.new(),
     )
   violations |> should.equal([])
 }
@@ -1414,6 +1469,7 @@ pub fn new() {
       ],
       polymorphic_kb(),
       signatures.empty(),
+      dict.new(),
       dict.new(),
     )
   list.length(violations) |> should.equal(1)
@@ -1657,6 +1713,7 @@ pub fn run(x: Int) {
       kb,
       reg,
       dict.new(),
+      dict.new(),
     )
   violations
 }
@@ -1832,6 +1889,7 @@ pub fn main(t: Task, msg: String) {
       kb,
       registry,
       dict.new(),
+      dict.new(),
     )
   violations
 }
@@ -1926,7 +1984,8 @@ pub fn caller() -> Nil {
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
-  let #(violations, _) = checker.check(module, [pass], kb, registry, dict.new())
+  let #(violations, _) =
+    checker.check(module, [pass], kb, registry, dict.new(), dict.new())
   violations |> should.equal([])
   let fail =
     EffectAnnotation(
@@ -1935,7 +1994,8 @@ pub fn caller() -> Nil {
       [],
       effect_term.from_effect_set(types.empty()),
     )
-  let #(failed, _) = checker.check(module, [fail], kb, registry, dict.new())
+  let #(failed, _) =
+    checker.check(module, [fail], kb, registry, dict.new(), dict.new())
   { failed != [] } |> should.be_true()
 }
 
@@ -2034,7 +2094,8 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
-  let #(violations, _) = checker.check(module, [ann], kb, reg, dict.new())
+  let #(violations, _) =
+    checker.check(module, [ann], kb, reg, dict.new(), dict.new())
   violations |> should.equal([])
 }
 
@@ -2053,7 +2114,8 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       [],
       effect_term.from_effect_set(types.empty()),
     )
-  let #(violations, _) = checker.check(module, [ann], kb, reg, dict.new())
+  let #(violations, _) =
+    checker.check(module, [ann], kb, reg, dict.new(), dict.new())
   { violations != [] } |> should.be_true()
 }
 
@@ -2073,7 +2135,8 @@ pub fn caller() -> Nil { app.with_logger(fn(logger) { logger(\"hi\") }) }"
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
-  let #(violations, _) = checker.check(module, [ann], kb, reg, dict.new())
+  let #(violations, _) =
+    checker.check(module, [ann], kb, reg, dict.new(), dict.new())
   violations |> should.equal([])
 }
 
@@ -2800,7 +2863,8 @@ pub fn caller() -> Nil {
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
-  let #(violations, _) = checker.check(module, [pass], kb, registry, dict.new())
+  let #(violations, _) =
+    checker.check(module, [pass], kb, registry, dict.new(), dict.new())
   violations |> should.equal([])
   let fail =
     EffectAnnotation(
@@ -2810,7 +2874,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(types.empty()),
     )
   let #(fail_violations, _) =
-    checker.check(module, [fail], kb, registry, dict.new())
+    checker.check(module, [fail], kb, registry, dict.new(), dict.new())
   { fail_violations != [] } |> should.be_true()
 }
 
@@ -2854,7 +2918,8 @@ pub fn caller() -> Nil {
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
-  let #(violations, _) = checker.check(module, [pass], kb, registry, dict.new())
+  let #(violations, _) =
+    checker.check(module, [pass], kb, registry, dict.new(), dict.new())
   violations |> should.equal([])
 }
 
@@ -2951,7 +3016,8 @@ pub fn caller() -> Nil {
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
-  let #(violations, _) = checker.check(module, [pass], kb, registry, dict.new())
+  let #(violations, _) =
+    checker.check(module, [pass], kb, registry, dict.new(), dict.new())
   violations |> should.equal([])
   let fail =
     EffectAnnotation(
@@ -2960,7 +3026,8 @@ pub fn caller() -> Nil {
       [],
       effect_term.from_effect_set(types.empty()),
     )
-  let #(failed, _) = checker.check(module, [fail], kb, registry, dict.new())
+  let #(failed, _) =
+    checker.check(module, [fail], kb, registry, dict.new(), dict.new())
   { failed != [] } |> should.be_true()
 }
 
@@ -3098,6 +3165,43 @@ fn second_order_violations(
       [],
       effect_term.from_effect_set(Specific(set.from_list(budget))),
     )
-  let #(violations, _) = checker.check(module, [ann], kb, registry, dict.new())
+  let #(violations, _) =
+    checker.check(module, [ann], kb, registry, dict.new(), dict.new())
   violations
+}
+
+// ----- collapse classification is girard-independent (determinism) -----
+
+/// A parameter typed through a module-local function alias (`h: Handler` where
+/// `type Handler = fn(...)`) must be recognised as function-typed from the
+/// syntax alone, so the function is never *collapsed* during memoization. The
+/// type annotator can decline a function under load; relying on it here would
+/// let an effect-polymorphic function be collapsed (turning its `h(x)` call into
+/// `[Unknown]`) only sometimes — a nondeterministic result. Passing an empty
+/// girard map simulates the annotator being unavailable.
+pub fn alias_fn_param_is_excluded_from_collapse_test() {
+  let source =
+    "pub type Handler =
+  fn(String) -> Nil
+
+pub fn apply(h: Handler, x: String) -> Nil {
+  h(x)
+}
+
+pub fn plain(x: String) -> String {
+  x
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let context = extract.build_import_context(module)
+  let cache = checker.build_scc_ids(module, context, dict.new(), True)
+
+  // `apply` takes an alias-typed function parameter — excluded from collapse
+  // even with no girard input.
+  let assert Ok(apply_scc) = dict.get(cache.scc_id, "apply")
+  set.contains(cache.collapsible, apply_scc) |> should.be_false()
+
+  // `plain` is genuinely first-order — still collapsible.
+  let assert Ok(plain_scc) = dict.get(cache.scc_id, "plain")
+  set.contains(cache.collapsible, plain_scc) |> should.be_true()
 }
