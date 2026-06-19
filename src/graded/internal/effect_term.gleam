@@ -103,7 +103,10 @@ pub fn free_vars(term: EffectTerm) -> Set(String) {
 /// Substitute effect variables for terms, capture-avoiding. Bindings may map
 /// a variable to an operator (`TAbs`), which is what enables nested/second-
 /// order resolution. Variables not in `bindings` are left free.
-pub fn subst(term: EffectTerm, bindings: Dict(String, EffectTerm)) -> EffectTerm {
+pub fn subst(
+  term: EffectTerm,
+  bindings: Dict(String, EffectTerm),
+) -> EffectTerm {
   case term {
     TLabels(_) -> term
     TTop -> term
@@ -179,7 +182,10 @@ pub fn normalize(term: EffectTerm) -> EffectTerm {
 /// Like `normalize` but reports fuel exhaustion as `Error` instead of
 /// collapsing to `[Unknown]`. Used by the termination property test to assert
 /// that finite terms never hit the budget; production code uses `normalize`.
-pub fn normalize_bounded(term: EffectTerm, fuel: Int) -> Result(EffectTerm, Nil) {
+pub fn normalize_bounded(
+  term: EffectTerm,
+  fuel: Int,
+) -> Result(EffectTerm, Nil) {
   let #(result, remaining) = reduce(term, fuel)
   case remaining < 0 {
     True -> Error(Nil)

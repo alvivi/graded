@@ -110,7 +110,9 @@ pub fn format_annotation(annotation: EffectAnnotation) -> String {
 /// (`gleam/io`, `myapp/web/handlers`) and a `.` to separate the module
 /// path from the function name. The split happens on the LAST `.` since
 /// function names cannot contain dots.
-pub fn split_qualified_name(qualified: String) -> Result(#(String, String), Nil) {
+pub fn split_qualified_name(
+  qualified: String,
+) -> Result(#(String, String), Nil) {
   case list.reverse(string.split(qualified, ".")) {
     [] -> Error(Nil)
     [_only_one] -> Error(Nil)
@@ -569,7 +571,9 @@ fn parse_single_param(input: String) -> Result(ParamBound, Nil) {
 // Shared helper: parse "name : <bound>" returning the trimmed name and the
 // bound's effect term (which may be an operator `fn(cb) -> [..]`). Split on the
 // FIRST colon only, so an operator body's contents are left intact.
-fn parse_name_colon_effects(input: String) -> Result(#(String, EffectTerm), Nil) {
+fn parse_name_colon_effects(
+  input: String,
+) -> Result(#(String, EffectTerm), Nil) {
   use #(name_part, effects_part) <- result.try(string.split_once(
     string.trim(input),
     ":",

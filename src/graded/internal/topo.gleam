@@ -22,7 +22,9 @@ pub type SortError {
 }
 
 /// Kahn's algorithm: produce a leaves-first ordering of `graph`.
-pub fn sort(graph: Dict(String, Set(String))) -> Result(List(String), SortError) {
+pub fn sort(
+  graph: Dict(String, Set(String)),
+) -> Result(List(String), SortError) {
   let in_degrees = dict.map_values(graph, fn(_node, deps) { set.size(deps) })
   let reverse = build_reverse_graph(graph)
   let initial_queue =
