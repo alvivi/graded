@@ -122,9 +122,12 @@ pub fn infer_with_returns(
           cache,
           memo,
         )
-      #(memo, result.map(returned, fn(operator) {
-        #(definition.definition.name, operator)
-      }))
+      #(
+        memo,
+        result.map(returned, fn(operator) {
+          #(definition.definition.name, operator)
+        }),
+      )
     })
   let returned_operators =
     returned_pairs |> list.filter_map(fn(pair) { pair }) |> dict.from_list()
@@ -427,10 +430,20 @@ fn function_type_aliases(
 ) -> Set(String) {
   let alias_map =
     list.fold(aliases, dict.new(), fn(acc, definition) {
-      dict.insert(acc, definition.definition.name, definition.definition.aliased)
+      dict.insert(
+        acc,
+        definition.definition.name,
+        definition.definition.aliased,
+      )
     })
   list.filter_map(dict.keys(alias_map), fn(name) {
-    case resolves_to_function(glance.NamedType(Span(0, 0), name, None, []), alias_map, set.new()) {
+    case
+      resolves_to_function(
+        glance.NamedType(Span(0, 0), name, None, []),
+        alias_map,
+        set.new(),
+      )
+    {
       True -> Ok(name)
       False -> Error(Nil)
     }
@@ -472,7 +485,9 @@ fn alias_fn_typed_params(
 ) -> Set(String) {
   list.filter_map(function.parameters, fn(parameter) {
     case parameter.name, parameter.type_ {
-      glance.Named(name), Some(glance.NamedType(name: type_name, module: None, ..)) ->
+      glance.Named(name),
+        Some(glance.NamedType(name: type_name, module: None, ..))
+      ->
         case set.contains(fn_aliases, type_name) {
           True -> Ok(name)
           False -> Error(Nil)
@@ -1178,10 +1193,10 @@ fn substitute_at_call_site(
     [_, ..] -> #(effect, callee_kb_bounds)
     [] -> auto_bounds_from_registry(call.name, effect, args, registry)
   }
-  use <- bool.guard(
-    when: !has_vars(effective_effects),
-    return: #(effective_effects, memo),
-  )
+  use <- bool.guard(when: !has_vars(effective_effects), return: #(
+    effective_effects,
+    memo,
+  ))
   let #(bindings, memo) =
     bind_variables(
       call.name,
@@ -1278,7 +1293,9 @@ fn bind_variables(
         // positions come from the operator parameter's own signature so a
         // closure argument is abstracted over exactly the right parameters. A
         // first-order parameter just takes the argument's flat effect.
-        let #(arg_effects, memo) = case set.contains(operator_params, bound.name) {
+        let #(arg_effects, memo) = case
+          set.contains(operator_params, bound.name)
+        {
           True ->
             operator_term_for_argument(
               arg,
@@ -1685,8 +1702,10 @@ fn compute_returned_operator(
   case gated {
     Error(Nil) -> #(Error(Nil), memo)
     Ok(#(return_type, value)) -> {
-      let positions = signatures.operator_callback_positions_of_type(return_type)
-      let producer_operators = signatures.operator_params_from_function(function)
+      let positions =
+        signatures.operator_callback_positions_of_type(return_type)
+      let producer_operators =
+        signatures.operator_params_from_function(function)
       let producer_bounds =
         function
         |> ordered_fn_typed_param_names()
@@ -1796,7 +1815,10 @@ fn analyze_closure(
           cache,
           memo,
         )
-      #(operator, Memo(..memo, closures: dict.insert(memo.closures, key, operator)))
+      #(
+        operator,
+        Memo(..memo, closures: dict.insert(memo.closures, key, operator)),
+      )
     }
   }
 }
@@ -1957,7 +1979,10 @@ fn lift_local_function(
             list.fold_right(fn_param_names, body_term, fn(acc, param) {
               types.TAbs(param, acc)
             })
-          #(operator, Memo(..memo, lifts: dict.insert(memo.lifts, key, operator)))
+          #(
+            operator,
+            Memo(..memo, lifts: dict.insert(memo.lifts, key, operator)),
+          )
         }
       }
     }
