@@ -1958,35 +1958,64 @@ fn lift_local_function(
       let key = #(name, ancestors)
       case dict.get(memo.lifts, key) {
         Ok(cached) -> #(cached, memo)
-        Error(Nil) -> {
-          let bounds = list.map(fn_param_names, self_referential_bound)
-          let #(body_pairs, memo) =
-            collect_effects(
-              without_returned_closure(function),
-              function_map,
-              context,
-              knowledge_base,
-              set.insert(visited, name),
-              bounds,
-              registry,
-              module_types,
-              dict.new(),
-              cache,
-              memo,
-            )
-          let body_term = union_of(body_pairs)
-          let operator =
-            list.fold_right(fn_param_names, body_term, fn(acc, param) {
-              types.TAbs(param, acc)
-            })
-          #(
-            operator,
-            Memo(..memo, lifts: dict.insert(memo.lifts, key, operator)),
+        Error(Nil) ->
+          lift_operator_miss(
+            name,
+            function,
+            fn_param_names,
+            key,
+            context,
+            function_map,
+            knowledge_base,
+            visited,
+            registry,
+            module_types,
+            cache,
+            memo,
           )
-        }
       }
     }
   }
+}
+
+/// Compute (and cache) the operator lift of a same-module function on a `lifts`
+/// memo miss: analyse its body with its fn-typed params seeded as self-referential
+/// variables, then abstract over those params in declaration order.
+fn lift_operator_miss(
+  name: String,
+  function: Function,
+  fn_param_names: List(String),
+  key: #(String, List(String)),
+  context: ImportContext,
+  function_map: dict.Dict(String, Definition(Function)),
+  knowledge_base: KnowledgeBase,
+  visited: Set(String),
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  cache: LocalCache,
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
+  let bounds = list.map(fn_param_names, self_referential_bound)
+  let #(body_pairs, memo) =
+    collect_effects(
+      without_returned_closure(function),
+      function_map,
+      context,
+      knowledge_base,
+      set.insert(visited, name),
+      bounds,
+      registry,
+      module_types,
+      dict.new(),
+      cache,
+      memo,
+    )
+  let body_term = union_of(body_pairs)
+  let operator =
+    list.fold_right(fn_param_names, body_term, fn(acc, param) {
+      types.TAbs(param, acc)
+    })
+  #(operator, Memo(..memo, lifts: dict.insert(memo.lifts, key, operator)))
 }
 
 /// In-body names of a function's fn-typed parameters, in declaration order.
@@ -2107,61 +2136,58 @@ fn resolve_unknown_local(
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(#(ResolvedCall, EffectTerm)), Memo) {
-  case set.contains(visited, local_call.function) {
-    // Cycle detected — already analysing this function up the call stack.
-    // Return empty rather than looping; the effects will be captured by the
-    // outer frame that started the analysis.
-    True -> #([], memo)
-    False ->
-      case dict.get(function_map, local_call.function) {
-        Error(Nil) -> {
-          let synthetic_call =
-            types.ResolvedCall(
-              name: QualifiedName(
-                module: "<local>",
-                function: local_call.function,
-              ),
-              span: local_call.span,
-            )
-          #([#(synthetic_call, effect_term.unknown())], memo)
-        }
-        Ok(local_definition) ->
-          case is_opaque_external(local_definition) {
-            // A same-module call into a bodyless `@external` resolves to the
-            // conservative `[Unknown]`, not the `[]` its empty body would yield.
-            True -> #(
-              [
-                #(
-                  types.ResolvedCall(
-                    name: QualifiedName(
-                      module: "<local>",
-                      function: local_call.function,
-                    ),
-                    span: local_call.span,
-                  ),
-                  effect_term.unknown(),
+  // Cycle detected — already analysing this function up the call stack. Return
+  // empty rather than looping; the effects will be captured by the outer frame
+  // that started the analysis.
+  use <- bool.guard(when: set.contains(visited, local_call.function), return: #(
+    [],
+    memo,
+  ))
+  case dict.get(function_map, local_call.function) {
+    Error(Nil) -> {
+      let synthetic_call =
+        types.ResolvedCall(
+          name: QualifiedName(module: "<local>", function: local_call.function),
+          span: local_call.span,
+        )
+      #([#(synthetic_call, effect_term.unknown())], memo)
+    }
+    Ok(local_definition) ->
+      case is_opaque_external(local_definition) {
+        // A same-module call into a bodyless `@external` resolves to the
+        // conservative `[Unknown]`, not the `[]` its empty body would yield.
+        True -> #(
+          [
+            #(
+              types.ResolvedCall(
+                name: QualifiedName(
+                  module: "<local>",
+                  function: local_call.function,
                 ),
-              ],
-              memo,
-            )
-            // A genuine same-module body: memoize its transitive analysis,
-            // keyed by callee + same-SCC ancestors (see `memo_key`). The cached
-            // list holds in-body call spans, which are call-site-independent, so
-            // it is reusable verbatim across every caller sharing the key.
-            False ->
-              memoized_local(
-                local_call,
-                local_definition,
-                visited,
-                function_map,
-                context,
-                knowledge_base,
-                registry,
-                module_types,
-                cache,
-                memo,
-              )
-          }
+                span: local_call.span,
+              ),
+              effect_term.unknown(),
+            ),
+          ],
+          memo,
+        )
+        // A genuine same-module body: memoize its transitive analysis,
+        // keyed by callee + same-SCC ancestors (see `memo_key`). The cached
+        // list holds in-body call spans, which are call-site-independent, so
+        // it is reusable verbatim across every caller sharing the key.
+        False ->
+          memoized_local(
+            local_call,
+            local_definition,
+            visited,
+            function_map,
+            context,
+            knowledge_base,
+            registry,
+            module_types,
+            cache,
+            memo,
+          )
       }
   }
 }
@@ -2262,29 +2288,58 @@ fn collapsed_scc(
       let #(result, memo) =
         list.fold(members, #([], memo), fn(state, name) {
           let #(acc, memo) = state
-          case dict.get(function_map, name) {
-            Ok(definition) -> {
-              let #(member_effects, memo) =
-                collect_effects(
-                  without_returned_closure(definition.definition),
-                  function_map,
-                  context,
-                  knowledge_base,
-                  scc_set,
-                  [],
-                  registry,
-                  module_types,
-                  dict.new(),
-                  cache,
-                  memo,
-                )
-              #(list.append(acc, member_effects), memo)
-            }
-            Error(Nil) -> #(acc, memo)
-          }
+          collapsed_member(
+            name,
+            acc,
+            scc_set,
+            function_map,
+            context,
+            knowledge_base,
+            registry,
+            module_types,
+            cache,
+            memo,
+          )
         })
       #(result, Memo(..memo, sccs: dict.insert(memo.sccs, scc, result)))
     }
+  }
+}
+
+/// Analyse one member of a collapsing SCC and append its effects to `acc`. The
+/// whole component is marked `visited` (`scc_set`), so intra-SCC calls truncate
+/// immediately and each member's direct effects are gathered exactly once.
+fn collapsed_member(
+  name: String,
+  acc: List(#(ResolvedCall, EffectTerm)),
+  scc_set: Set(String),
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  cache: LocalCache,
+  memo: Memo,
+) -> #(List(#(ResolvedCall, EffectTerm)), Memo) {
+  case dict.get(function_map, name) {
+    Ok(definition) -> {
+      let #(member_effects, memo) =
+        collect_effects(
+          without_returned_closure(definition.definition),
+          function_map,
+          context,
+          knowledge_base,
+          scc_set,
+          [],
+          registry,
+          module_types,
+          dict.new(),
+          cache,
+          memo,
+        )
+      #(list.append(acc, member_effects), memo)
+    }
+    Error(Nil) -> #(acc, memo)
   }
 }
 
@@ -2356,43 +2411,39 @@ fn resolve_field_effect(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
-  case is_operator_valued(field_effect.effects) {
-    // An *operator*-valued field — a single closure field lifted to `λp. …`, or
-    // a *union* of such operators from several construction sites (`pure` wires
-    // `λ_. []`, `do` wires `λin. [Unknown]`, …). Apply it to the field call's
-    // arguments so the application β-reduces — the reducer distributes over a
-    // union of operators, `(f ⊔ g)(x) → f(x) ⊔ g(x)` — instead of leaving the
-    // raw operator bounds in the caller's ground effect set.
-    True -> #(
-      apply_field_operator(
-        field_effect.effects,
-        dict.get(call_args, field_call.span.start) |> result.unwrap([]),
-        knowledge_base,
-        caller_param_bounds,
-      ),
-      memo,
-    )
-    False ->
-      case has_vars(field_effect.effects), field_effect.source {
-        False, _ -> #(field_effect.effects, memo)
-        True, None -> #(concretize(field_effect.effects), memo)
-        True, Some(source) -> {
-          let args =
-            dict.get(call_args, field_call.span.start) |> result.unwrap([])
-          let #(bindings, memo) =
-            bind_variables(
-              source,
-              field_effect.bounds,
-              args,
-              knowledge_base,
-              caller_param_bounds,
-              registry,
-              lift_operator_arg,
-              memo,
-            )
-          #(concretize(effect_term.subst(field_effect.effects, bindings)), memo)
-        }
-      }
+  // An *operator*-valued field — a single closure field lifted to `λp. …`, or a
+  // *union* of such operators from several construction sites (`pure` wires
+  // `λ_. []`, `do` wires `λin. [Unknown]`, …). Apply it to the field call's
+  // arguments so the application β-reduces — the reducer distributes over a union
+  // of operators, `(f ⊔ g)(x) → f(x) ⊔ g(x)` — instead of leaving the raw
+  // operator bounds in the caller's ground effect set.
+  use <- bool.guard(when: is_operator_valued(field_effect.effects), return: #(
+    apply_field_operator(
+      field_effect.effects,
+      dict.get(call_args, field_call.span.start) |> result.unwrap([]),
+      knowledge_base,
+      caller_param_bounds,
+    ),
+    memo,
+  ))
+  case has_vars(field_effect.effects), field_effect.source {
+    False, _ -> #(field_effect.effects, memo)
+    True, None -> #(concretize(field_effect.effects), memo)
+    True, Some(source) -> {
+      let args = dict.get(call_args, field_call.span.start) |> result.unwrap([])
+      let #(bindings, memo) =
+        bind_variables(
+          source,
+          field_effect.bounds,
+          args,
+          knowledge_base,
+          caller_param_bounds,
+          registry,
+          lift_operator_arg,
+          memo,
+        )
+      #(concretize(effect_term.subst(field_effect.effects, bindings)), memo)
+    }
   }
 }
 
