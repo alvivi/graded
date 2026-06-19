@@ -172,6 +172,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
         knowledge_base,
         registry,
         typeinfo.for_module(type_info, module_path),
+        typeinfo.fn_typed_for_module(type_info, module_path),
       )
     })
 
@@ -368,6 +369,9 @@ fn build_constructor_field_index(
     // closure body in this module's context (same-module calls via its
     // function map), instead of collapsing to `[Unknown]`.
     let function_map = checker.build_function_map(module)
+    // Built once per module and shared across every field closure analysed
+    // below, rather than rebuilt per closure.
+    let scc_ids = checker.build_scc_ids(module, context, dict.new(), False)
     let closure_effect = fn(params, body) {
       checker.closure_field_operator(
         params,
@@ -375,6 +379,7 @@ fn build_constructor_field_index(
         context,
         function_map,
         knowledge_base,
+        scc_ids,
       )
     }
     extract.collect_constructor_bindings(module, context)
@@ -883,9 +888,17 @@ fn check_one_file(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   module_types: Dict(#(Int, Int), girard_types.Type),
+  girard_fn_typed: Dict(String, Set(String)),
 ) -> CheckResult {
   let #(violations, warnings) =
-    checker.check(module, module_checks, knowledge_base, registry, module_types)
+    checker.check(
+      module,
+      module_checks,
+      knowledge_base,
+      registry,
+      module_types,
+      girard_fn_typed,
+    )
   CheckResult(file: gleam_path, violations:, warnings:)
 }
 

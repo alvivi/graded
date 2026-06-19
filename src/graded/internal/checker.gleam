@@ -15,6 +15,7 @@ import graded/internal/effect_term
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract.{type ImportContext}
 import graded/internal/signatures.{type SignatureRegistry}
+import graded/internal/topo
 import graded/internal/typeinfo
 import graded/internal/types.{
   type EffectAnnotation, type EffectTerm, type LocalCall, type ParamBound,
@@ -29,23 +30,31 @@ pub fn check(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  girard_fn_typed: dict.Dict(String, Set(String)),
 ) -> #(List(Violation), List(Warning)) {
   let context =
     extract.build_import_context(module)
     |> extract.with_factories(extract.factory_map(module))
     |> extract.with_cross_factories(effects.factories(knowledge_base))
   let function_map = build_function_map(module)
+  let cache = build_scc_ids(module, context, girard_fn_typed, True)
 
-  let results =
-    list.map(annotations, fn(annotation) {
-      check_annotation(
-        annotation,
-        function_map,
-        context,
-        knowledge_base,
-        registry,
-        module_types,
-      )
+  // One memo table threaded across every annotation: same-module callees shared
+  // between annotations are analysed once.
+  let #(_memo, results) =
+    list.map_fold(annotations, new_memo(), fn(memo, annotation) {
+      let #(result, memo) =
+        check_annotation(
+          annotation,
+          function_map,
+          context,
+          knowledge_base,
+          registry,
+          module_types,
+          cache,
+          memo,
+        )
+      #(memo, result)
     })
   let violations = list.flat_map(results, fn(r) { r.0 })
   let warnings = list.flat_map(results, fn(r) { r.1 })
@@ -89,6 +98,7 @@ pub fn infer_with_returns(
     |> extract.with_factories(extract.factory_map(module))
     |> extract.with_cross_factories(effects.factories(knowledge_base))
   let function_map = build_function_map(module)
+  let cache = build_scc_ids(module, context, girard_fn_typed, True)
 
   let public_functions =
     list.filter(module.functions, fn(definition) {
@@ -96,21 +106,28 @@ pub fn infer_with_returns(
     })
 
   // Returned operators of public functions that return a function — recorded so
-  // downstream consumers resolve `let h = producer(); with(h)`.
-  let returned_operators =
-    list.filter_map(public_functions, fn(definition) {
-      compute_returned_operator(
-        definition.definition,
-        context,
-        function_map,
-        knowledge_base,
-        set.new(),
-        registry,
-        module_types,
-      )
-      |> result.map(fn(operator) { #(definition.definition.name, operator) })
+  // downstream consumers resolve `let h = producer(); with(h)`. One memo table
+  // is threaded through this pass and reused for the inference pass below.
+  let #(memo, returned_pairs) =
+    list.map_fold(public_functions, new_memo(), fn(memo, definition) {
+      let #(returned, memo) =
+        compute_returned_operator(
+          definition.definition,
+          context,
+          function_map,
+          knowledge_base,
+          set.new(),
+          registry,
+          module_types,
+          cache,
+          memo,
+        )
+      #(memo, result.map(returned, fn(operator) {
+        #(definition.definition.name, operator)
+      }))
     })
-    |> dict.from_list()
+  let returned_operators =
+    returned_pairs |> list.filter_map(fn(pair) { pair }) |> dict.from_list()
 
   // Seed param bounds from existing `check` annotations only — `effects`
   // annotations don't carry user-declared bounds, so they can't constrain
@@ -121,8 +138,8 @@ pub fn infer_with_returns(
     |> list.map(fn(annotation) { #(annotation.function, annotation.params) })
     |> dict.from_list()
 
-  let annotations =
-    list.map(public_functions, fn(definition) {
+  let #(_memo, annotations) =
+    list.map_fold(public_functions, memo, fn(memo, definition) {
       let param_bounds =
         dict.get(bounds_map, definition.definition.name)
         |> result.unwrap([])
@@ -146,31 +163,39 @@ pub fn infer_with_returns(
         list.append(param_bounds, synthetic_fn_typed_bounds(fn_typed_params))
       // A bodyless `@external` is opaque FFI — conservatively `[Unknown]`, not
       // the `[]` its empty body would otherwise infer.
-      let effects_term = case is_opaque_external(definition) {
-        True -> effect_term.unknown()
-        False ->
-          union_of(collect_effects(
-            without_returned_closure(definition.definition),
-            function_map,
-            context,
-            knowledge_base,
-            set.new(),
-            effective_bounds,
-            registry,
-            module_types,
-            dict.new(),
-          ))
+      let #(effects_term, memo) = case is_opaque_external(definition) {
+        True -> #(effect_term.unknown(), memo)
+        False -> {
+          let #(pairs, memo) =
+            collect_effects(
+              without_returned_closure(definition.definition),
+              function_map,
+              context,
+              knowledge_base,
+              set.new(),
+              effective_bounds,
+              registry,
+              module_types,
+              dict.new(),
+              cache,
+              memo,
+            )
+          #(union_of(pairs), memo)
+        }
       }
       // If the function's inferred effects reference effect variables
       // (because it calls fn-typed params), emit ParamBound entries so
       // the polymorphic annotation round-trips correctly.
       let inferred_params =
         polymorphic_param_bounds(effects_term, fn_typed_params)
-      EffectAnnotation(
-        kind: Effects,
-        function: definition.definition.name,
-        params: inferred_params,
-        effects: effects_term,
+      #(
+        memo,
+        EffectAnnotation(
+          kind: Effects,
+          function: definition.definition.name,
+          params: inferred_params,
+          effects: effects_term,
+        ),
       )
     })
   #(annotations, returned_operators)
@@ -299,6 +324,290 @@ pub fn build_function_map(
   |> dict.from_list()
 }
 
+/// The call-graph strongly-connected-component structure of a module, threaded
+/// read-only through the analysis to drive same-module memoization (see
+/// `memoized_local`). Without memoization a densely mutually-recursive module
+/// (a recursive-descent parser, a `use`-chained codec) re-walks each callee once
+/// per distinct call path — combinatorial blow-up. The component structure makes
+/// two memo strategies possible, each keeping results identical to the
+/// un-memoized walk:
+///
+/// - A **collapsible** component (every member first-order) shares one
+///   full-reachability effect set across all members, computed once.
+/// - Any other callee is keyed by `#(callee, visited ∩ callee's SCC)`: its
+///   result depends on the caller's `visited` only through same-SCC ancestors
+///   (the back-edges cycle-truncation cuts), so that key is exact.
+pub type LocalCache {
+  LocalCache(
+    /// Function name → its call-graph SCC id.
+    scc_id: dict.Dict(String, Int),
+    /// SCC id → the names of its member functions.
+    members: dict.Dict(Int, List(String)),
+    /// SCC ids that may be *collapsed*: every member is first-order (no fn-typed
+    /// params) and has a body. Such a component's members are all mutually
+    /// reachable, so they share one full-reachability effect set — computed once
+    /// and reused by name. A component with an effect-polymorphic member instead
+    /// uses the precise `visited ∩ SCC` key, where the result is path-dependent.
+    collapsible: Set(Int),
+  )
+}
+
+/// Index a module's functions by call-graph SCC, recording for each component
+/// its members and whether it is collapsible.
+///
+/// `girard_fn_typed` carries girard's per-function fn-typed parameter names so a
+/// parameter that *infers* to a function without a `fn(...)` annotation is still
+/// recognised as effect-polymorphic — those, syntactic fn-typed params, and
+/// `@external` functions are all excluded from collapsible components, since the
+/// collapse pools members' effect *sets* and a free effect variable doesn't
+/// belong to every member. `collapse` is `False` for callers that can't supply
+/// girard's view (the constructor-field index), forcing the always-correct
+/// precise key everywhere. Exposed so the constructor-field index can build it
+/// once and reuse it across the closures it lifts.
+pub fn build_scc_ids(
+  module: Module,
+  context: ImportContext,
+  girard_fn_typed: dict.Dict(String, Set(String)),
+  collapse: Bool,
+) -> LocalCache {
+  let definitions = module.functions
+  // Module-local type aliases that resolve to a function type, so a parameter
+  // typed with one (`dec: SizedDecoder(a)` where `type SizedDecoder(a) =
+  // fn(...)`) is recognised as effect-polymorphic. This is the deterministic,
+  // syntax-only counterpart to girard's inference: relying on girard alone here
+  // is unsound under load — girard is best-effort and can decline a function
+  // (e.g. when a dependency import races under concurrent disk I/O), which would
+  // silently drop a fn-typed parameter and let an effect-polymorphic function be
+  // wrongly collapsed. Resolving aliases ourselves keeps the collapse decision
+  // independent of girard's availability.
+  let fn_aliases = function_type_aliases(module.type_aliases)
+  let needs_exact =
+    list.filter_map(definitions, fn(definition) {
+      let name = definition.definition.name
+      let first_order =
+        signatures.fn_typed_params_from_function(definition.definition)
+        |> set.union(alias_fn_typed_params(definition.definition, fn_aliases))
+        |> set.union(typeinfo.fn_typed_params(girard_fn_typed, name))
+        |> set.is_empty()
+      case first_order && !is_opaque_external(definition) {
+        True -> Error(Nil)
+        False -> Ok(name)
+      }
+    })
+    |> set.from_list()
+  topo.scc_order(local_call_graph(definitions, context))
+  |> list.index_fold(
+    LocalCache(dict.new(), dict.new(), set.new()),
+    fn(cache, component, id) {
+      let scc_id =
+        list.fold(component, cache.scc_id, fn(ids, name) {
+          dict.insert(ids, name, id)
+        })
+      let collapsible = case
+        collapse
+        && !list.any(component, fn(name) { set.contains(needs_exact, name) })
+      {
+        True -> set.insert(cache.collapsible, id)
+        False -> cache.collapsible
+      }
+      LocalCache(
+        scc_id:,
+        members: dict.insert(cache.members, id, component),
+        collapsible:,
+      )
+    },
+  )
+}
+
+/// Names of module-local type aliases that resolve (transitively, through other
+/// aliases) to a function type. `type Decoder(a) = fn(...)` and an alias of such
+/// an alias both qualify; an alias to a record or tuple does not.
+fn function_type_aliases(
+  aliases: List(Definition(glance.TypeAlias)),
+) -> Set(String) {
+  let alias_map =
+    list.fold(aliases, dict.new(), fn(acc, definition) {
+      dict.insert(acc, definition.definition.name, definition.definition.aliased)
+    })
+  list.filter_map(dict.keys(alias_map), fn(name) {
+    case resolves_to_function(glance.NamedType(Span(0, 0), name, None, []), alias_map, set.new()) {
+      True -> Ok(name)
+      False -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+}
+
+/// Does `type_` denote a function — directly (`fn(...)`) or via a chain of
+/// module-local aliases? `seen` guards against alias cycles (which Gleam rejects,
+/// but the walk must terminate regardless).
+fn resolves_to_function(
+  type_: glance.Type,
+  alias_map: dict.Dict(String, glance.Type),
+  seen: Set(String),
+) -> Bool {
+  case type_ {
+    glance.FunctionType(..) -> True
+    glance.NamedType(name:, module: None, ..) ->
+      case set.contains(seen, name) {
+        True -> False
+        False ->
+          case dict.get(alias_map, name) {
+            Ok(aliased) ->
+              resolves_to_function(aliased, alias_map, set.insert(seen, name))
+            // Not an alias (a custom type or prelude type) — not a function.
+            Error(Nil) -> False
+          }
+      }
+    _ -> False
+  }
+}
+
+/// Parameters of `function` whose declared type resolves to a function through a
+/// module-local alias. The direct `fn(...)` case is already covered by
+/// `signatures.fn_typed_params_from_function`; this adds the alias-resolved ones.
+fn alias_fn_typed_params(
+  function: Function,
+  fn_aliases: Set(String),
+) -> Set(String) {
+  list.filter_map(function.parameters, fn(parameter) {
+    case parameter.name, parameter.type_ {
+      glance.Named(name), Some(glance.NamedType(name: type_name, module: None, ..)) ->
+        case set.contains(fn_aliases, type_name) {
+          True -> Ok(name)
+          False -> Error(Nil)
+        }
+      _, _ -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+}
+
+/// Build the same-module call graph: each function mapped to the same-module
+/// functions its analysis can transitively recurse into. Deriving these from the
+/// extractor — the same pass that drives resolution — makes the
+/// strongly-connected-component structure match the truncation relation exactly.
+/// That agreement matters: a *split* of a real cycle makes `collapsed_scc`
+/// re-enter itself across the spurious boundary, never hitting its in-progress
+/// cache (an exponential blow-up); a *merge* of unrelated functions
+/// over-approximates the collapsed effect. A looser reference scan risks both.
+fn local_call_graph(
+  definitions: List(Definition(Function)),
+  context: ImportContext,
+) -> dict.Dict(String, Set(String)) {
+  let names =
+    definitions
+    |> list.map(fn(definition) { definition.definition.name })
+    |> set.from_list()
+  list.fold(definitions, dict.new(), fn(graph, definition) {
+    let edges = recursion_edges(definition.definition, context, names)
+    dict.insert(graph, definition.definition.name, edges)
+  })
+}
+
+/// The memo key for a local call: the callee name plus the sorted subset of the
+/// current `visited` ancestors that share the callee's SCC. Those ancestors are
+/// exactly the back-edges cycle-truncation can cut, so two calls with the same
+/// key truncate identically and yield the same `(call, effect)` list. A callee
+/// on no cycle has no same-SCC ancestors, so its key is always `#(name, [])`.
+fn memo_key(
+  name: String,
+  visited: Set(String),
+  cache: LocalCache,
+) -> #(String, List(String)) {
+  let scc = dict.get(cache.scc_id, name)
+  let ancestors =
+    visited
+    |> set.to_list()
+    |> list.filter(fn(ancestor) { dict.get(cache.scc_id, ancestor) == scc })
+    |> list.sort(string.compare)
+  #(name, ancestors)
+}
+
+/// Per-module memo tables, threaded through same-module effect analysis as
+/// explicit immutable state: every memoized function takes a `Memo` and returns
+/// the (possibly extended) table alongside its result. A fresh `new_memo()` is
+/// created at each top-level analysis entry (`infer_with_returns`, `check`,
+/// `closure_field_operator`), so a module's memoized sub-results never leak into
+/// the next module's analysis. Threading a value beats a process-dictionary memo:
+/// the analysis stays referentially transparent and the persistent-dict cost is
+/// negligible.
+type Memo {
+  Memo(
+    /// Polymorphic same-module call analyses, keyed by callee + same-SCC
+    /// ancestors (see `memo_key`).
+    locals: dict.Dict(
+      #(String, List(String)),
+      List(#(ResolvedCall, EffectTerm)),
+    ),
+    /// Collapsible-SCC full-reachability analyses, keyed by SCC id.
+    sccs: dict.Dict(Int, List(#(ResolvedCall, EffectTerm))),
+    /// Operator-lifts of same-module function references, keyed by name +
+    /// same-SCC ancestors.
+    lifts: dict.Dict(#(String, List(String)), EffectTerm),
+    /// Closure analyses, keyed by body position, lifting positions, ambient
+    /// operator names, and visited ancestors.
+    closures: dict.Dict(
+      #(Int, List(Int), List(String), List(String)),
+      EffectTerm,
+    ),
+  )
+}
+
+fn new_memo() -> Memo {
+  Memo(
+    locals: dict.new(),
+    sccs: dict.new(),
+    lifts: dict.new(),
+    closures: dict.new(),
+  )
+}
+
+/// The same-module functions a function actually calls or references as a
+/// value — its call-graph edges. Computed as the **free** variables of the body
+/// (those *not* bound by a parameter, `let`, `use`, `fn`, or `case` pattern)
+/// intersected with the module's function names. Tracking bindings is essential:
+/// a parameter or local that shadows a sibling function's name (`fn apply(func,
+/// …)` alongside a `func` function) is a reference to the local, not the
+/// function, and must not create a spurious edge — a spurious edge merges
+/// unrelated components, and the SCC-collapse memo would then pool their effects.
+/// The same-module functions `function`'s analysis recurses into, intersected
+/// with the module's function names. Mirrors the three same-module recursion
+/// sites in `collect_effects`: unresolved local calls (`resolve_unknown_local`),
+/// a let-bound returned operator's same-module producer
+/// (`resolve_returned_operator`), and a same-module function reference handed to
+/// an operator parameter (`lift_local_function`, reached when the argument is a
+/// `LocalRef`). Calls inside nested closures are already flattened into the
+/// extractor's result, so they are covered too.
+fn recursion_edges(
+  function: Function,
+  context: ImportContext,
+  names: Set(String),
+) -> Set(String) {
+  let result = extract.extract_calls(function.body, context)
+  let local = list.map(result.local, fn(call) { call.function })
+  let returned =
+    list.filter_map(result.direct_ops, fn(op) {
+      case op.callee.module {
+        "" -> Ok(op.callee.function)
+        _ -> Error(Nil)
+      }
+    })
+  let lifted =
+    result.call_args
+    |> dict.values()
+    |> list.flatten()
+    |> list.filter_map(fn(argument) {
+      case argument.value {
+        types.LocalRef(name) -> Ok(name)
+        _ -> Error(Nil)
+      }
+    })
+  list.flatten([local, returned, lifted])
+  |> set.from_list()
+  |> set.intersection(names)
+}
+
 /// A function declared `@external(...)` is opaque foreign code: graded cannot see
 /// what the native implementation does, so its effect is the conservative
 /// `[Unknown]` by default — never the `[]` an empty (or pure-looking fallback)
@@ -325,7 +634,14 @@ pub fn closure_field_operator(
   context: ImportContext,
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
+  // The module's SCC ids, built once by the caller (`build_scc_ids`) and reused
+  // across every field closure it analyses.
+  scc_ids: LocalCache,
 ) -> EffectTerm {
+  // Independent analysis entry (called while building the construction index,
+  // not under `infer`/`check`): start from a fresh memo so no other module's
+  // entries leak in. Each call gets its own memo — these closures are shallow,
+  // so not sharing across fields costs nothing.
   // Abstract over every parameter (positions 0..n-1), in order.
   let positions = list.index_map(params, fn(_, index) { index })
   analyze_closure(
@@ -339,7 +655,9 @@ pub fn closure_field_operator(
     signatures.empty(),
     dict.new(),
     dict.new(),
-  )
+    scc_ids,
+    new_memo(),
+  ).0
 }
 
 fn check_annotation(
@@ -349,13 +667,15 @@ fn check_annotation(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-) -> #(List(Violation), List(Warning)) {
+  cache: LocalCache,
+  memo: Memo,
+) -> #(#(List(Violation), List(Warning)), Memo) {
   case dict.get(function_map, annotation.function) {
     // Silently skip: the annotation may be stale or apply to a different
     // build target. Missing functions are not an error.
-    Error(Nil) -> #([], [])
+    Error(Nil) -> #(#([], []), memo)
     Ok(function_definition) -> {
-      let body_effects =
+      let #(body_effects, memo) =
         collect_effects(
           without_returned_closure(function_definition.definition),
           function_map,
@@ -366,6 +686,8 @@ fn check_annotation(
           registry,
           module_types,
           dict.new(),
+          cache,
+          memo,
         )
       // A call is a violation when its effect set is not a subset of the
       // declared budget — i.e. it performs effects the caller didn't allow.
@@ -399,7 +721,7 @@ fn check_annotation(
           knowledge_base,
         )
 
-      #(violations, warnings)
+      #(#(violations, warnings), memo)
     }
   }
 }
@@ -450,7 +772,12 @@ fn collect_effects(
   // returned closure we're analysing), so a call to one becomes a curried
   // operator application rather than `[Unknown]`. Empty for an ordinary function.
   ambient_operators: dict.Dict(String, List(Int)),
-) -> List(#(types.ResolvedCall, EffectTerm)) {
+  // Memoized same-module body analyses, keyed by function name. Lets the local-
+  // call path resolve a cacheable callee in O(1) instead of re-walking its body.
+  cache: LocalCache,
+  // Threaded memo state, extended as memoizable sub-analyses are computed.
+  memo: Memo,
+) -> #(List(#(types.ResolvedCall, EffectTerm)), Memo) {
   let result = extract.extract_calls(function.body, context)
   let operator_params =
     dict.merge(
@@ -466,16 +793,17 @@ fn collect_effects(
       registry,
       module_types,
       ambient_operators,
+      cache,
     )
 
   // Resolved calls: qualified names looked up directly in the knowledge
   // base. If the callee's effects are polymorphic (contain effect
   // variables), bind the variables by matching arguments at fn-typed
   // parameter positions and substitute for concrete effects.
-  let resolved_effects =
-    list.map(result.resolved, fn(call) {
+  let #(memo, resolved_effects) =
+    list.map_fold(result.resolved, memo, fn(memo, call) {
       let effect_set = effects.lookup_effects(knowledge_base, call.name)
-      let concrete =
+      let #(concrete, memo) =
         substitute_at_call_site(
           call,
           effect_set,
@@ -484,15 +812,16 @@ fn collect_effects(
           param_bounds,
           registry,
           lift_operator_arg,
+          memo,
         )
-      #(call, concrete)
+      #(memo, #(call, concrete))
     })
 
   // Local calls: check param bounds first (user-declared and auto-detected
   // fn-typed bounds both live here), then fall back to transitive analysis
   // of local definitions.
-  let local_effects =
-    list.flat_map(result.local, fn(local_call) {
+  let #(memo, local_effects_nested) =
+    list.map_fold(result.local, memo, fn(memo, local_call) {
       case
         list.find(param_bounds, fn(param) { param.name == local_call.function })
       {
@@ -525,19 +854,23 @@ fn collect_effects(
                 param_bounds,
               )
           }
-          [#(synthetic_call, effect)]
+          #(memo, [#(synthetic_call, effect)])
         }
-        Error(Nil) ->
-          resolve_unknown_local(
-            local_call,
-            visited,
-            function_map,
-            context,
-            knowledge_base,
-            registry,
-            module_types,
-          )
-          |> substitute_local_call_effects(
+        Error(Nil) -> {
+          let #(recursive, memo) =
+            resolve_unknown_local(
+              local_call,
+              visited,
+              function_map,
+              context,
+              knowledge_base,
+              registry,
+              module_types,
+              cache,
+              memo,
+            )
+          substitute_local_call_effects(
+            recursive,
             local_call,
             result.call_args,
             function_map,
@@ -545,13 +878,17 @@ fn collect_effects(
             param_bounds,
             registry,
             lift_operator_arg,
+            memo,
           )
+          |> fn(pair) { #(pair.1, pair.0) }
+        }
       }
     })
+  let local_effects = list.flatten(local_effects_nested)
 
   // Field calls: object.method(args) resolved via type field annotations.
-  let field_effects =
-    list.map(result.field, fn(field_call) {
+  let #(memo, field_effects) =
+    list.map_fold(result.field, memo, fn(memo, field_call) {
       let synthetic_call =
         types.ResolvedCall(
           name: QualifiedName(
@@ -560,7 +897,7 @@ fn collect_effects(
           ),
           span: field_call.span,
         )
-      let effect_set =
+      let #(effect_set, memo) =
         resolve_field_call(
           field_call,
           function,
@@ -570,16 +907,17 @@ fn collect_effects(
           param_bounds,
           registry,
           lift_operator_arg,
+          memo,
         )
-      #(synthetic_call, effect_set)
+      #(memo, #(synthetic_call, effect_set))
     })
 
   // Direct applications of a let-bound returned operator: `let h = pick(); h(cb)`.
   // Resolve the producer's returned operator, then apply it to this call's own
   // arguments (curried over the operator's binders). Untraceable producers
   // resolve to [Unknown], exactly as the previous local-call path did.
-  let direct_op_effects =
-    list.map(result.direct_ops, fn(op) {
+  let #(memo, direct_op_effects) =
+    list.map_fold(result.direct_ops, memo, fn(memo, op) {
       let synthetic_call =
         types.ResolvedCall(
           name: QualifiedName(
@@ -588,7 +926,7 @@ fn collect_effects(
           ),
           span: op.span,
         )
-      let effect = case
+      let #(resolved_op, memo) =
         resolve_returned_operator(
           op.callee,
           op.producer_args,
@@ -598,8 +936,10 @@ fn collect_effects(
           visited,
           registry,
           module_types,
+          cache,
+          memo,
         )
-      {
+      let effect = case resolved_op {
         Ok(operator) -> {
           let positions = positions_up_to(operator_spine_arity(operator))
           curried_operator_application(
@@ -613,21 +953,21 @@ fn collect_effects(
         }
         Error(Nil) -> effect_term.unknown()
       }
-      #(synthetic_call, effect)
+      #(memo, #(synthetic_call, effect))
     })
 
   // Pipe into an inline closure / case of functions (`x |> fn(f) { f() }`):
   // lift the target to an operator over its first parameter and apply the piped
   // value (argument 0). Resolving this fixes an understatement — walking the
   // target as a value dropped its use of the piped value.
-  let direct_pipe_effects =
-    list.map(result.direct_pipe_ops, fn(op) {
+  let #(memo, direct_pipe_effects) =
+    list.map_fold(result.direct_pipe_ops, memo, fn(memo, op) {
       let synthetic_call =
         types.ResolvedCall(
           name: QualifiedName(module: "<pipe>", function: "<operator>"),
           span: op.span,
         )
-      let operator =
+      let #(operator, memo) =
         operator_term_for_argument(
           types.CallArgument(position: 0, label: None, value: op.value),
           [0],
@@ -635,6 +975,7 @@ fn collect_effects(
           param_bounds,
           registry,
           lift_operator_arg,
+          memo,
         )
       let effect =
         curried_operator_application(
@@ -645,16 +986,19 @@ fn collect_effects(
           knowledge_base,
           param_bounds,
         )
-      #(synthetic_call, effect)
+      #(memo, #(synthetic_call, effect))
     })
 
-  list.flatten([
-    resolved_effects,
-    local_effects,
-    field_effects,
-    direct_op_effects,
-    direct_pipe_effects,
-  ])
+  #(
+    list.flatten([
+      resolved_effects,
+      local_effects,
+      field_effects,
+      direct_op_effects,
+      direct_pipe_effects,
+    ]),
+    memo,
+  )
 }
 
 /// The number of leading operator binders a (resolved) returned operator takes
@@ -680,17 +1024,25 @@ fn first_order_arg_effect(
   arg: types.CallArgument,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
-  lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
-    Result(EffectTerm, Nil),
-) -> EffectTerm {
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
   case arg.value {
-    types.Closure(_, _) ->
-      case lift_operator_arg(arg.value, []) {
-        Ok(operator) -> discharge_operator(operator)
-        Error(Nil) ->
-          resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
+    types.Closure(_, _) -> {
+      let #(lifted, memo) = lift_operator_arg(arg.value, [], memo)
+      case lifted {
+        Ok(operator) -> #(discharge_operator(operator), memo)
+        Error(Nil) -> #(
+          resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
+          memo,
+        )
       }
-    _ -> resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
+    }
+    _ -> #(
+      resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
+      memo,
+    )
   }
 }
 
@@ -740,13 +1092,14 @@ fn substitute_local_call_effects(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
-    Result(EffectTerm, Nil),
-) -> List(#(types.ResolvedCall, EffectTerm)) {
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(List(#(types.ResolvedCall, EffectTerm)), Memo) {
   let any_polymorphic = list.any(recursive, fn(p) { has_vars(p.1) })
-  use <- bool.guard(when: !any_polymorphic, return: recursive)
+  use <- bool.guard(when: !any_polymorphic, return: #(recursive, memo))
   case dict.get(function_map, local_call.function) {
-    Error(Nil) -> recursive
+    Error(Nil) -> #(recursive, memo)
     Ok(local_definition) -> {
       let bounds = local_polymorphic_bounds(local_definition.definition)
       let args = dict.get(call_args, local_call.span.start) |> result.unwrap([])
@@ -767,7 +1120,7 @@ fn substitute_local_call_effects(
           ),
         )
       let merged_registry = signatures.merge(registry, local_registry)
-      let bindings =
+      let #(bindings, memo) =
         bind_variables(
           callee_name,
           bounds,
@@ -776,11 +1129,14 @@ fn substitute_local_call_effects(
           caller_param_bounds,
           merged_registry,
           lift_operator_arg,
+          memo,
         )
-      list.map(recursive, fn(pair) {
-        let #(call, term) = pair
-        #(call, effect_term.normalize(effect_term.subst(term, bindings)))
-      })
+      let substituted =
+        list.map(recursive, fn(pair) {
+          let #(call, term) = pair
+          #(call, effect_term.normalize(effect_term.subst(term, bindings)))
+        })
+      #(substituted, memo)
     }
   }
 }
@@ -805,16 +1161,17 @@ fn substitute_at_call_site(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
-    Result(EffectTerm, Nil),
-) -> EffectTerm {
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
   let callee_kb_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
   // Fast path: concrete effect with declared bounds — nothing to
   // substitute. With no declared bounds we still need to fall through
   // in case the registry flags auto-injectable fn-typed params.
   use <- bool.guard(
     when: !has_vars(effect) && callee_kb_bounds != [],
-    return: effect,
+    return: #(effect, memo),
   )
   let args = dict.get(call_args, call.span.start) |> result.unwrap([])
   let #(effective_effects, effective_bounds) = case callee_kb_bounds {
@@ -823,9 +1180,9 @@ fn substitute_at_call_site(
   }
   use <- bool.guard(
     when: !has_vars(effective_effects),
-    return: effective_effects,
+    return: #(effective_effects, memo),
   )
-  let bindings =
+  let #(bindings, memo) =
     bind_variables(
       call.name,
       effective_bounds,
@@ -834,8 +1191,9 @@ fn substitute_at_call_site(
       caller_param_bounds,
       registry,
       lift_operator_arg,
+      memo,
     )
-  effect_term.normalize(effect_term.subst(effective_effects, bindings))
+  #(effect_term.normalize(effect_term.subst(effective_effects, bindings)), memo)
 }
 
 /// When the KB has no bounds but the registry reports fn-typed params,
@@ -901,11 +1259,13 @@ fn bind_variables(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
-    Result(EffectTerm, Nil),
-) -> dict.Dict(String, EffectTerm) {
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(dict.Dict(String, EffectTerm), Memo) {
   let operator_params = signatures.operator_param_names(registry, callee_name)
-  list.fold(callee_bounds, dict.new(), fn(acc, bound) {
+  list.fold(callee_bounds, #(dict.new(), memo), fn(state, bound) {
+    let #(acc, memo) = state
     // Find the argument matching this parameter by label (caller used
     // an explicit label) or by real parameter position from the
     // registry. If neither matches, the variable stays unresolved.
@@ -918,7 +1278,7 @@ fn bind_variables(
         // positions come from the operator parameter's own signature so a
         // closure argument is abstracted over exactly the right parameters. A
         // first-order parameter just takes the argument's flat effect.
-        let arg_effects = case set.contains(operator_params, bound.name) {
+        let #(arg_effects, memo) = case set.contains(operator_params, bound.name) {
           True ->
             operator_term_for_argument(
               arg,
@@ -931,6 +1291,7 @@ fn bind_variables(
               caller_param_bounds,
               registry,
               lift_operator_arg,
+              memo,
             )
           False ->
             first_order_arg_effect(
@@ -938,6 +1299,7 @@ fn bind_variables(
               knowledge_base,
               caller_param_bounds,
               lift_operator_arg,
+              memo,
             )
         }
         // Bind the bound's free variable(s) to the argument's effect. For a
@@ -945,11 +1307,13 @@ fn bind_variables(
         // referential fn-typed bound it's the parameter name itself.
         let var_names =
           bound.effects |> effect_term.free_vars() |> set.to_list()
-        list.fold(var_names, acc, fn(d, var) {
-          dict.insert(d, var, arg_effects)
-        })
+        let acc =
+          list.fold(var_names, acc, fn(d, var) {
+            dict.insert(d, var, arg_effects)
+          })
+        #(acc, memo)
       }
-      None -> acc
+      None -> #(acc, memo)
     }
   })
 }
@@ -969,39 +1333,50 @@ fn operator_term_for_argument(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
-    Result(EffectTerm, Nil),
-) -> EffectTerm {
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
   case arg.value {
     types.FunctionRef(name) -> {
       let body = effects.lookup_effects(knowledge_base, name)
       // Abstract over `g`'s fn-typed params in declaration order. The outermost
       // binder is the first param, matching the left-nested application spine
       // built at the definition site.
-      signatures.fn_typed_param_names_ordered(registry, name)
-      |> list.fold_right(body, fn(acc, param) { types.TAbs(param, acc) })
+      let operator =
+        signatures.fn_typed_param_names_ordered(registry, name)
+        |> list.fold_right(body, fn(acc, param) { types.TAbs(param, acc) })
+      #(operator, memo)
     }
     // A branch over function-like options: lift each, then join the operators —
     // `(f ⊔ g)(cb) = f(cb) ⊔ g(cb)`, an over-approximation of every branch.
-    types.Choice(options) ->
-      options
-      |> list.map(fn(option) {
-        operator_term_for_argument(
-          types.CallArgument(..arg, value: option),
-          positions,
-          knowledge_base,
-          caller_param_bounds,
-          registry,
-          lift_operator_arg,
+    types.Choice(options) -> {
+      let #(memo, operators) =
+        list.map_fold(options, memo, fn(memo, option) {
+          let #(op, memo) =
+            operator_term_for_argument(
+              types.CallArgument(..arg, value: option),
+              positions,
+              knowledge_base,
+              caller_param_bounds,
+              registry,
+              lift_operator_arg,
+              memo,
+            )
+          #(memo, op)
+        })
+      #(join_operators(operators), memo)
+    }
+    _ -> {
+      let #(lifted, memo) = lift_operator_arg(arg.value, positions, memo)
+      case lifted {
+        Ok(operator) -> #(operator, memo)
+        Error(Nil) -> #(
+          resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
+          memo,
         )
-      })
-      |> join_operators()
-    _ ->
-      case lift_operator_arg(arg.value, positions) {
-        Ok(operator) -> operator
-        Error(Nil) ->
-          resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
       }
+    }
   }
 }
 
@@ -1070,38 +1445,50 @@ fn build_lift_operator_arg(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
   ambient_operators: dict.Dict(String, List(Int)),
-) -> fn(types.ArgumentValue, List(Int)) -> Result(EffectTerm, Nil) {
-  fn(value: types.ArgumentValue, positions: List(Int)) {
+  cache: LocalCache,
+) -> fn(types.ArgumentValue, List(Int), Memo) ->
+  #(Result(EffectTerm, Nil), Memo) {
+  fn(value: types.ArgumentValue, positions: List(Int), memo: Memo) {
     case value {
-      types.Closure(params, body) ->
-        Ok(analyze_closure(
-          params,
-          body,
-          positions,
-          context,
-          function_map,
-          knowledge_base,
-          visited,
-          registry,
-          module_types,
-          ambient_operators,
-        ))
+      types.Closure(params, body) -> {
+        let #(operator, memo) =
+          analyze_closure(
+            params,
+            body,
+            positions,
+            context,
+            function_map,
+            knowledge_base,
+            visited,
+            registry,
+            module_types,
+            ambient_operators,
+            cache,
+            memo,
+          )
+        #(Ok(operator), memo)
+      }
       types.LocalRef(name) ->
         // Guard against a function passed as an operator argument to itself:
         // `visited` already carries the call stack, so a name on it would loop.
         case set.contains(visited, name), dict.get(function_map, name) {
-          False, Ok(definition) ->
-            Ok(lift_local_function(
-              name,
-              definition,
-              context,
-              function_map,
-              knowledge_base,
-              visited,
-              registry,
-              module_types,
-            ))
-          _, _ -> Error(Nil)
+          False, Ok(definition) -> {
+            let #(operator, memo) =
+              lift_local_function(
+                name,
+                definition,
+                context,
+                function_map,
+                knowledge_base,
+                visited,
+                registry,
+                module_types,
+                cache,
+                memo,
+              )
+            #(Ok(operator), memo)
+          }
+          _, _ -> #(Error(Nil), memo)
         }
       types.ReturnedOperator(callee, args) ->
         resolve_returned_operator(
@@ -1113,8 +1500,10 @@ fn build_lift_operator_arg(
           visited,
           registry,
           module_types,
+          cache,
+          memo,
         )
-      _ -> Error(Nil)
+      _ -> #(Error(Nil), memo)
     }
   }
 }
@@ -1134,8 +1523,10 @@ fn resolve_returned_operator(
   visited: Set(String),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-) -> Result(EffectTerm, Nil) {
-  let lookup = case callee.module {
+  cache: LocalCache,
+  memo: Memo,
+) -> #(Result(EffectTerm, Nil), Memo) {
+  let #(lookup, memo) = case callee.module {
     "" ->
       case
         set.contains(visited, callee.function),
@@ -1150,28 +1541,38 @@ fn resolve_returned_operator(
             set.insert(visited, callee.function),
             registry,
             module_types,
+            cache,
+            memo,
           )
-        _, _ -> Error(Nil)
+        _, _ -> #(Error(Nil), memo)
       }
-    _ -> effects.lookup_returned_operator(knowledge_base, callee)
+    _ -> #(effects.lookup_returned_operator(knowledge_base, callee), memo)
   }
-  use operator <- result.map(lookup)
-  // Concrete operator (no free vars): nothing to bind. Polymorphic in the
-  // producer's params: bind them to the producer call's arguments.
-  case set.is_empty(effect_term.free_vars(operator)) {
-    True -> operator
-    False ->
-      bind_producer_params(
-        operator,
-        callee,
-        args,
-        context,
-        function_map,
-        knowledge_base,
-        visited,
-        registry,
-        module_types,
-      )
+  case lookup {
+    Error(Nil) -> #(Error(Nil), memo)
+    // Concrete operator (no free vars): nothing to bind. Polymorphic in the
+    // producer's params: bind them to the producer call's arguments.
+    Ok(operator) ->
+      case set.is_empty(effect_term.free_vars(operator)) {
+        True -> #(Ok(operator), memo)
+        False -> {
+          let #(bound, memo) =
+            bind_producer_params(
+              operator,
+              callee,
+              args,
+              context,
+              function_map,
+              knowledge_base,
+              visited,
+              registry,
+              module_types,
+              cache,
+              memo,
+            )
+          #(Ok(bound), memo)
+        }
+      }
   }
 }
 
@@ -1190,7 +1591,9 @@ fn bind_producer_params(
   visited: Set(String),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-) -> EffectTerm {
+  cache: LocalCache,
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
   let #(bounds, effective_registry) = case callee.module {
     "" ->
       case dict.get(function_map, callee.function) {
@@ -1227,8 +1630,9 @@ fn bind_producer_params(
       registry,
       module_types,
       dict.new(),
+      cache,
     )
-  let bindings =
+  let #(bindings, memo) =
     bind_variables(
       callee,
       bounds,
@@ -1237,8 +1641,9 @@ fn bind_producer_params(
       [],
       effective_registry,
       lift,
+      memo,
     )
-  effect_term.normalize(effect_term.subst(operator, bindings))
+  #(effect_term.normalize(effect_term.subst(operator, bindings)), memo)
 }
 
 /// Compute the operator a function returns, for the returned-operator KB and for
@@ -1261,42 +1666,61 @@ fn compute_returned_operator(
   visited: Set(String),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-) -> Result(EffectTerm, Nil) {
-  use return_type <- result.try(option.to_result(function.return, Nil))
+  cache: LocalCache,
+  memo: Memo,
+) -> #(Result(EffectTerm, Nil), Memo) {
   // Gate on the return type being *a function* (so there's something to record
   // when called), not specifically operator-shaped — a first-order returned
   // function (`fn make() -> fn() -> Nil`) carries a latent effect too. The
   // callback positions may be empty (a first-order return has no callbacks).
-  use <- bool.guard(
-    when: !signatures.is_function_return_type(return_type),
-    return: Error(Nil),
-  )
-  let positions = signatures.operator_callback_positions_of_type(return_type)
-  use value <- result.try(extract.return_value(function, context))
-  let producer_operators = signatures.operator_params_from_function(function)
-  let producer_bounds =
-    function
-    |> ordered_fn_typed_param_names()
-    |> list.map(self_referential_bound)
-  let lift =
-    build_lift_operator_arg(
-      context,
-      function_map,
-      knowledge_base,
-      visited,
-      registry,
-      module_types,
-      producer_operators,
+  let gated = {
+    use return_type <- result.try(option.to_result(function.return, Nil))
+    use <- bool.guard(
+      when: !signatures.is_function_return_type(return_type),
+      return: Error(Nil),
     )
-  let operator =
-    operator_term_for_argument(
-      types.CallArgument(position: 0, label: None, value:),
-      positions,
-      knowledge_base,
-      producer_bounds,
-      registry,
-      lift,
-    )
+    use value <- result.try(extract.return_value(function, context))
+    Ok(#(return_type, value))
+  }
+  case gated {
+    Error(Nil) -> #(Error(Nil), memo)
+    Ok(#(return_type, value)) -> {
+      let positions = signatures.operator_callback_positions_of_type(return_type)
+      let producer_operators = signatures.operator_params_from_function(function)
+      let producer_bounds =
+        function
+        |> ordered_fn_typed_param_names()
+        |> list.map(self_referential_bound)
+      let lift =
+        build_lift_operator_arg(
+          context,
+          function_map,
+          knowledge_base,
+          visited,
+          registry,
+          module_types,
+          producer_operators,
+          cache,
+        )
+      let #(operator, memo) =
+        operator_term_for_argument(
+          types.CallArgument(position: 0, label: None, value:),
+          positions,
+          knowledge_base,
+          producer_bounds,
+          registry,
+          lift,
+          memo,
+        )
+      #(compute_returned_operator_result(operator), memo)
+    }
+  }
+}
+
+/// Classify the lifted return value into the operator a producer records.
+fn compute_returned_operator_result(
+  operator: EffectTerm,
+) -> Result(EffectTerm, Nil) {
   // Record the operator a producer returns:
   //   - an abstraction (`λcb. …`, possibly polymorphic in the producer's
   //     params), a bare operator parameter returned directly (`TVar`, the
@@ -1339,7 +1763,58 @@ fn analyze_closure(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
   ambient_operators: dict.Dict(String, List(Int)),
-) -> EffectTerm {
+  cache: LocalCache,
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
+  // Memoize closure analysis. `use`-desugaring nests each continuation inside the
+  // previous one, so a naive walk re-analyses the same closure once per path that
+  // reaches it — exponential on a long `use` chain (a record decoder, say). A
+  // closure is uniquely identified within a module by its body's source position,
+  // and its result depends besides on the lifting `positions`, the in-scope
+  // ambient operators, and which ancestors are visited; key by all four.
+  let key = #(
+    closure_body_start(body),
+    positions,
+    list.sort(dict.keys(ambient_operators), string.compare),
+    list.sort(set.to_list(visited), string.compare),
+  )
+  case dict.get(memo.closures, key) {
+    Ok(cached) -> #(cached, memo)
+    Error(Nil) -> {
+      let #(operator, memo) =
+        analyze_closure_uncached(
+          params,
+          body,
+          positions,
+          context,
+          function_map,
+          knowledge_base,
+          visited,
+          registry,
+          module_types,
+          ambient_operators,
+          cache,
+          memo,
+        )
+      #(operator, Memo(..memo, closures: dict.insert(memo.closures, key, operator)))
+    }
+  }
+}
+
+fn analyze_closure_uncached(
+  params: List(String),
+  body: List(Statement),
+  positions: List(Int),
+  context: ImportContext,
+  function_map: dict.Dict(String, Definition(Function)),
+  knowledge_base: KnowledgeBase,
+  visited: Set(String),
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  ambient_operators: dict.Dict(String, List(Int)),
+  cache: LocalCache,
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
   let synthetic =
     Function(
       location: Span(0, 0),
@@ -1358,7 +1833,7 @@ fn analyze_closure(
       list.map(params, self_referential_bound),
       list.map(dict.keys(ambient_operators), self_referential_bound),
     )
-  let body_term =
+  let #(body_pairs, memo) =
     collect_effects(
       synthetic,
       function_map,
@@ -1369,8 +1844,10 @@ fn analyze_closure(
       registry,
       module_types,
       ambient_operators,
+      cache,
+      memo,
     )
-    |> union_of()
+  let body_term = union_of(body_pairs)
   // Which closure parameters to abstract over: those at the operator's callback
   // positions (in order). Fall back to the first parameter when positions are
   // unknown, preserving the previous single-callback behaviour.
@@ -1383,9 +1860,31 @@ fn analyze_closure(
     _ ->
       list.filter_map(positions, fn(position) { extract.at(params, position) })
   }
-  list.fold_right(callback_params, body_term, fn(acc, param) {
-    types.TAbs(param, acc)
-  })
+  let operator =
+    list.fold_right(callback_params, body_term, fn(acc, param) {
+      types.TAbs(param, acc)
+    })
+  #(operator, memo)
+}
+
+/// The source offset of a closure body's first statement — a stable per-module
+/// identity for the closure, used to memoize its analysis. An empty body (no
+/// statements, hence nothing distinguishing) keys on `-1`.
+fn closure_body_start(body: List(Statement)) -> Int {
+  case body {
+    [statement, ..] -> statement_start(statement)
+    [] -> -1
+  }
+}
+
+fn statement_start(statement: Statement) -> Int {
+  case statement {
+    glance.Use(location:, ..) -> location.start
+    glance.Assignment(location:, ..) -> location.start
+    glance.Assert(location:, ..) -> location.start
+    // Every `glance.Expression` variant carries a `location` field.
+    glance.Expression(expression) -> expression.location.start
+  }
 }
 
 /// Lift a same-module named function passed as an operator argument into an
@@ -1403,26 +1902,66 @@ fn lift_local_function(
   visited: Set(String),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-) -> EffectTerm {
+  cache: LocalCache,
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
   let function = definition.definition
   let fn_param_names = ordered_fn_typed_param_names(function)
-  let bounds = list.map(fn_param_names, self_referential_bound)
-  let body_term =
-    collect_effects(
-      without_returned_closure(function),
-      function_map,
-      context,
-      knowledge_base,
-      set.insert(visited, name),
-      bounds,
-      registry,
-      module_types,
-      dict.new(),
-    )
-    |> union_of()
-  list.fold_right(fn_param_names, body_term, fn(acc, param) {
-    types.TAbs(param, acc)
-  })
+  let scc = dict.get(cache.scc_id, name) |> result.unwrap(-1)
+  case set.contains(cache.collapsible, scc) {
+    // A first-order function in a collapsible SCC lifts to a ground term (no
+    // binders): its operator is just its full-reachability effect, which is the
+    // component's shared collapsed analysis — reuse it rather than re-walking.
+    True -> {
+      let #(pairs, memo) =
+        collapsed_scc(
+          scc,
+          function_map,
+          context,
+          knowledge_base,
+          registry,
+          module_types,
+          cache,
+          memo,
+        )
+      #(union_of(pairs), memo)
+    }
+    // Otherwise memoize like `memoized_local`'s polymorphic path, but for the
+    // operator-lifting of a function reference (an encoder passed to a codec
+    // combinator, reached through deep reference chains). Keyed distinctly from
+    // the local-call memo; the precise `visited ∩ SCC` ancestors when the lifted
+    // function is itself effect-polymorphic.
+    False -> {
+      let #(_, ancestors) = memo_key(name, visited, cache)
+      let key = #(name, ancestors)
+      case dict.get(memo.lifts, key) {
+        Ok(cached) -> #(cached, memo)
+        Error(Nil) -> {
+          let bounds = list.map(fn_param_names, self_referential_bound)
+          let #(body_pairs, memo) =
+            collect_effects(
+              without_returned_closure(function),
+              function_map,
+              context,
+              knowledge_base,
+              set.insert(visited, name),
+              bounds,
+              registry,
+              module_types,
+              dict.new(),
+              cache,
+              memo,
+            )
+          let body_term = union_of(body_pairs)
+          let operator =
+            list.fold_right(fn_param_names, body_term, fn(acc, param) {
+              types.TAbs(param, acc)
+            })
+          #(operator, Memo(..memo, lifts: dict.insert(memo.lifts, key, operator)))
+        }
+      }
+    }
+  }
 }
 
 /// In-body names of a function's fn-typed parameters, in declaration order.
@@ -1540,12 +2079,14 @@ fn resolve_unknown_local(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-) -> List(#(ResolvedCall, EffectTerm)) {
+  cache: LocalCache,
+  memo: Memo,
+) -> #(List(#(ResolvedCall, EffectTerm)), Memo) {
   case set.contains(visited, local_call.function) {
     // Cycle detected — already analysing this function up the call stack.
     // Return empty rather than looping; the effects will be captured by the
     // outer frame that started the analysis.
-    True -> []
+    True -> #([], memo)
     False ->
       case dict.get(function_map, local_call.function) {
         Error(Nil) -> {
@@ -1557,50 +2098,168 @@ fn resolve_unknown_local(
               ),
               span: local_call.span,
             )
-          [#(synthetic_call, effect_term.unknown())]
+          #([#(synthetic_call, effect_term.unknown())], memo)
         }
         Ok(local_definition) ->
           case is_opaque_external(local_definition) {
             // A same-module call into a bodyless `@external` resolves to the
             // conservative `[Unknown]`, not the `[]` its empty body would yield.
-            True -> [
-              #(
-                types.ResolvedCall(
-                  name: QualifiedName(
-                    module: "<local>",
-                    function: local_call.function,
+            True -> #(
+              [
+                #(
+                  types.ResolvedCall(
+                    name: QualifiedName(
+                      module: "<local>",
+                      function: local_call.function,
+                    ),
+                    span: local_call.span,
                   ),
-                  span: local_call.span,
+                  effect_term.unknown(),
                 ),
-                effect_term.unknown(),
-              ),
-            ]
-            False -> {
-              let new_visited = set.insert(visited, local_call.function)
-              // Seed synthetic bounds for the local callee's own fn-typed
-              // params so its body can produce effect variables too (nested
-              // higher-order calls stay polymorphic through the transitive
-              // analysis).
-              let nested_bounds =
-                synthetic_fn_typed_bounds(
-                  signatures.fn_typed_params_from_function(
-                    local_definition.definition,
-                  ),
-                )
-              collect_effects(
-                without_returned_closure(local_definition.definition),
+              ],
+              memo,
+            )
+            // A genuine same-module body: memoize its transitive analysis,
+            // keyed by callee + same-SCC ancestors (see `memo_key`). The cached
+            // list holds in-body call spans, which are call-site-independent, so
+            // it is reusable verbatim across every caller sharing the key.
+            False ->
+              memoized_local(
+                local_call,
+                local_definition,
+                visited,
                 function_map,
                 context,
                 knowledge_base,
-                new_visited,
-                nested_bounds,
                 registry,
                 module_types,
-                dict.new(),
+                cache,
+                memo,
               )
-            }
           }
       }
+  }
+}
+
+/// Resolve a same-module non-external call, memoized.
+///
+/// A call into a **collapsible** SCC (every member first-order) returns that
+/// component's single full-reachability analysis — every member is mutually
+/// reachable, so they share one effect set, and a public entry's truncated union
+/// already equals that set, so collapsing changes nothing but cost. This is what
+/// keeps a dense first-order parser linear instead of exploding over the
+/// component's exponentially-many ancestor subsets.
+///
+/// Any other callee is **effect-polymorphic** (its analysis carries free param
+/// variables bound per call site, so the result genuinely depends on which
+/// ancestors cycle-truncation cut): key by callee + same-SCC ancestors, which is
+/// exact, and analyse the body live on a miss.
+fn memoized_local(
+  local_call: LocalCall,
+  local_definition: Definition(Function),
+  visited: Set(String),
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  cache: LocalCache,
+  memo: Memo,
+) -> #(List(#(ResolvedCall, EffectTerm)), Memo) {
+  let scc = dict.get(cache.scc_id, local_call.function) |> result.unwrap(-1)
+  case set.contains(cache.collapsible, scc) {
+    True ->
+      collapsed_scc(
+        scc,
+        function_map,
+        context,
+        knowledge_base,
+        registry,
+        module_types,
+        cache,
+        memo,
+      )
+    False -> {
+      // Seed synthetic bounds for the callee's own fn-typed params so its body
+      // can produce effect variables too (nested higher-order calls stay
+      // polymorphic through the transitive analysis).
+      let nested_bounds =
+        synthetic_fn_typed_bounds(signatures.fn_typed_params_from_function(
+          local_definition.definition,
+        ))
+      let key = memo_key(local_call.function, visited, cache)
+      case dict.get(memo.locals, key) {
+        Ok(cached) -> #(cached, memo)
+        Error(Nil) -> {
+          let new_visited = set.insert(visited, local_call.function)
+          let #(result, memo) =
+            collect_effects(
+              without_returned_closure(local_definition.definition),
+              function_map,
+              context,
+              knowledge_base,
+              new_visited,
+              nested_bounds,
+              registry,
+              module_types,
+              dict.new(),
+              cache,
+              memo,
+            )
+          #(result, Memo(..memo, locals: dict.insert(memo.locals, key, result)))
+        }
+      }
+    }
+  }
+}
+
+/// The full-reachability analysis of a collapsible SCC, computed once and shared
+/// by all its members. Each member is analysed with the *whole* component marked
+/// visited, so intra-SCC calls truncate immediately (every member's direct
+/// effects are gathered exactly once across the union, and lower SCCs resolve
+/// through the cache); the union over members is the component's reachable
+/// effect. Keyed by SCC id, so the members beyond the first are free.
+fn collapsed_scc(
+  scc: Int,
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  cache: LocalCache,
+  memo: Memo,
+) -> #(List(#(ResolvedCall, EffectTerm)), Memo) {
+  case dict.get(memo.sccs, scc) {
+    Ok(cached) -> #(cached, memo)
+    Error(Nil) -> {
+      let members = dict.get(cache.members, scc) |> result.unwrap([])
+      let scc_set = set.from_list(members)
+      let #(result, memo) =
+        list.fold(members, #([], memo), fn(state, name) {
+          let #(acc, memo) = state
+          case dict.get(function_map, name) {
+            Ok(definition) -> {
+              let #(member_effects, memo) =
+                collect_effects(
+                  without_returned_closure(definition.definition),
+                  function_map,
+                  context,
+                  knowledge_base,
+                  scc_set,
+                  [],
+                  registry,
+                  module_types,
+                  dict.new(),
+                  cache,
+                  memo,
+                )
+              #(list.append(acc, member_effects), memo)
+            }
+            Error(Nil) -> #(acc, memo)
+          }
+        })
+      #(result, Memo(..memo, sccs: dict.insert(memo.sccs, scc, result)))
+    }
   }
 }
 
@@ -1612,9 +2271,10 @@ fn resolve_field_call(
   call_args: dict.Dict(Int, List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
-    Result(EffectTerm, Nil),
-) -> EffectTerm {
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
   // Resolve the receiver's nominal type, qualified by its defining module:
   // girard's inferred type for the receiver expression first (any receiver, and
   // girard reports the defining module), then the receiver's syntactic parameter
@@ -1630,7 +2290,7 @@ fn resolve_field_call(
       |> option.map(fn(type_name) { #("", type_name) })
     })
   case receiver_type {
-    None -> effect_term.unknown()
+    None -> #(effect_term.unknown(), memo)
     Some(#(module, type_name)) ->
       case
         effects.lookup_type_field(
@@ -1640,7 +2300,7 @@ fn resolve_field_call(
           field_call.label,
         )
       {
-        Error(Nil) -> effect_term.unknown()
+        Error(Nil) -> #(effect_term.unknown(), memo)
         Ok(field_effect) ->
           resolve_field_effect(
             field_effect,
@@ -1650,6 +2310,7 @@ fn resolve_field_call(
             caller_param_bounds,
             registry,
             lift_operator_arg,
+            memo,
           )
       }
   }
@@ -1666,9 +2327,10 @@ fn resolve_field_effect(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  lift_operator_arg: fn(types.ArgumentValue, List(Int)) ->
-    Result(EffectTerm, Nil),
-) -> EffectTerm {
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
   case is_operator_valued(field_effect.effects) {
     // An *operator*-valued field — a single closure field lifted to `λp. …`, or
     // a *union* of such operators from several construction sites (`pure` wires
@@ -1676,21 +2338,23 @@ fn resolve_field_effect(
     // arguments so the application β-reduces — the reducer distributes over a
     // union of operators, `(f ⊔ g)(x) → f(x) ⊔ g(x)` — instead of leaving the
     // raw operator bounds in the caller's ground effect set.
-    True ->
+    True -> #(
       apply_field_operator(
         field_effect.effects,
         dict.get(call_args, field_call.span.start) |> result.unwrap([]),
         knowledge_base,
         caller_param_bounds,
-      )
+      ),
+      memo,
+    )
     False ->
       case has_vars(field_effect.effects), field_effect.source {
-        False, _ -> field_effect.effects
-        True, None -> concretize(field_effect.effects)
+        False, _ -> #(field_effect.effects, memo)
+        True, None -> #(concretize(field_effect.effects), memo)
         True, Some(source) -> {
           let args =
             dict.get(call_args, field_call.span.start) |> result.unwrap([])
-          let bindings =
+          let #(bindings, memo) =
             bind_variables(
               source,
               field_effect.bounds,
@@ -1699,8 +2363,9 @@ fn resolve_field_effect(
               caller_param_bounds,
               registry,
               lift_operator_arg,
+              memo,
             )
-          concretize(effect_term.subst(field_effect.effects, bindings))
+          #(concretize(effect_term.subst(field_effect.effects, bindings)), memo)
         }
       }
   }

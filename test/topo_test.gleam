@@ -11,6 +11,7 @@
 
 import filepath
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/set
 import gleam/string
@@ -795,4 +796,77 @@ pub fn new(value: Int) -> List(MyError) {
 
   let _ = simplifile.delete(dir)
   Nil
+}
+
+// ----- dense mutual recursion (memoization regression guard) -----
+
+/// Build a module of `count` mutually-recursive first-order functions forming
+/// one dense strongly-connected component: `p_i` calls `p_{i+1}` (a ring) and
+/// `p_{i+7}` (a chord), indices wrapping. `p0` calls `io.println`, so every
+/// function — each reachable from every other around the ring — must infer
+/// `[Stdout]`. The branching ring has exponentially many simple paths, so
+/// before memoization a single `infer` re-walked each callee per path and blew
+/// up; this fixture would hang. It also pins the cycle-truncation correctness
+/// the memo must preserve: `p10` reaches `p0`'s effect only by going around the
+/// ring, so a memo that cached a path-truncated result would drop its `Stdout`.
+fn dense_scc_module(count: Int) -> String {
+  let body =
+    indices(count)
+    |> list.map(fn(i) {
+      let ring = "p" <> int.to_string({ i + 1 } % count)
+      let chord = "p" <> int.to_string({ i + 7 } % count)
+      let prefix = case i {
+        0 -> "  io.println(\"leaf\")\n"
+        _ -> ""
+      }
+      "pub fn p"
+      <> int.to_string(i)
+      <> "(n: Int) -> Int {\n"
+      <> prefix
+      <> "  "
+      <> ring
+      <> "(n) + "
+      <> chord
+      <> "(n)\n}\n"
+    })
+    |> string.join("\n")
+  "import gleam/io\n\n" <> body
+}
+
+pub fn dense_mutual_recursion_infers_without_blowup_test() {
+  let count = 24
+  let directory =
+    make_fixture("dense_scc", [#("dense.gleam", dense_scc_module(count))])
+
+  // The crucial assertion is simply that this returns at all: without per-module
+  // memoization the dense SCC's exponentially-many paths make inference hang.
+  let assert Ok(Nil) = graded.run_infer(directory)
+
+  let inferred = read_inferred(directory <> "/build/.graded/dense.graded")
+  let stdout = with_labels(["Stdout"])
+
+  // `p0` holds the effect directly.
+  effects_of(inferred, "p0") |> should.equal(stdout)
+  // `p10` reaches it only through the ring back to `p0` — the truncation case.
+  effects_of(inferred, "p10") |> should.equal(stdout)
+  // Every member of the SCC sees the effect.
+  indices(count)
+  |> list.each(fn(i) {
+    effects_of(inferred, "p" <> int.to_string(i)) |> should.equal(stdout)
+  })
+
+  cleanup(directory)
+}
+
+/// `[0, 1, …, count-1]` — a local stand-in for `list.range`, which this
+/// stdlib version lacks.
+fn indices(count: Int) -> List(Int) {
+  indices_loop(count - 1, [])
+}
+
+fn indices_loop(n: Int, acc: List(Int)) -> List(Int) {
+  case n < 0 {
+    True -> acc
+    False -> indices_loop(n - 1, [n, ..acc])
+  }
 }
