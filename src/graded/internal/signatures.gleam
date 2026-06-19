@@ -19,6 +19,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
+import graded/internal/config
 import graded/internal/types.{type QualifiedName, QualifiedName}
 import simplifile
 
@@ -342,7 +343,10 @@ fn registry_from_gleam_file(
 ) -> SignatureRegistry {
   use source <- bool_or_default(simplifile.read(gleam_path), empty())
   use module <- bool_or_default(glance.module(source), empty())
-  from_glance_module(module_path_for(gleam_path, source_dir), module)
+  from_glance_module(
+    config.module_path_for_source(gleam_path, source_dir),
+    module,
+  )
 }
 
 /// Continuation-style result-or-default: runs `next` with the Ok value,
@@ -353,16 +357,4 @@ fn bool_or_default(result: Result(a, b), default: c, next: fn(a) -> c) -> c {
     Ok(v) -> next(v)
     Error(_) -> default
   }
-}
-
-/// Compute the dotted module name for a gleam file under a dep's
-/// `src/` directory. Mirrors `extract.module_path_for_source` but
-/// kept inline to avoid a circular dep between modules.
-fn module_path_for(gleam_path: String, source_dir: String) -> String {
-  let prefix = source_dir <> "/"
-  let relative = case string.starts_with(gleam_path, prefix) {
-    True -> string.drop_start(gleam_path, string.length(prefix))
-    False -> gleam_path
-  }
-  filepath.strip_extension(relative)
 }

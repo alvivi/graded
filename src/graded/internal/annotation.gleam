@@ -151,7 +151,9 @@ pub fn extract_type_fields(file: GradedFile) -> List(TypeFieldAnnotation) {
   })
 }
 
-/// Render an ExternalAnnotation back to its .graded line format.
+/// The qualified name (`module` or `module.function`) an external annotation
+/// targets. Used both as a sort key and as the rendered name in
+/// `format_external`.
 fn external_sort_key(external_annotation: ExternalAnnotation) -> String {
   case external_annotation.target {
     ModuleExternal -> external_annotation.module
@@ -159,13 +161,10 @@ fn external_sort_key(external_annotation: ExternalAnnotation) -> String {
   }
 }
 
+/// Render an ExternalAnnotation back to its `.graded` line format.
 pub fn format_external(external_annotation: ExternalAnnotation) -> String {
-  let name = case external_annotation.target {
-    ModuleExternal -> external_annotation.module
-    FunctionExternal(function) -> external_annotation.module <> "." <> function
-  }
   "external effects "
-  <> name
+  <> external_sort_key(external_annotation)
   <> " : "
   <> format_effect_set(external_annotation.effects)
 }
@@ -584,11 +583,7 @@ fn parse_name_colon_effects(input: String) -> Result(#(String, EffectTerm), Nil)
 /// A token is an effect label if its first character is uppercase.
 /// Lowercase first character => effect variable.
 fn is_label_token(token: String) -> Bool {
-  case string.first(token) {
-    Ok(first) ->
-      first == string.uppercase(first) && first != string.lowercase(first)
-    Error(Nil) -> False
-  }
+  types.is_upper_initial(token)
 }
 
 /// Parse an effect term `[...]`. Beyond labels and variables, supports
@@ -793,7 +788,11 @@ fn abstraction_spine(term: EffectTerm) -> #(List(String), EffectTerm) {
   }
 }
 
-fn format_effect_set(effect_set: EffectSet) -> String {
+/// Render an effect set to its `[A, B]` surface syntax: `[]` for empty, `[_]`
+/// for wildcard, labels then variables each sorted. The single source of truth
+/// for the on-disk effect-set format (`effects.format_effect_set` delegates
+/// here for diagnostics).
+pub fn format_effect_set(effect_set: EffectSet) -> String {
   case effect_set {
     Wildcard -> "[_]"
     Specific(labels) ->

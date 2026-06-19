@@ -2,25 +2,26 @@ import glance
 import gleam/dict
 import gleam/list
 import gleeunit/should
+import graded/internal/config
 import graded/internal/extract
 
 pub fn module_path_simple_test() {
-  extract.module_path_for_source("src/app.gleam", "src")
+  config.module_path_for_source("src/app.gleam", "src")
   |> should.equal("app")
 }
 
 pub fn module_path_nested_test() {
-  extract.module_path_for_source("src/app/router.gleam", "src")
+  config.module_path_for_source("src/app/router.gleam", "src")
   |> should.equal("app/router")
 }
 
 pub fn module_path_custom_directory_test() {
-  extract.module_path_for_source("test/fixtures/view.gleam", "test/fixtures")
+  config.module_path_for_source("test/fixtures/view.gleam", "test/fixtures")
   |> should.equal("view")
 }
 
 pub fn module_path_deeply_nested_test() {
-  extract.module_path_for_source("src/app/web/handlers/auth.gleam", "src")
+  config.module_path_for_source("src/app/web/handlers/auth.gleam", "src")
   |> should.equal("app/web/handlers/auth")
 }
 
@@ -31,7 +32,7 @@ pub fn module_path_deeply_nested_test() {
 /// disappear and inference degenerates back to the per-file behaviour.
 pub fn module_path_matches_import_context_test() {
   // Compute the module name for a fake "leaf" file as it would live on disk.
-  let leaf_module = extract.module_path_for_source("src/app/d.gleam", "src")
+  let leaf_module = config.module_path_for_source("src/app/d.gleam", "src")
 
   // Parse a sibling that imports it and read what extract sees.
   let src =
@@ -49,7 +50,7 @@ pub fn run() { d.format(\"hi\") }"
 
 pub fn module_path_matches_import_context_nested_test() {
   let leaf_module =
-    extract.module_path_for_source("src/app/web/handlers/auth.gleam", "src")
+    config.module_path_for_source("src/app/web/handlers/auth.gleam", "src")
 
   let src =
     "import app/web/handlers/auth

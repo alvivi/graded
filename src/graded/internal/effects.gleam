@@ -13,8 +13,7 @@ import graded/internal/types.{
   type ArgumentValue, type EffectAnnotation, type EffectSet, type EffectTerm,
   type ExternalAnnotation, type ParamBound, type QualifiedName,
   type TypeFieldAnnotation, type TypeFieldEffect, Check, ConstructorRef, Effects,
-  FunctionExternal, FunctionRef, ModuleExternal, Polymorphic, QualifiedName,
-  Specific, TypeFieldEffect, Wildcard,
+  FunctionExternal, FunctionRef, ModuleExternal, QualifiedName, TypeFieldEffect,
 }
 import simplifile
 import tom
@@ -53,7 +52,8 @@ pub type KnowledgeBase {
 /// Build a knowledge base by scanning dependency .graded files
 /// and loading versioned catalog files from priv/catalog/.
 pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
-  let #(dep_effects, dep_params) = load_dependency_effects(packages_directory)
+  let #(dep_effects, dep_params, dep_returns) =
+    load_dependencies(packages_directory)
   let catalog_dir = find_catalog_directory()
   let #(cat_effects, cat_pure, cat_params) =
     load_catalog(catalog_dir, "manifest.toml")
@@ -63,7 +63,7 @@ pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
     // ordering in CLAUDE.md — dict.merge lets the second arg win.
     param_bounds: dict.merge(cat_params, dep_params),
     type_fields: dict.new(),
-    returned_operators: load_dependency_returns(packages_directory),
+    returned_operators: dep_returns,
     factories: dict.new(),
     pure_modules: cat_pure,
   )
@@ -237,23 +237,11 @@ pub fn lookup_param_bounds(
   }
 }
 
-/// Format an effect set for display: [] for empty, [_] for wildcard, [A, B] sorted.
+/// Format an effect set for display: [] for empty, [_] for wildcard, [A, B]
+/// sorted. Delegates to `annotation.format_effect_set` so diagnostics and the
+/// on-disk spec format share one renderer.
 pub fn format_effect_set(effect_set: EffectSet) -> String {
-  case effect_set {
-    Wildcard -> "[_]"
-    Specific(labels) ->
-      case set.to_list(labels) |> list.sort(string.compare) {
-        [] -> "[]"
-        sorted -> "[" <> string.join(sorted, ", ") <> "]"
-      }
-    Polymorphic(labels, variables) -> {
-      let sorted_labels = set.to_list(labels) |> list.sort(string.compare)
-      let sorted_variables = set.to_list(variables) |> list.sort(string.compare)
-      "["
-      <> string.join(list.append(sorted_labels, sorted_variables), ", ")
-      <> "]"
-    }
-  }
+  annotation.format_effect_set(effect_set)
 }
 
 /// Parse gleam.toml to find path dependencies.
@@ -358,28 +346,6 @@ fn fold_spec_returns(
   })
 }
 
-/// Scan dependency `.graded` specs for `returns` lines so a returned operator a
-/// dependency declares crosses the package boundary.
-fn load_dependency_returns(
-  packages_directory: String,
-) -> Dict(QualifiedName, EffectTerm) {
-  let entries = case simplifile.read_directory(packages_directory) {
-    Ok(found) -> found
-    Error(_) -> []
-  }
-  list.fold(entries, dict.new(), fn(acc, package_name) {
-    let dep_root = packages_directory <> "/" <> package_name
-    let spec_file = case config.read(dep_root <> "/gleam.toml") {
-      Ok(cfg) -> cfg.spec_file
-      Error(_) -> config.default_spec_file(package_name)
-    }
-    case read_spec_file(dep_root <> "/" <> spec_file) {
-      Ok(file) -> dict.merge(acc, load_spec_returns_from_file(file))
-      Error(_) -> acc
-    }
-  })
-}
-
 /// Merge inferred effects into a knowledge base.
 /// Existing entries in the knowledge base take priority.
 pub fn with_inferred(
@@ -443,39 +409,44 @@ pub fn lookup_returned_operator(
 // PRIVATE
 
 /// For each installed package, locate its spec file via the package's own
-/// `[tools.graded]` config (defaulting to `<package_name>.graded`), parse
-/// its qualified `effects` and `check` annotations, and fold them into the
-/// global effect / param maps. Packages with no spec file are silently
-/// skipped — same fail-soft semantics as the catalog and the old
-/// per-module reader.
-fn load_dependency_effects(
+/// `[tools.graded]` config (defaulting to `<package_name>.graded`), then read
+/// and parse it *once*, folding its qualified `effects`/`check` annotations
+/// into the global effect/param maps and its `returns` lines into the
+/// returned-operator map. Packages with no spec file are silently skipped —
+/// same fail-soft semantics as the catalog and the old per-module reader.
+fn load_dependencies(
   packages_directory: String,
-) -> #(Dict(QualifiedName, EffectTerm), Dict(QualifiedName, List(ParamBound))) {
+) -> #(
+  Dict(QualifiedName, EffectTerm),
+  Dict(QualifiedName, List(ParamBound)),
+  Dict(QualifiedName, EffectTerm),
+) {
   let entries = case simplifile.read_directory(packages_directory) {
     Ok(found) -> found
     Error(_) -> []
   }
-  list.fold(entries, #(dict.new(), dict.new()), fn(maps, package_name) {
-    let dep_root = packages_directory <> "/" <> package_name
-    let spec_file = case config.read(dep_root <> "/gleam.toml") {
-      Ok(cfg) -> cfg.spec_file
-      Error(_) -> config.default_spec_file(package_name)
-    }
-    load_spec_into_maps(maps, dep_root <> "/" <> spec_file)
-  })
-}
-
-fn load_spec_into_maps(
-  maps: #(
-    Dict(QualifiedName, EffectTerm),
-    Dict(QualifiedName, List(ParamBound)),
-  ),
-  spec_path: String,
-) -> #(Dict(QualifiedName, EffectTerm), Dict(QualifiedName, List(ParamBound))) {
-  case read_spec_annotations(spec_path) {
-    Error(_) -> maps
-    Ok(annotations) -> list.fold(annotations, maps, fold_qualified_annotation)
-  }
+  list.fold(
+    entries,
+    #(dict.new(), dict.new(), dict.new()),
+    fn(acc, package_name) {
+      let #(effect_map, param_map, returns_map) = acc
+      let dep_root = packages_directory <> "/" <> package_name
+      case read_spec_file(config.spec_file_for(dep_root, package_name)) {
+        Error(_) -> acc
+        Ok(file) -> {
+          let #(new_effects, new_params) =
+            list.fold(
+              annotation.extract_annotations(file),
+              #(effect_map, param_map),
+              fold_qualified_annotation,
+            )
+          let new_returns =
+            dict.merge(returns_map, load_spec_returns_from_file(file))
+          #(new_effects, new_params, new_returns)
+        }
+      }
+    },
+  )
 }
 
 fn fold_qualified_annotation(
