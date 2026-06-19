@@ -1,4 +1,3 @@
-import filepath
 import glance.{
   type Clause, type Expression, type Field, type Module, type Statement,
 }
@@ -44,24 +43,6 @@ type LocalBinding {
 
 type Env =
   Dict(String, LocalBinding)
-
-/// Compute the dotted module name (as it appears in `import` statements) for
-/// a `.gleam` file under a given source directory. For example,
-/// `module_path_for_source("src/app/router.gleam", "src")` returns
-/// `"app/router"`. The returned string is what `build_import_context` will
-/// produce for any module that imports this file — the project's dependency
-/// graph is built by intersecting the two.
-pub fn module_path_for_source(
-  gleam_path: String,
-  source_directory: String,
-) -> String {
-  let prefix = source_directory <> "/"
-  let relative = case string.starts_with(gleam_path, prefix) {
-    True -> string.drop_start(gleam_path, string.length(prefix))
-    False -> gleam_path
-  }
-  filepath.strip_extension(relative)
-}
 
 /// Import context built from a module's import list.
 ///
@@ -600,10 +581,7 @@ fn use_pattern_to_fn_param(pattern: glance.UsePattern) -> glance.FnParameter {
 // PRIVATE
 
 fn is_constructor_name(name: String) -> Bool {
-  case string.first(name) {
-    Ok(char) -> char == string.uppercase(char) && char != string.lowercase(char)
-    Error(Nil) -> False
-  }
+  types.is_upper_initial(name)
 }
 
 /// Env-captured function refs beat import-based resolution.

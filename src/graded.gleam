@@ -160,7 +160,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   let results =
     list.map(parsed, fn(entry) {
       let #(gleam_path, module) = entry
-      let module_path = extract.module_path_for_source(gleam_path, directory)
+      let module_path = config.module_path_for_source(gleam_path, directory)
       let module_checks = case dict.get(checks_by_module, module_path) {
         Ok(list) -> list
         Error(_) -> []
@@ -632,7 +632,7 @@ fn build_module_index(
 ) -> Dict(String, #(String, glance.Module)) {
   list.fold(parsed, dict.new(), fn(acc, entry) {
     let #(gleam_path, module) = entry
-    let module_path = extract.module_path_for_source(gleam_path, directory)
+    let module_path = config.module_path_for_source(gleam_path, directory)
     dict.insert(acc, module_path, #(gleam_path, module))
   })
 }
@@ -977,11 +977,7 @@ fn enrich_with_path_deps(knowledge_base: KnowledgeBase) -> KnowledgeBase {
   let path_deps = effects.parse_path_dependencies("gleam.toml")
   list.fold(path_deps, knowledge_base, fn(kb, dep) {
     let #(name, dep_path) = dep
-    let spec_file = case config.read(filepath.join(dep_path, "gleam.toml")) {
-      Ok(cfg) -> cfg.spec_file
-      Error(_) -> config.default_spec_file(name)
-    }
-    let spec_path = filepath.join(dep_path, spec_file)
+    let spec_path = config.spec_file_for(dep_path, name)
     case simplifile.is_file(spec_path) {
       Ok(True) ->
         effects.with_inferred(kb, effects.load_spec_effects(spec_path))
@@ -1021,7 +1017,7 @@ pub fn infer_path_dep(
       use module <- result.try(
         read_and_parse_gleam(gleam_path) |> result.map_error(fn(_) { Nil }),
       )
-      let module_path = extract.module_path_for_source(gleam_path, source_dir)
+      let module_path = config.module_path_for_source(gleam_path, source_dir)
       // Path-dep checks come from the dep's spec file (loaded by
       // enrich_with_path_deps), not from per-module files. Inference here
       // only needs the parsed module.

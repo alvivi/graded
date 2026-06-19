@@ -11,7 +11,9 @@
 //// defaults apply. The `name` field at the top of `gleam.toml` provides the
 //// package name used to derive the default `spec_file`.
 
+import filepath
 import gleam/result
+import gleam/string
 import simplifile
 import tom
 
@@ -84,4 +86,33 @@ pub fn default_spec_file(package_name: String) -> String {
 
 pub fn default_cache_dir() -> String {
   "build/.graded"
+}
+
+/// Resolve the full path to a package's spec file given its root directory and
+/// package name. Reads the package's own `[tools.graded].spec_file`, falling
+/// back to `<package_name>.graded` when the config is missing or unreadable.
+/// Single source of truth for "where does package X keep its spec file".
+pub fn spec_file_for(package_root: String, package_name: String) -> String {
+  let spec_file = case read(filepath.join(package_root, "gleam.toml")) {
+    Ok(cfg) -> cfg.spec_file
+    Error(_) -> default_spec_file(package_name)
+  }
+  filepath.join(package_root, spec_file)
+}
+
+/// Compute the dotted module name (as it appears in `import` statements) for a
+/// `.gleam` file under a given source directory. For example,
+/// `module_path_for_source("src/app/router.gleam", "src")` returns
+/// `"app/router"` — the same string `import` statements use, so the project's
+/// dependency graph can be built by intersecting the two.
+pub fn module_path_for_source(
+  gleam_path: String,
+  source_directory: String,
+) -> String {
+  let prefix = source_directory <> "/"
+  let relative = case string.starts_with(gleam_path, prefix) {
+    True -> string.drop_start(gleam_path, string.length(prefix))
+    False -> gleam_path
+  }
+  filepath.strip_extension(relative)
 }

@@ -1,6 +1,20 @@
 import glance.{type Span, type Statement}
 import gleam/option.{type Option}
 import gleam/set.{type Set}
+import gleam/string
+
+/// Whether a name's first character is an uppercase letter. This single
+/// lexical rule distinguishes effect labels from effect variables and record
+/// constructors from ordinary functions — the comparison against both cases
+/// excludes non-cased graphemes (digits, symbols) that compare equal to
+/// themselves under both `uppercase` and `lowercase`.
+pub fn is_upper_initial(name: String) -> Bool {
+  case string.first(name) {
+    Ok(first) ->
+      first == string.uppercase(first) && first != string.lowercase(first)
+    Error(Nil) -> False
+  }
+}
 
 /// A fully qualified function name: module path + function name.
 pub type QualifiedName {
