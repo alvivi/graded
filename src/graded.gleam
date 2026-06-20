@@ -65,6 +65,10 @@ pub type GradedError {
   GleamParseError(path: String, cause: glance.Error)
   /// A `.graded` annotation file could not be parsed.
   GradedParseError(path: String, cause: annotation.ParseError)
+  /// `gleam.toml` was present but could not be parsed, or is missing its
+  /// `name`. A missing `gleam.toml` is tolerated (defaults apply) and does not
+  /// produce this error.
+  InvalidConfig(path: String, cause: config.ConfigError)
   /// One or more `.graded` files are not formatted (returned by `run_format_check`).
   FormatCheckFailed(paths: List(String))
   /// The project's import graph contains a cycle. Gleam disallows circular
@@ -85,7 +89,7 @@ pub fn main() -> Nil {
           halt(1)
         }
       }
-    ["format", "--stdin"] -> {
+    ["format", "--stdin", ..] -> {
       let input = stdin.read_lines() |> yielder.to_list() |> string.join("")
       case annotation.parse_file(input) {
         Ok(file) -> io.print(annotation.format_sorted(file))
@@ -123,7 +127,7 @@ pub fn main() -> Nil {
 /// hints, and `type` field annotations, then reports violations per source
 /// file.
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
-  let cfg = read_config(directory)
+  use cfg <- result.try(read_config(directory))
   let spec = read_spec(cfg.spec_file)
   let checks_by_module = checks_grouped_by_module(spec)
 
@@ -194,7 +198,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
 /// analysed after every other project module it imports — a single pass
 /// resolves transitive chains of any depth.
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
-  let cfg = read_config(directory)
+  use cfg <- result.try(read_config(directory))
   let spec = read_spec(cfg.spec_file)
 
   use gleam_files <- result.try(find_gleam_files(directory))
@@ -271,9 +275,13 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
 /// source of truth for hand-written `check`/`external`/`type` lines and
 /// the inferred public-API effects.
 pub fn run_format(directory: String) -> Result(Nil, GradedError) {
-  let cfg = read_config(directory)
+  use cfg <- result.try(read_config(directory))
   case format_one_spec(cfg.spec_file) {
-    Error(_) -> Ok(Nil)
+    // A missing spec file is nothing to format; tolerate it. But a malformed
+    // spec file must surface — silently "succeeding" on unparseable input is
+    // how a real syntax error slips through unnoticed.
+    Error(FileReadError(..)) -> Ok(Nil)
+    Error(error) -> Error(error)
     Ok(formatted) ->
       simplifile.write(cfg.spec_file, formatted)
       |> result.map_error(FileWriteError(cfg.spec_file, _))
@@ -283,9 +291,12 @@ pub fn run_format(directory: String) -> Result(Nil, GradedError) {
 /// Check that the project's spec file is already formatted. Returns error
 /// with the file path if it isn't. Used by CI as `format --check`.
 pub fn run_format_check(directory: String) -> Result(Nil, GradedError) {
-  let cfg = read_config(directory)
+  use cfg <- result.try(read_config(directory))
   case format_one_spec(cfg.spec_file) {
-    Error(_) -> Ok(Nil)
+    // Missing spec file: nothing to check. Malformed spec file: fail CI rather
+    // than passing green on a `.graded` file that doesn't even parse.
+    Error(FileReadError(..)) -> Ok(Nil)
+    Error(error) -> Error(error)
     Ok(formatted) ->
       case simplifile.read(cfg.spec_file) {
         Error(_) -> Ok(Nil)
@@ -455,14 +466,17 @@ fn field_effect_of(
   case field_value_function(value, module_path) {
     Some(name) -> {
       let field_effects = effects.lookup_effects(knowledge_base, name)
-      case !set.is_empty(effect_term.free_vars(field_effects)) {
-        True ->
+      case set.is_empty(effect_term.free_vars(field_effects)) {
+        // Concrete (monomorphic) effect: no bounds or source to carry.
+        True -> types.TypeFieldEffect(field_effects, [], None)
+        // Effect-polymorphic: keep the wired function's bounds + identity so
+        // the field call can bind its variables at the use site.
+        False ->
           types.TypeFieldEffect(
             field_effects,
             effects.lookup_param_bounds(knowledge_base, name),
             Some(name),
           )
-        False -> types.TypeFieldEffect(field_effects, [], None)
       }
     }
     // A field wired to an inline/let-bound closure: analyse its body for the
@@ -913,21 +927,26 @@ fn check_one_file(
 ///
 /// Resolved paths are returned in the same `GradedConfig` shape so callers
 /// can use them as-is for I/O without further joining.
-fn read_config(directory: String) -> config.GradedConfig {
+fn read_config(directory: String) -> Result(config.GradedConfig, GradedError) {
   let project_root = case directory {
     "src" -> "."
     _ -> directory
   }
   let toml_path = filepath.join(project_root, "gleam.toml")
-  let raw = case config.read(toml_path) {
-    Ok(cfg) -> cfg
-    Error(_) -> config.defaults_for(default_package_name(directory))
-  }
-  config.GradedConfig(
+  use raw <- result.try(case config.read(toml_path) {
+    Ok(cfg) -> Ok(cfg)
+    // A missing `gleam.toml` is tolerated — fall back to defaults. A malformed
+    // one (TOML syntax error, or no `name`) is a hard error: silently guessing
+    // the package name would point us at the wrong spec file.
+    Error(config.TomlReadError(..)) ->
+      Ok(config.defaults_for(default_package_name(project_root)))
+    Error(cause) -> Error(InvalidConfig(path: toml_path, cause:))
+  })
+  Ok(config.GradedConfig(
     package_name: raw.package_name,
     spec_file: resolve_path(project_root, raw.spec_file),
     cache_dir: resolve_path(project_root, raw.cache_dir),
-  )
+  ))
 }
 
 /// Join a path against a root, but leave it untouched if it's already
@@ -941,11 +960,12 @@ fn resolve_path(root: String, path: String) -> String {
   filepath.join(root, path)
 }
 
-fn default_package_name(directory: String) -> String {
+fn default_package_name(project_root: String) -> String {
   // Fallback used only when no gleam.toml is found. Best-effort — uses the
-  // last path segment, then "graded" if the directory is empty or "/".
-  case filepath.base_name(directory) {
-    "" | "/" -> "graded"
+  // project root's last path segment, then "graded" when that's empty, "/", or
+  // "." (the resolved root for a production `src` run).
+  case filepath.base_name(project_root) {
+    "" | "/" | "." -> "graded"
     name -> name
   }
 }
@@ -1155,6 +1175,7 @@ fn format_error(error: GradedError) -> String {
     DirectoryCreateError(path, _) -> "Could not create directory: " <> path
     GleamParseError(path, _) -> "Could not parse: " <> path
     GradedParseError(path, _) -> "Parse error in .graded file for: " <> path
+    InvalidConfig(path, _) -> "Invalid gleam.toml: " <> path
     FormatCheckFailed(paths:) ->
       "Unformatted .graded files:\n"
       <> string.join(list.map(paths, fn(path) { "  " <> path }), "\n")
