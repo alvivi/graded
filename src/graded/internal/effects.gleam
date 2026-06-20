@@ -58,9 +58,6 @@ pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
   let #(cat_effects, cat_pure, cat_params) =
     load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
-    // Deps take priority over catalog per the knowledge-base priority ordering
-    // in CLAUDE.md (dependency spec files > versioned catalog). `dict.merge`
-    // keeps its SECOND argument on a key clash, so `dep_*` must come second.
     all_effects: merge_with_dependency_priority(cat_effects, dep_effects),
     param_bounds: merge_with_dependency_priority(cat_params, dep_params),
     type_fields: dict.new(),
@@ -70,12 +67,8 @@ pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
   )
 }
 
-// Merge catalog-derived knowledge with dependency-spec-derived knowledge so
-// that **dependency specs win** on a key clash — the knowledge-base priority
-// in CLAUDE.md ranks dependency spec files above the versioned catalog.
-// `dict.merge` keeps its second argument on conflict, so `dependency` is
-// passed second. Exposed so the priority ordering can be regression-tested
-// without standing up an on-disk catalog + dependency tree.
+// Merge catalog and dependency knowledge so dependency entries win on a key
+// clash. `dict.merge` keeps its second argument, so `dependency` goes second.
 pub fn merge_with_dependency_priority(
   catalog: Dict(key, value),
   dependency: Dict(key, value),
@@ -625,10 +618,7 @@ pub fn pick_best_version(
   case eligible {
     [best, ..] -> Ok(best.1)
     [] ->
-      // Deliberate deviation from "highest ≤ installed": when *every* catalog
-      // entry is newer than the installed package, fall back to the highest
-      // available rather than contributing nothing. Effect profiles are stable
-      // across patch/minor bumps, so a slightly-ahead catalog beats `[Unknown]`.
+      // No entry ≤ installed: fall back to the highest available version.
       case
         list.sort(versions, fn(left, right) { compare_semver(right.0, left.0) })
       {
@@ -639,10 +629,8 @@ pub fn pick_best_version(
 }
 
 // Parse a `major.minor.patch` string into a comparable tuple. Non-numeric
-// components (e.g. a `-rc1` pre-release suffix on the patch) parse as `0`, so
-// `1.2.0-rc1` reads as `#(1, 2, 0)` — pre-release/build metadata is not
-// distinguished. Catalog filenames use plain release versions, so this is
-// sufficient in practice.
+// components (e.g. a `-rc1` suffix) parse as `0`, so `1.2.0-rc1` reads as
+// `#(1, 2, 0)`.
 pub fn parse_semver(version: String) -> #(Int, Int, Int) {
   case string.split(version, ".") {
     [major, minor, patch] -> #(

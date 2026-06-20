@@ -1233,21 +1233,17 @@ fn extract_from_expression(
         ),
       )
 
-    // Echo: walk both the echoed value and the optional `as` message — either
-    // may hold an effectful call (`echo run() as label()`).
+    // Echo: walk the echoed value and the optional `as` message.
     glance.Echo(expression:, message:, ..) ->
       empty()
       |> merge_optional(expression, context, env)
       |> merge_optional(message, context, env)
 
-    // `panic`/`todo` with an `as <expr>` message: the message can be an
-    // effectful expression (`panic as build_message(io.debug(x))`), so its
-    // effects must be counted, not dropped as a leaf.
+    // `panic`/`todo`: walk the optional `as` message expression.
     glance.Panic(message:, ..) -> merge_optional(empty(), message, context, env)
     glance.Todo(message:, ..) -> merge_optional(empty(), message, context, env)
 
-    // Bit string: each segment's value expression can hold effectful calls
-    // (`<<encode(read()):size(8)>>`).
+    // Bit string: walk each segment's value expression.
     glance.BitString(segments:, ..) ->
       list.fold(segments, empty(), fn(accumulated, segment) {
         merge(accumulated, extract_from_expression(segment.0, context, env))
