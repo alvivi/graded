@@ -1,13 +1,13 @@
-//// Operations over `EffectTerm` — the small lambda-calculus-with-union that
-//// underlies graded's effect representation (the type itself lives in
-//// `types.gleam` to avoid an import cycle). `EffectSet` is the *ground normal
-//// form*: a fully-resolved term reduces back to one, and that is the only
-//// representation the subset check and the knowledge base compare against.
-////
-//// The interesting capability is second-order effect polymorphism: a `TAbs`
-//// is an effect *operator* (kind `Eff -> Eff`) that `TApp` applies to an
-//// argument effect and `normalize` beta-reduces. See
-//// docs/second-order-effects.md for the design and the property suite.
+// Operations over `EffectTerm` — the small lambda-calculus-with-union that
+// underlies graded's effect representation (the type itself lives in
+// `types.gleam` to avoid an import cycle). `EffectSet` is the *ground normal
+// form*: a fully-resolved term reduces back to one, and that is the only
+// representation the subset check and the knowledge base compare against.
+//
+// The interesting capability is second-order effect polymorphism: a `TAbs`
+// is an effect *operator* (kind `Eff -> Eff`) that `TApp` applies to an
+// argument effect and `normalize` beta-reduces. See
+// docs/second-order-effects.md for the design and the property suite.
 
 import gleam/bool
 import gleam/dict.{type Dict}

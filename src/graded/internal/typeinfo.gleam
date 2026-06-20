@@ -1,16 +1,16 @@
-//// Per-expression type information sourced from girard, keyed so the checker
-//// can ask "what is the nominal type of the receiver at this span?" and "which
-//// of this function's parameters are function-typed?" — without knowing
-//// anything about girard's package-annotation shape.
-////
-//// Expressions are keyed by their full `#(start, end)` span. The start offset
-//// alone is not unique — a receiver `v`, the field access `v.field`, and the
-//// whole call `v.field(x)` all share a start offset but have different types,
-//// so we need the end offset to pick out the receiver. A function girard could
-//// not type contributes no expressions, so its spans are simply absent: every
-//// lookup miss falls back to the syntax-level path, which is what makes girard
-//// a pure enhancement layer (it can only ever upgrade an `[Unknown]`, never
-//// change an already-resolved result).
+// Per-expression type information sourced from girard, keyed so the checker
+// can ask "what is the nominal type of the receiver at this span?" and "which
+// of this function's parameters are function-typed?" — without knowing
+// anything about girard's package-annotation shape.
+//
+// Expressions are keyed by their full `#(start, end)` span. The start offset
+// alone is not unique — a receiver `v`, the field access `v.field`, and the
+// whole call `v.field(x)` all share a start offset but have different types,
+// so we need the end offset to pick out the receiver. A function girard could
+// not type contributes no expressions, so its spans are simply absent: every
+// lookup miss falls back to the syntax-level path, which is what makes girard
+// a pure enhancement layer (it can only ever upgrade an `[Unknown]`, never
+// change an already-resolved result).
 
 import girard/types.{type Type, Named}
 import gleam/dict.{type Dict}

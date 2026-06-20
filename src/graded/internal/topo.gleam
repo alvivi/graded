@@ -1,11 +1,11 @@
-//// Topological sort over a string-keyed dependency graph. Used by inference
-//// to walk project (and path-dep) modules in dependency order so each module
-//// is analysed after every other module it imports.
-////
-//// The graph is `Dict(node, Set(node it depends on))`. The output is a
-//// leaves-first list: any node `u` that depends on `v` appears *after* `v`.
-//// Gleam's no-circular-imports guarantee makes the import graph a DAG in
-//// practice, but the algorithm still detects cycles defensively.
+// Topological sort over a string-keyed dependency graph. Used by inference
+// to walk project (and path-dep) modules in dependency order so each module
+// is analysed after every other module it imports.
+//
+// The graph is `Dict(node, Set(node it depends on))`. The output is a
+// leaves-first list: any node `u` that depends on `v` appears *after* `v`.
+// Gleam's no-circular-imports guarantee makes the import graph a DAG in
+// practice, but the algorithm still detects cycles defensively.
 
 import gleam/dict.{type Dict}
 import gleam/int

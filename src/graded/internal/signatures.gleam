@@ -1,14 +1,14 @@
-//// Glance-backed signature registry.
-////
-//// Parses Gleam source with glance to learn which function parameters
-//// are themselves function-typed. This powers call-site effect
-//// substitution and auto-inference of polymorphic signatures: knowing a
-//// parameter's type is `fn(...) -> ...` lets graded bind an effect
-//// variable at the definition site and substitute the caller's
-//// concrete argument at each call site.
-////
-//// Project modules are parsed during `run_infer` / `run`; dependency
-//// modules are parsed from `build/packages/<dep>/src/` on demand.
+// Glance-backed signature registry.
+//
+// Parses Gleam source with glance to learn which function parameters
+// are themselves function-typed. This powers call-site effect
+// substitution and auto-inference of polymorphic signatures: knowing a
+// parameter's type is `fn(...) -> ...` lets graded bind an effect
+// variable at the definition site and substitute the caller's
+// concrete argument at each call site.
+//
+// Project modules are parsed during `run_infer` / `run`; dependency
+// modules are parsed from `build/packages/<dep>/src/` on demand.
 
 import filepath
 import glance.{type Function, type Module, FunctionType}

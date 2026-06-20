@@ -1,15 +1,15 @@
-//// Per-package graded configuration, parsed from `gleam.toml`. Each Gleam
-//// package can declare:
-////
-//// ```toml
-//// [tools.graded]
-//// spec_file = "myapp.graded"     # default: "<name>.graded"
-//// cache_dir = "build/.graded"    # default: "build/.graded"
-//// ```
-////
-//// Both fields are optional. If `[tools.graded]` is missing entirely, both
-//// defaults apply. The `name` field at the top of `gleam.toml` provides the
-//// package name used to derive the default `spec_file`.
+// Per-package graded configuration, parsed from `gleam.toml`. Each Gleam
+// package can declare:
+//
+// ```toml
+// [tools.graded]
+// spec_file = "myapp.graded"     # default: "<name>.graded"
+// cache_dir = "build/.graded"    # default: "build/.graded"
+// ```
+//
+// Both fields are optional. If `[tools.graded]` is missing entirely, both
+// defaults apply. The `name` field at the top of `gleam.toml` provides the
+// package name used to derive the default `spec_file`.
 
 import filepath
 import gleam/result
