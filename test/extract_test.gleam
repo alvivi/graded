@@ -669,6 +669,15 @@ pub fn target() { echo io.println(\"hi\") }",
   |> should.equal([QualifiedName("gleam/io", "println")])
 }
 
+pub fn echo_message_effects_test() {
+  // The optional `as` message is a separate expression from the echoed value.
+  resolved_names(
+    "import gleam/io
+pub fn target() { echo 1 as io.println(\"label\") }",
+  )
+  |> should.equal([QualifiedName("gleam/io", "println")])
+}
+
 pub fn bitstring_segment_effects_test() {
   resolved_names(
     "import gleam/io
