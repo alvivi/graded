@@ -13,30 +13,30 @@ import graded/internal/types.{
   FunctionRef, LocalCall, LocalRef, OtherExpression, QualifiedName, ResolvedCall,
 }
 
-/// Classification of a `let`-bound name inside a function body so that
-/// later calls through the name can be resolved. `BoundOpaque` covers
-/// everything we can't statically track (closures, computed values,
-/// destructuring) and is also written on shadowing to erase stale
-/// bindings.
+// Classification of a `let`-bound name inside a function body so that
+// later calls through the name can be resolved. `BoundOpaque` covers
+// everything we can't statically track (closures, computed values,
+// destructuring) and is also written on shadowing to erase stale
+// bindings.
 type LocalBinding {
   BoundFunctionRef(name: QualifiedName)
   BoundConstructor(fields: Dict(String, ArgumentValue))
-  /// A closure's own parameter, bound while walking the closure body. A call
-  /// to it is a callback invocation whose effect is accounted where the
-  /// closure is applied (operator lifting), so it contributes nothing to the
-  /// enclosing function's direct effect — rather than surfacing as `[Unknown]`.
+  // A closure's own parameter, bound while walking the closure body. A call
+  // to it is a callback invocation whose effect is accounted where the
+  // closure is applied (operator lifting), so it contributes nothing to the
+  // enclosing function's direct effect — rather than surfacing as `[Unknown]`.
   BoundParam
-  /// A let-bound inline closure (`let h = fn(cb) { ... }`). Keeping its
-  /// parameters and body lets a later use of `h` as an operator argument be
-  /// lifted to an effect operator, just like an inline closure passed directly,
-  /// rather than collapsing to `[Unknown]`.
+  // A let-bound inline closure (`let h = fn(cb) { ... }`). Keeping its
+  // parameters and body lets a later use of `h` as an operator argument be
+  // lifted to an effect operator, just like an inline closure passed directly,
+  // rather than collapsing to `[Unknown]`.
   BoundClosure(params: List(String), body: List(glance.Statement))
-  /// A let-bound `case`/`if` over function-like options (`let h = case c { … }`).
-  /// A later use of `h` as an operator argument lifts and joins the options.
+  // A let-bound `case`/`if` over function-like options (`let h = case c { … }`).
+  // A later use of `h` as an operator argument lifts and joins the options.
   BoundChoice(options: List(ArgumentValue))
-  /// A let-bound result of calling a function that returns a function
-  /// (`let h = pick_handler(args)`). A later use of `h` as an operator argument
-  /// resolves the producer's returned operator, binding `args` to its params.
+  // A let-bound result of calling a function that returns a function
+  // (`let h = pick_handler(args)`). A later use of `h` as an operator argument
+  // resolves the producer's returned operator, binding `args` to its params.
   BoundReturnedOperator(callee: QualifiedName, args: List(CallArgument))
   BoundOpaque
 }
@@ -44,18 +44,18 @@ type LocalBinding {
 type Env =
   Dict(String, LocalBinding)
 
-/// Import context built from a module's import list.
-///
-/// `constructors` maps a same-module custom-type constructor name to
-/// the ordered labels of its fields (`None` for unlabelled positions).
-/// Used to route positional arguments (`Validator(x)`) to the right
-/// field label when building a `BoundConstructor`.
-///
-/// `cross_constructors` does the same for *other* modules' constructors,
-/// keyed by `#(defining module, constructor)`. It is empty by default and
-/// populated (via [`with_cross_constructors`](#with_cross_constructors)) only
-/// for the package-wide constructor-field walk, so a cross-module positional
-/// call (`a.Validator(x)`) can still route `x` to the right field.
+// Import context built from a module's import list.
+//
+// `constructors` maps a same-module custom-type constructor name to
+// the ordered labels of its fields (`None` for unlabelled positions).
+// Used to route positional arguments (`Validator(x)`) to the right
+// field label when building a `BoundConstructor`.
+//
+// `cross_constructors` does the same for *other* modules' constructors,
+// keyed by `#(defining module, constructor)`. It is empty by default and
+// populated (via [`with_cross_constructors`](#with_cross_constructors)) only
+// for the package-wide constructor-field walk, so a cross-module positional
+// call (`a.Validator(x)`) can still route `x` to the right field.
 pub type ImportContext {
   ImportContext(
     aliases: Dict(String, String),
@@ -70,8 +70,8 @@ pub type ImportContext {
   )
 }
 
-/// Attach a package-wide `#(defining module, constructor) -> field labels` map
-/// to a context, so cross-module positional constructor calls resolve.
+// Attach a package-wide `#(defining module, constructor) -> field labels` map
+// to a context, so cross-module positional constructor calls resolve.
 pub fn with_cross_constructors(
   context: ImportContext,
   cross_constructors: Dict(#(String, String), List(Option(String))),
@@ -79,7 +79,7 @@ pub fn with_cross_constructors(
   ImportContext(..context, cross_constructors:)
 }
 
-/// Attach a module's own factory signatures (bare-keyed) to its context.
+// Attach a module's own factory signatures (bare-keyed) to its context.
 pub fn with_factories(
   context: ImportContext,
   factories: Dict(String, FactorySignature),
@@ -87,8 +87,8 @@ pub fn with_factories(
   ImportContext(..context, factories:)
 }
 
-/// Attach the package-wide `#(defining module, function) -> factory signature`
-/// map, so a let-bound *cross-module* factory call resolves its result's fields.
+// Attach the package-wide `#(defining module, function) -> factory signature`
+// map, so a let-bound *cross-module* factory call resolves its result's fields.
 pub fn with_cross_factories(
   context: ImportContext,
   cross_factories: Dict(#(String, String), FactorySignature),
@@ -96,20 +96,20 @@ pub fn with_cross_factories(
   ImportContext(..context, cross_factories:)
 }
 
-/// A module's `constructor -> field labels` map (the same labels
-/// `build_import_context` records for same-module constructors), for building
-/// the package-wide cross-module constructor map.
+// A module's `constructor -> field labels` map (the same labels
+// `build_import_context` records for same-module constructors), for building
+// the package-wide cross-module constructor map.
 pub fn constructor_label_map(
   module: Module,
 ) -> Dict(String, List(Option(String))) {
   build_constructor_registry(module)
 }
 
-/// Result of extracting calls from a function body.
-///
-/// `call_args` maps a resolved call's span start (unique per AST node)
-/// to the call's arguments. Only populated for resolved calls — local
-/// and field calls don't need argument tracking for substitution yet.
+// Result of extracting calls from a function body.
+//
+// `call_args` maps a resolved call's span start (unique per AST node)
+// to the call's arguments. Only populated for resolved calls — local
+// and field calls don't need argument tracking for substitution yet.
 pub type ExtractResult {
   ExtractResult(
     resolved: List(ResolvedCall),
@@ -122,7 +122,7 @@ pub type ExtractResult {
   )
 }
 
-/// Build import context from a parsed module's imports.
+// Build import context from a parsed module's imports.
 pub fn build_import_context(module: Module) -> ImportContext {
   let #(aliases, unqualified) =
     list.fold(module.imports, #(dict.new(), dict.new()), fn(state, definition) {
@@ -188,10 +188,10 @@ fn build_constructor_registry(
   })
 }
 
-/// Map each same-module constructor (variant) name to the custom type it
-/// belongs to. Stage C keys inferred field effects by *type* name — matching
-/// the nominal type girard reports for a receiver — but construction sites name
-/// the *constructor*, which can differ (`pub type Shape { Circle(..) }`).
+// Map each same-module constructor (variant) name to the custom type it
+// belongs to. Stage C keys inferred field effects by *type* name — matching
+// the nominal type girard reports for a receiver — but construction sites name
+// the *constructor*, which can differ (`pub type Shape { Circle(..) }`).
 pub fn build_constructor_type_map(module: Module) -> Dict(String, String) {
   list.fold(module.custom_types, dict.new(), fn(acc, definition) {
     let type_name = definition.definition.name
@@ -201,19 +201,19 @@ pub fn build_constructor_type_map(module: Module) -> Dict(String, String) {
   })
 }
 
-/// A *factory* function's signature: each constructor field it wires to one of
-/// its own parameters, mapped to that parameter's position. A call
-/// `make(io.println)` to a factory `fn make(logger) { Validator(to_error: logger) }`
-/// therefore binds the result's `to_error` field to argument 0 — so a later
-/// `v.to_error(..)` resolves like a direct construction instead of `[Unknown]`.
+// A *factory* function's signature: each constructor field it wires to one of
+// its own parameters, mapped to that parameter's position. A call
+// `make(io.println)` to a factory `fn make(logger) { Validator(to_error: logger) }`
+// therefore binds the result's `to_error` field to argument 0 — so a later
+// `v.to_error(..)` resolves like a direct construction instead of `[Unknown]`.
 pub type FactorySignature =
   Dict(String, Int)
 
-/// Detect each function in a module that is a *factory*: its body's tail is a
-/// constructor call with at least one field wired to a bare parameter. Purely
-/// syntactic — no knowledge base — so the whole package's factories can be
-/// precomputed up front (like the constructor-label map). Keyed by bare
-/// function name.
+// Detect each function in a module that is a *factory*: its body's tail is a
+// constructor call with at least one field wired to a bare parameter. Purely
+// syntactic — no knowledge base — so the whole package's factories can be
+// precomputed up front (like the constructor-label map). Keyed by bare
+// function name.
 pub fn factory_map(module: Module) -> Dict(String, FactorySignature) {
   let context = build_import_context(module)
   list.fold(module.functions, dict.new(), fn(acc, definition) {
@@ -225,9 +225,9 @@ pub fn factory_map(module: Module) -> Dict(String, FactorySignature) {
   })
 }
 
-/// The factory signature of a single function, or `Error` when it isn't a
-/// factory (tail isn't a bare constructor call, or no field is wired to a
-/// parameter).
+// The factory signature of a single function, or `Error` when it isn't a
+// factory (tail isn't a bare constructor call, or no field is wired to a
+// parameter).
 fn factory_signature(
   function: glance.Function,
   context: ImportContext,
@@ -272,9 +272,9 @@ fn factory_signature(
   }
 }
 
-/// A constructor call's `#(constructor, module alias, arguments)` — the alias is
-/// `Some` for a qualified call (`a.Validator(..)`), `None` otherwise. `Error`
-/// when the expression isn't a constructor call.
+// A constructor call's `#(constructor, module alias, arguments)` — the alias is
+// `Some` for a qualified call (`a.Validator(..)`), `None` otherwise. `Error`
+// when the expression isn't a constructor call.
 fn constructor_call_parts(
   expression: Expression,
 ) -> Result(#(String, Option(String), List(Field(Expression))), Nil) {
@@ -301,7 +301,7 @@ fn constructor_call_parts(
   }
 }
 
-/// Each named parameter's position (0-based) in a function's parameter list.
+// Each named parameter's position (0-based) in a function's parameter list.
 fn param_position_map(function: glance.Function) -> Dict(String, Int) {
   function.parameters
   |> list.index_map(fn(parameter, index) { #(parameter, index) })
@@ -314,10 +314,10 @@ fn param_position_map(function: glance.Function) -> Dict(String, Int) {
   })
 }
 
-/// One constructor call found in a function body. `module` is the constructor's
-/// resolved module path for a qualified call (`a.Validator(..)`), or `None` for
-/// an unqualified call (resolved against the current module). `fields` maps each
-/// field label to its argument value.
+// One constructor call found in a function body. `module` is the constructor's
+// resolved module path for a qualified call (`a.Validator(..)`), or `None` for
+// an unqualified call (resolved against the current module). `fields` maps each
+// field label to its argument value.
 pub type ConstructorBinding {
   ConstructorBinding(
     module: Option(String),
@@ -326,10 +326,10 @@ pub type ConstructorBinding {
   )
 }
 
-/// Collect every constructor call in a module's function bodies. Feeds the Stage
-/// C constructor-field effect index: a field wired to a known function
-/// (`Validator(to_error: io.println)`) lets graded infer that field's effect
-/// without a hand-written annotation.
+// Collect every constructor call in a module's function bodies. Feeds the Stage
+// C constructor-field effect index: a field wired to a known function
+// (`Validator(to_error: io.println)`) lets graded infer that field's effect
+// without a hand-written annotation.
 pub fn collect_constructor_bindings(
   module: Module,
   context: ImportContext,
@@ -493,7 +493,7 @@ fn ctor_binding(
   ConstructorBinding(module:, constructor:, fields:)
 }
 
-/// Extract all calls from a list of statements.
+// Extract all calls from a list of statements.
 pub fn extract_calls(
   statements: List(Statement),
   context: ImportContext,
@@ -501,9 +501,9 @@ pub fn extract_calls(
   walk_scope(statements, context, dict.new())
 }
 
-/// Walk a sequence of statements threading the binding env forward so
-/// later statements see earlier `let`s. The final env is discarded —
-/// block/closure bindings don't leak back to the enclosing scope.
+// Walk a sequence of statements threading the binding env forward so
+// later statements see earlier `let`s. The final env is discarded —
+// block/closure bindings don't leak back to the enclosing scope.
 fn walk_scope(
   statements: List(Statement),
   context: ImportContext,
@@ -512,9 +512,9 @@ fn walk_scope(
   walk_scope_with_env(statements, context, env).0
 }
 
-/// Like `walk_scope` but also returns the environment after the statements —
-/// needed to classify a block's tail expression with its preceding `let`s in
-/// scope.
+// Like `walk_scope` but also returns the environment after the statements —
+// needed to classify a block's tail expression with its preceding `let`s in
+// scope.
 fn walk_scope_with_env(
   statements: List(Statement),
   context: ImportContext,
@@ -545,11 +545,11 @@ fn walk_scope_with_env(
   }
 }
 
-/// Desugar `use p1, p2 <- callee(args)` followed by `rest` into the call
-/// `callee(args, fn(p1, p2) { rest })` — Gleam's own desugaring. Reusing the
-/// normal call walk binds an operator callee's callback to the continuation
-/// closure, while the continuation's effects are still extracted from the
-/// closure body (so a non-operator callee doesn't drop them).
+// Desugar `use p1, p2 <- callee(args)` followed by `rest` into the call
+// `callee(args, fn(p1, p2) { rest })` — Gleam's own desugaring. Reusing the
+// normal call walk binds an operator callee's callback to the continuation
+// closure, while the continuation's effects are still extracted from the
+// closure body (so a non-operator callee doesn't drop them).
 fn desugar_use(
   location: glance.Span,
   patterns: List(glance.UsePattern),
@@ -567,9 +567,9 @@ fn desugar_use(
   }
 }
 
-/// Turn a `use` pattern into the synthetic closure's parameter. A simple
-/// variable binds by name; a destructuring pattern can't be a bare parameter,
-/// so it's discarded (its names stay unbound — the conservative behaviour).
+// Turn a `use` pattern into the synthetic closure's parameter. A simple
+// variable binds by name; a destructuring pattern can't be a bare parameter,
+// so it's discarded (its names stay unbound — the conservative behaviour).
 fn use_pattern_to_fn_param(pattern: glance.UsePattern) -> glance.FnParameter {
   let name = case pattern.pattern {
     glance.PatternVariable(name:, ..) -> glance.Named(name)
@@ -584,7 +584,7 @@ fn is_constructor_name(name: String) -> Bool {
   types.is_upper_initial(name)
 }
 
-/// Env-captured function refs beat import-based resolution.
+// Env-captured function refs beat import-based resolution.
 fn resolve_variable_call(
   name: String,
   span: glance.Span,
@@ -609,7 +609,7 @@ fn resolve_variable_call(
   }
 }
 
-/// Bind a closure's parameters as `BoundParam` in a child scope.
+// Bind a closure's parameters as `BoundParam` in a child scope.
 fn bind_closure_params(env: Env, parameters: List(glance.FnParameter)) -> Env {
   list.fold(parameters, env, fn(accumulator, parameter) {
     case parameter.name {
@@ -637,9 +637,9 @@ fn resolve_unqualified_call(
   }
 }
 
-/// `alias.label` where `alias` is either an imported module (cross-module
-/// call), a locally-constructed record (field-call resolution via env),
-/// or an unknown local (FieldCall for type-level annotation lookup).
+// `alias.label` where `alias` is either an imported module (cross-module
+// call), a locally-constructed record (field-call resolution via env),
+// or an unknown local (FieldCall for type-level annotation lookup).
 fn resolve_qualified_call(
   alias: String,
   function_name: String,
@@ -693,8 +693,8 @@ fn qualified_call_lookup(
   }
 }
 
-/// Fallback to `FieldCall` preserves the type-level
-/// `type Foo.field : [...]` annotation path for unresolved cases.
+// Fallback to `FieldCall` preserves the type-level
+// `type Foo.field : [...]` annotation path for unresolved cases.
 fn resolve_constructor_field_call(
   alias: String,
   label: String,
@@ -719,8 +719,8 @@ fn resolve_constructor_field_call(
   }
 }
 
-/// Resolve a qualified `alias.label` used as a value (not called).
-/// Constructors short-circuit to empty; unknown aliases are dropped.
+// Resolve a qualified `alias.label` used as a value (not called).
+// Constructors short-circuit to empty; unknown aliases are dropped.
 fn resolve_qualified_reference(
   alias: String,
   function_name: String,
@@ -790,11 +790,11 @@ fn extract_from_statement(
   }
 }
 
-/// Record the names introduced by a `let` pattern.
-///
-/// A `PatternVariable` (simple `let x = rhs`) is classified via
-/// Destructuring patterns always bind their names to `BoundOpaque` —
-/// tracking values through destructuring is out of scope.
+// Record the names introduced by a `let` pattern.
+//
+// A `PatternVariable` (simple `let x = rhs`) is classified via
+// Destructuring patterns always bind their names to `BoundOpaque` —
+// tracking values through destructuring is out of scope.
 fn bind_assignment(
   pattern: glance.Pattern,
   value: glance.Expression,
@@ -812,9 +812,9 @@ fn bind_opaque(env: Env, name: String) -> Env {
   dict.insert(env, name, BoundOpaque)
 }
 
-/// Classify the right-hand side of a `let name = rhs`. Unrecognised
-/// shapes become `BoundOpaque`, which deliberately shadows any earlier
-/// binding of the same name.
+// Classify the right-hand side of a `let name = rhs`. Unrecognised
+// shapes become `BoundOpaque`, which deliberately shadows any earlier
+// binding of the same name.
 fn classify_rhs(
   expression: glance.Expression,
   context: ImportContext,
@@ -862,9 +862,9 @@ fn classify_rhs(
   }
 }
 
-/// Bind a factory call's result as a `BoundConstructor` (so later field calls
-/// resolve like a direct construction), or fall back to the generic ref path
-/// when the callee isn't a factory or the call can't be routed.
+// Bind a factory call's result as a `BoundConstructor` (so later field calls
+// resolve like a direct construction), or fall back to the generic ref path
+// when the callee isn't a factory or the call can't be routed.
 fn factory_or_ref(
   signature: Result(FactorySignature, Nil),
   expression: glance.Expression,
@@ -882,8 +882,8 @@ fn factory_or_ref(
   }
 }
 
-/// The factory signature for a bare callee — a same-module factory, or an
-/// unqualified-imported one resolved through the cross-module map.
+// The factory signature for a bare callee — a same-module factory, or an
+// unqualified-imported one resolved through the cross-module map.
 fn lookup_factory_bare(
   name: String,
   context: ImportContext,
@@ -899,7 +899,7 @@ fn lookup_factory_bare(
   }
 }
 
-/// The factory signature for a qualified callee `alias.name`.
+// The factory signature for a qualified callee `alias.name`.
 fn lookup_factory_qualified(
   alias: String,
   name: String,
@@ -911,10 +911,10 @@ fn lookup_factory_qualified(
   }
 }
 
-/// Build a `BoundConstructor` from a *positionally-called* factory: route each
-/// wired field to the call argument at the factory parameter's position. A
-/// labeled or shorthand argument can't be routed by position here, so the whole
-/// call falls back (conservative). `Error` when no field could be routed.
+// Build a `BoundConstructor` from a *positionally-called* factory: route each
+// wired field to the call argument at the factory parameter's position. A
+// labeled or shorthand argument can't be routed by position here, so the whole
+// call falls back (conservative). `Error` when no field could be routed.
 fn factory_construction(
   signature: FactorySignature,
   arguments: List(Field(Expression)),
@@ -935,8 +935,8 @@ fn factory_construction(
   }
 }
 
-/// Classify a call's arguments by position, requiring them all unlabelled.
-/// `Error` if any is labelled/shorthand (position-based routing would be unsafe).
+// Classify a call's arguments by position, requiring them all unlabelled.
+// `Error` if any is labelled/shorthand (position-based routing would be unsafe).
 fn positional_arg_values(
   arguments: List(Field(Expression)),
   context: ImportContext,
@@ -951,16 +951,16 @@ fn positional_arg_values(
   })
 }
 
-/// The element at `index` (0-based, non-negative) of a list, or `Error` when out
-/// of range.
+// The element at `index` (0-based, non-negative) of a list, or `Error` when out
+// of range.
 pub fn at(items: List(a), index: Int) -> Result(a, Nil) {
   items |> list.drop(index) |> list.first()
 }
 
-/// For RHS expressions that aren't constructor calls, reuse
-/// `classify_expression`'s shape recognition and map its result to a
-/// `LocalBinding`. Eager resolution through the env means aliases never
-/// need to be chased at lookup time.
+// For RHS expressions that aren't constructor calls, reuse
+// `classify_expression`'s shape recognition and map its result to a
+// `LocalBinding`. Eager resolution through the env means aliases never
+// need to be chased at lookup time.
 fn classify_rhs_ref(
   expression: glance.Expression,
   context: ImportContext,
@@ -976,11 +976,11 @@ fn classify_rhs_ref(
   }
 }
 
-/// Build a BoundConstructor from a constructor call's arguments.
-/// Labelled arguments populate `fields` directly. Unlabelled ones are
-/// mapped to the corresponding labelled slot when the constructor's
-/// declared labels are known (same-module); otherwise discarded —
-/// field-call resolution only needs the labelled view.
+// Build a BoundConstructor from a constructor call's arguments.
+// Labelled arguments populate `fields` directly. Unlabelled ones are
+// mapped to the corresponding labelled slot when the constructor's
+// declared labels are known (same-module); otherwise discarded —
+// field-call resolution only needs the labelled view.
 fn classify_constructor(
   type_name: String,
   module: Option(String),
@@ -1030,17 +1030,17 @@ fn resolve_env(name: String, env: Env) -> LocalBinding {
   dict.get(env, name) |> result.unwrap(BoundOpaque)
 }
 
-/// `use` bindings come from the callback call-site, which we can't
-/// trace syntactically — mark them all opaque.
+// `use` bindings come from the callback call-site, which we can't
+// trace syntactically — mark them all opaque.
 fn bind_use_patterns(patterns: List(glance.UsePattern), env: Env) -> Env {
   list.fold(patterns, env, fn(acc, use_pattern) {
     fold_pattern_names(use_pattern.pattern, acc, bind_opaque)
   })
 }
 
-/// Walk a pattern and fold over every variable name it binds into
-/// scope, avoiding the intermediate `List(String)` a collect-then-fold
-/// would allocate.
+// Walk a pattern and fold over every variable name it binds into
+// scope, avoiding the intermediate `List(String)` a collect-then-fold
+// would allocate.
 fn fold_pattern_names(
   pattern: glance.Pattern,
   acc: a,
@@ -1354,10 +1354,10 @@ fn extract_pipe_target(
   }
 }
 
-/// Pipe into a block: walk its leading statements (their effects + the `let`
-/// bindings they introduce), then re-dispatch the pipe at the block's tail
-/// expression. A block whose tail isn't a bare expression has no callee to
-/// attach the piped argument to, so it's walked without arg tracking.
+// Pipe into a block: walk its leading statements (their effects + the `let`
+// bindings they introduce), then re-dispatch the pipe at the block's tail
+// expression. A block whose tail isn't a bare expression has no callee to
+// attach the piped argument to, so it's walked without arg tracking.
 fn pipe_into_block(
   statements: List(Statement),
   context: ImportContext,
@@ -1377,12 +1377,12 @@ fn pipe_into_block(
   }
 }
 
-/// Pipe into an inline closure or `case`-of-functions: classify the target as a
-/// function-like value and emit a `DirectPipeOp` so the checker lifts it to an
-/// operator and applies the piped value (recorded as argument 0 via
-/// `attach_pipe_args`). A target that isn't function-like (a `case` with a
-/// non-function branch) has nothing to apply, so it falls back to the normal
-/// value walk.
+// Pipe into an inline closure or `case`-of-functions: classify the target as a
+// function-like value and emit a `DirectPipeOp` so the checker lifts it to an
+// operator and applies the piped value (recorded as argument 0 via
+// `attach_pipe_args`). A target that isn't function-like (a `case` with a
+// non-function branch) has nothing to apply, so it falls back to the normal
+// value walk.
 fn pipe_into_operator_value(
   expression: Expression,
   span: glance.Span,
@@ -1415,8 +1415,8 @@ fn extract_from_clause(
   }
 }
 
-/// Build a CallArgument list from glance fields, starting at a given
-/// position offset (used by pipes to leave position 0 for the piped value).
+// Build a CallArgument list from glance fields, starting at a given
+// position offset (used by pipes to leave position 0 for the piped value).
 fn classify_arguments(
   arguments: List(Field(Expression)),
   context: ImportContext,
@@ -1437,9 +1437,9 @@ fn classify_arguments(
   })
 }
 
-/// Classify a single argument expression. Determines whether it's a
-/// function reference (qualified or unqualified import), a local
-/// identifier, a constructor (uppercase), or something else.
+// Classify a single argument expression. Determines whether it's a
+// function reference (qualified or unqualified import), a local
+// identifier, a constructor (uppercase), or something else.
 fn classify_expression(
   expression: Expression,
   context: ImportContext,
@@ -1515,9 +1515,9 @@ fn classify_expression(
   }
 }
 
-/// Classify the value a block evaluates to — its tail expression, with the
-/// block's preceding `let`/`use` bindings threaded into scope. A block whose
-/// tail isn't a bare expression is opaque.
+// Classify the value a block evaluates to — its tail expression, with the
+// block's preceding `let`/`use` bindings threaded into scope. A block whose
+// tail isn't a bare expression is opaque.
 fn classify_block(
   statements: List(glance.Statement),
   context: ImportContext,
@@ -1541,9 +1541,9 @@ fn classify_block(
   }
 }
 
-/// Classify a call's *callee* as the producer of a returned operator. When the
-/// callee is a function reference (cross-module) or a same-module bare name, the
-/// call is a `ReturnedOperator`; a constructor call or anything else is opaque.
+// Classify a call's *callee* as the producer of a returned operator. When the
+// callee is a function reference (cross-module) or a same-module bare name, the
+// call is a `ReturnedOperator`; a constructor call or anything else is opaque.
 fn classify_call_producer(
   function: glance.Expression,
   arguments: List(Field(Expression)),
@@ -1563,11 +1563,11 @@ fn classify_call_producer(
   }
 }
 
-/// The value a function evaluates to, for returned-operator inference: the tail
-/// statement's expression classified with only the import context in scope
-/// (parameters and prior `let`s are deliberately not threaded — v1 handles a
-/// directly-returned ref/closure/branch/producer-call). `Error` when the body's
-/// tail isn't a bare expression.
+// The value a function evaluates to, for returned-operator inference: the tail
+// statement's expression classified with only the import context in scope
+// (parameters and prior `let`s are deliberately not threaded — v1 handles a
+// directly-returned ref/closure/branch/producer-call). `Error` when the body's
+// tail isn't a bare expression.
 pub fn return_value(
   function: glance.Function,
   context: ImportContext,
@@ -1579,9 +1579,9 @@ pub fn return_value(
   }
 }
 
-/// Classify the clause bodies of a `case` as a `Choice` of function-like
-/// options, or `OtherExpression` if any body isn't a bare function/closure/
-/// branch (or there are no clauses).
+// Classify the clause bodies of a `case` as a `Choice` of function-like
+// options, or `OtherExpression` if any body isn't a bare function/closure/
+// branch (or there are no clauses).
 fn classify_case_options(
   clauses: List(glance.Clause),
   context: ImportContext,
@@ -1612,9 +1612,9 @@ fn classify_case_options(
   }
 }
 
-/// Record a pipe target's argument list against its call span. Used
-/// by the two pipe-target shapes (`|> foo.bar` and `|> bar`) that
-/// don't go through `merge_with_args`.
+// Record a pipe target's argument list against its call span. Used
+// by the two pipe-target shapes (`|> foo.bar` and `|> bar`) that
+// don't go through `merge_with_args`.
 fn attach_pipe_args(
   base: ExtractResult,
   span: glance.Span,
@@ -1626,8 +1626,8 @@ fn attach_pipe_args(
   )
 }
 
-/// Merge an extraction result with a call's sub-expression walk, and
-/// record the call's argument list keyed by span start.
+// Merge an extraction result with a call's sub-expression walk, and
+// record the call's argument list keyed by span start.
 fn merge_with_args(
   call_result: ExtractResult,
   inner: ExtractResult,
