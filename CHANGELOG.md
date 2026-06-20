@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dependency spec effects are no longer overridden by the catalog.** The knowledge base merged dependency-spec and catalog effects with the arguments reversed, so a function present in both an installed dependency's spec file and the bundled catalog resolved to the *catalog* entry — contrary to the documented priority (dependency spec files rank above the versioned catalog). Dependency specs now win, matching the parameter-bound merge.
+- **Effects inside `panic`/`todo`/`echo` messages and bit-string segments are now counted.** These positions hold arbitrary expressions (`panic as build_message(io.debug(x))`, `<<encode(read()):size(8)>>`), but the effect walker treated them as effect-free leaves (and walked only an `echo` value, not its `as` message), silently dropping any call there — a false negative. They are now traversed like every other sub-expression.
+- **`graded format --check` fails on an unparseable spec file** instead of exiting zero. Both `format` and `format --check` previously swallowed every error, so CI passed green on a `.graded` file that did not even parse. A missing spec file is still tolerated; a malformed one is now an error.
+- **A malformed `gleam.toml` is reported** rather than silently falling back to a guessed package name (and thus the wrong spec-file path). A missing `gleam.toml` still falls back to defaults.
+
 ## [0.7.0] - 2026-06-19
 
 ### Added
@@ -133,3 +140,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Warnings for function references passed as values with known effects.
 - Versioned catalog system resolved against `manifest.toml`.
 - Catalog entries for `gleam_stdlib`, `gleam_erlang`, `gleam_otp`, `gleam_http`, `gleam_httpc`, `gleam_json`, `gleam_regexp`, `gleam_yielder`, `gleam_crypto`, `lustre`, `lustre_http`, `simplifile`, `filepath`, `tom`.
+
+[Unreleased]: https://github.com/alvivi/graded/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/alvivi/graded/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/alvivi/graded/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/alvivi/graded/compare/v0.4.2...v0.5.0
+[0.4.2]: https://github.com/alvivi/graded/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/alvivi/graded/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/alvivi/graded/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/alvivi/graded/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/alvivi/graded/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/alvivi/graded/releases/tag/v0.1.0
