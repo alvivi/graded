@@ -5,7 +5,7 @@ import gleam/option.{Some}
 import gleeunit/should
 import graded/internal/extract
 import graded/internal/types.{
-  Choice, FunctionRef, OtherExpression, QualifiedName,
+  type QualifiedName, Choice, FunctionRef, OtherExpression, QualifiedName,
 }
 
 fn parse_and_extract(src: String) -> extract.ExtractResult {
@@ -635,4 +635,44 @@ pub fn cross_module_positional_unresolved_without_labels_test() {
     extract.collect_constructor_bindings(module, context)
     |> list.find(fn(binding) { binding.constructor == "Validator" })
   dict.get(binding.fields, "to_error") |> should.equal(Error(Nil))
+}
+
+// ──── Effects inside panic/todo/echo/bitstring sub-expressions ────
+// These positions hold arbitrary expressions; a call inside them must still
+// be counted, not dropped as a leaf node.
+
+fn resolved_names(src: String) -> List(QualifiedName) {
+  parse_and_extract(src).resolved |> list.map(fn(r) { r.name })
+}
+
+pub fn panic_message_effects_test() {
+  resolved_names(
+    "import gleam/io
+pub fn target() { panic as io.println(\"boom\") }",
+  )
+  |> should.equal([QualifiedName("gleam/io", "println")])
+}
+
+pub fn todo_message_effects_test() {
+  resolved_names(
+    "import gleam/io
+pub fn target() { todo as io.println(\"boom\") }",
+  )
+  |> should.equal([QualifiedName("gleam/io", "println")])
+}
+
+pub fn echo_expression_effects_test() {
+  resolved_names(
+    "import gleam/io
+pub fn target() { echo io.println(\"hi\") }",
+  )
+  |> should.equal([QualifiedName("gleam/io", "println")])
+}
+
+pub fn bitstring_segment_effects_test() {
+  resolved_names(
+    "import gleam/io
+pub fn target() { <<io.println(\"x\")>> }",
+  )
+  |> should.equal([QualifiedName("gleam/io", "println")])
 }

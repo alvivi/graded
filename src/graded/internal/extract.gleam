@@ -1233,10 +1233,25 @@ fn extract_from_expression(
         ),
       )
 
-    // Echo
-    glance.Echo(expression: Some(inner), ..) ->
-      extract_from_expression(inner, context, env)
-    glance.Echo(expression: None, ..) -> empty()
+    // Echo: walk both the echoed value and the optional `as` message — either
+    // may hold an effectful call (`echo run() as label()`).
+    glance.Echo(expression:, message:, ..) ->
+      empty()
+      |> merge_optional(expression, context, env)
+      |> merge_optional(message, context, env)
+
+    // `panic`/`todo` with an `as <expr>` message: the message can be an
+    // effectful expression (`panic as build_message(io.debug(x))`), so its
+    // effects must be counted, not dropped as a leaf.
+    glance.Panic(message:, ..) -> merge_optional(empty(), message, context, env)
+    glance.Todo(message:, ..) -> merge_optional(empty(), message, context, env)
+
+    // Bit string: each segment's value expression can hold effectful calls
+    // (`<<encode(read()):size(8)>>`).
+    glance.BitString(segments:, ..) ->
+      list.fold(segments, empty(), fn(accumulated, segment) {
+        merge(accumulated, extract_from_expression(segment.0, context, env))
+      })
 
     // Unqualified function reference used as a value (not called)
     glance.Variable(location: span, name:) ->
@@ -1248,13 +1263,8 @@ fn extract_from_expression(
         Error(Nil) -> empty()
       }
 
-    // Leaf nodes
-    glance.Int(..)
-    | glance.Float(..)
-    | glance.String(..)
-    | glance.Panic(..)
-    | glance.Todo(..)
-    | glance.BitString(..) -> empty()
+    // Leaf nodes (no sub-expressions that can carry effects)
+    glance.Int(..) | glance.Float(..) | glance.String(..) -> empty()
   }
 }
 
