@@ -1,11 +1,11 @@
-//// Topological sort over a string-keyed dependency graph. Used by inference
-//// to walk project (and path-dep) modules in dependency order so each module
-//// is analysed after every other module it imports.
-////
-//// The graph is `Dict(node, Set(node it depends on))`. The output is a
-//// leaves-first list: any node `u` that depends on `v` appears *after* `v`.
-//// Gleam's no-circular-imports guarantee makes the import graph a DAG in
-//// practice, but the algorithm still detects cycles defensively.
+// Topological sort over a string-keyed dependency graph. Used by inference
+// to walk project (and path-dep) modules in dependency order so each module
+// is analysed after every other module it imports.
+//
+// The graph is `Dict(node, Set(node it depends on))`. The output is a
+// leaves-first list: any node `u` that depends on `v` appears *after* `v`.
+// Gleam's no-circular-imports guarantee makes the import graph a DAG in
+// practice, but the algorithm still detects cycles defensively.
 
 import gleam/dict.{type Dict}
 import gleam/int
@@ -14,14 +14,14 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/set.{type Set}
 
-/// Failure mode of `sort`. The contained list names every node still
-/// participating in unresolved dependencies — useful for diagnostics on
-/// cyclic input.
+// Failure mode of `sort`. The contained list names every node still
+// participating in unresolved dependencies — useful for diagnostics on
+// cyclic input.
 pub type SortError {
   Cycle(nodes: List(String))
 }
 
-/// Kahn's algorithm: produce a leaves-first ordering of `graph`.
+// Kahn's algorithm: produce a leaves-first ordering of `graph`.
 pub fn sort(
   graph: Dict(String, Set(String)),
 ) -> Result(List(String), SortError) {
@@ -83,16 +83,16 @@ fn prepend_all(prefix: List(a), tail: List(a)) -> List(a) {
   list.fold(prefix, tail, fn(acc, item) { [item, ..acc] })
 }
 
-/// Tarjan's algorithm: partition `graph` (node -> set of nodes it points at)
-/// into strongly-connected components, returned in **callee-first** order —
-/// every component appears before the components that point into it. A
-/// component is a list of mutually-reachable nodes; a node on no cycle is a
-/// singleton (a self-loop still yields a size-1 component).
-///
-/// Unlike `sort`, this never fails: cycles are exactly what it groups. The
-/// checker uses it to memoize same-module effect analysis — a singleton's
-/// result is independent of its callers and can be cached, while a genuine
-/// mutual-recursion cluster is handled together as one component.
+// Tarjan's algorithm: partition `graph` (node -> set of nodes it points at)
+// into strongly-connected components, returned in **callee-first** order —
+// every component appears before the components that point into it. A
+// component is a list of mutually-reachable nodes; a node on no cycle is a
+// singleton (a self-loop still yields a size-1 component).
+//
+// Unlike `sort`, this never fails: cycles are exactly what it groups. The
+// checker uses it to memoize same-module effect analysis — a singleton's
+// result is independent of its callers and can be cached, while a genuine
+// mutual-recursion cluster is handled together as one component.
 pub fn scc_order(graph: Dict(String, Set(String))) -> List(List(String)) {
   let state =
     list.fold(dict.keys(graph), new_tarjan(), fn(state, node) {

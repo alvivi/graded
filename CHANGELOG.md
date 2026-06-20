@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- When a function appears in both an installed dependency's spec file and the bundled catalog, its effects now come from the dependency's spec file.
+- Effects performed inside `panic`/`todo`/`echo` messages and bit-string segments are now counted toward a function's effects.
+- `graded format` and `graded format --check` now report an error on a `.graded` spec file that cannot be parsed, instead of succeeding silently. A missing spec file is still treated as nothing to do.
+- A malformed `gleam.toml` is now reported as an error instead of being silently ignored. A missing `gleam.toml` still falls back to defaults.
+
 ## [0.7.0] - 2026-06-19
 
 ### Added
@@ -133,3 +140,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Warnings for function references passed as values with known effects.
 - Versioned catalog system resolved against `manifest.toml`.
 - Catalog entries for `gleam_stdlib`, `gleam_erlang`, `gleam_otp`, `gleam_http`, `gleam_httpc`, `gleam_json`, `gleam_regexp`, `gleam_yielder`, `gleam_crypto`, `lustre`, `lustre_http`, `simplifile`, `filepath`, `tom`.
+
+[Unreleased]: https://github.com/alvivi/graded/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/alvivi/graded/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/alvivi/graded/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/alvivi/graded/compare/v0.4.2...v0.5.0
+[0.4.2]: https://github.com/alvivi/graded/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/alvivi/graded/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/alvivi/graded/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/alvivi/graded/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/alvivi/graded/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/alvivi/graded/releases/tag/v0.1.0

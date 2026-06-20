@@ -23,7 +23,7 @@ import graded/internal/types.{
   ParamBound, QualifiedName, TUnion, TVar, UntrackedEffectWarning, Violation,
 }
 
-/// Check a parsed module against its effect annotations.
+// Check a parsed module against its effect annotations.
 pub fn check(
   module: Module,
   annotations: List(EffectAnnotation),
@@ -61,8 +61,8 @@ pub fn check(
   #(violations, warnings)
 }
 
-/// Infer the effect set for every public function in a module.
-/// Pass existing `check` annotations so their param bounds are used during inference.
+// Infer the effect set for every public function in a module.
+// Pass existing `check` annotations so their param bounds are used during inference.
 pub fn infer(
   module: Module,
   knowledge_base: KnowledgeBase,
@@ -81,10 +81,10 @@ pub fn infer(
   ).0
 }
 
-/// Like `infer`, but also returns each public function's *returned operator*
-/// (bare function name → the operator it returns) for functions that return a
-/// function — so the topological pass can thread them into the knowledge base
-/// for downstream `let h = producer(); with(h)` consumers.
+// Like `infer`, but also returns each public function's *returned operator*
+// (bare function name → the operator it returns) for functions that return a
+// function — so the topological pass can thread them into the knowledge base
+// for downstream `let h = producer(); with(h)` consumers.
 pub fn infer_with_returns(
   module: Module,
   knowledge_base: KnowledgeBase,
@@ -204,16 +204,16 @@ pub fn infer_with_returns(
   #(annotations, returned_operators)
 }
 
-/// The effect of the callback an operator parameter is applied to. The callback
-/// isn't assumed to be first: `callback_position` is the operator parameter's
-/// own callback argument index (from its type signature, see
-/// `signatures.operator_params_from_function`), so `action(config, cb)` resolves
-/// `cb` and not `config`. Pipe-adjusted call positions already align with the
-/// operator's logical argument positions (the piped receiver takes position 0),
-/// so the index applies directly. A missing argument at a callback position means
-/// the operator is under-applied (a partial application whose deferred effect we
-/// can't resolve here), so it collapses to `[Unknown]` rather than `pure()` — the
-/// effect must never be silently dropped.
+// The effect of the callback an operator parameter is applied to. The callback
+// isn't assumed to be first: `callback_position` is the operator parameter's
+// own callback argument index (from its type signature, see
+// `signatures.operator_params_from_function`), so `action(config, cb)` resolves
+// `cb` and not `config`. Pipe-adjusted call positions already align with the
+// operator's logical argument positions (the piped receiver takes position 0),
+// so the index applies directly. A missing argument at a callback position means
+// the operator is under-applied (a partial application whose deferred effect we
+// can't resolve here), so it collapses to `[Unknown]` rather than `pure()` — the
+// effect must never be silently dropped.
 fn operator_argument_effect(
   call_args: dict.Dict(Int, List(types.CallArgument)),
   span_start: Int,
@@ -229,11 +229,11 @@ fn operator_argument_effect(
   }
 }
 
-/// Build a call to a second-order parameter as a *curried* effect-operator
-/// application over all its callback arguments, in order: `action(cb1, cb2)` ⟹
-/// `((action e1) e2)`. Left-nesting matches the binder order of the lifted
-/// operator, so each callback beta-reduces against the right binder once the
-/// operator is bound at a call site.
+// Build a call to a second-order parameter as a *curried* effect-operator
+// application over all its callback arguments, in order: `action(cb1, cb2)` ⟹
+// `((action e1) e2)`. Left-nesting matches the binder order of the lifted
+// operator, so each callback beta-reduces against the right binder once the
+// operator is bound at a call site.
 fn curried_operator_application(
   operator: EffectTerm,
   callback_positions: List(Int),
@@ -256,38 +256,38 @@ fn curried_operator_application(
   })
 }
 
-/// A bound whose effect is the single variable named after the param
-/// itself — `TVar(name)`. The variable refers to itself, resolved later by
-/// substitution at call sites. When the matching argument is an effect
-/// *operator* (a `TAbs`), binding `name` to it and beta-reducing is exactly
-/// what resolves a second-order call.
+// A bound whose effect is the single variable named after the param
+// itself — `TVar(name)`. The variable refers to itself, resolved later by
+// substitution at call sites. When the matching argument is an effect
+// *operator* (a `TAbs`), binding `name` to it and beta-reducing is exactly
+// what resolves a second-order call.
 fn self_referential_bound(name: String) -> ParamBound {
   ParamBound(name, TVar(name))
 }
 
-/// True iff a term still carries unresolved (free) effect variables.
+// True iff a term still carries unresolved (free) effect variables.
 fn has_vars(term: EffectTerm) -> Bool {
   !set.is_empty(effect_term.free_vars(term))
 }
 
-/// Union the effect terms of a list of `(call, term)` pairs, normalizing once.
+// Union the effect terms of a list of `(call, term)` pairs, normalizing once.
 fn union_of(pairs: List(#(types.ResolvedCall, EffectTerm))) -> EffectTerm {
   effect_term.normalize(TUnion(list.map(pairs, fn(pair) { pair.1 })))
 }
 
-/// Synthesise a self-referential polymorphic bound for each auto-detected
-/// fn-typed parameter. Seeding these into `param_bounds` lets the body
-/// walker treat direct calls to, and forwarded uses of, the param
-/// uniformly with user-declared bounds.
+// Synthesise a self-referential polymorphic bound for each auto-detected
+// fn-typed parameter. Seeding these into `param_bounds` lets the body
+// walker treat direct calls to, and forwarded uses of, the param
+// uniformly with user-declared bounds.
 fn synthetic_fn_typed_bounds(fn_typed_params: Set(String)) -> List(ParamBound) {
   fn_typed_params
   |> set.to_list()
   |> list.map(self_referential_bound)
 }
 
-/// Build a `ParamBound` for each free effect variable in `term` whose name is
-/// a fn-typed parameter. Each is self-referential (`TVar(name)`), resolved by
-/// substitution at call sites — so the polymorphic signature round-trips.
+// Build a `ParamBound` for each free effect variable in `term` whose name is
+// a fn-typed parameter. Each is self-referential (`TVar(name)`), resolved by
+// substitution at call sites — so the polymorphic signature round-trips.
 fn polymorphic_param_bounds(
   term: EffectTerm,
   fn_typed_params: Set(String),
@@ -302,14 +302,14 @@ fn polymorphic_param_bounds(
 
 // PRIVATE
 
-/// A function's body with a trailing *returned closure* dropped. A closure is
-/// lazy: a function that returns one runs nothing of that closure when *called* —
-/// its effects happen when the returned closure is later applied, and are
-/// accounted there (via the returned operator, or the conservative `[Unknown]`
-/// for an untracked application). Excluding it from the direct call-effect
-/// removes a spurious over-approximation (e.g. a decorator's `io.println` leaking
-/// into the producer call) while staying sound. Only a bare tail `Fn` is trimmed;
-/// other returned-closure shapes keep the conservative behaviour.
+// A function's body with a trailing *returned closure* dropped. A closure is
+// lazy: a function that returns one runs nothing of that closure when *called* —
+// its effects happen when the returned closure is later applied, and are
+// accounted there (via the returned operator, or the conservative `[Unknown]`
+// for an untracked application). Excluding it from the direct call-effect
+// removes a spurious over-approximation (e.g. a decorator's `io.println` leaking
+// into the producer call) while staying sound. Only a bare tail `Fn` is trimmed;
+// other returned-closure shapes keep the conservative behaviour.
 fn without_returned_closure(function: Function) -> Function {
   case list.reverse(function.body) {
     [glance.Expression(glance.Fn(..)), ..rest] ->
@@ -318,7 +318,7 @@ fn without_returned_closure(function: Function) -> Function {
   }
 }
 
-/// Map a module's functions by name — for transitive same-module resolution.
+// Map a module's functions by name — for transitive same-module resolution.
 pub fn build_function_map(
   module: Module,
 ) -> dict.Dict(String, Definition(Function)) {
@@ -327,46 +327,46 @@ pub fn build_function_map(
   |> dict.from_list()
 }
 
-/// The call-graph strongly-connected-component structure of a module, threaded
-/// read-only through the analysis to drive same-module memoization (see
-/// `memoized_local`). Without memoization a densely mutually-recursive module
-/// (a recursive-descent parser, a `use`-chained codec) re-walks each callee once
-/// per distinct call path — combinatorial blow-up. The component structure makes
-/// two memo strategies possible, each keeping results identical to the
-/// un-memoized walk:
-///
-/// - A **collapsible** component (every member first-order) shares one
-///   full-reachability effect set across all members, computed once.
-/// - Any other callee is keyed by `#(callee, visited ∩ callee's SCC)`: its
-///   result depends on the caller's `visited` only through same-SCC ancestors
-///   (the back-edges cycle-truncation cuts), so that key is exact.
+// The call-graph strongly-connected-component structure of a module, threaded
+// read-only through the analysis to drive same-module memoization (see
+// `memoized_local`). Without memoization a densely mutually-recursive module
+// (a recursive-descent parser, a `use`-chained codec) re-walks each callee once
+// per distinct call path — combinatorial blow-up. The component structure makes
+// two memo strategies possible, each keeping results identical to the
+// un-memoized walk:
+//
+// - A **collapsible** component (every member first-order) shares one
+//   full-reachability effect set across all members, computed once.
+// - Any other callee is keyed by `#(callee, visited ∩ callee's SCC)`: its
+//   result depends on the caller's `visited` only through same-SCC ancestors
+//   (the back-edges cycle-truncation cuts), so that key is exact.
 pub type LocalCache {
   LocalCache(
-    /// Function name → its call-graph SCC id.
+    // Function name → its call-graph SCC id.
     scc_id: dict.Dict(String, Int),
-    /// SCC id → the names of its member functions.
+    // SCC id → the names of its member functions.
     members: dict.Dict(Int, List(String)),
-    /// SCC ids that may be *collapsed*: every member is first-order (no fn-typed
-    /// params) and has a body. Such a component's members are all mutually
-    /// reachable, so they share one full-reachability effect set — computed once
-    /// and reused by name. A component with an effect-polymorphic member instead
-    /// uses the precise `visited ∩ SCC` key, where the result is path-dependent.
+    // SCC ids that may be *collapsed*: every member is first-order (no fn-typed
+    // params) and has a body. Such a component's members are all mutually
+    // reachable, so they share one full-reachability effect set — computed once
+    // and reused by name. A component with an effect-polymorphic member instead
+    // uses the precise `visited ∩ SCC` key, where the result is path-dependent.
     collapsible: Set(Int),
   )
 }
 
-/// Index a module's functions by call-graph SCC, recording for each component
-/// its members and whether it is collapsible.
-///
-/// `girard_fn_typed` carries girard's per-function fn-typed parameter names so a
-/// parameter that *infers* to a function without a `fn(...)` annotation is still
-/// recognised as effect-polymorphic — those, syntactic fn-typed params, and
-/// `@external` functions are all excluded from collapsible components, since the
-/// collapse pools members' effect *sets* and a free effect variable doesn't
-/// belong to every member. `collapse` is `False` for callers that can't supply
-/// girard's view (the constructor-field index), forcing the always-correct
-/// precise key everywhere. Exposed so the constructor-field index can build it
-/// once and reuse it across the closures it lifts.
+// Index a module's functions by call-graph SCC, recording for each component
+// its members and whether it is collapsible.
+//
+// `girard_fn_typed` carries girard's per-function fn-typed parameter names so a
+// parameter that *infers* to a function without a `fn(...)` annotation is still
+// recognised as effect-polymorphic — those, syntactic fn-typed params, and
+// `@external` functions are all excluded from collapsible components, since the
+// collapse pools members' effect *sets* and a free effect variable doesn't
+// belong to every member. `collapse` is `False` for callers that can't supply
+// girard's view (the constructor-field index), forcing the always-correct
+// precise key everywhere. Exposed so the constructor-field index can build it
+// once and reuse it across the closures it lifts.
 pub fn build_scc_ids(
   module: Module,
   context: ImportContext,
@@ -422,9 +422,9 @@ pub fn build_scc_ids(
   )
 }
 
-/// Names of module-local type aliases that resolve (transitively, through other
-/// aliases) to a function type. `type Decoder(a) = fn(...)` and an alias of such
-/// an alias both qualify; an alias to a record or tuple does not.
+// Names of module-local type aliases that resolve (transitively, through other
+// aliases) to a function type. `type Decoder(a) = fn(...)` and an alias of such
+// an alias both qualify; an alias to a record or tuple does not.
 fn function_type_aliases(
   aliases: List(Definition(glance.TypeAlias)),
 ) -> Set(String) {
@@ -451,9 +451,9 @@ fn function_type_aliases(
   |> set.from_list()
 }
 
-/// Does `type_` denote a function — directly (`fn(...)`) or via a chain of
-/// module-local aliases? `seen` guards against alias cycles (which Gleam rejects,
-/// but the walk must terminate regardless).
+// Does `type_` denote a function — directly (`fn(...)`) or via a chain of
+// module-local aliases? `seen` guards against alias cycles (which Gleam rejects,
+// but the walk must terminate regardless).
 fn resolves_to_function(
   type_: glance.Type,
   alias_map: dict.Dict(String, glance.Type),
@@ -476,9 +476,9 @@ fn resolves_to_function(
   }
 }
 
-/// Parameters of `function` whose declared type resolves to a function through a
-/// module-local alias. The direct `fn(...)` case is already covered by
-/// `signatures.fn_typed_params_from_function`; this adds the alias-resolved ones.
+// Parameters of `function` whose declared type resolves to a function through a
+// module-local alias. The direct `fn(...)` case is already covered by
+// `signatures.fn_typed_params_from_function`; this adds the alias-resolved ones.
 fn alias_fn_typed_params(
   function: Function,
   fn_aliases: Set(String),
@@ -498,14 +498,14 @@ fn alias_fn_typed_params(
   |> set.from_list()
 }
 
-/// Build the same-module call graph: each function mapped to the same-module
-/// functions its analysis can transitively recurse into. Deriving these from the
-/// extractor — the same pass that drives resolution — makes the
-/// strongly-connected-component structure match the truncation relation exactly.
-/// That agreement matters: a *split* of a real cycle makes `collapsed_scc`
-/// re-enter itself across the spurious boundary, never hitting its in-progress
-/// cache (an exponential blow-up); a *merge* of unrelated functions
-/// over-approximates the collapsed effect. A looser reference scan risks both.
+// Build the same-module call graph: each function mapped to the same-module
+// functions its analysis can transitively recurse into. Deriving these from the
+// extractor — the same pass that drives resolution — makes the
+// strongly-connected-component structure match the truncation relation exactly.
+// That agreement matters: a *split* of a real cycle makes `collapsed_scc`
+// re-enter itself across the spurious boundary, never hitting its in-progress
+// cache (an exponential blow-up); a *merge* of unrelated functions
+// over-approximates the collapsed effect. A looser reference scan risks both.
 fn local_call_graph(
   definitions: List(Definition(Function)),
   context: ImportContext,
@@ -520,11 +520,11 @@ fn local_call_graph(
   })
 }
 
-/// The memo key for a local call: the callee name plus the sorted subset of the
-/// current `visited` ancestors that share the callee's SCC. Those ancestors are
-/// exactly the back-edges cycle-truncation can cut, so two calls with the same
-/// key truncate identically and yield the same `(call, effect)` list. A callee
-/// on no cycle has no same-SCC ancestors, so its key is always `#(name, [])`.
+// The memo key for a local call: the callee name plus the sorted subset of the
+// current `visited` ancestors that share the callee's SCC. Those ancestors are
+// exactly the back-edges cycle-truncation can cut, so two calls with the same
+// key truncate identically and yield the same `(call, effect)` list. A callee
+// on no cycle has no same-SCC ancestors, so its key is always `#(name, [])`.
 fn memo_key(
   name: String,
   visited: Set(String),
@@ -539,29 +539,29 @@ fn memo_key(
   #(name, ancestors)
 }
 
-/// Per-module memo tables, threaded through same-module effect analysis as
-/// explicit immutable state: every memoized function takes a `Memo` and returns
-/// the (possibly extended) table alongside its result. A fresh `new_memo()` is
-/// created at each top-level analysis entry (`infer_with_returns`, `check`,
-/// `closure_field_operator`), so a module's memoized sub-results never leak into
-/// the next module's analysis. Threading a value beats a process-dictionary memo:
-/// the analysis stays referentially transparent and the persistent-dict cost is
-/// negligible.
+// Per-module memo tables, threaded through same-module effect analysis as
+// explicit immutable state: every memoized function takes a `Memo` and returns
+// the (possibly extended) table alongside its result. A fresh `new_memo()` is
+// created at each top-level analysis entry (`infer_with_returns`, `check`,
+// `closure_field_operator`), so a module's memoized sub-results never leak into
+// the next module's analysis. Threading a value beats a process-dictionary memo:
+// the analysis stays referentially transparent and the persistent-dict cost is
+// negligible.
 type Memo {
   Memo(
-    /// Polymorphic same-module call analyses, keyed by callee + same-SCC
-    /// ancestors (see `memo_key`).
+    // Polymorphic same-module call analyses, keyed by callee + same-SCC
+    // ancestors (see `memo_key`).
     locals: dict.Dict(
       #(String, List(String)),
       List(#(ResolvedCall, EffectTerm)),
     ),
-    /// Collapsible-SCC full-reachability analyses, keyed by SCC id.
+    // Collapsible-SCC full-reachability analyses, keyed by SCC id.
     sccs: dict.Dict(Int, List(#(ResolvedCall, EffectTerm))),
-    /// Operator-lifts of same-module function references, keyed by name +
-    /// same-SCC ancestors.
+    // Operator-lifts of same-module function references, keyed by name +
+    // same-SCC ancestors.
     lifts: dict.Dict(#(String, List(String)), EffectTerm),
-    /// Closure analyses, keyed by body position, lifting positions, ambient
-    /// operator names, and visited ancestors.
+    // Closure analyses, keyed by body position, lifting positions, ambient
+    // operator names, and visited ancestors.
     closures: dict.Dict(
       #(Int, List(Int), List(String), List(String)),
       EffectTerm,
@@ -578,22 +578,22 @@ fn new_memo() -> Memo {
   )
 }
 
-/// The same-module functions a function actually calls or references as a
-/// value — its call-graph edges. Computed as the **free** variables of the body
-/// (those *not* bound by a parameter, `let`, `use`, `fn`, or `case` pattern)
-/// intersected with the module's function names. Tracking bindings is essential:
-/// a parameter or local that shadows a sibling function's name (`fn apply(func,
-/// …)` alongside a `func` function) is a reference to the local, not the
-/// function, and must not create a spurious edge — a spurious edge merges
-/// unrelated components, and the SCC-collapse memo would then pool their effects.
-/// The same-module functions `function`'s analysis recurses into, intersected
-/// with the module's function names. Mirrors the three same-module recursion
-/// sites in `collect_effects`: unresolved local calls (`resolve_unknown_local`),
-/// a let-bound returned operator's same-module producer
-/// (`resolve_returned_operator`), and a same-module function reference handed to
-/// an operator parameter (`lift_local_function`, reached when the argument is a
-/// `LocalRef`). Calls inside nested closures are already flattened into the
-/// extractor's result, so they are covered too.
+// The same-module functions a function actually calls or references as a
+// value — its call-graph edges. Computed as the **free** variables of the body
+// (those *not* bound by a parameter, `let`, `use`, `fn`, or `case` pattern)
+// intersected with the module's function names. Tracking bindings is essential:
+// a parameter or local that shadows a sibling function's name (`fn apply(func,
+// …)` alongside a `func` function) is a reference to the local, not the
+// function, and must not create a spurious edge — a spurious edge merges
+// unrelated components, and the SCC-collapse memo would then pool their effects.
+// The same-module functions `function`'s analysis recurses into, intersected
+// with the module's function names. Mirrors the three same-module recursion
+// sites in `collect_effects`: unresolved local calls (`resolve_unknown_local`),
+// a let-bound returned operator's same-module producer
+// (`resolve_returned_operator`), and a same-module function reference handed to
+// an operator parameter (`lift_local_function`, reached when the argument is a
+// `LocalRef`). Calls inside nested closures are already flattened into the
+// extractor's result, so they are covered too.
 fn recursion_edges(
   function: Function,
   context: ImportContext,
@@ -623,26 +623,26 @@ fn recursion_edges(
   |> set.intersection(names)
 }
 
-/// A function declared `@external(...)` is opaque foreign code: graded cannot see
-/// what the native implementation does, so its effect is the conservative
-/// `[Unknown]` by default — never the `[]` an empty (or pure-looking fallback)
-/// body might suggest. Authors opt in to a precise effect by annotating it with
-/// an `external effects … : [...]` line (or via the versioned catalog), which
-/// wins at resolution time. This holds even when the `@external` also carries a
-/// Gleam fallback body: that body only runs on the *other* compile target, where
-/// the foreign function may still differ, so trusting it would be unsound.
+// A function declared `@external(...)` is opaque foreign code: graded cannot see
+// what the native implementation does, so its effect is the conservative
+// `[Unknown]` by default — never the `[]` an empty (or pure-looking fallback)
+// body might suggest. Authors opt in to a precise effect by annotating it with
+// an `external effects … : [...]` line (or via the versioned catalog), which
+// wins at resolution time. This holds even when the `@external` also carries a
+// Gleam fallback body: that body only runs on the *other* compile target, where
+// the foreign function may still differ, so trusting it would be unsound.
 fn is_opaque_external(definition: Definition(Function)) -> Bool {
   list.any(definition.attributes, fn(attribute) { attribute.name == "external" })
 }
 
-/// Lift a record field wired to an inline closure into an effect *operator*,
-/// abstracting over every closure parameter. A first-order field
-/// (`to_error: fn(m) { io.println(m) }`) becomes `λm. [Stdout]` (applying it to
-/// the field call's argument gives `[Stdout]` back); a higher-order field
-/// (`run: fn(next) { next() }`) becomes `λnext. [next]` (applying it gives the
-/// callback's effect). `resolve_field_effect` applies the operator at the field
-/// call. `function_map` resolves same-module calls; a minimal registry/types is
-/// enough for the common case of a closure calling library/qualified functions.
+// Lift a record field wired to an inline closure into an effect *operator*,
+// abstracting over every closure parameter. A first-order field
+// (`to_error: fn(m) { io.println(m) }`) becomes `λm. [Stdout]` (applying it to
+// the field call's argument gives `[Stdout]` back); a higher-order field
+// (`run: fn(next) { next() }`) becomes `λnext. [next]` (applying it gives the
+// callback's effect). `resolve_field_effect` applies the operator at the field
+// call. `function_map` resolves same-module calls; a minimal registry/types is
+// enough for the common case of a closure calling library/qualified functions.
 pub fn closure_field_operator(
   params: List(String),
   body: List(Statement),
@@ -1016,12 +1016,8 @@ fn collect_effects(
   )
 }
 
-/// The number of leading operator binders a (resolved) returned operator takes
-/// — its arity, so a direct application `h(cb1, cb2)` can be curried over the
-/// right number of callback positions. A union of operators shares one arity;
-/// take the max so a partial member can't shorten the spine.
-/// `[0, 1, …, n-1]` — the callback positions of an `n`-ary operator, applied
-/// in order. Empty for `n <= 0`.
+// `[0, 1, …, n-1]` — the callback positions of an `n`-ary operator, applied
+// in order. Empty for `n <= 0`.
 fn positions_up_to(n: Int) -> List(Int) {
   case n <= 0 {
     True -> []
@@ -1029,12 +1025,12 @@ fn positions_up_to(n: Int) -> List(Int) {
   }
 }
 
-/// The effect of an argument bound to a *first-order* fn-typed parameter. A
-/// closure's effect is the effect of *calling* it — its body — recovered by
-/// lifting and discharging the (value) parameters, rather than collapsing to
-/// [Unknown]. Covers a `use` callback (`use r <- with_thing()`) and any inline
-/// closure passed to a first-order higher-order function. Anything else takes
-/// its flat effect.
+// The effect of an argument bound to a *first-order* fn-typed parameter. A
+// closure's effect is the effect of *calling* it — its body — recovered by
+// lifting and discharging the (value) parameters, rather than collapsing to
+// [Unknown]. Covers a `use` callback (`use r <- with_thing()`) and any inline
+// closure passed to a first-order higher-order function. Anything else takes
+// its flat effect.
 fn first_order_arg_effect(
   arg: types.CallArgument,
   knowledge_base: KnowledgeBase,
@@ -1061,11 +1057,11 @@ fn first_order_arg_effect(
   }
 }
 
-/// Recover a first-order closure's body effect from its lifted operator by
-/// discharging each value parameter to `pure` (`λr. body ↦ body`). Used when a
-/// closure is bound to a first-order fn-typed parameter — the effect of calling
-/// it. A first-order parameter never contributes to the body's *effect*, so the
-/// substitution is exact.
+// Recover a first-order closure's body effect from its lifted operator by
+// discharging each value parameter to `pure` (`λr. body ↦ body`). Used when a
+// closure is bound to a first-order fn-typed parameter — the effect of calling
+// it. A first-order parameter never contributes to the body's *effect*, so the
+// substitution is exact.
 fn discharge_operator(operator: EffectTerm) -> EffectTerm {
   case operator {
     types.TAbs(param, body) ->
@@ -1079,6 +1075,10 @@ fn discharge_operator(operator: EffectTerm) -> EffectTerm {
   }
 }
 
+// The number of leading operator binders a (resolved) returned operator takes
+// — its arity, so a direct application `h(cb1, cb2)` can be curried over the
+// right number of callback positions. A union of operators shares one arity;
+// take the max so a partial member can't shorten the spine.
 fn operator_spine_arity(term: EffectTerm) -> Int {
   case term {
     types.TAbs(_, body) -> 1 + operator_spine_arity(body)
@@ -1090,15 +1090,15 @@ fn operator_spine_arity(term: EffectTerm) -> Int {
   }
 }
 
-/// Substitute effect variables in the recursive analysis of a local
-/// (same-module) call. The recursive `collect_effects` returns calls
-/// from inside the callee whose effects may reference the callee's
-/// own fn-typed parameters as variables; this resolves those
-/// variables against the caller's arguments at this call site.
-///
-/// Without this step, a same-module higher-order helper would leak
-/// `[<var>]` upward — only cross-module calls (which go through
-/// `substitute_at_call_site`) would get bound.
+// Substitute effect variables in the recursive analysis of a local
+// (same-module) call. The recursive `collect_effects` returns calls
+// from inside the callee whose effects may reference the callee's
+// own fn-typed parameters as variables; this resolves those
+// variables against the caller's arguments at this call site.
+//
+// Without this step, a same-module higher-order helper would leak
+// `[<var>]` upward — only cross-module calls (which go through
+// `substitute_at_call_site`) would get bound.
 fn substitute_local_call_effects(
   recursive: List(#(types.ResolvedCall, EffectTerm)),
   local_call: LocalCall,
@@ -1156,19 +1156,19 @@ fn substitute_local_call_effects(
   }
 }
 
-/// Derive the polymorphic param bounds a local function would carry
-/// after auto-inference: one bound per fn-typed parameter, with an
-/// effect variable matching the parameter name.
+// Derive the polymorphic param bounds a local function would carry
+// after auto-inference: one bound per fn-typed parameter, with an
+// effect variable matching the parameter name.
 fn local_polymorphic_bounds(function: Function) -> List(ParamBound) {
   synthetic_fn_typed_bounds(signatures.fn_typed_params_from_function(function))
 }
 
-/// Resolve effect variables at a call site. If the callee's effects
-/// carry variables, match arguments to the callee's param bounds and
-/// bind each variable to the concrete effect set of the corresponding
-/// argument. `caller_param_bounds` lets us propagate effect bounds
-/// from the caller's own parameters (when a fn-typed arg is itself
-/// the caller's parameter).
+// Resolve effect variables at a call site. If the callee's effects
+// carry variables, match arguments to the callee's param bounds and
+// bind each variable to the concrete effect set of the corresponding
+// argument. `caller_param_bounds` lets us propagate effect bounds
+// from the caller's own parameters (when a fn-typed arg is itself
+// the caller's parameter).
 fn substitute_at_call_site(
   call: types.ResolvedCall,
   effect: EffectTerm,
@@ -1211,17 +1211,17 @@ fn substitute_at_call_site(
   #(effect_term.normalize(effect_term.subst(effective_effects, bindings)), memo)
 }
 
-/// When the KB has no bounds but the registry reports fn-typed params,
-/// synthesise polymorphic bounds so caller fn-typed args propagate through
-/// the call. Covers stdlib higher-order functions whose catalog entries
-/// mark the module pure but don't record callback param bounds.
-///
-/// Bounds are synthesised per fn-typed param, and only when the matching
-/// argument is a tracked value (FunctionRef / LocalRef / ConstructorRef).
-/// Inline-closure args are skipped: their bodies are walked separately by
-/// the extractor, so binding them here would double-count — mixing tracked
-/// refs and closures in the same call works correctly because each param
-/// is decided independently.
+// When the KB has no bounds but the registry reports fn-typed params,
+// synthesise polymorphic bounds so caller fn-typed args propagate through
+// the call. Covers stdlib higher-order functions whose catalog entries
+// mark the module pure but don't record callback param bounds.
+//
+// Bounds are synthesised per fn-typed param, and only when the matching
+// argument is a tracked value (FunctionRef / LocalRef / ConstructorRef).
+// Inline-closure args are skipped: their bodies are walked separately by
+// the extractor, so binding them here would double-count — mixing tracked
+// refs and closures in the same call works correctly because each param
+// is decided independently.
 fn auto_bounds_from_registry(
   callee_name: types.QualifiedName,
   existing_effects: EffectTerm,
@@ -1263,10 +1263,10 @@ fn auto_bounds_from_registry(
   }
 }
 
-/// Match arguments against a callee's param bounds and produce a
-/// variable-to-effect-set binding map. For each param bound, find the
-/// argument at its label (preferred) or position, and resolve the
-/// argument's effects.
+// Match arguments against a callee's param bounds and produce a
+// variable-to-effect-set binding map. For each param bound, find the
+// argument at its label (preferred) or position, and resolve the
+// argument's effects.
 fn bind_variables(
   callee_name: types.QualifiedName,
   callee_bounds: List(ParamBound),
@@ -1335,15 +1335,15 @@ fn bind_variables(
   })
 }
 
-/// Lift a call argument bound to an *operator* parameter into an effect operator
-/// (`TAbs`, curried when the operator takes several callbacks) so the callee's
-/// `op(cb1, cb2)` application beta-reduces. A function reference `g` becomes
-/// `λp1. λp2. <g's effect>`, abstracting over all of `g`'s callback parameters in
-/// order; an inline closure or a same-module named function is lifted by
-/// `lift_operator_arg` (which has the analysis context). `positions` are the
-/// operator parameter's callback argument indices, used to abstract a closure
-/// over exactly those parameters. Anything else falls back to its flat effect
-/// (leaving the application stuck → `[Unknown]`).
+// Lift a call argument bound to an *operator* parameter into an effect operator
+// (`TAbs`, curried when the operator takes several callbacks) so the callee's
+// `op(cb1, cb2)` application beta-reduces. A function reference `g` becomes
+// `λp1. λp2. <g's effect>`, abstracting over all of `g`'s callback parameters in
+// order; an inline closure or a same-module named function is lifted by
+// `lift_operator_arg` (which has the analysis context). `positions` are the
+// operator parameter's callback argument indices, used to abstract a closure
+// over exactly those parameters. Anything else falls back to its flat effect
+// (leaving the application stuck → `[Unknown]`).
 fn operator_term_for_argument(
   arg: types.CallArgument,
   positions: List(Int),
@@ -1397,12 +1397,12 @@ fn operator_term_for_argument(
   }
 }
 
-/// Join several lifted operators into one that over-approximates all of them:
-/// `λp. ⊔ bodies`. Descends the `TAbs` spines in lockstep, alpha-renaming each
-/// operator's binder to the first's (capture-avoiding, no fresh names), and
-/// unions the leaves. A spine-length mismatch (mixed abstraction / non-operator)
-/// can't happen for well-typed branches but collapses conservatively to
-/// `[Unknown]` if it does.
+// Join several lifted operators into one that over-approximates all of them:
+// `λp. ⊔ bodies`. Descends the `TAbs` spines in lockstep, alpha-renaming each
+// operator's binder to the first's (capture-avoiding, no fresh names), and
+// unions the leaves. A spine-length mismatch (mixed abstraction / non-operator)
+// can't happen for well-typed branches but collapses conservatively to
+// `[Unknown]` if it does.
 fn join_operators(terms: List(EffectTerm)) -> EffectTerm {
   case terms {
     [] -> effect_term.unknown()
@@ -1432,8 +1432,8 @@ fn join_operators(terms: List(EffectTerm)) -> EffectTerm {
   }
 }
 
-/// Alpha-rename an abstraction's body to use `binder` in place of its own
-/// parameter, so several operators can be joined under one shared binder.
+// Alpha-rename an abstraction's body to use `binder` in place of its own
+// parameter, so several operators can be joined under one shared binder.
 fn rename_binder(
   binder: String,
   abstraction: #(String, EffectTerm),
@@ -1446,14 +1446,14 @@ fn rename_binder(
   }
 }
 
-/// Build the closure that lifts an operator argument we can only resolve with a
-/// function's analysis context — an inline closure (analyse its body), a
-/// same-module named function (transitively analyse its definition, since
-/// siblings aren't in the KB during their module's inference pass), or a
-/// returned operator (`pick()` — resolve the producer's inferred returned
-/// operator from the KB, or on-demand for a same-module producer). `positions`
-/// are the operator parameter's callback argument indices. `visited` guards the
-/// recursion (self-reference / cyclic producers).
+// Build the closure that lifts an operator argument we can only resolve with a
+// function's analysis context — an inline closure (analyse its body), a
+// same-module named function (transitively analyse its definition, since
+// siblings aren't in the KB during their module's inference pass), or a
+// returned operator (`pick()` — resolve the producer's inferred returned
+// operator from the KB, or on-demand for a same-module producer). `positions`
+// are the operator parameter's callback argument indices. `visited` guards the
+// recursion (self-reference / cyclic producers).
 fn build_lift_operator_arg(
   context: ImportContext,
   function_map: dict.Dict(String, Definition(Function)),
@@ -1525,12 +1525,12 @@ fn build_lift_operator_arg(
   }
 }
 
-/// Resolve the operator a producer returns. A qualified callee is looked up in
-/// the KB (computed at the producer's inference time, available downstream by
-/// topological order); a same-module callee (`""` module) is computed on-demand
-/// (cycle-guarded by `visited`). When the returned operator is *polymorphic* in
-/// the producer's parameters, `args` (the producer call's arguments) are bound to
-/// them — so a decorator `traced(real)` substitutes its `action` with `real`.
+// Resolve the operator a producer returns. A qualified callee is looked up in
+// the KB (computed at the producer's inference time, available downstream by
+// topological order); a same-module callee (`""` module) is computed on-demand
+// (cycle-guarded by `visited`). When the returned operator is *polymorphic* in
+// the producer's parameters, `args` (the producer call's arguments) are bound to
+// them — so a decorator `traced(real)` substitutes its `action` with `real`.
 fn resolve_returned_operator(
   callee: types.QualifiedName,
   args: List(types.CallArgument),
@@ -1593,11 +1593,11 @@ fn resolve_returned_operator(
   }
 }
 
-/// Bind a polymorphic returned operator's free producer-parameter variables to
-/// the producer call's arguments, reusing the call-site substitution machinery.
-/// The producer's parameter bounds + a registry that knows its operator params
-/// come from the KB/project registry (cross-module) or its glance signature
-/// (same-module, keyed by the `""` module so the synthetic callee name matches).
+// Bind a polymorphic returned operator's free producer-parameter variables to
+// the producer call's arguments, reusing the call-site substitution machinery.
+// The producer's parameter bounds + a registry that knows its operator params
+// come from the KB/project registry (cross-module) or its glance signature
+// (same-module, keyed by the `""` module so the synthetic callee name matches).
 fn bind_producer_params(
   operator: EffectTerm,
   callee: types.QualifiedName,
@@ -1663,18 +1663,18 @@ fn bind_producer_params(
   #(effect_term.normalize(effect_term.subst(operator, bindings)), memo)
 }
 
-/// Compute the operator a function returns, for the returned-operator KB and for
-/// same-module on-demand resolution: classify its return expression and lift it
-/// with the callback positions of its declared return type. `Error` when the
-/// function doesn't return an operator-shaped value (no return-type annotation,
-/// non-function tail, or a tail that doesn't resolve to a function/operator).
-///
-/// The producer's own operator parameters are seeded both as caller bounds (so a
-/// returned bare parameter, `fn wrap(base) { base }`, resolves to its variable)
-/// and as *ambient operators* (so a returned closure that calls a parameter,
-/// `fn traced(action) { fn(cb) { action(cb) } }`, builds `action(cb)`). The
-/// result may therefore be **polymorphic** in those parameters — they're bound to
-/// the producer call's arguments at `resolve_returned_operator`.
+// Compute the operator a function returns, for the returned-operator KB and for
+// same-module on-demand resolution: classify its return expression and lift it
+// with the callback positions of its declared return type. `Error` when the
+// function doesn't return an operator-shaped value (no return-type annotation,
+// non-function tail, or a tail that doesn't resolve to a function/operator).
+//
+// The producer's own operator parameters are seeded both as caller bounds (so a
+// returned bare parameter, `fn wrap(base) { base }`, resolves to its variable)
+// and as *ambient operators* (so a returned closure that calls a parameter,
+// `fn traced(action) { fn(cb) { action(cb) } }`, builds `action(cb)`). The
+// result may therefore be **polymorphic** in those parameters — they're bound to
+// the producer call's arguments at `resolve_returned_operator`.
 fn compute_returned_operator(
   function: Function,
   context: ImportContext,
@@ -1736,7 +1736,7 @@ fn compute_returned_operator(
   }
 }
 
-/// Classify the lifted return value into the operator a producer records.
+// Classify the lifted return value into the operator a producer records.
 fn compute_returned_operator_result(
   operator: EffectTerm,
 ) -> Result(EffectTerm, Nil) {
@@ -1764,13 +1764,13 @@ fn compute_returned_operator_result(
   }
 }
 
-/// Analyse an inline closure's body as if its parameters were fn-typed, then
-/// abstract over the parameters at the operator's callback `positions`, in
-/// order — turning `fn(cb) { cb(x) }` (position `[0]`) into the operator
-/// `λcb. [cb]`, and `fn(f, g) { f(); g() }` (positions `[0, 1]`) into
-/// `λf. λg. [f, g]`. This lets a closure passed to an operator parameter
-/// beta-reduce just like a named function reference. With no positions (operator
-/// info missing) it falls back to abstracting over the first parameter.
+// Analyse an inline closure's body as if its parameters were fn-typed, then
+// abstract over the parameters at the operator's callback `positions`, in
+// order — turning `fn(cb) { cb(x) }` (position `[0]`) into the operator
+// `λcb. [cb]`, and `fn(f, g) { f(); g() }` (positions `[0, 1]`) into
+// `λf. λg. [f, g]`. This lets a closure passed to an operator parameter
+// beta-reduce just like a named function reference. With no positions (operator
+// info missing) it falls back to abstracting over the first parameter.
 fn analyze_closure(
   params: List(String),
   body: List(Statement),
@@ -1889,9 +1889,9 @@ fn analyze_closure_uncached(
   #(operator, memo)
 }
 
-/// The source offset of a closure body's first statement — a stable per-module
-/// identity for the closure, used to memoize its analysis. An empty body (no
-/// statements, hence nothing distinguishing) keys on `-1`.
+// The source offset of a closure body's first statement — a stable per-module
+// identity for the closure, used to memoize its analysis. An empty body (no
+// statements, hence nothing distinguishing) keys on `-1`.
 fn closure_body_start(body: List(Statement)) -> Int {
   case body {
     [statement, ..] -> statement_start(statement)
@@ -1909,12 +1909,12 @@ fn statement_start(statement: Statement) -> Int {
   }
 }
 
-/// Lift a same-module named function passed as an operator argument into an
-/// effect operator. Sibling functions aren't in the knowledge base during their
-/// module's inference pass, so this transitively analyses the definition (its
-/// fn-typed params seeded as self-referential variables) and abstracts over
-/// those params in order — the `function_map` analogue of the `FunctionRef`/KB
-/// path in `operator_term_for_argument`.
+// Lift a same-module named function passed as an operator argument into an
+// effect operator. Sibling functions aren't in the knowledge base during their
+// module's inference pass, so this transitively analyses the definition (its
+// fn-typed params seeded as self-referential variables) and abstracts over
+// those params in order — the `function_map` analogue of the `FunctionRef`/KB
+// path in `operator_term_for_argument`.
 fn lift_local_function(
   name: String,
   definition: Definition(Function),
@@ -1978,9 +1978,9 @@ fn lift_local_function(
   }
 }
 
-/// Compute (and cache) the operator lift of a same-module function on a `lifts`
-/// memo miss: analyse its body with its fn-typed params seeded as self-referential
-/// variables, then abstract over those params in declaration order.
+// Compute (and cache) the operator lift of a same-module function on a `lifts`
+// memo miss: analyse its body with its fn-typed params seeded as self-referential
+// variables, then abstract over those params in declaration order.
 fn lift_operator_miss(
   name: String,
   function: Function,
@@ -2018,7 +2018,7 @@ fn lift_operator_miss(
   #(operator, Memo(..memo, lifts: dict.insert(memo.lifts, key, operator)))
 }
 
-/// In-body names of a function's fn-typed parameters, in declaration order.
+// In-body names of a function's fn-typed parameters, in declaration order.
 fn ordered_fn_typed_param_names(function: Function) -> List(String) {
   list.filter_map(function.parameters, fn(param) {
     case param.type_, param.name {
@@ -2028,9 +2028,9 @@ fn ordered_fn_typed_param_names(function: Function) -> List(String) {
   })
 }
 
-/// Find the argument that matches a given param bound. Prefers label
-/// match; falls back to positional match using the bound's index in
-/// the bound list (which mirrors the parameter order).
+// Find the argument that matches a given param bound. Prefers label
+// match; falls back to positional match using the bound's index in
+// the bound list (which mirrors the parameter order).
 fn find_matching_arg(
   callee_name: types.QualifiedName,
   bound: ParamBound,
@@ -2067,9 +2067,9 @@ fn find_arg_at_position(
   |> option.from_result
 }
 
-/// Look up the real parameter position of a named parameter in the
-/// callee's signature. Returns `None` when the callee is not in the
-/// registry or the parameter name doesn't match any labeled parameter.
+// Look up the real parameter position of a named parameter in the
+// callee's signature. Returns `None` when the callee is not in the
+// registry or the parameter name doesn't match any labeled parameter.
 fn position_from_registry(
   callee_name: types.QualifiedName,
   param_name: String,
@@ -2095,10 +2095,10 @@ fn find_param_position(
   |> option.from_result
 }
 
-/// Look up the effects of an argument value. Function references →
-/// KB lookup; constructors → pure; local refs matching a caller param
-/// bound (user-declared or auto-detected fn-typed) → that bound's
-/// effects; otherwise [Unknown].
+// Look up the effects of an argument value. Function references →
+// KB lookup; constructors → pure; local refs matching a caller param
+// bound (user-declared or auto-detected fn-typed) → that bound's
+// effects; otherwise [Unknown].
 fn resolve_argument_effects(
   arg: types.CallArgument,
   knowledge_base: KnowledgeBase,
@@ -2192,19 +2192,19 @@ fn resolve_unknown_local(
   }
 }
 
-/// Resolve a same-module non-external call, memoized.
-///
-/// A call into a **collapsible** SCC (every member first-order) returns that
-/// component's single full-reachability analysis — every member is mutually
-/// reachable, so they share one effect set, and a public entry's truncated union
-/// already equals that set, so collapsing changes nothing but cost. This is what
-/// keeps a dense first-order parser linear instead of exploding over the
-/// component's exponentially-many ancestor subsets.
-///
-/// Any other callee is **effect-polymorphic** (its analysis carries free param
-/// variables bound per call site, so the result genuinely depends on which
-/// ancestors cycle-truncation cut): key by callee + same-SCC ancestors, which is
-/// exact, and analyse the body live on a miss.
+// Resolve a same-module non-external call, memoized.
+//
+// A call into a **collapsible** SCC (every member first-order) returns that
+// component's single full-reachability analysis — every member is mutually
+// reachable, so they share one effect set, and a public entry's truncated union
+// already equals that set, so collapsing changes nothing but cost. This is what
+// keeps a dense first-order parser linear instead of exploding over the
+// component's exponentially-many ancestor subsets.
+//
+// Any other callee is **effect-polymorphic** (its analysis carries free param
+// variables bound per call site, so the result genuinely depends on which
+// ancestors cycle-truncation cut): key by callee + same-SCC ancestors, which is
+// exact, and analyse the body live on a miss.
 fn memoized_local(
   local_call: LocalCall,
   local_definition: Definition(Function),
@@ -2264,12 +2264,12 @@ fn memoized_local(
   }
 }
 
-/// The full-reachability analysis of a collapsible SCC, computed once and shared
-/// by all its members. Each member is analysed with the *whole* component marked
-/// visited, so intra-SCC calls truncate immediately (every member's direct
-/// effects are gathered exactly once across the union, and lower SCCs resolve
-/// through the cache); the union over members is the component's reachable
-/// effect. Keyed by SCC id, so the members beyond the first are free.
+// The full-reachability analysis of a collapsible SCC, computed once and shared
+// by all its members. Each member is analysed with the *whole* component marked
+// visited, so intra-SCC calls truncate immediately (every member's direct
+// effects are gathered exactly once across the union, and lower SCCs resolve
+// through the cache); the union over members is the component's reachable
+// effect. Keyed by SCC id, so the members beyond the first are free.
 fn collapsed_scc(
   scc: Int,
   function_map: dict.Dict(String, Definition(Function)),
@@ -2306,9 +2306,9 @@ fn collapsed_scc(
   }
 }
 
-/// Analyse one member of a collapsing SCC and append its effects to `acc`. The
-/// whole component is marked `visited` (`scc_set`), so intra-SCC calls truncate
-/// immediately and each member's direct effects are gathered exactly once.
+// Analyse one member of a collapsing SCC and append its effects to `acc`. The
+// whole component is marked `visited` (`scc_set`), so intra-SCC calls truncate
+// immediately and each member's direct effects are gathered exactly once.
 fn collapsed_member(
   name: String,
   acc: List(#(ResolvedCall, EffectTerm)),
@@ -2396,10 +2396,10 @@ fn resolve_field_call(
   }
 }
 
-/// Resolve a type field's effect. When it carries effect variables and a
-/// polymorphic source (a function wired into the field), bind those variables to
-/// the field call's arguments — the same call-site substitution resolved calls
-/// use. Any variable left unbound collapses to `[Unknown]`.
+// Resolve a type field's effect. When it carries effect variables and a
+// polymorphic source (a function wired into the field), bind those variables to
+// the field call's arguments — the same call-site substitution resolved calls
+// use. Any variable left unbound collapses to `[Unknown]`.
 fn resolve_field_effect(
   field_effect: types.TypeFieldEffect,
   field_call: types.FieldCall,
@@ -2447,14 +2447,14 @@ fn resolve_field_effect(
   }
 }
 
-/// Is this field effect operator-valued — an effect operator (`TAbs`) or a
-/// union of them? A field constructed at several sites (each wiring a closure)
-/// has a `TUnion` of operators; it must be *applied* to the field call's
-/// arguments, not returned raw. A non-operator effect (ground labels, or a
-/// polymorphic variable bound from a wired function) is handled by the
-/// `has_vars` path instead. A mixed union (an operator alongside a label set or
-/// free variable) still counts: applying it goes stuck in the reducer and
-/// collapses to the conservative `[Unknown]`, which is sound.
+// Is this field effect operator-valued — an effect operator (`TAbs`) or a
+// union of them? A field constructed at several sites (each wiring a closure)
+// has a `TUnion` of operators; it must be *applied* to the field call's
+// arguments, not returned raw. A non-operator effect (ground labels, or a
+// polymorphic variable bound from a wired function) is handled by the
+// `has_vars` path instead. A mixed union (an operator alongside a label set or
+// free variable) still counts: applying it goes stuck in the reducer and
+// collapses to the conservative `[Unknown]`, which is sound.
 fn is_operator_valued(term: EffectTerm) -> Bool {
   case term {
     types.TAbs(_, _) -> True
@@ -2463,21 +2463,21 @@ fn is_operator_valued(term: EffectTerm) -> Bool {
   }
 }
 
-/// Apply an operator-valued field to a field call's arguments, in position
-/// order: `λp0. λp1. body` applied to `(a0, a1)` β-reduces to `body[p0:=a0]
-/// [p1:=a1]`. A first-order field's binder is unused, so the result is just its
-/// body. Leftover binders (fewer args than params) leave the operator partially
-/// applied → `[Unknown]` (the conservative collapse in `to_effect_set`). Any
-/// variable still free after application is `concretize`d to `[Unknown]`, as in
-/// the non-operator branch — a field call has no caller to propagate vars to.
-///
-/// A field built at several construction sites is a *union* of operators
-/// (possibly mixed with ground members — a site that wired an opaque value
-/// contributes a bare label set). Distribute the application over the union,
-/// `(L ⊔ f ⊔ g)(args) = L ⊔ f(args) ⊔ g(args)`: each operator member is applied
-/// to the arguments, each ground member passes through unchanged. (Wrapping the
-/// whole mixed union in a single `TApp` would instead go stuck in the reducer
-/// and surface as a malformed applied-union term.)
+// Apply an operator-valued field to a field call's arguments, in position
+// order: `λp0. λp1. body` applied to `(a0, a1)` β-reduces to `body[p0:=a0]
+// [p1:=a1]`. A first-order field's binder is unused, so the result is just its
+// body. Leftover binders (fewer args than params) leave the operator partially
+// applied → `[Unknown]` (the conservative collapse in `to_effect_set`). Any
+// variable still free after application is `concretize`d to `[Unknown]`, as in
+// the non-operator branch — a field call has no caller to propagate vars to.
+//
+// A field built at several construction sites is a *union* of operators
+// (possibly mixed with ground members — a site that wired an opaque value
+// contributes a bare label set). Distribute the application over the union,
+// `(L ⊔ f ⊔ g)(args) = L ⊔ f(args) ⊔ g(args)`: each operator member is applied
+// to the arguments, each ground member passes through unchanged. (Wrapping the
+// whole mixed union in a single `TApp` would instead go stuck in the reducer
+// and surface as a malformed applied-union term.)
 fn apply_field_operator(
   operator: EffectTerm,
   args: List(types.CallArgument),
@@ -2503,16 +2503,16 @@ fn apply_field_operator(
   }
 }
 
-/// Apply an operator to argument effect terms in order, building the curried
-/// `TApp` spine the reducer β-reduces.
+// Apply an operator to argument effect terms in order, building the curried
+// `TApp` spine the reducer β-reduces.
 fn apply_args(operator: EffectTerm, arg_terms: List(EffectTerm)) -> EffectTerm {
   list.fold(arg_terms, operator, fn(acc, arg) { types.TApp(acc, arg) })
 }
 
-/// Collapse any effect variables left after substitution to `Unknown`, so an
-/// unbound field effect never surfaces with free variables. (Unlike a regular
-/// call, a field whose variables can't be bound has no caller to propagate them
-/// to, so the conservative `[Unknown]` is the right answer.)
+// Collapse any effect variables left after substitution to `Unknown`, so an
+// unbound field effect never surfaces with free variables. (Unlike a regular
+// call, a field whose variables can't be bound has no caller to propagate them
+// to, so the conservative `[Unknown]` is the right answer.)
 fn concretize(term: EffectTerm) -> EffectTerm {
   let bindings =
     term
@@ -2523,9 +2523,9 @@ fn concretize(term: EffectTerm) -> EffectTerm {
   effect_term.normalize(effect_term.subst(term, bindings))
 }
 
-/// The nominal type name declared on the function parameter named `object`, if
-/// it carries a `NamedType` annotation. The syntax-level fallback for receivers
-/// girard could not type.
+// The nominal type name declared on the function parameter named `object`, if
+// it carries a `NamedType` annotation. The syntax-level fallback for receivers
+// girard could not type.
 fn syntactic_param_type(
   function: Function,
   object: String,

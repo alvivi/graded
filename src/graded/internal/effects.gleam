@@ -23,7 +23,7 @@ pub type EffectLookup {
   Unknown
 }
 
-/// Bundles all effect knowledge: dependency + catalog, precomputed for fast lookup.
+// Bundles all effect knowledge: dependency + catalog, precomputed for fast lookup.
 pub type KnowledgeBase {
   KnowledgeBase(
     all_effects: Dict(QualifiedName, EffectTerm),
@@ -49,8 +49,8 @@ pub type KnowledgeBase {
   )
 }
 
-/// Build a knowledge base by scanning dependency .graded files
-/// and loading versioned catalog files from priv/catalog/.
+// Build a knowledge base by scanning dependency .graded files
+// and loading versioned catalog files from priv/catalog/.
 pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
   let #(dep_effects, dep_params, dep_returns) =
     load_dependencies(packages_directory)
@@ -58,9 +58,8 @@ pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
   let #(cat_effects, cat_pure, cat_params) =
     load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
-    all_effects: dict.merge(dep_effects, cat_effects),
-    // Deps take priority over catalog per the knowledge-base priority
-    // ordering in CLAUDE.md — dict.merge lets the second arg win.
+    // Dependency entries win on a clash: dict.merge keeps its second argument.
+    all_effects: dict.merge(cat_effects, dep_effects),
     param_bounds: dict.merge(cat_params, dep_params),
     type_fields: dict.new(),
     returned_operators: dep_returns,
@@ -69,7 +68,7 @@ pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
   )
 }
 
-/// Build a knowledge base from the catalog only (no dependency scanning).
+// Build a knowledge base from the catalog only (no dependency scanning).
 pub fn empty_knowledge_base() -> KnowledgeBase {
   let catalog_dir = find_catalog_directory()
   let #(cat_effects, cat_pure, cat_params) =
@@ -84,9 +83,9 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
   )
 }
 
-/// Look up a type field's resolved effect (with any polymorphic bounds/source).
-/// `module` is the type's defining module (or "" for an unqualified lookup).
-/// `Error(Nil)` when the field is not in the registry.
+// Look up a type field's resolved effect (with any polymorphic bounds/source).
+// `module` is the type's defining module (or "" for an unqualified lookup).
+// `Error(Nil)` when the field is not in the registry.
 pub fn lookup_type_field(
   knowledge_base: KnowledgeBase,
   module: String,
@@ -96,10 +95,10 @@ pub fn lookup_type_field(
   dict.get(knowledge_base.type_fields, #(module, type_name, field))
 }
 
-/// Merge hand-written type field annotations into a knowledge base. These carry
-/// no polymorphic bounds (a hand-written `type Foo.field : [...]` is a concrete
-/// budget), so they store empty bounds and no source. A spec-qualified
-/// annotation (`type myapp.Foo.field`) keys by its module; a bare one by "".
+// Merge hand-written type field annotations into a knowledge base. These carry
+// no polymorphic bounds (a hand-written `type Foo.field : [...]` is a concrete
+// budget), so they store empty bounds and no source. A spec-qualified
+// annotation (`type myapp.Foo.field`) keys by its module; a bare one by "".
 pub fn with_type_fields(
   knowledge_base: KnowledgeBase,
   type_fields: List(TypeFieldAnnotation),
@@ -123,10 +122,10 @@ pub fn with_type_fields(
   KnowledgeBase(..knowledge_base, type_fields: merged)
 }
 
-/// Merge inferred type fields (from constructor sites) into a knowledge base.
-/// Each entry is `#(#(module, type_name, field), TypeFieldEffect)` and may carry
-/// the wired function's bounds + source for variable substitution at field
-/// calls. Applied before `with_type_fields(spec)` so hand-written lines win.
+// Merge inferred type fields (from constructor sites) into a knowledge base.
+// Each entry is `#(#(module, type_name, field), TypeFieldEffect)` and may carry
+// the wired function's bounds + source for variable substitution at field
+// calls. Applied before `with_type_fields(spec)` so hand-written lines win.
 pub fn with_inferred_type_fields(
   knowledge_base: KnowledgeBase,
   inferred: List(#(#(String, String, String), TypeFieldEffect)),
@@ -140,9 +139,9 @@ pub fn with_inferred_type_fields(
   )
 }
 
-/// Merge external annotations into a knowledge base.
-/// Module-level externals mark the whole module as pure.
-/// Function-level externals are added to all_effects.
+// Merge external annotations into a knowledge base.
+// Module-level externals mark the whole module as pure.
+// Function-level externals are added to all_effects.
 pub fn with_externals(
   knowledge_base: KnowledgeBase,
   externals: List(ExternalAnnotation),
@@ -176,7 +175,7 @@ pub fn with_externals(
   )
 }
 
-/// Look up the effect set for a qualified function name.
+// Look up the effect set for a qualified function name.
 pub fn lookup(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -191,9 +190,9 @@ pub fn lookup(
   }
 }
 
-/// Look up effects as an `EffectTerm`, returning `[Unknown]` for unrecognized
-/// functions. The term may be second-order (carry operator applications) for
-/// higher-order functions; callers reduce it at the resolution boundary.
+// Look up effects as an `EffectTerm`, returning `[Unknown]` for unrecognized
+// functions. The term may be second-order (carry operator applications) for
+// higher-order functions; callers reduce it at the resolution boundary.
 pub fn lookup_effects(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -204,15 +203,15 @@ pub fn lookup_effects(
   }
 }
 
-/// The effect of a value wired into a constructor field (Stage C). A function
-/// reference resolves via the knowledge base; a nested constructor is pure;
-/// anything else (a local identifier, an inline expression) is `[Unknown]`,
-/// since we can't statically resolve it here.
-///
-/// A function reference may be effect-polymorphic, returning a `Polymorphic`
-/// set with free variables. Those variables are bound at the field-call site by
-/// `resolve_field_call` (using the bounds captured in the field's
-/// `TypeFieldEffect`), or collapse to `[Unknown]` if no argument resolves them.
+// The effect of a value wired into a constructor field (Stage C). A function
+// reference resolves via the knowledge base; a nested constructor is pure;
+// anything else (a local identifier, an inline expression) is `[Unknown]`,
+// since we can't statically resolve it here.
+//
+// A function reference may be effect-polymorphic, returning a `Polymorphic`
+// set with free variables. Those variables are bound at the field-call site by
+// `resolve_field_call` (using the bounds captured in the field's
+// `TypeFieldEffect`), or collapse to `[Unknown]` if no argument resolves them.
 pub fn argument_value_effects(
   knowledge_base: KnowledgeBase,
   value: ArgumentValue,
@@ -224,9 +223,9 @@ pub fn argument_value_effects(
   }
 }
 
-/// Look up a function's parameter bounds. Used during call-site
-/// substitution to know which parameters of the callee are effect-typed
-/// so arguments at those positions can bind effect variables.
+// Look up a function's parameter bounds. Used during call-site
+// substitution to know which parameters of the callee are effect-typed
+// so arguments at those positions can bind effect variables.
 pub fn lookup_param_bounds(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -237,15 +236,15 @@ pub fn lookup_param_bounds(
   }
 }
 
-/// Format an effect set for display: [] for empty, [_] for wildcard, [A, B]
-/// sorted. Delegates to `annotation.format_effect_set` so diagnostics and the
-/// on-disk spec format share one renderer.
+// Format an effect set for display: [] for empty, [_] for wildcard, [A, B]
+// sorted. Delegates to `annotation.format_effect_set` so diagnostics and the
+// on-disk spec format share one renderer.
 pub fn format_effect_set(effect_set: EffectSet) -> String {
   annotation.format_effect_set(effect_set)
 }
 
-/// Parse gleam.toml to find path dependencies.
-/// Returns a list of #(package_name, source_directory) pairs.
+// Parse gleam.toml to find path dependencies.
+// Returns a list of #(package_name, source_directory) pairs.
 pub fn parse_path_dependencies(
   gleam_toml_path: String,
 ) -> List(#(String, String)) {
@@ -275,11 +274,11 @@ pub fn parse_path_dependencies(
   result.unwrap(parsed, [])
 }
 
-/// Load inferred effects from a package's spec file. The spec file uses
-/// module-qualified function names (e.g. `myapp/router.handle`) so each
-/// `effects` annotation maps directly to a `QualifiedName` without needing
-/// to know which file it came from. Returns an empty dict when the spec
-/// file is missing or unparseable.
+// Load inferred effects from a package's spec file. The spec file uses
+// module-qualified function names (e.g. `myapp/router.handle`) so each
+// `effects` annotation maps directly to a `QualifiedName` without needing
+// to know which file it came from. Returns an empty dict when the spec
+// file is missing or unparseable.
 pub fn load_spec_effects(spec_path: String) -> Dict(QualifiedName, EffectTerm) {
   case read_spec_annotations(spec_path) {
     Error(_) -> dict.new()
@@ -287,9 +286,9 @@ pub fn load_spec_effects(spec_path: String) -> Dict(QualifiedName, EffectTerm) {
   }
 }
 
-/// Same as `load_spec_effects` but takes an already-parsed GradedFile,
-/// avoiding a second read+parse when the caller already has the spec file
-/// in hand.
+// Same as `load_spec_effects` but takes an already-parsed GradedFile,
+// avoiding a second read+parse when the caller already has the spec file
+// in hand.
 pub fn load_spec_effects_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, EffectTerm) {
@@ -326,8 +325,8 @@ fn read_spec_file(spec_path: String) -> Result(types.GradedFile, Nil) {
   annotation.parse_file(content) |> result.replace_error(Nil)
 }
 
-/// Build a returned-operator map (qualified name → operator) from a parsed
-/// spec's `returns` lines. Used to load the project spec during `check`.
+// Build a returned-operator map (qualified name → operator) from a parsed
+// spec's `returns` lines. Used to load the project spec during `check`.
 pub fn load_spec_returns_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, EffectTerm) {
@@ -346,8 +345,8 @@ fn fold_spec_returns(
   })
 }
 
-/// Merge inferred effects into a knowledge base.
-/// Existing entries in the knowledge base take priority.
+// Merge inferred effects into a knowledge base.
+// Existing entries in the knowledge base take priority.
 pub fn with_inferred(
   knowledge_base: KnowledgeBase,
   inferred: Dict(QualifiedName, EffectTerm),
@@ -356,10 +355,10 @@ pub fn with_inferred(
   KnowledgeBase(..knowledge_base, all_effects: merged)
 }
 
-/// Merge inferred param bounds into a knowledge base. Used so that
-/// call-site substitution can resolve effect variables for functions
-/// inferred earlier in the topo-sort pass.
-/// Existing entries take priority.
+// Merge inferred param bounds into a knowledge base. Used so that
+// call-site substitution can resolve effect variables for functions
+// inferred earlier in the topo-sort pass.
+// Existing entries take priority.
 pub fn with_inferred_params(
   knowledge_base: KnowledgeBase,
   inferred: Dict(QualifiedName, List(types.ParamBound)),
@@ -368,9 +367,9 @@ pub fn with_inferred_params(
   KnowledgeBase(..knowledge_base, param_bounds: merged)
 }
 
-/// Merge inferred returned-operator signatures into a knowledge base, so a
-/// downstream module's `let h = producer(); with(h)` can resolve `h` to the
-/// operator the producer returns. Existing entries take priority.
+// Merge inferred returned-operator signatures into a knowledge base, so a
+// downstream module's `let h = producer(); with(h)` can resolve `h` to the
+// operator the producer returns. Existing entries take priority.
 pub fn with_inferred_returned_operators(
   knowledge_base: KnowledgeBase,
   inferred: Dict(QualifiedName, EffectTerm),
@@ -379,9 +378,9 @@ pub fn with_inferred_returned_operators(
   KnowledgeBase(..knowledge_base, returned_operators: merged)
 }
 
-/// Attach the package-wide factory map (keyed by `#(module, function)`), so a
-/// let-bound cross-module factory call binds its result's fields. Replaces any
-/// existing map (it's computed once per run).
+// Attach the package-wide factory map (keyed by `#(module, function)`), so a
+// let-bound cross-module factory call binds its result's fields. Replaces any
+// existing map (it's computed once per run).
 pub fn with_factories(
   knowledge_base: KnowledgeBase,
   factories: Dict(#(String, String), Dict(String, Int)),
@@ -389,16 +388,16 @@ pub fn with_factories(
   KnowledgeBase(..knowledge_base, factories:)
 }
 
-/// The package-wide factory map, for threading into a module's extraction
-/// context as its cross-module factories.
+// The package-wide factory map, for threading into a module's extraction
+// context as its cross-module factories.
 pub fn factories(
   knowledge_base: KnowledgeBase,
 ) -> Dict(#(String, String), Dict(String, Int)) {
   knowledge_base.factories
 }
 
-/// Look up the operator a function returns, if known. `Error(Nil)` when the
-/// callee doesn't return a (tracked) operator.
+// Look up the operator a function returns, if known. `Error(Nil)` when the
+// callee doesn't return a (tracked) operator.
 pub fn lookup_returned_operator(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -408,12 +407,12 @@ pub fn lookup_returned_operator(
 
 // PRIVATE
 
-/// For each installed package, locate its spec file via the package's own
-/// `[tools.graded]` config (defaulting to `<package_name>.graded`), then read
-/// and parse it *once*, folding its qualified `effects`/`check` annotations
-/// into the global effect/param maps and its `returns` lines into the
-/// returned-operator map. Packages with no spec file are silently skipped —
-/// same fail-soft semantics as the catalog and the old per-module reader.
+// For each installed package, locate its spec file via the package's own
+// `[tools.graded]` config (defaulting to `<package_name>.graded`), then read
+// and parse it *once*, folding its qualified `effects`/`check` annotations
+// into the global effect/param maps and its `returns` lines into the
+// returned-operator map. Packages with no spec file are silently skipped —
+// same fail-soft semantics as the catalog and the old per-module reader.
 fn load_dependencies(
   packages_directory: String,
 ) -> #(
@@ -517,10 +516,10 @@ fn load_catalog(
   #(all_effects, acc.pure_mods, acc.poly_params)
 }
 
-/// Fold one catalog file into the accumulator. `external effects` lines
-/// feed module-level pure markers and specific function effects; `effects`
-/// lines with param bounds feed polymorphic higher-order entries. Files
-/// that fail to read or parse are silently skipped.
+// Fold one catalog file into the accumulator. `external effects` lines
+// feed module-level pure markers and specific function effects; `effects`
+// lines with param bounds feed polymorphic higher-order entries. Files
+// that fail to read or parse are silently skipped.
 fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
   case simplifile.read(file_path) {
     Error(_) -> acc
@@ -611,7 +610,7 @@ pub fn pick_best_version(
   case eligible {
     [best, ..] -> Ok(best.1)
     [] ->
-      // Fallback: use highest available catalog version
+      // No entry ≤ installed: fall back to the highest available version.
       case
         list.sort(versions, fn(left, right) { compare_semver(right.0, left.0) })
       {
@@ -621,6 +620,9 @@ pub fn pick_best_version(
   }
 }
 
+// Parse a `major.minor.patch` string into a comparable tuple. Non-numeric
+// components (e.g. a `-rc1` suffix) parse as `0`, so `1.2.0-rc1` reads as
+// `#(1, 2, 0)`.
 pub fn parse_semver(version: String) -> #(Int, Int, Int) {
   case string.split(version, ".") {
     [major, minor, patch] -> #(

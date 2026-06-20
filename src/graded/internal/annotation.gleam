@@ -20,7 +20,7 @@ pub type ParseError {
   InvalidLine(line_number: Int, content: String)
 }
 
-/// Parse an .graded file preserving full structure (comments, blanks, annotations).
+// Parse an .graded file preserving full structure (comments, blanks, annotations).
 pub fn parse_file(input: String) -> Result(GradedFile, ParseError) {
   input
   |> string.split("\n")
@@ -32,13 +32,13 @@ pub fn parse_file(input: String) -> Result(GradedFile, ParseError) {
   |> result.map(fn(lines) { GradedFile(lines:) })
 }
 
-/// Parse an .graded file returning only the annotations (discards structure).
+// Parse an .graded file returning only the annotations (discards structure).
 pub fn parse(input: String) -> Result(List(EffectAnnotation), ParseError) {
   use file <- result.try(parse_file(input))
   Ok(extract_annotations(file))
 }
 
-/// Extract all annotations from a parsed file.
+// Extract all annotations from a parsed file.
 pub fn extract_annotations(file: GradedFile) -> List(EffectAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
@@ -52,7 +52,7 @@ pub fn extract_annotations(file: GradedFile) -> List(EffectAnnotation) {
   })
 }
 
-/// Extract all `returns` annotations from a parsed file.
+// Extract all `returns` annotations from a parsed file.
 pub fn extract_returns(file: GradedFile) -> List(ReturnsAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
@@ -62,13 +62,13 @@ pub fn extract_returns(file: GradedFile) -> List(ReturnsAnnotation) {
   })
 }
 
-/// Render a ReturnsAnnotation back to its .graded line format.
+// Render a ReturnsAnnotation back to its .graded line format.
 pub fn format_returns(returns: ReturnsAnnotation) -> String {
   "returns " <> returns.function <> " : " <> format_operator(returns.operator)
 }
 
-/// Format an operator term — a `TAbs` as `fn(cb) -> [body]`, anything else as a
-/// plain effect term (e.g. a polymorphic returned operator that's a bare `[v]`).
+// Format an operator term — a `TAbs` as `fn(cb) -> [body]`, anything else as a
+// plain effect term (e.g. a polymorphic returned operator that's a bare `[v]`).
 fn format_operator(term: EffectTerm) -> String {
   case term {
     TAbs(_, _) -> render_abstraction(term)
@@ -76,13 +76,13 @@ fn format_operator(term: EffectTerm) -> String {
   }
 }
 
-/// Extract only `check` annotations (enforced invariants).
+// Extract only `check` annotations (enforced invariants).
 pub fn extract_checks(file: GradedFile) -> List(EffectAnnotation) {
   extract_annotations(file)
   |> list.filter(fn(annotation) { annotation.kind == Check })
 }
 
-/// Render an EffectAnnotation back to its .graded line format.
+// Render an EffectAnnotation back to its .graded line format.
 pub fn format_annotation(annotation: EffectAnnotation) -> String {
   let prefix = case annotation.kind {
     Effects -> "effects"
@@ -102,14 +102,14 @@ pub fn format_annotation(annotation: EffectAnnotation) -> String {
   <> effects_string
 }
 
-/// Split a qualified function name like `myapp/router.handle` into its
-/// module path and function name parts. Returns `Error(Nil)` for bare
-/// names with no `.` separator.
-///
-/// The qualified format uses slashes within the module path
-/// (`gleam/io`, `myapp/web/handlers`) and a `.` to separate the module
-/// path from the function name. The split happens on the LAST `.` since
-/// function names cannot contain dots.
+// Split a qualified function name like `myapp/router.handle` into its
+// module path and function name parts. Returns `Error(Nil)` for bare
+// names with no `.` separator.
+//
+// The qualified format uses slashes within the module path
+// (`gleam/io`, `myapp/web/handlers`) and a `.` to separate the module
+// path from the function name. The split happens on the LAST `.` since
+// function names cannot contain dots.
 pub fn split_qualified_name(
   qualified: String,
 ) -> Result(#(String, String), Nil) {
@@ -126,9 +126,9 @@ pub fn split_qualified_name(
   }
 }
 
-/// Render a TypeFieldAnnotation back to its .graded line format. Includes
-/// the module prefix when present (qualified form, used in spec files);
-/// emits the bare form otherwise (cache files).
+// Render a TypeFieldAnnotation back to its .graded line format. Includes
+// the module prefix when present (qualified form, used in spec files);
+// emits the bare form otherwise (cache files).
 pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
   let prefix = case tf.module {
     Some(module) -> module <> "."
@@ -143,7 +143,7 @@ pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
   <> format_effect_term(tf.effects)
 }
 
-/// Extract type field annotations from a parsed file.
+// Extract type field annotations from a parsed file.
 pub fn extract_type_fields(file: GradedFile) -> List(TypeFieldAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
@@ -153,9 +153,9 @@ pub fn extract_type_fields(file: GradedFile) -> List(TypeFieldAnnotation) {
   })
 }
 
-/// The qualified name (`module` or `module.function`) an external annotation
-/// targets. Used both as a sort key and as the rendered name in
-/// `format_external`.
+// The qualified name (`module` or `module.function`) an external annotation
+// targets. Used both as a sort key and as the rendered name in
+// `format_external`.
 fn external_sort_key(external_annotation: ExternalAnnotation) -> String {
   case external_annotation.target {
     ModuleExternal -> external_annotation.module
@@ -163,7 +163,7 @@ fn external_sort_key(external_annotation: ExternalAnnotation) -> String {
   }
 }
 
-/// Render an ExternalAnnotation back to its `.graded` line format.
+// Render an ExternalAnnotation back to its `.graded` line format.
 pub fn format_external(external_annotation: ExternalAnnotation) -> String {
   "external effects "
   <> external_sort_key(external_annotation)
@@ -171,7 +171,7 @@ pub fn format_external(external_annotation: ExternalAnnotation) -> String {
   <> format_effect_set(external_annotation.effects)
 }
 
-/// Extract external annotations from a parsed file.
+// Extract external annotations from a parsed file.
 pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
@@ -181,7 +181,7 @@ pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
   })
 }
 
-/// Render a full GradedFile back to a string, preserving structure.
+// Render a full GradedFile back to a string, preserving structure.
 pub fn format_file(file: GradedFile) -> String {
   file.lines
   |> list.map(fn(line) {
@@ -197,12 +197,12 @@ pub fn format_file(file: GradedFile) -> String {
   |> string.join("\n")
 }
 
-/// Merge inferred effects and returned-operator signatures into an existing
-/// GradedFile, preserving structure.
-///
-/// - `check` / `type` / `external` lines, comments, blanks: kept in place
-/// - Existing `effects` and `returns` lines: updated in-place; removed if stale
-/// - New functions not yet in file: `effects` / `returns` lines appended at end
+// Merge inferred effects and returned-operator signatures into an existing
+// GradedFile, preserving structure.
+//
+// - `check` / `type` / `external` lines, comments, blanks: kept in place
+// - Existing `effects` and `returns` lines: updated in-place; removed if stale
+// - New functions not yet in file: `effects` / `returns` lines appended at end
 pub fn merge_inferred(
   file: GradedFile,
   inferred: List(EffectAnnotation),
@@ -293,14 +293,14 @@ pub fn merge_inferred(
   )
 }
 
-/// Format an GradedFile: normalize spacing, sort annotations, ensure trailing newline.
-///
-/// Output order:
-/// 1. Leading comments (file header)
-/// 2. `check` lines, sorted alphabetically by function name
-/// 3. Blank line separator (if both check and effects lines exist)
-/// 4. `effects` lines, sorted alphabetically by function name
-/// 5. Single trailing newline
+// Format an GradedFile: normalize spacing, sort annotations, ensure trailing newline.
+//
+// Output order:
+// 1. Leading comments (file header)
+// 2. `check` lines, sorted alphabetically by function name
+// 3. Blank line separator (if both check and effects lines exist)
+// 4. `effects` lines, sorted alphabetically by function name
+// 5. Single trailing newline
 pub fn format_sorted(file: GradedFile) -> String {
   let comments = collect_comments(file.lines)
   let annotations = extract_annotations(file)
@@ -395,8 +395,8 @@ fn parse_structured_line(
   }
 }
 
-/// Parse a `returns mod.fn : fn(cb) -> [body]` line. The operator reuses the
-/// same `fn(..) -> [..]` syntax as an operator parameter bound.
+// Parse a `returns mod.fn : fn(cb) -> [body]` line. The operator reuses the
+// same `fn(..) -> [..]` syntax as an operator parameter bound.
 fn parse_returns_line(rest: String) -> Result(ReturnsAnnotation, Nil) {
   use #(name, operator) <- result.try(parse_name_colon_effects(rest))
   Ok(ReturnsAnnotation(function: name, operator:))
@@ -442,10 +442,10 @@ fn parse_annotation_rest(
   }
 }
 
-/// Split `name(params)suffix` at the params parens, matching nested parens so
-/// operator bounds (`fn(cb)`) and result applications don't confuse it.
-/// `Error(Nil)` when there's no params list (no `(`, or the first `(` is inside
-/// the effect brackets).
+// Split `name(params)suffix` at the params parens, matching nested parens so
+// operator bounds (`fn(cb)`) and result applications don't confuse it.
+// `Error(Nil)` when there's no params list (no `(`, or the first `(` is inside
+// the effect brackets).
 fn split_call(s: String) -> Result(#(String, String, String), Nil) {
   use #(before, rest) <- result.try(string.split_once(s, "("))
   use <- bool.guard(when: string.contains(before, "["), return: Error(Nil))
@@ -455,8 +455,8 @@ fn split_call(s: String) -> Result(#(String, String, String), Nil) {
   Ok(#(before, params, suffix))
 }
 
-/// Walk graphemes after an opening paren, returning the contents up to the
-/// matching close and the remaining suffix.
+// Walk graphemes after an opening paren, returning the contents up to the
+// matching close and the remaining suffix.
 fn match_paren(
   graphemes: List(String),
   depth: Int,
@@ -584,15 +584,15 @@ fn parse_name_colon_effects(
   Ok(#(name, effects))
 }
 
-/// A token is an effect label if its first character is uppercase.
-/// Lowercase first character => effect variable.
+// A token is an effect label if its first character is uppercase.
+// Lowercase first character => effect variable.
 fn is_label_token(token: String) -> Bool {
   types.is_upper_initial(token)
 }
 
-/// Parse an effect term `[...]`. Beyond labels and variables, supports
-/// second-order *operator applications* `name(arg, ...)`; comma splitting is
-/// paren-aware so an application's own argument list isn't split.
+// Parse an effect term `[...]`. Beyond labels and variables, supports
+// second-order *operator applications* `name(arg, ...)`; comma splitting is
+// paren-aware so an application's own argument list isn't split.
 fn parse_effect_term(input: String) -> Result(EffectTerm, Nil) {
   let trimmed = string.trim(input)
   use <- bool.guard(
@@ -613,8 +613,8 @@ fn parse_effect_term(input: String) -> Result(EffectTerm, Nil) {
   }
 }
 
-/// Parse the comma-separated atoms of an effect term body (paren-aware split,
-/// trimmed, empties dropped).
+// Parse the comma-separated atoms of an effect term body (paren-aware split,
+// trimmed, empties dropped).
 fn parse_atoms(inner: String) -> Result(List(EffectTerm), Nil) {
   inner
   |> split_top_level_commas()
@@ -623,11 +623,11 @@ fn parse_atoms(inner: String) -> Result(List(EffectTerm), Nil) {
   |> list.try_map(parse_atom)
 }
 
-/// Parse one comma-separated atom of an effect term: a label, a variable, or
-/// an operator application `name([arg], ...)`. An application's arguments are
-/// each a full bracketed effect term, and multiple arguments are *curried*:
-/// `f([A], [B])` ⟹ `TApp(TApp(TVar(f), A), B)`, so the comma form is
-/// unambiguous (a single multi-label argument is `f([A, B])`).
+// Parse one comma-separated atom of an effect term: a label, a variable, or
+// an operator application `name([arg], ...)`. An application's arguments are
+// each a full bracketed effect term, and multiple arguments are *curried*:
+// `f([A], [B])` ⟹ `TApp(TApp(TVar(f), A), B)`, so the comma form is
+// unambiguous (a single multi-label argument is `f([A, B])`).
 fn parse_atom(token: String) -> Result(EffectTerm, Nil) {
   case string.split_once(token, "(") {
     Ok(#(name, rest)) -> {
@@ -645,9 +645,9 @@ fn parse_atom(token: String) -> Result(EffectTerm, Nil) {
   }
 }
 
-/// Parse an operator application's argument list — comma-separated, each a full
-/// bracketed effect term — splitting at top-level commas only (bracket- and
-/// paren-aware, so a nested application or a multi-label argument isn't split).
+// Parse an operator application's argument list — comma-separated, each a full
+// bracketed effect term — splitting at top-level commas only (bracket- and
+// paren-aware, so a nested application or a multi-label argument isn't split).
 fn parse_application_args(inner: String) -> Result(List(EffectTerm), Nil) {
   case string.trim(inner) {
     "" -> Ok([])
@@ -659,9 +659,9 @@ fn parse_application_args(inner: String) -> Result(List(EffectTerm), Nil) {
   }
 }
 
-/// Split on commas at nesting depth 0, counting both `[`/`]` and `(`/`)` toward
-/// depth. Used for operator-application argument lists, whose arguments are
-/// bracketed effect terms that may themselves contain nested applications.
+// Split on commas at nesting depth 0, counting both `[`/`]` and `(`/`)` toward
+// depth. Used for operator-application argument lists, whose arguments are
+// bracketed effect terms that may themselves contain nested applications.
 fn split_top_level_commas(input: String) -> List(String) {
   let #(segments, current, _depth) =
     list.fold(string.to_graphemes(input), #([], "", 0), fn(state, char) {
@@ -676,8 +676,8 @@ fn split_top_level_commas(input: String) -> List(String) {
   list.reverse([current, ..segments])
 }
 
-/// Parse a parameter bound's effect: an operator `fn(a, b) -> [body]` (a curried
-/// `TAbs`) or an ordinary effect term `[...]`.
+// Parse a parameter bound's effect: an operator `fn(a, b) -> [body]` (a curried
+// `TAbs`) or an ordinary effect term `[...]`.
 fn parse_bound_effect(input: String) -> Result(EffectTerm, Nil) {
   let trimmed = string.trim(input)
   case string.starts_with(trimmed, "fn(") {
@@ -707,9 +707,9 @@ fn collect_comments(lines: List(GradedLine)) -> List(String) {
   })
 }
 
-/// Format a parameter bound. A first-order bound renders as `name: [effects]`;
-/// a second-order *operator* bound (a curried `TAbs`) renders as
-/// `name: fn(a, b) -> [body]`.
+// Format a parameter bound. A first-order bound renders as `name: [effects]`;
+// a second-order *operator* bound (a curried `TAbs`) renders as
+// `name: fn(a, b) -> [body]`.
 fn format_param_bound(param: ParamBound) -> String {
   case param.effects {
     TAbs(_, _) -> param.name <> ": " <> render_abstraction(param.effects)
@@ -717,11 +717,11 @@ fn format_param_bound(param: ParamBound) -> String {
   }
 }
 
-/// Format an `EffectTerm` as `[...]`. Free variables render as bare lowercase
-/// names, operator applications as `name(arg, ...)`, and a wildcard as `[_]`.
-/// Atoms are sorted; since labels are upper-initial and variables lower-initial
-/// (so labels sort first), a first-order term formats byte-identically to its
-/// `EffectSet`.
+// Format an `EffectTerm` as `[...]`. Free variables render as bare lowercase
+// names, operator applications as `name(arg, ...)`, and a wildcard as `[_]`.
+// Atoms are sorted; since labels are upper-initial and variables lower-initial
+// (so labels sort first), a first-order term formats byte-identically to its
+// `EffectSet`.
 fn format_effect_term(term: EffectTerm) -> String {
   case effect_term.normalize(term) {
     TTop -> "[_]"
@@ -745,10 +745,10 @@ fn term_atoms(term: EffectTerm) -> List(String) {
   }
 }
 
-/// Render an operator application `head([arg0], [arg1], ...)`. Walks the whole
-/// (possibly curried) application spine and renders arguments **in spine order**
-/// — currying is positional, so argument order is significant and must not be
-/// sorted (unlike union members). Each argument is a bracketed effect term.
+// Render an operator application `head([arg0], [arg1], ...)`. Walks the whole
+// (possibly curried) application spine and renders arguments **in spine order**
+// — currying is positional, so argument order is significant and must not be
+// sorted (unlike union members). Each argument is a bracketed effect term.
 fn render_application(term: EffectTerm) -> String {
   let #(head, args) = application_spine(term)
   let callee = case head {
@@ -761,8 +761,8 @@ fn render_application(term: EffectTerm) -> String {
   <> ")"
 }
 
-/// Collect an application spine `((head a0) a1 ...)` into its head and the
-/// argument list in application order.
+// Collect an application spine `((head a0) a1 ...)` into its head and the
+// argument list in application order.
 fn application_spine(term: EffectTerm) -> #(EffectTerm, List(EffectTerm)) {
   case term {
     TApp(operator, argument) -> {
@@ -773,15 +773,15 @@ fn application_spine(term: EffectTerm) -> #(EffectTerm, List(EffectTerm)) {
   }
 }
 
-/// Render an operator abstraction `fn(a, b) -> [body]`. Walks the curried
-/// `TAbs` spine to collect all binders in order.
+// Render an operator abstraction `fn(a, b) -> [body]`. Walks the curried
+// `TAbs` spine to collect all binders in order.
 fn render_abstraction(term: EffectTerm) -> String {
   let #(binders, body) = abstraction_spine(term)
   "fn(" <> string.join(binders, ", ") <> ") -> " <> format_effect_term(body)
 }
 
-/// Collect a curried abstraction `λa. λb. body` into its binders (in order) and
-/// the innermost body.
+// Collect a curried abstraction `λa. λb. body` into its binders (in order) and
+// the innermost body.
 fn abstraction_spine(term: EffectTerm) -> #(List(String), EffectTerm) {
   case term {
     TAbs(param, body) -> {
@@ -792,10 +792,10 @@ fn abstraction_spine(term: EffectTerm) -> #(List(String), EffectTerm) {
   }
 }
 
-/// Render an effect set to its `[A, B]` surface syntax: `[]` for empty, `[_]`
-/// for wildcard, labels then variables each sorted. The single source of truth
-/// for the on-disk effect-set format (`effects.format_effect_set` delegates
-/// here for diagnostics).
+// Render an effect set to its `[A, B]` surface syntax: `[]` for empty, `[_]`
+// for wildcard, labels then variables each sorted. The single source of truth
+// for the on-disk effect-set format (`effects.format_effect_set` delegates
+// here for diagnostics).
 pub fn format_effect_set(effect_set: EffectSet) -> String {
   case effect_set {
     Wildcard -> "[_]"

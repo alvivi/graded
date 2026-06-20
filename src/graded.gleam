@@ -65,6 +65,9 @@ pub type GradedError {
   GleamParseError(path: String, cause: glance.Error)
   /// A `.graded` annotation file could not be parsed.
   GradedParseError(path: String, cause: annotation.ParseError)
+  /// `gleam.toml` was present but malformed, or missing its `name`. A missing
+  /// `gleam.toml` is tolerated and does not produce this error.
+  InvalidConfig(path: String, cause: config.ConfigError)
   /// One or more `.graded` files are not formatted (returned by `run_format_check`).
   FormatCheckFailed(paths: List(String))
   /// The project's import graph contains a cycle. Gleam disallows circular
@@ -85,7 +88,7 @@ pub fn main() -> Nil {
           halt(1)
         }
       }
-    ["format", "--stdin"] -> {
+    ["format", "--stdin", ..] -> {
       let input = stdin.read_lines() |> yielder.to_list() |> string.join("")
       case annotation.parse_file(input) {
         Ok(file) -> io.print(annotation.format_sorted(file))
@@ -123,7 +126,7 @@ pub fn main() -> Nil {
 /// hints, and `type` field annotations, then reports violations per source
 /// file.
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
-  let cfg = read_config(directory)
+  use cfg <- result.try(read_config(directory))
   let spec = read_spec(cfg.spec_file)
   let checks_by_module = checks_grouped_by_module(spec)
 
@@ -194,7 +197,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
 /// analysed after every other project module it imports — a single pass
 /// resolves transitive chains of any depth.
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
-  let cfg = read_config(directory)
+  use cfg <- result.try(read_config(directory))
   let spec = read_spec(cfg.spec_file)
 
   use gleam_files <- result.try(find_gleam_files(directory))
@@ -271,10 +274,11 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
 /// source of truth for hand-written `check`/`external`/`type` lines and
 /// the inferred public-API effects.
 pub fn run_format(directory: String) -> Result(Nil, GradedError) {
-  let cfg = read_config(directory)
-  case format_one_spec(cfg.spec_file) {
-    Error(_) -> Ok(Nil)
-    Ok(formatted) ->
+  use cfg <- result.try(read_config(directory))
+  use formatted <- result.try(format_one_spec(cfg.spec_file))
+  case formatted {
+    None -> Ok(Nil)
+    Some(formatted) ->
       simplifile.write(cfg.spec_file, formatted)
       |> result.map_error(FileWriteError(cfg.spec_file, _))
   }
@@ -283,10 +287,11 @@ pub fn run_format(directory: String) -> Result(Nil, GradedError) {
 /// Check that the project's spec file is already formatted. Returns error
 /// with the file path if it isn't. Used by CI as `format --check`.
 pub fn run_format_check(directory: String) -> Result(Nil, GradedError) {
-  let cfg = read_config(directory)
-  case format_one_spec(cfg.spec_file) {
-    Error(_) -> Ok(Nil)
-    Ok(formatted) ->
+  use cfg <- result.try(read_config(directory))
+  use formatted <- result.try(format_one_spec(cfg.spec_file))
+  case formatted {
+    None -> Ok(Nil)
+    Some(formatted) ->
       case simplifile.read(cfg.spec_file) {
         Error(_) -> Ok(Nil)
         Ok(content) ->
@@ -298,22 +303,25 @@ pub fn run_format_check(directory: String) -> Result(Nil, GradedError) {
   }
 }
 
-fn format_one_spec(spec_path: String) -> Result(String, GradedError) {
-  use content <- result.try(
-    simplifile.read(spec_path) |> result.map_error(FileReadError(spec_path, _)),
-  )
-  use file <- result.try(
-    annotation.parse_file(content)
-    |> result.map_error(GradedParseError(spec_path, _)),
-  )
-  Ok(annotation.format_sorted(file))
+// Format the spec file's contents, or `None` when there is no spec file. A
+// missing file is tolerated; a malformed one is a parse error.
+fn format_one_spec(
+  spec_path: String,
+) -> Result(option.Option(String), GradedError) {
+  case simplifile.read(spec_path) {
+    Error(_) -> Ok(None)
+    Ok(content) ->
+      annotation.parse_file(content)
+      |> result.map(fn(file) { Some(annotation.format_sorted(file)) })
+      |> result.map_error(GradedParseError(spec_path, _))
+  }
 }
 
 // PRIVATE
 
-/// Parse every project source file once, returning `(path, parsed module)`
-/// pairs. Used by `run_infer` so the topo sort can read each module's
-/// imports without re-parsing on the inference pass.
+// Parse every project source file once, returning `(path, parsed module)`
+// pairs. Used by `run_infer` so the topo sort can read each module's
+// imports without re-parsing on the inference pass.
 fn parse_all_files(
   gleam_files: List(String),
 ) -> Result(List(#(String, glance.Module)), GradedError) {
@@ -323,9 +331,9 @@ fn parse_all_files(
   })
 }
 
-/// Build a signature registry covering every project module. Used by
-/// the checker's call-site substitution to resolve effect variables
-/// when the caller passes positional (unlabeled) arguments.
+// Build a signature registry covering every project module. Used by
+// the checker's call-site substitution to resolve effect variables
+// when the caller passes positional (unlabeled) arguments.
 fn build_project_registry(
   index: Dict(String, #(String, glance.Module)),
 ) -> SignatureRegistry {
@@ -335,12 +343,12 @@ fn build_project_registry(
   })
 }
 
-/// Stage C: derive `type Foo.field : [...]` annotations from constructor call
-/// sites across the package. `Validator(to_error: io.println)` anywhere makes
-/// `Validator.to_error` carry io.println's effects (unioned across all sites),
-/// so a field call resolves without a hand-written annotation. Resolved via
-/// girard's receiver typing at the use site; hand-written `type` lines still
-/// win, since they are merged over these.
+// Stage C: derive `type Foo.field : [...]` annotations from constructor call
+// sites across the package. `Validator(to_error: io.println)` anywhere makes
+// `Validator.to_error` carry io.println's effects (unioned across all sites),
+// so a field call resolves without a hand-written annotation. Resolved via
+// girard's receiver typing at the use site; hand-written `type` lines still
+// win, since they are merged over these.
 fn build_constructor_field_index(
   index: Dict(String, #(String, glance.Module)),
   knowledge_base: KnowledgeBase,
@@ -397,8 +405,8 @@ fn build_constructor_field_index(
   |> dict.to_list()
 }
 
-/// Build a package-wide map keyed by `#(defining module, name)` from a per-module
-/// `name -> value` map, qualifying each entry with the module it came from.
+// Build a package-wide map keyed by `#(defining module, name)` from a per-module
+// `name -> value` map, qualifying each entry with the module it came from.
 fn qualify_by_module(
   index: Dict(String, #(String, glance.Module)),
   per_module: fn(glance.Module) -> Dict(String, value),
@@ -411,11 +419,11 @@ fn qualify_by_module(
   })
 }
 
-/// Fold one constructor call's field bindings into the (module, type, field) ->
-/// effect accumulator, unioning with any effect already recorded for that field.
-/// The defining module is the call's resolved module (qualified) or the current
-/// module (unqualified) — so same-named constructors in different modules don't
-/// collide.
+// Fold one constructor call's field bindings into the (module, type, field) ->
+// effect accumulator, unioning with any effect already recorded for that field.
+// The defining module is the call's resolved module (qualified) or the current
+// module (unqualified) — so same-named constructors in different modules don't
+// collide.
 fn accumulate_constructor_binding(
   acc: Dict(#(String, String, String), types.TypeFieldEffect),
   binding: extract.ConstructorBinding,
@@ -442,10 +450,10 @@ fn accumulate_constructor_binding(
   }
 }
 
-/// The effect a constructor field's value contributes. A function reference (or
-/// a same-module function, qualified by `module_path`) resolves via the
-/// knowledge base — capturing its param bounds + identity when it is
-/// effect-polymorphic. A constructor is pure; anything else is `[Unknown]`.
+// The effect a constructor field's value contributes. A function reference (or
+// a same-module function, qualified by `module_path`) resolves via the
+// knowledge base — capturing its param bounds + identity when it is
+// effect-polymorphic. A constructor is pure; anything else is `[Unknown]`.
 fn field_effect_of(
   knowledge_base: KnowledgeBase,
   value: types.ArgumentValue,
@@ -455,14 +463,16 @@ fn field_effect_of(
   case field_value_function(value, module_path) {
     Some(name) -> {
       let field_effects = effects.lookup_effects(knowledge_base, name)
-      case !set.is_empty(effect_term.free_vars(field_effects)) {
-        True ->
+      case set.is_empty(effect_term.free_vars(field_effects)) {
+        // Concrete effect: no bounds or source to carry.
+        True -> types.TypeFieldEffect(field_effects, [], None)
+        // Effect-polymorphic: keep the wired function's bounds and identity.
+        False ->
           types.TypeFieldEffect(
             field_effects,
             effects.lookup_param_bounds(knowledge_base, name),
             Some(name),
           )
-        False -> types.TypeFieldEffect(field_effects, [], None)
       }
     }
     // A field wired to an inline/let-bound closure: analyse its body for the
@@ -481,9 +491,9 @@ fn field_effect_of(
   }
 }
 
-/// The qualified function a field value refers to, if any: a `FunctionRef`
-/// directly, or a `LocalRef` (a bare same-module name) qualified by the current
-/// module. `None` for constructors and inline expressions.
+// The qualified function a field value refers to, if any: a `FunctionRef`
+// directly, or a `LocalRef` (a bare same-module name) qualified by the current
+// module. `None` for constructors and inline expressions.
 fn field_value_function(
   value: types.ArgumentValue,
   module_path: String,
@@ -495,9 +505,9 @@ fn field_value_function(
   }
 }
 
-/// Union two field-effect contributions for the same field across sites. Keeps
-/// the first polymorphic source — conflicting polymorphism across sites is rare,
-/// and unbound variables collapse to `[Unknown]` at the call site.
+// Union two field-effect contributions for the same field across sites. Keeps
+// the first polymorphic source — conflicting polymorphism across sites is rare,
+// and unbound variables collapse to `[Unknown]` at the call site.
 fn merge_field_effect(
   existing: types.TypeFieldEffect,
   new: types.TypeFieldEffect,
@@ -513,10 +523,10 @@ fn merge_field_effect(
   )
 }
 
-/// Run girard's whole-package type inference once over every project module
-/// and fold the result into a `TypeInfo` (module path -> span start -> type).
-/// girard is best-effort: a function it can't type contributes no expressions,
-/// so the checker silently falls back to syntax-level resolution for it.
+// Run girard's whole-package type inference once over every project module
+// and fold the result into a `TypeInfo` (module path -> span start -> type).
+// girard is best-effort: a function it can't type contributes no expressions,
+// so the checker silently falls back to syntax-level resolution for it.
 fn build_type_index(
   index: Dict(String, #(String, glance.Module)),
 ) -> typeinfo.TypeInfo {
@@ -559,11 +569,11 @@ fn build_type_index(
   typeinfo.from_modules(span_types, fn_typed)
 }
 
-/// From girard's inferred top-level signatures, the set of function-typed
-/// parameter names for each function — including parameters with no syntactic
-/// `fn(...)` annotation, which the glance-only detection misses. A parameter is
-/// function-typed when its inferred type (positional in the function's `Fn`
-/// type) is itself a `Fn`.
+// From girard's inferred top-level signatures, the set of function-typed
+// parameter names for each function — including parameters with no syntactic
+// `fn(...)` annotation, which the glance-only detection misses. A parameter is
+// function-typed when its inferred type (positional in the function's `Fn`
+// type) is itself a `Fn`.
 fn fn_typed_params_from_schemes(
   module_result: girard.ModuleResult,
   module: glance.Module,
@@ -582,8 +592,8 @@ fn fn_typed_params_from_schemes(
   })
 }
 
-/// The names of `function`'s parameters whose inferred type (positional in
-/// `argument_types`) is itself a `Fn`.
+// The names of `function`'s parameters whose inferred type (positional in
+// `argument_types`) is itself a `Fn`.
 fn fn_typed_names(
   function: glance.Function,
   argument_types: List(girard_types.Type),
@@ -606,10 +616,10 @@ fn fn_typed_names(
   |> set.from_list()
 }
 
-/// A girard `Resolver` that resolves graded's own project modules from `index`
-/// first (so non-`src` layouts like `test/fixtures` work), then falls through
-/// to girard's stock disk resolver for dependencies and stdlib under
-/// `build/packages`.
+// A girard `Resolver` that resolves graded's own project modules from `index`
+// first (so non-`src` layouts like `test/fixtures` work), then falls through
+// to girard's stock disk resolver for dependencies and stdlib under
+// `build/packages`.
 fn build_girard_resolver(
   index: Dict(String, #(String, glance.Module)),
 ) -> fn(String) -> Result(String, Nil) {
@@ -623,9 +633,9 @@ fn build_girard_resolver(
   }
 }
 
-/// Build an index from dotted module name (`app/router`) to the parsed file.
-/// This is the set of *project* modules — every module name in this dict is
-/// a candidate dependency-graph node.
+// Build an index from dotted module name (`app/router`) to the parsed file.
+// This is the set of *project* modules — every module name in this dict is
+// a candidate dependency-graph node.
 fn build_module_index(
   parsed: List(#(String, glance.Module)),
   directory: String,
@@ -637,10 +647,10 @@ fn build_module_index(
   })
 }
 
-/// For every project module, derive its set of project-internal imports.
-/// Imports of stdlib/dep modules (anything not in `index`) are filtered out
-/// — those are leaves with effects already resolved via the knowledge base
-/// and don't belong in the topological sort.
+// For every project module, derive its set of project-internal imports.
+// Imports of stdlib/dep modules (anything not in `index`) are filtered out
+// — those are leaves with effects already resolved via the knowledge base
+// and don't belong in the topological sort.
 fn build_dependency_graph(
   index: Dict(String, #(String, glance.Module)),
 ) -> Dict(String, Set(String)) {
@@ -654,10 +664,10 @@ fn build_dependency_graph(
   })
 }
 
-/// Infer effects for a single module, write its cache file (with bare
-/// names), and return the new knowledge base + the module's *public*
-/// inferred annotations qualified with the module path. The caller
-/// accumulates the public annotations for the eventual spec file write.
+// Infer effects for a single module, write its cache file (with bare
+// names), and return the new knowledge base + the module's *public*
+// inferred annotations qualified with the module path. The caller
+// accumulates the public annotations for the eventual spec file write.
 fn infer_one_module(
   module: glance.Module,
   module_path: String,
@@ -755,13 +765,13 @@ fn infer_one_module(
   Ok(#(new_kb, public_annotations, public_returns))
 }
 
-/// Infer project modules in topological order, in memory, folding their
-/// effects, param bounds, and returned operators into `base_kb` — with existing
-/// (spec / dependency) entries taking priority, so committed effects are never
-/// overridden. This lets `check` resolve calls into project modules that haven't
-/// been `graded infer`-ed yet, without writing the cache. Falls back to
-/// `base_kb` unchanged when the import graph has a cycle (the real
-/// `graded infer` reports that error; `check` just degrades to spec-only).
+// Infer project modules in topological order, in memory, folding their
+// effects, param bounds, and returned operators into `base_kb` — with existing
+// (spec / dependency) entries taking priority, so committed effects are never
+// overridden. This lets `check` resolve calls into project modules that haven't
+// been `graded infer`-ed yet, without writing the cache. Falls back to
+// `base_kb` unchanged when the import graph has a cycle (the real
+// `graded infer` reports that error; `check` just degrades to spec-only).
 fn infer_project_in_memory(
   base_kb: KnowledgeBase,
   index: Dict(String, #(String, glance.Module)),
@@ -781,9 +791,9 @@ fn infer_project_in_memory(
   }
 }
 
-/// Infer one module against `kb` and fold its effects, param bounds, and
-/// returned operators (qualified by `module_path`) into the knowledge base, with
-/// existing entries winning. The per-module step of `infer_project_in_memory`.
+// Infer one module against `kb` and fold its effects, param bounds, and
+// returned operators (qualified by `module_path`) into the knowledge base, with
+// existing entries winning. The per-module step of `infer_project_in_memory`.
 fn fold_inferred_module(
   kb: KnowledgeBase,
   module: glance.Module,
@@ -822,7 +832,7 @@ fn fold_inferred_module(
   |> effects.with_inferred_returned_operators(returns_dict)
 }
 
-/// Build a set of public function names from a parsed Gleam module.
+// Build a set of public function names from a parsed Gleam module.
 fn public_function_names(module: glance.Module) -> set.Set(String) {
   list.fold(module.functions, set.new(), fn(acc, def) {
     case def.definition.publicity {
@@ -832,10 +842,10 @@ fn public_function_names(module: glance.Module) -> set.Set(String) {
   })
 }
 
-/// Write the project's spec file. Reads the existing spec (if any),
-/// preserves all `check`/`external`/`type` lines plus comments and blank
-/// lines, replaces the inferred `effects` lines with the freshly inferred
-/// public-function annotations, and writes the result back.
+// Write the project's spec file. Reads the existing spec (if any),
+// preserves all `check`/`external`/`type` lines plus comments and blank
+// lines, replaces the inferred `effects` lines with the freshly inferred
+// public-function annotations, and writes the result back.
 fn write_spec_file(
   spec_path: String,
   existing: GradedFile,
@@ -857,10 +867,10 @@ fn write_spec_file(
   write_graded_file(spec_path, merged)
 }
 
-/// Group a parsed spec file's `check` annotations by their module path. Used
-/// during `run` to hand each source file only the checks that apply to it.
-/// The checker expects bare function names per module, so we strip the
-/// module qualifier from the grouped annotations.
+// Group a parsed spec file's `check` annotations by their module path. Used
+// during `run` to hand each source file only the checks that apply to it.
+// The checker expects bare function names per module, so we strip the
+// module qualifier from the grouped annotations.
 fn checks_grouped_by_module(
   spec: GradedFile,
 ) -> Dict(String, List(EffectAnnotation)) {
@@ -879,8 +889,8 @@ fn checks_grouped_by_module(
   })
 }
 
-/// Run the checker against one source file using the slice of `check`
-/// annotations from the spec file that mention this file's module.
+// Run the checker against one source file using the slice of `check`
+// annotations from the spec file that mention this file's module.
 fn check_one_file(
   gleam_path: String,
   module: glance.Module,
@@ -902,37 +912,40 @@ fn check_one_file(
   CheckResult(file: gleam_path, violations:, warnings:)
 }
 
-/// Read the project's `[tools.graded]` config and return spec/cache paths
-/// already resolved relative to the project root. The "project root" is
-/// the directory containing `gleam.toml`:
-///
-/// - When `directory == "src"` (the production case), project root is `.`
-///   and gleam.toml lives at `./gleam.toml`.
-/// - Otherwise (tests against ad-hoc directories), the source directory
-///   itself acts as the project root and gleam.toml is looked up there.
-///
-/// Resolved paths are returned in the same `GradedConfig` shape so callers
-/// can use them as-is for I/O without further joining.
-fn read_config(directory: String) -> config.GradedConfig {
+// Read the project's `[tools.graded]` config and return spec/cache paths
+// already resolved relative to the project root. The "project root" is
+// the directory containing `gleam.toml`:
+//
+// - When `directory == "src"` (the production case), project root is `.`
+//   and gleam.toml lives at `./gleam.toml`.
+// - Otherwise (tests against ad-hoc directories), the source directory
+//   itself acts as the project root and gleam.toml is looked up there.
+//
+// Resolved paths are returned in the same `GradedConfig` shape so callers
+// can use them as-is for I/O without further joining.
+fn read_config(directory: String) -> Result(config.GradedConfig, GradedError) {
   let project_root = case directory {
     "src" -> "."
     _ -> directory
   }
   let toml_path = filepath.join(project_root, "gleam.toml")
-  let raw = case config.read(toml_path) {
-    Ok(cfg) -> cfg
-    Error(_) -> config.defaults_for(default_package_name(directory))
-  }
-  config.GradedConfig(
+  use raw <- result.try(case config.read(toml_path) {
+    Ok(cfg) -> Ok(cfg)
+    // Missing gleam.toml: fall back to defaults. Malformed gleam.toml: error.
+    Error(config.TomlReadError(..)) ->
+      Ok(config.defaults_for(default_package_name(project_root)))
+    Error(cause) -> Error(InvalidConfig(path: toml_path, cause:))
+  })
+  Ok(config.GradedConfig(
     package_name: raw.package_name,
     spec_file: resolve_path(project_root, raw.spec_file),
     cache_dir: resolve_path(project_root, raw.cache_dir),
-  )
+  ))
 }
 
-/// Join a path against a root, but leave it untouched if it's already
-/// absolute (starts with `/`) or if the root is `.` (so production paths
-/// stay short and unprefixed).
+// Join a path against a root, but leave it untouched if it's already
+// absolute (starts with `/`) or if the root is `.` (so production paths
+// stay short and unprefixed).
 fn resolve_path(root: String, path: String) -> String {
   use <- bool.guard(
     when: string.starts_with(path, "/") || root == ".",
@@ -941,11 +954,11 @@ fn resolve_path(root: String, path: String) -> String {
   filepath.join(root, path)
 }
 
-fn default_package_name(directory: String) -> String {
-  // Fallback used only when no gleam.toml is found. Best-effort — uses the
-  // last path segment, then "graded" if the directory is empty or "/".
-  case filepath.base_name(directory) {
-    "" | "/" -> "graded"
+fn default_package_name(project_root: String) -> String {
+  // Used only when no gleam.toml is found: the project root's last path
+  // segment, or "graded" when that's empty, "/", or ".".
+  case filepath.base_name(project_root) {
+    "" | "/" | "." -> "graded"
     name -> name
   }
 }
@@ -961,18 +974,18 @@ fn read_spec(spec_path: String) -> GradedFile {
   }
 }
 
-/// For each path dependency declared in `gleam.toml`:
-///
-/// 1. Try to load its spec file (via the dep's own `[tools.graded]`
-///    config, defaulting to `<package_name>.graded`) and fold its
-///    annotations into the knowledge base. This is the fast, intended
-///    path: the dep author already ran `graded infer`, committed the
-///    spec file, and the consumer just reads it.
-///
-/// 2. If the dep has no spec file, fall back to inferring from source via
-///    `infer_path_dep` so path deps without graded set up still work.
-///    Cross-path-dep imports are not currently merged into a single graph
-///    — each dep is processed sequentially.
+// For each path dependency declared in `gleam.toml`:
+//
+// 1. Try to load its spec file (via the dep's own `[tools.graded]`
+//    config, defaulting to `<package_name>.graded`) and fold its
+//    annotations into the knowledge base. This is the fast, intended
+//    path: the dep author already ran `graded infer`, committed the
+//    spec file, and the consumer just reads it.
+//
+// 2. If the dep has no spec file, fall back to inferring from source via
+//    `infer_path_dep` so path deps without graded set up still work.
+//    Cross-path-dep imports are not currently merged into a single graph
+//    — each dep is processed sequentially.
 fn enrich_with_path_deps(knowledge_base: KnowledgeBase) -> KnowledgeBase {
   let path_deps = effects.parse_path_dependencies("gleam.toml")
   list.fold(path_deps, knowledge_base, fn(kb, dep) {
@@ -1155,6 +1168,7 @@ fn format_error(error: GradedError) -> String {
     DirectoryCreateError(path, _) -> "Could not create directory: " <> path
     GleamParseError(path, _) -> "Could not parse: " <> path
     GradedParseError(path, _) -> "Parse error in .graded file for: " <> path
+    InvalidConfig(path, _) -> "Invalid gleam.toml: " <> path
     FormatCheckFailed(paths:) ->
       "Unformatted .graded files:\n"
       <> string.join(list.map(paths, fn(path) { "  " <> path }), "\n")

@@ -1,7 +1,7 @@
-//// Property and unit tests for the topological sort algorithm in
-//// `graded/internal/topo`. The algorithm is the foundation of single-pass
-//// inference (project modules and path deps both rely on it), so its
-//// invariants are worth pinning down independently of any inference fixture.
+// Property and unit tests for the topological sort algorithm in
+// `graded/internal/topo`. The algorithm is the foundation of single-pass
+// inference (project modules and path deps both rely on it), so its
+// invariants are worth pinning down independently of any inference fixture.
 
 import gleam/dict.{type Dict}
 import gleam/int
@@ -14,10 +14,10 @@ import qcheck
 
 // ----- generators -----
 
-/// Generate a random DAG by name. Strategy: produce a list of N node names
-/// (`n0`, `n1`, …, `n{N-1}`), then for each `n_i` randomly choose deps from
-/// `n_0..n_{i-1}`. This guarantees acyclicity by construction — there can
-/// never be an edge from a lower-numbered node to a higher-numbered one.
+// Generate a random DAG by name. Strategy: produce a list of N node names
+// (`n0`, `n1`, …, `n{N-1}`), then for each `n_i` randomly choose deps from
+// `n_0..n_{i-1}`. This guarantees acyclicity by construction — there can
+// never be an edge from a lower-numbered node to a higher-numbered one.
 fn random_dag_gen() -> qcheck.Generator(Dict(String, Set(String))) {
   use size <- qcheck.bind(qcheck.bounded_int(0, 12))
   let nodes = node_names(size)
@@ -52,7 +52,7 @@ fn build_dag_gen(
   }
 }
 
-/// For each candidate, flip a coin to decide whether it becomes a dependency.
+// For each candidate, flip a coin to decide whether it becomes a dependency.
 fn deps_subset_gen(candidates: List(String)) -> qcheck.Generator(List(String)) {
   case candidates {
     [] -> qcheck.return([])
@@ -100,8 +100,8 @@ pub fn topo_sort_set_preservation_test() {
   sorted_set |> should.equal(nodes_set)
 }
 
-/// Defining property of topological order: for every edge `u -> v` (u
-/// depends on v), v must appear *before* u in the leaves-first output.
+// Defining property of topological order: for every edge `u -> v` (u
+// depends on v), v must appear *before* u in the leaves-first output.
 pub fn topo_sort_order_respects_edges_test() {
   use graph <- qcheck.given(random_dag_gen())
   let assert Ok(sorted) = topo.sort(graph)
@@ -140,9 +140,9 @@ pub fn topo_sort_simple_chain_test() {
   sorted |> should.equal(["c", "b", "a"])
 }
 
-/// Cycle detection is unreachable from real Gleam projects (the compiler
-/// rejects circular imports), but the algorithm itself must still report it
-/// rather than producing a partial order — this test exercises that path.
+// Cycle detection is unreachable from real Gleam projects (the compiler
+// rejects circular imports), but the algorithm itself must still report it
+// rather than producing a partial order — this test exercises that path.
 pub fn topo_sort_detects_simple_cycle_test() {
   // a -> b -> a (a depends on b, b depends on a)
   let graph =
@@ -195,7 +195,7 @@ pub fn topo_sort_partial_cycle_returns_only_cyclic_nodes_test() {
 
 // ----- scc_order (Tarjan strongly-connected components) -----
 
-/// Find the component containing `name`, sorted for stable comparison.
+// Find the component containing `name`, sorted for stable comparison.
 fn component_of(components: List(List(String)), name: String) -> List(String) {
   let assert Ok(component) =
     list.find(components, fn(c) { list.contains(c, name) })
@@ -262,8 +262,8 @@ pub fn scc_order_disjoint_components_test() {
   component_of(order, "x") |> should.equal(["x", "y"])
 }
 
-/// Every node appears in exactly one component, and components partition the
-/// graph — a basic invariant of any SCC decomposition.
+// Every node appears in exactly one component, and components partition the
+// graph — a basic invariant of any SCC decomposition.
 pub fn scc_order_partitions_all_nodes_test() {
   use graph <- qcheck.given(random_dag_gen())
   let order = topo.scc_order(graph)

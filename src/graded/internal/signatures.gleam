@@ -1,14 +1,14 @@
-//// Glance-backed signature registry.
-////
-//// Parses Gleam source with glance to learn which function parameters
-//// are themselves function-typed. This powers call-site effect
-//// substitution and auto-inference of polymorphic signatures: knowing a
-//// parameter's type is `fn(...) -> ...` lets graded bind an effect
-//// variable at the definition site and substitute the caller's
-//// concrete argument at each call site.
-////
-//// Project modules are parsed during `run_infer` / `run`; dependency
-//// modules are parsed from `build/packages/<dep>/src/` on demand.
+// Glance-backed signature registry.
+//
+// Parses Gleam source with glance to learn which function parameters
+// are themselves function-typed. This powers call-site effect
+// substitution and auto-inference of polymorphic signatures: knowing a
+// parameter's type is `fn(...) -> ...` lets graded bind an effect
+// variable at the definition site and substitute the caller's
+// concrete argument at each call site.
+//
+// Project modules are parsed during `run_infer` / `run`; dependency
+// modules are parsed from `build/packages/<dep>/src/` on demand.
 
 import filepath
 import glance.{type Function, type Module, FunctionType}
@@ -23,58 +23,58 @@ import graded/internal/config
 import graded/internal/types.{type QualifiedName, QualifiedName}
 import simplifile
 
-/// One parameter of a function's signature.
-///
-/// `label` is the Gleam argument label (e.g. `by` in `fn foo(by name: X)`).
-/// `name` is the in-body parameter name when we have source access via
-/// glance (`None` when the info was loaded from `gleam export
-/// package-interface` JSON, which doesn't expose in-body names).
-///
-/// Auto-inferred param bounds key off the in-body name (because it's
-/// what appears at call sites in the body), so matching at a call site
-/// tries `name` before `label`.
+// One parameter of a function's signature.
+//
+// `label` is the Gleam argument label (e.g. `by` in `fn foo(by name: X)`).
+// `name` is the in-body parameter name when we have source access via
+// glance (`None` when the info was loaded from `gleam export
+// package-interface` JSON, which doesn't expose in-body names).
+//
+// Auto-inferred param bounds key off the in-body name (because it's
+// what appears at call sites in the body), so matching at a call site
+// tries `name` before `label`.
 pub type ParameterInfo {
   ParameterInfo(
     position: Int,
     label: Option(String),
     name: Option(String),
     is_fn_typed: Bool,
-    /// True when the parameter is *second-order* — its own type takes a
-    /// function (`fn(fn(..) -> _) -> _`). Calls to it are effect-operator
-    /// applications, and arguments bound to it are lifted to operators.
-    /// Equivalent to `callback_positions != []`.
+    // True when the parameter is *second-order* — its own type takes a
+    // function (`fn(fn(..) -> _) -> _`). Calls to it are effect-operator
+    // applications, and arguments bound to it are lifted to operators.
+    // Equivalent to `callback_positions != []`.
     is_operator: Bool,
-    /// For an operator parameter, the argument indices (within its own type's
-    /// argument list) that are themselves function-typed — its callbacks, in
-    /// order. Empty for first-order parameters. Lets the call site curry an
-    /// argument's abstraction over exactly the right positions.
+    // For an operator parameter, the argument indices (within its own type's
+    // argument list) that are themselves function-typed — its callbacks, in
+    // order. Empty for first-order parameters. Lets the call site curry an
+    // argument's abstraction over exactly the right positions.
     callback_positions: List(Int),
   )
 }
 
-/// Maps qualified function names to their parameter signatures.
-///
-/// Only populated for functions whose signatures are known — anything
-/// parsed successfully from project or dependency source. Functions
-/// absent from the registry fall back to glance-AST inspection at the
-/// definition site, or are treated as opaque at call sites.
+// Maps qualified function names to their parameter signatures.
+//
+// Only populated for functions whose signatures are known — anything
+// parsed successfully from project or dependency source. Functions
+// absent from the registry fall back to glance-AST inspection at the
+// definition site, or are treated as opaque at call sites.
 pub type SignatureRegistry {
   SignatureRegistry(signatures: Dict(QualifiedName, List(ParameterInfo)))
 }
 
-/// An empty registry — nothing known about any function's parameters.
+// An empty registry — nothing known about any function's parameters.
 pub fn empty() -> SignatureRegistry {
   SignatureRegistry(signatures: dict.new())
 }
 
-/// Merge two registries. On key conflict, `b` wins (so later-loaded
-/// interfaces override earlier ones — useful when the project's own
-/// interface is loaded after dependency interfaces).
+// Merge two registries. On key conflict, `b` wins (so later-loaded
+// interfaces override earlier ones — useful when the project's own
+// interface is loaded after dependency interfaces).
 pub fn merge(a: SignatureRegistry, b: SignatureRegistry) -> SignatureRegistry {
   SignatureRegistry(signatures: dict.merge(a.signatures, b.signatures))
 }
 
-/// Look up a function's parameter signatures.
+// Look up a function's parameter signatures.
 pub fn lookup(
   registry: SignatureRegistry,
   name: QualifiedName,
@@ -85,11 +85,11 @@ pub fn lookup(
   }
 }
 
-/// Names of a function's fn-typed parameters. Returns an empty set if
-/// the function isn't in the registry (conservative: "we don't know").
-/// Prefers the argument label (canonical for cross-module calls), falling
-/// back to the in-body name when no label is declared. `position_from_registry`
-/// matches by either, so both forms round-trip.
+// Names of a function's fn-typed parameters. Returns an empty set if
+// the function isn't in the registry (conservative: "we don't know").
+// Prefers the argument label (canonical for cross-module calls), falling
+// back to the in-body name when no label is declared. `position_from_registry`
+// matches by either, so both forms round-trip.
 pub fn fn_typed_param_names(
   registry: SignatureRegistry,
   name: QualifiedName,
@@ -106,8 +106,8 @@ pub fn fn_typed_param_names(
   }
 }
 
-/// Names (label or in-body) of a callee's *operator* parameters — those whose
-/// type takes a function. Empty when the callee isn't in the registry.
+// Names (label or in-body) of a callee's *operator* parameters — those whose
+// type takes a function. Empty when the callee isn't in the registry.
 pub fn operator_param_names(
   registry: SignatureRegistry,
   name: QualifiedName,
@@ -124,11 +124,11 @@ pub fn operator_param_names(
   }
 }
 
-/// In-body parameter names of a callee's fn-typed parameters, **in declaration
-/// order** (label preferred, then in-body name). Unlike `fn_typed_param_names`
-/// (a `Set`), this preserves order — needed to curry an operator argument's
-/// abstraction so its binders line up with the application spine. Empty when the
-/// callee isn't in the registry.
+// In-body parameter names of a callee's fn-typed parameters, **in declaration
+// order** (label preferred, then in-body name). Unlike `fn_typed_param_names`
+// (a `Set`), this preserves order — needed to curry an operator argument's
+// abstraction so its binders line up with the application spine. Empty when the
+// callee isn't in the registry.
 pub fn fn_typed_param_names_ordered(
   registry: SignatureRegistry,
   name: QualifiedName,
@@ -145,12 +145,12 @@ pub fn fn_typed_param_names_ordered(
   }
 }
 
-/// The argument positions of the callbacks of one *operator* parameter — the
-/// function-typed argument indices within that parameter's own type, in order.
-/// For `action: fn(Config, fn() -> _, fn() -> _) -> _` this is `[1, 2]`. Empty
-/// when the callee or parameter isn't a known operator. The registry-backed twin
-/// of `operator_params_from_function`, used at the call site to curry a closure
-/// argument's abstraction over the right parameters.
+// The argument positions of the callbacks of one *operator* parameter — the
+// function-typed argument indices within that parameter's own type, in order.
+// For `action: fn(Config, fn() -> _, fn() -> _) -> _` this is `[1, 2]`. Empty
+// when the callee or parameter isn't a known operator. The registry-backed twin
+// of `operator_params_from_function`, used at the call site to curry a closure
+// argument's abstraction over the right parameters.
 pub fn operator_callback_positions(
   registry: SignatureRegistry,
   callee_name: QualifiedName,
@@ -168,10 +168,10 @@ pub fn operator_callback_positions(
 
 // ──── Glance AST → SignatureRegistry ────
 
-/// Build a SignatureRegistry from a parsed project module. Used during
-/// `run_infer` / `run` to give the checker position information for
-/// every function in the project — which powers positional argument
-/// matching at polymorphic call sites.
+// Build a SignatureRegistry from a parsed project module. Used during
+// `run_infer` / `run` to give the checker position information for
+// every function in the project — which powers positional argument
+// matching at polymorphic call sites.
 pub fn from_glance_module(
   module_path: String,
   module: Module,
@@ -209,12 +209,12 @@ pub fn from_glance_module(
 
 // ──── Glance AST detection ────
 
-/// Names of a local function's fn-typed parameters, detected from
-/// glance AST type annotations. Returns names of parameters whose
-/// type annotation is `fn(...) -> ...`.
-///
-/// Parameters without explicit type annotations (or with non-function
-/// types) are omitted.
+// Names of a local function's fn-typed parameters, detected from
+// glance AST type annotations. Returns names of parameters whose
+// type annotation is `fn(...) -> ...`.
+//
+// Parameters without explicit type annotations (or with non-function
+// types) are omitted.
 pub fn fn_typed_params_from_function(function: Function) -> Set(String) {
   function.parameters
   |> list.filter_map(fn(param) {
@@ -231,15 +231,15 @@ pub fn fn_typed_params_from_function(function: Function) -> Set(String) {
   |> set.from_list()
 }
 
-/// A function's *operator* parameters — fn-typed parameters whose own type
-/// takes a function, i.e. `fn(fn(..) -> _) -> _` — mapped to the argument
-/// positions of their callbacks *within the operator's own parameter list*, in
-/// order. For `action: fn(Config, fn() -> _, fn() -> _) -> _` the entry is
-/// `action -> [1, 2]`, so a call `action(config, cb1, cb2)` knows its callbacks
-/// are the position-1 and position-2 arguments. These are second-order: their
-/// effect depends on the callbacks they're applied to, so a call to one becomes
-/// a curried effect-operator *application* rather than a flat variable. (Keys
-/// are a subset of `fn_typed_params_from_function`.)
+// A function's *operator* parameters — fn-typed parameters whose own type
+// takes a function, i.e. `fn(fn(..) -> _) -> _` — mapped to the argument
+// positions of their callbacks *within the operator's own parameter list*, in
+// order. For `action: fn(Config, fn() -> _, fn() -> _) -> _` the entry is
+// `action -> [1, 2]`, so a call `action(config, cb1, cb2)` knows its callbacks
+// are the position-1 and position-2 arguments. These are second-order: their
+// effect depends on the callbacks they're applied to, so a call to one becomes
+// a curried effect-operator *application* rather than a flat variable. (Keys
+// are a subset of `fn_typed_params_from_function`.)
 pub fn operator_params_from_function(
   function: Function,
 ) -> Dict(String, List(Int)) {
@@ -257,10 +257,10 @@ pub fn operator_params_from_function(
   |> dict.from_list()
 }
 
-/// The callback positions of an operator-shaped *type* — the function-typed
-/// argument indices of a `fn(.., fn(..) -> _, ..) -> _`, in order. Empty when
-/// the type isn't a function type that takes a function (i.e. not an operator).
-/// Used to lift a function *returned* by a producer (its declared return type).
+// The callback positions of an operator-shaped *type* — the function-typed
+// argument indices of a `fn(.., fn(..) -> _, ..) -> _`, in order. Empty when
+// the type isn't a function type that takes a function (i.e. not an operator).
+// Used to lift a function *returned* by a producer (its declared return type).
 pub fn operator_callback_positions_of_type(type_: glance.Type) -> List(Int) {
   case type_ {
     FunctionType(_, param_types, _) -> all_function_indices(param_types)
@@ -268,17 +268,17 @@ pub fn operator_callback_positions_of_type(type_: glance.Type) -> List(Int) {
   }
 }
 
-/// Whether a type is itself a function type (`fn(..) -> _`). A producer whose
-/// return type satisfies this *returns a function*, so the effect of calling
-/// that function is worth recording — even when it isn't operator-shaped (takes
-/// no callback). Distinguishes `fn make() -> fn() -> Nil` (record its latent
-/// effect) from `fn make() -> Int` (nothing to record).
+// Whether a type is itself a function type (`fn(..) -> _`). A producer whose
+// return type satisfies this *returns a function*, so the effect of calling
+// that function is worth recording — even when it isn't operator-shaped (takes
+// no callback). Distinguishes `fn make() -> fn() -> Nil` (record its latent
+// effect) from `fn make() -> Int` (nothing to record).
 pub fn is_function_return_type(type_: glance.Type) -> Bool {
   is_function_type(type_)
 }
 
-/// The indices of the function-typed arguments in a type list, in order. These
-/// are the callback positions for an operator parameter's own argument list.
+// The indices of the function-typed arguments in a type list, in order. These
+// are the callback positions for an operator parameter's own argument list.
 fn all_function_indices(types: List(glance.Type)) -> List(Int) {
   types
   |> list.index_map(fn(t, i) { #(i, is_function_type(t)) })
@@ -302,18 +302,18 @@ fn assignment_name(name: glance.AssignmentName) -> Option(String) {
 
 // ──── Dependency loading via glance source parsing ────
 
-/// Load signature registries for every dependency in `packages_dir`
-/// by parsing each dep's `src/` directory with glance.
-///
-/// For each `<packages_dir>/<dep>/src/` subtree, walks every `.gleam`
-/// file and folds it into the registry via `from_glance_module`,
-/// using the path under `src/` as the module path (e.g.
-/// `gleam_stdlib/src/gleam/list.gleam` → `gleam/list`).
-///
-/// Failures (missing `src/`, parse errors from version mismatches,
-/// FFI-only Erlang packages) are silently skipped — affected deps
-/// contribute no entries and calls into them fall back to label-only
-/// argument matching at polymorphic call sites.
+// Load signature registries for every dependency in `packages_dir`
+// by parsing each dep's `src/` directory with glance.
+//
+// For each `<packages_dir>/<dep>/src/` subtree, walks every `.gleam`
+// file and folds it into the registry via `from_glance_module`,
+// using the path under `src/` as the module path (e.g.
+// `gleam_stdlib/src/gleam/list.gleam` → `gleam/list`).
+//
+// Failures (missing `src/`, parse errors from version mismatches,
+// FFI-only Erlang packages) are silently skipped — affected deps
+// contribute no entries and calls into them fall back to label-only
+// argument matching at polymorphic call sites.
 pub fn load_from_packages_dir(packages_dir: String) -> SignatureRegistry {
   case simplifile.read_directory(packages_dir) {
     Error(_) -> empty()
@@ -349,9 +349,9 @@ fn registry_from_gleam_file(
   )
 }
 
-/// Continuation-style result-or-default: runs `next` with the Ok value,
-/// or returns `default` on Error. Lets callers chain reads/parses
-/// without nested case expressions.
+// Continuation-style result-or-default: runs `next` with the Ok value,
+// or returns `default` on Error. Lets callers chain reads/parses
+// without nested case expressions.
 fn bool_or_default(result: Result(a, b), default: c, next: fn(a) -> c) -> c {
   case result {
     Ok(v) -> next(v)

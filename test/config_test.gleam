@@ -1,6 +1,6 @@
-//// Tests for `graded/internal/config` — gleam.toml `[tools.graded]` parsing.
-//// Fixtures are written under `/tmp/` so they don't get picked up by the
-//// Gleam compiler as project sources.
+// Tests for `graded/internal/config` — gleam.toml `[tools.graded]` parsing.
+// Fixtures are written under `/tmp/` so they don't get picked up by the
+// Gleam compiler as project sources.
 
 import filepath
 import gleeunit/should

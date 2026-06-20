@@ -25,11 +25,11 @@ pub fn module_path_deeply_nested_test() {
   |> should.equal("app/web/handlers/auth")
 }
 
-/// Critical: the dotted module name we compute for a `.gleam` file must
-/// exactly match the string `extract.build_import_context` produces when
-/// another module imports it. The topological sort relies on intersecting
-/// these two views — if they ever drift, dependency edges silently
-/// disappear and inference degenerates back to the per-file behaviour.
+// Critical: the dotted module name we compute for a `.gleam` file must
+// exactly match the string `extract.build_import_context` produces when
+// another module imports it. The topological sort relies on intersecting
+// these two views — if they ever drift, dependency edges silently
+// disappear and inference degenerates back to the per-file behaviour.
 pub fn module_path_matches_import_context_test() {
   // Compute the module name for a fake "leaf" file as it would live on disk.
   let leaf_module = config.module_path_for_source("src/app/d.gleam", "src")

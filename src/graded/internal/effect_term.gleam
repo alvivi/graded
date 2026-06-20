@@ -1,13 +1,13 @@
-//// Operations over `EffectTerm` — the small lambda-calculus-with-union that
-//// underlies graded's effect representation (the type itself lives in
-//// `types.gleam` to avoid an import cycle). `EffectSet` is the *ground normal
-//// form*: a fully-resolved term reduces back to one, and that is the only
-//// representation the subset check and the knowledge base compare against.
-////
-//// The interesting capability is second-order effect polymorphism: a `TAbs`
-//// is an effect *operator* (kind `Eff -> Eff`) that `TApp` applies to an
-//// argument effect and `normalize` beta-reduces. See
-//// docs/second-order-effects.md for the design and the property suite.
+// Operations over `EffectTerm` — the small lambda-calculus-with-union that
+// underlies graded's effect representation (the type itself lives in
+// `types.gleam` to avoid an import cycle). `EffectSet` is the *ground normal
+// form*: a fully-resolved term reduces back to one, and that is the only
+// representation the subset check and the knowledge base compare against.
+//
+// The interesting capability is second-order effect polymorphism: a `TAbs`
+// is an effect *operator* (kind `Eff -> Eff`) that `TApp` applies to an
+// argument effect and `normalize` beta-reduces. See
+// docs/second-order-effects.md for the design and the property suite.
 
 import gleam/bool
 import gleam/dict.{type Dict}
@@ -20,19 +20,19 @@ import graded/internal/types.{
   TTop, TUnion, TVar, Wildcard,
 }
 
-/// Reduction budget. Beta-reduction of finite, non-recursive terms always
-/// terminates (call-graph recursion is guarded elsewhere by the `visited`
-/// set), so this is only a backstop against a pathological input. Exhausting
-/// it collapses to `[Unknown]` — the same conservative fallback as a stuck
-/// application, so the checker stays sound rather than looping.
+// Reduction budget. Beta-reduction of finite, non-recursive terms always
+// terminates (call-graph recursion is guarded elsewhere by the `visited`
+// set), so this is only a backstop against a pathological input. Exhausting
+// it collapses to `[Unknown]` — the same conservative fallback as a stuck
+// application, so the checker stays sound rather than looping.
 const default_fuel = 1_000_000
 
-/// The pure (empty) effect term.
+// The pure (empty) effect term.
 pub fn pure() -> EffectTerm {
   TLabels(set.new())
 }
 
-/// The `[Unknown]` term — the conservative collapse for anything unresolvable.
+// The `[Unknown]` term — the conservative collapse for anything unresolvable.
 pub fn unknown() -> EffectTerm {
   TLabels(set.from_list(["Unknown"]))
 }
@@ -41,7 +41,7 @@ pub fn unknown() -> EffectTerm {
 // Bridges to/from the ground normal form
 // ---------------------------------------------------------------------------
 
-/// Lift an `EffectSet` into an `EffectTerm`. Total and exact.
+// Lift an `EffectSet` into an `EffectTerm`. Total and exact.
 pub fn from_effect_set(effect_set: EffectSet) -> EffectTerm {
   case effect_set {
     Wildcard -> TTop
@@ -55,10 +55,10 @@ pub fn from_effect_set(effect_set: EffectSet) -> EffectTerm {
   }
 }
 
-/// Reduce a term to its ground normal form. Leftover free variables become
-/// `Polymorphic` variables; any residual (stuck) application collapses to
-/// `[Unknown]`. Centralising the stuck-term collapse here is what keeps
-/// `check` sound — a violation is never silently dropped.
+// Reduce a term to its ground normal form. Leftover free variables become
+// `Polymorphic` variables; any residual (stuck) application collapses to
+// `[Unknown]`. Centralising the stuck-term collapse here is what keeps
+// `check` sound — a violation is never silently dropped.
 pub fn to_effect_set(term: EffectTerm) -> EffectSet {
   term_to_set(normalize(term))
 }
@@ -83,7 +83,7 @@ fn term_to_set(normalized: EffectTerm) -> EffectSet {
 // Free variables
 // ---------------------------------------------------------------------------
 
-/// The free effect variables of a term (a `TAbs` binds its parameter).
+// The free effect variables of a term (a `TAbs` binds its parameter).
 pub fn free_vars(term: EffectTerm) -> Set(String) {
   case term {
     TLabels(_) -> set.new()
@@ -100,9 +100,9 @@ pub fn free_vars(term: EffectTerm) -> Set(String) {
 // Capture-avoiding substitution
 // ---------------------------------------------------------------------------
 
-/// Substitute effect variables for terms, capture-avoiding. Bindings may map
-/// a variable to an operator (`TAbs`), which is what enables nested/second-
-/// order resolution. Variables not in `bindings` are left free.
+// Substitute effect variables for terms, capture-avoiding. Bindings may map
+// a variable to an operator (`TAbs`), which is what enables nested/second-
+// order resolution. Variables not in `bindings` are left free.
 pub fn subst(
   term: EffectTerm,
   bindings: Dict(String, EffectTerm),
@@ -172,16 +172,16 @@ fn fresh_loop(base: String, avoid: Set(String), n: Int) -> String {
 // Normalization (beta + union laws)
 // ---------------------------------------------------------------------------
 
-/// Reduce a term to normal form: beta-reduce every applied operator, and
-/// flatten/dedup/absorb unions into a canonical shape. Idempotent.
+// Reduce a term to normal form: beta-reduce every applied operator, and
+// flatten/dedup/absorb unions into a canonical shape. Idempotent.
 pub fn normalize(term: EffectTerm) -> EffectTerm {
   let #(result, _fuel) = reduce(term, default_fuel)
   result
 }
 
-/// Like `normalize` but reports fuel exhaustion as `Error` instead of
-/// collapsing to `[Unknown]`. Used by the termination property test to assert
-/// that finite terms never hit the budget; production code uses `normalize`.
+// Like `normalize` but reports fuel exhaustion as `Error` instead of
+// collapsing to `[Unknown]`. Used by the termination property test to assert
+// that finite terms never hit the budget; production code uses `normalize`.
 pub fn normalize_bounded(
   term: EffectTerm,
   fuel: Int,
@@ -213,8 +213,8 @@ fn reduce(term: EffectTerm, fuel: Int) -> #(EffectTerm, Int) {
   }
 }
 
-/// Reduce an application: reduce both sides, then beta-reduce if the operator
-/// became an abstraction, else leave it stuck.
+// Reduce an application: reduce both sides, then beta-reduce if the operator
+// became an abstraction, else leave it stuck.
 fn reduce_app(
   operator: EffectTerm,
   arg: EffectTerm,
@@ -270,10 +270,10 @@ fn reduce_each(terms: List(EffectTerm), fuel: Int) -> #(List(EffectTerm), Int) {
   #(list.reverse(acc), final_fuel)
 }
 
-/// Combine already-normalized members into a canonical union: merge all label
-/// sets into one, absorb `TTop`, drop pure, flatten nested unions, and sort +
-/// dedup the remaining (variable/application) members so that union is
-/// commutative, associative, and idempotent up to `==`.
+// Combine already-normalized members into a canonical union: merge all label
+// sets into one, absorb `TTop`, drop pure, flatten nested unions, and sort +
+// dedup the remaining (variable/application) members so that union is
+// commutative, associative, and idempotent up to `==`.
 fn flatten_union(members: List(EffectTerm)) -> EffectTerm {
   let flat =
     list.flat_map(members, fn(member) {
@@ -322,7 +322,7 @@ fn flatten_union(members: List(EffectTerm)) -> EffectTerm {
   }
 }
 
-/// Drop adjacent duplicates (by key) from a key-sorted list.
+// Drop adjacent duplicates (by key) from a key-sorted list.
 fn dedup_adjacent(
   keyed: List(#(String, EffectTerm)),
 ) -> List(#(String, EffectTerm)) {
@@ -336,10 +336,10 @@ fn dedup_adjacent(
   |> list.reverse
 }
 
-/// A canonical structural key, used to order and dedup union members so that
-/// structurally-equal terms compare equal regardless of how they were built.
-/// (Alpha-equivalence of operators is intentionally not normalized; variable
-/// names in practice are parameter-derived and stable.)
+// A canonical structural key, used to order and dedup union members so that
+// structurally-equal terms compare equal regardless of how they were built.
+// (Alpha-equivalence of operators is intentionally not normalized; variable
+// names in practice are parameter-derived and stable.)
 fn term_key(term: EffectTerm) -> String {
   case term {
     TTop -> "T"
