@@ -1245,9 +1245,11 @@ fn extract_from_expression(
 
     // Bit string: walk each segment's value expression.
     glance.BitString(segments:, ..) ->
-      list.fold(segments, empty(), fn(accumulated, segment) {
-        merge(accumulated, extract_from_expression(segment.0, context, env))
-      })
+      fold_expressions(
+        list.map(segments, fn(segment) { segment.0 }),
+        context,
+        env,
+      )
 
     // Unqualified function reference used as a value (not called)
     glance.Variable(location: span, name:) ->

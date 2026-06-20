@@ -275,11 +275,10 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
 /// the inferred public-API effects.
 pub fn run_format(directory: String) -> Result(Nil, GradedError) {
   use cfg <- result.try(read_config(directory))
-  case format_one_spec(cfg.spec_file) {
-    // Missing spec file: nothing to format. Malformed spec file: surface it.
-    Error(FileReadError(..)) -> Ok(Nil)
-    Error(error) -> Error(error)
-    Ok(formatted) ->
+  use formatted <- result.try(format_one_spec(cfg.spec_file))
+  case formatted {
+    None -> Ok(Nil)
+    Some(formatted) ->
       simplifile.write(cfg.spec_file, formatted)
       |> result.map_error(FileWriteError(cfg.spec_file, _))
   }
@@ -289,11 +288,10 @@ pub fn run_format(directory: String) -> Result(Nil, GradedError) {
 /// with the file path if it isn't. Used by CI as `format --check`.
 pub fn run_format_check(directory: String) -> Result(Nil, GradedError) {
   use cfg <- result.try(read_config(directory))
-  case format_one_spec(cfg.spec_file) {
-    // Missing spec file: nothing to check. Malformed spec file: surface it.
-    Error(FileReadError(..)) -> Ok(Nil)
-    Error(error) -> Error(error)
-    Ok(formatted) ->
+  use formatted <- result.try(format_one_spec(cfg.spec_file))
+  case formatted {
+    None -> Ok(Nil)
+    Some(formatted) ->
       case simplifile.read(cfg.spec_file) {
         Error(_) -> Ok(Nil)
         Ok(content) ->
@@ -305,15 +303,18 @@ pub fn run_format_check(directory: String) -> Result(Nil, GradedError) {
   }
 }
 
-fn format_one_spec(spec_path: String) -> Result(String, GradedError) {
-  use content <- result.try(
-    simplifile.read(spec_path) |> result.map_error(FileReadError(spec_path, _)),
-  )
-  use file <- result.try(
-    annotation.parse_file(content)
-    |> result.map_error(GradedParseError(spec_path, _)),
-  )
-  Ok(annotation.format_sorted(file))
+// Format the spec file's contents, or `None` when there is no spec file. A
+// missing file is tolerated; a malformed one is a parse error.
+fn format_one_spec(
+  spec_path: String,
+) -> Result(option.Option(String), GradedError) {
+  case simplifile.read(spec_path) {
+    Error(_) -> Ok(None)
+    Ok(content) ->
+      annotation.parse_file(content)
+      |> result.map(fn(file) { Some(annotation.format_sorted(file)) })
+      |> result.map_error(GradedParseError(spec_path, _))
+  }
 }
 
 // PRIVATE

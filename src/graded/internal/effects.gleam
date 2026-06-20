@@ -58,22 +58,14 @@ pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
   let #(cat_effects, cat_pure, cat_params) =
     load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
-    all_effects: merge_with_dependency_priority(cat_effects, dep_effects),
-    param_bounds: merge_with_dependency_priority(cat_params, dep_params),
+    // Dependency entries win on a clash: dict.merge keeps its second argument.
+    all_effects: dict.merge(cat_effects, dep_effects),
+    param_bounds: dict.merge(cat_params, dep_params),
     type_fields: dict.new(),
     returned_operators: dep_returns,
     factories: dict.new(),
     pure_modules: cat_pure,
   )
-}
-
-// Merge catalog and dependency knowledge so dependency entries win on a key
-// clash. `dict.merge` keeps its second argument, so `dependency` goes second.
-pub fn merge_with_dependency_priority(
-  catalog: Dict(key, value),
-  dependency: Dict(key, value),
-) -> Dict(key, value) {
-  dict.merge(catalog, dependency)
 }
 
 // Build a knowledge base from the catalog only (no dependency scanning).

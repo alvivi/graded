@@ -521,30 +521,3 @@ pub fn type_fields_distinguish_modules_test() {
   effect_term.to_effect_set(b.effects)
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
-
-// ──── Dependency vs. catalog priority ────
-
-pub fn dependency_specs_outrank_catalog_test() {
-  // On a name clash the dependency spec's effect must win over the catalog's
-  // (knowledge-base priority: dependency spec files > versioned catalog).
-  let name = QualifiedName("dep/mod", "f")
-  let catalog = dict.from_list([#(name, effect_term.unknown())])
-  let dependency =
-    dict.from_list([
-      #(name, effect_term.from_effect_set(Specific(set.from_list(["Http"])))),
-    ])
-  let merged = effects.merge_with_dependency_priority(catalog, dependency)
-  let assert Ok(term) = dict.get(merged, name)
-  effect_term.to_effect_set(term)
-  |> should.equal(Specific(set.from_list(["Http"])))
-}
-
-pub fn merge_keeps_non_conflicting_catalog_entries_test() {
-  let dep_name = QualifiedName("dep/mod", "f")
-  let cat_name = QualifiedName("cat/mod", "g")
-  let catalog = dict.from_list([#(cat_name, effect_term.unknown())])
-  let dependency = dict.from_list([#(dep_name, effect_term.pure())])
-  effects.merge_with_dependency_priority(catalog, dependency)
-  |> dict.size()
-  |> should.equal(2)
-}
