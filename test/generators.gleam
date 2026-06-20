@@ -26,9 +26,9 @@ fn one_of(items: List(String)) -> qcheck.Generator(String) {
   }
 }
 
-/// A generator for arbitrary `EffectTerm`s, depth-bounded so reduction stays
-/// cheap. Produces every constructor, including stuck applications and
-/// operators, so the property suite exercises the interesting reduction paths.
+// A generator for arbitrary `EffectTerm`s, depth-bounded so reduction stays
+// cheap. Produces every constructor, including stuck applications and
+// operators, so the property suite exercises the interesting reduction paths.
 pub fn effect_term_gen() -> qcheck.Generator(EffectTerm) {
   use depth <- qcheck.bind(qcheck.bounded_int(0, 3))
   effect_term_sized(depth)
@@ -69,17 +69,17 @@ fn effect_union_gen(
   qcheck.map(qcheck.fixed_length_list_from(sub, n), TUnion)
 }
 
-/// A first-order effect *term* — the lift of an arbitrary `EffectSet`. Used
-/// where an annotation field (now an `EffectTerm`) must still round-trip
-/// through the first-order serializer.
+// A first-order effect *term* — the lift of an arbitrary `EffectSet`. Used
+// where an annotation field (now an `EffectTerm`) must still round-trip
+// through the first-order serializer.
 pub fn first_order_term_gen() -> qcheck.Generator(EffectTerm) {
   qcheck.map(effect_set_gen(), effect_term.from_effect_set)
 }
 
-/// A generator for *serializable* effect terms: labels, variables, operator
-/// applications `f(args)`, and unions of those. Excludes operators (`TAbs`)
-/// and the wildcard, which don't appear as inferred result effects — so
-/// `parse ∘ format` round-trips (P-SER-2).
+// A generator for *serializable* effect terms: labels, variables, operator
+// applications `f(args)`, and unions of those. Excludes operators (`TAbs`)
+// and the wildcard, which don't appear as inferred result effects — so
+// `parse ∘ format` round-trips (P-SER-2).
 pub fn serializable_effect_term_gen() -> qcheck.Generator(EffectTerm) {
   use depth <- qcheck.bind(qcheck.bounded_int(0, 2))
   serializable_sized(depth)
@@ -128,8 +128,8 @@ fn serializable_sized(depth: Int) -> qcheck.Generator(EffectTerm) {
   }
 }
 
-/// A generator for variable→term substitutions over the standard variable
-/// pool, so substitution domains actually overlap term variables.
+// A generator for variable→term substitutions over the standard variable
+// pool, so substitution domains actually overlap term variables.
 pub fn effect_binding_gen() -> qcheck.Generator(dict.Dict(String, EffectTerm)) {
   let pair_gen =
     qcheck.map2(one_of(effect_var_names), effect_term_gen(), fn(name, term) {

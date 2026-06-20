@@ -295,8 +295,8 @@ pub fn infer_without_bounds_gets_unknown_test() {
   |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
-/// Build the fn-typed-param map girard supplies, the way build_type_index does:
-/// a parameter is fn-typed when its inferred type is itself a `Fn`.
+// Build the fn-typed-param map girard supplies, the way build_type_index does:
+// a parameter is fn-typed when its inferred type is itself a `Fn`.
 fn girard_fn_typed_for(
   module: glance.Module,
 ) -> dict.Dict(String, set.Set(String)) {
@@ -1836,9 +1836,9 @@ pub fn run(h: fn(Int) -> Int, x: Int) -> Int {
 
 // ──── Polymorphic field-call substitution (review issue #8) ────
 
-/// A KB whose `Task.go` field is wired to a polymorphic function `helper.run_it`
-/// (effect variable `action`), plus a registry giving run_it's parameter
-/// positions so the field call's arguments bind that variable.
+// A KB whose `Task.go` field is wired to a polymorphic function `helper.run_it`
+// (effect variable `action`), plus a registry giving run_it's parameter
+// positions so the field call's arguments bind that variable.
 fn polymorphic_field_kb_and_registry() -> #(
   effects.KnowledgeBase,
   signatures.SignatureRegistry,
@@ -2040,10 +2040,10 @@ pub fn caller() -> Nil {
 
 // ──── Second-order (nested) effect variables: end-to-end ────
 
-/// Registry + KB modelling the realistic post-topological-inference state:
-/// `with_logger(action)` is second-order — its inferred effect is the operator
-/// application `action(Stdout)` (it applies `action` to a [Stdout] callback),
-/// and `runner(cb)` runs its callback (effect `[cb]`).
+// Registry + KB modelling the realistic post-topological-inference state:
+// `with_logger(action)` is second-order — its inferred effect is the operator
+// application `action(Stdout)` (it applies `action` to a [Stdout] callback),
+// and `runner(cb)` runs its callback (effect `[cb]`).
 fn second_order_kb_and_registry() -> #(
   effects.KnowledgeBase,
   signatures.SignatureRegistry,
@@ -3138,7 +3138,7 @@ pub fn caller() -> Nil {
   |> should.be_true()
 }
 
-/// A `fs.read : [FileSystem]` external for second-order operator tests.
+// A `fs.read : [FileSystem]` external for second-order operator tests.
 fn fs_read_external() -> types.ExternalAnnotation {
   types.ExternalAnnotation(
     "fs",
@@ -3147,9 +3147,9 @@ fn fs_read_external() -> types.ExternalAnnotation {
   )
 }
 
-/// Check `function` in a single-module source against a `[budget]` and return
-/// the violations. The registry is built from the module so same-module operator
-/// parameters resolve; the `fs.read` external is always available.
+// Check `function` in a single-module source against a `[budget]` and return
+// the violations. The registry is built from the module so same-module operator
+// parameters resolve; the `fs.read` external is always available.
 fn second_order_violations(
   source: String,
   function: String,
@@ -3172,13 +3172,13 @@ fn second_order_violations(
 
 // ----- collapse classification is girard-independent (determinism) -----
 
-/// A parameter typed through a module-local function alias (`h: Handler` where
-/// `type Handler = fn(...)`) must be recognised as function-typed from the
-/// syntax alone, so the function is never *collapsed* during memoization. The
-/// type annotator can decline a function under load; relying on it here would
-/// let an effect-polymorphic function be collapsed (turning its `h(x)` call into
-/// `[Unknown]`) only sometimes — a nondeterministic result. Passing an empty
-/// girard map simulates the annotator being unavailable.
+// A parameter typed through a module-local function alias (`h: Handler` where
+// `type Handler = fn(...)`) must be recognised as function-typed from the
+// syntax alone, so the function is never *collapsed* during memoization. The
+// type annotator can decline a function under load; relying on it here would
+// let an effect-polymorphic function be collapsed (turning its `h(x)` call into
+// `[Unknown]`) only sometimes — a nondeterministic result. Passing an empty
+// girard map simulates the annotator being unavailable.
 pub fn alias_fn_param_is_excluded_from_collapse_test() {
   let source =
     "pub type Handler =

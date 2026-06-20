@@ -1,13 +1,13 @@
-//// Tests for topological-order project module inference. These exercise the
-//// regression from the original issue (deep transitive chains needing
-//// multiple `graded infer` runs to converge) and a few related shapes.
-////
-//// Fixtures are materialised at runtime under `/tmp/` so the Gleam compiler
-//// doesn't try to compile them as project modules — fixture modules import
-//// each other (e.g. `import app/d`) which would not resolve from `test/`.
-//// All temp directories start without any `.graded` files, which also
-//// exercises Risk 2 ("modules without prior .graded files still get
-//// processed").
+// Tests for topological-order project module inference. These exercise the
+// regression from the original issue (deep transitive chains needing
+// multiple `graded infer` runs to converge) and a few related shapes.
+//
+// Fixtures are materialised at runtime under `/tmp/` so the Gleam compiler
+// doesn't try to compile them as project modules — fixture modules import
+// each other (e.g. `import app/d`) which would not resolve from `test/`.
+// All temp directories start without any `.graded` files, which also
+// exercises Risk 2 ("modules without prior .graded files still get
+// processed").
 
 import filepath
 import gleam/dict
@@ -31,9 +31,9 @@ fn make_fixture(name: String, files: List(#(String, String))) -> String {
   write_fixture("/tmp/graded_topo_" <> name, files)
 }
 
-/// Materialise a tree of files at `directory`, replacing any prior contents.
-/// Used by both project-style fixtures (under `/tmp/graded_topo_*`) and the
-/// path-dep smoke test which writes to its own directory.
+// Materialise a tree of files at `directory`, replacing any prior contents.
+// Used by both project-style fixtures (under `/tmp/graded_topo_*`) and the
+// path-dep smoke test which writes to its own directory.
 fn write_fixture(directory: String, files: List(#(String, String))) -> String {
   let _ = simplifile.delete(directory)
   list.each(files, fn(entry) {
@@ -46,9 +46,9 @@ fn write_fixture(directory: String, files: List(#(String, String))) -> String {
   directory
 }
 
-/// Four-module pure chain `a -> b -> c -> d` where `d` calls `string.uppercase`
-/// (no effects). Reused by every test that needs the canonical "deep
-/// transitive chain that the old two-pass strategy mishandled" shape.
+// Four-module pure chain `a -> b -> c -> d` where `d` calls `string.uppercase`
+// (no effects). Reused by every test that needs the canonical "deep
+// transitive chain that the old two-pass strategy mishandled" shape.
 fn pure_chain_files() -> List(#(String, String)) {
   [
     #(
@@ -90,8 +90,8 @@ pub fn run(value: String) -> String {
   ]
 }
 
-/// Same shape as `pure_chain_files` but with `io.println` at the leaf so the
-/// `Stdout` effect must propagate up four modules.
+// Same shape as `pure_chain_files` but with `io.println` at the leaf so the
+// `Stdout` effect must propagate up four modules.
 fn impure_chain_files() -> List(#(String, String)) {
   [
     #(
@@ -375,9 +375,9 @@ pub fn infer_writes_graded_files_from_clean_slate_test() {
 
 // ----- inference idempotence (the fix's core promise) -----
 
-/// Pinning the single-pass convergence: a second `run_infer` against the
-/// same project must produce byte-identical `.graded` files. If this
-/// regresses, inference has stopped converging in one pass.
+// Pinning the single-pass convergence: a second `run_infer` against the
+// same project must produce byte-identical `.graded` files. If this
+// regresses, inference has stopped converging in one pass.
 pub fn run_infer_is_idempotent_test() {
   let directory = make_fixture("idempotent", impure_chain_files())
 
@@ -508,11 +508,11 @@ fn read_all_graded(directory: String) -> List(#(String, String)) {
 
 // ----- spec-file externals are honoured during inference -----
 
-/// Regression: a project module that calls into a third-party package not
-/// in the catalog should pick up the spec file's `external effects` line
-/// during `run_infer`, not fall back to `[Unknown]`. Pre-fix, externals
-/// were only consumed by `run` (check), so `infer` produced a noisy spec
-/// even when the user had already declared the dependency pure.
+// Regression: a project module that calls into a third-party package not
+// in the catalog should pick up the spec file's `external effects` line
+// during `run_infer`, not fall back to `[Unknown]`. Pre-fix, externals
+// were only consumed by `run` (check), so `infer` produced a noisy spec
+// even when the user had already declared the dependency pure.
 pub fn run_infer_honours_spec_file_externals_test() {
   let directory =
     make_fixture("externals_in_infer", [
@@ -547,12 +547,12 @@ pub fn total(a: String, b: String) -> String {
 
 // ----- cross-module type constructors are pure -----
 
-/// Calls to a custom type constructor defined in a sibling project
-/// module should be inferred as pure, regardless of position: as a
-/// direct call, at a pipe target, or as a value reference. Side
-/// effects inside a constructor's argument list must still propagate.
-/// All four positions are exercised against one fixture and one
-/// `run_infer` invocation; each function name isolates the case.
+// Calls to a custom type constructor defined in a sibling project
+// module should be inferred as pure, regardless of position: as a
+// direct call, at a pipe target, or as a value reference. Side
+// effects inside a constructor's argument list must still propagate.
+// All four positions are exercised against one fixture and one
+// `run_infer` invocation; each function name isolates the case.
 pub fn cross_module_type_constructors_resolve_pure_test() {
   let directory =
     make_fixture("cross_module_constructors", [
@@ -617,9 +617,9 @@ pub fn maker() -> fn(String) -> types.MyError {
 
 // ----- path-dep smoke test -----
 
-/// Same regression class as the project chain test (deep transitive
-/// effects must propagate in one pass) but exercising the path-dep code
-/// path via the test-exposed `infer_path_dep`.
+// Same regression class as the project chain test (deep transitive
+// effects must propagate in one pass) but exercising the path-dep code
+// path via the test-exposed `infer_path_dep`.
 pub fn path_dep_chain_resolves_in_one_pass_test() {
   let dep_path =
     write_fixture("/tmp/graded_pathdep_chain", [
@@ -685,10 +685,10 @@ pub fn run(value: String) -> Nil {
 
 // ----- polymorphic end-to-end -----
 
-/// Caller passes a pure type constructor to a fn-typed parameter.
-/// `validation.validate_range` should infer as polymorphic over its
-/// callback's effects, and `entity.new` should resolve to pure when
-/// the callback is a constructor.
+// Caller passes a pure type constructor to a fn-typed parameter.
+// `validation.validate_range` should infer as polymorphic over its
+// callback's effects, and `entity.new` should resolve to pure when
+// the callback is a constructor.
 pub fn polymorphic_constructor_resolves_to_pure_test() {
   let dir =
     make_fixture("polymorphic_constructor", [
@@ -747,11 +747,11 @@ pub fn new(value: Int) -> List(MyError) {
   Nil
 }
 
-/// Same shape as `polymorphic_constructor_resolves_to_pure_test` but
-/// the caller passes the constructor positionally — no `to_error:`
-/// label. The signature registry tells the checker that parameter 1
-/// of `validate_range` is named `to_error`, so positional argument 1
-/// still binds the effect variable.
+// Same shape as `polymorphic_constructor_resolves_to_pure_test` but
+// the caller passes the constructor positionally — no `to_error:`
+// label. The signature registry tells the checker that parameter 1
+// of `validate_range` is named `to_error`, so positional argument 1
+// still binds the effect variable.
 pub fn polymorphic_constructor_resolves_positional_test() {
   let dir =
     make_fixture("polymorphic_positional", [
@@ -800,15 +800,15 @@ pub fn new(value: Int) -> List(MyError) {
 
 // ----- dense mutual recursion (memoization regression guard) -----
 
-/// Build a module of `count` mutually-recursive first-order functions forming
-/// one dense strongly-connected component: `p_i` calls `p_{i+1}` (a ring) and
-/// `p_{i+7}` (a chord), indices wrapping. `p0` calls `io.println`, so every
-/// function — each reachable from every other around the ring — must infer
-/// `[Stdout]`. The branching ring has exponentially many simple paths, so
-/// before memoization a single `infer` re-walked each callee per path and blew
-/// up; this fixture would hang. It also pins the cycle-truncation correctness
-/// the memo must preserve: `p10` reaches `p0`'s effect only by going around the
-/// ring, so a memo that cached a path-truncated result would drop its `Stdout`.
+// Build a module of `count` mutually-recursive first-order functions forming
+// one dense strongly-connected component: `p_i` calls `p_{i+1}` (a ring) and
+// `p_{i+7}` (a chord), indices wrapping. `p0` calls `io.println`, so every
+// function — each reachable from every other around the ring — must infer
+// `[Stdout]`. The branching ring has exponentially many simple paths, so
+// before memoization a single `infer` re-walked each callee per path and blew
+// up; this fixture would hang. It also pins the cycle-truncation correctness
+// the memo must preserve: `p10` reaches `p0`'s effect only by going around the
+// ring, so a memo that cached a path-truncated result would drop its `Stdout`.
 fn dense_scc_module(count: Int) -> String {
   let body =
     indices(count)
@@ -858,8 +858,8 @@ pub fn dense_mutual_recursion_infers_without_blowup_test() {
   cleanup(directory)
 }
 
-/// `[0, 1, …, count-1]` — a local stand-in for `list.range`, which this
-/// stdlib version lacks.
+// `[0, 1, …, count-1]` — a local stand-in for `list.range`, which this
+// stdlib version lacks.
 fn indices(count: Int) -> List(Int) {
   indices_loop(count - 1, [])
 }

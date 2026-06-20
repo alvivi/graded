@@ -1,6 +1,6 @@
-//// Property + unit tests for the `EffectTerm` IR (see
-//// docs/second-order-effects.md). Property tags (P-LAT-*, P-NORM-*, …) match
-//// the design doc's "Properties & invariants" section.
+// Property + unit tests for the `EffectTerm` IR (see
+// docs/second-order-effects.md). Property tags (P-LAT-*, P-NORM-*, …) match
+// the design doc's "Properties & invariants" section.
 
 import gleam/dict
 import gleam/list
@@ -24,9 +24,9 @@ fn labels(items: List(String)) -> EffectTerm {
   TLabels(set.from_list(items))
 }
 
-/// The concrete labels a resolved effect set definitely contains. `Error`
-/// means the wildcard (top) — which contains everything, so any subset check
-/// against it passes vacuously.
+// The concrete labels a resolved effect set definitely contains. `Error`
+// means the wildcard (top) — which contains everything, so any subset check
+// against it passes vacuously.
 fn definite_labels(effect_set: EffectSet) -> Result(Set(String), Nil) {
   case effect_set {
     Wildcard -> Error(Nil)
@@ -35,8 +35,8 @@ fn definite_labels(effect_set: EffectSet) -> Result(Set(String), Nil) {
   }
 }
 
-/// True iff a (normalized) term contains no un-reduced beta-redex — i.e. no
-/// `TApp` whose operator is a `TAbs`.
+// True iff a (normalized) term contains no un-reduced beta-redex — i.e. no
+// `TApp` whose operator is a `TAbs`.
 fn no_redex(term: EffectTerm) -> Bool {
   case term {
     TLabels(_) -> True
