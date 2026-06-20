@@ -1016,10 +1016,6 @@ fn collect_effects(
   )
 }
 
-/// The number of leading operator binders a (resolved) returned operator takes
-/// — its arity, so a direct application `h(cb1, cb2)` can be curried over the
-/// right number of callback positions. A union of operators shares one arity;
-/// take the max so a partial member can't shorten the spine.
 /// `[0, 1, …, n-1]` — the callback positions of an `n`-ary operator, applied
 /// in order. Empty for `n <= 0`.
 fn positions_up_to(n: Int) -> List(Int) {
@@ -1079,6 +1075,10 @@ fn discharge_operator(operator: EffectTerm) -> EffectTerm {
   }
 }
 
+/// The number of leading operator binders a (resolved) returned operator takes
+/// — its arity, so a direct application `h(cb1, cb2)` can be curried over the
+/// right number of callback positions. A union of operators shares one arity;
+/// take the max so a partial member can't shorten the spine.
 fn operator_spine_arity(term: EffectTerm) -> Int {
   case term {
     types.TAbs(_, body) -> 1 + operator_spine_arity(body)
