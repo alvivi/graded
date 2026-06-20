@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Dependency spec effects are no longer overridden by the catalog.** The knowledge base merged dependency-spec and catalog effects with the arguments reversed, so a function present in both an installed dependency's spec file and the bundled catalog resolved to the *catalog* entry — contrary to the documented priority (dependency spec files rank above the versioned catalog). Dependency specs now win, matching the parameter-bound merge.
-- **Effects inside `panic`/`todo`/`echo` messages and bit-string segments are now counted.** These positions hold arbitrary expressions (`panic as build_message(io.debug(x))`, `<<encode(read()):size(8)>>`), but the effect walker treated them as effect-free leaves (and walked only an `echo` value, not its `as` message), silently dropping any call there — a false negative. They are now traversed like every other sub-expression.
-- **`graded format --check` fails on an unparseable spec file** instead of exiting zero. Both `format` and `format --check` previously swallowed every error, so CI passed green on a `.graded` file that did not even parse. A missing spec file is still tolerated; a malformed one is now an error.
-- **A malformed `gleam.toml` is reported** rather than silently falling back to a guessed package name (and thus the wrong spec-file path). A missing `gleam.toml` still falls back to defaults.
+- When a function appears in both an installed dependency's spec file and the bundled catalog, its effects now come from the dependency's spec file.
+- Effects performed inside `panic`/`todo`/`echo` messages and bit-string segments are now counted toward a function's effects.
+- `graded format` and `graded format --check` now report an error on a `.graded` spec file that cannot be parsed, instead of succeeding silently. A missing spec file is still treated as nothing to do.
+- A malformed `gleam.toml` is now reported as an error instead of being silently ignored. A missing `gleam.toml` still falls back to defaults.
 
 ## [0.7.0] - 2026-06-19
 
