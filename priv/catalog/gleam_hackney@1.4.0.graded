@@ -1,0 +1,4 @@
+// gleam_hackney — HTTP client (Erlang hackney)
+
+external effects gleam/hackney.send : [Http]
+external effects gleam/hackney.send_bits : [Http]

@@ -1,3 +1,4 @@
 // gleam_bitwise — pure bitwise integer operations
+// Package archived upstream; bitwise operators are now language built-ins.
 
 external effects gleam/bitwise : []

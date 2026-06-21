@@ -1,0 +1,4 @@
+// gleam_elli — HTTP server (Erlang elli)
+
+external effects gleam/http/elli.become : [Network, Process]
+external effects gleam/http/elli.start : [Network, Process]

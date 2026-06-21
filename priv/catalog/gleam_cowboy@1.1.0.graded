@@ -1,0 +1,3 @@
+// gleam_cowboy — HTTP server (Erlang cowboy)
+
+external effects gleam/http/cowboy.start : [Network, Process]

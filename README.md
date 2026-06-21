@@ -241,7 +241,7 @@ For example, if you have `gleam_stdlib@0.71.0` installed and the catalog has `gl
 
 ### Covered packages
 
-The catalog ships effect knowledge for 39 packages. The effectful ones:
+The catalog ships effect knowledge for 44 packages. The effectful ones:
 
 | Package | Effects | Labels |
 |---|---|---|
@@ -250,10 +250,13 @@ The catalog ships effect knowledge for 39 packages. The effectful ones:
 | **gleam_otp** | `gleam/otp/actor.*`, `gleam/otp/supervisor.*` | `Process` |
 | **gleam_httpc** | `gleam/httpc.send` | `Http` |
 | **gleam_fetch** | `gleam/fetch.send`, `.read_*_body` | `Http` |
+| **gleam_hackney** | `gleam/hackney.send`, `.send_bits` | `Http` |
 | **lustre** | `lustre.start`, `lustre.send`, `lustre/server_component.*` | `Process`, `Dom` |
 | **lustre_http** | `lustre_http.*` | `Http` |
 | **glisten** | `glisten.start`, `.send`, `.supervised` | `Network`, `Process` |
 | **mist** | `mist.start`, `.read_body`, `.send_file`, websocket frames | `Network`, `Process`, `FileSystem` |
+| **gleam_cowboy** | `gleam/http/cowboy.start` | `Network`, `Process` |
+| **gleam_elli** | `gleam/http/elli.start`, `.become` | `Network`, `Process` |
 | **wisp** | `wisp.log_*`, `.serve_static`, `.random_string`, `wisp/wisp_mist.handler` | `Stdout`, `FileSystem`, `Random`, `Network` |
 | **pog** | `pog.query`, `.execute`, `.transaction`, `.start` | `Database`, `Process` |
 | **simplifile** | `simplifile.*` | `FileSystem` |
@@ -266,7 +269,7 @@ The catalog ships effect knowledge for 39 packages. The effectful ones:
 | **birl** | `birl.now`, `.utc_now`, `.monotonic_now` | `Time` |
 | **youid** | `youid/uuid.v1`, `.v4`, `.v7` | `Time`, `Random` |
 
-Pure (all functions `[]`): **filepath**, **gleam_http**, **gleam_json**, **gleam_crypto**, **gleam_regexp**, **gleam_yielder**, **houdini**, **tom**, **glance**, **glexer**, **justin**, **snag**, **ranger**, **marceau**, **splitter**, **glam**, **gleam_bitwise**, **gleam_community_colour**, **gleam_community_ansi**.
+Pure (all functions `[]`): **filepath**, **gleam_http**, **gleam_json**, **gleam_crypto**, **gleam_regexp**, **gleam_yielder**, **gleam_javascript**, **gleam_deque**, **houdini**, **tom**, **glance**, **glexer**, **justin**, **snag**, **ranger**, **marceau**, **splitter**, **glam**, **gleam_bitwise**, **gleam_community_colour**, **gleam_community_ansi**.
 
 For packages not in the catalog, use `external effects` declarations in your project's spec file.
 

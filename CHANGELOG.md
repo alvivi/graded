@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Catalog entries for 22 more of the most-used Gleam packages.** Calls into these now resolve to a precise effect (or `[]` for pure libraries) instead of `[Unknown]`: glance, glexer, justin, snag, ranger, marceau, gleam_community_colour, gleam_community_ansi, glam, splitter, and gleam_bitwise (pure); glisten, mist, wisp, pog, gleam_fetch, shellout, logging, argv, directories, birl, and youid (effectful).
+- **Catalog entries for 27 more of the most-used Gleam packages.** Calls into these now resolve to a precise effect (or `[]` for pure libraries) instead of `[Unknown]`: glance, glexer, justin, snag, ranger, marceau, gleam_community_colour, gleam_community_ansi, glam, splitter, gleam_bitwise, gleam_javascript, and gleam_deque (pure); glisten, mist, wisp, pog, gleam_fetch, gleam_hackney, gleam_cowboy, gleam_elli, shellout, logging, argv, directories, birl, and youid (effectful).
+- **The catalog now covers all of the core `gleam-lang` runtime, data, and HTTP packages.** The two remaining official packages, `gleam_package_interface` and `gleam_hexpm`, are tooling libraries and stay uncatalogued for now.
 - **New effect labels `Network`, `Database`, `Exec`, and `Random`** for socket/server I/O (glisten, mist), database queries (pog), running external programs (shellout), and nondeterministic generation (youid v4/v7, `wisp.random_string`).
 
 ### Fixed
