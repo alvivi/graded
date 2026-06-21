@@ -291,30 +291,6 @@ Idiomatic Gleam — inline callbacks, direct and aliased function references, pi
 
 The handful of patterns that fall back to `[Unknown]` — each with how it shows up and how to work around it — are documented in **[docs/LIMITATIONS.md](./docs/LIMITATIONS.md)**.
 
-## Future work
-
-The following features would progressively close the remaining limitations. Ordered by incrementality — earlier items are smaller, later items push into different territory.
-
-### Hand-written field bounds
-
-Extend parameter bounds to accept a path expression, so users can declare a field's effects at the function boundary when graded can't figure it out on its own:
-
-```
-check myapp.view(handler.on_click: [Dom]) : [Dom]
-```
-
-This is a syntax extension to `ParamBound` (path instead of identifier), no analysis required — the user declares what a record field's effects are, and substitution works exactly like first-order param bounds. Covers the escape-hatch case for field calls and for any other value flow graded can't trace.
-
-### Retiring the positional/label heuristics
-
-graded reads expression types from [girard](https://hexdocs.pm/girard), which already resolves field calls without explicit parameter annotations and detects fn-typed parameters. The one piece not taken: replacing the positional/label argument-matching heuristics (`find_matching_arg`/`position_from_registry`). They drive polymorphic call-site substitution — a subsystem girard's expression types don't cleanly map onto — so they were kept deliberately. Revisit only if a concrete imprecision surfaces.
-
-### Privacy and information flow checking
-
-The next major feature is **lattice-based privacy tracking** — preventing sensitive data (PII, credentials) from flowing into logs, error messages, or third-party services.
-
-Both checkers share the same theoretical foundation: graded modal type theory (see [THEORY.md](./THEORY.md)). Effects use sets with union; privacy uses lattices with join.
-
 ## License
 
 Apache-2.0

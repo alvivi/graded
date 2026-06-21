@@ -2,7 +2,7 @@
 
 Status: **implemented** (branch `nested-effect-vars`). This closes the "no
 nested (second-order) effect variables" limitation that was documented in
-[README.md](../README.md#limitations) and the corresponding ROADMAP item. All
+[README.md](../README.md#limitations). All
 six phases below shipped. Operators are **n-ary** via currying: an operator
 parameter whose type takes several functions (`fn(fn() -> _, fn() -> _) -> _`)
 threads *all* its callbacks as a curried application `((action e1) e2)`, and an
@@ -194,7 +194,7 @@ assumption.
 | **2. Serialization** | Parse / format operator bounds and application terms; round-trip + byte-identity tests. | Med |
 | **3. Infer** | Detect params typed `fn(fn(..)->_)->_` (girard signatures in `signatures.gleam` / `typeinfo.gleam` already expose this); build the `TAbs` body in `collect_effects`; emit the term-valued signature. | Med–high |
 | **4. Resolve at call sites** | Rework `bind_variables` / `substitute_at_call_site` / `resolve_field_effect` to bind operator variables to `TAbs` arguments and beta-reduce, then normalize. The payoff phase. | High |
-| **5. Semantics + docs** | `is_subset` for residual terms (conservative); remove the README limitation; ROADMAP / THEORY note framing second-order effects as higher-kinded effect variables. | Low |
+| **5. Semantics + docs** | `is_subset` for residual terms (conservative); remove the README limitation; THEORY note framing second-order effects as higher-kinded effect variables. | Low |
 
 ## Files touched
 
