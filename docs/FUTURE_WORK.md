@@ -48,6 +48,6 @@ sensitive data (PII, credentials) from flowing into logs, error messages, or
 third-party services.
 
 Both checkers share the same foundation: graded modal type theory (see
-[THEORY.md](../THEORY.md)). Effects use sets with union; privacy uses lattices
+[THEORY.md](./THEORY.md)). Effects use sets with union; privacy uses lattices
 with join. This is distinct enough to warrant its own design doc when the time
 comes.

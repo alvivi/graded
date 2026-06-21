@@ -15,7 +15,7 @@ included_files = [
   "manifest.toml",
   "README.md",
   "CHANGELOG.md",
-  "THEORY.md",
+  "docs",
   "LICENSE",
 ]
 
@@ -24,8 +24,10 @@ included_files = [
 
 [documentation]
 pages = [
+  { title = "Reference", path = "reference.html", source = "./docs/REFERENCE.md" },
+  { title = "Limitations", path = "limitations.html", source = "./docs/LIMITATIONS.md" },
+  { title = "Theory", path = "theory.html", source = "./docs/THEORY.md" },
   { title = "Changelog", path = "changelog.html", source = "./CHANGELOG.md" },
-  { title = "Theory", path = "theory.html", source = "./THEORY.md" },
 ]
 
 [dependencies]

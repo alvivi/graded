@@ -85,7 +85,7 @@ effects parse_query : []
 - **One spec file per package, regenerable cache under `build/`.** Spec file holds the public-API surface and the hand-written invariants; cache holds derived per-module data. The split keeps published metadata small while letting the tool keep all the data it needs internally.
 - **Agents first.** Annotations are designed to be machine-written and machine-read.
 - **Incremental adoption.** Modules without entries in the spec file are silently skipped at check time; the rest is ignored.
-- **Sound foundations.** Based on graded modal type theory (see THEORY.md).
+- **Sound foundations.** Based on graded modal type theory (see docs/THEORY.md).
 - **Type inference as an enhancement layer.** graded parses with glance (syntax-level) and additionally runs [girard](https://hexdocs.pm/girard) — a Hindley-Milner type annotator for Gleam — over the whole package to learn the inferred type of every expression. Types resolve field calls on any receiver (not just directly-annotated parameters) and let field effects be derived from construction sites. girard is best-effort and per-function: a function it can't type contributes no types, so graded silently falls back to the syntax-level path for it — types can only ever sharpen an `[Unknown]`, never change an already-resolved result.
 - **`priv/` is for runtime data, not build-time tool state.** graded's own `priv/catalog/` is read at graded's runtime when invoked, which is the textbook use of priv. graded does NOT write to user projects' or dependencies' priv directories.
 
@@ -107,4 +107,4 @@ Three call categories in the extractor:
 
 ## Theoretical Foundations
 
-Effects are sets of string labels. Composition is set union. Checking is subset inclusion. Effect *variables* can be higher-kinded (operators, `Eff → Eff`) for second-order polymorphism: the internal `EffectTerm` is a small lambda-calculus-with-union and `EffectSet` is its ground normal form, reached by beta + union normalization (`effect_term.gleam`). See THEORY.md and docs/second-order-effects.md for the full grounding (semirings, graded modal type theory, higher-kinded effect variables).
+Effects are sets of string labels. Composition is set union. Checking is subset inclusion. Effect *variables* can be higher-kinded (operators, `Eff → Eff`) for second-order polymorphism: the internal `EffectTerm` is a small lambda-calculus-with-union and `EffectSet` is its ground normal form, reached by beta + union normalization (`effect_term.gleam`). See docs/THEORY.md and docs/second-order-effects.md for the full grounding (semirings, graded modal type theory, higher-kinded effect variables).

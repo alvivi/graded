@@ -103,26 +103,27 @@ This allows `handle_request` to perform Http and Stdout effects, but nothing els
 {Http, Db} ⊆ {Http, Stdout}  →  false  →  VIOLATION (Db not allowed)
 ```
 
-## Step 4: Why this is a semiring
+## Step 4: The algebra of effects
 
-The mathematical structure underneath is a **semiring** — a set with two operations that interact nicely. For effects:
+Effect sets under union form a **commutative, idempotent monoid** (equivalently, a bounded join-semilattice):
 
 | Concept | Math | Effects meaning |
 |---------|------|----------------|
 | Elements | Sets of labels | `{}`, `{Stdout}`, `{Http, Db}` |
-| "Addition" (⊕) | Set union (∪) | Combining effects: if f has {A} and g has {B}, calling both gives {A, B} |
-| "Multiplication" (⊗) | Set intersection (∩) | Sequencing/composition (used in more advanced checking) |
-| Zero (𝟎) | Empty set {} | No effects — pure |
-| One (𝟏) | Universal set | All effects — unrestricted |
+| Combine (∪) | Set union | If `f` has `{A}` and `g` has `{B}`, doing both gives `{A, B}` |
+| Identity | Empty set `{}` | No effects — pure; combining with it adds nothing |
+| Order (⊆) | Subset | The checking relation: `actual ⊆ budget` |
 
-The semiring laws guarantee that effect composition is well-behaved:
+with these laws:
 
-- **Union is associative**: `(A ∪ B) ∪ C = A ∪ (B ∪ C)` — grouping doesn't matter
-- **Union is commutative**: `A ∪ B = B ∪ A` — order doesn't matter
-- **Empty set is identity**: `A ∪ {} = A` — calling a pure function adds no effects
-- **Union is idempotent**: `A ∪ A = A` — calling the same effect twice doesn't create a new kind of effect
+- **Associative**: `(A ∪ B) ∪ C = A ∪ (B ∪ C)` — grouping doesn't matter
+- **Commutative**: `A ∪ B = B ∪ A` — order doesn't matter
+- **Identity**: `A ∪ {} = A` — calling a pure function adds no effects
+- **Idempotent**: `A ∪ A = A` — doing the same effect twice is still one *kind* of effect
 
-These aren't arbitrary axioms — they're exactly what you'd expect from combining effects. If function `f` does Http and function `g` does Http, calling both still only gives you Http as an effect *kind* (though it happens twice).
+These aren't arbitrary axioms — they're exactly what you'd expect from combining effects, and both **sequencing** two calls and **branching** between them combine their effects the same way: by union.
+
+This union monoid is the *additive* fragment of the **semiring** that graded modal type theory uses in general (Step 7). Effects exercise only that fragment; a separate multiplicative operation becomes relevant for richer grades — for example ℕ, with `+` and `×`, for linearity (counting *how many times* a value is used). graded itself never intersects effect sets.
 
 ## Step 5: Transitive analysis
 
@@ -153,13 +154,21 @@ fn a() { b() }
 fn b() { a() }  // cycle — detected, not infinite loop
 ```
 
-## Step 6: The bigger picture — graded modal types
+## Step 6: Soundness and the `[Unknown]` grade
+
+graded is a *static* analysis, so it can't always know what a value does at runtime — an `@external` FFI function, a function pulled out of a list, a dependency that ships no annotations. Rather than guess (and risk calling an impure function pure), graded gives such a value the grade **`[Unknown]`**: "could be any effect."
+
+`[Unknown]` behaves like the **top** of the effect ordering — it is *not* a subset of any concrete budget, so a `check` that reaches an unresolved value fails rather than passing silently. This is what **sound, not complete** means: graded over-approximates, so it may ask you to annotate something it can't prove, but it never *understates* a function's effects. A green check is a real guarantee; a red one may just need a hint.
+
+That hint is the escape hatch — an `external effects` line, a `type` field annotation, or a wider budget turns the `[Unknown]` into a concrete grade graded can check. The patterns that produce `[Unknown]`, and how to resolve each, are catalogued in [LIMITATIONS.md](./LIMITATIONS.md).
+
+## Step 7: The bigger picture — graded modal types
 
 Effects are just one instance of a more general framework called **graded modal type theory**. The key insight: many properties of programs can be described by "how much" or "what kind" of some resource is used, and these quantities form algebraic structures.
 
 | Property | Algebra | Elements | "Zero" | Composition |
 |----------|---------|----------|--------|-------------|
-| **Effects** | Set semiring | `{Stdout, Http, ...}` | `{}` (pure) | Union |
+| **Effects** | Join-semilattice | `{Stdout, Http, ...}` | `{}` (pure) | Union |
 | **Privacy** | Lattice | `Public, Internal, Confidential, Secret` | `Public` | Join (max) |
 
 The checker algorithm is the same shape for both:
@@ -177,9 +186,9 @@ Effect *polymorphism* lets a grade contain variables: `map(f: [e]) : [e]` says "
 
 A higher-order parameter whose own type takes a function is *second-order*: its effect is not a set but a **function of a set**. Writing `Eff → Eff` for "effect operator," the parameter `action` in `with(action: fn(fn() -> Nil) -> a)` has kind `Eff → Eff`, and `with`'s effect is `action` *applied to* the effect of the callback it is handed — an **application** `action(Stdout)`, not a flat variable. This is exactly the type-level `*` vs `* → *` (kind) distinction lifted from types to effects: first-order effect polymorphism quantifies over `Eff`-kinded variables; second-order quantifies over `Eff → Eff`-kinded ones (System F-ω, transplanted to the effect algebra).
 
-graded represents this with a small term language (`EffectTerm`): labels and union (the set semiring above), plus variables, abstraction (`λcb. body`, an operator), and application (`op(arg)`). `EffectSet` is the **ground normal form** — a term with no abstractions, no applications, and no free higher-kinded variables. Resolution is **beta-reduction**: at a call site the operator argument is substituted for the variable and `op(arg)` reduces. Because the terms are finite and non-recursive (call-graph recursion is handled separately, by topological ordering and a cycle guard), reduction terminates without the unification/fixpoint machinery a full effect-inference system (Koka, Granule) would need — keeping graded a lightweight checker over the same semiring foundation. See [docs/second-order-effects.md](./docs/second-order-effects.md).
+graded represents this with a small term language (`EffectTerm`): labels and union (the union monoid above), plus variables, abstraction (`λcb. body`, an operator), and application (`op(arg)`). `EffectSet` is the **ground normal form** — a term with no abstractions, no applications, and no free higher-kinded variables. Resolution is **beta-reduction**: at a call site the operator argument is substituted for the variable and `op(arg)` reduces. Because the terms are finite and non-recursive (call-graph recursion is handled separately, by topological ordering and a cycle guard), reduction terminates without the unification/fixpoint machinery a full effect-inference system (Koka, Granule) would need — keeping graded a lightweight checker over the same semiring foundation. See [second-order-effects.md](./second-order-effects.md).
 
-## Step 7: Privacy — the next checker
+## Step 8: Privacy — the next checker
 
 Effects answer "what *kind* of side effect does this function perform?" Privacy answers "where does sensitive data *flow*?"
 
@@ -206,7 +215,7 @@ Privacy checking assigns sensitivity levels that form a *lattice*:
 Secret > Confidential > Internal > Public
 ```
 
-The rule: data at level L must not flow to a context at level < L.
+The rule: data at level L must not flow to a context at level < L. (The `privacy` lines below are illustrative — privacy checking isn't implemented yet.)
 
 ```
 // app.graded — at the project root
@@ -226,13 +235,13 @@ Unlike effect checking (which walks the call graph), privacy checking requires *
 
 graded implements **effect checking** with higher-order and type-aware resolution:
 
-- Effects are sets of string labels
-- Composition is set union
-- Checking is subset inclusion
-- Transitive analysis follows local calls with cycle detection
-- Knowledge base maps external functions to their effect sets
-- **Parameter bounds** for higher-order functions: `effects apply(f: [Stdout]) : [Stdout]` — calls to bounded parameters use the declared effect set
-- **Type field annotations**: `type Handler.on_click : [Dom]` — field access calls on typed parameters resolve effects via the type field registry
+- Effects are sets of string labels; composition is set union; checking is subset inclusion
+- Transitive analysis follows local calls, with topological ordering over the call graph and a cycle guard
+- A knowledge base maps dependency and FFI functions to their effect sets, seeded by a bundled catalog of common packages
+- Anything it can't statically resolve becomes the conservative `[Unknown]` (Step 6)
+- **Parameter bounds** for higher-order functions: `effects apply(f: [Stdout]) : [Stdout]` — calls to bounded parameters use the declared set
+- **Effect polymorphism**, including **higher-kinded (second-order) effect variables**: an operator parameter's effect is a *function* of its callback's effect, resolved by beta-reduction (Step 7)
+- **Type-aware resolution** via girard: field calls resolve through a receiver's inferred type, and field effects are inferred from construction sites — the `type Handler.on_click : [Dom]` line is the explicit override
 
 Privacy checking is the planned next step — it introduces a new algebra (lattices) and a new analysis mode (data flow) while reusing the existing AST infrastructure.
 
