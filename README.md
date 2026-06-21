@@ -68,24 +68,6 @@ check app/router.handle_request : [Http, Stdout]
 
 If `handle_request` does something outside its budget (like writing to a database), graded reports the violation with the call site.
 
-## Project layout
-
-```
-myapp/
-├── src/
-│   ├── myapp.gleam
-│   └── myapp/
-│       └── router.gleam
-├── myapp.graded          ← spec file (tracked, shipped, hand-editable)
-├── build/
-│   └── .graded/          ← cache (gitignored, not shipped)
-│       ├── myapp.graded
-│       └── myapp/
-│           └── router.graded
-├── gleam.toml
-└── ...
-```
-
 ## Configuration
 
 graded reads its configuration from a `[tools.graded]` table in `gleam.toml`. Both fields are optional — omit them to get the defaults.
