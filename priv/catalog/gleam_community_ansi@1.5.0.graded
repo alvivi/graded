@@ -1,0 +1,3 @@
+// gleam_community_ansi — pure ANSI string formatting
+
+external effects gleam_community/ansi : []

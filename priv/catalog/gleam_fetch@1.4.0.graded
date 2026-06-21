@@ -1,0 +1,11 @@
+// gleam_fetch — HTTP client (JavaScript Fetch)
+
+external effects gleam/fetch.raw_send : [Http]
+external effects gleam/fetch.read_bytes_body : [Http]
+external effects gleam/fetch.read_chunk : [Http]
+external effects gleam/fetch.read_json_body : [Http]
+external effects gleam/fetch.read_text_body : [Http]
+external effects gleam/fetch.send : [Http]
+external effects gleam/fetch.send_bits : [Http]
+external effects gleam/fetch.send_form_data : [Http]
+external effects gleam/fetch.stream_body : [Http]

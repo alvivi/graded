@@ -1,0 +1,3 @@
+// gleam_bitwise — pure bitwise integer operations
+
+external effects gleam/bitwise : []

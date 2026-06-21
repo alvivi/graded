@@ -1,0 +1,3 @@
+// justin — pure string case conversion
+
+external effects justin : []

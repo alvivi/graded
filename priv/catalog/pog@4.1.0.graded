@@ -1,0 +1,7 @@
+// pog — PostgreSQL client
+
+external effects pog.execute : [Database]
+external effects pog.query : [Database]
+external effects pog.start : [Database, Process]
+external effects pog.supervised : [Database, Process]
+external effects pog.transaction : [Database]

@@ -1,0 +1,3 @@
+// ranger — pure lazy ranges
+
+external effects ranger : []

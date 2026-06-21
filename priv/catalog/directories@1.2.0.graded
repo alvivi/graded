@@ -1,0 +1,13 @@
+// directories — standard system directory locations
+
+external effects directories.cache_dir : [Environment]
+external effects directories.config_dir : [Environment]
+external effects directories.config_local_dir : [Environment]
+external effects directories.data_dir : [Environment]
+external effects directories.data_local_dir : [Environment]
+external effects directories.executable_dir : [Environment]
+external effects directories.home_dir : [Environment]
+external effects directories.preference_dir : [Environment]
+external effects directories.runtime_dir : [Environment]
+external effects directories.state_dir : [Environment]
+external effects directories.tmp_dir : [Environment]

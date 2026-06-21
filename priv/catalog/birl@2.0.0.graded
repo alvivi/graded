@@ -1,0 +1,9 @@
+// birl — date and time handling
+
+external effects birl : []
+external effects birl.monotonic_now : [Time]
+external effects birl.now : [Time]
+external effects birl.now_with_offset : [Time]
+external effects birl.now_with_timezone : [Time]
+external effects birl.utc_now : [Time]
+external effects birl/duration : []

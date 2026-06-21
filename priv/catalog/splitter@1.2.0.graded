@@ -1,0 +1,3 @@
+// splitter — pure string splitting
+
+external effects splitter : []

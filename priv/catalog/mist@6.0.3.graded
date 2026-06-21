@@ -1,0 +1,12 @@
+// mist — web server
+
+external effects mist.read_body : [Network]
+external effects mist.read_request_body : [Network]
+external effects mist.send_binary_frame : [Network]
+external effects mist.send_chunk : [Network]
+external effects mist.send_event : [Network]
+external effects mist.send_file : [FileSystem]
+external effects mist.send_text_frame : [Network]
+external effects mist.start : [Network, Process]
+external effects mist.stream : [Network]
+external effects mist.supervised : [Network, Process]
