@@ -2,6 +2,6 @@
 
 external effects shellout : []
 external effects shellout.arguments : [Environment]
-external effects shellout.command : [Subprocess]
-external effects shellout.exit : [Subprocess]
-external effects shellout.which : [Subprocess]
+external effects shellout.command : [Exec]
+external effects shellout.exit : [Exec]
+external effects shellout.which : [Exec]

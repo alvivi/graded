@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Catalog entries for 22 more of the most-used Gleam packages.** Calls into these now resolve to a precise effect (or `[]` for pure libraries) instead of `[Unknown]`: glance, glexer, justin, snag, ranger, marceau, gleam_community_colour, gleam_community_ansi, glam, splitter, and gleam_bitwise (pure); glisten, mist, wisp, pog, gleam_fetch, shellout, logging, argv, directories, birl, and youid (effectful).
-- **New effect labels `Network`, `Database`, `Subprocess`, and `Random`** for socket/server I/O (glisten, mist), database queries (pog), shelling out (shellout), and nondeterministic generation (youid v4/v7, `wisp.random_string`).
+- **New effect labels `Network`, `Database`, `Exec`, and `Random`** for socket/server I/O (glisten, mist), database queries (pog), running external programs (shellout), and nondeterministic generation (youid v4/v7, `wisp.random_string`).
 
 ### Fixed
 
