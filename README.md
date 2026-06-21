@@ -25,7 +25,7 @@ This scans `src/`, analyses every function, and writes two outputs:
 - **`<package_name>.graded`** at the project root — the spec file. Contains the inferred effects of every *public* function plus any hand-written `check` invariants, `external effects` hints, and `type` field annotations. Tracked in git, ships to consumers if you add it to `included_files` in `gleam.toml`.
 - **`build/.graded/<module>.graded`** — per-module cache files. Contain the inferred effects of *every* function (public and private). Regenerated freely on each `graded infer` run, never shipped (`build/` is gitignored).
 
-### Lustre example
+### Example
 
 In a [Lustre](https://hexdocs.pm/lustre/) app, `view` must be pure — it builds HTML from the model without side effects. Enforce this with graded:
 
@@ -56,17 +56,6 @@ graded: 1 violation(s) found
 Remove the `io.println` and the check passes. Lustre's `init` and `update` functions are also pure — they return `#(Model, Effect(Msg))` where `Effect` is a data description, not an executed side effect.
 
 Function names in the spec file are **module-qualified**: `app.view` means the `view` function in module `app`. Use slashes for nested module paths (`app/router.handle_request`).
-
-### General example
-
-Constrain any function's effect budget:
-
-```
-// app.graded — at the project root
-check app/router.handle_request : [Http, Stdout]
-```
-
-If `handle_request` does something outside its budget (like writing to a database), graded reports the violation with the call site.
 
 ## Configuration
 
