@@ -1,0 +1,5 @@
+// gleam_javascript — JavaScript-target primitives (arrays, promises, symbols)
+
+external effects gleam/javascript/array : []
+external effects gleam/javascript/promise : []
+external effects gleam/javascript/symbol : []

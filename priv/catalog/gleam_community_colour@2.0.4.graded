@@ -1,0 +1,4 @@
+// gleam_community_colour — pure colour types and conversions
+
+external effects gleam_community/colour : []
+external effects gleam_community/colour/accessibility : []

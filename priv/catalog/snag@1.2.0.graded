@@ -1,0 +1,3 @@
+// snag — pure ad-hoc error values
+
+external effects snag : []

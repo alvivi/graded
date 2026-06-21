@@ -1,0 +1,10 @@
+// youid — UUID generation and parsing
+
+external effects youid/uuid : []
+external effects youid/uuid.v1 : [Random, Time]
+external effects youid/uuid.v1_string : [Random, Time]
+external effects youid/uuid.v4 : [Random]
+external effects youid/uuid.v4_string : [Random]
+external effects youid/uuid.v7 : [Random, Time]
+external effects youid/uuid.v7_from_millisec : [Random]
+external effects youid/uuid.v7_string : [Random, Time]

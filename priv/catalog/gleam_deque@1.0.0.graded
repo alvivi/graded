@@ -1,0 +1,3 @@
+// gleam_deque — pure double-ended queue
+
+external effects gleam/deque : []

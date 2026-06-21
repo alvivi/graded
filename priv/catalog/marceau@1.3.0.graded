@@ -1,0 +1,3 @@
+// marceau — pure MIME type lookup
+
+external effects marceau : []

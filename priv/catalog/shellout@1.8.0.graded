@@ -1,0 +1,7 @@
+// shellout — cross-platform shell operations
+
+external effects shellout : []
+external effects shellout.arguments : [Environment]
+external effects shellout.command : [Exec]
+external effects shellout.exit : [Exec]
+external effects shellout.which : [Exec]

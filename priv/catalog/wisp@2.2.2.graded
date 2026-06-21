@@ -1,0 +1,18 @@
+// wisp — web framework
+
+external effects wisp.configure_logger : [Stdout]
+external effects wisp.delete_temporary_files : [FileSystem]
+external effects wisp.log_alert : [Stdout]
+external effects wisp.log_critical : [Stdout]
+external effects wisp.log_debug : [Stdout]
+external effects wisp.log_emergency : [Stdout]
+external effects wisp.log_error : [Stdout]
+external effects wisp.log_info : [Stdout]
+external effects wisp.log_notice : [Stdout]
+external effects wisp.log_request : [Stdout]
+external effects wisp.log_warning : [Stdout]
+external effects wisp.new_temporary_file : [FileSystem]
+external effects wisp.random_string : [Random]
+external effects wisp.serve_static : [FileSystem]
+external effects wisp.set_logger_level : [Stdout]
+external effects wisp/wisp_mist.handler : [Network, Process]

@@ -1,0 +1,5 @@
+// logging — Erlang logger configuration
+
+external effects logging.configure : [Stdout]
+external effects logging.log : [Stdout]
+external effects logging.set_level : [Stdout]

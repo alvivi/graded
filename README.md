@@ -206,14 +206,19 @@ Effect labels are plain strings — you can use any name. The bundled catalog us
 
 | Label | Meaning | Example functions |
 |---|---|---|
-| `Stdout` | Writes to standard output | `gleam/io.println`, `gleam/io.debug` |
+| `Stdout` | Writes to standard output | `gleam/io.println`, `logging.log` |
 | `Stderr` | Writes to standard error | `gleam/io.print_error` |
 | `Stdin` | Reads from standard input | `gleam/erlang.get_line` |
 | `Process` | Spawns, sends to, or manages BEAM processes | `gleam/erlang/process.send`, `gleam/otp/actor.start` |
-| `Http` | Network HTTP requests | `gleam/httpc.send`, `lustre_http.get` |
-| `FileSystem` | Reads or writes the filesystem | `simplifile.read`, `simplifile.write` |
+| `Http` | Network HTTP requests | `gleam/httpc.send`, `gleam/fetch.send`, `lustre_http.get` |
+| `Network` | Lower-level socket / server I/O | `glisten.start`, `mist.start` |
+| `Database` | Database queries | `pog.query`, `pog.execute` |
+| `FileSystem` | Reads or writes the filesystem | `simplifile.read`, `wisp.serve_static` |
+| `Environment` | Reads env vars or command-line arguments | `envoy.get`, `argv.load`, `directories.home_dir` |
+| `Exec` | Runs an external program | `shellout.command`, `shellout.which` |
 | `Dom` | Browser DOM manipulation | `lustre.start`, `lustre.register` |
-| `Time` | Reads system clock or timezone | `gleam/time/timestamp.system_time`, `gleam/time/calendar.local_offset` |
+| `Time` | Reads system clock or timezone | `gleam/time/timestamp.system_time`, `birl.now` |
+| `Random` | Nondeterministic generation | `youid/uuid.v4`, `wisp.random_string` |
 
 You can define your own labels for project-specific effects:
 
@@ -236,18 +241,35 @@ For example, if you have `gleam_stdlib@0.71.0` installed and the catalog has `gl
 
 ### Covered packages
 
+The catalog ships effect knowledge for 44 packages. The effectful ones:
+
 | Package | Effects | Labels |
 |---|---|---|
 | **gleam_stdlib** | `gleam/io.*` | `Stdout`, `Stderr` |
-| **gleam_erlang** | `gleam/erlang/process.*` | `Process`, `Stdin`, `FileSystem` |
+| **gleam_erlang** | `gleam/erlang/process.*`, `gleam/erlang.get_line` | `Process`, `Stdin`, `FileSystem` |
 | **gleam_otp** | `gleam/otp/actor.*`, `gleam/otp/supervisor.*` | `Process` |
 | **gleam_httpc** | `gleam/httpc.send` | `Http` |
+| **gleam_fetch** | `gleam/fetch.send`, `.read_*_body` | `Http` |
+| **gleam_hackney** | `gleam/hackney.send`, `.send_bits` | `Http` |
 | **lustre** | `lustre.start`, `lustre.send`, `lustre/server_component.*` | `Process`, `Dom` |
 | **lustre_http** | `lustre_http.*` | `Http` |
+| **glisten** | `glisten.start`, `.send`, `.supervised` | `Network`, `Process` |
+| **mist** | `mist.start`, `.read_body`, `.send_file`, websocket frames | `Network`, `Process`, `FileSystem` |
+| **gleam_cowboy** | `gleam/http/cowboy.start` | `Network`, `Process` |
+| **gleam_elli** | `gleam/http/elli.start`, `.become` | `Network`, `Process` |
+| **wisp** | `wisp.log_*`, `.serve_static`, `.random_string`, `wisp/wisp_mist.handler` | `Stdout`, `FileSystem`, `Random`, `Network` |
+| **pog** | `pog.query`, `.execute`, `.transaction`, `.start` | `Database`, `Process` |
 | **simplifile** | `simplifile.*` | `FileSystem` |
+| **shellout** | `shellout.command`, `.which`, `.exit`, `.arguments` | `Exec`, `Environment` |
+| **envoy** | `envoy.get`, `.set`, `.unset`, `.all` | `Environment` |
+| **argv** | `argv.load` | `Environment` |
+| **directories** | `directories.*` | `Environment` |
+| **logging** | `logging.log`, `.configure`, `.set_level` | `Stdout` |
 | **gleam_time** | `gleam/time/timestamp.system_time`, `gleam/time/calendar.local_offset`, `.utc_offset` | `Time` |
+| **birl** | `birl.now`, `.utc_now`, `.monotonic_now` | `Time` |
+| **youid** | `youid/uuid.v1`, `.v4`, `.v7` | `Time`, `Random` |
 
-Pure (all functions `[]`): **gleam_http**, **gleam_json**, **filepath**, **gleam_regexp**, **gleam_yielder**, **gleam_crypto**, **houdini**, **tom**.
+Pure (all functions `[]`): **filepath**, **gleam_http**, **gleam_json**, **gleam_crypto**, **gleam_regexp**, **gleam_yielder**, **gleam_javascript**, **gleam_deque**, **houdini**, **tom**, **glance**, **glexer**, **justin**, **snag**, **ranger**, **marceau**, **splitter**, **glam**, **gleam_bitwise**, **gleam_community_colour**, **gleam_community_ansi**.
 
 For packages not in the catalog, use `external effects` declarations in your project's spec file.
 
