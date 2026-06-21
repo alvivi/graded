@@ -134,7 +134,7 @@ pub fn caller() -> Nil {
 external effects app.write_log : [Stdout]
 ```
 
-For common third-party packages, the [bundled catalog](../README.md#effect-catalog)
+For common third-party packages, the [bundled catalog](./REFERENCE.md#effect-catalog)
 already supplies these declarations, so you only need `external effects` for your
 own FFI and for packages the catalog doesn't cover.
 
