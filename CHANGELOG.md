@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-21
+
 ### Added
 
 - **Catalog entries for 27 more of the most-used Gleam packages.** Calls into these now resolve to a precise effect (or `[]` for pure libraries) instead of `[Unknown]`: glance, glexer, justin, snag, ranger, marceau, gleam_community_colour, gleam_community_ansi, glam, splitter, gleam_bitwise, gleam_javascript, and gleam_deque (pure); glisten, mist, wisp, pog, gleam_fetch, gleam_hackney, gleam_cowboy, gleam_elli, shellout, logging, argv, directories, birl, and youid (effectful).
@@ -147,7 +149,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Versioned catalog system resolved against `manifest.toml`.
 - Catalog entries for `gleam_stdlib`, `gleam_erlang`, `gleam_otp`, `gleam_http`, `gleam_httpc`, `gleam_json`, `gleam_regexp`, `gleam_yielder`, `gleam_crypto`, `lustre`, `lustre_http`, `simplifile`, `filepath`, `tom`.
 
-[Unreleased]: https://github.com/alvivi/graded/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/alvivi/graded/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/alvivi/graded/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/alvivi/graded/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/alvivi/graded/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/alvivi/graded/compare/v0.4.2...v0.5.0

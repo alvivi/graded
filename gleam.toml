@@ -1,10 +1,10 @@
 name = "graded"
-version = "0.7.0"
+version = "0.8.0"
 
 # Fill out these fields if you intend to generate HTML documentation or publish
 # your project to the Hex package manager.
 
-description = "Effect checker for Gleam via sidecar .graded annotation files"
+description = "Effect checking for Gleam"
 licences = ["Apache-2.0"]
 repository = { type = "github", user = "alvivi", repo = "graded" }
 links = [{ title = "Documentation", href = "https://hexdocs.pm/graded" }]
