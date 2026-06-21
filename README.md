@@ -111,7 +111,7 @@ gleam run -m graded format --stdin            # format from stdin (editor integr
 
 graded is **sound, not complete**: it combines syntax-level analysis ([glance](https://hexdocs.pm/glance/)) with type information ([girard](https://hexdocs.pm/girard)), and when it can't statically trace a function value it falls back to the `[Unknown]` effect rather than guess. `[Unknown]` fails an effect budget, so graded never silently *understates* effects — but a few value-flow patterns need a hand-written annotation or a wider budget to resolve.
 
-Idiomatic Gleam — inline callbacks, direct and aliased function references, pipe chains, higher-order functions passing functions by name (including second-order [operator effects](./docs/second-order-effects.md)), and validator/handler/config records — is handled automatically, including across modules: a fresh checkout resolves transitive chains with no prior `graded infer` (committed `effects` lines always win, and `check` writes nothing to disk).
+Idiomatic Gleam — inline callbacks, direct and aliased function references, pipe chains, higher-order functions passing functions by name (including second-order [operator effects](./docs/SECOND_ORDER_EFFECTS.md)), and validator/handler/config records — is handled automatically, including across modules: a fresh checkout resolves transitive chains with no prior `graded infer` (committed `effects` lines always win, and `check` writes nothing to disk).
 
 The handful of patterns that fall back to `[Unknown]` — each with how it shows up and how to work around it — are documented in **[docs/LIMITATIONS.md](./docs/LIMITATIONS.md)**.
 

@@ -50,7 +50,7 @@ without it you cannot annotate `map`, and Java's checked exceptions are the
 canonical failure. graded answers with effect variables (`map(f: [e]) : [e]`) and —
 going further than most set-based systems — higher-kinded *operator* variables for
 second-order callbacks (see [THEORY.md](./THEORY.md) and
-[second-order-effects.md](./second-order-effects.md)). Second, an effect checker can
+[SECOND_ORDER_EFFECTS.md](./SECOND_ORDER_EFFECTS.md)). Second, an effect checker can
 live **outside** the type system (as OCaml 5's untyped effects, or any external
 analyser, show), which is exactly what lets graded be a sidecar over plain Gleam
 rather than a language fork.

@@ -1,9 +1,8 @@
 # Design: second-order effect variables via a uniform `EffectTerm` model
 
-Status: **implemented** (branch `nested-effect-vars`). This closes the "no
-nested (second-order) effect variables" limitation that was documented in
-[README.md](../README.md#limitations). All
-six phases below shipped. Operators are **n-ary** via currying: an operator
+This is the design reference for graded's **higher-kinded (second-order) effect
+variables** — effect operators of kind `Eff → Eff`. Operators are **n-ary** via
+currying: an operator
 parameter whose type takes several functions (`fn(fn() -> _, fn() -> _) -> _`)
 threads *all* its callbacks as a curried application `((action e1) e2)`, and an
 operator argument is lifted to a curried operator `λp1. λp2. body` over the same
@@ -48,7 +47,7 @@ an untraceable source (no provenance to a factory or construction); and a
 
 Let graded express and resolve **higher-kinded effect variables** — effect
 variables of kind `Eff → Eff` (effect *operators*), not just `Eff` (flat sets).
-The motivating program graded cannot currently handle:
+The motivating program that requires it:
 
 ```gleam
 pub fn with_logger(action: fn(fn(String) -> Nil) -> a) -> a {
@@ -104,15 +103,14 @@ is `Eff → Eff`; a bare `TVar` is `Eff`. No kind field is stored. An explicit
 kind-check pass that rejects ill-kinded input (`e(Stdout)` where `e` was
 declared flat) is a later nicety, not core.
 
-## Data-model changes (uniform)
+## Data model
 
-`EffectSet` keeps its current definition — it is still the normal form, and
-`union` / `is_subset` / `empty` / `from_labels` stay as they are. The annotation
-types move to `EffectTerm`:
+`EffectSet` is the normal form, with `union` / `is_subset` / `empty` /
+`from_labels` as its operations. The annotation types carry `EffectTerm`:
 
 ```gleam
 pub type ParamBound {
-  ParamBound(name: String, effect: EffectTerm)   // was: effects: EffectSet
+  ParamBound(name: String, effects: EffectTerm)
 }
 
 pub type EffectAnnotation {
@@ -120,7 +118,7 @@ pub type EffectAnnotation {
     kind: AnnotationKind,
     function: String,
     params: List(ParamBound),   // first- and second-order entries, uniformly
-    effects: EffectTerm,        // result; may contain applications. was: EffectSet
+    effects: EffectTerm,        // result; may contain applications
   )
 }
 ```
@@ -185,27 +183,7 @@ free variables must format to **byte-identical** text vs. today
 existing `.graded` file and fixture stable; it is a dedicated test, not an
 assumption.
 
-## Phasing — each phase keeps the suite green
-
-| Phase | What | Risk |
-| --- | --- | --- |
-| **0. IR foundations** | `effect_term.gleam`: type, `normalize`, capture-avoiding `subst`, fuel guard, `from/to_effect_set`. Property + unit tests. No behavior change. | Low |
-| **1. Migrate data model + boundary** | Switch `ParamBound` / `EffectAnnotation` / `TypeField*` to `EffectTerm`; insert `to_effect_set` at the `is_subset` / KB boundary. Compiler exhaustiveness drives the edits. **Existing suite stays green** — proves the bridge is behavior-preserving before new capability. | Med |
-| **2. Serialization** | Parse / format operator bounds and application terms; round-trip + byte-identity tests. | Med |
-| **3. Infer** | Detect params typed `fn(fn(..)->_)->_` (girard signatures in `signatures.gleam` / `typeinfo.gleam` already expose this); build the `TAbs` body in `collect_effects`; emit the term-valued signature. | Med–high |
-| **4. Resolve at call sites** | Rework `bind_variables` / `substitute_at_call_site` / `resolve_field_effect` to bind operator variables to `TAbs` arguments and beta-reduce, then normalize. The payoff phase. | High |
-| **5. Semantics + docs** | `is_subset` for residual terms (conservative); remove the README limitation; THEORY note framing second-order effects as higher-kinded effect variables. | Low |
-
-## Files touched
-
-- **`effect_term.gleam`** *(new, ~280 LOC)* — IR, reduction, substitution, bridges, fuel guard.
-- **`types.gleam`** — retype `ParamBound` / `EffectAnnotation` / `TypeField*` fields to `EffectTerm`; `EffectSet` + its ops unchanged.
-- **`annotation.gleam`** — parse / format operator bounds + application terms; protect byte-identity.
-- **`checker.gleam`** — phases 1, 3, 4: boundary conversion, scheme inference, operator-variable resolution.
-- **`effects.gleam`** — KB stores / returns `EffectTerm`; reduces to `EffectSet` at the resolved lookup boundary.
-- Tests + `test/fixtures/` — second-order fixtures; docs in phase 5.
-
-## Risks & invariants
+## Invariants
 
 1. **Capture-avoidance** in `subst` — freshen bound names before substituting
    under a `TAbs`. Variables are param-named and controlled, so capture is rare
@@ -218,13 +196,12 @@ assumption.
 4. **Soundness of the stuck-term collapse** for `check` — centralized in
    `to_effect_set`, enforced in exactly one place. Property-tested (P-SOUND-1).
 
-## Properties & invariants (qcheck)
+## Properties (qcheck)
 
-This rewrite is dense with algebraic structure, so the test strategy leans
-heavily on property-based testing with **`qcheck`** (already a dev dependency,
-v1.0.4; existing generators live in `test/generators.gleam` and use the
-`use x <- qcheck.given(gen)` pattern). We add an `effect_term_gen()` and the
-properties below. Each `P-*` tag is a planned test.
+The algebraic structure is verified with property-based testing using
+**`qcheck`** (generators live in `test/generators.gleam`, using the
+`use x <- qcheck.given(gen)` pattern). An `effect_term_gen()` drives the
+properties below; each `P-*` tag is a test.
 
 ### Generators
 

@@ -187,7 +187,7 @@ concrete effect. graded models this with a small lambda-calculus-with-union
 form. Operator arguments resolve from named references, inline and let-bound
 closures, `case`/`if` branches over function-like options, blocks, and functions
 returned from a call. The full design and the property suite are in
-[docs/second-order-effects.md](./second-order-effects.md).
+[docs/SECOND_ORDER_EFFECTS.md](./SECOND_ORDER_EFFECTS.md).
 
 ## Type field effects
 

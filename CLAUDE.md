@@ -107,4 +107,4 @@ Three call categories in the extractor:
 
 ## Theoretical Foundations
 
-Effects are sets of string labels. Composition is set union. Checking is subset inclusion. Effect *variables* can be higher-kinded (operators, `Eff → Eff`) for second-order polymorphism: the internal `EffectTerm` is a small lambda-calculus-with-union and `EffectSet` is its ground normal form, reached by beta + union normalization (`effect_term.gleam`). See docs/THEORY.md and docs/second-order-effects.md for the full grounding (semirings, graded modal type theory, higher-kinded effect variables).
+Effects are sets of string labels. Composition is set union. Checking is subset inclusion. Effect *variables* can be higher-kinded (operators, `Eff → Eff`) for second-order polymorphism: the internal `EffectTerm` is a small lambda-calculus-with-union and `EffectSet` is its ground normal form, reached by beta + union normalization (`effect_term.gleam`). See docs/THEORY.md and docs/SECOND_ORDER_EFFECTS.md for the full grounding (semirings, graded modal type theory, higher-kinded effect variables).

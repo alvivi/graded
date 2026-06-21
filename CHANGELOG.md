@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - At a call site, operator arguments beta-reduce to concrete effects. Named refs, inline/let-bound closures, `case`/`if` branches (joined per-branch), and operators returned from calls are all lifted.
   - Same-module named functions passed as operator arguments resolve transitively instead of collapsing to `[Unknown]`.
   - The `.graded` syntax gained operator applications and operator bounds (`fn(a, b) -> [a, b]`); first-order lines are byte-identical to before.
-- Resolution is pure-Gleam term reduction (capture-avoiding substitution, beta, union normalization, fuel-guarded), no external solver. Laws, soundness, and termination are property-tested with qcheck. See [docs/second-order-effects.md](docs/second-order-effects.md).
+- Resolution is pure-Gleam term reduction (capture-avoiding substitution, beta, union normalization, fuel-guarded), no external solver. Laws, soundness, and termination are property-tested with qcheck. See [docs/SECOND_ORDER_EFFECTS.md](docs/SECOND_ORDER_EFFECTS.md).
 - **More value flow resolves instead of `[Unknown]`.**
   - **Blocks resolve to their tail** — a block value (`{ let f = io.println; f }`) is classified by the expression it evaluates to.
   - **Returned operators cross modules and packages** via `returns mod.fn : fn(cb) -> [cb]` lines, so `check` resolves `let h = producer(); with(h)` across boundaries.
