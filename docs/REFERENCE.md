@@ -1,28 +1,13 @@
 # graded reference
 
-A complete tour of what graded does and the `.graded` spec language it reads and
-writes. For installation, project layout, configuration, and the CLI, see the
-[README](../README.md); this document covers the analysis model, every annotation
-kind, the effect-set syntax, the resolution order, the effect-label conventions,
-and the bundled catalog.
-
-## How analysis works
-
-graded parses your Gleam source with [glance](https://hexdocs.pm/glance/), resolves
-imports, follows local calls transitively, and unions the effect sets it finds.
-Composition is set union; checking is subset inclusion — if a function's actual
-effects aren't a subset of its declared budget, that's a violation, reported with
-the call site.
-
-On top of the syntax layer, graded runs [girard](https://hexdocs.pm/girard) — a
-Hindley-Milner type annotator for Gleam — over the whole package to learn the
-inferred type of every expression. Types are an enhancement layer applied per
-function: a function girard can't type falls back to the syntax-level path, so
-types only ever *sharpen* a result (resolving a field call's receiver, for
-example), never change an already-resolved one. The analysis is **sound, not
-complete**: when it can't statically trace a value it falls back to the `[Unknown]`
-effect rather than guess, so effects are never silently understated. The patterns
-that fall back are catalogued in [LIMITATIONS.md](./LIMITATIONS.md).
+This document is the reference for the `.graded` spec language. graded resolves
+each function's effects — a set of string labels — and checks them against the
+budgets you declare: an effect set passes when it is a subset of its budget.
+Below: every annotation kind, the effect-set syntax, the resolution order, the
+effect-label conventions, and the bundled catalog. For installation, project
+layout, configuration, and the CLI, see the [README](../README.md); for how the
+analysis works under the hood, see [How analysis works](#how-analysis-works) at the
+end.
 
 ## The spec file and the cache
 
@@ -307,37 +292,26 @@ between patch versions. A new catalog file is only needed when a library adds
 modules or changes effect semantics. A dependency that ships its own `.graded` spec
 overrides the catalog (resolution order step 3 above).
 
-### Covered packages
+Browse [`priv/catalog/`](../priv/catalog/) for the exact set of covered packages
+and the effects each one declares — the files are plain `.graded` and readable at a
+glance. It covers the core `gleam-lang` packages and the most-used community
+libraries. For a package the catalog doesn't cover, add an `external effects`
+declaration in your spec file.
 
-The catalog ships effect knowledge for 44 packages. The effectful ones:
+## How analysis works
 
-| Package | Effects | Labels |
-|---|---|---|
-| **gleam_stdlib** | `gleam/io.*` | `Stdout`, `Stderr` |
-| **gleam_erlang** | `gleam/erlang/process.*`, `gleam/erlang.get_line` | `Process`, `Stdin`, `FileSystem` |
-| **gleam_otp** | `gleam/otp/actor.*`, `gleam/otp/supervisor.*` | `Process` |
-| **gleam_httpc** | `gleam/httpc.send` | `Http` |
-| **gleam_fetch** | `gleam/fetch.send`, `.read_*_body` | `Http` |
-| **gleam_hackney** | `gleam/hackney.send`, `.send_bits` | `Http` |
-| **lustre** | `lustre.start`, `lustre.send`, `lustre/server_component.*` | `Process`, `Dom` |
-| **lustre_http** | `lustre_http.*` | `Http` |
-| **glisten** | `glisten.start`, `.send`, `.supervised` | `Network`, `Process` |
-| **mist** | `mist.start`, `.read_body`, `.send_file`, websocket frames | `Network`, `Process`, `FileSystem` |
-| **gleam_cowboy** | `gleam/http/cowboy.start` | `Network`, `Process` |
-| **gleam_elli** | `gleam/http/elli.start`, `.become` | `Network`, `Process` |
-| **wisp** | `wisp.log_*`, `.serve_static`, `.random_string`, `wisp/wisp_mist.handler` | `Stdout`, `FileSystem`, `Random`, `Network` |
-| **pog** | `pog.query`, `.execute`, `.transaction`, `.start` | `Database`, `Process` |
-| **simplifile** | `simplifile.*` | `FileSystem` |
-| **shellout** | `shellout.command`, `.which`, `.exit`, `.arguments` | `Exec`, `Environment` |
-| **envoy** | `envoy.get`, `.set`, `.unset`, `.all` | `Environment` |
-| **argv** | `argv.load` | `Environment` |
-| **directories** | `directories.*` | `Environment` |
-| **logging** | `logging.log`, `.configure`, `.set_level` | `Stdout` |
-| **gleam_time** | `gleam/time/timestamp.system_time`, `gleam/time/calendar.local_offset`, `.utc_offset` | `Time` |
-| **birl** | `birl.now`, `.utc_now`, `.monotonic_now` | `Time` |
-| **youid** | `youid/uuid.v1`, `.v4`, `.v7` | `Time`, `Random` |
+graded parses your Gleam source with [glance](https://hexdocs.pm/glance/), resolves
+imports, follows local calls transitively, and unions the effect sets it finds.
+Composition is set union; checking is subset inclusion — if a function's actual
+effects aren't a subset of its declared budget, that's a violation, reported with
+the call site.
 
-Pure (all functions `[]`): **filepath**, **gleam_http**, **gleam_json**, **gleam_crypto**, **gleam_regexp**, **gleam_yielder**, **gleam_javascript**, **gleam_deque**, **houdini**, **tom**, **glance**, **glexer**, **justin**, **snag**, **ranger**, **marceau**, **splitter**, **glam**, **gleam_bitwise**, **gleam_community_colour**, **gleam_community_ansi**.
-
-For packages not in the catalog, use `external effects` declarations in your
-project's spec file.
+On top of the syntax layer, graded runs [girard](https://hexdocs.pm/girard) — a
+Hindley-Milner type annotator for Gleam — over the whole package to learn the
+inferred type of every expression. Types are an enhancement layer applied per
+function: a function girard can't type falls back to the syntax-level path, so
+types only ever *sharpen* a result (resolving a field call's receiver, for
+example), never change an already-resolved one. The analysis is **sound, not
+complete**: when it can't statically trace a value it falls back to the `[Unknown]`
+effect rather than guess, so effects are never silently understated. The patterns
+that fall back are catalogued in [LIMITATIONS.md](./LIMITATIONS.md).
