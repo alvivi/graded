@@ -642,6 +642,33 @@ pub fn roundtrip_multi_param_operator_bound_test() {
   annotation.format_annotation(ann) |> should.equal(line)
 }
 
+// ──── Field bounds (`param.field: [..]`) ────
+
+pub fn parse_field_bound_test() {
+  // A field bound's name is the `param.field` path; it parses like any other
+  // parameter bound, the dot carried verbatim in the name.
+  let assert Ok([ann]) =
+    annotation.parse("check view(handler.on_click: [Dom]) : [Dom]")
+  ann.params
+  |> should.equal([
+    ParamBound("handler.on_click", TLabels(set.from_list(["Dom"]))),
+  ])
+}
+
+pub fn roundtrip_field_bound_test() {
+  let line = "check view(handler.on_click: [Dom]) : [Dom]"
+  let assert Ok([ann]) = annotation.parse(line)
+  annotation.format_annotation(ann) |> should.equal(line)
+}
+
+pub fn roundtrip_mixed_param_and_field_bound_test() {
+  // A `check` line can mix an ordinary parameter bound with a field bound.
+  let line =
+    "check view(log: [Stdout], handler.on_click: [Dom]) : [Dom, Stdout]"
+  let assert Ok([ann]) = annotation.parse(line)
+  annotation.format_annotation(ann) |> should.equal(line)
+}
+
 fn union_vars(first: EffectTerm, second: String) -> EffectTerm {
   effect_term.normalize(TUnion([first, TVar(second)]))
 }

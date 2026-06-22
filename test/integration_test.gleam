@@ -113,6 +113,22 @@ pub fn opaque_receiver_violation_detected_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn field_bound_resolves_untraceable_receiver_test() {
+  // field_bound.caller calls `v.to_error` where `v` arrives as a parameter —
+  // no construction site, no `type` line. The hand-written field bound on the
+  // `check field_bound.caller(v.to_error: [Stdout]) : []` line resolves the
+  // field call to [Stdout], so the [] budget must fail with that precise
+  // effect (not the [Unknown] graded would otherwise fall back to).
+  let assert Ok(results) = graded.run("test/fixtures")
+  let field_bound_result =
+    list.find(results, fn(r) { r.file == "test/fixtures/field_bound.gleam" })
+  let assert Ok(r) = field_bound_result
+  { r.violations != [] } |> should.be_true()
+  let assert [v, ..] = r.violations
+  v.function |> should.equal("caller")
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn closure_field_effect_from_construction_test() {
   // A record field wired to an *inline closure* at construction resolves to the
   // closure body's effect ([Stdout]) without a hand-written `type` annotation —

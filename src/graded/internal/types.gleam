@@ -132,6 +132,12 @@ pub type EffectTerm {
 // An effect bound on a function-typed parameter. The `effects` is an
 // `EffectTerm`: a flat `Eff` term for a first-order callback (`f: [e]`), or
 // an operator `TAbs` for a higher-order one (`action: fn(cb) -> [cb]`).
+//
+// `name` is the bare parameter name (`f`) for a parameter bound, or a
+// `param.field` path (`handler.on_click`) for a *field bound* — a hand-written
+// declaration of a record field's effect at the function boundary, the
+// boundary-scoped counterpart to a `type` line. A field bound's path carries a
+// dot; a parameter name never can, so the two forms don't collide.
 pub type ParamBound {
   ParamBound(name: String, effects: EffectTerm)
 }

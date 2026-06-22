@@ -2359,6 +2359,41 @@ fn resolve_field_call(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
+  // A hand-written field bound on the enclosing `check` line
+  // (`check f(recv.field: [..])`) resolves the call directly, ahead of
+  // girard/type-registry resolution. It's the boundary-scoped counterpart to a
+  // `type` line — an escape hatch for a receiver graded can't trace to a
+  // construction site. User-declared, so it wins over inferred field effects.
+  let field_target = field_call.object <> "." <> field_call.label
+  case list.find(caller_param_bounds, fn(b) { b.name == field_target }) {
+    Ok(bound) -> #(effect_term.normalize(bound.effects), memo)
+    Error(Nil) ->
+      resolve_field_call_by_type(
+        field_call,
+        function,
+        knowledge_base,
+        module_types,
+        call_args,
+        caller_param_bounds,
+        registry,
+        lift_operator_arg,
+        memo,
+      )
+  }
+}
+
+fn resolve_field_call_by_type(
+  field_call: types.FieldCall,
+  function: Function,
+  knowledge_base: KnowledgeBase,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  call_args: dict.Dict(Int, List(types.CallArgument)),
+  caller_param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
   // Resolve the receiver's nominal type, qualified by its defining module:
   // girard's inferred type for the receiver expression first (any receiver, and
   // girard reports the defining module), then the receiver's syntactic parameter

@@ -148,6 +148,22 @@ effects myapp.apply(f: [Stdout]) : [Stdout]
 A call to a bounded parameter (`f(x)` inside `apply`) uses the declared bound
 instead of `[Unknown]`.
 
+### Field bounds
+
+A bound's name can be a `param.field` path, declaring the effect of a function-typed
+field reached through a parameter:
+
+```
+// handler.on_click carries [Dom] inside view
+check myapp.view(handler.on_click: [Dom]) : [Dom]
+```
+
+A field call `handler.on_click(event)` then resolves to `[Dom]` directly, taking
+priority over receiver-type resolution. This is the boundary-scoped counterpart to a
+[`type` line](#type-field-effects): the `type` line declares a field's effect for
+every receiver of that type package-wide, the field bound for one `check`'d function.
+A field bound and an ordinary parameter bound can share one `check` line.
+
 ### Effect polymorphism
 
 When a function's effects *depend on* its callback, use lowercase effect variables:
@@ -222,8 +238,9 @@ The field's effect comes from one of:
 Field effects are keyed by the type's **defining module** (from girard's inferred
 type), so two different types both named `Validator` never conflate. When a field
 is wired to a value graded can't trace — a constructor parameter, or a local that
-isn't a traceable function — it falls back to `[Unknown]`, and the `type` line is
-the escape hatch; see [LIMITATIONS.md](./LIMITATIONS.md).
+isn't a traceable function — it falls back to `[Unknown]`. The escape hatch is a
+`type` line, or a [field bound](#field-bounds) when the assertion belongs at a single
+function boundary; see [LIMITATIONS.md](./LIMITATIONS.md).
 
 ## External declarations and FFI
 

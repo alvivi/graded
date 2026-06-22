@@ -1,26 +1,10 @@
 # Future work
 
 graded's effect analysis is mature: first- and second-order effect polymorphism,
-girard-backed field resolution, and cross-module / cross-package inference all
-ship today. What remains is a short list of refinements and one new direction,
-ordered by incrementality — earlier items are smaller, later items push into
-different territory.
-
-## Hand-written field bounds
-
-Extend parameter bounds to accept a *path* expression, so a user can declare a
-record field's effects at the function boundary when graded can't trace the value
-on its own (the field-call case in [LIMITATIONS.md](./LIMITATIONS.md#1-a-record-field-reached-through-an-untraceable-receiver)):
-
-```
-check myapp.view(handler.on_click: [Dom]) : [Dom]
-```
-
-This is a syntax extension to `ParamBound` (a path instead of a bare identifier),
-no analysis required — the user states what a field's effects are, and
-substitution works exactly like first-order parameter bounds. It gives the
-field-call limitation a boundary-level escape hatch, complementing the existing
-`type` line.
+girard-backed field resolution, hand-written field bounds, and cross-module /
+cross-package inference all ship today. What remains is a short list of refinements
+and one new direction, ordered by incrementality — earlier items are smaller, later
+items push into different territory.
 
 ## Retiring the positional/label heuristics
 
