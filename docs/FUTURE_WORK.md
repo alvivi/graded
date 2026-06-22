@@ -16,15 +16,6 @@ argument-matching heuristics (`find_matching_arg` / `position_from_registry` in
 substitution — a subsystem girard's expression types don't cleanly map onto — so
 they were kept deliberately. Revisit only if a concrete imprecision surfaces.
 
-## Ecosystem catalog growth
-
-The bundled catalog (`priv/catalog/`) covers the core `gleam-lang` packages and
-the most-used community libraries. Adding `.graded` entries for more packages as
-they come up is an ongoing maintenance thread, not a milestone. The longer-term
-fix for the most popular libraries is for them to ship their own `.graded` spec —
-dependency specs outrank the catalog — so cataloguing is the stopgap for the head
-of the long tail.
-
 ## Privacy and information-flow checking
 
 The next major direction is **lattice-based privacy tracking** — preventing
