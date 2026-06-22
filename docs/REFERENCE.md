@@ -148,6 +148,41 @@ effects myapp.apply(f: [Stdout]) : [Stdout]
 A call to a bounded parameter (`f(x)` inside `apply`) uses the declared bound
 instead of `[Unknown]`.
 
+### Field bounds
+
+A bound's name can be a `param.field` path, declaring the effect of a function-typed
+field reached through a parameter:
+
+```
+// handler.on_click carries [Dom] inside view
+check myapp.view(handler.on_click: [Dom]) : [Dom]
+```
+
+A field call `handler.on_click(event)` then resolves to `[Dom]` directly, taking
+priority over receiver-type resolution. This is the boundary-scoped counterpart to a
+[`type` line](#type-field-effects): the `type` line declares a field's effect for
+every receiver of that type package-wide, the field bound for one `check`'d function.
+A field bound and an ordinary parameter bound can share one `check` line.
+
+A field bound declares a *concrete* effect set: it resolves to exactly the effects
+written, with no call-site substitution. For an effect-polymorphic field — one whose
+effect depends on its own arguments — use a [`type` line](#type-field-effects)
+instead, which substitutes the field call's arguments into the declared variables.
+
+If a field bound's `param.field` path matches no field call in the checked function's
+body, graded emits a warning — the bound is dead. When the receiver is a parameter the
+cause is a typo in the path; when it isn't, the warning also notes the field call may
+have resolved through value provenance (a receiver traced to a construction site),
+which shadows the bound.
+
+**Precedence.** A field bound only competes with receiver-type (`type`-line)
+resolution, and wins it. It does *not* override value provenance: when the receiver
+is traced to a construction site — a direct constructor or a factory — and the field
+resolves through that value, the call is resolved before it is ever treated as a
+field call, so the bound doesn't apply. This isn't a conflict in practice: field
+bounds exist for receivers graded can't trace (a parameter, a value threaded through
+data), which is exactly the case where there's no provenance to compete with.
+
 ### Effect polymorphism
 
 When a function's effects *depend on* its callback, use lowercase effect variables:
@@ -222,8 +257,9 @@ The field's effect comes from one of:
 Field effects are keyed by the type's **defining module** (from girard's inferred
 type), so two different types both named `Validator` never conflate. When a field
 is wired to a value graded can't trace — a constructor parameter, or a local that
-isn't a traceable function — it falls back to `[Unknown]`, and the `type` line is
-the escape hatch; see [LIMITATIONS.md](./LIMITATIONS.md).
+isn't a traceable function — it falls back to `[Unknown]`. The escape hatch is a
+`type` line, or a [field bound](#field-bounds) when the assertion belongs at a single
+function boundary; see [LIMITATIONS.md](./LIMITATIONS.md).
 
 ## External declarations and FFI
 

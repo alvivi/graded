@@ -18,7 +18,8 @@ import graded/internal/signatures
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
   ParamBound, Polymorphic, QualifiedName, Specific, TypeFieldEffect,
-  UntrackedEffectWarning, Wildcard,
+  UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning, UntrackedEffectWarning,
+  Wildcard,
 }
 import qcheck
 
@@ -832,7 +833,8 @@ pub fn greet_all(names) { list.map(names, io.println) }"
     ])
   warnings |> list.length() |> should.equal(1)
   let assert [warning] = warnings
-  let UntrackedEffectWarning(function:, reference:, effects:, ..) = warning
+  let assert UntrackedEffectWarning(function:, reference:, effects:, ..) =
+    warning
   function |> should.equal("greet_all")
   reference |> should.equal(QualifiedName("gleam/io", "println"))
   effects |> should.equal(Specific(set.from_list(["Stdout"])))
@@ -855,8 +857,147 @@ pub fn greet_all(names) { list.map(names, println) }"
     ])
   warnings |> list.length() |> should.equal(1)
   let assert [warning] = warnings
-  let UntrackedEffectWarning(reference:, ..) = warning
+  let assert UntrackedEffectWarning(reference:, ..) = warning
   reference |> should.equal(QualifiedName("gleam/io", "println"))
+}
+
+// A field bound whose `param.field` path matches no field call in the body is
+// dead (typically a typo) and emits a warning naming the path and function.
+pub fn field_bound_unmatched_warns_test() {
+  let source =
+    "pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+pub fn caller(v: Validator) -> Nil { v.to_error(\"bad\") }"
+  let warnings =
+    check_warnings(source, [
+      EffectAnnotation(
+        Check,
+        "caller",
+        // Typo: the body calls `v.to_error`, not `v.to_errorx`.
+        [
+          ParamBound(
+            "v.to_errorx",
+            effect_term.from_effect_set(Specific(set.new())),
+          ),
+        ],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
+    ])
+  warnings |> list.length() |> should.equal(1)
+  let assert [warning] = warnings
+  let assert UnmatchedFieldBoundWarning(
+    function:,
+    field_path:,
+    receiver_is_param:,
+  ) = warning
+  function |> should.equal("caller")
+  field_path |> should.equal("v.to_errorx")
+  // `v` is a parameter, so the cause is a genuine typo, not provenance shadowing.
+  receiver_is_param |> should.be_true()
+}
+
+// A field bound whose path matches a real field call emits no warning.
+pub fn field_bound_matched_no_warning_test() {
+  let source =
+    "pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+pub fn caller(v: Validator) -> Nil { v.to_error(\"bad\") }"
+  check_warnings(source, [
+    EffectAnnotation(
+      Check,
+      "caller",
+      [
+        ParamBound(
+          "v.to_error",
+          effect_term.from_effect_set(Specific(set.new())),
+        ),
+      ],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
+  ])
+  |> should.equal([])
+}
+
+// A plain parameter bound whose name matches no declared parameter is dead
+// (a typo) and emits a warning naming the parameter and function.
+pub fn param_bound_unmatched_warns_test() {
+  let source = "pub fn apply(f, x) { f(x) }"
+  let warnings =
+    check_warnings(source, [
+      EffectAnnotation(
+        Check,
+        "apply",
+        // Typo: the parameter is `f`, not `g`.
+        [ParamBound("g", effect_term.from_effect_set(Specific(set.new())))],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
+    ])
+  warnings |> list.length() |> should.equal(1)
+  let assert [warning] = warnings
+  let assert UnmatchedParamBoundWarning(function:, param:) = warning
+  function |> should.equal("apply")
+  param |> should.equal("g")
+}
+
+// A parameter bound on a callback that's forwarded but never called directly
+// still names a real parameter, so it stays load-bearing and emits no warning.
+pub fn param_bound_forwarded_no_warning_test() {
+  let source =
+    "pub fn apply(f, x) { helper(f, x) }
+pub fn helper(g, y) { g(y) }"
+  check_warnings(source, [
+    EffectAnnotation(
+      Check,
+      "apply",
+      [ParamBound("f", effect_term.from_effect_set(Specific(set.new())))],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
+  ])
+  |> should.equal([])
+}
+
+// When the field bound's receiver is a local traced to a construction site, the
+// field call resolves through value provenance and never lands in the field
+// list, so the bound is unmatched — but the cause is provenance shadowing, not a
+// typo, and `receiver_is_param` is False to flag that.
+pub fn field_bound_unmatched_non_param_receiver_test() {
+  let source =
+    "import gleam/io
+pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+pub fn caller() -> Nil {
+  let v = Validator(io.println)
+  v.to_error(\"bad\")
+}"
+  let warnings =
+    check_warnings(source, [
+      EffectAnnotation(
+        Check,
+        "caller",
+        [
+          ParamBound(
+            "v.to_error",
+            effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+          ),
+        ],
+        effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      ),
+    ])
+  // Construction also wires io.println as a value, emitting an untracked-effect
+  // warning; pick out the field-bound one.
+  let assert Ok(warning) =
+    list.find(warnings, fn(w) {
+      case w {
+        UnmatchedFieldBoundWarning(..) -> True
+        _ -> False
+      }
+    })
+  let assert UnmatchedFieldBoundWarning(receiver_is_param:, ..) = warning
+  // `v` is a local, not a parameter, so provenance shadowing is the likely cause.
+  receiver_is_param |> should.be_false()
 }
 
 // Pure function reference does not emit warning

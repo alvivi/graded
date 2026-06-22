@@ -45,6 +45,16 @@ type app.Validator.to_error : [Stdout]
 
 Field calls then resolve on *any* receiver of that type, however it was obtained.
 
+Or, when the assertion belongs at a single function boundary, declare it as a **field
+bound** on that function's `check` line:
+
+```
+check app.caller(v.to_error: [Stdout]) : [Stdout]
+```
+
+The `param.field` bound resolves the call inside `caller` only, leaving the type
+untouched elsewhere.
+
 > Note: when a record *is* built by a factory function (`let v = make(io.println)`),
 > graded resolves the field through the factory — but only for **positional**
 > wiring (`make(io.println)`). A factory that wires the field with a *labeled*

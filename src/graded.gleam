@@ -45,7 +45,8 @@ import graded/internal/typeinfo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type GradedFile, type QualifiedName,
   type Violation, type Warning, AnnotationLine, CheckResult, EffectAnnotation,
-  GradedFile, QualifiedName,
+  GradedFile, QualifiedName, UnmatchedFieldBoundWarning,
+  UnmatchedParamBoundWarning, UntrackedEffectWarning,
 }
 import simplifile
 
@@ -1212,18 +1213,50 @@ fn print_warnings(check_result: CheckResult) -> Nil {
 }
 
 fn print_warning(file: String, warning: Warning) -> Nil {
-  io.println(
-    file
-    <> ": warning: "
-    <> warning.function
-    <> " passes "
-    <> warning.reference.module
-    <> "."
-    <> warning.reference.function
-    <> " as a value — its effects "
-    <> effects.format_effect_set(warning.effects)
-    <> " won't be tracked",
-  )
+  case warning {
+    UntrackedEffectWarning(function:, reference:, effects: effs, ..) ->
+      io.println(
+        file
+        <> ": warning: "
+        <> function
+        <> " passes "
+        <> reference.module
+        <> "."
+        <> reference.function
+        <> " as a value — its effects "
+        <> effects.format_effect_set(effs)
+        <> " won't be tracked",
+      )
+    UnmatchedFieldBoundWarning(function:, field_path:, receiver_is_param:) -> {
+      let cause = case receiver_is_param {
+        True -> " matches no field call in its body — check the path"
+        // A non-parameter receiver can be traced to a construction site, so the
+        // call may exist but resolve through value provenance, shadowing the bound.
+        False ->
+          " matches no field call in its body — check the path,"
+          <> " or the receiver is traced to a construction site and resolved"
+          <> " through value provenance (field bounds apply only to untraceable"
+          <> " receivers)"
+      }
+      io.println(
+        file
+        <> ": warning: field bound "
+        <> field_path
+        <> " on "
+        <> function
+        <> cause,
+      )
+    }
+    UnmatchedParamBoundWarning(function:, param:) ->
+      io.println(
+        file
+        <> ": warning: parameter bound "
+        <> param
+        <> " on "
+        <> function
+        <> " names no parameter of the function — check the name",
+      )
+  }
 }
 
 @external(erlang, "erlang", "halt")

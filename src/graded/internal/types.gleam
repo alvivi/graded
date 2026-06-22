@@ -132,6 +132,12 @@ pub type EffectTerm {
 // An effect bound on a function-typed parameter. The `effects` is an
 // `EffectTerm`: a flat `Eff` term for a first-order callback (`f: [e]`), or
 // an operator `TAbs` for a higher-order one (`action: fn(cb) -> [cb]`).
+//
+// `name` is the bare parameter name (`f`) for a parameter bound, or a
+// `param.field` path (`handler.on_click`) for a *field bound* — a hand-written
+// declaration of a record field's effect at the function boundary, the
+// boundary-scoped counterpart to a `type` line. A field bound's path carries a
+// dot; a parameter name never can, so the two forms don't collide.
 pub type ParamBound {
   ParamBound(name: String, effects: EffectTerm)
 }
@@ -317,15 +323,33 @@ pub type Violation {
   )
 }
 
-// A warning about a function reference passed as a value whose effects
-// won't be tracked through the callee.
+// A warning surfaced during checking.
 pub type Warning {
+  // A function reference passed as a value whose effects won't be tracked
+  // through the callee.
   UntrackedEffectWarning(
     function: String,
     reference: QualifiedName,
     span: Span,
     effects: EffectSet,
   )
+  // A field bound (`check f(recv.field: [..])`) whose `recv.field` path matched
+  // no field call in the function's body. Such a bound resolves nothing and is
+  // silently dead, so it's flagged. `receiver_is_param` distinguishes the cause:
+  // when the receiver is a parameter it can't be traced to a construction site,
+  // so a missing field call is a genuine typo; when it isn't, the field call may
+  // exist but have resolved through value provenance, shadowing the bound.
+  UnmatchedFieldBoundWarning(
+    function: String,
+    field_path: String,
+    receiver_is_param: Bool,
+  )
+  // A plain parameter bound (`check f(g: [..])`) whose name matches no declared
+  // parameter of the function — a typo. Matched on parameter *existence*, not
+  // call presence: a callback forwarded but never called directly is still a
+  // real parameter and isn't flagged, since its bound stays load-bearing during
+  // substitution.
+  UnmatchedParamBoundWarning(function: String, param: String)
 }
 
 // Result of checking one file.

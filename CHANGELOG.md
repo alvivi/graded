@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Field bounds.** A `check` line can bound a function-typed field reached through a parameter, using a `param.field` path: `check myapp.view(handler.on_click: [Dom]) : [Dom]`. The field call resolves to the declared effect, taking priority over receiver-type resolution — the boundary-scoped counterpart to a `type` line, for a receiver graded can't trace to a construction site.
+- A field bound whose `param.field` path matches no field call in the checked function's body now emits a warning, catching typos in the path that would otherwise resolve nothing silently. When the receiver is not a parameter, the warning also notes the call may have resolved through value provenance, which shadows the bound, rather than blaming the path.
+- A plain parameter bound whose name matches no declared parameter now emits a warning. It is matched on parameter existence, not call presence, so a callback that's forwarded but never called directly is not flagged.
+
 ## [0.8.1] - 2026-06-22
 
 ### Changed

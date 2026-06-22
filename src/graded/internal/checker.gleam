@@ -20,7 +20,8 @@ import graded/internal/typeinfo
 import graded/internal/types.{
   type EffectAnnotation, type EffectTerm, type LocalCall, type ParamBound,
   type ResolvedCall, type Violation, type Warning, EffectAnnotation, Effects,
-  ParamBound, QualifiedName, TUnion, TVar, UntrackedEffectWarning, Violation,
+  ParamBound, QualifiedName, TUnion, TVar, UnmatchedFieldBoundWarning,
+  UnmatchedParamBoundWarning, UntrackedEffectWarning, Violation,
 }
 
 // Check a parsed module against its effect annotations.
@@ -134,7 +135,12 @@ pub fn infer_with_returns(
 
   // Seed param bounds from existing `check` annotations only — `effects`
   // annotations don't carry user-declared bounds, so they can't constrain
-  // higher-order parameters during inference.
+  // higher-order parameters during inference. Field bounds (dotted `param.field`
+  // names) ride this same path: they resolve field calls during the seeded
+  // inference exactly as plain bounds resolve parameter calls. Only callers that
+  // pass real checks here are affected — the `graded infer` cache pass passes
+  // `[]`, so a `check`-line bound never leaks into the written cache; path-dep
+  // inference passes its spec checks, so a dep's bounds do constrain it.
   let bounds_map =
     existing_checks
     |> list.filter(fn(annotation) { annotation.params != [] })
@@ -729,12 +735,74 @@ fn check_annotation(
       // Warn about function references passed as values with known non-pure effects.
       let extract_result =
         extract.extract_calls(function_definition.definition.body, context)
-      let warnings =
+      let reference_warnings =
         collect_reference_warnings(
           annotation.function,
           extract_result.references,
           knowledge_base,
         )
+
+      let param_names =
+        function_definition.definition.parameters
+        |> list.filter_map(fn(param) {
+          case param.name {
+            glance.Named(name) -> Ok(name)
+            glance.Discarded(_) -> Error(Nil)
+          }
+        })
+        |> set.from_list()
+
+      // Warn about field bounds whose `recv.field` path matches no field call in
+      // the body — a dead bound. When the receiver is a parameter it can't be
+      // traced to a construction site, so a missing field call is a genuine typo.
+      // When it isn't, the field call may exist but have resolved through value
+      // provenance, shadowing the bound; the warning says so rather than blaming
+      // the path. (Provenance only traces let-bound constructions, never a
+      // parameter, so the parameter case is never a false provenance report.)
+      let field_call_targets =
+        extract_result.field
+        |> list.map(fn(field_call) {
+          field_call.object <> "." <> field_call.label
+        })
+        |> set.from_list()
+      let unmatched_field_bound_warnings =
+        annotation.params
+        |> list.filter(fn(bound) { string.contains(bound.name, ".") })
+        |> list.filter(fn(bound) {
+          !set.contains(field_call_targets, bound.name)
+        })
+        |> list.map(fn(bound) {
+          let receiver = case string.split_once(bound.name, ".") {
+            Ok(#(receiver, _)) -> receiver
+            Error(Nil) -> bound.name
+          }
+          UnmatchedFieldBoundWarning(
+            function: annotation.function,
+            field_path: bound.name,
+            receiver_is_param: set.contains(param_names, receiver),
+          )
+        })
+
+      // Warn about plain parameter bounds whose name matches no declared
+      // parameter — a typo. Checked on parameter *existence*, not call presence:
+      // a callback that's forwarded but never called directly is still a real
+      // parameter, so its bound stays load-bearing during substitution and isn't
+      // flagged. Only a name that is no parameter at all is dead.
+      let unmatched_param_bound_warnings =
+        annotation.params
+        |> list.filter(fn(bound) { !string.contains(bound.name, ".") })
+        |> list.filter(fn(bound) { !set.contains(param_names, bound.name) })
+        |> list.map(fn(bound) {
+          UnmatchedParamBoundWarning(
+            function: annotation.function,
+            param: bound.name,
+          )
+        })
+
+      let warnings =
+        reference_warnings
+        |> list.append(unmatched_field_bound_warnings)
+        |> list.append(unmatched_param_bound_warnings)
 
       #(#(violations, warnings), memo)
     }
@@ -2359,10 +2427,55 @@ fn resolve_field_call(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
-  // Resolve the receiver's nominal type, qualified by its defining module:
-  // girard's inferred type for the receiver expression first (any receiver, and
-  // girard reports the defining module), then the receiver's syntactic parameter
-  // annotation (no module available, so keyed unqualified as "").
+  // A hand-written field bound on the enclosing `check` line
+  // (`check f(recv.field: [..])`) resolves the call directly, ahead of
+  // girard/type-registry resolution. It's the boundary-scoped counterpart to a
+  // `type` line — an escape hatch for a receiver graded can't trace to a
+  // construction site. User-declared, so it wins over inferred field effects.
+  // (Factory/constructor-traced receivers never reach here — extraction resolves
+  // them to a plain call through value provenance — so the bound only competes
+  // with, and beats, receiver-type resolution.)
+  //
+  // The bound's effects are returned verbatim — a concrete effect set, no
+  // call-site substitution (unlike the `type`-line path below, which runs
+  // through `resolve_field_effect`). Effect-polymorphic fields belong on a
+  // `type` line.
+  let field_target = field_call.object <> "." <> field_call.label
+  case list.find(caller_param_bounds, fn(b) { b.name == field_target }) {
+    Ok(bound) -> #(bound.effects, memo)
+    Error(Nil) ->
+      resolve_field_call_by_type(
+        field_call,
+        function,
+        knowledge_base,
+        module_types,
+        call_args,
+        caller_param_bounds,
+        registry,
+        lift_operator_arg,
+        memo,
+      )
+  }
+}
+
+// Resolve a field call through the receiver's nominal type. The fallback when no
+// hand-written field bound applies: resolve the receiver's type qualified by its
+// defining module — girard's inferred type for the receiver expression first (any
+// receiver, and girard reports the defining module), then the receiver's syntactic
+// parameter annotation (no module available, so keyed unqualified as "") — then
+// look the field up in the type registry.
+fn resolve_field_call_by_type(
+  field_call: types.FieldCall,
+  function: Function,
+  knowledge_base: KnowledgeBase,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  call_args: dict.Dict(Int, List(types.CallArgument)),
+  caller_param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
   let receiver_type =
     typeinfo.receiver_type(
       module_types,
