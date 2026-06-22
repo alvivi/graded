@@ -33,7 +33,6 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
-import gleam/yielder
 import graded/internal/annotation
 import graded/internal/checker
 import graded/internal/config
@@ -49,7 +48,6 @@ import graded/internal/types.{
   GradedFile, QualifiedName,
 }
 import simplifile
-import stdin
 
 /// Errors that can occur during checking, inference, or formatting.
 pub type GradedError {
@@ -88,16 +86,14 @@ pub fn main() -> Nil {
           halt(1)
         }
       }
-    ["format", "--stdin", ..] -> {
-      let input = stdin.read_lines() |> yielder.to_list() |> string.join("")
-      case annotation.parse_file(input) {
-        Ok(file) -> io.print(annotation.format_sorted(file))
+    ["format", "--stdin", ..] ->
+      case run_format_stdin(read_stdin()) {
+        Ok(output) -> io.print(output)
         Error(_) -> {
           io.println_error("graded: error: could not parse stdin")
           halt(1)
         }
       }
-    }
     ["format", "--check", ..rest] ->
       case run_format_check(target_directory(rest)) {
         Ok(Nil) -> Nil
@@ -282,6 +278,16 @@ pub fn run_format(directory: String) -> Result(Nil, GradedError) {
       simplifile.write(cfg.spec_file, formatted)
       |> result.map_error(FileWriteError(cfg.spec_file, _))
   }
+}
+
+/// Format a `.graded` spec given as a string, as `graded format --stdin` does
+/// for editor integration: parse the input, then sort and reformat it. Returns
+/// the input's parse error if it doesn't parse.
+pub fn run_format_stdin(
+  input: String,
+) -> Result(String, annotation.ParseError) {
+  use file <- result.map(annotation.parse_file(input))
+  annotation.format_sorted(file)
 }
 
 /// Check that the project's spec file is already formatted. Returns error
@@ -1222,3 +1228,7 @@ fn print_warning(file: String, warning: Warning) -> Nil {
 
 @external(erlang, "erlang", "halt")
 fn halt(code: Int) -> Nil
+
+// Read all of standard input to EOF as a single string.
+@external(erlang, "graded_ffi", "read_stdin")
+fn read_stdin() -> String
