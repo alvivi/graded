@@ -33,7 +33,6 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
-import gleam/yielder
 import graded/internal/annotation
 import graded/internal/checker
 import graded/internal/config
@@ -49,7 +48,6 @@ import graded/internal/types.{
   GradedFile, QualifiedName,
 }
 import simplifile
-import stdin
 
 /// Errors that can occur during checking, inference, or formatting.
 pub type GradedError {
@@ -89,7 +87,7 @@ pub fn main() -> Nil {
         }
       }
     ["format", "--stdin", ..] -> {
-      let input = stdin.read_lines() |> yielder.to_list() |> string.join("")
+      let input = read_stdin()
       case annotation.parse_file(input) {
         Ok(file) -> io.print(annotation.format_sorted(file))
         Error(_) -> {
@@ -1222,3 +1220,7 @@ fn print_warning(file: String, warning: Warning) -> Nil {
 
 @external(erlang, "erlang", "halt")
 fn halt(code: Int) -> Nil
+
+// Read all of standard input to EOF as a single string.
+@external(erlang, "graded_ffi", "read_stdin")
+fn read_stdin() -> String

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Dropped the `stdin` and `gleam_yielder` dependencies.** `graded format --stdin` now reads standard input through a small built-in Erlang FFI. The `stdin` package capped `gleam_stdlib` below `1.0.0`, which made graded uninstallable alongside packages that require `gleam_stdlib >= 1.0.0`.
+
 ## [0.8.0] - 2026-06-21
 
 ### Added
