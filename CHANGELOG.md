@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A field bound whose `param.field` path matches no field call in the checked function's body now emits a warning, catching typos in the path that would otherwise resolve nothing silently. When the receiver is not a parameter, the warning also notes the call may have resolved through value provenance, which shadows the bound, rather than blaming the path.
 - A plain parameter bound whose name matches no declared parameter now emits a warning. It is matched on parameter existence, not call presence, so a callback that's forwarded but never called directly is not flagged.
 
+### Fixed
+
+- **`gleam/time/calendar.utc_offset` is now `[]` instead of `[Time]`.** It is a compile-time constant (`duration.empty`), not a clock or timezone read, so it carries no effect. `calendar.local_offset` and `timestamp.system_time` remain `[Time]`.
+
 ## [0.8.1] - 2026-06-22
 
 ### Changed
