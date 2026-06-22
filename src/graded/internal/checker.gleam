@@ -1019,9 +1019,13 @@ fn collect_effects(
 // `[0, 1, …, n-1]` — the callback positions of an `n`-ary operator, applied
 // in order. Empty for `n <= 0`.
 fn positions_up_to(n: Int) -> List(Int) {
-  case n <= 0 {
-    True -> []
-    False -> list.append(positions_up_to(n - 1), [n - 1])
+  positions_loop(n - 1, [])
+}
+
+fn positions_loop(i: Int, acc: List(Int)) -> List(Int) {
+  case i < 0 {
+    True -> acc
+    False -> positions_loop(i - 1, [i, ..acc])
   }
 }
 

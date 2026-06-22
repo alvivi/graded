@@ -764,12 +764,16 @@ fn render_application(term: EffectTerm) -> String {
 // Collect an application spine `((head a0) a1 ...)` into its head and the
 // argument list in application order.
 fn application_spine(term: EffectTerm) -> #(EffectTerm, List(EffectTerm)) {
+  spine_loop(term, [])
+}
+
+fn spine_loop(
+  term: EffectTerm,
+  args: List(EffectTerm),
+) -> #(EffectTerm, List(EffectTerm)) {
   case term {
-    TApp(operator, argument) -> {
-      let #(head, args) = application_spine(operator)
-      #(head, list.append(args, [argument]))
-    }
-    other -> #(other, [])
+    TApp(operator, argument) -> spine_loop(operator, [argument, ..args])
+    other -> #(other, args)
   }
 }
 

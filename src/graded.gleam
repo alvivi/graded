@@ -707,40 +707,16 @@ fn infer_one_module(
     }
   })
 
-  let inferred_dict =
-    list.fold(inferred, dict.new(), fn(acc, ann) {
-      dict.insert(
-        acc,
-        QualifiedName(module: module_path, function: ann.function),
-        ann.effects,
-      )
-    })
-  // Also thread polymorphic param bounds into the KB so later
-  // modules in the topo-sort pass can bind variables at call sites
-  // that target this module's functions.
-  let params_dict =
-    list.fold(inferred, dict.new(), fn(acc, ann) {
-      case ann.params {
-        [] -> acc
-        _ ->
-          dict.insert(
-            acc,
-            QualifiedName(module: module_path, function: ann.function),
-            ann.params,
-          )
-      }
-    })
-  // Returned-operator signatures (qualified by module) so a downstream module's
-  // `let h = this_module.producer(); with(h)` resolves the returned operator.
-  let returned_dict =
-    dict.fold(returned_operators, dict.new(), fn(acc, function, operator) {
-      dict.insert(acc, QualifiedName(module: module_path, function:), operator)
-    })
+  // Thread inferred effects, polymorphic param bounds, and returned-operator
+  // signatures into the KB so later modules in the topo-sort pass can resolve
+  // call sites targeting this module's functions.
   let new_kb =
-    knowledge_base
-    |> effects.with_inferred(inferred_dict)
-    |> effects.with_inferred_params(params_dict)
-    |> effects.with_inferred_returned_operators(returned_dict)
+    thread_inferred_into_kb(
+      knowledge_base,
+      inferred,
+      returned_operators,
+      module_path,
+    )
 
   let public_names = public_function_names(module)
   let public_annotations =
@@ -810,6 +786,18 @@ fn fold_inferred_module(
       typeinfo.for_module(type_info, module_path),
       typeinfo.fn_typed_for_module(type_info, module_path),
     )
+  thread_inferred_into_kb(kb, inferred, returned_operators, module_path)
+}
+
+// Thread a module's freshly inferred effects, polymorphic param bounds, and
+// returned-operator signatures (all qualified by `module_path`) into the
+// knowledge base. Existing entries win.
+fn thread_inferred_into_kb(
+  knowledge_base: KnowledgeBase,
+  inferred: List(EffectAnnotation),
+  returned_operators: Dict(String, types.EffectTerm),
+  module_path: String,
+) -> KnowledgeBase {
   let qualify = fn(function) { QualifiedName(module: module_path, function:) }
   let effects_dict =
     list.fold(inferred, dict.new(), fn(acc, ann) {
@@ -826,7 +814,7 @@ fn fold_inferred_module(
     dict.fold(returned_operators, dict.new(), fn(acc, function, op) {
       dict.insert(acc, qualify(function), op)
     })
-  kb
+  knowledge_base
   |> effects.with_inferred(effects_dict)
   |> effects.with_inferred_params(params_dict)
   |> effects.with_inferred_returned_operators(returns_dict)
