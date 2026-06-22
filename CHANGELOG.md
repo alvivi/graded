@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`gleam/time/calendar.utc_offset` is now `[]` instead of `[Time]`.** It is a compile-time constant (`duration.empty`), not a clock or timezone read, so it carries no effect. `calendar.local_offset` and `timestamp.system_time` remain `[Time]`.
+- **A same-module named function passed to a first-order fn-typed parameter now resolves to its actual effect instead of `[Unknown]`.** `parse_optional("x", logging_parser)` binds the parameter to `logging_parser`'s effect — so a fully-applied caller is no longer polluted by an unresolved effect variable from a higher-order callee. Inline closures already resolved; named references now take the same lift-and-discharge path operator arguments have used since 0.7.0.
 
 ## [0.8.1] - 2026-06-22
 

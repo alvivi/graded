@@ -12,6 +12,7 @@ check factory_field.run : []
 check field_union.run : []
 check ffi_external.run : []
 check field_bound.caller(v.to_error: [Stdout]) : []
+check named_fn_arg.run : []
 
 // Type field annotations (the effect source for type-directed field calls).
 type opaque_receiver.Validator.to_error : [Stdout]

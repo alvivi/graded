@@ -1112,7 +1112,13 @@ fn first_order_arg_effect(
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
   case arg.value {
-    types.Closure(_, _) -> {
+    // A closure or a same-module named function both lift to an operator (the
+    // function reference via `lift_local_function`), whose discharge is the
+    // effect of calling it. A `LocalRef` that isn't a same-module function — a
+    // forwarded parameter — lifts to `Error(Nil)` and falls back to the param-
+    // bound lookup, so a named function resolves to its real effect instead of
+    // collapsing to [Unknown].
+    types.Closure(_, _) | types.LocalRef(_) -> {
       let #(lifted, memo) = lift_operator_arg(arg.value, [], memo)
       case lifted {
         Ok(operator) -> #(discharge_operator(operator), memo)

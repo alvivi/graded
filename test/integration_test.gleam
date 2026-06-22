@@ -189,6 +189,22 @@ pub fn local_field_value_resolved_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn named_fn_arg_resolves_test() {
+  // named_fn_arg.run passes a *same-module named function* (logging_parser :
+  // [Stdout]) to a first-order fn-typed parameter. The argument resolves to the
+  // function's real effect, so the [] budget fails with the precise [Stdout] —
+  // not the [Unknown] graded fell back to before (inline closures already
+  // resolved; named references did not).
+  let assert Ok(results) = graded.run("test/fixtures")
+  let named_result =
+    list.find(results, fn(r) { r.file == "test/fixtures/named_fn_arg.gleam" })
+  let assert Ok(r) = named_result
+  { r.violations != [] } |> should.be_true()
+  let assert [v, ..] = r.violations
+  v.function |> should.equal("run")
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn infer_then_check_round_trip_test() {
   // `run_infer` rewrites the spec file in place, so capture the canonical
   // fixture content up front and restore it at the end — keeping the test
