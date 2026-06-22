@@ -32,7 +32,10 @@ pub fn pure_value_libraries_are_module_pure_test() {
     #("priv/catalog/bigi@4.1.1.graded", "bigi"),
     #("priv/catalog/glearray@2.1.2.graded", "glearray"),
     #("priv/catalog/iv@1.4.4.graded", "iv"),
-    #("priv/catalog/gleam_community_maths@2.0.2.graded", "gleam_community/maths"),
+    #(
+      "priv/catalog/gleam_community_maths@2.0.2.graded",
+      "gleam_community/maths",
+    ),
   ]
   |> list.each(fn(entry) {
     let #(path, module) = entry
