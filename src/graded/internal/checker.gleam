@@ -2115,9 +2115,10 @@ fn ordered_fn_typed_param_names(function: Function) -> List(String) {
   })
 }
 
-// Find the argument that matches a given param bound. Prefers label
-// match; falls back to positional match using the bound's index in
-// the bound list (which mirrors the parameter order).
+// Find the argument that matches a given param bound, via the bound's
+// own label, then the callee signature's declared label, then the
+// parameter's real position. See the body for why the bound's index in
+// the bound list is deliberately not used as a fallback.
 fn find_matching_arg(
   callee_name: types.QualifiedName,
   bound: ParamBound,
@@ -2169,12 +2170,12 @@ fn param_info(
   registry: SignatureRegistry,
 ) -> option.Option(signatures.ParameterInfo) {
   use params <- option.then(signatures.lookup(registry, callee_name))
-  case list.find(params, fn(p) { p.name == Some(param_name) }) {
-    Ok(param) -> option.Some(param)
-    Error(Nil) ->
-      list.find(params, fn(p) { p.label == Some(param_name) })
-      |> option.from_result
-  }
+  let by_name =
+    list.find(params, fn(p) { p.name == Some(param_name) })
+    |> option.from_result
+  use <- option.lazy_or(by_name)
+  list.find(params, fn(p) { p.label == Some(param_name) })
+  |> option.from_result
 }
 
 // Look up the effects of an argument value. Function references →
