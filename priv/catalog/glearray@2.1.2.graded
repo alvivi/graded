@@ -1,0 +1,3 @@
+// glearray — pure immutable arrays
+
+external effects glearray : []

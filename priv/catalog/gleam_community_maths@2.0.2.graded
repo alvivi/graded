@@ -1,0 +1,3 @@
+// gleam_community_maths — pure mathematics functions and utilities
+
+external effects gleam_community/maths : []

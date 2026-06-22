@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added catalog entries for the pure value libraries `bigi`, `glearray`, `iv`, and `gleam_community_maths` — calls into them now resolve to `[]` instead of `[Unknown]`.
+
 ## [0.9.0] - 2026-06-22
 
 ### Added

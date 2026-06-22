@@ -5,7 +5,7 @@ pub fn parse_optional(input: String, parser: fn(String) -> Int) -> Int {
 }
 
 // A same-module named function whose name the `run` parameter below shadows.
-fn handler(s: String) -> Int {
+pub fn handler(s: String) -> Int {
   io.println(s)
   1
 }
