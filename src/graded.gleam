@@ -1227,15 +1227,26 @@ fn print_warning(file: String, warning: Warning) -> Nil {
         <> effects.format_effect_set(effs)
         <> " won't be tracked",
       )
-    UnmatchedFieldBoundWarning(function:, field_path:) ->
+    UnmatchedFieldBoundWarning(function:, field_path:, receiver_is_param:) -> {
+      let cause = case receiver_is_param {
+        True -> " matches no field call in its body — check the path"
+        // A non-parameter receiver can be traced to a construction site, so the
+        // call may exist but resolve through value provenance, shadowing the bound.
+        False ->
+          " matches no field call in its body — check the path,"
+          <> " or the receiver is traced to a construction site and resolved"
+          <> " through value provenance (field bounds apply only to untraceable"
+          <> " receivers)"
+      }
       io.println(
         file
         <> ": warning: field bound "
         <> field_path
         <> " on "
         <> function
-        <> " matches no field call in its body — check the path",
+        <> cause,
       )
+    }
     UnmatchedParamBoundWarning(function:, param:) ->
       io.println(
         file

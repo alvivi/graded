@@ -334,9 +334,16 @@ pub type Warning {
     effects: EffectSet,
   )
   // A field bound (`check f(recv.field: [..])`) whose `recv.field` path matched
-  // no field call in the function's body — usually a typo in the path. Such a
-  // bound resolves nothing and is silently dead, so it's flagged.
-  UnmatchedFieldBoundWarning(function: String, field_path: String)
+  // no field call in the function's body. Such a bound resolves nothing and is
+  // silently dead, so it's flagged. `receiver_is_param` distinguishes the cause:
+  // when the receiver is a parameter it can't be traced to a construction site,
+  // so a missing field call is a genuine typo; when it isn't, the field call may
+  // exist but have resolved through value provenance, shadowing the bound.
+  UnmatchedFieldBoundWarning(
+    function: String,
+    field_path: String,
+    receiver_is_param: Bool,
+  )
   // A plain parameter bound (`check f(g: [..])`) whose name matches no declared
   // parameter of the function — a typo. Matched on parameter *existence*, not
   // call presence: a callback forwarded but never called directly is still a

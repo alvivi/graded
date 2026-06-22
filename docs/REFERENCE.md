@@ -170,7 +170,10 @@ effect depends on its own arguments — use a [`type` line](#type-field-effects)
 instead, which substitutes the field call's arguments into the declared variables.
 
 If a field bound's `param.field` path matches no field call in the checked function's
-body, graded emits a warning — the bound is dead, usually a typo in the path.
+body, graded emits a warning — the bound is dead. When the receiver is a parameter the
+cause is a typo in the path; when it isn't, the warning also notes the field call may
+have resolved through value provenance (a receiver traced to a construction site),
+which shadows the bound.
 
 **Precedence.** A field bound only competes with receiver-type (`type`-line)
 resolution, and wins it. It does *not* override value provenance: when the receiver

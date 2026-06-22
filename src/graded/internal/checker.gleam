@@ -742,8 +742,23 @@ fn check_annotation(
           knowledge_base,
         )
 
+      let param_names =
+        function_definition.definition.parameters
+        |> list.filter_map(fn(param) {
+          case param.name {
+            glance.Named(name) -> Ok(name)
+            glance.Discarded(_) -> Error(Nil)
+          }
+        })
+        |> set.from_list()
+
       // Warn about field bounds whose `recv.field` path matches no field call in
-      // the body — a dead bound, almost always a typo in the path.
+      // the body — a dead bound. When the receiver is a parameter it can't be
+      // traced to a construction site, so a missing field call is a genuine typo.
+      // When it isn't, the field call may exist but have resolved through value
+      // provenance, shadowing the bound; the warning says so rather than blaming
+      // the path. (Provenance only traces let-bound constructions, never a
+      // parameter, so the parameter case is never a false provenance report.)
       let field_call_targets =
         extract_result.field
         |> list.map(fn(field_call) {
@@ -757,9 +772,14 @@ fn check_annotation(
           !set.contains(field_call_targets, bound.name)
         })
         |> list.map(fn(bound) {
+          let receiver = case string.split_once(bound.name, ".") {
+            Ok(#(receiver, _)) -> receiver
+            Error(Nil) -> bound.name
+          }
           UnmatchedFieldBoundWarning(
             function: annotation.function,
             field_path: bound.name,
+            receiver_is_param: set.contains(param_names, receiver),
           )
         })
 
@@ -768,15 +788,6 @@ fn check_annotation(
       // a callback that's forwarded but never called directly is still a real
       // parameter, so its bound stays load-bearing during substitution and isn't
       // flagged. Only a name that is no parameter at all is dead.
-      let param_names =
-        function_definition.definition.parameters
-        |> list.filter_map(fn(param) {
-          case param.name {
-            glance.Named(name) -> Ok(name)
-            glance.Discarded(_) -> Error(Nil)
-          }
-        })
-        |> set.from_list()
       let unmatched_param_bound_warnings =
         annotation.params
         |> list.filter(fn(bound) { !string.contains(bound.name, ".") })

@@ -886,9 +886,15 @@ pub fn caller(v: Validator) -> Nil { v.to_error(\"bad\") }"
     ])
   warnings |> list.length() |> should.equal(1)
   let assert [warning] = warnings
-  let assert UnmatchedFieldBoundWarning(function:, field_path:) = warning
+  let assert UnmatchedFieldBoundWarning(
+    function:,
+    field_path:,
+    receiver_is_param:,
+  ) = warning
   function |> should.equal("caller")
   field_path |> should.equal("v.to_errorx")
+  // `v` is a parameter, so the cause is a genuine typo, not provenance shadowing.
+  receiver_is_param |> should.be_true()
 }
 
 // A field bound whose path matches a real field call emits no warning.
@@ -938,7 +944,8 @@ pub fn param_bound_unmatched_warns_test() {
 // A parameter bound on a callback that's forwarded but never called directly
 // still names a real parameter, so it stays load-bearing and emits no warning.
 pub fn param_bound_forwarded_no_warning_test() {
-  let source = "pub fn apply(f, x) { helper(f, x) }
+  let source =
+    "pub fn apply(f, x) { helper(f, x) }
 pub fn helper(g, y) { g(y) }"
   check_warnings(source, [
     EffectAnnotation(
@@ -949,6 +956,48 @@ pub fn helper(g, y) { g(y) }"
     ),
   ])
   |> should.equal([])
+}
+
+// When the field bound's receiver is a local traced to a construction site, the
+// field call resolves through value provenance and never lands in the field
+// list, so the bound is unmatched — but the cause is provenance shadowing, not a
+// typo, and `receiver_is_param` is False to flag that.
+pub fn field_bound_unmatched_non_param_receiver_test() {
+  let source =
+    "import gleam/io
+pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+pub fn caller() -> Nil {
+  let v = Validator(io.println)
+  v.to_error(\"bad\")
+}"
+  let warnings =
+    check_warnings(source, [
+      EffectAnnotation(
+        Check,
+        "caller",
+        [
+          ParamBound(
+            "v.to_error",
+            effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+          ),
+        ],
+        effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      ),
+    ])
+  // Construction also wires io.println as a value, emitting an untracked-effect
+  // warning; pick out the field-bound one.
+  let assert Ok(warning) =
+    list.find(warnings, fn(w) {
+      case w {
+        UnmatchedFieldBoundWarning(..) -> True
+        _ -> False
+      }
+    })
+  let assert UnmatchedFieldBoundWarning(receiver_is_param:, ..) = warning
+  // `v` is a local, not a parameter, so provenance shadowing is the likely cause.
+  receiver_is_param |> should.be_false()
 }
 
 // Pure function reference does not emit warning
