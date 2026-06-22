@@ -202,6 +202,20 @@ pub fn named_fn_arg_resolves_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn labeled_callback_resolves_test() {
+  // labeled_callback.run passes an effectful callback (logging_parser :
+  // [Stdout]) with a Gleam label (`with:`). Argument-to-parameter matching now
+  // binds the labelled argument, so the parameter's effect variable discharges
+  // to [Stdout] instead of leaking unresolved into the fully-applied caller.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/labeled_callback.gleam"
+    })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn shadowed_param_resolves_through_bound_test() {
   // shadow_param.run takes a fn-typed parameter `handler` that shadows a
   // same-module function of the same name (handler : [Stdout]). The forwarded

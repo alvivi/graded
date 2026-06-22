@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added catalog entries for the pure value libraries `bigi`, `glearray`, `iv`, and `gleam_community_maths` — calls into them now resolve to `[]` instead of `[Unknown]`.
 
+### Fixed
+
+- A higher-order callback passed with a Gleam label (`apply(with: parser)`) now binds to its parameter, so the parameter's effect variable resolves instead of leaking into the fully-applied caller. Previously only positional callback arguments were matched; a labelled call site left the variable unresolved (e.g. `[parser]`).
+
 ## [0.9.0] - 2026-06-22
 
 ### Added

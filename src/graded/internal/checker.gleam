@@ -2124,18 +2124,22 @@ fn find_matching_arg(
   args: List(types.CallArgument),
   registry: SignatureRegistry,
 ) -> option.Option(types.CallArgument) {
-  // Try two strategies in order:
-  //   1. Label match (caller used an explicit argument label)
-  //   2. Registry-backed position (authoritative when available)
-  // We deliberately do not fall back to the bound's index in the
-  // bounds list — that's only correct when every parameter has a
-  // bound, and silently picks the wrong argument when bounds are
-  // sparse. If the registry has no entry, the variable stays
-  // unresolved and surfaces as part of the result.
-  let by_label = find_arg_by_label(args, bound.name)
-  use <- option.lazy_or(by_label)
-  position_from_registry(callee_name, bound.name, registry)
-  |> option.then(fn(pos) { find_arg_at_position(args, pos) })
+  // Match the argument bound to this parameter, in order:
+  //   1. An argument the caller labelled with the bound's own name.
+  //   2. The callee's signature: an argument carrying the parameter's
+  //      declared Gleam label (a labelled call site, `f(with: cb)`), or the
+  //      argument at the parameter's real position (a positional call site).
+  // We deliberately do not fall back to the bound's index in the bounds
+  // list — that's only correct when every parameter has a bound, and
+  // silently picks the wrong argument when bounds are sparse. If the
+  // registry has no entry, the variable stays unresolved and surfaces as
+  // part of the result.
+  let by_bound_name = find_arg_by_label(args, bound.name)
+  use <- option.lazy_or(by_bound_name)
+  use param <- option.then(param_info(callee_name, bound.name, registry))
+  let by_param_label = param.label |> option.then(find_arg_by_label(args, _))
+  use <- option.lazy_or(by_param_label)
+  find_arg_at_position(args, param.position)
 }
 
 fn find_arg_by_label(
@@ -2154,32 +2158,23 @@ fn find_arg_at_position(
   |> option.from_result
 }
 
-// Look up the real parameter position of a named parameter in the
-// callee's signature. Returns `None` when the callee is not in the
-// registry or the parameter name doesn't match any labeled parameter.
-fn position_from_registry(
+// Look up the parameter in the callee's signature matching the bound's name.
+// Tries the in-body parameter name first (auto-inferred bounds key off the
+// name, not the Gleam argument label), then falls back to label matching for
+// JSON-sourced signatures where in-body names aren't available. Returns `None`
+// when the callee is not in the registry or nothing matches.
+fn param_info(
   callee_name: types.QualifiedName,
   param_name: String,
   registry: SignatureRegistry,
-) -> option.Option(Int) {
-  // Try in-body parameter name first (auto-inferred bounds key off
-  // the name, not the Gleam argument label). Fall back to label
-  // matching for JSON-sourced signatures where name info isn't
-  // available.
+) -> option.Option(signatures.ParameterInfo) {
   use params <- option.then(signatures.lookup(registry, callee_name))
-  let by_name =
-    find_param_position(params, fn(p) { p.name == Some(param_name) })
-  use <- option.lazy_or(by_name)
-  find_param_position(params, fn(p) { p.label == Some(param_name) })
-}
-
-fn find_param_position(
-  params: List(signatures.ParameterInfo),
-  predicate: fn(signatures.ParameterInfo) -> Bool,
-) -> option.Option(Int) {
-  list.find(params, predicate)
-  |> result.map(fn(p) { p.position })
-  |> option.from_result
+  case list.find(params, fn(p) { p.name == Some(param_name) }) {
+    Ok(param) -> option.Some(param)
+    Error(Nil) ->
+      list.find(params, fn(p) { p.label == Some(param_name) })
+      |> option.from_result
+  }
 }
 
 // Look up the effects of an argument value. Function references →
