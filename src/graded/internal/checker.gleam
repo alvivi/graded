@@ -2366,72 +2366,49 @@ fn resolve_field_call(
   // construction site. User-declared, so it wins over inferred field effects.
   let field_target = field_call.object <> "." <> field_call.label
   case list.find(caller_param_bounds, fn(b) { b.name == field_target }) {
-    Ok(bound) -> #(effect_term.normalize(bound.effects), memo)
-    Error(Nil) ->
-      resolve_field_call_by_type(
-        field_call,
-        function,
-        knowledge_base,
-        module_types,
-        call_args,
-        caller_param_bounds,
-        registry,
-        lift_operator_arg,
-        memo,
-      )
-  }
-}
-
-fn resolve_field_call_by_type(
-  field_call: types.FieldCall,
-  function: Function,
-  knowledge_base: KnowledgeBase,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
-  call_args: dict.Dict(Int, List(types.CallArgument)),
-  caller_param_bounds: List(ParamBound),
-  registry: SignatureRegistry,
-  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
-    #(Result(EffectTerm, Nil), Memo),
-  memo: Memo,
-) -> #(EffectTerm, Memo) {
-  // Resolve the receiver's nominal type, qualified by its defining module:
-  // girard's inferred type for the receiver expression first (any receiver, and
-  // girard reports the defining module), then the receiver's syntactic parameter
-  // annotation (no module available, so keyed unqualified as "").
-  let receiver_type =
-    typeinfo.receiver_type(
-      module_types,
-      field_call.receiver_span.start,
-      field_call.receiver_span.end,
-    )
-    |> option.lazy_or(fn() {
-      syntactic_param_type(function, field_call.object)
-      |> option.map(fn(type_name) { #("", type_name) })
-    })
-  case receiver_type {
-    None -> #(effect_term.unknown(), memo)
-    Some(#(module, type_name)) ->
-      case
-        effects.lookup_type_field(
-          knowledge_base,
-          module,
-          type_name,
-          field_call.label,
+    Ok(bound) -> #(bound.effects, memo)
+    Error(Nil) -> {
+      // No field bound: resolve the receiver's nominal type, qualified by its
+      // defining module — girard's inferred type for the receiver expression
+      // first (any receiver, and girard reports the defining module), then the
+      // receiver's syntactic parameter annotation (no module available, so keyed
+      // unqualified as "").
+      let receiver_type =
+        typeinfo.receiver_type(
+          module_types,
+          field_call.receiver_span.start,
+          field_call.receiver_span.end,
         )
-      {
-        Error(Nil) -> #(effect_term.unknown(), memo)
-        Ok(field_effect) ->
-          resolve_field_effect(
-            field_effect,
-            field_call,
-            call_args,
-            knowledge_base,
-            caller_param_bounds,
-            registry,
-            lift_operator_arg,
-            memo,
-          )
+        |> option.lazy_or(fn() {
+          syntactic_param_type(function, field_call.object)
+          |> option.map(fn(type_name) { #("", type_name) })
+        })
+      case receiver_type {
+        None -> #(effect_term.unknown(), memo)
+        Some(#(module, type_name)) ->
+          case
+            effects.lookup_type_field(
+              knowledge_base,
+              module,
+              type_name,
+              field_call.label,
+            )
+          {
+            Error(Nil) -> #(effect_term.unknown(), memo)
+            Ok(field_effect) ->
+              resolve_field_effect(
+                field_effect,
+                field_call,
+                call_args,
+                knowledge_base,
+                caller_param_bounds,
+                registry,
+                lift_operator_arg,
+                memo,
+              )
+          }
       }
+    }
   }
 }
 
