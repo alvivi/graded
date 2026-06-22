@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Catalog entries for common pure value libraries.** Calls into `bigi` (arbitrary-precision integers), `glearray` and `iv` (immutable arrays), and `gleam_community_maths` now resolve to `[]` instead of `[Unknown]`. These are value-only libraries with no effects, so every caller that touches them stays pure without a hand-written `external effects` line. For an uncatalogued pure library, the same effect is available per project with `external effects <module> : []` in the spec file.
+
 ## [0.9.0] - 2026-06-22
 
 ### Added
