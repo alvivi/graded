@@ -196,13 +196,21 @@ pub fn named_fn_arg_resolves_test() {
   // not the [Unknown] graded fell back to before (inline closures already
   // resolved; named references did not).
   let assert Ok(results) = graded.run("test/fixtures")
-  let named_result =
+  let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/named_fn_arg.gleam" })
-  let assert Ok(r) = named_result
-  { r.violations != [] } |> should.be_true()
-  let assert [v, ..] = r.violations
-  v.function |> should.equal("run")
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn shadowed_param_resolves_through_bound_test() {
+  // shadow_param.run takes a fn-typed parameter `handler` that shadows a
+  // same-module function of the same name (handler : [Stdout]). The forwarded
+  // argument must resolve through the param bound ([]), not by lifting the
+  // shadowed function — so the [] budget holds and `run` has no violation.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/shadow_param.gleam" })
+  list.any(r.violations, fn(v) { v.function == "run" }) |> should.be_false()
 }
 
 pub fn infer_then_check_round_trip_test() {

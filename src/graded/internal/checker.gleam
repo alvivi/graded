@@ -1111,14 +1111,23 @@ fn first_order_arg_effect(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
-  case arg.value {
+  // A `LocalRef` naming a caller parameter bound is a forwarded *parameter*,
+  // which can shadow a same-module function of the same name. Resolve it
+  // through the bound, never by lifting the shadowed function — a param bound
+  // only ever names a parameter, so this can't misfire on a real function ref.
+  let shadows_param = case arg.value {
+    types.LocalRef(name) ->
+      list.any(caller_param_bounds, fn(b) { b.name == name })
+    _ -> False
+  }
+  case arg.value, shadows_param {
     // A closure or a same-module named function both lift to an operator (the
     // function reference via `lift_local_function`), whose discharge is the
     // effect of calling it. A `LocalRef` that isn't a same-module function — a
-    // forwarded parameter — lifts to `Error(Nil)` and falls back to the param-
-    // bound lookup, so a named function resolves to its real effect instead of
-    // collapsing to [Unknown].
-    types.Closure(_, _) | types.LocalRef(_) -> {
+    // forwarded parameter with no bound — lifts to `Error(Nil)` and falls back
+    // to the param-bound lookup, so a named function resolves to its real
+    // effect instead of collapsing to [Unknown].
+    types.Closure(_, _), _ | types.LocalRef(_), False -> {
       let #(lifted, memo) = lift_operator_arg(arg.value, [], memo)
       case lifted {
         Ok(operator) -> #(discharge_operator(operator), memo)
@@ -1128,7 +1137,7 @@ fn first_order_arg_effect(
         )
       }
     }
-    _ -> #(
+    _, _ -> #(
       resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
       memo,
     )
