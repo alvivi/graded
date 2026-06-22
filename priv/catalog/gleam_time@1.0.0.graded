@@ -6,4 +6,4 @@ external effects gleam/time/timestamp : []
 
 external effects gleam/time/timestamp.system_time : [Time]
 external effects gleam/time/calendar.local_offset : [Time]
-external effects gleam/time/calendar.utc_offset : [Time]
+external effects gleam/time/calendar.utc_offset : []
