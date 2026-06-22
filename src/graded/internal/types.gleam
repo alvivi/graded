@@ -337,6 +337,12 @@ pub type Warning {
   // no field call in the function's body — usually a typo in the path. Such a
   // bound resolves nothing and is silently dead, so it's flagged.
   UnmatchedFieldBoundWarning(function: String, field_path: String)
+  // A plain parameter bound (`check f(g: [..])`) whose name matches no declared
+  // parameter of the function — a typo. Matched on parameter *existence*, not
+  // call presence: a callback forwarded but never called directly is still a
+  // real parameter and isn't flagged, since its bound stays load-bearing during
+  // substitution.
+  UnmatchedParamBoundWarning(function: String, param: String)
 }
 
 // Result of checking one file.

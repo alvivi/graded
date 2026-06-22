@@ -45,7 +45,8 @@ import graded/internal/typeinfo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type GradedFile, type QualifiedName,
   type Violation, type Warning, AnnotationLine, CheckResult, EffectAnnotation,
-  GradedFile, QualifiedName, UnmatchedFieldBoundWarning, UntrackedEffectWarning,
+  GradedFile, QualifiedName, UnmatchedFieldBoundWarning,
+  UnmatchedParamBoundWarning, UntrackedEffectWarning,
 }
 import simplifile
 
@@ -1234,6 +1235,15 @@ fn print_warning(file: String, warning: Warning) -> Nil {
         <> " on "
         <> function
         <> " matches no field call in its body — check the path",
+      )
+    UnmatchedParamBoundWarning(function:, param:) ->
+      io.println(
+        file
+        <> ": warning: parameter bound "
+        <> param
+        <> " on "
+        <> function
+        <> " names no parameter of the function — check the name",
       )
   }
 }

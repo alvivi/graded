@@ -18,7 +18,8 @@ import graded/internal/signatures
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
   ParamBound, Polymorphic, QualifiedName, Specific, TypeFieldEffect,
-  UnmatchedFieldBoundWarning, UntrackedEffectWarning, Wildcard,
+  UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning, UntrackedEffectWarning,
+  Wildcard,
 }
 import qcheck
 
@@ -907,6 +908,43 @@ pub fn caller(v: Validator) -> Nil { v.to_error(\"bad\") }"
           effect_term.from_effect_set(Specific(set.new())),
         ),
       ],
+      effect_term.from_effect_set(Specific(set.new())),
+    ),
+  ])
+  |> should.equal([])
+}
+
+// A plain parameter bound whose name matches no declared parameter is dead
+// (a typo) and emits a warning naming the parameter and function.
+pub fn param_bound_unmatched_warns_test() {
+  let source = "pub fn apply(f, x) { f(x) }"
+  let warnings =
+    check_warnings(source, [
+      EffectAnnotation(
+        Check,
+        "apply",
+        // Typo: the parameter is `f`, not `g`.
+        [ParamBound("g", effect_term.from_effect_set(Specific(set.new())))],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
+    ])
+  warnings |> list.length() |> should.equal(1)
+  let assert [warning] = warnings
+  let assert UnmatchedParamBoundWarning(function:, param:) = warning
+  function |> should.equal("apply")
+  param |> should.equal("g")
+}
+
+// A parameter bound on a callback that's forwarded but never called directly
+// still names a real parameter, so it stays load-bearing and emits no warning.
+pub fn param_bound_forwarded_no_warning_test() {
+  let source = "pub fn apply(f, x) { helper(f, x) }
+pub fn helper(g, y) { g(y) }"
+  check_warnings(source, [
+    EffectAnnotation(
+      Check,
+      "apply",
+      [ParamBound("f", effect_term.from_effect_set(Specific(set.new())))],
       effect_term.from_effect_set(Specific(set.new())),
     ),
   ])

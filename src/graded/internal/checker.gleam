@@ -21,7 +21,7 @@ import graded/internal/types.{
   type EffectAnnotation, type EffectTerm, type LocalCall, type ParamBound,
   type ResolvedCall, type Violation, type Warning, EffectAnnotation, Effects,
   ParamBound, QualifiedName, TUnion, TVar, UnmatchedFieldBoundWarning,
-  UntrackedEffectWarning, Violation,
+  UnmatchedParamBoundWarning, UntrackedEffectWarning, Violation,
 }
 
 // Check a parsed module against its effect annotations.
@@ -763,8 +763,35 @@ fn check_annotation(
           )
         })
 
+      // Warn about plain parameter bounds whose name matches no declared
+      // parameter — a typo. Checked on parameter *existence*, not call presence:
+      // a callback that's forwarded but never called directly is still a real
+      // parameter, so its bound stays load-bearing during substitution and isn't
+      // flagged. Only a name that is no parameter at all is dead.
+      let param_names =
+        function_definition.definition.parameters
+        |> list.filter_map(fn(param) {
+          case param.name {
+            glance.Named(name) -> Ok(name)
+            glance.Discarded(_) -> Error(Nil)
+          }
+        })
+        |> set.from_list()
+      let unmatched_param_bound_warnings =
+        annotation.params
+        |> list.filter(fn(bound) { !string.contains(bound.name, ".") })
+        |> list.filter(fn(bound) { !set.contains(param_names, bound.name) })
+        |> list.map(fn(bound) {
+          UnmatchedParamBoundWarning(
+            function: annotation.function,
+            param: bound.name,
+          )
+        })
+
       let warnings =
-        list.append(reference_warnings, unmatched_field_bound_warnings)
+        reference_warnings
+        |> list.append(unmatched_field_bound_warnings)
+        |> list.append(unmatched_param_bound_warnings)
 
       #(#(violations, warnings), memo)
     }
