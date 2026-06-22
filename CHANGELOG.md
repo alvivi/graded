@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-22
+
 ### Added
 
 - **Field bounds.** A `check` line can bound a function-typed field reached through a parameter, using a `param.field` path: `check myapp.view(handler.on_click: [Dom]) : [Dom]`. The field call resolves to the declared effect, taking priority over receiver-type resolution — the boundary-scoped counterpart to a `type` line, for a receiver graded can't trace to a construction site.
