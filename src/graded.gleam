@@ -45,7 +45,7 @@ import graded/internal/typeinfo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type GradedFile, type QualifiedName,
   type Violation, type Warning, AnnotationLine, CheckResult, EffectAnnotation,
-  GradedFile, QualifiedName,
+  GradedFile, QualifiedName, UnmatchedFieldBoundWarning, UntrackedEffectWarning,
 }
 import simplifile
 
@@ -1212,18 +1212,30 @@ fn print_warnings(check_result: CheckResult) -> Nil {
 }
 
 fn print_warning(file: String, warning: Warning) -> Nil {
-  io.println(
-    file
-    <> ": warning: "
-    <> warning.function
-    <> " passes "
-    <> warning.reference.module
-    <> "."
-    <> warning.reference.function
-    <> " as a value — its effects "
-    <> effects.format_effect_set(warning.effects)
-    <> " won't be tracked",
-  )
+  case warning {
+    UntrackedEffectWarning(function:, reference:, effects: effs, ..) ->
+      io.println(
+        file
+        <> ": warning: "
+        <> function
+        <> " passes "
+        <> reference.module
+        <> "."
+        <> reference.function
+        <> " as a value — its effects "
+        <> effects.format_effect_set(effs)
+        <> " won't be tracked",
+      )
+    UnmatchedFieldBoundWarning(function:, field_path:) ->
+      io.println(
+        file
+        <> ": warning: field bound "
+        <> field_path
+        <> " on "
+        <> function
+        <> " matches no field call in its body — check the path",
+      )
+  }
 }
 
 @external(erlang, "erlang", "halt")

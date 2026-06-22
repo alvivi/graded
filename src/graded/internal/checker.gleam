@@ -20,7 +20,8 @@ import graded/internal/typeinfo
 import graded/internal/types.{
   type EffectAnnotation, type EffectTerm, type LocalCall, type ParamBound,
   type ResolvedCall, type Violation, type Warning, EffectAnnotation, Effects,
-  ParamBound, QualifiedName, TUnion, TVar, UntrackedEffectWarning, Violation,
+  ParamBound, QualifiedName, TUnion, TVar, UnmatchedFieldBoundWarning,
+  UntrackedEffectWarning, Violation,
 }
 
 // Check a parsed module against its effect annotations.
@@ -734,12 +735,36 @@ fn check_annotation(
       // Warn about function references passed as values with known non-pure effects.
       let extract_result =
         extract.extract_calls(function_definition.definition.body, context)
-      let warnings =
+      let reference_warnings =
         collect_reference_warnings(
           annotation.function,
           extract_result.references,
           knowledge_base,
         )
+
+      // Warn about field bounds whose `recv.field` path matches no field call in
+      // the body — a dead bound, almost always a typo in the path.
+      let field_call_targets =
+        extract_result.field
+        |> list.map(fn(field_call) {
+          field_call.object <> "." <> field_call.label
+        })
+        |> set.from_list()
+      let unmatched_field_bound_warnings =
+        annotation.params
+        |> list.filter(fn(bound) { string.contains(bound.name, ".") })
+        |> list.filter(fn(bound) {
+          !set.contains(field_call_targets, bound.name)
+        })
+        |> list.map(fn(bound) {
+          UnmatchedFieldBoundWarning(
+            function: annotation.function,
+            field_path: bound.name,
+          )
+        })
+
+      let warnings =
+        list.append(reference_warnings, unmatched_field_bound_warnings)
 
       #(#(violations, warnings), memo)
     }

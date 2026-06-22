@@ -323,15 +323,20 @@ pub type Violation {
   )
 }
 
-// A warning about a function reference passed as a value whose effects
-// won't be tracked through the callee.
+// A warning surfaced during checking.
 pub type Warning {
+  // A function reference passed as a value whose effects won't be tracked
+  // through the callee.
   UntrackedEffectWarning(
     function: String,
     reference: QualifiedName,
     span: Span,
     effects: EffectSet,
   )
+  // A field bound (`check f(recv.field: [..])`) whose `recv.field` path matched
+  // no field call in the function's body — usually a typo in the path. Such a
+  // bound resolves nothing and is silently dead, so it's flagged.
+  UnmatchedFieldBoundWarning(function: String, field_path: String)
 }
 
 // Result of checking one file.
