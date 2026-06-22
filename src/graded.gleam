@@ -86,16 +86,14 @@ pub fn main() -> Nil {
           halt(1)
         }
       }
-    ["format", "--stdin", ..] -> {
-      let input = read_stdin()
-      case annotation.parse_file(input) {
-        Ok(file) -> io.print(annotation.format_sorted(file))
+    ["format", "--stdin", ..] ->
+      case run_format_stdin(read_stdin()) {
+        Ok(output) -> io.print(output)
         Error(_) -> {
           io.println_error("graded: error: could not parse stdin")
           halt(1)
         }
       }
-    }
     ["format", "--check", ..rest] ->
       case run_format_check(target_directory(rest)) {
         Ok(Nil) -> Nil
@@ -280,6 +278,16 @@ pub fn run_format(directory: String) -> Result(Nil, GradedError) {
       simplifile.write(cfg.spec_file, formatted)
       |> result.map_error(FileWriteError(cfg.spec_file, _))
   }
+}
+
+/// Format a `.graded` spec given as a string, as `graded format --stdin` does
+/// for editor integration: parse the input, then sort and reformat it. Returns
+/// the input's parse error if it doesn't parse.
+pub fn run_format_stdin(
+  input: String,
+) -> Result(String, annotation.ParseError) {
+  use file <- result.map(annotation.parse_file(input))
+  annotation.format_sorted(file)
 }
 
 /// Check that the project's spec file is already formatted. Returns error

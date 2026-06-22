@@ -39,3 +39,16 @@ pub fn format_fails_on_unparseable_spec_test() {
     simplifile.write(dir <> "/graded_fmt_bad.graded", bad_spec)
   graded.run_format(dir) |> should.be_error
 }
+
+// `graded format --stdin` reads a spec on standard input and prints the
+// formatted result, for editor integration. `run_format_stdin` is the pure
+// transform behind it: parse, sort, reformat.
+
+pub fn format_stdin_sorts_and_normalizes_test() {
+  graded.run_format_stdin("effects myapp.b:[Http]\ncheck  myapp.a : []")
+  |> should.equal(Ok("check myapp.a : []\n\neffects myapp.b : [Http]\n"))
+}
+
+pub fn format_stdin_fails_on_unparseable_input_test() {
+  graded.run_format_stdin(bad_spec) |> should.be_error
+}
