@@ -2364,6 +2364,11 @@ fn resolve_field_call(
   // girard/type-registry resolution. It's the boundary-scoped counterpart to a
   // `type` line — an escape hatch for a receiver graded can't trace to a
   // construction site. User-declared, so it wins over inferred field effects.
+  //
+  // The bound's effects are returned verbatim — a concrete effect set, no
+  // call-site substitution (unlike the `type`-line path below, which runs
+  // through `resolve_field_effect`). Effect-polymorphic fields belong on a
+  // `type` line.
   let field_target = field_call.object <> "." <> field_call.label
   case list.find(caller_param_bounds, fn(b) { b.name == field_target }) {
     Ok(bound) -> #(bound.effects, memo)

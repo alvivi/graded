@@ -164,6 +164,11 @@ priority over receiver-type resolution. This is the boundary-scoped counterpart 
 every receiver of that type package-wide, the field bound for one `check`'d function.
 A field bound and an ordinary parameter bound can share one `check` line.
 
+A field bound declares a *concrete* effect set: it resolves to exactly the effects
+written, with no call-site substitution. For an effect-polymorphic field — one whose
+effect depends on its own arguments — use a [`type` line](#type-field-effects)
+instead, which substitutes the field call's arguments into the declared variables.
+
 ### Effect polymorphism
 
 When a function's effects *depend on* its callback, use lowercase effect variables:
