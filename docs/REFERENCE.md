@@ -172,6 +172,14 @@ instead, which substitutes the field call's arguments into the declared variable
 If a field bound's `param.field` path matches no field call in the checked function's
 body, graded emits a warning — the bound is dead, usually a typo in the path.
 
+**Precedence.** A field bound only competes with receiver-type (`type`-line)
+resolution, and wins it. It does *not* override value provenance: when the receiver
+is traced to a construction site — a direct constructor or a factory — and the field
+resolves through that value, the call is resolved before it is ever treated as a
+field call, so the bound doesn't apply. This isn't a conflict in practice: field
+bounds exist for receivers graded can't trace (a parameter, a value threaded through
+data), which is exactly the case where there's no provenance to compete with.
+
 ### Effect polymorphism
 
 When a function's effects *depend on* its callback, use lowercase effect variables:

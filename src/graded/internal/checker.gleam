@@ -2394,6 +2394,9 @@ fn resolve_field_call(
   // girard/type-registry resolution. It's the boundary-scoped counterpart to a
   // `type` line — an escape hatch for a receiver graded can't trace to a
   // construction site. User-declared, so it wins over inferred field effects.
+  // (Factory/constructor-traced receivers never reach here — extraction resolves
+  // them to a plain call through value provenance — so the bound only competes
+  // with, and beats, receiver-type resolution.)
   //
   // The bound's effects are returned verbatim — a concrete effect set, no
   // call-site substitution (unlike the `type`-line path below, which runs
