@@ -134,7 +134,12 @@ pub fn infer_with_returns(
 
   // Seed param bounds from existing `check` annotations only — `effects`
   // annotations don't carry user-declared bounds, so they can't constrain
-  // higher-order parameters during inference.
+  // higher-order parameters during inference. Field bounds (dotted `param.field`
+  // names) ride this same path: they resolve field calls during the seeded
+  // inference exactly as plain bounds resolve parameter calls. Only callers that
+  // pass real checks here are affected — the `graded infer` cache pass passes
+  // `[]`, so a `check`-line bound never leaks into the written cache; path-dep
+  // inference passes its spec checks, so a dep's bounds do constrain it.
   let bounds_map =
     existing_checks
     |> list.filter(fn(annotation) { annotation.params != [] })
