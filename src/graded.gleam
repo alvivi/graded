@@ -124,20 +124,25 @@ pub fn main() -> Nil {
 /// file.
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   use cfg <- result.try(read_config(directory))
+  let package_root = resolve_package_root(directory)
   let spec = read_spec(cfg.spec_file)
   let checks_by_module = checks_grouped_by_module(spec)
 
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.try(parse_all_files(gleam_files))
   let index = build_module_index(parsed, directory)
-  let dep_registry = signatures.load_from_packages_dir("build/packages")
+  let dep_registry =
+    signatures.load_from_packages_dir(packages_dir(package_root))
   let registry = signatures.merge(dep_registry, build_project_registry(index))
   let type_info = build_type_index(index)
 
   // Hand-written `type` lines (last) win over the inferred construction index.
   let kb_base =
-    effects.load_knowledge_base("build/packages")
-    |> enrich_with_path_deps()
+    effects.load_knowledge_base(
+      packages_dir(package_root),
+      manifest_path(package_root),
+    )
+    |> enrich_with_path_deps(package_root)
     |> effects.with_inferred(effects.load_spec_effects_from_file(spec))
     |> effects.with_inferred_returned_operators(
       effects.load_spec_returns_from_file(spec),
@@ -195,6 +200,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
 /// resolves transitive chains of any depth.
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   use cfg <- result.try(read_config(directory))
+  let package_root = resolve_package_root(directory)
   let spec = read_spec(cfg.spec_file)
 
   use gleam_files <- result.try(find_gleam_files(directory))
@@ -202,8 +208,11 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   let index = build_module_index(parsed, directory)
 
   let kb_base =
-    effects.load_knowledge_base("build/packages")
-    |> enrich_with_path_deps()
+    effects.load_knowledge_base(
+      packages_dir(package_root),
+      manifest_path(package_root),
+    )
+    |> enrich_with_path_deps(package_root)
     |> effects.with_externals(annotation.extract_externals(spec))
   // Resolve constructor-field values against the same view `run` uses — catalog
   // + externals + the spec's *existing* inferred effects — so `infer` and
@@ -233,7 +242,8 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   // Build a signature registry covering every project module so the
   // checker can do positional argument matching for cross-module
   // polymorphic calls.
-  let dep_registry = signatures.load_from_packages_dir("build/packages")
+  let dep_registry =
+    signatures.load_from_packages_dir(packages_dir(package_root))
   let registry = signatures.merge(dep_registry, build_project_registry(index))
   let type_info = build_type_index(index)
 
@@ -938,6 +948,52 @@ fn read_config(directory: String) -> Result(config.GradedConfig, GradedError) {
   ))
 }
 
+// The Gleam project root: where dependency state lives — `build/packages`,
+// `manifest.toml`, and the `gleam.toml` that lists path dependencies. Found by
+// walking up from the source directory to the nearest ancestor holding a
+// `gleam.toml`, so a source directory nested inside a project (e.g. a test
+// fixture tree) inherits that project's installed dependencies rather than the
+// process cwd's. Falls back to the source directory when no `gleam.toml` is
+// found anywhere up the tree.
+fn resolve_package_root(directory: String) -> String {
+  let source_root = case directory {
+    "src" -> "."
+    _ -> directory
+  }
+  find_gleam_toml_dir(source_root, source_root, 64)
+}
+
+// Dependency `.graded` specs live under `<root>/build/packages/<dep>/`.
+fn packages_dir(package_root: String) -> String {
+  filepath.join(package_root, "build/packages")
+}
+
+// `manifest.toml` (installed dependency versions, for catalog selection) sits
+// at the project root next to `gleam.toml`.
+fn manifest_path(package_root: String) -> String {
+  filepath.join(package_root, "manifest.toml")
+}
+
+fn find_gleam_toml_dir(dir: String, original: String, fuel: Int) -> String {
+  let dir = case dir {
+    "" -> "."
+    _ -> dir
+  }
+  case simplifile.is_file(filepath.join(dir, "gleam.toml")) {
+    Ok(True) -> dir
+    _ -> {
+      let parent = case filepath.directory_name(dir) {
+        "" -> "."
+        other -> other
+      }
+      case fuel <= 0 || parent == dir {
+        True -> original
+        False -> find_gleam_toml_dir(parent, original, fuel - 1)
+      }
+    }
+  }
+}
+
 // Join a path against a root, but leave it untouched if it's already
 // absolute (starts with `/`) or if the root is `.` (so production paths
 // stay short and unprefixed).
@@ -981,16 +1037,22 @@ fn read_spec(spec_path: String) -> GradedFile {
 //    `infer_path_dep` so path deps without graded set up still work.
 //    Cross-path-dep imports are not currently merged into a single graph
 //    — each dep is processed sequentially.
-fn enrich_with_path_deps(knowledge_base: KnowledgeBase) -> KnowledgeBase {
-  let path_deps = effects.parse_path_dependencies("gleam.toml")
+fn enrich_with_path_deps(
+  knowledge_base: KnowledgeBase,
+  package_root: String,
+) -> KnowledgeBase {
+  let path_deps =
+    effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
   list.fold(path_deps, knowledge_base, fn(kb, dep) {
     let #(name, dep_path) = dep
-    let spec_path = config.spec_file_for(dep_path, name)
+    // Path dependency locations are declared relative to the project root.
+    let resolved_dep_path = filepath.join(package_root, dep_path)
+    let spec_path = config.spec_file_for(resolved_dep_path, name)
     case simplifile.is_file(spec_path) {
       Ok(True) ->
         effects.with_inferred(kb, effects.load_spec_effects(spec_path))
       _ ->
-        case infer_path_dep(dep_path, kb) {
+        case infer_path_dep(resolved_dep_path, kb) {
           Error(Nil) -> kb
           Ok(inferred) -> effects.with_inferred(kb, inferred)
         }

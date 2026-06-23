@@ -28,7 +28,22 @@ import simplifile
 // ----- helpers -----
 
 fn make_fixture(name: String, files: List(#(String, String))) -> String {
-  write_fixture("/tmp/graded_topo_" <> name, files)
+  write_fixture("/tmp/graded_topo_" <> name, [stdlib_manifest(), ..files])
+}
+
+// A minimal `manifest.toml` so a fixture project selects the bundled catalog
+// (which marks `gleam/io.println : [Stdout]`, `gleam/string` pure, …) the same
+// way a real installed project would. Dependency resolution now reads the
+// project's own root, so a fixture without this would see an empty catalog. A
+// fixture can override it by listing its own `manifest.toml` entry.
+fn stdlib_manifest() -> #(String, String) {
+  #(
+    "manifest.toml",
+    "packages = [
+  { name = \"gleam_stdlib\", version = \"0.71.0\" },
+]
+",
+  )
 }
 
 // Materialise a tree of files at `directory`, replacing any prior contents.
@@ -663,8 +678,9 @@ pub fn run(value: String) -> Nil {
 
   // load_knowledge_base from a missing dir falls back to the bundled
   // catalog (which has io.println marked [Stdout]) without any project
-  // externals layered on.
-  let base_kb = effects.load_knowledge_base("nonexistent_packages_dir")
+  // externals layered on. The manifest selects catalog versions.
+  let base_kb =
+    effects.load_knowledge_base("nonexistent_packages_dir", "manifest.toml")
 
   let assert Ok(inferred) = graded.infer_path_dep(dep_path, base_kb)
 

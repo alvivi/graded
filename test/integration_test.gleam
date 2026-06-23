@@ -272,3 +272,39 @@ pub fn infer_then_check_round_trip_test() {
   // Restore the captured fixture so subsequent test runs start clean.
   let assert Ok(Nil) = simplifile.write(spec_path, original)
 }
+
+pub fn run_resolves_deps_from_target_dir_test() {
+  // graded.run is handed a project directory that is NOT the process cwd (which
+  // stays at the repository root under `gleam test`). Dependency specs must be
+  // read from THAT directory's `build/packages`, not the repo's. We build a
+  // throwaway project under the gitignored `build/` whose own `build/packages`
+  // declares `dep.fetch : [Http]`; `run` calls it, so the `[]` budget must fail
+  // with the precise [Http]. When dependency loading is cwd-relative, the repo
+  // has no such dep and the call leaks as [Unknown] instead.
+  let root = "build/cwd_dep_fixture"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(root <> "/build/packages/dep")
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/proj.graded", "check proj.run : []\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/proj.gleam",
+      "import dep\n\npub fn run() -> Nil {\n  dep.fetch()\n}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/build/packages/dep/dep.graded",
+      "effects dep.fetch : [Http]\n",
+    )
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Http"])))
+
+  let assert Ok(Nil) = simplifile.delete(root)
+}
