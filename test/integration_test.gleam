@@ -216,6 +216,19 @@ pub fn labeled_callback_resolves_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn record_update_field_walked_test() {
+  // record_update.run updates a field with an effectful expression (shout :
+  // [Stdout]). The call sits inside a record update, so its effect surfaces
+  // only if the extractor walks the updated field values, not just the base
+  // record. Without that, the [Stdout] is silently dropped and `run` wrongly
+  // resolves to [].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/record_update.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn shadowed_param_resolves_through_bound_test() {
   // shadow_param.run takes a fn-typed parameter `handler` that shadows a
   // same-module function of the same name (handler : [Stdout]). The forwarded
