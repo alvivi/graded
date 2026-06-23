@@ -14,6 +14,7 @@ check ffi_external.run : []
 check field_bound.caller(v.to_error: [Stdout]) : []
 check named_fn_arg.run : []
 check labeled_callback.run : []
+check record_update.run : []
 check shadow_param.run(handler: []) : []
 
 // Type field annotations (the effect source for type-directed field calls).

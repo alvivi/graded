@@ -1199,9 +1199,16 @@ fn extract_from_expression(
     glance.NegateBool(value:, ..) ->
       extract_from_expression(value, context, env)
 
-    // Record update
-    glance.RecordUpdate(record:, ..) ->
-      extract_from_expression(record, context, env)
+    // Record update: walk the base record and every updated field value
+    // (a field item is absent only for shorthand `Rec(..base, field:)`).
+    glance.RecordUpdate(record:, fields:, ..) ->
+      list.fold(
+        fields,
+        extract_from_expression(record, context, env),
+        fn(accumulated, field) {
+          merge_optional(accumulated, field.item, context, env)
+        },
+      )
 
     // Function reference: qualified name used as a value (not called).
     glance.FieldAccess(
