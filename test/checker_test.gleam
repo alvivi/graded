@@ -35,6 +35,7 @@ fn check_source(
   let #(violations, _warnings) =
     checker.check(
       module,
+      "",
       annotations,
       knowledge_base(),
       signatures.empty(),
@@ -194,6 +195,7 @@ pub fn view(items) { list.map(items, fn(x) { x }) }"
   let inferred =
     checker.infer(
       module,
+      "",
       knowledge_base(),
       [],
       signatures.empty(),
@@ -215,6 +217,7 @@ pub fn greet() { io.println(\"hi\") }"
   let inferred =
     checker.infer(
       module,
+      "",
       knowledge_base(),
       [],
       signatures.empty(),
@@ -235,6 +238,7 @@ fn helper() { io.println(\"x\") }"
   let inferred =
     checker.infer(
       module,
+      "",
       knowledge_base(),
       [],
       signatures.empty(),
@@ -266,6 +270,7 @@ pub fn infer_uses_param_bounds_test() {
   let inferred =
     checker.infer(
       module,
+      "",
       knowledge_base(),
       existing_checks,
       signatures.empty(),
@@ -285,6 +290,7 @@ pub fn infer_without_bounds_gets_unknown_test() {
   let inferred =
     checker.infer(
       module,
+      "",
       knowledge_base(),
       [],
       signatures.empty(),
@@ -336,6 +342,7 @@ pub fn infer_girard_detects_unannotated_fn_typed_param_test() {
   let inferred =
     checker.infer(
       module,
+      "",
       knowledge_base(),
       [],
       signatures.empty(),
@@ -447,6 +454,7 @@ fn check_source_with_type_fields(
   let #(violations, _warnings) =
     checker.check(
       module,
+      "",
       annotations,
       kb,
       signatures.empty(),
@@ -506,6 +514,7 @@ fn check_source_with_girard(
   let #(violations, _warnings) =
     checker.check(
       module,
+      "",
       annotations,
       kb,
       signatures.empty(),
@@ -697,6 +706,7 @@ fn check_source_with_externals(
   let #(violations, _warnings) =
     checker.check(
       module,
+      "",
       annotations,
       kb,
       signatures.empty(),
@@ -753,6 +763,67 @@ pub fn fetch() { httpc.send(request) }"
   |> should.be_true()
 }
 
+// A same-module (unqualified) call into a bodyless `@external` inherits the
+// effects declared for it in the knowledge base — qualified by the current
+// module — not the `[Unknown]` an undeclared external yields. Regression for the
+// FFI idiom: an `@external` binding paired with a same-module wrapper.
+pub fn external_same_module_resolves_declared_effects_test() {
+  let source =
+    "@external(erlang, \"ffi\", \"now\")
+pub fn now() -> Int
+
+pub fn read_clock() { now() }"
+  let assert Ok(module) = glance.module(source)
+  let externals = [
+    types.ExternalAnnotation(
+      "ffi_mod",
+      types.FunctionExternal("now"),
+      Specific(set.from_list(["Time"])),
+    ),
+  ]
+  let kb = effects.with_externals(knowledge_base(), externals)
+  let inferred =
+    checker.infer(
+      module,
+      "ffi_mod",
+      kb,
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
+  let assert Ok(annotation) =
+    list.find(inferred, fn(a) { a.function == "read_clock" })
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Specific(set.from_list(["Time"])))
+}
+
+// Without a declaration, a same-module call into a bodyless `@external` stays
+// `[Unknown]` — the opaque-FFI default (`module_path` qualifies the lookup, so a
+// wrong/absent entry never silently resolves to `[]`).
+pub fn external_same_module_without_declaration_is_unknown_test() {
+  let source =
+    "@external(erlang, \"ffi\", \"now\")
+pub fn now() -> Int
+
+pub fn read_clock() { now() }"
+  let assert Ok(module) = glance.module(source)
+  let inferred =
+    checker.infer(
+      module,
+      "ffi_mod",
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
+  let assert Ok(annotation) =
+    list.find(inferred, fn(a) { a.function == "read_clock" })
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
 // Wildcard [_] tests
 
 pub fn wildcard_declared_passes_all_effects_test() {
@@ -807,6 +878,7 @@ fn check_warnings(
   let #(_violations, warnings) =
     checker.check(
       module,
+      "",
       annotations,
       knowledge_base(),
       signatures.empty(),
@@ -1138,6 +1210,7 @@ pub fn check_no_false_positives_test() {
       let #(violations, _) =
         checker.check(
           module,
+          "",
           [ann],
           kb,
           signatures.empty(),
@@ -1166,6 +1239,7 @@ pub fn check_wildcard_never_violates_test() {
       let #(violations, _) =
         checker.check(
           module,
+          "",
           [ann],
           kb,
           signatures.empty(),
@@ -1197,6 +1271,7 @@ pub fn check_empty_budget_detects_effects_test() {
           let #(violations, _) =
             checker.check(
               module,
+              "",
               [ann],
               kb,
               signatures.empty(),
@@ -1230,6 +1305,7 @@ pub fn check_violations_iff_not_subset_test() {
       let #(violations, _) =
         checker.check(
           module,
+          "",
           [ann],
           kb,
           signatures.empty(),
@@ -1254,6 +1330,7 @@ pub fn infer_matches_actual_effects_test() {
       let inferred =
         checker.infer(
           module,
+          "",
           kb,
           [],
           signatures.empty(),
@@ -1328,6 +1405,7 @@ pub fn infer_terminates_with_cycles_test() {
       let inferred =
         checker.infer(
           module,
+          "",
           bare_knowledge_base(),
           [],
           signatures.empty(),
@@ -1356,6 +1434,7 @@ pub fn check_terminates_with_cycles_test() {
       let #(violations, _) =
         checker.check(
           module,
+          "",
           [ann],
           bare_knowledge_base(),
           signatures.empty(),
@@ -1374,6 +1453,7 @@ fn infer_single(source: String) -> EffectAnnotation {
   let assert [ann] =
     checker.infer(
       module,
+      "",
       knowledge_base(),
       [],
       signatures.empty(),
@@ -1472,6 +1552,7 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
   let assert [ann] =
     checker.infer(
       module,
+      "",
       knowledge_base(),
       [existing],
       signatures.empty(),
@@ -1539,6 +1620,7 @@ pub fn new() {
   let #(violations, _) =
     checker.check(
       module,
+      "",
       [
         EffectAnnotation(
           Check,
@@ -1570,6 +1652,7 @@ pub fn new() {
   let #(violations, _) =
     checker.check(
       module,
+      "",
       [
         EffectAnnotation(
           Check,
@@ -1600,6 +1683,7 @@ pub fn new() {
   let #(violations, _) =
     checker.check(
       module,
+      "",
       [
         EffectAnnotation(
           Check,
@@ -1630,6 +1714,7 @@ pub fn new() {
   let assert [ann] =
     checker.infer(
       module,
+      "",
       polymorphic_kb(),
       [],
       signatures.empty(),
@@ -1656,6 +1741,7 @@ pub fn new() {
   let assert [ann] =
     checker.infer(
       module,
+      "",
       polymorphic_kb(),
       [],
       signatures.empty(),
@@ -1723,6 +1809,7 @@ pub fn outer() -> MyError {
   let inferred =
     checker.infer(
       module,
+      "",
       knowledge_base(),
       [],
       signatures.empty(),
@@ -1748,6 +1835,7 @@ pub fn run() {
   let assert [ann] =
     checker.infer(
       module,
+      "",
       two_callback_kb(),
       [],
       signatures.empty(),
@@ -1772,6 +1860,7 @@ fn infer_single_with_list(source: String) -> types.EffectAnnotation {
   let assert [ann] =
     checker.infer(
       module,
+      "",
       knowledge_base(),
       [],
       list_registry(),
@@ -1850,6 +1939,7 @@ pub fn run(x: Int) {
   let #(violations, _) =
     checker.check(
       module,
+      "",
       [EffectAnnotation(Check, "run", [], effect_term.from_effect_set(budget))],
       kb,
       reg,
@@ -1969,7 +2059,8 @@ pub fn run(h: fn(Int) -> Int, x: Int) -> Int {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let assert [ann] = checker.infer(module, kb, [], reg, dict.new(), dict.new())
+  let assert [ann] =
+    checker.infer(module, "", kb, [], reg, dict.new(), dict.new())
   ann.function |> should.equal("run")
   effect_term.to_effect_set(ann.effects)
   |> should.equal(Polymorphic(set.new(), set.from_list(["h"])))
@@ -2019,6 +2110,7 @@ pub fn main(t: Task, msg: String) {
   let #(violations, _warnings) =
     checker.check(
       module,
+      "",
       [
         EffectAnnotation(
           Check,
@@ -2126,7 +2218,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
   let #(violations, _) =
-    checker.check(module, [pass], kb, registry, dict.new(), dict.new())
+    checker.check(module, "", [pass], kb, registry, dict.new(), dict.new())
   violations |> should.equal([])
   let fail =
     EffectAnnotation(
@@ -2136,7 +2228,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(types.empty()),
     )
   let #(failed, _) =
-    checker.check(module, [fail], kb, registry, dict.new(), dict.new())
+    checker.check(module, "", [fail], kb, registry, dict.new(), dict.new())
   { failed != [] } |> should.be_true()
 }
 
@@ -2236,7 +2328,7 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
   let #(violations, _) =
-    checker.check(module, [ann], kb, reg, dict.new(), dict.new())
+    checker.check(module, "", [ann], kb, reg, dict.new(), dict.new())
   violations |> should.equal([])
 }
 
@@ -2256,7 +2348,7 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       effect_term.from_effect_set(types.empty()),
     )
   let #(violations, _) =
-    checker.check(module, [ann], kb, reg, dict.new(), dict.new())
+    checker.check(module, "", [ann], kb, reg, dict.new(), dict.new())
   { violations != [] } |> should.be_true()
 }
 
@@ -2277,7 +2369,7 @@ pub fn caller() -> Nil { app.with_logger(fn(logger) { logger(\"hi\") }) }"
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
   let #(violations, _) =
-    checker.check(module, [ann], kb, reg, dict.new(), dict.new())
+    checker.check(module, "", [ann], kb, reg, dict.new(), dict.new())
   violations |> should.equal([])
 }
 
@@ -2339,7 +2431,15 @@ pub fn run(action: fn(fn(String) -> Nil, fn(String) -> Nil) -> Nil) -> Nil {
 "
   let assert Ok(module) = glance.module(source)
   let assert [ann] =
-    checker.infer(module, kb, [], signatures.empty(), dict.new(), dict.new())
+    checker.infer(
+      module,
+      "",
+      kb,
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   ann.effects
   |> effect_term.normalize
   |> should.equal(types.TApp(
@@ -2364,7 +2464,15 @@ pub fn run(
 "
   let assert Ok(module) = glance.module(source)
   let assert [ann] =
-    checker.infer(module, kb, [], signatures.empty(), dict.new(), dict.new())
+    checker.infer(
+      module,
+      "",
+      kb,
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   ann.effects
   |> effect_term.normalize
   |> should.equal(types.TApp(
@@ -3005,7 +3113,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
   let #(violations, _) =
-    checker.check(module, [pass], kb, registry, dict.new(), dict.new())
+    checker.check(module, "", [pass], kb, registry, dict.new(), dict.new())
   violations |> should.equal([])
   let fail =
     EffectAnnotation(
@@ -3015,7 +3123,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(types.empty()),
     )
   let #(fail_violations, _) =
-    checker.check(module, [fail], kb, registry, dict.new(), dict.new())
+    checker.check(module, "", [fail], kb, registry, dict.new(), dict.new())
   { fail_violations != [] } |> should.be_true()
 }
 
@@ -3060,7 +3168,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
   let #(violations, _) =
-    checker.check(module, [pass], kb, registry, dict.new(), dict.new())
+    checker.check(module, "", [pass], kb, registry, dict.new(), dict.new())
   violations |> should.equal([])
 }
 
@@ -3079,6 +3187,7 @@ pub fn pick() -> fn(fn(String) -> Nil) -> Nil {
   let #(_annotations, returns) =
     checker.infer_with_returns(
       module,
+      "",
       knowledge_base(),
       [],
       signatures.from_glance_module("app", module),
@@ -3103,6 +3212,7 @@ pub fn make_printer() -> fn() -> Nil {
   let #(_annotations, returns) =
     checker.infer_with_returns(
       module,
+      "",
       knowledge_base(),
       [],
       signatures.from_glance_module("app", module),
@@ -3158,7 +3268,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     )
   let #(violations, _) =
-    checker.check(module, [pass], kb, registry, dict.new(), dict.new())
+    checker.check(module, "", [pass], kb, registry, dict.new(), dict.new())
   violations |> should.equal([])
   let fail =
     EffectAnnotation(
@@ -3168,7 +3278,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(types.empty()),
     )
   let #(failed, _) =
-    checker.check(module, [fail], kb, registry, dict.new(), dict.new())
+    checker.check(module, "", [fail], kb, registry, dict.new(), dict.new())
   { failed != [] } |> should.be_true()
 }
 
@@ -3193,6 +3303,7 @@ pub fn pick(
   let #(_annotations, returns) =
     checker.infer_with_returns(
       module,
+      "",
       knowledge_base(),
       [],
       signatures.from_glance_module("app", module),
@@ -3307,7 +3418,7 @@ fn second_order_violations(
       effect_term.from_effect_set(Specific(set.from_list(budget))),
     )
   let #(violations, _) =
-    checker.check(module, [ann], kb, registry, dict.new(), dict.new())
+    checker.check(module, "", [ann], kb, registry, dict.new(), dict.new())
   violations
 }
 

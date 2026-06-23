@@ -173,6 +173,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
       }
       check_one_file(
         gleam_path,
+        module_path,
         module,
         module_checks,
         knowledge_base,
@@ -702,6 +703,7 @@ fn infer_one_module(
   let #(inferred, returned_operators) =
     checker.infer_with_returns(
       module,
+      module_path,
       knowledge_base,
       [],
       registry,
@@ -799,6 +801,7 @@ fn fold_inferred_module(
   let #(inferred, returned_operators) =
     checker.infer_with_returns(
       module,
+      module_path,
       kb,
       [],
       registry,
@@ -916,6 +919,7 @@ fn checks_grouped_by_module(
 // annotations from the spec file that mention this file's module.
 fn check_one_file(
   gleam_path: String,
+  module_path: String,
   module: glance.Module,
   module_checks: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
@@ -926,6 +930,7 @@ fn check_one_file(
   let #(violations, warnings) =
     checker.check(
       module,
+      module_path,
       module_checks,
       knowledge_base,
       registry,
@@ -1229,6 +1234,7 @@ fn infer_path_dep_module(
       let #(annotations, returned_operators) =
         checker.infer_with_returns(
           module,
+          module_path,
           kb,
           checks,
           registry,

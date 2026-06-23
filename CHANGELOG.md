@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A same-module (unqualified) call into a bodyless `@external` now applies its `external effects` declaration, matching the cross-module (qualified) call path. The local-call path resolved opaque externals straight to `[Unknown]` without consulting the knowledge base, so a declared `external effects` entry took effect only for callers in other modules; the common FFI idiom of an `@external` binding plus a same-module wrapper cascaded to `[Unknown]`. Undeclared externals still resolve to `[Unknown]`.
+
 ## [0.9.2] - 2026-06-23
 
 ### Fixed

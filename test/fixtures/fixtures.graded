@@ -16,6 +16,10 @@ check named_fn_arg.run : []
 check labeled_callback.run : []
 check record_update.run : []
 check shadow_param.run(handler: []) : []
+check external_same_module.read_clock : []
+
+// External effects (third-party / FFI functions graded can't see into).
+external effects external_same_module.now : [Time]
 
 // Type field annotations (the effect source for type-directed field calls).
 type opaque_receiver.Validator.to_error : [Stdout]

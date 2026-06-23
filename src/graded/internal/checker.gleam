@@ -27,6 +27,7 @@ import graded/internal/types.{
 // Check a parsed module against its effect annotations.
 pub fn check(
   module: Module,
+  module_path: String,
   annotations: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
@@ -35,6 +36,7 @@ pub fn check(
 ) -> #(List(Violation), List(Warning)) {
   let context =
     extract.build_import_context(module)
+    |> extract.with_module_path(module_path)
     |> extract.with_factories(extract.factory_map(module))
     |> extract.with_cross_factories(effects.factories(knowledge_base))
   let function_map = build_function_map(module)
@@ -66,6 +68,7 @@ pub fn check(
 // Pass existing `check` annotations so their param bounds are used during inference.
 pub fn infer(
   module: Module,
+  module_path: String,
   knowledge_base: KnowledgeBase,
   existing_checks: List(EffectAnnotation),
   registry: SignatureRegistry,
@@ -74,6 +77,7 @@ pub fn infer(
 ) -> List(EffectAnnotation) {
   infer_with_returns(
     module,
+    module_path,
     knowledge_base,
     existing_checks,
     registry,
@@ -88,6 +92,7 @@ pub fn infer(
 // for downstream `let h = producer(); with(h)` consumers.
 pub fn infer_with_returns(
   module: Module,
+  module_path: String,
   knowledge_base: KnowledgeBase,
   existing_checks: List(EffectAnnotation),
   registry: SignatureRegistry,
@@ -96,6 +101,7 @@ pub fn infer_with_returns(
 ) -> #(List(EffectAnnotation), dict.Dict(String, EffectTerm)) {
   let context =
     extract.build_import_context(module)
+    |> extract.with_module_path(module_path)
     |> extract.with_factories(extract.factory_map(module))
     |> extract.with_cross_factories(effects.factories(knowledge_base))
   let function_map = build_function_map(module)
@@ -2237,23 +2243,31 @@ fn resolve_unknown_local(
     }
     Ok(local_definition) ->
       case is_opaque_external(local_definition) {
-        // A same-module call into a bodyless `@external` resolves to the
+        // A same-module call into a bodyless `@external` has no analysable body,
+        // so consult the knowledge base for a declared `external effects` entry —
+        // qualifying the bare name with the current module. A declaration wins;
+        // without one (or when the module is unknown) it falls back to the
         // conservative `[Unknown]`, not the `[]` its empty body would yield.
-        True -> #(
-          [
-            #(
-              types.ResolvedCall(
-                name: QualifiedName(
-                  module: "<local>",
-                  function: local_call.function,
-                ),
-                span: local_call.span,
+        True -> {
+          let qualified =
+            QualifiedName(
+              module: context.module_path,
+              function: local_call.function,
+            )
+          let term = case effects.lookup(knowledge_base, qualified) {
+            effects.Known(declared) -> declared
+            effects.Unknown -> effect_term.unknown()
+          }
+          #(
+            [
+              #(
+                types.ResolvedCall(name: qualified, span: local_call.span),
+                term,
               ),
-              effect_term.unknown(),
-            ),
-          ],
-          memo,
-        )
+            ],
+            memo,
+          )
+        }
         // A genuine same-module body: memoize its transitive analysis,
         // keyed by callee + same-SCC ancestors (see `memo_key`). The cached
         // list holds in-body call spans, which are call-site-independent, so
