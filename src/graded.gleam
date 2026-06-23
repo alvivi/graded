@@ -1424,8 +1424,10 @@ fn print_warning(file: String, warning: Warning) -> Nil {
 }
 
 @external(erlang, "erlang", "halt")
+@external(javascript, "./graded_ffi.mjs", "halt")
 fn halt(code: Int) -> Nil
 
 // Read all of standard input to EOF as a single string.
 @external(erlang, "graded_ffi", "read_stdin")
+@external(javascript, "./graded_ffi.mjs", "read_stdin")
 fn read_stdin() -> String
