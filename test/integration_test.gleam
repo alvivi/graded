@@ -419,3 +419,56 @@ pub fn path_dep_hof_param_discharges_from_spec_test() {
   let _ = simplifile.delete("build/pd_spec_dep")
   Nil
 }
+
+pub fn path_dep_cross_module_positional_discharges_test() {
+  // Source-only path dep whose module `b` calls another module `a`'s
+  // higher-order function POSITIONALLY (`a.apply(pure_cb)`). Inferring the dep
+  // needs a registry covering its own modules, so the positional callback
+  // matches `apply`'s bound by position — otherwise `b.run` keeps the
+  // unresolved variable and the consumer's [] check fails. Labelled calls
+  // resolved without it (matched by name); this is the positional gap.
+  let app_root = "build/pd_xmod_app"
+  let dep_root = "build/pd_xmod_dep"
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+
+  let assert Ok(Nil) = simplifile.create_directory_all(dep_root <> "/src/dep")
+  let assert Ok(Nil) =
+    simplifile.write(dep_root <> "/gleam.toml", "name = \"dep\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/src/dep/a.gleam",
+      "pub fn apply(f f: fn(String) -> a) -> a {\n  f(\"x\")\n}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/src/dep/b.gleam",
+      "import dep/a\n\n"
+        <> "fn pure_cb(s: String) -> Int {\n  case s {\n    \"\" -> 0\n    _ -> 1\n  }\n}\n\n"
+        <> "pub fn run() -> Int {\n  a.apply(pure_cb)\n}\n",
+    )
+
+  let assert Ok(Nil) = simplifile.create_directory_all(app_root)
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/gleam.toml",
+      "name = \"app\"\n\n[dependencies]\ndep = { path = \"../pd_xmod_dep\" }\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(app_root <> "/app.graded", "check app.caller : []\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/app.gleam",
+      "import dep/b\n\npub fn caller() -> Int {\n  b.run()\n}\n",
+    )
+
+  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+  Nil
+}

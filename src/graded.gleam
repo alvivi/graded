@@ -1183,13 +1183,23 @@ pub fn infer_path_dep(
       |> set.from_list()
     })
 
+  // A registry covering the dep's own modules, so a cross-module call between
+  // them (`b.run` calling `a.apply(cb)`) matches the callee's bound by parameter
+  // position during inference — exactly as the project registry does for the
+  // project's own modules. Built from the already-parsed `index`, not re-read.
+  let registry =
+    dict.fold(index, signatures.empty(), fn(acc, module_path, entry) {
+      let #(module, _checks) = entry
+      signatures.merge(acc, signatures.from_glance_module(module_path, module))
+    })
+
   use sorted <- result.try(topo.sort(graph) |> result.map_error(fn(_) { Nil }))
   let #(effs, params, returns, _final_kb) =
     list.fold(
       sorted,
       #(dict.new(), dict.new(), dict.new(), base_kb),
       fn(state, module_path) {
-        infer_path_dep_module(state, module_path, index)
+        infer_path_dep_module(state, module_path, index, registry)
       },
     )
   Ok(#(effs, params, returns))
@@ -1204,6 +1214,7 @@ fn infer_path_dep_module(
   ),
   module_path: String,
   index: Dict(String, #(glance.Module, List(types.EffectAnnotation))),
+  registry: SignatureRegistry,
 ) -> #(
   Dict(QualifiedName, types.EffectTerm),
   Dict(QualifiedName, List(types.ParamBound)),
@@ -1220,7 +1231,7 @@ fn infer_path_dep_module(
           module,
           kb,
           checks,
-          signatures.empty(),
+          registry,
           dict.new(),
           dict.new(),
         )
