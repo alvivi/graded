@@ -325,6 +325,15 @@ pub fn load_from_packages_dir(packages_dir: String) -> SignatureRegistry {
   }
 }
 
+// Build a registry from a single package's `src/` directory by parsing every
+// `.gleam` file under it. Used for path dependencies, whose source lives at the
+// declared `path` rather than under `build/packages` — so `load_from_packages_dir`
+// never sees them and their cross-module calls would otherwise lack the position
+// info positional argument matching needs.
+pub fn load_from_source_dir(source_dir: String) -> SignatureRegistry {
+  registry_from_source_dir(source_dir)
+}
+
 fn registry_from_source_dir(source_dir: String) -> SignatureRegistry {
   case simplifile.get_files(source_dir) {
     Error(_) -> empty()

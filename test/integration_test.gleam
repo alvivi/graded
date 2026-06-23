@@ -308,3 +308,167 @@ pub fn run_resolves_deps_from_target_dir_test() {
 
   let assert Ok(Nil) = simplifile.delete(root)
 }
+
+// Write an app project and a sibling path-dependency `dep` exposing a
+// higher-order `dep_apply` that *invokes* its callback parameter. The app calls
+// it with a pure callback and an impure (`io.println`) one. When `write_spec`
+// is True the dep ships a committed `dep.graded` (the fast path consumers read);
+// otherwise the dep has source only (graded infers it). Both branches must load
+// the dep's polymorphic param bound so the callback's effect discharges at the
+// call site instead of leaking the parameter's effect variable.
+fn setup_path_dep_project(
+  app_root: String,
+  dep_name: String,
+  write_spec: Bool,
+) {
+  let dep_root = "build/" <> dep_name
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+
+  let assert Ok(Nil) = simplifile.create_directory_all(dep_root <> "/src")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/src/dep.gleam",
+      "pub fn dep_apply(f f: fn(String) -> a) -> a {\n  f(\"x\")\n}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(dep_root <> "/gleam.toml", "name = \"dep\"\n")
+  let assert Ok(Nil) = case write_spec {
+    True ->
+      simplifile.write(
+        dep_root <> "/dep.graded",
+        "effects dep.dep_apply(f: [f]) : [f]\n",
+      )
+    False -> Ok(Nil)
+  }
+
+  let assert Ok(Nil) = simplifile.create_directory_all(app_root)
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/gleam.toml",
+      "name = \"app\"\n\n[dependencies]\ndep = { path = \"../"
+        <> dep_name
+        <> "\" }\n",
+    )
+  // manifest.toml lets catalog selection resolve `gleam/io.println : [Stdout]`,
+  // so the impure-callback case can assert the real effect flows through.
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/manifest.toml",
+      "packages = [{ name = \"gleam_stdlib\", version = \"0.70.0\" }]\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/app.graded",
+      "check app.caller_pure : []\ncheck app.caller_impure : []\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/app.gleam",
+      "import dep\nimport gleam/io\n\n"
+        <> "fn pure_cb(s: String) -> Int {\n  case s {\n    \"\" -> 0\n    _ -> 1\n  }\n}\n\n"
+        <> "pub fn caller_pure() -> Int {\n  dep.dep_apply(pure_cb)\n}\n\n"
+        <> "pub fn caller_impure() -> Nil {\n  dep.dep_apply(io.println)\n}\n",
+    )
+  Nil
+}
+
+pub fn path_dep_hof_param_discharges_from_source_test() {
+  // Path dep with source only (no committed spec): graded infers `dep_apply`'s
+  // polymorphic bound and must thread it into the knowledge base so the pure
+  // callback discharges to []. Before the fix, the variable `f` leaked.
+  let app_root = "build/pd_src_app"
+  setup_path_dep_project(app_root, "pd_src_dep", False)
+
+  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
+
+  // Pure callback: the bound discharges, so the [] budget holds.
+  list.any(r.violations, fn(v) { v.function == "caller_pure" })
+  |> should.be_false()
+  // Impure callback: the callback's real effect ([Stdout]) flows through the
+  // bound — not a leaked variable, not [Unknown].
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "caller_impure" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete("build/pd_src_dep")
+  Nil
+}
+
+pub fn path_dep_hof_param_discharges_from_spec_test() {
+  // Path dep shipping a committed `dep.graded` carrying the polymorphic bound:
+  // the consumer must load the bound (not just the effect) so the callback
+  // discharges. Before the fix, the spec-file branch dropped the bound too.
+  let app_root = "build/pd_spec_app"
+  setup_path_dep_project(app_root, "pd_spec_dep", True)
+
+  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
+
+  list.any(r.violations, fn(v) { v.function == "caller_pure" })
+  |> should.be_false()
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "caller_impure" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete("build/pd_spec_dep")
+  Nil
+}
+
+pub fn path_dep_cross_module_positional_discharges_test() {
+  // Source-only path dep whose module `b` calls another module `a`'s
+  // higher-order function POSITIONALLY (`a.apply(pure_cb)`). Inferring the dep
+  // needs a registry covering its own modules, so the positional callback
+  // matches `apply`'s bound by position — otherwise `b.run` keeps the
+  // unresolved variable and the consumer's [] check fails. Labelled calls
+  // resolved without it (matched by name); this is the positional gap.
+  let app_root = "build/pd_xmod_app"
+  let dep_root = "build/pd_xmod_dep"
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+
+  let assert Ok(Nil) = simplifile.create_directory_all(dep_root <> "/src/dep")
+  let assert Ok(Nil) =
+    simplifile.write(dep_root <> "/gleam.toml", "name = \"dep\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/src/dep/a.gleam",
+      "pub fn apply(f f: fn(String) -> a) -> a {\n  f(\"x\")\n}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/src/dep/b.gleam",
+      "import dep/a\n\n"
+        <> "fn pure_cb(s: String) -> Int {\n  case s {\n    \"\" -> 0\n    _ -> 1\n  }\n}\n\n"
+        <> "pub fn run() -> Int {\n  a.apply(pure_cb)\n}\n",
+    )
+
+  let assert Ok(Nil) = simplifile.create_directory_all(app_root)
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/gleam.toml",
+      "name = \"app\"\n\n[dependencies]\ndep = { path = \"../pd_xmod_dep\" }\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(app_root <> "/app.graded", "check app.caller : []\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/app.gleam",
+      "import dep/b\n\npub fn caller() -> Int {\n  b.run()\n}\n",
+    )
+
+  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+  Nil
+}

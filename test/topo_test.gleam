@@ -682,7 +682,8 @@ pub fn run(value: String) -> Nil {
   let base_kb =
     effects.load_knowledge_base("nonexistent_packages_dir", "manifest.toml")
 
-  let assert Ok(inferred) = graded.infer_path_dep(dep_path, base_kb)
+  let assert Ok(#(inferred, _params, _returns)) =
+    graded.infer_path_dep(dep_path, base_kb)
 
   let assert Ok(d_effects) =
     dict.get(inferred, QualifiedName(module: "dep/d", function: "shout"))
