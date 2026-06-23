@@ -699,6 +699,48 @@ pub fn run(value: String) -> Nil {
   Nil
 }
 
+// A path dependency declared with an ABSOLUTE `path` must resolve against that
+// path as-is, not be re-rooted under the project directory. Exercises the
+// gleam.toml-driven `enrich_with_path_deps` resolution end-to-end (unlike the
+// chain test above, which calls `infer_path_dep` directly). The dep ships a
+// spec marking `dep.shout : [Stdout]`; the app calls it, so the [] budget must
+// fail with [Stdout] — a clobbered absolute path would not find the spec and
+// the call would leak [Unknown].
+pub fn run_resolves_absolute_path_dependency_test() {
+  let dep_dir =
+    write_fixture("/tmp/graded_pathdep_abs_dep", [
+      #("gleam.toml", "name = \"dep\"\n"),
+      #("dep.graded", "effects dep.shout : [Stdout]\n"),
+      #(
+        "src/dep.gleam",
+        "import gleam/io\n\npub fn shout() -> Nil {\n  io.println(\"x\")\n}\n",
+      ),
+    ])
+  let app_dir =
+    write_fixture("/tmp/graded_pathdep_abs_app", [
+      #(
+        "gleam.toml",
+        "name = \"app\"\n\n[dependencies]\ndep = { path = \""
+          <> dep_dir
+          <> "\" }\n",
+      ),
+      #("app.graded", "check src/main.run : []\n"),
+      #(
+        "src/main.gleam",
+        "import dep\n\npub fn run() -> Nil {\n  dep.shout()\n}\n",
+      ),
+    ])
+
+  let assert Ok(results) = graded.run(app_dir)
+  let assert Ok(r) =
+    list.find(results, fn(r) { string.ends_with(r.file, "src/main.gleam") })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
+  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+
+  cleanup(dep_dir)
+  cleanup(app_dir)
+}
+
 // ----- polymorphic end-to-end -----
 
 // Caller passes a pure type constructor to a fn-typed parameter.

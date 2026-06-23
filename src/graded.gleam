@@ -1053,8 +1053,9 @@ fn enrich_with_path_deps(
     effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
   list.fold(path_deps, knowledge_base, fn(kb, dep) {
     let #(name, dep_path) = dep
-    // Path dependency locations are declared relative to the project root.
-    let resolved_dep_path = filepath.join(package_root, dep_path)
+    // Path dependency locations are declared relative to the project root,
+    // except an absolute `path`, which `resolve_path` leaves untouched.
+    let resolved_dep_path = resolve_path(package_root, dep_path)
     let spec_path = config.spec_file_for(resolved_dep_path, name)
     case simplifile.is_file(spec_path) {
       Ok(True) ->
