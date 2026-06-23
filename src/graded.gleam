@@ -133,6 +133,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   let index = build_module_index(parsed, directory)
   let dep_registry =
     signatures.load_from_packages_dir(packages_dir(package_root))
+    |> signatures.merge(path_dep_registry(package_root))
   let registry = signatures.merge(dep_registry, build_project_registry(index))
   let type_info = build_type_index(index)
 
@@ -244,6 +245,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   // polymorphic calls.
   let dep_registry =
     signatures.load_from_packages_dir(packages_dir(package_root))
+    |> signatures.merge(path_dep_registry(package_root))
   let registry = signatures.merge(dep_registry, build_project_registry(index))
   let type_info = build_type_index(index)
 
@@ -1045,6 +1047,23 @@ fn read_spec(spec_path: String) -> GradedFile {
 //    `infer_path_dep` so path deps without graded set up still work.
 //    Cross-path-dep imports are not currently merged into a single graph
 //    — each dep is processed sequentially.
+// Build a signature registry from every path dependency's `src/` directory.
+// Path deps live at their declared `path`, not under `build/packages`, so
+// `load_from_packages_dir` never sees them — without this their cross-module
+// callees lack the parameter-position info that positional (unlabeled) argument
+// matching needs to bind effect variables at the call site.
+fn path_dep_registry(package_root: String) -> SignatureRegistry {
+  effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
+  |> list.fold(signatures.empty(), fn(acc, dep) {
+    let #(_name, dep_path) = dep
+    let resolved_dep_path = resolve_path(package_root, dep_path)
+    signatures.merge(
+      acc,
+      signatures.load_from_source_dir(resolved_dep_path <> "/src"),
+    )
+  })
+}
+
 fn enrich_with_path_deps(
   knowledge_base: KnowledgeBase,
   package_root: String,
@@ -1058,23 +1077,45 @@ fn enrich_with_path_deps(
     let resolved_dep_path = resolve_path(package_root, dep_path)
     let spec_path = config.spec_file_for(resolved_dep_path, name)
     case simplifile.is_file(spec_path) {
-      Ok(True) ->
-        effects.with_inferred(kb, effects.load_spec_effects(spec_path))
+      Ok(True) -> {
+        let #(effs, params, returns) =
+          effects.load_dep_spec(resolved_dep_path, name)
+        fold_path_dep_into_kb(kb, effs, params, returns)
+      }
       _ ->
         case infer_path_dep(resolved_dep_path, kb) {
           Error(Nil) -> kb
-          Ok(inferred) -> effects.with_inferred(kb, inferred)
+          Ok(#(effs, params, returns)) ->
+            fold_path_dep_into_kb(kb, effs, params, returns)
         }
     }
   })
 }
 
+// Thread a path dependency's effects, polymorphic param bounds, and
+// returned-operator signatures into the knowledge base. Mirrors
+// `thread_inferred_into_kb` for the path-dep loaders: effects alone would leave
+// a higher-order callee's bound unloaded, so its callback's effect variable
+// would leak unsubstituted into every caller. Existing entries win.
+fn fold_path_dep_into_kb(
+  knowledge_base: KnowledgeBase,
+  effs: Dict(QualifiedName, types.EffectTerm),
+  params: Dict(QualifiedName, List(types.ParamBound)),
+  returns: Dict(QualifiedName, types.EffectTerm),
+) -> KnowledgeBase {
+  knowledge_base
+  |> effects.with_inferred(effs)
+  |> effects.with_inferred_params(params)
+  |> effects.with_inferred_returned_operators(returns)
+}
+
 /// Build the dependency-graph index for a single path dep, topo-sort it,
 /// then infer every module in dependency order. Returns the union of all
-/// inferred effects keyed by `QualifiedName` so the caller can fold them
-/// into the global knowledge base. Errors are swallowed (returned as
-/// `Error(Nil)`) to preserve the existing tolerance: a malformed dep
-/// shouldn't break the whole project.
+/// inferred effects, polymorphic param bounds, and returned-operator
+/// signatures keyed by `QualifiedName` so the caller can fold them into the
+/// global knowledge base. Errors are swallowed (returned as `Error(Nil)`) to
+/// preserve the existing tolerance: a malformed dep shouldn't break the whole
+/// project.
 ///
 /// Exposed (pub) primarily so tests can exercise the topological-order path
 /// inference on a temporary directory tree without going through
@@ -1083,7 +1124,14 @@ fn enrich_with_path_deps(
 pub fn infer_path_dep(
   dep_path: String,
   base_kb: KnowledgeBase,
-) -> Result(Dict(QualifiedName, types.EffectTerm), Nil) {
+) -> Result(
+  #(
+    Dict(QualifiedName, types.EffectTerm),
+    Dict(QualifiedName, List(types.ParamBound)),
+    Dict(QualifiedName, types.EffectTerm),
+  ),
+  Nil,
+) {
   let source_dir = dep_path <> "/src"
   let gleam_files = case simplifile.get_files(source_dir) {
     Ok(found) ->
@@ -1120,25 +1168,39 @@ pub fn infer_path_dep(
     })
 
   use sorted <- result.try(topo.sort(graph) |> result.map_error(fn(_) { Nil }))
-  let #(inferred, _final_kb) =
-    list.fold(sorted, #(dict.new(), base_kb), fn(state, module_path) {
-      infer_path_dep_module(state, module_path, index)
-    })
-  Ok(inferred)
+  let #(effs, params, returns, _final_kb) =
+    list.fold(
+      sorted,
+      #(dict.new(), dict.new(), dict.new(), base_kb),
+      fn(state, module_path) {
+        infer_path_dep_module(state, module_path, index)
+      },
+    )
+  Ok(#(effs, params, returns))
 }
 
 fn infer_path_dep_module(
-  state: #(Dict(QualifiedName, types.EffectTerm), KnowledgeBase),
+  state: #(
+    Dict(QualifiedName, types.EffectTerm),
+    Dict(QualifiedName, List(types.ParamBound)),
+    Dict(QualifiedName, types.EffectTerm),
+    KnowledgeBase,
+  ),
   module_path: String,
   index: Dict(String, #(glance.Module, List(types.EffectAnnotation))),
-) -> #(Dict(QualifiedName, types.EffectTerm), KnowledgeBase) {
-  let #(acc, kb) = state
+) -> #(
+  Dict(QualifiedName, types.EffectTerm),
+  Dict(QualifiedName, List(types.ParamBound)),
+  Dict(QualifiedName, types.EffectTerm),
+  KnowledgeBase,
+) {
+  let #(eff_acc, param_acc, returns_acc, kb) = state
   case dict.get(index, module_path) {
-    Error(_) -> #(acc, kb)
+    Error(_) -> state
     Ok(#(module, checks)) -> {
       // Path-dep inference skips girard in v1 (cost/benefit): pass no types.
-      let annotations =
-        checker.infer(
+      let #(annotations, returned_operators) =
+        checker.infer_with_returns(
           module,
           kb,
           checks,
@@ -1146,15 +1208,40 @@ fn infer_path_dep_module(
           dict.new(),
           dict.new(),
         )
-      let module_dict =
+      // Thread effects, polymorphic param bounds, and returned operators into
+      // the dep's own KB so later modules in its topo order resolve calls into
+      // this one — and accumulate the same three for the caller to fold in.
+      let new_kb =
+        thread_inferred_into_kb(
+          kb,
+          annotations,
+          returned_operators,
+          module_path,
+        )
+      let qualify = fn(function) {
+        QualifiedName(module: module_path, function:)
+      }
+      let module_effects =
         list.fold(annotations, dict.new(), fn(d, annotation) {
-          dict.insert(
-            d,
-            QualifiedName(module: module_path, function: annotation.function),
-            annotation.effects,
-          )
+          dict.insert(d, qualify(annotation.function), annotation.effects)
         })
-      #(dict.merge(acc, module_dict), effects.with_inferred(kb, module_dict))
+      let module_params =
+        list.fold(annotations, dict.new(), fn(d, annotation) {
+          case annotation.params {
+            [] -> d
+            params -> dict.insert(d, qualify(annotation.function), params)
+          }
+        })
+      let module_returns =
+        dict.fold(returned_operators, dict.new(), fn(d, function, operator) {
+          dict.insert(d, qualify(function), operator)
+        })
+      #(
+        dict.merge(eff_acc, module_effects),
+        dict.merge(param_acc, module_params),
+        dict.merge(returns_acc, module_returns),
+        new_kb,
+      )
     }
   }
 }

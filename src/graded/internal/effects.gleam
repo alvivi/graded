@@ -299,6 +299,35 @@ pub fn load_spec_effects_from_file(
   fold_spec_effects(annotation.extract_annotations(file))
 }
 
+// Load one package's spec into its effects, polymorphic param bounds, and
+// returned-operator maps, keyed by `QualifiedName`. Reads the spec via the
+// package's own `[tools.graded]` config (defaulting to `<package_name>.graded`)
+// at `dep_root`. Empty maps when the spec is missing or unparseable. Shared by
+// the `build/packages` dependency scan and path-dependency enrichment so both
+// dep kinds load identical metadata — effects alone would drop the bounds a
+// higher-order callee needs to discharge its callback's effect at the call site.
+pub fn load_dep_spec(
+  dep_root: String,
+  package_name: String,
+) -> #(
+  Dict(QualifiedName, EffectTerm),
+  Dict(QualifiedName, List(ParamBound)),
+  Dict(QualifiedName, EffectTerm),
+) {
+  case read_spec_file(config.spec_file_for(dep_root, package_name)) {
+    Error(_) -> #(dict.new(), dict.new(), dict.new())
+    Ok(file) -> {
+      let #(effect_map, param_map) =
+        list.fold(
+          annotation.extract_annotations(file),
+          #(dict.new(), dict.new()),
+          fold_qualified_annotation,
+        )
+      #(effect_map, param_map, load_spec_returns_from_file(file))
+    }
+  }
+}
+
 fn fold_spec_effects(
   annotations: List(EffectAnnotation),
 ) -> Dict(QualifiedName, EffectTerm) {
@@ -434,20 +463,13 @@ fn load_dependencies(
     fn(acc, package_name) {
       let #(effect_map, param_map, returns_map) = acc
       let dep_root = packages_directory <> "/" <> package_name
-      case read_spec_file(config.spec_file_for(dep_root, package_name)) {
-        Error(_) -> acc
-        Ok(file) -> {
-          let #(new_effects, new_params) =
-            list.fold(
-              annotation.extract_annotations(file),
-              #(effect_map, param_map),
-              fold_qualified_annotation,
-            )
-          let new_returns =
-            dict.merge(returns_map, load_spec_returns_from_file(file))
-          #(new_effects, new_params, new_returns)
-        }
-      }
+      let #(new_effects, new_params, new_returns) =
+        load_dep_spec(dep_root, package_name)
+      #(
+        dict.merge(effect_map, new_effects),
+        dict.merge(param_map, new_params),
+        dict.merge(returns_map, new_returns),
+      )
     },
   )
 }
