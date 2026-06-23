@@ -817,6 +817,25 @@ fn thread_inferred_into_kb(
   returned_operators: Dict(String, types.EffectTerm),
   module_path: String,
 ) -> KnowledgeBase {
+  let #(effects_dict, params_dict, returns_dict) =
+    qualified_inferred(inferred, returned_operators, module_path)
+  fold_inferred_into_kb(knowledge_base, effects_dict, params_dict, returns_dict)
+}
+
+// Qualify a module's freshly inferred effects, polymorphic param bounds, and
+// returned operators by `module_path`, producing the three `QualifiedName`-keyed
+// maps the knowledge base is threaded with. Split from `thread_inferred_into_kb`
+// so the path-dep inference loop can both fold the maps into its running KB and
+// accumulate them for the caller without re-deriving them.
+fn qualified_inferred(
+  inferred: List(EffectAnnotation),
+  returned_operators: Dict(String, types.EffectTerm),
+  module_path: String,
+) -> #(
+  Dict(QualifiedName, types.EffectTerm),
+  Dict(QualifiedName, List(types.ParamBound)),
+  Dict(QualifiedName, types.EffectTerm),
+) {
   let qualify = fn(function) { QualifiedName(module: module_path, function:) }
   let effects_dict =
     list.fold(inferred, dict.new(), fn(acc, ann) {
@@ -833,10 +852,7 @@ fn thread_inferred_into_kb(
     dict.fold(returned_operators, dict.new(), fn(acc, function, op) {
       dict.insert(acc, qualify(function), op)
     })
-  knowledge_base
-  |> effects.with_inferred(effects_dict)
-  |> effects.with_inferred_params(params_dict)
-  |> effects.with_inferred_returned_operators(returns_dict)
+  #(effects_dict, params_dict, returns_dict)
 }
 
 // Build a set of public function names from a parsed Gleam module.
@@ -1047,6 +1063,34 @@ fn read_spec(spec_path: String) -> GradedFile {
 //    `infer_path_dep` so path deps without graded set up still work.
 //    Cross-path-dep imports are not currently merged into a single graph
 //    — each dep is processed sequentially.
+fn enrich_with_path_deps(
+  knowledge_base: KnowledgeBase,
+  package_root: String,
+) -> KnowledgeBase {
+  let path_deps =
+    effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
+  list.fold(path_deps, knowledge_base, fn(kb, dep) {
+    let #(name, dep_path) = dep
+    // Path dependency locations are declared relative to the project root,
+    // except an absolute `path`, which `resolve_path` leaves untouched.
+    let resolved_dep_path = resolve_path(package_root, dep_path)
+    let spec_path = config.spec_file_for(resolved_dep_path, name)
+    case simplifile.is_file(spec_path) {
+      Ok(True) -> {
+        let #(effs, params, returns) =
+          effects.load_dep_spec(resolved_dep_path, name)
+        fold_inferred_into_kb(kb, effs, params, returns)
+      }
+      _ ->
+        case infer_path_dep(resolved_dep_path, kb) {
+          Error(Nil) -> kb
+          Ok(#(effs, params, returns)) ->
+            fold_inferred_into_kb(kb, effs, params, returns)
+        }
+    }
+  })
+}
+
 // Build a signature registry from every path dependency's `src/` directory.
 // Path deps live at their declared `path`, not under `build/packages`, so
 // `load_from_packages_dir` never sees them — without this their cross-module
@@ -1064,40 +1108,12 @@ fn path_dep_registry(package_root: String) -> SignatureRegistry {
   })
 }
 
-fn enrich_with_path_deps(
-  knowledge_base: KnowledgeBase,
-  package_root: String,
-) -> KnowledgeBase {
-  let path_deps =
-    effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
-  list.fold(path_deps, knowledge_base, fn(kb, dep) {
-    let #(name, dep_path) = dep
-    // Path dependency locations are declared relative to the project root,
-    // except an absolute `path`, which `resolve_path` leaves untouched.
-    let resolved_dep_path = resolve_path(package_root, dep_path)
-    let spec_path = config.spec_file_for(resolved_dep_path, name)
-    case simplifile.is_file(spec_path) {
-      Ok(True) -> {
-        let #(effs, params, returns) =
-          effects.load_dep_spec(resolved_dep_path, name)
-        fold_path_dep_into_kb(kb, effs, params, returns)
-      }
-      _ ->
-        case infer_path_dep(resolved_dep_path, kb) {
-          Error(Nil) -> kb
-          Ok(#(effs, params, returns)) ->
-            fold_path_dep_into_kb(kb, effs, params, returns)
-        }
-    }
-  })
-}
-
-// Thread a path dependency's effects, polymorphic param bounds, and
-// returned-operator signatures into the knowledge base. Mirrors
-// `thread_inferred_into_kb` for the path-dep loaders: effects alone would leave
-// a higher-order callee's bound unloaded, so its callback's effect variable
-// would leak unsubstituted into every caller. Existing entries win.
-fn fold_path_dep_into_kb(
+// Apply three `QualifiedName`-keyed inferred maps — effects, polymorphic param
+// bounds, and returned-operator signatures — to the knowledge base. The shared
+// tail of `thread_inferred_into_kb` and the path-dep loaders: effects alone
+// would leave a higher-order callee's bound unloaded, so its callback's effect
+// variable would leak unsubstituted into every caller. Existing entries win.
+fn fold_inferred_into_kb(
   knowledge_base: KnowledgeBase,
   effs: Dict(QualifiedName, types.EffectTerm),
   params: Dict(QualifiedName, List(types.ParamBound)),
@@ -1208,34 +1224,13 @@ fn infer_path_dep_module(
           dict.new(),
           dict.new(),
         )
-      // Thread effects, polymorphic param bounds, and returned operators into
-      // the dep's own KB so later modules in its topo order resolve calls into
-      // this one — and accumulate the same three for the caller to fold in.
+      // Qualify the module's results once, then both fold them into the dep's
+      // own KB (so later modules in its topo order resolve calls into this one)
+      // and accumulate them for the caller.
+      let #(module_effects, module_params, module_returns) =
+        qualified_inferred(annotations, returned_operators, module_path)
       let new_kb =
-        thread_inferred_into_kb(
-          kb,
-          annotations,
-          returned_operators,
-          module_path,
-        )
-      let qualify = fn(function) {
-        QualifiedName(module: module_path, function:)
-      }
-      let module_effects =
-        list.fold(annotations, dict.new(), fn(d, annotation) {
-          dict.insert(d, qualify(annotation.function), annotation.effects)
-        })
-      let module_params =
-        list.fold(annotations, dict.new(), fn(d, annotation) {
-          case annotation.params {
-            [] -> d
-            params -> dict.insert(d, qualify(annotation.function), params)
-          }
-        })
-      let module_returns =
-        dict.fold(returned_operators, dict.new(), fn(d, function, operator) {
-          dict.insert(d, qualify(function), operator)
-        })
+        fold_inferred_into_kb(kb, module_effects, module_params, module_returns)
       #(
         dict.merge(eff_acc, module_effects),
         dict.merge(param_acc, module_params),
