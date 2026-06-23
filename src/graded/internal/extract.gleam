@@ -58,6 +58,11 @@ type Env =
 // call (`a.Validator(x)`) can still route `x` to the right field.
 pub type ImportContext {
   ImportContext(
+    // The path of the module being analysed (e.g. `myapp/router`), so a
+    // same-module bare call can be qualified back into a knowledge-base key.
+    // Empty when unknown (synthetic test modules); the empty path matches no
+    // entry, so resolution falls back exactly as before.
+    module_path: String,
     aliases: Dict(String, String),
     unqualified: Dict(String, QualifiedName),
     constructors: Dict(String, List(Option(String))),
@@ -68,6 +73,14 @@ pub type ImportContext {
     factories: Dict(String, FactorySignature),
     cross_factories: Dict(#(String, String), FactorySignature),
   )
+}
+
+// Record which module the context describes, so same-module bare calls qualify.
+pub fn with_module_path(
+  context: ImportContext,
+  module_path: String,
+) -> ImportContext {
+  ImportContext(..context, module_path:)
 }
 
 // Attach a package-wide `#(defining module, constructor) -> field labels` map
@@ -162,6 +175,7 @@ pub fn build_import_context(module: Module) -> ImportContext {
 
   let constructors = build_constructor_registry(module)
   ImportContext(
+    module_path: "",
     aliases:,
     unqualified:,
     constructors:,

@@ -95,6 +95,24 @@ pub fn external_is_unknown_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
+pub fn external_same_module_declared_effects_test() {
+  // A same-module (unqualified) call into a bodyless `@external` that carries an
+  // `external effects` declaration inherits the DECLARED effects, not the
+  // `[Unknown]` an undeclared external yields. `read_clock` calls `now()` bare,
+  // so against a `[]` budget the actual must be the declared `[Time]`. Without
+  // the fix the local path bypassed the knowledge base and reported `[Unknown]`.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let same_module_result =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/external_same_module.gleam"
+    })
+  let assert Ok(r) = same_module_result
+  { r.violations != [] } |> should.be_true()
+  let assert [v, ..] = r.violations
+  v.function |> should.equal("read_clock")
+  v.actual |> should.equal(types.Specific(set.from_list(["Time"])))
+}
+
 pub fn opaque_receiver_violation_detected_test() {
   // opaque_receiver.run binds its Validator from make() — a *cross-function*
   // construction the syntax-level path can't see. girard types the receiver,
