@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Record update expressions (`Rec(..base, field: expr)`) now have their updated field values walked, so effects in those expressions are counted. Previously only the base record was extracted, under-approximating the effect set and letting a `check ... : []` pass over a record update whose field called an effectful function.
+- Dependency, catalog, and path-dependency resolution now read from the checked project's own root (`build/packages`, `manifest.toml`, and the path-dep `gleam.toml`), found by walking up from the source directory to the nearest `gleam.toml`. Previously these paths were resolved relative to the process working directory, so checking a project from a different directory loaded the wrong dependency specs, installed versions, or path dependencies.
 
 ## [0.9.1] - 2026-06-23
 

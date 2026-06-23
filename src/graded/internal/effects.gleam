@@ -49,14 +49,18 @@ pub type KnowledgeBase {
   )
 }
 
-// Build a knowledge base by scanning dependency .graded files
-// and loading versioned catalog files from priv/catalog/.
-pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
+// Build a knowledge base by scanning dependency .graded files under
+// `packages_directory` and loading versioned catalog files from priv/catalog/,
+// selecting versions from the manifest at `manifest_path`.
+pub fn load_knowledge_base(
+  packages_directory: String,
+  manifest_path: String,
+) -> KnowledgeBase {
   let #(dep_effects, dep_params, dep_returns) =
     load_dependencies(packages_directory)
   let catalog_dir = find_catalog_directory()
   let #(cat_effects, cat_pure, cat_params) =
-    load_catalog(catalog_dir, "manifest.toml")
+    load_catalog(catalog_dir, manifest_path)
   KnowledgeBase(
     // Dependency entries win on a clash: dict.merge keeps its second argument.
     all_effects: dict.merge(cat_effects, dep_effects),

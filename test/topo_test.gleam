@@ -28,7 +28,22 @@ import simplifile
 // ----- helpers -----
 
 fn make_fixture(name: String, files: List(#(String, String))) -> String {
-  write_fixture("/tmp/graded_topo_" <> name, files)
+  write_fixture("/tmp/graded_topo_" <> name, [stdlib_manifest(), ..files])
+}
+
+// A minimal `manifest.toml` so a fixture project selects the bundled catalog
+// (which marks `gleam/io.println : [Stdout]`, `gleam/string` pure, …) the same
+// way a real installed project would. Dependency resolution now reads the
+// project's own root, so a fixture without this would see an empty catalog. A
+// fixture can override it by listing its own `manifest.toml` entry.
+fn stdlib_manifest() -> #(String, String) {
+  #(
+    "manifest.toml",
+    "packages = [
+  { name = \"gleam_stdlib\", version = \"0.71.0\" },
+]
+",
+  )
 }
 
 // Materialise a tree of files at `directory`, replacing any prior contents.
@@ -663,8 +678,9 @@ pub fn run(value: String) -> Nil {
 
   // load_knowledge_base from a missing dir falls back to the bundled
   // catalog (which has io.println marked [Stdout]) without any project
-  // externals layered on.
-  let base_kb = effects.load_knowledge_base("nonexistent_packages_dir")
+  // externals layered on. The manifest selects catalog versions.
+  let base_kb =
+    effects.load_knowledge_base("nonexistent_packages_dir", "manifest.toml")
 
   let assert Ok(inferred) = graded.infer_path_dep(dep_path, base_kb)
 
@@ -681,6 +697,48 @@ pub fn run(value: String) -> Nil {
 
   let _ = simplifile.delete(dep_path)
   Nil
+}
+
+// A path dependency declared with an ABSOLUTE `path` must resolve against that
+// path as-is, not be re-rooted under the project directory. Exercises the
+// gleam.toml-driven `enrich_with_path_deps` resolution end-to-end (unlike the
+// chain test above, which calls `infer_path_dep` directly). The dep ships a
+// spec marking `dep.shout : [Stdout]`; the app calls it, so the [] budget must
+// fail with [Stdout] — a clobbered absolute path would not find the spec and
+// the call would leak [Unknown].
+pub fn run_resolves_absolute_path_dependency_test() {
+  let dep_dir =
+    write_fixture("/tmp/graded_pathdep_abs_dep", [
+      #("gleam.toml", "name = \"dep\"\n"),
+      #("dep.graded", "effects dep.shout : [Stdout]\n"),
+      #(
+        "src/dep.gleam",
+        "import gleam/io\n\npub fn shout() -> Nil {\n  io.println(\"x\")\n}\n",
+      ),
+    ])
+  let app_dir =
+    write_fixture("/tmp/graded_pathdep_abs_app", [
+      #(
+        "gleam.toml",
+        "name = \"app\"\n\n[dependencies]\ndep = { path = \""
+          <> dep_dir
+          <> "\" }\n",
+      ),
+      #("app.graded", "check src/main.run : []\n"),
+      #(
+        "src/main.gleam",
+        "import dep\n\npub fn run() -> Nil {\n  dep.shout()\n}\n",
+      ),
+    ])
+
+  let assert Ok(results) = graded.run(app_dir)
+  let assert Ok(r) =
+    list.find(results, fn(r) { string.ends_with(r.file, "src/main.gleam") })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
+  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+
+  cleanup(dep_dir)
+  cleanup(app_dir)
 }
 
 // ----- polymorphic end-to-end -----
