@@ -2254,10 +2254,7 @@ fn resolve_unknown_local(
               module: context.module_path,
               function: local_call.function,
             )
-          let term = case effects.lookup(knowledge_base, qualified) {
-            effects.Known(declared) -> declared
-            effects.Unknown -> effect_term.unknown()
-          }
+          let term = effects.lookup_effects(knowledge_base, qualified)
           #(
             [
               #(

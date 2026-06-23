@@ -763,25 +763,15 @@ pub fn fetch() { httpc.send(request) }"
   |> should.be_true()
 }
 
-// A same-module (unqualified) call into a bodyless `@external` inherits the
-// effects declared for it in the knowledge base — qualified by the current
-// module — not the `[Unknown]` an undeclared external yields. Regression for the
-// FFI idiom: an `@external` binding paired with a same-module wrapper.
-pub fn external_same_module_resolves_declared_effects_test() {
+// Infer `read_clock`'s effects in module `ffi_mod`, which wraps a bodyless
+// same-module `@external` (`now`), under the given knowledge base.
+fn infer_external_wrapper(kb: effects.KnowledgeBase) -> EffectSet {
   let source =
     "@external(erlang, \"ffi\", \"now\")
 pub fn now() -> Int
 
 pub fn read_clock() { now() }"
   let assert Ok(module) = glance.module(source)
-  let externals = [
-    types.ExternalAnnotation(
-      "ffi_mod",
-      types.FunctionExternal("now"),
-      Specific(set.from_list(["Time"])),
-    ),
-  ]
-  let kb = effects.with_externals(knowledge_base(), externals)
   let inferred =
     checker.infer(
       module,
@@ -795,6 +785,21 @@ pub fn read_clock() { now() }"
   let assert Ok(annotation) =
     list.find(inferred, fn(a) { a.function == "read_clock" })
   effect_term.to_effect_set(annotation.effects)
+}
+
+// A same-module (unqualified) call into a bodyless `@external` inherits the
+// effects declared for it in the knowledge base — qualified by the current
+// module — not the `[Unknown]` an undeclared external yields. Regression for the
+// FFI idiom: an `@external` binding paired with a same-module wrapper.
+pub fn external_same_module_resolves_declared_effects_test() {
+  let externals = [
+    types.ExternalAnnotation(
+      "ffi_mod",
+      types.FunctionExternal("now"),
+      Specific(set.from_list(["Time"])),
+    ),
+  ]
+  infer_external_wrapper(effects.with_externals(knowledge_base(), externals))
   |> should.equal(Specific(set.from_list(["Time"])))
 }
 
@@ -802,25 +807,7 @@ pub fn read_clock() { now() }"
 // `[Unknown]` — the opaque-FFI default (`module_path` qualifies the lookup, so a
 // wrong/absent entry never silently resolves to `[]`).
 pub fn external_same_module_without_declaration_is_unknown_test() {
-  let source =
-    "@external(erlang, \"ffi\", \"now\")
-pub fn now() -> Int
-
-pub fn read_clock() { now() }"
-  let assert Ok(module) = glance.module(source)
-  let inferred =
-    checker.infer(
-      module,
-      "ffi_mod",
-      knowledge_base(),
-      [],
-      signatures.empty(),
-      dict.new(),
-      dict.new(),
-    )
-  let assert Ok(annotation) =
-    list.find(inferred, fn(a) { a.function == "read_clock" })
-  effect_term.to_effect_set(annotation.effects)
+  infer_external_wrapper(knowledge_base())
   |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
