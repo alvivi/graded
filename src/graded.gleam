@@ -929,10 +929,7 @@ fn check_one_file(
 // Resolved paths are returned in the same `GradedConfig` shape so callers
 // can use them as-is for I/O without further joining.
 fn read_config(directory: String) -> Result(config.GradedConfig, GradedError) {
-  let project_root = case directory {
-    "src" -> "."
-    _ -> directory
-  }
+  let project_root = source_root_for(directory)
   let toml_path = filepath.join(project_root, "gleam.toml")
   use raw <- result.try(case config.read(toml_path) {
     Ok(cfg) -> Ok(cfg)
@@ -956,11 +953,19 @@ fn read_config(directory: String) -> Result(config.GradedConfig, GradedError) {
 // process cwd's. Falls back to the source directory when no `gleam.toml` is
 // found anywhere up the tree.
 fn resolve_package_root(directory: String) -> String {
-  let source_root = case directory {
+  let source_root = source_root_for(directory)
+  find_gleam_toml_dir(source_root, source_root)
+}
+
+// The directory a source argument is rooted at. `src` is the production layout,
+// whose root is the current directory; any other directory acts as its own
+// root. Shared by spec/cache resolution (`read_config`) and the dependency-root
+// walk-up so the two stay in step.
+fn source_root_for(directory: String) -> String {
+  case directory {
     "src" -> "."
     _ -> directory
   }
-  find_gleam_toml_dir(source_root, source_root, 64)
 }
 
 // Dependency `.graded` specs live under `<root>/build/packages/<dep>/`.
@@ -974,7 +979,7 @@ fn manifest_path(package_root: String) -> String {
   filepath.join(package_root, "manifest.toml")
 }
 
-fn find_gleam_toml_dir(dir: String, original: String, fuel: Int) -> String {
+fn find_gleam_toml_dir(dir: String, original: String) -> String {
   let dir = case dir {
     "" -> "."
     _ -> dir
@@ -986,9 +991,12 @@ fn find_gleam_toml_dir(dir: String, original: String, fuel: Int) -> String {
         "" -> "."
         other -> other
       }
-      case fuel <= 0 || parent == dir {
+      // `.` (and `/`) is a fixed point of `directory_name`, so `parent == dir`
+      // always halts the walk — at which point no `gleam.toml` was found and we
+      // fall back to the source dir.
+      case parent == dir {
         True -> original
-        False -> find_gleam_toml_dir(parent, original, fuel - 1)
+        False -> find_gleam_toml_dir(parent, original)
       }
     }
   }
