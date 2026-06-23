@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Record update expressions (`Rec(..base, field: expr)`) now have their updated field values walked, so effects in those expressions are counted. Previously only the base record was extracted, under-approximating the effect set and letting a `check ... : []` pass over a record update whose field called an effectful function.
+
 ## [0.9.1] - 2026-06-23
 
 ### Added
