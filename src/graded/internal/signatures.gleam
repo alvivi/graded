@@ -88,7 +88,7 @@ pub fn lookup(
 // Names of a function's fn-typed parameters. Returns an empty set if
 // the function isn't in the registry (conservative: "we don't know").
 // Prefers the argument label (canonical for cross-module calls), falling
-// back to the in-body name when no label is declared. `position_from_registry`
+// back to the in-body name when no label is declared. `param_info`
 // matches by either, so both forms round-trip.
 pub fn fn_typed_param_names(
   registry: SignatureRegistry,
