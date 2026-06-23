@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-06-23
+
 ### Fixed
 
 - Record update expressions (`Rec(..base, field: expr)`) now have their updated field values walked, so effects in those expressions are counted. Previously only the base record was extracted, under-approximating the effect set and letting a `check ... : []` pass over a record update whose field called an effectful function.
 - Dependency, catalog, and path-dependency resolution now read from the checked project's own root (`build/packages`, `manifest.toml`, and the path-dep `gleam.toml`), found by walking up from the source directory to the nearest `gleam.toml`. Previously these paths were resolved relative to the process working directory, so checking a project from a different directory loaded the wrong dependency specs, installed versions, or path dependencies.
 - A higher-order function defined in a **path dependency** now discharges its callback parameter's effect at the call site, instead of leaking the parameter's effect variable (e.g. `[on_change]`) into the caller. Path dependencies are loaded through a separate code path that recorded each callee's effects but dropped its polymorphic parameter bounds, and never registered the dep's parameter signatures — so neither labelled nor positional callback arguments could be matched. The path-dep loaders now thread parameter bounds and returned-operator signatures into the knowledge base and register path-dep signatures, reaching parity with `build/packages` dependencies. The identical function defined in-project was already handled.
+- graded now compiles and runs on the JavaScript target by providing JavaScript externals for the built-in FFI used by `format --stdin` and process halting.
 
 ## [0.9.1] - 2026-06-23
 
@@ -184,7 +187,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Versioned catalog system resolved against `manifest.toml`.
 - Catalog entries for `gleam_stdlib`, `gleam_erlang`, `gleam_otp`, `gleam_http`, `gleam_httpc`, `gleam_json`, `gleam_regexp`, `gleam_yielder`, `gleam_crypto`, `lustre`, `lustre_http`, `simplifile`, `filepath`, `tom`.
 
-[Unreleased]: https://github.com/alvivi/graded/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/alvivi/graded/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/alvivi/graded/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/alvivi/graded/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/alvivi/graded/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/alvivi/graded/compare/v0.8.0...v0.8.1
