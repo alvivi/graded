@@ -1,7 +1,7 @@
 import girard/types as girard_types
 import glance.{
-  type Definition, type Function, type Module, type Statement, Function, Private,
-  Span,
+  type Definition, type Function, type Module, type Span, type Statement,
+  Function, Private, Span,
 }
 import gleam/bool
 import gleam/dict
@@ -23,6 +23,15 @@ import graded/internal/types.{
   ParamBound, QualifiedName, TUnion, TVar, UnmatchedFieldBoundWarning,
   UnmatchedParamBoundWarning, UntrackedEffectWarning, Violation,
 }
+
+// Operator parameters in scope, mapped to their callback shape: for each
+// callback position, that callback's own callback positions (see
+// `signatures.operator_param_shapes`). Threaded as `ambient_operators` so a
+// closure analysed inside a producer's returned closure can both resolve a
+// captured operator and lift a callback argument over exactly its own function
+// parameters.
+type OperatorShapes =
+  dict.Dict(String, List(#(Int, List(Int))))
 
 // Check a parsed module against its effect annotations.
 pub fn check(
@@ -198,6 +207,12 @@ pub fn infer_with_returns(
           #(union_of(pairs), memo)
         }
       }
+      // A free effect variable that isn't one of the function's own fn-typed
+      // parameters is a *phantom* — e.g. an inline closure's parameter that
+      // leaked out of an application graded couldn't fully resolve. It can never
+      // be bound, so collapse it to the conservative [Unknown] rather than let an
+      // internal name surface in the effect set.
+      let effects_term = collapse_phantom_vars(effects_term, fn_typed_params)
       // If the function's inferred effects reference effect variables
       // (because it calls fn-typed params), emit ParamBound entries so
       // the polymorphic annotation round-trips correctly.
@@ -219,25 +234,73 @@ pub fn infer_with_returns(
 // The effect of the callback an operator parameter is applied to. The callback
 // isn't assumed to be first: `callback_position` is the operator parameter's
 // own callback argument index (from its type signature, see
-// `signatures.operator_params_from_function`), so `action(config, cb)` resolves
+// `signatures.operator_param_shapes`), so `action(config, cb)` resolves
 // `cb` and not `config`. Pipe-adjusted call positions already align with the
 // operator's logical argument positions (the piped receiver takes position 0),
 // so the index applies directly. A missing argument at a callback position means
 // the operator is under-applied (a partial application whose deferred effect we
 // can't resolve here), so it collapses to `[Unknown]` rather than `pure()` — the
 // effect must never be silently dropped.
+// A call's recorded arguments, or `[]` if none were tracked. Keyed by the
+// call's full span (see `extract.span_key`), so writer and reader agree.
+fn call_args_for(
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
+  span: Span,
+) -> List(types.CallArgument) {
+  dict.get(call_args, extract.span_key(span)) |> result.unwrap([])
+}
+
+// A synthetic resolved call carrying an inferred effect that isn't an ordinary
+// catalog lookup. `module` is a sentinel (`<param>`, `<field>`, `<returned>`,
+// `<pipe>`, `<apply>`, `<local>`) marking how the effect was derived, surfaced
+// in diagnostics.
+fn sentinel_call(module: String, function: String, span: Span) -> ResolvedCall {
+  types.ResolvedCall(name: QualifiedName(module:, function:), span:)
+}
+
 fn operator_argument_effect(
-  call_args: dict.Dict(Int, List(types.CallArgument)),
-  span_start: Int,
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
+  span: Span,
   callback_position: Int,
+  nested_positions: List(Int),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
-) -> EffectTerm {
-  let args = dict.get(call_args, span_start) |> result.unwrap([])
-  case list.find(args, fn(a) { a.position == callback_position }) {
+  registry: SignatureRegistry,
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
+  case
+    list.find(call_args_for(call_args, span), fn(a) {
+      a.position == callback_position
+    })
+  {
+    // A closure, branch, or returned operator passed as the callback must be
+    // *lifted* (its body analysed / producer resolved), as at a direct operator
+    // call — `resolve_argument_effects` would collapse it to [Unknown]. It is
+    // lifted over `nested_positions` — the callback's own function parameters,
+    // taken from the operator parameter's type — so a value-parameter callback
+    // (`fn(message) { … }`, no nested positions) reduces to its ground effect
+    // while a higher-order callback (`fn(_next) { … }`) keeps a binder that
+    // β-reduces when the operator applies it.
     Ok(arg) ->
-      resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
-    Error(Nil) -> effect_term.unknown()
+      case arg.value {
+        types.Closure(..) | types.Choice(..) | types.ReturnedOperator(..) ->
+          operator_term_for_argument(
+            arg,
+            nested_positions,
+            knowledge_base,
+            caller_param_bounds,
+            registry,
+            lift_operator_arg,
+            memo,
+          )
+        _ -> #(
+          resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
+          memo,
+        )
+      }
+    Error(Nil) -> #(effect_term.unknown(), memo)
   }
 }
 
@@ -245,26 +308,36 @@ fn operator_argument_effect(
 // application over all its callback arguments, in order: `action(cb1, cb2)` ⟹
 // `((action e1) e2)`. Left-nesting matches the binder order of the lifted
 // operator, so each callback beta-reduces against the right binder once the
-// operator is bound at a call site.
+// operator is bound at a call site. `shape` is the operator's callbacks: each
+// `#(callback position, that callback's own callback positions)`.
 fn curried_operator_application(
   operator: EffectTerm,
-  callback_positions: List(Int),
-  call_args: dict.Dict(Int, List(types.CallArgument)),
-  span_start: Int,
+  shape: List(#(Int, List(Int))),
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
+  span: Span,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
-) -> EffectTerm {
-  list.fold(callback_positions, operator, fn(acc, position) {
-    types.TApp(
-      acc,
+  registry: SignatureRegistry,
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
+  list.fold(shape, #(operator, memo), fn(acc, entry) {
+    let #(term, memo) = acc
+    let #(position, nested_positions) = entry
+    let #(arg_effect, memo) =
       operator_argument_effect(
         call_args,
-        span_start,
+        span,
         position,
+        nested_positions,
         knowledge_base,
         caller_param_bounds,
-      ),
-    )
+        registry,
+        lift_operator_arg,
+        memo,
+      )
+    #(types.TApp(term, arg_effect), memo)
   })
 }
 
@@ -310,6 +383,23 @@ fn polymorphic_param_bounds(
   |> list.filter(fn(v) { set.contains(fn_typed_params, v) })
   |> list.sort(string.compare)
   |> list.map(self_referential_bound)
+}
+
+// Replace every free effect variable in `term` that isn't one of `params` with
+// [Unknown]. Such a variable is a phantom: it can never be bound at a call site
+// (only the function's own fn-typed parameters can), so leaving it would surface
+// an internal name in the effect set instead of the conservative fallback.
+fn collapse_phantom_vars(term: EffectTerm, params: Set(String)) -> EffectTerm {
+  let phantoms = set.difference(effect_term.free_vars(term), params)
+  case set.is_empty(phantoms) {
+    True -> term
+    False ->
+      phantoms
+      |> set.to_list()
+      |> list.map(fn(v) { #(v, effect_term.unknown()) })
+      |> dict.from_list()
+      |> effect_term.subst(term, _)
+  }
 }
 
 // PRIVATE
@@ -611,7 +701,7 @@ fn recursion_edges(
   context: ImportContext,
   names: Set(String),
 ) -> Set(String) {
-  let result = extract.extract_calls(function.body, context)
+  let result = extract.extract_function_calls(function, context)
   let local = list.map(result.local, fn(call) { call.function })
   let returned =
     list.filter_map(result.direct_ops, fn(op) {
@@ -740,7 +830,7 @@ fn check_annotation(
 
       // Warn about function references passed as values with known non-pure effects.
       let extract_result =
-        extract.extract_calls(function_definition.definition.body, context)
+        extract.extract_function_calls(function_definition.definition, context)
       let reference_warnings =
         collect_reference_warnings(
           annotation.function,
@@ -860,19 +950,18 @@ fn collect_effects(
   // Operator parameters in scope from an *enclosing* function (a producer whose
   // returned closure we're analysing), so a call to one becomes a curried
   // operator application rather than `[Unknown]`. Empty for an ordinary function.
-  ambient_operators: dict.Dict(String, List(Int)),
+  ambient_operators: OperatorShapes,
   // Memoized same-module body analyses, keyed by function name. Lets the local-
   // call path resolve a cacheable callee in O(1) instead of re-walking its body.
   cache: LocalCache,
   // Threaded memo state, extended as memoizable sub-analyses are computed.
   memo: Memo,
 ) -> #(List(#(types.ResolvedCall, EffectTerm)), Memo) {
-  let result = extract.extract_calls(function.body, context)
+  let result = extract.extract_function_calls(function, context)
+  // The function's own fn-typed params join the inherited ambient operators, so
+  // a closure in this body that captures one resolves it to its effect variable.
   let operator_params =
-    dict.merge(
-      ambient_operators,
-      signatures.operator_params_from_function(function),
-    )
+    dict.merge(ambient_operators, signatures.operator_param_shapes(function))
   let lift_operator_arg =
     build_lift_operator_arg(
       context,
@@ -881,7 +970,7 @@ fn collect_effects(
       visited,
       registry,
       module_types,
-      ambient_operators,
+      operator_params,
       cache,
     )
 
@@ -916,13 +1005,7 @@ fn collect_effects(
       {
         Ok(bound) -> {
           let synthetic_call =
-            types.ResolvedCall(
-              name: QualifiedName(
-                module: "<param>",
-                function: local_call.function,
-              ),
-              span: local_call.span,
-            )
+            sentinel_call("<param>", local_call.function, local_call.span)
           // A call to a fn-typed parameter contributes that parameter's effect
           // variable. If the parameter is *second-order* (an operator — its own
           // type takes one or more functions), the call is a *curried*
@@ -931,16 +1014,21 @@ fn collect_effects(
           // the applications so each binder of the lifted operator (abstracted
           // in the same order) beta-reduces against the matching callback once
           // the operator is bound at a call site.
-          let effect = case dict.get(operator_params, local_call.function) {
-            Error(Nil) -> bound.effects
-            Ok(positions) ->
+          let #(effect, memo) = case
+            dict.get(operator_params, local_call.function)
+          {
+            Error(Nil) -> #(bound.effects, memo)
+            Ok(shape) ->
               curried_operator_application(
                 bound.effects,
-                positions,
+                shape,
                 result.call_args,
-                local_call.span.start,
+                local_call.span,
                 knowledge_base,
                 param_bounds,
+                registry,
+                lift_operator_arg,
+                memo,
               )
           }
           #(memo, [#(synthetic_call, effect)])
@@ -979,12 +1067,10 @@ fn collect_effects(
   let #(memo, field_effects) =
     list.map_fold(result.field, memo, fn(memo, field_call) {
       let synthetic_call =
-        types.ResolvedCall(
-          name: QualifiedName(
-            module: "<field>",
-            function: field_call.object <> "." <> field_call.label,
-          ),
-          span: field_call.span,
+        sentinel_call(
+          "<field>",
+          field_call.object <> "." <> field_call.label,
+          field_call.span,
         )
       let #(effect_set, memo) =
         resolve_field_call(
@@ -1008,13 +1094,7 @@ fn collect_effects(
   let #(memo, direct_op_effects) =
     list.map_fold(result.direct_ops, memo, fn(memo, op) {
       let synthetic_call =
-        types.ResolvedCall(
-          name: QualifiedName(
-            module: "<returned>",
-            function: op.callee.function,
-          ),
-          span: op.span,
-        )
+        sentinel_call("<returned>", op.callee.function, op.span)
       let #(resolved_op, memo) =
         resolve_returned_operator(
           op.callee,
@@ -1028,54 +1108,74 @@ fn collect_effects(
           cache,
           memo,
         )
-      let effect = case resolved_op {
+      let #(effect, memo) = case resolved_op {
         Ok(operator) -> {
-          let positions = positions_up_to(operator_spine_arity(operator))
+          // The returned operator's outer arguments have no tracked type here, so
+          // their own callback positions are unknown — lift each over nothing.
+          let shape =
+            positions_up_to(operator_spine_arity(operator))
+            |> list.map(fn(p) { #(p, []) })
           curried_operator_application(
             operator,
-            positions,
+            shape,
             result.call_args,
-            op.span.start,
+            op.span,
             knowledge_base,
             param_bounds,
+            registry,
+            lift_operator_arg,
+            memo,
           )
         }
-        Error(Nil) -> effect_term.unknown()
+        Error(Nil) -> #(effect_term.unknown(), memo)
       }
       #(memo, #(synthetic_call, effect))
     })
 
-  // Pipe into an inline closure / case of functions (`x |> fn(f) { f() }`):
-  // lift the target to an operator over its first parameter and apply the piped
-  // value (argument 0). Resolving this fixes an understatement — walking the
-  // target as a value dropped its use of the piped value.
+  // An inline closure / `case` of functions applied to arguments — a pipe target
+  // (`x |> fn(f) { f() }`, one argument) or an immediately-invoked closure
+  // (`fn(a, cb) { cb() }(1, io.println)`, several). Lift the value over the
+  // parameter positions the call supplies arguments for, then apply every
+  // argument, so each argument's effect reaches the matching parameter.
   let #(memo, direct_pipe_effects) =
     list.map_fold(result.direct_pipe_ops, memo, fn(memo, op) {
-      let synthetic_call =
-        types.ResolvedCall(
-          name: QualifiedName(module: "<pipe>", function: "<operator>"),
-          span: op.span,
-        )
+      let synthetic_call = sentinel_call("<pipe>", "<operator>", op.span)
+      let positions =
+        call_args_for(result.call_args, op.span)
+        |> list.map(fn(a) { a.position })
+        |> list.sort(int.compare)
       let #(operator, memo) =
         operator_term_for_argument(
           types.CallArgument(position: 0, label: None, value: op.value),
-          [0],
+          positions,
           knowledge_base,
           param_bounds,
           registry,
           lift_operator_arg,
           memo,
         )
-      let effect =
+      let #(effect, memo) =
         curried_operator_application(
           operator,
-          [0],
+          list.map(positions, fn(p) { #(p, []) }),
           result.call_args,
-          op.span.start,
+          op.span,
           knowledge_base,
           param_bounds,
+          registry,
+          lift_operator_arg,
+          memo,
         )
       #(memo, #(synthetic_call, effect))
+    })
+
+  // Applications of an opaque computed function value (`funcs.0(x)`): the callee
+  // can't be resolved to a concrete function, so the application is [Unknown] —
+  // never silently pure.
+  let unknown_app_effects =
+    list.map(result.unknown_apps, fn(span) {
+      let synthetic_call = sentinel_call("<apply>", "<unknown>", span)
+      #(synthetic_call, effect_term.unknown())
     })
 
   // Direct applications of a let-bound closure / case-of-functions: `let h =
@@ -1091,11 +1191,7 @@ fn collect_effects(
   // captured names (which resolve only under the binding-site environment).
   let #(memo, direct_closure_effects) =
     list.map_fold(result.direct_closure_ops, memo, fn(memo, op) {
-      let synthetic_call =
-        types.ResolvedCall(
-          name: QualifiedName(module: "<closure>", function: "<applied>"),
-          span: op.span,
-        )
+      let synthetic_call = sentinel_call("<closure>", "<applied>", op.span)
       let positions = direct_call_positions(op.value)
       let #(operator, memo) =
         operator_term_for_argument(
@@ -1107,13 +1203,16 @@ fn collect_effects(
           lift_operator_arg,
           memo,
         )
-      let effect =
+      let #(effect, memo) =
         invoked_parameter_effect(
           operator,
           result.call_args,
-          op.span.start,
+          op.span,
           knowledge_base,
           param_bounds,
+          registry,
+          lift_operator_arg,
+          memo,
         )
       #(memo, #(synthetic_call, effect))
     })
@@ -1125,6 +1224,7 @@ fn collect_effects(
       field_effects,
       direct_op_effects,
       direct_pipe_effects,
+      unknown_app_effects,
       direct_closure_effects,
     ]),
     memo,
@@ -1140,31 +1240,43 @@ fn collect_effects(
 // first-order effect is deliberately ignored — it is counted at the `let` site.
 fn invoked_parameter_effect(
   operator: EffectTerm,
-  call_args: dict.Dict(Int, List(types.CallArgument)),
-  span_start: Int,
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
+  span: Span,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
-) -> EffectTerm {
+  registry: SignatureRegistry,
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
   let #(binders, body) = peel_abstractions(operator, [])
   let free = effect_term.free_vars(body)
-  binders
-  |> list.index_fold(effect_term.pure(), fn(acc, binder, position) {
-    case set.contains(free, binder) {
-      True ->
-        TUnion([
-          acc,
-          operator_argument_effect(
-            call_args,
-            span_start,
-            position,
-            knowledge_base,
-            caller_param_bounds,
-          ),
-        ])
-      False -> acc
-    }
-  })
-  |> effect_term.normalize()
+  let #(effect, memo) =
+    binders
+    |> list.index_fold(#(effect_term.pure(), memo), fn(acc, binder, position) {
+      let #(term, memo) = acc
+      case set.contains(free, binder) {
+        // The argument's own callback shape isn't tracked at a direct call, so
+        // lift it over no nested positions ([]).
+        True -> {
+          let #(arg_effect, memo) =
+            operator_argument_effect(
+              call_args,
+              span,
+              position,
+              [],
+              knowledge_base,
+              caller_param_bounds,
+              registry,
+              lift_operator_arg,
+              memo,
+            )
+          #(TUnion([term, arg_effect]), memo)
+        }
+        False -> #(term, memo)
+      }
+    })
+  #(effect_term.normalize(effect), memo)
 }
 
 // Peel a `TAbs` spine, returning its binder names in order plus the innermost
@@ -1301,7 +1413,7 @@ fn operator_spine_arity(term: EffectTerm) -> Int {
 fn substitute_local_call_effects(
   recursive: List(#(types.ResolvedCall, EffectTerm)),
   local_call: LocalCall,
-  call_args: dict.Dict(Int, List(types.CallArgument)),
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
@@ -1316,7 +1428,7 @@ fn substitute_local_call_effects(
     Error(Nil) -> #(recursive, memo)
     Ok(local_definition) -> {
       let bounds = local_polymorphic_bounds(local_definition.definition)
-      let args = dict.get(call_args, local_call.span.start) |> result.unwrap([])
+      let args = call_args_for(call_args, local_call.span)
       let callee_name =
         QualifiedName(module: "<local>", function: local_call.function)
       // The synthetic `<local>` module isn't in `registry`, so build a
@@ -1371,7 +1483,7 @@ fn local_polymorphic_bounds(function: Function) -> List(ParamBound) {
 fn substitute_at_call_site(
   call: types.ResolvedCall,
   effect: EffectTerm,
-  call_args: dict.Dict(Int, List(types.CallArgument)),
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
@@ -1387,7 +1499,7 @@ fn substitute_at_call_site(
     when: !has_vars(effect) && callee_kb_bounds != [],
     return: #(effect, memo),
   )
-  let args = dict.get(call_args, call.span.start) |> result.unwrap([])
+  let args = call_args_for(call_args, call.span)
   let #(effective_effects, effective_bounds) = case callee_kb_bounds {
     [_, ..] -> #(effect, callee_kb_bounds)
     [] -> auto_bounds_from_registry(call.name, effect, args, registry)
@@ -1660,7 +1772,7 @@ fn build_lift_operator_arg(
   visited: Set(String),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-  ambient_operators: dict.Dict(String, List(Int)),
+  ambient_operators: OperatorShapes,
   cache: LocalCache,
 ) -> fn(types.ArgumentValue, List(Int), Memo) ->
   #(Result(EffectTerm, Nil), Memo) {
@@ -1903,8 +2015,7 @@ fn compute_returned_operator(
     Ok(#(return_type, value)) -> {
       let positions =
         signatures.operator_callback_positions_of_type(return_type)
-      let producer_operators =
-        signatures.operator_params_from_function(function)
+      let producer_operators = signatures.operator_param_shapes(function)
       let producer_bounds =
         function
         |> ordered_fn_typed_param_names()
@@ -1951,7 +2062,10 @@ fn compute_returned_operator_result(
   //     no callback arguments) yields this effect directly. A pure-[Unknown]
   //     latent is dropped: it carries no information and resolution falls back
   //     to [Unknown] anyway.
-  // A bare stuck application isn't usable.
+  //   - an application still polymorphic in a producer parameter (`op(cb)` in a
+  //     returned zero-argument closure, `TApp(op, …)`): it β-reduces once `op` is
+  //     bound to the producer call's argument. Only a *ground* stuck application
+  //     (no free vars left to bind) is unusable.
   case operator {
     types.TAbs(_, _) | types.TVar(_) | types.TUnion(_) -> Ok(operator)
     types.TLabels(_) | types.TTop ->
@@ -1959,7 +2073,11 @@ fn compute_returned_operator_result(
         True -> Error(Nil)
         False -> Ok(operator)
       }
-    types.TApp(_, _) -> Error(Nil)
+    types.TApp(_, _) ->
+      case set.is_empty(effect_term.free_vars(operator)) {
+        True -> Error(Nil)
+        False -> Ok(operator)
+      }
   }
 }
 
@@ -1980,7 +2098,7 @@ fn analyze_closure(
   visited: Set(String),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-  ambient_operators: dict.Dict(String, List(Int)),
+  ambient_operators: OperatorShapes,
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
@@ -2032,7 +2150,7 @@ fn analyze_closure_uncached(
   visited: Set(String),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-  ambient_operators: dict.Dict(String, List(Int)),
+  ambient_operators: OperatorShapes,
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
@@ -2045,6 +2163,13 @@ fn analyze_closure_uncached(
       return: None,
       body:,
     )
+  // A closure parameter shadows an enclosing ambient operator of the same name:
+  // drop the stale callback positions so calls to the parameter aren't treated
+  // as applications of the (differently-shaped) enclosing operator.
+  let ambient_operators =
+    list.fold(params, ambient_operators, fn(acc, param) {
+      dict.delete(acc, param)
+    })
   // Seed every closure parameter — and every ambient operator parameter from an
   // enclosing producer — as a self-referential bound, so calls to them inside the
   // body resolve to their effect variable (the local-call branch matches on
@@ -2070,17 +2195,12 @@ fn analyze_closure_uncached(
     )
   let body_term = union_of(body_pairs)
   // Which closure parameters to abstract over: those at the operator's callback
-  // positions (in order). Fall back to the first parameter when positions are
-  // unknown, preserving the previous single-callback behaviour.
-  let callback_params = case positions {
-    [] ->
-      case params {
-        [first, ..] -> [first]
-        [] -> []
-      }
-    _ ->
-      list.filter_map(positions, fn(position) { extract.at(params, position) })
-  }
+  // positions (in order). `positions` is authoritative — derived from the
+  // operator parameter's type at the call site — so an empty list means the
+  // callback is first-order (no parameters to abstract, its body is the ground
+  // effect), not "unknown".
+  let callback_params =
+    list.filter_map(positions, fn(position) { extract.at(params, position) })
   let operator =
     list.fold_right(callback_params, body_term, fn(acc, param) {
       types.TAbs(param, acc)
@@ -2341,10 +2461,7 @@ fn resolve_unknown_local(
   case dict.get(function_map, local_call.function) {
     Error(Nil) -> {
       let synthetic_call =
-        types.ResolvedCall(
-          name: QualifiedName(module: "<local>", function: local_call.function),
-          span: local_call.span,
-        )
+        sentinel_call("<local>", local_call.function, local_call.span)
       #([#(synthetic_call, effect_term.unknown())], memo)
     }
     Ok(local_definition) ->
@@ -2548,7 +2665,7 @@ fn resolve_field_call(
   function: Function,
   knowledge_base: KnowledgeBase,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-  call_args: dict.Dict(Int, List(types.CallArgument)),
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
@@ -2597,7 +2714,7 @@ fn resolve_field_call_by_type(
   function: Function,
   knowledge_base: KnowledgeBase,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-  call_args: dict.Dict(Int, List(types.CallArgument)),
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
@@ -2648,7 +2765,7 @@ fn resolve_field_call_by_type(
 fn resolve_field_effect(
   field_effect: types.TypeFieldEffect,
   field_call: types.FieldCall,
-  call_args: dict.Dict(Int, List(types.CallArgument)),
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
@@ -2665,7 +2782,7 @@ fn resolve_field_effect(
   use <- bool.guard(when: is_operator_valued(field_effect.effects), return: #(
     apply_field_operator(
       field_effect.effects,
-      dict.get(call_args, field_call.span.start) |> result.unwrap([]),
+      call_args_for(call_args, field_call.span),
       knowledge_base,
       caller_param_bounds,
     ),
@@ -2675,7 +2792,7 @@ fn resolve_field_effect(
     False, _ -> #(field_effect.effects, memo)
     True, None -> #(concretize(field_effect.effects), memo)
     True, Some(source) -> {
-      let args = dict.get(call_args, field_call.span.start) |> result.unwrap([])
+      let args = call_args_for(call_args, field_call.span)
       let #(bindings, memo) =
         bind_variables(
           source,

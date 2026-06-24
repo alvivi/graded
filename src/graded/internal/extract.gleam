@@ -27,6 +27,12 @@ type LocalBinding {
   // closure is applied (operator lifting), so it contributes nothing to the
   // enclosing function's direct effect — rather than surfacing as `[Unknown]`.
   BoundParam
+  // A top-level function parameter, seeded before walking the body. A call to
+  // it is a *local* call resolved via the function's own param bounds (fn-typed
+  // params) or transitive analysis — never an unqualified import that happens to
+  // share the name. Distinct from `BoundParam`, whose effect is deferred to the
+  // operator-lifting site.
+  BoundLocal
   // A let-bound inline closure (`let h = fn(cb) { ... }`). Keeping its
   // parameters and body lets a later use of `h` as an operator argument be
   // lifted to an effect operator, just like an inline closure passed directly,
@@ -121,9 +127,9 @@ pub fn constructor_label_map(
 
 // Result of extracting calls from a function body.
 //
-// `call_args` maps a resolved call's span start (unique per AST node)
-// to the call's arguments. Only populated for resolved calls — local
-// and field calls don't need argument tracking for substitution yet.
+// `call_args` maps a call's `span_key` (its full span) to its arguments. Only
+// populated for resolved calls — local and field calls don't need argument
+// tracking for substitution yet.
 pub type ExtractResult {
   ExtractResult(
     resolved: List(ResolvedCall),
@@ -132,8 +138,15 @@ pub type ExtractResult {
     references: List(ResolvedCall),
     direct_ops: List(DirectOperatorCall),
     direct_pipe_ops: List(DirectPipeOp),
+    // Directly-applied let-bound closures / case-of-functions (`let h = fn(x)
+    // { … }; h(a)`): lifted and applied with their binding-site walk supplying
+    // first-order/captured effects.
     direct_closure_ops: List(DirectClosureCall),
-    call_args: Dict(Int, List(CallArgument)),
+    // Spans of applications whose callee is an opaque computed function value
+    // (`funcs.0(x)`): applying it could do anything, so each collapses to
+    // [Unknown] rather than being silently dropped as pure.
+    unknown_apps: List(glance.Span),
+    call_args: Dict(#(Int, Int), List(CallArgument)),
   )
 }
 
@@ -509,12 +522,45 @@ fn ctor_binding(
   ConstructorBinding(module:, constructor:, fields:)
 }
 
-// Extract all calls from a list of statements.
+// Extract all calls from a list of statements, with an empty lexical scope.
 pub fn extract_calls(
   statements: List(Statement),
   context: ImportContext,
 ) -> ExtractResult {
   walk_scope(statements, context, dict.new())
+}
+
+// Extract all calls from a function body, seeding the function's own parameters
+// into the lexical scope first. A parameter therefore shadows an unqualified
+// import of the same name: a call to (or forwarding of) the parameter resolves
+// to the parameter, not the import. Without this seeding a parameter named like
+// a pure import could let an effectful argument be inferred as pure.
+pub fn extract_function_calls(
+  function: glance.Function,
+  context: ImportContext,
+) -> ExtractResult {
+  walk_scope(function.body, context, seed_parameters(function.parameters))
+}
+
+// Seed each named top-level parameter as `BoundLocal`. Discarded parameters
+// (`_`) bind nothing.
+fn seed_parameters(parameters: List(glance.FunctionParameter)) -> Env {
+  bind_names(dict.new(), list.map(parameters, fn(p) { p.name }), BoundLocal)
+}
+
+// Bind each named parameter to `binding` in `env`; discarded parameters (`_`)
+// bind nothing.
+fn bind_names(
+  env: Env,
+  names: List(glance.AssignmentName),
+  binding: LocalBinding,
+) -> Env {
+  list.fold(names, env, fn(env, name) {
+    case name {
+      glance.Named(name) -> dict.insert(env, name, binding)
+      glance.Discarded(_) -> env
+    }
+  })
 }
 
 // Walk a sequence of statements threading the binding env forward so
@@ -613,6 +659,10 @@ fn resolve_variable_call(
     // A closure parameter called inside its own body — its effect is the
     // callback's, accounted where the closure is applied, not here.
     BoundParam -> empty()
+    // A top-level parameter: a local call resolved via the function's param
+    // bounds (fn-typed params) or transitive analysis, shadowing any unqualified
+    // import of the same name.
+    BoundLocal -> ExtractResult(..empty(), local: [LocalCall(name, span)])
     // A let-bound returned operator applied directly: `let h = pick(); h(cb)`.
     // Emit a direct-operator call so the checker resolves the producer's
     // returned operator and applies it to this call's arguments (captured in
@@ -624,8 +674,10 @@ fn resolve_variable_call(
     // A let-bound closure (or `case`-of-functions) applied directly: `let h =
     // fn(x) { ... }; h(a)`. Emit a direct-closure call carrying the lifted
     // operator source so the checker lifts it and applies this call's arguments
-    // (captured in `call_args` under `span.start` by `merge_with_args`), rather
+    // (captured in `call_args` under the call span by `merge_with_args`), rather
     // than emitting a `LocalCall` the checker can only resolve to `[Unknown]`.
+    // The closure body's first-order/captured effect is already counted at the
+    // binding site, so the checker only adds its invoked parameters' effects.
     BoundClosure(params, body) ->
       ExtractResult(..empty(), direct_closure_ops: [
         DirectClosureCall(types.Closure(params, body), span),
@@ -640,12 +692,7 @@ fn resolve_variable_call(
 
 // Bind a closure's parameters as `BoundParam` in a child scope.
 fn bind_closure_params(env: Env, parameters: List(glance.FnParameter)) -> Env {
-  list.fold(parameters, env, fn(accumulator, parameter) {
-    case parameter.name {
-      glance.Named(name) -> dict.insert(accumulator, name, BoundParam)
-      glance.Discarded(_) -> accumulator
-    }
-  })
+  bind_names(env, list.map(parameters, fn(p) { p.name }), BoundParam)
 }
 
 fn resolve_unqualified_call(
@@ -1164,11 +1211,17 @@ fn extract_from_expression(
         classify_arguments(arguments, context, env, 0),
       )
 
-    // Other call shapes (e.g., result of another call being called)
-    glance.Call(function: function_expression, arguments:, ..) ->
-      merge(
-        extract_from_expression(function_expression, context, env),
-        extract_from_arguments(arguments, context, env),
+    // Other call shapes: the callee is an expression that evaluates to a
+    // function (an inline closure, a `case` of functions, a call returning a
+    // function, a block whose tail is one of those, or an opaque computed
+    // value). Classify and apply it so its latent effect isn't dropped.
+    glance.Call(location: span, function: function_expression, arguments:) ->
+      extract_expression_call(
+        function_expression,
+        arguments,
+        span,
+        context,
+        env,
       )
 
     // Pipe: left |> right. The piped value becomes implicit argument 0
@@ -1436,6 +1489,70 @@ fn pipe_into_operator_value(
   }
 }
 
+// Apply an *expression-valued* callee — one that isn't a bare variable or a
+// `module.fn` field access (those have dedicated branches above). The callee is
+// always walked for its own effects (a `case` scrutinee, a block's leading
+// statements, a producer call's body); since effects are sets, any overlap with
+// the lifted application below is idempotent. The application itself is then
+// modelled per the callee's classified shape so it isn't silently dropped:
+//   - an inline closure or `case`/`if` of functions is lifted to an operator
+//     and applied to the call's arguments (`DirectPipeOp`);
+//   - a call returning a function resolves the producer's returned operator and
+//     applies it (`DirectOperatorCall`);
+//   - a function/local reference reached through a block (`{ io.println }(x)`)
+//     is a direct resolved/local call;
+//   - a record constructor is pure (only the arguments matter);
+//   - anything else is an opaque function value whose application is [Unknown].
+fn extract_expression_call(
+  callee: Expression,
+  arguments: List(Field(Expression)),
+  span: glance.Span,
+  context: ImportContext,
+  env: Env,
+) -> ExtractResult {
+  let base =
+    merge(
+      extract_from_expression(callee, context, env),
+      extract_from_arguments(arguments, context, env),
+    )
+  let call_args = classify_arguments(arguments, context, env, 0)
+  case classify_expression(callee, context, env) {
+    types.Closure(..) as value | types.Choice(..) as value ->
+      merge_with_args(
+        base,
+        ExtractResult(..empty(), direct_pipe_ops: [DirectPipeOp(value, span)]),
+        span,
+        call_args,
+      )
+    types.ReturnedOperator(producer, producer_args) ->
+      merge_with_args(
+        base,
+        ExtractResult(..empty(), direct_ops: [
+          types.DirectOperatorCall(producer, producer_args, span),
+        ]),
+        span,
+        call_args,
+      )
+    FunctionRef(name:) ->
+      merge_with_args(
+        base,
+        ExtractResult(..empty(), resolved: [ResolvedCall(name, span)]),
+        span,
+        call_args,
+      )
+    LocalRef(name:) ->
+      merge_with_args(
+        base,
+        ExtractResult(..empty(), local: [LocalCall(name, span)]),
+        span,
+        call_args,
+      )
+    ConstructorRef -> base
+    OtherExpression ->
+      merge(base, ExtractResult(..empty(), unknown_apps: [span]))
+  }
+}
+
 fn extract_from_clause(
   clause: Clause,
   context: ImportContext,
@@ -1471,6 +1588,29 @@ fn classify_arguments(
   })
 }
 
+// Map a lexical binding to the argument value a bare reference to it denotes.
+fn classify_local_binding(
+  binding: LocalBinding,
+  name: String,
+) -> types.ArgumentValue {
+  case binding {
+    BoundFunctionRef(name: qualified) -> FunctionRef(name: qualified)
+    // A let-bound closure resolves to the closure itself, so it can be lifted to
+    // an operator at the use site.
+    BoundClosure(params, body) -> types.Closure(params, body)
+    // A let-bound branch resolves to its options, lifted and joined at the use
+    // site.
+    BoundChoice(options) -> types.Choice(options)
+    // A let-bound producer call resolves to its returned operator at the use
+    // site.
+    BoundReturnedOperator(callee, args) -> types.ReturnedOperator(callee, args)
+    // A parameter, a constructor binding, or an opaque value: a bare local
+    // reference, resolved (or left unresolved) at the use site.
+    BoundLocal | BoundParam | BoundConstructor(..) | BoundOpaque ->
+      LocalRef(name:)
+  }
+}
+
 // Classify a single argument expression. Determines whether it's a
 // function reference (qualified or unqualified import), a local
 // identifier, a constructor (uppercase), or something else.
@@ -1498,23 +1638,14 @@ fn classify_expression(
       case is_constructor_name(name) {
         True -> ConstructorRef
         False ->
-          case dict.get(context.unqualified, name) {
-            Ok(qualified_name) -> FunctionRef(name: qualified_name)
+          // Lexical scope wins over an unqualified import of the same name, so a
+          // parameter or `let` shadowing an import resolves to the binding.
+          case dict.get(env, name) {
+            Ok(binding) -> classify_local_binding(binding, name)
             Error(Nil) ->
-              case resolve_env(name, env) {
-                BoundFunctionRef(name: qualified) ->
-                  FunctionRef(name: qualified)
-                // A let-bound closure used by name resolves to the closure
-                // itself, so it can be lifted to an operator at the use site.
-                BoundClosure(params, body) -> types.Closure(params, body)
-                // A let-bound branch resolves to its options, lifted and joined
-                // at the use site.
-                BoundChoice(options) -> types.Choice(options)
-                // A let-bound producer call resolves to its returned operator
-                // at the use site.
-                BoundReturnedOperator(callee, args) ->
-                  types.ReturnedOperator(callee, args)
-                _ -> LocalRef(name:)
+              case dict.get(context.unqualified, name) {
+                Ok(qualified_name) -> FunctionRef(name: qualified_name)
+                Error(Nil) -> LocalRef(name:)
               }
           }
       }
@@ -1646,6 +1777,15 @@ fn classify_case_options(
   }
 }
 
+// The `call_args` key for a call: its full `#(span start, span end)`. The full
+// span — not just the start — is the key because an immediate application
+// (`make(io.println)()`) nests two calls that share a start but differ in end.
+// Readers (the checker) must derive the key the same way, so both go through
+// this one function.
+pub fn span_key(span: glance.Span) -> #(Int, Int) {
+  #(span.start, span.end)
+}
+
 // Record a pipe target's argument list against its call span. Used
 // by the two pipe-target shapes (`|> foo.bar` and `|> bar`) that
 // don't go through `merge_with_args`.
@@ -1656,12 +1796,12 @@ fn attach_pipe_args(
 ) -> ExtractResult {
   ExtractResult(
     ..base,
-    call_args: dict.insert(base.call_args, span.start, pipe_args),
+    call_args: dict.insert(base.call_args, span_key(span), pipe_args),
   )
 }
 
 // Merge an extraction result with a call's sub-expression walk, and
-// record the call's argument list keyed by span start.
+// record the call's argument list keyed by its full span.
 fn merge_with_args(
   call_result: ExtractResult,
   inner: ExtractResult,
@@ -1671,7 +1811,7 @@ fn merge_with_args(
   let merged = merge(call_result, inner)
   ExtractResult(
     ..merged,
-    call_args: dict.insert(merged.call_args, span.start, args),
+    call_args: dict.insert(merged.call_args, span_key(span), args),
   )
 }
 
@@ -1726,6 +1866,7 @@ fn empty() -> ExtractResult {
     direct_ops: [],
     direct_pipe_ops: [],
     direct_closure_ops: [],
+    unknown_apps: [],
     call_args: dict.new(),
   )
 }
@@ -1742,6 +1883,7 @@ fn merge(left: ExtractResult, right: ExtractResult) -> ExtractResult {
       left.direct_closure_ops,
       right.direct_closure_ops,
     ),
+    unknown_apps: list.append(left.unknown_apps, right.unknown_apps),
     call_args: dict.merge(left.call_args, right.call_args),
   )
 }

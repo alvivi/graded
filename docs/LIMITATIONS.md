@@ -121,7 +121,45 @@ pub fn get_logger() -> fn(String) -> Nil {
 or declare the producer's effect with an `external effects` / `type` line if it
 lives behind a record field.
 
-## 4. External (FFI) and un-annotated precompiled code
+## 4. A higher-order argument to an immediately-applied returned function
+
+When a function returned by a producer is applied straight away
+(`producer()(arg)`), graded resolves the producer's returned operator but does
+not track that operator's *parameter* types. If `arg` is itself higher-order — a
+closure that takes and applies its own function parameter — graded can't tell how
+to lift it and falls back to `[Unknown]`. A plain value or a first-order closure
+argument resolves precisely.
+
+```gleam
+import gleam/io
+
+fn make() -> fn(fn(fn() -> Nil) -> Nil) -> Nil {
+  fn(action) { action(io.println) }
+}
+
+pub fn caller() -> Nil {
+  make()(fn(cb) { cb() })   // [Unknown] — `make()`'s parameter type isn't tracked
+}
+```
+
+**How to avoid it** — make the operator a *named* function and call it directly,
+instead of returning it and applying the result. graded has the named function's
+signature, so it lifts the higher-order argument over exactly the right
+parameters:
+
+```gleam
+fn apply_action(action: fn(fn() -> Nil) -> Nil) -> Nil {
+  action(io.println)
+}
+
+pub fn caller() -> Nil {
+  apply_action(fn(cb) { cb() })   // resolves — `apply_action`'s signature is known
+}
+```
+
+or declare the budget explicitly (`check app.caller : [_]`, or the precise set).
+
+## 5. External (FFI) and un-annotated precompiled code
 
 graded can't see across an `@external` boundary, so FFI functions are `[Unknown]`
 — even when the declaration carries a pure-looking Gleam fallback body, since the

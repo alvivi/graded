@@ -149,7 +149,7 @@ pub fn fn_typed_param_names_ordered(
 // function-typed argument indices within that parameter's own type, in order.
 // For `action: fn(Config, fn() -> _, fn() -> _) -> _` this is `[1, 2]`. Empty
 // when the callee or parameter isn't a known operator. The registry-backed twin
-// of `operator_params_from_function`, used at the call site to curry a closure
+// of `operator_param_shapes`, used at the call site to curry a closure
 // argument's abstraction over the right parameters.
 pub fn operator_callback_positions(
   registry: SignatureRegistry,
@@ -231,26 +231,32 @@ pub fn fn_typed_params_from_function(function: Function) -> Set(String) {
   |> set.from_list()
 }
 
-// A function's *operator* parameters — fn-typed parameters whose own type
-// takes a function, i.e. `fn(fn(..) -> _) -> _` — mapped to the argument
-// positions of their callbacks *within the operator's own parameter list*, in
-// order. For `action: fn(Config, fn() -> _, fn() -> _) -> _` the entry is
-// `action -> [1, 2]`, so a call `action(config, cb1, cb2)` knows its callbacks
-// are the position-1 and position-2 arguments. These are second-order: their
-// effect depends on the callbacks they're applied to, so a call to one becomes
-// a curried effect-operator *application* rather than a flat variable. (Keys
-// are a subset of `fn_typed_params_from_function`.)
-pub fn operator_params_from_function(
+// Every fn-typed parameter of a function, mapped to the *shape* of its
+// callbacks: a list of `#(callback position, that callback's own callback
+// positions)`. For `op: fn(fn(String) -> Nil) -> Nil` the entry is
+// `op -> [#(0, [])]` — its position-0 argument is a callback that itself takes
+// no function (a first-order callback). For `op: fn(fn(fn() -> Nil) -> Nil) ->
+// Nil` it is `op -> [#(0, [0])]` — the callback at position 0 itself takes a
+// function at position 0. A first-order fn-typed parameter (`cb: fn(String) ->
+// Nil`) maps to `[]`. This lets a call site lift each callback argument over
+// exactly its own function parameters — discharging value parameters — instead
+// of guessing.
+pub fn operator_param_shapes(
   function: Function,
-) -> Dict(String, List(Int)) {
+) -> Dict(String, List(#(Int, List(Int)))) {
   function.parameters
   |> list.filter_map(fn(param) {
     case param.type_, assignment_name(param.name) {
-      Some(FunctionType(_, param_types, _)), Some(name) ->
-        case all_function_indices(param_types) {
-          [] -> Error(Nil)
-          positions -> Ok(#(name, positions))
-        }
+      Some(FunctionType(_, param_types, _)), Some(name) -> {
+        let shape =
+          param_types
+          |> list.index_map(fn(t, i) { #(i, t) })
+          |> list.filter(fn(pair) { is_function_type(pair.1) })
+          |> list.map(fn(pair) {
+            #(pair.0, operator_callback_positions_of_type(pair.1))
+          })
+        Ok(#(name, shape))
+      }
       _, _ -> Error(Nil)
     }
   })

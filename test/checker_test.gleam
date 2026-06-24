@@ -3573,3 +3573,346 @@ pub fn plain(x: String) -> String {
   let assert Ok(plain_scc) = dict.get(cache.scc_id, "plain")
   set.contains(cache.collapsible, plain_scc) |> should.be_true()
 }
+
+// ===========================================================================
+// Regression: soundness of effect inference for expression-valued callees
+// (Issue 1) and lexical parameters shadowing unqualified imports (Issue 2).
+// ===========================================================================
+
+fn infer_annotation(source: String, name: String) -> EffectAnnotation {
+  let assert Ok(module) = glance.module(source)
+  let registry = signatures.from_glance_module("m", module)
+  let inferred =
+    checker.infer(
+      module,
+      "",
+      knowledge_base(),
+      [],
+      registry,
+      dict.new(),
+      dict.new(),
+    )
+  let assert Ok(annotation) = list.find(inferred, fn(a) { a.function == name })
+  annotation
+}
+
+fn infer_effect_set(source: String, name: String) -> types.EffectSet {
+  effect_term.to_effect_set(infer_annotation(source, name).effects)
+}
+
+// --- Issue 1: expression-valued callees ---
+
+// An immediately invoked closure must propagate its callback's effect.
+pub fn issue1_iife_propagates_callback_test() {
+  let source =
+    "import gleam/io
+pub fn run() -> Nil { fn(callback) { callback(\"hi\") }(io.println) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// An immediately invoked closure applies *every* argument, not just the first:
+// the callback at position 1 must still be applied.
+pub fn issue1_iife_applies_non_first_argument_test() {
+  let source =
+    "import gleam/io
+pub fn run() -> Nil { fn(_value, callback) { callback(\"x\") }(1, io.println) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// Two invoked callback parameters are both applied.
+pub fn issue1_iife_applies_two_callbacks_test() {
+  let source =
+    "import gleam/io
+pub fn run() -> Nil {
+  fn(a, b) {
+    a(\"x\")
+    b(\"y\")
+  }(io.println, io.print)
+}"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A directly called let-bound closure resolves through the binding rather than
+// collapsing to [Unknown].
+pub fn issue1_direct_let_bound_closure_test() {
+  let source =
+    "import gleam/io
+pub fn run() -> Nil {
+  let helper = fn(cb) { cb(\"x\") }
+  helper(io.println)
+}"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// An immediately applied returned function must propagate its latent effect.
+pub fn issue1_returned_fn_propagates_test() {
+  let source =
+    "import gleam/io
+fn printer() -> fn(String) -> Nil { io.println }
+pub fn run() -> Nil { printer()(\"hi\") }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A producer whose returned closure captures a *first-order* callback parameter
+// (`fn make(cb) { fn() { cb(x) } }`) must propagate the callback's effect: the
+// closure analysis seeds every fn-typed producer parameter, not only
+// second-order operators, so `cb` resolves to the supplied function.
+pub fn issue1_returned_closure_captures_callback_test() {
+  let source =
+    "import gleam/io
+fn make(cb: fn(String) -> Nil) -> fn() -> Nil {
+  fn() { cb(\"later\") }
+}
+pub fn run() -> Nil { make(io.println)() }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// The same applies to a closure passed to an operator that captures the
+// enclosing function's first-order callback parameter.
+pub fn issue1_closure_captures_enclosing_callback_test() {
+  let source =
+    "import gleam/io
+fn with(action: fn(fn() -> Nil) -> Nil) -> Nil { action(fn() { Nil }) }
+fn outer(cb: fn(String) -> Nil) -> Nil {
+  with(fn(_run) { cb(\"x\") })
+}
+pub fn run() -> Nil { outer(io.println) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A returned zero-argument closure that applies a captured second-order operator
+// parameter (`fn make(op) { fn() { op(io.println) } }`) yields an application
+// still polymorphic in `op`. It must be kept (not rejected as a stuck term) so
+// it β-reduces once `op` is bound to the producer's argument.
+pub fn issue1_returned_polymorphic_application_test() {
+  let source =
+    "import gleam/io
+fn identity(f: fn(String) -> Nil) -> Nil { f(\"x\") }
+fn make(op: fn(fn(String) -> Nil) -> Nil) -> fn() -> Nil {
+  fn() { op(io.println) }
+}
+pub fn run() -> Nil { make(identity)() }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A returned closure whose own parameter reuses an enclosing operator
+// parameter's name must not inherit the enclosing operator's callback positions:
+// the inner first-order `cb()` is the closure's own parameter, not the
+// second-order enclosing `cb`.
+pub fn issue1_returned_closure_shadows_ambient_operator_test() {
+  let source =
+    "import gleam/io
+fn make(cb: fn(fn() -> Nil) -> Nil) -> fn(fn() -> Nil) -> Nil {
+  fn(cb) { cb() }
+}
+pub fn run() -> Nil { make(fn(g) { g() })(io.println) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A *closure* (not a bare function reference) passed as an operator's callback
+// must be lifted, not collapsed to [Unknown]: the producer's returned closure
+// applies the captured operator to an inline callback whose body prints.
+pub fn issue1_closure_callback_to_captured_operator_test() {
+  let source =
+    "import gleam/io
+fn identity(f: fn() -> Nil) -> Nil { f() }
+fn make(op: fn(fn() -> Nil) -> Nil) -> fn() -> Nil {
+  fn() { op(fn() { io.println(\"x\") }) }
+}
+pub fn run() -> Nil { make(identity)() }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// The same lifting applies at a direct operator call whose callback is a
+// closure that itself invokes its (second-order) parameter.
+pub fn issue1_closure_callback_at_direct_operator_call_test() {
+  let source =
+    "import gleam/io
+fn apply(g: fn(fn() -> Nil) -> Nil) -> Nil { g(fn() { io.println(\"y\") }) }
+pub fn run() -> Nil { apply(fn(h) { h() }) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A callback closure with an ordinary *value* parameter (`fn(message) {
+// io.println(message) }`) must lift to its ground effect. The closure analyser
+// abstracts the first parameter when positions are unknown, so the value
+// parameter has to be discharged or the effect collapses to [Unknown].
+pub fn issue1_value_param_callback_returned_test() {
+  let source =
+    "import gleam/io
+fn identity(f: fn(String) -> Nil) -> Nil { f(\"x\") }
+fn make(op: fn(fn(String) -> Nil) -> Nil) -> fn() -> Nil {
+  fn() { op(fn(message) { io.println(message) }) }
+}
+pub fn run() -> Nil { make(identity)() }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// The same value-parameter callback, applied through a fn-typed operator
+// parameter rather than a returned closure.
+pub fn issue1_value_param_callback_direct_test() {
+  let source =
+    "import gleam/io
+fn caller(op: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  op(fn(message) { io.println(message) })
+}
+fn identity(f: fn(String) -> Nil) -> Nil { f(\"x\") }
+pub fn run() -> Nil { caller(identity) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A callback that *ignores* a higher-order parameter (`fn(_next) { ... }`) must
+// stay an operator (its binder is kept), so applying it to a concrete operator
+// β-reduces to the precise effect rather than over-approximating to [Unknown].
+// The binder is kept because the callback's expected shape — the operator
+// parameter's type says position 0 is itself a function — is threaded to the lift,
+// distinguishing it from a value parameter.
+pub fn issue1_ignored_higher_order_callback_test() {
+  let source =
+    "import gleam/io
+fn apply_next(k: fn(fn() -> Nil) -> Nil) -> Nil { k(io.println) }
+fn make(op: fn(fn(fn() -> Nil) -> Nil) -> Nil) -> fn() -> Nil {
+  fn() { op(fn(_next) { io.println(\"x\") }) }
+}
+pub fn run() -> Nil { make(apply_next)() }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A *higher-order* argument to an immediately-applied returned operator can't be
+// lifted precisely — the returned operator's parameter type isn't tracked — so it
+// falls back to the conservative [Unknown], not a leaked internal variable name.
+// (See docs/LIMITATIONS.md.)
+pub fn issue1_higher_order_arg_to_returned_operator_is_unknown_test() {
+  let source =
+    "import gleam/io
+fn make() -> fn(fn(fn() -> Nil) -> Nil) -> Nil {
+  fn(action) { action(io.println) }
+}
+pub fn run() -> Nil { make()(fn(cb) { cb() }) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+// An immediately applied `case` of operators joins every branch's effect: the
+// effectful branch (applies the callback) and the pure branch (ignores it) are
+// over-approximated together.
+pub fn issue1_case_of_functions_joins_test() {
+  let source =
+    "import gleam/io
+pub fn run(b: Bool) -> Nil {
+  case b {
+    True -> fn(cb) { cb(\"x\") }
+    False -> fn(_cb) { Nil }
+  }(io.println)
+}"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// An opaque computed callable collapses to [Unknown], never silently pure.
+pub fn issue1_opaque_callable_is_unknown_test() {
+  let source =
+    "pub fn run(funcs: #(fn(String) -> Nil)) -> Nil { funcs.0(\"hi\") }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+// A pure expression-valued callable stays pure.
+pub fn issue1_pure_callable_stays_pure_test() {
+  let source = "pub fn run() -> String { fn(x) { x }(\"hi\") }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.new()))
+}
+
+// An immediate application `make(io.println)()` nests two calls that share a
+// span start. Keying call args by the full span keeps the outer (empty) call
+// from clobbering the producer's arguments, so the producer's own
+// effect-polymorphic parameter still resolves to the supplied effect rather
+// than leaking as an unbound variable.
+pub fn issue1_immediate_returned_call_preserves_producer_args_test() {
+  let source =
+    "import gleam/io
+fn make(cb: fn(String) -> Nil) -> fn() -> Nil {
+  cb(\"setup\")
+  fn() { Nil }
+}
+pub fn run() -> Nil { make(io.println)() }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// --- Issue 2: lexical parameters shadowing unqualified imports ---
+
+// A fn-typed parameter shadowing a *pure* unqualified import must contribute
+// its own effect variable, not the (pure) import's effect.
+pub fn issue2_fn_param_shadows_pure_import_test() {
+  let source =
+    "import gleam/string.{uppercase}
+pub fn run(uppercase: fn(String) -> String) -> String { uppercase(\"hi\") }"
+  let annotation = infer_annotation(source, "run")
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Polymorphic(set.new(), set.from_list(["uppercase"])))
+  annotation.params
+  |> should.equal([ParamBound("uppercase", types.TVar("uppercase"))])
+}
+
+// A fn-typed parameter shadowing an *effectful* unqualified import must
+// contribute its own effect variable, not the import's concrete effect.
+pub fn issue2_fn_param_shadows_effectful_import_test() {
+  let source =
+    "import gleam/io.{println}
+pub fn run(println: fn(String) -> Nil) -> Nil { println(\"hi\") }"
+  infer_effect_set(source, "run")
+  |> should.equal(Polymorphic(set.new(), set.from_list(["println"])))
+}
+
+// Forwarding the shadowing fn-typed parameter to a higher-order callee
+// substitutes the caller-provided effect, not the import's.
+pub fn issue2_forward_fn_param_shadow_test() {
+  let source =
+    "import gleam/string.{uppercase}
+fn apply(g: fn(String) -> String) -> String { g(\"x\") }
+pub fn run(uppercase: fn(String) -> String) -> String { apply(uppercase) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Polymorphic(set.new(), set.from_list(["uppercase"])))
+}
+
+// A let binding shadowing an unqualified import wins when the bound value is
+// forwarded (the classify path must consult lexical scope before imports).
+pub fn issue2_let_shadows_import_forward_test() {
+  let source =
+    "import gleam/string.{uppercase}
+import gleam/io
+fn apply(g: fn(String) -> Nil) -> Nil { g(\"x\") }
+pub fn run() -> Nil {
+  let uppercase = io.println
+  apply(uppercase)
+}"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A first-order (non-function) parameter shadowing an import must not resolve
+// to the import's function reference when forwarded.
+pub fn issue2_first_order_param_shadow_not_import_test() {
+  let source =
+    "import gleam/string.{uppercase}
+fn apply(g: fn(String) -> String) -> String { g(\"x\") }
+pub fn run(uppercase: String) -> String { apply(uppercase) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
