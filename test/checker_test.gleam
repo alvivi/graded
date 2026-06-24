@@ -1450,6 +1450,12 @@ fn infer_single(source: String) -> EffectAnnotation {
   ann
 }
 
+// The inferred effect set of a single-function source — `infer_single` reduced
+// to its ground effect set, for the let-bound-closure cases.
+fn infer_effect(source: String) -> EffectSet {
+  effect_term.to_effect_set(infer_single(source).effects)
+}
+
 pub fn infer_fn_typed_param_emits_variable_test() {
   let source =
     "
@@ -2530,6 +2536,129 @@ pub fn caller() -> Nil {
 "
   second_order_violations(source, "caller", ["Stdout"]) |> should.equal([])
   { second_order_violations(source, "caller", []) != [] } |> should.be_true()
+}
+
+// A let-bound closure that is *applied directly by name* (`let h = fn(x) { x };
+// h(1)`) resolves to its body's effect, not `[Unknown]`. The pure first-order
+// case infers `[]`.
+pub fn let_bound_closure_called_directly_test() {
+  let source =
+    "pub fn direct_let() -> Int {
+  let helper = fn(x: Int) { x + 1 }
+  helper(1)
+}"
+  infer_effect(source) |> should.equal(Specific(set.new()))
+}
+
+// The same direct application reached through a mapper closure (`list.map(xs,
+// fn(n) { helper(n) })`): `helper` is still a let-bound closure in scope, so its
+// pure body resolves to `[]`.
+pub fn let_bound_closure_called_in_mapper_test() {
+  let source =
+    "import gleam/list
+pub fn let_in_map() -> List(Int) {
+  let helper = fn(x: Int) { x + 1 }
+  list.map([1, 2], fn(n) { helper(n) })
+}"
+  infer_effect(source) |> should.equal(Specific(set.new()))
+}
+
+// A direct application of a let-bound closure must not *drop* the body's real
+// effects: an effectful first-order closure resolves to its body effect.
+pub fn let_bound_closure_direct_call_keeps_effects_test() {
+  let source =
+    "import gleam/io
+pub fn run() -> Nil {
+  let log = fn(m: String) { io.println(m) }
+  log(\"hi\")
+}"
+  infer_effect(source)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A *higher-order* let-bound closure applied directly (`let h = fn(cb) { cb(..)
+// }; h(io.println)`): the closure lifts to an operator and the call's argument
+// beta-reduces, giving the callback's effect rather than `[Unknown]`.
+pub fn let_bound_higher_order_closure_applied_directly_test() {
+  let source =
+    "import gleam/io
+pub fn run() -> Nil {
+  let h = fn(cb) { cb(\"x\") }
+  h(io.println)
+}"
+  infer_effect(source)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// The direct-application fix lets a `check direct_let : []` invariant pass
+// instead of being spuriously blocked by `[Unknown]`.
+pub fn let_bound_closure_direct_call_satisfies_pure_check_test() {
+  let source =
+    "pub fn direct_let() -> Int {
+  let helper = fn(x: Int) { x + 1 }
+  helper(1)
+}"
+  let assert Ok(module) = glance.module(source)
+  let ann = EffectAnnotation(Check, "direct_let", [], effect_term.pure())
+  let #(violations, _) =
+    checker.check(
+      module,
+      "",
+      [ann],
+      knowledge_base(),
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
+  violations |> should.equal([])
+}
+
+// A directly-called closure that *captures* another let-bound callable resolves
+// the capture: `let suffix = string.append` is in scope at the closure's binding
+// site, so `helper`'s body resolves to `string.append`'s effect (`[]`), not the
+// `[Unknown]` a re-analysis with an empty environment would yield.
+pub fn let_bound_closure_captures_resolved_test() {
+  let source =
+    "import gleam/string
+pub fn run() -> String {
+  let suffix = string.append
+  let helper = fn(x) { suffix(x, \"!\") }
+  helper(\"hi\")
+}"
+  infer_effect(source) |> should.equal(Specific(set.new()))
+}
+
+// A directly-called closure that captures an *effectful* callable still surfaces
+// that effect (from the binding-site walk), so a pure `check` would fail — the
+// capture is resolved, not silently dropped.
+pub fn let_bound_closure_captures_effect_test() {
+  let source =
+    "import gleam/io
+pub fn run() -> Nil {
+  let log = io.println
+  let helper = fn(x) { log(x) }
+  helper(\"hi\")
+}"
+  infer_effect(source)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A let-bound `case`-of-closures applied directly (`let h = case c { ... };
+// h(a)`): each branch is lifted and joined, over-approximating both, rather than
+// `[Unknown]`. Here one branch logs and the other is pure, so the join is
+// `[Stdout]`.
+pub fn let_bound_choice_applied_directly_test() {
+  let source =
+    "import gleam/io
+pub fn run(c: Bool) -> Nil {
+  let h = case c {
+    True -> fn(m: String) { io.println(m) }
+    False -> fn(_m: String) { Nil }
+  }
+  h(\"hi\")
+}"
+  infer_effect(source)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 pub fn second_order_let_bound_closure_resolves_test() {

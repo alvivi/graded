@@ -1078,6 +1078,46 @@ fn collect_effects(
       #(memo, #(synthetic_call, effect))
     })
 
+  // Direct applications of a let-bound closure / case-of-functions: `let h =
+  // fn(x) { ... }; h(a)`. The closure body is already walked at its `let`
+  // binding site with the lexical environment in scope, so its first-order
+  // effect — including any captured callable (`let suffix = string.append; let h
+  // = fn(x) { suffix(x) }`) — is already counted there. The only effect that
+  // walk drops is the closure's own parameters, bound as opaque callbacks. So
+  // lift the closure to an operator over all its parameters and add just the
+  // effect flowing through the parameters it actually invokes: each argument at
+  // a position whose parameter is still free in the operator body. Re-deriving
+  // the whole body here instead would re-introduce a spurious `[Unknown]` for
+  // captured names (which resolve only under the binding-site environment).
+  let #(memo, direct_closure_effects) =
+    list.map_fold(result.direct_closure_ops, memo, fn(memo, op) {
+      let synthetic_call =
+        types.ResolvedCall(
+          name: QualifiedName(module: "<closure>", function: "<applied>"),
+          span: op.span,
+        )
+      let positions = direct_call_positions(op.value)
+      let #(operator, memo) =
+        operator_term_for_argument(
+          types.CallArgument(position: 0, label: None, value: op.value),
+          positions,
+          knowledge_base,
+          param_bounds,
+          registry,
+          lift_operator_arg,
+          memo,
+        )
+      let effect =
+        invoked_parameter_effect(
+          operator,
+          result.call_args,
+          op.span.start,
+          knowledge_base,
+          param_bounds,
+        )
+      #(memo, #(synthetic_call, effect))
+    })
+
   #(
     list.flatten([
       resolved_effects,
@@ -1085,9 +1125,77 @@ fn collect_effects(
       field_effects,
       direct_op_effects,
       direct_pipe_effects,
+      direct_closure_effects,
     ]),
     memo,
   )
+}
+
+// The effect a directly-applied closure adds beyond its binding-site walk: the
+// effect of each argument whose parameter the closure actually invokes. The
+// lifted `operator` is `λp0. … λpn-1. body`; a parameter that is invoked stays
+// free in `body`, so peel the binders and, for each one free in the body, union
+// the argument at that position (`operator_argument_effect` resolves the
+// callback's effect, recurring through second-order callbacks). The body's own
+// first-order effect is deliberately ignored — it is counted at the `let` site.
+fn invoked_parameter_effect(
+  operator: EffectTerm,
+  call_args: dict.Dict(Int, List(types.CallArgument)),
+  span_start: Int,
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+) -> EffectTerm {
+  let #(binders, body) = peel_abstractions(operator, [])
+  let free = effect_term.free_vars(body)
+  binders
+  |> list.index_fold(effect_term.pure(), fn(acc, binder, position) {
+    case set.contains(free, binder) {
+      True ->
+        TUnion([
+          acc,
+          operator_argument_effect(
+            call_args,
+            span_start,
+            position,
+            knowledge_base,
+            caller_param_bounds,
+          ),
+        ])
+      False -> acc
+    }
+  })
+  |> effect_term.normalize()
+}
+
+// Peel a `TAbs` spine, returning its binder names in order plus the innermost
+// (non-abstraction) body.
+fn peel_abstractions(
+  term: EffectTerm,
+  acc: List(String),
+) -> #(List(String), EffectTerm) {
+  case term {
+    types.TAbs(param, body) -> peel_abstractions(body, [param, ..acc])
+    other -> #(list.reverse(acc), other)
+  }
+}
+
+// The callback positions to abstract a directly-applied closure over: every one
+// of its parameters, in order. A `case`-of-functions takes the widest arity
+// among its options, so each branch is fully abstracted. A non-function value
+// has no binders.
+fn direct_call_positions(value: types.ArgumentValue) -> List(Int) {
+  positions_up_to(value_arity(value))
+}
+
+fn value_arity(value: types.ArgumentValue) -> Int {
+  case value {
+    types.Closure(params, _) -> list.length(params)
+    types.Choice(options) ->
+      list.fold(options, 0, fn(max, option) {
+        int.max(max, value_arity(option))
+      })
+    _ -> 0
+  }
 }
 
 // `[0, 1, …, n-1]` — the callback positions of an `n`-ary operator, applied
