@@ -1869,7 +1869,10 @@ fn compute_returned_operator_result(
   //     no callback arguments) yields this effect directly. A pure-[Unknown]
   //     latent is dropped: it carries no information and resolution falls back
   //     to [Unknown] anyway.
-  // A bare stuck application isn't usable.
+  //   - an application still polymorphic in a producer parameter (`op(cb)` in a
+  //     returned zero-argument closure, `TApp(op, …)`): it β-reduces once `op` is
+  //     bound to the producer call's argument. Only a *ground* stuck application
+  //     (no free vars left to bind) is unusable.
   case operator {
     types.TAbs(_, _) | types.TVar(_) | types.TUnion(_) -> Ok(operator)
     types.TLabels(_) | types.TTop ->
@@ -1877,7 +1880,11 @@ fn compute_returned_operator_result(
         True -> Error(Nil)
         False -> Ok(operator)
       }
-    types.TApp(_, _) -> Error(Nil)
+    types.TApp(_, _) ->
+      case set.is_empty(effect_term.free_vars(operator)) {
+        True -> Error(Nil)
+        False -> Ok(operator)
+      }
   }
 }
 
@@ -1963,6 +1970,13 @@ fn analyze_closure_uncached(
       return: None,
       body:,
     )
+  // A closure parameter shadows an enclosing ambient operator of the same name:
+  // drop the stale callback positions so calls to the parameter aren't treated
+  // as applications of the (differently-shaped) enclosing operator.
+  let ambient_operators =
+    list.fold(params, ambient_operators, fn(acc, param) {
+      dict.delete(acc, param)
+    })
   // Seed every closure parameter — and every ambient operator parameter from an
   // enclosing producer — as a self-referential bound, so calls to them inside the
   // body resolve to their effect variable (the local-call branch matches on

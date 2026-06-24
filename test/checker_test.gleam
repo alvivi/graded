@@ -3521,6 +3521,37 @@ pub fn run() -> Nil { outer(io.println) }"
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
+// A returned zero-argument closure that applies a captured second-order operator
+// parameter (`fn make(op) { fn() { op(io.println) } }`) yields an application
+// still polymorphic in `op`. It must be kept (not rejected as a stuck term) so
+// it β-reduces once `op` is bound to the producer's argument.
+pub fn issue1_returned_polymorphic_application_test() {
+  let source =
+    "import gleam/io
+fn identity(f: fn(String) -> Nil) -> Nil { f(\"x\") }
+fn make(op: fn(fn(String) -> Nil) -> Nil) -> fn() -> Nil {
+  fn() { op(io.println) }
+}
+pub fn run() -> Nil { make(identity)() }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A returned closure whose own parameter reuses an enclosing operator
+// parameter's name must not inherit the enclosing operator's callback positions:
+// the inner first-order `cb()` is the closure's own parameter, not the
+// second-order enclosing `cb`.
+pub fn issue1_returned_closure_shadows_ambient_operator_test() {
+  let source =
+    "import gleam/io
+fn make(cb: fn(fn() -> Nil) -> Nil) -> fn(fn() -> Nil) -> Nil {
+  fn(cb) { cb() }
+}
+pub fn run() -> Nil { make(fn(g) { g() })(io.println) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
 // An immediately applied `case` of operators joins every branch's effect: the
 // effectful branch (applies the callback) and the pure branch (ignores it) are
 // over-approximated together.
