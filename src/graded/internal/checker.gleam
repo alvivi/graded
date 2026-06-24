@@ -266,22 +266,48 @@ fn operator_argument_effect(
     // operator that β-reduces when this operator is applied.
     Ok(arg) ->
       case arg.value {
-        types.Closure(..) | types.Choice(..) | types.ReturnedOperator(..) ->
-          operator_term_for_argument(
-            arg,
-            [],
-            knowledge_base,
-            caller_param_bounds,
-            registry,
-            lift_operator_arg,
-            memo,
-          )
+        types.Closure(..) | types.Choice(..) | types.ReturnedOperator(..) -> {
+          let #(operator, memo) =
+            operator_term_for_argument(
+              arg,
+              [],
+              knowledge_base,
+              caller_param_bounds,
+              registry,
+              lift_operator_arg,
+              memo,
+            )
+          #(discharge_value_param(operator), memo)
+        }
         _ -> #(
           resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
           memo,
         )
       }
     Error(Nil) -> #(effect_term.unknown(), memo)
+  }
+}
+
+// With no callback positions, `analyze_closure` abstracts a closure's first
+// parameter (it can't tell callbacks from values without types), turning
+// `fn(message) { io.println(message) }` into `λmessage. [Stdout]`. As a callback
+// effect that stuck abstraction collapses to [Unknown]. A binder the body never
+// uses is a *value* parameter the enclosing operator supplies a value for, so
+// discharge it and keep the ground body. A binder the body applies (a genuine
+// nested callback) stays, β-reducing when the operator is applied; a multi-binder
+// operator spine is left intact so its arguments still line up.
+fn discharge_value_param(operator: EffectTerm) -> EffectTerm {
+  case operator {
+    types.TAbs(param, body) ->
+      case body {
+        types.TAbs(_, _) -> operator
+        _ ->
+          case set.contains(effect_term.free_vars(body), param) {
+            True -> operator
+            False -> body
+          }
+      }
+    _ -> operator
   }
 }
 

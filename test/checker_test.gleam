@@ -3578,6 +3578,36 @@ pub fn run() -> Nil { apply(fn(h) { h() }) }"
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
+// A callback closure with an ordinary *value* parameter (`fn(message) {
+// io.println(message) }`) must lift to its ground effect. The closure analyser
+// abstracts the first parameter when positions are unknown, so the value
+// parameter has to be discharged or the effect collapses to [Unknown].
+pub fn issue1_value_param_callback_returned_test() {
+  let source =
+    "import gleam/io
+fn identity(f: fn(String) -> Nil) -> Nil { f(\"x\") }
+fn make(op: fn(fn(String) -> Nil) -> Nil) -> fn() -> Nil {
+  fn() { op(fn(message) { io.println(message) }) }
+}
+pub fn run() -> Nil { make(identity)() }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// The same value-parameter callback, applied through a fn-typed operator
+// parameter rather than a returned closure.
+pub fn issue1_value_param_callback_direct_test() {
+  let source =
+    "import gleam/io
+fn caller(op: fn(fn(String) -> Nil) -> Nil) -> Nil {
+  op(fn(message) { io.println(message) })
+}
+fn identity(f: fn(String) -> Nil) -> Nil { f(\"x\") }
+pub fn run() -> Nil { caller(identity) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
 // An immediately applied `case` of operators joins every branch's effect: the
 // effectful branch (applies the callback) and the pure branch (ignores it) are
 // over-approximated together.
