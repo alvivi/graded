@@ -3482,6 +3482,43 @@ pub fn run() -> Nil { fn(callback) { callback(\"hi\") }(io.println) }"
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
+// An immediately invoked closure applies *every* argument, not just the first:
+// the callback at position 1 must still be applied.
+pub fn issue1_iife_applies_non_first_argument_test() {
+  let source =
+    "import gleam/io
+pub fn run() -> Nil { fn(_value, callback) { callback(\"x\") }(1, io.println) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// Two invoked callback parameters are both applied.
+pub fn issue1_iife_applies_two_callbacks_test() {
+  let source =
+    "import gleam/io
+pub fn run() -> Nil {
+  fn(a, b) {
+    a(\"x\")
+    b(\"y\")
+  }(io.println, io.print)
+}"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A directly called let-bound closure resolves through the binding rather than
+// collapsing to [Unknown].
+pub fn issue1_direct_let_bound_closure_test() {
+  let source =
+    "import gleam/io
+pub fn run() -> Nil {
+  let helper = fn(cb) { cb(\"x\") }
+  helper(io.println)
+}"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
 // An immediately applied returned function must propagate its latent effect.
 pub fn issue1_returned_fn_propagates_test() {
   let source =

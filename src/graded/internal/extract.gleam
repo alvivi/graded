@@ -666,6 +666,17 @@ fn resolve_variable_call(
       ExtractResult(..empty(), direct_ops: [
         types.DirectOperatorCall(callee, producer_args, span),
       ])
+    // A let-bound closure or branch applied directly (`let h = fn(cb) { cb() };
+    // h(x)`): lift it and apply this call's arguments — captured in `call_args`
+    // under `span.start` by `merge_with_args` — exactly as an inline closure call.
+    BoundClosure(params, body) ->
+      ExtractResult(..empty(), direct_pipe_ops: [
+        DirectPipeOp(types.Closure(params, body), span),
+      ])
+    BoundChoice(options) ->
+      ExtractResult(..empty(), direct_pipe_ops: [
+        DirectPipeOp(types.Choice(options), span),
+      ])
     _ -> resolve_unqualified_call(name, span, context)
   }
 }

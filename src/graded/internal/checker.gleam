@@ -1132,17 +1132,22 @@ fn collect_effects(
       #(memo, #(synthetic_call, effect))
     })
 
-  // Pipe into an inline closure / case of functions (`x |> fn(f) { f() }`):
-  // lift the target to an operator over its first parameter and apply the piped
-  // value (argument 0). Resolving this fixes an understatement — walking the
-  // target as a value dropped its use of the piped value.
+  // An inline closure / `case` of functions applied to arguments — a pipe target
+  // (`x |> fn(f) { f() }`, one argument) or an immediately-invoked closure
+  // (`fn(a, cb) { cb() }(1, io.println)`, several). Lift the value over the
+  // parameter positions the call supplies arguments for, then apply every
+  // argument, so each argument's effect reaches the matching parameter.
   let #(memo, direct_pipe_effects) =
     list.map_fold(result.direct_pipe_ops, memo, fn(memo, op) {
       let synthetic_call = sentinel_call("<pipe>", "<operator>", op.span)
+      let positions =
+        call_args_for(result.call_args, op.span)
+        |> list.map(fn(a) { a.position })
+        |> list.sort(int.compare)
       let #(operator, memo) =
         operator_term_for_argument(
           types.CallArgument(position: 0, label: None, value: op.value),
-          [0],
+          positions,
           knowledge_base,
           param_bounds,
           registry,
@@ -1152,7 +1157,7 @@ fn collect_effects(
       let #(effect, memo) =
         curried_operator_application(
           operator,
-          [#(0, [])],
+          list.map(positions, fn(p) { #(p, []) }),
           result.call_args,
           op.span,
           knowledge_base,
