@@ -2613,6 +2613,36 @@ pub fn let_bound_closure_direct_call_satisfies_pure_check_test() {
   violations |> should.equal([])
 }
 
+// A directly-called closure that *captures* another let-bound callable resolves
+// the capture: `let suffix = string.append` is in scope at the closure's binding
+// site, so `helper`'s body resolves to `string.append`'s effect (`[]`), not the
+// `[Unknown]` a re-analysis with an empty environment would yield.
+pub fn let_bound_closure_captures_resolved_test() {
+  let source =
+    "import gleam/string
+pub fn run() -> String {
+  let suffix = string.append
+  let helper = fn(x) { suffix(x, \"!\") }
+  helper(\"hi\")
+}"
+  infer_effect(source) |> should.equal(Specific(set.new()))
+}
+
+// A directly-called closure that captures an *effectful* callable still surfaces
+// that effect (from the binding-site walk), so a pure `check` would fail — the
+// capture is resolved, not silently dropped.
+pub fn let_bound_closure_captures_effect_test() {
+  let source =
+    "import gleam/io
+pub fn run() -> Nil {
+  let log = io.println
+  let helper = fn(x) { log(x) }
+  helper(\"hi\")
+}"
+  infer_effect(source)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
 // A let-bound `case`-of-closures applied directly (`let h = case c { ... };
 // h(a)`): each branch is lifted and joined, over-approximating both, rather than
 // `[Unknown]`. Here one branch logs and the other is pure, so the join is
