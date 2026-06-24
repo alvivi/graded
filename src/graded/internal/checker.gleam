@@ -241,15 +241,39 @@ fn operator_argument_effect(
   callback_position: Int,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
-) -> EffectTerm {
+  registry: SignatureRegistry,
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
   case
     list.find(call_args_for(call_args, span), fn(a) {
       a.position == callback_position
     })
   {
+    // A closure, branch, or returned operator passed as the callback must be
+    // *lifted* (its body analysed / producer resolved), as at a direct operator
+    // call — `resolve_argument_effects` would collapse it to [Unknown]. A first-
+    // order callback lifts to its ground effect; a higher-order one to an
+    // operator that β-reduces when this operator is applied.
     Ok(arg) ->
-      resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
-    Error(Nil) -> effect_term.unknown()
+      case arg.value {
+        types.Closure(..) | types.Choice(..) | types.ReturnedOperator(..) ->
+          operator_term_for_argument(
+            arg,
+            [],
+            knowledge_base,
+            caller_param_bounds,
+            registry,
+            lift_operator_arg,
+            memo,
+          )
+        _ -> #(
+          resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
+          memo,
+        )
+      }
+    Error(Nil) -> #(effect_term.unknown(), memo)
   }
 }
 
@@ -265,18 +289,25 @@ fn curried_operator_application(
   span: Span,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
-) -> EffectTerm {
-  list.fold(callback_positions, operator, fn(acc, position) {
-    types.TApp(
-      acc,
+  registry: SignatureRegistry,
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
+  list.fold(callback_positions, #(operator, memo), fn(acc, position) {
+    let #(term, memo) = acc
+    let #(arg_effect, memo) =
       operator_argument_effect(
         call_args,
         span,
         position,
         knowledge_base,
         caller_param_bounds,
-      ),
-    )
+        registry,
+        lift_operator_arg,
+        memo,
+      )
+    #(types.TApp(term, arg_effect), memo)
   })
 }
 
@@ -942,8 +973,10 @@ fn collect_effects(
           // the applications so each binder of the lifted operator (abstracted
           // in the same order) beta-reduces against the matching callback once
           // the operator is bound at a call site.
-          let effect = case dict.get(operator_params, local_call.function) {
-            Error(Nil) -> bound.effects
+          let #(effect, memo) = case
+            dict.get(operator_params, local_call.function)
+          {
+            Error(Nil) -> #(bound.effects, memo)
             Ok(positions) ->
               curried_operator_application(
                 bound.effects,
@@ -952,6 +985,9 @@ fn collect_effects(
                 local_call.span,
                 knowledge_base,
                 param_bounds,
+                registry,
+                lift_operator_arg,
+                memo,
               )
           }
           #(memo, [#(synthetic_call, effect)])
@@ -1039,7 +1075,7 @@ fn collect_effects(
           cache,
           memo,
         )
-      let effect = case resolved_op {
+      let #(effect, memo) = case resolved_op {
         Ok(operator) -> {
           let positions = positions_up_to(operator_spine_arity(operator))
           curried_operator_application(
@@ -1049,9 +1085,12 @@ fn collect_effects(
             op.span,
             knowledge_base,
             param_bounds,
+            registry,
+            lift_operator_arg,
+            memo,
           )
         }
-        Error(Nil) -> effect_term.unknown()
+        Error(Nil) -> #(effect_term.unknown(), memo)
       }
       #(memo, #(synthetic_call, effect))
     })
@@ -1077,7 +1116,7 @@ fn collect_effects(
           lift_operator_arg,
           memo,
         )
-      let effect =
+      let #(effect, memo) =
         curried_operator_application(
           operator,
           [0],
@@ -1085,6 +1124,9 @@ fn collect_effects(
           op.span,
           knowledge_base,
           param_bounds,
+          registry,
+          lift_operator_arg,
+          memo,
         )
       #(memo, #(synthetic_call, effect))
     })

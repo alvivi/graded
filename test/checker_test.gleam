@@ -3552,6 +3552,32 @@ pub fn run() -> Nil { make(fn(g) { g() })(io.println) }"
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
+// A *closure* (not a bare function reference) passed as an operator's callback
+// must be lifted, not collapsed to [Unknown]: the producer's returned closure
+// applies the captured operator to an inline callback whose body prints.
+pub fn issue1_closure_callback_to_captured_operator_test() {
+  let source =
+    "import gleam/io
+fn identity(f: fn() -> Nil) -> Nil { f() }
+fn make(op: fn(fn() -> Nil) -> Nil) -> fn() -> Nil {
+  fn() { op(fn() { io.println(\"x\") }) }
+}
+pub fn run() -> Nil { make(identity)() }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// The same lifting applies at a direct operator call whose callback is a
+// closure that itself invokes its (second-order) parameter.
+pub fn issue1_closure_callback_at_direct_operator_call_test() {
+  let source =
+    "import gleam/io
+fn apply(g: fn(fn() -> Nil) -> Nil) -> Nil { g(fn() { io.println(\"y\") }) }
+pub fn run() -> Nil { apply(fn(h) { h() }) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
 // An immediately applied `case` of operators joins every branch's effect: the
 // effectful branch (applies the callback) and the pure branch (ignores it) are
 // over-approximated together.
