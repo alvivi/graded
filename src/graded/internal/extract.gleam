@@ -597,6 +597,9 @@ fn callable_captures(
   |> dict.to_list
   |> list.filter_map(fn(entry) {
     let #(name, binding) = entry
+    // A parameter shadows an outer binding of the same name, so it's not a
+    // capture. Otherwise keep only the callable shapes — the bindings that
+    // carry an effect.
     case list.contains(params, name), binding {
       False, BoundFunctionRef(..)
       | False, BoundClosure(..)
