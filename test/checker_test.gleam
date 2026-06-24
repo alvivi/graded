@@ -3522,3 +3522,65 @@ pub fn issue1_pure_callable_stays_pure_test() {
   infer_effect_set(source, "run")
   |> should.equal(Specific(set.new()))
 }
+
+// --- Issue 2: lexical parameters shadowing unqualified imports ---
+
+// A fn-typed parameter shadowing a *pure* unqualified import must contribute
+// its own effect variable, not the (pure) import's effect.
+pub fn issue2_fn_param_shadows_pure_import_test() {
+  let source =
+    "import gleam/string.{uppercase}
+pub fn run(uppercase: fn(String) -> String) -> String { uppercase(\"hi\") }"
+  let annotation = infer_annotation(source, "run")
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Polymorphic(set.new(), set.from_list(["uppercase"])))
+  annotation.params
+  |> should.equal([ParamBound("uppercase", types.TVar("uppercase"))])
+}
+
+// A fn-typed parameter shadowing an *effectful* unqualified import must
+// contribute its own effect variable, not the import's concrete effect.
+pub fn issue2_fn_param_shadows_effectful_import_test() {
+  let source =
+    "import gleam/io.{println}
+pub fn run(println: fn(String) -> Nil) -> Nil { println(\"hi\") }"
+  infer_effect_set(source, "run")
+  |> should.equal(Polymorphic(set.new(), set.from_list(["println"])))
+}
+
+// Forwarding the shadowing fn-typed parameter to a higher-order callee
+// substitutes the caller-provided effect, not the import's.
+pub fn issue2_forward_fn_param_shadow_test() {
+  let source =
+    "import gleam/string.{uppercase}
+fn apply(g: fn(String) -> String) -> String { g(\"x\") }
+pub fn run(uppercase: fn(String) -> String) -> String { apply(uppercase) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Polymorphic(set.new(), set.from_list(["uppercase"])))
+}
+
+// A let binding shadowing an unqualified import wins when the bound value is
+// forwarded (the classify path must consult lexical scope before imports).
+pub fn issue2_let_shadows_import_forward_test() {
+  let source =
+    "import gleam/string.{uppercase}
+import gleam/io
+fn apply(g: fn(String) -> Nil) -> Nil { g(\"x\") }
+pub fn run() -> Nil {
+  let uppercase = io.println
+  apply(uppercase)
+}"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A first-order (non-function) parameter shadowing an import must not resolve
+// to the import's function reference when forwarded.
+pub fn issue2_first_order_param_shadow_not_import_test() {
+  let source =
+    "import gleam/string.{uppercase}
+fn apply(g: fn(String) -> String) -> String { g(\"x\") }
+pub fn run(uppercase: String) -> String { apply(uppercase) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}

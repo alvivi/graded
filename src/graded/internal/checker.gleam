@@ -611,7 +611,7 @@ fn recursion_edges(
   context: ImportContext,
   names: Set(String),
 ) -> Set(String) {
-  let result = extract.extract_calls(function.body, context)
+  let result = extract.extract_function_calls(function, context)
   let local = list.map(result.local, fn(call) { call.function })
   let returned =
     list.filter_map(result.direct_ops, fn(op) {
@@ -740,7 +740,7 @@ fn check_annotation(
 
       // Warn about function references passed as values with known non-pure effects.
       let extract_result =
-        extract.extract_calls(function_definition.definition.body, context)
+        extract.extract_function_calls(function_definition.definition, context)
       let reference_warnings =
         collect_reference_warnings(
           annotation.function,
@@ -867,7 +867,7 @@ fn collect_effects(
   // Threaded memo state, extended as memoizable sub-analyses are computed.
   memo: Memo,
 ) -> #(List(#(types.ResolvedCall, EffectTerm)), Memo) {
-  let result = extract.extract_calls(function.body, context)
+  let result = extract.extract_function_calls(function, context)
   let operator_params =
     dict.merge(
       ambient_operators,

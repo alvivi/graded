@@ -26,6 +26,12 @@ type LocalBinding {
   // closure is applied (operator lifting), so it contributes nothing to the
   // enclosing function's direct effect — rather than surfacing as `[Unknown]`.
   BoundParam
+  // A top-level function parameter, seeded before walking the body. A call to
+  // it is a *local* call resolved via the function's own param bounds (fn-typed
+  // params) or transitive analysis — never an unqualified import that happens to
+  // share the name. Distinct from `BoundParam`, whose effect is deferred to the
+  // operator-lifting site.
+  BoundLocal
   // A let-bound inline closure (`let h = fn(cb) { ... }`). Keeping its
   // parameters and body lets a later use of `h` as an operator argument be
   // lifted to an effect operator, just like an inline closure passed directly,
@@ -511,12 +517,35 @@ fn ctor_binding(
   ConstructorBinding(module:, constructor:, fields:)
 }
 
-// Extract all calls from a list of statements.
+// Extract all calls from a list of statements, with an empty lexical scope.
 pub fn extract_calls(
   statements: List(Statement),
   context: ImportContext,
 ) -> ExtractResult {
   walk_scope(statements, context, dict.new())
+}
+
+// Extract all calls from a function body, seeding the function's own parameters
+// into the lexical scope first. A parameter therefore shadows an unqualified
+// import of the same name: a call to (or forwarding of) the parameter resolves
+// to the parameter, not the import. Without this seeding a parameter named like
+// a pure import could let an effectful argument be inferred as pure.
+pub fn extract_function_calls(
+  function: glance.Function,
+  context: ImportContext,
+) -> ExtractResult {
+  walk_scope(function.body, context, seed_parameters(function.parameters))
+}
+
+// Seed each named top-level parameter as `BoundLocal`. Discarded parameters
+// (`_`) bind nothing.
+fn seed_parameters(parameters: List(glance.FunctionParameter)) -> Env {
+  list.fold(parameters, dict.new(), fn(env, parameter) {
+    case parameter.name {
+      glance.Named(name) -> dict.insert(env, name, BoundLocal)
+      glance.Discarded(_) -> env
+    }
+  })
 }
 
 // Walk a sequence of statements threading the binding env forward so
@@ -615,6 +644,10 @@ fn resolve_variable_call(
     // A closure parameter called inside its own body — its effect is the
     // callback's, accounted where the closure is applied, not here.
     BoundParam -> empty()
+    // A top-level parameter: a local call resolved via the function's param
+    // bounds (fn-typed params) or transitive analysis, shadowing any unqualified
+    // import of the same name.
+    BoundLocal -> ExtractResult(..empty(), local: [LocalCall(name, span)])
     // A let-bound returned operator applied directly: `let h = pick(); h(cb)`.
     // Emit a direct-operator call so the checker resolves the producer's
     // returned operator and applies it to this call's arguments (captured in
@@ -1532,6 +1565,29 @@ fn classify_arguments(
   })
 }
 
+// Map a lexical binding to the argument value a bare reference to it denotes.
+fn classify_local_binding(
+  binding: LocalBinding,
+  name: String,
+) -> types.ArgumentValue {
+  case binding {
+    BoundFunctionRef(name: qualified) -> FunctionRef(name: qualified)
+    // A let-bound closure resolves to the closure itself, so it can be lifted to
+    // an operator at the use site.
+    BoundClosure(params, body) -> types.Closure(params, body)
+    // A let-bound branch resolves to its options, lifted and joined at the use
+    // site.
+    BoundChoice(options) -> types.Choice(options)
+    // A let-bound producer call resolves to its returned operator at the use
+    // site.
+    BoundReturnedOperator(callee, args) -> types.ReturnedOperator(callee, args)
+    // A parameter, a constructor binding, or an opaque value: a bare local
+    // reference, resolved (or left unresolved) at the use site.
+    BoundLocal | BoundParam | BoundConstructor(..) | BoundOpaque ->
+      LocalRef(name:)
+  }
+}
+
 // Classify a single argument expression. Determines whether it's a
 // function reference (qualified or unqualified import), a local
 // identifier, a constructor (uppercase), or something else.
@@ -1559,23 +1615,14 @@ fn classify_expression(
       case is_constructor_name(name) {
         True -> ConstructorRef
         False ->
-          case dict.get(context.unqualified, name) {
-            Ok(qualified_name) -> FunctionRef(name: qualified_name)
+          // Lexical scope wins over an unqualified import of the same name, so a
+          // parameter or `let` shadowing an import resolves to the binding.
+          case dict.get(env, name) {
+            Ok(binding) -> classify_local_binding(binding, name)
             Error(Nil) ->
-              case resolve_env(name, env) {
-                BoundFunctionRef(name: qualified) ->
-                  FunctionRef(name: qualified)
-                // A let-bound closure used by name resolves to the closure
-                // itself, so it can be lifted to an operator at the use site.
-                BoundClosure(params, body) -> types.Closure(params, body)
-                // A let-bound branch resolves to its options, lifted and joined
-                // at the use site.
-                BoundChoice(options) -> types.Choice(options)
-                // A let-bound producer call resolves to its returned operator
-                // at the use site.
-                BoundReturnedOperator(callee, args) ->
-                  types.ReturnedOperator(callee, args)
-                _ -> LocalRef(name:)
+              case dict.get(context.unqualified, name) {
+                Ok(qualified_name) -> FunctionRef(name: qualified_name)
+                Error(Nil) -> LocalRef(name:)
               }
           }
       }
