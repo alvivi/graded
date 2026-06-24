@@ -292,10 +292,19 @@ fn operator_argument_effect(
 // parameter (it can't tell callbacks from values without types), turning
 // `fn(message) { io.println(message) }` into `λmessage. [Stdout]`. As a callback
 // effect that stuck abstraction collapses to [Unknown]. A binder the body never
-// uses is a *value* parameter the enclosing operator supplies a value for, so
-// discharge it and keep the ground body. A binder the body applies (a genuine
-// nested callback) stays, β-reducing when the operator is applied; a multi-binder
-// operator spine is left intact so its arguments still line up.
+// uses is treated as a *value* parameter the enclosing operator supplies a value
+// for, so discharge it and keep the ground body. A binder the body applies (a
+// genuine nested callback) stays, β-reducing when the operator is applied; a
+// multi-binder operator spine is left intact so its arguments still line up.
+//
+// LIMITATION: an *ignored* higher-order parameter (`fn(_next) { io.println("x")
+// }`) is indistinguishable from a value parameter here — both are unused — so it
+// is discharged too. If such a closure is then passed to a concrete operator
+// that applies it, the lost binder leaves a stuck application and the effect
+// over-approximates to `[Stdout, Unknown]` instead of `[Stdout]`. This is sound
+// (a superset) and rare; distinguishing the two needs the callback's expected
+// shape from the operator's parameter type, which isn't threaded here. The
+// common case — a value-parameter callback — is the one kept precise.
 fn discharge_value_param(operator: EffectTerm) -> EffectTerm {
   case operator {
     types.TAbs(param, body) ->
