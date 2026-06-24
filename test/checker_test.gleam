@@ -3626,6 +3626,21 @@ pub fn run() -> Nil { make(apply_next)() }"
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
+// A *higher-order* argument to an immediately-applied returned operator can't be
+// lifted precisely — the returned operator's parameter type isn't tracked — so it
+// falls back to the conservative [Unknown], not a leaked internal variable name.
+// (See docs/LIMITATIONS.md.)
+pub fn issue1_higher_order_arg_to_returned_operator_is_unknown_test() {
+  let source =
+    "import gleam/io
+fn make() -> fn(fn(fn() -> Nil) -> Nil) -> Nil {
+  fn(action) { action(io.println) }
+}
+pub fn run() -> Nil { make()(fn(cb) { cb() }) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
 // An immediately applied `case` of operators joins every branch's effect: the
 // effectful branch (applies the callback) and the pure branch (ignores it) are
 // over-approximated together.

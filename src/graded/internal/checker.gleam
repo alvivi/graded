@@ -207,6 +207,12 @@ pub fn infer_with_returns(
           #(union_of(pairs), memo)
         }
       }
+      // A free effect variable that isn't one of the function's own fn-typed
+      // parameters is a *phantom* — e.g. an inline closure's parameter that
+      // leaked out of an application graded couldn't fully resolve. It can never
+      // be bound, so collapse it to the conservative [Unknown] rather than let an
+      // internal name surface in the effect set.
+      let effects_term = collapse_phantom_vars(effects_term, fn_typed_params)
       // If the function's inferred effects reference effect variables
       // (because it calls fn-typed params), emit ParamBound entries so
       // the polymorphic annotation round-trips correctly.
@@ -377,6 +383,23 @@ fn polymorphic_param_bounds(
   |> list.filter(fn(v) { set.contains(fn_typed_params, v) })
   |> list.sort(string.compare)
   |> list.map(self_referential_bound)
+}
+
+// Replace every free effect variable in `term` that isn't one of `params` with
+// [Unknown]. Such a variable is a phantom: it can never be bound at a call site
+// (only the function's own fn-typed parameters can), so leaving it would surface
+// an internal name in the effect set instead of the conservative fallback.
+fn collapse_phantom_vars(term: EffectTerm, params: Set(String)) -> EffectTerm {
+  let phantoms = set.difference(effect_term.free_vars(term), params)
+  case set.is_empty(phantoms) {
+    True -> term
+    False ->
+      phantoms
+      |> set.to_list()
+      |> list.map(fn(v) { #(v, effect_term.unknown()) })
+      |> dict.from_list()
+      |> effect_term.subst(term, _)
+  }
 }
 
 // PRIVATE
