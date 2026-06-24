@@ -24,6 +24,15 @@ import graded/internal/types.{
   UnmatchedParamBoundWarning, UntrackedEffectWarning, Violation,
 }
 
+// Operator parameters in scope, mapped to their callback shape: for each
+// callback position, that callback's own callback positions (see
+// `signatures.operator_param_shapes`). Threaded as `ambient_operators` so a
+// closure analysed inside a producer's returned closure can both resolve a
+// captured operator and lift a callback argument over exactly its own function
+// parameters.
+type OperatorShapes =
+  dict.Dict(String, List(#(Int, List(Int))))
+
 // Check a parsed module against its effect annotations.
 pub fn check(
   module: Module,
@@ -219,7 +228,7 @@ pub fn infer_with_returns(
 // The effect of the callback an operator parameter is applied to. The callback
 // isn't assumed to be first: `callback_position` is the operator parameter's
 // own callback argument index (from its type signature, see
-// `signatures.operator_params_from_function`), so `action(config, cb)` resolves
+// `signatures.operator_param_shapes`), so `action(config, cb)` resolves
 // `cb` and not `config`. Pipe-adjusted call positions already align with the
 // operator's logical argument positions (the piped receiver takes position 0),
 // so the index applies directly. A missing argument at a callback position means
@@ -247,6 +256,7 @@ fn operator_argument_effect(
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   span: Span,
   callback_position: Int,
+  nested_positions: List(Int),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
@@ -261,24 +271,24 @@ fn operator_argument_effect(
   {
     // A closure, branch, or returned operator passed as the callback must be
     // *lifted* (its body analysed / producer resolved), as at a direct operator
-    // call — `resolve_argument_effects` would collapse it to [Unknown]. A first-
-    // order callback lifts to its ground effect; a higher-order one to an
-    // operator that β-reduces when this operator is applied.
+    // call — `resolve_argument_effects` would collapse it to [Unknown]. It is
+    // lifted over `nested_positions` — the callback's own function parameters,
+    // taken from the operator parameter's type — so a value-parameter callback
+    // (`fn(message) { … }`, no nested positions) reduces to its ground effect
+    // while a higher-order callback (`fn(_next) { … }`) keeps a binder that
+    // β-reduces when the operator applies it.
     Ok(arg) ->
       case arg.value {
-        types.Closure(..) | types.Choice(..) | types.ReturnedOperator(..) -> {
-          let #(operator, memo) =
-            operator_term_for_argument(
-              arg,
-              [],
-              knowledge_base,
-              caller_param_bounds,
-              registry,
-              lift_operator_arg,
-              memo,
-            )
-          #(discharge_value_param(operator), memo)
-        }
+        types.Closure(..) | types.Choice(..) | types.ReturnedOperator(..) ->
+          operator_term_for_argument(
+            arg,
+            nested_positions,
+            knowledge_base,
+            caller_param_bounds,
+            registry,
+            lift_operator_arg,
+            memo,
+          )
         _ -> #(
           resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
           memo,
@@ -288,46 +298,15 @@ fn operator_argument_effect(
   }
 }
 
-// With no callback positions, `analyze_closure` abstracts a closure's first
-// parameter (it can't tell callbacks from values without types), turning
-// `fn(message) { io.println(message) }` into `λmessage. [Stdout]`. As a callback
-// effect that stuck abstraction collapses to [Unknown]. A binder the body never
-// uses is treated as a *value* parameter the enclosing operator supplies a value
-// for, so discharge it and keep the ground body. A binder the body applies (a
-// genuine nested callback) stays, β-reducing when the operator is applied; a
-// multi-binder operator spine is left intact so its arguments still line up.
-//
-// LIMITATION: an *ignored* higher-order parameter (`fn(_next) { io.println("x")
-// }`) is indistinguishable from a value parameter here — both are unused — so it
-// is discharged too. If such a closure is then passed to a concrete operator
-// that applies it, the lost binder leaves a stuck application and the effect
-// over-approximates to `[Stdout, Unknown]` instead of `[Stdout]`. This is sound
-// (a superset) and rare; distinguishing the two needs the callback's expected
-// shape from the operator's parameter type, which isn't threaded here. The
-// common case — a value-parameter callback — is the one kept precise.
-fn discharge_value_param(operator: EffectTerm) -> EffectTerm {
-  case operator {
-    types.TAbs(param, body) ->
-      case body {
-        types.TAbs(_, _) -> operator
-        _ ->
-          case set.contains(effect_term.free_vars(body), param) {
-            True -> operator
-            False -> body
-          }
-      }
-    _ -> operator
-  }
-}
-
 // Build a call to a second-order parameter as a *curried* effect-operator
 // application over all its callback arguments, in order: `action(cb1, cb2)` ⟹
 // `((action e1) e2)`. Left-nesting matches the binder order of the lifted
 // operator, so each callback beta-reduces against the right binder once the
-// operator is bound at a call site.
+// operator is bound at a call site. `shape` is the operator's callbacks: each
+// `#(callback position, that callback's own callback positions)`.
 fn curried_operator_application(
   operator: EffectTerm,
-  callback_positions: List(Int),
+  shape: List(#(Int, List(Int))),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   span: Span,
   knowledge_base: KnowledgeBase,
@@ -337,13 +316,15 @@ fn curried_operator_application(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
-  list.fold(callback_positions, #(operator, memo), fn(acc, position) {
+  list.fold(shape, #(operator, memo), fn(acc, entry) {
     let #(term, memo) = acc
+    let #(position, nested_positions) = entry
     let #(arg_effect, memo) =
       operator_argument_effect(
         call_args,
         span,
         position,
+        nested_positions,
         knowledge_base,
         caller_param_bounds,
         registry,
@@ -946,7 +927,7 @@ fn collect_effects(
   // Operator parameters in scope from an *enclosing* function (a producer whose
   // returned closure we're analysing), so a call to one becomes a curried
   // operator application rather than `[Unknown]`. Empty for an ordinary function.
-  ambient_operators: dict.Dict(String, List(Int)),
+  ambient_operators: OperatorShapes,
   // Memoized same-module body analyses, keyed by function name. Lets the local-
   // call path resolve a cacheable callee in O(1) instead of re-walking its body.
   cache: LocalCache,
@@ -1014,10 +995,10 @@ fn collect_effects(
             dict.get(operator_params, local_call.function)
           {
             Error(Nil) -> #(bound.effects, memo)
-            Ok(positions) ->
+            Ok(shape) ->
               curried_operator_application(
                 bound.effects,
-                positions,
+                shape,
                 result.call_args,
                 local_call.span,
                 knowledge_base,
@@ -1106,10 +1087,14 @@ fn collect_effects(
         )
       let #(effect, memo) = case resolved_op {
         Ok(operator) -> {
-          let positions = positions_up_to(operator_spine_arity(operator))
+          // The returned operator's outer arguments have no tracked type here, so
+          // their own callback positions are unknown — lift each over nothing.
+          let shape =
+            positions_up_to(operator_spine_arity(operator))
+            |> list.map(fn(p) { #(p, []) })
           curried_operator_application(
             operator,
-            positions,
+            shape,
             result.call_args,
             op.span,
             knowledge_base,
@@ -1144,7 +1129,7 @@ fn collect_effects(
       let #(effect, memo) =
         curried_operator_application(
           operator,
-          [0],
+          [#(0, [])],
           result.call_args,
           op.span,
           knowledge_base,
@@ -1642,7 +1627,7 @@ fn build_lift_operator_arg(
   visited: Set(String),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-  ambient_operators: dict.Dict(String, List(Int)),
+  ambient_operators: OperatorShapes,
   cache: LocalCache,
 ) -> fn(types.ArgumentValue, List(Int), Memo) ->
   #(Result(EffectTerm, Nil), Memo) {
@@ -1968,7 +1953,7 @@ fn analyze_closure(
   visited: Set(String),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-  ambient_operators: dict.Dict(String, List(Int)),
+  ambient_operators: OperatorShapes,
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
@@ -2020,7 +2005,7 @@ fn analyze_closure_uncached(
   visited: Set(String),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-  ambient_operators: dict.Dict(String, List(Int)),
+  ambient_operators: OperatorShapes,
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
@@ -2065,17 +2050,12 @@ fn analyze_closure_uncached(
     )
   let body_term = union_of(body_pairs)
   // Which closure parameters to abstract over: those at the operator's callback
-  // positions (in order). Fall back to the first parameter when positions are
-  // unknown, preserving the previous single-callback behaviour.
-  let callback_params = case positions {
-    [] ->
-      case params {
-        [first, ..] -> [first]
-        [] -> []
-      }
-    _ ->
-      list.filter_map(positions, fn(position) { extract.at(params, position) })
-  }
+  // positions (in order). `positions` is authoritative — derived from the
+  // operator parameter's type at the call site — so an empty list means the
+  // callback is first-order (no parameters to abstract, its body is the ground
+  // effect), not "unknown".
+  let callback_params =
+    list.filter_map(positions, fn(position) { extract.at(params, position) })
   let operator =
     list.fold_right(callback_params, body_term, fn(acc, param) {
       types.TAbs(param, acc)
@@ -2222,17 +2202,15 @@ fn ordered_fn_typed_param_names(function: Function) -> List(String) {
   })
 }
 
-// Every fn-typed parameter of `function`, mapped to its operator callback
-// positions ([] for a first-order callback). Second-order operator params keep
-// their real positions (for curried application); first-order callbacks are
-// included with no positions so that a closure capturing one — whether returned
-// by the function or passed to another operator inside it — still resolves the
-// callback to its effect variable instead of collapsing to [Unknown].
-fn ambient_param_operators(function: Function) -> dict.Dict(String, List(Int)) {
-  ordered_fn_typed_param_names(function)
-  |> list.map(fn(name) { #(name, []) })
-  |> dict.from_list
-  |> dict.merge(signatures.operator_params_from_function(function))
+// Every fn-typed parameter of `function`, mapped to its callback shape (see
+// `signatures.operator_param_shapes`): for each callback position, the callback's
+// own callback positions. A first-order fn-typed parameter maps to `[]` but is
+// still a key, so a closure capturing one — whether returned by the function or
+// passed to another operator inside it — resolves the callback to its effect
+// variable instead of collapsing to [Unknown]. The nested positions let a call
+// site lift each callback over exactly its own function parameters.
+fn ambient_param_operators(function: Function) -> OperatorShapes {
+  signatures.operator_param_shapes(function)
 }
 
 // Find the argument that matches a given param bound, via the bound's

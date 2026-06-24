@@ -3608,6 +3608,24 @@ pub fn run() -> Nil { caller(identity) }"
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
+// A callback that *ignores* a higher-order parameter (`fn(_next) { ... }`) must
+// stay an operator (its binder is kept), so applying it to a concrete operator
+// β-reduces to the precise effect rather than over-approximating to [Unknown].
+// The binder is kept because the callback's expected shape — the operator
+// parameter's type says position 0 is itself a function — is threaded to the lift,
+// distinguishing it from a value parameter.
+pub fn issue1_ignored_higher_order_callback_test() {
+  let source =
+    "import gleam/io
+fn apply_next(k: fn(fn() -> Nil) -> Nil) -> Nil { k(io.println) }
+fn make(op: fn(fn(fn() -> Nil) -> Nil) -> Nil) -> fn() -> Nil {
+  fn() { op(fn(_next) { io.println(\"x\") }) }
+}
+pub fn run() -> Nil { make(apply_next)() }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
 // An immediately applied `case` of operators joins every branch's effect: the
 // effectful branch (applies the callback) and the pure branch (ignores it) are
 // over-approximated together.
