@@ -3916,3 +3916,121 @@ pub fn run(uppercase: String) -> String { apply(uppercase) }"
   infer_effect_set(source, "run")
   |> should.equal(Specific(set.from_list(["Unknown"])))
 }
+
+// --- Issue 3: operator closures keep their captured callable bindings ---
+
+// The canonical reproduction: a closure passed to a second-order parameter
+// captures a pure qualified alias (`let suffix = string.append`). Re-analysing
+// the closure body must resolve `suffix` to its effect (`[]`) from the binding
+// site, so the only effect is the supplied `io.println` callback — `[Stdout]`,
+// not the `[Stdout, Unknown]` an empty-environment re-walk produced.
+pub fn issue3_operator_closure_captures_pure_alias_test() {
+  let source =
+    "import gleam/io
+import gleam/string
+fn with(action: fn(fn(String) -> Nil) -> Nil) -> Nil { action(io.println) }
+pub fn run() -> Nil {
+  let suffix = string.append
+  with(fn(callback) {
+    let _ = suffix(\"a\", \"b\")
+    callback(\"hi\")
+  })
+}"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A captured *effectful* qualified alias surfaces its effect. The operator
+// supplies a pure callback, so the only effect is the captured `io.println`
+// alias — proving the capture is resolved, not dropped.
+pub fn issue3_operator_closure_captures_effectful_alias_test() {
+  let source =
+    "import gleam/io
+fn with(action: fn(fn(String) -> Nil) -> Nil) -> Nil { action(fn(_x) { Nil }) }
+pub fn run() -> Nil {
+  let logit = io.println
+  with(fn(callback) {
+    logit(\"captured\")
+    callback(\"hi\")
+  })
+}"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A captured *let-bound closure* resolves through its own body. The operator
+// supplies a pure callback, isolating the captured closure's effect.
+pub fn issue3_operator_closure_captures_closure_test() {
+  let source =
+    "import gleam/io
+fn with(action: fn(fn(String) -> Nil) -> Nil) -> Nil { action(fn(_x) { Nil }) }
+pub fn run() -> Nil {
+  let helper = fn(m) { io.println(m) }
+  with(fn(callback) {
+    helper(\"x\")
+    callback(\"hi\")
+  })
+}"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// A captured *returned operator* (`let h = pick()`) is resolved to the
+// producer's returned function when called inside the operator closure.
+pub fn issue3_operator_closure_captures_returned_operator_test() {
+  let source =
+    "import gleam/io
+fn pick() -> fn(String) -> Nil { io.println }
+fn with(action: fn(fn(String) -> Nil) -> Nil) -> Nil { action(fn(_x) { Nil }) }
+pub fn run() -> Nil {
+  let h = pick()
+  with(fn(callback) {
+    h(\"x\")
+    callback(\"hi\")
+  })
+}"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// Shadowing uses the binding visible at the closure's creation site. `f` is
+// rebound from the effectful `io.println` to the pure `string.append`; the
+// closure must capture the latter, so the effect is `[]` (the operator's
+// callback is pure too) — not `[Stdout]`.
+pub fn issue3_operator_closure_capture_respects_shadowing_test() {
+  let source =
+    "import gleam/io
+import gleam/string
+fn with(action: fn(fn(String) -> Nil) -> Nil) -> Nil { action(fn(_x) { Nil }) }
+pub fn run() -> Nil {
+  let f = io.println
+  let f = string.append
+  with(fn(callback) {
+    let _ = f(\"a\", \"b\")
+    callback(\"hi\")
+  })
+}"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.new()))
+}
+
+// A captured `case`-of-closures is lifted and joined when called, contributing
+// the over-approximation of its branches without adding `[Unknown]`. One branch
+// prints, the other is pure, so the capture contributes `[Stdout]`.
+pub fn issue3_operator_closure_captures_choice_test() {
+  let source =
+    "import gleam/io
+fn with(action: fn(fn(String) -> Nil) -> Nil) -> Nil { action(fn(_x) { Nil }) }
+pub fn run(b: Bool) -> Nil {
+  let choose = case b {
+    True -> fn(m) { io.println(m) }
+    False -> fn(_m) { Nil }
+  }
+  with(fn(callback) {
+    choose(\"x\")
+    callback(\"hi\")
+  })
+}"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}

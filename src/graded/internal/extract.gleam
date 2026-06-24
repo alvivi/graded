@@ -36,8 +36,13 @@ type LocalBinding {
   // A let-bound inline closure (`let h = fn(cb) { ... }`). Keeping its
   // parameters and body lets a later use of `h` as an operator argument be
   // lifted to an effect operator, just like an inline closure passed directly,
-  // rather than collapsing to `[Unknown]`.
-  BoundClosure(params: List(String), body: List(glance.Statement))
+  // rather than collapsing to `[Unknown]`. `captures` are the callable bindings
+  // visible where the closure was written, carried so re-analysis resolves them.
+  BoundClosure(
+    params: List(String),
+    captures: List(#(String, ArgumentValue)),
+    body: List(glance.Statement),
+  )
   // A let-bound `case`/`if` over function-like options (`let h = case c { … }`).
   // A later use of `h` as an operator argument lifts and joins the options.
   BoundChoice(options: List(ArgumentValue))
@@ -542,10 +547,72 @@ pub fn extract_function_calls(
   walk_scope(function.body, context, seed_parameters(function.parameters))
 }
 
+// Extract a function body's calls, seeding both the function's parameters and a
+// set of captured callable bindings (`name -> value`) into the lexical scope.
+// Used to re-analyse a closure with the callables in scope at its creation site,
+// so a captured `let suffix = string.append` resolves to its effect rather than
+// `[Unknown]`. Parameters are seeded last, shadowing any capture of the same name.
+pub fn extract_function_calls_with_captures(
+  function: glance.Function,
+  context: ImportContext,
+  captures: List(#(String, ArgumentValue)),
+) -> ExtractResult {
+  let seeded =
+    list.fold(captures, dict.new(), fn(env, capture) {
+      dict.insert(env, capture.0, binding_from_argument_value(capture.1))
+    })
+  let env = bind_names(seeded, names(function.parameters), BoundLocal)
+  walk_scope(function.body, context, env)
+}
+
+// The named parameters of a function, dropping discards.
+fn names(
+  parameters: List(glance.FunctionParameter),
+) -> List(glance.AssignmentName) {
+  list.map(parameters, fn(p) { p.name })
+}
+
+// Map a classified argument value back to the lexical binding a bare reference
+// to it would carry — the inverse of `classify_local_binding` for the callable
+// shapes. Non-callable shapes become `BoundOpaque`.
+fn binding_from_argument_value(value: ArgumentValue) -> LocalBinding {
+  case value {
+    FunctionRef(name:) -> BoundFunctionRef(name:)
+    types.Closure(params, captures, body) ->
+      BoundClosure(params, captures, body)
+    types.Choice(options) -> BoundChoice(options)
+    types.ReturnedOperator(callee, args) -> BoundReturnedOperator(callee, args)
+    LocalRef(..) | ConstructorRef | OtherExpression -> BoundOpaque
+  }
+}
+
+// The callable bindings in scope, as `name -> value` pairs, excluding the
+// closure's own parameters (which shadow an outer binding of the same name).
+// Only callable shapes are kept — they're the only captures that carry effects.
+fn callable_captures(
+  env: Env,
+  params: List(String),
+) -> List(#(String, ArgumentValue)) {
+  env
+  |> dict.to_list
+  |> list.filter_map(fn(entry) {
+    let #(name, binding) = entry
+    case list.contains(params, name), binding {
+      False, BoundFunctionRef(..)
+      | False, BoundClosure(..)
+      | False, BoundChoice(..)
+      | False, BoundReturnedOperator(..)
+      -> Ok(#(name, classify_local_binding(binding, name)))
+      _, _ -> Error(Nil)
+    }
+  })
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+}
+
 // Seed each named top-level parameter as `BoundLocal`. Discarded parameters
 // (`_`) bind nothing.
 fn seed_parameters(parameters: List(glance.FunctionParameter)) -> Env {
-  bind_names(dict.new(), list.map(parameters, fn(p) { p.name }), BoundLocal)
+  bind_names(dict.new(), names(parameters), BoundLocal)
 }
 
 // Bind each named parameter to `binding` in `env`; discarded parameters (`_`)
@@ -678,9 +745,9 @@ fn resolve_variable_call(
     // than emitting a `LocalCall` the checker can only resolve to `[Unknown]`.
     // The closure body's first-order/captured effect is already counted at the
     // binding site, so the checker only adds its invoked parameters' effects.
-    BoundClosure(params, body) ->
+    BoundClosure(params, captures, body) ->
       ExtractResult(..empty(), direct_closure_ops: [
-        DirectClosureCall(types.Closure(params, body), span),
+        DirectClosureCall(types.Closure(params, captures, body), span),
       ])
     BoundChoice(options) ->
       ExtractResult(..empty(), direct_closure_ops: [
@@ -784,7 +851,7 @@ fn resolve_constructor_field_call(
     Ok(LocalRef(name: local_name)) ->
       ExtractResult(..empty(), local: [LocalCall(local_name, span)])
     Ok(ConstructorRef) -> empty()
-    Ok(types.Closure(_, _))
+    Ok(types.Closure(_, _, _))
     | Ok(types.Choice(_))
     | Ok(types.ReturnedOperator(_, _))
     | Ok(OtherExpression)
@@ -1045,7 +1112,8 @@ fn classify_rhs_ref(
   case classify_expression(expression, context, env) {
     FunctionRef(name:) -> BoundFunctionRef(name:)
     LocalRef(name:) -> dict.get(env, name) |> result.unwrap(BoundOpaque)
-    types.Closure(params, body) -> BoundClosure(params, body)
+    types.Closure(params, captures, body) ->
+      BoundClosure(params, captures, body)
     types.Choice(options) -> BoundChoice(options)
     types.ReturnedOperator(callee, args) -> BoundReturnedOperator(callee, args)
     ConstructorRef | OtherExpression -> BoundOpaque
@@ -1597,7 +1665,8 @@ fn classify_local_binding(
     BoundFunctionRef(name: qualified) -> FunctionRef(name: qualified)
     // A let-bound closure resolves to the closure itself, so it can be lifted to
     // an operator at the use site.
-    BoundClosure(params, body) -> types.Closure(params, body)
+    BoundClosure(params, captures, body) ->
+      types.Closure(params, captures, body)
     // A let-bound branch resolves to its options, lifted and joined at the use
     // site.
     BoundChoice(options) -> types.Choice(options)
@@ -1651,17 +1720,19 @@ fn classify_expression(
       }
     // An inline closure argument: capture its parameter names and body so the
     // checker can lift it to an effect operator when it's passed to an operator
-    // parameter.
-    glance.Fn(arguments:, body:, ..) ->
-      types.Closure(
+    // parameter. The callable bindings in scope are captured too, so re-analysing
+    // the body resolves a captured name (`let suffix = string.append`) to its
+    // effect rather than `[Unknown]`.
+    glance.Fn(arguments:, body:, ..) -> {
+      let params =
         list.map(arguments, fn(parameter) {
           case parameter.name {
             glance.Named(name) -> name
             glance.Discarded(_) -> "_"
           }
-        }),
-        body,
-      )
+        })
+      types.Closure(params, callable_captures(env, params), body)
+    }
     // A `case`/`if` whose every clause body is a bare function-like value is a
     // selection among known operators: capture them as a `Choice` so the checker
     // can lift and join them. Any non-function (or block) clause body, or no

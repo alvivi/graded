@@ -201,8 +201,16 @@ pub type ArgumentValue {
   // (`_` for discarded), `body` its statements. When passed to an operator
   // parameter, the checker analyses the body — treating the first parameter as
   // the callback — and lifts it to an effect operator so the application
-  // beta-reduces (rather than collapsing to `[Unknown]`).
-  Closure(params: List(String), body: List(Statement))
+  // beta-reduces (rather than collapsing to `[Unknown]`). `captures` are the
+  // callable bindings in scope at the closure's creation site (`let suffix =
+  // string.append`), so re-analysing the body resolves a captured name to its
+  // effect instead of `[Unknown]` — the binding-site lexical environment, kept
+  // only for the callables the body could invoke.
+  Closure(
+    params: List(String),
+    captures: List(#(String, ArgumentValue)),
+    body: List(Statement),
+  )
   // A value selected among several function-like options by a `case`/`if`
   // (`case c { True -> f  False -> g }`). When passed to an operator parameter,
   // each option is lifted and the results are joined (`(f ⊔ g)(cb) = f(cb) ⊔

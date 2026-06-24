@@ -202,6 +202,7 @@ pub fn infer_with_returns(
               module_types,
               dict.new(),
               cache,
+              [],
               memo,
             )
           #(union_of(pairs), memo)
@@ -763,6 +764,7 @@ pub fn closure_field_operator(
   let positions = list.index_map(params, fn(_, index) { index })
   analyze_closure(
     params,
+    [],
     body,
     positions,
     context,
@@ -804,6 +806,7 @@ fn check_annotation(
           module_types,
           dict.new(),
           cache,
+          [],
           memo,
         )
       // A call is a violation when its effect set is not a subset of the
@@ -954,10 +957,14 @@ fn collect_effects(
   // Memoized same-module body analyses, keyed by function name. Lets the local-
   // call path resolve a cacheable callee in O(1) instead of re-walking its body.
   cache: LocalCache,
+  // Callable bindings to seed into the body's lexical scope, for a closure being
+  // re-analysed away from its creation site. Empty for an ordinary function.
+  captures: List(#(String, types.ArgumentValue)),
   // Threaded memo state, extended as memoizable sub-analyses are computed.
   memo: Memo,
 ) -> #(List(#(types.ResolvedCall, EffectTerm)), Memo) {
-  let result = extract.extract_function_calls(function, context)
+  let result =
+    extract.extract_function_calls_with_captures(function, context, captures)
   // The function's own fn-typed params join the inherited ambient operators, so
   // a closure in this body that captures one resolves it to its effect variable.
   let operator_params =
@@ -1301,7 +1308,7 @@ fn direct_call_positions(value: types.ArgumentValue) -> List(Int) {
 
 fn value_arity(value: types.ArgumentValue) -> Int {
   case value {
-    types.Closure(params, _) -> list.length(params)
+    types.Closure(params, _, _) -> list.length(params)
     types.Choice(options) ->
       list.fold(options, 0, fn(max, option) {
         int.max(max, value_arity(option))
@@ -1351,7 +1358,7 @@ fn first_order_arg_effect(
     // forwarded parameter with no bound — lifts to `Error(Nil)` and falls back
     // to the param-bound lookup, so a named function resolves to its real
     // effect instead of collapsing to [Unknown].
-    types.Closure(_, _), _ | types.LocalRef(_), False -> {
+    types.Closure(_, _, _), _ | types.LocalRef(_), False -> {
       let #(lifted, memo) = lift_operator_arg(arg.value, [], memo)
       case lifted {
         Ok(operator) -> #(discharge_operator(operator), memo)
@@ -1555,7 +1562,7 @@ fn auto_bounds_from_registry(
           case arg.value {
             // Closures, branches, and other inline expressions are walked
             // separately by the extractor; binding them here would double-count.
-            types.Closure(_, _) | types.Choice(_) | types.OtherExpression ->
+            types.Closure(_, _, _) | types.Choice(_) | types.OtherExpression ->
               Error(Nil)
             _ -> Ok(bound)
           }
@@ -1778,10 +1785,11 @@ fn build_lift_operator_arg(
   #(Result(EffectTerm, Nil), Memo) {
   fn(value: types.ArgumentValue, positions: List(Int), memo: Memo) {
     case value {
-      types.Closure(params, body) -> {
+      types.Closure(params, captures, body) -> {
         let #(operator, memo) =
           analyze_closure(
             params,
+            captures,
             body,
             positions,
             context,
@@ -2090,6 +2098,7 @@ fn compute_returned_operator_result(
 // info missing) it falls back to abstracting over the first parameter.
 fn analyze_closure(
   params: List(String),
+  captures: List(#(String, types.ArgumentValue)),
   body: List(Statement),
   positions: List(Int),
   context: ImportContext,
@@ -2120,6 +2129,7 @@ fn analyze_closure(
       let #(operator, memo) =
         analyze_closure_uncached(
           params,
+          captures,
           body,
           positions,
           context,
@@ -2142,6 +2152,7 @@ fn analyze_closure(
 
 fn analyze_closure_uncached(
   params: List(String),
+  captures: List(#(String, types.ArgumentValue)),
   body: List(Statement),
   positions: List(Int),
   context: ImportContext,
@@ -2191,6 +2202,7 @@ fn analyze_closure_uncached(
       module_types,
       ambient_operators,
       cache,
+      captures,
       memo,
     )
   let body_term = union_of(body_pairs)
@@ -2327,6 +2339,7 @@ fn lift_operator_miss(
       module_types,
       dict.new(),
       cache,
+      [],
       memo,
     )
   let body_term = union_of(body_pairs)
@@ -2430,7 +2443,7 @@ fn resolve_argument_effects(
     // A closure in a first-order position contributes nothing here — its body
     // is walked by the enclosing extractor. (Operator positions are handled by
     // `operator_term_for_argument`, which lifts the closure to an operator.)
-    types.Closure(_, _) -> effect_term.unknown()
+    types.Closure(_, _, _) -> effect_term.unknown()
     // Branches and returned operators are only resolvable in an operator
     // position (handled by `operator_term_for_argument`); first-order, they're
     // conservative.
@@ -2572,6 +2585,7 @@ fn memoized_local(
               module_types,
               dict.new(),
               cache,
+              [],
               memo,
             )
           #(result, Memo(..memo, locals: dict.insert(memo.locals, key, result)))
@@ -2652,6 +2666,7 @@ fn collapsed_member(
           module_types,
           dict.new(),
           cache,
+          [],
           memo,
         )
       #(list.append(acc, member_effects), memo)
