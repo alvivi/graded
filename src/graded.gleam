@@ -1403,10 +1403,7 @@ fn print_warning(file: String, warning: Warning) -> Nil {
         // A non-parameter receiver can be traced to a construction site, so the
         // call may exist but resolve through value provenance, shadowing the bound.
         False ->
-          " matches no field call in its body — check the path,"
-          <> " or the receiver is traced to a construction site and resolved"
-          <> " through value provenance (field bounds apply only to untraceable"
-          <> " receivers)"
+          " matches no field call in its body — check the path, or the receiver is traced to a construction site and resolved through value provenance (field bounds apply only to untraceable receivers)"
       }
       io.println(
         file

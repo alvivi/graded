@@ -1205,10 +1205,8 @@ fn positions_up_to(n: Int) -> List(Int) {
 }
 
 fn positions_loop(i: Int, acc: List(Int)) -> List(Int) {
-  case i < 0 {
-    True -> acc
-    False -> positions_loop(i - 1, [i, ..acc])
-  }
+  use <- bool.guard(when: i < 0, return: acc)
+  positions_loop(i - 1, [i, ..acc])
 }
 
 // The effect of an argument bound to a *first-order* fn-typed parameter. A
