@@ -499,7 +499,7 @@ fn field_effect_of(
     // field's effect instead of collapsing to `[Unknown]`.
     None ->
       case value {
-        types.Closure(params, body) ->
+        types.Closure(params, _captures, body) ->
           types.TypeFieldEffect(closure_effect(params, body), [], None)
         _ ->
           types.TypeFieldEffect(
