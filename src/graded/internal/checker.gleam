@@ -235,6 +235,14 @@ fn call_args_for(
   dict.get(call_args, extract.span_key(span)) |> result.unwrap([])
 }
 
+// A synthetic resolved call carrying an inferred effect that isn't an ordinary
+// catalog lookup. `module` is a sentinel (`<param>`, `<field>`, `<returned>`,
+// `<pipe>`, `<apply>`, `<local>`) marking how the effect was derived, surfaced
+// in diagnostics.
+fn sentinel_call(module: String, function: String, span: Span) -> ResolvedCall {
+  types.ResolvedCall(name: QualifiedName(module:, function:), span:)
+}
+
 fn operator_argument_effect(
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   span: Span,
@@ -958,13 +966,7 @@ fn collect_effects(
       {
         Ok(bound) -> {
           let synthetic_call =
-            types.ResolvedCall(
-              name: QualifiedName(
-                module: "<param>",
-                function: local_call.function,
-              ),
-              span: local_call.span,
-            )
+            sentinel_call("<param>", local_call.function, local_call.span)
           // A call to a fn-typed parameter contributes that parameter's effect
           // variable. If the parameter is *second-order* (an operator — its own
           // type takes one or more functions), the call is a *curried*
@@ -1026,12 +1028,10 @@ fn collect_effects(
   let #(memo, field_effects) =
     list.map_fold(result.field, memo, fn(memo, field_call) {
       let synthetic_call =
-        types.ResolvedCall(
-          name: QualifiedName(
-            module: "<field>",
-            function: field_call.object <> "." <> field_call.label,
-          ),
-          span: field_call.span,
+        sentinel_call(
+          "<field>",
+          field_call.object <> "." <> field_call.label,
+          field_call.span,
         )
       let #(effect_set, memo) =
         resolve_field_call(
@@ -1055,13 +1055,7 @@ fn collect_effects(
   let #(memo, direct_op_effects) =
     list.map_fold(result.direct_ops, memo, fn(memo, op) {
       let synthetic_call =
-        types.ResolvedCall(
-          name: QualifiedName(
-            module: "<returned>",
-            function: op.callee.function,
-          ),
-          span: op.span,
-        )
+        sentinel_call("<returned>", op.callee.function, op.span)
       let #(resolved_op, memo) =
         resolve_returned_operator(
           op.callee,
@@ -1101,11 +1095,7 @@ fn collect_effects(
   // target as a value dropped its use of the piped value.
   let #(memo, direct_pipe_effects) =
     list.map_fold(result.direct_pipe_ops, memo, fn(memo, op) {
-      let synthetic_call =
-        types.ResolvedCall(
-          name: QualifiedName(module: "<pipe>", function: "<operator>"),
-          span: op.span,
-        )
+      let synthetic_call = sentinel_call("<pipe>", "<operator>", op.span)
       let #(operator, memo) =
         operator_term_for_argument(
           types.CallArgument(position: 0, label: None, value: op.value),
@@ -1136,11 +1126,7 @@ fn collect_effects(
   // never silently pure.
   let unknown_app_effects =
     list.map(result.unknown_apps, fn(span) {
-      let synthetic_call =
-        types.ResolvedCall(
-          name: QualifiedName(module: "<apply>", function: "<unknown>"),
-          span:,
-        )
+      let synthetic_call = sentinel_call("<apply>", "<unknown>", span)
       #(synthetic_call, effect_term.unknown())
     })
 
@@ -2328,10 +2314,7 @@ fn resolve_unknown_local(
   case dict.get(function_map, local_call.function) {
     Error(Nil) -> {
       let synthetic_call =
-        types.ResolvedCall(
-          name: QualifiedName(module: "<local>", function: local_call.function),
-          span: local_call.span,
-        )
+        sentinel_call("<local>", local_call.function, local_call.span)
       #([#(synthetic_call, effect_term.unknown())], memo)
     }
     Ok(local_definition) ->
