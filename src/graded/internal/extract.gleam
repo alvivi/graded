@@ -126,9 +126,10 @@ pub fn constructor_label_map(
 
 // Result of extracting calls from a function body.
 //
-// `call_args` maps a resolved call's span start (unique per AST node)
-// to the call's arguments. Only populated for resolved calls — local
-// and field calls don't need argument tracking for substitution yet.
+// `call_args` maps a call's `#(span start, span end)` to its arguments. The
+// full span is the key — not just the start — because an immediate application
+// (`make(io.println)()`) nests two calls that share a start but differ in end;
+// keying by start alone would let the outer call clobber the producer's args.
 pub type ExtractResult {
   ExtractResult(
     resolved: List(ResolvedCall),
@@ -141,7 +142,7 @@ pub type ExtractResult {
     // (`funcs.0(x)`): applying it could do anything, so each collapses to
     // [Unknown] rather than being silently dropped as pure.
     unknown_apps: List(glance.Span),
-    call_args: Dict(Int, List(CallArgument)),
+    call_args: Dict(#(Int, Int), List(CallArgument)),
   )
 }
 
@@ -1767,12 +1768,12 @@ fn attach_pipe_args(
 ) -> ExtractResult {
   ExtractResult(
     ..base,
-    call_args: dict.insert(base.call_args, span.start, pipe_args),
+    call_args: dict.insert(base.call_args, #(span.start, span.end), pipe_args),
   )
 }
 
 // Merge an extraction result with a call's sub-expression walk, and
-// record the call's argument list keyed by span start.
+// record the call's argument list keyed by its full span.
 fn merge_with_args(
   call_result: ExtractResult,
   inner: ExtractResult,
@@ -1782,7 +1783,7 @@ fn merge_with_args(
   let merged = merge(call_result, inner)
   ExtractResult(
     ..merged,
-    call_args: dict.insert(merged.call_args, span.start, args),
+    call_args: dict.insert(merged.call_args, #(span.start, span.end), args),
   )
 }
 

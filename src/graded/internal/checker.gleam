@@ -227,13 +227,13 @@ pub fn infer_with_returns(
 // can't resolve here), so it collapses to `[Unknown]` rather than `pure()` — the
 // effect must never be silently dropped.
 fn operator_argument_effect(
-  call_args: dict.Dict(Int, List(types.CallArgument)),
-  span_start: Int,
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
+  span_key: #(Int, Int),
   callback_position: Int,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
 ) -> EffectTerm {
-  let args = dict.get(call_args, span_start) |> result.unwrap([])
+  let args = dict.get(call_args, span_key) |> result.unwrap([])
   case list.find(args, fn(a) { a.position == callback_position }) {
     Ok(arg) ->
       resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
@@ -249,8 +249,8 @@ fn operator_argument_effect(
 fn curried_operator_application(
   operator: EffectTerm,
   callback_positions: List(Int),
-  call_args: dict.Dict(Int, List(types.CallArgument)),
-  span_start: Int,
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
+  span_key: #(Int, Int),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
 ) -> EffectTerm {
@@ -259,7 +259,7 @@ fn curried_operator_application(
       acc,
       operator_argument_effect(
         call_args,
-        span_start,
+        span_key,
         position,
         knowledge_base,
         caller_param_bounds,
@@ -938,7 +938,7 @@ fn collect_effects(
                 bound.effects,
                 positions,
                 result.call_args,
-                local_call.span.start,
+                #(local_call.span.start, local_call.span.end),
                 knowledge_base,
                 param_bounds,
               )
@@ -1035,7 +1035,7 @@ fn collect_effects(
             operator,
             positions,
             result.call_args,
-            op.span.start,
+            #(op.span.start, op.span.end),
             knowledge_base,
             param_bounds,
           )
@@ -1071,7 +1071,7 @@ fn collect_effects(
           operator,
           [0],
           result.call_args,
-          op.span.start,
+          #(op.span.start, op.span.end),
           knowledge_base,
           param_bounds,
         )
@@ -1209,7 +1209,7 @@ fn operator_spine_arity(term: EffectTerm) -> Int {
 fn substitute_local_call_effects(
   recursive: List(#(types.ResolvedCall, EffectTerm)),
   local_call: LocalCall,
-  call_args: dict.Dict(Int, List(types.CallArgument)),
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
@@ -1224,7 +1224,9 @@ fn substitute_local_call_effects(
     Error(Nil) -> #(recursive, memo)
     Ok(local_definition) -> {
       let bounds = local_polymorphic_bounds(local_definition.definition)
-      let args = dict.get(call_args, local_call.span.start) |> result.unwrap([])
+      let args =
+        dict.get(call_args, #(local_call.span.start, local_call.span.end))
+        |> result.unwrap([])
       let callee_name =
         QualifiedName(module: "<local>", function: local_call.function)
       // The synthetic `<local>` module isn't in `registry`, so build a
@@ -1279,7 +1281,7 @@ fn local_polymorphic_bounds(function: Function) -> List(ParamBound) {
 fn substitute_at_call_site(
   call: types.ResolvedCall,
   effect: EffectTerm,
-  call_args: dict.Dict(Int, List(types.CallArgument)),
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
@@ -1295,7 +1297,8 @@ fn substitute_at_call_site(
     when: !has_vars(effect) && callee_kb_bounds != [],
     return: #(effect, memo),
   )
-  let args = dict.get(call_args, call.span.start) |> result.unwrap([])
+  let args =
+    dict.get(call_args, #(call.span.start, call.span.end)) |> result.unwrap([])
   let #(effective_effects, effective_bounds) = case callee_kb_bounds {
     [_, ..] -> #(effect, callee_kb_bounds)
     [] -> auto_bounds_from_registry(call.name, effect, args, registry)
@@ -2456,7 +2459,7 @@ fn resolve_field_call(
   function: Function,
   knowledge_base: KnowledgeBase,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-  call_args: dict.Dict(Int, List(types.CallArgument)),
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
@@ -2505,7 +2508,7 @@ fn resolve_field_call_by_type(
   function: Function,
   knowledge_base: KnowledgeBase,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
-  call_args: dict.Dict(Int, List(types.CallArgument)),
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
@@ -2556,7 +2559,7 @@ fn resolve_field_call_by_type(
 fn resolve_field_effect(
   field_effect: types.TypeFieldEffect,
   field_call: types.FieldCall,
-  call_args: dict.Dict(Int, List(types.CallArgument)),
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
@@ -2573,7 +2576,8 @@ fn resolve_field_effect(
   use <- bool.guard(when: is_operator_valued(field_effect.effects), return: #(
     apply_field_operator(
       field_effect.effects,
-      dict.get(call_args, field_call.span.start) |> result.unwrap([]),
+      dict.get(call_args, #(field_call.span.start, field_call.span.end))
+        |> result.unwrap([]),
       knowledge_base,
       caller_param_bounds,
     ),
@@ -2583,7 +2587,9 @@ fn resolve_field_effect(
     False, _ -> #(field_effect.effects, memo)
     True, None -> #(concretize(field_effect.effects), memo)
     True, Some(source) -> {
-      let args = dict.get(call_args, field_call.span.start) |> result.unwrap([])
+      let args =
+        dict.get(call_args, #(field_call.span.start, field_call.span.end))
+        |> result.unwrap([])
       let #(bindings, memo) =
         bind_variables(
           source,

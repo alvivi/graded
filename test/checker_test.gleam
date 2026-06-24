@@ -3523,6 +3523,23 @@ pub fn issue1_pure_callable_stays_pure_test() {
   |> should.equal(Specific(set.new()))
 }
 
+// An immediate application `make(io.println)()` nests two calls that share a
+// span start. Keying call args by the full span keeps the outer (empty) call
+// from clobbering the producer's arguments, so the producer's own
+// effect-polymorphic parameter still resolves to the supplied effect rather
+// than leaking as an unbound variable.
+pub fn issue1_immediate_returned_call_preserves_producer_args_test() {
+  let source =
+    "import gleam/io
+fn make(cb: fn(String) -> Nil) -> fn() -> Nil {
+  cb(\"setup\")
+  fn() { Nil }
+}
+pub fn run() -> Nil { make(io.println)() }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
 // --- Issue 2: lexical parameters shadowing unqualified imports ---
 
 // A fn-typed parameter shadowing a *pure* unqualified import must contribute
