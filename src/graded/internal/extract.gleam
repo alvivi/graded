@@ -131,6 +131,10 @@ pub type ExtractResult {
     references: List(ResolvedCall),
     direct_ops: List(DirectOperatorCall),
     direct_pipe_ops: List(DirectPipeOp),
+    // Spans of applications whose callee is an opaque computed function value
+    // (`funcs.0(x)`): applying it could do anything, so each collapses to
+    // [Unknown] rather than being silently dropped as pure.
+    unknown_apps: List(glance.Span),
     call_args: Dict(Int, List(CallArgument)),
   )
 }
@@ -1149,11 +1153,17 @@ fn extract_from_expression(
         classify_arguments(arguments, context, env, 0),
       )
 
-    // Other call shapes (e.g., result of another call being called)
-    glance.Call(function: function_expression, arguments:, ..) ->
-      merge(
-        extract_from_expression(function_expression, context, env),
-        extract_from_arguments(arguments, context, env),
+    // Other call shapes: the callee is an expression that evaluates to a
+    // function (an inline closure, a `case` of functions, a call returning a
+    // function, a block whose tail is one of those, or an opaque computed
+    // value). Classify and apply it so its latent effect isn't dropped.
+    glance.Call(location: span, function: function_expression, arguments:) ->
+      extract_expression_call(
+        function_expression,
+        arguments,
+        span,
+        context,
+        env,
       )
 
     // Pipe: left |> right. The piped value becomes implicit argument 0
@@ -1418,6 +1428,72 @@ fn pipe_into_operator_value(
         pipe_args,
       )
     _ -> extract_from_expression(expression, context, env)
+  }
+}
+
+// Apply an *expression-valued* callee — one that isn't a bare variable or a
+// `module.fn` field access (those have dedicated branches above). The callee is
+// always walked for its own effects (a `case` scrutinee, a block's leading
+// statements, a producer call's body); since effects are sets, any overlap with
+// the lifted application below is idempotent. The application itself is then
+// modelled per the callee's classified shape so it isn't silently dropped:
+//   - an inline closure or `case`/`if` of functions is lifted to an operator
+//     and applied to the call's arguments (`DirectPipeOp`);
+//   - a call returning a function resolves the producer's returned operator and
+//     applies it (`DirectOperatorCall`);
+//   - a function/local reference reached through a block (`{ io.println }(x)`)
+//     is a direct resolved/local call;
+//   - a record constructor is pure (only the arguments matter);
+//   - anything else is an opaque function value whose application is [Unknown].
+fn extract_expression_call(
+  callee: Expression,
+  arguments: List(Field(Expression)),
+  span: glance.Span,
+  context: ImportContext,
+  env: Env,
+) -> ExtractResult {
+  let base =
+    merge(
+      extract_from_expression(callee, context, env),
+      extract_from_arguments(arguments, context, env),
+    )
+  let call_args = classify_arguments(arguments, context, env, 0)
+  case classify_expression(callee, context, env) {
+    types.Closure(..) as value | types.Choice(..) as value ->
+      attach_pipe_args(
+        merge(
+          base,
+          ExtractResult(..empty(), direct_pipe_ops: [DirectPipeOp(value, span)]),
+        ),
+        span,
+        call_args,
+      )
+    types.ReturnedOperator(producer, producer_args) ->
+      merge_with_args(
+        base,
+        ExtractResult(..empty(), direct_ops: [
+          types.DirectOperatorCall(producer, producer_args, span),
+        ]),
+        span,
+        call_args,
+      )
+    FunctionRef(name:) ->
+      merge_with_args(
+        base,
+        ExtractResult(..empty(), resolved: [ResolvedCall(name, span)]),
+        span,
+        call_args,
+      )
+    LocalRef(name:) ->
+      merge_with_args(
+        base,
+        ExtractResult(..empty(), local: [LocalCall(name, span)]),
+        span,
+        call_args,
+      )
+    ConstructorRef -> base
+    OtherExpression ->
+      merge(base, ExtractResult(..empty(), unknown_apps: [span]))
   }
 }
 
@@ -1710,6 +1786,7 @@ fn empty() -> ExtractResult {
     references: [],
     direct_ops: [],
     direct_pipe_ops: [],
+    unknown_apps: [],
     call_args: dict.new(),
   )
 }
@@ -1722,6 +1799,7 @@ fn merge(left: ExtractResult, right: ExtractResult) -> ExtractResult {
     references: list.append(left.references, right.references),
     direct_ops: list.append(left.direct_ops, right.direct_ops),
     direct_pipe_ops: list.append(left.direct_pipe_ops, right.direct_pipe_ops),
+    unknown_apps: list.append(left.unknown_apps, right.unknown_apps),
     call_args: dict.merge(left.call_args, right.call_args),
   )
 }

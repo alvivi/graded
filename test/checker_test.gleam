@@ -3444,3 +3444,81 @@ pub fn plain(x: String) -> String {
   let assert Ok(plain_scc) = dict.get(cache.scc_id, "plain")
   set.contains(cache.collapsible, plain_scc) |> should.be_true()
 }
+
+// ===========================================================================
+// Regression: soundness of effect inference for expression-valued callees
+// (Issue 1) and lexical parameters shadowing unqualified imports (Issue 2).
+// ===========================================================================
+
+fn infer_annotation(source: String, name: String) -> EffectAnnotation {
+  let assert Ok(module) = glance.module(source)
+  let registry = signatures.from_glance_module("m", module)
+  let inferred =
+    checker.infer(
+      module,
+      "",
+      knowledge_base(),
+      [],
+      registry,
+      dict.new(),
+      dict.new(),
+    )
+  let assert Ok(annotation) = list.find(inferred, fn(a) { a.function == name })
+  annotation
+}
+
+fn infer_effect_set(source: String, name: String) -> types.EffectSet {
+  effect_term.to_effect_set(infer_annotation(source, name).effects)
+}
+
+// --- Issue 1: expression-valued callees ---
+
+// An immediately invoked closure must propagate its callback's effect.
+pub fn issue1_iife_propagates_callback_test() {
+  let source =
+    "import gleam/io
+pub fn run() -> Nil { fn(callback) { callback(\"hi\") }(io.println) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// An immediately applied returned function must propagate its latent effect.
+pub fn issue1_returned_fn_propagates_test() {
+  let source =
+    "import gleam/io
+fn printer() -> fn(String) -> Nil { io.println }
+pub fn run() -> Nil { printer()(\"hi\") }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// An immediately applied `case` of operators joins every branch's effect: the
+// effectful branch (applies the callback) and the pure branch (ignores it) are
+// over-approximated together.
+pub fn issue1_case_of_functions_joins_test() {
+  let source =
+    "import gleam/io
+pub fn run(b: Bool) -> Nil {
+  case b {
+    True -> fn(cb) { cb(\"x\") }
+    False -> fn(_cb) { Nil }
+  }(io.println)
+}"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// An opaque computed callable collapses to [Unknown], never silently pure.
+pub fn issue1_opaque_callable_is_unknown_test() {
+  let source =
+    "pub fn run(funcs: #(fn(String) -> Nil)) -> Nil { funcs.0(\"hi\") }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+// A pure expression-valued callable stays pure.
+pub fn issue1_pure_callable_stays_pure_test() {
+  let source = "pub fn run() -> String { fn(x) { x }(\"hi\") }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.new()))
+}

@@ -1078,6 +1078,19 @@ fn collect_effects(
       #(memo, #(synthetic_call, effect))
     })
 
+  // Applications of an opaque computed function value (`funcs.0(x)`): the callee
+  // can't be resolved to a concrete function, so the application is [Unknown] —
+  // never silently pure.
+  let unknown_app_effects =
+    list.map(result.unknown_apps, fn(span) {
+      let synthetic_call =
+        types.ResolvedCall(
+          name: QualifiedName(module: "<apply>", function: "<unknown>"),
+          span:,
+        )
+      #(synthetic_call, effect_term.unknown())
+    })
+
   #(
     list.flatten([
       resolved_effects,
@@ -1085,6 +1098,7 @@ fn collect_effects(
       field_effects,
       direct_op_effects,
       direct_pipe_effects,
+      unknown_app_effects,
     ]),
     memo,
   )
