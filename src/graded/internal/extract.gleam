@@ -7,10 +7,11 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import graded/internal/types.{
-  type ArgumentValue, type CallArgument, type DirectOperatorCall,
-  type DirectPipeOp, type FieldCall, type LocalCall, type QualifiedName,
-  type ResolvedCall, CallArgument, ConstructorRef, DirectPipeOp, FieldCall,
-  FunctionRef, LocalCall, LocalRef, OtherExpression, QualifiedName, ResolvedCall,
+  type ArgumentValue, type CallArgument, type DirectClosureCall,
+  type DirectOperatorCall, type DirectPipeOp, type FieldCall, type LocalCall,
+  type QualifiedName, type ResolvedCall, CallArgument, ConstructorRef,
+  DirectClosureCall, DirectPipeOp, FieldCall, FunctionRef, LocalCall, LocalRef,
+  OtherExpression, QualifiedName, ResolvedCall,
 }
 
 // Classification of a `let`-bound name inside a function body so that
@@ -131,6 +132,7 @@ pub type ExtractResult {
     references: List(ResolvedCall),
     direct_ops: List(DirectOperatorCall),
     direct_pipe_ops: List(DirectPipeOp),
+    direct_closure_ops: List(DirectClosureCall),
     call_args: Dict(Int, List(CallArgument)),
   )
 }
@@ -618,6 +620,19 @@ fn resolve_variable_call(
     BoundReturnedOperator(callee, producer_args) ->
       ExtractResult(..empty(), direct_ops: [
         types.DirectOperatorCall(callee, producer_args, span),
+      ])
+    // A let-bound closure (or `case`-of-functions) applied directly: `let h =
+    // fn(x) { ... }; h(a)`. Emit a direct-closure call carrying the lifted
+    // operator source so the checker lifts it and applies this call's arguments
+    // (captured in `call_args` under `span.start` by `merge_with_args`), rather
+    // than emitting a `LocalCall` the checker can only resolve to `[Unknown]`.
+    BoundClosure(params, body) ->
+      ExtractResult(..empty(), direct_closure_ops: [
+        DirectClosureCall(types.Closure(params, body), span),
+      ])
+    BoundChoice(options) ->
+      ExtractResult(..empty(), direct_closure_ops: [
+        DirectClosureCall(types.Choice(options), span),
       ])
     _ -> resolve_unqualified_call(name, span, context)
   }
@@ -1710,6 +1725,7 @@ fn empty() -> ExtractResult {
     references: [],
     direct_ops: [],
     direct_pipe_ops: [],
+    direct_closure_ops: [],
     call_args: dict.new(),
   )
 }
@@ -1722,6 +1738,10 @@ fn merge(left: ExtractResult, right: ExtractResult) -> ExtractResult {
     references: list.append(left.references, right.references),
     direct_ops: list.append(left.direct_ops, right.direct_ops),
     direct_pipe_ops: list.append(left.direct_pipe_ops, right.direct_pipe_ops),
+    direct_closure_ops: list.append(
+      left.direct_closure_ops,
+      right.direct_closure_ops,
+    ),
     call_args: dict.merge(left.call_args, right.call_args),
   )
 }

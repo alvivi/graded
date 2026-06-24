@@ -1,6 +1,7 @@
 // Hand-written invariants for the integration test fixtures.
 check impure_view.view : []
 check pure_view.view : []
+check let_bound_view.view : []
 check transitive.view : []
 check validator_flow.run : []
 check opaque_receiver.run : []

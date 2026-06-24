@@ -1078,6 +1078,41 @@ fn collect_effects(
       #(memo, #(synthetic_call, effect))
     })
 
+  // Direct applications of a let-bound closure / case-of-functions: `let h =
+  // fn(x) { ... }; h(a)`. Lift the value to an operator over all its parameters
+  // and curry this call's arguments over it — the closure body's effect with the
+  // arguments substituted, rather than the `[Unknown]` an unresolved local call
+  // would yield.
+  let #(memo, direct_closure_effects) =
+    list.map_fold(result.direct_closure_ops, memo, fn(memo, op) {
+      let synthetic_call =
+        types.ResolvedCall(
+          name: QualifiedName(module: "<closure>", function: "<applied>"),
+          span: op.span,
+        )
+      let positions = direct_call_positions(op.value)
+      let #(operator, memo) =
+        operator_term_for_argument(
+          types.CallArgument(position: 0, label: None, value: op.value),
+          positions,
+          knowledge_base,
+          param_bounds,
+          registry,
+          lift_operator_arg,
+          memo,
+        )
+      let effect =
+        curried_operator_application(
+          operator,
+          positions,
+          result.call_args,
+          op.span.start,
+          knowledge_base,
+          param_bounds,
+        )
+      #(memo, #(synthetic_call, effect))
+    })
+
   #(
     list.flatten([
       resolved_effects,
@@ -1085,9 +1120,29 @@ fn collect_effects(
       field_effects,
       direct_op_effects,
       direct_pipe_effects,
+      direct_closure_effects,
     ]),
     memo,
   )
+}
+
+// The callback positions to abstract a directly-applied closure over: every one
+// of its parameters, in order. A `case`-of-functions takes the widest arity
+// among its options, so each branch is fully abstracted. A non-function value
+// has no binders.
+fn direct_call_positions(value: types.ArgumentValue) -> List(Int) {
+  positions_up_to(value_arity(value))
+}
+
+fn value_arity(value: types.ArgumentValue) -> Int {
+  case value {
+    types.Closure(params, _) -> list.length(params)
+    types.Choice(options) ->
+      list.fold(options, 0, fn(max, option) {
+        int.max(max, value_arity(option))
+      })
+    _ -> 0
+  }
 }
 
 // `[0, 1, …, n-1]` — the callback positions of an `n`-ary operator, applied

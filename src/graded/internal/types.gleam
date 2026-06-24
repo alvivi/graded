@@ -259,6 +259,16 @@ pub type DirectOperatorCall {
   )
 }
 
+// A let-bound function-like value *applied directly by name*: `let h = fn(x) {
+// ... }; h(a, b)`. `value` is the lifted operator source (a `Closure` or
+// `Choice`); the call's own arguments are recorded in `call_args` under
+// `span.start` and applied (curried) over the operator's binders. Lets a
+// let-bound closure that is called — not just passed to an operator parameter —
+// resolve to its body effect rather than collapsing to `[Unknown]`.
+pub type DirectClosureCall {
+  DirectClosureCall(value: ArgumentValue, span: Span)
+}
+
 // An inline function-like value used as a *pipe target* and thereby applied to
 // the piped value: `x |> fn(f) { f() }` or `x |> case c { _ -> a  _ -> b }`.
 // `value` is the lifted operator source (a `Closure` or `Choice`); the piped

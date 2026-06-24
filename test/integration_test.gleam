@@ -14,6 +14,18 @@ pub fn pure_view_passes_test() {
   r.violations |> should.equal([])
 }
 
+pub fn let_bound_view_passes_test() {
+  // The MVU idiom: a let-bound element builder (`let row = fn(item) { ... }`)
+  // mapped over a list. The view is pure, so the `check view : []` invariant
+  // must pass — the let-bound closure resolves to its body effect, not
+  // `[Unknown]`.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let result =
+    list.find(results, fn(r) { r.file == "test/fixtures/let_bound_view.gleam" })
+  let assert Ok(r) = result
+  r.violations |> should.equal([])
+}
+
 pub fn impure_view_fails_test() {
   let assert Ok(results) = graded.run("test/fixtures")
   let impure_result =

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A let-bound closure that is *called directly* (`let helper = fn(x) { ... }; helper(1)`) now resolves to its body's effect instead of `[Unknown]`. The extractor tracked the binding and resolved it when the closure was *passed* to a higher-order parameter, but a direct application by name fell through to an unresolved local call, so the common idiom of defining a reusable builder as `let row = fn(...) { ... }` and mapping it over a list cascaded to `[Unknown]` and blocked a `check view : []` invariant. A direct application now lifts the closure to an effect operator and applies the call's arguments, mirroring the let-bound returned-operator path; a directly-applied `case`-of-functions resolves the same way.
+
 ## [0.9.3] - 2026-06-23
 
 ### Fixed
