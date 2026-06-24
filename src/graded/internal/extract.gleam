@@ -540,9 +540,19 @@ pub fn extract_function_calls(
 // Seed each named top-level parameter as `BoundLocal`. Discarded parameters
 // (`_`) bind nothing.
 fn seed_parameters(parameters: List(glance.FunctionParameter)) -> Env {
-  list.fold(parameters, dict.new(), fn(env, parameter) {
-    case parameter.name {
-      glance.Named(name) -> dict.insert(env, name, BoundLocal)
+  bind_names(dict.new(), list.map(parameters, fn(p) { p.name }), BoundLocal)
+}
+
+// Bind each named parameter to `binding` in `env`; discarded parameters (`_`)
+// bind nothing.
+fn bind_names(
+  env: Env,
+  names: List(glance.AssignmentName),
+  binding: LocalBinding,
+) -> Env {
+  list.fold(names, env, fn(env, name) {
+    case name {
+      glance.Named(name) -> dict.insert(env, name, binding)
       glance.Discarded(_) -> env
     }
   })
@@ -662,12 +672,7 @@ fn resolve_variable_call(
 
 // Bind a closure's parameters as `BoundParam` in a child scope.
 fn bind_closure_params(env: Env, parameters: List(glance.FnParameter)) -> Env {
-  list.fold(parameters, env, fn(accumulator, parameter) {
-    case parameter.name {
-      glance.Named(name) -> dict.insert(accumulator, name, BoundParam)
-      glance.Discarded(_) -> accumulator
-    }
-  })
+  bind_names(env, list.map(parameters, fn(p) { p.name }), BoundParam)
 }
 
 fn resolve_unqualified_call(
@@ -1493,11 +1498,9 @@ fn extract_expression_call(
   let call_args = classify_arguments(arguments, context, env, 0)
   case classify_expression(callee, context, env) {
     types.Closure(..) as value | types.Choice(..) as value ->
-      attach_pipe_args(
-        merge(
-          base,
-          ExtractResult(..empty(), direct_pipe_ops: [DirectPipeOp(value, span)]),
-        ),
+      merge_with_args(
+        base,
+        ExtractResult(..empty(), direct_pipe_ops: [DirectPipeOp(value, span)]),
         span,
         call_args,
       )
