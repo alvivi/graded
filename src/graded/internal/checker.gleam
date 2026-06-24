@@ -961,7 +961,7 @@ fn collect_effects(
   // The function's own fn-typed params join the inherited ambient operators, so
   // a closure in this body that captures one resolves it to its effect variable.
   let operator_params =
-    dict.merge(ambient_operators, ambient_param_operators(function))
+    dict.merge(ambient_operators, signatures.operator_param_shapes(function))
   let lift_operator_arg =
     build_lift_operator_arg(
       context,
@@ -1898,7 +1898,7 @@ fn compute_returned_operator(
     Ok(#(return_type, value)) -> {
       let positions =
         signatures.operator_callback_positions_of_type(return_type)
-      let producer_operators = ambient_param_operators(function)
+      let producer_operators = signatures.operator_param_shapes(function)
       let producer_bounds =
         function
         |> ordered_fn_typed_param_names()
@@ -2228,17 +2228,6 @@ fn ordered_fn_typed_param_names(function: Function) -> List(String) {
       _, _ -> Error(Nil)
     }
   })
-}
-
-// Every fn-typed parameter of `function`, mapped to its callback shape (see
-// `signatures.operator_param_shapes`): for each callback position, the callback's
-// own callback positions. A first-order fn-typed parameter maps to `[]` but is
-// still a key, so a closure capturing one — whether returned by the function or
-// passed to another operator inside it — resolves the callback to its effect
-// variable instead of collapsing to [Unknown]. The nested positions let a call
-// site lift each callback over exactly its own function parameters.
-fn ambient_param_operators(function: Function) -> OperatorShapes {
-  signatures.operator_param_shapes(function)
 }
 
 // Find the argument that matches a given param bound, via the bound's
