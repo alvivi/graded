@@ -880,11 +880,10 @@ fn collect_effects(
   memo: Memo,
 ) -> #(List(#(types.ResolvedCall, EffectTerm)), Memo) {
   let result = extract.extract_function_calls(function, context)
+  // The function's own fn-typed params join the inherited ambient operators, so
+  // a closure in this body that captures one resolves it to its effect variable.
   let operator_params =
-    dict.merge(
-      ambient_operators,
-      signatures.operator_params_from_function(function),
-    )
+    dict.merge(ambient_operators, ambient_param_operators(function))
   let lift_operator_arg =
     build_lift_operator_arg(
       context,
@@ -893,7 +892,7 @@ fn collect_effects(
       visited,
       registry,
       module_types,
-      ambient_operators,
+      operator_params,
       cache,
     )
 
@@ -1823,8 +1822,7 @@ fn compute_returned_operator(
     Ok(#(return_type, value)) -> {
       let positions =
         signatures.operator_callback_positions_of_type(return_type)
-      let producer_operators =
-        signatures.operator_params_from_function(function)
+      let producer_operators = ambient_param_operators(function)
       let producer_bounds =
         function
         |> ordered_fn_typed_param_names()
@@ -2145,6 +2143,19 @@ fn ordered_fn_typed_param_names(function: Function) -> List(String) {
       _, _ -> Error(Nil)
     }
   })
+}
+
+// Every fn-typed parameter of `function`, mapped to its operator callback
+// positions ([] for a first-order callback). Second-order operator params keep
+// their real positions (for curried application); first-order callbacks are
+// included with no positions so that a closure capturing one — whether returned
+// by the function or passed to another operator inside it — still resolves the
+// callback to its effect variable instead of collapsing to [Unknown].
+fn ambient_param_operators(function: Function) -> dict.Dict(String, List(Int)) {
+  ordered_fn_typed_param_names(function)
+  |> list.map(fn(name) { #(name, []) })
+  |> dict.from_list
+  |> dict.merge(signatures.operator_params_from_function(function))
 }
 
 // Find the argument that matches a given param bound, via the bound's

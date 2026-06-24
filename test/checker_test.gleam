@@ -3492,6 +3492,35 @@ pub fn run() -> Nil { printer()(\"hi\") }"
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
+// A producer whose returned closure captures a *first-order* callback parameter
+// (`fn make(cb) { fn() { cb(x) } }`) must propagate the callback's effect: the
+// closure analysis seeds every fn-typed producer parameter, not only
+// second-order operators, so `cb` resolves to the supplied function.
+pub fn issue1_returned_closure_captures_callback_test() {
+  let source =
+    "import gleam/io
+fn make(cb: fn(String) -> Nil) -> fn() -> Nil {
+  fn() { cb(\"later\") }
+}
+pub fn run() -> Nil { make(io.println)() }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// The same applies to a closure passed to an operator that captures the
+// enclosing function's first-order callback parameter.
+pub fn issue1_closure_captures_enclosing_callback_test() {
+  let source =
+    "import gleam/io
+fn with(action: fn(fn() -> Nil) -> Nil) -> Nil { action(fn() { Nil }) }
+fn outer(cb: fn(String) -> Nil) -> Nil {
+  with(fn(_run) { cb(\"x\") })
+}
+pub fn run() -> Nil { outer(io.println) }"
+  infer_effect_set(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
 // An immediately applied `case` of operators joins every branch's effect: the
 // effectful branch (applies the callback) and the pure branch (ignores it) are
 // over-approximated together.
