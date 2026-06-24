@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Expression-valued callees are no longer inferred pure.** An immediately invoked closure (`fn(cb) { cb("x") }(io.println)`), an applied returned function (`printer()("x")`), or a `case`/`if` that selects the function being called now propagates the callee's effect. Previously graded walked the callee as a value without modelling the application, so effectful code could be inferred as `[]` and slip past a `check ... : []` purity invariant. An opaque computed callee (`funcs.0(x)`) now resolves to `[Unknown]` rather than `[]`.
+- **A parameter that shadows an unqualified import now resolves to the parameter, not the import.** With `import gleam/string.{uppercase}`, a function `run(uppercase: fn(String) -> String)` that calls or forwards `uppercase` binds to its parameter. Previously the import shadowed the parameter, so an effectful argument passed for a parameter named like a pure import could be inferred pure.
+- **More higher-order closure patterns resolve to a precise effect instead of `[Unknown]`:** a callback closure with an ordinary value parameter (`fn(message) { io.println(message) }`); a callback that ignores a higher-order parameter (`fn(_next) { … }`); a producer whose returned closure captures or applies a first-order callback parameter; an immediately invoked closure with more than one argument (every argument is applied, not only the first); and a directly called let-bound closure (`let h = fn(cb) { cb() }  h(io.println)`).
+- An immediate application of a returned function (`make(io.println)()`) no longer drops the producer's arguments. An internal effect variable that can never be bound at a call site now collapses to the conservative `[Unknown]` instead of leaking into the inferred effect set.
+
 ## [0.9.3] - 2026-06-23
 
 ### Fixed
