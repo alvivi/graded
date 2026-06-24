@@ -1,7 +1,7 @@
 import girard/types as girard_types
 import glance.{
-  type Definition, type Function, type Module, type Statement, Function, Private,
-  Span,
+  type Definition, type Function, type Module, type Span, type Statement,
+  Function, Private, Span,
 }
 import gleam/bool
 import gleam/dict
@@ -226,15 +226,27 @@ pub fn infer_with_returns(
 // the operator is under-applied (a partial application whose deferred effect we
 // can't resolve here), so it collapses to `[Unknown]` rather than `pure()` — the
 // effect must never be silently dropped.
+// A call's recorded arguments, or `[]` if none were tracked. Keyed by the
+// call's full span (see `extract.span_key`), so writer and reader agree.
+fn call_args_for(
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
+  span: Span,
+) -> List(types.CallArgument) {
+  dict.get(call_args, extract.span_key(span)) |> result.unwrap([])
+}
+
 fn operator_argument_effect(
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
-  span_key: #(Int, Int),
+  span: Span,
   callback_position: Int,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
 ) -> EffectTerm {
-  let args = dict.get(call_args, span_key) |> result.unwrap([])
-  case list.find(args, fn(a) { a.position == callback_position }) {
+  case
+    list.find(call_args_for(call_args, span), fn(a) {
+      a.position == callback_position
+    })
+  {
     Ok(arg) ->
       resolve_argument_effects(arg, knowledge_base, caller_param_bounds)
     Error(Nil) -> effect_term.unknown()
@@ -250,7 +262,7 @@ fn curried_operator_application(
   operator: EffectTerm,
   callback_positions: List(Int),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
-  span_key: #(Int, Int),
+  span: Span,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
 ) -> EffectTerm {
@@ -259,7 +271,7 @@ fn curried_operator_application(
       acc,
       operator_argument_effect(
         call_args,
-        span_key,
+        span,
         position,
         knowledge_base,
         caller_param_bounds,
@@ -938,7 +950,7 @@ fn collect_effects(
                 bound.effects,
                 positions,
                 result.call_args,
-                #(local_call.span.start, local_call.span.end),
+                local_call.span,
                 knowledge_base,
                 param_bounds,
               )
@@ -1035,7 +1047,7 @@ fn collect_effects(
             operator,
             positions,
             result.call_args,
-            #(op.span.start, op.span.end),
+            op.span,
             knowledge_base,
             param_bounds,
           )
@@ -1071,7 +1083,7 @@ fn collect_effects(
           operator,
           [0],
           result.call_args,
-          #(op.span.start, op.span.end),
+          op.span,
           knowledge_base,
           param_bounds,
         )
@@ -1224,9 +1236,7 @@ fn substitute_local_call_effects(
     Error(Nil) -> #(recursive, memo)
     Ok(local_definition) -> {
       let bounds = local_polymorphic_bounds(local_definition.definition)
-      let args =
-        dict.get(call_args, #(local_call.span.start, local_call.span.end))
-        |> result.unwrap([])
+      let args = call_args_for(call_args, local_call.span)
       let callee_name =
         QualifiedName(module: "<local>", function: local_call.function)
       // The synthetic `<local>` module isn't in `registry`, so build a
@@ -1297,8 +1307,7 @@ fn substitute_at_call_site(
     when: !has_vars(effect) && callee_kb_bounds != [],
     return: #(effect, memo),
   )
-  let args =
-    dict.get(call_args, #(call.span.start, call.span.end)) |> result.unwrap([])
+  let args = call_args_for(call_args, call.span)
   let #(effective_effects, effective_bounds) = case callee_kb_bounds {
     [_, ..] -> #(effect, callee_kb_bounds)
     [] -> auto_bounds_from_registry(call.name, effect, args, registry)
@@ -2576,8 +2585,7 @@ fn resolve_field_effect(
   use <- bool.guard(when: is_operator_valued(field_effect.effects), return: #(
     apply_field_operator(
       field_effect.effects,
-      dict.get(call_args, #(field_call.span.start, field_call.span.end))
-        |> result.unwrap([]),
+      call_args_for(call_args, field_call.span),
       knowledge_base,
       caller_param_bounds,
     ),
@@ -2587,9 +2595,7 @@ fn resolve_field_effect(
     False, _ -> #(field_effect.effects, memo)
     True, None -> #(concretize(field_effect.effects), memo)
     True, Some(source) -> {
-      let args =
-        dict.get(call_args, #(field_call.span.start, field_call.span.end))
-        |> result.unwrap([])
+      let args = call_args_for(call_args, field_call.span)
       let #(bindings, memo) =
         bind_variables(
           source,

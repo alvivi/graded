@@ -543,8 +543,7 @@ pub fn target(xs) {
     list.find(result.resolved, fn(r) {
       r.name == QualifiedName("gleam/list", "map")
     })
-  let assert Ok(args) =
-    dict.get(result.call_args, #(call.span.start, call.span.end))
+  let assert Ok(args) = dict.get(result.call_args, extract.span_key(call.span))
   let assert Ok(second_arg) = list.find(args, fn(a) { a.position == 1 })
   second_arg.value
   |> should.equal(FunctionRef(QualifiedName("gleam/io", "println")))

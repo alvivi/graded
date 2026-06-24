@@ -126,10 +126,9 @@ pub fn constructor_label_map(
 
 // Result of extracting calls from a function body.
 //
-// `call_args` maps a call's `#(span start, span end)` to its arguments. The
-// full span is the key — not just the start — because an immediate application
-// (`make(io.println)()`) nests two calls that share a start but differ in end;
-// keying by start alone would let the outer call clobber the producer's args.
+// `call_args` maps a call's `span_key` (its full span) to its arguments. Only
+// populated for resolved calls — local and field calls don't need argument
+// tracking for substitution yet.
 pub type ExtractResult {
   ExtractResult(
     resolved: List(ResolvedCall),
@@ -1758,6 +1757,15 @@ fn classify_case_options(
   }
 }
 
+// The `call_args` key for a call: its full `#(span start, span end)`. The full
+// span — not just the start — is the key because an immediate application
+// (`make(io.println)()`) nests two calls that share a start but differ in end.
+// Readers (the checker) must derive the key the same way, so both go through
+// this one function.
+pub fn span_key(span: glance.Span) -> #(Int, Int) {
+  #(span.start, span.end)
+}
+
 // Record a pipe target's argument list against its call span. Used
 // by the two pipe-target shapes (`|> foo.bar` and `|> bar`) that
 // don't go through `merge_with_args`.
@@ -1768,7 +1776,7 @@ fn attach_pipe_args(
 ) -> ExtractResult {
   ExtractResult(
     ..base,
-    call_args: dict.insert(base.call_args, #(span.start, span.end), pipe_args),
+    call_args: dict.insert(base.call_args, span_key(span), pipe_args),
   )
 }
 
@@ -1783,7 +1791,7 @@ fn merge_with_args(
   let merged = merge(call_result, inner)
   ExtractResult(
     ..merged,
-    call_args: dict.insert(merged.call_args, #(span.start, span.end), args),
+    call_args: dict.insert(merged.call_args, span_key(span), args),
   )
 }
 
