@@ -1,0 +1,251 @@
+// Tests for the Lustre 5 catalog entries and the spec-annotation lint that
+// warns on `check`/`type` lines whose target exists nowhere in the project.
+//
+// Like the topo tests, fixtures are materialised under `/tmp/` so the Gleam
+// compiler doesn't try to compile them as project modules.
+
+import gleam/list
+import gleam/set
+import gleam/string
+import gleeunit/should
+import graded
+import graded/internal/annotation
+import graded/internal/effect_term
+import graded/internal/types.{
+  type CheckResult, type EffectSet, type Warning, Specific,
+  UnmatchedCheckWarning, UnmatchedTypeFieldWarning,
+}
+import simplifile
+
+// ----- helpers -----
+
+fn write_fixture(directory: String, files: List(#(String, String))) -> String {
+  let _ = simplifile.delete(directory)
+  list.each(files, fn(entry) {
+    let #(relative_path, contents) = entry
+    let full_path = directory <> "/" <> relative_path
+    let segments = string.split(full_path, "/")
+    let parent =
+      segments
+      |> list.take(list.length(segments) - 1)
+      |> string.join("/")
+    let assert Ok(_) = simplifile.create_directory_all(parent)
+    let assert Ok(Nil) = simplifile.write(full_path, contents)
+  })
+  directory
+}
+
+fn cleanup(directory: String) -> Nil {
+  let _ = simplifile.delete(directory)
+  Nil
+}
+
+// A fixture project must carry its own `gleam.toml` so package-root resolution
+// stops at the fixture (and reads the fixture's `manifest.toml`) instead of
+// walking up to the real project root. The spec file is then `app.graded`.
+fn project_files() -> List(#(String, String)) {
+  [
+    #("gleam.toml", "name = \"app\"\nversion = \"1.0.0\"\n"),
+    #(
+      "manifest.toml",
+      "packages = [
+  { name = \"lustre\", version = \"5.7.0\" },
+]
+",
+    ),
+  ]
+}
+
+fn read_inferred_effect(graded_path: String, function: String) -> EffectSet {
+  let assert Ok(content) = simplifile.read(graded_path)
+  let assert Ok(file) = annotation.parse_file(content)
+  let assert Ok(ann) =
+    list.find(annotation.extract_annotations(file), fn(a) {
+      a.function == function
+    })
+  effect_term.to_effect_set(ann.effects)
+}
+
+fn all_warnings(results: List(CheckResult)) -> List(Warning) {
+  list.flat_map(results, fn(r) { r.warnings })
+}
+
+fn pure() -> EffectSet {
+  Specific(set.new())
+}
+
+fn labels(xs: List(String)) -> EffectSet {
+  Specific(set.from_list(xs))
+}
+
+// ----- Lustre 5 catalog -----
+
+pub fn lustre5_constructors_are_pure_test() {
+  let directory =
+    write_fixture(
+      "/tmp/graded_release_lustre",
+      list.append(project_files(), [
+        #(
+          "ui.gleam",
+          "import lustre
+
+pub fn app() {
+  lustre.application(init, update, view)
+}
+
+pub fn comp() {
+  lustre.component(init, update, view, options)
+}
+
+pub fn mount() {
+  lustre.start(app(), \"#app\", Nil)
+}
+
+fn init(_flags) {
+  0
+}
+
+fn update(model, _msg) {
+  model
+}
+
+fn view(_model) {
+  0
+}
+
+fn options() {
+  []
+}
+",
+        ),
+      ]),
+    )
+
+  let assert Ok(Nil) = graded.run_infer(directory)
+  let cache = directory <> "/build/.graded/ui.graded"
+
+  read_inferred_effect(cache, "app")
+  |> should.equal(pure())
+
+  read_inferred_effect(cache, "comp")
+  |> should.equal(pure())
+
+  // The effectful runtime functions still carry their effects.
+  read_inferred_effect(cache, "mount")
+  |> should.equal(labels(["Dom", "Process"]))
+
+  cleanup(directory)
+}
+
+// ----- spec-annotation lint -----
+
+pub fn unqualified_check_and_type_lines_warn_test() {
+  let directory =
+    write_fixture(
+      "/tmp/graded_release_lint",
+      list.append(project_files(), [
+        #(
+          "opts.gleam",
+          "import gleam/io
+
+pub type Opts {
+  Opts(on_change: fn(String) -> Nil)
+}
+
+pub fn run(o: Opts) -> Nil {
+  io.println(\"log\")
+  o.on_change(\"x\")
+}
+",
+        ),
+        // Both lines are unqualified — the exact mistake from the field report.
+        #("app.graded", "type Opts.on_change : []\ncheck run : []\n"),
+      ]),
+    )
+
+  let assert Ok(results) = graded.run(directory)
+  let warnings = all_warnings(results)
+
+  list.any(warnings, fn(w) {
+    w == UnmatchedTypeFieldWarning(name: "Opts.on_change")
+  })
+  |> should.be_true
+
+  list.any(warnings, fn(w) { w == UnmatchedCheckWarning(function: "run") })
+  |> should.be_true
+
+  cleanup(directory)
+}
+
+pub fn qualified_check_and_type_lines_do_not_warn_test() {
+  let directory =
+    write_fixture(
+      "/tmp/graded_release_clean",
+      list.append(project_files(), [
+        #(
+          "opts.gleam",
+          "import gleam/io
+
+pub type Opts {
+  Opts(on_change: fn(String) -> Nil)
+}
+
+pub fn run(o: Opts) -> Nil {
+  io.println(\"log\")
+  o.on_change(\"x\")
+}
+",
+        ),
+        #(
+          "app.graded",
+          "type opts.Opts.on_change : []\ncheck opts.run : [Stdout]\n",
+        ),
+      ]),
+    )
+
+  let assert Ok(results) = graded.run(directory)
+  all_warnings(results)
+  |> should.equal([])
+
+  cleanup(directory)
+}
+
+pub fn mismatched_qualifier_warns_test() {
+  let directory =
+    write_fixture(
+      "/tmp/graded_release_typo",
+      list.append(project_files(), [
+        #(
+          "opts.gleam",
+          "pub type Opts {
+  Opts(on_change: fn(String) -> Nil)
+}
+
+pub fn run(_o: Opts) -> Nil {
+  Nil
+}
+",
+        ),
+        // `wrong` is not a project module; `missing` is not a function of `opts`.
+        #(
+          "app.graded",
+          "type wrong.Opts.on_change : []\ncheck opts.missing : []\n",
+        ),
+      ]),
+    )
+
+  let assert Ok(results) = graded.run(directory)
+  let warnings = all_warnings(results)
+
+  list.any(warnings, fn(w) {
+    w == UnmatchedTypeFieldWarning(name: "wrong.Opts.on_change")
+  })
+  |> should.be_true
+
+  list.any(warnings, fn(w) {
+    w == UnmatchedCheckWarning(function: "opts.missing")
+  })
+  |> should.be_true
+
+  cleanup(directory)
+}

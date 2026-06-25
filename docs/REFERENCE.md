@@ -48,6 +48,10 @@ An invariant enforced by `graded check`. If the function's actual effects aren't
 subset of the declared budget, the build breaks. This is the line you write to pin
 a function's effects down.
 
+The name is module-qualified (`myapp/router.handle_request`). A `check` whose name
+matches no function in any project module — most often a missing module qualifier —
+never runs against anything and passes silently; `graded check` warns about it.
+
 ### `type` — function-typed field effects
 
 ```
@@ -57,6 +61,11 @@ type myapp/router.Request.send : [Http]
 
 Declares the effect of a function-typed field on a custom type. See
 [Type field effects](#type-field-effects).
+
+The type is module-qualified by the module that *defines* it. An unqualified or
+mis-qualified `type` line keys nothing, so the field silently resolves to
+`[Unknown]`; `graded check` warns when a `type` line matches no field of any
+project type.
 
 ### `external effects` — third-party and FFI functions
 

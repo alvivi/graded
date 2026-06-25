@@ -1,0 +1,39 @@
+// lustre — pure submodules for element/effect construction
+external effects lustre/element : []
+external effects lustre/element/html : []
+external effects lustre/element/svg : []
+external effects lustre/element/keyed : []
+external effects lustre/element/mathml : []
+external effects lustre/attribute : []
+external effects lustre/event : []
+external effects lustre/effect : []
+external effects lustre/component : []
+external effects lustre/dev/query : []
+
+// lustre — App/value constructors (pure data)
+external effects lustre.application : []
+external effects lustre.simple : []
+external effects lustre.component : []
+external effects lustre.element : []
+external effects lustre.named : []
+external effects lustre.dispatch : []
+external effects lustre.shutdown : []
+external effects lustre.supervised : []
+external effects lustre.is_browser : []
+
+// lustre — effectful runtime functions
+external effects lustre.start : [Process, Dom]
+external effects lustre.start_server_component : [Process]
+external effects lustre.send : [Process]
+external effects lustre.register : [Dom]
+external effects lustre.is_registered : [Dom]
+external effects lustre.factory : [Process]
+
+// lustre/server_component — effectful runtime management
+external effects lustre/server_component.subject : [Process]
+external effects lustre/server_component.pid : [Process]
+external effects lustre/server_component.register_subject : [Process]
+external effects lustre/server_component.deregister_subject : [Process]
+external effects lustre/server_component.register_callback : [Process]
+external effects lustre/server_component.deregister_callback : [Process]
+external effects lustre/server_component.emit : [Dom]

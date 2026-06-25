@@ -45,8 +45,8 @@ import graded/internal/typeinfo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type GradedFile, type QualifiedName,
   type Violation, type Warning, AnnotationLine, CheckResult, EffectAnnotation,
-  GradedFile, QualifiedName, UnmatchedFieldBoundWarning,
-  UnmatchedParamBoundWarning, UntrackedEffectWarning,
+  GradedFile, QualifiedName, UnmatchedCheckWarning, UnmatchedFieldBoundWarning,
+  UnmatchedParamBoundWarning, UnmatchedTypeFieldWarning, UntrackedEffectWarning,
 }
 import simplifile
 
@@ -183,7 +183,98 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
       )
     })
 
+  // Spec-level lint: `check`/`type` lines whose target doesn't exist in any
+  // project module. These silently do nothing (a vacuous check, or a field
+  // annotation that resolves to [Unknown]), so they're reported against the
+  // spec file itself rather than any source file.
+  let results = case validate_spec_annotations(spec, index) {
+    [] -> results
+    spec_warnings -> [
+      CheckResult(file: cfg.spec_file, violations: [], warnings: spec_warnings),
+      ..results
+    ]
+  }
+
   Ok(results)
+}
+
+// Flag `check`/`type` spec lines whose target matches nothing in the project.
+// A `check` line names a function that must exist in some project module; a
+// `type` line names a `module.Type.field` that must be a function-typed field
+// of a project custom type. When the qualifier is missing or wrong the line is
+// silently dead, so surface it as a warning.
+fn validate_spec_annotations(
+  spec: GradedFile,
+  index: Dict(String, #(String, glance.Module)),
+) -> List(Warning) {
+  let known_functions = known_function_names(index)
+  let known_type_fields = known_type_field_names(index)
+
+  let check_warnings =
+    annotation.extract_checks(spec)
+    |> list.filter(fn(ann) { !set.contains(known_functions, ann.function) })
+    |> list.map(fn(ann) { UnmatchedCheckWarning(function: ann.function) })
+
+  let type_field_warnings =
+    annotation.extract_type_fields(spec)
+    |> list.filter_map(fn(tf) {
+      let name = case tf.module {
+        Some(module) -> module <> "." <> tf.type_name <> "." <> tf.field
+        // Unqualified `type Type.field` carries no module, so it can never key
+        // a receiver's resolved type — always dead.
+        None -> tf.type_name <> "." <> tf.field
+      }
+      case set.contains(known_type_fields, name) {
+        True -> Error(Nil)
+        False -> Ok(UnmatchedTypeFieldWarning(name:))
+      }
+    })
+
+  list.append(check_warnings, type_field_warnings)
+}
+
+// Every `module.function` defined across the project (public and private), the
+// set a `check` line's qualified name must belong to.
+fn known_function_names(
+  index: Dict(String, #(String, glance.Module)),
+) -> Set(String) {
+  dict.fold(index, set.new(), fn(acc, module_path, entry) {
+    let #(_gleam_path, module) = entry
+    list.fold(module.functions, acc, fn(acc2, definition) {
+      set.insert(acc2, module_path <> "." <> definition.definition.name)
+    })
+  })
+}
+
+// Every `module.Type.field` labelled field across the project's custom types,
+// the set a qualified `type` line must belong to.
+fn known_type_field_names(
+  index: Dict(String, #(String, glance.Module)),
+) -> Set(String) {
+  dict.fold(index, set.new(), fn(acc, module_path, entry) {
+    let #(_gleam_path, module) = entry
+    list.fold(module.custom_types, acc, fn(acc2, definition) {
+      insert_type_field_names(acc2, module_path, definition.definition)
+    })
+  })
+}
+
+// Add every `module.Type.field` for one custom type's labelled fields.
+fn insert_type_field_names(
+  acc: Set(String),
+  module_path: String,
+  custom_type: glance.CustomType,
+) -> Set(String) {
+  let prefix = module_path <> "." <> custom_type.name <> "."
+  list.fold(custom_type.variants, acc, fn(acc2, variant) {
+    list.fold(variant.fields, acc2, fn(acc3, field) {
+      case field {
+        glance.LabelledVariantField(label:, ..) ->
+          set.insert(acc3, prefix <> label)
+        glance.UnlabelledVariantField(..) -> acc3
+      }
+    })
+  })
 }
 
 /// Infer effects for all `.gleam` files in `directory`. Writes two outputs:
@@ -1422,6 +1513,20 @@ fn print_warning(file: String, warning: Warning) -> Nil {
         <> " on "
         <> function
         <> " names no parameter of the function — check the name",
+      )
+    UnmatchedCheckWarning(function:) ->
+      io.println(
+        file
+        <> ": warning: check "
+        <> function
+        <> " names no function in any project module — check the module qualifier; the check never runs",
+      )
+    UnmatchedTypeFieldWarning(name:) ->
+      io.println(
+        file
+        <> ": warning: type "
+        <> name
+        <> " names no field of any project type — check the module qualifier; the field resolves to [Unknown]",
       )
   }
 }
