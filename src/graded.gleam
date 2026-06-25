@@ -1451,7 +1451,13 @@ fn drop_modules(
   entries: Dict(QualifiedName, a),
   modules: Set(String),
 ) -> Dict(QualifiedName, a) {
-  dict.filter(entries, fn(name, _value) { !set.contains(modules, name.module) })
+  case set.is_empty(modules) {
+    True -> entries
+    False ->
+      dict.filter(entries, fn(name, _value) {
+        !set.contains(modules, name.module)
+      })
+  }
 }
 
 // Build a signature registry from every path dependency's `src/` directory.
