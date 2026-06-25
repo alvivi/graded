@@ -2822,7 +2822,11 @@ fn field_fallback(
   type_name: String,
   context: ImportContext,
 ) -> EffectTerm {
-  case is_fn_typed_field(context, type_name, field_call.label) {
+  // A receiver with no clean access path (`make().field` — a call result) gets
+  // the `<expr>` sentinel object; never mint a `<expr>.field` variable for it,
+  // since no `check` bound can name it and an inferred spec shouldn't carry one.
+  let has_path = !string.contains(field_call.object, "<expr>")
+  case has_path && is_fn_typed_field(context, type_name, field_call.label) {
     True -> TVar(field_call.object <> "." <> field_call.label)
     False -> effect_term.unknown()
   }

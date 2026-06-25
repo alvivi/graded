@@ -881,6 +881,80 @@ fn resolve_constructor_field_call(
   }
 }
 
+// A *nested* field-access call `<receiver>.label(args)` whose receiver is itself
+// a field access or a call (not a bare variable): `d.svc.find(..)`,
+// `make_svc().find(..)`. Emits a `FieldCall` whose `receiver_span` is the
+// receiver expression's own span, so girard's inferred type for that span drives
+// `type`-line and polymorphic resolution exactly as the single-level case does —
+// no level-by-level type walk. `object` is a dotted path (`d.svc`) when the
+// receiver is a pure variable/field-access chain, so a `check f(d.svc.field: ..)`
+// bound matches; otherwise a sentinel that matches no bound (girard still types
+// the span). An uppercase label is a constructor, not a field — skipped.
+fn resolve_nested_field_call(
+  receiver: Expression,
+  label: String,
+  span: glance.Span,
+  receiver_span: glance.Span,
+) -> ExtractResult {
+  case is_constructor_name(label) {
+    True -> empty()
+    False -> {
+      let object = case receiver_path(receiver) {
+        Some(path) -> path
+        None -> "<expr>"
+      }
+      ExtractResult(..empty(), field: [
+        FieldCall(object, label, span, receiver_span),
+      ])
+    }
+  }
+}
+
+// The dotted access path of a receiver expression (`d.svc.org` for nested field
+// access on a variable), or `None` when the receiver isn't a pure
+// variable/field-access chain (e.g. a call result). The path names the field
+// bound a nested `check f(d.svc.field: ..)` line targets and the synthetic
+// polymorphic field variable.
+fn receiver_path(expression: Expression) -> Option(String) {
+  case expression {
+    glance.Variable(name:, ..) -> Some(name)
+    glance.FieldAccess(container:, label:, ..) ->
+      receiver_path(container)
+      |> option.map(fn(prefix) { prefix <> "." <> label })
+    _ -> None
+  }
+}
+
+// The source span of an expression, used as the `receiver_span` for a nested
+// field call so girard's per-span type lookup resolves the receiver. Every
+// glance expression carries a `location`; this surfaces it for the receiver
+// shapes a field call can have.
+fn expression_location(expression: Expression) -> glance.Span {
+  case expression {
+    glance.Int(location:, ..)
+    | glance.Float(location:, ..)
+    | glance.String(location:, ..)
+    | glance.Variable(location:, ..)
+    | glance.NegateInt(location:, ..)
+    | glance.NegateBool(location:, ..)
+    | glance.Block(location:, ..)
+    | glance.Panic(location:, ..)
+    | glance.Todo(location:, ..)
+    | glance.Tuple(location:, ..)
+    | glance.List(location:, ..)
+    | glance.Fn(location:, ..)
+    | glance.RecordUpdate(location:, ..)
+    | glance.FieldAccess(location:, ..)
+    | glance.Call(location:, ..)
+    | glance.TupleIndex(location:, ..)
+    | glance.FnCapture(location:, ..)
+    | glance.BitString(location:, ..)
+    | glance.Case(location:, ..)
+    | glance.BinaryOperator(location:, ..)
+    | glance.Echo(location:, ..) -> location
+  }
+}
+
 // Resolve a qualified `alias.label` used as a value (not called).
 // Constructors short-circuit to empty; unknown aliases are dropped.
 fn resolve_qualified_reference(
@@ -1294,6 +1368,32 @@ fn extract_from_expression(
       merge_with_args(
         resolve_variable_call(name, span, context, env),
         extract_from_arguments(arguments, context, env),
+        span,
+        classify_arguments(arguments, context, env, 0),
+      )
+
+    // Nested field-access call: `d.svc.find(args)` or `make_svc().find(args)`.
+    // The callee is a field access whose container is NOT a bare variable (that
+    // single-level case is handled above), so it resolves through the receiver's
+    // inferred type rather than as a module-qualified call. The receiver
+    // expression is still walked for its own effects, and the arguments are
+    // walked and recorded for call-site substitution.
+    glance.Call(
+      location: span,
+      function: glance.FieldAccess(container: receiver, label:, ..),
+      arguments:,
+    ) ->
+      merge_with_args(
+        resolve_nested_field_call(
+          receiver,
+          label,
+          span,
+          expression_location(receiver),
+        ),
+        merge(
+          extract_from_expression(receiver, context, env),
+          extract_from_arguments(arguments, context, env),
+        ),
         span,
         classify_arguments(arguments, context, env, 0),
       )

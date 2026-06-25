@@ -245,6 +245,123 @@ fn checker_infer_opaque_field() -> Result(List(types.EffectAnnotation), Nil) {
   ))
 }
 
+pub fn nested_field_resolves_via_type_line_test() {
+  // nested_field.via_type calls `o.inner.run()` — a NESTED field call whose
+  // receiver `o.inner` is itself a field access, not a bare variable. girard
+  // types the `o.inner` span as `Inner`, so the `type nested_field.Inner.run :
+  // [Disk]` line resolves it, and the [] budget fails with the precise [Disk].
+  // Before nested extraction this collapsed to <apply>.<unknown> ([Unknown]).
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/nested_field.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "via_type" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+pub fn nested_field_discharges_via_dotted_bound_test() {
+  // nested_field.via_bound has a dotted field bound on its `check` line
+  // (`check nested_field.via_bound(o.inner.run: [Stdout]) : []`). The nested
+  // `o.inner.run` field call carries the dotted path `o.inner` as its object, so
+  // the bound matches and discharges to [Stdout], winning over the `type` line.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/nested_field.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "via_bound" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn nested_field_unbound_is_unknown_test() {
+  // nested_field.unbound calls `h.loose.act()` — a nested fn-typed field with no
+  // `type` line and no field bound. The synthetic field-effect variable can't be
+  // discharged, so it concretizes to [Unknown] — the soundness floor — and the
+  // [] budget fails with [Unknown], never silently [].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/nested_field.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "unbound" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn nested_field_round_trips_as_dotted_field_bound_test() {
+  // Inferring a nested fn-typed field call on a same-module type (no `type`
+  // line, no field bound) surfaces it as a polymorphic *dotted* field bound —
+  // `o.inner.run` — mirroring the single-level round-trip but with a
+  // multi-segment path. Run through the full `run_infer` pipeline so girard
+  // types the nested receiver (the same-module polymorphic path needs the
+  // resolved receiver type, which only girard supplies for a nested receiver).
+  let root = "build/nested_poly_app"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) = simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/proj.gleam",
+      "pub type Inner {\n  Inner(run: fn() -> Nil)\n}\n\n"
+        <> "pub type Outer {\n  Outer(inner: Inner)\n}\n\n"
+        <> "pub fn poke(o: Outer) -> Nil {\n  o.inner.run()\n}\n",
+    )
+  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", "")
+
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(content) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(file) = annotation.parse_file(content)
+  let assert Ok(annotation) =
+    list.find(annotation.extract_annotations(file), fn(a) {
+      a.function == "proj.poke"
+    })
+  let assert Ok(bound) =
+    list.find(annotation.params, fn(b) { b.name == "o.inner.run" })
+  bound.effects |> should.equal(types.TVar("o.inner.run"))
+  annotation.effects |> should.equal(types.TVar("o.inner.run"))
+
+  let _ = simplifile.delete(root)
+  Nil
+}
+
+pub fn nested_field_resolves_cross_module_type_line_test() {
+  // The essem case: a nested call whose INTERMEDIATE receiver type lives in
+  // ANOTHER module. `handler.handle` calls `model.service.org.create("acme")`;
+  // girard types `model.service.org` as `svc.OrganizationService`, and the
+  // module-qualified `type svc.OrganizationService.create : [Storage, Time]`
+  // line resolves it cross-module — so the [] budget fails with that precise
+  // effect. Synthesized as a multi-module project so the consumer's `type` line
+  // points at a type defined in a different module, exactly essem's shape.
+  let root = "build/nested_xmod_app"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) = simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/svc.gleam",
+      "pub type OrganizationService {\n"
+        <> "  OrganizationService(create: fn(String) -> Nil)\n}\n\n"
+        <> "pub type Services {\n  Services(org: OrganizationService)\n}\n\n"
+        <> "pub type Model {\n  Model(service: Services)\n}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/handler.gleam",
+      "import svc\n\n"
+        <> "pub fn handle(model: svc.Model) -> Nil {\n"
+        <> "  model.service.org.create(\"acme\")\n}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/proj.graded",
+      "check handler.handle : []\n\n"
+        <> "type svc.OrganizationService.create : [Storage, Time]\n",
+    )
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/handler.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "handle" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Storage", "Time"])))
+
+  let _ = simplifile.delete(root)
+  Nil
+}
+
 pub fn closure_field_effect_from_construction_test() {
   // A record field wired to an *inline closure* at construction resolves to the
   // closure body's effect ([Stdout]) without a hand-written `type` annotation —
