@@ -207,6 +207,57 @@ pub fn from_glance_module(
   SignatureRegistry(signatures:)
 }
 
+// Function-typed *record fields* of a module's custom types, keyed by
+// `#(type_name, field_name)`. A field qualifies when its declared type is a
+// direct `fn(..)` or a module-local alias resolving to one (`fn_aliases`). Only
+// labelled fields are included — an unlabelled field can't be reached by a
+// `record.field(..)` call. The boundary-scoped analog of
+// `fn_typed_params_from_function`: it lets the checker treat a `fn`-typed field
+// on an opaque receiver as polymorphic (a field-effect variable) instead of
+// collapsing it to `[Unknown]`.
+pub fn fn_typed_fields_from_module(
+  module: Module,
+  fn_aliases: Set(String),
+) -> Set(#(String, String)) {
+  module.custom_types
+  |> list.flat_map(fn(definition) {
+    let type_name = definition.definition.name
+    definition.definition.variants
+    |> list.flat_map(fn(variant) { variant.fields })
+    |> list.filter_map(labelled_fn_field(type_name, _, fn_aliases))
+  })
+  |> set.from_list()
+}
+
+// A `#(type_name, label)` entry for a labelled, callable field; `Error(Nil)`
+// for an unlabelled or non-fn field.
+fn labelled_fn_field(
+  type_name: String,
+  field: glance.VariantField,
+  fn_aliases: Set(String),
+) -> Result(#(String, String), Nil) {
+  case field {
+    glance.LabelledVariantField(item:, label:) ->
+      case is_field_fn_typed(item, fn_aliases) {
+        True -> Ok(#(type_name, label))
+        False -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+// Whether a field's declared type is callable: a direct `fn(..)` or a
+// module-local alias that resolves to one (`run: Action` with
+// `type Action = fn() -> Nil`). Mirrors the alias handling applied to fn-typed
+// parameters.
+fn is_field_fn_typed(type_: glance.Type, fn_aliases: Set(String)) -> Bool {
+  case type_ {
+    FunctionType(_, _, _) -> True
+    glance.NamedType(name:, module: None, ..) -> set.contains(fn_aliases, name)
+    _ -> False
+  }
+}
+
 // ──── Glance AST detection ────
 
 // Names of a local function's fn-typed parameters, detected from

@@ -60,6 +60,49 @@ pub fn apply2(f: fn(Int) -> Int, g: fn(Int) -> Int, x: Int) -> Int {
   |> should.equal(set.from_list(["f", "g"]))
 }
 
+pub fn glance_detects_fn_typed_record_field_test() {
+  let source =
+    "
+pub type Runner {
+  Runner(run: fn() -> Nil, name: String)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  signatures.fn_typed_fields_from_module(module, set.new())
+  |> should.equal(set.from_list([#("Runner", "run")]))
+}
+
+pub fn glance_detects_fn_typed_field_via_alias_test() {
+  // A field declared through a module-local function alias (`run: Action` with
+  // `type Action = fn() -> Nil`) is callable, so it is recorded when the alias
+  // is in the resolved function-alias set.
+  let source =
+    "
+pub type Action = fn() -> Nil
+
+pub type Runner {
+  Runner(run: Action)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  signatures.fn_typed_fields_from_module(module, set.from_list(["Action"]))
+  |> should.equal(set.from_list([#("Runner", "run")]))
+}
+
+pub fn glance_skips_unlabelled_fn_typed_field_test() {
+  // An unlabelled `fn`-typed field can't be reached by a `record.field(..)`
+  // call, so it isn't recorded.
+  let source =
+    "
+pub type Wrapped {
+  Wrapped(fn() -> Nil)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  signatures.fn_typed_fields_from_module(module, set.new())
+  |> should.equal(set.new())
+}
+
 // ──── Loading from a packages directory ────
 
 pub fn load_from_packages_dir_walks_dep_sources_test() {

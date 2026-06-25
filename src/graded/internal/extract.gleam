@@ -5,6 +5,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import graded/internal/types.{
   type ArgumentValue, type CallArgument, type DirectClosureCall,
@@ -84,6 +85,11 @@ pub type ImportContext {
     // factory call resolves the result's fields like a direct construction.
     factories: Dict(String, FactorySignature),
     cross_factories: Dict(#(String, String), FactorySignature),
+    // The module's own `fn`-typed record fields, by `#(type_name, field)`. Lets
+    // the checker treat a field call on an opaque same-module receiver as
+    // polymorphic (a field-effect variable) rather than `[Unknown]`. Empty by
+    // default; populated only for the module under analysis.
+    fn_typed_fields: Set(#(String, String)),
   )
 }
 
@@ -119,6 +125,15 @@ pub fn with_cross_factories(
   cross_factories: Dict(#(String, String), FactorySignature),
 ) -> ImportContext {
   ImportContext(..context, cross_factories:)
+}
+
+// Attach the module's own `fn`-typed record fields, so a field call on an
+// opaque same-module receiver resolves to a field-effect variable.
+pub fn with_fn_typed_fields(
+  context: ImportContext,
+  fn_typed_fields: Set(#(String, String)),
+) -> ImportContext {
+  ImportContext(..context, fn_typed_fields:)
 }
 
 // A module's `constructor -> field labels` map (the same labels
@@ -202,6 +217,7 @@ pub fn build_import_context(module: Module) -> ImportContext {
     cross_constructors: dict.new(),
     factories: dict.new(),
     cross_factories: dict.new(),
+    fn_typed_fields: set.new(),
   )
 }
 
@@ -865,6 +881,50 @@ fn resolve_constructor_field_call(
   }
 }
 
+// A *nested* field-access call `<receiver>.label(args)` whose receiver is itself
+// a field access or a call (not a bare variable): `d.svc.find(..)`,
+// `make_svc().find(..)`. Emits a `FieldCall` whose `receiver_span` is the
+// receiver expression's own span, so girard's inferred type for that span drives
+// `type`-line and polymorphic resolution exactly as the single-level case does —
+// no level-by-level type walk. `object` is a dotted path (`d.svc`) when the
+// receiver is a pure variable/field-access chain, so a `check f(d.svc.field: ..)`
+// bound matches; otherwise a sentinel that matches no bound (girard still types
+// the span). An uppercase label is a constructor, not a field — skipped.
+fn resolve_nested_field_call(
+  receiver: Expression,
+  label: String,
+  span: glance.Span,
+  receiver_span: glance.Span,
+) -> ExtractResult {
+  case is_constructor_name(label) {
+    True -> empty()
+    False -> {
+      let object = case receiver_path(receiver) {
+        Some(path) -> path
+        None -> "<expr>"
+      }
+      ExtractResult(..empty(), field: [
+        FieldCall(object, label, span, receiver_span),
+      ])
+    }
+  }
+}
+
+// The dotted access path of a receiver expression (`d.svc.org` for nested field
+// access on a variable), or `None` when the receiver isn't a pure
+// variable/field-access chain (e.g. a call result). The path names the field
+// bound a nested `check f(d.svc.field: ..)` line targets and the synthetic
+// polymorphic field variable.
+fn receiver_path(expression: Expression) -> Option(String) {
+  case expression {
+    glance.Variable(name:, ..) -> Some(name)
+    glance.FieldAccess(container:, label:, ..) ->
+      receiver_path(container)
+      |> option.map(fn(prefix) { prefix <> "." <> label })
+    _ -> None
+  }
+}
+
 // Resolve a qualified `alias.label` used as a value (not called).
 // Constructors short-circuit to empty; unknown aliases are dropped.
 fn resolve_qualified_reference(
@@ -1282,6 +1342,27 @@ fn extract_from_expression(
         classify_arguments(arguments, context, env, 0),
       )
 
+    // Nested field-access call: `d.svc.find(args)` or `make_svc().find(args)`.
+    // The callee is a field access whose container is NOT a bare variable (that
+    // single-level case is handled above), so it resolves through the receiver's
+    // inferred type rather than as a module-qualified call. The receiver
+    // expression is still walked for its own effects, and the arguments are
+    // walked and recorded for call-site substitution.
+    glance.Call(
+      location: span,
+      function: glance.FieldAccess(container: receiver, label:, ..),
+      arguments:,
+    ) ->
+      merge_with_args(
+        resolve_nested_field_call(receiver, label, span, receiver.location),
+        merge(
+          extract_from_expression(receiver, context, env),
+          extract_from_arguments(arguments, context, env),
+        ),
+        span,
+        classify_arguments(arguments, context, env, 0),
+      )
+
     // Other call shapes: the callee is an expression that evaluates to a
     // function (an inline closure, a `case` of functions, a call returning a
     // function, a block whose tail is one of those, or an opaque computed
@@ -1451,6 +1532,27 @@ fn extract_pipe_target(
         pipe_args,
       )
 
+    // A nested field access as a pipe target (`value |> o.inner.run`): the
+    // receiver is a field-access chain or call result, not a bare variable, so
+    // it resolves through its inferred type. The piped value is the sole
+    // argument and the receiver is walked for its own effects.
+    glance.FieldAccess(
+      location: span,
+      container: receiver,
+      label: function_name,
+    ) ->
+      merge_with_args(
+        resolve_nested_field_call(
+          receiver,
+          function_name,
+          span,
+          receiver.location,
+        ),
+        extract_from_expression(receiver, context, env),
+        span,
+        pipe_args,
+      )
+
     glance.Variable(location: span, name:) ->
       attach_pipe_args(
         resolve_variable_call(name, span, context, env),
@@ -1479,6 +1581,32 @@ fn extract_pipe_target(
           env,
         ),
         extract_from_arguments(arguments, context, env),
+        span,
+        list.append(pipe_args, classify_arguments(arguments, context, env, 1)),
+      )
+
+    // `value |> o.inner.run(extra)` — nested field call with explicit args; the
+    // piped value is the first argument and the explicit args shift up by one.
+    glance.Call(
+      location: span,
+      function: glance.FieldAccess(
+        container: receiver,
+        label: function_name,
+        ..,
+      ),
+      arguments:,
+    ) ->
+      merge_with_args(
+        resolve_nested_field_call(
+          receiver,
+          function_name,
+          span,
+          receiver.location,
+        ),
+        merge(
+          extract_from_expression(receiver, context, env),
+          extract_from_arguments(arguments, context, env),
+        ),
         span,
         list.append(pipe_args, classify_arguments(arguments, context, env, 1)),
       )

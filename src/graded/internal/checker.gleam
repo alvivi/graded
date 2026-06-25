@@ -48,6 +48,10 @@ pub fn check(
     |> extract.with_module_path(module_path)
     |> extract.with_factories(extract.factory_map(module))
     |> extract.with_cross_factories(effects.factories(knowledge_base))
+    |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(
+      module,
+      function_type_aliases(module.type_aliases),
+    ))
   let function_map = build_function_map(module)
   let cache = build_scc_ids(module, context, girard_fn_typed, True)
 
@@ -113,6 +117,10 @@ pub fn infer_with_returns(
     |> extract.with_module_path(module_path)
     |> extract.with_factories(extract.factory_map(module))
     |> extract.with_cross_factories(effects.factories(knowledge_base))
+    |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(
+      module,
+      function_type_aliases(module.type_aliases),
+    ))
   let function_map = build_function_map(module)
   let cache = build_scc_ids(module, context, girard_fn_typed, True)
 
@@ -208,17 +216,28 @@ pub fn infer_with_returns(
           #(union_of(pairs), memo)
         }
       }
-      // A free effect variable that isn't one of the function's own fn-typed
-      // parameters is a *phantom* — e.g. an inline closure's parameter that
-      // leaked out of an application graded couldn't fully resolve. It can never
-      // be bound, so collapse it to the conservative [Unknown] rather than let an
-      // internal name surface in the effect set.
-      let effects_term = collapse_phantom_vars(effects_term, fn_typed_params)
-      // If the function's inferred effects reference effect variables
-      // (because it calls fn-typed params), emit ParamBound entries so
-      // the polymorphic annotation round-trips correctly.
+      // A free effect variable that is neither one of the function's own
+      // fn-typed parameters nor a `recv.field` field-effect variable is a
+      // *phantom* — e.g. an inline closure's parameter that leaked out of an
+      // application graded couldn't fully resolve. It can never be bound, so
+      // collapse it to the conservative [Unknown] rather than let an internal
+      // name surface. Field-effect variables survive: they round-trip as field
+      // bounds, mirroring how fn-typed parameter variables round-trip.
+      let field_vars =
+        effect_term.free_vars(effects_term) |> set.filter(is_field_path_var)
+      let effects_term =
+        collapse_phantom_vars(
+          effects_term,
+          set.union(fn_typed_params, field_vars),
+        )
+      // If the function's inferred effects reference effect variables (because it
+      // calls fn-typed params, or a fn-typed field on an opaque receiver), emit
+      // ParamBound entries so the polymorphic annotation round-trips correctly.
       let inferred_params =
-        polymorphic_param_bounds(effects_term, fn_typed_params)
+        list.append(
+          polymorphic_param_bounds(effects_term, fn_typed_params),
+          polymorphic_param_bounds(effects_term, field_vars),
+        )
       #(
         memo,
         EffectAnnotation(
@@ -386,21 +405,24 @@ fn polymorphic_param_bounds(
   |> list.map(self_referential_bound)
 }
 
+// Substitute every variable in `vars` with `[Unknown]` in `term`. The shared
+// core of phantom collapse and field-variable concretization: both select a set
+// of free variables that can never be bound here and ground them.
+fn ground_vars(term: EffectTerm, vars: Set(String)) -> EffectTerm {
+  use <- bool.guard(set.is_empty(vars), term)
+  vars
+  |> set.to_list()
+  |> list.map(fn(v) { #(v, effect_term.unknown()) })
+  |> dict.from_list()
+  |> effect_term.subst(term, _)
+}
+
 // Replace every free effect variable in `term` that isn't one of `params` with
 // [Unknown]. Such a variable is a phantom: it can never be bound at a call site
 // (only the function's own fn-typed parameters can), so leaving it would surface
 // an internal name in the effect set instead of the conservative fallback.
 fn collapse_phantom_vars(term: EffectTerm, params: Set(String)) -> EffectTerm {
-  let phantoms = set.difference(effect_term.free_vars(term), params)
-  case set.is_empty(phantoms) {
-    True -> term
-    False ->
-      phantoms
-      |> set.to_list()
-      |> list.map(fn(v) { #(v, effect_term.unknown()) })
-      |> dict.from_list()
-      |> effect_term.subst(term, _)
-  }
+  ground_vars(term, set.difference(effect_term.free_vars(term), params))
 }
 
 // PRIVATE
@@ -817,7 +839,11 @@ fn check_annotation(
         body_effects
         |> list.filter_map(fn(pair) {
           let #(call, call_term) = pair
-          let actual = effect_term.to_effect_set(call_term)
+          // A field-effect variable that reached the subset check undischarged
+          // (no `check`-line field bound bound it) collapses to `[Unknown]`, so a
+          // `fn`-typed field call on an opaque receiver is never silently `[]`.
+          let actual =
+            effect_term.to_effect_set(concretize_field_vars(call_term))
           case types.is_subset(actual, declared) {
             True -> Error(Nil)
             False ->
@@ -1083,6 +1109,7 @@ fn collect_effects(
         resolve_field_call(
           field_call,
           function,
+          context,
           knowledge_base,
           module_types,
           result.call_args,
@@ -1464,10 +1491,20 @@ fn substitute_local_call_effects(
           lift_operator_arg,
           memo,
         )
+      // A field-effect variable surfaced inside the callee names the *callee's*
+      // receiver, which is out of this caller's scope — it can never be bound
+      // here, so ground it to `[Unknown]` rather than leak a phantom field bound
+      // (`thing.run`) referencing a parameter the caller doesn't have.
       let substituted =
         list.map(recursive, fn(pair) {
           let #(call, term) = pair
-          #(call, effect_term.normalize(effect_term.subst(term, bindings)))
+          #(
+            call,
+            term
+              |> effect_term.subst(bindings)
+              |> concretize_field_vars()
+              |> effect_term.normalize(),
+          )
         })
       #(substituted, memo)
     }
@@ -1499,6 +1536,12 @@ fn substitute_at_call_site(
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
   let callee_kb_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
+  // A callee whose effect carries a field-effect variable (a `recv.field` path)
+  // can never have it bound here — the caller doesn't supply the callee's
+  // record field — so ground it to `[Unknown]` before anything else. Keeps a
+  // loaded `effects f(v.run: [v.run]) : [v.run]` from leaking an internal field
+  // variable into this caller's effect set.
+  let effect = concretize_field_vars(effect)
   // Fast path: concrete effect with declared bounds — nothing to
   // substitute. With no declared bounds we still need to fall through
   // in case the registry flags auto-injectable fn-typed params.
@@ -2678,6 +2721,7 @@ fn collapsed_member(
 fn resolve_field_call(
   field_call: types.FieldCall,
   function: Function,
+  context: ImportContext,
   knowledge_base: KnowledgeBase,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
@@ -2707,6 +2751,7 @@ fn resolve_field_call(
       resolve_field_call_by_type(
         field_call,
         function,
+        context,
         knowledge_base,
         module_types,
         call_args,
@@ -2727,6 +2772,7 @@ fn resolve_field_call(
 fn resolve_field_call_by_type(
   field_call: types.FieldCall,
   function: Function,
+  context: ImportContext,
   knowledge_base: KnowledgeBase,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
@@ -2747,7 +2793,7 @@ fn resolve_field_call_by_type(
       |> option.map(fn(type_name) { #("", type_name) })
     })
   case receiver_type {
-    None -> #(effect_term.unknown(), memo)
+    None -> #(field_fallback(field_call, "", "", context), memo)
     Some(#(module, type_name)) ->
       case
         effects.lookup_type_field(
@@ -2757,7 +2803,10 @@ fn resolve_field_call_by_type(
           field_call.label,
         )
       {
-        Error(Nil) -> #(effect_term.unknown(), memo)
+        Error(Nil) -> #(
+          field_fallback(field_call, module, type_name, context),
+          memo,
+        )
         Ok(field_effect) ->
           resolve_field_effect(
             field_effect,
@@ -2770,6 +2819,75 @@ fn resolve_field_call_by_type(
             memo,
           )
       }
+  }
+}
+
+// The effect of a field call the type registry couldn't resolve. When the
+// receiver's same-module type declares this field as `fn`-typed, the call gets a
+// synthetic *field-effect variable* named after the `receiver.field` path — the
+// boundary-scoped analog of the self-referential bound a `fn`-typed parameter
+// gets. The variable discharges against a `check f(recv.field: [..])` bound (by
+// the field-bound match in `resolve_field_call`) or collapses to `[Unknown]`
+// when nothing binds it (`collapse_phantom_vars` during infer, the concretize at
+// the check boundary, and the consume-side guard in `substitute_at_call_site`).
+// `type_name` is `""` for a receiver typed only syntactically (the syntactic
+// fallback yields no module), which the same-module set still matches by name.
+fn field_fallback(
+  field_call: types.FieldCall,
+  module: String,
+  type_name: String,
+  context: ImportContext,
+) -> EffectTerm {
+  // A receiver with no clean access path (`make().field` — a call result) gets
+  // the `<expr>` sentinel object; never mint a `<expr>.field` variable for it,
+  // since no `check` bound can name it and an inferred spec shouldn't carry one.
+  let has_path = field_call.object != "<expr>"
+  // The field registry holds only the current module's types. An imported
+  // receiver type sharing a name with a local fn-typed type must not borrow the
+  // local field. `module` is the receiver type's defining module (from girard);
+  // "" is the syntactic-annotation fallback, matched by name as before.
+  let in_scope = module == "" || module == context.module_path
+  case
+    has_path
+    && in_scope
+    && is_fn_typed_field(context, type_name, field_call.label)
+  {
+    True -> TVar(field_call.object <> "." <> field_call.label)
+    False -> effect_term.unknown()
+  }
+}
+
+// Whether a field of a same-module custom type is `fn`-typed. The registry is
+// keyed by `#(type_name, field)`; a `""` type name (syntactic-only receiver
+// type) can't be matched against a concrete type, so it never reports `fn`-typed
+// — the conservative `[Unknown]` still wins there.
+fn is_fn_typed_field(
+  context: ImportContext,
+  type_name: String,
+  field: String,
+) -> Bool {
+  type_name != "" && set.contains(context.fn_typed_fields, #(type_name, field))
+}
+
+// Whether an effect-variable name is a *field-effect* variable — a `recv.field`
+// path (the dot distinguishes it from a plain parameter name, which can't carry
+// one). Used to collapse such a variable to `[Unknown]` at every boundary where
+// it could otherwise leak past the function whose body it belongs to.
+fn is_field_path_var(name: String) -> Bool {
+  string.contains(name, ".")
+}
+
+// Collapse every surviving field-effect variable in `term` to `[Unknown]`. A
+// field-effect variable can only ever be bound *inside* the function whose body
+// produced it (by that function's own `check`-line field bound); it can never be
+// bound by a downstream caller's arguments, so any that escape a function
+// boundary are conservatively grounded.
+fn concretize_field_vars(term: EffectTerm) -> EffectTerm {
+  let field_vars =
+    term |> effect_term.free_vars() |> set.filter(is_field_path_var)
+  case set.is_empty(field_vars) {
+    True -> term
+    False -> ground_vars(term, field_vars) |> effect_term.normalize()
   }
 }
 
@@ -2915,8 +3033,11 @@ fn syntactic_param_type(
       }
     })
   {
+    // Only an unqualified annotation (`r: Runner`) is treated as the current
+    // module's type. A qualified one (`r: ext.Runner`) names an imported type,
+    // whose fields the local registry must not claim, so it yields no type.
     Ok(glance.FunctionParameter(
-      type_: Some(glance.NamedType(name: type_name, ..)),
+      type_: Some(glance.NamedType(name: type_name, module: None, ..)),
       ..,
     )) -> Some(type_name)
     _ -> None
