@@ -188,7 +188,8 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   // project module. These silently do nothing (a vacuous check, or a field
   // annotation that resolves to [Unknown]), so they're reported against the
   // spec file itself rather than any source file.
-  let results = case validate_spec_annotations(spec, index) {
+  let dep_modules = dependency_modules(package_root)
+  let results = case validate_spec_annotations(spec, index, dep_modules) {
     [] -> results
     spec_warnings -> [
       CheckResult(file: cfg.spec_file, violations: [], warnings: spec_warnings),
@@ -199,6 +200,19 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   Ok(results)
 }
 
+// Module paths of every installed dependency (under `build/packages`) and path
+// dependency (under its declared `path`). Lets the spec lint tell a dependency
+// type — which it can't introspect but is still valid — from a typo.
+fn dependency_modules(package_root: String) -> Set(String) {
+  let installed = effects.dependency_module_paths(packages_dir(package_root))
+  effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
+  |> list.fold(installed, fn(acc, dep) {
+    let #(_name, dep_path) = dep
+    let src_dir = filepath.join(resolve_path(package_root, dep_path), "src")
+    set.union(acc, effects.source_dir_module_paths(src_dir))
+  })
+}
+
 // Flag `check`/`type` spec lines whose target matches nothing in the project.
 // A `check` line names a function that must exist in some project module; a
 // `type` line names a `module.Type.field` that must be a function-typed field
@@ -207,6 +221,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
 fn validate_spec_annotations(
   spec: GradedFile,
   index: Dict(String, #(String, glance.Module)),
+  dep_modules: Set(String),
 ) -> List(Warning) {
   let known_functions = known_function_names(index)
   let known_type_fields = known_type_field_names(index)
@@ -218,7 +233,12 @@ fn validate_spec_annotations(
 
   let type_field_warnings =
     annotation.extract_type_fields(spec)
-    |> list.filter_map(unmatched_type_field_warning(_, index, known_type_fields))
+    |> list.filter_map(unmatched_type_field_warning(
+      _,
+      index,
+      dep_modules,
+      known_type_fields,
+    ))
 
   list.append(check_warnings, type_field_warnings)
 }
@@ -229,21 +249,34 @@ fn validate_spec_annotations(
 //     type, so it's always dead;
 //   - qualified at a *project* module: dead unless it names a function-typed
 //     field of one of that module's custom types;
-//   - qualified at a *dependency* module: left alone — the field belongs to a
-//     type graded can't see in `index`, and girard still resolves it from the
-//     receiver's nominal type, so flagging it would be a false positive.
+//   - qualified at a *dependency* module: left alone — graded can't introspect
+//     the dependency's types, but girard still resolves the field from the
+//     receiver's nominal type, so flagging it would be a false positive;
+//   - qualified at an unknown module (neither project nor dependency): a typo,
+//     so it's dead and flagged.
 fn unmatched_type_field_warning(
   tf: TypeFieldAnnotation,
   index: Dict(String, #(String, glance.Module)),
+  dep_modules: Set(String),
   known_type_fields: Set(String),
 ) -> Result(Warning, Nil) {
   case tf.module {
     None -> Ok(UnmatchedTypeFieldWarning(name: tf.type_name <> "." <> tf.field))
     Some(module) -> {
       let name = module <> "." <> tf.type_name <> "." <> tf.field
-      case dict.has_key(index, module), set.contains(known_type_fields, name) {
-        True, False -> Ok(UnmatchedTypeFieldWarning(name:))
-        _, _ -> Error(Nil)
+      case dict.has_key(index, module) {
+        // Project module: the field must exist and be function-typed.
+        True ->
+          case set.contains(known_type_fields, name) {
+            True -> Error(Nil)
+            False -> Ok(UnmatchedTypeFieldWarning(name:))
+          }
+        // Dependency module: valid. Unknown module: a typo, so flag it.
+        False ->
+          case set.contains(dep_modules, module) {
+            True -> Error(Nil)
+            False -> Ok(UnmatchedTypeFieldWarning(name:))
+          }
       }
     }
   }
@@ -266,14 +299,22 @@ fn known_function_names(
 // project's custom types, the set a qualified `type` line must belong to. A
 // `type` line only ever resolves a function-typed field, so a non-function
 // field is not a valid target — including it would let the lint miss exactly
-// the dead annotation it's meant to catch.
+// the dead annotation it's meant to catch. A field whose declared type is a
+// module-local alias of a function (`callback: Handler` with
+// `type Handler = fn(...)`) counts as function-typed.
 fn known_type_field_names(
   index: Dict(String, #(String, glance.Module)),
 ) -> Set(String) {
   dict.fold(index, set.new(), fn(acc, module_path, entry) {
     let #(_gleam_path, module) = entry
+    let fn_aliases = checker.function_type_aliases(module.type_aliases)
     list.fold(module.custom_types, acc, fn(acc2, definition) {
-      insert_type_field_names(acc2, module_path, definition.definition)
+      insert_type_field_names(
+        acc2,
+        module_path,
+        definition.definition,
+        fn_aliases,
+      )
     })
   })
 }
@@ -284,17 +325,34 @@ fn insert_type_field_names(
   acc: Set(String),
   module_path: String,
   custom_type: glance.CustomType,
+  fn_aliases: Set(String),
 ) -> Set(String) {
   let prefix = module_path <> "." <> custom_type.name <> "."
   list.fold(custom_type.variants, acc, fn(acc2, variant) {
     list.fold(variant.fields, acc2, fn(acc3, field) {
       case field {
-        glance.LabelledVariantField(label:, item: glance.FunctionType(..)) ->
-          set.insert(acc3, prefix <> label)
+        glance.LabelledVariantField(label:, item:) ->
+          case field_is_function_typed(item, fn_aliases) {
+            True -> set.insert(acc3, prefix <> label)
+            False -> acc3
+          }
         _ -> acc3
       }
     })
   })
+}
+
+// Whether a custom-type field's declared type is callable: a direct `fn(...)`,
+// or a module-local alias that resolves to one (`fn_aliases`, precomputed for
+// the field's module). A field type qualified by another module is left out —
+// graded resolves only module-local aliases, matching the checker's treatment
+// of function-typed parameters.
+fn field_is_function_typed(item: glance.Type, fn_aliases: Set(String)) -> Bool {
+  case item {
+    glance.FunctionType(..) -> True
+    glance.NamedType(name:, module: None, ..) -> set.contains(fn_aliases, name)
+    _ -> False
+  }
 }
 
 /// Infer effects for all `.gleam` files in `directory`. Writes two outputs:

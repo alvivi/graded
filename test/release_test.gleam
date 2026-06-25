@@ -248,23 +248,86 @@ pub fn run(_o: Opts) -> Nil {
   cleanup(directory)
 }
 
-// A `type` line qualified at a dependency module names a field graded can't see
-// (the type isn't a project type), but girard still resolves it from the
-// receiver's nominal type — so it must not be flagged as dead.
+// A `type` line qualified at an *installed* dependency module names a field
+// graded can't introspect (the type isn't a project type), but girard still
+// resolves it from the receiver's nominal type — so it must not be flagged.
 pub fn dependency_type_field_does_not_warn_test() {
   let directory =
     write_fixture(
       "/tmp/graded_release_dep_type",
       list.append(project_files(), [
-        #("widget.gleam", "pub fn render() -> Nil {\n  Nil\n}\n"),
-        #("app.graded", "type lustre/component.Config.on_click : [Dom]\n"),
+        #("app_mod.gleam", "pub fn render() -> Nil {\n  Nil\n}\n"),
+        // A real installed dependency (under build/packages) owning the type.
+        #(
+          "build/packages/widgets/src/widgets/ui.gleam",
+          "pub type Config {\n  Config(on_click: fn() -> Nil)\n}\n",
+        ),
+        #("app.graded", "type widgets/ui.Config.on_click : [Dom]\n"),
       ]),
     )
 
   let assert Ok(results) = graded.run(directory)
   all_warnings(results)
   |> list.any(fn(w) {
-    w == UnmatchedTypeFieldWarning(name: "lustre/component.Config.on_click")
+    w == UnmatchedTypeFieldWarning(name: "widgets/ui.Config.on_click")
+  })
+  |> should.be_false
+
+  cleanup(directory)
+}
+
+// A `type` line qualified at a module that is neither a project module nor an
+// installed/path dependency is a typo — it resolves nothing, so it's flagged.
+pub fn unknown_module_qualifier_warns_test() {
+  let directory =
+    write_fixture(
+      "/tmp/graded_release_unknown_mod",
+      list.append(project_files(), [
+        #(
+          "opts.gleam",
+          "pub type Opts {\n  Opts(on_change: fn(String) -> Nil)\n}\n",
+        ),
+        // `optz` is a typo of the project module `opts`.
+        #("app.graded", "type optz.Opts.on_change : []\n"),
+      ]),
+    )
+
+  let assert Ok(results) = graded.run(directory)
+  all_warnings(results)
+  |> list.any(fn(w) {
+    w == UnmatchedTypeFieldWarning(name: "optz.Opts.on_change")
+  })
+  |> should.be_true
+
+  cleanup(directory)
+}
+
+// A field declared through a module-local function alias (`callback: Handler`
+// with `type Handler = fn(...)`) is callable, so its `type` line is a valid
+// target and must not be flagged.
+pub fn function_alias_field_does_not_warn_test() {
+  let directory =
+    write_fixture(
+      "/tmp/graded_release_alias",
+      list.append(project_files(), [
+        #(
+          "widget.gleam",
+          "pub type Handler =
+  fn(String) -> Nil
+
+pub type Widget {
+  Widget(callback: Handler)
+}
+",
+        ),
+        #("app.graded", "type widget.Widget.callback : [Dom]\n"),
+      ]),
+    )
+
+  let assert Ok(results) = graded.run(directory)
+  all_warnings(results)
+  |> list.any(fn(w) {
+    w == UnmatchedTypeFieldWarning(name: "widget.Widget.callback")
   })
   |> should.be_false
 

@@ -528,7 +528,7 @@ pub fn build_scc_ids(
 // Names of module-local type aliases that resolve (transitively, through other
 // aliases) to a function type. `type Decoder(a) = fn(...)` and an alias of such
 // an alias both qualify; an alias to a record or tuple does not.
-fn function_type_aliases(
+pub fn function_type_aliases(
   aliases: List(Definition(glance.TypeAlias)),
 ) -> Set(String) {
   let alias_map =
