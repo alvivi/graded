@@ -4,7 +4,6 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/order
 import gleam/result
-import gleam/set.{type Set}
 import gleam/string
 import graded/internal/annotation
 import graded/internal/config
@@ -45,7 +44,11 @@ pub type KnowledgeBase {
     // bind its result's fields like a direct construction. (Same-module
     // factories are derived locally from the module, like constructors.)
     factories: Dict(#(String, String), Dict(String, Int)),
-    pure_modules: Set(String),
+    // Module-level externals: a whole module's declared effect, keyed by module
+    // name. Consulted by `lookup` when `all_effects` has no entry for a name, so
+    // every function in the module resolves to this set. An empty set is a pure
+    // module.
+    module_effects: Dict(String, EffectTerm),
   )
 }
 
@@ -59,7 +62,7 @@ pub fn load_knowledge_base(
   let #(dep_effects, dep_params, dep_returns) =
     load_dependencies(packages_directory)
   let catalog_dir = find_catalog_directory()
-  let #(cat_effects, cat_pure, cat_params) =
+  let #(cat_effects, cat_module_effects, cat_params) =
     load_catalog(catalog_dir, manifest_path)
   KnowledgeBase(
     // Dependency entries win on a clash: dict.merge keeps its second argument.
@@ -68,14 +71,14 @@ pub fn load_knowledge_base(
     type_fields: dict.new(),
     returned_operators: dep_returns,
     factories: dict.new(),
-    pure_modules: cat_pure,
+    module_effects: cat_module_effects,
   )
 }
 
 // Build a knowledge base from the catalog only (no dependency scanning).
 pub fn empty_knowledge_base() -> KnowledgeBase {
   let catalog_dir = find_catalog_directory()
-  let #(cat_effects, cat_pure, cat_params) =
+  let #(cat_effects, cat_module_effects, cat_params) =
     load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
     all_effects: cat_effects,
@@ -83,7 +86,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     type_fields: dict.new(),
     returned_operators: dict.new(),
     factories: dict.new(),
-    pure_modules: cat_pure,
+    module_effects: cat_module_effects,
   )
 }
 
@@ -144,22 +147,26 @@ pub fn with_inferred_type_fields(
 }
 
 // Merge external annotations into a knowledge base.
-// Module-level externals mark the whole module as pure.
+// Module-level externals record the whole module's declared effect.
 // Function-level externals are added to all_effects.
 pub fn with_externals(
   knowledge_base: KnowledgeBase,
   externals: List(ExternalAnnotation),
 ) -> KnowledgeBase {
-  let #(effect_map, pure_set) =
+  let #(effect_map, module_effs) =
     list.fold(
       externals,
-      #(knowledge_base.all_effects, knowledge_base.pure_modules),
+      #(knowledge_base.all_effects, knowledge_base.module_effects),
       fn(accumulator, external_annotation) {
-        let #(effect_map, pure_set) = accumulator
+        let #(effect_map, module_effs) = accumulator
         case external_annotation.target {
           ModuleExternal -> #(
             effect_map,
-            set.insert(pure_set, external_annotation.module),
+            dict.insert(
+              module_effs,
+              external_annotation.module,
+              effect_term.from_effect_set(external_annotation.effects),
+            ),
           )
           FunctionExternal(function) -> #(
             dict.insert(
@@ -167,7 +174,7 @@ pub fn with_externals(
               QualifiedName(external_annotation.module, function),
               effect_term.from_effect_set(external_annotation.effects),
             ),
-            pure_set,
+            module_effs,
           )
         }
       },
@@ -175,7 +182,7 @@ pub fn with_externals(
   KnowledgeBase(
     ..knowledge_base,
     all_effects: effect_map,
-    pure_modules: pure_set,
+    module_effects: module_effs,
   )
 }
 
@@ -187,9 +194,9 @@ pub fn lookup(
   case dict.get(knowledge_base.all_effects, name) {
     Ok(effect_set) -> Known(effect_set)
     Error(Nil) ->
-      case set.contains(knowledge_base.pure_modules, name.module) {
-        True -> Known(effect_term.pure())
-        False -> Unknown
+      case dict.get(knowledge_base.module_effects, name.module) {
+        Ok(effect_set) -> Known(effect_set)
+        Error(Nil) -> Unknown
       }
   }
 }
@@ -546,7 +553,7 @@ fn find_catalog_directory() -> String {
 type CatalogAcc {
   CatalogAcc(
     ext_effects: Dict(QualifiedName, EffectTerm),
-    pure_mods: Set(String),
+    module_effects: Dict(String, EffectTerm),
     poly_effects: Dict(QualifiedName, EffectTerm),
     poly_params: Dict(QualifiedName, List(ParamBound)),
   )
@@ -557,7 +564,7 @@ fn load_catalog(
   manifest_path: String,
 ) -> #(
   Dict(QualifiedName, EffectTerm),
-  Set(String),
+  Dict(String, EffectTerm),
   Dict(QualifiedName, List(ParamBound)),
 ) {
   let installed_versions = parse_manifest_versions(manifest_path)
@@ -567,12 +574,12 @@ fn load_catalog(
     Error(_) -> []
   }
   let selected = resolve_catalog_files(catalog_files, installed_versions)
-  let initial = CatalogAcc(dict.new(), set.new(), dict.new(), dict.new())
+  let initial = CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new())
   let acc = list.fold(selected, initial, fold_catalog_file)
   // Explicit `effects` annotations in the catalog take precedence over the
-  // module-level `external effects` pure markers.
+  // module-level `external effects` markers.
   let all_effects = dict.merge(acc.ext_effects, acc.poly_effects)
-  #(all_effects, acc.pure_mods, acc.poly_params)
+  #(all_effects, acc.module_effects, acc.poly_params)
 }
 
 // Fold one catalog file into the accumulator. `external effects` lines
@@ -594,7 +601,7 @@ fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
                 type_fields: dict.new(),
                 returned_operators: dict.new(),
                 factories: dict.new(),
-                pure_modules: acc.pure_mods,
+                module_effects: acc.module_effects,
               ),
               annotation.extract_externals(graded_file),
             )
@@ -606,7 +613,7 @@ fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
             )
           CatalogAcc(
             ext_effects: kb.all_effects,
-            pure_mods: kb.pure_modules,
+            module_effects: kb.module_effects,
             poly_effects:,
             poly_params:,
           )

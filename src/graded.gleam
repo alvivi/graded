@@ -144,6 +144,10 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
       packages_dir(package_root),
       manifest_path(package_root),
     )
+    // Consumer externals are applied before path-dep inference so a module-level
+    // external governs a path dependency's module during that dep's own
+    // inference, not only at the final lookup.
+    |> effects.with_externals(annotation.extract_externals(spec))
     |> enrich_with_path_deps(
       package_root,
       annotation.module_external_modules(spec),
@@ -152,7 +156,6 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     |> effects.with_inferred_returned_operators(
       effects.load_spec_returns_from_file(spec),
     )
-    |> effects.with_externals(annotation.extract_externals(spec))
     // Fill gaps for project modules not (yet) in the spec by inferring them
     // in memory, so `check` resolves cross-module calls without a prior
     // `graded infer`. Spec entries above take priority — committed effects are
@@ -548,11 +551,14 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
       packages_dir(package_root),
       manifest_path(package_root),
     )
+    // Consumer externals are applied before path-dep inference so a module-level
+    // external governs a path dependency's module during that dep's own
+    // inference, not only at the final lookup.
+    |> effects.with_externals(annotation.extract_externals(spec))
     |> enrich_with_path_deps(
       package_root,
       annotation.module_external_modules(spec),
     )
-    |> effects.with_externals(annotation.extract_externals(spec))
   // Resolve constructor-field values against the same view `run` uses — catalog
   // + externals + the spec's *existing* inferred effects — so `infer` and
   // `check` agree on a field wired to a qualified project function, converging
@@ -1406,16 +1412,14 @@ fn read_spec(spec_path: String) -> GradedFile {
 //    Cross-path-dep imports are not currently merged into a single graph
 //    — each dep is processed sequentially.
 //
-// `module_externals` is the set of modules the consumer spec declared pure with
-// a module-level `external effects <module> : [...]` line. Source inference for
-// those modules is dropped so the consumer's declaration governs them (via the
-// `pure_modules` fallback) instead of leaking an inferred `[Unknown]` that would
-// shadow it. The spec-file branch is left untouched: an authoritative dep spec
-// (or catalog) effect still wins.
+// A module the consumer declared with a module-level external (in
+// `consumer_modules`) is not inferred over during step 2 (see `infer_path_dep`),
+// so the consumer's declaration governs it. The spec-file branch is left
+// untouched: an authoritative dep spec (or catalog) effect still wins.
 fn enrich_with_path_deps(
   knowledge_base: KnowledgeBase,
   package_root: String,
-  module_externals: Set(String),
+  consumer_modules: Set(String),
 ) -> KnowledgeBase {
   let path_deps =
     effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
@@ -1432,32 +1436,13 @@ fn enrich_with_path_deps(
         fold_inferred_into_kb(kb, effs, params, returns)
       }
       _ ->
-        case infer_path_dep(resolved_dep_path, kb) {
+        case infer_path_dep(resolved_dep_path, kb, consumer_modules) {
           Error(Nil) -> kb
           Ok(#(effs, params, returns)) ->
-            fold_inferred_into_kb(
-              kb,
-              drop_modules(effs, module_externals),
-              drop_modules(params, module_externals),
-              drop_modules(returns, module_externals),
-            )
+            fold_inferred_into_kb(kb, effs, params, returns)
         }
     }
   })
-}
-
-// Drop every `QualifiedName`-keyed entry whose module is in `modules`.
-fn drop_modules(
-  entries: Dict(QualifiedName, a),
-  modules: Set(String),
-) -> Dict(QualifiedName, a) {
-  case set.is_empty(modules) {
-    True -> entries
-    False ->
-      dict.filter(entries, fn(name, _value) {
-        !set.contains(modules, name.module)
-      })
-  }
 }
 
 // Build a signature registry from every path dependency's `src/` directory.
@@ -1509,6 +1494,7 @@ fn fold_inferred_into_kb(
 pub fn infer_path_dep(
   dep_path: String,
   base_kb: KnowledgeBase,
+  consumer_modules: Set(String),
 ) -> Result(
   #(
     Dict(QualifiedName, types.EffectTerm),
@@ -1568,7 +1554,13 @@ pub fn infer_path_dep(
       sorted,
       #(dict.new(), dict.new(), dict.new(), base_kb),
       fn(state, module_path) {
-        infer_path_dep_module(state, module_path, index, registry)
+        infer_path_dep_module(
+          state,
+          module_path,
+          index,
+          registry,
+          consumer_modules,
+        )
       },
     )
   Ok(#(effs, params, returns))
@@ -1584,6 +1576,7 @@ fn infer_path_dep_module(
   module_path: String,
   index: Dict(String, #(glance.Module, List(types.EffectAnnotation))),
   registry: SignatureRegistry,
+  consumer_modules: Set(String),
 ) -> #(
   Dict(QualifiedName, types.EffectTerm),
   Dict(QualifiedName, List(types.ParamBound)),
@@ -1608,17 +1601,48 @@ fn infer_path_dep_module(
       // Qualify the module's results once, then both fold them into the dep's
       // own KB (so later modules in its topo order resolve calls into this one)
       // and accumulate them for the caller.
-      let #(module_effects, module_params, module_returns) =
+      let #(inferred_effs, inferred_params, inferred_returns) =
         qualified_inferred(annotations, returned_operators, module_path)
+      // A module the consumer declared with a module-level external governs its
+      // own functions: drop its inferred results so it resolves to the declared
+      // effect — both for the dep's later modules and the consumer — instead of
+      // the inferred one.
+      let inferred_effs = drop_declared_modules(inferred_effs, consumer_modules)
+      let inferred_params =
+        drop_declared_modules(inferred_params, consumer_modules)
+      let inferred_returns =
+        drop_declared_modules(inferred_returns, consumer_modules)
       let new_kb =
-        fold_inferred_into_kb(kb, module_effects, module_params, module_returns)
+        fold_inferred_into_kb(
+          kb,
+          inferred_effs,
+          inferred_params,
+          inferred_returns,
+        )
       #(
-        dict.merge(eff_acc, module_effects),
-        dict.merge(param_acc, module_params),
-        dict.merge(returns_acc, module_returns),
+        dict.merge(eff_acc, inferred_effs),
+        dict.merge(param_acc, inferred_params),
+        dict.merge(returns_acc, inferred_returns),
         new_kb,
       )
     }
+  }
+}
+
+// Drop every `QualifiedName`-keyed entry whose module the consumer declared
+// with a module-level external. Keyed off the consumer's declared modules, not
+// the whole knowledge base, so a catalog pure-module entry never suppresses a
+// same-named path-dependency module.
+fn drop_declared_modules(
+  entries: Dict(QualifiedName, a),
+  modules: Set(String),
+) -> Dict(QualifiedName, a) {
+  case set.is_empty(modules) {
+    True -> entries
+    False ->
+      dict.filter(entries, fn(name, _value) {
+        !set.contains(modules, name.module)
+      })
   }
 }
 

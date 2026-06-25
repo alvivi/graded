@@ -499,6 +499,108 @@ pub fn path_dep_module_level_external_marks_pure_test() {
   Nil
 }
 
+pub fn path_dep_module_level_external_preserves_effect_test() {
+  // A module-level external with a NON-EMPTY effect set propagates that exact
+  // set, it does not collapse to pure. `external effects dep : [Database]` makes
+  // every `dep.*` call resolve to [Database]; the consumer's `check caller : []`
+  // therefore fails with an actual of [Database] — the declared effect is kept,
+  // not flattened to [] and not left as an inferred [Unknown].
+  let app_root = "build/pd_modext_eff_app"
+  let dep_root = "build/pd_modext_eff_dep"
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+
+  let assert Ok(Nil) = simplifile.create_directory_all(dep_root <> "/src")
+  let assert Ok(Nil) =
+    simplifile.write(dep_root <> "/gleam.toml", "name = \"dep\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/src/dep.gleam",
+      "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
+    )
+
+  let assert Ok(Nil) = simplifile.create_directory_all(app_root)
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/gleam.toml",
+      "name = \"app\"\n\n[dependencies]\ndep = { path = \"../pd_modext_eff_dep\" }\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/app.graded",
+      "external effects dep : [Database]\n\ncheck app.caller : []\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/app.gleam",
+      "import dep\n\npub fn caller() -> Nil {\n  dep.touch()\n}\n",
+    )
+
+  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Database"])))
+
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+  Nil
+}
+
+pub fn path_dep_module_external_propagates_through_wrapper_test() {
+  // A module-level external governs its module DURING the dependency's own
+  // inference, not only at the final consumer lookup. The dep has an opaque FFI
+  // module `ffi` (declared pure) and a `wrapper` module that calls it. Were
+  // `ffi` inferred [Unknown] and only dropped afterward, `wrapper.go` would be
+  // polluted to [Unknown]; instead it resolves to [] and `check caller : []`
+  // holds for a consumer that goes through the wrapper.
+  let app_root = "build/pd_modext_wrap_app"
+  let dep_root = "build/pd_modext_wrap_dep"
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+
+  let assert Ok(Nil) = simplifile.create_directory_all(dep_root <> "/src")
+  let assert Ok(Nil) =
+    simplifile.write(dep_root <> "/gleam.toml", "name = \"dep\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/src/ffi.gleam",
+      "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/src/wrapper.gleam",
+      "import ffi\n\npub fn go() -> Nil {\n  ffi.touch()\n}\n",
+    )
+
+  let assert Ok(Nil) = simplifile.create_directory_all(app_root)
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/gleam.toml",
+      "name = \"app\"\n\n[dependencies]\ndep = { path = \"../pd_modext_wrap_dep\" }\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/app.graded",
+      "external effects ffi : []\n\ncheck app.caller : []\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/app.gleam",
+      "import wrapper\n\npub fn caller() -> Nil {\n  wrapper.go()\n}\n",
+    )
+
+  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+  Nil
+}
+
 pub fn path_dep_cross_module_positional_discharges_test() {
   // Source-only path dep whose module `b` calls another module `a`'s
   // higher-order function POSITIONALLY (`a.apply(pure_cb)`). Inferring the dep

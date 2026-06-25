@@ -1171,7 +1171,7 @@ fn build_kb(calls: List(#(String, String, String))) -> effects.KnowledgeBase {
     type_fields: dict.new(),
     returned_operators: dict.new(),
     factories: dict.new(),
-    pure_modules: set.new(),
+    module_effects: dict.new(),
   )
 }
 
@@ -1379,7 +1379,7 @@ fn bare_knowledge_base() -> effects.KnowledgeBase {
     type_fields: dict.new(),
     returned_operators: dict.new(),
     factories: dict.new(),
-    pure_modules: set.new(),
+    module_effects: dict.new(),
   )
 }
 

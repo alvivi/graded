@@ -289,16 +289,19 @@ effect at once, so every function in it resolves to that set without a per-funct
 line.
 
 ```
-external effects gleam/list : []          // the whole module is pure
-external effects my_app/db : [Database]    // every db function does Database I/O
+external effects gleam/list : []           // the whole module is pure
+external effects some_db/client : [Database] // every client function does Database I/O
 ```
 
-Use the per-function form when functions in a module differ; use the module-level
-form when one budget fits the module. A per-function `external effects mod.fn` or a
-catalog `effects` line for the same function takes precedence over a module-level
-external. The module-level form applies uniformly to hex and path dependencies: a
-module-level external on a path dependency suppresses graded's source inference for
-that module, so it resolves to the declared set instead of an inferred `[Unknown]`.
+Module-level externals describe **dependency** modules (hex or path) — code graded
+doesn't infer itself; a declaration for one of your own project modules is shadowed
+by graded's inference of that module's source. Use the per-function form when
+functions in a module differ; use the module-level form when one budget fits the
+module. A per-function `external effects mod.fn` or a catalog `effects` line for the
+same function takes precedence over a module-level external. The module-level form
+applies uniformly to hex and path dependencies: a module-level external on a path
+dependency suppresses graded's source inference for that module, so it resolves to
+the declared set instead of an inferred `[Unknown]`.
 
 This is also the mechanism for **FFI**. A bodyless `@external` function is opaque —
 graded infers `[Unknown]`, never the `[]` an empty body would suggest, since the
