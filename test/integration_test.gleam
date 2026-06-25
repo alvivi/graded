@@ -7,6 +7,7 @@ import gleeunit/should
 import graded
 import graded/internal/annotation
 import graded/internal/checker
+import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/signatures
 import graded/internal/types
@@ -362,6 +363,48 @@ pub fn alias_typed_field_round_trips_as_field_bound_test() {
     list.find(annotation.params, fn(b) { b.name == "r.run" })
   bound.effects |> should.equal(types.TVar("r.run"))
   annotation.effects |> should.equal(types.TVar("r.run"))
+
+  let _ = simplifile.delete(root)
+  Nil
+}
+
+pub fn imported_same_name_field_does_not_borrow_local_test() {
+  // The local module defines its own fn-typed `Runner.run`, and `go` calls
+  // `r.run()` on an *imported* `ext.Runner` that shares the type name and field
+  // label. The field fallback consults only the current module's registry, so
+  // the imported field must not borrow the local one: `go` resolves to [Unknown]
+  // with no `r.run` bound — not a spurious polymorphic field variable for an
+  // unrelated imported type.
+  let root = "build/imported_samename_app"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/ext.gleam",
+      "pub type Runner {\n  Runner(run: fn() -> Nil)\n}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/proj.gleam",
+      "import ext\n\n"
+        <> "pub type Runner {\n  Runner(run: fn() -> Nil)\n}\n\n"
+        <> "pub fn go(r: ext.Runner) -> Nil {\n  r.run()\n}\n",
+    )
+  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", "")
+
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(content) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(file) = annotation.parse_file(content)
+  let assert Ok(annotation) =
+    list.find(annotation.extract_annotations(file), fn(a) {
+      a.function == "proj.go"
+    })
+  list.any(annotation.params, fn(b) { b.name == "r.run" })
+  |> should.be_false()
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 
   let _ = simplifile.delete(root)
   Nil

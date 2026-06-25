@@ -2793,7 +2793,7 @@ fn resolve_field_call_by_type(
       |> option.map(fn(type_name) { #("", type_name) })
     })
   case receiver_type {
-    None -> #(field_fallback(field_call, "", context), memo)
+    None -> #(field_fallback(field_call, "", "", context), memo)
     Some(#(module, type_name)) ->
       case
         effects.lookup_type_field(
@@ -2803,7 +2803,10 @@ fn resolve_field_call_by_type(
           field_call.label,
         )
       {
-        Error(Nil) -> #(field_fallback(field_call, type_name, context), memo)
+        Error(Nil) -> #(
+          field_fallback(field_call, module, type_name, context),
+          memo,
+        )
         Ok(field_effect) ->
           resolve_field_effect(
             field_effect,
@@ -2831,6 +2834,7 @@ fn resolve_field_call_by_type(
 // fallback yields no module), which the same-module set still matches by name.
 fn field_fallback(
   field_call: types.FieldCall,
+  module: String,
   type_name: String,
   context: ImportContext,
 ) -> EffectTerm {
@@ -2838,7 +2842,16 @@ fn field_fallback(
   // the `<expr>` sentinel object; never mint a `<expr>.field` variable for it,
   // since no `check` bound can name it and an inferred spec shouldn't carry one.
   let has_path = field_call.object != "<expr>"
-  case has_path && is_fn_typed_field(context, type_name, field_call.label) {
+  // The field registry holds only the current module's types. An imported
+  // receiver type sharing a name with a local fn-typed type must not borrow the
+  // local field. `module` is the receiver type's defining module (from girard);
+  // "" is the syntactic-annotation fallback, matched by name as before.
+  let in_scope = module == "" || module == context.module_path
+  case
+    has_path
+    && in_scope
+    && is_fn_typed_field(context, type_name, field_call.label)
+  {
     True -> TVar(field_call.object <> "." <> field_call.label)
     False -> effect_term.unknown()
   }
@@ -3020,8 +3033,11 @@ fn syntactic_param_type(
       }
     })
   {
+    // Only an unqualified annotation (`r: Runner`) is treated as the current
+    // module's type. A qualified one (`r: ext.Runner`) names an imported type,
+    // whose fields the local registry must not claim, so it yields no type.
     Ok(glance.FunctionParameter(
-      type_: Some(glance.NamedType(name: type_name, ..)),
+      type_: Some(glance.NamedType(name: type_name, module: None, ..)),
       ..,
     )) -> Some(type_name)
     _ -> None
