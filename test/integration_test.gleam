@@ -283,6 +283,30 @@ pub fn nested_field_unbound_is_unknown_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
+// Materialise a single-package project named `proj` under `root` from `files`
+// (each `#(relative_path, contents)` under the project root), run `graded
+// infer`, and return the inferred public-API annotations parsed back from the
+// spec file. `root` lives under the gitignored `build/`; it is cleared first.
+fn infer_project(
+  root: String,
+  files: List(#(String, String)),
+) -> List(types.EffectAnnotation) {
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
+  list.each(files, fn(file) {
+    let #(path, contents) = file
+    let assert Ok(Nil) = simplifile.write(root <> "/" <> path, contents)
+    Nil
+  })
+  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", "")
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(content) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(file) = annotation.parse_file(content)
+  annotation.extract_annotations(file)
+}
+
 pub fn nested_field_round_trips_as_dotted_field_bound_test() {
   // Inferring a nested fn-typed field call on a same-module type (no `type`
   // line, no field bound) surfaces it as a polymorphic *dotted* field bound —
@@ -290,34 +314,21 @@ pub fn nested_field_round_trips_as_dotted_field_bound_test() {
   // multi-segment path. Run through the full `run_infer` pipeline so girard
   // types the nested receiver (the same-module polymorphic path needs the
   // resolved receiver type, which only girard supplies for a nested receiver).
-  let root = "build/nested_poly_app"
-  let _ = simplifile.delete(root)
-  let assert Ok(Nil) = simplifile.create_directory_all(root)
-  let assert Ok(Nil) =
-    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
-  let assert Ok(Nil) =
-    simplifile.write(
-      root <> "/proj.gleam",
-      "pub type Inner {\n  Inner(run: fn() -> Nil)\n}\n\n"
-        <> "pub type Outer {\n  Outer(inner: Inner)\n}\n\n"
-        <> "pub fn poke(o: Outer) -> Nil {\n  o.inner.run()\n}\n",
-    )
-  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", "")
-
-  let assert Ok(Nil) = graded.run_infer(root)
-  let assert Ok(content) = simplifile.read(root <> "/proj.graded")
-  let assert Ok(file) = annotation.parse_file(content)
+  let annotations =
+    infer_project("build/nested_poly_app", [
+      #(
+        "proj.gleam",
+        "pub type Inner {\n  Inner(run: fn() -> Nil)\n}\n\n"
+          <> "pub type Outer {\n  Outer(inner: Inner)\n}\n\n"
+          <> "pub fn poke(o: Outer) -> Nil {\n  o.inner.run()\n}\n",
+      ),
+    ])
   let assert Ok(annotation) =
-    list.find(annotation.extract_annotations(file), fn(a) {
-      a.function == "proj.poke"
-    })
+    list.find(annotations, fn(a) { a.function == "proj.poke" })
   let assert Ok(bound) =
     list.find(annotation.params, fn(b) { b.name == "o.inner.run" })
   bound.effects |> should.equal(types.TVar("o.inner.run"))
   annotation.effects |> should.equal(types.TVar("o.inner.run"))
-
-  let _ = simplifile.delete(root)
-  Nil
 }
 
 pub fn nested_field_pipe_target_resolves_test() {
@@ -338,34 +349,21 @@ pub fn alias_typed_field_round_trips_as_field_bound_test() {
   // `type Action = fn(String) -> Nil`) is callable. Inferring a function that
   // calls it on an opaque receiver surfaces the polymorphic field bound `r.run`,
   // not [Unknown] — the alias is resolved exactly as for fn-typed parameters.
-  let root = "build/alias_field_app"
-  let _ = simplifile.delete(root)
-  let assert Ok(Nil) = simplifile.create_directory_all(root)
-  let assert Ok(Nil) =
-    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
-  let assert Ok(Nil) =
-    simplifile.write(
-      root <> "/proj.gleam",
-      "pub type Action = fn(String) -> Nil\n\n"
-        <> "pub type Runner {\n  Runner(run: Action)\n}\n\n"
-        <> "pub fn go(r: Runner) -> Nil {\n  r.run(\"x\")\n}\n",
-    )
-  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", "")
-
-  let assert Ok(Nil) = graded.run_infer(root)
-  let assert Ok(content) = simplifile.read(root <> "/proj.graded")
-  let assert Ok(file) = annotation.parse_file(content)
+  let annotations =
+    infer_project("build/alias_field_app", [
+      #(
+        "proj.gleam",
+        "pub type Action = fn(String) -> Nil\n\n"
+          <> "pub type Runner {\n  Runner(run: Action)\n}\n\n"
+          <> "pub fn go(r: Runner) -> Nil {\n  r.run(\"x\")\n}\n",
+      ),
+    ])
   let assert Ok(annotation) =
-    list.find(annotation.extract_annotations(file), fn(a) {
-      a.function == "proj.go"
-    })
+    list.find(annotations, fn(a) { a.function == "proj.go" })
   let assert Ok(bound) =
     list.find(annotation.params, fn(b) { b.name == "r.run" })
   bound.effects |> should.equal(types.TVar("r.run"))
   annotation.effects |> should.equal(types.TVar("r.run"))
-
-  let _ = simplifile.delete(root)
-  Nil
 }
 
 pub fn imported_same_name_field_does_not_borrow_local_test() {
@@ -375,39 +373,22 @@ pub fn imported_same_name_field_does_not_borrow_local_test() {
   // the imported field must not borrow the local one: `go` resolves to [Unknown]
   // with no `r.run` bound — not a spurious polymorphic field variable for an
   // unrelated imported type.
-  let root = "build/imported_samename_app"
-  let _ = simplifile.delete(root)
-  let assert Ok(Nil) = simplifile.create_directory_all(root)
-  let assert Ok(Nil) =
-    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
-  let assert Ok(Nil) =
-    simplifile.write(
-      root <> "/ext.gleam",
-      "pub type Runner {\n  Runner(run: fn() -> Nil)\n}\n",
-    )
-  let assert Ok(Nil) =
-    simplifile.write(
-      root <> "/proj.gleam",
-      "import ext\n\n"
-        <> "pub type Runner {\n  Runner(run: fn() -> Nil)\n}\n\n"
-        <> "pub fn go(r: ext.Runner) -> Nil {\n  r.run()\n}\n",
-    )
-  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", "")
-
-  let assert Ok(Nil) = graded.run_infer(root)
-  let assert Ok(content) = simplifile.read(root <> "/proj.graded")
-  let assert Ok(file) = annotation.parse_file(content)
+  let annotations =
+    infer_project("build/imported_samename_app", [
+      #("ext.gleam", "pub type Runner {\n  Runner(run: fn() -> Nil)\n}\n"),
+      #(
+        "proj.gleam",
+        "import ext\n\n"
+          <> "pub type Runner {\n  Runner(run: fn() -> Nil)\n}\n\n"
+          <> "pub fn go(r: ext.Runner) -> Nil {\n  r.run()\n}\n",
+      ),
+    ])
   let assert Ok(annotation) =
-    list.find(annotation.extract_annotations(file), fn(a) {
-      a.function == "proj.go"
-    })
+    list.find(annotations, fn(a) { a.function == "proj.go" })
   list.any(annotation.params, fn(b) { b.name == "r.run" })
   |> should.be_false()
   effect_term.to_effect_set(annotation.effects)
   |> should.equal(types.Specific(set.from_list(["Unknown"])))
-
-  let _ = simplifile.delete(root)
-  Nil
 }
 
 pub fn nested_field_resolves_cross_module_type_line_test() {
