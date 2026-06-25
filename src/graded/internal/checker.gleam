@@ -396,21 +396,27 @@ fn polymorphic_param_bounds(
   |> list.map(self_referential_bound)
 }
 
-// Replace every free effect variable in `term` that isn't one of `params` with
-// [Unknown]. Such a variable is a phantom: it can never be bound at a call site
-// (only the function's own fn-typed parameters can), so leaving it would surface
-// an internal name in the effect set instead of the conservative fallback.
-fn collapse_phantom_vars(term: EffectTerm, params: Set(String)) -> EffectTerm {
-  let phantoms = set.difference(effect_term.free_vars(term), params)
-  case set.is_empty(phantoms) {
+// Substitute every variable in `vars` with `[Unknown]` in `term`. The shared
+// core of phantom collapse and field-variable concretization: both select a set
+// of free variables that can never be bound here and ground them.
+fn ground_vars(term: EffectTerm, vars: Set(String)) -> EffectTerm {
+  case set.is_empty(vars) {
     True -> term
     False ->
-      phantoms
+      vars
       |> set.to_list()
       |> list.map(fn(v) { #(v, effect_term.unknown()) })
       |> dict.from_list()
       |> effect_term.subst(term, _)
   }
+}
+
+// Replace every free effect variable in `term` that isn't one of `params` with
+// [Unknown]. Such a variable is a phantom: it can never be bound at a call site
+// (only the function's own fn-typed parameters can), so leaving it would surface
+// an internal name in the effect set instead of the conservative fallback.
+fn collapse_phantom_vars(term: EffectTerm, params: Set(String)) -> EffectTerm {
+  ground_vars(term, set.difference(effect_term.free_vars(term), params))
 }
 
 // PRIVATE
@@ -2825,7 +2831,7 @@ fn field_fallback(
   // A receiver with no clean access path (`make().field` — a call result) gets
   // the `<expr>` sentinel object; never mint a `<expr>.field` variable for it,
   // since no `check` bound can name it and an inferred spec shouldn't carry one.
-  let has_path = !string.contains(field_call.object, "<expr>")
+  let has_path = field_call.object != "<expr>"
   case has_path && is_fn_typed_field(context, type_name, field_call.label) {
     True -> TVar(field_call.object <> "." <> field_call.label)
     False -> effect_term.unknown()
@@ -2862,13 +2868,7 @@ fn concretize_field_vars(term: EffectTerm) -> EffectTerm {
     term |> effect_term.free_vars() |> set.filter(is_field_path_var)
   case set.is_empty(field_vars) {
     True -> term
-    False ->
-      field_vars
-      |> set.to_list()
-      |> list.map(fn(v) { #(v, effect_term.unknown()) })
-      |> dict.from_list()
-      |> effect_term.subst(term, _)
-      |> effect_term.normalize()
+    False -> ground_vars(term, field_vars) |> effect_term.normalize()
   }
 }
 

@@ -925,36 +925,6 @@ fn receiver_path(expression: Expression) -> Option(String) {
   }
 }
 
-// The source span of an expression, used as the `receiver_span` for a nested
-// field call so girard's per-span type lookup resolves the receiver. Every
-// glance expression carries a `location`; this surfaces it for the receiver
-// shapes a field call can have.
-fn expression_location(expression: Expression) -> glance.Span {
-  case expression {
-    glance.Int(location:, ..)
-    | glance.Float(location:, ..)
-    | glance.String(location:, ..)
-    | glance.Variable(location:, ..)
-    | glance.NegateInt(location:, ..)
-    | glance.NegateBool(location:, ..)
-    | glance.Block(location:, ..)
-    | glance.Panic(location:, ..)
-    | glance.Todo(location:, ..)
-    | glance.Tuple(location:, ..)
-    | glance.List(location:, ..)
-    | glance.Fn(location:, ..)
-    | glance.RecordUpdate(location:, ..)
-    | glance.FieldAccess(location:, ..)
-    | glance.Call(location:, ..)
-    | glance.TupleIndex(location:, ..)
-    | glance.FnCapture(location:, ..)
-    | glance.BitString(location:, ..)
-    | glance.Case(location:, ..)
-    | glance.BinaryOperator(location:, ..)
-    | glance.Echo(location:, ..) -> location
-  }
-}
-
 // Resolve a qualified `alias.label` used as a value (not called).
 // Constructors short-circuit to empty; unknown aliases are dropped.
 fn resolve_qualified_reference(
@@ -1384,12 +1354,7 @@ fn extract_from_expression(
       arguments:,
     ) ->
       merge_with_args(
-        resolve_nested_field_call(
-          receiver,
-          label,
-          span,
-          expression_location(receiver),
-        ),
+        resolve_nested_field_call(receiver, label, span, receiver.location),
         merge(
           extract_from_expression(receiver, context, env),
           extract_from_arguments(arguments, context, env),
