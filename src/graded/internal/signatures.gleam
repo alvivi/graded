@@ -207,6 +207,27 @@ pub fn from_glance_module(
   SignatureRegistry(signatures:)
 }
 
+// Function-typed *record fields* of a module's custom types, keyed by
+// `#(type_name, field_name)`. Only labelled fields are included — an
+// unlabelled field can't be reached by a `record.field(..)` call. The
+// boundary-scoped analog of `fn_typed_params_from_function`: it lets the
+// checker treat a `fn`-typed field on an opaque receiver as polymorphic
+// (a field-effect variable) instead of collapsing it to `[Unknown]`.
+pub fn fn_typed_fields_from_module(module: Module) -> Set(#(String, String)) {
+  list.fold(module.custom_types, set.new(), fn(acc, definition) {
+    let type_name = definition.definition.name
+    list.fold(definition.definition.variants, acc, fn(acc2, variant) {
+      list.fold(variant.fields, acc2, fn(acc3, field) {
+        case field {
+          glance.LabelledVariantField(item: FunctionType(_, _, _), label:) ->
+            set.insert(acc3, #(type_name, label))
+          _ -> acc3
+        }
+      })
+    })
+  })
+}
+
 // ──── Glance AST detection ────
 
 // Names of a local function's fn-typed parameters, detected from

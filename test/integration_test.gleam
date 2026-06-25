@@ -1,8 +1,14 @@
+import gleam/dict
 import gleam/list
+import gleam/result
 import gleam/set
 import gleeunit/should
+import glance
 import graded
 import graded/internal/annotation
+import graded/internal/checker
+import graded/internal/effects
+import graded/internal/signatures
 import graded/internal/types
 import simplifile
 
@@ -175,6 +181,68 @@ pub fn field_bound_resolves_untraceable_receiver_test() {
   let assert [v, ..] = r.violations
   v.function |> should.equal("caller")
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn opaque_fn_typed_field_discharges_via_bound_test() {
+  // opaque_field.exec calls `r.run` where `r` is an opaque parameter — no
+  // construction site, no `type` line. `run` is a `fn`-typed field, so the call
+  // becomes a synthetic field-effect variable rather than [Unknown]. The
+  // `check opaque_field.exec(r.run: [Stdout]) : []` field bound discharges that
+  // variable to [Stdout], so the [] budget must fail with the precise [Stdout].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/opaque_field.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "exec" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn opaque_fn_typed_field_unbound_is_unknown_test() {
+  // opaque_field.exec_unbound makes the same opaque `fn`-typed field call with
+  // NO field bound. The synthetic `r.run` variable can't be discharged, so it
+  // concretizes to [Unknown] — the soundness floor — and the [] budget fails
+  // with [Unknown], never silently []. This is the invariant the polymorphic
+  // field-bound feature must never violate.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/opaque_field.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "exec_unbound" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn opaque_fn_typed_field_round_trips_as_field_bound_test() {
+  // Inferring opaque_field.exec surfaces the synthetic field-effect variable as
+  // a polymorphic *field bound* on the function's signature — the field-bound
+  // analog of the parameter bounds a fn-typed parameter produces. The inferred
+  // `effects` line carries a `r.run`-keyed bound whose effect is the `[r.run]`
+  // variable, so the polymorphic signature round-trips through the spec file.
+  let assert Ok(results) =
+    checker_infer_opaque_field()
+  let assert Ok(annotation) =
+    list.find(results, fn(a) { a.function == "exec" })
+  let assert Ok(bound) =
+    list.find(annotation.params, fn(b) { b.name == "r.run" })
+  bound.effects |> should.equal(types.TVar("r.run"))
+  annotation.effects |> should.equal(types.TVar("r.run"))
+}
+
+// Infer the opaque_field fixture module in isolation and return its public
+// annotations, so the round-trip test can inspect the surfaced field bound
+// without round-tripping the whole spec file.
+fn checker_infer_opaque_field() -> Result(List(types.EffectAnnotation), Nil) {
+  use source <- result.try(
+    simplifile.read("test/fixtures/opaque_field.gleam") |> result.replace_error(Nil),
+  )
+  use module <- result.try(glance.module(source) |> result.replace_error(Nil))
+  Ok(checker.infer(
+    module,
+    "opaque_field",
+    effects.empty_knowledge_base(),
+    [],
+    signatures.empty(),
+    dict.new(),
+    dict.new(),
+  ))
 }
 
 pub fn closure_field_effect_from_construction_test() {

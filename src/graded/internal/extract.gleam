@@ -5,6 +5,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import graded/internal/types.{
   type ArgumentValue, type CallArgument, type DirectClosureCall,
@@ -84,6 +85,11 @@ pub type ImportContext {
     // factory call resolves the result's fields like a direct construction.
     factories: Dict(String, FactorySignature),
     cross_factories: Dict(#(String, String), FactorySignature),
+    // The module's own `fn`-typed record fields, by `#(type_name, field)`. Lets
+    // the checker treat a field call on an opaque same-module receiver as
+    // polymorphic (a field-effect variable) rather than `[Unknown]`. Empty by
+    // default; populated only for the module under analysis.
+    fn_typed_fields: Set(#(String, String)),
   )
 }
 
@@ -119,6 +125,15 @@ pub fn with_cross_factories(
   cross_factories: Dict(#(String, String), FactorySignature),
 ) -> ImportContext {
   ImportContext(..context, cross_factories:)
+}
+
+// Attach the module's own `fn`-typed record fields, so a field call on an
+// opaque same-module receiver resolves to a field-effect variable.
+pub fn with_fn_typed_fields(
+  context: ImportContext,
+  fn_typed_fields: Set(#(String, String)),
+) -> ImportContext {
+  ImportContext(..context, fn_typed_fields:)
 }
 
 // A module's `constructor -> field labels` map (the same labels
@@ -202,6 +217,7 @@ pub fn build_import_context(module: Module) -> ImportContext {
     cross_constructors: dict.new(),
     factories: dict.new(),
     cross_factories: dict.new(),
+    fn_typed_fields: set.new(),
   )
 }
 
