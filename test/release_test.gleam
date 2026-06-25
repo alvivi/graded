@@ -226,11 +226,9 @@ pub fn run(_o: Opts) -> Nil {
 }
 ",
         ),
-        // `wrong` is not a project module; `missing` is not a function of `opts`.
-        #(
-          "app.graded",
-          "type wrong.Opts.on_change : []\ncheck opts.missing : []\n",
-        ),
+        // `opts` is a project module: `gone` is no field of `Opts`, and
+        // `missing` is no function of the module.
+        #("app.graded", "type opts.Opts.gone : []\ncheck opts.missing : []\n"),
       ]),
     )
 
@@ -238,13 +236,57 @@ pub fn run(_o: Opts) -> Nil {
   let warnings = all_warnings(results)
 
   list.any(warnings, fn(w) {
-    w == UnmatchedTypeFieldWarning(name: "wrong.Opts.on_change")
+    w == UnmatchedTypeFieldWarning(name: "opts.Opts.gone")
   })
   |> should.be_true
 
   list.any(warnings, fn(w) {
     w == UnmatchedCheckWarning(function: "opts.missing")
   })
+  |> should.be_true
+
+  cleanup(directory)
+}
+
+// A `type` line qualified at a dependency module names a field graded can't see
+// (the type isn't a project type), but girard still resolves it from the
+// receiver's nominal type — so it must not be flagged as dead.
+pub fn dependency_type_field_does_not_warn_test() {
+  let directory =
+    write_fixture(
+      "/tmp/graded_release_dep_type",
+      list.append(project_files(), [
+        #("widget.gleam", "pub fn render() -> Nil {\n  Nil\n}\n"),
+        #("app.graded", "type lustre/component.Config.on_click : [Dom]\n"),
+      ]),
+    )
+
+  let assert Ok(results) = graded.run(directory)
+  all_warnings(results)
+  |> list.any(fn(w) {
+    w == UnmatchedTypeFieldWarning(name: "lustre/component.Config.on_click")
+  })
+  |> should.be_false
+
+  cleanup(directory)
+}
+
+// A `type` line on a project type whose field isn't function-typed can never
+// resolve a field call, so it's dead and must be flagged — the lint shouldn't
+// treat a plain data field as a valid target.
+pub fn non_function_field_annotation_warns_test() {
+  let directory =
+    write_fixture(
+      "/tmp/graded_release_nonfn",
+      list.append(project_files(), [
+        #("rec.gleam", "pub type Rec {\n  Rec(count: Int)\n}\n"),
+        #("app.graded", "type rec.Rec.count : []\n"),
+      ]),
+    )
+
+  let assert Ok(results) = graded.run(directory)
+  all_warnings(results)
+  |> list.any(fn(w) { w == UnmatchedTypeFieldWarning(name: "rec.Rec.count") })
   |> should.be_true
 
   cleanup(directory)

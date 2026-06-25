@@ -44,9 +44,10 @@ import graded/internal/topo
 import graded/internal/typeinfo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type GradedFile, type QualifiedName,
-  type Violation, type Warning, AnnotationLine, CheckResult, EffectAnnotation,
-  GradedFile, QualifiedName, UnmatchedCheckWarning, UnmatchedFieldBoundWarning,
-  UnmatchedParamBoundWarning, UnmatchedTypeFieldWarning, UntrackedEffectWarning,
+  type TypeFieldAnnotation, type Violation, type Warning, AnnotationLine,
+  CheckResult, EffectAnnotation, GradedFile, QualifiedName,
+  UnmatchedCheckWarning, UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning,
+  UnmatchedTypeFieldWarning, UntrackedEffectWarning,
 }
 import simplifile
 
@@ -217,20 +218,35 @@ fn validate_spec_annotations(
 
   let type_field_warnings =
     annotation.extract_type_fields(spec)
-    |> list.filter_map(fn(tf) {
-      let name = case tf.module {
-        Some(module) -> module <> "." <> tf.type_name <> "." <> tf.field
-        // Unqualified `type Type.field` carries no module, so it can never key
-        // a receiver's resolved type — always dead.
-        None -> tf.type_name <> "." <> tf.field
-      }
-      case set.contains(known_type_fields, name) {
-        True -> Error(Nil)
-        False -> Ok(UnmatchedTypeFieldWarning(name:))
-      }
-    })
+    |> list.filter_map(unmatched_type_field_warning(_, index, known_type_fields))
 
   list.append(check_warnings, type_field_warnings)
+}
+
+// A warning for a `type` line that resolves nothing, or `Error(Nil)` when the
+// line is a valid target. Cases:
+//   - unqualified (`type Type.field`): no module to key a receiver's resolved
+//     type, so it's always dead;
+//   - qualified at a *project* module: dead unless it names a function-typed
+//     field of one of that module's custom types;
+//   - qualified at a *dependency* module: left alone — the field belongs to a
+//     type graded can't see in `index`, and girard still resolves it from the
+//     receiver's nominal type, so flagging it would be a false positive.
+fn unmatched_type_field_warning(
+  tf: TypeFieldAnnotation,
+  index: Dict(String, #(String, glance.Module)),
+  known_type_fields: Set(String),
+) -> Result(Warning, Nil) {
+  case tf.module {
+    None -> Ok(UnmatchedTypeFieldWarning(name: tf.type_name <> "." <> tf.field))
+    Some(module) -> {
+      let name = module <> "." <> tf.type_name <> "." <> tf.field
+      case dict.has_key(index, module), set.contains(known_type_fields, name) {
+        True, False -> Ok(UnmatchedTypeFieldWarning(name:))
+        _, _ -> Error(Nil)
+      }
+    }
+  }
 }
 
 // Every `module.function` defined across the project (public and private), the
@@ -246,8 +262,11 @@ fn known_function_names(
   })
 }
 
-// Every `module.Type.field` labelled field across the project's custom types,
-// the set a qualified `type` line must belong to.
+// Every `module.Type.field` *function-typed* labelled field across the
+// project's custom types, the set a qualified `type` line must belong to. A
+// `type` line only ever resolves a function-typed field, so a non-function
+// field is not a valid target — including it would let the lint miss exactly
+// the dead annotation it's meant to catch.
 fn known_type_field_names(
   index: Dict(String, #(String, glance.Module)),
 ) -> Set(String) {
@@ -259,7 +278,8 @@ fn known_type_field_names(
   })
 }
 
-// Add every `module.Type.field` for one custom type's labelled fields.
+// Add every `module.Type.field` for one custom type's function-typed labelled
+// fields.
 fn insert_type_field_names(
   acc: Set(String),
   module_path: String,
@@ -269,9 +289,9 @@ fn insert_type_field_names(
   list.fold(custom_type.variants, acc, fn(acc2, variant) {
     list.fold(variant.fields, acc2, fn(acc3, field) {
       case field {
-        glance.LabelledVariantField(label:, ..) ->
+        glance.LabelledVariantField(label:, item: glance.FunctionType(..)) ->
           set.insert(acc3, prefix <> label)
-        glance.UnlabelledVariantField(..) -> acc3
+        _ -> acc3
       }
     })
   })
