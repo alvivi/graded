@@ -74,6 +74,24 @@ pub fn factory_field_violation_detected_test() {
   v.call.function |> should.equal("println")
 }
 
+pub fn inline_construction_field_is_unknown_test() {
+  // inline_construction_field.run calls a function-typed field directly on an
+  // *inline, un-let-bound* construction: `Validator(to_error: io.println)
+  // .to_error("oops")`. The receiver is a `Call`, not a `Variable`, so there's
+  // no construction site to trace and no `type` line — the field call resolves
+  // to [Unknown]. Reporting it as [] would be unsound (the field is wired to
+  // io.println), so the [] budget must fail with actual [Unknown]. Locks in the
+  // 0.9.4 soundness fix (2237f87) for expression-valued callees.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/inline_construction_field.gleam"
+    })
+  let assert [v, ..] = r.violations
+  v.function |> should.equal("run")
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
 pub fn field_union_operator_reduces_test() {
   // field_union.run calls a function-typed field built at two *distinct*
   // construction sites (pure + printing), so the field's inferred effect is a
