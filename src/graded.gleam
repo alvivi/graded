@@ -144,7 +144,10 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
       packages_dir(package_root),
       manifest_path(package_root),
     )
-    |> enrich_with_path_deps(package_root)
+    |> enrich_with_path_deps(
+      package_root,
+      annotation.module_external_modules(spec),
+    )
     |> effects.with_inferred(effects.load_spec_effects_from_file(spec))
     |> effects.with_inferred_returned_operators(
       effects.load_spec_returns_from_file(spec),
@@ -545,7 +548,10 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
       packages_dir(package_root),
       manifest_path(package_root),
     )
-    |> enrich_with_path_deps(package_root)
+    |> enrich_with_path_deps(
+      package_root,
+      annotation.module_external_modules(spec),
+    )
     |> effects.with_externals(annotation.extract_externals(spec))
   // Resolve constructor-field values against the same view `run` uses — catalog
   // + externals + the spec's *existing* inferred effects — so `infer` and
@@ -1399,9 +1405,17 @@ fn read_spec(spec_path: String) -> GradedFile {
 //    `infer_path_dep` so path deps without graded set up still work.
 //    Cross-path-dep imports are not currently merged into a single graph
 //    — each dep is processed sequentially.
+//
+// `module_externals` is the set of modules the consumer spec declared pure with
+// a module-level `external effects <module> : [...]` line. Source inference for
+// those modules is dropped so the consumer's declaration governs them (via the
+// `pure_modules` fallback) instead of leaking an inferred `[Unknown]` that would
+// shadow it. The spec-file branch is left untouched: an authoritative dep spec
+// (or catalog) effect still wins.
 fn enrich_with_path_deps(
   knowledge_base: KnowledgeBase,
   package_root: String,
+  module_externals: Set(String),
 ) -> KnowledgeBase {
   let path_deps =
     effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
@@ -1421,10 +1435,23 @@ fn enrich_with_path_deps(
         case infer_path_dep(resolved_dep_path, kb) {
           Error(Nil) -> kb
           Ok(#(effs, params, returns)) ->
-            fold_inferred_into_kb(kb, effs, params, returns)
+            fold_inferred_into_kb(
+              kb,
+              drop_modules(effs, module_externals),
+              drop_modules(params, module_externals),
+              drop_modules(returns, module_externals),
+            )
         }
     }
   })
+}
+
+// Drop every `QualifiedName`-keyed entry whose module is in `modules`.
+fn drop_modules(
+  entries: Dict(QualifiedName, a),
+  modules: Set(String),
+) -> Dict(QualifiedName, a) {
+  dict.filter(entries, fn(name, _value) { !set.contains(modules, name.module) })
 }
 
 // Build a signature registry from every path dependency's `src/` directory.

@@ -450,6 +450,55 @@ pub fn path_dep_hof_param_discharges_from_spec_test() {
   Nil
 }
 
+pub fn path_dep_module_level_external_marks_pure_test() {
+  // Source-only path dep `dep` exposing a function with an opaque FFI body that
+  // graded would otherwise infer as [Unknown]. The consumer spec declares the
+  // whole dep module pure with a module-level `external effects dep : []`. The
+  // consumer's `check caller : []` must hold: the module-level external
+  // suppresses path-dep source inference for that module, so `dep.touch`
+  // resolves to [] (pure) — NOT [Unknown].
+  let app_root = "build/pd_modext_app"
+  let dep_root = "build/pd_modext_dep"
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+
+  let assert Ok(Nil) = simplifile.create_directory_all(dep_root <> "/src")
+  let assert Ok(Nil) =
+    simplifile.write(dep_root <> "/gleam.toml", "name = \"dep\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/src/dep.gleam",
+      "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
+    )
+
+  let assert Ok(Nil) = simplifile.create_directory_all(app_root)
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/gleam.toml",
+      "name = \"app\"\n\n[dependencies]\ndep = { path = \"../pd_modext_dep\" }\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/app.graded",
+      "external effects dep : []\n\ncheck app.caller : []\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/app.gleam",
+      "import dep\n\npub fn caller() -> Nil {\n  dep.touch()\n}\n",
+    )
+
+  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+  Nil
+}
+
 pub fn path_dep_cross_module_positional_discharges_test() {
   // Source-only path dep whose module `b` calls another module `a`'s
   // higher-order function POSITIONALLY (`a.apply(pure_cb)`). Inferring the dep
