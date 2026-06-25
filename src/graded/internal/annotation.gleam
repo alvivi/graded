@@ -181,6 +181,20 @@ pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
   })
 }
 
+// The modules a file declares with a module-level `external effects
+// <module> : [...]` line (no `.`). Per-function externals (`<module>.<fn>`)
+// don't count — they target one function, not the whole module. These are the
+// modules whose source inference the consumer's declaration overrides.
+pub fn module_external_modules(file: GradedFile) -> set.Set(String) {
+  list.filter_map(extract_externals(file), fn(ext) {
+    case ext.target {
+      ModuleExternal -> Ok(ext.module)
+      FunctionExternal(_) -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+}
+
 // Render a full GradedFile back to a string, preserving structure.
 pub fn format_file(file: GradedFile) -> String {
   file.lines

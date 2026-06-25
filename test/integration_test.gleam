@@ -468,6 +468,138 @@ pub fn path_dep_hof_param_discharges_from_spec_test() {
   Nil
 }
 
+// Build a source-only path-dependency fixture under build/<name>_{dep,app}, run
+// graded on the app, and return the CheckResult for app.gleam. `dep_files` maps
+// each path under the dep's `src/` to its source; `spec` is the app's `.graded`
+// contents; `app_src` is app.gleam's contents.
+fn run_path_dep_fixture(
+  name: String,
+  dep_files: List(#(String, String)),
+  spec: String,
+  app_src: String,
+) -> types.CheckResult {
+  let app_root = "build/" <> name <> "_app"
+  let dep_root = "build/" <> name <> "_dep"
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+
+  let assert Ok(Nil) = simplifile.create_directory_all(dep_root <> "/src")
+  let assert Ok(Nil) =
+    simplifile.write(dep_root <> "/gleam.toml", "name = \"dep\"\n")
+  list.each(dep_files, fn(file) {
+    let #(path, content) = file
+    let assert Ok(Nil) = simplifile.write(dep_root <> "/src/" <> path, content)
+    Nil
+  })
+
+  let assert Ok(Nil) = simplifile.create_directory_all(app_root)
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/gleam.toml",
+      "name = \"app\"\n\n[dependencies]\ndep = { path = \"../"
+        <> name
+        <> "_dep\" }\n",
+    )
+  let assert Ok(Nil) = simplifile.write(app_root <> "/app.graded", spec)
+  let assert Ok(Nil) = simplifile.write(app_root <> "/app.gleam", app_src)
+
+  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
+  r
+}
+
+pub fn path_dep_module_level_external_marks_pure_test() {
+  // Source-only path dep `dep` with an opaque FFI body graded would infer as
+  // [Unknown]. `external effects dep : []` declares the whole module pure, so
+  // `dep.touch` resolves to [] and `check caller : []` holds.
+  let r =
+    run_path_dep_fixture(
+      "pd_modext",
+      [
+        #(
+          "dep.gleam",
+          "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
+        ),
+      ],
+      "external effects dep : []\n\ncheck app.caller : []\n",
+      "import dep\n\npub fn caller() -> Nil {\n  dep.touch()\n}\n",
+    )
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+}
+
+pub fn path_dep_module_level_external_preserves_effect_test() {
+  // A non-empty module-level external propagates that exact set, it does not
+  // collapse to pure. `external effects dep : [Database]` makes `dep.touch`
+  // resolve to [Database], so `check caller : []` fails with an actual of
+  // [Database] — not flattened to [] and not left as an inferred [Unknown].
+  let r =
+    run_path_dep_fixture(
+      "pd_modext_eff",
+      [
+        #(
+          "dep.gleam",
+          "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
+        ),
+      ],
+      "external effects dep : [Database]\n\ncheck app.caller : []\n",
+      "import dep\n\npub fn caller() -> Nil {\n  dep.touch()\n}\n",
+    )
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Database"])))
+}
+
+pub fn path_dep_module_external_propagates_through_wrapper_test() {
+  // A module-level external governs its module DURING the dependency's own
+  // inference. The dep's `wrapper` calls the declared-pure `ffi`; were `ffi`
+  // inferred [Unknown] and dropped only afterward, `wrapper.go` would be
+  // polluted. It resolves to [] instead, so `check caller : []` holds through
+  // the wrapper.
+  let r =
+    run_path_dep_fixture(
+      "pd_modext_wrap",
+      [
+        #(
+          "ffi.gleam",
+          "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
+        ),
+        #(
+          "wrapper.gleam",
+          "import ffi\n\npub fn go() -> Nil {\n  ffi.touch()\n}\n",
+        ),
+      ],
+      "external effects ffi : []\n\ncheck app.caller : []\n",
+      "import wrapper\n\npub fn caller() -> Nil {\n  wrapper.go()\n}\n",
+    )
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+}
+
+pub fn path_dep_module_external_keeps_returned_operator_test() {
+  // A module-level external suppresses only the call effect, not the
+  // returned-operator metadata. `make` returns a pure closure; `wrapper` does
+  // `let action = ffi.make()  action()`. With `external effects ffi : []`, the
+  // call to `make` resolves to [] and `action()` resolves through `make`'s kept
+  // returned operator, so `check caller : []` holds. Dropping the returned
+  // operator would leave `action()` as [Unknown] and fail the check.
+  let r =
+    run_path_dep_fixture(
+      "pd_modext_ret",
+      [
+        #("ffi.gleam", "pub fn make() -> fn() -> Nil {\n  fn() { Nil }\n}\n"),
+        #(
+          "wrapper.gleam",
+          "import ffi\n\npub fn go() -> Nil {\n  let action = ffi.make()\n  action()\n}\n",
+        ),
+      ],
+      "external effects ffi : []\n\ncheck app.caller : []\n",
+      "import wrapper\n\npub fn caller() -> Nil {\n  wrapper.go()\n}\n",
+    )
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+}
+
 pub fn path_dep_cross_module_positional_discharges_test() {
   // Source-only path dep whose module `b` calls another module `a`'s
   // higher-order function POSITIONALLY (`a.apply(pure_cb)`). Inferring the dep

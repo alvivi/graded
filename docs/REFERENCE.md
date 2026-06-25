@@ -284,6 +284,25 @@ external effects gleam/otp/actor.start : [Process]
 These are merged into the knowledge base before both `infer` and `check`, so
 callers resolve them instead of getting `[Unknown]`.
 
+A name with no `.` is a **module-level** external: it declares the whole module's
+effect at once, so every function in it resolves to that set without a per-function
+line.
+
+```
+external effects gleam/list : []           // the whole module is pure
+external effects some_db/client : [Database] // every client function does Database I/O
+```
+
+Module-level externals describe **dependency** modules (hex or path) — code graded
+doesn't infer itself; a declaration for one of your own project modules is shadowed
+by graded's inference of that module's source. Use the per-function form when
+functions in a module differ; use the module-level form when one budget fits the
+module. A per-function `external effects mod.fn` or a catalog `effects` line for the
+same function takes precedence over a module-level external. The module-level form
+applies uniformly to hex and path dependencies: a module-level external on a path
+dependency suppresses graded's source inference for that module, so it resolves to
+the declared set instead of an inferred `[Unknown]`.
+
 This is also the mechanism for **FFI**. A bodyless `@external` function is opaque —
 graded infers `[Unknown]`, never the `[]` an empty body would suggest, since the
 foreign implementation may do anything (this holds even when the `@external`
@@ -342,6 +361,24 @@ and the effects each one declares — the files are plain `.graded` and readable
 glance. It covers the core `gleam-lang` packages and the most-used community
 libraries. For a package the catalog doesn't cover, add an `external effects`
 declaration in your spec file.
+
+### Declaring uncatalogued dependencies
+
+The bundled catalog is a curated convenience for common packages, not a
+general-purpose registry that grows on request. To teach graded about a dependency
+it doesn't catalog — hex or path — declare its effects yourself with
+`external effects` in your spec file:
+
+```
+external effects some_dep/io : [FileSystem]   // module-level: whole-module budget
+external effects some_dep/net.fetch : [Http]   // per-function: precision
+```
+
+Use the module-level form when one budget fits the whole module, the per-function
+form when functions differ. Both forms apply uniformly to hex and path
+dependencies — a module-level external suppresses path-dep source inference for
+that module, so it resolves to the declared set rather than an inferred `[Unknown]`.
+This keeps your effect knowledge in your own spec file, versioned with your project.
 
 ## How analysis works
 
