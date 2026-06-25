@@ -1603,15 +1603,14 @@ fn infer_path_dep_module(
       // and accumulate them for the caller.
       let #(inferred_effs, inferred_params, inferred_returns) =
         qualified_inferred(annotations, returned_operators, module_path)
-      // A module the consumer declared with a module-level external governs its
-      // own functions: drop its inferred results so it resolves to the declared
-      // effect — both for the dep's later modules and the consumer — instead of
-      // the inferred one.
+      // A consumer's module-level external governs only the *call effect* of the
+      // module's functions: drop the inferred effect so it resolves to the
+      // declared one — for the dep's later modules and the consumer alike.
+      // Returned-operator and parameter-bound metadata describe what a function
+      // returns and how it consumes operator arguments, not its call effect, so
+      // they are kept; a sibling wrapper doing `let f = mod.make(); f()` still
+      // resolves `f` instead of falling to `[Unknown]`.
       let inferred_effs = drop_declared_modules(inferred_effs, consumer_modules)
-      let inferred_params =
-        drop_declared_modules(inferred_params, consumer_modules)
-      let inferred_returns =
-        drop_declared_modules(inferred_returns, consumer_modules)
       let new_kb =
         fold_inferred_into_kb(
           kb,

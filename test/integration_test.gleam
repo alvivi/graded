@@ -601,6 +601,62 @@ pub fn path_dep_module_external_propagates_through_wrapper_test() {
   Nil
 }
 
+pub fn path_dep_module_external_keeps_returned_operator_test() {
+  // A module-level external suppresses only the call effect, not the
+  // returned-operator metadata. Dep module `ffi` exposes `make`, which returns
+  // a pure closure; a `wrapper` does `let action = ffi.make()  action()`. With
+  // `external effects ffi : []`, the call to `make` resolves to [] via the
+  // declaration, and `action()` resolves through `make`'s inferred returned
+  // operator (kept, not dropped) — so `wrapper.go` is [] and the consumer's
+  // `check caller : []` holds. Dropping the returned operator would leave
+  // `action()` as [Unknown] and fail the check.
+  let app_root = "build/pd_modext_ret_app"
+  let dep_root = "build/pd_modext_ret_dep"
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+
+  let assert Ok(Nil) = simplifile.create_directory_all(dep_root <> "/src")
+  let assert Ok(Nil) =
+    simplifile.write(dep_root <> "/gleam.toml", "name = \"dep\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/src/ffi.gleam",
+      "pub fn make() -> fn() -> Nil {\n  fn() { Nil }\n}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/src/wrapper.gleam",
+      "import ffi\n\npub fn go() -> Nil {\n  let action = ffi.make()\n  action()\n}\n",
+    )
+
+  let assert Ok(Nil) = simplifile.create_directory_all(app_root)
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/gleam.toml",
+      "name = \"app\"\n\n[dependencies]\ndep = { path = \"../pd_modext_ret_dep\" }\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/app.graded",
+      "external effects ffi : []\n\ncheck app.caller : []\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/app.gleam",
+      "import wrapper\n\npub fn caller() -> Nil {\n  wrapper.go()\n}\n",
+    )
+
+  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+  Nil
+}
+
 pub fn path_dep_cross_module_positional_discharges_test() {
   // Source-only path dep whose module `b` calls another module `a`'s
   // higher-order function POSITIONALLY (`a.apply(pure_cb)`). Inferring the dep
