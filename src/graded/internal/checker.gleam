@@ -48,7 +48,10 @@ pub fn check(
     |> extract.with_module_path(module_path)
     |> extract.with_factories(extract.factory_map(module))
     |> extract.with_cross_factories(effects.factories(knowledge_base))
-    |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(module))
+    |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(
+      module,
+      function_type_aliases(module.type_aliases),
+    ))
   let function_map = build_function_map(module)
   let cache = build_scc_ids(module, context, girard_fn_typed, True)
 
@@ -114,7 +117,10 @@ pub fn infer_with_returns(
     |> extract.with_module_path(module_path)
     |> extract.with_factories(extract.factory_map(module))
     |> extract.with_cross_factories(effects.factories(knowledge_base))
-    |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(module))
+    |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(
+      module,
+      function_type_aliases(module.type_aliases),
+    ))
   let function_map = build_function_map(module)
   let cache = build_scc_ids(module, context, girard_fn_typed, True)
 
@@ -220,7 +226,10 @@ pub fn infer_with_returns(
       let field_vars =
         effect_term.free_vars(effects_term) |> set.filter(is_field_path_var)
       let effects_term =
-        collapse_phantom_vars(effects_term, set.union(fn_typed_params, field_vars))
+        collapse_phantom_vars(
+          effects_term,
+          set.union(fn_typed_params, field_vars),
+        )
       // If the function's inferred effects reference effect variables (because it
       // calls fn-typed params, or a fn-typed field on an opaque receiver), emit
       // ParamBound entries so the polymorphic annotation round-trips correctly.

@@ -1532,6 +1532,27 @@ fn extract_pipe_target(
         pipe_args,
       )
 
+    // A nested field access as a pipe target (`value |> o.inner.run`): the
+    // receiver is a field-access chain or call result, not a bare variable, so
+    // it resolves through its inferred type. The piped value is the sole
+    // argument and the receiver is walked for its own effects.
+    glance.FieldAccess(
+      location: span,
+      container: receiver,
+      label: function_name,
+    ) ->
+      merge_with_args(
+        resolve_nested_field_call(
+          receiver,
+          function_name,
+          span,
+          receiver.location,
+        ),
+        extract_from_expression(receiver, context, env),
+        span,
+        pipe_args,
+      )
+
     glance.Variable(location: span, name:) ->
       attach_pipe_args(
         resolve_variable_call(name, span, context, env),
@@ -1560,6 +1581,32 @@ fn extract_pipe_target(
           env,
         ),
         extract_from_arguments(arguments, context, env),
+        span,
+        list.append(pipe_args, classify_arguments(arguments, context, env, 1)),
+      )
+
+    // `value |> o.inner.run(extra)` — nested field call with explicit args; the
+    // piped value is the first argument and the explicit args shift up by one.
+    glance.Call(
+      location: span,
+      function: glance.FieldAccess(
+        container: receiver,
+        label: function_name,
+        ..,
+      ),
+      arguments:,
+    ) ->
+      merge_with_args(
+        resolve_nested_field_call(
+          receiver,
+          function_name,
+          span,
+          receiver.location,
+        ),
+        merge(
+          extract_from_expression(receiver, context, env),
+          extract_from_arguments(arguments, context, env),
+        ),
         span,
         list.append(pipe_args, classify_arguments(arguments, context, env, 1)),
       )
