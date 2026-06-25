@@ -80,14 +80,14 @@ pub fn factory_field_violation_detected_test() {
   v.call.function |> should.equal("println")
 }
 
-pub fn inline_construction_field_is_unknown_test() {
+pub fn inline_construction_field_resolves_through_construction_test() {
   // inline_construction_field.run calls a function-typed field directly on an
   // *inline, un-let-bound* construction: `Validator(to_error: io.println)
-  // .to_error("oops")`. The receiver is a `Call`, not a `Variable`, so there's
-  // no construction site to trace and no `type` line — the field call resolves
-  // to [Unknown]. Reporting it as [] would be unsound (the field is wired to
-  // io.println), so the [] budget must fail with actual [Unknown]. Locks in the
-  // 0.9.4 soundness fix (2237f87) for expression-valued callees.
+  // .to_error("oops")`. The field is wired to io.println right at the
+  // construction, so resolving the field call through the receiver's type and
+  // construction provenance yields the precise [Stdout] — not the conservative
+  // [Unknown] of an untraceable receiver. Reporting it as [] would be unsound,
+  // so the [] budget must still fail, now with actual [Stdout].
   let assert Ok(results) = graded.run("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
@@ -95,7 +95,7 @@ pub fn inline_construction_field_is_unknown_test() {
     })
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn field_union_operator_reduces_test() {
