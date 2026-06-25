@@ -188,8 +188,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   // project module. These silently do nothing (a vacuous check, or a field
   // annotation that resolves to [Unknown]), so they're reported against the
   // spec file itself rather than any source file.
-  let dep_files = dependency_module_files(package_root)
-  let results = case validate_spec_annotations(spec, index, dep_files) {
+  let results = case validate_spec_annotations(spec, index, package_root) {
     [] -> results
     spec_warnings -> [
       CheckResult(file: cfg.spec_file, violations: [], warnings: spec_warnings),
@@ -222,28 +221,35 @@ fn dependency_module_files(package_root: String) -> Dict(String, String) {
 fn validate_spec_annotations(
   spec: GradedFile,
   index: Dict(String, #(String, glance.Module)),
-  dep_files: Dict(String, String),
+  package_root: String,
 ) -> List(Warning) {
   let known_functions = known_function_names(index)
-  let dep_modules = set.from_list(dict.keys(dep_files))
-  let project_infos = project_module_infos(index)
-  let module_info = fn(module_path) {
-    lookup_module_info(module_path, project_infos, dep_files)
-  }
 
   let check_warnings =
     annotation.extract_checks(spec)
     |> list.filter(fn(ann) { !set.contains(known_functions, ann.function) })
     |> list.map(fn(ann) { UnmatchedCheckWarning(function: ann.function) })
 
-  let type_field_warnings =
-    annotation.extract_type_fields(spec)
-    |> list.filter_map(unmatched_type_field_warning(
-      _,
-      index,
-      dep_modules,
-      module_info,
-    ))
+  // Resolving `type` lines needs the dependency module map and per-module type
+  // info; build them only when there are `type` lines to check, so a project
+  // without any pays no `build/packages` scan.
+  let type_field_warnings = case annotation.extract_type_fields(spec) {
+    [] -> []
+    type_fields -> {
+      let dep_files = dependency_module_files(package_root)
+      let dep_modules = set.from_list(dict.keys(dep_files))
+      let project_infos = project_module_infos(index)
+      let module_info = fn(module_path) {
+        lookup_module_info(module_path, project_infos, dep_files)
+      }
+      list.filter_map(type_fields, unmatched_type_field_warning(
+        _,
+        index,
+        dep_modules,
+        module_info,
+      ))
+    }
+  }
 
   list.append(check_warnings, type_field_warnings)
 }
