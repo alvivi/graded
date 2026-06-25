@@ -567,8 +567,17 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   // `check` agree on a field wired to a qualified project function, converging
   // across runs. The inferred effects are NOT seeded into `base_kb` below: the
   // topo loop recomputes them fresh, threading each module's result forward.
+  // Stale `effects` lines for a module-level-external module are dropped, exactly
+  // as `run` does, so a field wired to such a function resolves to the
+  // declaration rather than the outranking-but-stale per-function effect.
   let construction_kb =
-    effects.with_inferred(kb_base, effects.load_spec_effects_from_file(spec))
+    effects.with_inferred(
+      kb_base,
+      drop_declared_modules(
+        effects.load_spec_effects_from_file(spec),
+        declared_modules,
+      ),
+    )
   let base_kb =
     kb_base
     |> effects.with_inferred_type_fields(build_constructor_field_index(

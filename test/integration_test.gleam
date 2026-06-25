@@ -1011,6 +1011,38 @@ pub fn project_module_external_infer_omits_lines_and_governs_test() {
   go.effects |> should.equal(types.TLabels(set.from_list(["Database"])))
 }
 
+pub fn project_module_external_infer_filters_construction_kb_test() {
+  // A field wired to a declared-external module's function resolves through the
+  // construction index. The spec still carries a STALE `effects db.touch :
+  // [Stdout]` line; since function effects outrank module effects, that stale
+  // entry would pollute the construction knowledge base and make `graded infer`
+  // resolve `Runner.act` (and its caller `go`) to [Stdout] — disagreeing with
+  // `check`, which filters it. With the stale line dropped from the construction
+  // KB too, the field resolves to the declared [Database].
+  let root = "build/modext_construction_proj"
+  write_project(
+    root,
+    [
+      #("db.gleam", ffi_touch),
+      #(
+        "app.gleam",
+        "import db\n\n"
+          <> "pub type Runner {\n  Runner(act: fn() -> Nil)\n}\n\n"
+          <> "pub fn make() -> Runner {\n  Runner(act: db.touch)\n}\n\n"
+          <> "pub fn go(r: Runner) -> Nil {\n  r.act()\n}\n",
+      ),
+    ],
+    "external effects db : [Database]\neffects db.touch : [Stdout]\n",
+  )
+  let assert Ok(Nil) = graded.run_infer(root)
+
+  let assert Ok(content) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(file) = annotation.parse_file(content)
+  let annotations = annotation.extract_annotations(file)
+  let assert Ok(go) = list.find(annotations, fn(a) { a.function == "app.go" })
+  go.effects |> should.equal(types.TLabels(set.from_list(["Database"])))
+}
+
 pub fn path_dep_cross_module_positional_discharges_test() {
   // Source-only path dep whose module `b` calls another module `a`'s
   // higher-order function POSITIONALLY (`a.apply(pure_cb)`). Inferring the dep
