@@ -366,6 +366,111 @@ pub type Widget {
   cleanup(directory)
 }
 
+// A module-local alias that delegates to an imported alias
+// (`type LocalHandler = handlers.Handler`) still resolves to a function, so a
+// field typed `LocalHandler` is callable and its `type` line must not warn.
+pub fn alias_chain_through_imported_alias_does_not_warn_test() {
+  let directory =
+    write_fixture(
+      "/tmp/graded_release_alias_chain",
+      list.append(project_files(), [
+        #("handlers.gleam", "pub type Handler =\n  fn(String) -> Nil\n"),
+        #(
+          "widget.gleam",
+          "import handlers
+
+pub type LocalHandler =
+  handlers.Handler
+
+pub type Widget {
+  Widget(callback: LocalHandler)
+}
+",
+        ),
+        #("app.graded", "type widget.Widget.callback : [Dom]\n"),
+      ]),
+    )
+
+  let assert Ok(results) = graded.run(directory)
+  all_warnings(results)
+  |> list.any(fn(w) {
+    w == UnmatchedTypeFieldWarning(name: "widget.Widget.callback")
+  })
+  |> should.be_false
+
+  cleanup(directory)
+}
+
+// A field whose type is a non-function type owned by an installed dependency
+// (`value: types.Record`) genuinely can't be called, so its `type` line is dead
+// and must be flagged — graded parses the dependency to confirm.
+pub fn dependency_non_function_field_warns_test() {
+  let directory =
+    write_fixture(
+      "/tmp/graded_release_dep_nonfn",
+      list.append(project_files(), [
+        #(
+          "build/packages/dep/src/dep/types.gleam",
+          "pub type Record {\n  Record(x: Int)\n}\n",
+        ),
+        #(
+          "widget.gleam",
+          "import dep/types
+
+pub type Widget {
+  Widget(value: types.Record)
+}
+",
+        ),
+        #("app.graded", "type widget.Widget.value : []\n"),
+      ]),
+    )
+
+  let assert Ok(results) = graded.run(directory)
+  all_warnings(results)
+  |> list.any(fn(w) {
+    w == UnmatchedTypeFieldWarning(name: "widget.Widget.value")
+  })
+  |> should.be_true
+
+  cleanup(directory)
+}
+
+// The dependency counterpart of the project case: a field typed with a
+// *function* alias from an installed dependency stays callable, so it must not
+// warn even though graded had to parse the dependency to tell.
+pub fn dependency_function_alias_field_does_not_warn_test() {
+  let directory =
+    write_fixture(
+      "/tmp/graded_release_dep_fn_alias",
+      list.append(project_files(), [
+        #(
+          "build/packages/dep/src/dep/types.gleam",
+          "pub type Handler =\n  fn(String) -> Nil\n",
+        ),
+        #(
+          "widget.gleam",
+          "import dep/types
+
+pub type Widget {
+  Widget(callback: types.Handler)
+}
+",
+        ),
+        #("app.graded", "type widget.Widget.callback : [Dom]\n"),
+      ]),
+    )
+
+  let assert Ok(results) = graded.run(directory)
+  all_warnings(results)
+  |> list.any(fn(w) {
+    w == UnmatchedTypeFieldWarning(name: "widget.Widget.callback")
+  })
+  |> should.be_false
+
+  cleanup(directory)
+}
+
 // A `type` line on a project type whose field isn't function-typed can never
 // resolve a field call, so it's dead and must be flagged — the lint shouldn't
 // treat a plain data field as a valid target.
