@@ -1637,13 +1637,8 @@ fn drop_declared_modules(
   entries: Dict(QualifiedName, a),
   modules: Set(String),
 ) -> Dict(QualifiedName, a) {
-  case set.is_empty(modules) {
-    True -> entries
-    False ->
-      dict.filter(entries, fn(name, _value) {
-        !set.contains(modules, name.module)
-      })
-  }
+  use <- bool.guard(set.is_empty(modules), entries)
+  dict.filter(entries, fn(name, _value) { !set.contains(modules, name.module) })
 }
 
 fn target_directory(arguments: List(String)) -> String {
