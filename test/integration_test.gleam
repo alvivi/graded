@@ -83,12 +83,10 @@ pub fn inline_construction_field_is_unknown_test() {
   // io.println), so the [] budget must fail with actual [Unknown]. Locks in the
   // 0.9.4 soundness fix (2237f87) for expression-valued callees.
   let assert Ok(results) = graded.run("test/fixtures")
-  let inline_result =
+  let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/inline_construction_field.gleam"
     })
-  let assert Ok(r) = inline_result
-  { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
   v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
