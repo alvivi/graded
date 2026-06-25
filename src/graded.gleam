@@ -299,23 +299,37 @@ fn known_function_names(
 // project's custom types, the set a qualified `type` line must belong to. A
 // `type` line only ever resolves a function-typed field, so a non-function
 // field is not a valid target — including it would let the lint miss exactly
-// the dead annotation it's meant to catch. A field whose declared type is a
-// module-local alias of a function (`callback: Handler` with
-// `type Handler = fn(...)`) counts as function-typed.
+// the dead annotation it's meant to catch. A field whose declared type is an
+// alias of a function (`callback: Handler` with `type Handler = fn(...)`, in
+// the same module or another project module) counts as function-typed.
 fn known_type_field_names(
   index: Dict(String, #(String, glance.Module)),
 ) -> Set(String) {
+  let project_fn_aliases = project_function_aliases(index)
   dict.fold(index, set.new(), fn(acc, module_path, entry) {
     let #(_gleam_path, module) = entry
-    let fn_aliases = checker.function_type_aliases(module.type_aliases)
+    let import_aliases = extract.build_import_context(module).aliases
     list.fold(module.custom_types, acc, fn(acc2, definition) {
       insert_type_field_names(
         acc2,
         module_path,
         definition.definition,
-        fn_aliases,
+        import_aliases,
+        project_fn_aliases,
       )
     })
+  })
+}
+
+// Each project module's set of type-alias names that resolve to a function, so
+// a field whose type is such an alias — in its own module or another project
+// module — can be recognised as callable.
+fn project_function_aliases(
+  index: Dict(String, #(String, glance.Module)),
+) -> Dict(String, Set(String)) {
+  dict.map_values(index, fn(_module_path, entry) {
+    let #(_gleam_path, module) = entry
+    checker.function_type_aliases(module.type_aliases)
   })
 }
 
@@ -325,14 +339,22 @@ fn insert_type_field_names(
   acc: Set(String),
   module_path: String,
   custom_type: glance.CustomType,
-  fn_aliases: Set(String),
+  import_aliases: Dict(String, String),
+  project_fn_aliases: Dict(String, Set(String)),
 ) -> Set(String) {
   let prefix = module_path <> "." <> custom_type.name <> "."
   list.fold(custom_type.variants, acc, fn(acc2, variant) {
     list.fold(variant.fields, acc2, fn(acc3, field) {
       case field {
         glance.LabelledVariantField(label:, item:) ->
-          case field_is_function_typed(item, fn_aliases) {
+          case
+            field_is_function_typed(
+              item,
+              module_path,
+              import_aliases,
+              project_fn_aliases,
+            )
+          {
             True -> set.insert(acc3, prefix <> label)
             False -> acc3
           }
@@ -342,16 +364,47 @@ fn insert_type_field_names(
   })
 }
 
-// Whether a custom-type field's declared type is callable: a direct `fn(...)`,
-// or a module-local alias that resolves to one (`fn_aliases`, precomputed for
-// the field's module). A field type qualified by another module is left out —
-// graded resolves only module-local aliases, matching the checker's treatment
-// of function-typed parameters.
-fn field_is_function_typed(item: glance.Type, fn_aliases: Set(String)) -> Bool {
+// Whether a custom-type field's declared type is callable:
+//   - a direct `fn(...)`;
+//   - a module-local alias resolving to a function (`type Handler = fn(...)`);
+//   - an alias imported from another *project* module (`handlers.Handler`),
+//     resolved through the field module's imports and that module's aliases;
+//   - an alias imported from a dependency (or any module graded can't
+//     introspect): kept conservatively, since flagging it would be a false
+//     positive — the same way a dependency-owned type field is left alone.
+fn field_is_function_typed(
+  item: glance.Type,
+  module_path: String,
+  import_aliases: Dict(String, String),
+  project_fn_aliases: Dict(String, Set(String)),
+) -> Bool {
   case item {
     glance.FunctionType(..) -> True
-    glance.NamedType(name:, module: None, ..) -> set.contains(fn_aliases, name)
+    glance.NamedType(name:, module: None, ..) ->
+      module_alias_is_function(project_fn_aliases, module_path, name)
+    glance.NamedType(name:, module: Some(alias), ..) ->
+      case dict.get(import_aliases, alias) {
+        Ok(real_module) ->
+          case dict.has_key(project_fn_aliases, real_module) {
+            True ->
+              module_alias_is_function(project_fn_aliases, real_module, name)
+            False -> True
+          }
+        Error(Nil) -> True
+      }
     _ -> False
+  }
+}
+
+// Whether `name` is a function-resolving type alias of `module_path`.
+fn module_alias_is_function(
+  project_fn_aliases: Dict(String, Set(String)),
+  module_path: String,
+  name: String,
+) -> Bool {
+  case dict.get(project_fn_aliases, module_path) {
+    Ok(fn_aliases) -> set.contains(fn_aliases, name)
+    Error(Nil) -> False
   }
 }
 
