@@ -195,6 +195,20 @@ pub fn module_external_modules(file: GradedFile) -> set.Set(String) {
   |> set.from_list()
 }
 
+// Whether a qualified function name's module carries a module-level external.
+// Short-circuits when nothing is declared (the common case), so the qualified
+// name isn't split needlessly.
+fn in_external_module(
+  function: String,
+  external_modules: set.Set(String),
+) -> Bool {
+  use <- bool.guard(set.is_empty(external_modules), False)
+  case split_qualified_name(function) {
+    Ok(#(module, _function)) -> set.contains(external_modules, module)
+    Error(Nil) -> False
+  }
+}
+
 // Render a full GradedFile back to a string, preserving structure.
 pub fn format_file(file: GradedFile) -> String {
   file.lines
@@ -239,9 +253,14 @@ pub fn merge_inferred(
       }
     })
     |> set.from_list()
+  // A module-level `external effects mod : [...]` declares the whole module's
+  // effect, so every inferred `effects mod.fn` line is likewise redundant and
+  // would shadow the declaration. Drop them all for the declared module.
+  let external_modules = module_external_modules(file)
   let inferred =
     list.filter(inferred, fn(annotation) {
       !set.contains(external_functions, annotation.function)
+      && !in_external_module(annotation.function, external_modules)
     })
 
   let inferred_map =

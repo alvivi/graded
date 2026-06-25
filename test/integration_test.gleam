@@ -3,6 +3,7 @@ import gleam/dict
 import gleam/list
 import gleam/result
 import gleam/set
+import gleam/string
 import gleeunit/should
 import graded
 import graded/internal/annotation
@@ -857,6 +858,189 @@ pub fn path_dep_module_external_keeps_returned_operator_test() {
     )
   list.any(r.violations, fn(v) { v.function == "caller" })
   |> should.be_false()
+}
+
+// An opaque FFI body graded infers as [Unknown]: the canonical declared-external
+// target across the module-external project fixtures below.
+const ffi_touch = "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n"
+
+// Write a fresh project at `root`: `name = "proj"` gleam.toml, each
+// `#(filename, source)` module at the root, and the `proj.graded` spec.
+fn write_project(
+  root: String,
+  modules: List(#(String, String)),
+  spec: String,
+) -> Nil {
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
+  list.each(modules, fn(file) {
+    let #(path, content) = file
+    let assert Ok(Nil) = simplifile.write(root <> "/" <> path, content)
+    Nil
+  })
+  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", spec)
+  Nil
+}
+
+// Write a multi-module project (the extra `modules` plus an `app.gleam`) and its
+// spec, run graded, and return the CheckResult for app.gleam. The project-module
+// counterpart of `run_path_dep_fixture`: the declared-external module is a
+// sibling project module, not a path dependency.
+fn run_project_module_fixture(
+  name: String,
+  modules: List(#(String, String)),
+  spec: String,
+  app_src: String,
+) -> types.CheckResult {
+  let root = "build/" <> name <> "_proj"
+  write_project(root, [#("app.gleam", app_src), ..modules], spec)
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  r
+}
+
+pub fn project_module_level_external_marks_pure_test() {
+  // A project module `db` with an opaque FFI body graded would infer as
+  // [Unknown]. `external effects db : []` declares the whole module pure, so
+  // `db.touch` resolves to [] and `check caller : []` holds — the
+  // project-module counterpart of `path_dep_module_level_external_marks_pure`.
+  // Before the fix the in-memory inference of `db` left an [Unknown] in
+  // `all_effects` that shadowed the declaration.
+  let r =
+    run_project_module_fixture(
+      "modext_pure",
+      [#("db.gleam", ffi_touch)],
+      "external effects db : []\n\ncheck app.caller : []\n",
+      "import db\n\npub fn caller() -> Nil {\n  db.touch()\n}\n",
+    )
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+}
+
+pub fn project_module_level_external_preserves_effect_test() {
+  // A non-empty module-level external propagates that exact set, it does not
+  // collapse to pure or stay an inferred [Unknown]. `external effects db :
+  // [Database]` makes `db.touch` resolve to [Database], so `check caller : []`
+  // fails with [Database].
+  let r =
+    run_project_module_fixture(
+      "modext_eff",
+      [#("db.gleam", ffi_touch)],
+      "external effects db : [Database]\n\ncheck app.caller : []\n",
+      "import db\n\npub fn caller() -> Nil {\n  db.touch()\n}\n",
+    )
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Database"])))
+}
+
+pub fn project_module_external_propagates_through_wrapper_test() {
+  // A module-level external governs its module DURING the project's in-memory
+  // inference. The sibling `wrapper.go` calls the declared-pure `db.touch`; were
+  // `db.touch` inferred [Unknown] and only dropped at final lookup, `wrapper.go`
+  // would be polluted. It resolves to [] instead, so `check caller : []` holds
+  // through the wrapper.
+  let r =
+    run_project_module_fixture(
+      "modext_wrap",
+      [
+        #("db.gleam", ffi_touch),
+        #(
+          "wrapper.gleam",
+          "import db\n\npub fn go() -> Nil {\n  db.touch()\n}\n",
+        ),
+      ],
+      "external effects db : []\n\ncheck app.caller : []\n",
+      "import wrapper\n\npub fn caller() -> Nil {\n  wrapper.go()\n}\n",
+    )
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+}
+
+pub fn project_module_external_keeps_returned_operator_test() {
+  // A module-level external suppresses only the call effect, not the
+  // returned-operator metadata. `db.make` returns a pure closure; `wrapper` does
+  // `let action = db.make()  action()`. With `external effects db : []`, the call
+  // to `make` resolves to [] and `action()` resolves through `make`'s kept
+  // returned operator, so `check caller : []` holds. Dropping the returned
+  // operator would leave `action()` as [Unknown] and fail the check.
+  let r =
+    run_project_module_fixture(
+      "modext_ret",
+      [
+        #("db.gleam", "pub fn make() -> fn() -> Nil {\n  fn() { Nil }\n}\n"),
+        #(
+          "wrapper.gleam",
+          "import db\n\npub fn go() -> Nil {\n  let action = db.make()\n  action()\n}\n",
+        ),
+      ],
+      "external effects db : []\n\ncheck app.caller : []\n",
+      "import wrapper\n\npub fn caller() -> Nil {\n  wrapper.go()\n}\n",
+    )
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+}
+
+pub fn project_module_external_infer_omits_lines_and_governs_test() {
+  // `graded infer` over a project with `external effects db : [Database]` writes
+  // no inferred `effects db.*` lines (the declaration governs the module, like a
+  // function-level external suppresses its own line), and a sibling `wrapper.go`
+  // calling into `db` inherits the declared [Database] — so `infer` and `check`
+  // agree on the cross-module effect.
+  let root = "build/modext_infer_proj"
+  write_project(
+    root,
+    [
+      #("db.gleam", ffi_touch),
+      #("wrapper.gleam", "import db\n\npub fn go() -> Nil {\n  db.touch()\n}\n"),
+    ],
+    "external effects db : [Database]\n",
+  )
+  let assert Ok(Nil) = graded.run_infer(root)
+
+  let assert Ok(content) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(file) = annotation.parse_file(content)
+  let annotations = annotation.extract_annotations(file)
+  list.any(annotations, fn(a) { string.starts_with(a.function, "db.") })
+  |> should.be_false()
+  let assert Ok(go) =
+    list.find(annotations, fn(a) { a.function == "wrapper.go" })
+  go.effects |> should.equal(types.TLabels(set.from_list(["Database"])))
+}
+
+pub fn project_module_external_infer_filters_construction_kb_test() {
+  // A field wired to a declared-external module's function resolves through the
+  // construction index. The spec still carries a STALE `effects db.touch :
+  // [Stdout]` line; since function effects outrank module effects, that stale
+  // entry would pollute the construction knowledge base and make `graded infer`
+  // resolve `Runner.act` (and its caller `go`) to [Stdout] — disagreeing with
+  // `check`, which filters it. With the stale line dropped from the construction
+  // KB too, the field resolves to the declared [Database].
+  let root = "build/modext_construction_proj"
+  write_project(
+    root,
+    [
+      #("db.gleam", ffi_touch),
+      #(
+        "app.gleam",
+        "import db\n\n"
+          <> "pub type Runner {\n  Runner(act: fn() -> Nil)\n}\n\n"
+          <> "pub fn make() -> Runner {\n  Runner(act: db.touch)\n}\n\n"
+          <> "pub fn go(r: Runner) -> Nil {\n  r.act()\n}\n",
+      ),
+    ],
+    "external effects db : [Database]\neffects db.touch : [Stdout]\n",
+  )
+  let assert Ok(Nil) = graded.run_infer(root)
+
+  let assert Ok(content) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(file) = annotation.parse_file(content)
+  let annotations = annotation.extract_annotations(file)
+  let assert Ok(go) = list.find(annotations, fn(a) { a.function == "app.go" })
+  go.effects |> should.equal(types.TLabels(set.from_list(["Database"])))
 }
 
 pub fn path_dep_cross_module_positional_discharges_test() {

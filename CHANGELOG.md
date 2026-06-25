@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **A module-level `external effects <module>` declaration now governs a path dependency's inferred module, with its full effect set.** Previously the declared set was flattened to pure (so `dep.*` calls resolved to `[]`), and graded's own source-inference of the path dependency shadowed the declaration — leaving the module and its in-dependency callers at `[Unknown]`. The declaration now applies during the dependency's inference, so both resolve to the declared set. A per-function `external effects mod.fn` or an authoritative dependency spec/catalog effect still takes precedence.
+- **A module-level external now governs the consumer's own project modules too.** A declaration for a project module (`external effects myapp/db : [Database]`) was shadowed by graded's in-memory inference of that module's source, so its functions resolved to the inferred effect rather than the declared set. The inferred call effect is now dropped for a declared module — at both `check` and `infer` time, so a sibling module calling into it agrees — and `graded infer` writes no per-function `effects` lines for it, matching how a per-function external suppresses its own line. Returned-operator and parameter-bound metadata are kept.
 
 ## [0.9.4] - 2026-06-24
 
