@@ -219,21 +219,31 @@ pub fn fn_typed_fields_from_module(
   module: Module,
   fn_aliases: Set(String),
 ) -> Set(#(String, String)) {
-  list.fold(module.custom_types, set.new(), fn(acc, definition) {
+  module.custom_types
+  |> list.flat_map(fn(definition) {
     let type_name = definition.definition.name
-    list.fold(definition.definition.variants, acc, fn(acc2, variant) {
-      list.fold(variant.fields, acc2, fn(acc3, field) {
-        case field {
-          glance.LabelledVariantField(item:, label:) ->
-            case is_field_fn_typed(item, fn_aliases) {
-              True -> set.insert(acc3, #(type_name, label))
-              False -> acc3
-            }
-          _ -> acc3
-        }
-      })
-    })
+    definition.definition.variants
+    |> list.flat_map(fn(variant) { variant.fields })
+    |> list.filter_map(labelled_fn_field(type_name, _, fn_aliases))
   })
+  |> set.from_list()
+}
+
+// A `#(type_name, label)` entry for a labelled, callable field; `Error(Nil)`
+// for an unlabelled or non-fn field.
+fn labelled_fn_field(
+  type_name: String,
+  field: glance.VariantField,
+  fn_aliases: Set(String),
+) -> Result(#(String, String), Nil) {
+  case field {
+    glance.LabelledVariantField(item:, label:) ->
+      case is_field_fn_typed(item, fn_aliases) {
+        True -> Ok(#(type_name, label))
+        False -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
 }
 
 // Whether a field's declared type is callable: a direct `fn(..)` or a

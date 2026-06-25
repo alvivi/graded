@@ -409,15 +409,12 @@ fn polymorphic_param_bounds(
 // core of phantom collapse and field-variable concretization: both select a set
 // of free variables that can never be bound here and ground them.
 fn ground_vars(term: EffectTerm, vars: Set(String)) -> EffectTerm {
-  case set.is_empty(vars) {
-    True -> term
-    False ->
-      vars
-      |> set.to_list()
-      |> list.map(fn(v) { #(v, effect_term.unknown()) })
-      |> dict.from_list()
-      |> effect_term.subst(term, _)
-  }
+  use <- bool.guard(set.is_empty(vars), term)
+  vars
+  |> set.to_list()
+  |> list.map(fn(v) { #(v, effect_term.unknown()) })
+  |> dict.from_list()
+  |> effect_term.subst(term, _)
 }
 
 // Replace every free effect variable in `term` that isn't one of `params` with
