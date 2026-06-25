@@ -249,6 +249,39 @@ pub fn format_effect_set(effect_set: EffectSet) -> String {
 
 // Parse gleam.toml to find path dependencies.
 // Returns a list of #(package_name, source_directory) pairs.
+// Map of module path -> source file for every `.gleam` under each installed
+// dependency's `src/` directory. Derived from file paths (no parsing), so it's
+// cheap and covers type-only modules. Used both to confirm that a qualified
+// spec annotation names a real dependency (rather than a typo) and to parse a
+// dependency module on demand when resolving a field's declared type.
+pub fn dependency_module_files(
+  packages_directory: String,
+) -> Dict(String, String) {
+  case simplifile.read_directory(packages_directory) {
+    Error(_) -> dict.new()
+    Ok(packages) ->
+      list.fold(packages, dict.new(), fn(acc, package_name) {
+        let src_dir = packages_directory <> "/" <> package_name <> "/src"
+        dict.merge(acc, source_dir_module_files(src_dir))
+      })
+  }
+}
+
+// Map of module path -> source file for every `.gleam` under `source_dir` (a
+// single package's `src/`), keyed the same way the rest of the tool keys
+// modules.
+pub fn source_dir_module_files(source_dir: String) -> Dict(String, String) {
+  case simplifile.get_files(source_dir) {
+    Error(_) -> dict.new()
+    Ok(files) ->
+      files
+      |> list.filter(string.ends_with(_, ".gleam"))
+      |> list.fold(dict.new(), fn(acc, file) {
+        dict.insert(acc, config.module_path_for_source(file, source_dir), file)
+      })
+  }
+}
+
 pub fn parse_path_dependencies(
   gleam_toml_path: String,
 ) -> List(#(String, String)) {

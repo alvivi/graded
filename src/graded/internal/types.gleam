@@ -368,6 +368,16 @@ pub type Warning {
   // real parameter and isn't flagged, since its bound stays load-bearing during
   // substitution.
   UnmatchedParamBoundWarning(function: String, param: String)
+  // A `check` line whose qualified function name matches no function defined in
+  // any project module — a missing module qualifier or a typo. The check then
+  // never runs against any function and passes vacuously, so it's flagged.
+  UnmatchedCheckWarning(function: String)
+  // A `type` line whose module/type/field matches no field of a project custom
+  // type — unqualified, mis-qualified, or a typo. The annotation then resolves
+  // nothing and the field call silently degrades to `[Unknown]`, so it's
+  // flagged. `name` is the annotation as written (`Opts.on_change` when
+  // unqualified, `myapp/opts.Opts.on_change` when qualified).
+  UnmatchedTypeFieldWarning(name: String)
 }
 
 // Result of checking one file.
