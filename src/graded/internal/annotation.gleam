@@ -239,9 +239,18 @@ pub fn merge_inferred(
       }
     })
     |> set.from_list()
+  // A module-level `external effects mod : [...]` declares the whole module's
+  // effect, so every inferred `effects mod.fn` line is likewise redundant and
+  // would shadow the declaration. Drop them all for the declared module.
+  let external_modules = module_external_modules(file)
   let inferred =
     list.filter(inferred, fn(annotation) {
+      let in_external_module = case split_qualified_name(annotation.function) {
+        Ok(#(module, _function)) -> set.contains(external_modules, module)
+        Error(Nil) -> False
+      }
       !set.contains(external_functions, annotation.function)
+      && !in_external_module
     })
 
   let inferred_map =

@@ -128,6 +128,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   let package_root = resolve_package_root(directory)
   let spec = read_spec(cfg.spec_file)
   let checks_by_module = checks_grouped_by_module(spec)
+  let declared_modules = annotation.module_external_modules(spec)
 
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.try(parse_all_files(gleam_files))
@@ -148,11 +149,15 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
     |> effects.with_externals(annotation.extract_externals(spec))
-    |> enrich_with_path_deps(
-      package_root,
-      annotation.module_external_modules(spec),
-    )
-    |> effects.with_inferred(effects.load_spec_effects_from_file(spec))
+    |> enrich_with_path_deps(package_root, declared_modules)
+    // Committed `effects` lines for a module-level-external module are dropped
+    // so they can't reshadow the declaration (which lives in `module_effects`,
+    // consulted only when `all_effects` misses). `graded infer` no longer writes
+    // such lines; this guards a stale or hand-written one.
+    |> effects.with_inferred(drop_declared_modules(
+      effects.load_spec_effects_from_file(spec),
+      declared_modules,
+    ))
     |> effects.with_inferred_returned_operators(
       effects.load_spec_returns_from_file(spec),
     )
@@ -160,7 +165,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     // in memory, so `check` resolves cross-module calls without a prior
     // `graded infer`. Spec entries above take priority — committed effects are
     // never overridden — and nothing is written to disk.
-    |> infer_project_in_memory(index, registry, type_info)
+    |> infer_project_in_memory(index, registry, type_info, declared_modules)
   let knowledge_base =
     kb_base
     |> effects.with_inferred_type_fields(build_constructor_field_index(
@@ -541,6 +546,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
   let spec = read_spec(cfg.spec_file)
+  let declared_modules = annotation.module_external_modules(spec)
 
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.try(parse_all_files(gleam_files))
@@ -555,10 +561,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
     |> effects.with_externals(annotation.extract_externals(spec))
-    |> enrich_with_path_deps(
-      package_root,
-      annotation.module_external_modules(spec),
-    )
+    |> enrich_with_path_deps(package_root, declared_modules)
   // Resolve constructor-field values against the same view `run` uses — catalog
   // + externals + the spec's *existing* inferred effects — so `infer` and
   // `check` agree on a field wired to a qualified project function, converging
@@ -607,6 +610,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
             registry,
             typeinfo.for_module(type_info, module_path),
             typeinfo.fn_typed_for_module(type_info, module_path),
+            declared_modules,
           ))
           // Prepend new entries so each iteration is O(|new|) instead of
           // O(|acc|); final order doesn't matter, merge_inferred keys by name.
@@ -1039,6 +1043,7 @@ fn infer_one_module(
   registry: SignatureRegistry,
   module_types: Dict(#(Int, Int), girard_types.Type),
   girard_fn_typed: Dict(String, Set(String)),
+  declared_modules: Set(String),
 ) -> Result(
   #(KnowledgeBase, List(EffectAnnotation), List(types.ReturnsAnnotation)),
   GradedError,
@@ -1073,13 +1078,16 @@ fn infer_one_module(
 
   // Thread inferred effects, polymorphic param bounds, and returned-operator
   // signatures into the KB so later modules in the topo-sort pass can resolve
-  // call sites targeting this module's functions.
+  // call sites targeting this module's functions. A module-level-external module
+  // resolves via its declaration, so later modules calling into it agree with
+  // `check`.
   let new_kb =
     thread_inferred_into_kb(
       knowledge_base,
       inferred,
       returned_operators,
       module_path,
+      declared_modules,
     )
 
   let public_names = public_function_names(module)
@@ -1117,6 +1125,7 @@ fn infer_project_in_memory(
   index: Dict(String, #(String, glance.Module)),
   registry: SignatureRegistry,
   type_info: typeinfo.TypeInfo,
+  declared_modules: Set(String),
 ) -> KnowledgeBase {
   case topo.sort(build_dependency_graph(index)) {
     Error(_) -> base_kb
@@ -1125,7 +1134,14 @@ fn infer_project_in_memory(
         case dict.get(index, module_path) {
           Error(_) -> kb
           Ok(#(_gleam_path, module)) ->
-            fold_inferred_module(kb, module, module_path, registry, type_info)
+            fold_inferred_module(
+              kb,
+              module,
+              module_path,
+              registry,
+              type_info,
+              declared_modules,
+            )
         }
       })
   }
@@ -1140,6 +1156,7 @@ fn fold_inferred_module(
   module_path: String,
   registry: SignatureRegistry,
   type_info: typeinfo.TypeInfo,
+  declared_modules: Set(String),
 ) -> KnowledgeBase {
   let #(inferred, returned_operators) =
     checker.infer_with_returns(
@@ -1151,20 +1168,35 @@ fn fold_inferred_module(
       typeinfo.for_module(type_info, module_path),
       typeinfo.fn_typed_for_module(type_info, module_path),
     )
-  thread_inferred_into_kb(kb, inferred, returned_operators, module_path)
+  thread_inferred_into_kb(
+    kb,
+    inferred,
+    returned_operators,
+    module_path,
+    declared_modules,
+  )
 }
 
 // Thread a module's freshly inferred effects, polymorphic param bounds, and
 // returned-operator signatures (all qualified by `module_path`) into the
 // knowledge base. Existing entries win.
+//
+// A module the consumer declared with a module-level external (in
+// `declared_modules`) has its inferred *call effect* dropped so lookup falls
+// through to the declared set — the project-module counterpart of the path-dep
+// `drop_declared_modules` in `infer_path_dep_module`. Returned-operator and
+// parameter-bound metadata describe what a function returns and how it consumes
+// operator arguments, not its call effect, so they are kept.
 fn thread_inferred_into_kb(
   knowledge_base: KnowledgeBase,
   inferred: List(EffectAnnotation),
   returned_operators: Dict(String, types.EffectTerm),
   module_path: String,
+  declared_modules: Set(String),
 ) -> KnowledgeBase {
   let #(effects_dict, params_dict, returns_dict) =
     qualified_inferred(inferred, returned_operators, module_path)
+  let effects_dict = drop_declared_modules(effects_dict, declared_modules)
   fold_inferred_into_kb(knowledge_base, effects_dict, params_dict, returns_dict)
 }
 

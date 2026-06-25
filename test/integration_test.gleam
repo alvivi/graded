@@ -3,6 +3,7 @@ import gleam/dict
 import gleam/list
 import gleam/result
 import gleam/set
+import gleam/string
 import gleeunit/should
 import graded
 import graded/internal/annotation
@@ -857,6 +858,167 @@ pub fn path_dep_module_external_keeps_returned_operator_test() {
     )
   list.any(r.violations, fn(v) { v.function == "caller" })
   |> should.be_false()
+}
+
+// Write a multi-module project (each `#(filename, source)` at the project root)
+// plus its spec, run graded, and return the CheckResult for app.gleam. The
+// project-module counterpart of `run_path_dep_fixture`: the declared-external
+// module is a sibling project module, not a path dependency.
+fn run_project_module_fixture(
+  name: String,
+  modules: List(#(String, String)),
+  spec: String,
+  app_src: String,
+) -> types.CheckResult {
+  let root = "build/" <> name <> "_proj"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
+  list.each(modules, fn(file) {
+    let #(path, content) = file
+    let assert Ok(Nil) = simplifile.write(root <> "/" <> path, content)
+    Nil
+  })
+  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", spec)
+  let assert Ok(Nil) = simplifile.write(root <> "/app.gleam", app_src)
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  r
+}
+
+pub fn project_module_level_external_marks_pure_test() {
+  // A project module `db` with an opaque FFI body graded would infer as
+  // [Unknown]. `external effects db : []` declares the whole module pure, so
+  // `db.touch` resolves to [] and `check caller : []` holds — the
+  // project-module counterpart of `path_dep_module_level_external_marks_pure`.
+  // Before the fix the in-memory inference of `db` left an [Unknown] in
+  // `all_effects` that shadowed the declaration.
+  let r =
+    run_project_module_fixture(
+      "modext_pure",
+      [
+        #(
+          "db.gleam",
+          "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
+        ),
+      ],
+      "external effects db : []\n\ncheck app.caller : []\n",
+      "import db\n\npub fn caller() -> Nil {\n  db.touch()\n}\n",
+    )
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+}
+
+pub fn project_module_level_external_preserves_effect_test() {
+  // A non-empty module-level external propagates that exact set, it does not
+  // collapse to pure or stay an inferred [Unknown]. `external effects db :
+  // [Database]` makes `db.touch` resolve to [Database], so `check caller : []`
+  // fails with [Database].
+  let r =
+    run_project_module_fixture(
+      "modext_eff",
+      [
+        #(
+          "db.gleam",
+          "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
+        ),
+      ],
+      "external effects db : [Database]\n\ncheck app.caller : []\n",
+      "import db\n\npub fn caller() -> Nil {\n  db.touch()\n}\n",
+    )
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Database"])))
+}
+
+pub fn project_module_external_propagates_through_wrapper_test() {
+  // A module-level external governs its module DURING the project's in-memory
+  // inference. The sibling `wrapper.go` calls the declared-pure `db.touch`; were
+  // `db.touch` inferred [Unknown] and only dropped at final lookup, `wrapper.go`
+  // would be polluted. It resolves to [] instead, so `check caller : []` holds
+  // through the wrapper.
+  let r =
+    run_project_module_fixture(
+      "modext_wrap",
+      [
+        #(
+          "db.gleam",
+          "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
+        ),
+        #(
+          "wrapper.gleam",
+          "import db\n\npub fn go() -> Nil {\n  db.touch()\n}\n",
+        ),
+      ],
+      "external effects db : []\n\ncheck app.caller : []\n",
+      "import wrapper\n\npub fn caller() -> Nil {\n  wrapper.go()\n}\n",
+    )
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+}
+
+pub fn project_module_external_keeps_returned_operator_test() {
+  // A module-level external suppresses only the call effect, not the
+  // returned-operator metadata. `db.make` returns a pure closure; `wrapper` does
+  // `let action = db.make()  action()`. With `external effects db : []`, the call
+  // to `make` resolves to [] and `action()` resolves through `make`'s kept
+  // returned operator, so `check caller : []` holds. Dropping the returned
+  // operator would leave `action()` as [Unknown] and fail the check.
+  let r =
+    run_project_module_fixture(
+      "modext_ret",
+      [
+        #("db.gleam", "pub fn make() -> fn() -> Nil {\n  fn() { Nil }\n}\n"),
+        #(
+          "wrapper.gleam",
+          "import db\n\npub fn go() -> Nil {\n  let action = db.make()\n  action()\n}\n",
+        ),
+      ],
+      "external effects db : []\n\ncheck app.caller : []\n",
+      "import wrapper\n\npub fn caller() -> Nil {\n  wrapper.go()\n}\n",
+    )
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+}
+
+pub fn project_module_external_infer_omits_lines_and_governs_test() {
+  // `graded infer` over a project with `external effects db : [Database]` writes
+  // no inferred `effects db.*` lines (the declaration governs the module, like a
+  // function-level external suppresses its own line), and a sibling `wrapper.go`
+  // calling into `db` inherits the declared [Database] — so `infer` and `check`
+  // agree on the cross-module effect.
+  let root = "build/modext_infer_proj"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/db.gleam",
+      "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/wrapper.gleam",
+      "import db\n\npub fn go() -> Nil {\n  db.touch()\n}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/proj.graded",
+      "external effects db : [Database]\n",
+    )
+  let assert Ok(Nil) = graded.run_infer(root)
+
+  let assert Ok(content) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(file) = annotation.parse_file(content)
+  let annotations = annotation.extract_annotations(file)
+  list.any(annotations, fn(a) { string.starts_with(a.function, "db.") })
+  |> should.be_false()
+  let assert Ok(go) =
+    list.find(annotations, fn(a) { a.function == "wrapper.go" })
+  go.effects |> should.equal(types.TLabels(set.from_list(["Database"])))
 }
 
 pub fn path_dep_cross_module_positional_discharges_test() {
