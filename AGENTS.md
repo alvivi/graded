@@ -22,6 +22,8 @@ gleam run -m graded format --check [dir]   # CI mode, exits non-zero on diffs
 gleam run -m graded format --stdin         # editor integration: format from stdin
 ```
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the local dev loop (the CI gates to run before pushing), how to add a catalog entry, and the code/changelog/commit conventions.
+
 Tests use **gleeunit** with **qcheck** property generators in `test/generators.gleam`. Gleam fixture sources live in `test/fixtures/` with a single `test/fixtures/fixtures.graded` spec file containing all the integration test annotations (qualified by source module). Integration tests load these real fixtures end-to-end.
 
 ## Architecture
