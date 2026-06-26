@@ -1,5 +1,7 @@
+import filepath
 import gleam/dict.{type Dict}
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/order
@@ -559,13 +561,52 @@ fn fold_qualified_annotation(
   }
 }
 
+// The resolved bundled-catalog directory (see `find_catalog_directory`).
+pub fn catalog_directory() -> String {
+  find_catalog_directory()
+}
+
+// Resolve graded's bundled `priv/catalog`. The install location (via
+// `code:priv_dir`) is tried first so the catalog is found regardless of the
+// process's working directory; the cwd-relative layouts follow as a fallback.
+// When no candidate exists, warn and return the cwd-relative default — an empty
+// catalog collapses every catalogued call to `[Unknown]`, so the degradation is
+// surfaced instead of silent.
 fn find_catalog_directory() -> String {
-  let installed = "build/packages/graded/priv/catalog"
-  case simplifile.is_directory(installed) {
-    Ok(True) -> installed
-    _ -> "priv/catalog"
+  let candidates =
+    list.append(bundled_catalog_candidates(), [
+      "build/packages/graded/priv/catalog",
+      "priv/catalog",
+    ])
+  case list.find(candidates, is_existing_directory) {
+    Ok(directory) -> directory
+    Error(Nil) -> {
+      io.println_error(
+        "graded: warning: catalog directory not found; catalogued calls will resolve to [Unknown]",
+      )
+      "priv/catalog"
+    }
   }
 }
+
+// graded's own `priv/catalog`, anchored on its install location. Empty when the
+// application priv directory can't be located.
+fn bundled_catalog_candidates() -> List(String) {
+  case priv_directory() {
+    Ok(priv) -> [filepath.join(priv, "catalog")]
+    Error(Nil) -> []
+  }
+}
+
+fn is_existing_directory(path: String) -> Bool {
+  case simplifile.is_directory(path) {
+    Ok(True) -> True
+    _ -> False
+  }
+}
+
+@external(erlang, "graded_ffi", "priv_directory")
+fn priv_directory() -> Result(String, Nil)
 
 type CatalogAcc {
   CatalogAcc(

@@ -1338,18 +1338,15 @@ fn check_one_file(
 }
 
 // Read the project's `[tools.graded]` config and return spec/cache paths
-// already resolved relative to the project root. The "project root" is
-// the directory containing `gleam.toml`:
-//
-// - When `directory == "src"` (the production case), project root is `.`
-//   and gleam.toml lives at `./gleam.toml`.
-// - Otherwise (tests against ad-hoc directories), the source directory
-//   itself acts as the project root and gleam.toml is looked up there.
+// already resolved relative to the project root. The root is the nearest
+// ancestor of the source directory holding a `gleam.toml` (see `spec_root_for`),
+// so a source directory like `../other/src` resolves its spec and cache under
+// `../other`, not under the passed directory.
 //
 // Resolved paths are returned in the same `GradedConfig` shape so callers
 // can use them as-is for I/O without further joining.
 fn read_config(directory: String) -> Result(config.GradedConfig, GradedError) {
-  let project_root = source_root_for(directory)
+  let project_root = spec_root_for(directory)
   let toml_path = filepath.join(project_root, "gleam.toml")
   use raw <- result.try(case config.read(toml_path) {
     Ok(cfg) -> Ok(cfg)
@@ -1363,6 +1360,23 @@ fn read_config(directory: String) -> Result(config.GradedConfig, GradedError) {
     spec_file: resolve_path(project_root, raw.spec_file),
     cache_dir: resolve_path(project_root, raw.cache_dir),
   ))
+}
+
+// Where the spec and cache live: the nearest ancestor `gleam.toml`, found by
+// the same walk-up `resolve_package_root` uses for dependency state, so an
+// out-of-tree source like `../other/src` roots its spec under `../other` rather
+// than writing it back under the passed directory. The one exception is a
+// relative source directory nested in the current project whose only ancestor
+// `gleam.toml` is the cwd: it keeps acting as its own root (the `src` layout
+// aside), so pointing graded at a subtree of the current project — e.g. a test
+// fixture directory — doesn't write the spec into the surrounding project.
+fn spec_root_for(directory: String) -> String {
+  let walked = resolve_package_root(directory)
+  let source_root = source_root_for(directory)
+  case walked == "." && source_root != "." {
+    True -> source_root
+    False -> walked
+  }
 }
 
 // The Gleam project root: where dependency state lives — `build/packages`,
@@ -1411,10 +1425,12 @@ fn find_gleam_toml_dir(dir: String, original: String) -> String {
         "" -> "."
         other -> other
       }
-      // `.` (and `/`) is a fixed point of `directory_name`, so `parent == dir`
-      // always halts the walk — at which point no `gleam.toml` was found and we
-      // fall back to the source dir.
-      case parent == dir {
+      // Halt at a fixed point so an exhausted walk falls back to the source dir.
+      // `.` is its own fixed point, halting a relative walk at the cwd. An
+      // absolute walk halts at `/`, whose `directory_name` is `""` → `.`: left
+      // unchecked it would fold into the cwd and wrongly adopt that project's
+      // root, so `/` halts explicitly.
+      case parent == dir || dir == "/" {
         True -> original
         False -> find_gleam_toml_dir(parent, original)
       }

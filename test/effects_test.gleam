@@ -545,3 +545,24 @@ pub fn load_knowledge_base_loads_dependency_type_fields_test() {
   let _ = simplifile.delete("build/eff_dep_typefield")
   Nil
 }
+
+// The catalog directory resolves via graded's own install location (its bundled
+// `priv`), not a bare cwd-relative path — so an out-of-tree run still finds the
+// catalog instead of silently degrading every catalogued call to [Unknown].
+pub fn catalog_directory_anchored_on_install_location_test() {
+  let directory = effects.catalog_directory()
+
+  // The bundled path ends at `priv/catalog` but is prefixed by the install
+  // location, so it differs from the bare cwd-relative fallback.
+  string.ends_with(directory, "priv/catalog")
+  |> should.be_true()
+  { directory != "priv/catalog" }
+  |> should.be_true()
+
+  // It points at a real directory holding catalog spec files.
+  simplifile.is_directory(directory)
+  |> should.equal(Ok(True))
+  let assert Ok(files) = simplifile.get_files(directory)
+  list.any(files, string.ends_with(_, ".graded"))
+  |> should.be_true()
+}
