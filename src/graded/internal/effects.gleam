@@ -606,6 +606,7 @@ fn is_existing_directory(path: String) -> Bool {
 }
 
 @external(erlang, "graded_ffi", "priv_directory")
+@external(javascript, "../../graded_ffi.mjs", "priv_directory")
 fn priv_directory() -> Result(String, Nil)
 
 type CatalogAcc {
