@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **graded finds its bundled catalog regardless of the working directory.** The catalog was resolved relative to the process's current directory, so running graded from another project's directory (for example via an Erlang shipment) resolved to an empty catalog and collapsed every catalogued call to `[Unknown]`. The catalog is now located relative to graded's own install directory; when no catalog directory can be found at all, graded warns on standard error instead of degrading silently.
+- **`infer` and `check` against an out-of-tree source directory root the spec and cache at the project, not the passed directory.** The project root is resolved by walking up to the nearest `gleam.toml`, so `graded infer ../other/src` writes `../other`'s spec and cache under its package name rather than scattering `../other/src/src.graded` and `../other/src/build/`. A relative source directory inside the current project whose only ancestor `gleam.toml` is the working directory still acts as its own root, so pointing graded at a subtree doesn't write into the surrounding project.
+
 ## [0.10.1] - 2026-06-26
 
 ### Fixed

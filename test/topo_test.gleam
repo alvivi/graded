@@ -929,3 +929,48 @@ fn indices_loop(n: Int, acc: List(Int)) -> List(Int) {
     False -> indices_loop(n - 1, [n, ..acc])
   }
 }
+
+// ----- out-of-tree project root resolution (BUG B) -----
+
+// `infer` against a source directory whose project root is an ancestor (where
+// `gleam.toml` lives) must write the spec and cache under that root, not under
+// the passed source directory. Pre-fix, a non-"src" source argument was treated
+// as the project root itself, scattering `src/src.graded` and `src/build/` into
+// the wrong place with the wrong package name.
+pub fn infer_roots_spec_at_nearest_gleam_toml_test() {
+  let root =
+    write_fixture("/tmp/graded_outoftree_root", [
+      stdlib_manifest(),
+      #("gleam.toml", "name = \"myproj\"\n"),
+      #(
+        "src/app.gleam",
+        "import gleam/string
+
+pub fn shout(value: String) -> String {
+  string.uppercase(value)
+}
+",
+      ),
+    ])
+
+  let assert Ok(Nil) = graded.run_infer(root <> "/src")
+
+  // Spec lands at the project root under the package name from gleam.toml.
+  simplifile.is_file(root <> "/myproj.graded")
+  |> should.equal(Ok(True))
+  // Not under the source directory with the basename-derived "src" name.
+  simplifile.is_file(root <> "/src/src.graded")
+  |> should.equal(Ok(False))
+
+  // Cache lands under the project root, not the source directory.
+  simplifile.is_directory(root <> "/build/.graded")
+  |> should.equal(Ok(True))
+  simplifile.is_directory(root <> "/src/build")
+  |> should.equal(Ok(False))
+
+  // Inference actually ran: the pure function reads back as pure.
+  effects_of(read_inferred(root <> "/build/.graded/app.graded"), "shout")
+  |> should.equal(pure())
+
+  cleanup(root)
+}
