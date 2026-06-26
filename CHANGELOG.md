@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-06-26
+
+### Fixed
+
+- **A function-typed field on a dependency-defined type now resolves to its declared effect instead of `[Unknown]`.** When a receiver is typed by a dependency (`fn use(repo: dep/repo.Repo) { repo.find(..) }`), graded reads the dependency's source — a path dependency at its declared location, an installed dependency under `build/packages` — to type the receiver, so a module-qualified `type dep/repo.Repo.find : [Storage]` line resolves at the call site. Previously the receiver type was unresolved for path dependencies, and for installed dependencies whenever graded ran outside the package root, so the field call leaked `[Unknown]`.
+- **A dependency now ships the effects of its own types' function fields.** `type` field annotations in a dependency's spec file, and in the versioned catalog, are loaded into the knowledge base alongside its `effects`/`external` entries, so a consumer resolves `receiver.field(..)` on a dependency-defined record without re-declaring it. A consumer's own `type` line wins on a clash; otherwise the priority follows the effect order (path dependency > installed dependency > catalog).
+
 ## [0.10.0] - 2026-06-25
 
 ### Added
@@ -215,6 +222,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Versioned catalog system resolved against `manifest.toml`.
 - Catalog entries for `gleam_stdlib`, `gleam_erlang`, `gleam_otp`, `gleam_http`, `gleam_httpc`, `gleam_json`, `gleam_regexp`, `gleam_yielder`, `gleam_crypto`, `lustre`, `lustre_http`, `simplifile`, `filepath`, `tom`.
 
+[0.10.1]: https://github.com/alvivi/graded/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/alvivi/graded/compare/v0.9.4...v0.10.0
 [0.9.4]: https://github.com/alvivi/graded/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/alvivi/graded/compare/v0.9.2...v0.9.3
