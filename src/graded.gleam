@@ -137,7 +137,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     signatures.load_from_packages_dir(packages_dir(package_root))
     |> signatures.merge(path_dep_registry(package_root))
   let registry = signatures.merge(dep_registry, build_project_registry(index))
-  let type_info = build_type_index(index)
+  let type_info = build_type_index(index, package_root)
 
   // Hand-written `type` lines (last) win over the inferred construction index.
   let kb_base =
@@ -603,7 +603,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     signatures.load_from_packages_dir(packages_dir(package_root))
     |> signatures.merge(path_dep_registry(package_root))
   let registry = signatures.merge(dep_registry, build_project_registry(index))
-  let type_info = build_type_index(index)
+  let type_info = build_type_index(index, package_root)
 
   use #(_kb, public_annotations, public_returns) <- result.try(
     list.try_fold(sorted, #(base_kb, [], []), fn(state, module_path) {
@@ -905,10 +905,14 @@ fn merge_field_effect(
 // so the checker silently falls back to syntax-level resolution for it.
 fn build_type_index(
   index: Dict(String, #(String, glance.Module)),
+  package_root: String,
 ) -> typeinfo.TypeInfo {
   let options =
     girard.default_options()
-    |> girard.with_resolver(build_girard_resolver(index))
+    |> girard.with_resolver(build_girard_resolver(
+      index,
+      dependency_module_files(package_root),
+    ))
   let entries =
     dict.to_list(index)
     |> list.map(fn(pair) {
@@ -993,18 +997,27 @@ fn fn_typed_names(
 }
 
 // A girard `Resolver` that resolves graded's own project modules from `index`
-// first (so non-`src` layouts like `test/fixtures` work), then falls through
-// to girard's stock disk resolver for dependencies and stdlib under
-// `build/packages`.
+// first (so non-`src` layouts like `test/fixtures` work), then dependency
+// modules from `dep_files` (installed deps under `build/packages` and path deps
+// at their declared location, both keyed package-root-relative). The stock disk
+// resolver is the last resort: it reads `build/packages` relative to the process
+// cwd, which misses path deps entirely and misses installed deps when graded is
+// invoked from outside the package root — so a dependency-defined type on a
+// parameter would leave the receiver untyped and its field calls `[Unknown]`.
 fn build_girard_resolver(
   index: Dict(String, #(String, glance.Module)),
+  dep_files: Dict(String, String),
 ) -> fn(String) -> Result(String, Nil) {
   let disk = girard.disk_resolver()
   fn(module_path) {
     case dict.get(index, module_path) {
       Ok(#(gleam_path, _module)) ->
         simplifile.read(gleam_path) |> result.replace_error(Nil)
-      Error(Nil) -> disk(module_path)
+      Error(Nil) ->
+        case dict.get(dep_files, module_path) {
+          Ok(file) -> simplifile.read(file) |> result.replace_error(Nil)
+          Error(Nil) -> disk(module_path)
+        }
     }
   }
 }
@@ -1472,9 +1485,14 @@ fn enrich_with_path_deps(
     let spec_path = config.spec_file_for(resolved_dep_path, name)
     case simplifile.is_file(spec_path) {
       Ok(True) -> {
-        let #(effs, params, returns) =
+        // A committed path-dep spec can also ship `type` field effects for the
+        // dep's own types; load them so a consumer resolves those fields without
+        // re-declaring them. The infer-from-source fallback has no spec, so no
+        // hand-written `type` lines to load.
+        let #(effs, params, returns, type_fields) =
           effects.load_dep_spec(resolved_dep_path, name)
         fold_inferred_into_kb(kb, effs, params, returns)
+        |> effects.with_type_fields(type_fields)
       }
       _ ->
         case infer_path_dep(resolved_dep_path, kb, consumer_modules) {

@@ -521,3 +521,27 @@ pub fn type_fields_distinguish_modules_test() {
   effect_term.to_effect_set(b.effects)
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
+
+pub fn load_knowledge_base_loads_dependency_type_fields_test() {
+  // A dependency's committed spec under `build/packages` carries a module-
+  // qualified `type` line. `load_knowledge_base` must fold it into the registry
+  // so a consumer's field call against that dependency type resolves, rather
+  // than dropping `type` lines as it did before.
+  let packages = "build/eff_dep_typefield/packages"
+  let _ = simplifile.delete("build/eff_dep_typefield")
+  let assert Ok(Nil) = simplifile.create_directory_all(packages <> "/dep")
+  let assert Ok(Nil) =
+    simplifile.write(
+      packages <> "/dep/dep.graded",
+      "type dep/repo.Repo.find : [Storage]\n",
+    )
+
+  let kb = effects.load_knowledge_base(packages, "missing_manifest.toml")
+  let assert Ok(field) =
+    effects.lookup_type_field(kb, "dep/repo", "Repo", "find")
+  effect_term.to_effect_set(field.effects)
+  |> should.equal(Specific(set.from_list(["Storage"])))
+
+  let _ = simplifile.delete("build/eff_dep_typefield")
+  Nil
+}

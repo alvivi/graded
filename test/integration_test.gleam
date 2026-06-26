@@ -1095,3 +1095,121 @@ pub fn path_dep_cross_module_positional_discharges_test() {
   let _ = simplifile.delete(dep_root)
   Nil
 }
+
+// ----- function-typed fields on dependency-defined types -----
+
+pub fn path_dep_type_field_resolves_from_consumer_spec_test() {
+  // A path dep defines a capability record `Repo(find: fn(String) -> Int)`. The
+  // consumer calls `r.find(...)` through a parameter typed by the dependency,
+  // and annotates that field in its OWN spec with a module-qualified `type`
+  // line. graded must type the receiver as the dependency's nominal type
+  // (`dep/repo.Repo`) so the `#(module, type, field)` lookup hits — which means
+  // girard has to read the path dependency's source, not just `build/packages`.
+  // Before the fix the receiver type was unresolved and the call leaked
+  // [Unknown]; now it resolves to the annotated [Storage].
+  let r =
+    run_path_dep_fixture(
+      "pd_typefield_consumer",
+      [#("repo.gleam", "pub type Repo {\n  Repo(find: fn(String) -> Int)\n}\n")],
+      "type repo.Repo.find : [Storage]\n\ncheck app.use_field : []\n",
+      "import repo.{type Repo}\n\n"
+        <> "pub fn use_field(r: Repo) -> Int {\n  r.find(\"x\")\n}\n",
+    )
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "use_field" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Storage"])))
+}
+
+pub fn path_dep_ships_type_field_test() {
+  // The dependency itself ships the `type` annotation in its committed
+  // `dep.graded`; the consumer declares no field annotation at all. graded must
+  // load the dependency spec's `type` lines (not just its `effects`) so the
+  // consumer's `r.find(...)` resolves to the dependency-declared [Storage].
+  let app_root = "build/pd_ships_typefield_app"
+  let dep_root = "build/pd_ships_typefield_dep"
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+
+  let assert Ok(Nil) = simplifile.create_directory_all(dep_root <> "/src/dep")
+  let assert Ok(Nil) =
+    simplifile.write(dep_root <> "/gleam.toml", "name = \"dep\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/src/dep/repo.gleam",
+      "pub type Repo {\n  Repo(find: fn(String) -> Int)\n}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/dep.graded",
+      "type dep/repo.Repo.find : [Storage]\n",
+    )
+
+  let assert Ok(Nil) = simplifile.create_directory_all(app_root)
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/gleam.toml",
+      "name = \"app\"\n\n[dependencies]\ndep = { path = \"../pd_ships_typefield_dep\" }\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(app_root <> "/app.graded", "check app.use_field : []\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/app.gleam",
+      "import dep/repo.{type Repo}\n\n"
+        <> "pub fn use_field(r: Repo) -> Int {\n  r.find(\"x\")\n}\n",
+    )
+
+  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "use_field" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Storage"])))
+
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+  Nil
+}
+
+pub fn installed_dep_ships_type_field_test() {
+  // The reporter's primary case: a published (under `build/packages`) dependency
+  // ships its own `type` field effects. The fixture lives under the gitignored
+  // `build/` so its `build/packages` resolves package-root-relative — exercising
+  // both the dependency-aware girard resolver (to type the receiver) and
+  // dependency `type`-field loading (to resolve the field). The consumer writes
+  // no annotation; `r.find(...)` must resolve to the dependency's [Storage].
+  let root = "build/installed_typefield_fixture"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(root <> "/build/packages/dep/src/dep")
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/gleam.toml", "name = \"app\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/app.graded", "check app.use_field : []\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/build/packages/dep/src/dep/repo.gleam",
+      "pub type Repo {\n  Repo(find: fn(String) -> Int)\n}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/build/packages/dep/dep.graded",
+      "type dep/repo.Repo.find : [Storage]\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/app.gleam",
+      "import dep/repo.{type Repo}\n\n"
+        <> "pub fn use_field(r: Repo) -> Int {\n  r.find(\"x\")\n}\n",
+    )
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "use_field" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Storage"])))
+
+  let _ = simplifile.delete(root)
+  Nil
+}
