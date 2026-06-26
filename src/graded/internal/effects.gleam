@@ -59,10 +59,10 @@ pub fn load_knowledge_base(
   packages_directory: String,
   manifest_path: String,
 ) -> KnowledgeBase {
-  let #(dep_effects, dep_params, dep_returns) =
+  let #(dep_effects, dep_params, dep_returns, dep_type_fields) =
     load_dependencies(packages_directory)
   let catalog_dir = find_catalog_directory()
-  let #(cat_effects, cat_module_effects, cat_params) =
+  let #(cat_effects, cat_module_effects, cat_params, cat_type_fields) =
     load_catalog(catalog_dir, manifest_path)
   KnowledgeBase(
     // Dependency entries win on a clash: dict.merge keeps its second argument.
@@ -73,12 +73,15 @@ pub fn load_knowledge_base(
     factories: dict.new(),
     module_effects: cat_module_effects,
   )
+  // Catalog `type` fields first, then dependency ones (appended last, so they
+  // win on a clash) — matching the effect priority (dependency spec > catalog).
+  |> with_type_fields(list.append(cat_type_fields, dep_type_fields))
 }
 
 // Build a knowledge base from the catalog only (no dependency scanning).
 pub fn empty_knowledge_base() -> KnowledgeBase {
   let catalog_dir = find_catalog_directory()
-  let #(cat_effects, cat_module_effects, cat_params) =
+  let #(cat_effects, cat_module_effects, cat_params, cat_type_fields) =
     load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
     all_effects: cat_effects,
@@ -88,6 +91,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     factories: dict.new(),
     module_effects: cat_module_effects,
   )
+  |> with_type_fields(cat_type_fields)
 }
 
 // Look up a type field's resolved effect (with any polymorphic bounds/source).
@@ -339,13 +343,17 @@ pub fn load_spec_effects_from_file(
   fold_spec_effects(annotation.extract_annotations(file))
 }
 
-// Load one package's spec into its effects, polymorphic param bounds, and
-// returned-operator maps, keyed by `QualifiedName`. Reads the spec via the
-// package's own `[tools.graded]` config (defaulting to `<package_name>.graded`)
-// at `dep_root`. Empty maps when the spec is missing or unparseable. Shared by
-// the `build/packages` dependency scan and path-dependency enrichment so both
-// dep kinds load identical metadata — effects alone would drop the bounds a
-// higher-order callee needs to discharge its callback's effect at the call site.
+// Load one package's spec into its effects, polymorphic param bounds,
+// returned-operator maps, and hand-written `type` field annotations. The first
+// three are keyed by `QualifiedName`; the `type` fields stay a list (applied via
+// `with_type_fields`, whose insert order decides priority against the project
+// spec). Reads the spec via the package's own `[tools.graded]` config
+// (defaulting to `<package_name>.graded`) at `dep_root`, once. Empty when the
+// spec is missing or unparseable. Shared by the `build/packages` dependency scan
+// and path-dependency enrichment so both dep kinds load identical metadata —
+// effects alone would drop the bounds a higher-order callee needs to discharge
+// its callback's effect, or the `type` fields a capability record on the dep's
+// own types needs to resolve at a consumer's call site.
 pub fn load_dep_spec(
   dep_root: String,
   package_name: String,
@@ -353,9 +361,10 @@ pub fn load_dep_spec(
   Dict(QualifiedName, EffectTerm),
   Dict(QualifiedName, List(ParamBound)),
   Dict(QualifiedName, EffectTerm),
+  List(TypeFieldAnnotation),
 ) {
   case read_spec_file(config.spec_file_for(dep_root, package_name)) {
-    Error(_) -> #(dict.new(), dict.new(), dict.new())
+    Error(_) -> #(dict.new(), dict.new(), dict.new(), [])
     Ok(file) -> {
       let #(effect_map, param_map) =
         list.fold(
@@ -363,7 +372,12 @@ pub fn load_dep_spec(
           #(dict.new(), dict.new()),
           fold_qualified_annotation,
         )
-      #(effect_map, param_map, load_spec_returns_from_file(file))
+      #(
+        effect_map,
+        param_map,
+        load_spec_returns_from_file(file),
+        annotation.extract_type_fields(file),
+      )
     }
   }
 }
@@ -483,15 +497,17 @@ pub fn lookup_returned_operator(
 // For each installed package, locate its spec file via the package's own
 // `[tools.graded]` config (defaulting to `<package_name>.graded`), then read
 // and parse it *once*, folding its qualified `effects`/`check` annotations
-// into the global effect/param maps and its `returns` lines into the
-// returned-operator map. Packages with no spec file are silently skipped —
-// same fail-soft semantics as the catalog and the old per-module reader.
+// into the global effect/param maps, its `returns` lines into the
+// returned-operator map, and its `type` field lines into a flat list. Packages
+// with no spec file are silently skipped — same fail-soft semantics as the
+// catalog and the old per-module reader.
 fn load_dependencies(
   packages_directory: String,
 ) -> #(
   Dict(QualifiedName, EffectTerm),
   Dict(QualifiedName, List(ParamBound)),
   Dict(QualifiedName, EffectTerm),
+  List(TypeFieldAnnotation),
 ) {
   let entries = case simplifile.read_directory(packages_directory) {
     Ok(found) -> found
@@ -499,16 +515,17 @@ fn load_dependencies(
   }
   list.fold(
     entries,
-    #(dict.new(), dict.new(), dict.new()),
+    #(dict.new(), dict.new(), dict.new(), []),
     fn(acc, package_name) {
-      let #(effect_map, param_map, returns_map) = acc
+      let #(effect_map, param_map, returns_map, type_fields) = acc
       let dep_root = packages_directory <> "/" <> package_name
-      let #(new_effects, new_params, new_returns) =
+      let #(new_effects, new_params, new_returns, new_type_fields) =
         load_dep_spec(dep_root, package_name)
       #(
         dict.merge(effect_map, new_effects),
         dict.merge(param_map, new_params),
         dict.merge(returns_map, new_returns),
+        list.append(type_fields, new_type_fields),
       )
     },
   )
@@ -556,6 +573,7 @@ type CatalogAcc {
     module_effects: Dict(String, EffectTerm),
     poly_effects: Dict(QualifiedName, EffectTerm),
     poly_params: Dict(QualifiedName, List(ParamBound)),
+    type_fields: List(TypeFieldAnnotation),
   )
 }
 
@@ -566,6 +584,7 @@ fn load_catalog(
   Dict(QualifiedName, EffectTerm),
   Dict(String, EffectTerm),
   Dict(QualifiedName, List(ParamBound)),
+  List(TypeFieldAnnotation),
 ) {
   let installed_versions = parse_manifest_versions(manifest_path)
   let catalog_files = case simplifile.get_files(catalog_dir) {
@@ -574,12 +593,12 @@ fn load_catalog(
     Error(_) -> []
   }
   let selected = resolve_catalog_files(catalog_files, installed_versions)
-  let initial = CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new())
+  let initial = CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new(), [])
   let acc = list.fold(selected, initial, fold_catalog_file)
   // Explicit `effects` annotations in the catalog take precedence over the
   // module-level `external effects` markers.
   let all_effects = dict.merge(acc.ext_effects, acc.poly_effects)
-  #(all_effects, acc.module_effects, acc.poly_params)
+  #(all_effects, acc.module_effects, acc.poly_params, acc.type_fields)
 }
 
 // Fold one catalog file into the accumulator. `external effects` lines
@@ -616,6 +635,10 @@ fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
             module_effects: kb.module_effects,
             poly_effects:,
             poly_params:,
+            type_fields: list.append(
+              acc.type_fields,
+              annotation.extract_type_fields(graded_file),
+            ),
           )
         }
       }

@@ -270,6 +270,15 @@ isn't a traceable function — it falls back to `[Unknown]`. The escape hatch is
 `type` line, or a [field bound](#field-bounds) when the assertion belongs at a single
 function boundary; see [LIMITATIONS.md](./LIMITATIONS.md).
 
+**Dependency-defined types.** The receiver type a field call resolves to can belong
+to a dependency, so a `type` line may name a dependency module
+(`type dep/repo.Repo.find : [Storage]`). This works for both path and published
+dependencies — girard reads the dependency's source to type the receiver. A
+dependency can also **ship** its own `type` lines in its committed spec file; a
+consumer picks them up automatically, the same way it inherits a dependency's
+`effects` and `external` annotations, so the capability-record pattern needs no
+per-consumer re-declaration. A consumer's own `type` line still wins on a clash.
+
 ## External declarations and FFI
 
 `external effects` annotates a function graded can't see into, without touching the
