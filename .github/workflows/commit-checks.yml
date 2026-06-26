@@ -1,0 +1,36 @@
+name: Commit checks
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  commit-messages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install gitlint
+        run: pip install gitlint
+
+      - name: Lint commit messages
+        run: gitlint --commits ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+
+  branch-name:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject git-flow / conventional branch prefixes
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          if printf '%s' "$BRANCH" | grep -qiE '^(feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|test|ci|build|perf|style)/'; then
+            echo "::error::Branch '$BRANCH' uses a git-flow/conventional prefix. Use a short, descriptive kebab-case name (e.g. dependency-field-resolution)."
+            exit 1
+          fi
+          echo "Branch name '$BRANCH' OK"

@@ -1,0 +1,10 @@
+#!/bin/sh
+# Lint the commit message against the seven rules (config in .gitlint).
+# Skips with a warning if gitlint is not installed; CI enforces regardless.
+
+if command -v gitlint >/dev/null 2>&1; then
+	gitlint --msg-filename "$1" || exit 1
+else
+	echo "commit-msg: gitlint not found, skipping local check (CI still enforces)." >&2
+	echo "commit-msg: install with 'pip install gitlint' for local feedback." >&2
+fi

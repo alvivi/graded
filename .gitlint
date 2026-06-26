@@ -1,0 +1,26 @@
+# gitlint config — enforces the mechanical half of the seven rules
+# (https://chris.beams.io/posts/git-commit/#seven-rules). Imperative mood and
+# "what & why, not how" are not machine-checkable; CONTRIBUTING.md covers them.
+
+[general]
+# Single-line commits are fine; don't require a body.
+ignore=body-is-missing
+ignore-merge-commits=true
+ignore-fixup-commits=true
+ignore-revert-commits=true
+
+# Rule 2 (target is 50; 72 is Beams' hard limit and matches this repo's style).
+[title-max-length]
+line-length=72
+
+[title-min-length]
+min-length=5
+
+# Rule 3: capitalized subject. A capital first letter also rejects the
+# lowercase Conventional Commits prefixes (feat:, fix:, chore:, …).
+[title-match-regex]
+regex=^[A-Z]
+
+# Rule 6: wrap the body at 72.
+[body-max-line-length]
+line-length=72

@@ -1,0 +1,20 @@
+#!/bin/sh
+# Reject pushing a branch whose name uses a git-flow / conventional prefix.
+# Mirrors the branch-name job in .github/workflows/commit-checks.yml.
+
+forbidden='^(feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|test|ci|build|perf|style)/'
+status=0
+
+while read -r local_ref _local_sha _remote_ref _remote_sha; do
+	case "$local_ref" in
+		refs/heads/*) branch=${local_ref#refs/heads/} ;;
+		*) continue ;;
+	esac
+	if printf '%s' "$branch" | grep -qiE "$forbidden"; then
+		echo "pre-push: branch '$branch' uses a git-flow/conventional prefix." >&2
+		echo "pre-push: rename it to a short, descriptive kebab-case name." >&2
+		status=1
+	fi
+done
+
+exit $status
