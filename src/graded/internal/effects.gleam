@@ -573,11 +573,14 @@ pub fn catalog_directory() -> String {
 // catalog collapses every catalogued call to `[Unknown]`, so the degradation is
 // surfaced instead of silent.
 fn find_catalog_directory() -> String {
-  let candidates =
-    list.append(bundled_catalog_candidates(), [
-      "build/packages/graded/priv/catalog",
-      "priv/catalog",
-    ])
+  let cwd_relative = ["build/packages/graded/priv/catalog", "priv/catalog"]
+  // The install-location candidate (anchored on graded's own priv) is tried
+  // ahead of the cwd-relative ones; absent when the priv directory can't be
+  // located.
+  let candidates = case priv_directory() {
+    Ok(priv) -> [filepath.join(priv, "catalog"), ..cwd_relative]
+    Error(Nil) -> cwd_relative
+  }
   case list.find(candidates, is_existing_directory) {
     Ok(directory) -> directory
     Error(Nil) -> {
@@ -586,15 +589,6 @@ fn find_catalog_directory() -> String {
       )
       "priv/catalog"
     }
-  }
-}
-
-// graded's own `priv/catalog`, anchored on its install location. Empty when the
-// application priv directory can't be located.
-fn bundled_catalog_candidates() -> List(String) {
-  case priv_directory() {
-    Ok(priv) -> [filepath.join(priv, "catalog")]
-    Error(Nil) -> []
   }
 }
 
