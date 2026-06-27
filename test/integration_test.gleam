@@ -34,6 +34,23 @@ pub fn let_bound_view_passes_test() {
   r.violations |> should.equal([])
 }
 
+pub fn recursive_fn_arg_resolves_pure_test() {
+  // A self-recursive function passed by name to a higher-order call
+  // (`list.flat_map(children, walk)`) must resolve to its real (pure) effect,
+  // not [Unknown]: the recursive reference is already on the analysis stack, so
+  // it contributes nothing rather than collapsing the result. With girard type
+  // info active (as here), the operator-lift path reaches the recursive
+  // reference; before the fix it leaked a phantom variable that became
+  // [Unknown], failing the `check walk : []` budget.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let result =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/recursive_fn_arg.gleam"
+    })
+  let assert Ok(r) = result
+  r.violations |> should.equal([])
+}
+
 pub fn impure_view_fails_test() {
   let assert Ok(results) = graded.run("test/fixtures")
   let impure_result =
