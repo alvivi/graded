@@ -346,6 +346,110 @@ fn infer_project(
   annotation.extract_annotations(file)
 }
 
+fn field_forwarding_source() -> String {
+  "pub type Options {\n"
+  <> "  Options(resolver: fn() -> Nil)\n"
+  <> "}\n\n"
+  <> "pub type Inner {\n"
+  <> "  Inner(run: fn() -> Nil)\n"
+  <> "}\n\n"
+  <> "pub type Outer {\n"
+  <> "  Outer(inner: Inner)\n"
+  <> "}\n\n"
+  <> "pub fn direct(options: Options) -> Nil {\n"
+  <> "  options.resolver()\n"
+  <> "}\n\n"
+  <> "pub fn inner(options: Options) -> Nil {\n"
+  <> "  options.resolver()\n"
+  <> "}\n\n"
+  <> "pub fn one_hop(options: Options) -> Nil {\n"
+  <> "  inner(options)\n"
+  <> "}\n\n"
+  <> "pub fn two_hop(options: Options) -> Nil {\n"
+  <> "  one_hop(options)\n"
+  <> "}\n\n"
+  <> "pub fn recursive(options: Options) -> Nil {\n"
+  <> "  inner(options)\n"
+  <> "  recursive(options)\n"
+  <> "}\n\n"
+  <> "pub fn nested_inner(o: Outer) -> Nil {\n"
+  <> "  o.inner.run()\n"
+  <> "}\n\n"
+  <> "pub fn nested_forward(x: Outer) -> Nil {\n"
+  <> "  nested_inner(x)\n"
+  <> "}\n"
+}
+
+fn run_project_with_spec(
+  root: String,
+  source: String,
+  spec: String,
+) -> List(types.CheckResult) {
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
+  let assert Ok(Nil) = simplifile.write(root <> "/proj.gleam", source)
+  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", spec)
+  let assert Ok(results) = graded.run(root)
+  results
+}
+
+fn expect_field_bound(
+  annotations: List(types.EffectAnnotation),
+  function: String,
+  field_path: String,
+) {
+  let assert Ok(annotation) =
+    list.find(annotations, fn(a) { a.function == function })
+  let assert Ok(bound) =
+    list.find(annotation.params, fn(b) { b.name == field_path })
+  bound.effects |> should.equal(types.TVar(field_path))
+  annotation.effects |> should.equal(types.TVar(field_path))
+}
+
+pub fn field_effect_forwarding_infers_direct_and_hops_test() {
+  let annotations =
+    infer_project("build/field_forwarding_app", [
+      #("proj.gleam", field_forwarding_source()),
+    ])
+
+  expect_field_bound(annotations, "proj.direct", "options.resolver")
+  expect_field_bound(annotations, "proj.inner", "options.resolver")
+  expect_field_bound(annotations, "proj.one_hop", "options.resolver")
+  expect_field_bound(annotations, "proj.two_hop", "options.resolver")
+  expect_field_bound(annotations, "proj.recursive", "options.resolver")
+  expect_field_bound(annotations, "proj.nested_forward", "x.inner.run")
+}
+
+pub fn field_effect_forwarding_unbound_check_stays_unknown_test() {
+  let root = "build/field_forwarding_unbound_check"
+  let results =
+    run_project_with_spec(
+      root,
+      field_forwarding_source(),
+      "check proj.one_hop : []\n",
+    )
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "one_hop" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn field_effect_forwarding_bound_check_uses_forwarded_bound_test() {
+  let root = "build/field_forwarding_bound_check"
+  let results =
+    run_project_with_spec(
+      root,
+      field_forwarding_source(),
+      "check proj.one_hop(options.resolver: [Stdout]) : []\n",
+    )
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "one_hop" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn nested_field_round_trips_as_dotted_field_bound_test() {
   // Inferring a nested fn-typed field call on a same-module type (no `type`
   // line, no field bound) surfaces it as a polymorphic *dotted* field bound —
