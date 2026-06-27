@@ -58,8 +58,10 @@ check app.caller(v.to_error: [Stdout]) : [Stdout]
 The `param.field` bound resolves the call inside `caller` only, leaving the type
 untouched elsewhere.
 
-Direct forwarding of that parameter through helper calls preserves the same field
-bound:
+Forwarding that parameter through helper calls preserves the same field bound.
+Two argument shapes forward: passing one of the caller's own parameters directly,
+and passing a receiver path rooted at one of them (`config.validator`,
+`config.options.inner`).
 
 ```gleam
 fn inner(v: Validator) -> Nil {
@@ -69,14 +71,18 @@ fn inner(v: Validator) -> Nil {
 pub fn caller(v: Validator) -> Nil {
   inner(v)                  // forwards `v.to_error`
 }
+
+pub fn from_config(config: Config) -> Nil {
+  inner(config.validator)   // forwards `config.validator.to_error`
+}
 ```
 
-This forwarding is intentionally narrow. It only applies when the caller passes
-one of its own parameters directly as the receiver argument. Aliases
-(`let w = v; inner(w)`), factory results (`inner(default_validator())`), field
-receivers (`inner(config.validator)`), and computed expressions remain
-conservative and fall back to `[Unknown]` unless covered by a `type` line or a
-field bound.
+This forwarding is intentionally narrow. It applies only when the receiver
+argument is one of the caller's own parameters, or a field path rooted at one.
+Aliases (`let w = config.validator; inner(w)`), factory results
+(`inner(default_validator())`), and computed expressions (`inner(make(config))`)
+remain conservative and fall back to `[Unknown]` unless covered by a `type` line
+or a field bound.
 
 > Note: when a record *is* built by a factory function (`let v = make(io.println)`),
 > graded resolves the field through the factory — but only for **positional**

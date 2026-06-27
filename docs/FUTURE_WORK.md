@@ -6,6 +6,16 @@ cross-package inference all ship today. What remains is a short list of refineme
 and one new direction, ordered by incrementality — earlier items are smaller, later
 items push into different territory.
 
+## Alias- and factory-aware field forwarding
+
+Field-effect forwarding re-keys a callee's field bound onto the caller when the
+receiver argument is one of the caller's parameters or a field path rooted at one
+(`inner(config.options)` → `config.options.resolver`). Receivers reached through a
+let-binding (`let w = config.options; inner(w)`) or returned from a function
+(`inner(make_options())`) stay conservative and fall back to `[Unknown]`. A later
+step could trace let-bindings back to their source path and resolve factory
+returns to their constructed field, extending forwarding to those cases.
+
 ## Retiring the positional/label heuristics
 
 graded reads expression types from [girard](https://hexdocs.pm/girard), which

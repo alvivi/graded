@@ -1709,13 +1709,33 @@ fn field_forwarding_binding(
     args,
     registry,
   ))
-  case arg {
-    types.CallArgument(value: types.LocalRef(name), ..) ->
-      case set.contains(caller_param_names, name) {
-        True -> Some(#(var, TVar(name <> "." <> tail)))
-        False -> None
-      }
+  // Graft the caller-rooted path the argument denotes before the callee tail:
+  // `inner(options)` makes `o.run` the caller's `options.run`, and
+  // `inner(config.options)` makes `o.inner.run` its `config.options.inner.run`.
+  use path <- option.then(caller_rooted_path(arg.value, caller_param_names))
+  Some(#(var, TVar(path <> "." <> tail)))
+}
+
+// The receiver path an argument denotes when rooted at one of the caller's own
+// parameters: a bare parameter reference is the single-segment case
+// (`options`), a receiver path the multi-segment one (`config.options`). `None`
+// for any other value, or when the root isn't a caller parameter.
+fn caller_rooted_path(
+  value: types.ArgumentValue,
+  caller_param_names: Set(String),
+) -> option.Option(String) {
+  use path <- option.then(case value {
+    types.LocalRef(name) -> Some(name)
+    types.ReceiverPath(path) -> Some(path)
     _ -> None
+  })
+  let root = case string.split_once(path, ".") {
+    Ok(#(root, _)) -> root
+    Error(Nil) -> path
+  }
+  case set.contains(caller_param_names, root) {
+    True -> Some(path)
+    False -> None
   }
 }
 
@@ -1774,8 +1794,10 @@ fn auto_bounds_from_registry(
           case arg.value {
             // Closures, branches, and other inline expressions are walked
             // separately by the extractor; binding them here would double-count.
-            types.Closure(_, _, _) | types.Choice(_) | types.OtherExpression ->
-              Error(Nil)
+            types.Closure(_, _, _)
+            | types.Choice(_)
+            | types.ReceiverPath(_)
+            | types.OtherExpression -> Error(Nil)
             _ -> Ok(bound)
           }
         None -> Error(Nil)
@@ -2686,6 +2708,7 @@ fn resolve_argument_effects(
     // conservative.
     types.Choice(_) -> effect_term.unknown()
     types.ReturnedOperator(_, _) -> effect_term.unknown()
+    types.ReceiverPath(_) -> effect_term.unknown()
     types.OtherExpression -> effect_term.unknown()
   }
 }
