@@ -1402,6 +1402,16 @@ fn first_order_arg_effect(
   }
 }
 
+// A pure operator that absorbs `positions`-many callback arguments and reduces
+// to `pure`. The contribution of an operator reference whose own effects are
+// already accounted for elsewhere — a recursive self-reference, captured by the
+// outer frame analysing it. Empty `positions` yields a ground `pure`.
+fn pure_operator(positions: List(Int)) -> EffectTerm {
+  list.fold(positions, effect_term.pure(), fn(body, position) {
+    types.TAbs("_rec" <> int.to_string(position), body)
+  })
+}
+
 // Recover a first-order closure's body effect from its lifted operator by
 // discharging each value parameter to `pure` (`λr. body ↦ body`). Used when a
 // closure is bound to a first-order fn-typed parameter — the effect of calling
@@ -1867,6 +1877,12 @@ fn build_lift_operator_arg(
               )
             #(Ok(operator), memo)
           }
+          // A recursive reference — the function is already being analysed up
+          // the call stack, so its own effects are captured by that outer
+          // frame. This reference contributes nothing: a pure operator over the
+          // callback positions, rather than collapsing to [Unknown]. Mirrors
+          // the cycle handling in `resolve_unknown_local`.
+          True, Ok(_) -> #(Ok(pure_operator(positions)), memo)
           _, _ -> #(Error(Nil), memo)
         }
       types.ReturnedOperator(callee, args) ->
