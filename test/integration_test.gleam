@@ -385,12 +385,7 @@ fn run_project_with_spec(
   source: String,
   spec: String,
 ) -> List(types.CheckResult) {
-  let _ = simplifile.delete(root)
-  let assert Ok(Nil) = simplifile.create_directory_all(root)
-  let assert Ok(Nil) =
-    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
-  let assert Ok(Nil) = simplifile.write(root <> "/proj.gleam", source)
-  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", spec)
+  write_project(root, [#("proj.gleam", source)], spec)
   let assert Ok(results) = graded.run(root)
   results
 }

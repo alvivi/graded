@@ -626,10 +626,7 @@ fn alias_fn_typed_params(
 fn named_function_params(function: Function) -> Set(String) {
   function.parameters
   |> list.filter_map(fn(param) {
-    case param.name {
-      glance.Named(name) -> Ok(name)
-      glance.Discarded(_) -> Error(Nil)
-    }
+    param.name |> signatures.assignment_name |> option.to_result(Nil)
   })
   |> set.from_list()
 }
@@ -1003,6 +1000,7 @@ fn collect_effects(
   let result =
     extract.extract_function_calls_with_captures(function, context, captures)
   let caller_param_names = named_function_params(function)
+  let caller_field_bindings = field_bound_bindings(param_bounds)
   // The function's own fn-typed params join the inherited ambient operators, so
   // a closure in this body that captures one resolves it to its effect variable.
   let operator_params =
@@ -1034,6 +1032,7 @@ fn collect_effects(
           knowledge_base,
           param_bounds,
           caller_param_names,
+          caller_field_bindings,
           registry,
           lift_operator_arg,
           memo,
@@ -1100,6 +1099,7 @@ fn collect_effects(
             knowledge_base,
             param_bounds,
             caller_param_names,
+            caller_field_bindings,
             registry,
             lift_operator_arg,
             memo,
@@ -1489,6 +1489,7 @@ fn substitute_local_call_effects(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   caller_param_names: Set(String),
+  caller_field_bindings: dict.Dict(String, EffectTerm),
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
@@ -1529,27 +1530,28 @@ fn substitute_local_call_effects(
           lift_operator_arg,
           memo,
         )
+      let callee_terms = list.map(recursive, fn(pair) { pair.1 })
       let field_bindings =
         field_forwarding_bindings(
           callee_name,
-          recursive |> list.map(fn(pair) { pair.1 }) |> TUnion,
+          TUnion(callee_terms),
           args,
           caller_param_names,
           merged_registry,
         )
-      let caller_field_bindings = field_bound_bindings(caller_param_bounds)
       let forwarded = forwarded_field_vars(field_bindings)
       let substituted =
         list.map(recursive, fn(pair) {
           let #(call, term) = pair
           #(
             call,
-            term
-              |> effect_term.subst(bindings)
-              |> effect_term.subst(field_bindings)
-              |> effect_term.subst(caller_field_bindings)
-              |> concretize_field_vars_except(forwarded)
-              |> effect_term.normalize(),
+            apply_call_bindings(
+              term,
+              bindings,
+              field_bindings,
+              caller_field_bindings,
+              forwarded,
+            ),
           )
         })
       #(substituted, memo)
@@ -1577,6 +1579,7 @@ fn substitute_at_call_site(
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   caller_param_names: Set(String),
+  caller_field_bindings: dict.Dict(String, EffectTerm),
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
@@ -1620,13 +1623,43 @@ fn substitute_at_call_site(
     )
   let forwarded = forwarded_field_vars(field_bindings)
   let substituted =
-    effective_effects
-    |> effect_term.subst(bindings)
-    |> effect_term.subst(field_bindings)
-    |> effect_term.subst(field_bound_bindings(caller_param_bounds))
-    |> concretize_field_vars_except(forwarded)
-    |> effect_term.normalize()
+    apply_call_bindings(
+      effective_effects,
+      bindings,
+      field_bindings,
+      caller_field_bindings,
+      forwarded,
+    )
   #(substituted, memo)
+}
+
+// Finish a call-site effect: bind the callee's effect variables, re-key any
+// forwarded field paths onto the caller's parameters, discharge the caller's
+// own field bounds, then ground every field variable still naming a
+// callee-local receiver. Shared by the resolved and local call paths.
+fn apply_call_bindings(
+  term: EffectTerm,
+  bindings: dict.Dict(String, EffectTerm),
+  field_bindings: dict.Dict(String, EffectTerm),
+  caller_field_bindings: dict.Dict(String, EffectTerm),
+  forwarded: Set(String),
+) -> EffectTerm {
+  term
+  |> subst_if(bindings)
+  |> subst_if(field_bindings)
+  |> subst_if(caller_field_bindings)
+  |> concretize_field_vars_except(forwarded)
+  |> effect_term.normalize()
+}
+
+// `effect_term.subst` walks and reallocates the whole term even for an empty
+// binding set, so skip it when there is nothing to substitute.
+fn subst_if(
+  term: EffectTerm,
+  bindings: dict.Dict(String, EffectTerm),
+) -> EffectTerm {
+  use <- bool.guard(when: dict.is_empty(bindings), return: term)
+  effect_term.subst(term, bindings)
 }
 
 // Re-key free field-effect variables from a callee receiver parameter onto a
@@ -1670,8 +1703,12 @@ fn field_forwarding_binding(
   use #(receiver, tail) <- option.then(
     option.from_result(string.split_once(var, ".")),
   )
-  let bound = ParamBound(receiver, TVar(receiver))
-  use arg <- option.then(find_matching_arg(callee_name, bound, args, registry))
+  use arg <- option.then(find_matching_arg_by_name(
+    callee_name,
+    receiver,
+    args,
+    registry,
+  ))
   case arg {
     types.CallArgument(value: types.LocalRef(name), ..) ->
       case set.contains(caller_param_names, name) {
@@ -1687,11 +1724,13 @@ fn field_bound_bindings(
 ) -> dict.Dict(String, EffectTerm) {
   caller_param_bounds
   |> list.filter(fn(bound) { is_field_path_var(bound.name) })
-  |> list.fold(dict.new(), fn(bindings, bound) {
-    dict.insert(bindings, bound.name, bound.effects)
-  })
+  |> list.map(fn(bound) { #(bound.name, bound.effects) })
+  |> dict.from_list()
 }
 
+// The forwarded vars are the receiver paths re-keyed onto the caller's own
+// parameters (always dotted field paths), which `concretize_field_vars_except`
+// must preserve while grounding every remaining callee-local field var.
 fn forwarded_field_vars(
   bindings: dict.Dict(String, EffectTerm),
 ) -> Set(String) {
@@ -1700,7 +1739,6 @@ fn forwarded_field_vars(
   |> list.fold(set.new(), fn(vars, term) {
     set.union(vars, effect_term.free_vars(term))
   })
-  |> set.filter(is_field_path_var)
 }
 
 // When the KB has no bounds but the registry reports fn-typed params,
@@ -2560,8 +2598,17 @@ fn find_matching_arg(
   args: List(types.CallArgument),
   registry: SignatureRegistry,
 ) -> option.Option(types.CallArgument) {
+  find_matching_arg_by_name(callee_name, bound.name, args, registry)
+}
+
+fn find_matching_arg_by_name(
+  callee_name: types.QualifiedName,
+  name: String,
+  args: List(types.CallArgument),
+  registry: SignatureRegistry,
+) -> option.Option(types.CallArgument) {
   // Match the argument bound to this parameter, in order:
-  //   1. An argument the caller labelled with the bound's own name.
+  //   1. An argument the caller labelled with the parameter's own name.
   //   2. The callee's signature: an argument carrying the parameter's
   //      declared Gleam label (a labelled call site, `f(with: cb)`), or the
   //      argument at the parameter's real position (a positional call site).
@@ -2570,9 +2617,9 @@ fn find_matching_arg(
   // silently picks the wrong argument when bounds are sparse. If the
   // registry has no entry, the variable stays unresolved and surfaces as
   // part of the result.
-  let by_bound_name = find_arg_by_label(args, bound.name)
-  use <- option.lazy_or(by_bound_name)
-  use param <- option.then(param_info(callee_name, bound.name, registry))
+  let by_name = find_arg_by_label(args, name)
+  use <- option.lazy_or(by_name)
+  use param <- option.then(param_info(callee_name, name, registry))
   let by_param_label = param.label |> option.then(find_arg_by_label(args, _))
   use <- option.lazy_or(by_param_label)
   find_arg_at_position(args, param.position)

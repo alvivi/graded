@@ -350,7 +350,7 @@ fn is_function_type(t: glance.Type) -> Bool {
   }
 }
 
-fn assignment_name(name: glance.AssignmentName) -> Option(String) {
+pub fn assignment_name(name: glance.AssignmentName) -> Option(String) {
   case name {
     glance.Named(n) -> Some(n)
     glance.Discarded(_) -> None
