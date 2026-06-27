@@ -1412,6 +1412,19 @@ fn pure_operator(positions: List(Int)) -> EffectTerm {
   })
 }
 
+// The neutral operator a recursive producer call contributes: pure over the
+// callback positions of the producer's returned function type. `Error(Nil)`
+// when the return type is absent or not a function (no arity to recover), so
+// resolution stays conservative.
+fn neutral_returned_operator(function: Function) -> Result(EffectTerm, Nil) {
+  use return_type <- result.try(option.to_result(function.return, Nil))
+  use <- bool.guard(
+    when: !signatures.is_function_return_type(return_type),
+    return: Error(Nil),
+  )
+  Ok(pure_operator(signatures.operator_callback_positions_of_type(return_type)))
+}
+
 // Recover a first-order closure's body effect from its lifted operator by
 // discharging each value parameter to `pure` (`λr. body ↦ body`). Used when a
 // closure is bound to a first-order fn-typed parameter — the effect of calling
@@ -1939,6 +1952,16 @@ fn resolve_returned_operator(
             cache,
             memo,
           )
+        // A recursive producer call — the producer is already on the analysis
+        // stack, so this branch contributes the neutral operator (pure over the
+        // returned function's callback positions), not [Unknown]. Mirrors the
+        // recursive function-reference handling in `build_lift_operator_arg`.
+        // Arity comes from the producer's return type; if it isn't a function
+        // type, stay conservative.
+        True, Ok(definition) -> #(
+          neutral_returned_operator(definition.definition),
+          memo,
+        )
         _, _ -> #(Error(Nil), memo)
       }
     _ -> #(effects.lookup_returned_operator(knowledge_base, callee), memo)

@@ -51,6 +51,22 @@ pub fn recursive_fn_arg_resolves_pure_test() {
   r.violations |> should.equal([])
 }
 
+pub fn recursive_returned_operator_resolves_pure_test() {
+  // A same-module recursive producer whose recursive branch returns a recursive
+  // producer call (`pick(n - 1)`). Applying the operator it returns must treat
+  // that branch as neutral, not [Unknown]: the producer is already on the
+  // returned-operator analysis stack, so it contributes no effect — matching
+  // `X = [] union X`, whose least solution is `[]`. Before the fix `run` failed
+  // the `check run : []` budget with `<returned>.pick : [Unknown]`.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let result =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/recursive_returned_operator.gleam"
+    })
+  let assert Ok(r) = result
+  r.violations |> should.equal([])
+}
+
 pub fn impure_view_fails_test() {
   let assert Ok(results) = graded.run("test/fixtures")
   let impure_result =
