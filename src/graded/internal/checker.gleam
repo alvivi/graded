@@ -623,6 +623,17 @@ fn alias_fn_typed_params(
   |> set.from_list()
 }
 
+fn named_function_params(function: Function) -> Set(String) {
+  function.parameters
+  |> list.filter_map(fn(param) {
+    case param.name {
+      glance.Named(name) -> Ok(name)
+      glance.Discarded(_) -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+}
+
 // Build the same-module call graph: each function mapped to the same-module
 // functions its analysis can transitively recurse into. Deriving these from the
 // extractor — the same pass that drives resolution — makes the
@@ -991,6 +1002,7 @@ fn collect_effects(
 ) -> #(List(#(types.ResolvedCall, EffectTerm)), Memo) {
   let result =
     extract.extract_function_calls_with_captures(function, context, captures)
+  let caller_param_names = named_function_params(function)
   // The function's own fn-typed params join the inherited ambient operators, so
   // a closure in this body that captures one resolves it to its effect variable.
   let operator_params =
@@ -1021,6 +1033,7 @@ fn collect_effects(
           result.call_args,
           knowledge_base,
           param_bounds,
+          caller_param_names,
           registry,
           lift_operator_arg,
           memo,
@@ -1086,6 +1099,7 @@ fn collect_effects(
             function_map,
             knowledge_base,
             param_bounds,
+            caller_param_names,
             registry,
             lift_operator_arg,
             memo,
@@ -1474,6 +1488,7 @@ fn substitute_local_call_effects(
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  caller_param_names: Set(String),
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
@@ -1514,10 +1529,16 @@ fn substitute_local_call_effects(
           lift_operator_arg,
           memo,
         )
-      // A field-effect variable surfaced inside the callee names the *callee's*
-      // receiver, which is out of this caller's scope — it can never be bound
-      // here, so ground it to `[Unknown]` rather than leak a phantom field bound
-      // (`thing.run`) referencing a parameter the caller doesn't have.
+      let field_bindings =
+        field_forwarding_bindings(
+          callee_name,
+          recursive |> list.map(fn(pair) { pair.1 }) |> TUnion,
+          args,
+          caller_param_names,
+          merged_registry,
+        )
+      let caller_field_bindings = field_bound_bindings(caller_param_bounds)
+      let forwarded = forwarded_field_vars(field_bindings)
       let substituted =
         list.map(recursive, fn(pair) {
           let #(call, term) = pair
@@ -1525,7 +1546,9 @@ fn substitute_local_call_effects(
             call,
             term
               |> effect_term.subst(bindings)
-              |> concretize_field_vars()
+              |> effect_term.subst(field_bindings)
+              |> effect_term.subst(caller_field_bindings)
+              |> concretize_field_vars_except(forwarded)
               |> effect_term.normalize(),
           )
         })
@@ -1553,18 +1576,13 @@ fn substitute_at_call_site(
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
+  caller_param_names: Set(String),
   registry: SignatureRegistry,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
   let callee_kb_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
-  // A callee whose effect carries a field-effect variable (a `recv.field` path)
-  // can never have it bound here — the caller doesn't supply the callee's
-  // record field — so ground it to `[Unknown]` before anything else. Keeps a
-  // loaded `effects f(v.run: [v.run]) : [v.run]` from leaking an internal field
-  // variable into this caller's effect set.
-  let effect = concretize_field_vars(effect)
   // Fast path: concrete effect with declared bounds — nothing to
   // substitute. With no declared bounds we still need to fall through
   // in case the registry flags auto-injectable fn-typed params.
@@ -1592,7 +1610,97 @@ fn substitute_at_call_site(
       lift_operator_arg,
       memo,
     )
-  #(effect_term.normalize(effect_term.subst(effective_effects, bindings)), memo)
+  let field_bindings =
+    field_forwarding_bindings(
+      call.name,
+      effective_effects,
+      args,
+      caller_param_names,
+      registry,
+    )
+  let forwarded = forwarded_field_vars(field_bindings)
+  let substituted =
+    effective_effects
+    |> effect_term.subst(bindings)
+    |> effect_term.subst(field_bindings)
+    |> effect_term.subst(field_bound_bindings(caller_param_bounds))
+    |> concretize_field_vars_except(forwarded)
+    |> effect_term.normalize()
+  #(substituted, memo)
+}
+
+// Re-key free field-effect variables from a callee receiver parameter onto a
+// caller parameter when the caller forwards that parameter directly:
+// `inner(options)` lets `inner`'s `o.run` become this caller's `options.run`.
+// Only the first path segment is matched as the callee parameter; the remaining
+// tail is preserved, so `o.inner.run` forwards to `options.inner.run`.
+fn field_forwarding_bindings(
+  callee_name: types.QualifiedName,
+  effect: EffectTerm,
+  args: List(types.CallArgument),
+  caller_param_names: Set(String),
+  registry: SignatureRegistry,
+) -> dict.Dict(String, EffectTerm) {
+  effect
+  |> effect_term.free_vars()
+  |> set.filter(is_field_path_var)
+  |> set.fold(dict.new(), fn(bindings, var) {
+    case
+      field_forwarding_binding(
+        var,
+        callee_name,
+        args,
+        caller_param_names,
+        registry,
+      )
+    {
+      Some(#(from, to)) -> dict.insert(bindings, from, to)
+      None -> bindings
+    }
+  })
+}
+
+fn field_forwarding_binding(
+  var: String,
+  callee_name: types.QualifiedName,
+  args: List(types.CallArgument),
+  caller_param_names: Set(String),
+  registry: SignatureRegistry,
+) -> option.Option(#(String, EffectTerm)) {
+  use #(receiver, tail) <- option.then(
+    option.from_result(string.split_once(var, ".")),
+  )
+  let bound = ParamBound(receiver, TVar(receiver))
+  use arg <- option.then(find_matching_arg(callee_name, bound, args, registry))
+  case arg {
+    types.CallArgument(value: types.LocalRef(name), ..) ->
+      case set.contains(caller_param_names, name) {
+        True -> Some(#(var, TVar(name <> "." <> tail)))
+        False -> None
+      }
+    _ -> None
+  }
+}
+
+fn field_bound_bindings(
+  caller_param_bounds: List(ParamBound),
+) -> dict.Dict(String, EffectTerm) {
+  caller_param_bounds
+  |> list.filter(fn(bound) { is_field_path_var(bound.name) })
+  |> list.fold(dict.new(), fn(bindings, bound) {
+    dict.insert(bindings, bound.name, bound.effects)
+  })
+}
+
+fn forwarded_field_vars(
+  bindings: dict.Dict(String, EffectTerm),
+) -> Set(String) {
+  bindings
+  |> dict.values()
+  |> list.fold(set.new(), fn(vars, term) {
+    set.union(vars, effect_term.free_vars(term))
+  })
+  |> set.filter(is_field_path_var)
 }
 
 // When the KB has no bounds but the registry reports fn-typed params,
@@ -2916,14 +3024,23 @@ fn is_field_path_var(name: String) -> Bool {
   string.contains(name, ".")
 }
 
-// Collapse every surviving field-effect variable in `term` to `[Unknown]`. A
-// field-effect variable can only ever be bound *inside* the function whose body
-// produced it (by that function's own `check`-line field bound); it can never be
-// bound by a downstream caller's arguments, so any that escape a function
-// boundary are conservatively grounded.
+// Collapse every surviving field-effect variable in `term` to `[Unknown]`.
+// Call-site substitution uses the `_except` variant to preserve variables it has
+// re-keyed onto the caller's own parameters; every other dotted variable still
+// names a callee-local receiver and is conservatively grounded at the boundary.
 fn concretize_field_vars(term: EffectTerm) -> EffectTerm {
+  concretize_field_vars_except(term, set.new())
+}
+
+fn concretize_field_vars_except(
+  term: EffectTerm,
+  keep: Set(String),
+) -> EffectTerm {
   let field_vars =
-    term |> effect_term.free_vars() |> set.filter(is_field_path_var)
+    term
+    |> effect_term.free_vars()
+    |> set.filter(is_field_path_var)
+    |> fn(vars) { set.difference(vars, keep) }
   case set.is_empty(field_vars) {
     True -> term
     False -> ground_vars(term, field_vars) |> effect_term.normalize()

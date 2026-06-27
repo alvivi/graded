@@ -15,8 +15,10 @@ Each section shows how the limitation manifests, then how to work around it.
 
 graded resolves a function-typed field's effect from where the record is
 *constructed*. When the record instead arrives through a parameter (or is threaded
-through other data), there's no visible construction site, so the field call is
-`[Unknown]`.
+through other data), there's no visible construction site. For a direct parameter
+receiver, graded represents this as a polymorphic field bound such as
+`v.to_error: [v.to_error]`; if nothing binds that field at check time, it
+conservatively collapses to `[Unknown]`.
 
 ```gleam
 // src/app.gleam
@@ -25,7 +27,7 @@ pub type Validator {
 }
 
 pub fn caller(v: Validator) -> Nil {
-  v.to_error("bad input")   // [Unknown] — `v` came in as a parameter
+  v.to_error("bad input")   // `v.to_error` field bound, or [Unknown] if unbound
 }
 ```
 
@@ -35,7 +37,8 @@ check app.caller : [Stdout]
 ```
 
 `graded check` flags `caller` even if every `Validator` in your code wires
-`to_error` to `io.println` — graded can't see those construction sites from here.
+`to_error` to `io.println` — graded can't see those construction sites from here,
+and no bound told it what `v.to_error` costs.
 
 **How to avoid it** — declare the field's effect once, at the type level:
 
@@ -54,6 +57,26 @@ check app.caller(v.to_error: [Stdout]) : [Stdout]
 
 The `param.field` bound resolves the call inside `caller` only, leaving the type
 untouched elsewhere.
+
+Direct forwarding of that parameter through helper calls preserves the same field
+bound:
+
+```gleam
+fn inner(v: Validator) -> Nil {
+  v.to_error("bad input")
+}
+
+pub fn caller(v: Validator) -> Nil {
+  inner(v)                  // forwards `v.to_error`
+}
+```
+
+This forwarding is intentionally narrow. It only applies when the caller passes
+one of its own parameters directly as the receiver argument. Aliases
+(`let w = v; inner(w)`), factory results (`inner(default_validator())`), field
+receivers (`inner(config.validator)`), and computed expressions remain
+conservative and fall back to `[Unknown]` unless covered by a `type` line or a
+field bound.
 
 > Note: when a record *is* built by a factory function (`let v = make(io.println)`),
 > graded resolves the field through the factory — but only for **positional**
