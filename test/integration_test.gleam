@@ -445,6 +445,139 @@ pub fn field_effect_forwarding_bound_check_uses_forwarded_bound_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+fn receiver_path_forwarding_source() -> String {
+  "pub type Options {\n"
+  <> "  Options(resolver: fn() -> Nil)\n"
+  <> "}\n\n"
+  <> "pub type Inner {\n"
+  <> "  Inner(run: fn() -> Nil)\n"
+  <> "}\n\n"
+  <> "pub type Outer {\n"
+  <> "  Outer(inner: Inner)\n"
+  <> "}\n\n"
+  <> "pub type Config {\n"
+  <> "  Config(options: Options, outer: Outer)\n"
+  <> "}\n\n"
+  <> "pub fn inner(options: Options) -> Nil {\n"
+  <> "  options.resolver()\n"
+  <> "}\n\n"
+  <> "pub fn nested_inner(o: Outer) -> Nil {\n"
+  <> "  o.inner.run()\n"
+  <> "}\n\n"
+  // Forwards `config.options` as the receiver: inner's `options.resolver`
+  // re-keys to `config.options.resolver`.
+  <> "pub fn forward_path(config: Config) -> Nil {\n"
+  <> "  inner(config.options)\n"
+  <> "}\n\n"
+  // Forwards `config.outer`: nested_inner's `o.inner.run` re-keys to
+  // `config.outer.inner.run`.
+  <> "pub fn forward_nested(config: Config) -> Nil {\n"
+  <> "  nested_inner(config.outer)\n"
+  <> "}\n\n"
+  <> "fn get_options(options: Options) -> Options {\n"
+  <> "  options\n"
+  <> "}\n\n"
+  // Computed receiver: a call result rather than a caller-rooted path, so it
+  // stays conservative even though `config.options` flows into the call.
+  <> "pub fn forward_computed(config: Config) -> Nil {\n"
+  <> "  inner(get_options(config.options))\n"
+  <> "}\n\n"
+  // Aliased receiver path: the binding is opaque, so it stays conservative.
+  <> "pub fn forward_alias(config: Config) -> Nil {\n"
+  <> "  let alias = config.options\n"
+  <> "  inner(alias)\n"
+  <> "}\n"
+}
+
+// A function whose inferred effects collapsed to `[Unknown]` with no caller-
+// rooted field bound surfaced — the conservative outcome for non-forwardable
+// receivers.
+fn expect_unknown_without_field_bound(
+  annotations: List(types.EffectAnnotation),
+  function: String,
+) {
+  let assert Ok(annotation) =
+    list.find(annotations, fn(a) { a.function == function })
+  annotation.effects |> should.equal(effect_term.unknown())
+  annotation.params
+  |> list.filter(fn(b) { string.starts_with(b.name, "config.") })
+  |> should.equal([])
+}
+
+pub fn receiver_path_forwarding_infers_path_test() {
+  let annotations =
+    infer_project("build/receiver_path_forwarding", [
+      #("proj.gleam", receiver_path_forwarding_source()),
+    ])
+
+  expect_field_bound(
+    annotations,
+    "proj.forward_path",
+    "config.options.resolver",
+  )
+}
+
+pub fn receiver_path_forwarding_infers_nested_callee_field_test() {
+  let annotations =
+    infer_project("build/receiver_path_forwarding_nested", [
+      #("proj.gleam", receiver_path_forwarding_source()),
+    ])
+
+  expect_field_bound(
+    annotations,
+    "proj.forward_nested",
+    "config.outer.inner.run",
+  )
+}
+
+pub fn receiver_path_forwarding_unbound_check_stays_unknown_test() {
+  let root = "build/receiver_path_forwarding_unbound_check"
+  let results =
+    run_project_with_spec(
+      root,
+      receiver_path_forwarding_source(),
+      "check proj.forward_path : []\n",
+    )
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "forward_path" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn receiver_path_forwarding_bound_check_discharges_test() {
+  let root = "build/receiver_path_forwarding_bound_check"
+  let results =
+    run_project_with_spec(
+      root,
+      receiver_path_forwarding_source(),
+      "check proj.forward_path(config.options.resolver: [Stdout]) : []\n",
+    )
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "forward_path" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn receiver_path_forwarding_computed_receiver_stays_unknown_test() {
+  let annotations =
+    infer_project("build/receiver_path_forwarding_computed", [
+      #("proj.gleam", receiver_path_forwarding_source()),
+    ])
+
+  expect_unknown_without_field_bound(annotations, "proj.forward_computed")
+}
+
+pub fn receiver_path_forwarding_alias_stays_conservative_test() {
+  let annotations =
+    infer_project("build/receiver_path_forwarding_alias", [
+      #("proj.gleam", receiver_path_forwarding_source()),
+    ])
+
+  expect_unknown_without_field_bound(annotations, "proj.forward_alias")
+}
+
 pub fn nested_field_round_trips_as_dotted_field_bound_test() {
   // Inferring a nested fn-typed field call on a same-module type (no `type`
   // line, no field bound) surfaces it as a polymorphic *dotted* field bound —

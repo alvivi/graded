@@ -167,7 +167,9 @@ field reached through a parameter:
 check myapp.view(handler.on_click: [Dom]) : [Dom]
 ```
 
-A field call `handler.on_click(event)` then resolves to `[Dom]` directly, taking
+The path may have more than two segments (`config.handler.on_click`), naming a
+field reached through a nested receiver path forwarded from a parameter. A field
+call `handler.on_click(event)` then resolves to `[Dom]` directly, taking
 priority over receiver-type resolution. This is the boundary-scoped counterpart to a
 [`type` line](#type-field-effects): the `type` line declares a field's effect for
 every receiver of that type package-wide, the field bound for one `check`'d function.

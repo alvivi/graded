@@ -598,7 +598,8 @@ fn binding_from_argument_value(value: ArgumentValue) -> LocalBinding {
       BoundClosure(params, captures, body)
     types.Choice(options) -> BoundChoice(options)
     types.ReturnedOperator(callee, args) -> BoundReturnedOperator(callee, args)
-    LocalRef(..) | ConstructorRef | OtherExpression -> BoundOpaque
+    LocalRef(..) | ConstructorRef | types.ReceiverPath(..) | OtherExpression ->
+      BoundOpaque
   }
 }
 
@@ -873,6 +874,7 @@ fn resolve_constructor_field_call(
     Ok(types.Closure(_, _, _))
     | Ok(types.Choice(_))
     | Ok(types.ReturnedOperator(_, _))
+    | Ok(types.ReceiverPath(_))
     | Ok(OtherExpression)
     | Error(Nil) ->
       ExtractResult(..empty(), field: [
@@ -1179,7 +1181,7 @@ fn classify_rhs_ref(
       BoundClosure(params, captures, body)
     types.Choice(options) -> BoundChoice(options)
     types.ReturnedOperator(callee, args) -> BoundReturnedOperator(callee, args)
-    ConstructorRef | OtherExpression -> BoundOpaque
+    ConstructorRef | types.ReceiverPath(..) | OtherExpression -> BoundOpaque
   }
 }
 
@@ -1747,7 +1749,7 @@ fn extract_expression_call(
         call_args,
       )
     ConstructorRef -> base
-    OtherExpression ->
+    types.ReceiverPath(..) | OtherExpression ->
       merge(base, ExtractResult(..empty(), unknown_apps: [span]))
   }
 }
@@ -1831,7 +1833,10 @@ fn classify_expression(
           case dict.get(context.aliases, alias) {
             Ok(module_path) ->
               FunctionRef(name: QualifiedName(module_path, function_name))
-            Error(Nil) -> OtherExpression
+            // Not a module alias: a receiver path like `config.options`. Carried
+            // as a path so the checker can forward field effects through it when
+            // its root is a caller parameter.
+            Error(Nil) -> receiver_path_value(expression)
           }
       }
     glance.Variable(_, name) ->
@@ -1878,7 +1883,20 @@ fn classify_expression(
     // own `let`s in scope. Lets `{ let f = io.println; f }` and a function/branch
     // body that ends in a block resolve instead of going opaque.
     glance.Block(statements:, ..) -> classify_block(statements, context, env)
+    // A nested receiver path whose container is itself a field access
+    // (`config.a.b`): carried as a path for field-effect forwarding.
+    glance.FieldAccess(..) -> receiver_path_value(expression)
     _ -> OtherExpression
+  }
+}
+
+// A field-access expression rooted at a bare identifier becomes a
+// `ReceiverPath`; anything else (a computed receiver such as `make().field`)
+// stays opaque, since `receiver_path` only bottoms out at a `Variable`.
+fn receiver_path_value(expression: Expression) -> types.ArgumentValue {
+  case receiver_path(expression) {
+    Some(path) -> types.ReceiverPath(path)
+    None -> OtherExpression
   }
 }
 
@@ -1926,6 +1944,7 @@ fn classify_call_producer(
     | types.Closure(..)
     | types.Choice(..)
     | types.ReturnedOperator(..)
+    | types.ReceiverPath(..)
     | OtherExpression -> OtherExpression
   }
 }
@@ -1970,7 +1989,7 @@ fn classify_case_options(
         | types.Closure(..)
         | types.Choice(..)
         | types.ReturnedOperator(..) -> True
-        ConstructorRef | OtherExpression -> False
+        ConstructorRef | types.ReceiverPath(..) | OtherExpression -> False
       }
     })
   case all_function_like {

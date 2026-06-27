@@ -226,6 +226,11 @@ pub type ArgumentValue {
   // (a decorator, `fn traced(action) { fn(cb) { action(cb) } }`). Lets
   // `with_logger(pick_handler())` resolve instead of `[Unknown]`.
   ReturnedOperator(callee: QualifiedName, args: List(CallArgument))
+  // A receiver path rooted at a bare identifier (`config.options` or
+  // `config.a.b`). Carries the dotted path so a forwarded field-effect variable
+  // can be re-keyed onto it when the root is one of the caller's parameters.
+  // Treated as opaque (`[Unknown]`) everywhere except call-site field forwarding.
+  ReceiverPath(path: String)
   // Anything else (a computed expression, literal, etc.). Effects come from
   // the enclosing walk; at the argument level we have no concrete function to
   // propagate.
