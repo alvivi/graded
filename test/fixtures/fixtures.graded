@@ -28,6 +28,7 @@ check external_same_module.read_clock : []
 check recursive_fn_arg.walk : []
 check recursive_fn_arg.run : []
 check recursive_returned_operator.run : []
+check recursive_returned_operator.run_cb : []
 
 // External effects (third-party / FFI functions graded can't see into).
 external effects external_same_module.now : [Time]
