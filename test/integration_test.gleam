@@ -58,6 +58,11 @@ pub fn recursive_returned_operator_resolves_pure_test() {
   // returned-operator analysis stack, so it contributes no effect — matching
   // `X = [] union X`, whose least solution is `[]`. Before the fix `run` failed
   // the `check run : []` budget with `<returned>.pick : [Unknown]`.
+  //
+  // Covers both the first-order producer (`pick`/`run`, returning `fn() -> Nil`)
+  // and the second-order one (`pick_cb`/`run_cb`, returning a callback-taking
+  // `fn(fn() -> Nil) -> Nil`) — the latter exercises the neutral operator's
+  // binder over the callback position rather than a ground pure.
   let assert Ok(results) = graded.run("test/fixtures")
   let result =
     list.find(results, fn(r) {
