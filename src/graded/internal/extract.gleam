@@ -794,6 +794,13 @@ fn resolve_variable_call(
       ExtractResult(..empty(), direct_closure_ops: [
         DirectClosureCall(types.Choice(options), span),
       ])
+    // A called let-bound alias (`let f = uppercase; f(x)`): a local call on the
+    // aliased path, so a parameter alias resolves via the parameter's bound and
+    // shadows an unqualified import of the same name, rather than the call-site
+    // name resolving to the import. A multi-segment receiver path can't name a
+    // callable, so it stays a local call the checker leaves `[Unknown]`.
+    BoundReceiverPath(path) ->
+      ExtractResult(..empty(), local: [LocalCall(path, span)])
     _ -> resolve_unqualified_call(name, span, context)
   }
 }
