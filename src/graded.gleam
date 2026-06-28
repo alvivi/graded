@@ -766,6 +766,9 @@ fn build_constructor_field_index(
         scc_ids,
       )
     }
+    // The module's own function names, so a field wired to a bare name can be
+    // told apart from one wired to a parameter (the latter is polymorphic).
+    let module_functions = set.from_list(dict.keys(function_map))
     extract.collect_constructor_bindings(module, context)
     |> list.fold(acc, fn(inner, binding) {
       accumulate_constructor_binding(
@@ -774,6 +777,7 @@ fn build_constructor_field_index(
         constructor_types,
         knowledge_base,
         path,
+        module_functions,
         closure_effect,
       )
     })
@@ -806,6 +810,7 @@ fn accumulate_constructor_binding(
   constructor_types: Dict(#(String, String), String),
   knowledge_base: KnowledgeBase,
   module_path: String,
+  module_functions: Set(String),
   closure_effect: fn(List(String), List(glance.Statement)) -> types.EffectTerm,
 ) -> Dict(#(String, String, String), types.TypeFieldEffect) {
   let extract.ConstructorBinding(binding_module, constructor, fields) = binding
@@ -815,7 +820,13 @@ fn accumulate_constructor_binding(
     Ok(type_name) ->
       dict.fold(fields, acc, fn(inner, label, value) {
         let field_effect =
-          field_effect_of(knowledge_base, value, module_path, closure_effect)
+          field_effect_of(
+            knowledge_base,
+            value,
+            module_path,
+            module_functions,
+            closure_effect,
+          )
         let key = #(module, type_name, label)
         let merged = case dict.get(inner, key) {
           Ok(existing) -> merge_field_effect(existing, field_effect)
@@ -834,9 +845,10 @@ fn field_effect_of(
   knowledge_base: KnowledgeBase,
   value: types.ArgumentValue,
   module_path: String,
+  module_functions: Set(String),
   closure_effect: fn(List(String), List(glance.Statement)) -> types.EffectTerm,
 ) -> types.TypeFieldEffect {
-  case field_value_function(value, module_path) {
+  case field_value_function(value, module_path, module_functions) {
     Some(name) -> {
       let field_effects = effects.lookup_effects(knowledge_base, name)
       case set.is_empty(effect_term.free_vars(field_effects)) {
@@ -851,12 +863,17 @@ fn field_effect_of(
           )
       }
     }
-    // A field wired to an inline/let-bound closure: analyse its body for the
-    // field's effect instead of collapsing to `[Unknown]`.
     None ->
       case value {
+        // A field wired to an inline/let-bound closure: analyse its body for the
+        // field's effect instead of collapsing to `[Unknown]`.
         types.Closure(params, _captures, body) ->
           types.TypeFieldEffect(closure_effect(params, body), [], None)
+        // A field wired to a bare parameter (a factory threading its own
+        // argument into the field): polymorphic in that parameter, so carry the
+        // self marker rather than the `[Unknown]` a plain lookup would give —
+        // letting the call site forward through it.
+        types.LocalRef(_) -> checker.polymorphic_field_effect()
         _ ->
           types.TypeFieldEffect(
             effects.argument_value_effects(knowledge_base, value),
@@ -868,15 +885,22 @@ fn field_effect_of(
 }
 
 // The qualified function a field value refers to, if any: a `FunctionRef`
-// directly, or a `LocalRef` (a bare same-module name) qualified by the current
-// module. `None` for constructors and inline expressions.
+// directly, or a `LocalRef` naming one of the current module's own functions.
+// A `LocalRef` that isn't a module function is a parameter (or other local),
+// returned as `None` so the caller treats it as polymorphic. `None` too for
+// constructors and inline expressions.
 fn field_value_function(
   value: types.ArgumentValue,
   module_path: String,
+  module_functions: Set(String),
 ) -> option.Option(QualifiedName) {
   case value {
     types.FunctionRef(name:) -> Some(name)
-    types.LocalRef(name:) -> Some(QualifiedName(module_path, name))
+    types.LocalRef(name:) ->
+      case set.contains(module_functions, name) {
+        True -> Some(QualifiedName(module_path, name))
+        False -> None
+      }
     _ -> None
   }
 }

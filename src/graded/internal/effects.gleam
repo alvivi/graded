@@ -12,9 +12,10 @@ import graded/internal/config
 import graded/internal/effect_term
 import graded/internal/types.{
   type ArgumentValue, type EffectAnnotation, type EffectSet, type EffectTerm,
-  type ExternalAnnotation, type ParamBound, type QualifiedName,
-  type TypeFieldAnnotation, type TypeFieldEffect, Check, ConstructorRef, Effects,
-  FunctionExternal, FunctionRef, ModuleExternal, QualifiedName, TypeFieldEffect,
+  type ExternalAnnotation, type FactorySignature, type ParamBound,
+  type QualifiedName, type TypeFieldAnnotation, type TypeFieldEffect, Check,
+  ConstructorRef, Effects, FunctionExternal, FunctionRef, ModuleExternal,
+  QualifiedName, TypeFieldEffect,
 }
 import simplifile
 import tom
@@ -45,7 +46,7 @@ pub type KnowledgeBase {
     // to that parameter's position. Lets a let-bound *cross-module* factory call
     // bind its result's fields like a direct construction. (Same-module
     // factories are derived locally from the module, like constructors.)
-    factories: Dict(#(String, String), Dict(String, Int)),
+    factories: Dict(#(String, String), FactorySignature),
     // Module-level externals: a whole module's declared effect, keyed by module
     // name. Consulted by `lookup` when `all_effects` has no entry for a name, so
     // every function in the module resolves to this set. An empty set is a pure
@@ -472,7 +473,7 @@ pub fn with_inferred_returned_operators(
 // existing map (it's computed once per run).
 pub fn with_factories(
   knowledge_base: KnowledgeBase,
-  factories: Dict(#(String, String), Dict(String, Int)),
+  factories: Dict(#(String, String), FactorySignature),
 ) -> KnowledgeBase {
   KnowledgeBase(..knowledge_base, factories:)
 }
@@ -481,7 +482,7 @@ pub fn with_factories(
 // context as its cross-module factories.
 pub fn factories(
   knowledge_base: KnowledgeBase,
-) -> Dict(#(String, String), Dict(String, Int)) {
+) -> Dict(#(String, String), FactorySignature) {
   knowledge_base.factories
 }
 

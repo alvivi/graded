@@ -6,15 +6,19 @@ cross-package inference all ship today. What remains is a short list of refineme
 and one new direction, ordered by incrementality — earlier items are smaller, later
 items push into different territory.
 
-## Alias- and factory-aware field forwarding
+## Alias-aware field forwarding
 
 Field-effect forwarding re-keys a callee's field bound onto the caller when the
-receiver argument is one of the caller's parameters or a field path rooted at one
-(`inner(config.options)` → `config.options.resolver`). Receivers reached through a
-let-binding (`let w = config.options; inner(w)`) or returned from a function
-(`inner(make_options())`) stay conservative and fall back to `[Unknown]`. A later
-step could trace let-bindings back to their source path and resolve factory
-returns to their constructed field, extending forwarding to those cases.
+receiver argument is one of the caller's parameters, a field path rooted at one
+(`inner(config.options)` → `config.options.resolver`), or an inline
+constructor/factory call whose field is wired from such a value
+(`inner(make_options(resolver))` → `resolver`). Receivers reached through a
+let-binding (`let w = config.options; inner(w)`,
+`let o = make_options(resolver); inner(o)`) still stay conservative and fall back
+to `[Unknown]`, as does a nested factory call
+(`inner(make_outer(make_inner(resolver)))`, traced one level only). A later step
+could trace let-bindings back to their source path and follow factory results
+through more than one construction level, extending forwarding to those cases.
 
 ## Retiring the positional/label heuristics
 

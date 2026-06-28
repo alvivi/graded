@@ -9,10 +9,11 @@ import gleam/set.{type Set}
 import gleam/string
 import graded/internal/types.{
   type ArgumentValue, type CallArgument, type DirectClosureCall,
-  type DirectOperatorCall, type DirectPipeOp, type FieldCall, type LocalCall,
-  type QualifiedName, type ResolvedCall, CallArgument, ConstructorRef,
-  DirectClosureCall, DirectPipeOp, FieldCall, FunctionRef, LocalCall, LocalRef,
-  OtherExpression, QualifiedName, ResolvedCall,
+  type DirectOperatorCall, type DirectPipeOp, type FactorySignature,
+  type FieldCall, type LocalCall, type QualifiedName, type ResolvedCall,
+  CallArgument, Constructed, ConstructorRef, DirectClosureCall, DirectPipeOp,
+  FactorySignature, FieldCall, FunctionRef, LocalCall, LocalRef, OtherExpression,
+  QualifiedName, ResolvedCall,
 }
 
 // Classification of a `let`-bound name inside a function body so that
@@ -251,14 +252,6 @@ pub fn build_constructor_type_map(module: Module) -> Dict(String, String) {
   })
 }
 
-// A *factory* function's signature: each constructor field it wires to one of
-// its own parameters, mapped to that parameter's position. A call
-// `make(io.println)` to a factory `fn make(logger) { Validator(to_error: logger) }`
-// therefore binds the result's `to_error` field to argument 0 — so a later
-// `v.to_error(..)` resolves like a direct construction instead of `[Unknown]`.
-pub type FactorySignature =
-  Dict(String, Int)
-
 // Detect each function in a module that is a *factory*: its body's tail is a
 // constructor call with at least one field wired to a bare parameter. Purely
 // syntactic — no knowledge base — so the whole package's factories can be
@@ -318,8 +311,27 @@ fn factory_signature(
     })
   case dict.is_empty(field_to_param) {
     True -> Error(Nil)
-    False -> Ok(field_to_param)
+    False ->
+      Ok(FactorySignature(
+        fields: field_to_param,
+        param_labels: param_label_map(function),
+      ))
   }
+}
+
+// Each labeled parameter's position (0-based) in a function's parameter list,
+// keyed by its Gleam label. Lets a labeled factory call route to the same
+// fields as the positional one.
+fn param_label_map(function: glance.Function) -> Dict(String, Int) {
+  function.parameters
+  |> list.index_map(fn(parameter, index) { #(parameter, index) })
+  |> list.fold(dict.new(), fn(acc, pair) {
+    let #(parameter, index) = pair
+    case parameter.label {
+      Some(label) -> dict.insert(acc, label, index)
+      None -> acc
+    }
+  })
 }
 
 // A constructor call's `#(constructor, module alias, arguments)` — the alias is
@@ -598,6 +610,7 @@ fn binding_from_argument_value(value: ArgumentValue) -> LocalBinding {
       BoundClosure(params, captures, body)
     types.Choice(options) -> BoundChoice(options)
     types.ReturnedOperator(callee, args) -> BoundReturnedOperator(callee, args)
+    Constructed(fields:) -> BoundConstructor(fields:)
     LocalRef(..) | ConstructorRef | types.ReceiverPath(..) | OtherExpression ->
       BoundOpaque
   }
@@ -875,6 +888,7 @@ fn resolve_constructor_field_call(
     | Ok(types.Choice(_))
     | Ok(types.ReturnedOperator(_, _))
     | Ok(types.ReceiverPath(_))
+    | Ok(Constructed(_))
     | Ok(OtherExpression)
     | Error(Nil) ->
       ExtractResult(..empty(), field: [
@@ -1119,42 +1133,50 @@ fn lookup_factory_qualified(
   }
 }
 
-// Build a `BoundConstructor` from a *positionally-called* factory: route each
-// wired field to the call argument at the factory parameter's position. A
-// labeled or shorthand argument can't be routed by position here, so the whole
-// call falls back (conservative). `Error` when no field could be routed.
+// Build a `BoundConstructor` from a factory call: route each wired field to the
+// argument at the factory parameter's position (a labeled argument resolves its
+// position through the signature's parameter labels). `Error` when no field
+// could be routed.
 fn factory_construction(
   signature: FactorySignature,
   arguments: List(Field(Expression)),
   context: ImportContext,
   env: Env,
 ) -> Result(LocalBinding, Nil) {
-  use values <- result.try(positional_arg_values(arguments, context, env))
   let fields =
-    dict.fold(signature, dict.new(), fn(acc, label, position) {
-      case at(values, position) {
-        Ok(value) -> dict.insert(acc, label, value)
-        Error(Nil) -> acc
-      }
-    })
+    route_factory_fields(
+      signature,
+      classify_arguments(arguments, context, env, 0),
+    )
   case dict.is_empty(fields) {
     True -> Error(Nil)
     False -> Ok(BoundConstructor(fields:))
   }
 }
 
-// Classify a call's arguments by position, requiring them all unlabelled.
-// `Error` if any is labelled/shorthand (position-based routing would be unsafe).
-fn positional_arg_values(
-  arguments: List(Field(Expression)),
-  context: ImportContext,
-  env: Env,
-) -> Result(List(ArgumentValue), Nil) {
-  list.try_map(arguments, fn(field) {
-    case field {
-      glance.UnlabelledField(item:) ->
-        Ok(classify_expression(item, context, env))
-      _ -> Error(Nil)
+// Route a factory call's arguments to the constructor fields its signature
+// wires. Positional arguments route by position; labeled ones resolve their
+// position through the factory's parameter labels — so `make(io.println)` and
+// `make(logger: io.println)` produce the same field wiring.
+fn route_factory_fields(
+  signature: FactorySignature,
+  args: List(CallArgument),
+) -> Dict(String, ArgumentValue) {
+  let by_position =
+    list.fold(args, dict.new(), fn(acc, arg) {
+      case arg.label {
+        None -> dict.insert(acc, arg.position, arg.value)
+        Some(label) ->
+          case dict.get(signature.param_labels, label) {
+            Ok(position) -> dict.insert(acc, position, arg.value)
+            Error(Nil) -> acc
+          }
+      }
+    })
+  dict.fold(signature.fields, dict.new(), fn(acc, label, position) {
+    case dict.get(by_position, position) {
+      Ok(value) -> dict.insert(acc, label, value)
+      Error(Nil) -> acc
     }
   })
 }
@@ -1181,6 +1203,7 @@ fn classify_rhs_ref(
       BoundClosure(params, captures, body)
     types.Choice(options) -> BoundChoice(options)
     types.ReturnedOperator(callee, args) -> BoundReturnedOperator(callee, args)
+    Constructed(fields:) -> BoundConstructor(fields:)
     ConstructorRef | types.ReceiverPath(..) | OtherExpression -> BoundOpaque
   }
 }
@@ -1749,7 +1772,7 @@ fn extract_expression_call(
         call_args,
       )
     ConstructorRef -> base
-    types.ReceiverPath(..) | OtherExpression ->
+    types.ReceiverPath(..) | Constructed(..) | OtherExpression ->
       merge(base, ExtractResult(..empty(), unknown_apps: [span]))
   }
 }
@@ -1874,9 +1897,58 @@ fn classify_expression(
     // can lift and join them. Any non-function (or block) clause body, or no
     // clauses, makes the whole thing opaque.
     glance.Case(clauses:, ..) -> classify_case_options(clauses, context, env)
-    // A call to a function (not a constructor) is a *returned operator* if that
-    // function returns a function — captured here, resolved at the use site
-    // against the producer's inferred returned operator.
+    // An inline constructor call (`Options(resolver: resolver)`) carries its
+    // field wiring so a callee field-effect variable can forward through it.
+    glance.Call(function: glance.Variable(_, name) as function, arguments:, ..) ->
+      case is_constructor_name(name) {
+        True -> constructed_value(name, None, arguments, context, env)
+        // A factory call (`make_options(resolver)`) wires its result's fields
+        // from its arguments; otherwise it's a returned-operator producer.
+        False ->
+          case lookup_factory_bare(name, context) {
+            Ok(signature) ->
+              factory_constructed_or_producer(
+                signature,
+                function,
+                arguments,
+                context,
+                env,
+              )
+            Error(Nil) ->
+              classify_call_producer(function, arguments, context, env)
+          }
+      }
+    glance.Call(
+      function: glance.FieldAccess(
+        container: glance.Variable(_, alias),
+        label: name,
+        ..,
+      ) as function,
+      arguments:,
+      ..,
+    ) ->
+      case is_constructor_name(name) {
+        True -> {
+          let module = dict.get(context.aliases, alias) |> option.from_result
+          constructed_value(name, module, arguments, context, env)
+        }
+        False ->
+          case lookup_factory_qualified(alias, name, context) {
+            Ok(signature) ->
+              factory_constructed_or_producer(
+                signature,
+                function,
+                arguments,
+                context,
+                env,
+              )
+            Error(Nil) ->
+              classify_call_producer(function, arguments, context, env)
+          }
+      }
+    // Any other call (not a constructor or known factory) is a *returned
+    // operator* if that function returns a function — captured here, resolved at
+    // the use site against the producer's inferred returned operator.
     glance.Call(function:, arguments:, ..) ->
       classify_call_producer(function, arguments, context, env)
     // A block evaluates to its tail expression: classify that, with the block's
@@ -1887,6 +1959,43 @@ fn classify_expression(
     // (`config.a.b`): carried as a path for field-effect forwarding.
     glance.FieldAccess(..) -> receiver_path_value(expression)
     _ -> OtherExpression
+  }
+}
+
+// An inline constructor call as an argument value: reuse the constructor
+// field-routing (labeled, positional, and cross-module declared labels) and
+// carry the wiring as a `Constructed`. Opaque if no field could be routed.
+fn constructed_value(
+  type_name: String,
+  module: Option(String),
+  arguments: List(Field(Expression)),
+  context: ImportContext,
+  env: Env,
+) -> types.ArgumentValue {
+  case classify_constructor(type_name, module, arguments, context, env) {
+    BoundConstructor(fields:) -> Constructed(fields:)
+    _ -> OtherExpression
+  }
+}
+
+// A factory call as an argument value: route its arguments through the factory
+// signature into the constructed field wiring, carried as a `Constructed`. Falls
+// back to the returned-operator path when no field could be routed.
+fn factory_constructed_or_producer(
+  signature: FactorySignature,
+  function: Expression,
+  arguments: List(Field(Expression)),
+  context: ImportContext,
+  env: Env,
+) -> types.ArgumentValue {
+  let fields =
+    route_factory_fields(
+      signature,
+      classify_arguments(arguments, context, env, 0),
+    )
+  case dict.is_empty(fields) {
+    True -> classify_call_producer(function, arguments, context, env)
+    False -> Constructed(fields:)
   }
 }
 
@@ -1945,6 +2054,7 @@ fn classify_call_producer(
     | types.Choice(..)
     | types.ReturnedOperator(..)
     | types.ReceiverPath(..)
+    | Constructed(..)
     | OtherExpression -> OtherExpression
   }
 }
@@ -1989,7 +2099,10 @@ fn classify_case_options(
         | types.Closure(..)
         | types.Choice(..)
         | types.ReturnedOperator(..) -> True
-        ConstructorRef | types.ReceiverPath(..) | OtherExpression -> False
+        ConstructorRef
+        | types.ReceiverPath(..)
+        | Constructed(..)
+        | OtherExpression -> False
       }
     })
   case all_function_like {

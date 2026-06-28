@@ -263,7 +263,10 @@ The field's effect comes from one of:
 - **factory provenance** — when a record is built by a factory
   (`let v = make(io.println)`, where `make` wires its parameter into the field),
   graded follows the value through the factory, so `v.to_error` resolves with no
-  `type` line. (v1 routes positional factory calls.)
+  `type` line. Positional and labeled factory calls both route. When the factory
+  result is passed inline to a helper (`inner(make(resolver))`), the helper's
+  field-effect variable forwards onto the wired argument — see
+  [field-effect forwarding](./LIMITATIONS.md).
 
 Field effects are keyed by the type's **defining module** (from girard's inferred
 type), so two different types both named `Validator` never conflate. When a field
