@@ -1897,27 +1897,19 @@ fn classify_expression(
     // can lift and join them. Any non-function (or block) clause body, or no
     // clauses, makes the whole thing opaque.
     glance.Case(clauses:, ..) -> classify_case_options(clauses, context, env)
-    // An inline constructor call (`Options(resolver: resolver)`) carries its
-    // field wiring so a callee field-effect variable can forward through it.
+    // An inline constructor (`Options(resolver: resolver)`) or factory call
+    // (`make_options(resolver)`) carries its field wiring so a callee
+    // field-effect variable can forward through it.
     glance.Call(function: glance.Variable(_, name) as function, arguments:, ..) ->
-      case is_constructor_name(name) {
-        True -> constructed_value(name, None, arguments, context, env)
-        // A factory call (`make_options(resolver)`) wires its result's fields
-        // from its arguments; otherwise it's a returned-operator producer.
-        False ->
-          case lookup_factory_bare(name, context) {
-            Ok(signature) ->
-              factory_constructed_or_producer(
-                signature,
-                function,
-                arguments,
-                context,
-                env,
-              )
-            Error(Nil) ->
-              classify_call_producer(function, arguments, context, env)
-          }
-      }
+      classify_constructor_or_factory(
+        name,
+        None,
+        lookup_factory_bare(name, context),
+        function,
+        arguments,
+        context,
+        env,
+      )
     glance.Call(
       function: glance.FieldAccess(
         container: glance.Variable(_, alias),
@@ -1927,25 +1919,15 @@ fn classify_expression(
       arguments:,
       ..,
     ) ->
-      case is_constructor_name(name) {
-        True -> {
-          let module = dict.get(context.aliases, alias) |> option.from_result
-          constructed_value(name, module, arguments, context, env)
-        }
-        False ->
-          case lookup_factory_qualified(alias, name, context) {
-            Ok(signature) ->
-              factory_constructed_or_producer(
-                signature,
-                function,
-                arguments,
-                context,
-                env,
-              )
-            Error(Nil) ->
-              classify_call_producer(function, arguments, context, env)
-          }
-      }
+      classify_constructor_or_factory(
+        name,
+        dict.get(context.aliases, alias) |> option.from_result,
+        lookup_factory_qualified(alias, name, context),
+        function,
+        arguments,
+        context,
+        env,
+      )
     // Any other call (not a constructor or known factory) is a *returned
     // operator* if that function returns a function — captured here, resolved at
     // the use site against the producer's inferred returned operator.
@@ -1959,6 +1941,37 @@ fn classify_expression(
     // (`config.a.b`): carried as a path for field-effect forwarding.
     glance.FieldAccess(..) -> receiver_path_value(expression)
     _ -> OtherExpression
+  }
+}
+
+// An inline call to a constructor or factory as an argument value. A
+// constructor routes its arguments directly into the field wiring; a known
+// factory routes them through its signature; anything else is a
+// returned-operator producer. The wiring is carried as a `Constructed` so a
+// callee field-effect variable can forward through it.
+fn classify_constructor_or_factory(
+  name: String,
+  module: Option(String),
+  factory: Result(FactorySignature, Nil),
+  function: Expression,
+  arguments: List(Field(Expression)),
+  context: ImportContext,
+  env: Env,
+) -> types.ArgumentValue {
+  case is_constructor_name(name) {
+    True -> constructed_value(name, module, arguments, context, env)
+    False ->
+      case factory {
+        Ok(signature) ->
+          factory_constructed_or_producer(
+            signature,
+            function,
+            arguments,
+            context,
+            env,
+          )
+        Error(Nil) -> classify_call_producer(function, arguments, context, env)
+      }
   }
 }
 
