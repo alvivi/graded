@@ -284,6 +284,103 @@ fn checker_infer_opaque_field() -> Result(List(types.EffectAnnotation), Nil) {
   ))
 }
 
+pub fn factory_forward_resolves_through_factory_test() {
+  // factory_forward.caller calls `inner(make_options(resolver))`: the factory
+  // result is built inline, so its `resolver` field wiring forwards inner's
+  // `options.resolver` field-effect variable onto the caller's own `resolver`
+  // parameter. The `check ...caller(resolver: [Stdout]) : []` bound discharges
+  // it to [Stdout], so the [] budget fails with the precise effect — not the
+  // [Unknown] an untraced factory return would collapse to.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn factory_forward_resolves_through_inline_constructor_test() {
+  // Same forwarding for an inline *constructor* argument
+  // (`inner(Options(resolver: resolver))`).
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "caller_ctor" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn factory_forward_resolves_through_labeled_factory_test() {
+  // Labeled factory wiring (`inner(make_options(resolver: resolver))`) routes
+  // through the factory's parameter label to the same field, so it forwards too.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "caller_labeled" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn factory_forward_alias_stays_unknown_test() {
+  // factory_forward.caller_alias binds the factory result to a `let` before
+  // passing it (`let w = make_options(resolver); inner(w)`). Alias forwarding is
+  // deliberately not implemented, so the receiver is opaque and inner's field
+  // call concretizes to [Unknown] — the [] budget fails with [Unknown], proving
+  // the conservative boundary holds.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "caller_alias" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn factory_forward_computed_receiver_stays_unknown_test() {
+  // factory_forward.caller_computed threads the factory result through a call
+  // (`inner(get_options(make_options(resolver)))`). A computed receiver is not a
+  // traceable path, so forwarding doesn't apply and the field call concretizes to
+  // [Unknown] — the [] budget fails with [Unknown], proving the boundary holds.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "caller_computed" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn factory_forward_round_trips_as_param_bound_test() {
+  // Inferring factory_forward.caller surfaces the forwarded field effect as a
+  // polymorphic *parameter* bound on `resolver` (the factory field is wired to a
+  // bare fn-typed parameter, so the dotted callee var re-keys to the plain
+  // param var). The function effect and the bound are both `[resolver]`, so the
+  // polymorphic signature round-trips.
+  let assert Ok(results) = checker_infer_factory_forward()
+  let assert Ok(annotation) =
+    list.find(results, fn(a) { a.function == "caller" })
+  let assert Ok(bound) =
+    list.find(annotation.params, fn(b) { b.name == "resolver" })
+  bound.effects |> should.equal(types.TVar("resolver"))
+  annotation.effects |> should.equal(types.TVar("resolver"))
+}
+
+// Infer the factory_forward fixture module in isolation, with a registry built
+// from its own signatures so the factory/receiver-parameter positions resolve.
+fn checker_infer_factory_forward() -> Result(List(types.EffectAnnotation), Nil) {
+  use source <- result.try(
+    simplifile.read("test/fixtures/factory_forward.gleam")
+    |> result.replace_error(Nil),
+  )
+  use module <- result.try(glance.module(source) |> result.replace_error(Nil))
+  Ok(checker.infer(
+    module,
+    "factory_forward",
+    effects.empty_knowledge_base(),
+    [],
+    signatures.from_glance_module("factory_forward", module),
+    dict.new(),
+    dict.new(),
+  ))
+}
+
 pub fn nested_field_resolves_via_type_line_test() {
   // nested_field.via_type calls `o.inner.run()` — a NESTED field call whose
   // receiver `o.inner` is itself a field access, not a bare variable. girard

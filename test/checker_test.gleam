@@ -2199,7 +2199,13 @@ pub fn caller() -> Nil {
     )
     |> effects.with_factories(
       dict.from_list([
-        #(#("dep", "make"), dict.from_list([#("to_error", 0)])),
+        #(
+          #("dep", "make"),
+          types.FactorySignature(
+            fields: dict.from_list([#("to_error", 0)]),
+            param_labels: dict.new(),
+          ),
+        ),
       ]),
     )
   let registry = signatures.from_glance_module("app", module)

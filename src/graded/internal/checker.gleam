@@ -1537,6 +1537,7 @@ fn substitute_local_call_effects(
           TUnion(callee_terms),
           args,
           caller_param_names,
+          caller_param_bounds,
           merged_registry,
         )
       let forwarded = forwarded_field_vars(field_bindings)
@@ -1619,6 +1620,7 @@ fn substitute_at_call_site(
       effective_effects,
       args,
       caller_param_names,
+      caller_param_bounds,
       registry,
     )
   let forwarded = forwarded_field_vars(field_bindings)
@@ -1672,6 +1674,7 @@ fn field_forwarding_bindings(
   effect: EffectTerm,
   args: List(types.CallArgument),
   caller_param_names: Set(String),
+  caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
 ) -> dict.Dict(String, EffectTerm) {
   effect
@@ -1684,6 +1687,7 @@ fn field_forwarding_bindings(
         callee_name,
         args,
         caller_param_names,
+        caller_param_bounds,
         registry,
       )
     {
@@ -1698,6 +1702,7 @@ fn field_forwarding_binding(
   callee_name: types.QualifiedName,
   args: List(types.CallArgument),
   caller_param_names: Set(String),
+  caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
 ) -> option.Option(#(String, EffectTerm)) {
   use #(receiver, tail) <- option.then(
@@ -1709,11 +1714,57 @@ fn field_forwarding_binding(
     args,
     registry,
   ))
-  // Graft the caller-rooted path the argument denotes before the callee tail:
-  // `inner(options)` makes `o.run` the caller's `options.run`, and
-  // `inner(config.options)` makes `o.inner.run` its `config.options.inner.run`.
-  use path <- option.then(caller_rooted_path(arg.value, caller_param_names))
-  Some(#(var, TVar(path <> "." <> tail)))
+  use path <- option.then(forwarded_path(arg.value, tail, caller_param_names))
+  case is_field_path_var(path) {
+    // A dotted forwarded path (`config.options.run`) keeps its variable; the
+    // caller's dotted field-bound substitution (`caller_field_bindings`)
+    // discharges it.
+    True -> Some(#(var, TVar(path)))
+    // A plain forwarded path is a bare fn-typed caller parameter — a factory
+    // threading its argument into the field. The dotted-only field-bound
+    // substitution won't reach it, so discharge the caller's own param bound
+    // here (the self-referential bound during infer, a concrete one at check).
+    False ->
+      case list.find(caller_param_bounds, fn(b) { b.name == path }) {
+        Ok(bound) -> Some(#(var, bound.effects))
+        Error(Nil) -> Some(#(var, TVar(path)))
+      }
+  }
+}
+
+// The caller-rooted path a callee field var (`o.run`) re-keys to, given the
+// argument bound to the callee receiver and the callee tail (`run`):
+//  - a direct parameter or receiver-path argument grafts the caller path before
+//    the tail (`inner(options)` makes `o.run` the caller's `options.run`,
+//    `inner(config.options)` its `config.options.run`);
+//  - an inline constructor/factory argument resolves the tail's leading field
+//    through the constructed wiring (`inner(make_options(resolver))` makes
+//    `o.resolver` the caller's `resolver`), keeping any deeper tail segments.
+// `None` when the argument isn't rooted at a caller parameter, or the field
+// isn't wired to one.
+fn forwarded_path(
+  value: types.ArgumentValue,
+  tail: String,
+  caller_param_names: Set(String),
+) -> option.Option(String) {
+  case value {
+    types.Constructed(fields) -> {
+      let #(field, rest) = case string.split_once(tail, ".") {
+        Ok(#(field, rest)) -> #(field, Some(rest))
+        Error(Nil) -> #(tail, None)
+      }
+      use wired <- option.then(option.from_result(dict.get(fields, field)))
+      use base <- option.then(caller_rooted_path(wired, caller_param_names))
+      case rest {
+        Some(rest) -> Some(base <> "." <> rest)
+        None -> Some(base)
+      }
+    }
+    _ -> {
+      use base <- option.then(caller_rooted_path(value, caller_param_names))
+      Some(base <> "." <> tail)
+    }
+  }
 }
 
 // The receiver path an argument denotes when rooted at one of the caller's own
@@ -1748,9 +1799,12 @@ fn field_bound_bindings(
   |> dict.from_list()
 }
 
-// The forwarded vars are the receiver paths re-keyed onto the caller's own
-// parameters (always dotted field paths), which `concretize_field_vars_except`
-// must preserve while grounding every remaining callee-local field var.
+// The forwarded vars re-keyed onto the caller's own parameters, which
+// `concretize_field_vars_except` must preserve while grounding every remaining
+// callee-local field var. Usually a dotted field path (`config.options.run`);
+// a factory field wired to a bare fn-typed parameter forwards to that plain
+// parameter var (`resolver`), which `concretize_field_vars_except` leaves alone
+// anyway (it grounds only dotted vars), so keeping it is harmless.
 fn forwarded_field_vars(
   bindings: dict.Dict(String, EffectTerm),
 ) -> Set(String) {
@@ -1797,6 +1851,7 @@ fn auto_bounds_from_registry(
             types.Closure(_, _, _)
             | types.Choice(_)
             | types.ReceiverPath(_)
+            | types.Constructed(_)
             | types.OtherExpression -> Error(Nil)
             _ -> Ok(bound)
           }
@@ -2709,6 +2764,9 @@ fn resolve_argument_effects(
     types.Choice(_) -> effect_term.unknown()
     types.ReturnedOperator(_, _) -> effect_term.unknown()
     types.ReceiverPath(_) -> effect_term.unknown()
+    // A constructed record contributes no callable effect in a first-order
+    // position; field forwarding handles it at the receiver argument instead.
+    types.Constructed(_) -> effect_term.unknown()
     types.OtherExpression -> effect_term.unknown()
   }
 }
@@ -3025,16 +3083,37 @@ fn resolve_field_call_by_type(
           memo,
         )
         Ok(field_effect) ->
-          resolve_field_effect(
-            field_effect,
-            field_call,
-            call_args,
-            knowledge_base,
-            caller_param_bounds,
-            registry,
-            lift_operator_arg,
-            memo,
-          )
+          case
+            has_self_field_marker(field_effect.effects),
+            field_effect.source
+          {
+            // A construction-inferred field wired to a bare parameter is
+            // polymorphic in that parameter (the factory plumbing). Resolve the
+            // marker to the receiver-keyed field variable so the call forwards
+            // like an un-constructed `fn`-typed field, unioned with any concrete
+            // construction sites for the same field.
+            True, None -> #(
+              resolve_self_field(
+                field_effect.effects,
+                field_call,
+                module,
+                type_name,
+                context,
+              ),
+              memo,
+            )
+            _, _ ->
+              resolve_field_effect(
+                field_effect,
+                field_call,
+                call_args,
+                knowledge_base,
+                caller_param_bounds,
+                registry,
+                lift_operator_arg,
+                memo,
+              )
+          }
       }
   }
 }
@@ -3072,6 +3151,42 @@ fn field_fallback(
     True -> TVar(field_call.object <> "." <> field_call.label)
     False -> effect_term.unknown()
   }
+}
+
+// The sentinel variable a construction-inferred field uses when it is wired to a
+// bare parameter (the factory's own plumbing): the field's effect is whatever
+// that parameter turns out to be, so it stays polymorphic until a receiver
+// resolves it. `$` can't appear in a Gleam identifier, so it never collides with
+// a real parameter or field name.
+const self_field_marker = "$field"
+
+// The construction-inferred field effect for a field wired to a bare parameter:
+// polymorphic in that parameter, carried as the self marker so the call site
+// resolves it to the receiver-keyed field variable instead of a fixed
+// `[Unknown]`. Built here so the marker name stays internal to the checker.
+pub fn polymorphic_field_effect() -> types.TypeFieldEffect {
+  types.TypeFieldEffect(TVar(self_field_marker), [], None)
+}
+
+fn has_self_field_marker(effects: EffectTerm) -> Bool {
+  set.contains(effect_term.free_vars(effects), self_field_marker)
+}
+
+// Resolve a polymorphic (parameter-wired) construction-inferred field by
+// substituting the self marker with the receiver-keyed field variable — the
+// same variable an un-constructed `fn`-typed field falls back to, so it forwards
+// and discharges identically. Concrete co-site effects unioned with the marker
+// are preserved.
+fn resolve_self_field(
+  effects: EffectTerm,
+  field_call: types.FieldCall,
+  module: String,
+  type_name: String,
+  context: ImportContext,
+) -> EffectTerm {
+  let fallback = field_fallback(field_call, module, type_name, context)
+  effect_term.subst(effects, dict.from_list([#(self_field_marker, fallback)]))
+  |> effect_term.normalize()
 }
 
 // Whether a field of a same-module custom type is `fn`-typed. The registry is

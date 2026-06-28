@@ -1,4 +1,5 @@
 import glance.{type Span, type Statement}
+import gleam/dict.{type Dict}
 import gleam/option.{type Option}
 import gleam/set.{type Set}
 import gleam/string
@@ -231,6 +232,13 @@ pub type ArgumentValue {
   // can be re-keyed onto it when the root is one of the caller's parameters.
   // Treated as opaque (`[Unknown]`) everywhere except call-site field forwarding.
   ReceiverPath(path: String)
+  // An inline constructor or factory call passed as an argument
+  // (`inner(Options(resolver: resolver))` / `inner(make_options(resolver))`).
+  // `fields` maps each constructor field label to the argument value wired into
+  // it, so call-site field forwarding can re-key a callee field-effect variable
+  // (`o.resolver`) onto the caller parameter the field is wired to. Opaque
+  // (`[Unknown]`) everywhere except call-site field forwarding.
+  Constructed(fields: Dict(String, ArgumentValue))
   // Anything else (a computed expression, literal, etc.). Effects come from
   // the enclosing walk; at the argument level we have no concrete function to
   // propagate.
@@ -254,6 +262,17 @@ pub type LocalCall {
 // receiver variable's own span, used to look up its inferred type.
 pub type FieldCall {
   FieldCall(object: String, label: String, span: Span, receiver_span: Span)
+}
+
+// A *factory* function's signature. `fields` maps each constructor field the
+// factory wires to one of its own parameters to that parameter's position; a
+// call `make(io.println)` to `fn make(logger) { Validator(to_error: logger) }`
+// binds the result's `to_error` field to argument 0, so a later `v.to_error(..)`
+// resolves like a direct construction instead of `[Unknown]`. `param_labels`
+// maps each factory parameter's Gleam label to its position, so a labeled call
+// (`make(logger: io.println)`) routes to the same fields as the positional one.
+pub type FactorySignature {
+  FactorySignature(fields: Dict(String, Int), param_labels: Dict(String, Int))
 }
 
 // A *returned operator applied directly*: `let h = pick_handler(); h(cb)`.
