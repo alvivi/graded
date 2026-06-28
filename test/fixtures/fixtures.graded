@@ -32,8 +32,10 @@ check recursive_returned_operator.run_cb : []
 check factory_forward.caller(resolver: [Stdout]) : []
 check factory_forward.caller_ctor(resolver: [Stdout]) : []
 check factory_forward.caller_labeled(resolver: [Stdout]) : []
+check factory_forward.caller_shorthand(resolver: [Stdout]) : []
 check factory_forward.caller_alias : []
 check factory_forward.caller_computed : []
+check factory_forward.mixed_caller(run: [Stdout]) : []
 
 // External effects (third-party / FFI functions graded can't see into).
 external effects external_same_module.now : [Time]

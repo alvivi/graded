@@ -83,9 +83,10 @@ pub fn from_factory(to_error: fn(String) -> Nil) -> Nil {
 }
 ```
 
-The factory/constructor shape forwards both **positional** (`make_validator(to_error)`,
-`Validator(to_error)`) and **labeled** wiring (`make_validator(to_error: to_error)`,
-`Validator(to_error: to_error)`).
+The factory/constructor shape forwards **positional** (`make_validator(to_error)`,
+`Validator(to_error)`), **labeled** (`make_validator(to_error: to_error)`,
+`Validator(to_error: to_error)`), and **shorthand labeled** wiring
+(`make_validator(to_error:)`, `Validator(to_error:)`).
 
 This forwarding is intentionally narrow. It applies only when the receiver
 argument is one of the caller's own parameters, a field path rooted at one, or an

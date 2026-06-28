@@ -320,6 +320,37 @@ pub fn factory_forward_resolves_through_labeled_factory_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn factory_forward_resolves_through_shorthand_factory_test() {
+  // Shorthand labeled wiring (`make_options(resolver:)`) is sugar for
+  // `make_options(resolver: resolver)`, so its value is the `resolver` variable
+  // and it forwards the same way — not the [Unknown] an opaque shorthand gives.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "caller_shorthand" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn factory_forward_marker_survives_sibling_source_test() {
+  // factory_forward.mixed_caller forwards through `make_runner(run)` while the
+  // same `Runner.run` field also has a polymorphic source from `relay_runner`
+  // (`Runner(run: relay)`). The merged field keeps `source: Some`, so the bare
+  // factory marker must resolve alongside it rather than being regrounded by the
+  // sibling source. The two sites contribute independently: the factory marker
+  // forwards onto the caller's `run` parameter and the `run: [Stdout]` bound
+  // discharges it to [Stdout], while the polymorphic source's variable is
+  // unbound at this call and concretizes to [Unknown]. Both are present —
+  // before, the source regrounded the marker and the result was only [Unknown],
+  // dropping the forwarded [Stdout].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "mixed_caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout", "Unknown"])))
+}
+
 pub fn factory_forward_alias_stays_unknown_test() {
   // factory_forward.caller_alias binds the factory result to a `let` before
   // passing it (`let w = make_options(resolver); inner(w)`). Alias forwarding is

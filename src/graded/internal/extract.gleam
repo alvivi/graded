@@ -1,6 +1,7 @@
 import glance.{
   type Clause, type Expression, type Field, type Module, type Statement,
 }
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -1799,17 +1800,44 @@ fn classify_arguments(
   position_offset: Int,
 ) -> List(CallArgument) {
   list.index_map(arguments, fn(field, i) {
-    let #(label, expression) = case field {
-      glance.LabelledField(label:, item:, ..) -> #(Some(label), Some(item))
-      glance.ShorthandField(label:, ..) -> #(Some(label), None)
-      glance.UnlabelledField(item:) -> #(None, Some(item))
-    }
-    let value = case expression {
-      None -> OtherExpression
-      Some(expr) -> classify_expression(expr, context, env)
+    // A shorthand field (`f(resolver:)`) is sugar for `f(resolver: resolver)`,
+    // so its value is the variable named by the label.
+    let #(label, value) = case field {
+      glance.LabelledField(label:, item:, ..) -> #(
+        Some(label),
+        classify_expression(item, context, env),
+      )
+      glance.ShorthandField(label:, ..) -> #(
+        Some(label),
+        classify_variable(label, context, env),
+      )
+      glance.UnlabelledField(item:) -> #(
+        None,
+        classify_expression(item, context, env),
+      )
     }
     CallArgument(position: i + position_offset, label:, value:)
   })
+}
+
+// Classify a bare variable reference by name: a constructor, then a lexical
+// binding (scope wins over an unqualified import of the same name, so a
+// parameter or `let` shadowing an import resolves to the binding), then an
+// unqualified import, else an unresolved local reference.
+fn classify_variable(
+  name: String,
+  context: ImportContext,
+  env: Env,
+) -> types.ArgumentValue {
+  use <- bool.guard(when: is_constructor_name(name), return: ConstructorRef)
+  case dict.get(env, name) {
+    Ok(binding) -> classify_local_binding(binding, name)
+    Error(Nil) ->
+      case dict.get(context.unqualified, name) {
+        Ok(qualified_name) -> FunctionRef(name: qualified_name)
+        Error(Nil) -> LocalRef(name:)
+      }
+  }
 }
 
 // Map a lexical binding to the argument value a bare reference to it denotes.
@@ -1862,21 +1890,7 @@ fn classify_expression(
             Error(Nil) -> receiver_path_value(expression)
           }
       }
-    glance.Variable(_, name) ->
-      case is_constructor_name(name) {
-        True -> ConstructorRef
-        False ->
-          // Lexical scope wins over an unqualified import of the same name, so a
-          // parameter or `let` shadowing an import resolves to the binding.
-          case dict.get(env, name) {
-            Ok(binding) -> classify_local_binding(binding, name)
-            Error(Nil) ->
-              case dict.get(context.unqualified, name) {
-                Ok(qualified_name) -> FunctionRef(name: qualified_name)
-                Error(Nil) -> LocalRef(name:)
-              }
-          }
-      }
+    glance.Variable(_, name) -> classify_variable(name, context, env)
     // An inline closure argument: capture its parameter names and body so the
     // checker can lift it to an effect operator when it's passed to an operator
     // parameter. The callable bindings in scope are captured too, so re-analysing
