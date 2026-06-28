@@ -264,9 +264,18 @@ The field's effect comes from one of:
   (`let v = make(io.println)`, where `make` wires its parameter into the field),
   graded follows the value through the factory, so `v.to_error` resolves with no
   `type` line. Positional and labeled factory calls both route. When the factory
-  result is passed inline to a helper (`inner(make(resolver))`), the helper's
+  result is passed to a helper (`inner(make(resolver))`), the helper's
   field-effect variable forwards onto the wired argument — see
   [field-effect forwarding](./LIMITATIONS.md).
+
+- **alias-aware forwarding** — a receiver passed to a helper forwards its field
+  effects whether passed inline or through a let-bound alias. `let v =
+  config.options; inner(v)` re-keys the helper's field bound onto
+  `config.options.…` just as `inner(config.options)` does, and `let v =
+  make(resolver); inner(v)` forwards through the factory wiring. Aliasing is
+  resolved eagerly at the binding, so a reassignment (`let v = …` again) or a
+  binding from a computed call result clears the provenance and stays
+  `[Unknown]`. See [field-effect forwarding](./LIMITATIONS.md).
 
 Field effects are keyed by the type's **defining module** (from girard's inferred
 type), so two different types both named `Validator` never conflate. When a field

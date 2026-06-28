@@ -59,11 +59,12 @@ The `param.field` bound resolves the call inside `caller` only, leaving the type
 untouched elsewhere.
 
 Forwarding that parameter through helper calls preserves the same field bound.
-Three argument shapes forward: passing one of the caller's own parameters
-directly, passing a receiver path rooted at one of them (`config.validator`,
-`config.options.inner`), and passing an inline constructor or factory call whose
-field is wired from such a value (`inner(make_validator(to_error))` forwards
-`to_error`).
+The receiver argument forwards whenever its provenance is syntactically rooted in
+one of the caller's parameters: passing a parameter directly, a receiver path
+rooted at one (`config.validator`, `config.options.inner`), an inline constructor
+or factory call whose field is wired from such a value
+(`inner(make_validator(to_error))` forwards `to_error`), or a **let-bound alias**
+of any of those.
 
 ```gleam
 fn inner(v: Validator) -> Nil {
@@ -81,22 +82,31 @@ pub fn from_config(config: Config) -> Nil {
 pub fn from_factory(to_error: fn(String) -> Nil) -> Nil {
   inner(make_validator(to_error))   // forwards `to_error` through the factory
 }
+
+pub fn from_alias(config: Config) -> Nil {
+  let v = config.validator
+  inner(v)                  // alias preserves the path: `config.validator.to_error`
+}
 ```
 
 The factory/constructor shape forwards **positional** (`make_validator(to_error)`,
 `Validator(to_error)`), **labeled** (`make_validator(to_error: to_error)`,
 `Validator(to_error: to_error)`), and **shorthand labeled** wiring
-(`make_validator(to_error:)`, `Validator(to_error:)`).
+(`make_validator(to_error:)`, `Validator(to_error:)`). A let-bound alias of a
+parameter, a receiver path, or a constructor/factory result forwards exactly as
+the un-aliased form does — `let v = config.validator; inner(v)`,
+`let v = make_validator(to_error); inner(v)`. Construction nests one extra level:
+`inner(make_outer(make_inner(to_error)))` traces both hops' field wiring.
 
-This forwarding is intentionally narrow. It applies only when the receiver
-argument is one of the caller's own parameters, a field path rooted at one, or an
-inline constructor/factory call wiring such a value into the field. Aliases
-(`let w = config.validator; inner(w)`, `let v = make_validator(to_error); inner(v)`),
-opaque factory returns whose field wiring can't be traced
-(`inner(default_validator())`), nested factory calls
-(`inner(make_outer(make_inner(to_error)))`, traced one level only), and other
-computed expressions remain conservative and fall back to `[Unknown]` unless
-covered by a `type` line or a field bound.
+This forwarding stays narrow and sound: it applies only when the receiver's
+provenance is syntactically proven from a caller parameter, a caller-rooted
+receiver path, or traceable constructor/factory wiring. Receivers built by an
+**untraceable producer** (`inner(default_validator())`), threaded through a
+**computed call** (`inner(get_validator(config.validator))`), aliased from such an
+expression (`let w = get_validator(x); inner(w)`), or **reassigned** to an opaque
+binding before the call all stay conservative and fall back to `[Unknown]` unless
+covered by a `type` line or a field bound. Construction nested two or more levels
+beyond the single extra hop is likewise conservative.
 
 > Note: when a record *is* built by a factory and then **let-bound** before the
 > field is read (`let v = make(io.println); v.to_error(..)`), graded resolves the
