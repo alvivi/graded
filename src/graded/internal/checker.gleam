@@ -3083,26 +3083,28 @@ fn resolve_field_call_by_type(
           memo,
         )
         Ok(field_effect) ->
-          case
-            has_self_field_marker(field_effect.effects),
-            field_effect.source
-          {
+          case has_self_field_marker(field_effect.effects) {
             // A construction-inferred field wired to a bare parameter is
             // polymorphic in that parameter (the factory plumbing). Resolve the
             // marker to the receiver-keyed field variable so the call forwards
-            // like an un-constructed `fn`-typed field, unioned with any concrete
-            // construction sites for the same field.
-            True, None -> #(
+            // like an un-constructed `fn`-typed field, unioned with any other
+            // construction site for the same field (which may carry its own
+            // polymorphic source — `merge_field_effect` keeps `source: Some`).
+            True ->
               resolve_self_field(
-                field_effect.effects,
+                field_effect,
                 field_call,
                 module,
                 type_name,
                 context,
-              ),
-              memo,
-            )
-            _, _ ->
+                call_args,
+                knowledge_base,
+                caller_param_bounds,
+                registry,
+                lift_operator_arg,
+                memo,
+              )
+            False ->
               resolve_field_effect(
                 field_effect,
                 field_call,
@@ -3172,21 +3174,49 @@ fn has_self_field_marker(effects: EffectTerm) -> Bool {
   set.contains(effect_term.free_vars(effects), self_field_marker)
 }
 
-// Resolve a polymorphic (parameter-wired) construction-inferred field by
-// substituting the self marker with the receiver-keyed field variable — the
-// same variable an un-constructed `fn`-typed field falls back to, so it forwards
-// and discharges identically. Concrete co-site effects unioned with the marker
-// are preserved.
+// Resolve a polymorphic (parameter-wired) construction-inferred field. The self
+// marker resolves to the receiver-keyed field variable — the same variable an
+// un-constructed `fn`-typed field falls back to, so it forwards and discharges
+// identically. Any other construction site for the same field (a concrete co-site,
+// or a polymorphic function source `merge_field_effect` kept) is resolved with
+// the marker neutralized to `[]`, then unioned in — so a sibling site never
+// regrounds the forwarded marker to `[Unknown]`.
 fn resolve_self_field(
-  effects: EffectTerm,
+  field_effect: types.TypeFieldEffect,
   field_call: types.FieldCall,
   module: String,
   type_name: String,
   context: ImportContext,
-) -> EffectTerm {
-  let fallback = field_fallback(field_call, module, type_name, context)
-  effect_term.subst(effects, dict.from_list([#(self_field_marker, fallback)]))
-  |> effect_term.normalize()
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
+  let source_only =
+    types.TypeFieldEffect(
+      ..field_effect,
+      effects: field_effect.effects
+        |> effect_term.subst(
+          dict.from_list([#(self_field_marker, effect_term.pure())]),
+        )
+        |> effect_term.normalize(),
+    )
+  let #(source_part, memo) =
+    resolve_field_effect(
+      source_only,
+      field_call,
+      call_args,
+      knowledge_base,
+      caller_param_bounds,
+      registry,
+      lift_operator_arg,
+      memo,
+    )
+  let marker_part = field_fallback(field_call, module, type_name, context)
+  #(effect_term.normalize(types.TUnion([source_part, marker_part])), memo)
 }
 
 // Whether a field of a same-module custom type is `fn`-typed. The registry is
