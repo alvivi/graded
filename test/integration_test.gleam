@@ -1078,6 +1078,18 @@ pub fn shadowed_param_resolves_through_bound_test() {
   list.any(r.violations, fn(v) { v.function == "run" }) |> should.be_false()
 }
 
+pub fn aliased_param_call_resolves_through_bound_test() {
+  // shadow_param.run_alias aliases its fn-typed parameter (`let f = handler`)
+  // and calls the alias directly. The call must resolve through the parameter's
+  // bound ([]), not the shadowed same-module `handler` nor [Unknown], so the []
+  // budget holds and `run_alias` has no violation.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/shadow_param.gleam" })
+  list.any(r.violations, fn(v) { v.function == "run_alias" })
+  |> should.be_false()
+}
+
 pub fn infer_then_check_round_trip_test() {
   // `run_infer` rewrites the spec file in place, so capture the canonical
   // fixture content up front and restore it at the end — keeping the test
