@@ -25,6 +25,13 @@ import graded/internal/types.{
 type LocalBinding {
   BoundFunctionRef(name: QualifiedName)
   BoundConstructor(fields: Dict(String, ArgumentValue))
+  // A let-bound alias of a receiver path or a forwarded parameter (`let options
+  // = config.options`, `let forwarded = options`). `path` is the dotted path the
+  // alias stands for (single-segment for a bare parameter), so a later use as a
+  // receiver argument re-keys a callee field-effect variable onto it — exactly
+  // as the un-aliased path would. Opaque (`[Unknown]`) everywhere except
+  // call-site field forwarding.
+  BoundReceiverPath(path: String)
   // A closure's own parameter, bound while walking the closure body. A call
   // to it is a callback invocation whose effect is accounted where the
   // closure is applied (operator lifting), so it contributes nothing to the
@@ -1199,13 +1206,25 @@ fn classify_rhs_ref(
 ) -> LocalBinding {
   case classify_expression(expression, context, env) {
     FunctionRef(name:) -> BoundFunctionRef(name:)
-    LocalRef(name:) -> dict.get(env, name) |> result.unwrap(BoundOpaque)
+    LocalRef(name:) ->
+      case dict.get(env, name) {
+        // Aliasing a top-level parameter (`let forwarded = options`): remember
+        // the parameter as a single-segment receiver path, so a forwarded field
+        // var re-keys onto it at the use site rather than onto the dead alias
+        // name. Any other binding is copied as-is (eager alias resolution).
+        Ok(BoundLocal) -> BoundReceiverPath(name)
+        Ok(binding) -> binding
+        Error(Nil) -> BoundOpaque
+      }
     types.Closure(params, captures, body) ->
       BoundClosure(params, captures, body)
     types.Choice(options) -> BoundChoice(options)
     types.ReturnedOperator(callee, args) -> BoundReturnedOperator(callee, args)
     Constructed(fields:) -> BoundConstructor(fields:)
-    ConstructorRef | types.ReceiverPath(..) | OtherExpression -> BoundOpaque
+    // A receiver-path alias (`let options = config.options`): keep the path so a
+    // forwarded field var re-keys onto `config.options`, not the opaque alias.
+    types.ReceiverPath(path) -> BoundReceiverPath(path)
+    ConstructorRef | OtherExpression -> BoundOpaque
   }
 }
 
@@ -1857,10 +1876,17 @@ fn classify_local_binding(
     // A let-bound producer call resolves to its returned operator at the use
     // site.
     BoundReturnedOperator(callee, args) -> types.ReturnedOperator(callee, args)
-    // A parameter, a constructor binding, or an opaque value: a bare local
-    // reference, resolved (or left unresolved) at the use site.
-    BoundLocal | BoundParam | BoundConstructor(..) | BoundOpaque ->
-      LocalRef(name:)
+    // A let-bound construction/factory result resolves to its field wiring, so a
+    // forwarded callee field var re-keys through it (`let o = make_options(r);
+    // inner(o)` re-keys `o.resolver` onto `r`).
+    BoundConstructor(fields:) -> Constructed(fields:)
+    // A receiver-path or parameter alias resolves to its path, so a forwarded
+    // field var re-keys onto the caller's receiver (`let o = config.options;
+    // inner(o)` re-keys `o.resolver` onto `config.options.resolver`).
+    BoundReceiverPath(path) -> types.ReceiverPath(path)
+    // A parameter or an opaque value: a bare local reference, resolved (or left
+    // unresolved) at the use site.
+    BoundLocal | BoundParam | BoundOpaque -> LocalRef(name:)
   }
 }
 

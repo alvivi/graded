@@ -351,17 +351,69 @@ pub fn factory_forward_marker_survives_sibling_source_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout", "Unknown"])))
 }
 
-pub fn factory_forward_alias_stays_unknown_test() {
+pub fn factory_forward_resolves_through_factory_alias_test() {
   // factory_forward.caller_alias binds the factory result to a `let` before
-  // passing it (`let w = make_options(resolver); inner(w)`). Alias forwarding is
-  // deliberately not implemented, so the receiver is opaque and inner's field
-  // call concretizes to [Unknown] — the [] budget fails with [Unknown], proving
-  // the conservative boundary holds.
+  // passing it (`let o = make_options(resolver); inner(o)`). The alias preserves
+  // the constructed field wiring, so `o.resolver` re-keys onto the caller's
+  // `resolver` parameter and the `resolver: [Stdout]` bound discharges it — the
+  // [] budget fails with [Stdout], not the [Unknown] an opaque alias gave before.
   let assert Ok(results) = graded.run("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "caller_alias" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn factory_forward_resolves_through_constructor_alias_test() {
+  // factory_forward.caller_ctor_alias binds an inline constructor before passing
+  // it (`let o = Options(resolver: resolver); inner(o)`). The constructor wiring
+  // forwards the same way, so the bound discharges to [Stdout].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "caller_ctor_alias" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn factory_forward_resolves_through_nested_construction_test() {
+  // factory_forward.caller_nested wires `resolver` two construction levels deep
+  // (`inner_holder(make_holder(make_options(resolver)))`). Each hop's field
+  // wiring is traced in turn, so `holder.options.resolver` re-keys onto the
+  // caller's `resolver` and the bound discharges to [Stdout].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "caller_nested" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn factory_forward_computed_alias_stays_unknown_test() {
+  // factory_forward.caller_computed_alias binds a computed receiver
+  // (`let o = get_options(make_options(resolver)); inner(o)`). The binding is an
+  // opaque call result, not a traceable construction, so forwarding doesn't
+  // apply and the field call concretizes to [Unknown].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "caller_computed_alias" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn factory_forward_shadowed_alias_stays_unknown_test() {
+  // factory_forward.caller_shadow rebinds a traceable factory alias to a computed
+  // value before forwarding (`let o = make_options(resolver); let o =
+  // get_options(o); inner(o)`). The shadowing binding clears the stale factory
+  // provenance, so the field call concretizes to [Unknown] — proving a
+  // reassignment can never leave a forwarded effect understated.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "caller_shadow" })
   v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
@@ -610,9 +662,22 @@ fn receiver_path_forwarding_source() -> String {
   <> "pub fn forward_computed(config: Config) -> Nil {\n"
   <> "  inner(get_options(config.options))\n"
   <> "}\n\n"
-  // Aliased receiver path: the binding is opaque, so it stays conservative.
+  // Aliased receiver path: the alias preserves the path, so inner's
+  // `options.resolver` re-keys to `config.options.resolver`.
   <> "pub fn forward_alias(config: Config) -> Nil {\n"
   <> "  let alias = config.options\n"
+  <> "  inner(alias)\n"
+  <> "}\n\n"
+  // Direct parameter alias: `forwarded` aliases the `options` parameter, so
+  // inner's `options.resolver` re-keys to the caller's `options.resolver`.
+  <> "pub fn forward_param_alias(options: Options) -> Nil {\n"
+  <> "  let forwarded = options\n"
+  <> "  inner(forwarded)\n"
+  <> "}\n\n"
+  // Computed-receiver alias: the binding is an opaque call result, so it stays
+  // conservative even though `config.options` flows into it.
+  <> "pub fn forward_computed_alias(config: Config) -> Nil {\n"
+  <> "  let alias = get_options(config.options)\n"
   <> "  inner(alias)\n"
   <> "}\n"
 }
@@ -697,13 +762,80 @@ pub fn receiver_path_forwarding_computed_receiver_stays_unknown_test() {
   expect_unknown_without_field_bound(annotations, "proj.forward_computed")
 }
 
-pub fn receiver_path_forwarding_alias_stays_conservative_test() {
+pub fn receiver_path_forwarding_alias_infers_path_test() {
+  // `let alias = config.options; inner(alias)` — the alias preserves the
+  // receiver path, so the forwarded field bound is `config.options.resolver`,
+  // identical to the inline `inner(config.options)` case.
   let annotations =
     infer_project("build/receiver_path_forwarding_alias", [
       #("proj.gleam", receiver_path_forwarding_source()),
     ])
 
-  expect_unknown_without_field_bound(annotations, "proj.forward_alias")
+  expect_field_bound(
+    annotations,
+    "proj.forward_alias",
+    "config.options.resolver",
+  )
+}
+
+pub fn receiver_path_forwarding_param_alias_infers_path_test() {
+  // `let forwarded = options; inner(forwarded)` — a direct parameter alias
+  // forwards onto the caller's own `options.resolver`, just like passing the
+  // parameter directly.
+  let annotations =
+    infer_project("build/receiver_path_forwarding_param_alias", [
+      #("proj.gleam", receiver_path_forwarding_source()),
+    ])
+
+  expect_field_bound(
+    annotations,
+    "proj.forward_param_alias",
+    "options.resolver",
+  )
+}
+
+pub fn receiver_path_forwarding_computed_alias_stays_conservative_test() {
+  // `let alias = get_options(config.options); inner(alias)` — the alias is bound
+  // from a computed call result, not a traceable path, so it stays [Unknown].
+  let annotations =
+    infer_project("build/receiver_path_forwarding_computed_alias", [
+      #("proj.gleam", receiver_path_forwarding_source()),
+    ])
+
+  expect_unknown_without_field_bound(annotations, "proj.forward_computed_alias")
+}
+
+pub fn receiver_path_forwarding_alias_bound_check_discharges_test() {
+  // A `check` field bound on the aliased path discharges to [Stdout], proving the
+  // alias re-keys onto the caller's receiver exactly as the inline path does.
+  let root = "build/receiver_path_forwarding_alias_bound_check"
+  let results =
+    run_project_with_spec(
+      root,
+      receiver_path_forwarding_source(),
+      "check proj.forward_alias(config.options.resolver: [Stdout]) : []\n",
+    )
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "forward_alias" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn receiver_path_forwarding_param_alias_bound_check_discharges_test() {
+  // A `check` field bound on the direct parameter alias discharges to [Stdout].
+  let root = "build/receiver_path_forwarding_param_alias_bound_check"
+  let results =
+    run_project_with_spec(
+      root,
+      receiver_path_forwarding_source(),
+      "check proj.forward_param_alias(options.resolver: [Stdout]) : []\n",
+    )
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "forward_param_alias" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn nested_field_round_trips_as_dotted_field_bound_test() {

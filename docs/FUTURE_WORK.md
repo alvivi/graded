@@ -6,19 +6,21 @@ cross-package inference all ship today. What remains is a short list of refineme
 and one new direction, ordered by incrementality — earlier items are smaller, later
 items push into different territory.
 
-## Alias-aware field forwarding
+## Deeper provenance for field forwarding
 
 Field-effect forwarding re-keys a callee's field bound onto the caller when the
-receiver argument is one of the caller's parameters, a field path rooted at one
-(`inner(config.options)` → `config.options.resolver`), or an inline
-constructor/factory call whose field is wired from such a value
-(`inner(make_options(resolver))` → `resolver`). Receivers reached through a
-let-binding (`let w = config.options; inner(w)`,
-`let o = make_options(resolver); inner(o)`) still stay conservative and fall back
-to `[Unknown]`, as does a nested factory call
-(`inner(make_outer(make_inner(resolver)))`, traced one level only). A later step
-could trace let-bindings back to their source path and follow factory results
-through more than one construction level, extending forwarding to those cases.
+receiver argument's provenance is syntactically rooted in a caller parameter — a
+parameter, a receiver path (`inner(config.options)` → `config.options.resolver`),
+an inline constructor/factory call (`inner(make_options(resolver))` → `resolver`),
+or a let-bound alias of any of those (`let o = make_options(resolver); inner(o)`).
+Construction nests one extra level (`make_outer(make_inner(resolver))`). What
+remains conservative is provenance that needs real data-flow analysis: a receiver
+threaded through a **computed call** (`inner(get_options(config.options))`),
+construction nested **two or more levels** beyond the single extra hop, and values
+pulled out of collections or other data structures. Extending forwarding to those
+would mean tracing values through arbitrary expressions rather than the syntactic
+shapes above — a larger step, and one that risks understating effects if done
+unsoundly. The `type` line and field bound remain the escape hatches meanwhile.
 
 ## Retiring the positional/label heuristics
 

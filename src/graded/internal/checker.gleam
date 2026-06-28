@@ -1739,7 +1739,11 @@ fn field_forwarding_binding(
 //    `inner(config.options)` its `config.options.run`);
 //  - an inline constructor/factory argument resolves the tail's leading field
 //    through the constructed wiring (`inner(make_options(resolver))` makes
-//    `o.resolver` the caller's `resolver`), keeping any deeper tail segments.
+//    `o.resolver` the caller's `resolver`), keeping any deeper tail segments. A
+//    field wired to a *further* construction recurses one hop at a time, so
+//    `inner(make_holder(make_options(resolver)))` re-keys `h.options.resolver`
+//    onto `resolver` — each hop's wiring must be known and bottom out at a
+//    caller-rooted value.
 // `None` when the argument isn't rooted at a caller parameter, or the field
 // isn't wired to one.
 fn forwarded_path(
@@ -1754,10 +1758,11 @@ fn forwarded_path(
         Error(Nil) -> #(tail, None)
       }
       use wired <- option.then(option.from_result(dict.get(fields, field)))
-      use base <- option.then(caller_rooted_path(wired, caller_param_names))
       case rest {
-        Some(rest) -> Some(base <> "." <> rest)
-        None -> Some(base)
+        // A deeper tail forwards through the next construction hop's wiring.
+        Some(rest) -> forwarded_path(wired, rest, caller_param_names)
+        // The leaf field must be wired to a caller-rooted value.
+        None -> caller_rooted_path(wired, caller_param_names)
       }
     }
     _ -> {
