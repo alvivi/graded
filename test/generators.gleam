@@ -307,3 +307,68 @@ pub fn inferred_list_gen() -> qcheck.Generator(List(types.EffectAnnotation)) {
     },
   )
 }
+
+// A computed-receiver program in two forms differing only in whether the helper's
+// return value is traceable: `traced` uses a direct tail shape (passthrough,
+// getter, or rebuild); `untraced` wraps the same body in a redundant `case`, so
+// its return provenance is `Opaque` while its runtime effect is unchanged. Feeds
+// the provenance regression guard rail, which compares the two.
+pub type ProvenanceProgram {
+  ProvenanceProgram(traced: String, untraced: String, label: String)
+}
+
+pub type ProvenanceShape {
+  ProvPassthrough
+  ProvGetter
+  ProvRebuild
+}
+
+pub fn provenance_program_gen() -> qcheck.Generator(ProvenanceProgram) {
+  use shape <- qcheck.bind(
+    qcheck.from_generators(qcheck.return(ProvPassthrough), [
+      qcheck.return(ProvGetter),
+      qcheck.return(ProvRebuild),
+    ]),
+  )
+  use label <- qcheck.map(one_of(effect_labels))
+  build_provenance_program(shape, label)
+}
+
+fn build_provenance_program(
+  shape: ProvenanceShape,
+  label: String,
+) -> ProvenanceProgram {
+  let options_type =
+    "pub type Options {\n  Options(resolver: fn() -> Nil)\n}\n\n"
+  let inner = "pub fn inner(o: Options) -> Nil {\n  o.resolver()\n}\n\n"
+  let #(extra_type, params, body, call_arg) = case shape {
+    ProvPassthrough -> #("", "o: Options", "o", "Options(resolver: resolver)")
+    ProvGetter -> #(
+      "pub type Config {\n  Config(options: Options)\n}\n\n",
+      "c: Config",
+      "c.options",
+      "Config(options: Options(resolver: resolver))",
+    )
+    ProvRebuild -> #(
+      "",
+      "o: Options",
+      "Options(resolver: o.resolver)",
+      "Options(resolver: resolver)",
+    )
+  }
+  let helper = fn(helper_body: String) {
+    "fn helper(" <> params <> ") -> Options {\n  " <> helper_body <> "\n}\n\n"
+  }
+  let caller =
+    "pub fn caller(resolver: fn() -> Nil) -> Nil {\n  inner(helper("
+    <> call_arg
+    <> "))\n}\n"
+  let common = options_type <> extra_type <> inner
+  ProvenanceProgram(
+    traced: common <> helper(body) <> caller,
+    untraced: common
+      <> helper("case True {\n    _ -> " <> body <> "\n  }")
+      <> caller,
+    label:,
+  )
+}

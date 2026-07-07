@@ -417,17 +417,18 @@ pub fn factory_forward_shadowed_alias_stays_unknown_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
-pub fn factory_forward_computed_receiver_stays_unknown_test() {
-  // factory_forward.caller_computed threads the factory result through a call
-  // (`inner(get_options(make_options(resolver)))`). A computed receiver is not a
-  // traceable path, so forwarding doesn't apply and the field call concretizes to
-  // [Unknown] — the [] budget fails with [Unknown], proving the boundary holds.
+pub fn factory_forward_computed_receiver_resolves_test() {
+  // factory_forward.caller_computed threads the factory result through a
+  // passthrough helper (`inner(get_options(make_options(resolver)))`).
+  // `get_options` returns its parameter, so return-value provenance forwards the
+  // factory-wired `resolver` onto the caller's `resolver` and the bound
+  // discharges it to [Stdout] — where before Phase 1 it collapsed to [Unknown].
   let assert Ok(results) = graded.run("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "caller_computed" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn factory_forward_round_trips_as_param_bound_test() {
@@ -625,6 +626,40 @@ pub fn field_effect_forwarding_bound_check_uses_forwarded_bound_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn provenance_cross_module_getter_resolves_test() {
+  // A public getter in another module. `app.caller` calls
+  // `dep.inner(dep.get_options(config))`; `get_options` returns `config.options`,
+  // and its return provenance is threaded through the knowledge base by
+  // topological order, so the computed receiver forwards cross-module onto
+  // `config.options.resolver` and the field bound discharges it to [Stdout].
+  let root = "build/provenance_cross_module"
+  write_project(
+    root,
+    [
+      #(
+        "dep.gleam",
+        "pub type Options {\n  Options(resolver: fn() -> Nil)\n}\n\n"
+          <> "pub type Config {\n  Config(options: Options)\n}\n\n"
+          <> "pub fn inner(o: Options) -> Nil {\n  o.resolver()\n}\n\n"
+          <> "pub fn get_options(config: Config) -> Options {\n  config.options\n}\n",
+      ),
+      #(
+        "app.gleam",
+        "import dep\n\n"
+          <> "pub fn caller(config: dep.Config) -> Nil {\n"
+          <> "  dep.inner(dep.get_options(config))\n"
+          <> "}\n",
+      ),
+    ],
+    "check app.caller(config.options.resolver: [Stdout]) : []\n",
+  )
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 fn receiver_path_forwarding_source() -> String {
   "pub type Options {\n"
   <> "  Options(resolver: fn() -> Nil)\n"
@@ -657,8 +692,9 @@ fn receiver_path_forwarding_source() -> String {
   <> "fn get_options(options: Options) -> Options {\n"
   <> "  options\n"
   <> "}\n\n"
-  // Computed receiver: a call result rather than a caller-rooted path, so it
-  // stays conservative even though `config.options` flows into the call.
+  // Computed receiver whose helper returns its parameter (`Passthrough`): return
+  // provenance forwards `config.options` through the call, so inner's
+  // `options.resolver` re-keys to `config.options.resolver`.
   <> "pub fn forward_computed(config: Config) -> Nil {\n"
   <> "  inner(get_options(config.options))\n"
   <> "}\n\n"
@@ -753,13 +789,20 @@ pub fn receiver_path_forwarding_bound_check_discharges_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
-pub fn receiver_path_forwarding_computed_receiver_stays_unknown_test() {
+pub fn receiver_path_forwarding_computed_receiver_resolves_test() {
+  // `inner(get_options(config.options))` — `get_options` returns its parameter,
+  // so return-value provenance forwards `config.options` through the call and
+  // inner's `options.resolver` re-keys to `config.options.resolver`.
   let annotations =
     infer_project("build/receiver_path_forwarding_computed", [
       #("proj.gleam", receiver_path_forwarding_source()),
     ])
 
-  expect_unknown_without_field_bound(annotations, "proj.forward_computed")
+  expect_field_bound(
+    annotations,
+    "proj.forward_computed",
+    "config.options.resolver",
+  )
 }
 
 pub fn receiver_path_forwarding_alias_infers_path_test() {
@@ -1754,4 +1797,89 @@ pub fn installed_dep_ships_type_field_test() {
 
   let _ = simplifile.delete(root)
   Nil
+}
+
+pub fn provenance_passthrough_resolves_test() {
+  // provenance_passthrough.caller passes `id_options(Options(resolver:
+  // resolver))` to `inner`. `id_options` returns its whole parameter
+  // (`Passthrough`), so `o.resolver` forwards onto the caller's `resolver` and
+  // the `resolver: [Stdout]` bound discharges it — the [] budget fails with
+  // [Stdout], not the [Unknown] an untraced call result would collapse to.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/provenance_passthrough.gleam"
+    })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn provenance_getter_resolves_test() {
+  // provenance_getter.caller (the headline case) passes `get_options(Config(..))`
+  // to `inner`. `get_options` returns `config.options` (a `Path`), so `o.resolver`
+  // forwards through the getter's path onto the caller's `resolver` and the
+  // bound discharges it to [Stdout].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/provenance_getter.gleam"
+    })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn provenance_rebuild_resolves_test() {
+  // provenance_rebuild.caller passes `normalize(Options(resolver: resolver))` to
+  // `inner`. `normalize` rebuilds `Options(resolver: o.resolver)` (a `Build`), so
+  // `o.resolver` forwards onto the caller's `resolver` and the bound discharges
+  // it to [Stdout]. The rebuild's own receiver-path wiring registers a
+  // conservative [Unknown] source on the field, so the result carries both — the
+  // mixed-site shape of factory_forward.mixed_caller. The [Stdout] is what proves
+  // the forwarding fired (before Phase 1 the receiver was wholly [Unknown]).
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/provenance_rebuild.gleam"
+    })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout", "Unknown"])))
+}
+
+pub fn provenance_branch_stays_unknown_test() {
+  // provenance_branch.caller passes `pick(..)` to `inner`. `pick` returns a
+  // `case` branch, whose provenance is `Opaque`, so forwarding doesn't apply and
+  // the field call concretizes to [Unknown] — the [] budget fails with [Unknown].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/provenance_branch.gleam"
+    })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn provenance_computed_deep_stays_unknown_test() {
+  // provenance_computed_deep.caller passes `deep(resolver)` to `inner`. `deep`'s
+  // return is a nested call (`get(make(resolver))`), whose provenance is
+  // `Opaque` (no helper-call composition in Phase 1), so it stays [Unknown].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/provenance_computed_deep.gleam"
+    })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn provenance_external_stays_unknown_test() {
+  // provenance_external.caller passes `load_options(resolver)` to `inner`.
+  // `load_options` is an external with no visible body, so its provenance can't
+  // be traced and the field call concretizes to [Unknown].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/provenance_external.gleam"
+    })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }

@@ -1210,6 +1210,71 @@ pub fn check_no_false_positives_test() {
   }
 }
 
+// The effect a computed-receiver `caller` reports against a `(resolver: [label])
+// : []` bound, run in-memory. `Specific(∅)` when nothing violated.
+fn provenance_caller_effect(src: String, label: String) -> EffectSet {
+  let assert Ok(module) = glance.module(src)
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [
+        ParamBound(
+          "resolver",
+          effect_term.from_effect_set(Specific(set.from_list([label]))),
+        ),
+      ],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
+  let #(violations, _) =
+    checker.check(
+      module,
+      "",
+      [annotation],
+      knowledge_base(),
+      signatures.from_glance_module("", module),
+      dict.new(),
+      dict.new(),
+    )
+  case list.find(violations, fn(v) { v.function == "caller" }) {
+    Ok(violation) -> violation.actual
+    Error(Nil) -> Specific(set.new())
+  }
+}
+
+// The ground labels of an effect set (variables folded in), for the concrete-set
+// comparison the provenance guard rail needs.
+fn effect_labels_of(effect_set: EffectSet) -> set.Set(String) {
+  case effect_set {
+    Specific(labels) -> labels
+    Polymorphic(labels, variables) -> set.union(labels, variables)
+    Wildcard -> set.new()
+  }
+}
+
+pub fn provenance_never_regresses_baseline_test() {
+  // Regression guard rail, NOT a soundness proof: enabling return-value
+  // provenance may only remove `Unknown` and add the concrete labels it stood
+  // for. For concrete(S) = S \ {"Unknown"}, with W the provenance-off (opaque)
+  // effect and P the provenance-on effect: concrete(W) ⊆ concrete(P), and
+  // `Unknown ∈ P ⟹ Unknown ∈ W`. It cannot catch provenance resolving an
+  // `Unknown` into an *incomplete* concrete set — that risk is held structurally
+  // by reusing the trusted forwarding path and widening to Top.
+  use program <- qcheck.given(generators.provenance_program_gen())
+  let p =
+    effect_labels_of(provenance_caller_effect(program.traced, program.label))
+  let w =
+    effect_labels_of(provenance_caller_effect(program.untraced, program.label))
+  let concrete = fn(labels) { set.delete(labels, "Unknown") }
+  // Provenance never drops a real label vs the opaque baseline.
+  set.is_subset(concrete(w), of: concrete(p)) |> should.be_true()
+  // Provenance never introduces an `Unknown` the opaque baseline didn't have.
+  case set.contains(p, "Unknown") {
+    True -> set.contains(w, "Unknown") |> should.be_true()
+    False -> Nil
+  }
+}
+
 pub fn check_wildcard_never_violates_test() {
   use selections <- qcheck.given(call_selection_gen())
   let calls = selected_calls(selections)
