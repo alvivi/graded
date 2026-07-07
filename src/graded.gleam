@@ -1094,7 +1094,7 @@ fn infer_one_module(
   #(KnowledgeBase, List(EffectAnnotation), List(types.ReturnsAnnotation)),
   GradedError,
 ) {
-  let #(inferred, returned_operators) =
+  let #(inferred, returned_operators, provenance) =
     checker.infer_with_returns(
       module,
       module_path,
@@ -1135,6 +1135,7 @@ fn infer_one_module(
       module_path,
       declared_modules,
     )
+    |> effects.with_provenance(qualify_provenance(provenance, module_path))
 
   let public_names = public_function_names(module)
   let public_annotations =
@@ -1204,7 +1205,7 @@ fn fold_inferred_module(
   type_info: typeinfo.TypeInfo,
   declared_modules: Set(String),
 ) -> KnowledgeBase {
-  let #(inferred, returned_operators) =
+  let #(inferred, returned_operators, provenance) =
     checker.infer_with_returns(
       module,
       module_path,
@@ -1221,6 +1222,18 @@ fn fold_inferred_module(
     module_path,
     declared_modules,
   )
+  |> effects.with_provenance(qualify_provenance(provenance, module_path))
+}
+
+// Qualify a module's inferred return-value provenance by `module_path`, producing
+// the `QualifiedName`-keyed map the knowledge base is threaded with.
+fn qualify_provenance(
+  provenance: Dict(String, types.ReturnProvenance),
+  module_path: String,
+) -> Dict(QualifiedName, types.ReturnProvenance) {
+  dict.fold(provenance, dict.new(), fn(acc, function, traced) {
+    dict.insert(acc, QualifiedName(module: module_path, function:), traced)
+  })
 }
 
 // Thread a module's freshly inferred effects, polymorphic param bounds, and
@@ -1687,7 +1700,7 @@ fn infer_path_dep_module(
     Error(_) -> state
     Ok(#(module, checks)) -> {
       // Path-dep inference skips girard in v1 (cost/benefit): pass no types.
-      let #(annotations, returned_operators) =
+      let #(annotations, returned_operators, provenance) =
         checker.infer_with_returns(
           module,
           module_path,
@@ -1717,6 +1730,7 @@ fn infer_path_dep_module(
           inferred_params,
           inferred_returns,
         )
+        |> effects.with_provenance(qualify_provenance(provenance, module_path))
       #(
         dict.merge(eff_acc, inferred_effs),
         dict.merge(param_acc, inferred_params),

@@ -1172,6 +1172,7 @@ fn build_kb(calls: List(#(String, String, String))) -> effects.KnowledgeBase {
     returned_operators: dict.new(),
     factories: dict.new(),
     module_effects: dict.new(),
+    provenance: dict.new(),
   )
 }
 
@@ -1380,6 +1381,7 @@ fn bare_knowledge_base() -> effects.KnowledgeBase {
     returned_operators: dict.new(),
     factories: dict.new(),
     module_effects: dict.new(),
+    provenance: dict.new(),
   )
 }
 
@@ -3306,7 +3308,7 @@ pub fn pick() -> fn(fn(String) -> Nil) -> Nil {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(_annotations, returns) =
+  let #(_annotations, returns, _provenance) =
     checker.infer_with_returns(
       module,
       "",
@@ -3331,7 +3333,7 @@ pub fn make_printer() -> fn() -> Nil {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(_annotations, returns) =
+  let #(_annotations, returns, _provenance) =
     checker.infer_with_returns(
       module,
       "",
@@ -3422,7 +3424,7 @@ pub fn pick(
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(_annotations, returns) =
+  let #(_annotations, returns, _provenance) =
     checker.infer_with_returns(
       module,
       "",

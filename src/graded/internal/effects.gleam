@@ -13,9 +13,9 @@ import graded/internal/effect_term
 import graded/internal/types.{
   type ArgumentValue, type EffectAnnotation, type EffectSet, type EffectTerm,
   type ExternalAnnotation, type FactorySignature, type ParamBound,
-  type QualifiedName, type TypeFieldAnnotation, type TypeFieldEffect, Check,
-  ConstructorRef, Effects, FunctionExternal, FunctionRef, ModuleExternal,
-  QualifiedName, TypeFieldEffect,
+  type QualifiedName, type ReturnProvenance, type TypeFieldAnnotation,
+  type TypeFieldEffect, Check, ConstructorRef, Effects, FunctionExternal,
+  FunctionRef, ModuleExternal, QualifiedName, TypeFieldEffect,
 }
 import simplifile
 import tom
@@ -52,6 +52,12 @@ pub type KnowledgeBase {
     // every function in the module resolves to this set. An empty set is a pure
     // module.
     module_effects: Dict(String, EffectTerm),
+    // Return-value provenance of public functions, keyed by `QualifiedName`. Lets
+    // a downstream module's computed receiver (`inner(other.get_options(config))`)
+    // resolve `get_options`'s return path and forward its field effects. Computed
+    // at the function's inference time and threaded forward by the topological
+    // pass. (Same-module private helpers resolve on demand from the AST instead.)
+    provenance: Dict(QualifiedName, ReturnProvenance),
   )
 }
 
@@ -75,6 +81,7 @@ pub fn load_knowledge_base(
     returned_operators: dep_returns,
     factories: dict.new(),
     module_effects: cat_module_effects,
+    provenance: dict.new(),
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
@@ -93,6 +100,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     returned_operators: dict.new(),
     factories: dict.new(),
     module_effects: cat_module_effects,
+    provenance: dict.new(),
   )
   |> with_type_fields(cat_type_fields)
 }
@@ -495,6 +503,26 @@ pub fn lookup_returned_operator(
   dict.get(knowledge_base.returned_operators, name)
 }
 
+// Merge inferred return-value provenance into a knowledge base, so a downstream
+// module's computed receiver (`inner(other.get_options(config))`) can resolve the
+// callee's return path. Existing entries take priority.
+pub fn with_provenance(
+  knowledge_base: KnowledgeBase,
+  inferred: Dict(QualifiedName, ReturnProvenance),
+) -> KnowledgeBase {
+  let merged = dict.merge(inferred, knowledge_base.provenance)
+  KnowledgeBase(..knowledge_base, provenance: merged)
+}
+
+// Look up a function's return-value provenance, if known. `Error(Nil)` when the
+// callee's provenance wasn't tracked (a private helper resolves on demand).
+pub fn lookup_provenance(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Result(ReturnProvenance, Nil) {
+  dict.get(knowledge_base.provenance, name)
+}
+
 // PRIVATE
 
 // For each installed package, locate its spec file via the package's own
@@ -658,6 +686,7 @@ fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
                 returned_operators: dict.new(),
                 factories: dict.new(),
                 module_effects: acc.module_effects,
+                provenance: dict.new(),
               ),
               annotation.extract_externals(graded_file),
             )

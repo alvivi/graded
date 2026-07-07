@@ -5,7 +5,118 @@ import gleam/option.{Some}
 import gleeunit/should
 import graded/internal/extract
 import graded/internal/types.{
-  type QualifiedName, Choice, FunctionRef, OtherExpression, QualifiedName,
+  type QualifiedName, Build, Choice, FieldParam, FieldPath, FunctionRef, Opaque,
+  OtherExpression, Passthrough, Path, QualifiedName,
+}
+
+fn provenance_of(src: String) -> types.ReturnProvenance {
+  let assert Ok(module) = glance.module(src)
+  let ctx =
+    extract.build_import_context(module)
+    |> extract.with_factories(extract.factory_map(module))
+  let assert Ok(func) =
+    list.find(module.functions, fn(def) { def.definition.name == "target" })
+  extract.return_provenance(func.definition, ctx)
+}
+
+pub fn provenance_passthrough_test() {
+  provenance_of("fn target(o) { o }")
+  |> should.equal(Passthrough(0))
+}
+
+pub fn provenance_passthrough_second_param_test() {
+  provenance_of("fn target(a, b) { b }")
+  |> should.equal(Passthrough(1))
+}
+
+pub fn provenance_path_test() {
+  provenance_of("fn target(config) { config.options }")
+  |> should.equal(Path(0, "options"))
+}
+
+pub fn provenance_nested_path_test() {
+  provenance_of("fn target(config) { config.a.b }")
+  |> should.equal(Path(0, "a.b"))
+}
+
+pub fn provenance_let_threaded_path_test() {
+  provenance_of(
+    "fn target(config) {
+  let x = config.options
+  x
+}",
+  )
+  |> should.equal(Path(0, "options"))
+}
+
+pub fn provenance_build_field_path_test() {
+  provenance_of(
+    "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+fn target(o) { Options(resolver: o.resolver) }",
+  )
+  |> should.equal(
+    Build(dict.from_list([#("resolver", FieldPath(0, "resolver"))])),
+  )
+}
+
+pub fn provenance_build_field_param_test() {
+  provenance_of(
+    "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+fn target(r) { Options(resolver: r) }",
+  )
+  |> should.equal(Build(dict.from_list([#("resolver", FieldParam(0))])))
+}
+
+pub fn provenance_call_is_opaque_test() {
+  provenance_of(
+    "fn get(o) { o }
+fn target(o) { get(o) }",
+  )
+  |> should.equal(Opaque)
+}
+
+pub fn provenance_branch_is_opaque_test() {
+  provenance_of(
+    "fn target(x, a, b) {
+  case x {
+    True -> a
+    False -> b
+  }
+}",
+  )
+  |> should.equal(Opaque)
+}
+
+pub fn provenance_literal_is_opaque_test() {
+  provenance_of("fn target() { 42 }")
+  |> should.equal(Opaque)
+}
+
+pub fn provenance_non_param_local_is_opaque_test() {
+  provenance_of(
+    "fn other() { 1 }
+fn target() {
+  let x = other()
+  x
+}",
+  )
+  |> should.equal(Opaque)
+}
+
+pub fn provenance_build_with_opaque_field_is_opaque_test() {
+  // A constructor with any non-parameter-rooted field widens the whole `Build`.
+  provenance_of(
+    "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+fn other() { fn() { Nil } }
+fn target(o) { Options(resolver: other()) }",
+  )
+  |> should.equal(Opaque)
 }
 
 fn parse_and_extract(src: String) -> extract.ExtractResult {
