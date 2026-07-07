@@ -277,6 +277,15 @@ The field's effect comes from one of:
   binding from a computed call result clears the provenance and stays
   `[Unknown]`. See [field-effect forwarding](./LIMITATIONS.md).
 
+- **return-value provenance** — an *inline* computed receiver forwards when it is
+  a call to a straight-line helper whose return is a direct tail shape: a
+  parameter (`inner(id_options(o))`), a parameter-rooted receiver path
+  (`inner(get_options(config))` returning `config.options`), or a constructor
+  rebuilt from parameter-rooted fields (`inner(normalize(o))`). graded substitutes
+  the call's arguments into the helper's return provenance and forwards through the
+  result. A helper whose return is itself a call, a branch, or an external body
+  stays `[Unknown]`. See [field-effect forwarding](./LIMITATIONS.md).
+
 Field effects are keyed by the type's **defining module** (from girard's inferred
 type), so two different types both named `Validator` never conflate. When a field
 is wired to a value graded can't trace — a constructor parameter, or a local that
