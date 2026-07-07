@@ -1548,8 +1548,9 @@ fn enrich_with_path_deps(
       _ ->
         case infer_path_dep(resolved_dep_path, kb, consumer_modules) {
           Error(Nil) -> kb
-          Ok(#(effs, params, returns)) ->
+          Ok(#(effs, params, returns, provenance)) ->
             fold_inferred_into_kb(kb, effs, params, returns)
+            |> effects.with_provenance(provenance)
         }
     }
   })
@@ -1591,9 +1592,12 @@ fn fold_inferred_into_kb(
 
 /// Build the dependency-graph index for a single path dep, topo-sort it,
 /// then infer every module in dependency order. Returns the union of all
-/// inferred effects, polymorphic param bounds, and returned-operator
-/// signatures keyed by `QualifiedName` so the caller can fold them into the
-/// global knowledge base. Errors are swallowed (returned as `Error(Nil)`) to
+/// inferred effects, polymorphic param bounds, returned-operator signatures,
+/// and return-value provenance keyed by `QualifiedName` so the caller can fold
+/// them into the global knowledge base — the provenance lets a consumer resolve
+/// a computed-receiver call into the dep (`dep.inner(dep.factory(x))`) that a
+/// committed dep spec, which does not serialize provenance, cannot. Errors are
+/// swallowed (returned as `Error(Nil)`) to
 /// preserve the existing tolerance: a malformed dep shouldn't break the whole
 /// project.
 ///
@@ -1610,6 +1614,7 @@ pub fn infer_path_dep(
     Dict(QualifiedName, types.EffectTerm),
     Dict(QualifiedName, List(types.ParamBound)),
     Dict(QualifiedName, types.EffectTerm),
+    Dict(QualifiedName, types.ReturnProvenance),
   ),
   Nil,
 ) {
@@ -1659,10 +1664,10 @@ pub fn infer_path_dep(
     })
 
   use sorted <- result.try(topo.sort(graph) |> result.map_error(fn(_) { Nil }))
-  let #(effs, params, returns, _final_kb) =
+  let #(effs, params, returns, provenance, _final_kb) =
     list.fold(
       sorted,
-      #(dict.new(), dict.new(), dict.new(), base_kb),
+      #(dict.new(), dict.new(), dict.new(), dict.new(), base_kb),
       fn(state, module_path) {
         infer_path_dep_module(
           state,
@@ -1673,7 +1678,7 @@ pub fn infer_path_dep(
         )
       },
     )
-  Ok(#(effs, params, returns))
+  Ok(#(effs, params, returns, provenance))
 }
 
 fn infer_path_dep_module(
@@ -1681,6 +1686,7 @@ fn infer_path_dep_module(
     Dict(QualifiedName, types.EffectTerm),
     Dict(QualifiedName, List(types.ParamBound)),
     Dict(QualifiedName, types.EffectTerm),
+    Dict(QualifiedName, types.ReturnProvenance),
     KnowledgeBase,
   ),
   module_path: String,
@@ -1691,9 +1697,10 @@ fn infer_path_dep_module(
   Dict(QualifiedName, types.EffectTerm),
   Dict(QualifiedName, List(types.ParamBound)),
   Dict(QualifiedName, types.EffectTerm),
+  Dict(QualifiedName, types.ReturnProvenance),
   KnowledgeBase,
 ) {
-  let #(eff_acc, param_acc, returns_acc, kb) = state
+  let #(eff_acc, param_acc, returns_acc, prov_acc, kb) = state
   case dict.get(index, module_path) {
     Error(_) -> state
     Ok(#(module, checks)) -> {
@@ -1721,6 +1728,7 @@ fn infer_path_dep_module(
       // they are kept; a sibling wrapper doing `let f = mod.make(); f()` still
       // resolves `f` instead of falling to `[Unknown]`.
       let inferred_effs = drop_declared_modules(inferred_effs, consumer_modules)
+      let inferred_provenance = qualify_bare_names(provenance, module_path)
       let new_kb =
         fold_inferred_into_kb(
           kb,
@@ -1728,11 +1736,12 @@ fn infer_path_dep_module(
           inferred_params,
           inferred_returns,
         )
-        |> effects.with_provenance(qualify_bare_names(provenance, module_path))
+        |> effects.with_provenance(inferred_provenance)
       #(
         dict.merge(eff_acc, inferred_effs),
         dict.merge(param_acc, inferred_params),
         dict.merge(returns_acc, inferred_returns),
+        dict.merge(prov_acc, inferred_provenance),
         new_kb,
       )
     }
