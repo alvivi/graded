@@ -617,7 +617,8 @@ fn binding_from_argument_value(value: ArgumentValue) -> LocalBinding {
     types.Closure(params, captures, body) ->
       BoundClosure(params, captures, body)
     types.Choice(options) -> BoundChoice(options)
-    types.ReturnedOperator(callee, args) -> BoundReturnedOperator(callee, args)
+    types.ReturnedOperator(callee, args) | types.CallResult(callee, args) ->
+      BoundReturnedOperator(callee, args)
     Constructed(fields:) -> BoundConstructor(fields:)
     LocalRef(..) | ConstructorRef | types.ReceiverPath(..) | OtherExpression ->
       BoundOpaque
@@ -902,6 +903,7 @@ fn resolve_constructor_field_call(
     Ok(types.Closure(_, _, _))
     | Ok(types.Choice(_))
     | Ok(types.ReturnedOperator(_, _))
+    | Ok(types.CallResult(_, _))
     | Ok(types.ReceiverPath(_))
     | Ok(Constructed(_))
     | Ok(OtherExpression)
@@ -1226,7 +1228,11 @@ fn classify_rhs_ref(
     types.Closure(params, captures, body) ->
       BoundClosure(params, captures, body)
     types.Choice(options) -> BoundChoice(options)
-    types.ReturnedOperator(callee, args) -> BoundReturnedOperator(callee, args)
+    // A let-bound call result acts as a returned-operator producer, so
+    // `let h = producer(); with(h)` still resolves; a computed receiver bound to
+    // a `let` stays opaque for forwarding (Phase 1 forwards inline receivers).
+    types.ReturnedOperator(callee, args) | types.CallResult(callee, args) ->
+      BoundReturnedOperator(callee, args)
     Constructed(fields:) -> BoundConstructor(fields:)
     // A receiver-path alias (`let options = config.options`): keep the path so a
     // forwarded field var re-keys onto `config.options`, not the opaque alias.
@@ -1775,7 +1781,8 @@ fn extract_expression_call(
         span,
         call_args,
       )
-    types.ReturnedOperator(producer, producer_args) ->
+    types.ReturnedOperator(producer, producer_args)
+    | types.CallResult(producer, producer_args) ->
       merge_with_args(
         base,
         ExtractResult(..empty(), direct_ops: [
@@ -2106,13 +2113,14 @@ fn classify_call_producer(
 ) -> types.ArgumentValue {
   let args = classify_arguments(arguments, context, env, 0)
   case classify_expression(function, context, env) {
-    FunctionRef(name: callee) -> types.ReturnedOperator(callee, args)
+    FunctionRef(name: callee) -> types.CallResult(callee, args)
     // Same-module bare name: `""` module is the resolved-on-demand sentinel.
-    LocalRef(name:) -> types.ReturnedOperator(QualifiedName("", name), args)
+    LocalRef(name:) -> types.CallResult(QualifiedName("", name), args)
     ConstructorRef
     | types.Closure(..)
     | types.Choice(..)
     | types.ReturnedOperator(..)
+    | types.CallResult(..)
     | types.ReceiverPath(..)
     | Constructed(..)
     | OtherExpression -> OtherExpression
@@ -2132,6 +2140,146 @@ pub fn return_value(
     Ok(glance.Expression(expression)) ->
       Ok(classify_expression(expression, context, dict.new()))
     _ -> Error(Nil)
+  }
+}
+
+// The return-value provenance of a function: resolve its tail expression with
+// parameters and prior `let`s in scope, then match the result's root against the
+// parameter list and fold it into a `ReturnProvenance`. Multi-statement bodies
+// are walked for their `let`s so a `let x = config.options  x` body resolves like
+// the inline form. Anything not a direct parameter-rooted tail shape is `Opaque`.
+pub fn return_provenance(
+  function: glance.Function,
+  context: ImportContext,
+) -> types.ReturnProvenance {
+  let positions = param_position_map(function)
+  case return_tail_value(function, context) {
+    Ok(value) -> provenance_of_value(value, positions)
+    Error(Nil) -> types.Opaque
+  }
+}
+
+// The function body's tail value, resolved with its parameters seeded and its
+// prior `let`s threaded. `Error` when the body's tail isn't a bare expression.
+fn return_tail_value(
+  function: glance.Function,
+  context: ImportContext,
+) -> Result(ArgumentValue, Nil) {
+  case list.reverse(function.body) {
+    [glance.Expression(tail), ..init_reversed] -> {
+      let env =
+        list.fold(
+          list.reverse(init_reversed),
+          seed_parameters(function.parameters),
+          fn(accumulator, statement) {
+            case statement {
+              glance.Assignment(pattern:, value:, ..) ->
+                bind_assignment(pattern, value, context, accumulator)
+              glance.Use(patterns:, ..) ->
+                bind_use_patterns(patterns, accumulator)
+              _ -> accumulator
+            }
+          },
+        )
+      Ok(classify_expression(tail, context, env))
+    }
+    _ -> Error(Nil)
+  }
+}
+
+// Fold a classified tail value into a `ReturnProvenance` by matching its root
+// against the parameter positions. Only a bare parameter, a parameter-rooted
+// receiver path, or a constructor rebuilt entirely from parameter-rooted fields
+// is traceable; every other shape is `Opaque`.
+fn provenance_of_value(
+  value: ArgumentValue,
+  positions: Dict(String, Int),
+) -> types.ReturnProvenance {
+  case value {
+    LocalRef(name) ->
+      case dict.get(positions, name) {
+        Ok(position) -> types.Passthrough(position)
+        Error(Nil) -> types.Opaque
+      }
+    types.ReceiverPath(path) -> {
+      let #(root, tail) = split_root(path)
+      case dict.get(positions, root), tail {
+        Ok(position), Some(tail) -> types.Path(position, tail)
+        Ok(position), None -> types.Passthrough(position)
+        Error(Nil), _ -> types.Opaque
+      }
+    }
+    Constructed(fields) -> build_provenance(fields, positions)
+    FunctionRef(..)
+    | ConstructorRef
+    | types.Closure(..)
+    | types.Choice(..)
+    | types.ReturnedOperator(..)
+    | types.CallResult(..)
+    | OtherExpression -> types.Opaque
+  }
+}
+
+// Fold a constructor's field wiring into a `Build` provenance. Any field not
+// rooted in a parameter makes the whole summary `Opaque`.
+fn build_provenance(
+  fields: Dict(String, ArgumentValue),
+  positions: Dict(String, Int),
+) -> types.ReturnProvenance {
+  let folded =
+    dict.fold(fields, Ok(dict.new()), fn(accumulator, label, value) {
+      use built <- result.try(accumulator)
+      case field_provenance_of_value(value, positions) {
+        types.FieldOpaque -> Error(Nil)
+        provenance -> Ok(dict.insert(built, label, provenance))
+      }
+    })
+  case folded {
+    Ok(built) ->
+      case dict.is_empty(built) {
+        True -> types.Opaque
+        False -> types.Build(built)
+      }
+    Error(Nil) -> types.Opaque
+  }
+}
+
+// Fold a single constructor field's wired value into a `FieldProvenance`.
+fn field_provenance_of_value(
+  value: ArgumentValue,
+  positions: Dict(String, Int),
+) -> types.FieldProvenance {
+  case value {
+    LocalRef(name) ->
+      case dict.get(positions, name) {
+        Ok(position) -> types.FieldParam(position)
+        Error(Nil) -> types.FieldOpaque
+      }
+    types.ReceiverPath(path) -> {
+      let #(root, tail) = split_root(path)
+      case dict.get(positions, root), tail {
+        Ok(position), Some(tail) -> types.FieldPath(position, tail)
+        Ok(position), None -> types.FieldParam(position)
+        Error(Nil), _ -> types.FieldOpaque
+      }
+    }
+    FunctionRef(..)
+    | ConstructorRef
+    | types.Closure(..)
+    | types.Choice(..)
+    | types.ReturnedOperator(..)
+    | types.CallResult(..)
+    | Constructed(..)
+    | OtherExpression -> types.FieldOpaque
+  }
+}
+
+// Split a dotted path into its root segment and the remaining tail (`None` when
+// the path is a single segment).
+fn split_root(path: String) -> #(String, Option(String)) {
+  case string.split_once(path, ".") {
+    Ok(#(root, rest)) -> #(root, Some(rest))
+    Error(Nil) -> #(path, None)
   }
 }
 
@@ -2158,7 +2306,8 @@ fn classify_case_options(
         | LocalRef(..)
         | types.Closure(..)
         | types.Choice(..)
-        | types.ReturnedOperator(..) -> True
+        | types.ReturnedOperator(..)
+        | types.CallResult(..) -> True
         ConstructorRef
         | types.ReceiverPath(..)
         | Constructed(..)

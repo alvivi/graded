@@ -111,7 +111,11 @@ pub fn infer_with_returns(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
-) -> #(List(EffectAnnotation), dict.Dict(String, EffectTerm)) {
+) -> #(
+  List(EffectAnnotation),
+  dict.Dict(String, EffectTerm),
+  dict.Dict(String, types.ReturnProvenance),
+) {
   let context =
     extract.build_import_context(module)
     |> extract.with_module_path(module_path)
@@ -155,6 +159,19 @@ pub fn infer_with_returns(
     })
   let returned_operators =
     returned_pairs |> list.filter_map(fn(pair) { pair }) |> dict.from_list()
+
+  // Return-value provenance of public functions — recorded so a downstream
+  // module's computed receiver resolves the callee's return path. Opaque
+  // provenance is dropped: a lookup miss is treated as opaque anyway.
+  let provenance =
+    public_functions
+    |> list.filter_map(fn(definition) {
+      case extract.return_provenance(definition.definition, context) {
+        types.Opaque -> Error(Nil)
+        traced -> Ok(#(definition.definition.name, traced))
+      }
+    })
+    |> dict.from_list()
 
   // Seed param bounds from existing `check` annotations only — `effects`
   // annotations don't carry user-declared bounds, so they can't constrain
@@ -248,7 +265,7 @@ pub fn infer_with_returns(
         ),
       )
     })
-  #(annotations, returned_operators)
+  #(annotations, returned_operators, provenance)
 }
 
 // The effect of the callback an operator parameter is applied to. The callback
@@ -305,7 +322,10 @@ fn operator_argument_effect(
     // β-reduces when the operator applies it.
     Ok(arg) ->
       case arg.value {
-        types.Closure(..) | types.Choice(..) | types.ReturnedOperator(..) ->
+        types.Closure(..)
+        | types.Choice(..)
+        | types.ReturnedOperator(..)
+        | types.CallResult(..) ->
           operator_term_for_argument(
             arg,
             nested_positions,
@@ -2126,7 +2146,7 @@ fn build_lift_operator_arg(
           True, Ok(_) -> #(Ok(pure_operator(positions)), memo)
           _, _ -> #(Error(Nil), memo)
         }
-      types.ReturnedOperator(callee, args) ->
+      types.ReturnedOperator(callee, args) | types.CallResult(callee, args) ->
         resolve_returned_operator(
           callee,
           args,
@@ -2768,6 +2788,9 @@ fn resolve_argument_effects(
     // conservative.
     types.Choice(_) -> effect_term.unknown()
     types.ReturnedOperator(_, _) -> effect_term.unknown()
+    // A computed receiver's effect is resolved through its return provenance at
+    // the forwarding site; first-order, it's conservative.
+    types.CallResult(_, _) -> effect_term.unknown()
     types.ReceiverPath(_) -> effect_term.unknown()
     // A constructed record contributes no callable effect in a first-order
     // position; field forwarding handles it at the receiver argument instead.

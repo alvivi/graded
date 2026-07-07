@@ -239,10 +239,38 @@ pub type ArgumentValue {
   // (`o.resolver`) onto the caller parameter the field is wired to. Opaque
   // (`[Unknown]`) everywhere except call-site field forwarding.
   Constructed(fields: Dict(String, ArgumentValue))
+  // A call whose result is a record/value (not a returned function): the
+  // receiver of a forwarding site, e.g. `inner(get_options(config))`. `callee`
+  // names the function (with the `""` same-module sentinel); `args` are the
+  // call's grounded arguments. Resolved at the call site against the callee's
+  // `ReturnProvenance`; opaque provenance leaves it `[Unknown]`, exactly as
+  // `OtherExpression` would.
+  CallResult(callee: QualifiedName, args: List(CallArgument))
   // Anything else (a computed expression, literal, etc.). Effects come from
   // the enclosing walk; at the argument level we have no concrete function to
   // propagate.
   OtherExpression
+}
+
+// What a function's return value is built from, abstract over its parameters.
+// `Passthrough` is the whole Nth parameter; `Path` is a receiver path rooted at
+// the Nth parameter (`config.options` from parameter `config`); `Build` is a
+// record rebuilt from parameter-rooted field provenances. `Opaque` is the Top
+// element — the return can't be traced and any call to it yields `[Unknown]`.
+pub type ReturnProvenance {
+  Passthrough(position: Int)
+  Path(position: Int, tail: String)
+  Build(fields: Dict(String, FieldProvenance))
+  Opaque
+}
+
+// A constructor field's provenance inside a `Build` summary: either the whole
+// Nth parameter, a path rooted at it, or untraceable. Deliberately narrow — a
+// field wired to anything richer makes the whole `Build` `Opaque` in Phase 1.
+pub type FieldProvenance {
+  FieldParam(position: Int)
+  FieldPath(position: Int, tail: String)
+  FieldOpaque
 }
 
 // One argument at a call site. `position` respects pipes (the piped
