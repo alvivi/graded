@@ -80,8 +80,10 @@ fn get_options(options: Options) -> Options {
   options
 }
 
-// Negative: a computed receiver (the factory result threaded through a call) is
-// not a traceable path, so forwarding doesn't apply and it stays [Unknown].
+// A computed receiver whose helper returns its parameter (`get_options` is a
+// `Passthrough`): the return provenance forwards the factory-wired `resolver`
+// onto the caller's own `resolver` parameter, so it resolves rather than staying
+// [Unknown].
 pub fn caller_computed(resolver: fn() -> Nil) -> Nil {
   inner(get_options(make_options(resolver)))
 }

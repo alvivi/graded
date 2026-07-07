@@ -1049,6 +1049,8 @@ fn collect_effects(
           call,
           effect_set,
           result.call_args,
+          function_map,
+          context,
           knowledge_base,
           param_bounds,
           caller_param_names,
@@ -1116,6 +1118,7 @@ fn collect_effects(
             local_call,
             result.call_args,
             function_map,
+            context,
             knowledge_base,
             param_bounds,
             caller_param_names,
@@ -1506,6 +1509,7 @@ fn substitute_local_call_effects(
   local_call: LocalCall,
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   caller_param_names: Set(String),
@@ -1559,6 +1563,9 @@ fn substitute_local_call_effects(
           caller_param_names,
           caller_param_bounds,
           merged_registry,
+          function_map,
+          context,
+          knowledge_base,
         )
       let forwarded = forwarded_field_vars(field_bindings)
       let substituted =
@@ -1597,6 +1604,8 @@ fn substitute_at_call_site(
   call: types.ResolvedCall,
   effect: EffectTerm,
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
   caller_param_names: Set(String),
@@ -1642,6 +1651,9 @@ fn substitute_at_call_site(
       caller_param_names,
       caller_param_bounds,
       registry,
+      function_map,
+      context,
+      knowledge_base,
     )
   let forwarded = forwarded_field_vars(field_bindings)
   let substituted =
@@ -1696,6 +1708,9 @@ fn field_forwarding_bindings(
   caller_param_names: Set(String),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
 ) -> dict.Dict(String, EffectTerm) {
   effect
   |> effect_term.free_vars()
@@ -1709,6 +1724,9 @@ fn field_forwarding_bindings(
         caller_param_names,
         caller_param_bounds,
         registry,
+        function_map,
+        context,
+        knowledge_base,
       )
     {
       Some(#(from, to)) -> dict.insert(bindings, from, to)
@@ -1724,6 +1742,9 @@ fn field_forwarding_binding(
   caller_param_names: Set(String),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
 ) -> option.Option(#(String, EffectTerm)) {
   use #(receiver, tail) <- option.then(
     option.from_result(string.split_once(var, ".")),
@@ -1734,7 +1755,23 @@ fn field_forwarding_binding(
     args,
     registry,
   ))
-  use path <- option.then(forwarded_path(arg.value, tail, caller_param_names))
+  // A computed receiver (`inner(get_options(config))`) resolves through the
+  // callee's return provenance into a caller-scope base value and any path
+  // prefix; a plain receiver forwards as-is. `forwarded_path` then re-keys the
+  // callee tail (prefixed) onto the caller's parameters.
+  use #(base, prefix) <- option.then(
+    option.from_result(grounded_receiver(
+      arg.value,
+      function_map,
+      context,
+      knowledge_base,
+    )),
+  )
+  let full_tail = case prefix {
+    "" -> tail
+    _ -> prefix <> "." <> tail
+  }
+  use path <- option.then(forwarded_path(base, full_tail, caller_param_names))
   case is_field_path_var(path) {
     // A dotted forwarded path (`config.options.run`) keeps its variable; the
     // caller's dotted field-bound substitution (`caller_field_bindings`)
@@ -1812,6 +1849,152 @@ fn caller_rooted_path(
   case set.contains(caller_param_names, root) {
     True -> Some(path)
     False -> None
+  }
+}
+
+// Resolve a computed-receiver `CallResult` to a `#(base value, tail prefix)` pair
+// by substituting its grounded arguments into the callee's `ReturnProvenance`.
+// The pair is fed to `forwarded_path` with the callee field tail appended, so a
+// `Path` provenance prepends its own segments and a `Build` produces a
+// constructed value `forwarded_path` navigates directly. Any other value is
+// forwarded as-is with no added tail. `Error` when the provenance is opaque or
+// can't be grounded — the receiver stays `[Unknown]`.
+fn grounded_receiver(
+  value: types.ArgumentValue,
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+) -> Result(#(types.ArgumentValue, String), Nil) {
+  case value {
+    types.CallResult(callee, args) -> {
+      // Provenance positions index the callee's parameter list, but a labeled
+      // argument can bind out of textual order, so a position match would be
+      // unsound. Ground only all-positional calls; a labeled one widens to Top.
+      use <- bool.guard(
+        when: list.any(args, fn(arg) { arg.label != None }),
+        return: Error(Nil),
+      )
+      use provenance <- result.try(callee_provenance(
+        callee,
+        function_map,
+        context,
+        knowledge_base,
+      ))
+      case provenance {
+        types.Passthrough(position) -> {
+          use grounded <- result.map(arg_value_at(args, position))
+          #(grounded, "")
+        }
+        types.Path(position, tail) -> {
+          use grounded <- result.map(arg_value_at(args, position))
+          #(grounded, tail)
+        }
+        types.Build(fields) -> {
+          use built <- result.map(substitute_build_fields(fields, args))
+          #(types.Constructed(fields: built), "")
+        }
+        types.Opaque -> Error(Nil)
+      }
+    }
+    types.FunctionRef(_)
+    | types.LocalRef(_)
+    | types.ConstructorRef
+    | types.Closure(..)
+    | types.Choice(_)
+    | types.ReturnedOperator(..)
+    | types.ReceiverPath(_)
+    | types.Constructed(_)
+    | types.OtherExpression -> Ok(#(value, ""))
+  }
+}
+
+// The return-value provenance of a `CallResult`'s callee: a same-module callee
+// (the `""` sentinel) is re-derived from the module-local function map, mirroring
+// the on-demand returned-operator path; a qualified callee is looked up in the
+// knowledge base (computed at its inference time, available by topological order).
+fn callee_provenance(
+  callee: types.QualifiedName,
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+) -> Result(types.ReturnProvenance, Nil) {
+  case callee.module {
+    "" ->
+      case dict.get(function_map, callee.function) {
+        Ok(definition) ->
+          Ok(extract.return_provenance(definition.definition, context))
+        Error(Nil) -> Error(Nil)
+      }
+    _ -> effects.lookup_provenance(knowledge_base, callee)
+  }
+}
+
+// The value at call-argument `position`, or `Error` when out of range.
+fn arg_value_at(
+  args: List(types.CallArgument),
+  position: Int,
+) -> Result(types.ArgumentValue, Nil) {
+  args
+  |> list.find(fn(arg) { arg.position == position })
+  |> result.map(fn(arg) { arg.value })
+}
+
+// Ground each field of a `Build` provenance to a caller-scope value. Any field
+// that can't be grounded (an out-of-range or non-path argument) widens the whole
+// construction to `Error`, leaving the receiver `[Unknown]`.
+fn substitute_build_fields(
+  fields: dict.Dict(String, types.FieldProvenance),
+  args: List(types.CallArgument),
+) -> Result(dict.Dict(String, types.ArgumentValue), Nil) {
+  dict.fold(fields, Ok(dict.new()), fn(accumulator, label, provenance) {
+    use built <- result.try(accumulator)
+    case provenance {
+      types.FieldParam(position) -> {
+        use grounded <- result.map(arg_value_at(args, position))
+        dict.insert(built, label, grounded)
+      }
+      types.FieldPath(position, tail) -> {
+        use grounded <- result.try(arg_value_at(args, position))
+        use extended <- result.map(value_at_path(grounded, tail))
+        dict.insert(built, label, extended)
+      }
+      types.FieldOpaque -> Error(Nil)
+    }
+  })
+}
+
+// The value reached by following `tail` (a dotted field path) from `value`:
+// navigate a `Constructed` record's wiring, or extend a caller-rooted path. An
+// empty tail returns the value unchanged. `Error` when the path can't be followed.
+fn value_at_path(
+  value: types.ArgumentValue,
+  tail: String,
+) -> Result(types.ArgumentValue, Nil) {
+  case tail {
+    "" -> Ok(value)
+    _ ->
+      case value {
+        types.Constructed(fields) -> {
+          let #(field, rest) = case string.split_once(tail, ".") {
+            Ok(#(field, rest)) -> #(field, Some(rest))
+            Error(Nil) -> #(tail, None)
+          }
+          use wired <- result.try(dict.get(fields, field))
+          case rest {
+            Some(rest) -> value_at_path(wired, rest)
+            None -> Ok(wired)
+          }
+        }
+        types.LocalRef(name) -> Ok(types.ReceiverPath(name <> "." <> tail))
+        types.ReceiverPath(path) -> Ok(types.ReceiverPath(path <> "." <> tail))
+        types.FunctionRef(_)
+        | types.ConstructorRef
+        | types.Closure(..)
+        | types.Choice(_)
+        | types.ReturnedOperator(..)
+        | types.CallResult(..)
+        | types.OtherExpression -> Error(Nil)
+      }
   }
 }
 
