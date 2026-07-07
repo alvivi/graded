@@ -12,15 +12,19 @@ Field-effect forwarding re-keys a callee's field bound onto the caller when the
 receiver argument's provenance is syntactically rooted in a caller parameter — a
 parameter, a receiver path (`inner(config.options)` → `config.options.resolver`),
 an inline constructor/factory call (`inner(make_options(resolver))` → `resolver`),
-or a let-bound alias of any of those (`let o = make_options(resolver); inner(o)`).
-Construction nests one extra level (`make_outer(make_inner(resolver))`). What
-remains conservative is provenance that needs real data-flow analysis: a receiver
-threaded through a **computed call** (`inner(get_options(config.options))`),
-construction nested **two or more levels** beyond the single extra hop, and values
-pulled out of collections or other data structures. Extending forwarding to those
-would mean tracing values through arbitrary expressions rather than the syntactic
-shapes above — a larger step, and one that risks understating effects if done
-unsoundly. The `type` line and field bound remain the escape hatches meanwhile.
+a let-bound alias of any of those (`let o = make_options(resolver); inner(o)`), or
+a **computed call** to a straight-line helper whose return-value provenance is a
+direct tail shape (`inner(get_options(config))` where `get_options` returns
+`config.options`). Construction nests one extra level
+(`make_outer(make_inner(resolver))`). What remains conservative is provenance that
+needs deeper data-flow analysis: a helper whose return is itself a **call**
+(`get(make(x))` — no helper-call composition), a **`case`/`if` branch** or
+**recursive** return, construction nested **two or more levels** beyond the single
+extra hop, and values pulled out of collections or other data structures.
+Extending forwarding to those would mean value-level joins, a provenance fixpoint,
+and tracing through arbitrary expressions — larger steps, each risking understated
+effects if done unsoundly. The `type` line and field bound remain the escape
+hatches meanwhile.
 
 ## Retiring the positional/label heuristics
 

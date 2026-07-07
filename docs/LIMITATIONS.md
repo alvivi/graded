@@ -98,15 +98,33 @@ the un-aliased form does — `let v = config.validator; inner(v)`,
 `let v = make_validator(to_error); inner(v)`. Construction nests one extra level:
 `inner(make_outer(make_inner(to_error)))` traces both hops' field wiring.
 
+A **computed receiver** also forwards when it is a call to a straight-line helper
+whose return-value provenance is a direct tail shape: a parameter it returns
+whole, a receiver path rooted at a parameter, or a constructor rebuilt from
+parameter-rooted fields. graded substitutes the call's arguments into that
+provenance and re-keys the field effect through the result.
+
+```gleam
+fn get_validator(config: Config) -> Validator {
+  config.validator          // returns a parameter-rooted path
+}
+
+pub fn from_getter(config: Config) -> Nil {
+  inner(get_validator(config))   // forwards `config.validator.to_error`
+}
+```
+
 This forwarding stays narrow and sound: it applies only when the receiver's
 provenance is syntactically proven from a caller parameter, a caller-rooted
 receiver path, or traceable constructor/factory wiring. Receivers built by an
-**untraceable producer** (`inner(default_validator())`), threaded through a
-**computed call** (`inner(get_validator(config.validator))`), aliased from such an
-expression (`let w = get_validator(x); inner(w)`), or **reassigned** to an opaque
-binding before the call all stay conservative and fall back to `[Unknown]` unless
-covered by a `type` line or a field bound. Construction nested two or more levels
-beyond the single extra hop is likewise conservative.
+**untraceable producer** (`inner(default_validator())`), a helper whose return is
+itself a **call** (`inner(get(make(x)))` — no helper-call composition), a
+**`case`/`if` branch**, a **recursive** helper, or an **external** with no visible
+body stay conservative, as does a computed receiver **aliased** to a `let`
+(`let w = get_validator(x); inner(w)`) or a receiver **reassigned** to an opaque
+binding before the call. All fall back to `[Unknown]` unless covered by a `type`
+line or a field bound. Construction nested two or more levels beyond the single
+extra hop is likewise conservative.
 
 > Note: when a record *is* built by a factory and then **let-bound** before the
 > field is read (`let v = make(io.println); v.to_error(..)`), graded resolves the
