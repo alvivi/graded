@@ -660,6 +660,41 @@ pub fn provenance_cross_module_getter_resolves_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn provenance_cross_module_getter_over_construction_resolves_test() {
+  // Same cross-module getter, but the receiver is built inline from the caller's
+  // own `resolver` parameter before the getter runs: `dep.inner(dep.get_options(
+  // dep.Config(options: dep.Options(resolver: resolver))))`. The getter's `Path`
+  // provenance threads through the knowledge base and the field bound re-keys
+  // onto the bare `resolver` through the construction, discharging to [Stdout]
+  // — the construction-through-getter twin of the passthrough case above.
+  let root = "build/provenance_cross_module_construct"
+  write_project(
+    root,
+    [
+      #(
+        "dep.gleam",
+        "pub type Options {\n  Options(resolver: fn() -> Nil)\n}\n\n"
+          <> "pub type Config {\n  Config(options: Options)\n}\n\n"
+          <> "pub fn inner(o: Options) -> Nil {\n  o.resolver()\n}\n\n"
+          <> "pub fn get_options(config: Config) -> Options {\n  config.options\n}\n",
+      ),
+      #(
+        "app.gleam",
+        "import dep\n\n"
+          <> "pub fn caller(resolver: fn() -> Nil) -> Nil {\n"
+          <> "  dep.inner(dep.get_options(dep.Config(options: dep.Options(resolver: resolver))))\n"
+          <> "}\n",
+      ),
+    ],
+    "check app.caller(resolver: [Stdout]) : []\n",
+  )
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 fn receiver_path_forwarding_source() -> String {
   "pub type Options {\n"
   <> "  Options(resolver: fn() -> Nil)\n"
