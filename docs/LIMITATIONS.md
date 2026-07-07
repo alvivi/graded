@@ -130,6 +130,13 @@ extra hop is likewise conservative.
 > field is read (`let v = make(io.println); v.to_error(..)`), graded resolves the
 > field through the factory for both positional and labeled wiring.
 
+Return-value provenance lives only in the in-process knowledge base; it is not
+serialized to `.graded` spec files or the catalog. A computed-receiver call
+forwards into a dependency only when graded infers that dependency's source in
+the same run — a **path dependency with no committed spec**. Into a spec-backed
+dependency, a catalogued dependency, or any dependency whose provenance would
+have to survive a spec round-trip, a computed receiver stays `[Unknown]`.
+
 ## 2. A function pulled out of a data structure
 
 graded follows named bindings and simple aliases, but not function values

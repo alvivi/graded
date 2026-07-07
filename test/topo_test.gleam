@@ -682,7 +682,7 @@ pub fn run(value: String) -> Nil {
   let base_kb =
     effects.load_knowledge_base("nonexistent_packages_dir", "manifest.toml")
 
-  let assert Ok(#(inferred, _params, _returns)) =
+  let assert Ok(#(inferred, _params, _returns, _provenance)) =
     graded.infer_path_dep(dep_path, base_kb, set.new())
 
   let assert Ok(d_effects) =
@@ -736,6 +736,70 @@ pub fn run_resolves_absolute_path_dependency_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "src/main.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
+  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+
+  cleanup(dep_dir)
+  cleanup(app_dir)
+}
+
+// A path dependency with no committed spec is inferred from source; its
+// return-value provenance must reach the consumer so a computed-receiver call
+// into the dep resolves. `dep.get_options` returns `config.options` (a `Path`
+// provenance), so in `dep.inner(dep.get_options(Config(Options(resolver:
+// resolver))))` the field bound `o.resolver` forwards through the getter onto
+// the caller's own `resolver` parameter — the cross-package twin of the
+// provenance_getter fixture. The `resolver: [Stdout]` bound then discharges to
+// [Stdout] against the [] budget. Without threading provenance out of
+// `infer_path_dep` the consumer never sees it and the call collapses to
+// [Unknown].
+pub fn run_resolves_path_dependency_provenance_test() {
+  let dep_dir =
+    write_fixture("/tmp/graded_pathdep_prov_dep", [
+      #("gleam.toml", "name = \"dep\"\n"),
+      #(
+        "src/dep.gleam",
+        "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+
+pub type Config {
+  Config(options: Options)
+}
+
+pub fn inner(o: Options) -> Nil {
+  o.resolver()
+}
+
+pub fn get_options(config: Config) -> Options {
+  config.options
+}
+",
+      ),
+    ])
+  let app_dir =
+    write_fixture("/tmp/graded_pathdep_prov_app", [
+      #(
+        "gleam.toml",
+        "name = \"app\"\n\n[dependencies]\ndep = { path = \""
+          <> dep_dir
+          <> "\" }\n",
+      ),
+      #("app.graded", "check src/main.caller(resolver: [Stdout]) : []\n"),
+      #(
+        "src/main.gleam",
+        "import dep
+
+pub fn caller(resolver: fn() -> Nil) -> Nil {
+  dep.inner(dep.get_options(dep.Config(options: dep.Options(resolver: resolver))))
+}
+",
+      ),
+    ])
+
+  let assert Ok(results) = graded.run(app_dir)
+  let assert Ok(r) =
+    list.find(results, fn(r) { string.ends_with(r.file, "src/main.gleam") })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
   v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 
   cleanup(dep_dir)
