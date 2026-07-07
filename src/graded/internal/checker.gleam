@@ -1756,10 +1756,10 @@ fn field_forwarding_binding(
     registry,
   ))
   // A computed receiver (`inner(get_options(config))`) resolves through the
-  // callee's return provenance into a caller-scope base value and any path
-  // prefix; a plain receiver forwards as-is. `forwarded_path` then re-keys the
-  // callee tail (prefixed) onto the caller's parameters.
-  use #(base, prefix) <- option.then(
+  // callee's return provenance into a caller-scope value; a plain receiver
+  // forwards as-is. `forwarded_path` then re-keys the callee tail onto the
+  // caller's parameters.
+  use base <- option.then(
     option.from_result(grounded_receiver(
       arg.value,
       function_map,
@@ -1767,11 +1767,7 @@ fn field_forwarding_binding(
       knowledge_base,
     )),
   )
-  let full_tail = case prefix {
-    "" -> tail
-    _ -> prefix <> "." <> tail
-  }
-  use path <- option.then(forwarded_path(base, full_tail, caller_param_names))
+  use path <- option.then(forwarded_path(base, tail, caller_param_names))
   case is_field_path_var(path) {
     // A dotted forwarded path (`config.options.run`) keeps its variable; the
     // caller's dotted field-bound substitution (`caller_field_bindings`)
@@ -1790,43 +1786,21 @@ fn field_forwarding_binding(
 }
 
 // The caller-rooted path a callee field var (`o.run`) re-keys to, given the
-// argument bound to the callee receiver and the callee tail (`run`):
-//  - a direct parameter or receiver-path argument grafts the caller path before
-//    the tail (`inner(options)` makes `o.run` the caller's `options.run`,
-//    `inner(config.options)` its `config.options.run`);
-//  - an inline constructor/factory argument resolves the tail's leading field
-//    through the constructed wiring (`inner(make_options(resolver))` makes
-//    `o.resolver` the caller's `resolver`), keeping any deeper tail segments. A
-//    field wired to a *further* construction recurses one hop at a time, so
-//    `inner(make_holder(make_options(resolver)))` re-keys `h.options.resolver`
-//    onto `resolver` — each hop's wiring must be known and bottom out at a
-//    caller-rooted value.
-// `None` when the argument isn't rooted at a caller parameter, or the field
-// isn't wired to one.
+// argument bound to the callee receiver and the callee tail (`run`): follow the
+// tail through the argument (grafting a receiver path, or resolving each field
+// wiring of an inline constructor/factory), then require the value it lands on
+// to be rooted at a caller parameter. So `inner(config.options)` makes `o.run`
+// the caller's `config.options.run` and `inner(make_options(resolver))` makes
+// `o.resolver` the caller's `resolver`. `None` when the argument isn't rooted at
+// a caller parameter, or the field isn't wired to one.
 fn forwarded_path(
   value: types.ArgumentValue,
   tail: String,
   caller_param_names: Set(String),
 ) -> option.Option(String) {
-  case value {
-    types.Constructed(fields) -> {
-      let #(field, rest) = case string.split_once(tail, ".") {
-        Ok(#(field, rest)) -> #(field, Some(rest))
-        Error(Nil) -> #(tail, None)
-      }
-      use wired <- option.then(option.from_result(dict.get(fields, field)))
-      case rest {
-        // A deeper tail forwards through the next construction hop's wiring.
-        Some(rest) -> forwarded_path(wired, rest, caller_param_names)
-        // The leaf field must be wired to a caller-rooted value.
-        None -> caller_rooted_path(wired, caller_param_names)
-      }
-    }
-    _ -> {
-      use base <- option.then(caller_rooted_path(value, caller_param_names))
-      Some(base <> "." <> tail)
-    }
-  }
+  value_at_path(value, tail)
+  |> option.from_result
+  |> option.then(caller_rooted_path(_, caller_param_names))
 }
 
 // The receiver path an argument denotes when rooted at one of the caller's own
@@ -1852,19 +1826,19 @@ fn caller_rooted_path(
   }
 }
 
-// Resolve a computed-receiver `CallResult` to a `#(base value, tail prefix)` pair
-// by substituting its grounded arguments into the callee's `ReturnProvenance`.
-// The pair is fed to `forwarded_path` with the callee field tail appended, so a
-// `Path` provenance prepends its own segments and a `Build` produces a
-// constructed value `forwarded_path` navigates directly. Any other value is
-// forwarded as-is with no added tail. `Error` when the provenance is opaque or
-// can't be grounded — the receiver stays `[Unknown]`.
+// Resolve a computed-receiver `CallResult` to a caller-scope value by
+// substituting its grounded arguments into the callee's `ReturnProvenance`: a
+// `Passthrough` yields the argument itself, a `Path` extends it into a receiver
+// path, and a `Build` produces a constructed value. The result is handed to
+// `forwarded_path`, which re-keys the callee field tail onto it. Any other value
+// forwards as-is. `Error` when the provenance is opaque or can't be grounded —
+// the receiver stays `[Unknown]`.
 fn grounded_receiver(
   value: types.ArgumentValue,
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
-) -> Result(#(types.ArgumentValue, String), Nil) {
+) -> Result(types.ArgumentValue, Nil) {
   case value {
     types.CallResult(callee, args) -> {
       // Provenance positions index the callee's parameter list, but a labeled
@@ -1881,17 +1855,14 @@ fn grounded_receiver(
         knowledge_base,
       ))
       case provenance {
-        types.Passthrough(position) -> {
-          use grounded <- result.map(arg_value_at(args, position))
-          #(grounded, "")
-        }
+        types.Passthrough(position) -> arg_value_at(args, position)
         types.Path(position, tail) -> {
-          use grounded <- result.map(arg_value_at(args, position))
-          #(grounded, tail)
+          use grounded <- result.try(arg_value_at(args, position))
+          value_at_path(grounded, tail)
         }
         types.Build(fields) -> {
           use built <- result.map(substitute_build_fields(fields, args))
-          #(types.Constructed(fields: built), "")
+          types.Constructed(fields: built)
         }
         types.Opaque -> Error(Nil)
       }
@@ -1904,7 +1875,7 @@ fn grounded_receiver(
     | types.ReturnedOperator(..)
     | types.ReceiverPath(_)
     | types.Constructed(_)
-    | types.OtherExpression -> Ok(#(value, ""))
+    | types.OtherExpression -> Ok(value)
   }
 }
 
@@ -1929,13 +1900,14 @@ fn callee_provenance(
   }
 }
 
-// The value at call-argument `position`, or `Error` when out of range.
+// The value at positional call-argument `position` (grounding runs only on
+// all-positional calls), or `Error` when out of range.
 fn arg_value_at(
   args: List(types.CallArgument),
   position: Int,
 ) -> Result(types.ArgumentValue, Nil) {
-  args
-  |> list.find(fn(arg) { arg.position == position })
+  find_arg_at_position(args, position)
+  |> option.to_result(Nil)
   |> result.map(fn(arg) { arg.value })
 }
 

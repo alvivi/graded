@@ -2196,20 +2196,13 @@ fn provenance_of_value(
   positions: Dict(String, Int),
 ) -> types.ReturnProvenance {
   case value {
-    LocalRef(name) ->
-      case dict.get(positions, name) {
-        Ok(position) -> types.Passthrough(position)
+    Constructed(fields) -> build_provenance(fields, positions)
+    LocalRef(..) | types.ReceiverPath(..) ->
+      case param_rooted(value, positions) {
+        Ok(#(position, Some(tail))) -> types.Path(position, tail)
+        Ok(#(position, None)) -> types.Passthrough(position)
         Error(Nil) -> types.Opaque
       }
-    types.ReceiverPath(path) -> {
-      let #(root, tail) = split_root(path)
-      case dict.get(positions, root), tail {
-        Ok(position), Some(tail) -> types.Path(position, tail)
-        Ok(position), None -> types.Passthrough(position)
-        Error(Nil), _ -> types.Opaque
-      }
-    }
-    Constructed(fields) -> build_provenance(fields, positions)
     FunctionRef(..)
     | ConstructorRef
     | types.Closure(..)
@@ -2217,6 +2210,34 @@ fn provenance_of_value(
     | types.ReturnedOperator(..)
     | types.CallResult(..)
     | OtherExpression -> types.Opaque
+  }
+}
+
+// The parameter position a value is rooted at, with any receiver-path tail: a
+// bare parameter reference is `#(i, None)`, a parameter-rooted receiver path
+// `#(i, Some(tail))`. `Error` for any other shape or a root that isn't a
+// parameter.
+fn param_rooted(
+  value: ArgumentValue,
+  positions: Dict(String, Int),
+) -> Result(#(Int, Option(String)), Nil) {
+  case value {
+    LocalRef(name) ->
+      dict.get(positions, name)
+      |> result.map(fn(position) { #(position, None) })
+    types.ReceiverPath(path) -> {
+      let #(root, tail) = split_root(path)
+      dict.get(positions, root)
+      |> result.map(fn(position) { #(position, tail) })
+    }
+    FunctionRef(..)
+    | ConstructorRef
+    | types.Closure(..)
+    | types.Choice(..)
+    | types.ReturnedOperator(..)
+    | types.CallResult(..)
+    | Constructed(..)
+    | OtherExpression -> Error(Nil)
   }
 }
 
@@ -2244,33 +2265,16 @@ fn build_provenance(
   }
 }
 
-// Fold a single constructor field's wired value into a `FieldProvenance`.
+// Fold a single constructor field's wired value into a `FieldProvenance`. A
+// field wired to anything but a parameter-rooted value is `FieldOpaque`.
 fn field_provenance_of_value(
   value: ArgumentValue,
   positions: Dict(String, Int),
 ) -> types.FieldProvenance {
-  case value {
-    LocalRef(name) ->
-      case dict.get(positions, name) {
-        Ok(position) -> types.FieldParam(position)
-        Error(Nil) -> types.FieldOpaque
-      }
-    types.ReceiverPath(path) -> {
-      let #(root, tail) = split_root(path)
-      case dict.get(positions, root), tail {
-        Ok(position), Some(tail) -> types.FieldPath(position, tail)
-        Ok(position), None -> types.FieldParam(position)
-        Error(Nil), _ -> types.FieldOpaque
-      }
-    }
-    FunctionRef(..)
-    | ConstructorRef
-    | types.Closure(..)
-    | types.Choice(..)
-    | types.ReturnedOperator(..)
-    | types.CallResult(..)
-    | Constructed(..)
-    | OtherExpression -> types.FieldOpaque
+  case param_rooted(value, positions) {
+    Ok(#(position, Some(tail))) -> types.FieldPath(position, tail)
+    Ok(#(position, None)) -> types.FieldParam(position)
+    Error(Nil) -> types.FieldOpaque
   }
 }
 

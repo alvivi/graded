@@ -1135,7 +1135,7 @@ fn infer_one_module(
       module_path,
       declared_modules,
     )
-    |> effects.with_provenance(qualify_provenance(provenance, module_path))
+    |> effects.with_provenance(qualify_bare_names(provenance, module_path))
 
   let public_names = public_function_names(module)
   let public_annotations =
@@ -1222,17 +1222,18 @@ fn fold_inferred_module(
     module_path,
     declared_modules,
   )
-  |> effects.with_provenance(qualify_provenance(provenance, module_path))
+  |> effects.with_provenance(qualify_bare_names(provenance, module_path))
 }
 
-// Qualify a module's inferred return-value provenance by `module_path`, producing
-// the `QualifiedName`-keyed map the knowledge base is threaded with.
-fn qualify_provenance(
-  provenance: Dict(String, types.ReturnProvenance),
+// Re-key a bare-name map (a module's inferred returned operators or return-value
+// provenance) into the `QualifiedName`-keyed form the knowledge base is threaded
+// with, qualifying every key by `module_path`.
+fn qualify_bare_names(
+  map: Dict(String, value),
   module_path: String,
-) -> Dict(QualifiedName, types.ReturnProvenance) {
-  dict.fold(provenance, dict.new(), fn(acc, function, traced) {
-    dict.insert(acc, QualifiedName(module: module_path, function:), traced)
+) -> Dict(QualifiedName, value) {
+  dict.fold(map, dict.new(), fn(acc, function, value) {
+    dict.insert(acc, QualifiedName(module: module_path, function:), value)
   })
 }
 
@@ -1285,10 +1286,7 @@ fn qualified_inferred(
         params -> dict.insert(acc, qualify(ann.function), params)
       }
     })
-  let returns_dict =
-    dict.fold(returned_operators, dict.new(), fn(acc, function, op) {
-      dict.insert(acc, qualify(function), op)
-    })
+  let returns_dict = qualify_bare_names(returned_operators, module_path)
   #(effects_dict, params_dict, returns_dict)
 }
 
@@ -1730,7 +1728,7 @@ fn infer_path_dep_module(
           inferred_params,
           inferred_returns,
         )
-        |> effects.with_provenance(qualify_provenance(provenance, module_path))
+        |> effects.with_provenance(qualify_bare_names(provenance, module_path))
       #(
         dict.merge(eff_acc, inferred_effs),
         dict.merge(param_acc, inferred_params),
