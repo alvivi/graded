@@ -1781,15 +1781,10 @@ fn field_forwarding_binding(
           caller_param_names,
           caller_param_bounds,
         ))
-      case options != [] && list.all(terms, option.is_some) {
-        True ->
-          Some(#(
-            var,
-            effect_term.normalize(
-              TUnion(list.filter_map(terms, option.to_result(_, Nil))),
-            ),
-          ))
-        False -> None
+      case option.all(terms) {
+        Some([_, ..] as effects) ->
+          Some(#(var, effect_term.normalize(TUnion(effects))))
+        _ -> None
       }
     }
     _ ->

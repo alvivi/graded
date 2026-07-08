@@ -2227,10 +2227,7 @@ fn join_provenance(
   positions: Dict(String, Int),
 ) -> types.ReturnProvenance {
   let branches = list.map(options, provenance_of_value(_, positions))
-  case options != [] && list.all(branches, fn(p) { p != types.Opaque }) {
-    True -> normalize_provenance(types.Join(branches))
-    False -> types.Opaque
-  }
+  normalize_provenance(types.Join(branches))
 }
 
 // A direct self-call widens naively (a return that is itself a call is `Opaque`),
