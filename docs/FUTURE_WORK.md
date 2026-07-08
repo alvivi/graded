@@ -9,20 +9,28 @@ items push into different territory.
 ## Deeper provenance for field forwarding
 
 Field-effect forwarding re-keys a callee's field bound onto the caller when the
-receiver argument's provenance is syntactically rooted in a caller parameter — a
-parameter, a receiver path (`inner(config.options)` → `config.options.resolver`),
-an inline constructor/factory call (`inner(make_options(resolver))` → `resolver`),
-a let-bound alias of any of those (`let o = make_options(resolver); inner(o)`), or
-a **computed call** to a straight-line helper whose return-value provenance is a
-direct tail shape (`inner(get_options(config))` where `get_options` returns
-`config.options`). Construction nests one extra level
-(`make_outer(make_inner(resolver))`). What remains conservative is provenance that
-needs deeper data-flow analysis: a helper whose return is itself a **call**
-(`get(make(x))` — no helper-call composition), a **`case`/`if` branch** or
-**recursive** return, construction nested **two or more levels** beyond the single
-extra hop, and values pulled out of collections or other data structures.
-Extending forwarding to those would mean value-level joins, a provenance fixpoint,
-and tracing through arbitrary expressions — larger steps, each risking understated
+receiver argument's provenance is traceable to a caller parameter — a parameter, a
+receiver path (`inner(config.options)` → `config.options.resolver`), an inline
+constructor/factory call (`inner(make_options(resolver))` → `resolver`), a
+let-bound alias of any of those (`let o = make_options(resolver); inner(o)`), or a
+**computed call** to a helper whose return-value provenance graded can trace. That
+last case now covers a direct tail shape (`inner(get_options(config))` where
+`get_options` returns `config.options`), a partial record rebuild that keeps its
+parameter-rooted fields, a labeled call (reordered into parameter order), a
+`case`/`if` join of parameter-rooted branches, and a parameter returned through a
+converging tail-recursive self-call. Construction nests one extra level
+(`make_outer(make_inner(resolver))`).
+
+What remains conservative is provenance that needs still-deeper data-flow
+analysis: a helper whose return is itself a **non-self call** (`get(make(x))` — no
+helper-call composition), a **record rebuilt through a recursion** or one that
+doesn't converge, **mutual recursion**, construction nested **two or more levels**
+beyond the single extra hop, and values pulled out of collections or other data
+structures. Return-value provenance also lives only in the in-process knowledge
+base — it isn't serialized to `.graded` specs or the catalog, so a computed
+receiver into a spec-backed or catalogued dependency stays conservative. Closing
+these would mean helper-call composition, tracing through arbitrary expressions,
+and a provenance serialization format — larger steps, each risking understated
 effects if done unsoundly. The `type` line and field bound remain the escape
 hatches meanwhile.
 

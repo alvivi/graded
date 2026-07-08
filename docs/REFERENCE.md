@@ -278,13 +278,17 @@ The field's effect comes from one of:
   `[Unknown]`. See [field-effect forwarding](./LIMITATIONS.md).
 
 - **return-value provenance** — an *inline* computed receiver forwards when it is
-  a call to a straight-line helper whose return is a direct tail shape: a
-  parameter (`inner(id_options(o))`), a parameter-rooted receiver path
-  (`inner(get_options(config))` returning `config.options`), or a constructor
-  rebuilt from parameter-rooted fields (`inner(normalize(o))`). graded substitutes
-  the call's arguments into the helper's return provenance and forwards through the
-  result. A helper whose return is itself a call, a branch, or an external body
-  stays `[Unknown]`. See [field-effect forwarding](./LIMITATIONS.md).
+  a call to a helper whose return provenance graded can trace: a parameter
+  (`inner(id_options(o))`), a parameter-rooted receiver path
+  (`inner(get_options(config))` returning `config.options`), a constructor rebuilt
+  from parameter-rooted fields (`inner(normalize(o))`, keeping literal defaults out
+  of the summary), a `case`/`if` join of parameter-rooted branches, or a parameter
+  returned through a converging tail-recursive self-call; a labeled call is
+  reordered into parameter order first. graded substitutes the call's arguments
+  into the helper's return provenance and forwards through the result. A helper
+  whose return is itself a non-self call, a `case`/`if` with an untraceable branch,
+  a non-converging or mutual recursion, or an external body stays `[Unknown]`. See
+  [field-effect forwarding](./LIMITATIONS.md).
 
 Field effects are keyed by the type's **defining module** (from girard's inferred
 type), so two different types both named `Validator` never conflate. When a field
