@@ -49,6 +49,8 @@ check provenance_labeled.caller(resolver: [Stdout]) : []
 check provenance_recursion.caller(resolver: [Stdout]) : []
 check provenance_binding.caller(resolver: [Stdout]) : []
 check provenance_branch.caller(resolver: [Stdout]) : []
+check provenance_branch_path.caller(resolver: [Stdout]) : []
+check provenance_branch_build.caller(resolver: [Stdout]) : []
 check provenance_computed_deep.caller : []
 check provenance_external.caller : []
 
