@@ -1880,6 +1880,21 @@ pub fn provenance_rebuild_resolves_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout", "Unknown"])))
 }
 
+pub fn provenance_partial_build_resolves_test() {
+  // provenance_partial.caller passes `normalize(Options(label: "", resolver:
+  // resolver))` to `inner`. `normalize` rebuilds `Options(label: "", resolver:
+  // o.resolver)` — a partial `Build` that keeps `resolver` and drops the literal
+  // `label` — so `o.resolver` forwards onto the caller's `resolver` and the bound
+  // discharges to [Stdout], where the all-or-nothing build left it [Unknown].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/provenance_partial.gleam"
+    })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout", "Unknown"])))
+}
+
 pub fn provenance_branch_resolves_test() {
   // provenance_branch.caller passes `pick(..)` to `inner`. `pick` returns a
   // `case` over its `a`/`b` parameters, so its provenance is a `Join` of two

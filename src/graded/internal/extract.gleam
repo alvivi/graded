@@ -2257,27 +2257,27 @@ fn param_rooted(
   }
 }
 
-// Fold a constructor's field wiring into a `Build` provenance. Any field not
-// rooted in a parameter makes the whole summary `Opaque`.
+// Fold a constructor's field wiring into a `Build` provenance, keeping every
+// parameter-rooted field and dropping the rest. A field wired to something
+// untraceable (a literal default, a computed value) is simply absent from the
+// summary — forwarding a field that isn't there fails to re-key and widens that
+// field to `[Unknown]`, so dropping it never under-reports, while a smart
+// constructor's fn-typed field still forwards alongside its literal defaults. The
+// whole summary is `Opaque` only when no field is parameter-rooted.
 fn build_provenance(
   fields: Dict(String, ArgumentValue),
   positions: Dict(String, Int),
 ) -> types.ReturnProvenance {
-  let folded =
-    dict.fold(fields, Ok(dict.new()), fn(accumulator, label, value) {
-      use built <- result.try(accumulator)
+  let built =
+    dict.fold(fields, dict.new(), fn(accumulator, label, value) {
       case field_provenance_of_value(value, positions) {
-        types.FieldOpaque -> Error(Nil)
-        provenance -> Ok(dict.insert(built, label, provenance))
+        types.FieldOpaque -> accumulator
+        provenance -> dict.insert(accumulator, label, provenance)
       }
     })
-  case folded {
-    Ok(built) ->
-      case dict.is_empty(built) {
-        True -> types.Opaque
-        False -> types.Build(built)
-      }
-    Error(Nil) -> types.Opaque
+  case dict.is_empty(built) {
+    True -> types.Opaque
+    False -> types.Build(built)
   }
 }
 

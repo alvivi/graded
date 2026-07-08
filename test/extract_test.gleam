@@ -123,8 +123,9 @@ fn target() {
   |> should.equal(Opaque)
 }
 
-pub fn provenance_build_with_opaque_field_is_opaque_test() {
-  // A constructor with any non-parameter-rooted field widens the whole `Build`.
+pub fn provenance_build_with_no_param_field_is_opaque_test() {
+  // A constructor whose only field is non-parameter-rooted has nothing traceable
+  // to keep, so the whole `Build` is `Opaque`.
   provenance_of(
     "pub type Options {
   Options(resolver: fn() -> Nil)
@@ -133,6 +134,19 @@ fn other() { fn() { Nil } }
 fn target(o) { Options(resolver: other()) }",
   )
   |> should.equal(Opaque)
+}
+
+pub fn provenance_partial_build_keeps_param_field_test() {
+  // A constructor mixing a parameter-rooted field with a literal default keeps
+  // the traceable field and drops the literal, rather than widening the whole
+  // `Build` to `Opaque` — the smart-constructor shape.
+  provenance_of(
+    "pub type Options {
+  Options(label: String, resolver: fn() -> Nil)
+}
+fn target(resolver) { Options(label: \"\", resolver: resolver) }",
+  )
+  |> should.equal(Build(dict.from_list([#("resolver", FieldParam(0))])))
 }
 
 fn parse_and_extract(src: String) -> extract.ExtractResult {
