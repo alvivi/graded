@@ -695,6 +695,76 @@ pub fn provenance_cross_module_getter_over_construction_resolves_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn provenance_cross_module_rebuild_resolves_test() {
+  // A public rebuild helper in another module. `app.caller` calls
+  // `dep.inner(dep.normalize(dep.Options(resolver: resolver)))`; `normalize`
+  // returns `Options(resolver: o.resolver)` — a `Build` whose provenance is
+  // threaded through the knowledge base by topological order. The build grounds
+  // to a constructed value cross-module, `o.resolver` re-keys onto the caller's
+  // `resolver`, and the field bound discharges it to [Stdout] — the cross-module
+  // twin of the same-module `provenance_rebuild` build forwarding.
+  let root = "build/provenance_cross_module_rebuild"
+  write_project(
+    root,
+    [
+      #(
+        "dep.gleam",
+        "pub type Options {\n  Options(resolver: fn() -> Nil)\n}\n\n"
+          <> "pub fn inner(o: Options) -> Nil {\n  o.resolver()\n}\n\n"
+          <> "pub fn normalize(o: Options) -> Options {\n  Options(resolver: o.resolver)\n}\n",
+      ),
+      #(
+        "app.gleam",
+        "import dep\n\n"
+          <> "pub fn caller(resolver: fn() -> Nil) -> Nil {\n"
+          <> "  dep.inner(dep.normalize(dep.Options(resolver: resolver)))\n"
+          <> "}\n",
+      ),
+    ],
+    "check app.caller(resolver: [Stdout]) : []\n",
+  )
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn provenance_cross_module_labeled_resolves_test() {
+  // A labeled call to a public helper in another module. `app.caller` calls
+  // `dep.inner(dep.rebuild(with: dep.Options(resolver: resolver)))`; the label
+  // binds the argument out of textual order, so grounding reorders it into
+  // parameter-position order via the callee's registry signature — the
+  // qualified-callee twin of the same-module `provenance_labeled` fixture. The
+  // constructed `Options` forwards through the `Passthrough`, `o.resolver`
+  // re-keys onto the caller's `resolver`, and the bound discharges to [Stdout].
+  let root = "build/provenance_cross_module_labeled"
+  write_project(
+    root,
+    [
+      #(
+        "dep.gleam",
+        "pub type Options {\n  Options(resolver: fn() -> Nil)\n}\n\n"
+          <> "pub fn inner(o: Options) -> Nil {\n  o.resolver()\n}\n\n"
+          <> "pub fn rebuild(with o: Options) -> Options {\n  o\n}\n",
+      ),
+      #(
+        "app.gleam",
+        "import dep\n\n"
+          <> "pub fn caller(resolver: fn() -> Nil) -> Nil {\n"
+          <> "  dep.inner(dep.rebuild(with: dep.Options(resolver: resolver)))\n"
+          <> "}\n",
+      ),
+    ],
+    "check app.caller(resolver: [Stdout]) : []\n",
+  )
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 fn receiver_path_forwarding_source() -> String {
   "pub type Options {\n"
   <> "  Options(resolver: fn() -> Nil)\n"
