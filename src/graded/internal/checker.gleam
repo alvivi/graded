@@ -1767,20 +1767,60 @@ fn field_forwarding_binding(
       knowledge_base,
     )),
   )
+  case base {
+    // A grounded `Join` (a `case`/`if` return) forwards through every branch and
+    // unions the results; any branch that can't re-key onto a caller parameter
+    // widens the whole join to Top, so the field var stays and concretizes to
+    // `[Unknown]` — the join never under-reports a branch.
+    types.Choice(options) -> {
+      let terms =
+        list.map(options, forwarded_binding_term(
+          _,
+          tail,
+          caller_param_names,
+          caller_param_bounds,
+        ))
+      case options != [] && list.all(terms, option.is_some) {
+        True ->
+          Some(#(
+            var,
+            effect_term.normalize(
+              TUnion(list.filter_map(terms, option.to_result(_, Nil))),
+            ),
+          ))
+        False -> None
+      }
+    }
+    _ ->
+      forwarded_binding_term(
+        base,
+        tail,
+        caller_param_names,
+        caller_param_bounds,
+      )
+      |> option.map(fn(term) { #(var, term) })
+  }
+}
+
+// The effect term a callee field var (`o.run`) re-keys to for one grounded
+// receiver value: a dotted forwarded path (`config.options.run`) stays a variable
+// the caller's field-bound substitution discharges; a plain forwarded path is a
+// bare fn-typed caller parameter, discharged here against the caller's own param
+// bound (self-referential during infer, concrete at check). `None` when the value
+// can't re-key onto a caller parameter.
+fn forwarded_binding_term(
+  base: types.ArgumentValue,
+  tail: String,
+  caller_param_names: Set(String),
+  caller_param_bounds: List(ParamBound),
+) -> option.Option(EffectTerm) {
   use path <- option.then(forwarded_path(base, tail, caller_param_names))
   case is_field_path_var(path) {
-    // A dotted forwarded path (`config.options.run`) keeps its variable; the
-    // caller's dotted field-bound substitution (`caller_field_bindings`)
-    // discharges it.
-    True -> Some(#(var, TVar(path)))
-    // A plain forwarded path is a bare fn-typed caller parameter — a factory
-    // threading its argument into the field. The dotted-only field-bound
-    // substitution won't reach it, so discharge the caller's own param bound
-    // here (the self-referential bound during infer, a concrete one at check).
+    True -> Some(TVar(path))
     False ->
       case list.find(caller_param_bounds, fn(b) { b.name == path }) {
-        Ok(bound) -> Some(#(var, bound.effects))
-        Error(Nil) -> Some(#(var, TVar(path)))
+        Ok(bound) -> Some(bound.effects)
+        Error(Nil) -> Some(TVar(path))
       }
   }
 }
@@ -1854,18 +1894,7 @@ fn grounded_receiver(
         context,
         knowledge_base,
       ))
-      case provenance {
-        types.Passthrough(position) -> arg_value_at(args, position)
-        types.Path(position, tail) -> {
-          use grounded <- result.try(arg_value_at(args, position))
-          value_at_path(grounded, tail)
-        }
-        types.Build(fields) -> {
-          use built <- result.map(substitute_build_fields(fields, args))
-          types.Constructed(fields: built)
-        }
-        types.Opaque -> Error(Nil)
-      }
+      ground_provenance(provenance, args)
     }
     types.FunctionRef(_)
     | types.LocalRef(_)
@@ -1876,6 +1905,39 @@ fn grounded_receiver(
     | types.ReceiverPath(_)
     | types.Constructed(_)
     | types.OtherExpression -> Ok(value)
+  }
+}
+
+// Substitute a call's grounded arguments into a `ReturnProvenance`, yielding a
+// caller-scope value: a `Passthrough` is the argument itself, a `Path` extends it
+// into a receiver path, a `Build` produces a constructed value, and a `Join`
+// grounds every branch into a `Choice` (whose branches the forwarding path
+// re-keys and unions). `Error` when the provenance is opaque or a branch/argument
+// can't be grounded — the receiver stays `[Unknown]`.
+fn ground_provenance(
+  provenance: types.ReturnProvenance,
+  args: List(types.CallArgument),
+) -> Result(types.ArgumentValue, Nil) {
+  case provenance {
+    types.Passthrough(position) -> arg_value_at(args, position)
+    types.Path(position, tail) -> {
+      use grounded <- result.try(arg_value_at(args, position))
+      value_at_path(grounded, tail)
+    }
+    types.Build(fields) -> {
+      use built <- result.map(substitute_build_fields(fields, args))
+      types.Constructed(fields: built)
+    }
+    types.Join(branches) -> {
+      use values <- result.try(
+        list.try_map(branches, ground_provenance(_, args)),
+      )
+      case values {
+        [] -> Error(Nil)
+        _ -> Ok(types.Choice(values))
+      }
+    }
+    types.Opaque -> Error(Nil)
   }
 }
 

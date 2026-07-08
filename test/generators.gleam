@@ -363,12 +363,15 @@ fn build_provenance_program(
     "pub fn caller(resolver: fn() -> Nil) -> Nil {\n  inner(helper("
     <> call_arg
     <> "))\n}\n"
+  // A helper-call composition (`relay(body)`) stays `Opaque` — Phase 1/2 traces a
+  // direct tail shape and a `case` join, but not a return that is itself a call —
+  // so it is a faithful provenance-off proxy while leaving the runtime effect
+  // unchanged (`relay` is the identity).
+  let relay = "fn relay(v: Options) -> Options {\n  v\n}\n\n"
   let common = options_type <> extra_type <> inner
   ProvenanceProgram(
     traced: common <> helper(body) <> caller,
-    untraced: common
-      <> helper("case True {\n    _ -> " <> body <> "\n  }")
-      <> caller,
+    untraced: common <> relay <> helper("relay(" <> body <> ")") <> caller,
     label:,
   )
 }

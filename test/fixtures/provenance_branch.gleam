@@ -1,5 +1,6 @@
-// Widen case: a helper whose return is a `case` branch is `Opaque`, so the
-// computed receiver stays [Unknown] — value-level joins are Phase 2.
+// Join case: a helper whose return is a `case` over parameter branches has a
+// `Join` provenance, so the computed receiver forwards through every branch and
+// the field effect resolves onto the caller's `resolver` rather than [Unknown].
 
 pub type Options {
   Options(resolver: fn() -> Nil)
@@ -9,7 +10,7 @@ pub fn inner(o: Options) -> Nil {
   o.resolver()
 }
 
-// Branch return: not a direct tail shape.
+// Branch return: each branch is a parameter, so the join forwards both.
 fn pick(flag: Bool, a: Options, b: Options) -> Options {
   case flag {
     True -> a

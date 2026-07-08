@@ -44,7 +44,7 @@ check factory_forward.mixed_caller(run: [Stdout]) : []
 check provenance_passthrough.caller(resolver: [Stdout]) : []
 check provenance_getter.caller(resolver: [Stdout]) : []
 check provenance_rebuild.caller(resolver: [Stdout]) : []
-check provenance_branch.caller : []
+check provenance_branch.caller(resolver: [Stdout]) : []
 check provenance_computed_deep.caller : []
 check provenance_external.caller : []
 

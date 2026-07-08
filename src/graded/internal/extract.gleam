@@ -2203,13 +2203,29 @@ fn provenance_of_value(
         Ok(#(position, None)) -> types.Passthrough(position)
         Error(Nil) -> types.Opaque
       }
+    // A `case`/`if` whose branches are all function-like values is a `Choice`;
+    // fold each branch to a provenance and join them. Any untraceable branch
+    // (its provenance `Opaque`) widens the whole join to `Opaque`.
+    types.Choice(options) -> join_provenance(options, positions)
     FunctionRef(..)
     | ConstructorRef
     | types.Closure(..)
-    | types.Choice(..)
     | types.ReturnedOperator(..)
     | types.CallResult(..)
     | OtherExpression -> types.Opaque
+  }
+}
+
+// Fold a `Choice`'s branch values into a `Join` provenance. An empty choice, or
+// any branch that is untraceable (`Opaque`), makes the whole join `Opaque`.
+fn join_provenance(
+  options: List(ArgumentValue),
+  positions: Dict(String, Int),
+) -> types.ReturnProvenance {
+  let branches = list.map(options, provenance_of_value(_, positions))
+  case options != [] && list.all(branches, fn(p) { p != types.Opaque }) {
+    True -> types.Join(branches)
+    False -> types.Opaque
   }
 }
 
