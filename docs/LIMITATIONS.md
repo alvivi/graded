@@ -98,11 +98,14 @@ the un-aliased form does — `let v = config.validator; inner(v)`,
 `let v = make_validator(to_error); inner(v)`. Construction nests one extra level:
 `inner(make_outer(make_inner(to_error)))` traces both hops' field wiring.
 
-A **computed receiver** also forwards when it is a call to a straight-line helper
-whose return-value provenance is a direct tail shape: a parameter it returns
-whole, a receiver path rooted at a parameter, or a constructor rebuilt from
-parameter-rooted fields. graded substitutes the call's arguments into that
-provenance and re-keys the field effect through the result.
+A **computed receiver** also forwards when it is a call to a helper whose
+return-value provenance graded can trace: a parameter it returns whole, a receiver
+path rooted at a parameter, a constructor rebuilt from parameter-rooted fields
+(dropping any literal defaults), a `case`/`if` whose branches are all
+parameter-rooted (forwarded through every branch and unioned), or a parameter
+returned through a tail-recursive self-call (resolved by fixpoint). A labeled call
+is reordered into parameter order first. graded substitutes the call's arguments
+into that provenance and re-keys the field effect through the result.
 
 ```gleam
 fn get_validator(config: Config) -> Validator {
@@ -115,16 +118,19 @@ pub fn from_getter(config: Config) -> Nil {
 ```
 
 This forwarding stays narrow and sound: it applies only when the receiver's
-provenance is syntactically proven from a caller parameter, a caller-rooted
-receiver path, or traceable constructor/factory wiring. Receivers built by an
-**untraceable producer** (`inner(default_validator())`), a helper whose return is
-itself a **call** (`inner(get(make(x)))` — no helper-call composition), a
-**`case`/`if` branch**, a **recursive** helper, or an **external** with no visible
-body stay conservative, as does a computed receiver **aliased** to a `let`
-(`let w = get_validator(x); inner(w)`) or a receiver **reassigned** to an opaque
-binding before the call. All fall back to `[Unknown]` unless covered by a `type`
-line or a field bound. Construction nested two or more levels beyond the single
-extra hop is likewise conservative.
+provenance is traceable to a caller parameter — whole, through a receiver path,
+through constructor/factory wiring, through a join of parameter-rooted branches,
+or through a converging self-recursion. Receivers built by an **untraceable
+producer** (`inner(default_validator())`), a helper whose return is itself a
+**non-self call** (`inner(get(make(x)))` — no helper-call composition), a
+**`case`/`if` with any untraceable branch**, a **record rebuilt through the
+recursion** or one that **doesn't converge**, **mutual recursion**, or an
+**external** with no visible body stay conservative, as does a computed receiver
+**aliased** to a `let` bound from a computed call (`let w = get_validator(x);
+inner(w)`) or a receiver **reassigned** to an opaque binding before the call. All
+fall back to `[Unknown]` unless covered by a `type` line or a field bound.
+Construction nested two or more levels beyond the single extra hop is likewise
+conservative.
 
 > Note: when a record *is* built by a factory and then **let-bound** before the
 > field is read (`let v = make(io.println); v.to_error(..)`), graded resolves the
