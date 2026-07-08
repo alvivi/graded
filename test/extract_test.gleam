@@ -79,6 +79,55 @@ fn target(o) { get(o) }",
   |> should.equal(Opaque)
 }
 
+pub fn provenance_tail_recursion_is_passthrough_test() {
+  // A tail-recursive passthrough: the base branch returns `o` and the recursive
+  // branch calls back with `o` at the same position. The fixpoint grounds the
+  // recursive branch through the estimate and converges to `Passthrough(1)`,
+  // where a naive walk (a call return is opaque) would widen.
+  provenance_of(
+    "fn target(stop, o) {
+  case stop {
+    True -> o
+    False -> target(True, o)
+  }
+}",
+  )
+  |> should.equal(Passthrough(1))
+}
+
+pub fn provenance_recursion_returns_either_param_is_join_test() {
+  // The recursive branch swaps the two parameters, so the function can return
+  // either. The fixpoint converges to a `Join` of both passthroughs — never
+  // under-reporting the branch it could take.
+  provenance_of(
+    "fn target(x, a, b) {
+  case x {
+    True -> a
+    False -> target(x, b, a)
+  }
+}",
+  )
+  |> should.equal(Join([Passthrough(1), Passthrough(2)]))
+}
+
+pub fn provenance_recursion_rebuild_is_opaque_test() {
+  // The recursive branch reconstructs the record rather than passing a parameter
+  // through. A `Build` grounded through recursion isn't modelled, so the fixpoint
+  // widens the whole function to `Opaque` instead of guessing.
+  provenance_of(
+    "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+fn target(stop, o) {
+  case stop {
+    True -> o
+    False -> target(True, Options(resolver: o.resolver))
+  }
+}",
+  )
+  |> should.equal(Opaque)
+}
+
 pub fn provenance_branch_is_join_test() {
   // A `case` over parameter branches folds to a `Join` of each branch's
   // provenance — here two `Passthrough`s onto parameters `a` and `b`.

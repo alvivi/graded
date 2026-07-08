@@ -2154,7 +2154,11 @@ pub fn return_provenance(
 ) -> types.ReturnProvenance {
   let positions = param_position_map(function)
   case return_tail_value(function, context) {
-    Ok(value) -> provenance_of_value(value, positions)
+    Ok(value) ->
+      case contains_self_call(value, function.name) {
+        True -> recursive_provenance(value, function.name, positions)
+        False -> provenance_of_value(value, positions)
+      }
     Error(Nil) -> types.Opaque
   }
 }
@@ -2226,6 +2230,167 @@ fn join_provenance(
   case options != [] && list.all(branches, fn(p) { p != types.Opaque }) {
     True -> types.Join(branches)
     False -> types.Opaque
+  }
+}
+
+// A direct self-call widens naively (a return that is itself a call is `Opaque`),
+// so a function whose tail recurses through a parameter would lose the passthrough.
+// The recursion fixpoint recovers it: start the recursive call at bottom (an
+// unreached branch, dropped from a join), then re-fold the tail, grounding each
+// self-call through the current provenance estimate until it stabilises. A
+// tail-recursive passthrough converges to `Passthrough`; anything that fails to
+// converge inside the fuel bound widens to `Opaque`, so an unmodelled cycle stays
+// sound. Only *direct* self-recursion is traced; mutual recursion is a foreign
+// call and stays `Opaque`.
+const recursion_fuel = 6
+
+// Whether a return value is, or (through a `Choice`) contains, a direct call to
+// the enclosing function — the `""` module is the same-module sentinel.
+fn contains_self_call(value: ArgumentValue, self_name: String) -> Bool {
+  case value {
+    types.CallResult(callee, _) ->
+      callee.module == "" && callee.function == self_name
+    types.Choice(options) -> list.any(options, contains_self_call(_, self_name))
+    _ -> False
+  }
+}
+
+fn recursive_provenance(
+  value: ArgumentValue,
+  self_name: String,
+  positions: Dict(String, Int),
+) -> types.ReturnProvenance {
+  recursion_fixpoint(value, self_name, positions, None, recursion_fuel)
+}
+
+// Kleene iteration from bottom (`None`). Each step re-folds the tail against the
+// current estimate; a fixed point is the provenance, exhausted fuel widens to
+// `Opaque`.
+fn recursion_fixpoint(
+  value: ArgumentValue,
+  self_name: String,
+  positions: Dict(String, Int),
+  current: Option(types.ReturnProvenance),
+  fuel: Int,
+) -> types.ReturnProvenance {
+  case fuel <= 0 {
+    True -> types.Opaque
+    False -> {
+      let next = eval_recursive(value, self_name, positions, current)
+      case next == current {
+        True -> option.unwrap(current, types.Opaque)
+        False -> recursion_fixpoint(value, self_name, positions, next, fuel - 1)
+      }
+    }
+  }
+}
+
+// Fold a tail value into a provenance estimate: a self-call grounds the current
+// estimate through its arguments (bottom while the estimate is `None`), a
+// `Choice` joins its reached branches (dropping bottom ones), and any other value
+// folds directly. `None` is bottom — an unreached branch.
+fn eval_recursive(
+  value: ArgumentValue,
+  self_name: String,
+  positions: Dict(String, Int),
+  current: Option(types.ReturnProvenance),
+) -> Option(types.ReturnProvenance) {
+  case value {
+    types.CallResult(callee, args) ->
+      case callee.module == "" && callee.function == self_name {
+        True -> option.map(current, ground_recursive(_, args, positions))
+        False -> Some(provenance_of_value(value, positions))
+      }
+    types.Choice(options) -> {
+      let reached =
+        list.filter_map(options, fn(option) {
+          eval_recursive(option, self_name, positions, current)
+          |> option.to_result(Nil)
+        })
+      case reached {
+        [] -> None
+        _ -> Some(normalize_provenance(types.Join(reached)))
+      }
+    }
+    _ -> Some(provenance_of_value(value, positions))
+  }
+}
+
+// Ground a candidate provenance through a self-call's arguments, yielding the
+// provenance in the caller's own parameter frame: a `Passthrough` folds the
+// argument at that position, a `Path` folds it extended by the tail, a `Join`
+// grounds every branch. A `Build` through recursion isn't modelled, so it widens.
+fn ground_recursive(
+  provenance: types.ReturnProvenance,
+  args: List(CallArgument),
+  positions: Dict(String, Int),
+) -> types.ReturnProvenance {
+  case provenance {
+    types.Passthrough(position) ->
+      case arg_value_at_position(args, position) {
+        Ok(value) -> provenance_of_value(value, positions)
+        Error(Nil) -> types.Opaque
+      }
+    types.Path(position, tail) ->
+      case arg_value_at_position(args, position) {
+        Ok(value) -> provenance_of_value(extend_path(value, tail), positions)
+        Error(Nil) -> types.Opaque
+      }
+    types.Join(branches) ->
+      normalize_provenance(
+        types.Join(list.map(branches, ground_recursive(_, args, positions))),
+      )
+    types.Build(_) -> types.Opaque
+    types.Opaque -> types.Opaque
+  }
+}
+
+// Flatten and dedupe a `Join`: nested joins are spliced in, an `Opaque` branch
+// widens the whole join, and a join of one distinct branch collapses to it. Keeps
+// the fixpoint from growing an ever-deeper join and never converging.
+fn normalize_provenance(
+  provenance: types.ReturnProvenance,
+) -> types.ReturnProvenance {
+  case provenance {
+    types.Join(branches) -> {
+      let flat =
+        list.flat_map(branches, fn(branch) {
+          case normalize_provenance(branch) {
+            types.Join(inner) -> inner
+            other -> [other]
+          }
+        })
+      case list.any(flat, fn(branch) { branch == types.Opaque }) {
+        True -> types.Opaque
+        False ->
+          case list.unique(flat) {
+            [] -> types.Opaque
+            [single] -> single
+            unique -> types.Join(unique)
+          }
+      }
+    }
+    _ -> provenance
+  }
+}
+
+// The value of the positional argument at `position`, or `Error` when absent (a
+// labelled or missing argument isn't grounded here).
+fn arg_value_at_position(
+  args: List(CallArgument),
+  position: Int,
+) -> Result(ArgumentValue, Nil) {
+  list.find(args, fn(arg) { arg.position == position && arg.label == None })
+  |> result.map(fn(arg) { arg.value })
+}
+
+// Extend a parameter-rooted value by a dotted field tail, so a `Path` grounds a
+// receiver path onto the argument. Any non-path value can't be extended.
+fn extend_path(value: ArgumentValue, tail: String) -> ArgumentValue {
+  case value {
+    LocalRef(name) -> types.ReceiverPath(name <> "." <> tail)
+    types.ReceiverPath(path) -> types.ReceiverPath(path <> "." <> tail)
+    _ -> OtherExpression
   }
 }
 

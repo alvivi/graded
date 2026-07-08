@@ -1982,6 +1982,22 @@ pub fn provenance_labeled_resolves_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn provenance_recursion_resolves_test() {
+  // provenance_recursion.caller passes `pick(True, Options(resolver: resolver))`
+  // to `inner`. `pick` returns its `o` parameter through a tail-recursive call,
+  // so its provenance is the fixpoint of the `case` join — both branches pass `o`
+  // through, converging to a `Passthrough`. The constructed `Options` forwards
+  // through, `o.resolver` re-keys onto the caller's `resolver`, and the bound
+  // discharges to [Stdout] — where a naive walk widened on the recursion.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/provenance_recursion.gleam"
+    })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn provenance_branch_resolves_test() {
   // provenance_branch.caller passes `pick(..)` to `inner`. `pick` returns a
   // `case` over its `a`/`b` parameters, so its provenance is a `Join` of two
