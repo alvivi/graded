@@ -322,6 +322,7 @@ pub type ProvenanceShape {
   ProvGetter
   ProvRebuild
   ProvLabeled
+  ProvRecursive
 }
 
 pub fn provenance_program_gen() -> qcheck.Generator(ProvenanceProgram) {
@@ -330,6 +331,7 @@ pub fn provenance_program_gen() -> qcheck.Generator(ProvenanceProgram) {
       qcheck.return(ProvGetter),
       qcheck.return(ProvRebuild),
       qcheck.return(ProvLabeled),
+      qcheck.return(ProvRecursive),
     ]),
   )
   use label <- qcheck.map(one_of(effect_labels))
@@ -375,6 +377,17 @@ fn build_provenance_program(
       "o",
       "Options(resolver: resolver)",
       "with: ",
+    )
+    // A tail-recursive passthrough: the `case` join's recursive branch calls the
+    // helper back with `o` at the same position, so the fixpoint converges to a
+    // `Passthrough`. The relay-wrapped `untraced` form isn't self-recursive (its
+    // tail is a `relay(..)` call), so it stays `Opaque`.
+    ProvRecursive -> #(
+      "",
+      "o: Options",
+      "case True {\n    True -> o\n    False -> helper(o)\n  }",
+      "Options(resolver: resolver)",
+      "",
     )
   }
   let helper = fn(helper_body: String) {
