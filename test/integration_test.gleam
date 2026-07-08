@@ -2065,6 +2065,37 @@ pub fn provenance_branch_resolves_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn provenance_branch_of_paths_resolves_test() {
+  // provenance_branch_path.caller passes `pick(..)` to `inner`. `pick` returns a
+  // `case` whose branches are parameter-rooted paths (`a.options`/`b.options`),
+  // so its provenance is a `Join` of two `Path`s. The join grounds each branch and
+  // forwards `o.resolver` onto the caller's `resolver`, discharging the bound to
+  // [Stdout] — where `classify_case_options` gates path branches, the receiver
+  // would collapse to [Unknown].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/provenance_branch_path.gleam"
+    })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn provenance_branch_of_builds_resolves_test() {
+  // provenance_branch_build.caller passes `pick(..)` to `inner`. `pick` returns a
+  // `case` whose branches rebuild `Options(resolver: a.resolver)`, so its
+  // provenance is a `Join` of two `Build`s. The join forwards `o.resolver` onto
+  // the caller's `resolver` (discharging to [Stdout]); each rebuild's receiver-path
+  // wiring registers a conservative [Unknown] source, so the result carries both.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/provenance_branch_build.gleam"
+    })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout", "Unknown"])))
+}
+
 pub fn provenance_computed_deep_stays_unknown_test() {
   // provenance_computed_deep.caller passes `deep(resolver)` to `inner`. `deep`'s
   // return is a nested call (`get(make(resolver))`), whose provenance is

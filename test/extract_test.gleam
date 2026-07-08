@@ -218,6 +218,46 @@ pub fn provenance_branch_is_join_test() {
   |> should.equal(Join([Passthrough(1), Passthrough(2)]))
 }
 
+pub fn provenance_branch_of_paths_is_join_test() {
+  // A `case` whose branches are parameter-rooted *paths* (not bare parameters)
+  // folds to a `Join` of each branch's `Path`. `classify_case_options` gates path
+  // branches out of the called-value path; return provenance folds them itself.
+  provenance_of(
+    "pub type Config {
+  Config(options: fn() -> Nil)
+}
+fn target(x, a, b) {
+  case x {
+    True -> a.options
+    False -> b.options
+  }
+}",
+  )
+  |> should.equal(Join([Path(1, "options"), Path(2, "options")]))
+}
+
+pub fn provenance_branch_of_builds_is_join_test() {
+  // A `case` whose branches rebuild a record from a parameter-rooted field folds
+  // to a `Join` of each branch's `Build`.
+  provenance_of(
+    "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+fn target(x, a, b) {
+  case x {
+    True -> Options(resolver: a.resolver)
+    False -> Options(resolver: b.resolver)
+  }
+}",
+  )
+  |> should.equal(
+    Join([
+      Build(dict.from_list([#("resolver", FieldPath(1, "resolver"))])),
+      Build(dict.from_list([#("resolver", FieldPath(2, "resolver"))])),
+    ]),
+  )
+}
+
 pub fn provenance_branch_with_opaque_branch_is_opaque_test() {
   // Any untraceable branch (a literal here) widens the whole join to `Opaque`,
   // so a partially-traceable `case` never under-reports a branch.

@@ -2185,9 +2185,31 @@ fn return_tail_value(
             }
           },
         )
-      Ok(classify_expression(tail, context, env))
+      Ok(classify_return_tail(tail, context, env))
     }
     _ -> Error(Nil)
+  }
+}
+
+// Classify a return tail. Mirrors `classify_expression` except a `case` folds
+// into a `Choice` over every branch's classification — including parameter-rooted
+// paths and rebuilt constructors — because `provenance_of_value` traces those
+// branch shapes. `classify_case_options` gates them out for the *called*
+// computed-receiver path (a path or a record isn't callable), so return
+// provenance folds the branches itself. Nested branch cases fold the same way.
+fn classify_return_tail(
+  tail: Expression,
+  context: ImportContext,
+  env: Env,
+) -> types.ArgumentValue {
+  case tail {
+    glance.Case(clauses:, ..) ->
+      types.Choice(
+        list.map(clauses, fn(clause) {
+          classify_return_tail(clause.body, context, env)
+        }),
+      )
+    _ -> classify_expression(tail, context, env)
   }
 }
 
