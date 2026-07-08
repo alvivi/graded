@@ -1895,6 +1895,23 @@ pub fn provenance_partial_build_resolves_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout", "Unknown"])))
 }
 
+pub fn provenance_labeled_resolves_test() {
+  // provenance_labeled.caller passes `rebuild(with: Options(resolver: resolver))`
+  // to `inner`. `rebuild` is a `Passthrough`, but the call labels its argument
+  // (`with:`), so grounding reorders it into parameter-position order via the
+  // callee signature before substituting. The constructed `Options` forwards
+  // through, `o.resolver` re-keys onto the caller's `resolver`, and the bound
+  // discharges to [Stdout] — where before the labeled call site widened to
+  // [Unknown].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/provenance_labeled.gleam"
+    })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn provenance_branch_resolves_test() {
   // provenance_branch.caller passes `pick(..)` to `inner`. `pick` returns a
   // `case` over its `a`/`b` parameters, so its provenance is a `Join` of two

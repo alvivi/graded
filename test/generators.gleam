@@ -321,6 +321,7 @@ pub type ProvenanceShape {
   ProvPassthrough
   ProvGetter
   ProvRebuild
+  ProvLabeled
 }
 
 pub fn provenance_program_gen() -> qcheck.Generator(ProvenanceProgram) {
@@ -328,6 +329,7 @@ pub fn provenance_program_gen() -> qcheck.Generator(ProvenanceProgram) {
     qcheck.from_generators(qcheck.return(ProvPassthrough), [
       qcheck.return(ProvGetter),
       qcheck.return(ProvRebuild),
+      qcheck.return(ProvLabeled),
     ]),
   )
   use label <- qcheck.map(one_of(effect_labels))
@@ -341,19 +343,38 @@ fn build_provenance_program(
   let options_type =
     "pub type Options {\n  Options(resolver: fn() -> Nil)\n}\n\n"
   let inner = "pub fn inner(o: Options) -> Nil {\n  o.resolver()\n}\n\n"
-  let #(extra_type, params, body, call_arg) = case shape {
-    ProvPassthrough -> #("", "o: Options", "o", "Options(resolver: resolver)")
+  // `call_prefix` is the Gleam label the caller applies at the call site
+  // (`with:`); `ProvLabeled` gives the helper param a label distinct from its
+  // in-body name so the call binds out of textual order, exercising the
+  // signature-directed argument reorder.
+  let #(extra_type, params, body, call_arg, call_prefix) = case shape {
+    ProvPassthrough -> #(
+      "",
+      "o: Options",
+      "o",
+      "Options(resolver: resolver)",
+      "",
+    )
     ProvGetter -> #(
       "pub type Config {\n  Config(options: Options)\n}\n\n",
       "c: Config",
       "c.options",
       "Config(options: Options(resolver: resolver))",
+      "",
     )
     ProvRebuild -> #(
       "",
       "o: Options",
       "Options(resolver: o.resolver)",
       "Options(resolver: resolver)",
+      "",
+    )
+    ProvLabeled -> #(
+      "",
+      "with o: Options",
+      "o",
+      "Options(resolver: resolver)",
+      "with: ",
     )
   }
   let helper = fn(helper_body: String) {
@@ -361,6 +382,7 @@ fn build_provenance_program(
   }
   let caller =
     "pub fn caller(resolver: fn() -> Nil) -> Nil {\n  inner(helper("
+    <> call_prefix
     <> call_arg
     <> "))\n}\n"
   // A helper-call composition (`relay(body)`) stays `Opaque` — Phase 1/2 traces a

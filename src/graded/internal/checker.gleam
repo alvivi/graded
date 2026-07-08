@@ -1765,6 +1765,7 @@ fn field_forwarding_binding(
       function_map,
       context,
       knowledge_base,
+      registry,
     )),
   )
   case base {
@@ -1878,15 +1879,20 @@ fn grounded_receiver(
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
 ) -> Result(types.ArgumentValue, Nil) {
   case value {
     types.CallResult(callee, args) -> {
       // Provenance positions index the callee's parameter list, but a labeled
-      // argument can bind out of textual order, so a position match would be
-      // unsound. Ground only all-positional calls; a labeled one widens to Top.
-      use <- bool.guard(
-        when: list.any(args, fn(arg) { arg.label != None }),
-        return: Error(Nil),
+      // argument can bind out of textual order. Reorder a labeled call into
+      // parameter-position order via the callee's signature before grounding;
+      // an all-positional call already lines up, so it grounds as-is. A labeled
+      // call whose callee isn't in the registry can't be reordered and widens.
+      use positional <- result.try(
+        case list.any(args, fn(arg) { arg.label != None }) {
+          False -> Ok(args)
+          True -> reorder_args_by_signature(callee, args, context, registry)
+        },
       )
       use provenance <- result.try(callee_provenance(
         callee,
@@ -1894,7 +1900,7 @@ fn grounded_receiver(
         context,
         knowledge_base,
       ))
-      ground_provenance(provenance, args)
+      ground_provenance(provenance, positional)
     }
     types.FunctionRef(_)
     | types.LocalRef(_)
@@ -1906,6 +1912,51 @@ fn grounded_receiver(
     | types.Constructed(_)
     | types.OtherExpression -> Ok(value)
   }
+}
+
+// Reorder a labeled call's arguments into the callee's declared parameter order
+// so provenance positions (which index the parameter list) still line up. Each
+// parameter takes the argument carrying its Gleam label, else the positional
+// argument at its position. The result is re-keyed to canonical positions
+// (`position: i, label: None`) so `arg_value_at` indexes it directly. `Error`
+// when the callee isn't in the registry or a parameter has no matching argument
+// — the receiver stays `[Unknown]`. A same-module (`""`) callee is keyed by the
+// module under check, where the registry stored its signature.
+fn reorder_args_by_signature(
+  callee: types.QualifiedName,
+  args: List(types.CallArgument),
+  context: ImportContext,
+  registry: SignatureRegistry,
+) -> Result(List(types.CallArgument), Nil) {
+  let key = case callee.module {
+    "" ->
+      types.QualifiedName(
+        module: context.module_path,
+        function: callee.function,
+      )
+    _ -> callee
+  }
+  use params <- result.try(option.to_result(
+    signatures.lookup(registry, key),
+    Nil,
+  ))
+  let sorted =
+    list.sort(params, fn(a, b) { int.compare(a.position, b.position) })
+  use values <- result.map(
+    list.try_map(sorted, fn(param) {
+      let by_label = param.label |> option.then(find_arg_by_label(args, _))
+      case by_label {
+        Some(arg) -> Ok(arg.value)
+        None ->
+          find_arg_at_position(args, param.position)
+          |> option.to_result(Nil)
+          |> result.map(fn(arg) { arg.value })
+      }
+    }),
+  )
+  list.index_map(values, fn(value, position) {
+    types.CallArgument(position:, label: None, value:)
+  })
 }
 
 // Substitute a call's grounded arguments into a `ReturnProvenance`, yielding a
