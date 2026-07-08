@@ -261,6 +261,12 @@ pub type ReturnProvenance {
   Passthrough(position: Int)
   Path(position: Int, tail: String)
   Build(fields: Dict(String, FieldProvenance))
+  // A union of branch provenances from a `case`/`if` return (`case c { True -> a
+  // False -> b }`). Every branch is grounded against the same call arguments and
+  // the results join, over-approximating the branch — mirroring how `Choice`
+  // lifts function-valued branches. Any `Opaque` branch makes the whole join
+  // `Opaque` (widen to Top), so a partially-traceable branch never under-reports.
+  Join(branches: List(ReturnProvenance))
   Opaque
 }
 

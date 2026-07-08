@@ -5,8 +5,8 @@ import gleam/option.{Some}
 import gleeunit/should
 import graded/internal/extract
 import graded/internal/types.{
-  type QualifiedName, Build, Choice, FieldParam, FieldPath, FunctionRef, Opaque,
-  OtherExpression, Passthrough, Path, QualifiedName,
+  type QualifiedName, Build, Choice, FieldParam, FieldPath, FunctionRef, Join,
+  Opaque, OtherExpression, Passthrough, Path, QualifiedName,
 }
 
 fn provenance_of(src: String) -> types.ReturnProvenance {
@@ -79,12 +79,28 @@ fn target(o) { get(o) }",
   |> should.equal(Opaque)
 }
 
-pub fn provenance_branch_is_opaque_test() {
+pub fn provenance_branch_is_join_test() {
+  // A `case` over parameter branches folds to a `Join` of each branch's
+  // provenance — here two `Passthrough`s onto parameters `a` and `b`.
   provenance_of(
     "fn target(x, a, b) {
   case x {
     True -> a
     False -> b
+  }
+}",
+  )
+  |> should.equal(Join([Passthrough(1), Passthrough(2)]))
+}
+
+pub fn provenance_branch_with_opaque_branch_is_opaque_test() {
+  // Any untraceable branch (a literal here) widens the whole join to `Opaque`,
+  // so a partially-traceable `case` never under-reports a branch.
+  provenance_of(
+    "fn target(x, a) {
+  case x {
+    True -> a
+    False -> 42
   }
 }",
   )

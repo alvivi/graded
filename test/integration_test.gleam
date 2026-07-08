@@ -1880,17 +1880,19 @@ pub fn provenance_rebuild_resolves_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout", "Unknown"])))
 }
 
-pub fn provenance_branch_stays_unknown_test() {
+pub fn provenance_branch_resolves_test() {
   // provenance_branch.caller passes `pick(..)` to `inner`. `pick` returns a
-  // `case` branch, whose provenance is `Opaque`, so forwarding doesn't apply and
-  // the field call concretizes to [Unknown] — the [] budget fails with [Unknown].
+  // `case` over its `a`/`b` parameters, so its provenance is a `Join` of two
+  // `Passthrough`s. The join grounds each branch and forwards `o.resolver` onto
+  // the caller's `resolver` through both, discharging the bound to [Stdout] —
+  // where before value-level joins it was [Unknown].
   let assert Ok(results) = graded.run("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_branch.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_computed_deep_stays_unknown_test() {
