@@ -1982,6 +1982,22 @@ pub fn provenance_labeled_resolves_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn provenance_binding_resolves_test() {
+  // provenance_binding.caller passes `alias(Options(resolver: resolver))` to
+  // `inner`. `alias` threads its parameter through a `let` before returning it,
+  // so the provenance walk folds through the binding to a `Passthrough`. The
+  // constructed `Options` forwards through, `o.resolver` re-keys onto the
+  // caller's `resolver`, and the bound discharges to [Stdout] — proving
+  // provenance survives the binding rather than widening at it.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/provenance_binding.gleam"
+    })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn provenance_recursion_resolves_test() {
   // provenance_recursion.caller passes `pick(True, Options(resolver: resolver))`
   // to `inner`. `pick` returns its `o` parameter through a tail-recursive call,
