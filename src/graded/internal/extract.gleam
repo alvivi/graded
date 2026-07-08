@@ -2228,7 +2228,7 @@ fn join_provenance(
 ) -> types.ReturnProvenance {
   let branches = list.map(options, provenance_of_value(_, positions))
   case options != [] && list.all(branches, fn(p) { p != types.Opaque }) {
-    True -> types.Join(branches)
+    True -> normalize_provenance(types.Join(branches))
     False -> types.Opaque
   }
 }

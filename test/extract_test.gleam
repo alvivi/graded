@@ -79,6 +79,82 @@ fn target(o) { get(o) }",
   |> should.equal(Opaque)
 }
 
+// The provenance walk threads bindings through the body before folding the tail,
+// so a parameter reached through a chain of `let`s, a `use` scope, or a
+// `let`-bound `case` still resolves rather than widening at the binding.
+
+pub fn provenance_survives_multi_let_test() {
+  // A parameter aliased through two `let` hops still folds to a `Passthrough`.
+  provenance_of(
+    "fn target(config) {
+  let a = config
+  let b = a
+  b
+}",
+  )
+  |> should.equal(Passthrough(0))
+}
+
+pub fn provenance_survives_use_binding_test() {
+  // A `use` scope threads its bound patterns; the tail parameter beneath it still
+  // folds to a `Passthrough`.
+  provenance_of(
+    "fn with_x(f) { f(1) }
+fn target(o) {
+  use _x <- with_x()
+  o
+}",
+  )
+  |> should.equal(Passthrough(0))
+}
+
+pub fn provenance_survives_case_let_test() {
+  // A `let` bound to a `case` whose branches all pass the same parameter through
+  // folds to a single `Passthrough` (the redundant join collapses).
+  provenance_of(
+    "fn target(flag, o) {
+  let picked = case flag {
+    True -> o
+    False -> o
+  }
+  picked
+}",
+  )
+  |> should.equal(Passthrough(1))
+}
+
+// Bindings whose value can't be traced back to a parameter widen to `Opaque` at
+// the binding rather than resolving to a wrong root — a pipe into a call, a
+// closure, and a constructor destructure.
+
+pub fn provenance_pipe_into_call_is_opaque_test() {
+  provenance_of(
+    "fn getopt(c) { c }
+fn target(c) { c |> getopt }",
+  )
+  |> should.equal(Opaque)
+}
+
+pub fn provenance_returned_closure_is_opaque_test() {
+  provenance_of("fn target(o) { fn() { o } }")
+  |> should.equal(Opaque)
+}
+
+pub fn provenance_destructure_binding_is_opaque_test() {
+  // A destructured field binds opaquely, so rebuilding from it can't forward the
+  // parameter and the whole build widens.
+  provenance_of(
+    "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+fn target(o) {
+  let Options(resolver: r) = o
+  Options(resolver: r)
+}",
+  )
+  |> should.equal(Opaque)
+}
+
 pub fn provenance_tail_recursion_is_passthrough_test() {
   // A tail-recursive passthrough: the base branch returns `o` and the recursive
   // branch calls back with `o` at the same position. The fixpoint grounds the
