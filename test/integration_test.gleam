@@ -1982,6 +1982,42 @@ pub fn provenance_labeled_resolves_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn provenance_labeled_reorder_maps_position_test() {
+  // Adversarial reorder: `wrap(tag first: Int, opts second: Options)` returns its
+  // second parameter, and the call labels the arguments out of textual order
+  // (`wrap(opts: Options(..), tag: 0)`). Grounding must route the `opts:` label to
+  // position 1 — where the `Passthrough` reads — not to its textual position 0 (an
+  // `Int` that wouldn't forward). It resolves to [Stdout], proving the label maps
+  // to the declared position rather than the call-site order.
+  let root = "build/provenance_labeled_reorder"
+  let results =
+    run_project_with_spec(
+      root,
+      "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+
+pub fn inner(o: Options) -> Nil {
+  o.resolver()
+}
+
+fn wrap(tag first: Int, opts second: Options) -> Options {
+  let _ = first
+  second
+}
+
+pub fn caller(resolver: fn() -> Nil) -> Nil {
+  inner(wrap(opts: Options(resolver: resolver), tag: 0))
+}
+",
+      "check proj.caller(resolver: [Stdout]) : []\n",
+    )
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn provenance_binding_resolves_test() {
   // provenance_binding.caller passes `alias(Options(resolver: resolver))` to
   // `inner`. `alias` threads its parameter through a `let` before returning it,
