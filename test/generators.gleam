@@ -321,6 +321,7 @@ pub type ProvenanceShape {
   ProvPassthrough
   ProvGetter
   ProvRebuild
+  ProvShorthand
   ProvLabeled
   ProvRecursive
 }
@@ -330,6 +331,7 @@ pub fn provenance_program_gen() -> qcheck.Generator(ProvenanceProgram) {
     qcheck.from_generators(qcheck.return(ProvPassthrough), [
       qcheck.return(ProvGetter),
       qcheck.return(ProvRebuild),
+      qcheck.return(ProvShorthand),
       qcheck.return(ProvLabeled),
       qcheck.return(ProvRecursive),
     ]),
@@ -369,6 +371,17 @@ fn build_provenance_program(
       "o: Options",
       "Options(resolver: o.resolver)",
       "Options(resolver: resolver)",
+      "",
+    )
+    // A smart constructor built with field shorthand (`Options(resolver:)`, sugar
+    // for `resolver: resolver`): the shorthand field resolves to the `resolver`
+    // parameter, so the `Build` keeps it. The relay-wrapped `untraced` form's tail
+    // is a `relay(..)` call, so it stays `Opaque`.
+    ProvShorthand -> #(
+      "",
+      "resolver: fn() -> Nil",
+      "Options(resolver:)",
+      "resolver",
       "",
     )
     ProvLabeled -> #(

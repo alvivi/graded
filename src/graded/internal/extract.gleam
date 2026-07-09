@@ -1271,8 +1271,11 @@ fn classify_constructor(
           ),
           remaining,
         )
+        // A shorthand field (`SelectOptions(on_change:)`) is sugar for
+        // `on_change: on_change`, so its value is the variable named by the
+        // label — matching how `classify_arguments` reads a shorthand argument.
         glance.ShorthandField(label:, ..) -> #(
-          dict.insert(fields_acc, label, OtherExpression),
+          dict.insert(fields_acc, label, classify_variable(label, context, env)),
           remaining,
         )
         glance.UnlabelledField(item:) -> {
