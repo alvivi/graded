@@ -34,6 +34,19 @@ and a provenance serialization format — larger steps, each risking understated
 effects if done unsoundly. The `type` line and field bound remain the escape
 hatches meanwhile.
 
+## Direct field calls on computed receivers
+
+A field call whose receiver is itself a call result (`decode_user().function(x)`,
+`make_yielder().continuation()`) resolves its receiver type through girard, then
+looks up the field's effect on that type. When the field is a callback stored on
+the record with no visible body — the decoder/iterator/context idiom
+(`.function`, `.continuation`, `.lookup`) — that field's own effect is already
+`[Unknown]`, so typing the receiver changes nothing and the call stays
+`[Unknown]`. Discharging it would need tracing the callback back to its
+construction site, the same construction-site data-flow the deeper-provenance
+items above defer, and understates the effect if done unsoundly. The `type` line
+remains the escape hatch meanwhile.
+
 ## Retiring the positional/label heuristics
 
 graded reads expression types from [girard](https://hexdocs.pm/girard), which

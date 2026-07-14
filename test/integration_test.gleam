@@ -1071,13 +1071,13 @@ pub fn imported_same_name_field_does_not_borrow_local_test() {
 }
 
 pub fn nested_field_resolves_cross_module_type_line_test() {
-  // The essem case: a nested call whose INTERMEDIATE receiver type lives in
-  // ANOTHER module. `handler.handle` calls `model.service.org.create("acme")`;
+  // A nested call whose INTERMEDIATE receiver type lives in ANOTHER module.
+  // `handler.handle` calls `model.service.org.create("acme")`;
   // girard types `model.service.org` as `svc.OrganizationService`, and the
   // module-qualified `type svc.OrganizationService.create : [Storage, Time]`
   // line resolves it cross-module — so the [] budget fails with that precise
   // effect. Synthesized as a multi-module project so the consumer's `type` line
-  // points at a type defined in a different module, exactly essem's shape.
+  // points at a type defined in a different module.
   let root = "build/nested_xmod_app"
   let _ = simplifile.delete(root)
   let assert Ok(Nil) = simplifile.create_directory_all(root)

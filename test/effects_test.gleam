@@ -354,15 +354,15 @@ pub fn parse_semver_roundtrip_test() {
 pub fn parse_path_dependencies_test() {
   let toml_path = "test/fixtures/gleam_with_path_deps.toml"
   let content =
-    "name = \"myapp\"\nversion = \"1.0.0\"\n\n[dependencies]\ngleam_stdlib = \">= 0.44.0\"\ndeeaitch = { path = \"../deeaitch\" }\ndeekay = { path = \"../deekay/gleam_lib\" }\n"
+    "name = \"myapp\"\nversion = \"1.0.0\"\n\n[dependencies]\ngleam_stdlib = \">= 0.44.0\"\ndep_a = { path = \"../dep_a\" }\ndep_b = { path = \"../dep_b/gleam_lib\" }\n"
   let assert Ok(Nil) = simplifile.write(toml_path, content)
   let deps = effects.parse_path_dependencies(toml_path)
   let assert Ok(Nil) = simplifile.delete(toml_path)
   deps
   |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
   |> should.equal([
-    #("deeaitch", "../deeaitch"),
-    #("deekay", "../deekay/gleam_lib"),
+    #("dep_a", "../dep_a"),
+    #("dep_b", "../dep_b/gleam_lib"),
   ])
 }
 
