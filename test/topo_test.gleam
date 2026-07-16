@@ -25,7 +25,7 @@ import graded/internal/types.{
 }
 import simplifile
 
-// ----- helpers -----
+// helpers
 
 fn make_fixture(name: String, files: List(#(String, String))) -> String {
   write_fixture("/tmp/graded_topo_" <> name, [stdlib_manifest(), ..files])
@@ -176,7 +176,7 @@ fn with_labels(labels: List(String)) -> EffectSet {
   Specific(set.from_list(labels))
 }
 
-// ----- chain (the reported issue, verbatim) -----
+// chain (the reported issue, verbatim)
 
 pub fn chain_resolves_in_one_pass_test() {
   let directory = make_fixture("chain", pure_chain_files())
@@ -209,7 +209,7 @@ pub fn chain_resolves_in_one_pass_test() {
   cleanup(directory)
 }
 
-// ----- diamond -----
+// diamond
 
 pub fn diamond_propagates_effects_through_both_branches_test() {
   let directory =
@@ -272,7 +272,7 @@ pub fn run() -> Nil {
   cleanup(directory)
 }
 
-// ----- fan-out (one leaf, many dependents) -----
+// fan-out (one leaf, many dependents)
 
 pub fn fanout_resolves_all_dependents_in_one_pass_test() {
   let leaf =
@@ -316,7 +316,7 @@ pub fn run(value: String) -> String {
   cleanup(directory)
 }
 
-// ----- impure chain (effect propagates through 4 modules) -----
+// impure chain (effect propagates through 4 modules)
 
 pub fn impure_chain_propagates_effect_to_root_test() {
   let directory = make_fixture("impure_chain", impure_chain_files())
@@ -344,7 +344,7 @@ pub fn impure_chain_propagates_effect_to_root_test() {
   cleanup(directory)
 }
 
-// ----- leaf only (single module, no project imports) -----
+// leaf only (single module, no project imports)
 
 pub fn single_module_with_no_project_imports_test() {
   let directory =
@@ -368,7 +368,7 @@ pub fn shout(value: String) -> String {
   cleanup(directory)
 }
 
-// ----- Risk 2: modules without prior .graded files get .graded files written -----
+// Risk 2: modules without prior .graded files get .graded files written
 
 pub fn infer_writes_graded_files_from_clean_slate_test() {
   let directory = make_fixture("clean_slate", pure_chain_files())
@@ -388,7 +388,7 @@ pub fn infer_writes_graded_files_from_clean_slate_test() {
   cleanup(directory)
 }
 
-// ----- inference idempotence (the fix's core promise) -----
+// inference idempotence (the fix's core promise)
 
 // Pinning the single-pass convergence: a second `run_infer` against the
 // same project must produce byte-identical `.graded` files. If this
@@ -407,7 +407,7 @@ pub fn run_infer_is_idempotent_test() {
   cleanup(directory)
 }
 
-// ----- returned operators cross module/package via the spec (D2) -----
+// returned operators cross module/package via the spec (D2)
 
 pub fn returns_operator_cross_module_end_to_end_test() {
   // A producer that returns a function, consumed in another module. After
@@ -464,7 +464,7 @@ fn with_logger(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
   cleanup(directory)
 }
 
-// ----- check auto-infers project modules missing from the spec (D4) -----
+// check auto-infers project modules missing from the spec (D4)
 
 pub fn check_auto_infers_missing_module_test() {
   // No prior `graded infer`: the spec has only a `check` line and no `effects`
@@ -521,7 +521,7 @@ fn read_all_graded(directory: String) -> List(#(String, String)) {
   }
 }
 
-// ----- spec-file externals are honoured during inference -----
+// spec-file externals are honoured during inference
 
 // Regression: a project module that calls into a third-party package not
 // in the catalog should pick up the spec file's `external effects` line
@@ -560,7 +560,7 @@ pub fn total(a: String, b: String) -> String {
   cleanup(directory)
 }
 
-// ----- cross-module type constructors are pure -----
+// cross-module type constructors are pure
 
 // Calls to a custom type constructor defined in a sibling project
 // module should be inferred as pure, regardless of position: as a
@@ -630,7 +630,7 @@ pub fn maker() -> fn(String) -> types.MyError {
   cleanup(directory)
 }
 
-// ----- path-dep smoke test -----
+// path-dep smoke test
 
 // Same regression class as the project chain test (deep transitive
 // effects must propagate in one pass) but exercising the path-dep code
@@ -806,7 +806,7 @@ pub fn caller(resolver: fn() -> Nil) -> Nil {
   cleanup(app_dir)
 }
 
-// ----- polymorphic end-to-end -----
+// polymorphic end-to-end
 
 // Caller passes a pure type constructor to a fn-typed parameter.
 // `validation.validate_range` should infer as polymorphic over its
@@ -921,7 +921,7 @@ pub fn new(value: Int) -> List(MyError) {
   Nil
 }
 
-// ----- dense mutual recursion (memoization regression guard) -----
+// dense mutual recursion (memoization regression guard)
 
 // Build a module of `count` mutually-recursive first-order functions forming
 // one dense strongly-connected component: `p_i` calls `p_{i+1}` (a ring) and
@@ -994,7 +994,7 @@ fn indices_loop(n: Int, acc: List(Int)) -> List(Int) {
   }
 }
 
-// ----- out-of-tree project root resolution (BUG B) -----
+// out-of-tree project root resolution (BUG B)
 
 // `infer` against a source directory whose project root is an ancestor (where
 // `gleam.toml` lives) must write the spec and cache under that root, not under

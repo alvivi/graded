@@ -12,7 +12,7 @@ import gleeunit/should
 import graded/internal/topo
 import qcheck
 
-// ----- generators -----
+// generators
 
 // Generate a random DAG by name. Strategy: produce a list of N node names
 // (`n0`, `n1`, …, `n{N-1}`), then for each `n_i` randomly choose deps from
@@ -67,7 +67,7 @@ fn deps_subset_gen(candidates: List(String)) -> qcheck.Generator(List(String)) {
   }
 }
 
-// ----- helpers -----
+// helpers
 
 fn position(haystack: List(String), needle: String) -> Int {
   position_loop(haystack, needle, 0)
@@ -84,7 +84,7 @@ fn position_loop(haystack: List(String), needle: String, index: Int) -> Int {
   }
 }
 
-// ----- properties -----
+// properties
 
 pub fn topo_sort_length_preservation_test() {
   use graph <- qcheck.given(random_dag_gen())
@@ -116,7 +116,7 @@ pub fn topo_sort_order_respects_edges_test() {
   })
 }
 
-// ----- unit tests -----
+// unit tests
 
 pub fn topo_sort_empty_graph_test() {
   topo.sort(dict.new()) |> should.equal(Ok([]))
@@ -193,7 +193,7 @@ pub fn topo_sort_partial_cycle_returns_only_cyclic_nodes_test() {
   }
 }
 
-// ----- scc_order (Tarjan strongly-connected components) -----
+// scc_order (Tarjan strongly-connected components)
 
 // Find the component containing `name`, sorted for stable comparison.
 fn component_of(components: List(List(String)), name: String) -> List(String) {
