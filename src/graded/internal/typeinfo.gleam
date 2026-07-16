@@ -12,7 +12,7 @@
 // a pure enhancement layer (it can only ever upgrade an `[Unknown]`, never
 // change an already-resolved result).
 
-import girard/types.{type Type, Named}
+import girard.{type Type, Named}
 import gleam/dict.{type Dict}
 import gleam/option.{type Option, None, Some}
 import gleam/set.{type Set}
