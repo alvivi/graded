@@ -17,7 +17,7 @@ import graded/internal/types.{
 }
 import simplifile
 
-// ----- helpers -----
+// helpers
 
 fn write_fixture(directory: String, files: List(#(String, String))) -> String {
   let _ = simplifile.delete(directory)
@@ -102,7 +102,7 @@ fn labels(xs: List(String)) -> EffectSet {
   Specific(set.from_list(xs))
 }
 
-// ----- Lustre 5 catalog -----
+// Lustre 5 catalog
 
 pub fn lustre5_constructors_are_pure_test() {
   let directory =
@@ -161,7 +161,7 @@ fn options() {
   cleanup(directory)
 }
 
-// ----- spec-annotation lint -----
+// spec-annotation lint
 
 const opts_module = "import gleam/io
 

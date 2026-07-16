@@ -1786,7 +1786,7 @@ pub fn path_dep_cross_module_positional_discharges_test() {
   Nil
 }
 
-// ----- function-typed fields on dependency-defined types -----
+// function-typed fields on dependency-defined types
 
 pub fn path_dep_type_field_resolves_from_consumer_spec_test() {
   // A path dep defines a capability record `Repo(find: fn(String) -> Int)`. The

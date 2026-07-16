@@ -3610,7 +3610,7 @@ fn second_order_violations(
   violations
 }
 
-// ----- collapse classification is girard-independent (determinism) -----
+// collapse classification is girard-independent (determinism)
 
 // A parameter typed through a module-local function alias (`h: Handler` where
 // `type Handler = fn(...)`) must be recognised as function-typed from the
@@ -3646,10 +3646,8 @@ pub fn plain(x: String) -> String {
   set.contains(cache.collapsible, plain_scc) |> should.be_true()
 }
 
-// ===========================================================================
 // Regression: soundness of effect inference for expression-valued callees
 // (Issue 1) and lexical parameters shadowing unqualified imports (Issue 2).
-// ===========================================================================
 
 fn infer_annotation(source: String, name: String) -> EffectAnnotation {
   let assert Ok(module) = glance.module(source)

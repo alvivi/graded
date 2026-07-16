@@ -37,9 +37,7 @@ pub fn unknown() -> EffectTerm {
   TLabels(set.from_list(["Unknown"]))
 }
 
-// ---------------------------------------------------------------------------
 // Bridges to/from the ground normal form
-// ---------------------------------------------------------------------------
 
 // Lift an `EffectSet` into an `EffectTerm`. Total and exact.
 pub fn from_effect_set(effect_set: EffectSet) -> EffectTerm {
@@ -79,9 +77,7 @@ fn term_to_set(normalized: EffectTerm) -> EffectSet {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Free variables
-// ---------------------------------------------------------------------------
 
 // The free effect variables of a term (a `TAbs` binds its parameter).
 pub fn free_vars(term: EffectTerm) -> Set(String) {
@@ -96,9 +92,7 @@ pub fn free_vars(term: EffectTerm) -> Set(String) {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Capture-avoiding substitution
-// ---------------------------------------------------------------------------
 
 // Substitute effect variables for terms, capture-avoiding. Bindings may map
 // a variable to an operator (`TAbs`), which is what enables nested/second-
@@ -168,9 +162,7 @@ fn fresh_loop(base: String, avoid: Set(String), n: Int) -> String {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Normalization (beta + union laws)
-// ---------------------------------------------------------------------------
 
 // Reduce a term to normal form: beta-reduce every applied operator, and
 // flatten/dedup/absorb unions into a canonical shape. Idempotent.
