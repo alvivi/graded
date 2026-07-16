@@ -267,10 +267,6 @@ fn check_one_file(
 }
 
 // Spec lint
-//
-// Warnings for spec lines that resolve nothing: a `check` line naming no
-// project function, or a `type` line naming no callable field. Field
-// classification follows alias chains across project and dependency modules.
 
 // Flag `check`/`type` spec lines whose target resolves nothing. A `check` line
 // names a function that must exist in some project module; a `type` line names
@@ -699,12 +695,8 @@ fn build_project_registry(
 }
 
 // Constructor-field index
-//
-// Derive `type Foo.field : [...]` effects from constructor call sites across
-// the package, unioning contributions per field, so field calls resolve
-// without hand-written annotations.
 
-// Stage C: derive `type Foo.field : [...]` annotations from constructor call
+// Derive `type Foo.field : [...]` annotations from constructor call
 // sites across the package. `Validator(to_error: io.println)` anywhere makes
 // `Validator.to_error` carry io.println's effects (unioned across all sites),
 // so a field call resolves without a hand-written annotation. Resolved via
@@ -909,9 +901,6 @@ fn merge_field_effect(
 }
 
 // Type index
-//
-// Run girard's whole-package type inference and key the results by expression
-// span, giving the checker the receiver types that resolve field calls.
 
 // Run girard's whole-package type inference once over every project module
 // and fold the result into a `TypeInfo` (module path -> span start -> type).

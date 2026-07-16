@@ -98,8 +98,10 @@ Add or update a test with every behaviour change.
   similar rows. A plain comment naming a section is fine; the row of dashes or
   equals signs is not.
 - **Semantic sections.** Group a file into sections by topic, each introduced
-  by a header — a `//` line naming the section, a blank `//` line, then a short
-  description of what it covers and why:
+  by a plain `//` title. Add a short description — a blank `//` line, then one
+  or two sentences — when it explains the relationship between the entities,
+  an important invariant, or why the section exists; avoid repeating adjacent
+  entity documentation:
 
   ```gleam
   // Section name
@@ -107,7 +109,9 @@ Add or update a test with every behaviour change.
   // One or two sentences on what this section covers and why.
   ```
 
-  A file that is a single section needs no header; its module doc is enough. Order the entities within a section for readability: lead with the
+  A file that is a single section needs no header; its module doc is enough.
+
+  Order the entities within a section for readability: lead with the
   public API (including `pub opaque` types), then the private implementation,
   and within each put constants before types before functions — but keep a type
   next to the functions that build and operate on it, put an entry point ahead
