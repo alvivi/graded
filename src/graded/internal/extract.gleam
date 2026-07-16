@@ -17,6 +17,11 @@ import graded/internal/types.{
   QualifiedName, ResolvedCall,
 }
 
+// Lexical bindings
+//
+// The environment threaded through a function-body walk: each in-scope name
+// mapped to what its value is statically known to be.
+
 // Classification of a `let`-bound name inside a function body so that
 // later calls through the name can be resolved. `BoundOpaque` covers
 // everything we can't statically track (closures, computed values,
@@ -65,6 +70,12 @@ type LocalBinding {
 
 type Env =
   Dict(String, LocalBinding)
+
+// Import context and module indexes
+//
+// Per-module lookup tables precomputed before any body walk — import aliases,
+// constructor field labels, factory signatures, fn-typed fields — that call
+// resolution and classification consult.
 
 // Import context built from a module's import list.
 //
@@ -154,31 +165,6 @@ pub fn constructor_label_map(
   build_constructor_registry(module)
 }
 
-// Result of extracting calls from a function body.
-//
-// `call_args` maps a call's `span_key` (its full span) to its arguments. Only
-// populated for resolved calls — local and field calls don't need argument
-// tracking for substitution yet.
-pub type ExtractResult {
-  ExtractResult(
-    resolved: List(ResolvedCall),
-    local: List(LocalCall),
-    field: List(FieldCall),
-    references: List(ResolvedCall),
-    direct_ops: List(DirectOperatorCall),
-    direct_pipe_ops: List(DirectPipeOp),
-    // Directly-applied let-bound closures / case-of-functions (`let h = fn(x)
-    // { … }; h(a)`): lifted and applied with their binding-site walk supplying
-    // first-order/captured effects.
-    direct_closure_ops: List(DirectClosureCall),
-    // Spans of applications whose callee is an opaque computed function value
-    // (`funcs.0(x)`): applying it could do anything, so each collapses to
-    // [Unknown] rather than being silently dropped as pure.
-    unknown_apps: List(glance.Span),
-    call_args: Dict(#(Int, Int), List(CallArgument)),
-  )
-}
-
 // Build import context from a parsed module's imports.
 pub fn build_import_context(module: Module) -> ImportContext {
   let #(aliases, unqualified) =
@@ -245,6 +231,13 @@ fn build_constructor_registry(
       dict.insert(acc2, variant.name, labels)
     })
   })
+}
+
+fn last_segment(module_path: String) -> String {
+  module_path
+  |> string.split("/")
+  |> list.last()
+  |> result.unwrap(module_path)
 }
 
 // Map each same-module constructor (variant) name to the custom type it
@@ -383,6 +376,11 @@ fn param_position_map(function: glance.Function) -> Dict(String, Int) {
     }
   })
 }
+
+// Constructor-binding collection
+//
+// A standalone module walk that gathers every constructor call in function
+// bodies, feeding the constructor-field effect index.
 
 // One constructor call found in a function body. `module` is the constructor's
 // resolved module path for a qualified call (`a.Validator(..)`), or `None` for
@@ -563,6 +561,37 @@ fn ctor_binding(
   ConstructorBinding(module:, constructor:, fields:)
 }
 
+// Extraction entry points and scope walk
+//
+// The public entry points that walk a function body, the parameter/capture
+// seeding they start from, and the statement-by-statement scope threading
+// (including `use` desugaring).
+
+// Result of extracting calls from a function body.
+//
+// `call_args` maps a call's `span_key` (its full span) to its arguments. Only
+// populated for resolved calls — local and field calls don't need argument
+// tracking for substitution yet.
+pub type ExtractResult {
+  ExtractResult(
+    resolved: List(ResolvedCall),
+    local: List(LocalCall),
+    field: List(FieldCall),
+    references: List(ResolvedCall),
+    direct_ops: List(DirectOperatorCall),
+    direct_pipe_ops: List(DirectPipeOp),
+    // Directly-applied let-bound closures / case-of-functions (`let h = fn(x)
+    // { … }; h(a)`): lifted and applied with their binding-site walk supplying
+    // first-order/captured effects.
+    direct_closure_ops: List(DirectClosureCall),
+    // Spans of applications whose callee is an opaque computed function value
+    // (`funcs.0(x)`): applying it could do anything, so each collapses to
+    // [Unknown] rather than being silently dropped as pure.
+    unknown_apps: List(glance.Span),
+    call_args: Dict(#(Int, Int), List(CallArgument)),
+  )
+}
+
 // Extract all calls from a list of statements, with an empty lexical scope.
 pub fn extract_calls(
   statements: List(Statement),
@@ -672,6 +701,11 @@ fn bind_names(
   })
 }
 
+// Bind a closure's parameters as `BoundParam` in a child scope.
+fn bind_closure_params(env: Env, parameters: List(glance.FnParameter)) -> Env {
+  bind_names(env, list.map(parameters, fn(p) { p.name }), BoundParam)
+}
+
 // Walk a sequence of statements threading the binding env forward so
 // later statements see earlier `let`s. The final env is discarded —
 // block/closure bindings don't leak back to the enclosing scope.
@@ -749,7 +783,11 @@ fn use_pattern_to_fn_param(pattern: glance.UsePattern) -> glance.FnParameter {
   glance.FnParameter(name:, type_: None)
 }
 
-// PRIVATE
+// Call resolution
+//
+// Map a call's callee shape to the right result bucket — resolved
+// (module-qualified or imported), local, or field — consulting the lexical
+// environment before import-based lookup.
 
 fn is_constructor_name(name: String) -> Bool {
   types.is_upper_initial(name)
@@ -804,11 +842,6 @@ fn resolve_variable_call(
       ExtractResult(..empty(), local: [LocalCall(path, span)])
     _ -> resolve_unqualified_call(name, span, context)
   }
-}
-
-// Bind a closure's parameters as `BoundParam` in a child scope.
-fn bind_closure_params(env: Env, parameters: List(glance.FnParameter)) -> Env {
-  bind_names(env, list.map(parameters, fn(p) { p.name }), BoundParam)
 }
 
 fn resolve_unqualified_call(
@@ -987,12 +1020,11 @@ fn qualified_reference_lookup(
   }
 }
 
-fn last_segment(module_path: String) -> String {
-  module_path
-  |> string.split("/")
-  |> list.last()
-  |> result.unwrap(module_path)
-}
+// Statement walk and let bindings
+//
+// Extract effects from a single statement and record what each `let`/`use`
+// pattern binds, classifying right-hand sides (constructions, factory calls,
+// aliases, closures) into `LocalBinding`s.
 
 fn extract_from_statement(
   statement: Statement,
@@ -1361,6 +1393,12 @@ fn fold_pattern_names(
     | glance.PatternDiscard(..) -> acc
   }
 }
+
+// Expression walk
+//
+// The recursive walk over every expression shape: dispatch calls to
+// resolution, thread pipes and blocks to their real targets, and apply
+// expression-valued callees so no latent effect is dropped.
 
 fn extract_from_expression(
   expression: Expression,
@@ -1827,6 +1865,12 @@ fn extract_from_clause(
   }
 }
 
+// Argument-value classification
+//
+// Classify an expression used as an argument or callee into an
+// `ArgumentValue` shape (function ref, closure, choice, construction,
+// receiver path), for operator lifting and call-site substitution.
+
 // Build a CallArgument list from glance fields, starting at a given
 // position offset (used by pipes to leave position 0 for the piped value).
 fn classify_arguments(
@@ -2129,6 +2173,49 @@ fn classify_call_producer(
     | OtherExpression -> OtherExpression
   }
 }
+
+// Classify the clause bodies of a `case` as a `Choice` of function-like
+// options, or `OtherExpression` if any body isn't a bare function/closure/
+// branch (or there are no clauses).
+fn classify_case_options(
+  clauses: List(glance.Clause),
+  context: ImportContext,
+  env: Env,
+) -> types.ArgumentValue {
+  let options =
+    list.map(clauses, fn(clause) {
+      classify_expression(clause.body, context, env)
+    })
+  // `LocalRef` is admitted: a same-module function resolves via the function
+  // map at the use site, and a genuinely opaque local just lifts to `[Unknown]`
+  // (sound). Only constructors and unclassifiable expressions disqualify a branch.
+  let all_function_like =
+    options != []
+    && list.all(options, fn(option) {
+      case option {
+        FunctionRef(..)
+        | LocalRef(..)
+        | types.Closure(..)
+        | types.Choice(..)
+        | types.ReturnedOperator(..)
+        | types.CallResult(..) -> True
+        ConstructorRef
+        | types.ReceiverPath(..)
+        | Constructed(..)
+        | OtherExpression -> False
+      }
+    })
+  case all_function_like {
+    True -> types.Choice(options)
+    False -> OtherExpression
+  }
+}
+
+// Return provenance
+//
+// Trace what a function returns back to its parameters — passthroughs,
+// parameter-rooted paths, constructors rebuilt from parameters, joins over
+// branches — with a fixpoint for direct self-recursion.
 
 // The value a function evaluates to, for returned-operator inference: the tail
 // statement's expression classified with only the import context in scope
@@ -2490,42 +2577,10 @@ fn split_root(path: String) -> #(String, Option(String)) {
   }
 }
 
-// Classify the clause bodies of a `case` as a `Choice` of function-like
-// options, or `OtherExpression` if any body isn't a bare function/closure/
-// branch (or there are no clauses).
-fn classify_case_options(
-  clauses: List(glance.Clause),
-  context: ImportContext,
-  env: Env,
-) -> types.ArgumentValue {
-  let options =
-    list.map(clauses, fn(clause) {
-      classify_expression(clause.body, context, env)
-    })
-  // `LocalRef` is admitted: a same-module function resolves via the function
-  // map at the use site, and a genuinely opaque local just lifts to `[Unknown]`
-  // (sound). Only constructors and unclassifiable expressions disqualify a branch.
-  let all_function_like =
-    options != []
-    && list.all(options, fn(option) {
-      case option {
-        FunctionRef(..)
-        | LocalRef(..)
-        | types.Closure(..)
-        | types.Choice(..)
-        | types.ReturnedOperator(..)
-        | types.CallResult(..) -> True
-        ConstructorRef
-        | types.ReceiverPath(..)
-        | Constructed(..)
-        | OtherExpression -> False
-      }
-    })
-  case all_function_like {
-    True -> types.Choice(options)
-    False -> OtherExpression
-  }
-}
+// Result assembly
+//
+// Build and combine `ExtractResult`s: span-keyed call-argument recording,
+// sub-expression folds, and the empty/merge pair every walk reduces through.
 
 // The `call_args` key for a call: its full `#(span start, span end)`. The full
 // span — not just the start — is the key because an immediate application

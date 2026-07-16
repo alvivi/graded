@@ -16,6 +16,11 @@ import graded/internal/types.{
 import qcheck
 import simplifile
 
+// Knowledge-base lookups
+//
+// Resolving qualified names against the default knowledge base: catalogued
+// effectful functions, pure stdlib modules, and the Unknown fallback.
+
 fn knowledge_base() -> effects.KnowledgeBase {
   effects.empty_knowledge_base()
 }
@@ -55,6 +60,11 @@ pub fn lookup_unknown_variant_test() {
   |> should.equal(effects.Unknown)
 }
 
+// Effect-set formatting
+//
+// Rendering effect sets as the bracketed, sorted list syntax used in spec
+// files.
+
 pub fn format_effect_set_empty_test() {
   effects.format_effect_set(Specific(set.new()))
   |> should.equal("[]")
@@ -69,7 +79,10 @@ pub fn format_wildcard_set_test() {
   effects.format_effect_set(Wildcard) |> should.equal("[_]")
 }
 
-// ──── Spec File Effects ────
+// Spec file effects
+//
+// Loading `effects` lines from a spec file into a lookup dict; `check` lines
+// and missing files contribute nothing.
 
 pub fn load_spec_effects_test() {
   let spec_path = "/tmp/graded_load_spec_effects.graded"
@@ -110,7 +123,10 @@ pub fn load_spec_effects_missing_file_test() {
   |> should.equal(0)
 }
 
-// ──── EffectSet Lattice Laws ────
+// EffectSet lattice laws
+//
+// Property tests: subset is a partial order with empty as bottom and Wildcard
+// as top, and union is its idempotent, commutative join.
 
 pub fn subset_reflexivity_test() {
   use a <- qcheck.given(generators.effect_set_gen())
@@ -225,7 +241,10 @@ pub fn subset_union_compatibility_test() {
   subset |> should.equal(union_eq)
 }
 
-// ──── Polymorphic Effect Sets ────
+// Polymorphic effect sets
+//
+// Effect sets carrying variables: variable detection and how union merges
+// labels and variables across operands.
 
 pub fn has_variables_specific_is_false_test() {
   types.has_variables(types.from_labels(["Stdout"])) |> should.be_false()
@@ -258,7 +277,10 @@ pub fn union_polymorphic_and_specific_test() {
   |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["e"])))
 }
 
-// ──── Semver Ordering Laws ────
+// Semver ordering laws
+//
+// Property tests over the catalog's version comparison: total-order laws and
+// parse/format round-tripping.
 
 fn semver_gen() -> qcheck.Generator(#(Int, Int, Int)) {
   qcheck.map2(
@@ -349,7 +371,10 @@ pub fn parse_semver_roundtrip_test() {
   reparsed |> should.equal(s)
 }
 
-// ──── Path Dependencies ────
+// Path dependencies
+//
+// Extracting `{ path = ... }` dependencies from gleam.toml, tolerating files
+// with none and missing files.
 
 pub fn parse_path_dependencies_test() {
   let toml_path = "test/fixtures/gleam_with_path_deps.toml"
@@ -380,6 +405,11 @@ pub fn parse_path_dependencies_missing_file_test() {
   effects.parse_path_dependencies("nonexistent.toml")
   |> should.equal([])
 }
+
+// Knowledge-base enrichment
+//
+// Merging inferred effects and returned operators into the knowledge base:
+// existing entries keep priority, new entries are added.
 
 pub fn with_inferred_does_not_overwrite_test() {
   let kb = knowledge_base()
@@ -429,6 +459,11 @@ pub fn with_inferred_adds_new_entries_test() {
   |> should.equal(Specific(set.from_list(["Http"])))
 }
 
+// Catalog version selection
+//
+// pick_best_version returns an eligible entry (at or below the installed
+// version) whenever one exists.
+
 pub fn pick_best_version_eligible_test() {
   use #(versions, installed) <- qcheck.given(
     qcheck.map2(
@@ -455,7 +490,10 @@ pub fn pick_best_version_eligible_test() {
   }
 }
 
-// argument_value_effects (Stage C construction-index value resolution)
+// Argument value effects
+//
+// Stage C construction-index value resolution: a FunctionRef resolves through
+// the knowledge base, constructors are pure, anything else is Unknown.
 
 pub fn argument_value_effects_resolves_function_ref_test() {
   // A FunctionRef resolves against the KB, including inferred project effects.
@@ -491,7 +529,10 @@ pub fn argument_value_effects_other_is_unknown_test() {
   |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
-// Type-field keys are qualified by the defining module (no cross-module collision)
+// Type-field registry
+//
+// Type-field keys are qualified by the defining module (no cross-module
+// collision), and dependency spec `type` lines load into the registry.
 
 pub fn type_fields_distinguish_modules_test() {
   // Two `Validator` types in different modules, same field — must NOT conflate.
@@ -546,9 +587,13 @@ pub fn load_knowledge_base_loads_dependency_type_fields_test() {
   Nil
 }
 
-// The catalog directory resolves via graded's own install location (its bundled
-// `priv`), not a bare cwd-relative path — so an out-of-tree run still finds the
-// catalog instead of silently degrading every catalogued call to [Unknown].
+// Catalog directory resolution
+//
+// The catalog directory resolves via graded's own install location (its
+// bundled `priv`), not a bare cwd-relative path — so an out-of-tree run still
+// finds the catalog instead of silently degrading every catalogued call to
+// [Unknown].
+
 pub fn catalog_directory_anchored_on_install_location_test() {
   let directory = effects.catalog_directory()
 

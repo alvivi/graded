@@ -6,7 +6,10 @@ import graded/internal/signatures
 import graded/internal/types.{QualifiedName}
 import simplifile
 
-// ──── Glance AST detection ────
+// Glance AST detection
+//
+// Detecting fn-typed parameters and record fields straight from a parsed
+// glance module, since that syntax-level pass is what feeds the registry.
 
 pub fn glance_detects_fn_typed_param_test() {
   let source =
@@ -103,7 +106,10 @@ pub type Wrapped {
   |> should.equal(set.new())
 }
 
-// ──── Loading from a packages directory ────
+// Loading from a packages directory
+//
+// Building a signature registry by walking dependency sources on disk, using
+// a temporary fake packages directory.
 
 pub fn load_from_packages_dir_walks_dep_sources_test() {
   let dir = "/tmp/graded_signatures_test_pkgs"

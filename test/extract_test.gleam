@@ -9,6 +9,12 @@ import graded/internal/types.{
   Opaque, OtherExpression, Passthrough, Path, QualifiedName,
 }
 
+// Return provenance
+//
+// `return_provenance` traces a function's return value back to its parameters
+// — passthroughs, field paths, rebuilt records, joins over branches — and
+// widens to `Opaque` wherever the value can't be traced.
+
 fn provenance_of(src: String) -> types.ReturnProvenance {
   let assert Ok(module) = glance.module(src)
   let ctx =
@@ -314,6 +320,11 @@ fn target(resolver) { Options(label: \"\", resolver: resolver) }",
   |> should.equal(Build(dict.from_list([#("resolver", FieldParam(0))])))
 }
 
+// Call extraction
+//
+// `extract_calls` walks a function body and sorts every call it finds into the
+// resolved (qualified), local (unqualified), reference, and field categories.
+
 fn parse_and_extract(src: String) -> extract.ExtractResult {
   let assert Ok(module) = glance.module(src)
   let ctx = extract.build_import_context(module)
@@ -506,7 +517,10 @@ pub fn target() { output.println(\"hi\") }"
   |> should.equal([QualifiedName("gleam/io", "println")])
 }
 
-// Field call tests
+// Field calls
+//
+// `object.field(args)` on a parameter receiver is recorded as a field call for
+// type-directed resolution; a module import receiver is not.
 
 pub fn field_access_call_test() {
   let src = "pub fn target(handler) { handler.on_click(event) }"
@@ -527,7 +541,19 @@ pub fn field_access_pipe_test() {
   fc.label |> should.equal("on_click")
 }
 
-// Constructor tests
+pub fn import_not_confused_with_field_test() {
+  let src =
+    "import gleam/io
+pub fn target() { io.println(\"hi\") }"
+  let result = parse_and_extract(src)
+  result.resolved |> list.length() |> should.equal(1)
+  result.field |> should.equal([])
+}
+
+// Constructors
+//
+// Record constructors are pure, so applying or piping into one is not tracked
+// as a call.
 
 pub fn constructors_not_tracked_as_calls_test() {
   let src =
@@ -562,16 +588,10 @@ pub fn pipe_to_constructor_not_tracked_test() {
   result.local |> should.equal([])
 }
 
-pub fn import_not_confused_with_field_test() {
-  let src =
-    "import gleam/io
-pub fn target() { io.println(\"hi\") }"
-  let result = parse_and_extract(src)
-  result.resolved |> list.length() |> should.equal(1)
-  result.field |> should.equal([])
-}
-
-// ──── Local binding resolution (same-function value flow) ────
+// Local binding resolution
+//
+// Same-function value flow: `let`-bound function references, block tails, case
+// choices, and constructor fields resolve at the call or argument site.
 
 pub fn case_of_function_refs_is_choice_arg_test() {
   // A `case` whose arms are all function references becomes a `Choice` argument.
@@ -855,7 +875,10 @@ pub fn target(xs) {
   |> should.equal(FunctionRef(QualifiedName("gleam/io", "println")))
 }
 
-// Stage C: constructor-field harvesting
+// Constructor-field harvesting
+//
+// Module-level collection of constructor bindings and the constructor-to-type
+// map, which feed field-effect derivation from construction sites.
 
 pub fn constructor_type_map_distinguishes_constructor_from_type_test() {
   // A type whose constructor name differs from the type name. The index must
@@ -908,7 +931,10 @@ pub fn pick(flag) {
   list.length(bindings) |> should.equal(2)
 }
 
-// Cross-module positional constructor args (limitation 1b)
+// Cross-module positional constructor args
+//
+// A positional argument to a constructor defined in another module resolves to
+// its field only when the package-wide label map is supplied.
 
 const cross_module_ctor = "import gleam/io
 import app/validator
@@ -943,7 +969,8 @@ pub fn cross_module_positional_unresolved_without_labels_test() {
   dict.get(binding.fields, "to_error") |> should.equal(Error(Nil))
 }
 
-// ──── Effects inside panic/todo/echo/bitstring sub-expressions ────
+// Effects inside panic, todo, echo, and bitstring sub-expressions
+//
 // These positions hold arbitrary expressions; a call inside them must still
 // be counted, not dropped as a leaf node.
 

@@ -9,6 +9,11 @@ import graded/internal/types.{
 }
 import qcheck
 
+// Example-based formatting
+//
+// Concrete spec inputs run through parse_file and format_sorted, asserting
+// exact output: comment preservation, sorting, and spacing normalization.
+
 pub fn preserves_comments_test() {
   let input =
     "// file header
@@ -71,7 +76,10 @@ pub fn sorts_effect_labels_test() {
   |> should.equal("effects handler : [Db, Http, Stdout]\n")
 }
 
-// ──── format_sorted Ordering Invariants (property) ────
+// Ordering invariants (property)
+//
+// qcheck properties over generated spec files: format_sorted keeps sections
+// in a fixed order, sorts entries alphabetically, and ends with a newline.
 
 pub fn format_sorted_section_order_test() {
   use file <- qcheck.given(generators.graded_file_gen())

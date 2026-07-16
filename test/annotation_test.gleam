@@ -14,7 +14,10 @@ import graded/internal/types.{
 }
 import qcheck
 
-// --- Parse ---
+// Parse
+//
+// Line-level parsing of `effects` and `check` annotations: effect sets,
+// interleaved comments and blank lines, and rejection of malformed input.
 
 pub fn empty_effects_test() {
   let input = "effects view : []"
@@ -104,7 +107,10 @@ pub fn missing_brackets_test() {
   let assert Error(_) = annotation.parse(input)
 }
 
-// --- parse_file structure preservation ---
+// File parsing
+//
+// `parse_file` preserves comments and blank lines as structured lines, and
+// `extract_checks` pulls the check annotations back out of a parsed file.
 
 pub fn parse_file_preserves_structure_test() {
   let input =
@@ -146,7 +152,9 @@ check handle_click : [Http]"
   |> should.be_true()
 }
 
-// --- Format ---
+// Format
+//
+// Serializing annotations back into spec-file lines.
 
 pub fn format_annotation_effects_test() {
   let ann =
@@ -173,7 +181,10 @@ pub fn format_annotation_check_test() {
   |> should.equal("check update : [Dom, Http]")
 }
 
-// --- Parameter bounds ---
+// Parameter bounds
+//
+// Higher-order budgets on parameters (`f: [Stdout]`): parsing and formatting,
+// with single and multiple bounds on both `effects` and `check` lines.
 
 pub fn parse_single_param_bound_test() {
   let input = "effects apply(f: [Stdout]) : []"
@@ -255,7 +266,9 @@ pub fn format_annotation_with_multiple_params_test() {
   |> should.equal("check transform(f: [], g: [Http]) : [Http]")
 }
 
-// --- Type field annotations ---
+// Type field annotations
+//
+// `type T.field : [...]` lines, both bare and module-qualified.
 
 pub fn parse_type_field_test() {
   let input = "type Handler.on_click : [Dom]"
@@ -318,7 +331,9 @@ pub fn parse_type_field_qualified_deep_module_test() {
   tf.field |> should.equal("validator")
 }
 
-// --- External annotations ---
+// External annotations
+//
+// `external effects module.fn : [...]` lines for third-party functions.
 
 pub fn parse_external_test() {
   let input = "external effects gleam/http/request.send : [Http]"
@@ -349,7 +364,9 @@ pub fn format_external_test() {
   |> should.equal("external effects gleam/httpc.send : [Http]")
 }
 
-// --- Wildcard [_] ---
+// Wildcard [_]
+//
+// The `[_]` effect set in annotations, parameter bounds, and formatting.
 
 pub fn parse_wildcard_effects_test() {
   let input = "effects handler : [_]"
@@ -383,7 +400,10 @@ pub fn format_wildcard_annotation_test() {
   annotation.format_annotation(ann) |> should.equal("effects handler : [_]")
 }
 
-// --- Polymorphic effect variables ---
+// Polymorphic effect variables
+//
+// Effect variables (`e`) in parameter bounds and result sets, alone and mixed
+// with concrete labels.
 
 pub fn parse_polymorphic_single_variable_test() {
   let input = "effects apply(f: [e]) : [e]"
@@ -447,7 +467,10 @@ pub fn format_polymorphic_annotation_test() {
   |> should.equal("effects apply(f: [e]) : [Stdout, e]")
 }
 
-// ──── Parse/Format Roundtrips (property) ────
+// Parse/format roundtrips (property)
+//
+// qcheck properties: formatting then parsing is the identity for annotations,
+// type fields, externals, and whole files; sorted formatting is idempotent.
 
 pub fn annotation_roundtrip_test() {
   use a <- qcheck.given(generators.annotation_gen())
@@ -487,7 +510,11 @@ pub fn format_sorted_idempotence_test() {
   s1 |> should.equal(s2)
 }
 
-// ──── merge_inferred Preservation (property) ────
+// merge_inferred
+//
+// Merging freshly inferred effects into an existing file: non-effects lines
+// survive in order, the effects lines track the inferred set exactly, and an
+// inferred line shadowed by an author-written external declaration is dropped.
 
 pub fn merge_inferred_invariants_test() {
   use #(file, inferred) <- qcheck.given(
@@ -536,8 +563,6 @@ pub fn merge_inferred_invariants_test() {
   })
 }
 
-// ──── merge_inferred drops effects shadowed by an external declaration ────
-
 pub fn merge_inferred_drops_effect_for_external_test() {
   // An author-written `external effects app.ffi : [...]` is authoritative: the
   // inferred `effects app.ffi` line (the opaque-FFI `[Unknown]` default) is
@@ -565,7 +590,11 @@ pub fn merge_inferred_drops_effect_for_external_test() {
   set.contains(effects_fns, "app.other") |> should.be_true()
 }
 
-// ──── Second-order serialization (operator applications) ────
+// Second-order serialization
+//
+// Operator applications (`action([Stdout])`) in effect terms: formatting,
+// parsing, curried multi-argument applications, and operator-typed parameter
+// bounds.
 
 pub fn format_second_order_application_test() {
   let ann =
@@ -642,7 +671,18 @@ pub fn roundtrip_multi_param_operator_bound_test() {
   annotation.format_annotation(ann) |> should.equal(line)
 }
 
-// ──── Field bounds (`param.field: [..]`) ────
+pub fn second_order_roundtrip_property_test() {
+  // P-SER-2: parse ∘ format is identity on normalized serializable terms.
+  use term <- qcheck.given(generators.serializable_effect_term_gen())
+  let normalized = effect_term.normalize(term)
+  let ann = EffectAnnotation(Effects, "f", [], normalized)
+  let assert Ok([parsed]) = annotation.parse(annotation.format_annotation(ann))
+  parsed.effects |> should.equal(normalized)
+}
+
+// Field bounds
+//
+// `param.field: [...]` bounds naming a function-typed field of a parameter.
 
 pub fn parse_field_bound_test() {
   // A field bound's name is the `param.field` path; it parses like any other
@@ -669,9 +709,10 @@ pub fn roundtrip_mixed_param_and_field_bound_test() {
   annotation.format_annotation(ann) |> should.equal(line)
 }
 
-fn union_vars(first: EffectTerm, second: String) -> EffectTerm {
-  effect_term.normalize(TUnion([first, TVar(second)]))
-}
+// Returns annotations
+//
+// `returns module.fn : fn(cb) -> [...]` lines carrying an operator term for a
+// function's return value.
 
 pub fn returns_line_round_trip_test() {
   let line = "returns app/dep.pick : fn(cb) -> [cb]"
@@ -691,11 +732,10 @@ pub fn returns_line_multi_callback_round_trip_test() {
   annotation.format_file(file) |> should.equal(line)
 }
 
-pub fn second_order_roundtrip_property_test() {
-  // P-SER-2: parse ∘ format is identity on normalized serializable terms.
-  use term <- qcheck.given(generators.serializable_effect_term_gen())
-  let normalized = effect_term.normalize(term)
-  let ann = EffectAnnotation(Effects, "f", [], normalized)
-  let assert Ok([parsed]) = annotation.parse(annotation.format_annotation(ann))
-  parsed.effects |> should.equal(normalized)
+// Helpers
+//
+// Shared term-building shorthand used by tests across sections.
+
+fn union_vars(first: EffectTerm, second: String) -> EffectTerm {
+  effect_term.normalize(TUnion([first, TVar(second)]))
 }

@@ -25,7 +25,10 @@ import graded/internal/types.{
 }
 import simplifile
 
-// helpers
+// Helpers
+//
+// Fixture builders that materialise project trees under /tmp, plus readback
+// helpers for the .graded files inference writes.
 
 fn make_fixture(name: String, files: List(#(String, String))) -> String {
   write_fixture("/tmp/graded_topo_" <> name, [stdlib_manifest(), ..files])
@@ -176,7 +179,10 @@ fn with_labels(labels: List(String)) -> EffectSet {
   Specific(set.from_list(labels))
 }
 
-// chain (the reported issue, verbatim)
+// Chain
+//
+// A four-module pure chain resolves in a single `graded infer` pass instead
+// of needing one run per dependency level.
 
 pub fn chain_resolves_in_one_pass_test() {
   let directory = make_fixture("chain", pure_chain_files())
@@ -209,7 +215,10 @@ pub fn chain_resolves_in_one_pass_test() {
   cleanup(directory)
 }
 
-// diamond
+// Diamond
+//
+// One effectful leaf reached through two branches; the apex reports the
+// effect once.
 
 pub fn diamond_propagates_effects_through_both_branches_test() {
   let directory =
@@ -272,7 +281,9 @@ pub fn run() -> Nil {
   cleanup(directory)
 }
 
-// fan-out (one leaf, many dependents)
+// Fan-out (one leaf, many dependents)
+//
+// Many modules depending on the same leaf all resolve in one pass.
 
 pub fn fanout_resolves_all_dependents_in_one_pass_test() {
   let leaf =
@@ -316,7 +327,9 @@ pub fn run(value: String) -> String {
   cleanup(directory)
 }
 
-// impure chain (effect propagates through 4 modules)
+// Impure chain (effect propagates through 4 modules)
+//
+// The leaf's Stdout effect reaches every module up to the root in one pass.
 
 pub fn impure_chain_propagates_effect_to_root_test() {
   let directory = make_fixture("impure_chain", impure_chain_files())
@@ -344,7 +357,9 @@ pub fn impure_chain_propagates_effect_to_root_test() {
   cleanup(directory)
 }
 
-// leaf only (single module, no project imports)
+// Leaf only (single module, no project imports)
+//
+// The degenerate one-module project still infers and writes its cache file.
 
 pub fn single_module_with_no_project_imports_test() {
   let directory =
@@ -368,7 +383,10 @@ pub fn shout(value: String) -> String {
   cleanup(directory)
 }
 
-// Risk 2: modules without prior .graded files get .graded files written
+// Clean-slate inference
+//
+// Modules without prior .graded files get cache files written by a single
+// inference run.
 
 pub fn infer_writes_graded_files_from_clean_slate_test() {
   let directory = make_fixture("clean_slate", pure_chain_files())
@@ -388,11 +406,12 @@ pub fn infer_writes_graded_files_from_clean_slate_test() {
   cleanup(directory)
 }
 
-// inference idempotence (the fix's core promise)
+// Inference idempotence (the fix's core promise)
+//
+// A second `run_infer` against the same project must produce byte-identical
+// `.graded` files. If this regresses, inference has stopped converging in
+// one pass.
 
-// Pinning the single-pass convergence: a second `run_infer` against the
-// same project must produce byte-identical `.graded` files. If this
-// regresses, inference has stopped converging in one pass.
 pub fn run_infer_is_idempotent_test() {
   let directory = make_fixture("idempotent", impure_chain_files())
 
@@ -407,7 +426,27 @@ pub fn run_infer_is_idempotent_test() {
   cleanup(directory)
 }
 
-// returned operators cross module/package via the spec (D2)
+fn read_all_graded(directory: String) -> List(#(String, String)) {
+  // Snapshot every .graded file under the test directory: the spec file
+  // at the root plus all the per-module cache files under build/.graded/.
+  // simplifile.get_files already returns regular files only.
+  case simplifile.get_files(directory) {
+    Error(_) -> []
+    Ok(files) ->
+      files
+      |> list.filter(fn(f) { string.ends_with(f, ".graded") })
+      |> list.sort(string.compare)
+      |> list.map(fn(path) {
+        let assert Ok(content) = simplifile.read(path)
+        #(path, content)
+      })
+  }
+}
+
+// Returned operators cross module/package via the spec
+//
+// A producer's `returns` line in the spec lets a consumer in another module
+// resolve a factory-produced handle to precise effects.
 
 pub fn returns_operator_cross_module_end_to_end_test() {
   // A producer that returns a function, consumed in another module. After
@@ -464,7 +503,10 @@ fn with_logger(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
   cleanup(directory)
 }
 
-// check auto-infers project modules missing from the spec (D4)
+// Check auto-infers project modules missing from the spec
+//
+// `check` infers un-specced sibling modules in memory so cross-module calls
+// resolve precisely without a prior `graded infer`.
 
 pub fn check_auto_infers_missing_module_test() {
   // No prior `graded infer`: the spec has only a `check` line and no `effects`
@@ -504,30 +546,14 @@ pub fn run() -> Nil {
   cleanup(directory)
 }
 
-fn read_all_graded(directory: String) -> List(#(String, String)) {
-  // Snapshot every .graded file under the test directory: the spec file
-  // at the root plus all the per-module cache files under build/.graded/.
-  // simplifile.get_files already returns regular files only.
-  case simplifile.get_files(directory) {
-    Error(_) -> []
-    Ok(files) ->
-      files
-      |> list.filter(fn(f) { string.ends_with(f, ".graded") })
-      |> list.sort(string.compare)
-      |> list.map(fn(path) {
-        let assert Ok(content) = simplifile.read(path)
-        #(path, content)
-      })
-  }
-}
+// Spec-file externals are honoured during inference
+//
+// A project module that calls into a third-party package not in the catalog
+// picks up the spec file's `external effects` line during `run_infer`, not
+// fall back to `[Unknown]`. Pre-fix, externals were only consumed by `run`
+// (check), so `infer` produced a noisy spec even when the user had already
+// declared the dependency pure.
 
-// spec-file externals are honoured during inference
-
-// Regression: a project module that calls into a third-party package not
-// in the catalog should pick up the spec file's `external effects` line
-// during `run_infer`, not fall back to `[Unknown]`. Pre-fix, externals
-// were only consumed by `run` (check), so `infer` produced a noisy spec
-// even when the user had already declared the dependency pure.
 pub fn run_infer_honours_spec_file_externals_test() {
   let directory =
     make_fixture("externals_in_infer", [
@@ -560,14 +586,14 @@ pub fn total(a: String, b: String) -> String {
   cleanup(directory)
 }
 
-// cross-module type constructors are pure
-
-// Calls to a custom type constructor defined in a sibling project
-// module should be inferred as pure, regardless of position: as a
-// direct call, at a pipe target, or as a value reference. Side
-// effects inside a constructor's argument list must still propagate.
-// All four positions are exercised against one fixture and one
+// Cross-module type constructors are pure
+//
+// Calls to a custom type constructor defined in a sibling project module are
+// inferred as pure regardless of position — direct call, pipe target, or
+// value reference — while side effects inside a constructor's argument list
+// still propagate. All four positions run against one fixture and one
 // `run_infer` invocation; each function name isolates the case.
+
 pub fn cross_module_type_constructors_resolve_pure_test() {
   let directory =
     make_fixture("cross_module_constructors", [
@@ -630,7 +656,11 @@ pub fn maker() -> fn(String) -> types.MyError {
   cleanup(directory)
 }
 
-// path-dep smoke test
+// Path dependencies
+//
+// Effects, specs, and return-value provenance must cross the path-dependency
+// boundary: a dep is read from its committed spec or inferred from source,
+// and the results reach the consuming project.
 
 // Same regression class as the project chain test (deep transitive
 // effects must propagate in one pass) but exercising the path-dep code
@@ -806,7 +836,10 @@ pub fn caller(resolver: fn() -> Nil) -> Nil {
   cleanup(app_dir)
 }
 
-// polymorphic end-to-end
+// Polymorphic end-to-end
+//
+// Effect-polymorphic functions resolve at call sites where the caller passes
+// a pure type constructor, whether the argument is labelled or positional.
 
 // Caller passes a pure type constructor to a fn-typed parameter.
 // `validation.validate_range` should infer as polymorphic over its
@@ -921,7 +954,11 @@ pub fn new(value: Int) -> List(MyError) {
   Nil
 }
 
-// dense mutual recursion (memoization regression guard)
+// Dense mutual recursion (memoization regression guard)
+//
+// A dense strongly-connected component with exponentially many simple paths
+// must infer without blowup while still propagating the leaf effect around
+// the ring.
 
 // Build a module of `count` mutually-recursive first-order functions forming
 // one dense strongly-connected component: `p_i` calls `p_{i+1}` (a ring) and
@@ -994,13 +1031,14 @@ fn indices_loop(n: Int, acc: List(Int)) -> List(Int) {
   }
 }
 
-// out-of-tree project root resolution (BUG B)
-
+// Out-of-tree project root resolution
+//
 // `infer` against a source directory whose project root is an ancestor (where
 // `gleam.toml` lives) must write the spec and cache under that root, not under
-// the passed source directory. Pre-fix, a non-"src" source argument was treated
-// as the project root itself, scattering `src/src.graded` and `src/build/` into
-// the wrong place with the wrong package name.
+// the passed source directory. Pre-fix, a non-"src" source argument was
+// treated as the project root itself, scattering `src/src.graded` and
+// `src/build/` into the wrong place with the wrong package name.
+
 pub fn infer_roots_spec_at_nearest_gleam_toml_test() {
   let root =
     write_fixture("/tmp/graded_outoftree_root", [

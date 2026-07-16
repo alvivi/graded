@@ -14,6 +14,11 @@ import graded/internal/signatures
 import graded/internal/types
 import simplifile
 
+// Baseline fixture checks
+//
+// End-to-end runs over test/fixtures: pure views and recursive helpers pass
+// their [] budgets, while impure and transitively impure callers fail them.
+
 pub fn pure_view_passes_test() {
   let assert Ok(results) = graded.run("test/fixtures")
   let pure_result =
@@ -91,6 +96,12 @@ pub fn transitive_violation_detected_test() {
   { r.violations != [] } |> should.be_true()
 }
 
+// Field calls on constructed receivers
+//
+// Function-typed fields wired at a visible construction site — a local
+// binding, a factory, an inline construction, or several distinct sites —
+// resolve to the wired effect instead of [Unknown].
+
 pub fn validator_flow_violation_detected_test() {
   // validator_flow.run constructs a Validator locally and calls its
   // field. The field is wired to io.println so the run function's
@@ -156,6 +167,11 @@ pub fn field_union_operator_reduces_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+// External functions
+//
+// Bodyless @external functions infer [Unknown] unless an `external effects`
+// declaration supplies the real effect.
+
 pub fn external_is_unknown_test() {
   // A bodyless `@external` (opaque FFI) is inferred `[Unknown]`, not `[]`, and
   // `run` — which calls it — inherits that. Against a `[]` budget this must be a
@@ -188,6 +204,12 @@ pub fn external_same_module_declared_effects_test() {
   v.function |> should.equal("read_clock")
   v.actual |> should.equal(types.Specific(set.from_list(["Time"])))
 }
+
+// Opaque receivers and field bounds
+//
+// Field calls whose receiver has no visible construction site: `type` lines
+// and hand-written field bounds discharge them, unbound calls stay [Unknown],
+// and inference surfaces the polymorphic field bound.
 
 pub fn opaque_receiver_violation_detected_test() {
   // opaque_receiver.run binds its Validator from make() — a *cross-function*
@@ -283,6 +305,12 @@ fn checker_infer_opaque_field() -> Result(List(types.EffectAnnotation), Nil) {
     dict.new(),
   ))
 }
+
+// Factory forwarding
+//
+// Field wirings that route a factory or constructor argument onto the
+// caller's own parameter, so a caller-side bound can discharge the forwarded
+// effect; untraceable and shadowed receivers stay [Unknown].
 
 pub fn factory_forward_resolves_through_factory_test() {
   // factory_forward.caller calls `inner(make_options(resolver))`: the factory
@@ -465,6 +493,12 @@ fn checker_infer_factory_forward() -> Result(List(types.EffectAnnotation), Nil) 
   ))
 }
 
+// Nested field calls
+//
+// Field calls whose receiver is itself a field access (`o.inner.run()`),
+// resolved via `type` lines or dotted field bounds, falling back to
+// [Unknown] when neither applies.
+
 pub fn nested_field_resolves_via_type_line_test() {
   // nested_field.via_type calls `o.inner.run()` — a NESTED field call whose
   // receiver `o.inner` is itself a field access, not a bare variable. girard
@@ -503,6 +537,12 @@ pub fn nested_field_unbound_is_unknown_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
+// Synthesized-project helpers
+//
+// Scaffolding shared by the sections below: materialise a throwaway project
+// under the gitignored `build/`, run infer or check on it, and assert on the
+// surfaced annotations.
+
 // Materialise a single-package project named `proj` under `root` from `files`
 // (each `#(relative_path, contents)` under the project root), run `graded
 // infer`, and return the inferred public-API annotations parsed back from the
@@ -526,6 +566,55 @@ fn infer_project(
   let assert Ok(file) = annotation.parse_file(content)
   annotation.extract_annotations(file)
 }
+
+fn run_project_with_spec(
+  root: String,
+  source: String,
+  spec: String,
+) -> List(types.CheckResult) {
+  write_project(root, [#("proj.gleam", source)], spec)
+  let assert Ok(results) = graded.run(root)
+  results
+}
+
+// Write a fresh project at `root`: `name = "proj"` gleam.toml, each
+// `#(filename, source)` module at the root, and the `proj.graded` spec.
+fn write_project(
+  root: String,
+  modules: List(#(String, String)),
+  spec: String,
+) -> Nil {
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
+  list.each(modules, fn(file) {
+    let #(path, content) = file
+    let assert Ok(Nil) = simplifile.write(root <> "/" <> path, content)
+    Nil
+  })
+  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", spec)
+  Nil
+}
+
+fn expect_field_bound(
+  annotations: List(types.EffectAnnotation),
+  function: String,
+  field_path: String,
+) {
+  let assert Ok(annotation) =
+    list.find(annotations, fn(a) { a.function == function })
+  let assert Ok(bound) =
+    list.find(annotation.params, fn(b) { b.name == field_path })
+  bound.effects |> should.equal(types.TVar(field_path))
+  annotation.effects |> should.equal(types.TVar(field_path))
+}
+
+// Field-effect forwarding through call hops
+//
+// A callee's field-effect variable re-keys onto the caller's receiver across
+// one or more call hops, surfacing as an inferred field bound the caller's
+// `check` line can discharge.
 
 fn field_forwarding_source() -> String {
   "pub type Options {\n"
@@ -559,29 +648,6 @@ fn field_forwarding_source() -> String {
   <> "pub fn nested_forward(x: Outer) -> Nil {\n"
   <> "  nested_inner(x)\n"
   <> "}\n"
-}
-
-fn run_project_with_spec(
-  root: String,
-  source: String,
-  spec: String,
-) -> List(types.CheckResult) {
-  write_project(root, [#("proj.gleam", source)], spec)
-  let assert Ok(results) = graded.run(root)
-  results
-}
-
-fn expect_field_bound(
-  annotations: List(types.EffectAnnotation),
-  function: String,
-  field_path: String,
-) {
-  let assert Ok(annotation) =
-    list.find(annotations, fn(a) { a.function == function })
-  let assert Ok(bound) =
-    list.find(annotation.params, fn(b) { b.name == field_path })
-  bound.effects |> should.equal(types.TVar(field_path))
-  annotation.effects |> should.equal(types.TVar(field_path))
 }
 
 pub fn field_effect_forwarding_infers_direct_and_hops_test() {
@@ -625,6 +691,12 @@ pub fn field_effect_forwarding_bound_check_uses_forwarded_bound_test() {
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "one_hop" })
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
+
+// Cross-module provenance
+//
+// Return provenance (getters, rebuilds, labeled passthroughs) threads through
+// the knowledge base in topological order, so computed receivers forward
+// across module boundaries.
 
 pub fn provenance_cross_module_getter_resolves_test() {
   // A public getter in another module. `app.caller` calls
@@ -764,6 +836,12 @@ pub fn provenance_cross_module_labeled_resolves_test() {
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
+
+// Receiver-path forwarding
+//
+// Receivers passed as parameter-rooted paths (`config.options`), aliases, or
+// passthrough call results re-key the callee's field variable onto the full
+// path; computed aliases stay conservative.
 
 fn receiver_path_forwarding_source() -> String {
   "pub type Options {\n"
@@ -986,6 +1064,12 @@ pub fn receiver_path_forwarding_param_alias_bound_check_discharges_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+// Field-call shape variants
+//
+// Remaining field-call shapes: dotted round trips, pipe targets, alias-typed
+// fields, same-named imported types, and cross-module `type` lines on nested
+// receivers.
+
 pub fn nested_field_round_trips_as_dotted_field_bound_test() {
   // Inferring a nested fn-typed field call on a same-module type (no `type`
   // line, no field bound) surfaces it as a polymorphic *dotted* field bound —
@@ -1115,6 +1199,12 @@ pub fn nested_field_resolves_cross_module_type_line_test() {
   Nil
 }
 
+// Field effects derived from construction
+//
+// Field effects inferred from what the construction wires in — inline
+// closures, operator-typed closures, and same-module named functions — with
+// no hand-written `type` line.
+
 pub fn closure_field_effect_from_construction_test() {
   // A record field wired to an *inline closure* at construction resolves to the
   // closure body's effect ([Stdout]) without a hand-written `type` annotation —
@@ -1174,6 +1264,12 @@ pub fn local_field_value_resolved_test() {
   v.function |> should.equal("run")
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
+
+// Callback arguments and local resolution
+//
+// Arguments to fn-typed parameters (named, labeled) resolve to their real
+// effects, record-update field values are walked, and parameter shadowing
+// wins over same-module names.
 
 pub fn named_fn_arg_resolves_test() {
   // named_fn_arg.run passes a *same-module named function* (logging_parser :
@@ -1238,6 +1334,11 @@ pub fn aliased_param_call_resolves_through_bound_test() {
   |> should.be_false()
 }
 
+// Infer/check round trip
+//
+// `run_infer` regenerates the fixtures spec in place, preserving the
+// hand-written check lines alongside the inferred effects.
+
 pub fn infer_then_check_round_trip_test() {
   // `run_infer` rewrites the spec file in place, so capture the canonical
   // fixture content up front and restore it at the end — keeping the test
@@ -1270,6 +1371,12 @@ pub fn infer_then_check_round_trip_test() {
   // Restore the captured fixture so subsequent test runs start clean.
   let assert Ok(Nil) = simplifile.write(spec_path, original)
 }
+
+// Dependency effect loading
+//
+// Effects, polymorphic bounds, and module-level externals load from installed
+// and path dependencies — from a committed spec when present, otherwise by
+// inferring the dependency's source.
 
 pub fn run_resolves_deps_from_target_dir_test() {
   // graded.run is handed a project directory that is NOT the process cwd (which
@@ -1550,29 +1657,67 @@ pub fn path_dep_module_external_keeps_returned_operator_test() {
   |> should.be_false()
 }
 
+pub fn path_dep_cross_module_positional_discharges_test() {
+  // Source-only path dep whose module `b` calls another module `a`'s
+  // higher-order function POSITIONALLY (`a.apply(pure_cb)`). Inferring the dep
+  // needs a registry covering its own modules, so the positional callback
+  // matches `apply`'s bound by position — otherwise `b.run` keeps the
+  // unresolved variable and the consumer's [] check fails. Labelled calls
+  // resolved without it (matched by name); this is the positional gap.
+  let app_root = "build/pd_xmod_app"
+  let dep_root = "build/pd_xmod_dep"
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+
+  let assert Ok(Nil) = simplifile.create_directory_all(dep_root <> "/src/dep")
+  let assert Ok(Nil) =
+    simplifile.write(dep_root <> "/gleam.toml", "name = \"dep\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/src/dep/a.gleam",
+      "pub fn apply(f f: fn(String) -> a) -> a {\n  f(\"x\")\n}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dep_root <> "/src/dep/b.gleam",
+      "import dep/a\n\n"
+        <> "fn pure_cb(s: String) -> Int {\n  case s {\n    \"\" -> 0\n    _ -> 1\n  }\n}\n\n"
+        <> "pub fn run() -> Int {\n  a.apply(pure_cb)\n}\n",
+    )
+
+  let assert Ok(Nil) = simplifile.create_directory_all(app_root)
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/gleam.toml",
+      "name = \"app\"\n\n[dependencies]\ndep = { path = \"../pd_xmod_dep\" }\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(app_root <> "/app.graded", "check app.caller : []\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      app_root <> "/app.gleam",
+      "import dep/b\n\npub fn caller() -> Int {\n  b.run()\n}\n",
+    )
+
+  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
+  list.any(r.violations, fn(v) { v.function == "caller" })
+  |> should.be_false()
+
+  let _ = simplifile.delete(app_root)
+  let _ = simplifile.delete(dep_root)
+  Nil
+}
+
+// Project-module externals
+//
+// Module-level `external effects` declarations governing sibling project
+// modules, during both check and infer.
+
 // An opaque FFI body graded infers as [Unknown]: the canonical declared-external
 // target across the module-external project fixtures below.
 const ffi_touch = "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n"
-
-// Write a fresh project at `root`: `name = "proj"` gleam.toml, each
-// `#(filename, source)` module at the root, and the `proj.graded` spec.
-fn write_project(
-  root: String,
-  modules: List(#(String, String)),
-  spec: String,
-) -> Nil {
-  let _ = simplifile.delete(root)
-  let assert Ok(Nil) = simplifile.create_directory_all(root)
-  let assert Ok(Nil) =
-    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
-  list.each(modules, fn(file) {
-    let #(path, content) = file
-    let assert Ok(Nil) = simplifile.write(root <> "/" <> path, content)
-    Nil
-  })
-  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", spec)
-  Nil
-}
 
 // Write a multi-module project (the extra `modules` plus an `app.gleam`) and its
 // spec, run graded, and return the CheckResult for app.gleam. The project-module
@@ -1733,60 +1878,10 @@ pub fn project_module_external_infer_filters_construction_kb_test() {
   go.effects |> should.equal(types.TLabels(set.from_list(["Database"])))
 }
 
-pub fn path_dep_cross_module_positional_discharges_test() {
-  // Source-only path dep whose module `b` calls another module `a`'s
-  // higher-order function POSITIONALLY (`a.apply(pure_cb)`). Inferring the dep
-  // needs a registry covering its own modules, so the positional callback
-  // matches `apply`'s bound by position — otherwise `b.run` keeps the
-  // unresolved variable and the consumer's [] check fails. Labelled calls
-  // resolved without it (matched by name); this is the positional gap.
-  let app_root = "build/pd_xmod_app"
-  let dep_root = "build/pd_xmod_dep"
-  let _ = simplifile.delete(app_root)
-  let _ = simplifile.delete(dep_root)
-
-  let assert Ok(Nil) = simplifile.create_directory_all(dep_root <> "/src/dep")
-  let assert Ok(Nil) =
-    simplifile.write(dep_root <> "/gleam.toml", "name = \"dep\"\n")
-  let assert Ok(Nil) =
-    simplifile.write(
-      dep_root <> "/src/dep/a.gleam",
-      "pub fn apply(f f: fn(String) -> a) -> a {\n  f(\"x\")\n}\n",
-    )
-  let assert Ok(Nil) =
-    simplifile.write(
-      dep_root <> "/src/dep/b.gleam",
-      "import dep/a\n\n"
-        <> "fn pure_cb(s: String) -> Int {\n  case s {\n    \"\" -> 0\n    _ -> 1\n  }\n}\n\n"
-        <> "pub fn run() -> Int {\n  a.apply(pure_cb)\n}\n",
-    )
-
-  let assert Ok(Nil) = simplifile.create_directory_all(app_root)
-  let assert Ok(Nil) =
-    simplifile.write(
-      app_root <> "/gleam.toml",
-      "name = \"app\"\n\n[dependencies]\ndep = { path = \"../pd_xmod_dep\" }\n",
-    )
-  let assert Ok(Nil) =
-    simplifile.write(app_root <> "/app.graded", "check app.caller : []\n")
-  let assert Ok(Nil) =
-    simplifile.write(
-      app_root <> "/app.gleam",
-      "import dep/b\n\npub fn caller() -> Int {\n  b.run()\n}\n",
-    )
-
-  let assert Ok(results) = graded.run(app_root)
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
-  list.any(r.violations, fn(v) { v.function == "caller" })
-  |> should.be_false()
-
-  let _ = simplifile.delete(app_root)
-  let _ = simplifile.delete(dep_root)
-  Nil
-}
-
-// function-typed fields on dependency-defined types
+// Function-typed fields on dependency-defined types
+//
+// `type` field annotations for dependency-defined records, whether declared
+// in the consumer's own spec or shipped by the dependency itself.
 
 pub fn path_dep_type_field_resolves_from_consumer_spec_test() {
   // A path dep defines a capability record `Repo(find: fn(String) -> Int)`. The
@@ -1903,6 +1998,12 @@ pub fn installed_dep_ships_type_field_test() {
   let _ = simplifile.delete(root)
   Nil
 }
+
+// Return provenance
+//
+// Same-module return provenance: passthroughs, getters, rebuilds, joins, and
+// recursion forward constructed receivers into callee field calls, widening
+// to [Unknown] only where the return can't be traced.
 
 pub fn provenance_passthrough_resolves_test() {
   // provenance_passthrough.caller passes `id_options(Options(resolver:

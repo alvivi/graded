@@ -17,7 +17,11 @@ import graded/internal/types.{
 }
 import simplifile
 
-// helpers
+// Helpers
+//
+// Fixture-project scaffolding shared by all tests below: materialise a project
+// under `/tmp/`, run the checker or inferrer, and read back warnings or
+// inferred effects.
 
 fn write_fixture(directory: String, files: List(#(String, String))) -> String {
   let _ = simplifile.delete(directory)
@@ -103,6 +107,9 @@ fn labels(xs: List(String)) -> EffectSet {
 }
 
 // Lustre 5 catalog
+//
+// The catalog entries for Lustre 5: app constructors are pure while the
+// runtime functions that mount an app carry their real effects.
 
 pub fn lustre5_constructors_are_pure_test() {
   let directory =
@@ -161,7 +168,11 @@ fn options() {
   cleanup(directory)
 }
 
-// spec-annotation lint
+// Spec-annotation lint
+//
+// The lint that warns on `check`/`type` lines whose target exists nowhere in
+// the project: unqualified or misspelled names are flagged, while targets that
+// resolve — including through dependencies and function-type aliases — are not.
 
 const opts_module = "import gleam/io
 

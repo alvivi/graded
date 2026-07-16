@@ -20,6 +20,12 @@ import graded/internal/types.{
 import simplifile
 import tom
 
+// Knowledge base
+//
+// The KnowledgeBase record bundling every effect source (dependencies,
+// catalog, externals, inferred data), with the lookup and merge operations
+// the checker and inference passes use against it.
+
 pub type EffectLookup {
   Known(EffectTerm)
   Unknown
@@ -269,8 +275,91 @@ pub fn format_effect_set(effect_set: EffectSet) -> String {
   annotation.format_effect_set(effect_set)
 }
 
-// Parse gleam.toml to find path dependencies.
-// Returns a list of #(package_name, source_directory) pairs.
+// Merge inferred effects into a knowledge base.
+// Existing entries in the knowledge base take priority.
+pub fn with_inferred(
+  knowledge_base: KnowledgeBase,
+  inferred: Dict(QualifiedName, EffectTerm),
+) -> KnowledgeBase {
+  let merged = dict.merge(inferred, knowledge_base.all_effects)
+  KnowledgeBase(..knowledge_base, all_effects: merged)
+}
+
+// Merge inferred param bounds into a knowledge base. Used so that
+// call-site substitution can resolve effect variables for functions
+// inferred earlier in the topo-sort pass.
+// Existing entries take priority.
+pub fn with_inferred_params(
+  knowledge_base: KnowledgeBase,
+  inferred: Dict(QualifiedName, List(types.ParamBound)),
+) -> KnowledgeBase {
+  let merged = dict.merge(inferred, knowledge_base.param_bounds)
+  KnowledgeBase(..knowledge_base, param_bounds: merged)
+}
+
+// Merge inferred returned-operator signatures into a knowledge base, so a
+// downstream module's `let h = producer(); with(h)` can resolve `h` to the
+// operator the producer returns. Existing entries take priority.
+pub fn with_inferred_returned_operators(
+  knowledge_base: KnowledgeBase,
+  inferred: Dict(QualifiedName, EffectTerm),
+) -> KnowledgeBase {
+  let merged = dict.merge(inferred, knowledge_base.returned_operators)
+  KnowledgeBase(..knowledge_base, returned_operators: merged)
+}
+
+// Attach the package-wide factory map (keyed by `#(module, function)`), so a
+// let-bound cross-module factory call binds its result's fields. Replaces any
+// existing map (it's computed once per run).
+pub fn with_factories(
+  knowledge_base: KnowledgeBase,
+  factories: Dict(#(String, String), FactorySignature),
+) -> KnowledgeBase {
+  KnowledgeBase(..knowledge_base, factories:)
+}
+
+// The package-wide factory map, for threading into a module's extraction
+// context as its cross-module factories.
+pub fn factories(
+  knowledge_base: KnowledgeBase,
+) -> Dict(#(String, String), FactorySignature) {
+  knowledge_base.factories
+}
+
+// Look up the operator a function returns, if known. `Error(Nil)` when the
+// callee doesn't return a (tracked) operator.
+pub fn lookup_returned_operator(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Result(EffectTerm, Nil) {
+  dict.get(knowledge_base.returned_operators, name)
+}
+
+// Merge inferred return-value provenance into a knowledge base, so a downstream
+// module's computed receiver (`inner(other.get_options(config))`) can resolve the
+// callee's return path. Existing entries take priority.
+pub fn with_provenance(
+  knowledge_base: KnowledgeBase,
+  inferred: Dict(QualifiedName, ReturnProvenance),
+) -> KnowledgeBase {
+  let merged = dict.merge(inferred, knowledge_base.provenance)
+  KnowledgeBase(..knowledge_base, provenance: merged)
+}
+
+// Look up a function's return-value provenance, if known. `Error(Nil)` when the
+// callee's provenance wasn't tracked (a private helper resolves on demand).
+pub fn lookup_provenance(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Result(ReturnProvenance, Nil) {
+  dict.get(knowledge_base.provenance, name)
+}
+
+// Dependency sources
+//
+// Locating dependency source code on disk: module-path -> file maps for
+// installed packages and path dependencies declared in gleam.toml.
+
 // Map of module path -> source file for every `.gleam` under each installed
 // dependency's `src/` directory. Derived from file paths (no parsing), so it's
 // cheap and covers type-only modules. Used both to confirm that a qualified
@@ -304,6 +393,8 @@ pub fn source_dir_module_files(source_dir: String) -> Dict(String, String) {
   }
 }
 
+// Parse gleam.toml to find path dependencies.
+// Returns a list of #(package_name, source_directory) pairs.
 pub fn parse_path_dependencies(
   gleam_toml_path: String,
 ) -> List(#(String, String)) {
@@ -332,6 +423,11 @@ pub fn parse_path_dependencies(
   }
   result.unwrap(parsed, [])
 }
+
+// Spec files
+//
+// Reading .graded spec files into effect, param-bound, returned-operator, and
+// type-field maps, for the project spec and for installed dependencies.
 
 // Load inferred effects from a package's spec file. The spec file uses
 // module-qualified function names (e.g. `myapp/router.handle`) so each
@@ -443,88 +539,6 @@ fn fold_spec_returns(
   })
 }
 
-// Merge inferred effects into a knowledge base.
-// Existing entries in the knowledge base take priority.
-pub fn with_inferred(
-  knowledge_base: KnowledgeBase,
-  inferred: Dict(QualifiedName, EffectTerm),
-) -> KnowledgeBase {
-  let merged = dict.merge(inferred, knowledge_base.all_effects)
-  KnowledgeBase(..knowledge_base, all_effects: merged)
-}
-
-// Merge inferred param bounds into a knowledge base. Used so that
-// call-site substitution can resolve effect variables for functions
-// inferred earlier in the topo-sort pass.
-// Existing entries take priority.
-pub fn with_inferred_params(
-  knowledge_base: KnowledgeBase,
-  inferred: Dict(QualifiedName, List(types.ParamBound)),
-) -> KnowledgeBase {
-  let merged = dict.merge(inferred, knowledge_base.param_bounds)
-  KnowledgeBase(..knowledge_base, param_bounds: merged)
-}
-
-// Merge inferred returned-operator signatures into a knowledge base, so a
-// downstream module's `let h = producer(); with(h)` can resolve `h` to the
-// operator the producer returns. Existing entries take priority.
-pub fn with_inferred_returned_operators(
-  knowledge_base: KnowledgeBase,
-  inferred: Dict(QualifiedName, EffectTerm),
-) -> KnowledgeBase {
-  let merged = dict.merge(inferred, knowledge_base.returned_operators)
-  KnowledgeBase(..knowledge_base, returned_operators: merged)
-}
-
-// Attach the package-wide factory map (keyed by `#(module, function)`), so a
-// let-bound cross-module factory call binds its result's fields. Replaces any
-// existing map (it's computed once per run).
-pub fn with_factories(
-  knowledge_base: KnowledgeBase,
-  factories: Dict(#(String, String), FactorySignature),
-) -> KnowledgeBase {
-  KnowledgeBase(..knowledge_base, factories:)
-}
-
-// The package-wide factory map, for threading into a module's extraction
-// context as its cross-module factories.
-pub fn factories(
-  knowledge_base: KnowledgeBase,
-) -> Dict(#(String, String), FactorySignature) {
-  knowledge_base.factories
-}
-
-// Look up the operator a function returns, if known. `Error(Nil)` when the
-// callee doesn't return a (tracked) operator.
-pub fn lookup_returned_operator(
-  knowledge_base: KnowledgeBase,
-  name: QualifiedName,
-) -> Result(EffectTerm, Nil) {
-  dict.get(knowledge_base.returned_operators, name)
-}
-
-// Merge inferred return-value provenance into a knowledge base, so a downstream
-// module's computed receiver (`inner(other.get_options(config))`) can resolve the
-// callee's return path. Existing entries take priority.
-pub fn with_provenance(
-  knowledge_base: KnowledgeBase,
-  inferred: Dict(QualifiedName, ReturnProvenance),
-) -> KnowledgeBase {
-  let merged = dict.merge(inferred, knowledge_base.provenance)
-  KnowledgeBase(..knowledge_base, provenance: merged)
-}
-
-// Look up a function's return-value provenance, if known. `Error(Nil)` when the
-// callee's provenance wasn't tracked (a private helper resolves on demand).
-pub fn lookup_provenance(
-  knowledge_base: KnowledgeBase,
-  name: QualifiedName,
-) -> Result(ReturnProvenance, Nil) {
-  dict.get(knowledge_base.provenance, name)
-}
-
-// PRIVATE
-
 // For each installed package, locate its spec file via the package's own
 // `[tools.graded]` config (defaulting to `<package_name>.graded`), then read
 // and parse it *once*, folding its qualified `effects`/`check` annotations
@@ -589,6 +603,12 @@ fn fold_qualified_annotation(
     }
   }
 }
+
+// Catalog
+//
+// The bundled priv/catalog of versioned .graded files: locating the
+// directory, selecting the best version per installed package against the
+// manifest, and folding the selected files into effect maps.
 
 // The resolved bundled-catalog directory (see `find_catalog_directory`).
 pub fn catalog_directory() -> String {

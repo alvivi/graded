@@ -22,6 +22,11 @@ import graded/internal/types.{
 }
 import qcheck
 
+// Check basics
+//
+// Shared check helper plus the core subset checks: pure budgets, declared
+// effects, transitive calls, closures, and unknown locals.
+
 fn knowledge_base() -> effects.KnowledgeBase {
   effects.empty_knowledge_base()
 }
@@ -185,6 +190,9 @@ pub fn unknown_local_function_test() {
 }
 
 // Infer
+//
+// Effect inference over source modules: ground effects derived from the body,
+// with only public functions reported.
 
 pub fn infer_pure_function_test() {
   let source =
@@ -249,6 +257,9 @@ fn helper() { io.println(\"x\") }"
 }
 
 // Infer respects existing param bounds
+//
+// Hand-written check bounds feed the inferred effects, and girard's
+// fn-typed-param map recovers unannotated higher-order parameters.
 
 pub fn infer_uses_param_bounds_test() {
   let source = "pub fn apply(f, x) { f(x) }"
@@ -353,7 +364,10 @@ pub fn infer_girard_detects_unannotated_fn_typed_param_test() {
   |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
 }
 
-// Higher-order / parameter bound tests
+// Higher-order parameter bounds
+//
+// Calls through fn-typed parameters take their effects from the declared
+// bound; undeclared parameters fall back to [Unknown].
 
 // Case 1: function that calls a parameter — effects come from the declared bound
 pub fn param_call_uses_bound_test() {
@@ -441,7 +455,10 @@ pub fn run(items) {
   |> should.be_true()
 }
 
-// Field call tests (Case 4)
+// Field calls
+//
+// `object.field(args)` resolves through the type-field registry, from the
+// receiver's annotated type or from girard's inferred type.
 
 fn check_source_with_type_fields(
   source: String,
@@ -693,7 +710,10 @@ pub fn field_call_untyped_is_unknown_test() {
   |> should.be_true()
 }
 
-// External declaration tests
+// External declarations
+//
+// `external` annotations resolve third-party and same-module `@external`
+// calls that would otherwise be [Unknown].
 
 fn check_source_with_externals(
   source: String,
@@ -810,7 +830,10 @@ pub fn external_same_module_without_declaration_is_unknown_test() {
   |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
-// Wildcard [_] tests
+// Wildcard budgets
+//
+// The `[_]` wildcard admits any effect, both as a function budget and as a
+// parameter bound.
 
 pub fn wildcard_declared_passes_all_effects_test() {
   let source =
@@ -854,7 +877,10 @@ pub fn wildcard_param_bound_in_pure_function_violates_test() {
   |> should.be_true()
 }
 
-// ──── Function Reference Warnings ────
+// Function reference warnings
+//
+// Effectful function references passed as values and dead (unmatched) bounds
+// emit warnings; pure, unknown, and inline-closure cases stay silent.
 
 fn check_warnings(
   source: String,
@@ -1109,7 +1135,11 @@ pub fn greet_all(names) { list.map(names, fn(n) { io.println(n) }) }"
   |> should.equal([])
 }
 
-// ──── Checker Soundness (property) ────
+// Checker soundness (property)
+//
+// qcheck properties over generated modules: violations occur exactly when
+// effects exceed the budget, and provenance never regresses the opaque
+// baseline.
 
 const call_pool = [
   #("mod_a", "call_http", "Http"),
@@ -1397,7 +1427,9 @@ pub fn infer_matches_actual_effects_test() {
   }
 }
 
-// ──── Cycle Detection (property) ────
+// Cycle detection (property)
+//
+// Infer and check terminate on generated call graphs containing cycles.
 
 fn cycle_graph_gen() -> qcheck.Generator(List(#(String, List(String)))) {
   let names = ["a", "b", "c", "d"]
@@ -1499,7 +1531,10 @@ pub fn check_terminates_with_cycles_test() {
   }
 }
 
-// ──── Polymorphic auto-inference ────
+// Polymorphic auto-inference
+//
+// Fn-typed parameters get auto-generated effect variables and matching
+// bounds; existing check bounds take priority.
 
 fn infer_single(source: String) -> EffectAnnotation {
   let assert Ok(module) = glance.module(source)
@@ -1638,7 +1673,11 @@ pub fn apply(f, x) {
   ann.params |> should.equal([])
 }
 
-// ──── Call-site substitution ────
+// Call-site substitution
+//
+// Arguments at a polymorphic call site bind the callee's effect variables:
+// constructors and function references resolve, unresolvable expressions keep
+// [Unknown].
 
 // KB pre-seeded with a polymorphic callee: `validate_range(to_error: [to_error]) : [to_error]`.
 fn polymorphic_kb() -> effects.KnowledgeBase {
@@ -1905,7 +1944,10 @@ pub fn run() {
   |> should.equal(Specific(set.from_list(["Http", "Stdout"])))
 }
 
-// ──── Two-hop effect unification ────
+// Two-hop effect unification
+//
+// Effect variables thread through chains of polymorphic forwarders and
+// resolve at the outermost call site.
 
 fn list_registry() -> signatures.SignatureRegistry {
   let source =
@@ -2125,7 +2167,10 @@ pub fn run(h: fn(Int) -> Int, x: Int) -> Int {
   |> should.equal(Polymorphic(set.new(), set.from_list(["h"])))
 }
 
-// ──── Polymorphic field-call substitution (review issue #8) ────
+// Polymorphic field-call substitution
+//
+// A field wired to a polymorphic function binds the field call's arguments to
+// its effect variables, including inline closures.
 
 // A KB whose `Task.go` field is wired to a polymorphic function `helper.run_it`
 // (effect variable `action`), plus a registry giving run_it's parameter
@@ -2216,7 +2261,11 @@ pub fn field_call_binds_effectful_closure_test() {
   v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
-// ──── B1: factory field provenance ────
+// Factory field provenance
+//
+// A receiver traced to a factory call resolves its fields from the factory's
+// arguments, same-module or cross-module; untraceable receivers stay
+// [Unknown].
 
 pub fn factory_field_resolves_same_module_test() {
   // A same-module factory wires a field to its parameter; a let-bound factory
@@ -2336,7 +2385,10 @@ pub fn caller() -> Nil {
   |> should.be_true()
 }
 
-// ──── Second-order (nested) effect variables: end-to-end ────
+// Second-order effect variables, end-to-end
+//
+// Nested effect variables (operator applications) resolve through call sites,
+// let bindings, returned functions, pipes, use expressions, and branches.
 
 // Registry + KB modelling the realistic post-topological-inference state:
 // `with_logger(action)` is second-order — its inferred effect is the operator
@@ -3610,7 +3662,10 @@ fn second_order_violations(
   violations
 }
 
-// collapse classification is girard-independent (determinism)
+// Collapse classification
+//
+// Functions are classified as collapsible from syntax alone, independent of
+// girard, so memoization stays deterministic.
 
 // A parameter typed through a module-local function alias (`h: Handler` where
 // `type Handler = fn(...)`) must be recognised as function-typed from the
@@ -3646,8 +3701,10 @@ pub fn plain(x: String) -> String {
   set.contains(cache.collapsible, plain_scc) |> should.be_true()
 }
 
-// Regression: soundness of effect inference for expression-valued callees
-// (Issue 1) and lexical parameters shadowing unqualified imports (Issue 2).
+// Inference soundness regressions
+//
+// Shared single-module infer helpers for the issue-1/2/3 regression sections
+// below.
 
 fn infer_annotation(source: String, name: String) -> EffectAnnotation {
   let assert Ok(module) = glance.module(source)
@@ -3670,7 +3727,10 @@ fn infer_effect_set(source: String, name: String) -> types.EffectSet {
   effect_term.to_effect_set(infer_annotation(source, name).effects)
 }
 
-// --- Issue 1: expression-valued callees ---
+// Expression-valued callees
+//
+// An expression in callee position (IIFE, returned function, case of
+// functions) contributes its resolved effect, never a silent [].
 
 // An immediately invoked closure must propagate its callback's effect.
 pub fn issue1_iife_propagates_callback_test() {
@@ -3925,7 +3985,10 @@ pub fn run() -> Nil { make(io.println)() }"
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
-// --- Issue 2: lexical parameters shadowing unqualified imports ---
+// Lexical parameters shadowing unqualified imports
+//
+// A parameter or let binding that shadows an unqualified import resolves to
+// the lexical binding, not the import.
 
 // A fn-typed parameter shadowing a *pure* unqualified import must contribute
 // its own effect variable, not the (pure) import's effect.
@@ -3987,7 +4050,10 @@ pub fn run(uppercase: String) -> String { apply(uppercase) }"
   |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
-// --- Issue 3: operator closures keep their captured callable bindings ---
+// Operator closures keep their captured callable bindings
+//
+// A closure passed to a second-order parameter resolves captured callables
+// from its binding site instead of re-walking with an empty environment.
 
 // The canonical reproduction: a closure passed to a second-order parameter
 // captures a pure qualified alias (`let suffix = string.append`). Re-analysing

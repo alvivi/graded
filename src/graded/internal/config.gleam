@@ -17,6 +17,12 @@ import gleam/string
 import simplifile
 import tom
 
+// Configuration
+//
+// The `GradedConfig` record and how it is obtained: parsed from a
+// `gleam.toml` via `read`, or built entirely from defaults when no file
+// is available.
+
 // Resolved per-package configuration. Use `read` to load it from a
 // `gleam.toml` path; use `defaults_for` to construct one without IO when
 // the package name is already known (for tests or in-memory fixtures).
@@ -87,6 +93,11 @@ pub fn default_spec_file(package_name: String) -> String {
 pub fn default_cache_dir() -> String {
   "build/.graded"
 }
+
+// Path resolution
+//
+// Derive filesystem and module paths from a package's location: where its
+// spec file lives, and the dotted module name of a source file.
 
 // Resolve the full path to a package's spec file given its root directory and
 // package name. Reads the package's own `[tools.graded].spec_file`, falling

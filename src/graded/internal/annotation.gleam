@@ -16,6 +16,12 @@ import graded/internal/types.{
   TTop, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 
+// Parsing
+//
+// Turn raw .graded text into a structured GradedFile: one recognizer per line
+// kind, with shared grammar helpers for names, effect terms, and operator
+// bounds.
+
 pub type ParseError {
   InvalidLine(line_number: Int, content: String)
 }
@@ -37,364 +43,6 @@ pub fn parse(input: String) -> Result(List(EffectAnnotation), ParseError) {
   use file <- result.try(parse_file(input))
   Ok(extract_annotations(file))
 }
-
-// Extract all annotations from a parsed file.
-pub fn extract_annotations(file: GradedFile) -> List(EffectAnnotation) {
-  list.filter_map(file.lines, fn(line) {
-    case line {
-      AnnotationLine(annotation) -> Ok(annotation)
-      TypeFieldLine(_) -> Error(Nil)
-      ExternalLine(_) -> Error(Nil)
-      ReturnsLine(_) -> Error(Nil)
-      CommentLine(_) -> Error(Nil)
-      BlankLine -> Error(Nil)
-    }
-  })
-}
-
-// Extract all `returns` annotations from a parsed file.
-pub fn extract_returns(file: GradedFile) -> List(ReturnsAnnotation) {
-  list.filter_map(file.lines, fn(line) {
-    case line {
-      ReturnsLine(returns) -> Ok(returns)
-      _ -> Error(Nil)
-    }
-  })
-}
-
-// Render a ReturnsAnnotation back to its .graded line format.
-pub fn format_returns(returns: ReturnsAnnotation) -> String {
-  "returns " <> returns.function <> " : " <> format_operator(returns.operator)
-}
-
-// Format an operator term — a `TAbs` as `fn(cb) -> [body]`, anything else as a
-// plain effect term (e.g. a polymorphic returned operator that's a bare `[v]`).
-fn format_operator(term: EffectTerm) -> String {
-  case term {
-    TAbs(_, _) -> render_abstraction(term)
-    other -> format_effect_term(other)
-  }
-}
-
-// Extract only `check` annotations (enforced invariants).
-pub fn extract_checks(file: GradedFile) -> List(EffectAnnotation) {
-  extract_annotations(file)
-  |> list.filter(fn(annotation) { annotation.kind == Check })
-}
-
-// Render an EffectAnnotation back to its .graded line format.
-pub fn format_annotation(annotation: EffectAnnotation) -> String {
-  let prefix = case annotation.kind {
-    Effects -> "effects"
-    Check -> "check"
-  }
-  let params_string = case annotation.params {
-    [] -> ""
-    params ->
-      "(" <> string.join(list.map(params, format_param_bound), ", ") <> ")"
-  }
-  let effects_string = format_effect_term(annotation.effects)
-  prefix
-  <> " "
-  <> annotation.function
-  <> params_string
-  <> " : "
-  <> effects_string
-}
-
-// Split a qualified function name like `myapp/router.handle` into its
-// module path and function name parts. Returns `Error(Nil)` for bare
-// names with no `.` separator.
-//
-// The qualified format uses slashes within the module path
-// (`gleam/io`, `myapp/web/handlers`) and a `.` to separate the module
-// path from the function name. The split happens on the LAST `.` since
-// function names cannot contain dots.
-pub fn split_qualified_name(
-  qualified: String,
-) -> Result(#(String, String), Nil) {
-  case list.reverse(string.split(qualified, ".")) {
-    [] -> Error(Nil)
-    [_only_one] -> Error(Nil)
-    [function, ..rest_reversed] -> {
-      let module = string.join(list.reverse(rest_reversed), ".")
-      case module == "" || function == "" {
-        True -> Error(Nil)
-        False -> Ok(#(module, function))
-      }
-    }
-  }
-}
-
-// Render a TypeFieldAnnotation back to its .graded line format. Includes
-// the module prefix when present (qualified form, used in spec files);
-// emits the bare form otherwise (cache files).
-pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
-  let prefix = case tf.module {
-    Some(module) -> module <> "."
-    None -> ""
-  }
-  "type "
-  <> prefix
-  <> tf.type_name
-  <> "."
-  <> tf.field
-  <> " : "
-  <> format_effect_term(tf.effects)
-}
-
-// Extract type field annotations from a parsed file.
-pub fn extract_type_fields(file: GradedFile) -> List(TypeFieldAnnotation) {
-  list.filter_map(file.lines, fn(line) {
-    case line {
-      TypeFieldLine(tf) -> Ok(tf)
-      _ -> Error(Nil)
-    }
-  })
-}
-
-// The qualified name (`module` or `module.function`) an external annotation
-// targets. Used both as a sort key and as the rendered name in
-// `format_external`.
-fn external_sort_key(external_annotation: ExternalAnnotation) -> String {
-  case external_annotation.target {
-    ModuleExternal -> external_annotation.module
-    FunctionExternal(function) -> external_annotation.module <> "." <> function
-  }
-}
-
-// Render an ExternalAnnotation back to its `.graded` line format.
-pub fn format_external(external_annotation: ExternalAnnotation) -> String {
-  "external effects "
-  <> external_sort_key(external_annotation)
-  <> " : "
-  <> format_effect_set(external_annotation.effects)
-}
-
-// Extract external annotations from a parsed file.
-pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
-  list.filter_map(file.lines, fn(line) {
-    case line {
-      ExternalLine(external_annotation) -> Ok(external_annotation)
-      _ -> Error(Nil)
-    }
-  })
-}
-
-// The modules a file declares with a module-level `external effects
-// <module> : [...]` line (no `.`). Per-function externals (`<module>.<fn>`)
-// don't count — they target one function, not the whole module. These are the
-// modules whose source inference the consumer's declaration overrides.
-pub fn module_external_modules(file: GradedFile) -> set.Set(String) {
-  list.filter_map(extract_externals(file), fn(ext) {
-    case ext.target {
-      ModuleExternal -> Ok(ext.module)
-      FunctionExternal(_) -> Error(Nil)
-    }
-  })
-  |> set.from_list()
-}
-
-// Whether a qualified function name's module carries a module-level external.
-// Short-circuits when nothing is declared (the common case), so the qualified
-// name isn't split needlessly.
-fn in_external_module(
-  function: String,
-  external_modules: set.Set(String),
-) -> Bool {
-  use <- bool.guard(set.is_empty(external_modules), False)
-  case split_qualified_name(function) {
-    Ok(#(module, _function)) -> set.contains(external_modules, module)
-    Error(Nil) -> False
-  }
-}
-
-// Render a full GradedFile back to a string, preserving structure.
-pub fn format_file(file: GradedFile) -> String {
-  file.lines
-  |> list.map(fn(line) {
-    case line {
-      AnnotationLine(annotation) -> format_annotation(annotation)
-      TypeFieldLine(tf) -> format_type_field(tf)
-      ExternalLine(ext) -> format_external(ext)
-      ReturnsLine(returns) -> format_returns(returns)
-      CommentLine(text) -> text
-      BlankLine -> ""
-    }
-  })
-  |> string.join("\n")
-}
-
-// Merge inferred effects and returned-operator signatures into an existing
-// GradedFile, preserving structure.
-//
-// - `check` / `type` / `external` lines, comments, blanks: kept in place
-// - Existing `effects` and `returns` lines: updated in-place; removed if stale
-// - New functions not yet in file: `effects` / `returns` lines appended at end
-pub fn merge_inferred(
-  file: GradedFile,
-  inferred: List(EffectAnnotation),
-  inferred_returns: List(ReturnsAnnotation),
-) -> GradedFile {
-  // A function the author declared with `external effects mod.fn : [...]` is
-  // authoritative — that line is their opt-in to a precise FFI effect. Drop any
-  // inferred `effects mod.fn` line for it so the opaque-FFI `[Unknown]` default
-  // neither shadows nor duplicates the author's declaration (and a stale prior
-  // inferred line is cleaned up on re-infer).
-  let external_functions =
-    list.filter_map(file.lines, fn(line) {
-      case line {
-        ExternalLine(ext) ->
-          case ext.target {
-            FunctionExternal(name) -> Ok(ext.module <> "." <> name)
-            ModuleExternal -> Error(Nil)
-          }
-        _ -> Error(Nil)
-      }
-    })
-    |> set.from_list()
-  // A module-level `external effects mod : [...]` declares the whole module's
-  // effect, so every inferred `effects mod.fn` line is likewise redundant and
-  // would shadow the declaration. Drop them all for the declared module.
-  let external_modules = module_external_modules(file)
-  let inferred =
-    list.filter(inferred, fn(annotation) {
-      !set.contains(external_functions, annotation.function)
-      && !in_external_module(annotation.function, external_modules)
-    })
-
-  let inferred_map =
-    inferred
-    |> list.map(fn(annotation) { #(annotation.function, annotation) })
-    |> dict.from_list()
-  let returns_map =
-    inferred_returns
-    |> list.map(fn(returns) { #(returns.function, returns) })
-    |> dict.from_list()
-
-  let #(new_lines, placed, placed_returns) =
-    list.fold(file.lines, #([], set.new(), set.new()), fn(state, line) {
-      let #(lines, placed_set, placed_returns_set) = state
-      case line {
-        AnnotationLine(annotation) ->
-          case annotation.kind {
-            Effects ->
-              case dict.get(inferred_map, annotation.function) {
-                Ok(new_annotation) -> #(
-                  [AnnotationLine(new_annotation), ..lines],
-                  set.insert(placed_set, annotation.function),
-                  placed_returns_set,
-                )
-                Error(Nil) -> #(lines, placed_set, placed_returns_set)
-              }
-            Check -> #([line, ..lines], placed_set, placed_returns_set)
-          }
-        ReturnsLine(returns) ->
-          case dict.get(returns_map, returns.function) {
-            Ok(new_returns) -> #(
-              [ReturnsLine(new_returns), ..lines],
-              placed_set,
-              set.insert(placed_returns_set, returns.function),
-            )
-            Error(Nil) -> #(lines, placed_set, placed_returns_set)
-          }
-        TypeFieldLine(_) | ExternalLine(_) | CommentLine(_) | BlankLine -> #(
-          [line, ..lines],
-          placed_set,
-          placed_returns_set,
-        )
-      }
-    })
-
-  let remaining_effects =
-    inferred
-    |> list.filter(fn(annotation) { !set.contains(placed, annotation.function) })
-    |> list.map(AnnotationLine)
-  let remaining_returns =
-    inferred_returns
-    |> list.filter(fn(returns) {
-      !set.contains(placed_returns, returns.function)
-    })
-    |> list.map(ReturnsLine)
-
-  GradedFile(
-    lines: list.flatten([
-      list.reverse(new_lines),
-      remaining_effects,
-      remaining_returns,
-    ]),
-  )
-}
-
-// Format an GradedFile: normalize spacing, sort annotations, ensure trailing newline.
-//
-// Output order:
-// 1. Leading comments (file header)
-// 2. `check` lines, sorted alphabetically by function name
-// 3. Blank line separator (if both check and effects lines exist)
-// 4. `effects` lines, sorted alphabetically by function name
-// 5. Single trailing newline
-pub fn format_sorted(file: GradedFile) -> String {
-  let comments = collect_comments(file.lines)
-  let annotations = extract_annotations(file)
-
-  let check_lines =
-    annotations
-    |> list.filter(fn(annotation) { annotation.kind == Check })
-    |> list.sort(fn(left, right) {
-      string.compare(left.function, right.function)
-    })
-    |> list.map(format_annotation)
-
-  let effects_lines =
-    annotations
-    |> list.filter(fn(annotation) { annotation.kind == Effects })
-    |> list.sort(fn(left, right) {
-      string.compare(left.function, right.function)
-    })
-    |> list.map(format_annotation)
-
-  let type_field_lines =
-    extract_type_fields(file)
-    |> list.sort(fn(left, right) {
-      string.compare(
-        left.type_name <> "." <> left.field,
-        right.type_name <> "." <> right.field,
-      )
-    })
-    |> list.map(format_type_field)
-
-  let external_lines =
-    extract_externals(file)
-    |> list.sort(fn(left, right) {
-      string.compare(external_sort_key(left), external_sort_key(right))
-    })
-    |> list.map(format_external)
-
-  let returns_lines =
-    extract_returns(file)
-    |> list.sort(fn(left, right) {
-      string.compare(left.function, right.function)
-    })
-    |> list.map(format_returns)
-
-  let sections = [
-    comments,
-    external_lines,
-    type_field_lines,
-    check_lines,
-    effects_lines,
-    returns_lines,
-  ]
-
-  sections
-  |> list.filter(fn(section) { section != [] })
-  |> list.map(fn(section) { string.join(section, "\n") })
-  |> string.join("\n\n")
-  |> fn(content) { content <> "\n" }
-}
-
-// PRIVATE
 
 fn parse_structured_line(
   line: String,
@@ -731,6 +379,404 @@ fn parse_bound_effect(input: String) -> Result(EffectTerm, Nil) {
   }
 }
 
+// Extraction
+//
+// Pull typed annotation lists out of a parsed GradedFile, dropping the
+// structural lines (comments, blanks) that only matter for round-tripping.
+
+// Extract all annotations from a parsed file.
+pub fn extract_annotations(file: GradedFile) -> List(EffectAnnotation) {
+  list.filter_map(file.lines, fn(line) {
+    case line {
+      AnnotationLine(annotation) -> Ok(annotation)
+      TypeFieldLine(_) -> Error(Nil)
+      ExternalLine(_) -> Error(Nil)
+      ReturnsLine(_) -> Error(Nil)
+      CommentLine(_) -> Error(Nil)
+      BlankLine -> Error(Nil)
+    }
+  })
+}
+
+// Extract all `returns` annotations from a parsed file.
+pub fn extract_returns(file: GradedFile) -> List(ReturnsAnnotation) {
+  list.filter_map(file.lines, fn(line) {
+    case line {
+      ReturnsLine(returns) -> Ok(returns)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+// Extract only `check` annotations (enforced invariants).
+pub fn extract_checks(file: GradedFile) -> List(EffectAnnotation) {
+  extract_annotations(file)
+  |> list.filter(fn(annotation) { annotation.kind == Check })
+}
+
+// Extract type field annotations from a parsed file.
+pub fn extract_type_fields(file: GradedFile) -> List(TypeFieldAnnotation) {
+  list.filter_map(file.lines, fn(line) {
+    case line {
+      TypeFieldLine(tf) -> Ok(tf)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+// Extract external annotations from a parsed file.
+pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
+  list.filter_map(file.lines, fn(line) {
+    case line {
+      ExternalLine(external_annotation) -> Ok(external_annotation)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+// The modules a file declares with a module-level `external effects
+// <module> : [...]` line (no `.`). Per-function externals (`<module>.<fn>`)
+// don't count — they target one function, not the whole module. These are the
+// modules whose source inference the consumer's declaration overrides.
+pub fn module_external_modules(file: GradedFile) -> set.Set(String) {
+  list.filter_map(extract_externals(file), fn(ext) {
+    case ext.target {
+      ModuleExternal -> Ok(ext.module)
+      FunctionExternal(_) -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+}
+
+// Qualified names
+//
+// Spec files identify functions by module-qualified name; splitting one back
+// into its parts is needed wherever a name must be resolved per-module.
+
+// Split a qualified function name like `myapp/router.handle` into its
+// module path and function name parts. Returns `Error(Nil)` for bare
+// names with no `.` separator.
+//
+// The qualified format uses slashes within the module path
+// (`gleam/io`, `myapp/web/handlers`) and a `.` to separate the module
+// path from the function name. The split happens on the LAST `.` since
+// function names cannot contain dots.
+pub fn split_qualified_name(
+  qualified: String,
+) -> Result(#(String, String), Nil) {
+  case list.reverse(string.split(qualified, ".")) {
+    [] -> Error(Nil)
+    [_only_one] -> Error(Nil)
+    [function, ..rest_reversed] -> {
+      let module = string.join(list.reverse(rest_reversed), ".")
+      case module == "" || function == "" {
+        True -> Error(Nil)
+        False -> Ok(#(module, function))
+      }
+    }
+  }
+}
+
+// Merging
+//
+// Fold freshly inferred results into an existing GradedFile so `graded infer`
+// updates derived lines without disturbing hand-written ones.
+
+// Merge inferred effects and returned-operator signatures into an existing
+// GradedFile, preserving structure.
+//
+// - `check` / `type` / `external` lines, comments, blanks: kept in place
+// - Existing `effects` and `returns` lines: updated in-place; removed if stale
+// - New functions not yet in file: `effects` / `returns` lines appended at end
+pub fn merge_inferred(
+  file: GradedFile,
+  inferred: List(EffectAnnotation),
+  inferred_returns: List(ReturnsAnnotation),
+) -> GradedFile {
+  // A function the author declared with `external effects mod.fn : [...]` is
+  // authoritative — that line is their opt-in to a precise FFI effect. Drop any
+  // inferred `effects mod.fn` line for it so the opaque-FFI `[Unknown]` default
+  // neither shadows nor duplicates the author's declaration (and a stale prior
+  // inferred line is cleaned up on re-infer).
+  let external_functions =
+    list.filter_map(file.lines, fn(line) {
+      case line {
+        ExternalLine(ext) ->
+          case ext.target {
+            FunctionExternal(name) -> Ok(ext.module <> "." <> name)
+            ModuleExternal -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+    })
+    |> set.from_list()
+  // A module-level `external effects mod : [...]` declares the whole module's
+  // effect, so every inferred `effects mod.fn` line is likewise redundant and
+  // would shadow the declaration. Drop them all for the declared module.
+  let external_modules = module_external_modules(file)
+  let inferred =
+    list.filter(inferred, fn(annotation) {
+      !set.contains(external_functions, annotation.function)
+      && !in_external_module(annotation.function, external_modules)
+    })
+
+  let inferred_map =
+    inferred
+    |> list.map(fn(annotation) { #(annotation.function, annotation) })
+    |> dict.from_list()
+  let returns_map =
+    inferred_returns
+    |> list.map(fn(returns) { #(returns.function, returns) })
+    |> dict.from_list()
+
+  let #(new_lines, placed, placed_returns) =
+    list.fold(file.lines, #([], set.new(), set.new()), fn(state, line) {
+      let #(lines, placed_set, placed_returns_set) = state
+      case line {
+        AnnotationLine(annotation) ->
+          case annotation.kind {
+            Effects ->
+              case dict.get(inferred_map, annotation.function) {
+                Ok(new_annotation) -> #(
+                  [AnnotationLine(new_annotation), ..lines],
+                  set.insert(placed_set, annotation.function),
+                  placed_returns_set,
+                )
+                Error(Nil) -> #(lines, placed_set, placed_returns_set)
+              }
+            Check -> #([line, ..lines], placed_set, placed_returns_set)
+          }
+        ReturnsLine(returns) ->
+          case dict.get(returns_map, returns.function) {
+            Ok(new_returns) -> #(
+              [ReturnsLine(new_returns), ..lines],
+              placed_set,
+              set.insert(placed_returns_set, returns.function),
+            )
+            Error(Nil) -> #(lines, placed_set, placed_returns_set)
+          }
+        TypeFieldLine(_) | ExternalLine(_) | CommentLine(_) | BlankLine -> #(
+          [line, ..lines],
+          placed_set,
+          placed_returns_set,
+        )
+      }
+    })
+
+  let remaining_effects =
+    inferred
+    |> list.filter(fn(annotation) { !set.contains(placed, annotation.function) })
+    |> list.map(AnnotationLine)
+  let remaining_returns =
+    inferred_returns
+    |> list.filter(fn(returns) {
+      !set.contains(placed_returns, returns.function)
+    })
+    |> list.map(ReturnsLine)
+
+  GradedFile(
+    lines: list.flatten([
+      list.reverse(new_lines),
+      remaining_effects,
+      remaining_returns,
+    ]),
+  )
+}
+
+// Whether a qualified function name's module carries a module-level external.
+// Short-circuits when nothing is declared (the common case), so the qualified
+// name isn't split needlessly.
+fn in_external_module(
+  function: String,
+  external_modules: set.Set(String),
+) -> Bool {
+  use <- bool.guard(set.is_empty(external_modules), False)
+  case split_qualified_name(function) {
+    Ok(#(module, _function)) -> set.contains(external_modules, module)
+    Error(Nil) -> False
+  }
+}
+
+// Formatting
+//
+// Render annotations and whole files back to .graded text — the single source
+// of truth for the on-disk surface syntax, so parse and format round-trip.
+
+// Render a full GradedFile back to a string, preserving structure.
+pub fn format_file(file: GradedFile) -> String {
+  file.lines
+  |> list.map(fn(line) {
+    case line {
+      AnnotationLine(annotation) -> format_annotation(annotation)
+      TypeFieldLine(tf) -> format_type_field(tf)
+      ExternalLine(ext) -> format_external(ext)
+      ReturnsLine(returns) -> format_returns(returns)
+      CommentLine(text) -> text
+      BlankLine -> ""
+    }
+  })
+  |> string.join("\n")
+}
+
+// Format an GradedFile: normalize spacing, sort annotations, ensure trailing newline.
+//
+// Output order:
+// 1. Leading comments (file header)
+// 2. `check` lines, sorted alphabetically by function name
+// 3. Blank line separator (if both check and effects lines exist)
+// 4. `effects` lines, sorted alphabetically by function name
+// 5. Single trailing newline
+pub fn format_sorted(file: GradedFile) -> String {
+  let comments = collect_comments(file.lines)
+  let annotations = extract_annotations(file)
+
+  let check_lines =
+    annotations
+    |> list.filter(fn(annotation) { annotation.kind == Check })
+    |> list.sort(fn(left, right) {
+      string.compare(left.function, right.function)
+    })
+    |> list.map(format_annotation)
+
+  let effects_lines =
+    annotations
+    |> list.filter(fn(annotation) { annotation.kind == Effects })
+    |> list.sort(fn(left, right) {
+      string.compare(left.function, right.function)
+    })
+    |> list.map(format_annotation)
+
+  let type_field_lines =
+    extract_type_fields(file)
+    |> list.sort(fn(left, right) {
+      string.compare(
+        left.type_name <> "." <> left.field,
+        right.type_name <> "." <> right.field,
+      )
+    })
+    |> list.map(format_type_field)
+
+  let external_lines =
+    extract_externals(file)
+    |> list.sort(fn(left, right) {
+      string.compare(external_sort_key(left), external_sort_key(right))
+    })
+    |> list.map(format_external)
+
+  let returns_lines =
+    extract_returns(file)
+    |> list.sort(fn(left, right) {
+      string.compare(left.function, right.function)
+    })
+    |> list.map(format_returns)
+
+  let sections = [
+    comments,
+    external_lines,
+    type_field_lines,
+    check_lines,
+    effects_lines,
+    returns_lines,
+  ]
+
+  sections
+  |> list.filter(fn(section) { section != [] })
+  |> list.map(fn(section) { string.join(section, "\n") })
+  |> string.join("\n\n")
+  |> fn(content) { content <> "\n" }
+}
+
+// Render an EffectAnnotation back to its .graded line format.
+pub fn format_annotation(annotation: EffectAnnotation) -> String {
+  let prefix = case annotation.kind {
+    Effects -> "effects"
+    Check -> "check"
+  }
+  let params_string = case annotation.params {
+    [] -> ""
+    params ->
+      "(" <> string.join(list.map(params, format_param_bound), ", ") <> ")"
+  }
+  let effects_string = format_effect_term(annotation.effects)
+  prefix
+  <> " "
+  <> annotation.function
+  <> params_string
+  <> " : "
+  <> effects_string
+}
+
+// Render a ReturnsAnnotation back to its .graded line format.
+pub fn format_returns(returns: ReturnsAnnotation) -> String {
+  "returns " <> returns.function <> " : " <> format_operator(returns.operator)
+}
+
+// Format an operator term — a `TAbs` as `fn(cb) -> [body]`, anything else as a
+// plain effect term (e.g. a polymorphic returned operator that's a bare `[v]`).
+fn format_operator(term: EffectTerm) -> String {
+  case term {
+    TAbs(_, _) -> render_abstraction(term)
+    other -> format_effect_term(other)
+  }
+}
+
+// Render a TypeFieldAnnotation back to its .graded line format. Includes
+// the module prefix when present (qualified form, used in spec files);
+// emits the bare form otherwise (cache files).
+pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
+  let prefix = case tf.module {
+    Some(module) -> module <> "."
+    None -> ""
+  }
+  "type "
+  <> prefix
+  <> tf.type_name
+  <> "."
+  <> tf.field
+  <> " : "
+  <> format_effect_term(tf.effects)
+}
+
+// Render an ExternalAnnotation back to its `.graded` line format.
+pub fn format_external(external_annotation: ExternalAnnotation) -> String {
+  "external effects "
+  <> external_sort_key(external_annotation)
+  <> " : "
+  <> format_effect_set(external_annotation.effects)
+}
+
+// The qualified name (`module` or `module.function`) an external annotation
+// targets. Used both as a sort key and as the rendered name in
+// `format_external`.
+fn external_sort_key(external_annotation: ExternalAnnotation) -> String {
+  case external_annotation.target {
+    ModuleExternal -> external_annotation.module
+    FunctionExternal(function) -> external_annotation.module <> "." <> function
+  }
+}
+
+// Render an effect set to its `[A, B]` surface syntax: `[]` for empty, `[_]`
+// for wildcard, labels then variables each sorted. The single source of truth
+// for the on-disk effect-set format (`effects.format_effect_set` delegates
+// here for diagnostics).
+pub fn format_effect_set(effect_set: EffectSet) -> String {
+  case effect_set {
+    Wildcard -> "[_]"
+    Specific(labels) ->
+      case set.to_list(labels) |> list.sort(string.compare) {
+        [] -> "[]"
+        sorted -> "[" <> string.join(sorted, ", ") <> "]"
+      }
+    Polymorphic(labels, variables) -> {
+      let sorted_labels = set.to_list(labels) |> list.sort(string.compare)
+      let sorted_variables = set.to_list(variables) |> list.sort(string.compare)
+      "["
+      <> string.join(list.append(sorted_labels, sorted_variables), ", ")
+      <> "]"
+    }
+  }
+}
+
 fn collect_comments(lines: List(GradedLine)) -> List(String) {
   list.filter_map(lines, fn(line) {
     case line {
@@ -826,27 +872,5 @@ fn abstraction_spine(term: EffectTerm) -> #(List(String), EffectTerm) {
       #([param, ..rest], inner)
     }
     other -> #([], other)
-  }
-}
-
-// Render an effect set to its `[A, B]` surface syntax: `[]` for empty, `[_]`
-// for wildcard, labels then variables each sorted. The single source of truth
-// for the on-disk effect-set format (`effects.format_effect_set` delegates
-// here for diagnostics).
-pub fn format_effect_set(effect_set: EffectSet) -> String {
-  case effect_set {
-    Wildcard -> "[_]"
-    Specific(labels) ->
-      case set.to_list(labels) |> list.sort(string.compare) {
-        [] -> "[]"
-        sorted -> "[" <> string.join(sorted, ", ") <> "]"
-      }
-    Polymorphic(labels, variables) -> {
-      let sorted_labels = set.to_list(labels) |> list.sort(string.compare)
-      let sorted_variables = set.to_list(variables) |> list.sort(string.compare)
-      "["
-      <> string.join(list.append(sorted_labels, sorted_variables), ", ")
-      <> "]"
-    }
   }
 }

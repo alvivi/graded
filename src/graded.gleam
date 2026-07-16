@@ -50,6 +50,11 @@ import graded/internal/types.{
 }
 import simplifile
 
+// Errors and CLI dispatch
+//
+// The error type every command returns, and the argv dispatcher that routes
+// to the per-command runners below.
+
 /// Errors that can occur during checking, inference, or formatting.
 pub type GradedError {
   /// Could not read the source directory.
@@ -115,6 +120,11 @@ pub fn main() -> Nil {
     _ -> run_check(target_directory(arguments))
   }
 }
+
+// Checking
+//
+// The `check` command: assemble the knowledge base for the project, run the
+// checker over each source file, and collect violations and warnings.
 
 /// Run the checker on all .gleam files in a directory.
 ///
@@ -209,19 +219,58 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   Ok(results)
 }
 
-// Map of module path -> source file for every installed dependency (under
-// `build/packages`) and path dependency (under its declared `path`). Lets the
-// spec lint tell a dependency type from a typo, and parse a dependency module
-// when it needs to resolve a field's declared type.
-fn dependency_module_files(package_root: String) -> Dict(String, String) {
-  let installed = effects.dependency_module_files(packages_dir(package_root))
-  effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
-  |> list.fold(installed, fn(acc, dep) {
-    let #(_name, dep_path) = dep
-    let src_dir = filepath.join(resolve_path(package_root, dep_path), "src")
-    dict.merge(acc, effects.source_dir_module_files(src_dir))
+// Group a parsed spec file's `check` annotations by their module path. Used
+// during `run` to hand each source file only the checks that apply to it.
+// The checker expects bare function names per module, so we strip the
+// module qualifier from the grouped annotations.
+fn checks_grouped_by_module(
+  spec: GradedFile,
+) -> Dict(String, List(EffectAnnotation)) {
+  list.fold(annotation.extract_checks(spec), dict.new(), fn(acc, ann) {
+    case annotation.split_qualified_name(ann.function) {
+      Error(_) -> acc
+      Ok(#(module, function)) -> {
+        let bare = EffectAnnotation(..ann, function:)
+        let existing = case dict.get(acc, module) {
+          Ok(list) -> list
+          Error(_) -> []
+        }
+        dict.insert(acc, module, [bare, ..existing])
+      }
+    }
   })
 }
+
+// Run the checker against one source file using the slice of `check`
+// annotations from the spec file that mention this file's module.
+fn check_one_file(
+  gleam_path: String,
+  module_path: String,
+  module: glance.Module,
+  module_checks: List(EffectAnnotation),
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  module_types: Dict(#(Int, Int), girard.Type),
+  girard_fn_typed: Dict(String, Set(String)),
+) -> CheckResult {
+  let #(violations, warnings) =
+    checker.check(
+      module,
+      module_path,
+      module_checks,
+      knowledge_base,
+      registry,
+      module_types,
+      girard_fn_typed,
+    )
+  CheckResult(file: gleam_path, violations:, warnings:)
+}
+
+// Spec lint
+//
+// Warnings for spec lines that resolve nothing: a `check` line naming no
+// project function, or a `type` line naming no callable field. Field
+// classification follows alias chains across project and dependency modules.
 
 // Flag `check`/`type` spec lines whose target resolves nothing. A `check` line
 // names a function that must exist in some project module; a `type` line names
@@ -262,6 +311,20 @@ fn validate_spec_annotations(
   }
 
   list.append(check_warnings, type_field_warnings)
+}
+
+// Map of module path -> source file for every installed dependency (under
+// `build/packages`) and path dependency (under its declared `path`). Lets the
+// spec lint tell a dependency type from a typo, and parse a dependency module
+// when it needs to resolve a field's declared type.
+fn dependency_module_files(package_root: String) -> Dict(String, String) {
+  let installed = effects.dependency_module_files(packages_dir(package_root))
+  effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
+  |> list.fold(installed, fn(acc, dep) {
+    let #(_name, dep_path) = dep
+    let src_dir = filepath.join(resolve_path(package_root, dep_path), "src")
+    dict.merge(acc, effects.source_dir_module_files(src_dir))
+  })
 }
 
 // A warning for a `type` line that resolves nothing, or `Error(Nil)` when the
@@ -527,113 +590,10 @@ fn classify_in_module(
   }
 }
 
-/// Infer effects for all `.gleam` files in `directory`. Writes two outputs:
-///
-/// 1. **Per-module cache files** under `<cache_dir>/<module_path>.graded`,
-///    containing the inferred effects of every function in the module
-///    (public + private). Regenerated freely; not shipped.
-///
-/// 2. **One spec file** at `<spec_file>` containing the inferred effects of
-///    every *public* function across all modules, plus any hand-written
-///    `check`, `external effects`, or `type` annotations the user already
-///    had in the spec file (those lines are preserved verbatim).
-///
-/// Walks the project's import graph in topological order so each module is
-/// analysed after every other project module it imports — a single pass
-/// resolves transitive chains of any depth.
-pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
-  use cfg <- result.try(read_config(directory))
-  let package_root = resolve_package_root(directory)
-  let spec = read_spec(cfg.spec_file)
-  let declared_modules = annotation.module_external_modules(spec)
-
-  use gleam_files <- result.try(find_gleam_files(directory))
-  use parsed <- result.try(parse_all_files(gleam_files))
-  let index = build_module_index(parsed, directory)
-
-  let kb_base =
-    effects.load_knowledge_base(
-      packages_dir(package_root),
-      manifest_path(package_root),
-    )
-    // Consumer externals are applied before path-dep inference so a module-level
-    // external governs a path dependency's module during that dep's own
-    // inference, not only at the final lookup.
-    |> effects.with_externals(annotation.extract_externals(spec))
-    |> enrich_with_path_deps(package_root, declared_modules)
-  // Resolve constructor-field values against the same view `run` uses — catalog
-  // + externals + the spec's *existing* inferred effects — so `infer` and
-  // `check` agree on a field wired to a qualified project function, converging
-  // across runs. The inferred effects are NOT seeded into `base_kb` below: the
-  // topo loop recomputes them fresh, threading each module's result forward.
-  // Stale `effects` lines for a module-level-external module are dropped, exactly
-  // as `run` does, so a field wired to such a function resolves to the
-  // declaration rather than the outranking-but-stale per-function effect.
-  let construction_kb =
-    effects.with_inferred(
-      kb_base,
-      drop_declared_modules(
-        effects.load_spec_effects_from_file(spec),
-        declared_modules,
-      ),
-    )
-  let base_kb =
-    kb_base
-    |> effects.with_inferred_type_fields(build_constructor_field_index(
-      index,
-      construction_kb,
-    ))
-    |> effects.with_type_fields(annotation.extract_type_fields(spec))
-    |> effects.with_factories(qualify_by_module(index, extract.factory_map))
-
-  let graph = build_dependency_graph(index)
-  use sorted <- result.try(
-    topo.sort(graph)
-    |> result.map_error(fn(error) {
-      let topo.Cycle(nodes:) = error
-      CyclicImports(modules: nodes)
-    }),
-  )
-
-  // Build a signature registry covering every project module so the
-  // checker can do positional argument matching for cross-module
-  // polymorphic calls.
-  let dep_registry =
-    signatures.load_from_packages_dir(packages_dir(package_root))
-    |> signatures.merge(path_dep_registry(package_root))
-  let registry = signatures.merge(dep_registry, build_project_registry(index))
-  let type_info = build_type_index(index, package_root)
-
-  use #(_kb, public_annotations, public_returns) <- result.try(
-    list.try_fold(sorted, #(base_kb, [], []), fn(state, module_path) {
-      let #(kb, acc, returns_acc) = state
-      case dict.get(index, module_path) {
-        Error(_) -> Ok(state)
-        Ok(#(_gleam_path, module)) -> {
-          use #(new_kb, new_public, new_returns) <- result.try(infer_one_module(
-            module,
-            module_path,
-            cfg.cache_dir,
-            kb,
-            registry,
-            typeinfo.for_module(type_info, module_path),
-            typeinfo.fn_typed_for_module(type_info, module_path),
-            declared_modules,
-          ))
-          // Prepend new entries so each iteration is O(|new|) instead of
-          // O(|acc|); final order doesn't matter, merge_inferred keys by name.
-          Ok(#(
-            new_kb,
-            list.append(new_public, acc),
-            list.append(new_returns, returns_acc),
-          ))
-        }
-      }
-    }),
-  )
-
-  write_spec_file(cfg.spec_file, spec, public_annotations, public_returns)
-}
+// Formatting
+//
+// The `format` command and its `--check`/`--stdin` variants: parse the spec
+// file, sort it, and write or compare the normalized form.
 
 /// Format the project's spec file in place. The spec file is the single
 /// source of truth for hand-written `check`/`external`/`type` lines and
@@ -692,7 +652,16 @@ fn format_one_spec(
   }
 }
 
-// PRIVATE
+// Source parsing and signatures
+//
+// Find and glance-parse the project's sources, and build the signature
+// registry used for positional argument matching at call sites.
+
+fn find_gleam_files(directory: String) -> Result(List(String), GradedError) {
+  simplifile.get_files(directory)
+  |> result.map_error(DirectoryReadError(directory, _))
+  |> result.map(list.filter(_, fn(path) { string.ends_with(path, ".gleam") }))
+}
 
 // Parse every project source file once, returning `(path, parsed module)`
 // pairs. Used by `run_infer` so the topo sort can read each module's
@@ -706,6 +675,17 @@ fn parse_all_files(
   })
 }
 
+fn read_and_parse_gleam(
+  gleam_path: String,
+) -> Result(glance.Module, GradedError) {
+  use source <- result.try(
+    simplifile.read(gleam_path)
+    |> result.map_error(FileReadError(gleam_path, _)),
+  )
+  glance.module(source)
+  |> result.map_error(GleamParseError(gleam_path, _))
+}
+
 // Build a signature registry covering every project module. Used by
 // the checker's call-site substitution to resolve effect variables
 // when the caller passes positional (unlabeled) arguments.
@@ -717,6 +697,12 @@ fn build_project_registry(
     signatures.merge(acc, signatures.from_glance_module(module_path, module))
   })
 }
+
+// Constructor-field index
+//
+// Derive `type Foo.field : [...]` effects from constructor call sites across
+// the package, unioning contributions per field, so field calls resolve
+// without hand-written annotations.
 
 // Stage C: derive `type Foo.field : [...]` annotations from constructor call
 // sites across the package. `Validator(to_error: io.println)` anywhere makes
@@ -922,6 +908,11 @@ fn merge_field_effect(
   )
 }
 
+// Type index
+//
+// Run girard's whole-package type inference and key the results by expression
+// span, giving the checker the receiver types that resolve field calls.
+
 // Run girard's whole-package type inference once over every project module
 // and fold the result into a `TypeInfo` (module path -> span start -> type).
 // girard is best-effort: a function it can't type contributes no expressions,
@@ -1045,6 +1036,11 @@ fn build_girard_resolver(
   }
 }
 
+// Module index and import graph
+//
+// Map dotted module names to parsed files and derive each module's
+// project-internal imports — the nodes and edges of the topological sort.
+
 // Build an index from dotted module name (`app/router`) to the parsed file.
 // This is the set of *project* modules — every module name in this dict is
 // a candidate dependency-graph node.
@@ -1074,6 +1070,120 @@ fn build_dependency_graph(
     |> list.filter(fn(imported) { dict.has_key(index, imported) })
     |> set.from_list()
   })
+}
+
+// Inference
+//
+// The `infer` command: infer each module's effects in import order, write the
+// per-module cache, and merge public annotations into the spec file. Also the
+// in-memory variant `check` uses for modules not yet in the spec.
+
+/// Infer effects for all `.gleam` files in `directory`. Writes two outputs:
+///
+/// 1. **Per-module cache files** under `<cache_dir>/<module_path>.graded`,
+///    containing the inferred effects of every function in the module
+///    (public + private). Regenerated freely; not shipped.
+///
+/// 2. **One spec file** at `<spec_file>` containing the inferred effects of
+///    every *public* function across all modules, plus any hand-written
+///    `check`, `external effects`, or `type` annotations the user already
+///    had in the spec file (those lines are preserved verbatim).
+///
+/// Walks the project's import graph in topological order so each module is
+/// analysed after every other project module it imports — a single pass
+/// resolves transitive chains of any depth.
+pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
+  use cfg <- result.try(read_config(directory))
+  let package_root = resolve_package_root(directory)
+  let spec = read_spec(cfg.spec_file)
+  let declared_modules = annotation.module_external_modules(spec)
+
+  use gleam_files <- result.try(find_gleam_files(directory))
+  use parsed <- result.try(parse_all_files(gleam_files))
+  let index = build_module_index(parsed, directory)
+
+  let kb_base =
+    effects.load_knowledge_base(
+      packages_dir(package_root),
+      manifest_path(package_root),
+    )
+    // Consumer externals are applied before path-dep inference so a module-level
+    // external governs a path dependency's module during that dep's own
+    // inference, not only at the final lookup.
+    |> effects.with_externals(annotation.extract_externals(spec))
+    |> enrich_with_path_deps(package_root, declared_modules)
+  // Resolve constructor-field values against the same view `run` uses — catalog
+  // + externals + the spec's *existing* inferred effects — so `infer` and
+  // `check` agree on a field wired to a qualified project function, converging
+  // across runs. The inferred effects are NOT seeded into `base_kb` below: the
+  // topo loop recomputes them fresh, threading each module's result forward.
+  // Stale `effects` lines for a module-level-external module are dropped, exactly
+  // as `run` does, so a field wired to such a function resolves to the
+  // declaration rather than the outranking-but-stale per-function effect.
+  let construction_kb =
+    effects.with_inferred(
+      kb_base,
+      drop_declared_modules(
+        effects.load_spec_effects_from_file(spec),
+        declared_modules,
+      ),
+    )
+  let base_kb =
+    kb_base
+    |> effects.with_inferred_type_fields(build_constructor_field_index(
+      index,
+      construction_kb,
+    ))
+    |> effects.with_type_fields(annotation.extract_type_fields(spec))
+    |> effects.with_factories(qualify_by_module(index, extract.factory_map))
+
+  let graph = build_dependency_graph(index)
+  use sorted <- result.try(
+    topo.sort(graph)
+    |> result.map_error(fn(error) {
+      let topo.Cycle(nodes:) = error
+      CyclicImports(modules: nodes)
+    }),
+  )
+
+  // Build a signature registry covering every project module so the
+  // checker can do positional argument matching for cross-module
+  // polymorphic calls.
+  let dep_registry =
+    signatures.load_from_packages_dir(packages_dir(package_root))
+    |> signatures.merge(path_dep_registry(package_root))
+  let registry = signatures.merge(dep_registry, build_project_registry(index))
+  let type_info = build_type_index(index, package_root)
+
+  use #(_kb, public_annotations, public_returns) <- result.try(
+    list.try_fold(sorted, #(base_kb, [], []), fn(state, module_path) {
+      let #(kb, acc, returns_acc) = state
+      case dict.get(index, module_path) {
+        Error(_) -> Ok(state)
+        Ok(#(_gleam_path, module)) -> {
+          use #(new_kb, new_public, new_returns) <- result.try(infer_one_module(
+            module,
+            module_path,
+            cfg.cache_dir,
+            kb,
+            registry,
+            typeinfo.for_module(type_info, module_path),
+            typeinfo.fn_typed_for_module(type_info, module_path),
+            declared_modules,
+          ))
+          // Prepend new entries so each iteration is O(|new|) instead of
+          // O(|acc|); final order doesn't matter, merge_inferred keys by name.
+          Ok(#(
+            new_kb,
+            list.append(new_public, acc),
+            list.append(new_returns, returns_acc),
+          ))
+        }
+      }
+    }),
+  )
+
+  write_spec_file(cfg.spec_file, spec, public_annotations, public_returns)
 }
 
 // Infer effects for a single module, write its cache file (with bare
@@ -1324,52 +1434,19 @@ fn write_spec_file(
   write_graded_file(spec_path, merged)
 }
 
-// Group a parsed spec file's `check` annotations by their module path. Used
-// during `run` to hand each source file only the checks that apply to it.
-// The checker expects bare function names per module, so we strip the
-// module qualifier from the grouped annotations.
-fn checks_grouped_by_module(
-  spec: GradedFile,
-) -> Dict(String, List(EffectAnnotation)) {
-  list.fold(annotation.extract_checks(spec), dict.new(), fn(acc, ann) {
-    case annotation.split_qualified_name(ann.function) {
-      Error(_) -> acc
-      Ok(#(module, function)) -> {
-        let bare = EffectAnnotation(..ann, function:)
-        let existing = case dict.get(acc, module) {
-          Ok(list) -> list
-          Error(_) -> []
-        }
-        dict.insert(acc, module, [bare, ..existing])
-      }
-    }
-  })
+fn write_graded_file(
+  path: String,
+  graded_file: GradedFile,
+) -> Result(Nil, GradedError) {
+  simplifile.write(path, annotation.format_file(graded_file))
+  |> result.map_error(FileWriteError(path, _))
 }
 
-// Run the checker against one source file using the slice of `check`
-// annotations from the spec file that mention this file's module.
-fn check_one_file(
-  gleam_path: String,
-  module_path: String,
-  module: glance.Module,
-  module_checks: List(EffectAnnotation),
-  knowledge_base: KnowledgeBase,
-  registry: SignatureRegistry,
-  module_types: Dict(#(Int, Int), girard.Type),
-  girard_fn_typed: Dict(String, Set(String)),
-) -> CheckResult {
-  let #(violations, warnings) =
-    checker.check(
-      module,
-      module_path,
-      module_checks,
-      knowledge_base,
-      registry,
-      module_types,
-      girard_fn_typed,
-    )
-  CheckResult(file: gleam_path, violations:, warnings:)
-}
+// Project layout
+//
+// Resolve the project root, spec file, cache directory, and dependency state
+// (`build/packages`, `manifest.toml`) from the source directory and
+// `gleam.toml`.
 
 // Read the project's `[tools.graded]` config and return spec/cache paths
 // already resolved relative to the project root. The root is the nearest
@@ -1502,6 +1579,11 @@ fn read_spec(spec_path: String) -> GradedFile {
       }
   }
 }
+
+// Path dependencies
+//
+// Fold path dependencies into the knowledge base: read a committed dep spec
+// when present, otherwise infer the dep from source in topological order.
 
 // For each path dependency declared in `gleam.toml`:
 //
@@ -1759,6 +1841,11 @@ fn drop_declared_modules(
   dict.filter(entries, fn(name, _value) { !set.contains(modules, name.module) })
 }
 
+// CLI plumbing
+//
+// Argument handling, human-readable printing of errors, violations, and
+// warnings, and the exit/stdin externals behind `main`.
+
 fn target_directory(arguments: List(String)) -> String {
   case arguments {
     [directory, ..] -> directory
@@ -1799,31 +1886,6 @@ fn run_check(directory: String) -> Nil {
       halt(1)
     }
   }
-}
-
-fn find_gleam_files(directory: String) -> Result(List(String), GradedError) {
-  simplifile.get_files(directory)
-  |> result.map_error(DirectoryReadError(directory, _))
-  |> result.map(list.filter(_, fn(path) { string.ends_with(path, ".gleam") }))
-}
-
-fn read_and_parse_gleam(
-  gleam_path: String,
-) -> Result(glance.Module, GradedError) {
-  use source <- result.try(
-    simplifile.read(gleam_path)
-    |> result.map_error(FileReadError(gleam_path, _)),
-  )
-  glance.module(source)
-  |> result.map_error(GleamParseError(gleam_path, _))
-}
-
-fn write_graded_file(
-  path: String,
-  graded_file: GradedFile,
-) -> Result(Nil, GradedError) {
-  simplifile.write(path, annotation.format_file(graded_file))
-  |> result.map_error(FileWriteError(path, _))
 }
 
 fn format_error(error: GradedError) -> String {
