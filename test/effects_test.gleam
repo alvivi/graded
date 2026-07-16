@@ -492,7 +492,7 @@ pub fn pick_best_version_eligible_test() {
 
 // Argument value effects
 //
-// Stage C construction-index value resolution: a FunctionRef resolves through
+// Construction-index value resolution: a FunctionRef resolves through
 // the knowledge base, constructors are pure, anything else is Unknown.
 
 pub fn argument_value_effects_resolves_function_ref_test() {

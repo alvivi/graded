@@ -502,7 +502,7 @@ pub fn field_call_typed_with_registry_test() {
   |> should.equal([])
 }
 
-// Stage A: type-directed receiver resolution via girard.
+// Type-directed receiver resolution via girard.
 //
 // Same as `check_source_with_type_fields`, but threads girard's real inferred
 // types so the receiver's nominal type is known even when it isn't a directly
@@ -642,8 +642,9 @@ pub fn run(msg: String) -> Nil {
 
 pub fn field_call_girard_without_annotation_still_unknown_test() {
   // girard types the receiver, but no `type Validator.to_error` annotation
-  // exists, so the effect is still [Unknown] — documents the A/C boundary:
-  // Stage A needs the annotation for the effect; Stage C removes that need.
+  // exists, so the effect is still [Unknown]: type-directed resolution needs
+  // the annotation for the effect; construction-derived field effects remove
+  // that need.
   let annotation =
     EffectAnnotation(
       Check,
