@@ -9,8 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Upgraded girard to 2.0.0 and glance to 7.0.0.** girard's `Type` now lives in the single `girard` module (`girard/types` was removed upstream), and glance 7 parses arithmetic in bit-array pattern segment sizes, so modules using that form now extract and type instead of failing to parse and collapsing to `[Unknown]`.
-- **The glinter lint gate is temporarily disabled.** glinter pins glance below 7.0.0, which conflicts with girard 2.0.0; the dev dependency and CI step return once glinter allows glance 7.x.
+- **Modules using arithmetic in bit-array pattern segment sizes now extract and type instead of collapsing to `[Unknown]`.** Upgrading glance to 7.0.0 (via girard 2.0.0) lets graded parse forms like `<<value:size(n * 8)>>`; such modules previously failed to parse entirely, so every function in them degraded to `[Unknown]`.
 
 ### Fixed
 
