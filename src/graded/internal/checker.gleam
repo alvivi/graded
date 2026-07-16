@@ -1,4 +1,4 @@
-import girard/types as girard_types
+import girard
 import glance.{
   type Definition, type Function, type Module, type Span, type Statement,
   Function, Private, Span,
@@ -40,7 +40,7 @@ pub fn check(
   annotations: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
 ) -> #(List(Violation), List(Warning)) {
   let context =
@@ -85,7 +85,7 @@ pub fn infer(
   knowledge_base: KnowledgeBase,
   existing_checks: List(EffectAnnotation),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
 ) -> List(EffectAnnotation) {
   infer_with_returns(
@@ -109,7 +109,7 @@ pub fn infer_with_returns(
   knowledge_base: KnowledgeBase,
   existing_checks: List(EffectAnnotation),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
 ) -> #(
   List(EffectAnnotation),
@@ -835,7 +835,7 @@ fn check_annotation(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(#(List(Violation), List(Warning)), Memo) {
@@ -1003,7 +1003,7 @@ fn collect_effects(
   visited: Set(String),
   param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   // Operator parameters in scope from an *enclosing* function (a producer whose
   // returned closure we're analysing), so a call to one becomes a curried
   // operator application rather than `[Unknown]`. Empty for an ordinary function.
@@ -2355,7 +2355,7 @@ fn build_lift_operator_arg(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   ambient_operators: OperatorShapes,
   cache: LocalCache,
 ) -> fn(types.ArgumentValue, List(Int), Memo) ->
@@ -2441,7 +2441,7 @@ fn resolve_returned_operator(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(Result(EffectTerm, Nil), Memo) {
@@ -2519,7 +2519,7 @@ fn bind_producer_params(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
@@ -2594,7 +2594,7 @@ fn compute_returned_operator(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(Result(EffectTerm, Nil), Memo) {
@@ -2699,7 +2699,7 @@ fn analyze_closure(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   ambient_operators: OperatorShapes,
   cache: LocalCache,
   memo: Memo,
@@ -2753,7 +2753,7 @@ fn analyze_closure_uncached(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   ambient_operators: OperatorShapes,
   cache: LocalCache,
   memo: Memo,
@@ -2847,7 +2847,7 @@ fn lift_local_function(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
@@ -2915,7 +2915,7 @@ fn lift_operator_miss(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
@@ -3069,7 +3069,7 @@ fn resolve_unknown_local(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(#(ResolvedCall, EffectTerm)), Memo) {
@@ -3152,7 +3152,7 @@ fn memoized_local(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(#(ResolvedCall, EffectTerm)), Memo) {
@@ -3216,7 +3216,7 @@ fn collapsed_scc(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(#(ResolvedCall, EffectTerm)), Memo) {
@@ -3257,7 +3257,7 @@ fn collapsed_member(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(#(ResolvedCall, EffectTerm)), Memo) {
@@ -3289,7 +3289,7 @@ fn resolve_field_call(
   function: Function,
   context: ImportContext,
   knowledge_base: KnowledgeBase,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
@@ -3340,7 +3340,7 @@ fn resolve_field_call_by_type(
   function: Function,
   context: ImportContext,
   knowledge_base: KnowledgeBase,
-  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,

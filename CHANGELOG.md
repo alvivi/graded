@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Upgraded girard to 2.0.0 and glance to 7.0.0.** girard's `Type` now lives in the single `girard` module (`girard/types` was removed upstream), and glance 7 parses arithmetic in bit-array pattern segment sizes, so modules using that form now extract and type instead of failing to parse and collapsing to `[Unknown]`.
+- **The glinter lint gate is temporarily disabled.** glinter pins glance below 7.0.0, which conflicts with girard 2.0.0; the dev dependency and CI step return once glinter allows glance 7.x.
+
 ### Fixed
 
 - **A computed receiver whose helper returns one of its parameters now forwards field effects instead of collapsing to `[Unknown]`.** When the receiver argument is a call to a straight-line helper that returns a parameter (`inner(id_options(o))`), a parameter-rooted receiver path (`inner(get_options(config))` returning `config.options`), or a constructor rebuilt from parameter-rooted fields (`inner(normalize(o))` returning `Options(resolver: o.resolver)`), graded resolves the helper's return-value provenance and substitutes the call's arguments into it, then re-keys the callee's field-effect variable through the resulting value exactly as an inline receiver would. Both a same-module private helper (resolved on demand from its source) and a public cross-module one (threaded through the knowledge base) resolve. A helper whose return is itself a non-self call, or an external with no visible body, stays `[Unknown]`, as does any argument that can't be grounded to a caller parameter — provenance widens to Top on every shape it can't trace.

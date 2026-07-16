@@ -22,7 +22,6 @@
 import argv
 import filepath
 import girard
-import girard/types as girard_types
 import glance
 import gleam/bool
 import gleam/dict.{type Dict}
@@ -989,7 +988,7 @@ fn fn_typed_params_from_schemes(
   list.fold(module_result.annotated.functions, dict.new(), fn(acc, entry) {
     let #(name, scheme) = entry
     case scheme.type_, dict.get(function_map, name) {
-      girard_types.Fn(argument_types, _return), Ok(function) ->
+      girard.Fn(argument_types, _return), Ok(function) ->
         dict.insert(acc, name, fn_typed_names(function, argument_types))
       _, _ -> acc
     }
@@ -1000,7 +999,7 @@ fn fn_typed_params_from_schemes(
 // `argument_types`) is itself a `Fn`.
 fn fn_typed_names(
   function: glance.Function,
-  argument_types: List(girard_types.Type),
+  argument_types: List(girard.Type),
 ) -> Set(String) {
   // Positional mapping is only sound when girard's `Fn` arity matches glance's
   // parameter count. `list.zip` would silently truncate a mismatch, so skip the
@@ -1013,7 +1012,7 @@ fn fn_typed_names(
   |> list.filter_map(fn(pair) {
     let #(parameter, argument_type) = pair
     case argument_type, parameter.name {
-      girard_types.Fn(_, _), glance.Named(parameter_name) -> Ok(parameter_name)
+      girard.Fn(_, _), glance.Named(parameter_name) -> Ok(parameter_name)
       _, _ -> Error(Nil)
     }
   })
@@ -1087,7 +1086,7 @@ fn infer_one_module(
   cache_dir: String,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: Dict(#(Int, Int), girard_types.Type),
+  module_types: Dict(#(Int, Int), girard.Type),
   girard_fn_typed: Dict(String, Set(String)),
   declared_modules: Set(String),
 ) -> Result(
@@ -1356,7 +1355,7 @@ fn check_one_file(
   module_checks: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: Dict(#(Int, Int), girard_types.Type),
+  module_types: Dict(#(Int, Int), girard.Type),
   girard_fn_typed: Dict(String, Set(String)),
 ) -> CheckResult {
   let #(violations, warnings) =

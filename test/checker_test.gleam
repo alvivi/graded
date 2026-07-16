@@ -1,6 +1,5 @@
 import generators
 import girard
-import girard/types as girard_types
 import glance
 import gleam/dict
 import gleam/list
@@ -312,14 +311,14 @@ fn girard_fn_typed_for(
       list.fold(annotated.functions, dict.new(), fn(acc, entry) {
         let #(name, scheme) = entry
         case scheme.type_ {
-          girard_types.Fn(argument_types, _return) -> {
+          girard.Fn(argument_types, _return) -> {
             let assert Ok(definition) =
               list.find(module.functions, fn(d) { d.definition.name == name })
             let names =
               list.zip(definition.definition.parameters, argument_types)
               |> list.filter_map(fn(pair) {
                 case pair.1, { pair.0 }.name {
-                  girard_types.Fn(_, _), glance.Named(parameter_name) ->
+                  girard.Fn(_, _), glance.Named(parameter_name) ->
                     Ok(parameter_name)
                   _, _ -> Error(Nil)
                 }

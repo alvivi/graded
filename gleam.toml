@@ -33,7 +33,7 @@ pages = [
 [dependencies]
 gleam_stdlib = ">= 0.44.0 and < 2.0.0"
 glance = ">= 6.0.0 and < 8.0.0"
-girard = ">= 1.0.0 and < 2.0.0"
+girard = ">= 2.0.0 and < 3.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
 argv = ">= 1.0.0 and < 2.0.0"
 filepath = ">= 1.1.2 and < 2.0.0"
@@ -41,7 +41,8 @@ tom = ">= 2.0.2 and < 3.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
-glinter = ">= 2.11.1 and < 3.0.0"
+# TODO: restore glinter (>= 2.11.1 and < 3.0.0) once it allows glance 7.x;
+# it currently pins glance < 7.0.0, which conflicts with girard 2.0.0.
 qcheck = ">= 1.0.0 and < 2.0.0"
 
 [tools.glinter]
