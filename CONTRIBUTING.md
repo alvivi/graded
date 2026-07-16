@@ -93,6 +93,28 @@ Add or update a test with every behaviour change.
 - **Doc-comment slashes.** `///` / `////` only on the public API
   (`src/graded.gleam`); use `//` everywhere internal — private entities,
   `src/graded/internal/`, and tests.
+- **No ASCII-art rules.** Do not decorate code or docs with divider or banner
+  lines built from repeated characters — no `// ====`, `// ----`, `# ----`, or
+  similar rows. A plain comment naming a section is fine; the row of dashes or
+  equals signs is not.
+- **Semantic sections.** Group a file into sections by topic, each introduced
+  by a header — a `//` line naming the section, a blank `//` line, then a short
+  description of what it covers and why:
+
+  ```gleam
+  // Section name
+  //
+  // One or two sentences on what this section covers and why.
+  ```
+
+  A file that is a single section needs no header; its module doc is enough. Order the entities within a section for readability: lead with the
+  public API (including `pub opaque` types), then the private implementation,
+  and within each put constants before types before functions — but keep a type
+  next to the functions that build and operate on it, put an entry point ahead
+  of the helpers it calls, and fall back to alphabetical order only to break
+  ties among unrelated peers. Test modules follow the same sectioning and
+  module-doc rules, but keep their sections in narrative order (by feature or
+  scenario) rather than reordering by visibility or kind.
 - **No circular dependencies** between the modules under `src/graded/internal/`.
 
 ## Changelog & commits
