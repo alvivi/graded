@@ -241,9 +241,10 @@ fn last_segment(module_path: String) -> String {
 }
 
 // Map each same-module constructor (variant) name to the custom type it
-// belongs to. Stage C keys inferred field effects by *type* name — matching
-// the nominal type girard reports for a receiver — but construction sites name
-// the *constructor*, which can differ (`pub type Shape { Circle(..) }`).
+// belongs to. The constructor-field index keys inferred field effects by
+// *type* name — matching the nominal type girard reports for a receiver —
+// but construction sites name the *constructor*, which can differ
+// (`pub type Shape { Circle(..) }`).
 pub fn build_constructor_type_map(module: Module) -> Dict(String, String) {
   list.fold(module.custom_types, dict.new(), fn(acc, definition) {
     let type_name = definition.definition.name

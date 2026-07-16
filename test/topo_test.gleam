@@ -6,8 +6,8 @@
 // doesn't try to compile them as project modules — fixture modules import
 // each other (e.g. `import app/d`) which would not resolve from `test/`.
 // All temp directories start without any `.graded` files, which also
-// exercises Risk 2 ("modules without prior .graded files still get
-// processed").
+// exercises clean-slate inference (modules without prior `.graded` files
+// still get processed).
 
 import filepath
 import gleam/dict
@@ -391,7 +391,7 @@ pub fn shout(value: String) -> String {
 pub fn infer_writes_graded_files_from_clean_slate_test() {
   let directory = make_fixture("clean_slate", pure_chain_files())
 
-  // Sanity: nothing exists yet — Risk 2 starting condition.
+  // Sanity: nothing exists yet — a clean slate.
   simplifile.is_file(directory <> "/build/.graded/app/a.graded")
   |> should.equal(Ok(False))
 
@@ -406,7 +406,7 @@ pub fn infer_writes_graded_files_from_clean_slate_test() {
   cleanup(directory)
 }
 
-// Inference idempotence (the fix's core promise)
+// Inference idempotence
 //
 // A second `run_infer` against the same project must produce byte-identical
 // `.graded` files. If this regresses, inference has stopped converging in

@@ -1234,7 +1234,7 @@ pub fn operator_typed_closure_field_test() {
 }
 
 pub fn inferred_field_effect_from_construction_test() {
-  // Stage C: inferred_field has NO `type Logger.emit` annotation. graded
+  // inferred_field has NO `type Logger.emit` annotation. graded
   // derives the field's effect from the construction `Logger(emit: io.println)`
   // and girard types the receiver, so the [] check budget fails with the
   // precise [Stdout] — no hand-written type annotation needed.

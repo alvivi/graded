@@ -235,7 +235,7 @@ pub fn lookup_effects(
   }
 }
 
-// The effect of a value wired into a constructor field (Stage C). A function
+// The effect of a value wired into a constructor field. A function
 // reference resolves via the knowledge base; a nested constructor is pure;
 // anything else (a local identifier, an inline expression) is `[Unknown]`,
 // since we can't statically resolve it here.
