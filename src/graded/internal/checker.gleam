@@ -24,14 +24,11 @@ import graded/internal/types.{
   UnmatchedParamBoundWarning, UntrackedEffectWarning, Violation,
 }
 
-// Operator parameters in scope, mapped to their callback shape: for each
-// callback position, that callback's own callback positions (see
-// `signatures.operator_param_shapes`). Threaded as `ambient_operators` so a
-// closure analysed inside a producer's returned closure can both resolve a
-// captured operator and lift a callback argument over exactly its own function
-// parameters.
-type OperatorShapes =
-  dict.Dict(String, List(#(Int, List(Int))))
+// Entry points
+//
+// The public analysis entries: check a module against its effect annotations,
+// infer the public API's effects (plus returned operators and provenance), and
+// lift a constructor-field closure for the construction-site index.
 
 // Check a parsed module against its effect annotations.
 pub fn check(
@@ -268,16 +265,53 @@ pub fn infer_with_returns(
   #(annotations, returned_operators, provenance)
 }
 
-// The effect of the callback an operator parameter is applied to. The callback
-// isn't assumed to be first: `callback_position` is the operator parameter's
-// own callback argument index (from its type signature, see
-// `signatures.operator_param_shapes`), so `action(config, cb)` resolves
-// `cb` and not `config`. Pipe-adjusted call positions already align with the
-// operator's logical argument positions (the piped receiver takes position 0),
-// so the index applies directly. A missing argument at a callback position means
-// the operator is under-applied (a partial application whose deferred effect we
-// can't resolve here), so it collapses to `[Unknown]` rather than `pure()` — the
-// effect must never be silently dropped.
+// Lift a record field wired to an inline closure into an effect *operator*,
+// abstracting over every closure parameter. A first-order field
+// (`to_error: fn(m) { io.println(m) }`) becomes `λm. [Stdout]` (applying it to
+// the field call's argument gives `[Stdout]` back); a higher-order field
+// (`run: fn(next) { next() }`) becomes `λnext. [next]` (applying it gives the
+// callback's effect). `resolve_field_effect` applies the operator at the field
+// call. `function_map` resolves same-module calls; a minimal registry/types is
+// enough for the common case of a closure calling library/qualified functions.
+pub fn closure_field_operator(
+  params: List(String),
+  body: List(Statement),
+  context: ImportContext,
+  function_map: dict.Dict(String, Definition(Function)),
+  knowledge_base: KnowledgeBase,
+  // The module's SCC ids, built once by the caller (`build_scc_ids`) and reused
+  // across every field closure it analyses.
+  scc_ids: LocalCache,
+) -> EffectTerm {
+  // Independent analysis entry (called while building the construction index,
+  // not under `infer`/`check`): start from a fresh memo so no other module's
+  // entries leak in. Each call gets its own memo — these closures are shallow,
+  // so not sharing across fields costs nothing.
+  // Abstract over every parameter (positions 0..n-1), in order.
+  let positions = list.index_map(params, fn(_, index) { index })
+  analyze_closure(
+    params,
+    [],
+    body,
+    positions,
+    context,
+    function_map,
+    knowledge_base,
+    set.new(),
+    signatures.empty(),
+    dict.new(),
+    dict.new(),
+    scc_ids,
+    new_memo(),
+  ).0
+}
+
+// Shared analysis helpers
+//
+// Small utilities shared across every resolution path: call-argument lookup,
+// sentinel calls for derived effects, returned-closure trimming, and
+// effect-term/param-bound manipulation.
+
 // A call's recorded arguments, or `[]` if none were tracked. Keyed by the
 // call's full span (see `extract.span_key`), so writer and reader agree.
 fn call_args_for(
@@ -293,92 +327,6 @@ fn call_args_for(
 // in diagnostics.
 fn sentinel_call(module: String, function: String, span: Span) -> ResolvedCall {
   types.ResolvedCall(name: QualifiedName(module:, function:), span:)
-}
-
-fn operator_argument_effect(
-  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
-  span: Span,
-  callback_position: Int,
-  nested_positions: List(Int),
-  knowledge_base: KnowledgeBase,
-  caller_param_bounds: List(ParamBound),
-  registry: SignatureRegistry,
-  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
-    #(Result(EffectTerm, Nil), Memo),
-  memo: Memo,
-) -> #(EffectTerm, Memo) {
-  case
-    list.find(call_args_for(call_args, span), fn(a) {
-      a.position == callback_position
-    })
-  {
-    // A closure, branch, or returned operator passed as the callback must be
-    // *lifted* (its body analysed / producer resolved), as at a direct operator
-    // call — `resolve_argument_effects` would collapse it to [Unknown]. It is
-    // lifted over `nested_positions` — the callback's own function parameters,
-    // taken from the operator parameter's type — so a value-parameter callback
-    // (`fn(message) { … }`, no nested positions) reduces to its ground effect
-    // while a higher-order callback (`fn(_next) { … }`) keeps a binder that
-    // β-reduces when the operator applies it.
-    Ok(arg) ->
-      case arg.value {
-        types.Closure(..)
-        | types.Choice(..)
-        | types.ReturnedOperator(..)
-        | types.CallResult(..) ->
-          operator_term_for_argument(
-            arg,
-            nested_positions,
-            knowledge_base,
-            caller_param_bounds,
-            registry,
-            lift_operator_arg,
-            memo,
-          )
-        _ -> #(
-          resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
-          memo,
-        )
-      }
-    Error(Nil) -> #(effect_term.unknown(), memo)
-  }
-}
-
-// Build a call to a second-order parameter as a *curried* effect-operator
-// application over all its callback arguments, in order: `action(cb1, cb2)` ⟹
-// `((action e1) e2)`. Left-nesting matches the binder order of the lifted
-// operator, so each callback beta-reduces against the right binder once the
-// operator is bound at a call site. `shape` is the operator's callbacks: each
-// `#(callback position, that callback's own callback positions)`.
-fn curried_operator_application(
-  operator: EffectTerm,
-  shape: List(#(Int, List(Int))),
-  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
-  span: Span,
-  knowledge_base: KnowledgeBase,
-  caller_param_bounds: List(ParamBound),
-  registry: SignatureRegistry,
-  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
-    #(Result(EffectTerm, Nil), Memo),
-  memo: Memo,
-) -> #(EffectTerm, Memo) {
-  list.fold(shape, #(operator, memo), fn(acc, entry) {
-    let #(term, memo) = acc
-    let #(position, nested_positions) = entry
-    let #(arg_effect, memo) =
-      operator_argument_effect(
-        call_args,
-        span,
-        position,
-        nested_positions,
-        knowledge_base,
-        caller_param_bounds,
-        registry,
-        lift_operator_arg,
-        memo,
-      )
-    #(types.TApp(term, arg_effect), memo)
-  })
 }
 
 // A bound whose effect is the single variable named after the param
@@ -445,8 +393,6 @@ fn collapse_phantom_vars(term: EffectTerm, params: Set(String)) -> EffectTerm {
   ground_vars(term, set.difference(effect_term.free_vars(term), params))
 }
 
-// PRIVATE
-
 // A function's body with a trailing *returned closure* dropped. A closure is
 // lazy: a function that returns one runs nothing of that closure when *called* —
 // its effects happen when the returned closure is later applied, and are
@@ -462,6 +408,13 @@ fn without_returned_closure(function: Function) -> Function {
     _ -> function
   }
 }
+
+// Module structure and memo state
+//
+// Per-module indexes threaded read-only through the analysis — the function
+// map, the call-graph SCC structure that drives same-module memoization, and
+// the memo tables — plus the alias/external classification that decides which
+// components may collapse.
 
 // Map a module's functions by name — for transitive same-module resolution.
 pub fn build_function_map(
@@ -643,14 +596,6 @@ fn alias_fn_typed_params(
   |> set.from_list()
 }
 
-fn named_function_params(function: Function) -> Set(String) {
-  function.parameters
-  |> list.filter_map(fn(param) {
-    param.name |> signatures.assignment_name |> option.to_result(Nil)
-  })
-  |> set.from_list()
-}
-
 // Build the same-module call graph: each function mapped to the same-module
 // functions its analysis can transitively recurse into. Deriving these from the
 // extractor — the same pass that drives resolution — makes the
@@ -788,46 +733,11 @@ fn is_opaque_external(definition: Definition(Function)) -> Bool {
   list.any(definition.attributes, fn(attribute) { attribute.name == "external" })
 }
 
-// Lift a record field wired to an inline closure into an effect *operator*,
-// abstracting over every closure parameter. A first-order field
-// (`to_error: fn(m) { io.println(m) }`) becomes `λm. [Stdout]` (applying it to
-// the field call's argument gives `[Stdout]` back); a higher-order field
-// (`run: fn(next) { next() }`) becomes `λnext. [next]` (applying it gives the
-// callback's effect). `resolve_field_effect` applies the operator at the field
-// call. `function_map` resolves same-module calls; a minimal registry/types is
-// enough for the common case of a closure calling library/qualified functions.
-pub fn closure_field_operator(
-  params: List(String),
-  body: List(Statement),
-  context: ImportContext,
-  function_map: dict.Dict(String, Definition(Function)),
-  knowledge_base: KnowledgeBase,
-  // The module's SCC ids, built once by the caller (`build_scc_ids`) and reused
-  // across every field closure it analyses.
-  scc_ids: LocalCache,
-) -> EffectTerm {
-  // Independent analysis entry (called while building the construction index,
-  // not under `infer`/`check`): start from a fresh memo so no other module's
-  // entries leak in. Each call gets its own memo — these closures are shallow,
-  // so not sharing across fields costs nothing.
-  // Abstract over every parameter (positions 0..n-1), in order.
-  let positions = list.index_map(params, fn(_, index) { index })
-  analyze_closure(
-    params,
-    [],
-    body,
-    positions,
-    context,
-    function_map,
-    knowledge_base,
-    set.new(),
-    signatures.empty(),
-    dict.new(),
-    dict.new(),
-    scc_ids,
-    new_memo(),
-  ).0
-}
+// Annotation checking
+//
+// Check one `check` annotation against its function: subset-check every
+// collected effect against the declared budget, and warn about untracked
+// references and dead parameter/field bounds.
 
 fn check_annotation(
   annotation: EffectAnnotation,
@@ -986,6 +896,21 @@ fn collect_reference_warnings(
     }
   })
 }
+
+// Effect collection
+//
+// The core body walker: turn a function's extracted calls — resolved, local,
+// field, and applied operators — into (call, effect term) pairs, applying
+// second-order operator parameters to their callback arguments.
+
+// Operator parameters in scope, mapped to their callback shape: for each
+// callback position, that callback's own callback positions (see
+// `signatures.operator_param_shapes`). Threaded as `ambient_operators` so a
+// closure analysed inside a producer's returned closure can both resolve a
+// captured operator and lift a callback argument over exactly its own function
+// parameters.
+type OperatorShapes =
+  dict.Dict(String, List(#(Int, List(Int))))
 
 // Collect all (call, effect_term) pairs reachable from a function body. Each
 // effect is an `EffectTerm` — possibly still carrying free variables or operator
@@ -1302,6 +1227,102 @@ fn collect_effects(
   )
 }
 
+// The effect of the callback an operator parameter is applied to. The callback
+// isn't assumed to be first: `callback_position` is the operator parameter's
+// own callback argument index (from its type signature, see
+// `signatures.operator_param_shapes`), so `action(config, cb)` resolves
+// `cb` and not `config`. Pipe-adjusted call positions already align with the
+// operator's logical argument positions (the piped receiver takes position 0),
+// so the index applies directly. A missing argument at a callback position means
+// the operator is under-applied (a partial application whose deferred effect we
+// can't resolve here), so it collapses to `[Unknown]` rather than `pure()` — the
+// effect must never be silently dropped.
+fn operator_argument_effect(
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
+  span: Span,
+  callback_position: Int,
+  nested_positions: List(Int),
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
+  case
+    list.find(call_args_for(call_args, span), fn(a) {
+      a.position == callback_position
+    })
+  {
+    // A closure, branch, or returned operator passed as the callback must be
+    // *lifted* (its body analysed / producer resolved), as at a direct operator
+    // call — `resolve_argument_effects` would collapse it to [Unknown]. It is
+    // lifted over `nested_positions` — the callback's own function parameters,
+    // taken from the operator parameter's type — so a value-parameter callback
+    // (`fn(message) { … }`, no nested positions) reduces to its ground effect
+    // while a higher-order callback (`fn(_next) { … }`) keeps a binder that
+    // β-reduces when the operator applies it.
+    Ok(arg) ->
+      case arg.value {
+        types.Closure(..)
+        | types.Choice(..)
+        | types.ReturnedOperator(..)
+        | types.CallResult(..) ->
+          operator_term_for_argument(
+            arg,
+            nested_positions,
+            knowledge_base,
+            caller_param_bounds,
+            registry,
+            lift_operator_arg,
+            memo,
+          )
+        _ -> #(
+          resolve_argument_effects(arg, knowledge_base, caller_param_bounds),
+          memo,
+        )
+      }
+    Error(Nil) -> #(effect_term.unknown(), memo)
+  }
+}
+
+// Build a call to a second-order parameter as a *curried* effect-operator
+// application over all its callback arguments, in order: `action(cb1, cb2)` ⟹
+// `((action e1) e2)`. Left-nesting matches the binder order of the lifted
+// operator, so each callback beta-reduces against the right binder once the
+// operator is bound at a call site. `shape` is the operator's callbacks: each
+// `#(callback position, that callback's own callback positions)`.
+fn curried_operator_application(
+  operator: EffectTerm,
+  shape: List(#(Int, List(Int))),
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
+  span: Span,
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
+  list.fold(shape, #(operator, memo), fn(acc, entry) {
+    let #(term, memo) = acc
+    let #(position, nested_positions) = entry
+    let #(arg_effect, memo) =
+      operator_argument_effect(
+        call_args,
+        span,
+        position,
+        nested_positions,
+        knowledge_base,
+        caller_param_bounds,
+        registry,
+        lift_operator_arg,
+        memo,
+      )
+    #(types.TApp(term, arg_effect), memo)
+  })
+}
+
 // The effect a directly-applied closure adds beyond its binding-site walk: the
 // effect of each argument whose parameter the closure actually invokes. The
 // lifted `operator` is `λp0. … λpn-1. body`; a parameter that is invoked stays
@@ -1494,6 +1515,20 @@ fn operator_spine_arity(term: EffectTerm) -> Int {
     _ -> 0
   }
 }
+
+fn named_function_params(function: Function) -> Set(String) {
+  function.parameters
+  |> list.filter_map(fn(param) {
+    param.name |> signatures.assignment_name |> option.to_result(Nil)
+  })
+  |> set.from_list()
+}
+
+// Call-site substitution
+//
+// Bind a callee's free effect variables against the caller's arguments and
+// bounds, so polymorphic effects ground at each call site instead of leaking
+// upward as internal variable names.
 
 // Substitute effect variables in the recursive analysis of a local
 // (same-module) call. The recursive `collect_effects` returns calls
@@ -1695,6 +1730,12 @@ fn subst_if(
   use <- bool.guard(when: dict.is_empty(bindings), return: term)
   effect_term.subst(term, bindings)
 }
+
+// Field forwarding and receiver grounding
+//
+// Re-key a callee's field-effect variables onto the caller's own parameters,
+// grounding computed receivers through return provenance so factory-built
+// values still resolve to a caller-scope path.
 
 // Re-key free field-effect variables from a callee receiver parameter onto a
 // caller parameter when the caller forwards that parameter directly:
@@ -2102,6 +2143,12 @@ fn forwarded_field_vars(
     set.union(vars, effect_term.free_vars(term))
   })
 }
+
+// Variable binding and operator lifting
+//
+// Match caller arguments to callee param bounds, lifting closures, same-module
+// functions, and returned operators into effect operators that beta-reduce at
+// their application sites.
 
 // When the KB has no bounds but the registry reports fn-typed params,
 // synthesise polymorphic bounds so caller fn-typed args propagate through
@@ -2953,6 +3000,11 @@ fn ordered_fn_typed_param_names(function: Function) -> List(String) {
   })
 }
 
+// Argument matching
+//
+// Locate the call argument bound to a named callee parameter — by label, then
+// signature position — and resolve an argument value's flat effect.
+
 // Find the argument that matches a given param bound, via the bound's
 // own label, then the callee signature's declared label, then the
 // parameter's real position. See the body for why the bound's index in
@@ -3061,6 +3113,12 @@ fn resolve_argument_effects(
     types.OtherExpression -> effect_term.unknown()
   }
 }
+
+// Local call resolution
+//
+// Resolve same-module calls transitively, memoized over the call-graph SCC
+// structure: a collapsible component shares one full-reachability analysis,
+// everything else keys precisely on same-SCC ancestors.
 
 fn resolve_unknown_local(
   local_call: LocalCall,
@@ -3283,6 +3341,12 @@ fn collapsed_member(
     Error(Nil) -> #(acc, memo)
   }
 }
+
+// Field-call resolution
+//
+// Resolve `object.field(args)` calls: a hand-written field bound wins, then
+// the receiver's nominal type against the type-field registry, with the
+// receiver-keyed field-effect variable as the traceable fallback.
 
 fn resolve_field_call(
   field_call: types.FieldCall,

@@ -14,6 +14,11 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/set.{type Set}
 
+// Kahn's algorithm
+//
+// Leaves-first ordering of an acyclic graph via in-degree counting. Fails
+// with `Cycle` when the input is not a DAG, naming the offending nodes.
+
 // Failure mode of `sort`. The contained list names every node still
 // participating in unresolved dependencies — useful for diagnostics on
 // cyclic input.
@@ -21,7 +26,7 @@ pub type SortError {
   Cycle(nodes: List(String))
 }
 
-// Kahn's algorithm: produce a leaves-first ordering of `graph`.
+// Produce a leaves-first ordering of `graph`.
 pub fn sort(
   graph: Dict(String, Set(String)),
 ) -> Result(List(String), SortError) {
@@ -83,14 +88,33 @@ fn prepend_all(prefix: List(a), tail: List(a)) -> List(a) {
   list.fold(prefix, tail, fn(acc, item) { [item, ..acc] })
 }
 
-// Tarjan's algorithm: partition `graph` (node -> set of nodes it points at)
-// into strongly-connected components, returned in **callee-first** order —
+fn build_reverse_graph(
+  graph: Dict(String, Set(String)),
+) -> Dict(String, Set(String)) {
+  dict.fold(graph, dict.new(), fn(reverse, node, deps) {
+    set.fold(deps, reverse, fn(rev, dep) {
+      dict.upsert(rev, dep, fn(existing) {
+        case existing {
+          Some(s) -> set.insert(s, node)
+          None -> set.from_list([node])
+        }
+      })
+    })
+  })
+}
+
+// Tarjan's algorithm
+//
+// Strongly-connected components in callee-first order. Unlike `sort`, cycles
+// are grouped into components rather than rejected, so this never fails.
+
+// Partition `graph` (node -> set of nodes it points at) into
+// strongly-connected components, returned in **callee-first** order —
 // every component appears before the components that point into it. A
 // component is a list of mutually-reachable nodes; a node on no cycle is a
 // singleton (a self-loop still yields a size-1 component).
 //
-// Unlike `sort`, this never fails: cycles are exactly what it groups. The
-// checker uses it to memoize same-module effect analysis — a singleton's
+// The checker uses it to memoize same-module effect analysis — a singleton's
 // result is independent of its callers and can be cached, while a genuine
 // mutual-recursion cluster is handled together as one component.
 pub fn scc_order(graph: Dict(String, Set(String))) -> List(List(String)) {
@@ -203,19 +227,4 @@ fn pop_component(
       }
     }
   }
-}
-
-fn build_reverse_graph(
-  graph: Dict(String, Set(String)),
-) -> Dict(String, Set(String)) {
-  dict.fold(graph, dict.new(), fn(reverse, node, deps) {
-    set.fold(deps, reverse, fn(rev, dep) {
-      dict.upsert(rev, dep, fn(existing) {
-        case existing {
-          Some(s) -> set.insert(s, node)
-          None -> set.from_list([node])
-        }
-      })
-    })
-  })
 }

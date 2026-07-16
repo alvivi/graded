@@ -23,6 +23,12 @@ import graded/internal/config
 import graded/internal/types.{type QualifiedName, QualifiedName}
 import simplifile
 
+// Registry
+//
+// The registry itself: what a ParameterInfo records, and the queries the
+// checker runs against it — which of a callee's parameters are fn-typed or
+// operators, in what order, and where their callbacks sit.
+
 // One parameter of a function's signature.
 //
 // `label` is the Gleam argument label (e.g. `by` in `fn foo(by name: X)`).
@@ -166,7 +172,10 @@ pub fn operator_callback_positions(
   }
 }
 
-// ──── Glance AST → SignatureRegistry ────
+// Glance AST to SignatureRegistry
+//
+// Builds registry entries and the fn-typed field index from parsed modules,
+// so both project and dependency signatures come from one construction path.
 
 // Build a SignatureRegistry from a parsed project module. Used during
 // `run_infer` / `run` to give the checker position information for
@@ -258,7 +267,11 @@ fn is_field_fn_typed(type_: glance.Type, fn_aliases: Set(String)) -> Bool {
   }
 }
 
-// ──── Glance AST detection ────
+// Glance AST detection
+//
+// Registry-free detection on a single function or type: reads fn-typed
+// parameters and operator shapes straight off glance annotations, for
+// definition-site inference where no registry lookup applies.
 
 // Names of a local function's fn-typed parameters, detected from
 // glance AST type annotations. Returns names of parameters whose
@@ -334,6 +347,13 @@ pub fn is_function_return_type(type_: glance.Type) -> Bool {
   is_function_type(type_)
 }
 
+pub fn assignment_name(name: glance.AssignmentName) -> Option(String) {
+  case name {
+    glance.Named(n) -> Some(n)
+    glance.Discarded(_) -> None
+  }
+}
+
 // The indices of the function-typed arguments in a type list, in order. These
 // are the callback positions for an operator parameter's own argument list.
 fn all_function_indices(types: List(glance.Type)) -> List(Int) {
@@ -350,14 +370,11 @@ fn is_function_type(t: glance.Type) -> Bool {
   }
 }
 
-pub fn assignment_name(name: glance.AssignmentName) -> Option(String) {
-  case name {
-    glance.Named(n) -> Some(n)
-    glance.Discarded(_) -> None
-  }
-}
-
-// ──── Dependency loading via glance source parsing ────
+// Dependency loading
+//
+// Parses dependency and path-dependency source trees with glance to fill the
+// registry with cross-package signatures; unreadable or unparseable packages
+// are skipped rather than failing the run.
 
 // Load signature registries for every dependency in `packages_dir`
 // by parsing each dep's `src/` directory with glance.

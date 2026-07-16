@@ -7,6 +7,11 @@ import gleeunit/should
 import graded/internal/config
 import simplifile
 
+// Fixture setup
+//
+// Each test writes its own gleam.toml into a per-test temporary directory,
+// so cases stay independent and reruns start clean.
+
 fn write_toml(name: String, content: String) -> String {
   let directory = "/tmp/graded_config_" <> name
   let _ = simplifile.delete(directory)
@@ -15,6 +20,11 @@ fn write_toml(name: String, content: String) -> String {
   let assert Ok(Nil) = simplifile.write(path, content)
   path
 }
+
+// Reading [tools.graded]
+//
+// `config.read` on well-formed gleam.toml files: defaults when the table is
+// absent, then each override individually, then both together.
 
 pub fn defaults_when_tools_graded_missing_test() {
   let path =
@@ -77,6 +87,11 @@ cache_dir = \"_cache/graded\"
   cfg.cache_dir |> should.equal("_cache/graded")
 }
 
+// Error cases
+//
+// `config.read` failures: a gleam.toml without a package name, and a path
+// with no gleam.toml at all.
+
 pub fn missing_name_is_error_test() {
   let path =
     write_toml(
@@ -101,6 +116,11 @@ pub fn missing_file_is_error_test() {
     _ -> should.fail()
   }
 }
+
+// Defaults helper
+//
+// `config.defaults_for` builds a config from a bare package name without
+// touching the filesystem.
 
 pub fn defaults_for_helper_test() {
   let cfg = config.defaults_for("hello")

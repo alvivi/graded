@@ -18,7 +18,10 @@ import qcheck
 
 import generators
 
-// ──── helpers ────
+// Helpers
+//
+// Shared building blocks for the assertions below: a label-set constructor,
+// the definite-labels view of a resolved effect set, and a redex detector.
 
 fn labels(items: List(String)) -> EffectTerm {
   TLabels(set.from_list(items))
@@ -49,7 +52,10 @@ fn no_redex(term: EffectTerm) -> Bool {
   }
 }
 
-// ──── P-LAT: union is a bounded semilattice ────
+// P-LAT: union is a bounded semilattice
+//
+// Commutativity, associativity, idempotence, `pure` as identity, and `TTop`
+// as annihilator — the lattice laws normalization must respect.
 
 pub fn union_commutative_property_test() {
   use #(a, b) <- qcheck.given(qcheck.tuple2(
@@ -88,7 +94,10 @@ pub fn union_top_annihilator_property_test() {
   |> should.equal(TTop)
 }
 
-// ──── P-NORM: normalization is a well-behaved normal form ────
+// P-NORM: normalization is a well-behaved normal form
+//
+// Normalization is idempotent, and the EffectSet↔EffectTerm bridge
+// round-trips ground effect sets exactly.
 
 pub fn normalize_idempotent_property_test() {
   use t <- qcheck.given(generators.effect_term_gen())
@@ -104,7 +113,10 @@ pub fn normalize_ground_agreement_property_test() {
   |> should.equal(s)
 }
 
-// ──── P-SUBST: capture-avoiding substitution ────
+// P-SUBST: capture-avoiding substitution
+//
+// Substitution is identity on empty bindings and closed terms, never
+// captures free variables, and leaves no beta-redex after normalization.
 
 pub fn subst_empty_identity_property_test() {
   use t <- qcheck.given(generators.effect_term_gen())
@@ -152,7 +164,10 @@ pub fn normalize_no_redex_property_test() {
   |> should.be_true()
 }
 
-// ──── P-SOUND: the checker never hides an effect ────
+// P-SOUND: the checker never hides an effect
+//
+// Resolution only over-approximates: substitution never drops a genuine
+// label, subset checking is reflexive, and a union bounds its operands.
 
 pub fn resolution_over_approximates_property_test() {
   // P-SOUND-1: substitution/reduction never drops a *genuine* concrete label.
@@ -201,7 +216,10 @@ pub fn union_upper_bound_property_test() {
   |> should.be_true()
 }
 
-// ──── P-DIST: application distributes over union ────
+// P-DIST: application distributes over union
+//
+// Applying a union of operators equals the union of the applications, and
+// distribution keeps every branch's effect.
 
 pub fn app_distributes_over_union_property_test() {
   // P-DIST-1: (f ⊔ g)(x) normalizes to the same term as f(x) ⊔ g(x), for
@@ -243,7 +261,10 @@ pub fn app_distribution_over_approximates_property_test() {
   })
 }
 
-// ──── P-TERM: termination ────
+// P-TERM: termination
+//
+// Finite terms normalize within a finite reduction budget, agreeing with
+// the unbounded normalizer.
 
 pub fn normalize_terminates_property_test() {
   // P-TERM-1: finite terms never exhaust the reduction budget, and the
@@ -253,7 +274,10 @@ pub fn normalize_terminates_property_test() {
   |> should.equal(Ok(normalize(t)))
 }
 
-// ──── unit tests: the second-order motivating example ────
+// Unit tests: the second-order motivating example
+//
+// Concrete beta-reduction, stuck-application, distribution, and
+// capture-avoidance scenarios drawn from the second-order design doc.
 
 pub fn beta_reduction_unit_test() {
   // (λcb. [Http, cb])(Stdout)  ──β──►  [Http, Stdout]

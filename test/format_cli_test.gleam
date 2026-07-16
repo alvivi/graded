@@ -2,6 +2,8 @@ import gleeunit/should
 import graded
 import simplifile
 
+// Format and format --check on the spec file
+//
 // `graded format --check` exists to fail CI on formatting drift. A spec file
 // that doesn't even parse must be a hard error, not a silent pass — otherwise
 // a real syntax error in the committed `.graded` slips through green.
@@ -40,6 +42,8 @@ pub fn format_fails_on_unparseable_spec_test() {
   graded.run_format(dir) |> should.be_error
 }
 
+// Format --stdin
+//
 // `graded format --stdin` reads a spec on standard input and prints the
 // formatted result, for editor integration. `run_format_stdin` is the pure
 // transform behind it: parse, sort, reformat.

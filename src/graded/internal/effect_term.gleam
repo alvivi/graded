@@ -20,12 +20,10 @@ import graded/internal/types.{
   TTop, TUnion, TVar, Wildcard,
 }
 
-// Reduction budget. Beta-reduction of finite, non-recursive terms always
-// terminates (call-graph recursion is guarded elsewhere by the `visited`
-// set), so this is only a backstop against a pathological input. Exhausting
-// it collapses to `[Unknown]` — the same conservative fallback as a stuck
-// application, so the checker stays sound rather than looping.
-const default_fuel = 1_000_000
+// Canonical terms
+//
+// The two distinguished ground terms every caller needs: the empty (pure)
+// effect and the `[Unknown]` collapse that unresolvable paths funnel into.
 
 // The pure (empty) effect term.
 pub fn pure() -> EffectTerm {
@@ -38,6 +36,10 @@ pub fn unknown() -> EffectTerm {
 }
 
 // Bridges to/from the ground normal form
+//
+// `EffectSet` is the representation the rest of graded compares against;
+// these conversions lift a set into the term calculus and, after
+// normalization, collapse a term back down to one.
 
 // Lift an `EffectSet` into an `EffectTerm`. Total and exact.
 pub fn from_effect_set(effect_set: EffectSet) -> EffectTerm {
@@ -78,6 +80,9 @@ fn term_to_set(normalized: EffectTerm) -> EffectSet {
 }
 
 // Free variables
+//
+// Which effect variables a term leaves unbound — substitution consults this
+// to detect capture, and leftover free variables surface as `Polymorphic`.
 
 // The free effect variables of a term (a `TAbs` binds its parameter).
 pub fn free_vars(term: EffectTerm) -> Set(String) {
@@ -93,6 +98,10 @@ pub fn free_vars(term: EffectTerm) -> Set(String) {
 }
 
 // Capture-avoiding substitution
+//
+// Replace effect variables with terms without letting a binder capture an
+// incoming free variable. This is the engine behind beta-reduction, so its
+// correctness is what makes normalization meaning-preserving.
 
 // Substitute effect variables for terms, capture-avoiding. Bindings may map
 // a variable to an operator (`TAbs`), which is what enables nested/second-
@@ -163,6 +172,17 @@ fn fresh_loop(base: String, avoid: Set(String), n: Int) -> String {
 }
 
 // Normalization (beta + union laws)
+//
+// Reduce a term to its canonical shape: beta-reduce every applied operator
+// and flatten/dedup/absorb unions, under a fuel budget so a pathological
+// input degrades to `[Unknown]` instead of looping.
+
+// Reduction budget. Beta-reduction of finite, non-recursive terms always
+// terminates (call-graph recursion is guarded elsewhere by the `visited`
+// set), so this is only a backstop against a pathological input. Exhausting
+// it collapses to `[Unknown]` — the same conservative fallback as a stuck
+// application, so the checker stays sound rather than looping.
+const default_fuel = 1_000_000
 
 // Reduce a term to normal form: beta-reduce every applied operator, and
 // flatten/dedup/absorb unions into a canonical shape. Idempotent.

@@ -11,6 +11,12 @@ import graded/internal/types.{
 }
 import qcheck
 
+// Shared pools
+//
+// Fixed label and variable pools drawn on by every generator, and the
+// uniform-choice helper that samples them, so generated data overlaps enough
+// for properties to hit interesting collisions.
+
 const effect_labels = ["Http", "Dom", "Stdout", "Db", "FileSystem", "Time"]
 
 const effect_var_names = ["e", "e1", "e2", "a", "cb"]
@@ -25,6 +31,12 @@ fn one_of(items: List(String)) -> qcheck.Generator(String) {
       )
   }
 }
+
+// Effect-term generators
+//
+// Depth-bounded `EffectTerm`s — arbitrary, first-order, and serializable
+// shapes — plus variable substitutions, feeding the normalization,
+// substitution, and serialization property suites.
 
 // A generator for arbitrary `EffectTerm`s, depth-bounded so reduction stays
 // cheap. Produces every constructor, including stuck applications and
@@ -137,6 +149,12 @@ pub fn effect_binding_gen() -> qcheck.Generator(dict.Dict(String, EffectTerm)) {
     })
   qcheck.map(qcheck.list_from(pair_gen), dict.from_list)
 }
+
+// Effect-set and spec-file generators
+//
+// Ground `EffectSet`s and the `.graded` structures built from them —
+// annotations, type fields, externals, and whole spec files — for the
+// parse/format round-trip properties.
 
 pub fn effect_set_gen() -> qcheck.Generator(EffectSet) {
   let label_gen =
@@ -307,6 +325,11 @@ pub fn inferred_list_gen() -> qcheck.Generator(List(types.EffectAnnotation)) {
     },
   )
 }
+
+// Provenance programs
+//
+// Paired Gleam source programs whose helper return value is traceable in one
+// form and opaque in the other, feeding the provenance regression guard rail.
 
 // A computed-receiver program in two forms differing only in whether the helper's
 // return value is traceable: `traced` uses a direct tail shape (passthrough,
