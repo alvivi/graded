@@ -22,7 +22,7 @@ gleam run -m graded infer
 
 This scans `src/`, analyses every function, and writes two outputs:
 
-- **`<package_name>.graded`** at the project root — the spec file. Contains the inferred effects of every *public* function plus any hand-written `check` invariants, `external effects` hints, and `type` field annotations. Tracked in git, ships to consumers if you add it to `included_files` in `gleam.toml`.
+- **`<package_name>.graded`** at the project root — the spec file. Contains the inferred effects of every *public* function plus any hand-written `check` invariants, `external effects` hints, and `type` field annotations. Tracked in git.
 - **`build/.graded/<module>.graded`** — per-module cache files. Contain the inferred effects of *every* function (public and private). Regenerated freely on each `graded infer` run, never shipped (`build/` is gitignored).
 
 ### Example
@@ -84,7 +84,7 @@ The cache directory under `build/` is gitignored and never ships, regardless of 
 
 ## Reference
 
-The `.graded` spec language and graded's analysis model are documented in full in **[docs/REFERENCE.md](./docs/REFERENCE.md)** — the annotation kinds (`effects`, `check`, `type`, `external effects`, `returns`), effect-set syntax, effect resolution order, higher-order and second-order effect polymorphism, type field effects, the effect-label conventions, and the bundled catalog of common packages.
+The `.graded` spec language and graded's analysis model are documented in full in **[the Reference](https://hexdocs.pm/graded/reference.html)** — the annotation kinds (`effects`, `check`, `type`, `external effects`, `returns`), effect-set syntax, effect resolution order, higher-order and second-order effect polymorphism, type field effects, the effect-label conventions, and the bundled catalog of common packages.
 
 ## Commands
 
@@ -100,9 +100,9 @@ gleam run -m graded format --stdin            # format from stdin (editor integr
 
 graded is **sound, not complete**: it combines syntax-level analysis ([glance](https://hexdocs.pm/glance/)) with type information ([girard](https://hexdocs.pm/girard)), and when it can't statically trace a function value it falls back to the `[Unknown]` effect rather than guess. `[Unknown]` fails an effect budget, so graded never silently *understates* effects — but a few value-flow patterns need a hand-written annotation or a wider budget to resolve.
 
-Idiomatic Gleam — inline callbacks, direct and aliased function references, pipe chains, higher-order functions passing functions by name (including second-order [operator effects](./docs/SECOND_ORDER_EFFECTS.md)), and validator/handler/config records — is handled automatically, including across modules: a fresh checkout resolves transitive chains with no prior `graded infer` (committed `effects` lines always win, and `check` writes nothing to disk).
+Idiomatic Gleam — inline callbacks, direct and aliased function references, pipe chains, higher-order functions passing functions by name (including second-order [operator effects](https://github.com/alvivi/graded/blob/main/docs/SECOND_ORDER_EFFECTS.md)), and validator/handler/config records — is handled automatically, including across modules: a fresh checkout resolves transitive chains with no prior `graded infer` (committed `effects` lines always win, and `check` writes nothing to disk).
 
-The handful of patterns that fall back to `[Unknown]` — each with how it shows up and how to work around it — are documented in **[docs/LIMITATIONS.md](./docs/LIMITATIONS.md)**.
+The handful of patterns that fall back to `[Unknown]` — each with how it shows up and how to work around it — are documented in **[Limitations](https://hexdocs.pm/graded/limitations.html)**.
 
 ## License
 
