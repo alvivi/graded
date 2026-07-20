@@ -372,14 +372,13 @@ fn self_referential_bound(name: String) -> ParamBound {
   ParamBound(name, TVar(name))
 }
 
-// The `$op$`-prefixed sentinel name for a producer parameter (Fix D). `$` is
-// un-representable in a Gleam identifier, so a sentinel can never coincide with a
-// residual leaked var read from source; the parser reserves the prefix so a
-// forged `.graded` token can't either.
-const sentinel_prefix = "$op$"
-
+// The sentinel name for a producer parameter (Fix D): the reserved
+// `effect_term.sentinel_prefix` followed by the real name. A sentinel can never
+// coincide with a residual leaked var read from source (the prefix is
+// un-representable in a Gleam identifier), and the parser reserves the prefix so
+// a forged `.graded` token can't mint one either.
 fn sentinel_of(name: String) -> String {
-  sentinel_prefix <> name
+  effect_term.sentinel_prefix <> name
 }
 
 // A producer parameter's bound whose *name* stays real (so a body call to the
@@ -586,17 +585,12 @@ fn function_type_aliases(
   aliases: List(Definition(glance.TypeAlias)),
 ) -> Set(String) {
   let alias_map = type_alias_map(aliases)
-  list.filter_map(dict.keys(alias_map), fn(name) {
-    case
-      resolves_to_function(
-        glance.NamedType(Span(0, 0), name, None, []),
-        alias_map,
-        set.new(),
-      )
-    {
-      True -> Ok(name)
-      False -> Error(Nil)
-    }
+  list.filter(dict.keys(alias_map), fn(name) {
+    signatures.resolve_function_type(
+      glance.NamedType(Span(0, 0), name, None, []),
+      alias_map,
+    )
+    |> result.is_ok
   })
   |> set.from_list()
 }
@@ -610,31 +604,6 @@ fn type_alias_map(
   list.fold(aliases, dict.new(), fn(acc, definition) {
     dict.insert(acc, definition.definition.name, definition.definition.aliased)
   })
-}
-
-// Does `type_` denote a function — directly (`fn(...)`) or via a chain of
-// module-local aliases? `seen` guards against alias cycles (which Gleam rejects,
-// but the walk must terminate regardless).
-fn resolves_to_function(
-  type_: glance.Type,
-  alias_map: dict.Dict(String, glance.Type),
-  seen: Set(String),
-) -> Bool {
-  case type_ {
-    glance.FunctionType(..) -> True
-    glance.NamedType(name:, module: None, ..) ->
-      case set.contains(seen, name) {
-        True -> False
-        False ->
-          case dict.get(alias_map, name) {
-            Ok(aliased) ->
-              resolves_to_function(aliased, alias_map, set.insert(seen, name))
-            // Not an alias (a custom type or prelude type) — not a function.
-            Error(Nil) -> False
-          }
-      }
-    _ -> False
-  }
 }
 
 // Parameters of `function` whose declared type resolves to a function through a
@@ -1546,10 +1515,11 @@ fn neutral_returned_operator(
   alias_map: dict.Dict(String, glance.Type),
 ) -> Result(EffectTerm, Nil) {
   use return_type <- result.try(option.to_result(function.return, Nil))
-  use _ <- result.try(signatures.resolve_function_type(return_type, alias_map))
-  Ok(
-    pure_operator(signatures.returned_callback_positions(return_type, alias_map)),
-  )
+  use positions <- result.map(signatures.returned_callback_positions(
+    return_type,
+    alias_map,
+  ))
+  pure_operator(positions)
 }
 
 // Recover a first-order closure's body effect from its lifted operator by
@@ -2761,37 +2731,30 @@ fn compute_returned_operator(
   // Gate on the return type being *a function* (so there's something to record
   // when called), not specifically operator-shaped — a first-order returned
   // function (`fn make() -> fn() -> Nil`) carries a latent effect too. The
-  // callback positions may be empty (a first-order return has no callbacks).
+  // callback positions may be empty (a first-order return has no callbacks);
+  // `returned_callback_positions` errors only when the return isn't a function.
   let gated = {
     use return_type <- result.try(option.to_result(function.return, Nil))
-    use _ <- result.try(signatures.resolve_function_type(
+    use positions <- result.try(signatures.returned_callback_positions(
       return_type,
       cache.fn_alias_types,
     ))
     use value <- result.try(extract.return_value(function, context))
-    Ok(#(return_type, value))
+    Ok(#(positions, value))
   }
   case gated {
     Error(Nil) -> #(Error(Nil), memo)
-    Ok(#(return_type, value)) -> {
-      let positions =
-        signatures.returned_callback_positions(
-          return_type,
-          cache.fn_alias_types,
-        )
+    Ok(#(positions, value)) -> {
       let producer_operators = signatures.operator_param_shapes(function)
       // All fn-typed params of the producer. `ordered_fn_typed_param_names` and
       // `operator_param_shapes` filter to the same set (fn-typed Named params), so
       // this covers both seed origins S1 (producer_bounds) and S3 (ambient ops).
-      let producer_params =
-        set.from_list(ordered_fn_typed_param_names(function))
+      let ordered_params = ordered_fn_typed_param_names(function)
+      let producer_params = set.from_list(ordered_params)
       // Fix D S1: seed the producer's params as sentinels (`$op$name`) rather than
       // self-referential, so a residual leaked var of the same name cannot merge
       // with a genuine producer param before rename-back.
-      let producer_bounds =
-        function
-        |> ordered_fn_typed_param_names()
-        |> list.map(sentinel_bound)
+      let producer_bounds = list.map(ordered_params, sentinel_bound)
       let lift =
         build_lift_operator_arg(
           context,

@@ -874,7 +874,15 @@ fn field_effect_of(
           )
       }
     }
-    None ->
+    None -> {
+      // The default for an unrecognised field value: its argument-value effects
+      // with no bounds or source (the `[Unknown]` a plain lookup would give).
+      let fallback =
+        types.TypeFieldEffect(
+          effects.argument_value_effects(knowledge_base, value),
+          [],
+          None,
+        )
       case value {
         // A field wired to an inline/let-bound closure: analyse its body for the
         // field's effect instead of collapsing to `[Unknown]`.
@@ -887,24 +895,15 @@ fn field_effect_of(
         types.LocalRef(_) -> checker.polymorphic_field_effect()
         // A field wired from a *call* (`Options(resolver: disk_resolver())`):
         // resolve the callee's returned-operator summary. `Error` preserves the
-        // prior `[Unknown]` behaviour exactly (the fallback below).
+        // prior `[Unknown]` behaviour exactly.
         types.CallResult(callee, args) ->
           case call_result_effect(callee, args) {
             Ok(operator) -> types.TypeFieldEffect(operator, [], None)
-            Error(Nil) ->
-              types.TypeFieldEffect(
-                effects.argument_value_effects(knowledge_base, value),
-                [],
-                None,
-              )
+            Error(Nil) -> fallback
           }
-        _ ->
-          types.TypeFieldEffect(
-            effects.argument_value_effects(knowledge_base, value),
-            [],
-            None,
-          )
+        _ -> fallback
       }
+    }
   }
 }
 
@@ -1298,7 +1297,7 @@ fn infer_one_module(
   // call sites targeting this module's functions. A module-level-external module
   // resolves via its declaration, so later modules calling into it agree with
   // `check`.
-  let new_kb =
+  let #(threaded_kb, _returns_delta, _bounds_delta) =
     thread_inferred_into_kb(
       knowledge_base,
       inferred,
@@ -1306,7 +1305,11 @@ fn infer_one_module(
       module_path,
       declared_modules,
     )
-    |> effects.with_provenance(qualify_bare_names(provenance, module_path))
+  let new_kb =
+    effects.with_provenance(
+      threaded_kb,
+      qualify_bare_names(provenance, module_path),
+    )
 
   let public_names = public_function_names(module)
   let public_annotations =
@@ -1403,12 +1406,10 @@ fn fold_inferred_module(
       typeinfo.for_module(type_info, module_path),
       typeinfo.fn_typed_for_module(type_info, module_path),
     )
-  // The module's fresh returns and param bounds, qualified — exposed as deltas so
+  // Fold into the KB and reuse the returns/param-bound deltas it qualifies, so
   // the caller can fold them Fresh into a cold `infer`'s `construction_kb` (Fix
   // C-B) without laundering the whole KB.
-  let #(_effects_dict, bounds_delta, returns_delta) =
-    qualified_inferred(inferred, returned_operators, module_path)
-  let new_kb =
+  let #(threaded_kb, returns_delta, bounds_delta) =
     thread_inferred_into_kb(
       kb,
       inferred,
@@ -1416,7 +1417,11 @@ fn fold_inferred_module(
       module_path,
       declared_modules,
     )
-    |> effects.with_provenance(qualify_bare_names(provenance, module_path))
+  let new_kb =
+    effects.with_provenance(
+      threaded_kb,
+      qualify_bare_names(provenance, module_path),
+    )
   #(new_kb, returns_delta, bounds_delta)
 }
 
@@ -1442,25 +1447,34 @@ fn qualify_bare_names(
 // `drop_declared_modules` in `infer_path_dep_module`. Returned-operator and
 // parameter-bound metadata describe what a function returns and how it consumes
 // operator arguments, not its call effect, so they are kept.
+// Returns the threaded knowledge base alongside the module's qualified returns
+// and param-bound deltas (before `drop_declared_modules`), so a cold `infer`'s
+// pre-pass (Fix C-B) can reuse them without re-deriving via `qualified_inferred`.
 fn thread_inferred_into_kb(
   knowledge_base: KnowledgeBase,
   inferred: List(EffectAnnotation),
   returned_operators: Dict(String, types.EffectTerm),
   module_path: String,
   declared_modules: Set(String),
-) -> KnowledgeBase {
+) -> #(
+  KnowledgeBase,
+  Dict(QualifiedName, types.EffectTerm),
+  Dict(QualifiedName, List(types.ParamBound)),
+) {
   let #(effects_dict, params_dict, returns_dict) =
     qualified_inferred(inferred, returned_operators, module_path)
   let effects_dict = drop_declared_modules(effects_dict, declared_modules)
   // Main project topo loop + the in-memory pre-pass: results inferred this run,
   // hence Fresh.
-  fold_inferred_into_kb(
-    knowledge_base,
-    effects_dict,
-    params_dict,
-    returns_dict,
-    effects.Fresh,
-  )
+  let kb =
+    fold_inferred_into_kb(
+      knowledge_base,
+      effects_dict,
+      params_dict,
+      returns_dict,
+      effects.Fresh,
+    )
+  #(kb, returns_dict, params_dict)
 }
 
 // Qualify a module's freshly inferred effects, polymorphic param bounds, and

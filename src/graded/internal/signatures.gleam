@@ -379,24 +379,24 @@ fn resolve_function_type_seen(
 // The callback positions of a producer's returned function, alias-aware at both
 // layers: the outer return type is resolved to its underlying `fn(args) -> _`
 // (through module-local aliases), and each argument index counts as a callback
-// when it *itself* resolves to a function through the alias map. Empty when the
-// return type isn't (transitively) a function. The alias-aware twin of
-// `operator_callback_positions_of_type`, used to lift a function returned by a
-// producer whose return type — or whose callback arguments — are aliases.
+// when it *itself* resolves to a function through the alias map. `Error(Nil)`
+// when the return type isn't (transitively) a function — so a caller gates on
+// "returns a function at all" and reads the callback positions in one step. The
+// alias-aware twin of `operator_callback_positions_of_type`, used to lift a
+// function returned by a producer whose return type — or whose callback
+// arguments — are aliases.
 pub fn returned_callback_positions(
   type_: glance.Type,
   alias_map: Dict(String, glance.Type),
-) -> List(Int) {
-  case resolve_function_type(type_, alias_map) {
-    Ok(FunctionType(_, param_types, _)) ->
-      param_types
-      |> list.index_map(fn(t, i) {
-        #(i, resolve_function_type(t, alias_map) |> result.is_ok)
-      })
-      |> list.filter(fn(pair) { pair.1 })
-      |> list.map(fn(pair) { pair.0 })
-    _ -> []
-  }
+) -> Result(List(Int), Nil) {
+  use resolved <- result.map(resolve_function_type(type_, alias_map))
+  let assert FunctionType(_, param_types, _) = resolved
+  param_types
+  |> list.index_map(fn(t, i) {
+    #(i, resolve_function_type(t, alias_map) |> result.is_ok)
+  })
+  |> list.filter(fn(pair) { pair.1 })
+  |> list.map(fn(pair) { pair.0 })
 }
 
 pub fn assignment_name(name: glance.AssignmentName) -> Option(String) {

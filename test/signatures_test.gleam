@@ -136,7 +136,7 @@ pub fn make() -> R { fn() { Nil } }
   let map = alias_map_of(module)
   let rt = return_type_of(module, "make")
   signatures.resolve_function_type(rt, map) |> should.be_ok()
-  signatures.returned_callback_positions(rt, map) |> should.equal([])
+  signatures.returned_callback_positions(rt, map) |> should.equal(Ok([]))
 }
 
 pub fn resolve_function_type_chained_alias_test() {
@@ -186,7 +186,7 @@ pub fn make() -> Op { fn(_cb) { Nil } }
   let assert Ok(module) = glance.module(source)
   let map = alias_map_of(module)
   signatures.returned_callback_positions(return_type_of(module, "make"), map)
-  |> should.equal([0])
+  |> should.equal(Ok([0]))
 }
 
 pub fn returned_callback_positions_nested_callback_alias_test() {
@@ -201,7 +201,7 @@ pub fn make() -> Op { fn(_cb) { Nil } }
   let assert Ok(module) = glance.module(source)
   let map = alias_map_of(module)
   signatures.returned_callback_positions(return_type_of(module, "make"), map)
-  |> should.equal([0])
+  |> should.equal(Ok([0]))
 }
 
 pub fn resolve_function_type_imported_alias_test() {
