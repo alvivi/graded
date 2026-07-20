@@ -448,6 +448,34 @@ fn read_all_graded(directory: String) -> List(#(String, String)) {
 // A producer's `returns` line in the spec lets a consumer in another module
 // resolve a factory-produced handle to precise effects.
 
+pub fn returns_aliased_return_generates_summary_test() {
+  // Gap A: a producer whose return type is a module-local alias to `fn(...)`
+  // now generates a `returns` line. Before Fix A the gate matched only a literal
+  // `fn(...)` return type, so no summary was emitted for the alias.
+  let directory =
+    make_fixture("returns_aliased", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "app/factory.gleam",
+        "import gleam/io
+
+pub type Resolver = fn() -> Nil
+
+pub fn make() -> Resolver {
+  fn() { io.println(\"x\") }
+}
+",
+      ),
+      #("app.graded", "check app/factory.make : []\n"),
+    ])
+
+  let assert Ok(Nil) = graded.run_infer(directory)
+  let assert Ok(spec) = simplifile.read(directory <> "/app.graded")
+  string.contains(spec, "returns app/factory.make : [Stdout]")
+  |> should.be_true()
+  cleanup(directory)
+}
+
 pub fn returns_operator_cross_module_end_to_end_test() {
   // A producer that returns a function, consumed in another module. After
   // `infer`, the spec carries a `returns` line for the producer; `check` then
@@ -500,6 +528,49 @@ fn with_logger(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
   let assert [violation, ..] = main_result.violations
   violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 
+  cleanup(directory)
+}
+
+pub fn field_from_aliased_producer_call_resolves_test() {
+  // Gaps A+B together (the girard motivating shape, same module): a record field
+  // wired from a producer whose return type is a module-local alias to `fn(...)`.
+  // Fix A generates the producer's summary; Fix B consumes it at the construction
+  // site so the field call resolves to the producer's real effect, not [Unknown].
+  let directory =
+    make_fixture("both_gaps", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "app/config.gleam",
+        "import gleam/io
+
+pub type Resolver = fn() -> Nil
+
+pub type Options {
+  Options(resolver: Resolver)
+}
+
+pub fn disk_resolver() -> Resolver {
+  fn() { io.println(\"x\") }
+}
+
+pub fn default_options() -> Options {
+  Options(resolver: disk_resolver())
+}
+
+pub fn use_resolver(o: Options) -> Nil {
+  o.resolver()
+}
+",
+      ),
+      #("app.graded", "check app/config.use_resolver : []\n"),
+    ])
+
+  let assert Ok(Nil) = graded.run_infer(directory)
+  let assert Ok(results) = graded.run(directory)
+  let assert Ok(config_result) =
+    list.find(results, fn(r) { string.ends_with(r.file, "app/config.gleam") })
+  let assert [violation, ..] = config_result.violations
+  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
   cleanup(directory)
 }
 

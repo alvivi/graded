@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A record field wired from a producer whose return type is a type alias to a function now infers the producer's real effect instead of `[Unknown]`.** When a constructor field is wired from a call (`Options(resolver: disk_resolver())`) and the producer's return type is a module-local alias to a function (`fn disk_resolver() -> Resolver` where `type Resolver = fn() -> Nil`), graded resolves the alias to its underlying function type and callback positions, generates the producer's returned-operator summary, and consumes it at the construction site — so a call through the field (`options.resolver()`) resolves to the returned closure's real effect (`[FileSystem]`) instead of collapsing to `[Unknown]`. Both a literal `fn(...)` return and an aliased one resolve, on `graded check` with no prior infer and on a single `graded infer`, and across project modules. A return type that references an alias imported from another module, or a producer with an un-annotated fn-typed parameter, emits no summary and its field stays `[Unknown]`.
+
 ## [0.11.0] - 2026-07-16
 
 ### Changed

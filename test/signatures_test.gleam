@@ -1,4 +1,6 @@
 import glance
+import gleam/dict
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/set
 import gleeunit/should
@@ -104,6 +106,116 @@ pub type Wrapped {
   let assert Ok(module) = glance.module(source)
   signatures.fn_typed_fields_from_module(module, set.new())
   |> should.equal(set.new())
+}
+
+// Alias-aware return-type resolution (Fix A)
+//
+// Resolving a producer's return type to its underlying function type through
+// module-local aliases, keeping callback positions.
+
+fn alias_map_of(module: glance.Module) -> dict.Dict(String, glance.Type) {
+  list.fold(module.type_aliases, dict.new(), fn(acc, d) {
+    dict.insert(acc, d.definition.name, d.definition.aliased)
+  })
+}
+
+fn return_type_of(module: glance.Module, name: String) -> glance.Type {
+  let assert Ok(def) =
+    list.find(module.functions, fn(d) { d.definition.name == name })
+  let assert Some(rt) = def.definition.return
+  rt
+}
+
+pub fn resolve_function_type_direct_alias_test() {
+  let source =
+    "
+pub type R = fn() -> Nil
+pub fn make() -> R { fn() { Nil } }
+"
+  let assert Ok(module) = glance.module(source)
+  let map = alias_map_of(module)
+  let rt = return_type_of(module, "make")
+  signatures.resolve_function_type(rt, map) |> should.be_ok()
+  signatures.returned_callback_positions(rt, map) |> should.equal([])
+}
+
+pub fn resolve_function_type_chained_alias_test() {
+  let source =
+    "
+pub type A = B
+pub type B = fn() -> Nil
+pub fn make() -> A { fn() { Nil } }
+"
+  let assert Ok(module) = glance.module(source)
+  let map = alias_map_of(module)
+  signatures.resolve_function_type(return_type_of(module, "make"), map)
+  |> should.be_ok()
+}
+
+pub fn resolve_function_type_cyclic_alias_terminates_test() {
+  let source =
+    "
+pub type A = B
+pub type B = A
+pub fn make() -> A { fn() { Nil } }
+"
+  let assert Ok(module) = glance.module(source)
+  let map = alias_map_of(module)
+  signatures.resolve_function_type(return_type_of(module, "make"), map)
+  |> should.be_error()
+}
+
+pub fn resolve_function_type_non_function_alias_test() {
+  let source =
+    "
+pub type Id = Int
+pub fn make() -> Id { 1 }
+"
+  let assert Ok(module) = glance.module(source)
+  let map = alias_map_of(module)
+  signatures.resolve_function_type(return_type_of(module, "make"), map)
+  |> should.be_error()
+}
+
+pub fn returned_callback_positions_operator_outer_test() {
+  let source =
+    "
+pub type Op = fn(fn() -> Nil) -> Nil
+pub fn make() -> Op { fn(_cb) { Nil } }
+"
+  let assert Ok(module) = glance.module(source)
+  let map = alias_map_of(module)
+  signatures.returned_callback_positions(return_type_of(module, "make"), map)
+  |> should.equal([0])
+}
+
+pub fn returned_callback_positions_nested_callback_alias_test() {
+  // The layer the direct `fn(fn()->Nil)` test does NOT catch: the callback
+  // argument is itself an alias, resolved through the alias map.
+  let source =
+    "
+pub type Callback = fn() -> Nil
+pub type Op = fn(Callback) -> Nil
+pub fn make() -> Op { fn(_cb) { Nil } }
+"
+  let assert Ok(module) = glance.module(source)
+  let map = alias_map_of(module)
+  signatures.returned_callback_positions(return_type_of(module, "make"), map)
+  |> should.equal([0])
+}
+
+pub fn resolve_function_type_imported_alias_test() {
+  // A return type that references an alias imported from another module is a
+  // `NamedType(module: Some(_))`, absent from the local alias map → Error (G4).
+  let source =
+    "
+import foo
+pub fn make() -> foo.Resolver { todo }
+"
+  let assert Ok(module) = glance.module(source)
+  let map = alias_map_of(module)
+  signatures.resolve_function_type(return_type_of(module, "make"), map)
+  |> should.be_error()
 }
 
 // Loading from a packages directory
