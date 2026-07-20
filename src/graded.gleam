@@ -167,13 +167,17 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
       effects.load_spec_effects_from_file(spec),
       declared_modules,
     ))
-    |> effects.with_inferred_returned_operators(
+    // Committed project returns are Foreign (Fix E): serialized, unsanitized. The
+    // fresh in-memory pass below re-infers project returns and, being Fresh, wins
+    // over these for the same key.
+    |> effects.with_foreign_returned_operators(
       effects.load_spec_returns_from_file(spec),
     )
   // Fill gaps for project modules not (yet) in the spec by inferring them in
   // memory, so `check` resolves cross-module calls without a prior `graded infer`.
-  // Committed effects are never overridden. The deltas aren't needed here — the
-  // pre-pass already folded them into `kb_base`. Nothing is written to disk.
+  // Committed effects are never overridden; fresh returns win over committed
+  // Foreign ones (Fix E). The deltas aren't needed here — the pre-pass already
+  // folded them into `kb_base`. Nothing is written to disk.
   let #(kb_base, _fresh_returns, _fresh_bounds) =
     infer_project_in_memory(
       kb_base,
@@ -1187,12 +1191,12 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
         declared_modules,
       ),
     )
-    // Committed project returns, then the fresh pre-pass delta; fresh
-    // directly-derived param bounds.
-    |> effects.with_inferred_returned_operators(
+    // Committed project returns (Foreign), then the fresh pre-pass delta which
+    // overrides them (Fix E fresh-wins); fresh directly-derived param bounds.
+    |> effects.with_foreign_returned_operators(
       effects.load_spec_returns_from_file(spec),
     )
-    |> effects.with_inferred_returned_operators(fresh_returns)
+    |> effects.with_fresh_returned_operators(fresh_returns)
     |> effects.with_inferred_params(fresh_bounds)
   let base_kb =
     kb_base
@@ -1448,7 +1452,15 @@ fn thread_inferred_into_kb(
   let #(effects_dict, params_dict, returns_dict) =
     qualified_inferred(inferred, returned_operators, module_path)
   let effects_dict = drop_declared_modules(effects_dict, declared_modules)
-  fold_inferred_into_kb(knowledge_base, effects_dict, params_dict, returns_dict)
+  // Main project topo loop + the in-memory pre-pass: results inferred this run,
+  // hence Fresh.
+  fold_inferred_into_kb(
+    knowledge_base,
+    effects_dict,
+    params_dict,
+    returns_dict,
+    effects.Fresh,
+  )
 }
 
 // Qualify a module's freshly inferred effects, polymorphic param bounds, and
@@ -1705,14 +1717,18 @@ fn enrich_with_path_deps(
         // hand-written `type` lines to load.
         let #(effs, params, returns, type_fields) =
           effects.load_dep_spec(resolved_dep_path, name)
-        fold_inferred_into_kb(kb, effs, params, returns)
+        // A committed path-dependency spec is serialized → Foreign.
+        fold_inferred_into_kb(kb, effs, params, returns, effects.Foreign)
         |> effects.with_type_fields(type_fields)
       }
       _ ->
         case infer_path_dep(resolved_dep_path, kb, consumer_modules) {
           Error(Nil) -> kb
+          // A path dependency inferred from source this run is Fix-D-sanitized →
+          // Fresh (trusting it is sound and more precise than blanket cross-package
+          // conservatism).
           Ok(#(effs, params, returns, provenance)) ->
-            fold_inferred_into_kb(kb, effs, params, returns)
+            fold_inferred_into_kb(kb, effs, params, returns, effects.Fresh)
             |> effects.with_provenance(provenance)
         }
     }
@@ -1741,16 +1757,25 @@ fn path_dep_registry(package_root: String) -> SignatureRegistry {
 // tail of `thread_inferred_into_kb` and the path-dep loaders: effects alone
 // would leave a higher-order callee's bound unloaded, so its callback's effect
 // variable would leak unsubstituted into every caller. Existing entries win.
+// `origin` (Fix E) classifies the returned-operator summaries being folded: a
+// committed serialized spec is `Foreign`; results freshly inferred this run are
+// `Fresh` (and win over a committed Foreign entry for the same key). Effects and
+// param bounds keep committed-wins regardless — the asymmetry is deliberate.
 fn fold_inferred_into_kb(
   knowledge_base: KnowledgeBase,
   effs: Dict(QualifiedName, types.EffectTerm),
   params: Dict(QualifiedName, List(types.ParamBound)),
   returns: Dict(QualifiedName, types.EffectTerm),
+  origin: effects.SummaryOrigin,
 ) -> KnowledgeBase {
+  let with_returns = case origin {
+    effects.Fresh -> effects.with_fresh_returned_operators
+    effects.Foreign -> effects.with_foreign_returned_operators
+  }
   knowledge_base
   |> effects.with_inferred(effs)
   |> effects.with_inferred_params(params)
-  |> effects.with_inferred_returned_operators(returns)
+  |> with_returns(returns)
 }
 
 /// Build the dependency-graph index for a single path dep, topo-sort it,
@@ -1898,6 +1923,8 @@ fn infer_path_dep_module(
           inferred_effs,
           inferred_params,
           inferred_returns,
+          // Path-dep modules inferred from source this run → Fresh.
+          effects.Fresh,
         )
         |> effects.with_provenance(inferred_provenance)
       #(

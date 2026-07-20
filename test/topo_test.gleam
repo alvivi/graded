@@ -574,6 +574,299 @@ pub fn use_resolver(o: Options) -> Nil {
   cleanup(directory)
 }
 
+pub fn fn_typed_collision_stays_unknown_test() {
+  // Fix D discriminator: a producer whose returned closure both calls a fn-typed
+  // param `handler` AND leaks a residual coincidentally named `handler` (from an
+  // unresolvable dep whose effect is the bare var `[handler]`). Without sentinels
+  // the two `TVar("handler")` merge (union dedup) and binding to `io.println`
+  // drops the residual → unsound `[Stdout]`. With Fix D they stay distinct: the
+  // residual grounds to `[Unknown]`, so the field is `[Unknown]`, not `[Stdout]`.
+  let directory =
+    make_fixture("fn_typed_collision", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "app/factory.gleam",
+        "import gleam/io
+import dep/ext
+
+pub type Resolver = fn() -> Nil
+
+pub fn make(handler: fn() -> Nil) -> Resolver {
+  fn() {
+    handler()
+    ext.raw()
+  }
+}
+
+pub type Options {
+  Options(resolver: Resolver)
+}
+
+pub fn build() -> Options {
+  Options(resolver: make(io.println))
+}
+
+pub fn use_resolver(o: Options) -> Nil {
+  o.resolver()
+}
+",
+      ),
+      #(
+        "app.graded",
+        "check app/factory.use_resolver : []\nexternal effects dep/ext : [handler]\n",
+      ),
+    ])
+
+  let assert Ok(Nil) = graded.run_infer(directory)
+  let assert Ok(results) = graded.run(directory)
+  let assert Ok(factory_result) =
+    list.find(results, fn(r) { string.ends_with(r.file, "app/factory.gleam") })
+  let assert [violation, ..] = factory_result.violations
+  // The residual `ext.raw` effect is not dropped: the field carries [Stdout,
+  // Unknown]. A sentinel merge would bind the merged var to io.println and yield
+  // just [Stdout], silently dropping the residual — the discriminating case.
+  violation.actual
+  |> should.equal(Specific(set.from_list(["Stdout", "Unknown"])))
+  cleanup(directory)
+}
+
+pub fn nested_producer_precision_test() {
+  // D1 (option i): a producer whose returned closure applies a *nested* producer
+  // with the outer producer's own param as an argument. Threading the outer
+  // sentinelized caller bounds into the nested bind keeps `action` resolvable, so
+  // `outer(io.println)` wired into a field resolves to the precise [Stdout] rather
+  // than the conservative [Unknown] the floor would give.
+  let directory =
+    make_fixture("d1_precision", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "app/factory.gleam",
+        "import gleam/io
+
+pub fn nested(f: fn() -> Nil) -> fn() -> Nil {
+  fn() { f() }
+}
+
+pub fn outer(action: fn() -> Nil) -> fn() -> Nil {
+  fn() { nested(action)() }
+}
+
+pub type Options {
+  Options(run: fn() -> Nil)
+}
+
+pub fn build() -> Options {
+  Options(run: outer(io.println))
+}
+
+pub fn use_run(o: Options) -> Nil {
+  o.run()
+}
+",
+      ),
+      #("app.graded", "check app/factory.use_run : []\n"),
+    ])
+  let assert Ok(Nil) = graded.run_infer(directory)
+  let assert Ok(results) = graded.run(directory)
+  let assert Ok(r) =
+    list.find(results, fn(r) { string.ends_with(r.file, "app/factory.gleam") })
+  let assert [violation, ..] = r.violations
+  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  cleanup(directory)
+}
+
+pub fn nested_producer_adversarial_test() {
+  // D1 adversarial (mandatory): a residual coinciding with the outer param
+  // `action`. A sentinel merge would bind the residual to io.println and drop it,
+  // yielding [Stdout]. Fix D keeps them distinct: the residual collapses to
+  // [Unknown], so the field is [Stdout, Unknown] — the observable discriminator.
+  let directory =
+    make_fixture("d1_adversarial", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "app/factory.gleam",
+        "import gleam/io
+import dep/ext
+
+pub fn nested(f: fn() -> Nil) -> fn() -> Nil {
+  fn() { f() }
+}
+
+pub fn outer(action: fn() -> Nil) -> fn() -> Nil {
+  fn() {
+    nested(action)()
+    ext.raw()
+  }
+}
+
+pub type Options {
+  Options(run: fn() -> Nil)
+}
+
+pub fn build() -> Options {
+  Options(run: outer(io.println))
+}
+
+pub fn use_run(o: Options) -> Nil {
+  o.run()
+}
+",
+      ),
+      #(
+        "app.graded",
+        "check app/factory.use_run : []\nexternal effects dep/ext : [action]\n",
+      ),
+    ])
+  let assert Ok(Nil) = graded.run_infer(directory)
+  let assert Ok(results) = graded.run(directory)
+  let assert Ok(r) =
+    list.find(results, fn(r) { string.ends_with(r.file, "app/factory.gleam") })
+  let assert [violation, ..] = r.violations
+  violation.actual
+  |> should.equal(Specific(set.from_list(["Stdout", "Unknown"])))
+  cleanup(directory)
+}
+
+pub fn cross_module_polymorphic_single_infer_test() {
+  // Fix C-B + completion path: a field in module B wired from a *polymorphic*
+  // producer in module A (`a.mk(io.println)`), consumed in module C. The C-B
+  // pre-pass makes a.mk's fresh summary available at index-build time on a single
+  // `run_infer`, and the completion path binds `logger` to io.println → [Stdout].
+  let directory =
+    make_fixture("cb_polymorphic", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "app/a.gleam",
+        "pub fn mk(logger: fn() -> Nil) -> fn() -> Nil {
+  fn() { logger() }
+}
+",
+      ),
+      #(
+        "app/b.gleam",
+        "import gleam/io
+import app/a
+
+pub type Rec {
+  Rec(field: fn() -> Nil)
+}
+
+pub fn build() -> Rec {
+  Rec(field: a.mk(io.println))
+}
+",
+      ),
+      #(
+        "app/c.gleam",
+        "import app/b
+
+pub fn use_field(r: b.Rec) -> Nil {
+  r.field()
+}
+",
+      ),
+      #("app.graded", "check app/c.use_field : []\n"),
+    ])
+  let assert Ok(Nil) = graded.run_infer(directory)
+  let assert Ok(results) = graded.run(directory)
+  let assert Ok(c_result) =
+    list.find(results, fn(r) { string.ends_with(r.file, "app/c.gleam") })
+  let assert [violation, ..] = c_result.violations
+  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  cleanup(directory)
+}
+
+pub fn fresh_replaces_committed_foreign_test() {
+  // Fix E fresh-wins (round-8 point 1): a committed `.graded` carries a stale
+  // degraded `returns app/a.mk` line (as an old graded might). The fresh
+  // re-inferred summary must WIN over the committed Foreign one, so the field
+  // still resolves to [Stdout]. Fails if fresh returns were existing-wins.
+  let directory =
+    make_fixture("fresh_wins", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "app/a.gleam",
+        "pub fn mk(logger: fn() -> Nil) -> fn() -> Nil {
+  fn() { logger() }
+}
+",
+      ),
+      #(
+        "app/b.gleam",
+        "import gleam/io
+import app/a
+
+pub type Rec {
+  Rec(field: fn() -> Nil)
+}
+
+pub fn build() -> Rec {
+  Rec(field: a.mk(io.println))
+}
+",
+      ),
+      #(
+        "app/c.gleam",
+        "import app/b
+
+pub fn use_field(r: b.Rec) -> Nil {
+  r.field()
+}
+",
+      ),
+      // A stale committed returns line (degraded to [Unknown]).
+      #(
+        "app.graded",
+        "check app/c.use_field : []\nreturns app/a.mk : [Unknown]\n",
+      ),
+    ])
+  let assert Ok(Nil) = graded.run_infer(directory)
+  let assert Ok(results) = graded.run(directory)
+  let assert Ok(c_result) =
+    list.find(results, fn(r) { string.ends_with(r.file, "app/c.gleam") })
+  let assert [violation, ..] = c_result.violations
+  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  cleanup(directory)
+}
+
+pub fn unannotated_producer_param_stays_unknown_test() {
+  // Soundness boundary: a producer with an **un-annotated** fn-typed param emits
+  // no summary (glance-only summary generation), so a field wired from it is
+  // [Unknown] — never an under-report.
+  let directory =
+    make_fixture("unannotated", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "app/factory.gleam",
+        "pub type Rec {
+  Rec(field: fn() -> Nil)
+}
+
+pub fn mk(logger) -> fn() -> Nil {
+  fn() { logger() }
+}
+
+pub fn build(l: fn() -> Nil) -> Rec {
+  Rec(field: mk(l))
+}
+
+pub fn use_field(r: Rec) -> Nil {
+  r.field()
+}
+",
+      ),
+      #("app.graded", "check app/factory.use_field : []\n"),
+    ])
+  let assert Ok(Nil) = graded.run_infer(directory)
+  let assert Ok(results) = graded.run(directory)
+  let assert Ok(r) =
+    list.find(results, fn(r) { string.ends_with(r.file, "app/factory.gleam") })
+  let assert [violation, ..] = r.violations
+  // No summary for the un-annotated producer → the field is [Unknown].
+  violation.actual |> should.equal(Specific(set.from_list(["Unknown"])))
+  cleanup(directory)
+}
+
 // Check auto-infers project modules missing from the spec
 //
 // `check` infers un-specced sibling modules in memory so cross-module calls

@@ -6,6 +6,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/order
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import graded/internal/annotation
 import graded/internal/config
@@ -47,6 +48,13 @@ pub type KnowledgeBase {
     // at the producer's inference time (where its module's private callees are
     // in scope) and threaded forward by the topological pass.
     returned_operators: Dict(QualifiedName, EffectTerm),
+    // The subset of `returned_operators` keys whose summary is **Foreign** (Fix E):
+    // loaded from a serialized `.graded` (a dependency's or a committed project
+    // spec), hence *not* sanitized by this run's `compute_returned_operator`. A key
+    // in `returned_operators` but absent here is **Fresh** (produced this run). A
+    // polymorphic Foreign summary is not trusted for synthesis — it resolves to
+    // `[Unknown]`; a ground one is safe regardless.
+    foreign_returns: Set(QualifiedName),
     // Package-wide factory signatures, keyed by `#(defining module, function)`:
     // each constructor field a function wires to one of its parameters, mapped
     // to that parameter's position. Lets a let-bound *cross-module* factory call
@@ -85,6 +93,8 @@ pub fn load_knowledge_base(
     param_bounds: dict.merge(cat_params, dep_params),
     type_fields: dict.new(),
     returned_operators: dep_returns,
+    // Every dependency summary is Foreign (loaded from a serialized dep spec).
+    foreign_returns: set.from_list(dict.keys(dep_returns)),
     factories: dict.new(),
     module_effects: cat_module_effects,
     provenance: dict.new(),
@@ -104,6 +114,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     param_bounds: cat_params,
     type_fields: dict.new(),
     returned_operators: dict.new(),
+    foreign_returns: set.new(),
     factories: dict.new(),
     module_effects: cat_module_effects,
     provenance: dict.new(),
@@ -297,15 +308,56 @@ pub fn with_inferred_params(
   KnowledgeBase(..knowledge_base, param_bounds: merged)
 }
 
-// Merge inferred returned-operator signatures into a knowledge base, so a
-// downstream module's `let h = producer(); with(h)` can resolve `h` to the
-// operator the producer returns. Existing entries take priority.
-pub fn with_inferred_returned_operators(
+// The origin of a returned-operator summary (Fix E). Named `SummaryOrigin`, not
+// `Provenance`, to avoid confusion with `types.ReturnProvenance` (return-value
+// field provenance, an unrelated concept).
+pub type SummaryOrigin {
+  // Produced by this run's `compute_returned_operator` — Fix-D-sanitized, so its
+  // free vars ⊆ the producer's fn-typed params; safe to synthesize/bind.
+  Fresh
+  // Loaded from a serialized `.graded` (dependency or committed project spec),
+  // unsanitized; a polymorphic Foreign summary is not trusted for synthesis.
+  Foreign
+}
+
+// Merge **Foreign** returned-operator summaries (from a serialized `.graded`)
+// into a knowledge base — existing entries take priority (gap-fill), and every
+// merged key is tagged Foreign. Used for dependency and committed-project returns.
+pub fn with_foreign_returned_operators(
   knowledge_base: KnowledgeBase,
   inferred: Dict(QualifiedName, EffectTerm),
 ) -> KnowledgeBase {
   let merged = dict.merge(inferred, knowledge_base.returned_operators)
-  KnowledgeBase(..knowledge_base, returned_operators: merged)
+  // Existing-wins, so only keys not already present take the Foreign tag; keys
+  // that were already Fresh stay Fresh (their value was kept).
+  let new_foreign =
+    dict.keys(inferred)
+    |> list.filter(fn(k) { !dict.has_key(knowledge_base.returned_operators, k) })
+    |> set.from_list()
+  KnowledgeBase(
+    ..knowledge_base,
+    returned_operators: merged,
+    foreign_returns: set.union(knowledge_base.foreign_returns, new_foreign),
+  )
+}
+
+// Merge **Fresh** returned-operator summaries (produced by this run's inference)
+// into a knowledge base — new entries take priority (they *replace* a committed
+// Foreign summary for the same key), and every merged key is tagged Fresh (dropped
+// from the Foreign set). Used for the pre-pass / main-loop fresh deltas.
+pub fn with_fresh_returned_operators(
+  knowledge_base: KnowledgeBase,
+  inferred: Dict(QualifiedName, EffectTerm),
+) -> KnowledgeBase {
+  let merged = dict.merge(knowledge_base.returned_operators, inferred)
+  KnowledgeBase(
+    ..knowledge_base,
+    returned_operators: merged,
+    foreign_returns: set.drop(
+      knowledge_base.foreign_returns,
+      dict.keys(inferred),
+    ),
+  )
 }
 
 // Attach the package-wide factory map (keyed by `#(module, function)`), so a
@@ -326,13 +378,18 @@ pub fn factories(
   knowledge_base.factories
 }
 
-// Look up the operator a function returns, if known. `Error(Nil)` when the
-// callee doesn't return a (tracked) operator.
+// Look up the operator a function returns, if known, with its origin (Fix E).
+// `Error(Nil)` when the callee doesn't return a (tracked) operator.
 pub fn lookup_returned_operator(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
-) -> Result(EffectTerm, Nil) {
-  dict.get(knowledge_base.returned_operators, name)
+) -> Result(#(EffectTerm, SummaryOrigin), Nil) {
+  use operator <- result.map(dict.get(knowledge_base.returned_operators, name))
+  let origin = case set.contains(knowledge_base.foreign_returns, name) {
+    True -> Foreign
+    False -> Fresh
+  }
+  #(operator, origin)
 }
 
 // Merge inferred return-value provenance into a knowledge base, so a downstream
@@ -704,6 +761,7 @@ fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
                 param_bounds: dict.new(),
                 type_fields: dict.new(),
                 returned_operators: dict.new(),
+                foreign_returns: set.new(),
                 factories: dict.new(),
                 module_effects: acc.module_effects,
                 provenance: dict.new(),

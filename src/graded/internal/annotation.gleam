@@ -310,6 +310,16 @@ fn parse_atoms(inner: String) -> Result(List(EffectTerm), Nil) {
 // `f([A], [B])` ⟹ `TApp(TApp(TVar(f), A), B)`, so the comma form is
 // unambiguous (a single multi-label argument is `f([A, B])`).
 fn parse_atom(token: String) -> Result(EffectTerm, Nil) {
+  // Reserve the `$op$` sentinel prefix (Fix D). graded never *writes* one — it
+  // renames sentinels back to real names before serialization — so a `$op$` token
+  // in a loaded `.graded` is forged and must never mint a `TVar` that could
+  // masquerade as a producer's sentinel. Ground it to `[Unknown]` instead. The
+  // check runs *before* the `(` split so an application head (`$op$f([A])`) is
+  // caught too; a nested occurrence is caught by the recursive descent.
+  use <- bool.guard(
+    when: string.starts_with(string.trim(token), sentinel_prefix),
+    return: Ok(effect_term.unknown()),
+  )
   case string.split_once(token, "(") {
     Ok(#(name, rest)) -> {
       use <- bool.guard(when: !string.ends_with(rest, ")"), return: Error(Nil))
@@ -325,6 +335,10 @@ fn parse_atom(token: String) -> Result(EffectTerm, Nil) {
       }
   }
 }
+
+// The reserved `$op$` sentinel prefix (mirrors `checker.sentinel_prefix`). Used
+// only to reject forged sentinels on parse — see `parse_atom` / `parse_bound_effect`.
+const sentinel_prefix = "$op$"
 
 // Parse an operator application's argument list — comma-separated, each a full
 // bracketed effect term — splitting at top-level commas only (bracket- and
@@ -372,6 +386,15 @@ fn parse_bound_effect(input: String) -> Result(EffectTerm, Nil) {
         |> list.map(string.trim)
         |> list.filter(fn(param) { param != "" })
       use <- bool.guard(when: params == [], return: Error(Nil))
+      // A `$op$`-prefixed *binder* (`fn($op$x) -> …`) is a forged sentinel (Fix D).
+      // It can't be ground in place like a variable, so parse the whole abstraction
+      // conservatively as `[Unknown]` — never a parse `Error`, which would fail the
+      // entire file (`parse_file` is `list.try_map`) and let `read_spec` silently
+      // substitute an empty spec, losing the user's hand-written lines.
+      use <- bool.guard(
+        when: list.any(params, string.starts_with(_, sentinel_prefix)),
+        return: Ok(effect_term.unknown()),
+      )
       use #(_, body_str) <- result.try(string.split_once(after, "->"))
       use body <- result.try(parse_effect_term(string.trim(body_str)))
       Ok(list.fold_right(params, body, fn(acc, param) { TAbs(param, acc) }))

@@ -62,6 +62,55 @@ pub fn check_with_effects_test() {
   |> should.equal(Specific(set.from_list(["Http", "Dom"])))
 }
 
+// `$op$` sentinel reservation (Fix D): the parser never mints a `$op$`-prefixed
+// TVar or binder from a loaded `.graded` (a forged sentinel), and never fails the
+// whole file over one — it grounds the offending term to `[Unknown]`.
+
+pub fn reserved_sentinel_bare_var_test() {
+  let assert Ok([EffectAnnotation(effects: eff, ..)]) =
+    annotation.parse("effects f : [$op$x]")
+  effect_term.to_effect_set(eff)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+pub fn reserved_sentinel_application_head_test() {
+  let assert Ok([EffectAnnotation(effects: eff, ..)]) =
+    annotation.parse("effects f : [$op$g([Http])]")
+  effect_term.to_effect_set(eff)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+pub fn reserved_sentinel_nested_occurrence_test() {
+  // A nested `$op$x` is caught by the recursive descent; the line still parses.
+  annotation.parse("effects f : [g([$op$x])]") |> should.be_ok()
+}
+
+pub fn reserved_sentinel_binder_test() {
+  let assert Ok(file) = annotation.parse_file("returns m.f : fn($op$x) -> [x]")
+  let assert [returns] = annotation.extract_returns(file)
+  effect_term.to_effect_set(returns.operator)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+pub fn reserved_sentinel_preserves_whole_file_test() {
+  // A forged `$op$` line must NOT fail the whole file (`parse_file` is `try_map`),
+  // which would let `read_spec` substitute an empty spec and lose hand-written
+  // lines. Sibling `check`/`external` lines survive.
+  let input =
+    "check app/a.run : []
+returns m.f : fn($op$x) -> [x]
+external effects dep/x : []"
+  let assert Ok(file) = annotation.parse_file(input)
+  let annotations = annotation.extract_annotations(file)
+  list.any(annotations, fn(a) {
+    case a {
+      EffectAnnotation(kind: Check, function: "app/a.run", ..) -> True
+      _ -> False
+    }
+  })
+  |> should.be_true()
+}
+
 pub fn mixed_file_test() {
   let input =
     "effects view : []
