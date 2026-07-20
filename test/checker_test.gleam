@@ -1200,6 +1200,7 @@ fn build_kb(calls: List(#(String, String, String))) -> effects.KnowledgeBase {
     param_bounds: dict.new(),
     type_fields: dict.new(),
     returned_operators: dict.new(),
+    foreign_returns: set.new(),
     factories: dict.new(),
     module_effects: dict.new(),
     provenance: dict.new(),
@@ -1476,6 +1477,7 @@ fn bare_knowledge_base() -> effects.KnowledgeBase {
     param_bounds: dict.new(),
     type_fields: dict.new(),
     returned_operators: dict.new(),
+    foreign_returns: set.new(),
     factories: dict.new(),
     module_effects: dict.new(),
     provenance: dict.new(),
@@ -3340,7 +3342,7 @@ pub fn caller() -> Nil {
         ),
       ]),
     )
-    |> effects.with_inferred_returned_operators(
+    |> effects.with_fresh_returned_operators(
       dict.from_list([
         #(QualifiedName("dep", "pick"), types.TAbs("cb", types.TVar("cb"))),
       ]),
@@ -3397,7 +3399,7 @@ pub fn caller() -> Nil {
         ),
       ]),
     )
-    |> effects.with_inferred_returned_operators(
+    |> effects.with_fresh_returned_operators(
       effects.load_spec_returns_from_file(spec),
     )
   let registry = signatures.from_glance_module("app", module)
@@ -3497,7 +3499,7 @@ pub fn caller() -> Nil {
         ),
       ]),
     )
-    |> effects.with_inferred_returned_operators(
+    |> effects.with_fresh_returned_operators(
       effects.load_spec_returns_from_file(spec),
     )
   let registry = signatures.from_glance_module("app", module)

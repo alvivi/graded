@@ -301,6 +301,7 @@ pub fn closure_field_operator(
     signatures.empty(),
     dict.new(),
     dict.new(),
+    set.new(),
     scc_ids,
     new_memo(),
   ).0
@@ -333,6 +334,7 @@ pub fn call_result_field_operator(
     set.new(),
     registry,
     dict.new(),
+    [],
     scc_ids,
     new_memo(),
   ).0
@@ -368,6 +370,24 @@ fn sentinel_call(module: String, function: String, span: Span) -> ResolvedCall {
 // what resolves a second-order call.
 fn self_referential_bound(name: String) -> ParamBound {
   ParamBound(name, TVar(name))
+}
+
+// The `$op$`-prefixed sentinel name for a producer parameter (Fix D). `$` is
+// un-representable in a Gleam identifier, so a sentinel can never coincide with a
+// residual leaked var read from source; the parser reserves the prefix so a
+// forged `.graded` token can't either.
+const sentinel_prefix = "$op$"
+
+fn sentinel_of(name: String) -> String {
+  sentinel_prefix <> name
+}
+
+// A producer parameter's bound whose *name* stays real (so a body call to the
+// param still matches, and its operator shape still looks up) but whose *effect*
+// is the sentinel var — so the summary distinguishes this param from any residual
+// of the same name until rename-back.
+fn sentinel_bound(name: String) -> ParamBound {
+  ParamBound(name, TVar(sentinel_of(name)))
 }
 
 // True iff a term still carries unresolved (free) effect variables.
@@ -702,9 +722,11 @@ type Memo {
     // same-SCC ancestors.
     lifts: dict.Dict(#(String, List(String)), EffectTerm),
     // Closure analyses, keyed by body position, lifting positions, ambient
-    // operator names, and visited ancestors.
+    // operator names, visited ancestors, and which ambient operators are
+    // sentinel-seeded (Fix D) — so a sentinel-flavored analysis never collides
+    // with a real-flavored one.
     closures: dict.Dict(
-      #(Int, List(Int), List(String), List(String)),
+      #(Int, List(Int), List(String), List(String), List(String)),
       EffectTerm,
     ),
   )
@@ -1002,6 +1024,7 @@ fn collect_effects(
       registry,
       module_types,
       operator_params,
+      set.new(),
       cache,
     )
 
@@ -1144,6 +1167,7 @@ fn collect_effects(
           visited,
           registry,
           module_types,
+          param_bounds,
           cache,
           memo,
         )
@@ -2449,6 +2473,7 @@ fn build_lift_operator_arg(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
   ambient_operators: OperatorShapes,
+  sentinel_params: Set(String),
   cache: LocalCache,
 ) -> fn(types.ArgumentValue, List(Int), Memo) ->
   #(Result(EffectTerm, Nil), Memo) {
@@ -2468,6 +2493,7 @@ fn build_lift_operator_arg(
             registry,
             module_types,
             ambient_operators,
+            sentinel_params,
             cache,
             memo,
           )
@@ -2511,6 +2537,7 @@ fn build_lift_operator_arg(
           visited,
           registry,
           module_types,
+          [],
           cache,
           memo,
         )
@@ -2534,27 +2561,35 @@ fn resolve_returned_operator(
   visited: Set(String),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
+  // The enclosing scope's caller bounds, threaded into `bind_producer_params`
+  // for D1 (nested-producer precision). `[]` when resolving a top-level producer.
+  caller_param_bounds: List(ParamBound),
   cache: LocalCache,
   memo: Memo,
 ) -> #(Result(EffectTerm, Nil), Memo) {
+  // A same-module (`""`) summary is computed on demand now, hence Fresh; a
+  // cross-module one is read from the KB with its recorded origin (Fix E).
   let #(lookup, memo) = case callee.module {
     "" ->
       case
         set.contains(visited, callee.function),
         dict.get(function_map, callee.function)
       {
-        False, Ok(definition) ->
-          compute_returned_operator(
-            definition.definition,
-            context,
-            function_map,
-            knowledge_base,
-            set.insert(visited, callee.function),
-            registry,
-            module_types,
-            cache,
-            memo,
-          )
+        False, Ok(definition) -> {
+          let #(result, memo) =
+            compute_returned_operator(
+              definition.definition,
+              context,
+              function_map,
+              knowledge_base,
+              set.insert(visited, callee.function),
+              registry,
+              module_types,
+              cache,
+              memo,
+            )
+          #(result.map(result, fn(op) { #(op, effects.Fresh) }), memo)
+        }
         // A recursive producer call — the producer is already on the analysis
         // stack, so this branch contributes the neutral operator (pure over the
         // returned function's callback positions), not [Unknown]. Mirrors the
@@ -2562,7 +2597,8 @@ fn resolve_returned_operator(
         // Arity comes from the producer's return type; if it isn't a function
         // type, stay conservative.
         True, Ok(definition) -> #(
-          neutral_returned_operator(definition.definition, cache.fn_alias_types),
+          neutral_returned_operator(definition.definition, cache.fn_alias_types)
+            |> result.map(fn(op) { #(op, effects.Fresh) }),
           memo,
         )
         _, _ -> #(Error(Nil), memo)
@@ -2571,12 +2607,13 @@ fn resolve_returned_operator(
   }
   case lookup {
     Error(Nil) -> #(Error(Nil), memo)
-    // Concrete operator (no free vars): nothing to bind. Polymorphic in the
-    // producer's params: bind them to the producer call's arguments.
-    Ok(operator) ->
-      case set.is_empty(effect_term.free_vars(operator)) {
-        True -> #(Ok(operator), memo)
-        False -> {
+    Ok(#(operator, origin)) ->
+      case set.is_empty(effect_term.free_vars(operator)), origin {
+        // Ground operator (no free vars): safe to use regardless of origin.
+        True, _ -> #(Ok(operator), memo)
+        // Polymorphic + Fresh: Fix D guarantees the free vars are the producer's
+        // own params — bind them to the producer call's arguments.
+        False, effects.Fresh -> {
           let #(bound, memo) =
             bind_producer_params(
               operator,
@@ -2588,11 +2625,17 @@ fn resolve_returned_operator(
               visited,
               registry,
               module_types,
+              caller_param_bounds,
               cache,
               memo,
             )
           #(Ok(bound), memo)
         }
+        // Polymorphic + Foreign (Fix E): an unsanitized serialized summary whose
+        // free vars may be residuals coinciding with a param name — not trusted
+        // for synthesis. Resolve conservatively to [Unknown] (the `Error` here
+        // reaches every consumer's [Unknown] fallback).
+        False, effects.Foreign -> #(Error(Nil), memo)
       }
   }
 }
@@ -2612,6 +2655,12 @@ fn bind_producer_params(
   visited: Set(String),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
+  // The enclosing scope's caller bounds (Fix D / D1): when a producer's returned
+  // closure applies a *nested* producer with one of the outer producer's params
+  // as an argument, these carry the outer param's sentinel bound (`$op$name`) so
+  // the nested bind resolves it to the sentinel — keeping it distinct from any
+  // residual of the same name. `[]` for a top-level producer resolution.
+  caller_param_bounds: List(ParamBound),
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
@@ -2640,7 +2689,25 @@ fn bind_producer_params(
         }
         Error(Nil) -> #([], registry)
       }
-    _ -> #(effects.lookup_param_bounds(knowledge_base, callee), registry)
+    _ -> {
+      // Cross-module completion (Fix B/C-B/E): the KB's param bounds omit params
+      // that are polymorphic only through the returned closure (inference derives
+      // bounds from the *direct* effect, which trims the closure). Synthesize a
+      // self-referential bound for each of the summary's own free vars not already
+      // bound, so the producer call's arguments bind them. Sound because Fix E only
+      // lets a **Fresh** (Fix-D-sanitized) summary reach here — its free vars ⊆ the
+      // producer's fn-typed params — and the real `registry` supplies each param's
+      // position. Field-path (dotted) vars are excluded (they round-trip as field
+      // bounds, not producer params).
+      let kb_bounds = effects.lookup_param_bounds(knowledge_base, callee)
+      let have = kb_bounds |> list.map(fn(b) { b.name }) |> set.from_list()
+      let synth =
+        effect_term.free_vars(operator)
+        |> set.filter(fn(v) { !is_field_path_var(v) && !set.contains(have, v) })
+        |> set.to_list()
+        |> list.map(self_referential_bound)
+      #(list.append(kb_bounds, synth), registry)
+    }
   }
   let lift =
     build_lift_operator_arg(
@@ -2651,6 +2718,7 @@ fn bind_producer_params(
       registry,
       module_types,
       dict.new(),
+      set.new(),
       cache,
     )
   let #(bindings, memo) =
@@ -2659,7 +2727,7 @@ fn bind_producer_params(
       bounds,
       args,
       knowledge_base,
-      [],
+      caller_param_bounds,
       effective_registry,
       lift,
       memo,
@@ -2712,10 +2780,18 @@ fn compute_returned_operator(
           cache.fn_alias_types,
         )
       let producer_operators = signatures.operator_param_shapes(function)
+      // All fn-typed params of the producer. `ordered_fn_typed_param_names` and
+      // `operator_param_shapes` filter to the same set (fn-typed Named params), so
+      // this covers both seed origins S1 (producer_bounds) and S3 (ambient ops).
+      let producer_params =
+        set.from_list(ordered_fn_typed_param_names(function))
+      // Fix D S1: seed the producer's params as sentinels (`$op$name`) rather than
+      // self-referential, so a residual leaked var of the same name cannot merge
+      // with a genuine producer param before rename-back.
       let producer_bounds =
         function
         |> ordered_fn_typed_param_names()
-        |> list.map(self_referential_bound)
+        |> list.map(sentinel_bound)
       let lift =
         build_lift_operator_arg(
           context,
@@ -2725,6 +2801,7 @@ fn compute_returned_operator(
           registry,
           module_types,
           producer_operators,
+          producer_params,
           cache,
         )
       let #(operator, memo) =
@@ -2737,9 +2814,38 @@ fn compute_returned_operator(
           lift,
           memo,
         )
+      // Fix D steps 3+4: ground every non-sentinel free var (bare residual or any
+      // dotted var) to [Unknown], then rename sentinels back to real param names —
+      // so the summary's free vars ⊆ the producer's fn-typed params by construction.
+      let operator = collapse_and_rename_back(operator, producer_params)
       #(compute_returned_operator_result(operator), memo)
     }
   }
+}
+
+// Fix D steps 3+4. Ground every free var that is not a producer *sentinel* to
+// [Unknown] — a bare residual left by an unresolvable inner call, and any dotted
+// var (no consumer discharges a summary's field var across a producer call) —
+// then rename the sentinels back to the producer's real parameter names for
+// serialization and consumer name-matching. After this the summary's free vars ⊆
+// the producer's fn-typed params, the invariant the completion path relies on.
+fn collapse_and_rename_back(
+  operator: EffectTerm,
+  producer_params: Set(String),
+) -> EffectTerm {
+  let sentinels =
+    producer_params |> set.to_list() |> list.map(sentinel_of) |> set.from_list()
+  let collapsed =
+    ground_vars(
+      operator,
+      set.difference(effect_term.free_vars(operator), sentinels),
+    )
+  let rename =
+    producer_params
+    |> set.to_list()
+    |> list.map(fn(p) { #(sentinel_of(p), TVar(p)) })
+    |> dict.from_list()
+  effect_term.normalize(effect_term.subst(collapsed, rename))
 }
 
 // Classify the lifted return value into the operator a producer records.
@@ -2796,6 +2902,10 @@ fn analyze_closure(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
   ambient_operators: OperatorShapes,
+  // Producer parameters seeded as `$op$`-prefixed sentinels (Fix D), so a residual
+  // leaked var can never merge with a genuine producer param of the same name.
+  // Empty for every use other than computing a producer's returned-operator summary.
+  sentinel_params: Set(String),
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
@@ -2804,12 +2914,14 @@ fn analyze_closure(
   // reaches it — exponential on a long `use` chain (a record decoder, say). A
   // closure is uniquely identified within a module by its body's source position,
   // and its result depends besides on the lifting `positions`, the in-scope
-  // ambient operators, and which ancestors are visited; key by all four.
+  // ambient operators, which ancestors are visited, and which of those ambient
+  // operators are sentinel-seeded; key by all five.
   let key = #(
     closure_body_start(body),
     positions,
     list.sort(dict.keys(ambient_operators), string.compare),
     list.sort(set.to_list(visited), string.compare),
+    list.sort(set.to_list(sentinel_params), string.compare),
   )
   case dict.get(memo.closures, key) {
     Ok(cached) -> #(cached, memo)
@@ -2827,6 +2939,7 @@ fn analyze_closure(
           registry,
           module_types,
           ambient_operators,
+          sentinel_params,
           cache,
           memo,
         )
@@ -2850,6 +2963,7 @@ fn analyze_closure_uncached(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
   ambient_operators: OperatorShapes,
+  sentinel_params: Set(String),
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
@@ -2864,19 +2978,28 @@ fn analyze_closure_uncached(
     )
   // A closure parameter shadows an enclosing ambient operator of the same name:
   // drop the stale callback positions so calls to the parameter aren't treated
-  // as applications of the (differently-shaped) enclosing operator.
+  // as applications of the (differently-shaped) enclosing operator. Shadowing
+  // also removes it from `ambient_operators`, so a shadowed producer param is
+  // seeded real below (not as a sentinel) — the closure's own binder wins.
   let ambient_operators =
     list.fold(params, ambient_operators, fn(acc, param) {
       dict.delete(acc, param)
     })
   // Seed every closure parameter — and every ambient operator parameter from an
-  // enclosing producer — as a self-referential bound, so calls to them inside the
-  // body resolve to their effect variable (the local-call branch matches on
-  // `param_bounds`, and the ambient ones are also flagged as operators).
+  // enclosing producer — as a bound, so calls to them inside the body resolve to
+  // their effect variable (the local-call branch matches on `param_bounds`, and
+  // the ambient ones are also flagged as operators). An ambient operator that is
+  // a *producer* parameter (in `sentinel_params`) is seeded with the sentinel
+  // effect `$op$name` (Fix D S3); the closure's own params stay self-referential.
   let bounds =
     list.append(
       list.map(params, self_referential_bound),
-      list.map(dict.keys(ambient_operators), self_referential_bound),
+      list.map(dict.keys(ambient_operators), fn(name) {
+        case set.contains(sentinel_params, name) {
+          True -> sentinel_bound(name)
+          False -> self_referential_bound(name)
+        }
+      }),
     )
   let #(body_pairs, memo) =
     collect_effects(

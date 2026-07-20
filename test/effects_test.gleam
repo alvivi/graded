@@ -431,12 +431,12 @@ pub fn returned_operators_round_trip_test() {
   let kb = knowledge_base()
   let operator = types.TAbs("cb", types.TVar("cb"))
   let enriched =
-    effects.with_inferred_returned_operators(
+    effects.with_fresh_returned_operators(
       kb,
       dict.from_list([#(QualifiedName("mylib/foo", "pick"), operator)]),
     )
   effects.lookup_returned_operator(enriched, QualifiedName("mylib/foo", "pick"))
-  |> should.equal(Ok(operator))
+  |> should.equal(Ok(#(operator, effects.Fresh)))
   effects.lookup_returned_operator(
     enriched,
     QualifiedName("mylib/foo", "absent"),
