@@ -35,6 +35,15 @@ pub fn unknown() -> EffectTerm {
   TLabels(set.from_list(["Unknown"]))
 }
 
+// Reserved prefix for internal sentinel `TVar` names (Fix D). `$` is
+// un-representable in a Gleam identifier, so a sentinel var can never coincide
+// with a variable read from source. `checker` mints sentinels with this prefix
+// while inferring a producer's returned-operator summary and renames them back
+// before serialization; `annotation` reserves it on parse so a forged token in a
+// loaded `.graded` grounds to `[Unknown]` rather than minting one. The two uses
+// must agree, so the prefix lives here rather than being duplicated per module.
+pub const sentinel_prefix = "$op$"
+
 // Bridges to/from the ground normal form
 //
 // `EffectSet` is the representation the rest of graded compares against;

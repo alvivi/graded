@@ -317,7 +317,7 @@ fn parse_atom(token: String) -> Result(EffectTerm, Nil) {
   // check runs *before* the `(` split so an application head (`$op$f([A])`) is
   // caught too; a nested occurrence is caught by the recursive descent.
   use <- bool.guard(
-    when: string.starts_with(string.trim(token), sentinel_prefix),
+    when: string.starts_with(string.trim(token), effect_term.sentinel_prefix),
     return: Ok(effect_term.unknown()),
   )
   case string.split_once(token, "(") {
@@ -335,10 +335,6 @@ fn parse_atom(token: String) -> Result(EffectTerm, Nil) {
       }
   }
 }
-
-// The reserved `$op$` sentinel prefix (mirrors `checker.sentinel_prefix`). Used
-// only to reject forged sentinels on parse — see `parse_atom` / `parse_bound_effect`.
-const sentinel_prefix = "$op$"
 
 // Parse an operator application's argument list — comma-separated, each a full
 // bracketed effect term — splitting at top-level commas only (bracket- and
@@ -392,7 +388,10 @@ fn parse_bound_effect(input: String) -> Result(EffectTerm, Nil) {
       // entire file (`parse_file` is `list.try_map`) and let `read_spec` silently
       // substitute an empty spec, losing the user's hand-written lines.
       use <- bool.guard(
-        when: list.any(params, string.starts_with(_, sentinel_prefix)),
+        when: list.any(params, string.starts_with(
+          _,
+          effect_term.sentinel_prefix,
+        )),
         return: Ok(effect_term.unknown()),
       )
       use #(_, body_str) <- result.try(string.split_once(after, "->"))
