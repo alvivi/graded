@@ -338,13 +338,65 @@ pub fn operator_callback_positions_of_type(type_: glance.Type) -> List(Int) {
   }
 }
 
-// Whether a type is itself a function type (`fn(..) -> _`). A producer whose
-// return type satisfies this *returns a function*, so the effect of calling
-// that function is worth recording — even when it isn't operator-shaped (takes
-// no callback). Distinguishes `fn make() -> fn() -> Nil` (record its latent
-// effect) from `fn make() -> Int` (nothing to record).
-pub fn is_function_return_type(type_: glance.Type) -> Bool {
-  is_function_type(type_)
+// Resolve a type to its underlying function type, following module-local type
+// aliases transitively (cycle-guarded). Returns the `fn(...)` type itself — not
+// a name — so an operator-shaped alias keeps its callback positions. `Error(Nil)`
+// when the type is not (transitively) a function. A producer whose return type
+// resolves here *returns a function*, so the effect of calling that function is
+// worth recording — even when it isn't operator-shaped (takes no callback).
+pub fn resolve_function_type(
+  type_: glance.Type,
+  alias_map: Dict(String, glance.Type),
+) -> Result(glance.Type, Nil) {
+  resolve_function_type_seen(type_, alias_map, set.new())
+}
+
+fn resolve_function_type_seen(
+  type_: glance.Type,
+  alias_map: Dict(String, glance.Type),
+  seen: Set(String),
+) -> Result(glance.Type, Nil) {
+  case type_ {
+    FunctionType(..) -> Ok(type_)
+    glance.NamedType(name:, module: None, ..) ->
+      case set.contains(seen, name) {
+        True -> Error(Nil)
+        False ->
+          case dict.get(alias_map, name) {
+            Ok(aliased) ->
+              resolve_function_type_seen(
+                aliased,
+                alias_map,
+                set.insert(seen, name),
+              )
+            Error(Nil) -> Error(Nil)
+          }
+      }
+    _ -> Error(Nil)
+  }
+}
+
+// The callback positions of a producer's returned function, alias-aware at both
+// layers: the outer return type is resolved to its underlying `fn(args) -> _`
+// (through module-local aliases), and each argument index counts as a callback
+// when it *itself* resolves to a function through the alias map. Empty when the
+// return type isn't (transitively) a function. The alias-aware twin of
+// `operator_callback_positions_of_type`, used to lift a function returned by a
+// producer whose return type — or whose callback arguments — are aliases.
+pub fn returned_callback_positions(
+  type_: glance.Type,
+  alias_map: Dict(String, glance.Type),
+) -> List(Int) {
+  case resolve_function_type(type_, alias_map) {
+    Ok(FunctionType(_, param_types, _)) ->
+      param_types
+      |> list.index_map(fn(t, i) {
+        #(i, resolve_function_type(t, alias_map) |> result.is_ok)
+      })
+      |> list.filter(fn(pair) { pair.1 })
+      |> list.map(fn(pair) { pair.0 })
+    _ -> []
+  }
 }
 
 pub fn assignment_name(name: glance.AssignmentName) -> Option(String) {

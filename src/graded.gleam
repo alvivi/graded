@@ -170,16 +170,24 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     |> effects.with_inferred_returned_operators(
       effects.load_spec_returns_from_file(spec),
     )
-    // Fill gaps for project modules not (yet) in the spec by inferring them
-    // in memory, so `check` resolves cross-module calls without a prior
-    // `graded infer`. Spec entries above take priority — committed effects are
-    // never overridden — and nothing is written to disk.
-    |> infer_project_in_memory(index, registry, type_info, declared_modules)
+  // Fill gaps for project modules not (yet) in the spec by inferring them in
+  // memory, so `check` resolves cross-module calls without a prior `graded infer`.
+  // Committed effects are never overridden. The deltas aren't needed here — the
+  // pre-pass already folded them into `kb_base`. Nothing is written to disk.
+  let #(kb_base, _fresh_returns, _fresh_bounds) =
+    infer_project_in_memory(
+      kb_base,
+      index,
+      registry,
+      type_info,
+      declared_modules,
+    )
   let knowledge_base =
     kb_base
     |> effects.with_inferred_type_fields(build_constructor_field_index(
       index,
       kb_base,
+      registry,
     ))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
@@ -705,6 +713,7 @@ fn build_project_registry(
 fn build_constructor_field_index(
   index: Dict(String, #(String, glance.Module)),
   knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
 ) -> List(#(#(String, String, String), types.TypeFieldEffect)) {
   // Package-wide #(defining module, constructor) -> type name. Keyed by module
   // so same-named constructors in different modules stay distinct; the call
@@ -743,6 +752,21 @@ fn build_constructor_field_index(
         scc_ids,
       )
     }
+    // Resolve a field wired from a *call* (`Options(resolver: disk_resolver())`)
+    // to the operator that call returns — the returned-operator summary — instead
+    // of collapsing to `[Unknown]`. Threads the real `registry` so a cross-module
+    // producer's annotated operator params bind, and `scc_ids` (Fix A's alias map).
+    let call_result_effect = fn(callee, args) {
+      checker.call_result_field_operator(
+        callee,
+        args,
+        context,
+        function_map,
+        knowledge_base,
+        registry,
+        scc_ids,
+      )
+    }
     // The module's own function names, so a field wired to a bare name can be
     // told apart from one wired to a parameter (the latter is polymorphic).
     let module_functions = set.from_list(dict.keys(function_map))
@@ -756,6 +780,7 @@ fn build_constructor_field_index(
         path,
         module_functions,
         closure_effect,
+        call_result_effect,
       )
     })
   })
@@ -789,6 +814,8 @@ fn accumulate_constructor_binding(
   module_path: String,
   module_functions: Set(String),
   closure_effect: fn(List(String), List(glance.Statement)) -> types.EffectTerm,
+  call_result_effect: fn(types.QualifiedName, List(types.CallArgument)) ->
+    Result(types.EffectTerm, Nil),
 ) -> Dict(#(String, String, String), types.TypeFieldEffect) {
   let extract.ConstructorBinding(binding_module, constructor, fields) = binding
   let module = option.unwrap(binding_module, module_path)
@@ -803,6 +830,7 @@ fn accumulate_constructor_binding(
             module_path,
             module_functions,
             closure_effect,
+            call_result_effect,
           )
         let key = #(module, type_name, label)
         let merged = case dict.get(inner, key) {
@@ -824,6 +852,8 @@ fn field_effect_of(
   module_path: String,
   module_functions: Set(String),
   closure_effect: fn(List(String), List(glance.Statement)) -> types.EffectTerm,
+  call_result_effect: fn(types.QualifiedName, List(types.CallArgument)) ->
+    Result(types.EffectTerm, Nil),
 ) -> types.TypeFieldEffect {
   case field_value_function(value, module_path, module_functions) {
     Some(name) -> {
@@ -851,6 +881,19 @@ fn field_effect_of(
         // self marker rather than the `[Unknown]` a plain lookup would give —
         // letting the call site forward through it.
         types.LocalRef(_) -> checker.polymorphic_field_effect()
+        // A field wired from a *call* (`Options(resolver: disk_resolver())`):
+        // resolve the callee's returned-operator summary. `Error` preserves the
+        // prior `[Unknown]` behaviour exactly (the fallback below).
+        types.CallResult(callee, args) ->
+          case call_result_effect(callee, args) {
+            Ok(operator) -> types.TypeFieldEffect(operator, [], None)
+            Error(Nil) ->
+              types.TypeFieldEffect(
+                effects.argument_value_effects(knowledge_base, value),
+                [],
+                None,
+              )
+          }
         _ ->
           types.TypeFieldEffect(
             effects.argument_value_effects(knowledge_base, value),
@@ -1101,6 +1144,33 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     // inference, not only at the final lookup.
     |> effects.with_externals(annotation.extract_externals(spec))
     |> enrich_with_path_deps(package_root, declared_modules)
+
+  // Build a signature registry covering every project module so the checker can
+  // do positional argument matching for cross-module polymorphic calls. Hoisted
+  // above `construction_kb` because the constructor-field index (Fix B) and the
+  // C-B pre-pass both consume `registry`/`type_info`; they need only
+  // `index`/`package_root`.
+  let dep_registry =
+    signatures.load_from_packages_dir(packages_dir(package_root))
+    |> signatures.merge(path_dep_registry(package_root))
+  let registry = signatures.merge(dep_registry, build_project_registry(index))
+  let type_info = build_type_index(index, package_root)
+
+  // Fix C-B: a metadata pre-pass so a field wired from *another project module's*
+  // producer resolves on a first-ever `infer`. Runs the same in-memory inference
+  // `check` uses, but folds **only** its fresh returns + param-bound deltas into
+  // `construction_kb` — its committed-only *effect* view is unchanged (cross-run
+  // field-effect convergence). Returns are fresh-wins (a re-inferred, Fix-D-
+  // sanitized summary replaces a committed Foreign one); effects stay committed.
+  let #(_prepass, fresh_returns, fresh_bounds) =
+    infer_project_in_memory(
+      kb_base,
+      index,
+      registry,
+      type_info,
+      declared_modules,
+    )
+
   // Resolve constructor-field values against the same view `run` uses — catalog
   // + externals + the spec's *existing* inferred effects — so `infer` and
   // `check` agree on a field wired to a qualified project function, converging
@@ -1117,11 +1187,19 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
         declared_modules,
       ),
     )
+    // Committed project returns, then the fresh pre-pass delta; fresh
+    // directly-derived param bounds.
+    |> effects.with_inferred_returned_operators(
+      effects.load_spec_returns_from_file(spec),
+    )
+    |> effects.with_inferred_returned_operators(fresh_returns)
+    |> effects.with_inferred_params(fresh_bounds)
   let base_kb =
     kb_base
     |> effects.with_inferred_type_fields(build_constructor_field_index(
       index,
       construction_kb,
+      registry,
     ))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
@@ -1134,15 +1212,6 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
       CyclicImports(modules: nodes)
     }),
   )
-
-  // Build a signature registry covering every project module so the
-  // checker can do positional argument matching for cross-module
-  // polymorphic calls.
-  let dep_registry =
-    signatures.load_from_packages_dir(packages_dir(package_root))
-    |> signatures.merge(path_dep_registry(package_root))
-  let registry = signatures.merge(dep_registry, build_project_registry(index))
-  let type_info = build_type_index(index, package_root)
 
   use #(_kb, public_annotations, public_returns) <- result.try(
     list.try_fold(sorted, #(base_kb, [], []), fn(state, module_path) {
@@ -1271,22 +1340,35 @@ fn infer_project_in_memory(
   registry: SignatureRegistry,
   type_info: typeinfo.TypeInfo,
   declared_modules: Set(String),
-) -> KnowledgeBase {
+) -> #(
+  KnowledgeBase,
+  Dict(QualifiedName, types.EffectTerm),
+  Dict(QualifiedName, List(types.ParamBound)),
+) {
+  let empty = #(base_kb, dict.new(), dict.new())
   case topo.sort(build_dependency_graph(index)) {
-    Error(_) -> base_kb
+    Error(_) -> empty
     Ok(sorted) ->
-      list.fold(sorted, base_kb, fn(kb, module_path) {
+      list.fold(sorted, empty, fn(state, module_path) {
+        let #(kb, returns_delta, bounds_delta) = state
         case dict.get(index, module_path) {
-          Error(_) -> kb
-          Ok(#(_gleam_path, module)) ->
-            fold_inferred_module(
-              kb,
-              module,
-              module_path,
-              registry,
-              type_info,
-              declared_modules,
+          Error(_) -> state
+          Ok(#(_gleam_path, module)) -> {
+            let #(new_kb, mod_returns, mod_bounds) =
+              fold_inferred_module(
+                kb,
+                module,
+                module_path,
+                registry,
+                type_info,
+                declared_modules,
+              )
+            #(
+              new_kb,
+              dict.merge(returns_delta, mod_returns),
+              dict.merge(bounds_delta, mod_bounds),
             )
+          }
         }
       })
   }
@@ -1302,7 +1384,11 @@ fn fold_inferred_module(
   registry: SignatureRegistry,
   type_info: typeinfo.TypeInfo,
   declared_modules: Set(String),
-) -> KnowledgeBase {
+) -> #(
+  KnowledgeBase,
+  Dict(QualifiedName, types.EffectTerm),
+  Dict(QualifiedName, List(types.ParamBound)),
+) {
   let #(inferred, returned_operators, provenance) =
     checker.infer_with_returns(
       module,
@@ -1313,14 +1399,21 @@ fn fold_inferred_module(
       typeinfo.for_module(type_info, module_path),
       typeinfo.fn_typed_for_module(type_info, module_path),
     )
-  thread_inferred_into_kb(
-    kb,
-    inferred,
-    returned_operators,
-    module_path,
-    declared_modules,
-  )
-  |> effects.with_provenance(qualify_bare_names(provenance, module_path))
+  // The module's fresh returns and param bounds, qualified — exposed as deltas so
+  // the caller can fold them Fresh into a cold `infer`'s `construction_kb` (Fix
+  // C-B) without laundering the whole KB.
+  let #(_effects_dict, bounds_delta, returns_delta) =
+    qualified_inferred(inferred, returned_operators, module_path)
+  let new_kb =
+    thread_inferred_into_kb(
+      kb,
+      inferred,
+      returned_operators,
+      module_path,
+      declared_modules,
+    )
+    |> effects.with_provenance(qualify_bare_names(provenance, module_path))
+  #(new_kb, returns_delta, bounds_delta)
 }
 
 // Re-key a bare-name map (a module's inferred returned operators or return-value

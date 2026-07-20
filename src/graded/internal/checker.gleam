@@ -306,6 +306,38 @@ pub fn closure_field_operator(
   ).0
 }
 
+// Resolve a record field wired from a *call* (`Options(resolver: disk_resolver())`)
+// to the operator that call's callee returns, so the construction index can
+// consume a producer's `returns` summary instead of falling to `[Unknown]`.
+// Reuses the returned-operator engine: a same-module producer's summary is
+// computed on demand from `function_map` (the `""` callee), a cross-module one is
+// read from the knowledge base, and a polymorphic summary is bound to the
+// construction-site `args`. `scc_ids` carries Fix A's alias map so an aliased
+// return type resolves; the real `registry` lets a cross-module producer's
+// annotated operator params be detected at bind time.
+pub fn call_result_field_operator(
+  callee: types.QualifiedName,
+  args: List(types.CallArgument),
+  context: ImportContext,
+  function_map: dict.Dict(String, Definition(Function)),
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  scc_ids: LocalCache,
+) -> Result(EffectTerm, Nil) {
+  resolve_returned_operator(
+    callee,
+    args,
+    context,
+    function_map,
+    knowledge_base,
+    set.new(),
+    registry,
+    dict.new(),
+    scc_ids,
+    new_memo(),
+  ).0
+}
+
 // Shared analysis helpers
 //
 // Small utilities shared across every resolution path: call-argument lookup,
@@ -450,6 +482,11 @@ pub type LocalCache {
     // and reused by name. A component with an effect-polymorphic member instead
     // uses the precise `visited ∩ SCC` key, where the result is path-dependent.
     collapsible: Set(Int),
+    // Module-local type aliases, raw name → aliased type. Lets the returns
+    // machinery resolve an aliased return type (`fn make() -> Resolver` where
+    // `type Resolver = fn(...)`) to its underlying function type and callback
+    // positions.
+    fn_alias_types: dict.Dict(String, glance.Type),
   )
 }
 
@@ -482,6 +519,7 @@ pub fn build_scc_ids(
   // wrongly collapsed. Resolving aliases ourselves keeps the collapse decision
   // independent of girard's availability.
   let fn_aliases = function_type_aliases(module.type_aliases)
+  let fn_alias_types = type_alias_map(module.type_aliases)
   let needs_exact =
     list.filter_map(definitions, fn(definition) {
       let name = definition.definition.name
@@ -498,7 +536,7 @@ pub fn build_scc_ids(
     |> set.from_list()
   topo.scc_order(local_call_graph(definitions, context))
   |> list.index_fold(
-    LocalCache(dict.new(), dict.new(), set.new()),
+    LocalCache(dict.new(), dict.new(), set.new(), fn_alias_types),
     fn(cache, component, id) {
       let scc_id =
         list.fold(component, cache.scc_id, fn(ids, name) {
@@ -515,6 +553,7 @@ pub fn build_scc_ids(
         scc_id:,
         members: dict.insert(cache.members, id, component),
         collapsible:,
+        fn_alias_types: cache.fn_alias_types,
       )
     },
   )
@@ -526,14 +565,7 @@ pub fn build_scc_ids(
 fn function_type_aliases(
   aliases: List(Definition(glance.TypeAlias)),
 ) -> Set(String) {
-  let alias_map =
-    list.fold(aliases, dict.new(), fn(acc, definition) {
-      dict.insert(
-        acc,
-        definition.definition.name,
-        definition.definition.aliased,
-      )
-    })
+  let alias_map = type_alias_map(aliases)
   list.filter_map(dict.keys(alias_map), fn(name) {
     case
       resolves_to_function(
@@ -547,6 +579,17 @@ fn function_type_aliases(
     }
   })
   |> set.from_list()
+}
+
+// Module-local type aliases as a raw `name → aliased type` map. Shared by the
+// collapse decision (`function_type_aliases`) and the returns machinery
+// (`LocalCache.fn_alias_types`).
+fn type_alias_map(
+  aliases: List(Definition(glance.TypeAlias)),
+) -> dict.Dict(String, glance.Type) {
+  list.fold(aliases, dict.new(), fn(acc, definition) {
+    dict.insert(acc, definition.definition.name, definition.definition.aliased)
+  })
 }
 
 // Does `type_` denote a function — directly (`fn(...)`) or via a chain of
@@ -1474,13 +1517,15 @@ fn pure_operator(positions: List(Int)) -> EffectTerm {
 // callback positions of the producer's returned function type. `Error(Nil)`
 // when the return type is absent or not a function (no arity to recover), so
 // resolution stays conservative.
-fn neutral_returned_operator(function: Function) -> Result(EffectTerm, Nil) {
+fn neutral_returned_operator(
+  function: Function,
+  alias_map: dict.Dict(String, glance.Type),
+) -> Result(EffectTerm, Nil) {
   use return_type <- result.try(option.to_result(function.return, Nil))
-  use <- bool.guard(
-    when: !signatures.is_function_return_type(return_type),
-    return: Error(Nil),
+  use _ <- result.try(signatures.resolve_function_type(return_type, alias_map))
+  Ok(
+    pure_operator(signatures.returned_callback_positions(return_type, alias_map)),
   )
-  Ok(pure_operator(signatures.operator_callback_positions_of_type(return_type)))
 }
 
 // Recover a first-order closure's body effect from its lifted operator by
@@ -2517,7 +2562,7 @@ fn resolve_returned_operator(
         // Arity comes from the producer's return type; if it isn't a function
         // type, stay conservative.
         True, Ok(definition) -> #(
-          neutral_returned_operator(definition.definition),
+          neutral_returned_operator(definition.definition, cache.fn_alias_types),
           memo,
         )
         _, _ -> #(Error(Nil), memo)
@@ -2651,10 +2696,10 @@ fn compute_returned_operator(
   // callback positions may be empty (a first-order return has no callbacks).
   let gated = {
     use return_type <- result.try(option.to_result(function.return, Nil))
-    use <- bool.guard(
-      when: !signatures.is_function_return_type(return_type),
-      return: Error(Nil),
-    )
+    use _ <- result.try(signatures.resolve_function_type(
+      return_type,
+      cache.fn_alias_types,
+    ))
     use value <- result.try(extract.return_value(function, context))
     Ok(#(return_type, value))
   }
@@ -2662,7 +2707,10 @@ fn compute_returned_operator(
     Error(Nil) -> #(Error(Nil), memo)
     Ok(#(return_type, value)) -> {
       let positions =
-        signatures.operator_callback_positions_of_type(return_type)
+        signatures.returned_callback_positions(
+          return_type,
+          cache.fn_alias_types,
+        )
       let producer_operators = signatures.operator_param_shapes(function)
       let producer_bounds =
         function
