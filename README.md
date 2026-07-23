@@ -96,6 +96,8 @@ gleam run -m graded format --check [directory] # verify formatting (CI mode)
 gleam run -m graded format --stdin            # format from stdin (editor integration)
 ```
 
+`check` and `infer` scope to the passed directory (default `src/`), recursing into it but never into `build/`. Passing the package root — `graded check .` — scopes to the root's `src/`, so module names come out as they appear in `import` statements (`app`, not `src/app`). To check another project, run graded from that project's root or point it at its `src/`.
+
 ## Limitations
 
 graded is **sound, not complete**: it combines syntax-level analysis ([glance](https://hexdocs.pm/glance/)) with type information ([girard](https://hexdocs.pm/girard)), and when it can't statically trace a function value it falls back to the `[Unknown]` effect rather than guess. `[Unknown]` fails an effect budget, so graded never silently *understates* effects — but a few value-flow patterns need a hand-written annotation or a wider budget to resolve.
