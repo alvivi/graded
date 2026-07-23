@@ -79,6 +79,10 @@ pub type GradedError {
   /// practice — if it ever fires it indicates a bug in the dependency edge
   /// extraction rather than user code.
   CyclicImports(modules: List(String))
+  /// `graded pack` could not inject the spec into the hex tarball: the tarball
+  /// was missing, its identity didn't match the project, the configured
+  /// `spec_file` path was unsafe, or the tarball transform failed.
+  PackError(message: String)
 }
 
 pub fn main() -> Nil {
@@ -133,7 +137,27 @@ pub fn main() -> Nil {
 
     ["check", ..rest] -> with_directory(rest, run_check)
 
+    ["pack", ..rest] ->
+      case rest {
+        [] -> pack_and_report(None)
+        [argument, ..] ->
+          case string.starts_with(argument, "-") {
+            True -> usage_error("unknown option `" <> argument <> "`")
+            False -> pack_and_report(Some(argument))
+          }
+      }
+
     [first, ..] -> dispatch_unknown(first)
+  }
+}
+
+fn pack_and_report(tarball: option.Option(String)) -> Nil {
+  case run_pack(tarball) {
+    Ok(message) -> io.println(message)
+    Error(error) -> {
+      io.println_error("graded: error: " <> format_error(error))
+      halt(1)
+    }
   }
 }
 
@@ -181,11 +205,198 @@ fn usage_text() -> String {
 Usage:
   graded [check] [directory]    Check effect annotations (default: src)
   graded infer [directory]      Infer effects; write the spec file and cache
+  graded pack [tarball]         Inject the spec into the hex tarball for release
   graded format [directory]     Format the spec file
   graded format --check [dir]   Verify formatting without writing (CI mode)
   graded format --stdin         Format the spec file read from stdin
   graded --help                 Show this help
   graded --version              Show the installed version"
+}
+
+// Packing
+//
+// The `pack` command: inject the configured `.graded` spec into the project's
+// hex tarball so it ships to consumers at `build/packages/<dep>/<spec_file>` and
+// is found by the existing dependency resolver — no consumer-side code. graded
+// patches and rehashes the tarball; the user builds it (`gleam export
+// hex-tarball`) and publishes it (via the Hex publish API, never `gleam
+// publish`, which rebuilds the tarball and drops the injected file).
+
+// Inject the configured spec into the current project's hex tarball. `tarball`
+// overrides the default `build/<name>-<version>.tar`.
+fn run_pack(tarball: option.Option(String)) -> Result(String, GradedError) {
+  pack_project(resolve_package_root("src"), tarball)
+}
+
+/// Inject the configured `.graded` spec into `project_root`'s hex tarball.
+/// `tarball` overrides the default `build/<name>-<version>.tar`. Returns a
+/// success message (with the publish command) or a `PackError`.
+pub fn pack_project(
+  project_root: String,
+  tarball: option.Option(String),
+) -> Result(String, GradedError) {
+  let gleam_toml = filepath.join(project_root, "gleam.toml")
+
+  // The raw (relative) spec path is the archive entry; the resolved path is
+  // where the source spec is read from disk. `read_config`/`resolve_path` return
+  // the resolved read path, which may be root-prefixed or absolute — wrong for an
+  // archive entry — so the two are kept distinct.
+  use raw_cfg <- result.try(
+    config.read(gleam_toml)
+    |> result.map_error(fn(_) {
+      PackError(
+        "graded pack needs a package with a readable gleam.toml at "
+        <> gleam_toml,
+      )
+    }),
+  )
+  let entry_name = raw_cfg.spec_file
+  let resolved_spec = resolve_path(project_root, raw_cfg.spec_file)
+
+  // A spec_file that is absolute or escapes the package root can't be a safe
+  // archive-relative entry.
+  use _ <- result.try(validate_archive_entry(entry_name))
+
+  use spec <- result.try(
+    simplifile.read(resolved_spec)
+    |> result.map_error(fn(_) {
+      PackError(
+        "no spec file at " <> resolved_spec <> "; run `graded infer` first",
+      )
+    }),
+  )
+
+  use tarball_path <- result.try(resolve_pack_tarball(
+    tarball,
+    project_root,
+    gleam_toml,
+    raw_cfg.package_name,
+  ))
+
+  // Inject into a temp, verify, then replace the tarball in place, so a failed
+  // transform never leaves a corrupt archive behind.
+  let temp = tarball_path <> ".packing"
+  use checksum <- result.try(
+    inject_spec(tarball_path, spec, entry_name, temp)
+    |> result.map_error(fn(message) {
+      let _ = simplifile.delete(temp)
+      PackError("could not patch " <> tarball_path <> ": " <> message)
+    }),
+  )
+  use _ <- result.try(
+    verify_tarball(temp, entry_name)
+    |> result.map_error(fn(message) {
+      let _ = simplifile.delete(temp)
+      PackError("patched tarball failed verification: " <> message)
+    }),
+  )
+  use _ <- result.try(
+    simplifile.rename(temp, tarball_path)
+    |> result.map_error(FileWriteError(tarball_path, _)),
+  )
+
+  Ok(pack_success_message(tarball_path, entry_name, checksum))
+}
+
+// Resolve the tarball to patch. An explicit path is validated as a readable hex
+// tarball. Without one, the default `build/<name>-<version>.tar` is opened and
+// its identity checked against the project's name and version, so `pack` can't
+// silently patch the wrong archive.
+fn resolve_pack_tarball(
+  tarball: option.Option(String),
+  project_root: String,
+  gleam_toml: String,
+  package_name: String,
+) -> Result(String, GradedError) {
+  case tarball {
+    Some(path) -> {
+      use _ <- result.try(
+        read_package_identity(path)
+        |> result.map_error(fn(message) {
+          PackError("not a readable hex tarball: " <> path <> ": " <> message)
+        }),
+      )
+      Ok(path)
+    }
+    None -> {
+      use version <- result.try(
+        config.read_version(gleam_toml)
+        |> result.replace_error(PackError(
+          "no `version` in "
+          <> gleam_toml
+          <> "; pass the tarball path explicitly",
+        )),
+      )
+      let path =
+        filepath.join(
+          project_root,
+          "build/" <> package_name <> "-" <> version <> ".tar",
+        )
+      use #(name, tar_version) <- result.try(
+        read_package_identity(path)
+        |> result.map_error(fn(message) {
+          PackError(
+            "could not read "
+            <> path
+            <> " (run `gleam export hex-tarball` first): "
+            <> message,
+          )
+        }),
+      )
+      case name == package_name && tar_version == version {
+        True -> Ok(path)
+        False ->
+          Error(PackError(
+            "tarball at "
+            <> path
+            <> " is "
+            <> name
+            <> "@"
+            <> tar_version
+            <> ", not the project's "
+            <> package_name
+            <> "@"
+            <> version,
+          ))
+      }
+    }
+  }
+}
+
+// Reject an absolute path or one that escapes the package root: the spec must
+// land at a safe archive-relative location inside the package.
+fn validate_archive_entry(entry: String) -> Result(Nil, GradedError) {
+  let escapes = list.contains(filepath.split(entry), "..")
+  case string.starts_with(entry, "/") || escapes {
+    True ->
+      Error(PackError(
+        "configured spec_file `"
+        <> entry
+        <> "` must be a relative path inside the package",
+      ))
+    False -> Ok(Nil)
+  }
+}
+
+fn pack_success_message(
+  tarball: String,
+  entry: String,
+  checksum: String,
+) -> String {
+  "graded: injected "
+  <> entry
+  <> " into "
+  <> tarball
+  <> "\n  checksum "
+  <> checksum
+  <> "\n\nPublish this tarball with the Hex publish API — NOT `gleam publish`,\n"
+  <> "which rebuilds the tarball and drops the injected spec:\n\n"
+  <> "  curl -X POST https://hex.pm/api/publish \\\n"
+  <> "    -H \"authorization: $HEX_API_KEY\" \\\n"
+  <> "    -H \"content-type: application/octet-stream\" \\\n"
+  <> "    --data-binary @"
+  <> tarball
+  <> "\n\nDocumentation still publishes via `gleam docs publish`."
 }
 
 // Checking
@@ -2131,6 +2342,7 @@ fn format_error(error: GradedError) -> String {
     CyclicImports(modules:) ->
       "Cyclic project imports detected (this should be unreachable — Gleam disallows circular imports):\n"
       <> string.join(list.map(modules, fn(m) { "  " <> m }), "\n")
+    PackError(message:) -> message
   }
 }
 
@@ -2244,3 +2456,26 @@ fn read_stdin() -> String
 @external(erlang, "graded_ffi", "version")
 @external(javascript, "./graded_ffi.mjs", "version")
 fn version() -> String
+
+// Inject a `.graded` spec into a hex tarball at `in_tar`, writing the patched
+// archive to `out_tar` with `spec` placed at the archive-relative `entry_name`.
+// Returns the recomputed inner checksum, or an error message.
+@external(erlang, "graded_pack_ffi", "inject_spec")
+@external(javascript, "./graded_pack_ffi.mjs", "inject_spec")
+fn inject_spec(
+  in_tar: String,
+  spec: String,
+  entry_name: String,
+  out_tar: String,
+) -> Result(String, String)
+
+// Assert a written tarball is internally consistent (checksum + files list) and
+// carries `entry_name`.
+@external(erlang, "graded_pack_ffi", "verify_tarball")
+@external(javascript, "./graded_pack_ffi.mjs", "verify_tarball")
+fn verify_tarball(tar: String, entry_name: String) -> Result(Nil, String)
+
+// Read `#(name, version)` from a hex tarball's `metadata.config`.
+@external(erlang, "graded_pack_ffi", "read_package_identity")
+@external(javascript, "./graded_pack_ffi.mjs", "read_package_identity")
+fn read_package_identity(tar: String) -> Result(#(String, String), String)

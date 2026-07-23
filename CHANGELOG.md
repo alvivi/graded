@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`graded pack` ships your `.graded` spec on a hex release.** Gleam can't include a package-root file like `myapp.graded` in a published package, so `graded pack` injects the configured spec into the hex tarball built by `gleam export hex-tarball`. It lands at `build/packages/<your-package>/<spec_file>` in downstream projects and is read by graded's resolver with no consumer-side setup. `pack` patches and rehashes the tarball in place; publish it with the Hex publish API (`pack` prints the command). It defaults to `build/<name>-<version>.tar` and verifies that tarball's name and version match the project, or takes an explicit tarball path. A custom `spec_file` (e.g. `effects/api.graded`) is injected at its configured archive-relative path; an absolute or root-escaping path is rejected. Do not run `gleam publish` afterwards — it rebuilds the tarball and drops the injected spec.
 - **`graded --help` and `graded --version`.** `--help` prints the command list; `--version` prints the installed version. (Run via `gleam run -m graded -- --help` so `gleam run` passes the flag through.)
 
 ### Changed
