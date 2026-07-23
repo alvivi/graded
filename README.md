@@ -69,18 +69,19 @@ cache_dir = "build/.graded"     # default: "build/.graded"
 
 ## Publishing your spec file to consumers
 
-If you're a library author and want downstream packages to read your effect annotations, add the spec file to `included_files` in your `gleam.toml`:
+Gleam can't ship a package-root file like `myapp.graded` on a hex release — a published package includes `src/`, `gleam.toml`, the README, and the licence, with no configuration key to add more (a known Gleam limitation). The spec has to be injected into the release tarball after it's built, which is what `graded pack` does:
 
-```toml
-included_files = [
-  "src",
-  "myapp.graded",        # ← add this so consumers see your effects
-  "gleam.toml",
-  "README.md",
-]
+```sh
+gleam export hex-tarball        # build the release tarball
+gleam run -m graded pack        # inject <spec_file> into it, then publish as printed
 ```
 
-The cache directory under `build/` is gitignored and never ships, regardless of `included_files`.
+`pack` places your spec at `build/packages/<your-package>/<spec_file>` in downstream projects — where graded's resolver already looks — so consumers need no setup. It patches `build/<name>-<version>.tar` in place (or an explicit tarball path) and prints the Hex publish API command to run next. Do **not** run `gleam publish` afterwards: it rebuilds the tarball from source and drops the injected spec. Documentation still publishes via `gleam docs publish`. The cache directory under `build/` is gitignored and never ships.
+
+Two cases need no packing:
+
+- **Path dependencies.** A `{ path = "..." }` dependency's root spec is read straight from its checkout.
+- **Common packages.** graded bundles a catalogue of effect specs for popular packages, so many dependencies resolve with no spec of their own.
 
 ## Reference
 
