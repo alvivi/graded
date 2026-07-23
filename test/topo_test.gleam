@@ -1178,7 +1178,7 @@ pub fn run_resolves_absolute_path_dependency_test() {
           <> dep_dir
           <> "\" }\n",
       ),
-      #("app.graded", "check src/main.run : []\n"),
+      #("app.graded", "check main.run : []\n"),
       #(
         "src/main.gleam",
         "import dep\n\npub fn run() -> Nil {\n  dep.shout()\n}\n",
@@ -1237,7 +1237,7 @@ pub fn get_options(config: Config) -> Options {
           <> dep_dir
           <> "\" }\n",
       ),
-      #("app.graded", "check src/main.caller(resolver: [Stdout]) : []\n"),
+      #("app.graded", "check main.caller(resolver: [Stdout]) : []\n"),
       #(
         "src/main.gleam",
         "import dep
@@ -1496,6 +1496,88 @@ pub fn shout(value: String) -> String {
   // Inference actually ran: the pure function reads back as pure.
   effects_of(read_inferred(root <> "/build/.graded/app.graded"), "shout")
   |> should.equal(pure())
+
+  cleanup(root)
+}
+
+// Package-root scoping
+//
+// Pointing `infer`/`check` at a package root (a `gleam.toml` beside `src/`)
+// scopes discovery and module-name derivation to `src/`: names come out
+// unprefixed (`app`, not `src/app`) and the walk never descends into `build/`
+// (dependency sources) or `test/`. Before the fix a package-root argument
+// prefixed names with `src/` and imported dependency and test modules, so a
+// `check` line matched no module and the command exited green having checked
+// nothing.
+
+pub fn infer_at_root_scopes_to_src_test() {
+  let root =
+    make_fixture("root_scope_infer", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "src/app.gleam",
+        "import gleam/string
+
+pub fn shout(value: String) -> String {
+  string.uppercase(value)
+}
+",
+      ),
+      // A dependency source under build/ and a test module must both be ignored.
+      #(
+        "build/packages/dep/src/dep.gleam",
+        "pub fn helper() -> Nil {\n  Nil\n}\n",
+      ),
+      #("test/app_test.gleam", "pub fn a_test() -> Nil {\n  Nil\n}\n"),
+    ])
+
+  let assert Ok(Nil) = graded.run_infer(root)
+
+  // The module name is `app`, not `src/app`.
+  simplifile.is_file(root <> "/build/.graded/app.graded")
+  |> should.equal(Ok(True))
+  simplifile.is_file(root <> "/build/.graded/src/app.graded")
+  |> should.equal(Ok(False))
+
+  // The dependency under build/ and the test module were never walked.
+  simplifile.is_directory(root <> "/build/.graded/build")
+  |> should.equal(Ok(False))
+  simplifile.is_file(root <> "/build/.graded/app_test.graded")
+  |> should.equal(Ok(False))
+
+  // The public spec carries the unprefixed module name and nothing from build/
+  // or test/.
+  let assert Ok(spec) = simplifile.read(root <> "/app.graded")
+  string.contains(spec, "app.shout") |> should.be_true()
+  string.contains(spec, "src/app") |> should.be_false()
+  string.contains(spec, "app_test") |> should.be_false()
+
+  cleanup(root)
+}
+
+pub fn check_at_root_runs_checks_test() {
+  let root =
+    make_fixture("root_scope_check", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "src/app.gleam",
+        "import gleam/io
+
+pub fn leak() -> Nil {
+  io.println(\"x\")
+}
+",
+      ),
+      #("app.graded", "check app.leak : []\n"),
+    ])
+
+  // Pre-fix the module derived as `src/app`, so `check app.leak` matched no
+  // module and no violation surfaced — a false-green exit. The check must run.
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { string.ends_with(r.file, "src/app.gleam") })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "leak" })
+  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 
   cleanup(root)
 }

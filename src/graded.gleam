@@ -133,6 +133,7 @@ pub fn main() -> Nil {
 /// hints, and `type` field annotations, then reports violations per source
 /// file.
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
+  let directory = scope_to_source_directory(directory)
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
   let spec = read_spec(cfg.spec_file)
@@ -668,7 +669,50 @@ fn format_one_spec(
 fn find_gleam_files(directory: String) -> Result(List(String), GradedError) {
   simplifile.get_files(directory)
   |> result.map_error(DirectoryReadError(directory, _))
-  |> result.map(list.filter(_, fn(path) { string.ends_with(path, ".gleam") }))
+  |> result.map(
+    list.filter(_, fn(path) {
+      string.ends_with(path, ".gleam") && !under_build_dir(directory, path)
+    }),
+  )
+}
+
+// A `.gleam` inside the scanned root's own `build/` subtree is dependency or
+// compiler output, never project source. The `src/` scoping in
+// `scope_to_source_directory` already keeps a package-root run out of `build/`;
+// this excludes it for any argument that isn't so scoped (a non-package subtree,
+// or a package with a non-standard layout). Scoped to the leading directory so a
+// throwaway project rooted *at* a `build/...` path (as test harnesses use) is
+// still scanned — only a `build/` directly below the scanned root is skipped.
+fn under_build_dir(directory: String, path: String) -> Bool {
+  let prefix = directory <> "/"
+  let relative = case string.starts_with(path, prefix) {
+    True -> string.drop_start(path, string.length(prefix))
+    False -> path
+  }
+  case filepath.split(relative) {
+    ["build", ..] -> True
+    _ -> False
+  }
+}
+
+// Scope a command's target directory to source files. When the argument is a
+// package root (a `gleam.toml` beside a `src/` directory), descend into `src/`
+// so module names derive unprefixed (`app`, not `src/app`) and the walk skips
+// `build/` and `test/`. A bare `src` argument, an out-of-tree source directory,
+// or a non-package subtree is left untouched. The `.` root maps to the literal
+// `"src"` (not `filepath.join(".", "src")`, which yields `"./src"`) so it keeps
+// hitting the production `"src"` layout convention shared with `read_config`.
+fn scope_to_source_directory(directory: String) -> String {
+  let has_toml = simplifile.is_file(filepath.join(directory, "gleam.toml"))
+  let has_src = simplifile.is_directory(filepath.join(directory, "src"))
+  case has_toml, has_src {
+    Ok(True), Ok(True) ->
+      case directory {
+        "." -> "src"
+        _ -> filepath.join(directory, "src")
+      }
+    _, _ -> directory
+  }
 }
 
 // Parse every project source file once, returning `(path, parsed module)`
@@ -1128,6 +1172,7 @@ fn build_dependency_graph(
 /// analysed after every other project module it imports — a single pass
 /// resolves transitive chains of any depth.
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
+  let directory = scope_to_source_directory(directory)
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
   let spec = read_spec(cfg.spec_file)
