@@ -389,6 +389,16 @@ fn sentinel_bound(name: String) -> ParamBound {
   ParamBound(name, TVar(sentinel_of(name)))
 }
 
+// A lexically-unique sentinel for a returned closure's callback binder. Keyed by
+// the closure body's source position, so nested or shadowed callbacks that share
+// a source name never share a sentinel. Carries the reserved `sentinel_prefix`,
+// so it can never coincide with a variable read from source (and a leaked one
+// grounds to [Unknown] rather than surviving). Distinct from `sentinel_of` (a
+// producer parameter's sentinel), which the position infix keeps apart.
+fn callback_binder_sentinel(start: Int, name: String) -> String {
+  effect_term.sentinel_prefix <> int.to_string(start) <> "$" <> name
+}
+
 // True iff a term still carries unresolved (free) effect variables.
 fn has_vars(term: EffectTerm) -> Bool {
   !set.is_empty(effect_term.free_vars(term))
@@ -2579,7 +2589,16 @@ fn resolve_returned_operator(
     Error(Nil) -> #(Error(Nil), memo)
     Ok(#(operator, origin)) ->
       case set.is_empty(effect_term.free_vars(operator)), origin {
-        // Ground operator (no free vars): safe to use regardless of origin.
+        // Ground operator (no free vars): trusted regardless of origin. A Fresh
+        // one is sanitized by this run (callback binders can't have captured a
+        // residual). A Foreign one — a serialized summary, including this
+        // package's own spec reloaded at check time and any dependency's — is
+        // taken on faith: a summary written by a *pre-sanitizer* graded could be
+        // a ground `TAbs` that dropped a captured residual, and nothing here
+        // distinguishes it from a sound one (the spec records no producing
+        // version). Re-running `infer` with a current graded regenerates a sound
+        // summary; a stale dependency spec is the residual soundness gap (see
+        // docs/LIMITATIONS.md).
         True, _ -> #(Ok(operator), memo)
         // Polymorphic + Fresh: Fix D guarantees the free vars are the producer's
         // own params — bind them to the producer call's arguments.
@@ -2948,15 +2967,41 @@ fn analyze_closure_uncached(
     list.fold(params, ambient_operators, fn(acc, param) {
       dict.delete(acc, param)
     })
+  // Which closure parameters to abstract over: those at the operator's callback
+  // positions (in order). `positions` is authoritative — derived from the
+  // operator parameter's type at the call site — so an empty list means the
+  // callback is first-order (no parameters to abstract, its body is the ground
+  // effect), not "unknown".
+  let callback_params =
+    list.filter_map(positions, fn(position) { extract.at(params, position) })
+  // Give each callback binder a lexically-unique internal sentinel (keyed by this
+  // closure's body position). Body calls to the callback then resolve to its
+  // sentinel var, staying distinct from any residual effect variable that happens
+  // to share the binder's source name — otherwise the `TAbs` below would capture
+  // that residual, hide it from `free_vars`, and silently drop it (unsound). The
+  // sentinels are ground out and renamed back to the real names before the
+  // abstraction is built.
+  let callback_sentinels =
+    callback_params
+    |> list.map(fn(name) {
+      #(name, callback_binder_sentinel(closure_body_start(body), name))
+    })
+    |> dict.from_list()
   // Seed every closure parameter — and every ambient operator parameter from an
   // enclosing producer — as a bound, so calls to them inside the body resolve to
   // their effect variable (the local-call branch matches on `param_bounds`, and
-  // the ambient ones are also flagged as operators). An ambient operator that is
-  // a *producer* parameter (in `sentinel_params`) is seeded with the sentinel
-  // effect `$op$name` (Fix D S3); the closure's own params stay self-referential.
+  // the ambient ones are also flagged as operators). A callback parameter is
+  // seeded with its unique sentinel; an ambient operator that is a *producer*
+  // parameter (in `sentinel_params`) is seeded with the sentinel effect
+  // `$op$name` (Fix D S3); every other closure param stays self-referential.
   let bounds =
     list.append(
-      list.map(params, self_referential_bound),
+      list.map(params, fn(name) {
+        case dict.get(callback_sentinels, name) {
+          Ok(sentinel) -> ParamBound(name, TVar(sentinel))
+          Error(Nil) -> self_referential_bound(name)
+        }
+      }),
       list.map(dict.keys(ambient_operators), fn(name) {
         case set.contains(sentinel_params, name) {
           True -> sentinel_bound(name)
@@ -2980,13 +3025,28 @@ fn analyze_closure_uncached(
       memo,
     )
   let body_term = union_of(body_pairs)
-  // Which closure parameters to abstract over: those at the operator's callback
-  // positions (in order). `positions` is authoritative — derived from the
-  // operator parameter's type at the call site — so an empty list means the
-  // callback is first-order (no parameters to abstract, its body is the ground
-  // effect), not "unknown".
-  let callback_params =
-    list.filter_map(positions, fn(position) { extract.at(params, position) })
+  // Ground any residual effect variable that collides with a callback binder's
+  // source name: with the callback seeded as a sentinel, a surviving real-named
+  // free var is an unrelated residual (from an unresolvable inner call), not the
+  // callback — grounding it now, while the two are still distinct, keeps the
+  // abstraction from capturing and later discharging it.
+  let body_term =
+    ground_vars(
+      body_term,
+      set.intersection(
+        effect_term.free_vars(body_term),
+        set.from_list(callback_params),
+      ),
+    )
+  // Rename each sentinel back to its callback's source name (residuals are ground,
+  // so the name is now collision-free), then abstract over the real names in
+  // callback order.
+  let rename =
+    callback_sentinels
+    |> dict.to_list()
+    |> list.map(fn(pair) { #(pair.1, TVar(pair.0)) })
+    |> dict.from_list()
+  let body_term = effect_term.subst(body_term, rename)
   let operator =
     list.fold_right(callback_params, body_term, fn(acc, param) {
       types.TAbs(param, acc)

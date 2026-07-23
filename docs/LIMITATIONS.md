@@ -269,6 +269,25 @@ For common third-party packages, the [bundled catalog](./REFERENCE.md#effect-cat
 already supplies these declarations, so you only need `external effects` for your
 own FFI and for packages the catalog doesn't cover.
 
+## 6. A returned-operator summary written by an older graded
+
+A `returns` line records the effect operator a producer returns, e.g.
+`returns app.make : fn(handler) -> [handler]`. When `check` consults such a line —
+its own package's spec, or a dependency's — it trusts a ground summary as written.
+A summary produced by a graded new enough to sanitize returned-closure callback
+binders is sound; one produced by an older graded may have dropped a residual
+effect that coincided with a callback's name, leaving a summary that under-reports.
+Because the spec records no producing version, `check` can't tell the two apart
+and trusts both.
+
+**How to avoid it** — re-run `graded infer` with a current graded to regenerate
+your own spec (the normal infer-then-check flow already does this). For a
+dependency shipping a spec built by an older graded, upgrade or regenerate that
+dependency's spec so its summaries are sound. Until then the summary is trusted as
+written, so any `check` that resolves through it can't be relied on — a widened
+consumer budget only permits more effects, it doesn't restore one the summary
+already omitted.
+
 ---
 
 Every fallback above is the conservative `[Unknown]`, never a silent `[]`: graded
