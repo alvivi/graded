@@ -630,6 +630,65 @@ pub fn use_resolver(o: Options) -> Nil {
   cleanup(directory)
 }
 
+pub fn returned_closure_binder_collision_stays_sound_test() {
+  // A returned closure whose own callback binder `handler` collides with a
+  // residual coincidentally named `handler` (from an unresolvable dep declared
+  // `[handler]`) — distinct from `fn_typed_collision_stays_unknown_test`, where
+  // the collision is with a *producer* parameter, not the returned closure's own
+  // binder. Seeding the binder with its real name would let the `TAbs` capture
+  // the residual and hide it from `free_vars`, so binding the callback to
+  // `io.println` would silently drop it — unsound `[Stdout]`. A unique callback
+  // sentinel keeps the two distinct: the residual grounds to `[Unknown]`, so
+  // applying the returned closure to `io.println` yields `[Stdout, Unknown]`.
+  let directory =
+    make_fixture("returned_binder_collision", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "app/factory.gleam",
+        "import gleam/io
+import dep/ext
+
+pub type Runner = fn(fn() -> Nil) -> Nil
+
+pub fn make() -> Runner {
+  fn(handler) {
+    handler()
+    ext.raw()
+  }
+}
+
+pub fn use_runner() -> Nil {
+  let runner = make()
+  runner(io.println)
+}
+",
+      ),
+      #(
+        "app.graded",
+        "check app/factory.use_runner : []\nexternal effects dep/ext : [handler]\n",
+      ),
+    ])
+
+  let assert Ok(Nil) = graded.run_infer(directory)
+
+  // The serialized summary keeps the residual: `[Unknown]` survives inside the
+  // binder's body, not just the callback variable.
+  let assert Ok(spec) = simplifile.read(directory <> "/app.graded")
+  string.contains(spec, "returns app/factory.make : fn(handler) ->")
+  |> should.be_true()
+  string.contains(spec, "Unknown") |> should.be_true()
+
+  let assert Ok(results) = graded.run(directory)
+  let assert Ok(factory_result) =
+    list.find(results, fn(r) { string.ends_with(r.file, "app/factory.gleam") })
+  let assert [violation, ..] = factory_result.violations
+  // Applying the returned closure to `io.println` carries [Stdout, Unknown]: the
+  // residual is not captured by the `handler` binder and dropped to [Stdout].
+  violation.actual
+  |> should.equal(Specific(set.from_list(["Stdout", "Unknown"])))
+  cleanup(directory)
+}
+
 pub fn nested_producer_precision_test() {
   // D1 (option i): a producer whose returned closure applies a *nested* producer
   // with the outer producer's own param as an argument. Threading the outer
