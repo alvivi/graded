@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`graded --help` and `graded --version`.** `--help` prints the command list; `--version` prints the installed version. (Run via `gleam run -m graded -- --help` so `gleam run` passes the flag through.)
+
+### Changed
+
+- **An unknown command or option now errors instead of being treated as a directory to check.** Previously any unrecognized first argument — `graded pack`, a mistyped command — was silently passed to `check` as a directory path, and an unknown flag such as `graded infer --dry-run` was taken as the inference directory. graded now prints a usage error and exits non-zero for an unknown command or option. A bare directory argument (`graded src`) still runs `check`, and a bare `graded` still checks `src/`.
+
 ### Fixed
 
 - **A record field wired from a producer whose return type is a type alias to a function now infers the producer's real effect instead of `[Unknown]`.** When a constructor field is wired from a call (`Options(resolver: disk_resolver())`) and the producer's return type is a module-local alias to a function (`fn disk_resolver() -> Resolver` where `type Resolver = fn() -> Nil`), graded resolves the alias to its underlying function type and callback positions, generates the producer's returned-operator summary, and consumes it at the construction site — so a call through the field (`options.resolver()`) resolves to the returned closure's real effect (`[FileSystem]`) instead of collapsing to `[Unknown]`. Both a literal `fn(...)` return and an aliased one resolve, on `graded check` with no prior infer and on a single `graded infer`, and across project modules. A return type that references an alias imported from another module, or a producer with an un-annotated fn-typed parameter, emits no summary and its field stays `[Unknown]`.

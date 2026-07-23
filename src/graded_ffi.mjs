@@ -25,3 +25,9 @@ export function halt(code) {
 export function priv_directory() {
   return new GError(undefined);
 }
+
+// The version is read from the OTP application on the BEAM target; on JavaScript
+// the install metadata isn't resolved.
+export function version() {
+  return "unknown";
+}

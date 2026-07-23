@@ -94,7 +94,11 @@ gleam run -m graded infer [directory]         # infer and write effects annotati
 gleam run -m graded format [directory]        # normalize .graded file formatting
 gleam run -m graded format --check [directory] # verify formatting (CI mode)
 gleam run -m graded format --stdin            # format from stdin (editor integration)
+gleam run -m graded -- --help                 # show usage (-- passes the flag through gleam run)
+gleam run -m graded -- --version              # show the installed version
 ```
+
+An unknown command or option is a usage error, not a silently-checked directory.
 
 `check` and `infer` scope to the passed directory (default `src/`), recursing into it but never into `build/`. Passing the package root — `graded check .` — scopes to the root's `src/`, so module names come out as they appear in `import` statements (`app`, not `src/app`). To check another project, run graded from that project's root or point it at its `src/`.
 

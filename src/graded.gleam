@@ -82,16 +82,13 @@ pub type GradedError {
 }
 
 pub fn main() -> Nil {
-  let arguments = argv.load().arguments
-  case arguments {
-    ["infer", ..rest] ->
-      case run_infer(target_directory(rest)) {
-        Ok(Nil) -> io.println("graded: inferred effects written")
-        Error(error) -> {
-          io.println_error("graded: error: " <> format_error(error))
-          halt(1)
-        }
-      }
+  case argv.load().arguments {
+    [] -> run_check("src")
+
+    ["--help", ..] | ["-h", ..] | ["help", ..] -> io.println(usage_text())
+
+    ["--version", ..] -> io.println("graded " <> version())
+
     ["format", "--stdin", ..] ->
       case run_format_stdin(read_stdin()) {
         Ok(output) -> io.print(output)
@@ -100,25 +97,95 @@ pub fn main() -> Nil {
           halt(1)
         }
       }
+
     ["format", "--check", ..rest] ->
-      case run_format_check(target_directory(rest)) {
-        Ok(Nil) -> Nil
-        Error(error) -> {
-          io.println_error("graded: error: " <> format_error(error))
-          halt(1)
+      with_directory(rest, fn(directory) {
+        case run_format_check(directory) {
+          Ok(Nil) -> Nil
+          Error(error) -> {
+            io.println_error("graded: error: " <> format_error(error))
+            halt(1)
+          }
         }
-      }
+      })
+
     ["format", ..rest] ->
-      case run_format(target_directory(rest)) {
-        Ok(Nil) -> Nil
-        Error(error) -> {
-          io.println_error("graded: error: " <> format_error(error))
-          halt(1)
+      with_directory(rest, fn(directory) {
+        case run_format(directory) {
+          Ok(Nil) -> Nil
+          Error(error) -> {
+            io.println_error("graded: error: " <> format_error(error))
+            halt(1)
+          }
         }
-      }
-    ["check", ..rest] -> run_check(target_directory(rest))
-    _ -> run_check(target_directory(arguments))
+      })
+
+    ["infer", ..rest] ->
+      with_directory(rest, fn(directory) {
+        case run_infer(directory) {
+          Ok(Nil) -> io.println("graded: inferred effects written")
+          Error(error) -> {
+            io.println_error("graded: error: " <> format_error(error))
+            halt(1)
+          }
+        }
+      })
+
+    ["check", ..rest] -> with_directory(rest, run_check)
+
+    [first, ..] -> dispatch_unknown(first)
   }
+}
+
+// Resolve the optional directory argument shared by check/infer/format, then run
+// `command` with it (default `src`). A leading `-…` token is an unknown option,
+// not a directory: reject it rather than treat it as a path, so a stray flag like
+// `graded infer --dry-run` errors instead of inferring a directory named
+// `--dry-run`.
+fn with_directory(rest: List(String), command: fn(String) -> Nil) -> Nil {
+  case rest {
+    [] -> command("src")
+    [argument, ..] ->
+      case string.starts_with(argument, "-") {
+        True -> usage_error("unknown option `" <> argument <> "`")
+        False -> command(argument)
+      }
+  }
+}
+
+// A first token that is neither a known command nor a flag: treat an existing
+// directory as `check <dir>` (the bare-directory shorthand), and anything else as
+// an unknown command — exiting non-zero rather than silently checking a directory
+// that isn't there. A future subcommand (e.g. `pack`) adds its own branch above
+// this fallback.
+fn dispatch_unknown(first: String) -> Nil {
+  case string.starts_with(first, "-") {
+    True -> usage_error("unknown option `" <> first <> "`")
+    False ->
+      case simplifile.is_directory(first) {
+        Ok(True) -> run_check(first)
+        _ -> usage_error("unknown command `" <> first <> "`")
+      }
+  }
+}
+
+fn usage_error(message: String) -> Nil {
+  io.println_error("graded: error: " <> message)
+  io.println_error("Run `graded --help` for usage.")
+  halt(1)
+}
+
+fn usage_text() -> String {
+  "graded — effect checker for Gleam
+
+Usage:
+  graded [check] [directory]    Check effect annotations (default: src)
+  graded infer [directory]      Infer effects; write the spec file and cache
+  graded format [directory]     Format the spec file
+  graded format --check [dir]   Verify formatting without writing (CI mode)
+  graded format --stdin         Format the spec file read from stdin
+  graded --help                 Show this help
+  graded --version              Show the installed version"
 }
 
 // Checking
@@ -2014,13 +2081,6 @@ fn drop_declared_modules(
 // Argument handling, human-readable printing of errors, violations, and
 // warnings, and the exit/stdin externals behind `main`.
 
-fn target_directory(arguments: List(String)) -> String {
-  case arguments {
-    [directory, ..] -> directory
-    [] -> "src"
-  }
-}
-
 fn run_check(directory: String) -> Nil {
   case run(directory) {
     Ok(results) -> {
@@ -2179,3 +2239,8 @@ fn halt(code: Int) -> Nil
 @external(erlang, "graded_ffi", "read_stdin")
 @external(javascript, "./graded_ffi.mjs", "read_stdin")
 fn read_stdin() -> String
+
+// graded's own version, from the loaded OTP application's `vsn`.
+@external(erlang, "graded_ffi", "version")
+@external(javascript, "./graded_ffi.mjs", "version")
+fn version() -> String
