@@ -139,11 +139,11 @@ pub fn main() -> Nil {
 
     ["pack", ..rest] ->
       case rest {
-        [] -> pack_and_report(None)
+        [] -> pack_and_report("src")
         [argument, ..] ->
           case string.starts_with(argument, "-") {
             True -> usage_error("unknown option `" <> argument <> "`")
-            False -> pack_and_report(Some(argument))
+            False -> pack_and_report(argument)
           }
       }
 
@@ -151,8 +151,8 @@ pub fn main() -> Nil {
   }
 }
 
-fn pack_and_report(tarball: option.Option(String)) -> Nil {
-  case run_pack(tarball) {
+fn pack_and_report(directory: String) -> Nil {
+  case run_pack(directory) {
     Ok(message) -> io.println(message)
     Error(error) -> {
       io.println_error("graded: error: " <> format_error(error))
@@ -205,7 +205,7 @@ fn usage_text() -> String {
 Usage:
   graded [check] [directory]    Check effect annotations (default: src)
   graded infer [directory]      Infer effects; write the spec file and cache
-  graded pack [tarball]         Inject the spec into the hex tarball for release
+  graded pack [directory]       Inject the spec into the hex tarball for release
   graded format [directory]     Format the spec file
   graded format --check [dir]   Verify formatting without writing (CI mode)
   graded format --stdin         Format the spec file read from stdin
@@ -222,10 +222,11 @@ Usage:
 // hex-tarball`) and publishes it (via the Hex publish API, never `gleam
 // publish`, which rebuilds the tarball and drops the injected file).
 
-// Inject the configured spec into the current project's hex tarball. `tarball`
-// overrides the default `build/<name>-<version>.tar`.
-fn run_pack(tarball: option.Option(String)) -> Result(String, GradedError) {
-  pack_project(resolve_package_root("src"), tarball)
+// Inject the configured spec into the hex tarball of the project rooted at
+// `directory` (default the current project). The tarball defaults to
+// `build/<name>-<version>.tar`; `pack_project` still accepts an explicit path.
+fn run_pack(directory: String) -> Result(String, GradedError) {
+  pack_project(resolve_package_root(directory), None)
 }
 
 /// Inject the configured `.graded` spec into `project_root`'s hex tarball.
