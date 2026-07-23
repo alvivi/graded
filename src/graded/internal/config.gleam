@@ -76,6 +76,19 @@ pub fn read(gleam_toml_path: String) -> Result(GradedConfig, ConfigError) {
   Ok(GradedConfig(package_name:, spec_file:, cache_dir:))
 }
 
+// Read the package `version` from a `gleam.toml`. Used by `graded pack` to
+// locate the default hex tarball (`build/<name>-<version>.tar`) and to verify a
+// tarball's identity; `GradedConfig` deliberately omits it since checking and
+// inference never need it. `Error(Nil)` when the file is unreadable, unparseable,
+// or has no string `version` — the caller builds the user-facing message.
+pub fn read_version(gleam_toml_path: String) -> Result(String, Nil) {
+  use content <- result.try(
+    simplifile.read(gleam_toml_path) |> result.replace_error(Nil),
+  )
+  use toml <- result.try(tom.parse(content) |> result.replace_error(Nil))
+  tom.get_string(toml, ["version"]) |> result.replace_error(Nil)
+}
+
 // Build a config using all defaults for a known package name. Useful in
 // tests where there's no real `gleam.toml` to read.
 pub fn defaults_for(package_name: String) -> GradedConfig {

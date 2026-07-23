@@ -79,19 +79,20 @@ pub type GradedError {
   /// practice — if it ever fires it indicates a bug in the dependency edge
   /// extraction rather than user code.
   CyclicImports(modules: List(String))
+  /// `graded pack` could not inject the spec into the hex tarball: the tarball
+  /// was missing, its identity didn't match the project, the configured
+  /// `spec_file` path was unsafe, or the tarball transform failed.
+  PackError(message: String)
 }
 
 pub fn main() -> Nil {
-  let arguments = argv.load().arguments
-  case arguments {
-    ["infer", ..rest] ->
-      case run_infer(target_directory(rest)) {
-        Ok(Nil) -> io.println("graded: inferred effects written")
-        Error(error) -> {
-          io.println_error("graded: error: " <> format_error(error))
-          halt(1)
-        }
-      }
+  case argv.load().arguments {
+    [] -> run_check("src")
+
+    ["--help", ..] | ["-h", ..] | ["help", ..] -> io.println(usage_text())
+
+    ["--version", ..] -> io.println("graded " <> version())
+
     ["format", "--stdin", ..] ->
       case run_format_stdin(read_stdin()) {
         Ok(output) -> io.print(output)
@@ -100,25 +101,303 @@ pub fn main() -> Nil {
           halt(1)
         }
       }
+
     ["format", "--check", ..rest] ->
-      case run_format_check(target_directory(rest)) {
-        Ok(Nil) -> Nil
-        Error(error) -> {
-          io.println_error("graded: error: " <> format_error(error))
-          halt(1)
+      with_directory(rest, fn(directory) {
+        case run_format_check(directory) {
+          Ok(Nil) -> Nil
+          Error(error) -> {
+            io.println_error("graded: error: " <> format_error(error))
+            halt(1)
+          }
         }
-      }
+      })
+
     ["format", ..rest] ->
-      case run_format(target_directory(rest)) {
-        Ok(Nil) -> Nil
-        Error(error) -> {
-          io.println_error("graded: error: " <> format_error(error))
-          halt(1)
+      with_directory(rest, fn(directory) {
+        case run_format(directory) {
+          Ok(Nil) -> Nil
+          Error(error) -> {
+            io.println_error("graded: error: " <> format_error(error))
+            halt(1)
+          }
         }
+      })
+
+    ["infer", ..rest] ->
+      with_directory(rest, fn(directory) {
+        case run_infer(directory) {
+          Ok(Nil) -> io.println("graded: inferred effects written")
+          Error(error) -> {
+            io.println_error("graded: error: " <> format_error(error))
+            halt(1)
+          }
+        }
+      })
+
+    ["check", ..rest] -> with_directory(rest, run_check)
+
+    ["pack", ..rest] ->
+      case rest {
+        [] -> pack_and_report("src")
+        [argument, ..] ->
+          case string.starts_with(argument, "-") {
+            True -> usage_error("unknown option `" <> argument <> "`")
+            False -> pack_and_report(argument)
+          }
       }
-    ["check", ..rest] -> run_check(target_directory(rest))
-    _ -> run_check(target_directory(arguments))
+
+    [first, ..] -> dispatch_unknown(first)
   }
+}
+
+fn pack_and_report(directory: String) -> Nil {
+  case run_pack(directory) {
+    Ok(message) -> io.println(message)
+    Error(error) -> {
+      io.println_error("graded: error: " <> format_error(error))
+      halt(1)
+    }
+  }
+}
+
+// Resolve the optional directory argument shared by check/infer/format, then run
+// `command` with it (default `src`). A leading `-…` token is an unknown option,
+// not a directory: reject it rather than treat it as a path, so a stray flag like
+// `graded infer --dry-run` errors instead of inferring a directory named
+// `--dry-run`.
+fn with_directory(rest: List(String), command: fn(String) -> Nil) -> Nil {
+  case rest {
+    [] -> command("src")
+    [argument, ..] ->
+      case string.starts_with(argument, "-") {
+        True -> usage_error("unknown option `" <> argument <> "`")
+        False -> command(argument)
+      }
+  }
+}
+
+// A first token that is neither a known command nor a flag: treat an existing
+// directory as `check <dir>` (the bare-directory shorthand), and anything else as
+// an unknown command — exiting non-zero rather than silently checking a directory
+// that isn't there. A future subcommand (e.g. `pack`) adds its own branch above
+// this fallback.
+fn dispatch_unknown(first: String) -> Nil {
+  case string.starts_with(first, "-") {
+    True -> usage_error("unknown option `" <> first <> "`")
+    False ->
+      case simplifile.is_directory(first) {
+        Ok(True) -> run_check(first)
+        _ -> usage_error("unknown command `" <> first <> "`")
+      }
+  }
+}
+
+fn usage_error(message: String) -> Nil {
+  io.println_error("graded: error: " <> message)
+  io.println_error("Run `graded --help` for usage.")
+  halt(1)
+}
+
+fn usage_text() -> String {
+  "graded — effect checker for Gleam
+
+Usage:
+  graded [check] [directory]    Check effect annotations (default: src)
+  graded infer [directory]      Infer effects; write the spec file and cache
+  graded pack [directory]       Inject the spec into the hex tarball for release
+  graded format [directory]     Format the spec file
+  graded format --check [dir]   Verify formatting without writing (CI mode)
+  graded format --stdin         Format the spec file read from stdin
+  graded --help                 Show this help
+  graded --version              Show the installed version"
+}
+
+// Packing
+//
+// The `pack` command: inject the configured `.graded` spec into the project's
+// hex tarball so it ships to consumers at `build/packages/<dep>/<spec_file>` and
+// is found by the existing dependency resolver — no consumer-side code. graded
+// patches and rehashes the tarball; the user builds it (`gleam export
+// hex-tarball`) and publishes it (via the Hex publish API, never `gleam
+// publish`, which rebuilds the tarball and drops the injected file).
+
+// Inject the configured spec into the hex tarball of the project rooted at
+// `directory` (default the current project). The tarball defaults to
+// `build/<name>-<version>.tar`; `pack_project` still accepts an explicit path.
+fn run_pack(directory: String) -> Result(String, GradedError) {
+  pack_project(resolve_package_root(directory), None)
+}
+
+/// Inject the configured `.graded` spec into `project_root`'s hex tarball.
+/// `tarball` overrides the default `build/<name>-<version>.tar`. Returns a
+/// success message (with the publish command) or a `PackError`.
+pub fn pack_project(
+  project_root: String,
+  tarball: option.Option(String),
+) -> Result(String, GradedError) {
+  let gleam_toml = filepath.join(project_root, "gleam.toml")
+
+  // The raw (relative) spec path is the archive entry; the resolved path is
+  // where the source spec is read from disk. `read_config`/`resolve_path` return
+  // the resolved read path, which may be root-prefixed or absolute — wrong for an
+  // archive entry — so the two are kept distinct.
+  use raw_cfg <- result.try(
+    config.read(gleam_toml)
+    |> result.map_error(fn(_) {
+      PackError(
+        "graded pack needs a package with a readable gleam.toml at "
+        <> gleam_toml,
+      )
+    }),
+  )
+  let entry_name = raw_cfg.spec_file
+  let resolved_spec = resolve_path(project_root, raw_cfg.spec_file)
+
+  // A spec_file that is absolute or escapes the package root can't be a safe
+  // archive-relative entry.
+  use _ <- result.try(validate_archive_entry(entry_name))
+
+  use spec <- result.try(
+    simplifile.read(resolved_spec)
+    |> result.map_error(fn(_) {
+      PackError(
+        "no spec file at " <> resolved_spec <> "; run `graded infer` first",
+      )
+    }),
+  )
+
+  use tarball_path <- result.try(resolve_pack_tarball(
+    tarball,
+    project_root,
+    gleam_toml,
+    raw_cfg.package_name,
+  ))
+
+  // Inject into a temp, verify, then replace the tarball in place, so a failed
+  // transform never leaves a corrupt archive behind.
+  let temp = tarball_path <> ".packing"
+  use checksum <- result.try(
+    inject_spec(tarball_path, spec, entry_name, temp)
+    |> result.map_error(fn(message) {
+      let _ = simplifile.delete(temp)
+      PackError("could not patch " <> tarball_path <> ": " <> message)
+    }),
+  )
+  use _ <- result.try(
+    verify_tarball(temp, entry_name)
+    |> result.map_error(fn(message) {
+      let _ = simplifile.delete(temp)
+      PackError("patched tarball failed verification: " <> message)
+    }),
+  )
+  use _ <- result.try(
+    simplifile.rename(temp, tarball_path)
+    |> result.map_error(FileWriteError(tarball_path, _)),
+  )
+
+  Ok(pack_success_message(tarball_path, entry_name, checksum))
+}
+
+// Resolve the tarball to patch. An explicit path is validated as a readable hex
+// tarball. Without one, the default `build/<name>-<version>.tar` is opened and
+// its identity checked against the project's name and version, so `pack` can't
+// silently patch the wrong archive.
+fn resolve_pack_tarball(
+  tarball: option.Option(String),
+  project_root: String,
+  gleam_toml: String,
+  package_name: String,
+) -> Result(String, GradedError) {
+  case tarball {
+    Some(path) -> {
+      use _ <- result.try(
+        read_package_identity(path)
+        |> result.map_error(fn(message) {
+          PackError("not a readable hex tarball: " <> path <> ": " <> message)
+        }),
+      )
+      Ok(path)
+    }
+    None -> {
+      use version <- result.try(
+        config.read_version(gleam_toml)
+        |> result.replace_error(PackError(
+          "no `version` in "
+          <> gleam_toml
+          <> "; pass the tarball path explicitly",
+        )),
+      )
+      let path =
+        filepath.join(
+          project_root,
+          "build/" <> package_name <> "-" <> version <> ".tar",
+        )
+      use #(name, tar_version) <- result.try(
+        read_package_identity(path)
+        |> result.map_error(fn(message) {
+          PackError(
+            "could not read "
+            <> path
+            <> " (run `gleam export hex-tarball` first): "
+            <> message,
+          )
+        }),
+      )
+      case name == package_name && tar_version == version {
+        True -> Ok(path)
+        False ->
+          Error(PackError(
+            "tarball at "
+            <> path
+            <> " is "
+            <> name
+            <> "@"
+            <> tar_version
+            <> ", not the project's "
+            <> package_name
+            <> "@"
+            <> version,
+          ))
+      }
+    }
+  }
+}
+
+// Reject an absolute path or one that escapes the package root: the spec must
+// land at a safe archive-relative location inside the package.
+fn validate_archive_entry(entry: String) -> Result(Nil, GradedError) {
+  let escapes = list.contains(filepath.split(entry), "..")
+  case string.starts_with(entry, "/") || escapes {
+    True ->
+      Error(PackError(
+        "configured spec_file `"
+        <> entry
+        <> "` must be a relative path inside the package",
+      ))
+    False -> Ok(Nil)
+  }
+}
+
+fn pack_success_message(
+  tarball: String,
+  entry: String,
+  checksum: String,
+) -> String {
+  "graded: injected "
+  <> entry
+  <> " into "
+  <> tarball
+  <> "\n  checksum "
+  <> checksum
+  <> "\n\nPublish this tarball with the Hex publish API — NOT `gleam publish`,\n"
+  <> "which rebuilds the tarball and drops the injected spec:\n\n"
+  <> "  curl -X POST https://hex.pm/api/publish \\\n"
+  <> "    -H \"authorization: $HEX_API_KEY\" \\\n"
+  <> "    -H \"content-type: application/octet-stream\" \\\n"
+  <> "    --data-binary @"
+  <> tarball
+  <> "\n\nDocumentation still publishes via `gleam docs publish`."
 }
 
 // Checking
@@ -133,6 +412,7 @@ pub fn main() -> Nil {
 /// hints, and `type` field annotations, then reports violations per source
 /// file.
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
+  let directory = scope_to_source_directory(directory)
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
   let spec = read_spec(cfg.spec_file)
@@ -668,7 +948,50 @@ fn format_one_spec(
 fn find_gleam_files(directory: String) -> Result(List(String), GradedError) {
   simplifile.get_files(directory)
   |> result.map_error(DirectoryReadError(directory, _))
-  |> result.map(list.filter(_, fn(path) { string.ends_with(path, ".gleam") }))
+  |> result.map(
+    list.filter(_, fn(path) {
+      string.ends_with(path, ".gleam") && !under_build_dir(directory, path)
+    }),
+  )
+}
+
+// A `.gleam` inside the scanned root's own `build/` subtree is dependency or
+// compiler output, never project source. The `src/` scoping in
+// `scope_to_source_directory` already keeps a package-root run out of `build/`;
+// this excludes it for any argument that isn't so scoped (a non-package subtree,
+// or a package with a non-standard layout). Scoped to the leading directory so a
+// throwaway project rooted *at* a `build/...` path (as test harnesses use) is
+// still scanned — only a `build/` directly below the scanned root is skipped.
+fn under_build_dir(directory: String, path: String) -> Bool {
+  let prefix = directory <> "/"
+  let relative = case string.starts_with(path, prefix) {
+    True -> string.drop_start(path, string.length(prefix))
+    False -> path
+  }
+  case filepath.split(relative) {
+    ["build", ..] -> True
+    _ -> False
+  }
+}
+
+// Scope a command's target directory to source files. When the argument is a
+// package root (a `gleam.toml` beside a `src/` directory), descend into `src/`
+// so module names derive unprefixed (`app`, not `src/app`) and the walk skips
+// `build/` and `test/`. A bare `src` argument, an out-of-tree source directory,
+// or a non-package subtree is left untouched. The `.` root maps to the literal
+// `"src"` (not `filepath.join(".", "src")`, which yields `"./src"`) so it keeps
+// hitting the production `"src"` layout convention shared with `read_config`.
+fn scope_to_source_directory(directory: String) -> String {
+  let has_toml = simplifile.is_file(filepath.join(directory, "gleam.toml"))
+  let has_src = simplifile.is_directory(filepath.join(directory, "src"))
+  case has_toml, has_src {
+    Ok(True), Ok(True) ->
+      case directory {
+        "." -> "src"
+        _ -> filepath.join(directory, "src")
+      }
+    _, _ -> directory
+  }
 }
 
 // Parse every project source file once, returning `(path, parsed module)`
@@ -1128,6 +1451,7 @@ fn build_dependency_graph(
 /// analysed after every other project module it imports — a single pass
 /// resolves transitive chains of any depth.
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
+  let directory = scope_to_source_directory(directory)
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
   let spec = read_spec(cfg.spec_file)
@@ -1969,13 +2293,6 @@ fn drop_declared_modules(
 // Argument handling, human-readable printing of errors, violations, and
 // warnings, and the exit/stdin externals behind `main`.
 
-fn target_directory(arguments: List(String)) -> String {
-  case arguments {
-    [directory, ..] -> directory
-    [] -> "src"
-  }
-}
-
 fn run_check(directory: String) -> Nil {
   case run(directory) {
     Ok(results) -> {
@@ -2026,6 +2343,7 @@ fn format_error(error: GradedError) -> String {
     CyclicImports(modules:) ->
       "Cyclic project imports detected (this should be unreachable — Gleam disallows circular imports):\n"
       <> string.join(list.map(modules, fn(m) { "  " <> m }), "\n")
+    PackError(message:) -> message
   }
 }
 
@@ -2134,3 +2452,31 @@ fn halt(code: Int) -> Nil
 @external(erlang, "graded_ffi", "read_stdin")
 @external(javascript, "./graded_ffi.mjs", "read_stdin")
 fn read_stdin() -> String
+
+// graded's own version, from the loaded OTP application's `vsn`.
+@external(erlang, "graded_ffi", "version")
+@external(javascript, "./graded_ffi.mjs", "version")
+fn version() -> String
+
+// Inject a `.graded` spec into a hex tarball at `in_tar`, writing the patched
+// archive to `out_tar` with `spec` placed at the archive-relative `entry_name`.
+// Returns the recomputed inner checksum, or an error message.
+@external(erlang, "graded_pack_ffi", "inject_spec")
+@external(javascript, "./graded_pack_ffi.mjs", "inject_spec")
+fn inject_spec(
+  in_tar: String,
+  spec: String,
+  entry_name: String,
+  out_tar: String,
+) -> Result(String, String)
+
+// Assert a written tarball is internally consistent (checksum + files list) and
+// carries `entry_name`.
+@external(erlang, "graded_pack_ffi", "verify_tarball")
+@external(javascript, "./graded_pack_ffi.mjs", "verify_tarball")
+fn verify_tarball(tar: String, entry_name: String) -> Result(Nil, String)
+
+// Read `#(name, version)` from a hex tarball's `metadata.config`.
+@external(erlang, "graded_pack_ffi", "read_package_identity")
+@external(javascript, "./graded_pack_ffi.mjs", "read_package_identity")
+fn read_package_identity(tar: String) -> Result(#(String, String), String)

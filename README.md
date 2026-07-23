@@ -22,7 +22,7 @@ gleam run -m graded infer
 
 This scans `src/`, analyses every function, and writes two outputs:
 
-- **`<package_name>.graded`** at the project root — the spec file. Contains the inferred effects of every *public* function plus any hand-written `check` invariants, `external effects` hints, and `type` field annotations. Tracked in git, ships to consumers if you add it to `included_files` in `gleam.toml`.
+- **`<package_name>.graded`** at the project root — the spec file. Contains the inferred effects of every *public* function plus any hand-written `check` invariants, `external effects` hints, and `type` field annotations. Tracked in git.
 - **`build/.graded/<module>.graded`** — per-module cache files. Contain the inferred effects of *every* function (public and private). Regenerated freely on each `graded infer` run, never shipped (`build/` is gitignored).
 
 ### Example
@@ -69,22 +69,23 @@ cache_dir = "build/.graded"     # default: "build/.graded"
 
 ## Publishing your spec file to consumers
 
-If you're a library author and want downstream packages to read your effect annotations, add the spec file to `included_files` in your `gleam.toml`:
+Gleam can't ship a package-root file like `myapp.graded` on a hex release — a published package includes `src/`, `gleam.toml`, the README, and the licence, with no configuration key to add more (a known Gleam limitation). The spec has to be injected into the release tarball after it's built, which is what `graded pack` does:
 
-```toml
-included_files = [
-  "src",
-  "myapp.graded",        # ← add this so consumers see your effects
-  "gleam.toml",
-  "README.md",
-]
+```sh
+gleam export hex-tarball        # build the release tarball
+gleam run -m graded pack        # inject <spec_file> into it, then publish as printed
 ```
 
-The cache directory under `build/` is gitignored and never ships, regardless of `included_files`.
+`pack` places your spec at `build/packages/<your-package>/<spec_file>` in downstream projects — where graded's resolver already looks — so consumers need no setup. It patches `build/<name>-<version>.tar` in place (or an explicit tarball path) and prints the Hex publish API command to run next. Do **not** run `gleam publish` afterwards: it rebuilds the tarball from source and drops the injected spec. Documentation still publishes via `gleam docs publish`. The cache directory under `build/` is gitignored and never ships.
+
+Two cases need no packing:
+
+- **Path dependencies.** A `{ path = "..." }` dependency's root spec is read straight from its checkout.
+- **Common packages.** graded bundles a catalogue of effect specs for popular packages, so many dependencies resolve with no spec of their own.
 
 ## Reference
 
-The `.graded` spec language and graded's analysis model are documented in full in **[docs/REFERENCE.md](./docs/REFERENCE.md)** — the annotation kinds (`effects`, `check`, `type`, `external effects`, `returns`), effect-set syntax, effect resolution order, higher-order and second-order effect polymorphism, type field effects, the effect-label conventions, and the bundled catalog of common packages.
+The `.graded` spec language and graded's analysis model are documented in full in **[the Reference](https://hexdocs.pm/graded/reference.html)** — the annotation kinds (`effects`, `check`, `type`, `external effects`, `returns`), effect-set syntax, effect resolution order, higher-order and second-order effect polymorphism, type field effects, the effect-label conventions, and the bundled catalog of common packages.
 
 ## Commands
 
@@ -94,15 +95,21 @@ gleam run -m graded infer [directory]         # infer and write effects annotati
 gleam run -m graded format [directory]        # normalize .graded file formatting
 gleam run -m graded format --check [directory] # verify formatting (CI mode)
 gleam run -m graded format --stdin            # format from stdin (editor integration)
+gleam run -m graded -- --help                 # show usage (-- passes the flag through gleam run)
+gleam run -m graded -- --version              # show the installed version
 ```
+
+An unknown command or option is a usage error, not a silently-checked directory.
+
+`check` and `infer` scope to the passed directory (default `src/`), recursing into it but never into `build/`. Passing the package root — `graded check .` — scopes to the root's `src/`, so module names come out as they appear in `import` statements (`app`, not `src/app`). To check another project, run graded from that project's root or point it at its `src/`.
 
 ## Limitations
 
 graded is **sound, not complete**: it combines syntax-level analysis ([glance](https://hexdocs.pm/glance/)) with type information ([girard](https://hexdocs.pm/girard)), and when it can't statically trace a function value it falls back to the `[Unknown]` effect rather than guess. `[Unknown]` fails an effect budget, so graded never silently *understates* effects — but a few value-flow patterns need a hand-written annotation or a wider budget to resolve.
 
-Idiomatic Gleam — inline callbacks, direct and aliased function references, pipe chains, higher-order functions passing functions by name (including second-order [operator effects](./docs/SECOND_ORDER_EFFECTS.md)), and validator/handler/config records — is handled automatically, including across modules: a fresh checkout resolves transitive chains with no prior `graded infer` (committed `effects` lines always win, and `check` writes nothing to disk).
+Idiomatic Gleam — inline callbacks, direct and aliased function references, pipe chains, higher-order functions passing functions by name (including second-order [operator effects](https://github.com/alvivi/graded/blob/main/docs/SECOND_ORDER_EFFECTS.md)), and validator/handler/config records — is handled automatically, including across modules: a fresh checkout resolves transitive chains with no prior `graded infer` (committed `effects` lines always win, and `check` writes nothing to disk).
 
-The handful of patterns that fall back to `[Unknown]` — each with how it shows up and how to work around it — are documented in **[docs/LIMITATIONS.md](./docs/LIMITATIONS.md)**.
+The handful of patterns that fall back to `[Unknown]` — each with how it shows up and how to work around it — are documented in **[Limitations](https://hexdocs.pm/graded/limitations.html)**.
 
 ## License
 
