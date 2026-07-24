@@ -627,11 +627,12 @@ pub fn run(msg: String) -> Nil {
   |> should.equal([])
 }
 
-pub fn field_call_girard_without_annotation_still_unknown_test() {
-  // girard types the receiver, but no `type Validator.to_error` annotation
-  // exists, so the effect is still [Unknown]: type-directed resolution needs
-  // the annotation for the effect; construction-derived field effects remove
-  // that need.
+pub fn field_call_construction_without_annotation_resolves_test() {
+  // No `type Validator.to_error` annotation exists, but the receiver is bound
+  // from a same-module producer (`let v = make()`) whose return construction
+  // wires `to_error` to io.println. Tier 2 grounds that construction per
+  // receiver, so `v.to_error()` resolves to the precise [Stdout] without any
+  // annotation — construction-derived field effects.
   let annotation =
     EffectAnnotation(
       Check,
@@ -642,7 +643,7 @@ pub fn field_call_girard_without_annotation_still_unknown_test() {
   let violations =
     check_source_with_girard(opaque_receiver_source, [annotation], [])
   let assert [violation] = violations
-  violation.actual |> should.equal(Specific(set.from_list(["Unknown"])))
+  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 // Field effects exceed declared budget → violation
@@ -951,16 +952,21 @@ pub fn run(options: Wrapper) -> Nil {
 }
 
 pub fn field_call_opaque_call_result_is_unknown_test() {
-  // Rule 5: a receiver bound from an external/opaque call (`let o =
-  // external_options(); o.resolver()`) is untraceable — never resolved by the
-  // nominal index, so it stays [Unknown].
+  // Rule 5: a receiver bound from a call whose producer's return provenance
+  // graded cannot build (`external_options`'s tail is itself a call, so its
+  // provenance is opaque) is untraceable — never resolved by the nominal index,
+  // so `o.resolver()` stays [Unknown].
   let source =
     "pub type Options {
   Options(resolver: fn() -> Nil)
 }
 
-pub fn external_options() -> Options {
+fn make() -> Options {
   Options(resolver: fn() { Nil })
+}
+
+pub fn external_options() -> Options {
+  make()
 }
 
 pub fn run() -> Nil {

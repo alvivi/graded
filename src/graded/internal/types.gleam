@@ -353,12 +353,16 @@ pub type ReturnProvenance {
   Opaque
 }
 
-// A constructor field's provenance inside a `Build` summary: either the whole
-// Nth parameter, a path rooted at it, or untraceable. Deliberately narrow — a
-// field wired to anything richer makes the whole `Build` `Opaque` in Phase 1.
+// A constructor field's provenance inside a `Build` summary: the whole Nth
+// parameter, a path rooted at it, a concrete value wired at the construction
+// site (a function reference, same-module function, closure, or nested
+// construction/call — resolved per receiver, independent of the call's
+// arguments), or untraceable. A field wired to anything else makes that field
+// `FieldOpaque`.
 pub type FieldProvenance {
   FieldParam(position: Int)
   FieldPath(position: Int, tail: String)
+  FieldValue(value: ArgumentValue)
   FieldOpaque
 }
 
@@ -402,10 +406,16 @@ pub type FieldCall {
 //   of the enclosing function (env-verified through nested aliases). Stays
 //   polymorphic: a receiver-keyed field variable that forwards up and grounds to
 //   `[Unknown]` if unbound.
+// - `ProvenReceiver` — the whole receiver is a traced value (a let-bound call
+//   result or a record-update overlay) whose construction is known but whose
+//   queried field's value is not extracted until check time. The checker grounds
+//   the receiver (a call result through its callee's return provenance) and reads
+//   the queried field from it, resolving per receiver — never the nominal index.
 // - `Untraceable` — the receiver is a shadowed/computed/opaque value, or a field
 //   inherited from an untraceable base. Resolved conservatively to `[Unknown]`.
 pub type FieldCallProvenance {
   ProvenValue(value: ArgumentValue)
+  ProvenReceiver(value: ArgumentValue)
   ParameterRoot(path: String)
   Untraceable
 }
