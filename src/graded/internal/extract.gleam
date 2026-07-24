@@ -406,38 +406,44 @@ fn update_signature(
   function: glance.Function,
   context: ImportContext,
 ) -> Result(UpdateSignature, Nil) {
-  use tail <- result.try(case list.last(function.body) {
-    Ok(glance.Expression(expression)) -> Ok(expression)
+  use #(tail, init) <- result.try(case list.reverse(function.body) {
+    [glance.Expression(tail), ..init_reversed] ->
+      Ok(#(tail, list.reverse(init_reversed)))
     _ -> Error(Nil)
   })
   use #(record, fields) <- result.try(case tail {
     glance.RecordUpdate(record:, fields:, ..) -> Ok(#(record, fields))
     _ -> Error(Nil)
   })
+  // Classify the tail with the lexical environment in effect there — parameters
+  // seeded, the body's leading `let`s threaded — so a parameter rebound before
+  // the update (`let resolver = impure; Options(..o, resolver:)`) no longer looks
+  // like the live parameter. Only a value still bound to a live parameter routes
+  // from the call site.
+  let env = pre_tail_env(init, function, context)
   let param_positions = param_position_map(function)
-  // The base record must be a bare parameter, so the call site supplies it.
-  use base_param <- result.try(case record {
-    glance.Variable(name:, ..) -> dict.get(param_positions, name)
-    _ -> Error(Nil)
-  })
-  // Every updated field must be wired to a parameter (classified with an empty
-  // env, so a bare parameter reference is a `LocalRef`). A field wired to a fixed
-  // value disqualifies the whole signature — that field would need the base to
-  // ground, so the function stays a plain call (its receiver widens to Unknown).
+  let live_param = fn(value) {
+    case value {
+      LocalRef(name) -> dict.get(param_positions, name)
+      _ -> Error(Nil)
+    }
+  }
+  // The base record must be a live parameter, so the call site supplies it.
+  use base_param <- result.try(
+    live_param(classify_expression(record, context, env)),
+  )
+  // Every updated field must be wired to a live parameter. A field wired to a
+  // fixed value (or a rebound name) disqualifies the whole signature — that field
+  // would need the base to ground, so the function stays a plain call (its
+  // receiver widens to Unknown).
   use field_to_param <- result.try(
     list.try_fold(fields, dict.new(), fn(acc, field) {
       let value = case field.item {
-        Some(item) -> classify_expression(item, context, dict.new())
-        None -> classify_variable(field.label, context, dict.new())
+        Some(item) -> classify_expression(item, context, env)
+        None -> classify_variable(field.label, context, env)
       }
-      case value {
-        LocalRef(name) ->
-          case dict.get(param_positions, name) {
-            Ok(position) -> Ok(dict.insert(acc, field.label, position))
-            Error(Nil) -> Error(Nil)
-          }
-        _ -> Error(Nil)
-      }
+      use position <- result.map(live_param(value))
+      dict.insert(acc, field.label, position)
     }),
   )
   case dict.is_empty(field_to_param) {
@@ -449,6 +455,23 @@ fn update_signature(
         param_labels: param_label_map(function),
       ))
   }
+}
+
+// The lexical environment in effect just before a function's tail expression:
+// parameters seeded, then the body's leading `let`/`use` bindings threaded.
+fn pre_tail_env(
+  init: List(glance.Statement),
+  function: glance.Function,
+  context: ImportContext,
+) -> Env {
+  list.fold(init, seed_parameters(function.parameters), fn(acc, statement) {
+    case statement {
+      glance.Assignment(pattern:, value:, ..) ->
+        bind_assignment(pattern, value, context, acc)
+      glance.Use(patterns:, ..) -> bind_use_patterns(patterns, acc)
+      _ -> acc
+    }
+  })
 }
 
 // Each labeled parameter's position (0-based) in a function's parameter list,
@@ -1343,7 +1366,7 @@ fn classify_rhs(
         // direct construction; otherwise fall through to the generic ref path.
         False ->
           factory_or_ref(
-            lookup_factory_bare(name, context),
+            unshadowed(name, env, lookup_factory_bare(name, context)),
             expression,
             arguments,
             context,
@@ -1366,7 +1389,11 @@ fn classify_rhs(
         }
         False ->
           factory_or_ref(
-            lookup_factory_qualified(alias, ctor, context),
+            unshadowed(
+              alias,
+              env,
+              lookup_factory_qualified(alias, ctor, context),
+            ),
             expression,
             arguments,
             context,
@@ -1423,6 +1450,23 @@ fn lookup_factory_qualified(
   case dict.get(context.aliases, alias) {
     Ok(module) -> dict.get(context.cross_factories, #(module, name))
     Error(Nil) -> Error(Nil)
+  }
+}
+
+// A factory/update signature applies only when its callee name resolves to the
+// top-level function it describes. A name bound in the local environment — a
+// parameter, or a `let`-bound closure/alias — shadows that top-level function, so
+// the signature must not be applied to a call through the shadowing binding.
+// Top-level functions are never seeded into the environment, so absence there
+// means the name resolves to the top level.
+fn unshadowed(
+  name: String,
+  env: Env,
+  signature: Result(a, Nil),
+) -> Result(a, Nil) {
+  case dict.has_key(env, name) {
+    True -> Error(Nil)
+    False -> signature
   }
 }
 
@@ -2293,8 +2337,8 @@ fn classify_expression(
       classify_constructor_or_factory(
         name,
         None,
-        lookup_factory_bare(name, context),
-        lookup_update_bare(name, context),
+        unshadowed(name, env, lookup_factory_bare(name, context)),
+        unshadowed(name, env, lookup_update_bare(name, context)),
         function,
         arguments,
         context,
@@ -2312,8 +2356,8 @@ fn classify_expression(
       classify_constructor_or_factory(
         name,
         dict.get(context.aliases, alias) |> option.from_result,
-        lookup_factory_qualified(alias, name, context),
-        lookup_update_qualified(alias, name, context),
+        unshadowed(alias, env, lookup_factory_qualified(alias, name, context)),
+        unshadowed(alias, env, lookup_update_qualified(alias, name, context)),
         function,
         arguments,
         context,
@@ -2685,20 +2729,7 @@ fn return_tail_value(
 ) -> Result(ArgumentValue, Nil) {
   case list.reverse(function.body) {
     [glance.Expression(tail), ..init_reversed] -> {
-      let env =
-        list.fold(
-          list.reverse(init_reversed),
-          seed_parameters(function.parameters),
-          fn(accumulator, statement) {
-            case statement {
-              glance.Assignment(pattern:, value:, ..) ->
-                bind_assignment(pattern, value, context, accumulator)
-              glance.Use(patterns:, ..) ->
-                bind_use_patterns(patterns, accumulator)
-              _ -> accumulator
-            }
-          },
-        )
+      let env = pre_tail_env(list.reverse(init_reversed), function, context)
       Ok(classify_return_tail(tail, context, env))
     }
     _ -> Error(Nil)
