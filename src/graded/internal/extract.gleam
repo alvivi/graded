@@ -12,9 +12,10 @@ import graded/internal/types.{
   type ArgumentValue, type CallArgument, type DirectClosureCall,
   type DirectOperatorCall, type DirectPipeOp, type FactorySignature,
   type FieldCall, type LocalCall, type QualifiedName, type ResolvedCall,
-  CallArgument, Constructed, ConstructorRef, DirectClosureCall, DirectPipeOp,
-  FactorySignature, FieldCall, FunctionRef, LocalCall, LocalRef, OtherExpression,
-  ParameterRoot, ProvenValue, QualifiedName, ResolvedCall, Untraceable,
+  type UpdateSignature, CallArgument, Constructed, ConstructorRef,
+  DirectClosureCall, DirectPipeOp, FactorySignature, FieldCall, FunctionRef,
+  LocalCall, LocalRef, OtherExpression, ParameterRoot, ProvenValue,
+  QualifiedName, ResolvedCall, Untraceable, UpdateSignature,
 }
 
 // Lexical bindings
@@ -65,6 +66,10 @@ type LocalBinding {
   // (`let h = pick_handler(args)`). A later use of `h` as an operator argument
   // resolves the producer's returned operator, binding `args` to its params.
   BoundReturnedOperator(callee: QualifiedName, args: List(CallArgument))
+  // A let-bound record-update overlay (`let o = with_resolver(base, http)` or
+  // `let o = Options(..base, resolver:)`). A later field call reads it
+  // field-selectively; a later use as a receiver argument forwards through it.
+  BoundUpdated(base: ArgumentValue, fields: Dict(String, ArgumentValue))
   BoundOpaque
 }
 
@@ -114,6 +119,11 @@ pub type ImportContext {
     // tell a same-module function wired into a constructor field (a traceable
     // `FieldValue`) apart from an opaque local of the same shape.
     functions: Set(String),
+    // Same-module update builders (bare name -> signature) and other modules'
+    // builders (keyed by `#(defining module, function)`), so a call to one
+    // (`with_resolver(base, http)`) builds an `Updated` overlay of its base.
+    updates: Dict(String, UpdateSignature),
+    cross_updates: Dict(#(String, String), UpdateSignature),
   )
 }
 
@@ -149,6 +159,23 @@ pub fn with_cross_factories(
   cross_factories: Dict(#(String, String), FactorySignature),
 ) -> ImportContext {
   ImportContext(..context, cross_factories:)
+}
+
+// Attach a module's own update-builder signatures (bare-keyed) to its context.
+pub fn with_updates(
+  context: ImportContext,
+  updates: Dict(String, UpdateSignature),
+) -> ImportContext {
+  ImportContext(..context, updates:)
+}
+
+// Attach the package-wide `#(defining module, function) -> update signature`
+// map, so a cross-module builder call composes an overlay of its base.
+pub fn with_cross_updates(
+  context: ImportContext,
+  cross_updates: Dict(#(String, String), UpdateSignature),
+) -> ImportContext {
+  ImportContext(..context, cross_updates:)
 }
 
 // Attach the module's own `fn`-typed record fields, so a field call on an
@@ -221,6 +248,8 @@ pub fn build_import_context(module: Module) -> ImportContext {
     cross_factories: dict.new(),
     fn_typed_fields: set.new(),
     functions:,
+    updates: dict.new(),
+    cross_updates: dict.new(),
   )
 }
 
@@ -323,6 +352,72 @@ fn factory_signature(
     True -> Error(Nil)
     False ->
       Ok(FactorySignature(
+        fields: field_to_param,
+        param_labels: param_label_map(function),
+      ))
+  }
+}
+
+// Detect each function in a module that is an *update builder*: its body's tail
+// is a record update of one of its parameters, with every updated field wired to
+// a parameter. Purely syntactic, precomputed up front. Keyed by bare name.
+pub fn update_map(module: Module) -> Dict(String, UpdateSignature) {
+  let context = build_import_context(module)
+  list.fold(module.functions, dict.new(), fn(acc, definition) {
+    let function = definition.definition
+    case update_signature(function, context) {
+      Ok(signature) -> dict.insert(acc, function.name, signature)
+      Error(Nil) -> acc
+    }
+  })
+}
+
+// The update-builder signature of a single function, or `Error` when its tail
+// isn't a record update of one of its parameters, or an updated field is wired to
+// anything but a parameter (which would require the base to ground).
+fn update_signature(
+  function: glance.Function,
+  context: ImportContext,
+) -> Result(UpdateSignature, Nil) {
+  use tail <- result.try(case list.last(function.body) {
+    Ok(glance.Expression(expression)) -> Ok(expression)
+    _ -> Error(Nil)
+  })
+  use #(record, fields) <- result.try(case tail {
+    glance.RecordUpdate(record:, fields:, ..) -> Ok(#(record, fields))
+    _ -> Error(Nil)
+  })
+  let param_positions = param_position_map(function)
+  // The base record must be a bare parameter, so the call site supplies it.
+  use base_param <- result.try(case record {
+    glance.Variable(name:, ..) -> dict.get(param_positions, name)
+    _ -> Error(Nil)
+  })
+  // Every updated field must be wired to a parameter (classified with an empty
+  // env, so a bare parameter reference is a `LocalRef`). A field wired to a fixed
+  // value disqualifies the whole signature — that field would need the base to
+  // ground, so the function stays a plain call (its receiver widens to Unknown).
+  use field_to_param <- result.try(
+    list.try_fold(fields, dict.new(), fn(acc, field) {
+      let value = case field.item {
+        Some(item) -> classify_expression(item, context, dict.new())
+        None -> classify_variable(field.label, context, dict.new())
+      }
+      case value {
+        LocalRef(name) ->
+          case dict.get(param_positions, name) {
+            Ok(position) -> Ok(dict.insert(acc, field.label, position))
+            Error(Nil) -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+    }),
+  )
+  case dict.is_empty(field_to_param) {
+    True -> Error(Nil)
+    False ->
+      Ok(UpdateSignature(
+        base_param:,
         fields: field_to_param,
         param_labels: param_label_map(function),
       ))
@@ -658,6 +753,7 @@ fn binding_from_argument_value(value: ArgumentValue) -> LocalBinding {
     types.ReturnedOperator(callee, args) | types.CallResult(callee, args) ->
       BoundReturnedOperator(callee, args)
     Constructed(fields:) -> BoundConstructor(fields:)
+    types.Updated(base:, fields:) -> BoundUpdated(base:, fields:)
     LocalRef(..) | ConstructorRef | types.ReceiverPath(..) | OtherExpression ->
       BoundOpaque
   }
@@ -933,6 +1029,18 @@ fn qualified_call_lookup(
               types.ProvenReceiver(types.CallResult(callee, args)),
             ),
           ])
+        // A let-bound record-update overlay: the receiver's whole value is the
+        // overlay, read field-selectively at check time.
+        BoundUpdated(base:, fields:) ->
+          ExtractResult(..empty(), field: [
+            FieldCall(
+              alias,
+              function_name,
+              span,
+              receiver_span,
+              types.ProvenReceiver(types.Updated(base:, fields:)),
+            ),
+          ])
         _ ->
           ExtractResult(..empty(), field: [
             FieldCall(
@@ -1023,6 +1131,7 @@ fn resolve_constructor_field_call(
       ])
     Ok(types.Choice(_))
     | Ok(types.ReceiverPath(_))
+    | Ok(types.Updated(_, _))
     | Ok(OtherExpression)
     | Error(Nil) ->
       ExtractResult(..empty(), field: [
@@ -1290,6 +1399,35 @@ fn lookup_factory_qualified(
   }
 }
 
+// The update signature for a bare callee — a same-module builder, or an
+// unqualified-imported one resolved through the cross-module map.
+fn lookup_update_bare(
+  name: String,
+  context: ImportContext,
+) -> Result(UpdateSignature, Nil) {
+  case dict.get(context.updates, name) {
+    Ok(signature) -> Ok(signature)
+    Error(Nil) ->
+      case dict.get(context.unqualified, name) {
+        Ok(QualifiedName(module:, function:)) ->
+          dict.get(context.cross_updates, #(module, function))
+        Error(Nil) -> Error(Nil)
+      }
+  }
+}
+
+// The update signature for a qualified callee `alias.name`.
+fn lookup_update_qualified(
+  alias: String,
+  name: String,
+  context: ImportContext,
+) -> Result(UpdateSignature, Nil) {
+  case dict.get(context.aliases, alias) {
+    Ok(module) -> dict.get(context.cross_updates, #(module, name))
+    Error(Nil) -> Error(Nil)
+  }
+}
+
 // Build a `BoundConstructor` from a factory call: route each wired field to the
 // argument at the factory parameter's position (a labeled argument resolves its
 // position through the signature's parameter labels). `Error` when no field
@@ -1374,6 +1512,7 @@ fn classify_rhs_ref(
     types.ReturnedOperator(callee, args) | types.CallResult(callee, args) ->
       BoundReturnedOperator(callee, args)
     Constructed(fields:) -> BoundConstructor(fields:)
+    types.Updated(base:, fields:) -> BoundUpdated(base:, fields:)
     // A receiver-path alias (`let options = config.options`): capture the
     // canonical path so a forwarded field var re-keys onto `config.options`
     // (fixed now, immune to later rebinds), not the opaque alias.
@@ -1967,7 +2106,10 @@ fn extract_expression_call(
         call_args,
       )
     ConstructorRef -> base
-    types.ReceiverPath(..) | Constructed(..) | OtherExpression ->
+    types.ReceiverPath(..)
+    | Constructed(..)
+    | types.Updated(..)
+    | OtherExpression ->
       merge(base, ExtractResult(..empty(), unknown_apps: [span]))
   }
 }
@@ -2061,6 +2203,9 @@ fn classify_local_binding(
     // forwarded callee field var re-keys through it (`let o = make_options(r);
     // inner(o)` re-keys `o.resolver` onto `r`).
     BoundConstructor(fields:) -> Constructed(fields:)
+    // A let-bound record-update overlay resolves to the overlay, so a later field
+    // call or forwarding reads it field-selectively.
+    BoundUpdated(base:, fields:) -> types.Updated(base:, fields:)
     // A receiver-path or parameter alias resolves to its path, so a forwarded
     // field var re-keys onto the caller's receiver (`let o = config.options;
     // inner(o)` re-keys `o.resolver` onto `config.options.resolver`).
@@ -2126,6 +2271,7 @@ fn classify_expression(
         name,
         None,
         lookup_factory_bare(name, context),
+        lookup_update_bare(name, context),
         function,
         arguments,
         context,
@@ -2144,11 +2290,24 @@ fn classify_expression(
         name,
         dict.get(context.aliases, alias) |> option.from_result,
         lookup_factory_qualified(alias, name, context),
+        lookup_update_qualified(alias, name, context),
         function,
         arguments,
         context,
         env,
       )
+    // A pipe desugars to a call with the piped value prepended; classify the
+    // reconstructed call so a builder pipe (`default() |> with_resolver(r)`)
+    // composes its overlay.
+    glance.BinaryOperator(name: glance.Pipe, left:, right:, ..) ->
+      case pipe_desugar(left, right) {
+        Ok(call) -> classify_expression(call, context, env)
+        Error(Nil) -> OtherExpression
+      }
+    // An inline record update (`Options(..base, resolver: r)`) is an overlay of
+    // the base with the updated fields replaced.
+    glance.RecordUpdate(record:, fields:, ..) ->
+      classify_record_update(record, fields, context, env)
     // Any other call (not a constructor or known factory) is a *returned
     // operator* if that function returns a function — captured here, resolved at
     // the use site against the producer's inferred returned operator.
@@ -2174,6 +2333,7 @@ fn classify_constructor_or_factory(
   name: String,
   module: Option(String),
   factory: Result(FactorySignature, Nil),
+  update: Result(UpdateSignature, Nil),
   function: Expression,
   arguments: List(Field(Expression)),
   context: ImportContext,
@@ -2182,8 +2342,8 @@ fn classify_constructor_or_factory(
   case is_constructor_name(name) {
     True -> constructed_value(name, module, arguments, context, env)
     False ->
-      case factory {
-        Ok(signature) ->
+      case factory, update {
+        Ok(signature), _ ->
           factory_constructed_or_producer(
             signature,
             function,
@@ -2191,8 +2351,115 @@ fn classify_constructor_or_factory(
             context,
             env,
           )
-        Error(Nil) -> classify_call_producer(function, arguments, context, env)
+        // An update builder composes an `Updated` overlay of its base argument
+        // with the wired fields replaced; falls back to the returned-operator
+        // path when the base argument can't be routed.
+        _, Ok(signature) ->
+          update_constructed_or_producer(
+            signature,
+            function,
+            arguments,
+            context,
+            env,
+          )
+        Error(Nil), Error(Nil) ->
+          classify_call_producer(function, arguments, context, env)
       }
+  }
+}
+
+// An update-builder call as an argument value: route the base argument and each
+// updated field's argument through the signature into an `Updated` overlay.
+// Falls back to the returned-operator path when the base argument is absent.
+fn update_constructed_or_producer(
+  signature: UpdateSignature,
+  function: Expression,
+  arguments: List(Field(Expression)),
+  context: ImportContext,
+  env: Env,
+) -> types.ArgumentValue {
+  let args = classify_arguments(arguments, context, env, 0)
+  let by_position = args_by_position(signature.param_labels, args)
+  case dict.get(by_position, signature.base_param) {
+    Ok(base) -> {
+      let fields =
+        dict.fold(signature.fields, dict.new(), fn(acc, label, position) {
+          case dict.get(by_position, position) {
+            Ok(value) -> dict.insert(acc, label, value)
+            Error(Nil) -> acc
+          }
+        })
+      case dict.is_empty(fields) {
+        True -> classify_call_producer(function, arguments, context, env)
+        False -> types.Updated(base:, fields:)
+      }
+    }
+    Error(Nil) -> classify_call_producer(function, arguments, context, env)
+  }
+}
+
+// Index a call's arguments by parameter position, resolving a labeled argument's
+// position through the callee's parameter labels. Shared by factory and update
+// routing.
+fn args_by_position(
+  param_labels: Dict(String, Int),
+  args: List(CallArgument),
+) -> Dict(Int, ArgumentValue) {
+  list.fold(args, dict.new(), fn(acc, arg) {
+    case arg.label {
+      None -> dict.insert(acc, arg.position, arg.value)
+      Some(label) ->
+        case dict.get(param_labels, label) {
+          Ok(position) -> dict.insert(acc, position, arg.value)
+          Error(Nil) -> acc
+        }
+    }
+  })
+}
+
+// Reconstruct the call a pipe desugars to: `left |> right` is `right(left, ..)`
+// with `left` prepended as the first argument. `Error` when the right side isn't
+// a call or a bare function reference (an `fn`-capture or other shape).
+fn pipe_desugar(
+  left: Expression,
+  right: Expression,
+) -> Result(Expression, Nil) {
+  case right {
+    glance.Call(location:, function:, arguments:) ->
+      Ok(
+        glance.Call(location, function, [
+          glance.UnlabelledField(left),
+          ..arguments
+        ]),
+      )
+    glance.Variable(location:, ..) | glance.FieldAccess(location:, ..) ->
+      Ok(glance.Call(location, right, [glance.UnlabelledField(left)]))
+    _ -> Error(Nil)
+  }
+}
+
+// An inline record update (`Options(..base, resolver: r)`) as an argument value:
+// classify the base and each updated field into an `Updated` overlay. A
+// shorthand field (`resolver:`) is the variable named by the label. With no
+// updated fields, the value is just the base.
+fn classify_record_update(
+  record: Expression,
+  fields: List(glance.RecordUpdateField(Expression)),
+  context: ImportContext,
+  env: Env,
+) -> types.ArgumentValue {
+  let base = classify_expression(record, context, env)
+  let updated =
+    list.fold(fields, dict.new(), fn(acc, field) {
+      let value = case field.item {
+        Some(item) -> classify_expression(item, context, env)
+        None -> classify_variable(field.label, context, env)
+      }
+      dict.insert(acc, field.label, value)
+    })
+  case dict.is_empty(updated) {
+    True -> base
+    False -> types.Updated(base:, fields: updated)
   }
 }
 
@@ -2290,6 +2557,7 @@ fn classify_call_producer(
     | types.CallResult(..)
     | types.ReceiverPath(..)
     | Constructed(..)
+    | types.Updated(..)
     | OtherExpression -> OtherExpression
   }
 }
@@ -2322,6 +2590,7 @@ fn classify_case_options(
         ConstructorRef
         | types.ReceiverPath(..)
         | Constructed(..)
+        | types.Updated(..)
         | OtherExpression -> False
       }
     })
@@ -2450,11 +2719,15 @@ fn provenance_of_value(
     // fold each branch to a provenance and join them. Any untraceable branch
     // (its provenance `Opaque`) widens the whole join to `Opaque`.
     types.Choice(options) -> join_provenance(options, positions, functions)
+    // A record-update tail is captured at the call site as an overlay via the
+    // function's update signature, not through return provenance, so folding it
+    // here would be redundant — it stays `Opaque`.
     FunctionRef(..)
     | ConstructorRef
     | types.Closure(..)
     | types.ReturnedOperator(..)
     | types.CallResult(..)
+    | types.Updated(..)
     | OtherExpression -> types.Opaque
   }
 }
@@ -2678,6 +2951,7 @@ fn param_rooted(
     | types.ReturnedOperator(..)
     | types.CallResult(..)
     | Constructed(..)
+    | types.Updated(..)
     | OtherExpression -> Error(Nil)
   }
 }
@@ -2738,6 +3012,7 @@ fn field_provenance_of_value(
         ConstructorRef
         | types.Choice(..)
         | types.ReceiverPath(..)
+        | types.Updated(..)
         | OtherExpression -> types.FieldOpaque
       }
   }

@@ -14,8 +14,8 @@ import graded/internal/types.{
   type ArgumentValue, type EffectAnnotation, type EffectSet, type EffectTerm,
   type ExternalAnnotation, type FactorySignature, type ParamBound,
   type QualifiedName, type ReturnProvenance, type TypeFieldAnnotation,
-  type TypeFieldEffect, Check, ConstructorRef, Effects, FunctionExternal,
-  FunctionRef, ModuleExternal, QualifiedName, TypeFieldEffect,
+  type TypeFieldEffect, type UpdateSignature, Check, ConstructorRef, Effects,
+  FunctionExternal, FunctionRef, ModuleExternal, QualifiedName, TypeFieldEffect,
 }
 import simplifile
 import tom
@@ -58,6 +58,11 @@ pub type KnowledgeBase {
     // bind its result's fields like a direct construction. (Same-module
     // factories are derived locally from the module, like constructors.)
     factories: Dict(#(String, String), FactorySignature),
+    // Package-wide update-builder signatures, keyed by `#(defining module,
+    // function)`. Lets a cross-module builder call (`options.with_resolver(base,
+    // http)`) compose an overlay of its base. Same-module builders are derived
+    // locally, like factories.
+    updates: Dict(#(String, String), UpdateSignature),
     // Module-level externals: a whole module's declared effect, keyed by module
     // name. Consulted by `lookup` when `all_effects` has no entry for a name, so
     // every function in the module resolves to this set. An empty set is a pure
@@ -92,6 +97,7 @@ pub fn load_knowledge_base(
     // Every dependency summary is Foreign (loaded from a serialized dep spec).
     returned_operators: tag_returns(dep_returns, Foreign),
     factories: dict.new(),
+    updates: dict.new(),
     module_effects: cat_module_effects,
     provenance: dict.new(),
   )
@@ -111,6 +117,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     type_fields: dict.new(),
     returned_operators: dict.new(),
     factories: dict.new(),
+    updates: dict.new(),
     module_effects: cat_module_effects,
     provenance: dict.new(),
   )
@@ -368,6 +375,24 @@ pub fn factories(
   knowledge_base: KnowledgeBase,
 ) -> Dict(#(String, String), FactorySignature) {
   knowledge_base.factories
+}
+
+// Attach the package-wide update-builder map (keyed by `#(module, function)`), so
+// a cross-module builder call composes an overlay of its base. Replaces any
+// existing map (it's computed once per run).
+pub fn with_updates(
+  knowledge_base: KnowledgeBase,
+  updates: Dict(#(String, String), UpdateSignature),
+) -> KnowledgeBase {
+  KnowledgeBase(..knowledge_base, updates:)
+}
+
+// The package-wide update-builder map, for threading into a module's extraction
+// context as its cross-module update builders.
+pub fn updates(
+  knowledge_base: KnowledgeBase,
+) -> Dict(#(String, String), UpdateSignature) {
+  knowledge_base.updates
 }
 
 // Look up the operator a function returns, if known, with its origin (Fix E).
@@ -749,6 +774,7 @@ fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
                 type_fields: dict.new(),
                 returned_operators: dict.new(),
                 factories: dict.new(),
+                updates: dict.new(),
                 module_effects: acc.module_effects,
                 provenance: dict.new(),
               ),

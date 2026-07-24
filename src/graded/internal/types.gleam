@@ -329,6 +329,13 @@ pub type ArgumentValue {
   // `ReturnProvenance`; opaque provenance leaves it `[Unknown]`, exactly as
   // `OtherExpression` would.
   CallResult(callee: QualifiedName, args: List(CallArgument))
+  // A record-update overlay: `base` with `fields` replaced (last-write-wins).
+  // Built from a `Constructor(..base, label: value)` record update or a builder
+  // call (`with_resolver(opts, http)`) whose body is one. Read field-selectively
+  // — an updated field takes its replacement value, any other field falls
+  // through to `base` — so the base need not be traceable to resolve an updated
+  // field. Composes: chained builders nest `Updated`s.
+  Updated(base: ArgumentValue, fields: Dict(String, ArgumentValue))
   // Anything else (a computed expression, literal, etc.). Effects come from
   // the enclosing walk; at the argument level we have no concrete function to
   // propagate.
@@ -429,6 +436,23 @@ pub type FieldCallProvenance {
 // (`make(logger: io.println)`) routes to the same fields as the positional one.
 pub type FactorySignature {
   FactorySignature(fields: Dict(String, Int), param_labels: Dict(String, Int))
+}
+
+// An *update builder*'s signature: its body is a record update of one of its
+// parameters (`with_resolver(o, resolver) { Options(..o, resolver:) }`).
+// `base_param` is the position of the parameter being updated (`o`); `fields`
+// maps each updated field label to the parameter position wiring it (`resolver`
+// -> 1). A call `with_resolver(base, http)` then builds an `Updated` overlay of
+// the base argument with those fields replaced. `param_labels` maps each
+// parameter's Gleam label to its position, for labeled calls. Only builders whose
+// every updated field is wired to a parameter qualify — a field wired to a fixed
+// value would need the base to ground, so such a function stays a plain call.
+pub type UpdateSignature {
+  UpdateSignature(
+    base_param: Int,
+    fields: Dict(String, Int),
+    param_labels: Dict(String, Int),
+  )
 }
 
 // A *returned operator applied directly*: `let h = pick_handler(); h(cb)`.
