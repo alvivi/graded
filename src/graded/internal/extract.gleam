@@ -947,17 +947,19 @@ fn param_rooted_path(path: String, env: Env) -> Option(String) {
   param_rooted_path_loop(path, env, set.new())
 }
 
-// `seen` breaks alias cycles: `let options = options` rebinds `options` to a
-// receiver path naming itself, so following it loops forever. Revisiting a path
-// means the root is a self-referential shadowing rebind, not a live parameter —
-// resolve it as `None` (untraceable), matching the shadowed-parameter rule.
+// `seen` breaks alias cycles by the path *root*, not the whole path: a rebind to
+// a path containing itself (`let options = options.inner`) makes the rewritten
+// path grow without bound (`options.inner`, `options.inner.inner`, …), so no
+// complete path ever repeats — but the root does. Re-following a root means it is
+// a self-referential shadowing rebind, not a live parameter, so resolve it as
+// `None` (untraceable), matching the shadowed-parameter rule.
 fn param_rooted_path_loop(
   path: String,
   env: Env,
   seen: Set(String),
 ) -> Option(String) {
-  use <- bool.guard(when: set.contains(seen, path), return: None)
   let #(root, rest) = split_root(path)
+  use <- bool.guard(when: set.contains(seen, root), return: None)
   case resolve_env(root, env) {
     BoundLocal -> Some(path)
     // The root is itself a `let` alias of a parameter or receiver path: rewrite
@@ -967,7 +969,7 @@ fn param_rooted_path_loop(
         Some(tail) -> aliased <> "." <> tail
         None -> aliased
       }
-      param_rooted_path_loop(next, env, set.insert(seen, path))
+      param_rooted_path_loop(next, env, set.insert(seen, root))
     }
     _ -> None
   }

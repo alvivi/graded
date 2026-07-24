@@ -813,9 +813,10 @@ pub fn annotate(options: Options) -> Nil {
 }
 
 pub fn field_call_self_rebound_parameter_terminates_test() {
-  // A parameter rebound to itself (`let options = options`) names a receiver path
-  // that points back at itself; canonicalization must break the cycle rather than
-  // loop forever. The self-rebind shadows the parameter, so the field call is
+  // A parameter rebound to a path containing itself (`let options =
+  // options.inner`) canonicalizes to an ever-growing path (`options.inner`,
+  // `options.inner.inner`, …), so cycle-breaking must key on the path *root*, not
+  // the whole path. The self-rebind shadows the parameter, so the field call is
   // untraceable — [Unknown]. Reaching an assertion at all proves termination.
   let source =
     "pub type Options {
@@ -823,13 +824,57 @@ pub fn field_call_self_rebound_parameter_terminates_test() {
 }
 
 pub fn annotate(options: Options) -> Nil {
-  let options = options
+  let options = options.inner
   options.resolver()
 }
 "
   let annotation = infer_field_annotation(source, "annotate")
   effect_term.to_effect_set(annotation.effects)
   |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+pub fn field_call_alias_matches_field_bound_test() {
+  // A parameter alias keys its bound on the canonical parameter path, so a
+  // `check annotate(options.resolver: [Stdout])` field bound matches `let f =
+  // options; f.resolver()` — it discharges to [Stdout] (no violation against that
+  // budget) and emits no spurious unmatched-field-bound warning for the alias.
+  let source =
+    "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+
+pub fn annotate(options: Options) -> Nil {
+  let f = options
+  f.resolver()
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let stdout = effect_term.from_effect_set(Specific(set.from_list(["Stdout"])))
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "annotate",
+      [ParamBound("options.resolver", stdout)],
+      stdout,
+    )
+  let #(violations, warnings) =
+    checker.check(
+      module,
+      "",
+      [annotation],
+      knowledge_base(),
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
+  violations |> should.equal([])
+  list.any(warnings, fn(w) {
+    case w {
+      UnmatchedFieldBoundWarning(..) -> True
+      _ -> False
+    }
+  })
+  |> should.be_false()
 }
 
 pub fn field_call_nested_parameter_path_stays_polymorphic_test() {

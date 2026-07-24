@@ -401,6 +401,23 @@ fn sentinel_call(module: String, function: String, span: Span) -> ResolvedCall {
   types.ResolvedCall(name: QualifiedName(module:, function:), span:)
 }
 
+// The receiver path a field call keys its bound, field variable, and diagnostics
+// on: the canonical parameter path for a parameter-rooted receiver (a `let`
+// alias resolves through the parameter it stands for), otherwise the syntactic
+// receiver. Keeping every site on this one path means `let f = options;
+// f.resolver()` matches a `check f(options.resolver: …)` bound, resolves like the
+// bare parameter, and never reports a spurious unmatched-bound warning.
+fn field_call_receiver(field_call: types.FieldCall) -> String {
+  case field_call.provenance {
+    types.ParameterRoot(path) -> path
+    _ -> field_call.object
+  }
+}
+
+fn field_call_target(field_call: types.FieldCall) -> String {
+  field_call_receiver(field_call) <> "." <> field_call.label
+}
+
 // A bound whose effect is the single variable named after the param
 // itself — `TVar(name)`. The variable refers to itself, resolved later by
 // substitution at call sites. When the matching argument is an effect
@@ -906,9 +923,7 @@ fn check_annotation(
       // parameter, so the parameter case is never a false provenance report.)
       let field_call_targets =
         extract_result.field
-        |> list.map(fn(field_call) {
-          field_call.object <> "." <> field_call.label
-        })
+        |> list.map(field_call_target)
         |> set.from_list()
       let unmatched_field_bound_warnings =
         annotation.params
@@ -1145,11 +1160,7 @@ fn collect_effects(
   let #(memo, field_effects) =
     list.map_fold(result.field, memo, fn(memo, field_call) {
       let synthetic_call =
-        sentinel_call(
-          "<field>",
-          field_call.object <> "." <> field_call.label,
-          field_call.span,
-        )
+        sentinel_call("<field>", field_call_target(field_call), field_call.span)
       let #(effect_set, memo) =
         resolve_field_call(
           field_call,
@@ -3822,22 +3833,18 @@ fn resolve_unproven_field(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
+  // The canonical receiver — a parameter alias (`let f = options`) resolves
+  // through the parameter it stands for — so bound matching, `type`-line lookup,
+  // and the field variable all key on the path the bare parameter would use.
+  let receiver_object = field_call_receiver(field_call)
   // Rule 2: a hand-written field bound on the enclosing `check` line
   // (`check f(recv.field: [..])`). User-declared, so it wins over the `type`
   // line and the param fallback. The bound's effects are returned verbatim — a
   // concrete effect set, no call-site substitution.
-  let field_target = field_call.object <> "." <> field_call.label
+  let field_target = field_call_target(field_call)
   case list.find(caller_param_bounds, fn(b) { b.name == field_target }) {
     Ok(bound) -> #(bound.effects, memo)
     Error(Nil) -> {
-      // When girard can't type the receiver, the syntactic fallback looks the
-      // receiver up as a parameter by name. Use the canonical parameter path (an
-      // alias `let f = options` resolves through `options`), not the dead alias
-      // identifier, so a parameter alias resolves like the bare parameter.
-      let receiver_object = case field_call.provenance {
-        types.ParameterRoot(path) -> path
-        _ -> field_call.object
-      }
       let receiver_type =
         typeinfo.receiver_type(
           module_types,
