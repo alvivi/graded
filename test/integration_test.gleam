@@ -1548,6 +1548,20 @@ pub fn builder_chain_call_result_replacement_direct_test() {
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn builder_chain_call_result_replacement_forwarded_test() {
+  // The same call-result replacement forwarded through `annotate`: the forwarding
+  // site grounds the resolver's operator to [Stdout] (not [Unknown]).
+  builder_chain_actual("run_call_result_forwarded")
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn builder_chain_closure_replacement_forwarded_test() {
+  // An inline closure builder replacement forwarded through `annotate` resolves
+  // to the first-order closure body's [Stdout], not [Unknown].
+  builder_chain_actual("run_closure_forwarded")
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn builder_chain_inherited_field_over_opaque_base_test() {
   // The inherited reporter (not updated) over the opaque base falls through to
   // the untraceable base and stays [Unknown] — sound, never guessed.
