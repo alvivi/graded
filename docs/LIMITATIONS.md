@@ -62,12 +62,11 @@ value that `caller` merely *passes* to another function: to resolve `annotate(op
 where `opts.resolver` matters, the bound has to be written on `annotate` itself, not
 on `caller`.
 
-### Builder-set fields are polymorphic, not specialized
+### Builder-set fields resolve precisely in-package, `[Unknown]` across a package boundary
 
-The same holds for a field set through a **builder** (`with_*`) record update. graded
-never resolves a field call on a parameter (or any receiver it can't trace to a
-construction) from a *package-wide* construction site — a caller can build the record
-differently, so borrowing one construction's effect would understate:
+A field call on a bare **parameter** receiver stays polymorphic — graded never
+resolves it from a *package-wide* construction site, since a caller can build the
+record differently:
 
 ```gleam
 pub opaque type Options {
@@ -88,24 +87,30 @@ pub fn annotate(options: Options) -> Nil {
 ```
 
 `annotate` infers `annotate(options.resolver: [options.resolver]) : [options.resolver]`
-— it does **not** specialize to `default_options`'s `[FileSystem]`. A consumer that
-supplies its own resolver keeps its effect rather than silently dropping it:
+— it does **not** specialize to `default_options`'s `[FileSystem]`.
+
+When a caller builds the options through a `with_*` builder and hands the result to
+`annotate`, graded now resolves the field to the *builder-set* value's effect,
+last-write-wins — **where it infers the builder's source in the same run** (the same
+package, or a path dependency it re-infers):
 
 ```gleam
 pub fn run() -> Nil {
   let opts = default_options() |> with_resolver(logging_resolver)  // [Stdout]
-  annotate(opts)   // [Unknown] — sound; never a bare [FileSystem]
+  annotate(opts)   // [Stdout] — the builder-set resolver, never a bare [FileSystem]
 }
 ```
 
-Here the builder result is bound to `opts` and then handed to `annotate`, so its
-construction isn't proven at the field call — graded reports `[Unknown]` rather than
-guess. That is sound (`[Unknown]` ⊇ any real effect), but it is *not* precise: a budget
-like `[FileSystem, Stdout]` still **fails** (`[Unknown] ⊄ [FileSystem, Stdout]`). The
-only ways through are a wildcard budget `[_]` (which admits `[Unknown]`) or a trusted
-external override — **not** writing the precise set. Recovering the precise
-`[FileSystem, Stdout]` needs per-value builder-chain provenance, tracked in
-[FUTURE_WORK.md](FUTURE_WORK.md).
+The remaining gap is **across a package boundary**. The overlay provenance that
+carries this precision lives only in the in-process knowledge base — it is not
+serialized to `.graded` specs or the catalog. So a consumer of an installed /
+catalogued dependency loads the polymorphic bound but no way to prove
+`opts.resolver = logging_resolver`, and reports `[Unknown]` for a field it supplies.
+That is sound (`[Unknown]` ⊇ any real effect) but imprecise: a budget like
+`[FileSystem, Stdout]` still **fails** (`[Unknown] ⊄ [FileSystem, Stdout]`). The only
+ways through there are a wildcard budget `[_]` (which admits `[Unknown]`) or a trusted
+external override — **not** writing the precise set. Carrying the precision across the
+boundary is tracked in [FUTURE_WORK.md](FUTURE_WORK.md).
 
 Forwarding that parameter through helper calls preserves the same field bound.
 The receiver argument forwards whenever its provenance is syntactically rooted in
