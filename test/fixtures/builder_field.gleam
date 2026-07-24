@@ -52,8 +52,8 @@ pub fn run_inline_arg() -> Nil {
   annotate("x", with_resolver(default_options(), logging_resolver))
 }
 
-// Whole-caller union: the eager construction's [Disk] plus the overridden field
-// call's [Stdout].
+// Whole-caller union: a construction-side effect ([Disk]) alongside the
+// overridden field call's [Stdout] — a real, separate effect, not the field's.
 @target(erlang)
 pub fn run_union() -> Nil {
   read_disk("init")
