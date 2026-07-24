@@ -47,6 +47,11 @@ pub fn run_default() -> Nil {
   annotate("x", default_options())
 }
 
+// The builder call inline as the argument, not let-bound: resolves the same.
+pub fn run_inline_arg() -> Nil {
+  annotate("x", with_resolver(default_options(), logging_resolver))
+}
+
 // Whole-caller union: the eager construction's [Disk] plus the overridden field
 // call's [Stdout].
 @target(erlang)
