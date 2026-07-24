@@ -109,3 +109,22 @@ pub fn run_call_result_direct() -> Nil {
   let x = Options(..opaque_options(), resolver: make_logging())
   x.resolver("hi")
 }
+
+// The same call-result replacement forwarded through `annotate`: the forwarding
+// site grounds the resolver's operator (its body ignores the argument) to
+// [Stdout], rather than falling back to [Unknown].
+@target(erlang)
+pub fn run_call_result_forwarded() -> Nil {
+  let x = Options(..opaque_options(), resolver: make_logging())
+  annotate("hi", x)
+}
+
+// An inline closure builder replacement forwarded through `annotate`: the
+// per-value resolver reports the first-order closure body's [Stdout], not
+// [Unknown].
+@target(erlang)
+pub fn run_closure_forwarded() -> Nil {
+  let opts =
+    with_resolver(opaque_options(), fn(message) { io.println(message) })
+  annotate("x", opts)
+}

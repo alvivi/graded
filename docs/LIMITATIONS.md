@@ -108,12 +108,13 @@ dependency composes the same overlay. A dependency whose source graded can't par
 stays `[Unknown]` for the builder's field — sound, since forwarding then has no
 parameter positions to work with either.
 
-One precision edge remains: when the builder-set value is itself a *call result*
-or *closure* (`with_resolver(o, make_resolver())`) rather than a function
-reference, a **direct** read of the field (`opts.resolver()`) resolves it
-precisely, but a value **forwarded** through another function (`annotate(opts)`,
-which itself calls `opts.resolver`) stays `[Unknown]` — the forwarding site has no
-field-call arguments to apply the value's operator effect. Sound, not precise.
+A builder-set value that is itself a *call result* or *closure*
+(`with_resolver(o, make_resolver())`) resolves the same per-value way a function
+reference does, both on a direct read (`opts.resolver()`) and forwarded through
+another function (`annotate(opts)`). The one edge is a **higher-order** resolver
+whose effect genuinely depends on a callback argument (`fn(cb) { cb() }`): a
+direct read applies it to the real argument, but a forwarded one has no field-call
+arguments at the binding site, so it stays `[Unknown]` — sound, not precise.
 
 Forwarding that parameter through helper calls preserves the same field bound.
 The receiver argument forwards whenever its provenance is syntactically rooted in

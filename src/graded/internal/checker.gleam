@@ -1083,6 +1083,7 @@ fn collect_effects(
           caller_param_names,
           caller_field_bindings,
           registry,
+          cache,
           lift_operator_arg,
           memo,
         )
@@ -1151,6 +1152,7 @@ fn collect_effects(
             caller_param_names,
             caller_field_bindings,
             registry,
+            cache,
             lift_operator_arg,
             memo,
           )
@@ -1654,6 +1656,7 @@ fn substitute_local_call_effects(
   caller_param_names: Set(String),
   caller_field_bindings: dict.Dict(String, EffectTerm),
   registry: SignatureRegistry,
+  cache: LocalCache,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
@@ -1705,6 +1708,7 @@ fn substitute_local_call_effects(
           function_map,
           context,
           knowledge_base,
+          cache,
         )
       let forwarded = forwarded_field_vars(field_bindings)
       let substituted =
@@ -1750,6 +1754,7 @@ fn substitute_at_call_site(
   caller_param_names: Set(String),
   caller_field_bindings: dict.Dict(String, EffectTerm),
   registry: SignatureRegistry,
+  cache: LocalCache,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
@@ -1793,6 +1798,7 @@ fn substitute_at_call_site(
       function_map,
       context,
       knowledge_base,
+      cache,
     )
   let forwarded = forwarded_field_vars(field_bindings)
   let substituted =
@@ -1856,6 +1862,7 @@ fn field_forwarding_bindings(
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
+  cache: LocalCache,
 ) -> dict.Dict(String, EffectTerm) {
   effect
   |> effect_term.free_vars()
@@ -1872,6 +1879,7 @@ fn field_forwarding_bindings(
         function_map,
         context,
         knowledge_base,
+        cache,
       )
     {
       Some(#(from, to)) -> dict.insert(bindings, from, to)
@@ -1890,6 +1898,7 @@ fn field_forwarding_binding(
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
+  cache: LocalCache,
 ) -> option.Option(#(String, EffectTerm)) {
   use #(receiver, tail) <- option.then(
     option.from_result(string.split_once(var, ".")),
@@ -1954,6 +1963,8 @@ fn field_forwarding_binding(
                 context,
                 knowledge_base,
                 function_map,
+                registry,
+                cache,
               )
               |> option.map(fn(term) { #(var, term) })
             Error(Nil) -> None
@@ -1977,27 +1988,38 @@ fn concrete_field_effect(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   function_map: dict.Dict(String, Definition(Function)),
+  registry: SignatureRegistry,
+  cache: LocalCache,
 ) -> option.Option(EffectTerm) {
-  let looked_up = case value {
-    types.FunctionRef(name) -> Ok(effects.lookup_effects(knowledge_base, name))
-    types.LocalRef(name) ->
-      case dict.has_key(function_map, name) {
-        True ->
-          Ok(effects.lookup_effects(
-            knowledge_base,
-            QualifiedName(context.module_path, name),
-          ))
-        False -> Error(Nil)
-      }
-    _ -> Error(Nil)
-  }
-  case looked_up {
-    Ok(effect) ->
-      case is_operator_valued(effect) || has_vars(effect) {
-        True -> None
-        False -> Some(effect)
-      }
-    Error(Nil) -> None
+  let #(closure_effect, call_result_effect) =
+    field_analysis_callbacks(
+      context,
+      function_map,
+      knowledge_base,
+      registry,
+      cache,
+    )
+  let module_functions = set.from_list(dict.keys(function_map))
+  let field_effect =
+    field_effect_of(
+      knowledge_base,
+      value,
+      context.module_path,
+      module_functions,
+      closure_effect,
+      call_result_effect,
+    )
+  case field_effect.source, is_operator_valued(field_effect.effects) {
+    // A wired effect-polymorphic function (a decorator), or an operator-valued
+    // field (a higher-order resolver): its effect depends on the field call's own
+    // arguments, bound at the call site and unavailable here — leave the variable
+    // to concretize to `[Unknown]`.
+    Some(_), _ | _, True -> None
+    // A ground effect — including the resolved effect of a first-order closure or
+    // call-result field value, which `field_effect_of` grounds via the same
+    // per-value resolution the direct-read path uses. Residual variables ground
+    // to `[Unknown]`; never a narrower set than the true effect.
+    None, False -> Some(concretize(field_effect.effects))
   }
 }
 
