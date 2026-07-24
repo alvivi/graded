@@ -34,31 +34,6 @@ and a provenance serialization format — larger steps, each risking understated
 effects if done unsoundly. The `type` line and field bound remain the escape
 hatches meanwhile.
 
-## Cross-package builder-chain field effects
-
-Within a package, a fn-typed field reached through a builder (`with_*`) record
-update now resolves to its precise, builder-set effect, last-write-wins:
-
-```gleam
-let opts = default_options() |> with_resolver(logging_resolver)  // [Stdout]
-annotate(opts)   // [Stdout] — the builder-set resolver, not the default
-```
-
-This holds only where graded infers the builder's source in the **same run** (the
-same package, or a path dependency graded re-infers). The overlay provenance that
-carries it lives only in the in-process knowledge base — it is not serialized to
-`.graded` specs or the catalog. So a consumer of an **installed / catalogued**
-dependency loads the polymorphic bound (`annotate(options.resolver:
-[options.resolver])`) but no way to prove `opts.resolver = logging_resolver`, and
-stays `[Unknown]` for a field it supplies. This is sound (see
-[LIMITATIONS.md](LIMITATIONS.md#1-a-record-field-reached-through-an-untraceable-receiver)),
-just imprecise across the boundary.
-
-Closing it needs a provenance-transport strategy — serializing value/overlay
-provenance into `.graded`, deriving public builder provenance from installed
-dependency source, or a dedicated catalog annotation — each a larger, separable
-design. The `type` line and field bound remain the escape hatches meanwhile.
-
 ## Direct field calls on computed receivers
 
 A field call whose receiver is itself a call result (`decode_user().function(x)`,

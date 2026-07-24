@@ -62,7 +62,7 @@ value that `caller` merely *passes* to another function: to resolve `annotate(op
 where `opts.resolver` matters, the bound has to be written on `annotate` itself, not
 on `caller`.
 
-### Builder-set fields resolve precisely in-package, `[Unknown]` across a package boundary
+### Builder-set fields resolve to the builder-set value, not the default
 
 A field call on a bare **parameter** receiver stays polymorphic — graded never
 resolves it from a *package-wide* construction site, since a caller can build the
@@ -90,9 +90,8 @@ pub fn annotate(options: Options) -> Nil {
 — it does **not** specialize to `default_options`'s `[FileSystem]`.
 
 When a caller builds the options through a `with_*` builder and hands the result to
-`annotate`, graded now resolves the field to the *builder-set* value's effect,
-last-write-wins — **where it infers the builder's source in the same run** (the same
-package, or a path dependency it re-infers):
+`annotate`, graded resolves the field to the *builder-set* value's effect,
+last-write-wins:
 
 ```gleam
 pub fn run() -> Nil {
@@ -101,16 +100,14 @@ pub fn run() -> Nil {
 }
 ```
 
-The remaining gap is **across a package boundary**. The overlay provenance that
-carries this precision lives only in the in-process knowledge base — it is not
-serialized to `.graded` specs or the catalog. So a consumer of an installed /
-catalogued dependency loads the polymorphic bound but no way to prove
-`opts.resolver = logging_resolver`, and reports `[Unknown]` for a field it supplies.
-That is sound (`[Unknown]` ⊇ any real effect) but imprecise: a budget like
-`[FileSystem, Stdout]` still **fails** (`[Unknown] ⊄ [FileSystem, Stdout]`). The only
-ways through there are a wildcard budget `[_]` (which admits `[Unknown]`) or a trusted
-external override — **not** writing the precise set. Carrying the precision across the
-boundary is tracked in [FUTURE_WORK.md](FUTURE_WORK.md).
+This holds **across a package boundary** too: a public builder's signature is
+serialized into the spec as an `update` line (see
+[REFERENCE.md](REFERENCE.md)), so a consumer of an installed or catalogued
+dependency composes the same overlay. The one thing graded still needs from the
+dependency is its **parameter positions** — read from the dependency's source
+under `build/packages`, which an installed dependency always ships. A dependency
+that provides neither a spec `update` line nor its source stays `[Unknown]` for
+the builder's field — sound, since graded then knows nothing about the builder.
 
 Forwarding that parameter through helper calls preserves the same field bound.
 The receiver argument forwards whenever its provenance is syntactically rooted in
