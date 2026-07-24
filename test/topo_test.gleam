@@ -557,7 +557,8 @@ pub fn default_options() -> Options {
   Options(resolver: disk_resolver())
 }
 
-pub fn use_resolver(o: Options) -> Nil {
+pub fn use_resolver() -> Nil {
+  let o = Options(resolver: disk_resolver())
   o.resolver()
 }
 ",
@@ -606,7 +607,8 @@ pub fn build() -> Options {
   Options(resolver: make(io.println))
 }
 
-pub fn use_resolver(o: Options) -> Nil {
+pub fn use_resolver() -> Nil {
+  let o = Options(resolver: make(io.println))
   o.resolver()
 }
 ",
@@ -718,7 +720,8 @@ pub fn build() -> Options {
   Options(run: outer(io.println))
 }
 
-pub fn use_run(o: Options) -> Nil {
+pub fn use_run() -> Nil {
+  let o = Options(run: outer(io.println))
   o.run()
 }
 ",
@@ -766,7 +769,8 @@ pub fn build() -> Options {
   Options(run: outer(io.println))
 }
 
-pub fn use_run(o: Options) -> Nil {
+pub fn use_run() -> Nil {
+  let o = Options(run: outer(io.println))
   o.run()
 }
 ",
@@ -817,9 +821,12 @@ pub fn build() -> Rec {
       ),
       #(
         "app/c.gleam",
-        "import app/b
+        "import gleam/io
+import app/a
+import app/b
 
-pub fn use_field(r: b.Rec) -> Nil {
+pub fn use_field() -> Nil {
+  let r = b.Rec(field: a.mk(io.println))
   r.field()
 }
 ",
@@ -866,9 +873,12 @@ pub fn build() -> Rec {
       ),
       #(
         "app/c.gleam",
-        "import app/b
+        "import gleam/io
+import app/a
+import app/b
 
-pub fn use_field(r: b.Rec) -> Nil {
+pub fn use_field() -> Nil {
+  let r = b.Rec(field: a.mk(io.println))
   r.field()
 }
 ",

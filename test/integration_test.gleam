@@ -149,14 +149,14 @@ pub fn inline_construction_field_resolves_through_construction_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
-pub fn field_union_operator_reduces_test() {
-  // field_union.run calls a function-typed field built at two *distinct*
-  // construction sites (pure + printing), so the field's inferred effect is a
-  // *union* of operators (`λ_. [] ⊔ λ_. [Stdout]`). Calling it with a
-  // non-function argument must apply and β-reduce that union to the precise
-  // [Stdout] — not leak the raw operator bounds into run's effect set, which
-  // would ground to [Unknown]. Regression for the union-of-operators field-call
-  // leak surfaced across the parser-combinator idiom (atto, bitty, automata).
+pub fn field_union_polymorphic_on_param_receiver_test() {
+  // field_union.run calls a function-typed field on a *parameter* receiver
+  // (`p: Parser`). The field's package-wide construction sites (pure + printing)
+  // are nominal evidence that must never resolve a parameter receiver — a caller
+  // can supply any Parser. So the call stays polymorphic: `run` infers the field
+  // bound `p.run` and, with no bound supplied on the `check` line, grounds to
+  // [Unknown]. A caller that supplies a concrete `Parser` (a proven construction)
+  // resolves it precisely instead.
   let assert Ok(results) = graded.run("test/fixtures")
   let union_result =
     list.find(results, fn(r) { r.file == "test/fixtures/field_union.gleam" })
@@ -164,7 +164,7 @@ pub fn field_union_operator_reduces_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 // External functions
@@ -286,6 +286,84 @@ pub fn opaque_fn_typed_field_round_trips_as_field_bound_test() {
   annotation.effects |> should.equal(types.TVar("r.run"))
 }
 
+pub fn field_call_param_receiver_not_specialized_by_index_test() {
+  // Soundness invariant, full pipeline: the construction index holds
+  // `Options.resolver : [Stdout]` from `default_options`, but `annotate`'s receiver
+  // is a *parameter* — a caller can build the record differently — so the field
+  // call must NOT be specialized to [Stdout]. It stays polymorphic and, against the
+  // [] budget with no field bound, surfaces as [Unknown], never [Stdout]. This is
+  // the girard options-builder understatement the precedence fix closes.
+  let root = "build/field_poly_soundness_proj"
+  let results =
+    run_project_with_spec(
+      root,
+      "import gleam/io
+
+pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+
+fn disk() -> Nil {
+  io.println(\"x\")
+}
+
+pub fn default_options() -> Options {
+  Options(resolver: disk)
+}
+
+pub fn annotate(options: Options) -> Nil {
+  options.resolver()
+}
+",
+      "check proj.annotate : []\n",
+    )
+  let assert Ok(r) =
+    list.find(results, fn(r) { string.ends_with(r.file, "proj.gleam") })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "annotate" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn field_call_record_update_inherited_field_is_unknown_test() {
+  // Tier 1 leaves a record update untraceable: `with_resolver` rebuilds via
+  // `Options(..base, ..)`, and `use_it` binds that call result before the field
+  // call. The inherited `resolver` field is not proven for this receiver, so the
+  // call resolves to [Unknown] rather than borrowing the package default. (Tier 2's
+  // field-selective overlay is what promotes an *updated* field to proven.)
+  let root = "build/field_poly_record_update_proj"
+  let results =
+    run_project_with_spec(
+      root,
+      "import gleam/io
+
+pub type Options {
+  Options(resolver: fn() -> Nil, label: String)
+}
+
+fn disk() -> Nil {
+  io.println(\"x\")
+}
+
+pub fn default_options() -> Options {
+  Options(resolver: disk, label: \"\")
+}
+
+pub fn with_label(base: Options, label: String) -> Options {
+  Options(..base, label: label)
+}
+
+pub fn use_it() -> Nil {
+  let o = with_label(default_options(), \"x\")
+  o.resolver()
+}
+",
+      "check proj.use_it : []\n",
+    )
+  let assert Ok(r) =
+    list.find(results, fn(r) { string.ends_with(r.file, "proj.gleam") })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "use_it" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
 // Infer the opaque_field fixture module in isolation and return its public
 // annotations, so the round-trip test can inspect the surfaced field bound
 // without round-tripping the whole spec file.
@@ -363,20 +441,18 @@ pub fn factory_forward_resolves_through_shorthand_factory_test() {
 pub fn factory_forward_marker_survives_sibling_source_test() {
   // factory_forward.mixed_caller forwards through `make_runner(run)` while the
   // same `Runner.run` field also has a polymorphic source from `relay_runner`
-  // (`Runner(run: relay)`). The merged field keeps `source: Some`, so the bare
-  // factory marker must resolve alongside it rather than being regrounded by the
-  // sibling source. The two sites contribute independently: the factory marker
-  // forwards onto the caller's `run` parameter and the `run: [Stdout]` bound
-  // discharges it to [Stdout], while the polymorphic source's variable is
-  // unbound at this call and concretizes to [Unknown]. Both are present —
-  // before, the source regrounded the marker and the result was only [Unknown],
-  // dropping the forwarded [Stdout].
+  // (`Runner(run: relay)`). `run_inner`'s receiver is a parameter, so the field
+  // call stays polymorphic — a receiver-keyed field variable that forwards onto
+  // the caller's own `run` parameter, where the `run: [Stdout]` bound discharges
+  // it to [Stdout]. The sibling `relay` source belongs to a *different*
+  // construction site and no longer pollutes this receiver: the nominal index is
+  // never consulted for a parameter receiver, so [Unknown] is gone.
   let assert Ok(results) = graded.run("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "mixed_caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout", "Unknown"])))
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn factory_forward_resolves_through_factory_alias_test() {
@@ -1234,10 +1310,12 @@ pub fn operator_typed_closure_field_test() {
 }
 
 pub fn inferred_field_effect_from_construction_test() {
-  // inferred_field has NO `type Logger.emit` annotation. graded
-  // derives the field's effect from the construction `Logger(emit: io.println)`
-  // and girard types the receiver, so the [] check budget fails with the
-  // precise [Stdout] — no hand-written type annotation needed.
+  // inferred_field binds the receiver from a *call* (`let l = make()`), so its
+  // construction isn't proven at the field call — a let-bound call result is
+  // untraceable in Tier 1. With no `type Logger.emit` line to consult, the field
+  // call resolves conservatively to [Unknown] rather than borrowing `make`'s
+  // in-package construction (which a caller could construct differently). Tier 2's
+  // let-bound call-result provenance restores the precise [Stdout].
   let assert Ok(results) = graded.run("test/fixtures")
   let inferred_result =
     list.find(results, fn(r) { r.file == "test/fixtures/inferred_field.gleam" })
@@ -1245,16 +1323,16 @@ pub fn inferred_field_effect_from_construction_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 pub fn local_field_value_resolved_test() {
   // local_field.run wires a *same-module* function (my_logger : [Stdout]) into a
-  // record field and calls it. graded qualifies the bare reference by the module
-  // and resolves its effect, so the [] check budget fails with the precise
-  // [Stdout] — the case that previously fell back to [Unknown]. local_field also
-  // defines a `Logger` type, same as inferred_field, so a pass here also proves
-  // same-named constructors in different modules aren't conflated.
+  // record field, but binds the receiver from a call (`let l = make()`). A
+  // let-bound call result is untraceable in Tier 1 and there is no `type
+  // Logger.emit` line, so the field call resolves to [Unknown] rather than
+  // borrowing `make`'s in-package construction. Tier 2's call-result provenance
+  // restores the precise [Stdout].
   let assert Ok(results) = graded.run("test/fixtures")
   let local_result =
     list.find(results, fn(r) { r.file == "test/fixtures/local_field.gleam" })
@@ -1262,7 +1340,7 @@ pub fn local_field_value_resolved_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 // Callback arguments and local resolution
@@ -1863,8 +1941,7 @@ pub fn project_module_external_infer_filters_construction_kb_test() {
         "app.gleam",
         "import db\n\n"
           <> "pub type Runner {\n  Runner(act: fn() -> Nil)\n}\n\n"
-          <> "pub fn make() -> Runner {\n  Runner(act: db.touch)\n}\n\n"
-          <> "pub fn go(r: Runner) -> Nil {\n  r.act()\n}\n",
+          <> "pub fn go() -> Nil {\n  let r = Runner(act: db.touch)\n  r.act()\n}\n",
       ),
     ],
     "external effects db : [Database]\neffects db.touch : [Stdout]\n",
@@ -2038,17 +2115,17 @@ pub fn provenance_rebuild_resolves_test() {
   // provenance_rebuild.caller passes `normalize(Options(resolver: resolver))` to
   // `inner`. `normalize` rebuilds `Options(resolver: o.resolver)` (a `Build`), so
   // `o.resolver` forwards onto the caller's `resolver` and the bound discharges
-  // it to [Stdout]. The rebuild's own receiver-path wiring registers a
-  // conservative [Unknown] source on the field, so the result carries both — the
-  // mixed-site shape of factory_forward.mixed_caller. The [Stdout] is what proves
-  // the forwarding fired (before Phase 1 the receiver was wholly [Unknown]).
+  // it to [Stdout]. `inner`'s own receiver is a parameter, so the field call is
+  // resolved as a forwarding field variable — never by the nominal index — so the
+  // rebuild's sibling receiver-path wiring no longer leaks a conservative
+  // [Unknown]. The result is the precise [Stdout] alone.
   let assert Ok(results) = graded.run("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_rebuild.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout", "Unknown"])))
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_partial_build_resolves_test() {
@@ -2057,13 +2134,16 @@ pub fn provenance_partial_build_resolves_test() {
   // o.resolver)` — a partial `Build` that keeps `resolver` and drops the literal
   // `label` — so `o.resolver` forwards onto the caller's `resolver` and the bound
   // discharges to [Stdout], where the all-or-nothing build left it [Unknown].
+  // `inner`'s parameter receiver keeps the field call polymorphic, so the sibling
+  // receiver-path wiring no longer leaks an [Unknown] — the precise [Stdout]
+  // stands alone.
   let assert Ok(results) = graded.run("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_partial.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout", "Unknown"])))
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_shorthand_build_resolves_test() {
@@ -2201,15 +2281,16 @@ pub fn provenance_branch_of_builds_resolves_test() {
   // provenance_branch_build.caller passes `pick(..)` to `inner`. `pick` returns a
   // `case` whose branches rebuild `Options(resolver: a.resolver)`, so its
   // provenance is a `Join` of two `Build`s. The join forwards `o.resolver` onto
-  // the caller's `resolver` (discharging to [Stdout]); each rebuild's receiver-path
-  // wiring registers a conservative [Unknown] source, so the result carries both.
+  // the caller's `resolver` (discharging to [Stdout]). `inner`'s parameter
+  // receiver keeps the field call polymorphic, so the branches' receiver-path
+  // wiring no longer leaks an [Unknown] — the precise [Stdout] stands alone.
   let assert Ok(results) = graded.run("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_branch_build.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout", "Unknown"])))
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_computed_deep_stays_unknown_test() {

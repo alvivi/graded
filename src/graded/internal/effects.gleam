@@ -149,7 +149,7 @@ pub fn with_type_fields(
         dict.insert(
           accumulator,
           #(module, type_field.type_name, type_field.field),
-          TypeFieldEffect(type_field.effects, [], None),
+          TypeFieldEffect(type_field.effects, [], None, types.Declared),
         )
       },
     )

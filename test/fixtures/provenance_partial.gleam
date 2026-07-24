@@ -2,7 +2,8 @@
 // (`label`) alongside a parameter-rooted fn field (`resolver`). The `Build`
 // provenance keeps `resolver` and drops the literal, so `o.resolver` forwards
 // onto the caller's `resolver` and the bound discharges to [Stdout] rather than
-// collapsing the whole build to [Unknown].
+// collapsing the whole build to [Unknown]. `inner`'s parameter receiver keeps the
+// field call polymorphic, so the result is the precise [Stdout] alone.
 
 pub type Options {
   Options(label: String, resolver: fn() -> Nil)

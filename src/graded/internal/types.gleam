@@ -201,17 +201,30 @@ pub type TypeFieldAnnotation {
   )
 }
 
+// Whether a type field's effect was hand-written on a `type Type.field : [...]`
+// line (`Declared`) or inferred from a construction site (`Inferred`). A field
+// call on a parameter/opaque receiver consults only `Declared` lines — an
+// inferred, nominal-type-keyed entry never resolves such a receiver, since it
+// holds package-wide evidence keyed by type rather than proof for this receiver.
+pub type TypeFieldOrigin {
+  Declared
+  Inferred
+}
+
 // A type field's resolved effect in the knowledge base. `effects` is the field
 // call's effect set. When the field was inferred from a constructor site that
 // wired an effect-polymorphic function, `bounds` and `source` carry that
 // function's parameter bounds and qualified name, so a field call can bind the
 // effect variables to its arguments (the same substitution resolved calls do).
 // Both are empty/`None` for hand-written annotations and concrete field values.
+// `origin` marks a hand-written `type` line apart from a construction-inferred
+// entry.
 pub type TypeFieldEffect {
   TypeFieldEffect(
     effects: EffectTerm,
     bounds: List(ParamBound),
     source: Option(QualifiedName),
+    origin: TypeFieldOrigin,
   )
 }
 
@@ -364,8 +377,37 @@ pub type LocalCall {
 // A field access call: object.label(args) where object is a local variable.
 // `span` is the whole call's span (for diagnostics); `receiver_span` is the
 // receiver variable's own span, used to look up its inferred type.
+// `provenance` records what extraction proved about the receiver, so the checker
+// can resolve the call by concrete evidence (a wired field value), a live
+// parameter root, or conservatively as `[Unknown]`.
 pub type FieldCall {
-  FieldCall(object: String, label: String, span: Span, receiver_span: Span)
+  FieldCall(
+    object: String,
+    label: String,
+    span: Span,
+    receiver_span: Span,
+    provenance: FieldCallProvenance,
+  )
+}
+
+// What extraction proved about a field call's receiver, driving the checker's
+// resolution precedence:
+//
+// - `ProvenValue` — this receiver's construction directly wired the queried
+//   field to `value` (a closure, call result, returned operator, or inline
+//   construction). Resolved per receiver via the field-value resolver, beating
+//   any annotation. `FunctionRef`/`LocalRef` field values never reach here —
+//   extraction resolves them to a plain call at their construction site.
+// - `ParameterRoot` — the receiver path is rooted at a live top-level parameter
+//   of the enclosing function (env-verified through nested aliases). Stays
+//   polymorphic: a receiver-keyed field variable that forwards up and grounds to
+//   `[Unknown]` if unbound.
+// - `Untraceable` — the receiver is a shadowed/computed/opaque value, or a field
+//   inherited from an untraceable base. Resolved conservatively to `[Unknown]`.
+pub type FieldCallProvenance {
+  ProvenValue(value: ArgumentValue)
+  ParameterRoot(path: String)
+  Untraceable
 }
 
 // A *factory* function's signature. `fields` maps each constructor field the

@@ -1118,10 +1118,12 @@ fn collect_effects(
           function,
           context,
           knowledge_base,
+          function_map,
           module_types,
           result.call_args,
           param_bounds,
           registry,
+          cache,
           lift_operator_arg,
           memo,
         )
@@ -3538,41 +3540,145 @@ fn collapsed_member(
 
 // Field-call resolution
 //
-// Resolve `object.field(args)` calls: a hand-written field bound wins, then
-// the receiver's nominal type against the type-field registry, with the
-// receiver-keyed field-effect variable as the traceable fallback.
+// Resolve `object.field(args)` calls by a precedence that never lets the
+// nominal, package-wide construction index resolve a receiver by type alone
+// (that understates when a caller supplies a different field value):
+//
+//   1. A value proven for *this* receiver (a field wired at its construction).
+//   2. A hand-written `check f(recv.field: [..])` field bound.
+//   3. A hand-written `type Type.field : [..]` line.
+//   4. A live parameter root → a receiver-keyed field variable (polymorphic).
+//   5. Otherwise → `[Unknown]`.
+
+// The effect a constructor field's value contributes, resolved per receiver. A
+// function reference (or a same-module function, qualified by `module_path`)
+// resolves via the knowledge base — capturing its param bounds + identity when
+// it is effect-polymorphic. A constructor is pure; a closure is analysed via
+// `closure_effect`; a call result via `call_result_effect`; anything else is
+// `[Unknown]`. Relocated from the top-level orchestration layer so both the
+// construction-index build and per-receiver field-call resolution share it; the
+// two analysis callbacks stay parameters so each caller wires its own context.
+pub fn field_effect_of(
+  knowledge_base: KnowledgeBase,
+  value: types.ArgumentValue,
+  module_path: String,
+  module_functions: Set(String),
+  closure_effect: fn(List(String), List(Statement)) -> EffectTerm,
+  call_result_effect: fn(types.QualifiedName, List(types.CallArgument)) ->
+    Result(EffectTerm, Nil),
+) -> types.TypeFieldEffect {
+  case field_value_function(value, module_path, module_functions) {
+    Some(name) -> {
+      let field_effects = effects.lookup_effects(knowledge_base, name)
+      case set.is_empty(effect_term.free_vars(field_effects)) {
+        // Concrete effect: no bounds or source to carry.
+        True -> types.TypeFieldEffect(field_effects, [], None, types.Inferred)
+        // Effect-polymorphic: keep the wired function's bounds and identity.
+        False ->
+          types.TypeFieldEffect(
+            field_effects,
+            effects.lookup_param_bounds(knowledge_base, name),
+            Some(name),
+            types.Inferred,
+          )
+      }
+    }
+    None -> {
+      // The default for an unrecognised field value: its argument-value effects
+      // with no bounds or source (the `[Unknown]` a plain lookup would give).
+      let fallback =
+        types.TypeFieldEffect(
+          effects.argument_value_effects(knowledge_base, value),
+          [],
+          None,
+          types.Inferred,
+        )
+      case value {
+        // A field wired to an inline/let-bound closure: analyse its body for the
+        // field's effect instead of collapsing to `[Unknown]`.
+        types.Closure(params, _captures, body) ->
+          types.TypeFieldEffect(
+            closure_effect(params, body),
+            [],
+            None,
+            types.Inferred,
+          )
+        // A field wired to a bare parameter (a factory threading its own
+        // argument into the field): polymorphic in that parameter, so carry the
+        // self marker rather than the `[Unknown]` a plain lookup would give —
+        // letting the call site forward through it.
+        types.LocalRef(_) -> polymorphic_field_effect()
+        // A field wired from a *call* (`Options(resolver: disk_resolver())`):
+        // resolve the callee's returned-operator summary. `Error` preserves the
+        // prior `[Unknown]` behaviour exactly.
+        types.CallResult(callee, args) ->
+          case call_result_effect(callee, args) {
+            Ok(operator) ->
+              types.TypeFieldEffect(operator, [], None, types.Inferred)
+            Error(Nil) -> fallback
+          }
+        _ -> fallback
+      }
+    }
+  }
+}
+
+// The qualified function a field value refers to, if any: a `FunctionRef`
+// directly, or a `LocalRef` naming one of the current module's own functions.
+// A `LocalRef` that isn't a module function is a parameter (or other local),
+// returned as `None` so the caller treats it as polymorphic. `None` too for
+// constructors and inline expressions.
+fn field_value_function(
+  value: types.ArgumentValue,
+  module_path: String,
+  module_functions: Set(String),
+) -> option.Option(types.QualifiedName) {
+  case value {
+    types.FunctionRef(name:) -> Some(name)
+    types.LocalRef(name:) ->
+      case set.contains(module_functions, name) {
+        True -> Some(QualifiedName(module_path, name))
+        False -> None
+      }
+    _ -> None
+  }
+}
 
 fn resolve_field_call(
   field_call: types.FieldCall,
   function: Function,
   context: ImportContext,
   knowledge_base: KnowledgeBase,
+  function_map: dict.Dict(String, Definition(Function)),
   module_types: dict.Dict(#(Int, Int), girard.Type),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
+  scc_ids: LocalCache,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
-  // A hand-written field bound on the enclosing `check` line
-  // (`check f(recv.field: [..])`) resolves the call directly, ahead of
-  // girard/type-registry resolution. It's the boundary-scoped counterpart to a
-  // `type` line — an escape hatch for a receiver graded can't trace to a
-  // construction site. User-declared, so it wins over inferred field effects.
-  // (Factory/constructor-traced receivers never reach here — extraction resolves
-  // them to a plain call through value provenance — so the bound only competes
-  // with, and beats, receiver-type resolution.)
-  //
-  // The bound's effects are returned verbatim — a concrete effect set, no
-  // call-site substitution (unlike the `type`-line path below, which runs
-  // through `resolve_field_effect`). Effect-polymorphic fields belong on a
-  // `type` line.
-  let field_target = field_call.object <> "." <> field_call.label
-  case list.find(caller_param_bounds, fn(b) { b.name == field_target }) {
-    Ok(bound) -> #(bound.effects, memo)
-    Error(Nil) ->
-      resolve_field_call_by_type(
+  case field_call.provenance {
+    // Rule 1: a value proven wired to this field at this receiver's
+    // construction. Concrete evidence — resolved per receiver, beating any
+    // annotation.
+    types.ProvenValue(value) ->
+      resolve_proven_field(
+        value,
+        field_call,
+        context,
+        knowledge_base,
+        function_map,
+        call_args,
+        caller_param_bounds,
+        registry,
+        scc_ids,
+        lift_operator_arg,
+        memo,
+      )
+    _ ->
+      resolve_unproven_field(
         field_call,
         function,
         context,
@@ -3587,13 +3693,75 @@ fn resolve_field_call(
   }
 }
 
-// Resolve a field call through the receiver's nominal type. The fallback when no
-// hand-written field bound applies: resolve the receiver's type qualified by its
-// defining module — girard's inferred type for the receiver expression first (any
-// receiver, and girard reports the defining module), then the receiver's syntactic
-// parameter annotation (no module available, so keyed unqualified as "") — then
-// look the field up in the type registry.
-fn resolve_field_call_by_type(
+// Resolve a field call whose receiver's construction directly wired the queried
+// field to `value` (rule 1). Resolves the value's effect per receiver via
+// `field_effect_of`, then applies the field call's own arguments — the same
+// call-site substitution the `type`-line path uses. Never consults the
+// nominal-type index, so a different receiver never borrows this one's value.
+fn resolve_proven_field(
+  value: types.ArgumentValue,
+  field_call: types.FieldCall,
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  function_map: dict.Dict(String, Definition(Function)),
+  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
+  caller_param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
+  scc_ids: LocalCache,
+  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
+    #(Result(EffectTerm, Nil), Memo),
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
+  let closure_effect = fn(params, body) {
+    closure_field_operator(
+      params,
+      body,
+      context,
+      function_map,
+      knowledge_base,
+      scc_ids,
+    )
+  }
+  let call_result_effect = fn(callee, args) {
+    call_result_field_operator(
+      callee,
+      args,
+      context,
+      function_map,
+      knowledge_base,
+      registry,
+      scc_ids,
+    )
+  }
+  let module_functions = set.from_list(dict.keys(function_map))
+  let field_effect =
+    field_effect_of(
+      knowledge_base,
+      value,
+      context.module_path,
+      module_functions,
+      closure_effect,
+      call_result_effect,
+    )
+  resolve_field_effect(
+    field_effect,
+    field_call,
+    call_args,
+    knowledge_base,
+    caller_param_bounds,
+    registry,
+    lift_operator_arg,
+    memo,
+  )
+}
+
+// Resolve a field call with no proven value (rule 2 onward): a hand-written
+// field bound, then a hand-written `type` line (looked up by the receiver's
+// nominal type — girard first, then the syntactic parameter annotation), then a
+// receiver-keyed field variable for a live parameter root, then `[Unknown]`. A
+// construction-inferred nominal entry is never consulted — it holds package-wide
+// evidence keyed by type, not proof for this receiver.
+fn resolve_unproven_field(
   field_call: types.FieldCall,
   function: Function,
   context: ImportContext,
@@ -3606,66 +3774,84 @@ fn resolve_field_call_by_type(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
-  let receiver_type =
-    typeinfo.receiver_type(
-      module_types,
-      field_call.receiver_span.start,
-      field_call.receiver_span.end,
-    )
-    |> option.lazy_or(fn() {
-      syntactic_param_type(function, field_call.object)
-      |> option.map(fn(type_name) { #("", type_name) })
-    })
-  case receiver_type {
-    None -> #(field_fallback(field_call, "", "", context), memo)
-    Some(#(module, type_name)) ->
-      case
-        effects.lookup_type_field(
-          knowledge_base,
-          module,
-          type_name,
-          field_call.label,
+  // Rule 2: a hand-written field bound on the enclosing `check` line
+  // (`check f(recv.field: [..])`). User-declared, so it wins over the `type`
+  // line and the param fallback. The bound's effects are returned verbatim — a
+  // concrete effect set, no call-site substitution.
+  let field_target = field_call.object <> "." <> field_call.label
+  case list.find(caller_param_bounds, fn(b) { b.name == field_target }) {
+    Ok(bound) -> #(bound.effects, memo)
+    Error(Nil) -> {
+      let receiver_type =
+        typeinfo.receiver_type(
+          module_types,
+          field_call.receiver_span.start,
+          field_call.receiver_span.end,
         )
-      {
-        Error(Nil) -> #(
-          field_fallback(field_call, module, type_name, context),
-          memo,
-        )
-        Ok(field_effect) ->
-          case has_self_field_marker(field_effect.effects) {
-            // A construction-inferred field wired to a bare parameter is
-            // polymorphic in that parameter (the factory plumbing). Resolve the
-            // marker to the receiver-keyed field variable so the call forwards
-            // like an un-constructed `fn`-typed field, unioned with any other
-            // construction site for the same field (which may carry its own
-            // polymorphic source — `merge_field_effect` keeps `source: Some`).
-            True ->
-              resolve_self_field(
-                field_effect,
-                field_call,
-                module,
-                type_name,
-                context,
-                call_args,
-                knowledge_base,
-                caller_param_bounds,
-                registry,
-                lift_operator_arg,
+        |> option.lazy_or(fn() {
+          syntactic_param_type(function, field_call.object)
+          |> option.map(fn(type_name) { #("", type_name) })
+        })
+      // Rule 3: a hand-written `type Type.field` line, resolved by the
+      // receiver's nominal type. Only *declared* lines qualify — a
+      // construction-inferred entry keyed by the same type is package-wide
+      // nominal evidence, which must never resolve an unproven receiver.
+      let declared = case receiver_type {
+        Some(#(module, type_name)) ->
+          case
+            effects.lookup_type_field(
+              knowledge_base,
+              module,
+              type_name,
+              field_call.label,
+            )
+          {
+            Ok(field_effect) ->
+              case field_effect.origin {
+                types.Declared -> Some(field_effect)
+                types.Inferred -> None
+              }
+            Error(Nil) -> None
+          }
+        None -> None
+      }
+      case declared {
+        Some(field_effect) ->
+          resolve_field_effect(
+            field_effect,
+            field_call,
+            call_args,
+            knowledge_base,
+            caller_param_bounds,
+            registry,
+            lift_operator_arg,
+            memo,
+          )
+        None ->
+          case field_call.provenance {
+            // Rule 4: the receiver is rooted at a live parameter — stay
+            // polymorphic in the field, forwarding a receiver-keyed field
+            // variable that grounds to `[Unknown]` if never bound. Keyed on the
+            // canonical parameter path (an alias `let f = options` resolves to
+            // `options.field`, not the dead `f.field`).
+            types.ParameterRoot(path) -> {
+              let #(module, type_name) = option.unwrap(receiver_type, #("", ""))
+              #(
+                field_fallback(
+                  path,
+                  field_call.label,
+                  module,
+                  type_name,
+                  context,
+                ),
                 memo,
               )
-            False ->
-              resolve_field_effect(
-                field_effect,
-                field_call,
-                call_args,
-                knowledge_base,
-                caller_param_bounds,
-                registry,
-                lift_operator_arg,
-                memo,
-              )
+            }
+            // Rule 5: an untraceable/opaque/computed receiver — `[Unknown]`.
+            _ -> #(effect_term.unknown(), memo)
           }
       }
+    }
   }
 }
 
@@ -3680,7 +3866,8 @@ fn resolve_field_call_by_type(
 // `type_name` is `""` for a receiver typed only syntactically (the syntactic
 // fallback yields no module), which the same-module set still matches by name.
 fn field_fallback(
-  field_call: types.FieldCall,
+  object: String,
+  label: String,
   module: String,
   type_name: String,
   context: ImportContext,
@@ -3688,18 +3875,14 @@ fn field_fallback(
   // A receiver with no clean access path (`make().field` — a call result) gets
   // the `<expr>` sentinel object; never mint a `<expr>.field` variable for it,
   // since no `check` bound can name it and an inferred spec shouldn't carry one.
-  let has_path = field_call.object != "<expr>"
+  let has_path = object != "<expr>"
   // The field registry holds only the current module's types. An imported
   // receiver type sharing a name with a local fn-typed type must not borrow the
   // local field. `module` is the receiver type's defining module (from girard);
   // "" is the syntactic-annotation fallback, matched by name as before.
   let in_scope = module == "" || module == context.module_path
-  case
-    has_path
-    && in_scope
-    && is_fn_typed_field(context, type_name, field_call.label)
-  {
-    True -> TVar(field_call.object <> "." <> field_call.label)
+  case has_path && in_scope && is_fn_typed_field(context, type_name, label) {
+    True -> TVar(object <> "." <> label)
     False -> effect_term.unknown()
   }
 }
@@ -3716,56 +3899,7 @@ const self_field_marker = "$field"
 // resolves it to the receiver-keyed field variable instead of a fixed
 // `[Unknown]`. Built here so the marker name stays internal to the checker.
 pub fn polymorphic_field_effect() -> types.TypeFieldEffect {
-  types.TypeFieldEffect(TVar(self_field_marker), [], None)
-}
-
-fn has_self_field_marker(effects: EffectTerm) -> Bool {
-  set.contains(effect_term.free_vars(effects), self_field_marker)
-}
-
-// Resolve a polymorphic (parameter-wired) construction-inferred field. The self
-// marker resolves to the receiver-keyed field variable — the same variable an
-// un-constructed `fn`-typed field falls back to, so it forwards and discharges
-// identically. Any other construction site for the same field (a concrete co-site,
-// or a polymorphic function source `merge_field_effect` kept) is resolved with
-// the marker neutralized to `[]`, then unioned in — so a sibling site never
-// regrounds the forwarded marker to `[Unknown]`.
-fn resolve_self_field(
-  field_effect: types.TypeFieldEffect,
-  field_call: types.FieldCall,
-  module: String,
-  type_name: String,
-  context: ImportContext,
-  call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
-  knowledge_base: KnowledgeBase,
-  caller_param_bounds: List(ParamBound),
-  registry: SignatureRegistry,
-  lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
-    #(Result(EffectTerm, Nil), Memo),
-  memo: Memo,
-) -> #(EffectTerm, Memo) {
-  let source_only =
-    types.TypeFieldEffect(
-      ..field_effect,
-      effects: field_effect.effects
-        |> effect_term.subst(
-          dict.from_list([#(self_field_marker, effect_term.pure())]),
-        )
-        |> effect_term.normalize(),
-    )
-  let #(source_part, memo) =
-    resolve_field_effect(
-      source_only,
-      field_call,
-      call_args,
-      knowledge_base,
-      caller_param_bounds,
-      registry,
-      lift_operator_arg,
-      memo,
-    )
-  let marker_part = field_fallback(field_call, module, type_name, context)
-  #(effect_term.normalize(types.TUnion([source_part, marker_part])), memo)
+  types.TypeFieldEffect(TVar(self_field_marker), [], None, types.Inferred)
 }
 
 // Whether a field of a same-module custom type is `fn`-typed. The registry is

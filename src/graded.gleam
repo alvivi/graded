@@ -828,7 +828,7 @@ fn accumulate_constructor_binding(
     Ok(type_name) ->
       dict.fold(fields, acc, fn(inner, label, value) {
         let field_effect =
-          field_effect_of(
+          checker.field_effect_of(
             knowledge_base,
             value,
             module_path,
@@ -843,88 +843,6 @@ fn accumulate_constructor_binding(
         }
         dict.insert(inner, key, merged)
       })
-  }
-}
-
-// The effect a constructor field's value contributes. A function reference (or
-// a same-module function, qualified by `module_path`) resolves via the
-// knowledge base — capturing its param bounds + identity when it is
-// effect-polymorphic. A constructor is pure; anything else is `[Unknown]`.
-fn field_effect_of(
-  knowledge_base: KnowledgeBase,
-  value: types.ArgumentValue,
-  module_path: String,
-  module_functions: Set(String),
-  closure_effect: fn(List(String), List(glance.Statement)) -> types.EffectTerm,
-  call_result_effect: fn(types.QualifiedName, List(types.CallArgument)) ->
-    Result(types.EffectTerm, Nil),
-) -> types.TypeFieldEffect {
-  case field_value_function(value, module_path, module_functions) {
-    Some(name) -> {
-      let field_effects = effects.lookup_effects(knowledge_base, name)
-      case set.is_empty(effect_term.free_vars(field_effects)) {
-        // Concrete effect: no bounds or source to carry.
-        True -> types.TypeFieldEffect(field_effects, [], None)
-        // Effect-polymorphic: keep the wired function's bounds and identity.
-        False ->
-          types.TypeFieldEffect(
-            field_effects,
-            effects.lookup_param_bounds(knowledge_base, name),
-            Some(name),
-          )
-      }
-    }
-    None -> {
-      // The default for an unrecognised field value: its argument-value effects
-      // with no bounds or source (the `[Unknown]` a plain lookup would give).
-      let fallback =
-        types.TypeFieldEffect(
-          effects.argument_value_effects(knowledge_base, value),
-          [],
-          None,
-        )
-      case value {
-        // A field wired to an inline/let-bound closure: analyse its body for the
-        // field's effect instead of collapsing to `[Unknown]`.
-        types.Closure(params, _captures, body) ->
-          types.TypeFieldEffect(closure_effect(params, body), [], None)
-        // A field wired to a bare parameter (a factory threading its own
-        // argument into the field): polymorphic in that parameter, so carry the
-        // self marker rather than the `[Unknown]` a plain lookup would give —
-        // letting the call site forward through it.
-        types.LocalRef(_) -> checker.polymorphic_field_effect()
-        // A field wired from a *call* (`Options(resolver: disk_resolver())`):
-        // resolve the callee's returned-operator summary. `Error` preserves the
-        // prior `[Unknown]` behaviour exactly.
-        types.CallResult(callee, args) ->
-          case call_result_effect(callee, args) {
-            Ok(operator) -> types.TypeFieldEffect(operator, [], None)
-            Error(Nil) -> fallback
-          }
-        _ -> fallback
-      }
-    }
-  }
-}
-
-// The qualified function a field value refers to, if any: a `FunctionRef`
-// directly, or a `LocalRef` naming one of the current module's own functions.
-// A `LocalRef` that isn't a module function is a parameter (or other local),
-// returned as `None` so the caller treats it as polymorphic. `None` too for
-// constructors and inline expressions.
-fn field_value_function(
-  value: types.ArgumentValue,
-  module_path: String,
-  module_functions: Set(String),
-) -> option.Option(QualifiedName) {
-  case value {
-    types.FunctionRef(name:) -> Some(name)
-    types.LocalRef(name:) ->
-      case set.contains(module_functions, name) {
-        True -> Some(QualifiedName(module_path, name))
-        False -> None
-      }
-    _ -> None
   }
 }
 
@@ -943,6 +861,7 @@ fn merge_field_effect(
     effect_term.normalize(types.TUnion([existing.effects, new.effects])),
     bounds,
     source,
+    types.Inferred,
   )
 }
 

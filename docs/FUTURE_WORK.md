@@ -34,6 +34,40 @@ and a provenance serialization format — larger steps, each risking understated
 effects if done unsoundly. The `type` line and field bound remain the escape
 hatches meanwhile.
 
+## Precise builder-chain field effects (Tier 2)
+
+A fn-typed field reached through a parameter or a builder (`with_*`) record update
+stays **polymorphic** — `annotate(options.resolver: [options.resolver])` — and a
+consumer that binds the builder result before the field is read gets `[Unknown]`:
+
+```gleam
+let opts = default_options() |> with_resolver(logging_resolver)  // [Stdout]
+annotate(opts)   // [Unknown] today — sound, but not the precise [FileSystem, Stdout]
+```
+
+This is sound (see [LIMITATIONS.md](LIMITATIONS.md#1-a-record-field-reached-through-an-untraceable-receiver))
+but imprecise. Two representations would recover the precise set:
+
+- **Let-bound call-result provenance.** A `let o = default_options() |>
+  with_resolver(http)` binds a *call result*; graded classifies that as a returned
+  operator (meant for functions returned by producers) and loses the `with_resolver`
+  value provenance. A `BoundCallResult(callee, args)` binding that survives the `let`
+  and carries its provenance when passed onward would let the field call resolve
+  through the builder chain.
+- **Field-selective overlay for record updates.** `Options(..base, resolver: http)`
+  replaces only `resolver` (last-write-wins, not union) and inherits the rest from
+  `base`. An `Updated(base, fields)` provenance that resolves per field — reading the
+  replacement immediately and consulting the base only for fields *not* updated, so an
+  opaque base never has to ground before an updated field is read — composes a chain
+  (`… |> with_resolver(http) |> with_target(js)`) precisely.
+
+Both are needed together to make the builder idiom precise where graded sees the
+builder's source in the same run. Carrying the precision *across* a package boundary
+(an installed/catalogued dependency whose builder source graded never infers) is a
+separate, still-undecided step: value/overlay provenance lives only in the in-process
+knowledge base, not in `.graded` specs or the catalog, so an installed consumer stays
+`[Unknown]` for a field it supplies unless a provenance-transport format is added.
+
 ## Direct field calls on computed receivers
 
 A field call whose receiver is itself a call result (`decode_user().function(x)`,

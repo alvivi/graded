@@ -4,14 +4,10 @@ pub type Notifier {
   Notifier(send: fn(String) -> Nil)
 }
 
-fn make() -> Notifier {
-  // The field is wired to an inline closure (not a named function). graded
-  // analyses the closure body, so `send`'s effect is inferred as [Stdout]
-  // without a hand-written `type Notifier.send` annotation.
-  Notifier(send: fn(msg) { io.println(msg) })
-}
-
 pub fn run() {
-  let n = make()
+  // The receiver is a let-bound *inline construction*, so `send`'s value is proven
+  // for this receiver: graded analyses the wired closure body and resolves the
+  // field call to [Stdout] — no hand-written `type Notifier.send` annotation.
+  let n = Notifier(send: fn(msg) { io.println(msg) })
   n.send("hi")
 }
