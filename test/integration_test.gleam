@@ -1439,6 +1439,18 @@ pub fn builder_chain_inherited_field_over_opaque_base_test() {
   |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
+pub fn shadow_field_does_not_borrow_function_effect_test() {
+  // shadow_field.make wires a destructured, opaque local `handler` into a field.
+  // That local shadows the top-level `handler` (pure []). The field call
+  // `c.run()` must stay [Unknown] — never borrow the shadowed function's effect,
+  // which would under-report (the field is really an untraceable value).
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/shadow_field.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "go" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
 // Callback arguments and local resolution
 //
 // Arguments to fn-typed parameters (named, labeled) resolve to their real
