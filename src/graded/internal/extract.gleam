@@ -12,10 +12,10 @@ import graded/internal/types.{
   type ArgumentValue, type CallArgument, type DirectClosureCall,
   type DirectOperatorCall, type DirectPipeOp, type FactorySignature,
   type FieldCall, type LocalCall, type QualifiedName, type ResolvedCall,
-  type UpdateAnnotation, type UpdateSignature, CallArgument, Constructed,
-  ConstructorRef, DirectClosureCall, DirectPipeOp, FactorySignature, FieldCall,
-  FunctionRef, LocalCall, LocalRef, OtherExpression, ParameterRoot, ProvenValue,
-  QualifiedName, ResolvedCall, Untraceable, UpdateAnnotation, UpdateSignature,
+  type UpdateSignature, CallArgument, Constructed, ConstructorRef,
+  DirectClosureCall, DirectPipeOp, FactorySignature, FieldCall, FunctionRef,
+  LocalCall, LocalRef, OtherExpression, ParameterRoot, ProvenValue,
+  QualifiedName, ResolvedCall, Untraceable, UpdateSignature,
 }
 
 // Lexical bindings
@@ -358,53 +358,16 @@ fn factory_signature(
   }
 }
 
-// The *public* update builders of a module as serializable `UpdateAnnotation`s,
-// qualified by `module_path`. Only public builders can be called across a
-// package boundary, so only they are written to the spec. `fields`/`param_labels`
-// are sorted for a deterministic (round-trippable) serialization.
-pub fn public_update_annotations(
-  module: Module,
-  module_path: String,
-) -> List(UpdateAnnotation) {
-  let publics =
-    list.fold(module.functions, set.new(), fn(acc, definition) {
-      case definition.definition.publicity {
-        glance.Public -> set.insert(acc, definition.definition.name)
-        glance.Private -> acc
-      }
-    })
-  update_map(module)
-  |> dict.to_list()
-  |> list.filter_map(fn(entry) {
-    let #(name, signature) = entry
-    case set.contains(publics, name) {
-      True ->
-        Ok(UpdateAnnotation(
-          function: module_path <> "." <> name,
-          base_param: signature.base_param,
-          fields: sorted_label_positions(signature.fields),
-          param_labels: sorted_label_positions(signature.param_labels),
-        ))
-      False -> Error(Nil)
-    }
-  })
-}
-
 // The *public* update builders of a module as runtime signatures, keyed by
 // `#(module_path, name)`. Used to derive a dependency's builders from its source
 // under `build/packages` — the source the consumer compiled against — so the
-// signature can never skew from a stale serialized spec.
+// signature can never skew. Only public builders are callable across a package
+// boundary.
 pub fn public_update_signatures(
   module: Module,
   module_path: String,
 ) -> Dict(#(String, String), UpdateSignature) {
-  let publics =
-    list.fold(module.functions, set.new(), fn(acc, definition) {
-      case definition.definition.publicity {
-        glance.Public -> set.insert(acc, definition.definition.name)
-        glance.Private -> acc
-      }
-    })
+  let publics = public_function_names(module)
   update_map(module)
   |> dict.to_list()
   |> list.filter(fn(entry) { set.contains(publics, entry.0) })
@@ -412,10 +375,14 @@ pub fn public_update_signatures(
   |> dict.from_list()
 }
 
-fn sorted_label_positions(pairs: Dict(String, Int)) -> List(#(String, Int)) {
-  pairs
-  |> dict.to_list()
-  |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+// The names of a module's public top-level functions.
+fn public_function_names(module: Module) -> Set(String) {
+  list.fold(module.functions, set.new(), fn(acc, definition) {
+    case definition.definition.publicity {
+      glance.Public -> set.insert(acc, definition.definition.name)
+      glance.Private -> acc
+    }
+  })
 }
 
 // Detect each function in a module that is an *update builder*: its body's tail
@@ -1517,17 +1484,7 @@ fn route_factory_fields(
   signature: FactorySignature,
   args: List(CallArgument),
 ) -> Dict(String, ArgumentValue) {
-  let by_position =
-    list.fold(args, dict.new(), fn(acc, arg) {
-      case arg.label {
-        None -> dict.insert(acc, arg.position, arg.value)
-        Some(label) ->
-          case dict.get(signature.param_labels, label) {
-            Ok(position) -> dict.insert(acc, position, arg.value)
-            Error(Nil) -> acc
-          }
-      }
-    })
+  let by_position = args_by_position(signature.param_labels, args)
   dict.fold(signature.fields, dict.new(), fn(acc, label, position) {
     case dict.get(by_position, position) {
       Ok(value) -> dict.insert(acc, label, value)

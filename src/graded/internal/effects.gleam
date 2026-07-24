@@ -16,7 +16,6 @@ import graded/internal/types.{
   type QualifiedName, type ReturnProvenance, type TypeFieldAnnotation,
   type TypeFieldEffect, type UpdateSignature, Check, ConstructorRef, Effects,
   FunctionExternal, FunctionRef, ModuleExternal, QualifiedName, TypeFieldEffect,
-  UpdateSignature,
 }
 import simplifile
 import tom
@@ -85,16 +84,11 @@ pub fn load_knowledge_base(
   packages_directory: String,
   manifest_path: String,
 ) -> KnowledgeBase {
-  let #(dep_effects, dep_params, dep_returns, dep_type_fields, dep_updates) =
+  let #(dep_effects, dep_params, dep_returns, dep_type_fields) =
     load_dependencies(packages_directory)
   let catalog_dir = find_catalog_directory()
-  let #(
-    cat_effects,
-    cat_module_effects,
-    cat_params,
-    cat_type_fields,
-    cat_updates,
-  ) = load_catalog(catalog_dir, manifest_path)
+  let #(cat_effects, cat_module_effects, cat_params, cat_type_fields) =
+    load_catalog(catalog_dir, manifest_path)
   KnowledgeBase(
     // Dependency entries win on a clash: dict.merge keeps its second argument.
     all_effects: dict.merge(cat_effects, dep_effects),
@@ -103,8 +97,10 @@ pub fn load_knowledge_base(
     // Every dependency summary is Foreign (loaded from a serialized dep spec).
     returned_operators: tag_returns(dep_returns, Foreign),
     factories: dict.new(),
-    // A dependency's builder wins over a catalogued one on a clash.
-    updates: dict.merge(cat_updates, dep_updates),
+    // Update builders are derived from dependency source at run time, not loaded
+    // from specs (a serialized signature could skew from the source a consumer
+    // compiled against); this starts empty.
+    updates: dict.new(),
     module_effects: cat_module_effects,
     provenance: dict.new(),
   )
@@ -116,20 +112,15 @@ pub fn load_knowledge_base(
 // Build a knowledge base from the catalog only (no dependency scanning).
 pub fn empty_knowledge_base() -> KnowledgeBase {
   let catalog_dir = find_catalog_directory()
-  let #(
-    cat_effects,
-    cat_module_effects,
-    cat_params,
-    cat_type_fields,
-    cat_updates,
-  ) = load_catalog(catalog_dir, "manifest.toml")
+  let #(cat_effects, cat_module_effects, cat_params, cat_type_fields) =
+    load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
     all_effects: cat_effects,
     param_bounds: cat_params,
     type_fields: dict.new(),
     returned_operators: dict.new(),
     factories: dict.new(),
-    updates: cat_updates,
+    updates: dict.new(),
     module_effects: cat_module_effects,
     provenance: dict.new(),
   )
@@ -554,10 +545,9 @@ pub fn load_dep_spec(
   Dict(QualifiedName, List(ParamBound)),
   Dict(QualifiedName, EffectTerm),
   List(TypeFieldAnnotation),
-  Dict(#(String, String), UpdateSignature),
 ) {
   case read_spec_file(config.spec_file_for(dep_root, package_name)) {
-    Error(_) -> #(dict.new(), dict.new(), dict.new(), [], dict.new())
+    Error(_) -> #(dict.new(), dict.new(), dict.new(), [])
     Ok(file) -> {
       let #(effect_map, param_map) =
         list.fold(
@@ -570,7 +560,6 @@ pub fn load_dep_spec(
         param_map,
         load_spec_returns_from_file(file),
         annotation.extract_type_fields(file),
-        extract_qualified_updates(file),
       )
     }
   }
@@ -640,7 +629,6 @@ fn load_dependencies(
   Dict(QualifiedName, List(ParamBound)),
   Dict(QualifiedName, EffectTerm),
   List(TypeFieldAnnotation),
-  Dict(#(String, String), UpdateSignature),
 ) {
   let entries = case simplifile.read_directory(packages_directory) {
     Ok(found) -> found
@@ -648,18 +636,17 @@ fn load_dependencies(
   }
   list.fold(
     entries,
-    #(dict.new(), dict.new(), dict.new(), [], dict.new()),
+    #(dict.new(), dict.new(), dict.new(), []),
     fn(acc, package_name) {
-      let #(effect_map, param_map, returns_map, type_fields, updates_map) = acc
+      let #(effect_map, param_map, returns_map, type_fields) = acc
       let dep_root = packages_directory <> "/" <> package_name
-      let #(new_effects, new_params, new_returns, new_type_fields, new_updates) =
+      let #(new_effects, new_params, new_returns, new_type_fields) =
         load_dep_spec(dep_root, package_name)
       #(
         dict.merge(effect_map, new_effects),
         dict.merge(param_map, new_params),
         dict.merge(returns_map, new_returns),
         list.append(type_fields, new_type_fields),
-        dict.merge(updates_map, new_updates),
       )
     },
   )
@@ -748,32 +735,7 @@ type CatalogAcc {
     poly_effects: Dict(QualifiedName, EffectTerm),
     poly_params: Dict(QualifiedName, List(ParamBound)),
     type_fields: List(TypeFieldAnnotation),
-    updates: Dict(#(String, String), UpdateSignature),
   )
-}
-
-// The update-builder signatures declared by a parsed spec's `update` lines,
-// keyed by `#(module, function)`, so a dependency's public builders resolve at a
-// consumer's call site exactly as a same-run builder would.
-fn extract_qualified_updates(
-  file: types.GradedFile,
-) -> Dict(#(String, String), UpdateSignature) {
-  annotation.extract_updates(file)
-  |> list.fold(dict.new(), fn(acc, update) {
-    case annotation.split_qualified_name(update.function) {
-      Ok(#(module, function)) ->
-        dict.insert(
-          acc,
-          #(module, function),
-          UpdateSignature(
-            base_param: update.base_param,
-            fields: dict.from_list(update.fields),
-            param_labels: dict.from_list(update.param_labels),
-          ),
-        )
-      Error(_) -> acc
-    }
-  })
 }
 
 fn load_catalog(
@@ -784,7 +746,6 @@ fn load_catalog(
   Dict(String, EffectTerm),
   Dict(QualifiedName, List(ParamBound)),
   List(TypeFieldAnnotation),
-  Dict(#(String, String), UpdateSignature),
 ) {
   let installed_versions = parse_manifest_versions(manifest_path)
   let catalog_files = case simplifile.get_files(catalog_dir) {
@@ -793,19 +754,12 @@ fn load_catalog(
     Error(_) -> []
   }
   let selected = resolve_catalog_files(catalog_files, installed_versions)
-  let initial =
-    CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new(), [], dict.new())
+  let initial = CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new(), [])
   let acc = list.fold(selected, initial, fold_catalog_file)
   // Explicit `effects` annotations in the catalog take precedence over the
   // module-level `external effects` markers.
   let all_effects = dict.merge(acc.ext_effects, acc.poly_effects)
-  #(
-    all_effects,
-    acc.module_effects,
-    acc.poly_params,
-    acc.type_fields,
-    acc.updates,
-  )
+  #(all_effects, acc.module_effects, acc.poly_params, acc.type_fields)
 }
 
 // Fold one catalog file into the accumulator. `external effects` lines
@@ -847,10 +801,6 @@ fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
             type_fields: list.append(
               acc.type_fields,
               annotation.extract_type_fields(graded_file),
-            ),
-            updates: dict.merge(
-              acc.updates,
-              extract_qualified_updates(graded_file),
             ),
           )
         }
