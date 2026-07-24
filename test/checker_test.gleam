@@ -814,10 +814,11 @@ pub fn annotate(options: Options) -> Nil {
 
 pub fn field_call_self_rebound_parameter_terminates_test() {
   // A parameter rebound to a path containing itself (`let options =
-  // options.inner`) canonicalizes to an ever-growing path (`options.inner`,
-  // `options.inner.inner`, …), so cycle-breaking must key on the path *root*, not
-  // the whole path. The self-rebind shadows the parameter, so the field call is
-  // untraceable — [Unknown]. Reaching an assertion at all proves termination.
+  // options.inner`) must not loop: aliases are canonicalized once at binding, so
+  // resolution is a single substitution rather than a chase that could grow the
+  // path without bound. Girard is absent here, so the nested receiver can't be
+  // typed and the call is [Unknown]; reaching an assertion at all proves
+  // termination.
   let source =
     "pub type Options {
   Options(resolver: fn() -> Nil)
@@ -831,6 +832,28 @@ pub fn annotate(options: Options) -> Nil {
   let annotation = infer_field_annotation(source, "annotate")
   effect_term.to_effect_set(annotation.effects)
   |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+pub fn field_call_alias_survives_later_shadowing_test() {
+  // An alias captured before its parameter is shadowed keeps resolving to the
+  // *original* parameter: `let saved = options; let options = other;
+  // saved.resolver()` is `options.resolver`, never `other.resolver`. The alias's
+  // canonical path is fixed when it is created, so rebinding `options` afterwards
+  // can't retarget it — otherwise a bound on the effectful original would be read
+  // as the pure replacement.
+  let source =
+    "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+
+pub fn annotate(options: Options, other: Options) -> Nil {
+  let saved = options
+  let options = other
+  saved.resolver()
+}
+"
+  let annotation = infer_field_annotation_typed(source, "annotate", True)
+  annotation.effects |> should.equal(types.TVar("options.resolver"))
 }
 
 pub fn field_call_alias_matches_field_bound_test() {

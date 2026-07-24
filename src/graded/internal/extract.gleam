@@ -938,40 +938,38 @@ fn field_receiver_provenance(
   }
 }
 
-// Canonicalize a receiver path to its live-parameter-rooted form, following
-// `let` aliases back to the parameter they stand for (`let f = options;
-// f.x()` → `Some("options")`). `None` when the root binds to a shadowing
-// rebind, a computed value, or is otherwise not a live top-level parameter — the
-// syntactic path alone is never trusted.
+// Canonicalize a receiver path to its live-parameter-rooted form (`let f =
+// options; f.x()` → `Some("options.x")`). `None` when the root isn't a live
+// parameter. A single step suffices: every `BoundReceiverPath` already stores a
+// *canonical* param-rooted path (see `bind_receiver_path`), so an alias root
+// resolves in one substitution rather than a chase through the env. That keeps
+// this total — no recursion, so a self-referential rebind (`let options =
+// options.inner`) can't loop — and correct under shadowing, since the alias's
+// canonical form was fixed when it was created, not re-derived from names that a
+// later `let` may have rebound.
 fn param_rooted_path(path: String, env: Env) -> Option(String) {
-  param_rooted_path_loop(path, env, set.new())
-}
-
-// `seen` breaks alias cycles by the path *root*, not the whole path: a rebind to
-// a path containing itself (`let options = options.inner`) makes the rewritten
-// path grow without bound (`options.inner`, `options.inner.inner`, …), so no
-// complete path ever repeats — but the root does. Re-following a root means it is
-// a self-referential shadowing rebind, not a live parameter, so resolve it as
-// `None` (untraceable), matching the shadowed-parameter rule.
-fn param_rooted_path_loop(
-  path: String,
-  env: Env,
-  seen: Set(String),
-) -> Option(String) {
   let #(root, rest) = split_root(path)
-  use <- bool.guard(when: set.contains(seen, root), return: None)
   case resolve_env(root, env) {
     BoundLocal -> Some(path)
-    // The root is itself a `let` alias of a parameter or receiver path: rewrite
-    // to the aliased path and re-check, so a chained alias still canonicalizes.
-    BoundReceiverPath(aliased) -> {
-      let next = case rest {
-        Some(tail) -> aliased <> "." <> tail
-        None -> aliased
-      }
-      param_rooted_path_loop(next, env, set.insert(seen, root))
-    }
+    BoundReceiverPath(canonical) ->
+      Some(case rest {
+        Some(tail) -> canonical <> "." <> tail
+        None -> canonical
+      })
     _ -> None
+  }
+}
+
+// The binding for a receiver-path alias, canonicalized at creation: resolve its
+// root to a live parameter through the *current* env and store the fully-resolved
+// path, so a later shadowing rebind of an intermediate name can never change what
+// an existing alias resolves to (`let saved = options; let options = other`
+// leaves `saved` pointing at the original `options`). A path not rooted at a live
+// parameter is opaque.
+fn bind_receiver_path(path: String, env: Env) -> LocalBinding {
+  case param_rooted_path(path, env) {
+    Some(canonical) -> BoundReceiverPath(canonical)
+    None -> BoundOpaque
   }
 }
 
@@ -1326,8 +1324,8 @@ pub fn at(items: List(a), index: Int) -> Result(a, Nil) {
 
 // For RHS expressions that aren't constructor calls, reuse
 // `classify_expression`'s shape recognition and map its result to a
-// `LocalBinding`. Eager resolution through the env means aliases never
-// need to be chased at lookup time.
+// `LocalBinding`. Aliases are canonicalized at creation (`bind_receiver_path`),
+// so they never need to be chased — or re-derived from shadowable names — later.
 fn classify_rhs_ref(
   expression: glance.Expression,
   context: ImportContext,
@@ -1337,11 +1335,11 @@ fn classify_rhs_ref(
     FunctionRef(name:) -> BoundFunctionRef(name:)
     LocalRef(name:) ->
       case dict.get(env, name) {
-        // Aliasing a top-level parameter (`let forwarded = options`): remember
-        // the parameter as a single-segment receiver path, so a forwarded field
-        // var re-keys onto it at the use site rather than onto the dead alias
-        // name. Any other binding is copied as-is (eager alias resolution).
-        Ok(BoundLocal) -> BoundReceiverPath(name)
+        // Aliasing a top-level parameter (`let forwarded = options`): capture the
+        // canonical parameter path so a forwarded field var re-keys onto it at
+        // the use site rather than onto the dead alias name. Any other binding is
+        // copied as-is (eager alias resolution).
+        Ok(BoundLocal) -> bind_receiver_path(name, env)
         Ok(binding) -> binding
         Error(Nil) -> BoundOpaque
       }
@@ -1354,9 +1352,10 @@ fn classify_rhs_ref(
     types.ReturnedOperator(callee, args) | types.CallResult(callee, args) ->
       BoundReturnedOperator(callee, args)
     Constructed(fields:) -> BoundConstructor(fields:)
-    // A receiver-path alias (`let options = config.options`): keep the path so a
-    // forwarded field var re-keys onto `config.options`, not the opaque alias.
-    types.ReceiverPath(path) -> BoundReceiverPath(path)
+    // A receiver-path alias (`let options = config.options`): capture the
+    // canonical path so a forwarded field var re-keys onto `config.options`
+    // (fixed now, immune to later rebinds), not the opaque alias.
+    types.ReceiverPath(path) -> bind_receiver_path(path, env)
     ConstructorRef | OtherExpression -> BoundOpaque
   }
 }
