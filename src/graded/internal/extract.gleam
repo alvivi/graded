@@ -944,16 +944,31 @@ fn field_receiver_provenance(
 // rebind, a computed value, or is otherwise not a live top-level parameter — the
 // syntactic path alone is never trusted.
 fn param_rooted_path(path: String, env: Env) -> Option(String) {
+  param_rooted_path_loop(path, env, set.new())
+}
+
+// `seen` breaks alias cycles: `let options = options` rebinds `options` to a
+// receiver path naming itself, so following it loops forever. Revisiting a path
+// means the root is a self-referential shadowing rebind, not a live parameter —
+// resolve it as `None` (untraceable), matching the shadowed-parameter rule.
+fn param_rooted_path_loop(
+  path: String,
+  env: Env,
+  seen: Set(String),
+) -> Option(String) {
+  use <- bool.guard(when: set.contains(seen, path), return: None)
   let #(root, rest) = split_root(path)
   case resolve_env(root, env) {
     BoundLocal -> Some(path)
     // The root is itself a `let` alias of a parameter or receiver path: rewrite
     // to the aliased path and re-check, so a chained alias still canonicalizes.
-    BoundReceiverPath(aliased) ->
-      case rest {
-        Some(tail) -> param_rooted_path(aliased <> "." <> tail, env)
-        None -> param_rooted_path(aliased, env)
+    BoundReceiverPath(aliased) -> {
+      let next = case rest {
+        Some(tail) -> aliased <> "." <> tail
+        None -> aliased
       }
+      param_rooted_path_loop(next, env, set.insert(seen, path))
+    }
     _ -> None
   }
 }

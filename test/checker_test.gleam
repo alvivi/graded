@@ -512,19 +512,7 @@ fn check_source_with_girard(
   type_fields: List(types.TypeFieldAnnotation),
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
-  let module_types = case
-    girard.annotate_module(module, girard.default_options())
-  {
-    Ok(annotated) ->
-      list.fold(annotated.expressions, dict.new(), fn(acc, annotation) {
-        dict.insert(
-          acc,
-          #(annotation.span.start, annotation.span.end),
-          annotation.type_,
-        )
-      })
-    Error(_) -> dict.new()
-  }
+  let module_types = girard_types(module)
   let kb = effects.with_type_fields(knowledge_base(), type_fields)
   let #(violations, _warnings) =
     checker.check(
@@ -803,6 +791,45 @@ pub fn annotate(options: Options) -> Nil {
 "
   let annotation = infer_field_annotation_typed(source, "annotate", True)
   annotation.effects |> should.equal(types.TVar("options.resolver"))
+}
+
+pub fn field_call_parameter_alias_resolves_without_girard_test() {
+  // The canonicalized parameter path also drives the *syntactic* type fallback:
+  // with girard unavailable, `let f = options; f.resolver()` still looks the
+  // receiver up as the parameter `options` (not the dead alias `f`), so it keeps
+  // resolving to the field variable rather than degrading to [Unknown].
+  let source =
+    "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+
+pub fn annotate(options: Options) -> Nil {
+  let f = options
+  f.resolver()
+}
+"
+  let annotation = infer_field_annotation(source, "annotate")
+  annotation.effects |> should.equal(types.TVar("options.resolver"))
+}
+
+pub fn field_call_self_rebound_parameter_terminates_test() {
+  // A parameter rebound to itself (`let options = options`) names a receiver path
+  // that points back at itself; canonicalization must break the cycle rather than
+  // loop forever. The self-rebind shadows the parameter, so the field call is
+  // untraceable — [Unknown]. Reaching an assertion at all proves termination.
+  let source =
+    "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+
+pub fn annotate(options: Options) -> Nil {
+  let options = options
+  options.resolver()
+}
+"
+  let annotation = infer_field_annotation(source, "annotate")
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
 pub fn field_call_nested_parameter_path_stays_polymorphic_test() {
