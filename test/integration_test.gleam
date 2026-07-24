@@ -1540,6 +1540,14 @@ pub fn builder_chain_inline_update_over_opaque_base_test() {
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn builder_chain_call_result_replacement_direct_test() {
+  // A builder-set field whose replacement is a call result (`resolver:
+  // make_logging()`) resolves precisely on a direct read — the per-value
+  // resolver applies the returned closure — to [Stdout], not [Unknown].
+  builder_chain_actual("run_call_result_direct")
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn builder_chain_inherited_field_over_opaque_base_test() {
   // The inherited reporter (not updated) over the opaque base falls through to
   // the untraceable base and stays [Unknown] — sound, never guessed.
