@@ -95,3 +95,17 @@ pub fn run_inline_inherited() -> Nil {
   let x = Options(..opaque_options(), resolver: logging_resolver)
   report("x", x)
 }
+
+// A producer that returns a resolver closure with a latent [Stdout].
+fn make_logging() -> fn(String) -> Nil {
+  fn(message) { io.println(message) }
+}
+
+// A builder-set field whose replacement is a *call result* resolves precisely
+// on a direct read: the per-value resolver applies the returned closure to the
+// field call's argument and reports [Stdout], not [Unknown].
+@target(erlang)
+pub fn run_call_result_direct() -> Nil {
+  let x = Options(..opaque_options(), resolver: make_logging())
+  x.resolver("hi")
+}

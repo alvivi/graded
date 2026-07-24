@@ -1962,12 +1962,16 @@ fn field_forwarding_binding(
   }
 }
 
-// The effect a concrete construction-site field value contributes when a callee
-// field variable forwards onto it: a function reference or same-module function
-// resolves via the knowledge base. `None` for a value that isn't a plain
-// function (a closure, a caller-rooted path, an opaque value), or one whose
-// effect is operator-valued or still polymorphic — the var then stays and
-// concretizes to `[Unknown]`, never a guessed narrower set.
+// The effect a callee field variable takes when it forwards onto a builder-set
+// field value: a function reference or same-module function whose effect is a
+// ground set resolves via the knowledge base. A closure or call-result value —
+// whose field effect is an *operator* awaiting the field call's own arguments —
+// can't be resolved here, since the forwarding site binds a ground effect but has
+// no field-call arguments to apply the operator to; those live in the callee's
+// body. Such a value, and any operator-valued or still-polymorphic effect,
+// yields `None`, so the variable stays and concretizes to `[Unknown]` — never a
+// guessed narrower set. (A *direct* read of the same field resolves it precisely
+// through `field_effect_of`, which does have the field call's arguments.)
 fn concrete_field_effect(
   value: types.ArgumentValue,
   context: ImportContext,
