@@ -1151,7 +1151,19 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     }),
   )
 
-  write_spec_file(cfg.spec_file, spec, public_annotations, public_returns)
+  let public_updates =
+    dict.fold(index, [], fn(acc, module_path, entry) {
+      let #(_gleam_path, module) = entry
+      list.append(extract.public_update_annotations(module, module_path), acc)
+    })
+
+  write_spec_file(
+    cfg.spec_file,
+    spec,
+    public_annotations,
+    public_returns,
+    public_updates,
+  )
 }
 
 // Infer effects for a single module, write its cache file (with bare
@@ -1433,8 +1445,15 @@ fn write_spec_file(
   existing: GradedFile,
   inferred: List(EffectAnnotation),
   inferred_returns: List(types.ReturnsAnnotation),
+  inferred_updates: List(types.UpdateAnnotation),
 ) -> Result(Nil, GradedError) {
-  let merged = annotation.merge_inferred(existing, inferred, inferred_returns)
+  let merged =
+    annotation.merge_inferred(
+      existing,
+      inferred,
+      inferred_returns,
+      inferred_updates,
+    )
 
   // create_directory_all is a no-op when the parent already exists, so it's
   // safe to call unconditionally — and necessary when the user has
@@ -1636,11 +1655,12 @@ fn enrich_with_path_deps(
         // dep's own types; load them so a consumer resolves those fields without
         // re-declaring them. The infer-from-source fallback has no spec, so no
         // hand-written `type` lines to load.
-        let #(effs, params, returns, type_fields) =
+        let #(effs, params, returns, type_fields, updates) =
           effects.load_dep_spec(resolved_dep_path, name)
         // A committed path-dependency spec is serialized → Foreign.
         fold_inferred_into_kb(kb, effs, params, returns, effects.Foreign)
         |> effects.with_type_fields(type_fields)
+        |> effects.with_updates(updates)
       }
       _ ->
         case infer_path_dep(resolved_dep_path, kb, consumer_modules) {

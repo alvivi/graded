@@ -1365,6 +1365,83 @@ pub fn builder_field_inherited_default_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Disk"])))
 }
 
+pub fn builder_field_cross_package_test() {
+  // The real cross-package case: a consumer calls a *dependency's* builder and
+  // annotate. The dependency is present only as installed metadata — its `.graded`
+  // spec (carrying `annotate`'s polymorphic field bound and `with_resolver`'s
+  // serialized `update` signature) plus its source under `build/packages` (for
+  // parameter positions). graded loads the update signature from the spec, so the
+  // consumer composes the overlay and resolves `annotate`'s field onto the
+  // consumer-supplied resolver — [Stdout], not [Unknown].
+  let root = "build/xpkg_builder"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(root <> "/build/packages/dep/src")
+
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/gleam.toml", "name = \"app\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/app.gleam",
+      "import dep
+
+@external(erlang, \"m\", \"log\")
+fn log(message: String) -> Nil
+
+pub fn run() -> Nil {
+  let opts = dep.default_options() |> dep.with_resolver(log)
+  dep.annotate(\"x\", opts)
+}
+",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/app.graded",
+      "external effects app.log : [Stdout]\ncheck app.run : []\n",
+    )
+  // The dependency's source — graded reads it only for parameter positions.
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/build/packages/dep/src/dep.gleam",
+      "pub type Options {
+  Options(resolver: fn(String) -> Nil)
+}
+
+pub fn default_options() -> Options {
+  Options(resolver: fn(_) { Nil })
+}
+
+pub fn with_resolver(options: Options, resolver: fn(String) -> Nil) -> Options {
+  Options(..options, resolver:)
+}
+
+pub fn annotate(source: String, options: Options) -> Nil {
+  options.resolver(source)
+}
+",
+    )
+  // The dependency's installed metadata: annotate's polymorphic field bound and
+  // with_resolver's serialized update signature.
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/build/packages/dep/dep.graded",
+      "effects dep.annotate(options.resolver: [options.resolver]) : [options.resolver]
+effects dep.default_options : []
+effects dep.with_resolver : []
+update dep.with_resolver : base 0 [resolver=1]
+",
+    )
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+
+  let _ = simplifile.delete(root)
+  Nil
+}
+
 pub fn builder_field_inline_argument_test() {
   // The builder call inline as annotate's argument (not let-bound) resolves the
   // overridden resolver to [Stdout], the same as the let-bound form.

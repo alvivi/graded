@@ -10,7 +10,7 @@ import graded/internal/types.{
   type EffectTerm, AnnotationLine, BlankLine, Check, CommentLine,
   EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
   ParamBound, Polymorphic, Specific, TAbs, TApp, TLabels, TUnion, TVar,
-  TypeFieldAnnotation, TypeFieldLine, Wildcard,
+  TypeFieldAnnotation, TypeFieldLine, UpdateAnnotation, UpdateLine, Wildcard,
 }
 import qcheck
 
@@ -573,7 +573,7 @@ pub fn merge_inferred_invariants_test() {
       fn(f, i) { #(f, i) },
     ),
   )
-  let merged = annotation.merge_inferred(file, inferred, [])
+  let merged = annotation.merge_inferred(file, inferred, [], [])
   let merged_effects =
     annotation.extract_annotations(merged)
     |> list.filter(fn(a) { a.kind == Effects })
@@ -630,7 +630,7 @@ pub fn merge_inferred_drops_effect_for_external_test() {
     EffectAnnotation(Effects, "app.other", [], effect_term.pure()),
   ]
   let effects_fns =
-    annotation.merge_inferred(file, inferred, [])
+    annotation.merge_inferred(file, inferred, [], [])
     |> annotation.extract_annotations
     |> list.filter(fn(a) { a.kind == Effects })
     |> list.map(fn(a) { a.function })
@@ -779,6 +779,52 @@ pub fn returns_line_multi_callback_round_trip_test() {
   returns.operator
   |> should.equal(TAbs("a", TAbs("b", union_vars(TVar("a"), "b"))))
   annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn update_line_round_trip_test() {
+  let line = "update dep/options.with_resolver : base 0 [resolver=1]"
+  let assert Ok(file) = annotation.parse_file(line)
+  let assert [update] = annotation.extract_updates(file)
+  update
+  |> should.equal(
+    UpdateAnnotation(
+      function: "dep/options.with_resolver",
+      base_param: 0,
+      fields: [#("resolver", 1)],
+      param_labels: [],
+    ),
+  )
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn update_line_with_labels_round_trip_test() {
+  let line = "update m.with : base 1 [a=0, b=2] (base=1, first=0, second=2)"
+  let assert Ok(file) = annotation.parse_file(line)
+  let assert [update] = annotation.extract_updates(file)
+  update
+  |> should.equal(
+    UpdateAnnotation(
+      function: "m.with",
+      base_param: 1,
+      fields: [#("a", 0), #("b", 2)],
+      param_labels: [#("base", 1), #("first", 0), #("second", 2)],
+    ),
+  )
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn update_line_survives_format_sorted_test() {
+  // An `update` line is preserved through `format_sorted` (the infer/format
+  // writer), sorted into its own section after `returns`.
+  let assert Ok(file) =
+    annotation.parse_file(
+      "update m.b : base 0 [x=1]\nupdate m.a : base 0 [y=1]",
+    )
+  let formatted = annotation.format_sorted(file)
+  let assert Ok(reparsed) = annotation.parse_file(formatted)
+  annotation.extract_updates(reparsed)
+  |> list.map(fn(u) { u.function })
+  |> should.equal(["m.a", "m.b"])
 }
 
 // Helpers
