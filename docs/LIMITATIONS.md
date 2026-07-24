@@ -101,14 +101,12 @@ pub fn run() -> Nil {
 ```
 
 This holds **across a package boundary** too: graded derives a dependency's
-builder signature from the dependency's own source under `build/packages` — the
-same source it reads for parameter positions, and the source the consumer
-compiled against — so a consumer of an installed dependency composes the same
-overlay. Reading the signature from source means it can never skew from a stale
-spec. A public builder is also serialized into the spec as an `update` line (see
-[REFERENCE.md](REFERENCE.md)) for documentation and as a fallback. A dependency
-whose source graded can't parse stays `[Unknown]` for the builder's field —
-sound, since forwarding then has no parameter positions to work with either.
+builder signature from the dependency's own source under `build/packages` (or a
+path dependency's `src/`) — the same source it reads for parameter positions, and
+the source the consumer compiled against — so a consumer of an installed
+dependency composes the same overlay. A dependency whose source graded can't parse
+stays `[Unknown]` for the builder's field — sound, since forwarding then has no
+parameter positions to work with either.
 
 Forwarding that parameter through helper calls preserves the same field bound.
 The receiver argument forwards whenever its provenance is syntactically rooted in

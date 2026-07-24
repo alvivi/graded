@@ -92,29 +92,6 @@ returned function's effect resolve at the call site (`let h = make_logger(); h()
 across module and package boundaries, not just within the defining module. Like
 `effects`, these lines are regenerated and shouldn't be hand-edited.
 
-### `update` — record-update builders
-
-```
-// with_resolver(options, resolver) { Options(..options, resolver:) }
-update myapp.with_resolver : base 0 [resolver=1]
-
-// a builder whose parameters carry Gleam labels adds a labels section
-update myapp.with : base 1 [target=0] (base=1, target=0)
-```
-
-Serialized by `graded infer` for a public function whose body is a record update
-of one of its parameters, with every updated field wired to a parameter — the
-`with_*` builder idiom. `base <n>` is the position of the parameter being updated;
-`[<field>=<n>, …]` maps each updated field label to the parameter position wiring
-it; the optional `(<label>=<n>, …)` section maps parameter labels to positions for
-labelled calls. It documents the builder so a consumer of an installed dependency
-composes the overlay — `dep.default_options() |> dep.with_resolver(logging)`
-resolves `dep.annotate`'s field call onto `logging`, last-write-wins — instead of
-`[Unknown]`. In practice graded derives this signature from the dependency's own
-source under `build/packages` (so it can't skew from a stale line); the serialized
-line is documentation and a fallback. Like `effects`, these lines are regenerated
-and shouldn't be hand-edited.
-
 ## Effect resolution order
 
 When graded needs a function's effects, it consults these sources in priority
@@ -397,8 +374,8 @@ external effects my_app/metrics.record : [Telemetry]
 check my_app/api.handle_request : [Http, Email]
 ```
 
-`graded infer` regenerates the inferred `effects`, `returns`, and `update` lines
-while preserving your `check`, `type`, `external`, comments, and blank lines.
+`graded infer` regenerates the inferred `effects` and `returns` lines while
+preserving your `check`, `type`, `external`, comments, and blank lines.
 `graded format` normalizes spacing and sorting.
 
 ## Effect catalog

@@ -241,29 +241,12 @@ pub type ExternalAnnotation {
   ExternalAnnotation(module: String, target: ExternalTarget, effects: EffectSet)
 }
 
-// A public update-builder's signature, serialized into the spec so it crosses a
-// package boundary: an installed dependency's `with_resolver` lets a consumer
-// compose an `Updated` overlay from a `dep.with_resolver(base, http)` call
-// without inferring the dependency's source. `function` is module-qualified in
-// the spec. `fields` maps each updated field label to the parameter position
-// wiring it; `param_labels` maps each parameter's Gleam label to its position,
-// for labeled calls. Both are sorted lists for deterministic serialization.
-pub type UpdateAnnotation {
-  UpdateAnnotation(
-    function: String,
-    base_param: Int,
-    fields: List(#(String, Int)),
-    param_labels: List(#(String, Int)),
-  )
-}
-
 // A single line in an .graded file, preserving structure for round-trip rewrites.
 pub type GradedLine {
   AnnotationLine(annotation: EffectAnnotation)
   TypeFieldLine(type_field: TypeFieldAnnotation)
   ExternalLine(external: ExternalAnnotation)
   ReturnsLine(returns: ReturnsAnnotation)
-  UpdateLine(update: UpdateAnnotation)
   CommentLine(text: String)
   BlankLine
 }

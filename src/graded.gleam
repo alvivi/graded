@@ -195,11 +195,12 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     ))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
-    // Dependency builders derived from source (authoritative) win over their
-    // serialized `update` lines; the current package's own builders win over both.
+    // Builders derived from installed and path dependency source; the current
+    // package's own builders win over both (module namespaces don't overlap).
     |> effects.with_updates(
       updates_from_packages_dir(packages_dir(package_root)),
     )
+    |> effects.with_updates(path_dep_updates(package_root))
     |> effects.with_updates(qualify_by_module(index, extract.update_map))
 
   let results =
@@ -1117,11 +1118,12 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     ))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
-    // Dependency builders derived from source (authoritative) win over their
-    // serialized `update` lines; the current package's own builders win over both.
+    // Builders derived from installed and path dependency source; the current
+    // package's own builders win over both (module namespaces don't overlap).
     |> effects.with_updates(
       updates_from_packages_dir(packages_dir(package_root)),
     )
+    |> effects.with_updates(path_dep_updates(package_root))
     |> effects.with_updates(qualify_by_module(index, extract.update_map))
 
   let graph = build_dependency_graph(index)
@@ -1161,19 +1163,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     }),
   )
 
-  let public_updates =
-    dict.fold(index, [], fn(acc, module_path, entry) {
-      let #(_gleam_path, module) = entry
-      list.append(extract.public_update_annotations(module, module_path), acc)
-    })
-
-  write_spec_file(
-    cfg.spec_file,
-    spec,
-    public_annotations,
-    public_returns,
-    public_updates,
-  )
+  write_spec_file(cfg.spec_file, spec, public_annotations, public_returns)
 }
 
 // Infer effects for a single module, write its cache file (with bare
@@ -1455,15 +1445,8 @@ fn write_spec_file(
   existing: GradedFile,
   inferred: List(EffectAnnotation),
   inferred_returns: List(types.ReturnsAnnotation),
-  inferred_updates: List(types.UpdateAnnotation),
 ) -> Result(Nil, GradedError) {
-  let merged =
-    annotation.merge_inferred(
-      existing,
-      inferred,
-      inferred_returns,
-      inferred_updates,
-    )
+  let merged = annotation.merge_inferred(existing, inferred, inferred_returns)
 
   // create_directory_all is a no-op when the parent already exists, so it's
   // safe to call unconditionally — and necessary when the user has
@@ -1713,12 +1696,11 @@ fn enrich_with_path_deps(
         // dep's own types; load them so a consumer resolves those fields without
         // re-declaring them. The infer-from-source fallback has no spec, so no
         // hand-written `type` lines to load.
-        let #(effs, params, returns, type_fields, updates) =
+        let #(effs, params, returns, type_fields) =
           effects.load_dep_spec(resolved_dep_path, name)
         // A committed path-dependency spec is serialized → Foreign.
         fold_inferred_into_kb(kb, effs, params, returns, effects.Foreign)
         |> effects.with_type_fields(type_fields)
-        |> effects.with_updates(updates)
       }
       _ ->
         case infer_path_dep(resolved_dep_path, kb, consumer_modules) {
@@ -1731,6 +1713,21 @@ fn enrich_with_path_deps(
             |> effects.with_provenance(provenance)
         }
     }
+  })
+}
+
+// Update-builder signatures derived from every path dependency's `src/`, keyed
+// by `#(module, function)`. Path deps live at their declared `path`, outside
+// `build/packages`, so `updates_from_packages_dir` never sees them — this reaches
+// them the same way `path_dep_registry` reaches their parameter positions.
+fn path_dep_updates(
+  package_root: String,
+) -> Dict(#(String, String), types.UpdateSignature) {
+  effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
+  |> list.fold(dict.new(), fn(acc, dep) {
+    let #(_name, dep_path) = dep
+    let resolved_dep_path = resolve_path(package_root, dep_path)
+    dict.merge(acc, updates_from_source_dir(resolved_dep_path <> "/src"))
   })
 }
 

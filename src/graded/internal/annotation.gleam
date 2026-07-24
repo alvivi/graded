@@ -1,6 +1,5 @@
 import gleam/bool
 import gleam/dict
-import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -10,12 +9,11 @@ import graded/internal/effect_term
 import graded/internal/types.{
   type AnnotationKind, type EffectAnnotation, type EffectSet, type EffectTerm,
   type ExternalAnnotation, type GradedFile, type GradedLine, type ParamBound,
-  type ReturnsAnnotation, type TypeFieldAnnotation, type UpdateAnnotation,
-  AnnotationLine, BlankLine, Check, CommentLine, EffectAnnotation, Effects,
-  ExternalAnnotation, ExternalLine, FunctionExternal, GradedFile, ModuleExternal,
-  ParamBound, Polymorphic, ReturnsAnnotation, ReturnsLine, Specific, TAbs, TApp,
-  TLabels, TTop, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine,
-  UpdateAnnotation, UpdateLine, Wildcard,
+  type ReturnsAnnotation, type TypeFieldAnnotation, AnnotationLine, BlankLine,
+  Check, CommentLine, EffectAnnotation, Effects, ExternalAnnotation,
+  ExternalLine, FunctionExternal, GradedFile, ModuleExternal, ParamBound,
+  Polymorphic, ReturnsAnnotation, ReturnsLine, Specific, TAbs, TApp, TLabels,
+  TTop, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 
 // Parsing
@@ -74,60 +72,7 @@ fn parse_structured_line(
         Ok(returns) -> Ok(ReturnsLine(returns))
         Error(Nil) -> Error(InvalidLine(line_number, line))
       }
-    "update " <> rest ->
-      case parse_update_line(rest) {
-        Ok(update) -> Ok(UpdateLine(update))
-        Error(Nil) -> Error(InvalidLine(line_number, line))
-      }
     _ -> Error(InvalidLine(line_number, line))
-  }
-}
-
-// Parse an update-builder line:
-//   `update mod.fn : base <n> [<flabel>=<n>, ...] (<plabel>=<n>, ...)`
-// The `(...)` label section is absent when the builder has no labeled parameters.
-fn parse_update_line(rest: String) -> Result(UpdateAnnotation, Nil) {
-  use #(name, spec) <- result.try(string.split_once(rest, " : "))
-  use #(base_part, after_base) <- result.try(string.split_once(spec, "["))
-  use #(fields_part, after_fields) <- result.try(string.split_once(
-    after_base,
-    "]",
-  ))
-  use base_param <- result.try(
-    base_part
-    |> string.replace("base", "")
-    |> string.trim()
-    |> int.parse(),
-  )
-  use fields <- result.try(parse_label_positions(fields_part))
-  let labels_part = case string.split_once(after_fields, "(") {
-    Ok(#(_, inner)) -> inner |> string.replace(")", "") |> string.trim()
-    Error(Nil) -> ""
-  }
-  use param_labels <- result.try(parse_label_positions(labels_part))
-  Ok(UpdateAnnotation(
-    function: string.trim(name),
-    base_param:,
-    fields:,
-    param_labels:,
-  ))
-}
-
-// Parse a comma-separated `<label>=<position>` list (empty string → empty list).
-fn parse_label_positions(input: String) -> Result(List(#(String, Int)), Nil) {
-  case string.trim(input) {
-    "" -> Ok([])
-    trimmed ->
-      trimmed
-      |> string.split(",")
-      |> list.try_map(fn(entry) {
-        use #(label, position) <- result.try(string.split_once(
-          string.trim(entry),
-          "=",
-        ))
-        use position <- result.try(int.parse(string.trim(position)))
-        Ok(#(string.trim(label), position))
-      })
   }
 }
 
@@ -469,7 +414,6 @@ pub fn extract_annotations(file: GradedFile) -> List(EffectAnnotation) {
       TypeFieldLine(_) -> Error(Nil)
       ExternalLine(_) -> Error(Nil)
       ReturnsLine(_) -> Error(Nil)
-      UpdateLine(_) -> Error(Nil)
       CommentLine(_) -> Error(Nil)
       BlankLine -> Error(Nil)
     }
@@ -481,16 +425,6 @@ pub fn extract_returns(file: GradedFile) -> List(ReturnsAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
       ReturnsLine(returns) -> Ok(returns)
-      _ -> Error(Nil)
-    }
-  })
-}
-
-// Extract all `update` builder annotations from a parsed file.
-pub fn extract_updates(file: GradedFile) -> List(UpdateAnnotation) {
-  list.filter_map(file.lines, fn(line) {
-    case line {
-      UpdateLine(update) -> Ok(update)
       _ -> Error(Nil)
     }
   })
@@ -580,7 +514,6 @@ pub fn merge_inferred(
   file: GradedFile,
   inferred: List(EffectAnnotation),
   inferred_returns: List(ReturnsAnnotation),
-  inferred_updates: List(UpdateAnnotation),
 ) -> GradedFile {
   // A function the author declared with `external effects mod.fn : [...]` is
   // authoritative — that line is their opt-in to a precise FFI effect. Drop any
@@ -617,105 +550,72 @@ pub fn merge_inferred(
     inferred_returns
     |> list.map(fn(returns) { #(returns.function, returns) })
     |> dict.from_list()
-  let updates_map =
-    inferred_updates
-    |> list.map(fn(update) { #(update.function, update) })
-    |> dict.from_list()
 
-  let #(new_lines, placed, placed_returns, placed_updates) =
-    list.fold(
-      file.lines,
-      #([], set.new(), set.new(), set.new()),
-      fn(state, line) {
-        let #(lines, placed_set, placed_returns_set, placed_updates_set) = state
-        case line {
-          AnnotationLine(annotation) ->
-            case annotation.kind {
-              Effects ->
-                case dict.get(inferred_map, annotation.function) {
-                  Ok(new_annotation) -> #(
-                    [AnnotationLine(new_annotation), ..lines],
-                    set.insert(placed_set, annotation.function),
-                    placed_returns_set,
-                    placed_updates_set,
-                  )
-                  Error(Nil) -> #(
-                    lines,
-                    placed_set,
-                    placed_returns_set,
-                    placed_updates_set,
-                  )
-                }
-              Check -> #(
-                [line, ..lines],
-                placed_set,
-                placed_returns_set,
-                placed_updates_set,
-              )
-            }
-          ReturnsLine(returns) ->
-            case dict.get(returns_map, returns.function) {
-              Ok(new_returns) -> #(
-                [ReturnsLine(new_returns), ..lines],
-                placed_set,
-                set.insert(placed_returns_set, returns.function),
-                placed_updates_set,
-              )
-              Error(Nil) -> #(
-                lines,
-                placed_set,
-                placed_returns_set,
-                placed_updates_set,
-              )
-            }
-          UpdateLine(update) ->
-            case dict.get(updates_map, update.function) {
-              Ok(new_update) -> #(
-                [UpdateLine(new_update), ..lines],
-                placed_set,
-                placed_returns_set,
-                set.insert(placed_updates_set, update.function),
-              )
-              Error(Nil) -> #(
-                lines,
-                placed_set,
-                placed_returns_set,
-                placed_updates_set,
-              )
-            }
-          TypeFieldLine(_) | ExternalLine(_) | CommentLine(_) | BlankLine -> #(
-            [line, ..lines],
-            placed_set,
-            placed_returns_set,
-            placed_updates_set,
-          )
-        }
-      },
-    )
+  // The functions whose `effects`/`returns` lines already exist in the file are
+  // updated in place below; the rest are appended. Both sets are pure functions
+  // of the file's lines, so they're derived up front rather than accumulated.
+  let present_effects =
+    names_of_lines(file.lines, fn(line) {
+      case line {
+        AnnotationLine(a) if a.kind == Effects -> Ok(a.function)
+        _ -> Error(Nil)
+      }
+    })
+  let present_returns =
+    names_of_lines(file.lines, fn(line) {
+      case line {
+        ReturnsLine(r) -> Ok(r.function)
+        _ -> Error(Nil)
+      }
+    })
+
+  let new_lines =
+    list.map(file.lines, fn(line) {
+      case line {
+        AnnotationLine(a) if a.kind == Effects ->
+          case dict.get(inferred_map, a.function) {
+            Ok(fresh) -> AnnotationLine(fresh)
+            Error(Nil) -> line
+          }
+        ReturnsLine(r) ->
+          case dict.get(returns_map, r.function) {
+            Ok(fresh) -> ReturnsLine(fresh)
+            Error(Nil) -> line
+          }
+        _ -> line
+      }
+    })
+    // A stale `effects`/`returns` line — one whose function is no longer
+    // inferred — is dropped; a `check`/`type`/`external`/comment/blank stays.
+    |> list.filter(fn(line) {
+      case line {
+        AnnotationLine(a) if a.kind == Effects ->
+          dict.has_key(inferred_map, a.function)
+        ReturnsLine(r) -> dict.has_key(returns_map, r.function)
+        _ -> True
+      }
+    })
 
   let remaining_effects =
     inferred
-    |> list.filter(fn(annotation) { !set.contains(placed, annotation.function) })
+    |> list.filter(fn(a) { !set.contains(present_effects, a.function) })
     |> list.map(AnnotationLine)
   let remaining_returns =
     inferred_returns
-    |> list.filter(fn(returns) {
-      !set.contains(placed_returns, returns.function)
-    })
+    |> list.filter(fn(r) { !set.contains(present_returns, r.function) })
     |> list.map(ReturnsLine)
-  let remaining_updates =
-    inferred_updates
-    |> list.filter(fn(update) { !set.contains(placed_updates, update.function) })
-    |> list.map(UpdateLine)
 
   GradedFile(
-    lines: list.flatten([
-      list.reverse(new_lines),
-      remaining_effects,
-      remaining_returns,
-      remaining_updates,
-    ]),
+    lines: list.flatten([new_lines, remaining_effects, remaining_returns]),
   )
+}
+
+// The set of names a filter extracts from a list of lines.
+fn names_of_lines(
+  lines: List(GradedLine),
+  extract: fn(GradedLine) -> Result(String, Nil),
+) -> set.Set(String) {
+  lines |> list.filter_map(extract) |> set.from_list()
 }
 
 // Whether a qualified function name's module carries a module-level external.
@@ -746,7 +646,6 @@ pub fn format_file(file: GradedFile) -> String {
       TypeFieldLine(tf) -> format_type_field(tf)
       ExternalLine(ext) -> format_external(ext)
       ReturnsLine(returns) -> format_returns(returns)
-      UpdateLine(update) -> format_update(update)
       CommentLine(text) -> text
       BlankLine -> ""
     }
@@ -806,13 +705,6 @@ pub fn format_sorted(file: GradedFile) -> String {
     })
     |> list.map(format_returns)
 
-  let update_lines =
-    extract_updates(file)
-    |> list.sort(fn(left, right) {
-      string.compare(left.function, right.function)
-    })
-    |> list.map(format_update)
-
   let sections = [
     comments,
     external_lines,
@@ -820,7 +712,6 @@ pub fn format_sorted(file: GradedFile) -> String {
     check_lines,
     effects_lines,
     returns_lines,
-    update_lines,
   ]
 
   sections
@@ -853,32 +744,6 @@ pub fn format_annotation(annotation: EffectAnnotation) -> String {
 // Render a ReturnsAnnotation back to its .graded line format.
 pub fn format_returns(returns: ReturnsAnnotation) -> String {
   "returns " <> returns.function <> " : " <> format_operator(returns.operator)
-}
-
-// Render an UpdateAnnotation back to its .graded line format:
-//   `update mod.fn : base <n> [<flabel>=<n>, ...] (<plabel>=<n>, ...)`
-// The `(...)` label section is omitted when there are no labeled parameters.
-pub fn format_update(update: UpdateAnnotation) -> String {
-  let fields = format_label_positions(update.fields)
-  let labels = case update.param_labels {
-    [] -> ""
-    labels -> " (" <> format_label_positions(labels) <> ")"
-  }
-  "update "
-  <> update.function
-  <> " : base "
-  <> int.to_string(update.base_param)
-  <> " ["
-  <> fields
-  <> "]"
-  <> labels
-}
-
-// Render a `<label>=<position>` list, comma-separated.
-fn format_label_positions(pairs: List(#(String, Int))) -> String {
-  pairs
-  |> list.map(fn(pair) { pair.0 <> "=" <> int.to_string(pair.1) })
-  |> string.join(", ")
 }
 
 // Format an operator term — a `TAbs` as `fn(cb) -> [body]`, anything else as a

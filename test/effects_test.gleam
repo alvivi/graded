@@ -565,30 +565,6 @@ pub fn type_fields_distinguish_modules_test() {
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
-pub fn load_knowledge_base_loads_dependency_update_builders_test() {
-  // A dependency's committed spec carries an `update` line for a public builder.
-  // `load_knowledge_base` must fold it into the update-signature map so a
-  // consumer's call to that dependency builder composes an overlay across the
-  // package boundary, rather than dropping the signature.
-  let packages = "build/eff_dep_update/packages"
-  let _ = simplifile.delete("build/eff_dep_update")
-  let assert Ok(Nil) = simplifile.create_directory_all(packages <> "/dep")
-  let assert Ok(Nil) =
-    simplifile.write(
-      packages <> "/dep/dep.graded",
-      "update dep/options.with_resolver : base 0 [resolver=1]\n",
-    )
-
-  let kb = effects.load_knowledge_base(packages, "missing_manifest.toml")
-  let assert Ok(signature) =
-    dict.get(effects.updates(kb), #("dep/options", "with_resolver"))
-  signature.base_param |> should.equal(0)
-  dict.get(signature.fields, "resolver") |> should.equal(Ok(1))
-
-  let _ = simplifile.delete("build/eff_dep_update")
-  Nil
-}
-
 pub fn load_knowledge_base_loads_dependency_type_fields_test() {
   // A dependency's committed spec under `build/packages` carries a module-
   // qualified `type` line. `load_knowledge_base` must fold it into the registry
