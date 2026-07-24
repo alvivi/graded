@@ -10,7 +10,7 @@ import graded/internal/types.{
   type EffectTerm, AnnotationLine, BlankLine, Check, CommentLine,
   EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
   ParamBound, Polymorphic, Specific, TAbs, TApp, TLabels, TUnion, TVar,
-  TypeFieldAnnotation, TypeFieldLine, UpdateAnnotation, UpdateLine, Wildcard,
+  TypeFieldAnnotation, TypeFieldLine, UpdateAnnotation, Wildcard,
 }
 import qcheck
 
