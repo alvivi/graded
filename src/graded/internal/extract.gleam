@@ -12,10 +12,10 @@ import graded/internal/types.{
   type ArgumentValue, type CallArgument, type DirectClosureCall,
   type DirectOperatorCall, type DirectPipeOp, type FactorySignature,
   type FieldCall, type LocalCall, type QualifiedName, type ResolvedCall,
-  type UpdateSignature, CallArgument, Constructed, ConstructorRef,
-  DirectClosureCall, DirectPipeOp, FactorySignature, FieldCall, FunctionRef,
-  LocalCall, LocalRef, OtherExpression, ParameterRoot, ProvenValue,
-  QualifiedName, ResolvedCall, Untraceable, UpdateSignature,
+  type UpdateAnnotation, type UpdateSignature, CallArgument, Constructed,
+  ConstructorRef, DirectClosureCall, DirectPipeOp, FactorySignature, FieldCall,
+  FunctionRef, LocalCall, LocalRef, OtherExpression, ParameterRoot, ProvenValue,
+  QualifiedName, ResolvedCall, Untraceable, UpdateAnnotation, UpdateSignature,
 }
 
 // Lexical bindings
@@ -356,6 +356,44 @@ fn factory_signature(
         param_labels: param_label_map(function),
       ))
   }
+}
+
+// The *public* update builders of a module as serializable `UpdateAnnotation`s,
+// qualified by `module_path`. Only public builders can be called across a
+// package boundary, so only they are written to the spec. `fields`/`param_labels`
+// are sorted for a deterministic (round-trippable) serialization.
+pub fn public_update_annotations(
+  module: Module,
+  module_path: String,
+) -> List(UpdateAnnotation) {
+  let publics =
+    list.fold(module.functions, set.new(), fn(acc, definition) {
+      case definition.definition.publicity {
+        glance.Public -> set.insert(acc, definition.definition.name)
+        glance.Private -> acc
+      }
+    })
+  update_map(module)
+  |> dict.to_list()
+  |> list.filter_map(fn(entry) {
+    let #(name, signature) = entry
+    case set.contains(publics, name) {
+      True ->
+        Ok(UpdateAnnotation(
+          function: module_path <> "." <> name,
+          base_param: signature.base_param,
+          fields: sorted_label_positions(signature.fields),
+          param_labels: sorted_label_positions(signature.param_labels),
+        ))
+      False -> Error(Nil)
+    }
+  })
+}
+
+fn sorted_label_positions(pairs: Dict(String, Int)) -> List(#(String, Int)) {
+  pairs
+  |> dict.to_list()
+  |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
 }
 
 // Detect each function in a module that is an *update builder*: its body's tail
