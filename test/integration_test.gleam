@@ -1340,6 +1340,51 @@ pub fn local_field_value_resolved_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn builder_field_replaced_is_precise_test() {
+  // builder_field.run_replaced binds `opts = default_options() |>
+  // with_resolver(logging_resolver)` and calls `annotate(_, opts)`. Tier 2's
+  // overlay resolves `annotate`'s polymorphic `options.resolver` onto the
+  // builder-set `logging_resolver` — [Stdout], last-write-wins — not the default
+  // resolver's [Disk], and not [Unknown].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/builder_field.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "run_replaced" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn builder_field_inherited_default_test() {
+  // builder_field.run_default calls `annotate(_, default_options())` with no
+  // override, so the field call inherits the default resolver's [Disk].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/builder_field.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "run_default" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+pub fn builder_field_whole_caller_union_test() {
+  // builder_field.run_union unions the eager construction's own [Disk] (a real,
+  // separate effect — nuance #2) with the overridden field call's [Stdout]. The
+  // two surface as separate per-call violations against the [] budget; together
+  // they cover the whole-caller union.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/builder_field.gleam" })
+  let union =
+    r.violations
+    |> list.filter(fn(v) { v.function == "run_union" })
+    |> list.fold(set.new(), fn(acc, v) {
+      case v.actual {
+        types.Specific(labels) -> set.union(acc, labels)
+        _ -> acc
+      }
+    })
+  union |> should.equal(set.from_list(["Disk", "Stdout"]))
+}
+
 // Callback arguments and local resolution
 //
 // Arguments to fn-typed parameters (named, labeled) resolve to their real

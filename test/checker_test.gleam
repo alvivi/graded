@@ -1514,6 +1514,7 @@ fn build_kb(calls: List(#(String, String, String))) -> effects.KnowledgeBase {
     type_fields: dict.new(),
     returned_operators: dict.new(),
     factories: dict.new(),
+    updates: dict.new(),
     module_effects: dict.new(),
     provenance: dict.new(),
   )
@@ -1790,6 +1791,7 @@ fn bare_knowledge_base() -> effects.KnowledgeBase {
     type_fields: dict.new(),
     returned_operators: dict.new(),
     factories: dict.new(),
+    updates: dict.new(),
     module_effects: dict.new(),
     provenance: dict.new(),
   )

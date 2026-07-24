@@ -44,7 +44,9 @@ pub fn check(
     extract.build_import_context(module)
     |> extract.with_module_path(module_path)
     |> extract.with_factories(extract.factory_map(module))
+    |> extract.with_updates(extract.update_map(module))
     |> extract.with_cross_factories(effects.factories(knowledge_base))
+    |> extract.with_cross_updates(effects.updates(knowledge_base))
     |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(
       module,
       function_type_aliases(module.type_aliases),
@@ -117,7 +119,9 @@ pub fn infer_with_returns(
     extract.build_import_context(module)
     |> extract.with_module_path(module_path)
     |> extract.with_factories(extract.factory_map(module))
+    |> extract.with_updates(extract.update_map(module))
     |> extract.with_cross_factories(effects.factories(knowledge_base))
+    |> extract.with_cross_updates(effects.updates(knowledge_base))
     |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(
       module,
       function_type_aliases(module.type_aliases),
@@ -1929,13 +1933,67 @@ fn field_forwarding_binding(
       }
     }
     _ ->
-      forwarded_binding_term(
-        base,
-        tail,
-        caller_param_names,
-        caller_param_bounds,
-      )
-      |> option.map(fn(term) { #(var, term) })
+      case
+        forwarded_binding_term(
+          base,
+          tail,
+          caller_param_names,
+          caller_param_bounds,
+        )
+      {
+        Some(term) -> Some(#(var, term))
+        // Not caller-rooted: the field may resolve to a concrete
+        // construction-site value (a builder-set field, `opts.resolver =
+        // logging_resolver`). Bind the var to that value's own effect, so a
+        // builder overlay forwards a precise effect instead of `[Unknown]`.
+        None ->
+          case value_at_path(base, tail) {
+            Ok(value) ->
+              concrete_field_effect(
+                value,
+                context,
+                knowledge_base,
+                function_map,
+              )
+              |> option.map(fn(term) { #(var, term) })
+            Error(Nil) -> None
+          }
+      }
+  }
+}
+
+// The effect a concrete construction-site field value contributes when a callee
+// field variable forwards onto it: a function reference or same-module function
+// resolves via the knowledge base. `None` for a value that isn't a plain
+// function (a closure, a caller-rooted path, an opaque value), or one whose
+// effect is operator-valued or still polymorphic — the var then stays and
+// concretizes to `[Unknown]`, never a guessed narrower set.
+fn concrete_field_effect(
+  value: types.ArgumentValue,
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  function_map: dict.Dict(String, Definition(Function)),
+) -> option.Option(EffectTerm) {
+  let looked_up = case value {
+    types.FunctionRef(name) -> Ok(effects.lookup_effects(knowledge_base, name))
+    types.LocalRef(name) ->
+      case dict.has_key(function_map, name) {
+        True ->
+          Ok(effects.lookup_effects(
+            knowledge_base,
+            QualifiedName(context.module_path, name),
+          ))
+        False -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+  case looked_up {
+    Ok(effect) ->
+      case is_operator_valued(effect) || has_vars(effect) {
+        True -> None
+        False -> Some(effect)
+      }
+    Error(Nil) -> None
   }
 }
 
@@ -2046,6 +2104,7 @@ fn grounded_receiver(
     | types.ReturnedOperator(..)
     | types.ReceiverPath(_)
     | types.Constructed(_)
+    | types.Updated(..)
     | types.OtherExpression -> Ok(value)
   }
 }
@@ -2207,6 +2266,24 @@ fn value_at_path(
           case rest {
             Some(rest) -> value_at_path(wired, rest)
             None -> Ok(wired)
+          }
+        }
+        // A record-update overlay: read the head field selectively. An updated
+        // field takes its replacement; any other falls through to the base —
+        // without requiring the base to be traceable, so an updated field
+        // resolves even over an opaque base.
+        types.Updated(base, fields) -> {
+          let #(field, rest) = case string.split_once(tail, ".") {
+            Ok(#(field, rest)) -> #(field, Some(rest))
+            Error(Nil) -> #(tail, None)
+          }
+          case dict.get(fields, field) {
+            Ok(wired) ->
+              case rest {
+                Some(rest) -> value_at_path(wired, rest)
+                None -> Ok(wired)
+              }
+            Error(Nil) -> value_at_path(base, tail)
           }
         }
         types.LocalRef(name) -> Ok(types.ReceiverPath(name <> "." <> tail))
@@ -3355,9 +3432,11 @@ fn resolve_argument_effects(
     // the forwarding site; first-order, it's conservative.
     types.CallResult(_, _) -> effect_term.unknown()
     types.ReceiverPath(_) -> effect_term.unknown()
-    // A constructed record contributes no callable effect in a first-order
-    // position; field forwarding handles it at the receiver argument instead.
+    // A constructed record or record-update overlay contributes no callable
+    // effect in a first-order position; field forwarding handles it at the
+    // receiver argument instead.
     types.Constructed(_) -> effect_term.unknown()
+    types.Updated(..) -> effect_term.unknown()
     types.OtherExpression -> effect_term.unknown()
   }
 }
@@ -3778,12 +3857,13 @@ fn resolve_field_call(
   }
 }
 
-// The value wired to `label` in a traced receiver: a `Constructed` record reads
-// the field directly; a call result (or any other groundable value) is grounded
-// through `grounded_receiver` — a same-module callee's return provenance
-// re-derived, a cross-module one read from the KB — into the record it builds,
-// then the field is read from that. `Error` when the receiver can't ground to a
-// record, or the record doesn't wire this field — the field stays `[Unknown]`.
+// The value wired to `label` in a traced receiver: a call result is first
+// grounded through `grounded_receiver` — a same-module callee's return
+// provenance re-derived, a cross-module one read from the KB — into the record it
+// builds; a record-update overlay is read field-selectively (an updated field
+// takes its replacement, any other falls through to the base). `Error` when the
+// receiver can't ground to a record wiring this field — the field stays
+// `[Unknown]`.
 fn field_value_of_receiver(
   receiver: types.ArgumentValue,
   label: String,
@@ -3799,10 +3879,7 @@ fn field_value_of_receiver(
     knowledge_base,
     registry,
   ))
-  case grounded {
-    types.Constructed(fields) -> dict.get(fields, label)
-    _ -> Error(Nil)
-  }
+  value_at_path(grounded, label)
 }
 
 // Resolve a field call whose receiver's construction directly wired the queried
