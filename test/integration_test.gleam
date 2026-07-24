@@ -1365,6 +1365,17 @@ pub fn builder_field_inherited_default_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Disk"])))
 }
 
+pub fn builder_field_inline_argument_test() {
+  // The builder call inline as annotate's argument (not let-bound) resolves the
+  // overridden resolver to [Stdout], the same as the let-bound form.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/builder_field.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "run_inline_arg" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn builder_field_whole_caller_union_test() {
   // builder_field.run_union unions the eager construction's own [Disk] (a real,
   // separate effect — nuance #2) with the overridden field call's [Stdout]. The
