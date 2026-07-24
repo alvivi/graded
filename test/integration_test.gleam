@@ -1481,6 +1481,37 @@ fn builder_chain_actual(function: String) -> types.EffectSet {
   v.actual
 }
 
+fn builder_shadow_actual(function: String) -> types.EffectSet {
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/builder_shadow.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == function })
+  v.actual
+}
+
+pub fn builder_shadow_rebound_param_is_unknown_test() {
+  // A builder that rebinds its `resolver` parameter before the update stores a
+  // fixed value, not the caller's argument. It must not be modeled as a builder
+  // that stores the caller's (pure) value — the field stays [Unknown], not [].
+  builder_shadow_actual("run_shadowed_param")
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn builder_shadow_shadowed_name_is_unknown_test() {
+  // A local closure shadowing the top-level `with_resolver` name must not have
+  // the top-level builder's signature applied — the field stays [Unknown].
+  builder_shadow_actual("run_shadowed_name")
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn builder_shadow_param_function_collision_is_unknown_test() {
+  // A parameter named the same as a pure module function (`handler`) wired into a
+  // field resolves as the parameter — the call stays polymorphic in `handler`,
+  // never borrowing the module function's [] effect (which would under-report).
+  builder_shadow_actual("run_param_collision")
+  |> should.equal(types.Polymorphic(set.new(), set.from_list(["handler"])))
+}
+
 pub fn builder_chain_update_preserves_resolver_test() {
   // A later `with_reporter` update preserves the resolver set by an earlier
   // `with_resolver` — the overlay composes.

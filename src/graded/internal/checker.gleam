@@ -3754,6 +3754,17 @@ pub fn field_effect_of(
   }
 }
 
+// The names of a function's named parameters (discards excluded).
+fn param_name_set(function: Function) -> Set(String) {
+  list.filter_map(function.parameters, fn(parameter) {
+    case parameter.name {
+      glance.Named(name) -> Ok(name)
+      glance.Discarded(_) -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+}
+
 // The qualified function a field value refers to, if any: a `FunctionRef`
 // directly, or a `LocalRef` naming one of the current module's own functions.
 // A `LocalRef` that isn't a module function is a parameter (or other local),
@@ -3790,6 +3801,12 @@ fn resolve_field_call(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
+  // A field value that is one of the enclosing function's own parameters (a
+  // `LocalRef` naming it) is that parameter — even when a module function shares
+  // the name, since the parameter shadows it lexically. Excluding these names
+  // keeps a proven field value from borrowing a same-named module function's
+  // effect (an under-report); the parameter resolves polymorphically instead.
+  let caller_param_names = param_name_set(function)
   case field_call.provenance {
     // Rule 1: a value proven wired to this field at this receiver's
     // construction. Concrete evidence — resolved per receiver, beating any
@@ -3801,6 +3818,7 @@ fn resolve_field_call(
         context,
         knowledge_base,
         function_map,
+        caller_param_names,
         call_args,
         caller_param_bounds,
         registry,
@@ -3832,6 +3850,7 @@ fn resolve_field_call(
             context,
             knowledge_base,
             function_map,
+            caller_param_names,
             call_args,
             caller_param_bounds,
             registry,
@@ -3893,6 +3912,7 @@ fn resolve_proven_field(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   function_map: dict.Dict(String, Definition(Function)),
+  caller_param_names: Set(String),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
@@ -3909,7 +3929,10 @@ fn resolve_proven_field(
       registry,
       scc_ids,
     )
-  let module_functions = set.from_list(dict.keys(function_map))
+  // A name that is one of the enclosing function's parameters resolves to that
+  // parameter, not a same-named module function — the parameter shadows it.
+  let module_functions =
+    set.difference(set.from_list(dict.keys(function_map)), caller_param_names)
   let field_effect =
     field_effect_of(
       knowledge_base,
