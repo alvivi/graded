@@ -5,8 +5,9 @@ import gleam/option.{Some}
 import gleeunit/should
 import graded/internal/extract
 import graded/internal/types.{
-  type QualifiedName, Build, Choice, FieldParam, FieldPath, FunctionRef, Join,
-  Opaque, OtherExpression, Passthrough, Path, QualifiedName,
+  type QualifiedName, Build, CallResult, Choice, FieldParam, FieldPath,
+  FieldValue, FunctionRef, Join, Opaque, OtherExpression, Passthrough, Path,
+  QualifiedName,
 }
 
 // Return provenance
@@ -294,9 +295,11 @@ fn target() {
   |> should.equal(Opaque)
 }
 
-pub fn provenance_build_with_no_param_field_is_opaque_test() {
-  // A constructor whose only field is non-parameter-rooted has nothing traceable
-  // to keep, so the whole `Build` is `Opaque`.
+pub fn provenance_build_with_concrete_field_keeps_value_test() {
+  // A constructor field wired to a concrete construction-site value (a call
+  // result here) is kept as a `FieldValue`, so a later field call on the returned
+  // record resolves it per receiver instead of widening the whole `Build` to
+  // `Opaque`. A field wired to a parameter would be a `FieldParam`/`FieldPath`.
   provenance_of(
     "pub type Options {
   Options(resolver: fn() -> Nil)
@@ -304,7 +307,13 @@ pub fn provenance_build_with_no_param_field_is_opaque_test() {
 fn other() { fn() { Nil } }
 fn target(o) { Options(resolver: other()) }",
   )
-  |> should.equal(Opaque)
+  |> should.equal(
+    Build(
+      dict.from_list([
+        #("resolver", FieldValue(CallResult(QualifiedName("", "other"), []))),
+      ]),
+    ),
+  )
 }
 
 pub fn provenance_partial_build_keeps_param_field_test() {

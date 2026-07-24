@@ -1310,12 +1310,11 @@ pub fn operator_typed_closure_field_test() {
 }
 
 pub fn inferred_field_effect_from_construction_test() {
-  // inferred_field binds the receiver from a *call* (`let l = make()`), so its
-  // construction isn't proven at the field call — a let-bound call result is
-  // untraceable in Tier 1. With no `type Logger.emit` line to consult, the field
-  // call resolves conservatively to [Unknown] rather than borrowing `make`'s
-  // in-package construction (which a caller could construct differently). Tier 2's
-  // let-bound call-result provenance restores the precise [Stdout].
+  // inferred_field binds the receiver from a *call* (`let l = make()`). Tier 2's
+  // let-bound call-result provenance grounds `make`'s return construction
+  // (`Logger(emit: io.println)`) per receiver, so `l.emit()` resolves to the
+  // precise [Stdout] — the in-package construction is proven for this receiver,
+  // not borrowed from the nominal index.
   let assert Ok(results) = graded.run("test/fixtures")
   let inferred_result =
     list.find(results, fn(r) { r.file == "test/fixtures/inferred_field.gleam" })
@@ -1323,16 +1322,14 @@ pub fn inferred_field_effect_from_construction_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn local_field_value_resolved_test() {
   // local_field.run wires a *same-module* function (my_logger : [Stdout]) into a
-  // record field, but binds the receiver from a call (`let l = make()`). A
-  // let-bound call result is untraceable in Tier 1 and there is no `type
-  // Logger.emit` line, so the field call resolves to [Unknown] rather than
-  // borrowing `make`'s in-package construction. Tier 2's call-result provenance
-  // restores the precise [Stdout].
+  // record field and binds the receiver from a call (`let l = make()`). Tier 2's
+  // call-result provenance grounds `make`'s return construction per receiver, so
+  // `l.emit()` resolves the wired same-module function to the precise [Stdout].
   let assert Ok(results) = graded.run("test/fixtures")
   let local_result =
     list.find(results, fn(r) { r.file == "test/fixtures/local_field.gleam" })
@@ -1340,7 +1337,7 @@ pub fn local_field_value_resolved_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 // Callback arguments and local resolution

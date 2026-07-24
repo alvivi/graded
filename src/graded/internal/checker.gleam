@@ -2179,6 +2179,9 @@ fn substitute_build_fields(
         use extended <- result.map(value_at_path(grounded, tail))
         dict.insert(built, label, extended)
       }
+      // A concrete construction-site value: independent of the call's arguments,
+      // so it grounds to itself.
+      types.FieldValue(value) -> Ok(dict.insert(built, label, value))
       types.FieldOpaque -> Error(Nil)
     }
   })
@@ -3726,6 +3729,39 @@ fn resolve_field_call(
         lift_operator_arg,
         memo,
       )
+    // Rule 1, receiver form: the whole receiver is a traced value (a let-bound
+    // call result or a record-update overlay). Read the queried field's value
+    // out of it — grounding a call result through its callee's return
+    // provenance, an overlay field-selectively — then resolve per receiver. An
+    // untraceable receiver (opaque callee, field neither updated nor inherited)
+    // leaves the field `[Unknown]`.
+    types.ProvenReceiver(receiver) ->
+      case
+        field_value_of_receiver(
+          receiver,
+          field_call.label,
+          context,
+          knowledge_base,
+          function_map,
+          registry,
+        )
+      {
+        Ok(value) ->
+          resolve_proven_field(
+            value,
+            field_call,
+            context,
+            knowledge_base,
+            function_map,
+            call_args,
+            caller_param_bounds,
+            registry,
+            scc_ids,
+            lift_operator_arg,
+            memo,
+          )
+        Error(Nil) -> #(effect_term.unknown(), memo)
+      }
     _ ->
       resolve_unproven_field(
         field_call,
@@ -3739,6 +3775,33 @@ fn resolve_field_call(
         lift_operator_arg,
         memo,
       )
+  }
+}
+
+// The value wired to `label` in a traced receiver: a `Constructed` record reads
+// the field directly; a call result (or any other groundable value) is grounded
+// through `grounded_receiver` — a same-module callee's return provenance
+// re-derived, a cross-module one read from the KB — into the record it builds,
+// then the field is read from that. `Error` when the receiver can't ground to a
+// record, or the record doesn't wire this field — the field stays `[Unknown]`.
+fn field_value_of_receiver(
+  receiver: types.ArgumentValue,
+  label: String,
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  function_map: dict.Dict(String, Definition(Function)),
+  registry: SignatureRegistry,
+) -> Result(types.ArgumentValue, Nil) {
+  use grounded <- result.try(grounded_receiver(
+    receiver,
+    function_map,
+    context,
+    knowledge_base,
+    registry,
+  ))
+  case grounded {
+    types.Constructed(fields) -> dict.get(fields, label)
+    _ -> Error(Nil)
   }
 }
 
