@@ -107,11 +107,13 @@ of one of its parameters, with every updated field wired to a parameter — the
 `with_*` builder idiom. `base <n>` is the position of the parameter being updated;
 `[<field>=<n>, …]` maps each updated field label to the parameter position wiring
 it; the optional `(<label>=<n>, …)` section maps parameter labels to positions for
-labelled calls. It lets a consumer of an installed dependency compose the builder's
-overlay — `dep.default_options() |> dep.with_resolver(logging)` resolves
-`dep.annotate`'s field call onto `logging`, last-write-wins — instead of
-`[Unknown]`. Like `effects`, these lines are regenerated and shouldn't be
-hand-edited.
+labelled calls. It documents the builder so a consumer of an installed dependency
+composes the overlay — `dep.default_options() |> dep.with_resolver(logging)`
+resolves `dep.annotate`'s field call onto `logging`, last-write-wins — instead of
+`[Unknown]`. In practice graded derives this signature from the dependency's own
+source under `build/packages` (so it can't skew from a stale line); the serialized
+line is documentation and a fallback. Like `effects`, these lines are regenerated
+and shouldn't be hand-edited.
 
 ## Effect resolution order
 
