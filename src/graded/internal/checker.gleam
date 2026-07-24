@@ -340,6 +340,44 @@ pub fn call_result_field_operator(
   ).0
 }
 
+// The two field-value analysis callbacks `field_effect_of` needs: one analysing
+// an inline closure's body, one resolving a call result's returned operator.
+// Shared by the construction-index build and per-receiver field-call resolution
+// so both wire the same module context to the same operators.
+pub fn field_analysis_callbacks(
+  context: ImportContext,
+  function_map: dict.Dict(String, Definition(Function)),
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  scc_ids: LocalCache,
+) -> #(
+  fn(List(String), List(Statement)) -> EffectTerm,
+  fn(types.QualifiedName, List(types.CallArgument)) -> Result(EffectTerm, Nil),
+) {
+  let closure_effect = fn(params, body) {
+    closure_field_operator(
+      params,
+      body,
+      context,
+      function_map,
+      knowledge_base,
+      scc_ids,
+    )
+  }
+  let call_result_effect = fn(callee, args) {
+    call_result_field_operator(
+      callee,
+      args,
+      context,
+      function_map,
+      knowledge_base,
+      registry,
+      scc_ids,
+    )
+  }
+  #(closure_effect, call_result_effect)
+}
+
 // Shared analysis helpers
 //
 // Small utilities shared across every resolution path: call-argument lookup,
@@ -3712,27 +3750,14 @@ fn resolve_proven_field(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
-  let closure_effect = fn(params, body) {
-    closure_field_operator(
-      params,
-      body,
-      context,
-      function_map,
-      knowledge_base,
-      scc_ids,
-    )
-  }
-  let call_result_effect = fn(callee, args) {
-    call_result_field_operator(
-      callee,
-      args,
+  let #(closure_effect, call_result_effect) =
+    field_analysis_callbacks(
       context,
       function_map,
       knowledge_base,
       registry,
       scc_ids,
     )
-  }
   let module_functions = set.from_list(dict.keys(function_map))
   let field_effect =
     field_effect_of(
@@ -3761,6 +3786,29 @@ fn resolve_proven_field(
 // receiver-keyed field variable for a live parameter root, then `[Unknown]`. A
 // construction-inferred nominal entry is never consulted — it holds package-wide
 // evidence keyed by type, not proof for this receiver.
+// The hand-written `type Type.field` line for a receiver's nominal type, if any.
+// A construction-inferred entry keyed by the same type does *not* qualify — it is
+// package-wide nominal evidence, which must never resolve an unproven receiver.
+fn declared_type_field(
+  knowledge_base: KnowledgeBase,
+  receiver_type: option.Option(#(String, String)),
+  field: String,
+) -> option.Option(types.TypeFieldEffect) {
+  use #(module, type_name) <- option.then(receiver_type)
+  use field_effect <- option.then(
+    option.from_result(effects.lookup_type_field(
+      knowledge_base,
+      module,
+      type_name,
+      field,
+    )),
+  )
+  case field_effect.origin {
+    types.Declared -> Some(field_effect)
+    types.Inferred -> None
+  }
+}
+
 fn resolve_unproven_field(
   field_call: types.FieldCall,
   function: Function,
@@ -3782,6 +3830,14 @@ fn resolve_unproven_field(
   case list.find(caller_param_bounds, fn(b) { b.name == field_target }) {
     Ok(bound) -> #(bound.effects, memo)
     Error(Nil) -> {
+      // When girard can't type the receiver, the syntactic fallback looks the
+      // receiver up as a parameter by name. Use the canonical parameter path (an
+      // alias `let f = options` resolves through `options`), not the dead alias
+      // identifier, so a parameter alias resolves like the bare parameter.
+      let receiver_object = case field_call.provenance {
+        types.ParameterRoot(path) -> path
+        _ -> field_call.object
+      }
       let receiver_type =
         typeinfo.receiver_type(
           module_types,
@@ -3789,32 +3845,13 @@ fn resolve_unproven_field(
           field_call.receiver_span.end,
         )
         |> option.lazy_or(fn() {
-          syntactic_param_type(function, field_call.object)
+          syntactic_param_type(function, receiver_object)
           |> option.map(fn(type_name) { #("", type_name) })
         })
       // Rule 3: a hand-written `type Type.field` line, resolved by the
-      // receiver's nominal type. Only *declared* lines qualify — a
-      // construction-inferred entry keyed by the same type is package-wide
-      // nominal evidence, which must never resolve an unproven receiver.
-      let declared = case receiver_type {
-        Some(#(module, type_name)) ->
-          case
-            effects.lookup_type_field(
-              knowledge_base,
-              module,
-              type_name,
-              field_call.label,
-            )
-          {
-            Ok(field_effect) ->
-              case field_effect.origin {
-                types.Declared -> Some(field_effect)
-                types.Inferred -> None
-              }
-            Error(Nil) -> None
-          }
-        None -> None
-      }
+      // receiver's nominal type.
+      let declared =
+        declared_type_field(knowledge_base, receiver_type, field_call.label)
       case declared {
         Some(field_effect) ->
           resolve_field_effect(

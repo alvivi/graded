@@ -744,33 +744,19 @@ fn build_constructor_field_index(
     // function map), instead of collapsing to `[Unknown]`.
     let function_map = checker.build_function_map(module)
     // Built once per module and shared across every field closure analysed
-    // below, rather than rebuilt per closure.
+    // below, rather than rebuilt per closure. The two analysis callbacks resolve
+    // a field wired to an inline closure (by analysing its body) or to a call
+    // (`Options(resolver: disk_resolver())`, by the callee's returned-operator
+    // summary) instead of collapsing to `[Unknown]`.
     let scc_ids = checker.build_scc_ids(module, context, dict.new(), False)
-    let closure_effect = fn(params, body) {
-      checker.closure_field_operator(
-        params,
-        body,
-        context,
-        function_map,
-        knowledge_base,
-        scc_ids,
-      )
-    }
-    // Resolve a field wired from a *call* (`Options(resolver: disk_resolver())`)
-    // to the operator that call returns — the returned-operator summary — instead
-    // of collapsing to `[Unknown]`. Threads the real `registry` so a cross-module
-    // producer's annotated operator params bind, and `scc_ids` (Fix A's alias map).
-    let call_result_effect = fn(callee, args) {
-      checker.call_result_field_operator(
-        callee,
-        args,
+    let #(closure_effect, call_result_effect) =
+      checker.field_analysis_callbacks(
         context,
         function_map,
         knowledge_base,
         registry,
         scc_ids,
       )
-    }
     // The module's own function names, so a field wired to a bare name can be
     // told apart from one wired to a parameter (the latter is polymorphic).
     let module_functions = set.from_list(dict.keys(function_map))
