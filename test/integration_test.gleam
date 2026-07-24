@@ -1367,10 +1367,11 @@ pub fn builder_field_inherited_default_test() {
 
 pub fn builder_field_cross_package_test() {
   // The real cross-package case: a consumer calls a *dependency's* builder and
-  // annotate. The dependency is present only as installed metadata — its `.graded`
-  // spec (carrying `annotate`'s polymorphic field bound and `with_resolver`'s
-  // serialized `update` signature) plus its source under `build/packages` (for
-  // parameter positions). graded loads the update signature from the spec, so the
+  // annotate. The dependency is present as an installed package — its `.graded`
+  // spec carries `annotate`'s polymorphic field bound, and its source under
+  // `build/packages` gives both the parameter positions and `with_resolver`'s
+  // builder signature (derived from the source the consumer compiled against, so
+  // it can never skew from a stale spec — no `update` line is needed here). The
   // consumer composes the overlay and resolves `annotate`'s field onto the
   // consumer-supplied resolver — [Stdout], not [Unknown].
   let root = "build/xpkg_builder"
@@ -1420,15 +1421,14 @@ pub fn annotate(source: String, options: Options) -> Nil {
 }
 ",
     )
-  // The dependency's installed metadata: annotate's polymorphic field bound and
-  // with_resolver's serialized update signature.
+  // The dependency's installed metadata: annotate's polymorphic field bound. No
+  // `update` line — the builder signature is derived from the source above.
   let assert Ok(Nil) =
     simplifile.write(
       root <> "/build/packages/dep/dep.graded",
       "effects dep.annotate(options.resolver: [options.resolver]) : [options.resolver]
 effects dep.default_options : []
 effects dep.with_resolver : []
-update dep.with_resolver : base 0 [resolver=1]
 ",
     )
 

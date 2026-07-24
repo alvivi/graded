@@ -195,6 +195,11 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     ))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
+    // Dependency builders derived from source (authoritative) win over their
+    // serialized `update` lines; the current package's own builders win over both.
+    |> effects.with_updates(
+      updates_from_packages_dir(packages_dir(package_root)),
+    )
     |> effects.with_updates(qualify_by_module(index, extract.update_map))
 
   let results =
@@ -1112,6 +1117,11 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     ))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
+    // Dependency builders derived from source (authoritative) win over their
+    // serialized `update` lines; the current package's own builders win over both.
+    |> effects.with_updates(
+      updates_from_packages_dir(packages_dir(package_root)),
+    )
     |> effects.with_updates(qualify_by_module(index, extract.update_map))
 
   let graph = build_dependency_graph(index)
@@ -1556,6 +1566,54 @@ fn packages_dir(package_root: String) -> String {
 // at the project root next to `gleam.toml`.
 fn manifest_path(package_root: String) -> String {
   filepath.join(package_root, "manifest.toml")
+}
+
+// Update-builder signatures derived from every installed dependency's *source*
+// under `build/packages`, keyed by `#(module, function)`. This is the source the
+// consumer compiled against, so a builder resolved from it can never skew from a
+// stale serialized `update` line — it takes precedence over the spec-loaded map.
+// A dependency whose source can't be parsed contributes nothing here and falls
+// back to its serialized signature.
+fn updates_from_packages_dir(
+  packages_directory: String,
+) -> Dict(#(String, String), types.UpdateSignature) {
+  case simplifile.read_directory(packages_directory) {
+    Error(_) -> dict.new()
+    Ok(entries) ->
+      list.fold(entries, dict.new(), fn(acc, dep) {
+        let src_dir =
+          filepath.join(filepath.join(packages_directory, dep), "src")
+        dict.merge(acc, updates_from_source_dir(src_dir))
+      })
+  }
+}
+
+fn updates_from_source_dir(
+  source_dir: String,
+) -> Dict(#(String, String), types.UpdateSignature) {
+  case simplifile.get_files(source_dir) {
+    Error(_) -> dict.new()
+    Ok(files) ->
+      files
+      |> list.filter(fn(path) { string.ends_with(path, ".gleam") })
+      |> list.fold(dict.new(), fn(acc, gleam_path) {
+        case simplifile.read(gleam_path) {
+          Error(_) -> acc
+          Ok(source) ->
+            case glance.module(source) {
+              Error(_) -> acc
+              Ok(module) ->
+                dict.merge(
+                  acc,
+                  extract.public_update_signatures(
+                    module,
+                    config.module_path_for_source(gleam_path, source_dir),
+                  ),
+                )
+            }
+        }
+      })
+  }
 }
 
 fn find_gleam_toml_dir(dir: String, original: String) -> String {

@@ -390,6 +390,28 @@ pub fn public_update_annotations(
   })
 }
 
+// The *public* update builders of a module as runtime signatures, keyed by
+// `#(module_path, name)`. Used to derive a dependency's builders from its source
+// under `build/packages` — the source the consumer compiled against — so the
+// signature can never skew from a stale serialized spec.
+pub fn public_update_signatures(
+  module: Module,
+  module_path: String,
+) -> Dict(#(String, String), UpdateSignature) {
+  let publics =
+    list.fold(module.functions, set.new(), fn(acc, definition) {
+      case definition.definition.publicity {
+        glance.Public -> set.insert(acc, definition.definition.name)
+        glance.Private -> acc
+      }
+    })
+  update_map(module)
+  |> dict.to_list()
+  |> list.filter(fn(entry) { set.contains(publics, entry.0) })
+  |> list.map(fn(entry) { #(#(module_path, entry.0), entry.1) })
+  |> dict.from_list()
+}
+
 fn sorted_label_positions(pairs: Dict(String, Int)) -> List(#(String, Int)) {
   pairs
   |> dict.to_list()
@@ -2424,20 +2446,26 @@ fn update_constructed_or_producer(
 ) -> types.ArgumentValue {
   let args = classify_arguments(arguments, context, env, 0)
   let by_position = args_by_position(signature.param_labels, args)
-  case dict.get(by_position, signature.base_param) {
-    Ok(base) -> {
-      let fields =
-        dict.fold(signature.fields, dict.new(), fn(acc, label, position) {
-          case dict.get(by_position, position) {
-            Ok(value) -> dict.insert(acc, label, value)
-            Error(Nil) -> acc
-          }
-        })
-      case dict.is_empty(fields) {
-        True -> classify_call_producer(function, arguments, context, env)
-        False -> types.Updated(base:, fields:)
-      }
-    }
+  // Route the base and *every* updated field. If any position the signature
+  // names doesn't match an argument of this call — an arity mismatch from a
+  // signature that has skewed from the callee's source — widen to the plain-call
+  // path rather than build a partial overlay whose missing updated field would
+  // silently fall through to the base and under-report.
+  let routed = {
+    use base <- result.try(dict.get(by_position, signature.base_param))
+    use fields <- result.map(
+      signature.fields
+      |> dict.to_list()
+      |> list.try_map(fn(entry) {
+        let #(label, position) = entry
+        dict.get(by_position, position)
+        |> result.map(fn(value) { #(label, value) })
+      }),
+    )
+    types.Updated(base:, fields: dict.from_list(fields))
+  }
+  case routed {
+    Ok(value) -> value
     Error(Nil) -> classify_call_producer(function, arguments, context, env)
   }
 }
