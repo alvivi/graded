@@ -14,7 +14,7 @@ import graded/internal/types.{
   type FieldCall, type LocalCall, type QualifiedName, type ResolvedCall,
   CallArgument, Constructed, ConstructorRef, DirectClosureCall, DirectPipeOp,
   FactorySignature, FieldCall, FunctionRef, LocalCall, LocalRef, OtherExpression,
-  QualifiedName, ResolvedCall,
+  ParameterRoot, ProvenValue, QualifiedName, ResolvedCall, Untraceable,
 }
 
 // Lexical bindings
@@ -913,14 +913,57 @@ fn qualified_call_lookup(
           )
         _ ->
           ExtractResult(..empty(), field: [
-            FieldCall(alias, function_name, span, receiver_span),
+            FieldCall(
+              alias,
+              function_name,
+              span,
+              receiver_span,
+              field_receiver_provenance(alias, env),
+            ),
           ])
       }
   }
 }
 
+// The provenance of a field call whose receiver is the bare identifier `alias`.
+// A live top-level parameter (through nested `let` aliases) roots a
+// `ParameterRoot`; anything shadowed, computed, or opaque is `Untraceable`.
+fn field_receiver_provenance(
+  alias: String,
+  env: Env,
+) -> types.FieldCallProvenance {
+  case param_rooted_path(alias, env) {
+    Some(canonical) -> ParameterRoot(canonical)
+    None -> Untraceable
+  }
+}
+
+// Canonicalize a receiver path to its live-parameter-rooted form, following
+// `let` aliases back to the parameter they stand for (`let f = options;
+// f.x()` → `Some("options")`). `None` when the root binds to a shadowing
+// rebind, a computed value, or is otherwise not a live top-level parameter — the
+// syntactic path alone is never trusted.
+fn param_rooted_path(path: String, env: Env) -> Option(String) {
+  let #(root, rest) = split_root(path)
+  case resolve_env(root, env) {
+    BoundLocal -> Some(path)
+    // The root is itself a `let` alias of a parameter or receiver path: rewrite
+    // to the aliased path and re-check, so a chained alias still canonicalizes.
+    BoundReceiverPath(aliased) ->
+      case rest {
+        Some(tail) -> param_rooted_path(aliased <> "." <> tail, env)
+        None -> param_rooted_path(aliased, env)
+      }
+    _ -> None
+  }
+}
+
 // Fallback to `FieldCall` preserves the type-level
-// `type Foo.field : [...]` annotation path for unresolved cases.
+// `type Foo.field : [...]` annotation path for unresolved cases. A field wired
+// to a concrete function reference is resolved directly at the construction
+// site; the complex field values (closure, call result, returned operator,
+// inline construction) carry `ProvenValue` so the checker resolves them per
+// receiver, and anything unwired or opaque is `Untraceable`.
 fn resolve_constructor_field_call(
   alias: String,
   label: String,
@@ -934,16 +977,19 @@ fn resolve_constructor_field_call(
     Ok(LocalRef(name: local_name)) ->
       ExtractResult(..empty(), local: [LocalCall(local_name, span)])
     Ok(ConstructorRef) -> empty()
-    Ok(types.Closure(_, _, _))
-    | Ok(types.Choice(_))
-    | Ok(types.ReturnedOperator(_, _))
-    | Ok(types.CallResult(_, _))
+    Ok(types.Closure(_, _, _) as value)
+    | Ok(types.ReturnedOperator(_, _) as value)
+    | Ok(types.CallResult(_, _) as value)
+    | Ok(Constructed(_) as value) ->
+      ExtractResult(..empty(), field: [
+        FieldCall(alias, label, span, receiver_span, ProvenValue(value)),
+      ])
+    Ok(types.Choice(_))
     | Ok(types.ReceiverPath(_))
-    | Ok(Constructed(_))
     | Ok(OtherExpression)
     | Error(Nil) ->
       ExtractResult(..empty(), field: [
-        FieldCall(alias, label, span, receiver_span),
+        FieldCall(alias, label, span, receiver_span, Untraceable),
       ])
   }
 }
@@ -962,6 +1008,8 @@ fn resolve_nested_field_call(
   label: String,
   span: glance.Span,
   receiver_span: glance.Span,
+  context: ImportContext,
+  env: Env,
 ) -> ExtractResult {
   case is_constructor_name(label) {
     True -> empty()
@@ -970,9 +1018,31 @@ fn resolve_nested_field_call(
         Some(path) -> path
         None -> "<expr>"
       }
-      ExtractResult(..empty(), field: [
-        FieldCall(object, label, span, receiver_span),
-      ])
+      // An inline-construction receiver (`Options(resolver: r).resolver()` or an
+      // inline factory call) directly wires the queried field, so route it
+      // through the constructor-field resolver — a fn ref resolves at the site,
+      // a complex value becomes `ProvenValue`. Anything else classifies by
+      // whether the path is rooted at a live parameter.
+      case classify_expression(receiver, context, env) {
+        Constructed(fields:) ->
+          resolve_constructor_field_call(
+            object,
+            label,
+            span,
+            receiver_span,
+            fields,
+          )
+        _ ->
+          ExtractResult(..empty(), field: [
+            FieldCall(
+              object,
+              label,
+              span,
+              receiver_span,
+              field_receiver_provenance(object, env),
+            ),
+          ])
+      }
     }
   }
 }
@@ -1454,7 +1524,14 @@ fn extract_from_expression(
       arguments:,
     ) ->
       merge_with_args(
-        resolve_nested_field_call(receiver, label, span, receiver.location),
+        resolve_nested_field_call(
+          receiver,
+          label,
+          span,
+          receiver.location,
+          context,
+          env,
+        ),
         merge(
           extract_from_expression(receiver, context, env),
           extract_from_arguments(arguments, context, env),
@@ -1647,6 +1724,8 @@ fn extract_pipe_target(
           function_name,
           span,
           receiver.location,
+          context,
+          env,
         ),
         extract_from_expression(receiver, context, env),
         span,
@@ -1702,6 +1781,8 @@ fn extract_pipe_target(
           function_name,
           span,
           receiver.location,
+          context,
+          env,
         ),
         merge(
           extract_from_expression(receiver, context, env),

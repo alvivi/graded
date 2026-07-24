@@ -56,7 +56,56 @@ check app.caller(v.to_error: [Stdout]) : [Stdout]
 ```
 
 The `param.field` bound resolves the call inside `caller` only, leaving the type
-untouched elsewhere.
+untouched elsewhere. It matches any unproven field call with that textual receiver
+path *inside `caller`* — a parameter or a local alike — but it **cannot** describe a
+value that `caller` merely *passes* to another function: to resolve `annotate(opts)`
+where `opts.resolver` matters, the bound has to be written on `annotate` itself, not
+on `caller`.
+
+### Builder-set fields are polymorphic, not specialized
+
+The same holds for a field set through a **builder** (`with_*`) record update. graded
+never resolves a field call on a parameter (or any receiver it can't trace to a
+construction) from a *package-wide* construction site — a caller can build the record
+differently, so borrowing one construction's effect would understate:
+
+```gleam
+pub opaque type Options {
+  Options(resolver: fn() -> Nil)
+}
+
+pub fn default_options() -> Options {
+  Options(resolver: disk_resolver)   // disk_resolver : [FileSystem]
+}
+
+pub fn with_resolver(o: Options, resolver: fn() -> Nil) -> Options {
+  Options(..o, resolver:)            // record update
+}
+
+pub fn annotate(options: Options) -> Nil {
+  options.resolver()                 // polymorphic: `options.resolver`, not [FileSystem]
+}
+```
+
+`annotate` infers `annotate(options.resolver: [options.resolver]) : [options.resolver]`
+— it does **not** specialize to `default_options`'s `[FileSystem]`. A consumer that
+supplies its own resolver keeps its effect rather than silently dropping it:
+
+```gleam
+pub fn run() -> Nil {
+  let opts = default_options() |> with_resolver(logging_resolver)  // [Stdout]
+  annotate(opts)   // [Unknown] — sound; never a bare [FileSystem]
+}
+```
+
+Here the builder result is bound to `opts` and then handed to `annotate`, so its
+construction isn't proven at the field call — graded reports `[Unknown]` rather than
+guess. That is sound (`[Unknown]` ⊇ any real effect), but it is *not* precise: a budget
+like `[FileSystem, Stdout]` still **fails** (`[Unknown] ⊄ [FileSystem, Stdout]`). The
+only ways through are a wildcard budget `[_]` (which admits `[Unknown]`) or a trusted
+external override — **not** writing the precise set. Recovering the precise
+`[FileSystem, Stdout]` needs per-value builder-chain provenance, tracked in
+[FUTURE_WORK.md](FUTURE_WORK.md).
 
 Forwarding that parameter through helper calls preserves the same field bound.
 The receiver argument forwards whenever its provenance is syntactically rooted in

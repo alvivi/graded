@@ -4,14 +4,11 @@ pub type Middleware {
   Middleware(wrap: fn(fn(String) -> Nil) -> Nil)
 }
 
-fn make() -> Middleware {
-  // The field is *operator-typed*: the closure calls its own callback `next`.
-  // graded lifts it to `λnext. [next]`, so a field call resolves to whatever
-  // callback is supplied.
-  Middleware(wrap: fn(next) { next("x") })
-}
-
 pub fn run() {
-  let m = make()
+  // The receiver is a let-bound *inline construction*, so `wrap`'s value is proven
+  // for this receiver. The field is *operator-typed*: the closure calls its own
+  // callback `next`, lifted to `λnext. [next]`, so the field call `m.wrap(io.println)`
+  // applies it to the supplied callback and resolves to [Stdout].
+  let m = Middleware(wrap: fn(next) { next("x") })
   m.wrap(io.println)
 }

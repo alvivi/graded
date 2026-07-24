@@ -15,6 +15,10 @@ fn make() -> Logger {
 }
 
 pub fn run() {
+  // The receiver is bound from a call (`make()`), untraceable in Tier 1, and no
+  // `type Logger.emit` line exists — so the field call resolves to [Unknown]
+  // rather than borrowing `make`'s in-package construction. Tier 2's call-result
+  // provenance restores the precise [Stdout].
   let l = make()
   l.emit("hi")
 }

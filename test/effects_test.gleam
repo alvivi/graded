@@ -544,6 +544,7 @@ pub fn type_fields_distinguish_modules_test() {
           effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
           [],
           None,
+          types.Inferred,
         ),
       ),
       #(
@@ -552,6 +553,7 @@ pub fn type_fields_distinguish_modules_test() {
           effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
           [],
           None,
+          types.Inferred,
         ),
       ),
     ])

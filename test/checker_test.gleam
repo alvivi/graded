@@ -3,7 +3,7 @@ import girard
 import glance
 import gleam/dict
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{None}
 import gleam/result
 import gleam/set
 import gleam/string
@@ -16,9 +16,8 @@ import graded/internal/extract
 import graded/internal/signatures
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
-  ParamBound, Polymorphic, QualifiedName, Specific, TypeFieldEffect,
-  UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning, UntrackedEffectWarning,
-  Wildcard,
+  ParamBound, Polymorphic, QualifiedName, Specific, UnmatchedFieldBoundWarning,
+  UnmatchedParamBoundWarning, UntrackedEffectWarning, Wildcard,
 }
 import qcheck
 
@@ -709,6 +708,219 @@ pub fn field_call_untyped_is_unknown_test() {
   check_source(source, [annotation])
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
+}
+
+// Parameter-field precedence (Tier 1)
+//
+// A fn-typed field call resolves by: (1) a value proven for this receiver, (2) a
+// `check` field bound, (3) a declared `type` line, (4) a live parameter root →
+// a receiver-keyed field variable, (5) else `[Unknown]`. The nominal construction
+// index never resolves an unproven receiver — a caller can build the record
+// differently, so specializing a parameter/opaque receiver would understate.
+
+// Infer `function`'s annotation in a single-module source, with the registry
+// built from the module so fn-typed params are detected. `girard` threads girard's
+// inferred types so a receiver typed only through an alias or nested path resolves.
+fn infer_field_annotation_typed(
+  source: String,
+  function: String,
+  girard: Bool,
+) -> EffectAnnotation {
+  let assert Ok(module) = glance.module(source)
+  let registry = signatures.from_glance_module("", module)
+  let module_types = case girard {
+    False -> dict.new()
+    True -> girard_types(module)
+  }
+  let inferred =
+    checker.infer(
+      module,
+      "",
+      knowledge_base(),
+      [],
+      registry,
+      module_types,
+      dict.new(),
+    )
+  let assert Ok(annotation) =
+    list.find(inferred, fn(a) { a.function == function })
+  annotation
+}
+
+fn infer_field_annotation(
+  source: String,
+  function: String,
+) -> EffectAnnotation {
+  infer_field_annotation_typed(source, function, False)
+}
+
+// girard's per-expression inferred types for a module, keyed by span, or empty
+// when the type annotator declines the module.
+fn girard_types(module: glance.Module) -> dict.Dict(#(Int, Int), girard.Type) {
+  case girard.annotate_module(module, girard.default_options()) {
+    Ok(annotated) ->
+      list.fold(annotated.expressions, dict.new(), fn(acc, annotation) {
+        dict.insert(
+          acc,
+          #(annotation.span.start, annotation.span.end),
+          annotation.type_,
+        )
+      })
+    Error(_) -> dict.new()
+  }
+}
+
+pub fn field_call_parameter_root_stays_polymorphic_test() {
+  // Rule 4: a fn-typed field of a parameter receiver stays polymorphic — the
+  // call resolves to the receiver-keyed field variable `options.resolver`, which
+  // forwards up rather than specializing to any package construction.
+  let source =
+    "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+
+pub fn annotate(options: Options) -> Nil {
+  options.resolver()
+}
+"
+  let annotation = infer_field_annotation(source, "annotate")
+  annotation.effects |> should.equal(types.TVar("options.resolver"))
+}
+
+pub fn field_call_parameter_alias_canonicalizes_test() {
+  // A `let` alias of a parameter (`let f = options`) canonicalizes to the
+  // parameter root, so `f.resolver()` resolves exactly like `options.resolver()`
+  // — the field variable is keyed on `options.resolver`, not the dead `f.resolver`.
+  let source =
+    "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+
+pub fn annotate(options: Options) -> Nil {
+  let f = options
+  f.resolver()
+}
+"
+  let annotation = infer_field_annotation_typed(source, "annotate", True)
+  annotation.effects |> should.equal(types.TVar("options.resolver"))
+}
+
+pub fn field_call_nested_parameter_path_stays_polymorphic_test() {
+  // A nested parameter path (`config.options.resolver()`) stays polymorphic on
+  // the whole path — the field variable is keyed on `config.options.resolver`.
+  let source =
+    "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+
+pub type Config {
+  Config(options: Options)
+}
+
+pub fn annotate(config: Config) -> Nil {
+  config.options.resolver()
+}
+"
+  let annotation = infer_field_annotation_typed(source, "annotate", True)
+  annotation.effects |> should.equal(types.TVar("config.options.resolver"))
+}
+
+pub fn field_call_shadowed_parameter_is_unknown_test() {
+  // A parameter shadowed by a later opaque `let` is untraceable — a field call
+  // through a path rooted at the shadowing binding must NOT tie to the dead
+  // parameter. `x.resolver()` resolves to [Unknown], proving classification
+  // consults the env for the live root, not the syntactic path (`options` here
+  // names the shadowing local, not the parameter).
+  let source =
+    "pub type Inner {
+  Inner(resolver: fn() -> Nil)
+}
+
+pub type Wrapper {
+  Wrapper(inner: Inner)
+}
+
+pub fn external_wrapper() -> Wrapper {
+  Wrapper(inner: Inner(resolver: fn() { Nil }))
+}
+
+pub fn run(options: Wrapper) -> Nil {
+  let options = external_wrapper()
+  let x = options.inner
+  x.resolver()
+}
+"
+  let annotation = infer_field_annotation_typed(source, "run", True)
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+pub fn field_call_opaque_call_result_is_unknown_test() {
+  // Rule 5: a receiver bound from an external/opaque call (`let o =
+  // external_options(); o.resolver()`) is untraceable — never resolved by the
+  // nominal index, so it stays [Unknown].
+  let source =
+    "pub type Options {
+  Options(resolver: fn() -> Nil)
+}
+
+pub fn external_options() -> Options {
+  Options(resolver: fn() { Nil })
+}
+
+pub fn run() -> Nil {
+  let o = external_options()
+  o.resolver()
+}
+"
+  let annotation = infer_field_annotation(source, "run")
+  effect_term.to_effect_set(annotation.effects)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+pub fn field_call_proven_value_beats_field_bound_test() {
+  // Rule 1 > rule 2: a value proven wired to this receiver (`let v =
+  // Validator(to_error: io.println)`) resolves to its real effect [Stdout] and is
+  // NOT silenced by a `check caller(v.to_error: [])` field bound — concrete
+  // evidence supersedes an annotation. Guards docs/REFERENCE.md's guarantee.
+  let source =
+    "import gleam/io
+
+pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+
+pub fn caller() -> Nil {
+  let v = Validator(to_error: io.println)
+  v.to_error(\"oops\")
+}
+"
+  let assert Ok(module) = glance.module(source)
+  // A field bound `v.to_error: []` that must NOT silence the proven [Stdout].
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [
+        ParamBound(
+          "v.to_error",
+          effect_term.from_effect_set(Specific(set.new())),
+        ),
+      ],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
+  let #(violations, _warnings) =
+    checker.check(
+      module,
+      "",
+      [annotation],
+      knowledge_base(),
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
+  let assert Ok(v) = list.find(violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 // External declarations
@@ -2173,45 +2385,31 @@ pub fn run(h: fn(Int) -> Int, x: Int) -> Int {
 // A field wired to a polymorphic function binds the field call's arguments to
 // its effect variables, including inline closures.
 
-// A KB whose `Task.go` field is wired to a polymorphic function `helper.run_it`
-// (effect variable `action`), plus a registry giving run_it's parameter
-// positions so the field call's arguments bind that variable.
-fn polymorphic_field_kb_and_registry() -> #(
-  effects.KnowledgeBase,
-  signatures.SignatureRegistry,
-) {
-  let action_var =
-    effect_term.from_effect_set(Polymorphic(
-      set.new(),
-      set.from_list(["action"]),
-    ))
-  let kb =
-    effects.with_inferred_type_fields(knowledge_base(), [
-      #(
-        #("", "Task", "go"),
-        TypeFieldEffect(
-          effects: action_var,
-          bounds: [ParamBound("action", action_var)],
-          source: Some(QualifiedName("helper", "run_it")),
-        ),
-      ),
-    ])
-  let run_it_src =
-    "pub fn run_it(action: fn(String) -> Nil, msg: String) -> Nil { action(msg) }"
-  let assert Ok(run_it_module) = glance.module(run_it_src)
-  let registry = signatures.from_glance_module("helper", run_it_module)
-  #(kb, registry)
-}
-
+// Check `t.go(<arg>, msg)` where `t` is a receiver *proven* to wire `go` to the
+// polymorphic same-module function `run_it` (effect variable `action`). The
+// let-bound construction makes the field value concrete for this receiver, so the
+// field call resolves through it — a `LocalRef` field resolves to a plain call at
+// the construction site — and the call's arguments bind `run_it`'s `action`
+// variable, exactly as an ordinary second-order call does.
 fn check_field_call(arg: String) -> List(types.Violation) {
-  let #(kb, registry) = polymorphic_field_kb_and_registry()
   let source = "
 import gleam/io
-pub fn main(t: Task, msg: String) {
+pub type Wrapper {
+  Wrapper
+}
+pub type Task {
+  Task(go: fn(fn(String) -> Nil, String) -> Nil)
+}
+fn run_it(action: fn(String) -> Nil, msg: String) -> Nil {
+  action(msg)
+}
+pub fn main(msg: String) {
+  let t = Task(go: run_it)
   t.go(" <> arg <> ", msg)
 }
 "
   let assert Ok(module) = glance.module(source)
+  let registry = signatures.from_glance_module("", module)
   let #(violations, _warnings) =
     checker.check(
       module,
@@ -2224,7 +2422,7 @@ pub fn main(t: Task, msg: String) {
           effect_term.from_effect_set(Specific(set.new())),
         ),
       ],
-      kb,
+      knowledge_base(),
       registry,
       dict.new(),
       dict.new(),

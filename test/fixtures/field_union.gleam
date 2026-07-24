@@ -19,11 +19,11 @@ pub fn shout(value: a) -> Parser(a) {
   })
 }
 
-// Calls the function-typed field with a *non-function* argument. The union of
-// operators must be applied and β-reduced to the concrete `[Stdout]`, not leak
-// the raw operator bounds into run's effect set (which would ground to
-// `[Unknown]` and violate the `[Stdout]` budget). Regression for the
-// union-of-operators field-call leak.
+// Calls the function-typed field on a *parameter* receiver. The two package-wide
+// construction sites are nominal evidence that must not resolve a parameter
+// receiver (a caller can supply any Parser), so the call stays polymorphic: `run`
+// infers the field bound `p.run` and grounds to `[Unknown]` when the `check` line
+// supplies no bound. A caller passing a concrete `Parser` resolves it precisely.
 pub fn run(p: Parser(a), in: Int) -> a {
   p.run(in)
 }
