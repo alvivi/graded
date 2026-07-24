@@ -1385,6 +1385,49 @@ pub fn builder_field_whole_caller_union_test() {
   union |> should.equal(set.from_list(["Disk", "Stdout"]))
 }
 
+fn builder_chain_actual(function: String) -> types.EffectSet {
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/builder_chain.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == function })
+  v.actual
+}
+
+pub fn builder_chain_update_preserves_resolver_test() {
+  // A later `with_reporter` update preserves the resolver set by an earlier
+  // `with_resolver` — the overlay composes.
+  builder_chain_actual("run_chained")
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn builder_chain_last_write_wins_test() {
+  // Two resolver updates: the second (logging, [Stdout]) wins over the first
+  // (disk, [Disk]).
+  builder_chain_actual("run_last_wins")
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn builder_chain_opaque_base_updated_field_test() {
+  // A builder over an untraceable producer resolves the updated field precisely;
+  // the base never has to ground.
+  builder_chain_actual("run_opaque_base")
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn builder_chain_inline_update_over_opaque_base_test() {
+  // An inline `Options(..opaque_options(), resolver: logging_resolver)`: the
+  // updated resolver resolves to [Stdout], field-selective over the opaque base.
+  builder_chain_actual("run_inline_updated")
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn builder_chain_inherited_field_over_opaque_base_test() {
+  // The inherited reporter (not updated) over the opaque base falls through to
+  // the untraceable base and stays [Unknown] — sound, never guessed.
+  builder_chain_actual("run_inline_inherited")
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
 // Callback arguments and local resolution
 //
 // Arguments to fn-typed parameters (named, labeled) resolve to their real
