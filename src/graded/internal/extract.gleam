@@ -2210,9 +2210,15 @@ fn classify_local_binding(
     // field var re-keys onto the caller's receiver (`let o = config.options;
     // inner(o)` re-keys `o.resolver` onto `config.options.resolver`).
     BoundReceiverPath(path) -> types.ReceiverPath(path)
-    // A parameter or an opaque value: a bare local reference, resolved (or left
-    // unresolved) at the use site.
-    BoundLocal | BoundParam | BoundOpaque -> LocalRef(name:)
+    // A parameter: a bare local reference, resolved against the caller's param
+    // bounds at the use site.
+    BoundLocal | BoundParam -> LocalRef(name:)
+    // An opaque value — a destructured, computed, or shadowed local. It is *not*
+    // a bare `LocalRef`: a top-level function is never bound in the env, so a
+    // `LocalRef` resolved by name would let an opaque local that happens to
+    // shadow a same-module function borrow that function's effect (an
+    // under-report). It stays untraceable.
+    BoundOpaque -> OtherExpression
   }
 }
 
