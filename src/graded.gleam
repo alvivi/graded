@@ -142,9 +142,10 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.try(parse_all_files(gleam_files))
   let index = build_module_index(parsed, directory)
+  let installed_sources = packages_dir_sources(packages_dir(package_root))
+  let path_sources = path_dep_sources(package_root)
   let dep_registry =
-    signatures.load_from_packages_dir(packages_dir(package_root))
-    |> signatures.merge(path_dep_registry(package_root))
+    signatures.merge(installed_sources.registry, path_sources.registry)
   let registry = signatures.merge(dep_registry, build_project_registry(index))
   let type_info = build_type_index(index, package_root)
 
@@ -197,10 +198,8 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
     // Builders derived from installed and path dependency source; the current
     // package's own builders win over both (module namespaces don't overlap).
-    |> effects.with_updates(
-      updates_from_packages_dir(packages_dir(package_root)),
-    )
-    |> effects.with_updates(path_dep_updates(package_root))
+    |> effects.with_updates(installed_sources.updates)
+    |> effects.with_updates(path_sources.updates)
     |> effects.with_updates(qualify_by_module(index, extract.update_map))
 
   let results =
@@ -1065,9 +1064,10 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   // above `construction_kb` because the constructor-field index (Fix B) and the
   // C-B pre-pass both consume `registry`/`type_info`; they need only
   // `index`/`package_root`.
+  let installed_sources = packages_dir_sources(packages_dir(package_root))
+  let path_sources = path_dep_sources(package_root)
   let dep_registry =
-    signatures.load_from_packages_dir(packages_dir(package_root))
-    |> signatures.merge(path_dep_registry(package_root))
+    signatures.merge(installed_sources.registry, path_sources.registry)
   let registry = signatures.merge(dep_registry, build_project_registry(index))
   let type_info = build_type_index(index, package_root)
 
@@ -1120,10 +1120,8 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
     // Builders derived from installed and path dependency source; the current
     // package's own builders win over both (module namespaces don't overlap).
-    |> effects.with_updates(
-      updates_from_packages_dir(packages_dir(package_root)),
-    )
-    |> effects.with_updates(path_dep_updates(package_root))
+    |> effects.with_updates(installed_sources.updates)
+    |> effects.with_updates(path_sources.updates)
     |> effects.with_updates(qualify_by_module(index, extract.update_map))
 
   let graph = build_dependency_graph(index)
@@ -1551,52 +1549,69 @@ fn manifest_path(package_root: String) -> String {
   filepath.join(package_root, "manifest.toml")
 }
 
-// Update-builder signatures derived from every installed dependency's *source*
-// under `build/packages`, keyed by `#(module, function)`. This is the source the
-// consumer compiled against, so a builder resolved from it can never skew from a
-// stale serialized `update` line — it takes precedence over the spec-loaded map.
-// A dependency whose source can't be parsed contributes nothing here and falls
+// Dependency sources
+//
+// What graded derives from a dependency's own `src/`: parameter positions for
+// positional argument matching, and the update-builder signatures its public
+// builders declare. One walk parses each file once and folds the parsed module
+// into both.
+
+// The signature registry and update-builder map derived from one or more
+// dependency source trees. Both come from the source the consumer compiled
+// against, so a builder resolved from `updates` can never skew from a stale
+// serialized `update` line — it takes precedence over the spec-loaded map. A
+// dependency whose source can't be parsed contributes to neither field and falls
 // back to its serialized signature.
-fn updates_from_packages_dir(
-  packages_directory: String,
-) -> Dict(#(String, String), types.UpdateSignature) {
+type DependencySources {
+  DependencySources(
+    registry: SignatureRegistry,
+    updates: Dict(#(String, String), types.UpdateSignature),
+  )
+}
+
+fn empty_dependency_sources() -> DependencySources {
+  DependencySources(registry: signatures.empty(), updates: dict.new())
+}
+
+// Merge two scans; `b` wins on key conflict, matching `signatures.merge`.
+fn merge_dependency_sources(
+  a: DependencySources,
+  b: DependencySources,
+) -> DependencySources {
+  DependencySources(
+    registry: signatures.merge(a.registry, b.registry),
+    updates: dict.merge(a.updates, b.updates),
+  )
+}
+
+// Scan the `src/` tree of every installed dependency under `build/packages`.
+fn packages_dir_sources(packages_directory: String) -> DependencySources {
   case simplifile.read_directory(packages_directory) {
-    Error(_) -> dict.new()
+    Error(_) -> empty_dependency_sources()
     Ok(entries) ->
-      list.fold(entries, dict.new(), fn(acc, dep) {
+      list.fold(entries, empty_dependency_sources(), fn(acc, dep) {
         let src_dir =
           filepath.join(filepath.join(packages_directory, dep), "src")
-        dict.merge(acc, updates_from_source_dir(src_dir))
+        merge_dependency_sources(acc, source_dir_sources(src_dir))
       })
   }
 }
 
-fn updates_from_source_dir(
-  source_dir: String,
-) -> Dict(#(String, String), types.UpdateSignature) {
-  case simplifile.get_files(source_dir) {
-    Error(_) -> dict.new()
-    Ok(files) ->
-      files
-      |> list.filter(fn(path) { string.ends_with(path, ".gleam") })
-      |> list.fold(dict.new(), fn(acc, gleam_path) {
-        case simplifile.read(gleam_path) {
-          Error(_) -> acc
-          Ok(source) ->
-            case glance.module(source) {
-              Error(_) -> acc
-              Ok(module) ->
-                dict.merge(
-                  acc,
-                  extract.public_update_signatures(
-                    module,
-                    config.module_path_for_source(gleam_path, source_dir),
-                  ),
-                )
-            }
-        }
-      })
-  }
+// Scan one package's `src/` tree, folding each parsed module into the registry
+// and into the update-builder map. Only public builders cross a package
+// boundary, so only those land in `updates`.
+fn source_dir_sources(source_dir: String) -> DependencySources {
+  signatures.parse_source_dir(source_dir)
+  |> list.fold(empty_dependency_sources(), fn(acc, entry) {
+    let #(module_path, module) = entry
+    merge_dependency_sources(
+      acc,
+      DependencySources(
+        registry: signatures.from_glance_module(module_path, module),
+        updates: extract.public_update_signatures(module, module_path),
+      ),
+    )
+  })
 }
 
 fn find_gleam_toml_dir(dir: String, original: String) -> String {
@@ -1716,34 +1731,20 @@ fn enrich_with_path_deps(
   })
 }
 
-// Update-builder signatures derived from every path dependency's `src/`, keyed
-// by `#(module, function)`. Path deps live at their declared `path`, outside
-// `build/packages`, so `updates_from_packages_dir` never sees them — this reaches
-// them the same way `path_dep_registry` reaches their parameter positions.
-fn path_dep_updates(
-  package_root: String,
-) -> Dict(#(String, String), types.UpdateSignature) {
-  effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
-  |> list.fold(dict.new(), fn(acc, dep) {
-    let #(_name, dep_path) = dep
-    let resolved_dep_path = resolve_path(package_root, dep_path)
-    dict.merge(acc, updates_from_source_dir(resolved_dep_path <> "/src"))
-  })
-}
-
-// Build a signature registry from every path dependency's `src/` directory.
-// Path deps live at their declared `path`, not under `build/packages`, so
-// `load_from_packages_dir` never sees them — without this their cross-module
+// Scan the `src/` tree of every path dependency declared in `gleam.toml`. Path
+// deps live at their declared `path`, not under `build/packages`, so
+// `packages_dir_sources` never sees them — without this their cross-module
 // callees lack the parameter-position info that positional (unlabeled) argument
-// matching needs to bind effect variables at the call site.
-fn path_dep_registry(package_root: String) -> SignatureRegistry {
+// matching needs to bind effect variables at the call site, and their builders
+// resolve only from a serialized `update` line.
+fn path_dep_sources(package_root: String) -> DependencySources {
   effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
-  |> list.fold(signatures.empty(), fn(acc, dep) {
+  |> list.fold(empty_dependency_sources(), fn(acc, dep) {
     let #(_name, dep_path) = dep
     let resolved_dep_path = resolve_path(package_root, dep_path)
-    signatures.merge(
+    merge_dependency_sources(
       acc,
-      signatures.load_from_source_dir(resolved_dep_path <> "/src"),
+      source_dir_sources(resolved_dep_path <> "/src"),
     )
   })
 }

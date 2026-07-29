@@ -218,12 +218,22 @@ pub fn make() -> foo.Resolver { todo }
   |> should.be_error()
 }
 
-// Loading from a packages directory
+// Parsing a dependency source tree
 //
-// Building a signature registry by walking dependency sources on disk, using
-// a temporary fake packages directory.
+// Walking a dependency's `src/` on disk, using a temporary fake package
+// directory, and folding what comes back into a registry.
 
-pub fn load_from_packages_dir_walks_dep_sources_test() {
+fn registry_from_source_dir(
+  source_dir: String,
+) -> signatures.SignatureRegistry {
+  signatures.parse_source_dir(source_dir)
+  |> list.fold(signatures.empty(), fn(acc, entry) {
+    let #(module_path, module) = entry
+    signatures.merge(acc, signatures.from_glance_module(module_path, module))
+  })
+}
+
+pub fn parse_source_dir_walks_dep_sources_test() {
   let dir = "/tmp/graded_signatures_test_pkgs"
   let _ = simplifile.delete(dir)
   let assert Ok(Nil) =
@@ -237,7 +247,7 @@ pub fn load_from_packages_dir_walks_dep_sources_test() {
 ",
     )
 
-  let registry = signatures.load_from_packages_dir(dir)
+  let registry = registry_from_source_dir(dir <> "/fake_dep/src")
   let params = signatures.lookup(registry, QualifiedName("fake/list", "map"))
   let assert Some([_items, f_param]) = params
   f_param.is_fn_typed |> should.be_true()
@@ -247,12 +257,12 @@ pub fn load_from_packages_dir_walks_dep_sources_test() {
   Nil
 }
 
-pub fn load_from_packages_dir_skips_missing_src_test() {
+pub fn parse_source_dir_skips_missing_src_test() {
   let dir = "/tmp/graded_signatures_test_skip"
   let _ = simplifile.delete(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/erlang_only")
 
-  let registry = signatures.load_from_packages_dir(dir)
+  let registry = registry_from_source_dir(dir <> "/erlang_only/src")
   signatures.lookup(registry, QualifiedName("anything", "foo"))
   |> should.equal(None)
 

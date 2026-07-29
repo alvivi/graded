@@ -10,7 +10,6 @@
 // Project modules are parsed during `run_infer` / `run`; dependency
 // modules are parsed from `build/packages/<dep>/src/` on demand.
 
-import filepath
 import glance.{type Function, type Module, FunctionType}
 import gleam/dict.{type Dict}
 import gleam/int
@@ -424,72 +423,35 @@ fn is_function_type(t: glance.Type) -> Bool {
 
 // Dependency loading
 //
-// Parses dependency and path-dependency source trees with glance to fill the
-// registry with cross-package signatures; unreadable or unparseable packages
-// are skipped rather than failing the run.
+// Parses dependency and path-dependency source trees with glance so a caller
+// folds each parsed module into everything it derives from dependency source —
+// this registry and the update-builder map — from a single read and parse per
+// file. Unreadable or unparseable files are skipped rather than failing the run.
 
-// Load signature registries for every dependency in `packages_dir`
-// by parsing each dep's `src/` directory with glance.
+// Parse every `.gleam` file under `source_dir` with glance, each paired with the
+// module path its location denotes (`<source_dir>/gleam/list.gleam` →
+// `gleam/list`), in walk order.
 //
-// For each `<packages_dir>/<dep>/src/` subtree, walks every `.gleam`
-// file and folds it into the registry via `from_glance_module`,
-// using the path under `src/` as the module path (e.g.
-// `gleam_stdlib/src/gleam/list.gleam` → `gleam/list`).
-//
-// Failures (missing `src/`, parse errors from version mismatches,
-// FFI-only Erlang packages) are silently skipped — affected deps
-// contribute no entries and calls into them fall back to label-only
-// argument matching at polymorphic call sites.
-pub fn load_from_packages_dir(packages_dir: String) -> SignatureRegistry {
-  case simplifile.read_directory(packages_dir) {
-    Error(_) -> empty()
-    Ok(entries) ->
-      list.fold(entries, empty(), fn(acc, dep) {
-        let src_dir = filepath.join(filepath.join(packages_dir, dep), "src")
-        merge(acc, registry_from_source_dir(src_dir))
-      })
-  }
-}
-
-// Build a registry from a single package's `src/` directory by parsing every
-// `.gleam` file under it. Used for path dependencies, whose source lives at the
-// declared `path` rather than under `build/packages` — so `load_from_packages_dir`
-// never sees them and their cross-module calls would otherwise lack the position
-// info positional argument matching needs.
-pub fn load_from_source_dir(source_dir: String) -> SignatureRegistry {
-  registry_from_source_dir(source_dir)
-}
-
-fn registry_from_source_dir(source_dir: String) -> SignatureRegistry {
+// Failures (a missing directory, parse errors from version mismatches, FFI-only
+// Erlang packages) are silently skipped — the affected files contribute nothing,
+// so calls into them fall back to label-only argument matching at polymorphic
+// call sites.
+pub fn parse_source_dir(source_dir: String) -> List(#(String, Module)) {
   case simplifile.get_files(source_dir) {
-    Error(_) -> empty()
+    Error(_) -> []
     Ok(files) ->
       files
-      |> list.filter(fn(p) { string.ends_with(p, ".gleam") })
-      |> list.fold(empty(), fn(acc, gleam_path) {
-        merge(acc, registry_from_gleam_file(gleam_path, source_dir))
+      |> list.filter(fn(path) { string.ends_with(path, ".gleam") })
+      |> list.filter_map(fn(gleam_path) {
+        use source <- result.try(result.replace_error(
+          simplifile.read(gleam_path),
+          Nil,
+        ))
+        use module <- result.map(result.replace_error(
+          glance.module(source),
+          Nil,
+        ))
+        #(config.module_path_for_source(gleam_path, source_dir), module)
       })
-  }
-}
-
-fn registry_from_gleam_file(
-  gleam_path: String,
-  source_dir: String,
-) -> SignatureRegistry {
-  use source <- bool_or_default(simplifile.read(gleam_path), empty())
-  use module <- bool_or_default(glance.module(source), empty())
-  from_glance_module(
-    config.module_path_for_source(gleam_path, source_dir),
-    module,
-  )
-}
-
-// Continuation-style result-or-default: runs `next` with the Ok value,
-// or returns `default` on Error. Lets callers chain reads/parses
-// without nested case expressions.
-fn bool_or_default(result: Result(a, b), default: c, next: fn(a) -> c) -> c {
-  case result {
-    Ok(v) -> next(v)
-    Error(_) -> default
   }
 }
