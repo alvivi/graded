@@ -116,6 +116,12 @@ whose effect genuinely depends on a callback argument (`fn(cb) { cb() }`): a
 direct read applies it to the real argument, but a forwarded one has no field-call
 arguments at the binding site, so it stays `[Unknown]` — sound, not precise.
 
+A field wired from a **closure's own parameter**
+(`fn(handler) { Options(..base, resolver: handler) }`) stays `[Unknown]` on both a
+direct read and a forwarded one. The value is fixed only where the closure is
+applied, so the field is neither a same-named module function nor an enclosing
+parameter — reading it as either would understate the effect.
+
 Forwarding that parameter through helper calls preserves the same field bound.
 The receiver argument forwards whenever its provenance is syntactically rooted in
 one of the caller's parameters: passing a parameter directly, a receiver path

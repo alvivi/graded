@@ -1513,6 +1513,7 @@ fn factory_construction(
     route_factory_fields(
       signature,
       classify_arguments(arguments, context, env, 0),
+      env,
     )
   case dict.is_empty(fields) {
     True -> Error(Nil)
@@ -1527,11 +1528,12 @@ fn factory_construction(
 fn route_factory_fields(
   signature: FactorySignature,
   args: List(CallArgument),
+  env: Env,
 ) -> Dict(String, ArgumentValue) {
   let by_position = args_by_position(signature.param_labels, args)
   dict.fold(signature.fields, dict.new(), fn(acc, label, position) {
     case dict.get(by_position, position) {
-      Ok(value) -> dict.insert(acc, label, value)
+      Ok(value) -> dict.insert(acc, label, field_value(value, env))
       Error(Nil) -> acc
     }
   })
@@ -1632,7 +1634,7 @@ fn classify_constructor(
         }
       }
     })
-  BoundConstructor(fields:)
+  BoundConstructor(fields: field_values(fields, env))
 }
 
 fn resolve_env(name: String, env: Env) -> LocalBinding {
@@ -2283,6 +2285,50 @@ fn classify_local_binding(
   }
 }
 
+// Reduce a record field's wired value to an opaque one when it is a closure's
+// own parameter. Field resolution reads a `LocalRef` field value by name — as a
+// same-module function when one shares the name, as the enclosing function's
+// parameter otherwise — and a closure parameter is neither, so either reading
+// borrows an effect the record does not store (an under-report). The closure's
+// application site accounts for the parameter; the field itself stays
+// untraceable.
+fn field_value(value: ArgumentValue, env: Env) -> ArgumentValue {
+  case value {
+    LocalRef(name:) ->
+      case dict.get(env, name) {
+        Ok(BoundParam) -> OtherExpression
+        Ok(BoundFunctionRef(..))
+        | Ok(BoundConstructor(..))
+        | Ok(BoundReceiverPath(..))
+        | Ok(BoundLocal)
+        | Ok(BoundClosure(..))
+        | Ok(BoundChoice(..))
+        | Ok(BoundReturnedOperator(..))
+        | Ok(BoundUpdated(..))
+        | Ok(BoundOpaque)
+        | Error(Nil) -> value
+      }
+    FunctionRef(..)
+    | ConstructorRef
+    | types.Closure(..)
+    | types.Choice(..)
+    | types.ReturnedOperator(..)
+    | types.CallResult(..)
+    | types.ReceiverPath(..)
+    | Constructed(..)
+    | types.Updated(..)
+    | OtherExpression -> value
+  }
+}
+
+// Apply `field_value` to every field of a record wiring.
+fn field_values(
+  fields: Dict(String, ArgumentValue),
+  env: Env,
+) -> Dict(String, ArgumentValue) {
+  dict.map_values(fields, fn(_label, value) { field_value(value, env) })
+}
+
 // Classify a single argument expression. Determines whether it's a
 // function reference (qualified or unqualified import), a local
 // identifier, a constructor (uppercase), or something else.
@@ -2460,7 +2506,7 @@ fn update_constructed_or_producer(
       |> list.try_map(fn(entry) {
         let #(label, position) = entry
         dict.get(by_position, position)
-        |> result.map(fn(value) { #(label, value) })
+        |> result.map(fn(value) { #(label, field_value(value, env)) })
       }),
     )
     types.Updated(base:, fields: dict.from_list(fields))
@@ -2532,7 +2578,7 @@ fn classify_record_update(
     })
   case dict.is_empty(updated) {
     True -> base
-    False -> types.Updated(base:, fields: updated)
+    False -> types.Updated(base:, fields: field_values(updated, env))
   }
 }
 
@@ -2566,6 +2612,7 @@ fn factory_constructed_or_producer(
     route_factory_fields(
       signature,
       classify_arguments(arguments, context, env, 0),
+      env,
     )
   case dict.is_empty(fields) {
     True -> classify_call_producer(function, arguments, context, env)

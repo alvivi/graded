@@ -1512,6 +1512,22 @@ pub fn builder_shadow_param_function_collision_is_unknown_test() {
   |> should.equal(types.Polymorphic(set.new(), set.from_list(["handler"])))
 }
 
+pub fn builder_shadow_closure_param_collision_is_unknown_test() {
+  // A *closure* parameter named the same as a pure module function (`handler`)
+  // wired into a field is neither the module function nor an enclosing
+  // parameter, so a direct read of the field stays [Unknown] rather than
+  // borrowing the module function's [].
+  builder_shadow_actual("run_closure_param_collision")
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn builder_shadow_closure_param_collision_forwarded_is_unknown_test() {
+  // The same closure-parameter collision read through a forwarding callee: the
+  // forwarded field variable stays [Unknown] too.
+  builder_shadow_actual("run_closure_param_collision_forwarded")
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
 pub fn builder_chain_update_preserves_resolver_test() {
   // A later `with_reporter` update preserves the resolver set by an earlier
   // `with_resolver` — the overlay composes.
