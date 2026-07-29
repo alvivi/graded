@@ -380,10 +380,11 @@ pub fn factories(
   knowledge_base.factories
 }
 
-// Merge the current package's update-builder map (keyed by `#(module,
-// function)`) into any already loaded from dependencies and the catalog, so both
-// a same-run builder and an installed dependency's builder resolve. The current
-// package wins on a clash (its signature is derived from source, not a spec).
+// Merge an update-builder map (keyed by `#(module, function)`) into the
+// knowledge base. Every map here is derived from source at run time — the
+// knowledge base starts with none, and the callers merge installed-dependency
+// source, then path-dependency source, then the current package's own builders.
+// A later merge wins on a clash, so the current package takes precedence.
 pub fn with_updates(
   knowledge_base: KnowledgeBase,
   updates: Dict(#(String, String), UpdateSignature),

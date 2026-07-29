@@ -1453,6 +1453,19 @@ pub fn builder_field_inline_argument_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn builder_field_labeled_reordered_arguments_test() {
+  // builder_field.run_labeled_reordered calls the labeled builder with its
+  // arguments in the reverse of the parameter order (`resolver:` before
+  // `options:`). The labels route each argument to its parameter position, so
+  // the overlay still replaces the resolver — [Stdout], not the default [Disk].
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/builder_field.gleam" })
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "run_labeled_reordered" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn builder_field_whole_caller_union_test() {
   // builder_field.run_union unions the eager construction's own [Disk] (a real,
   // separate effect — nuance #2) with the overridden field call's [Stdout]. The
