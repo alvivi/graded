@@ -569,30 +569,17 @@ pub fn merge_inferred(
       }
     })
 
+  // An `effects`/`returns` line takes its freshly inferred value; one whose
+  // function is no longer inferred is stale and dropped. A
+  // `check`/`type`/`external`/comment/blank stays as written.
   let new_lines =
-    list.map(file.lines, fn(line) {
+    list.filter_map(file.lines, fn(line) {
       case line {
         AnnotationLine(a) if a.kind == Effects ->
-          case dict.get(inferred_map, a.function) {
-            Ok(fresh) -> AnnotationLine(fresh)
-            Error(Nil) -> line
-          }
+          dict.get(inferred_map, a.function) |> result.map(AnnotationLine)
         ReturnsLine(r) ->
-          case dict.get(returns_map, r.function) {
-            Ok(fresh) -> ReturnsLine(fresh)
-            Error(Nil) -> line
-          }
-        _ -> line
-      }
-    })
-    // A stale `effects`/`returns` line — one whose function is no longer
-    // inferred — is dropped; a `check`/`type`/`external`/comment/blank stays.
-    |> list.filter(fn(line) {
-      case line {
-        AnnotationLine(a) if a.kind == Effects ->
-          dict.has_key(inferred_map, a.function)
-        ReturnsLine(r) -> dict.has_key(returns_map, r.function)
-        _ -> True
+          dict.get(returns_map, r.function) |> result.map(ReturnsLine)
+        _ -> Ok(line)
       }
     })
 

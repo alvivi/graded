@@ -1346,23 +1346,15 @@ pub fn builder_field_replaced_is_precise_test() {
   // overlay resolves `annotate`'s polymorphic `options.resolver` onto the
   // builder-set `logging_resolver` — [Stdout], last-write-wins — not the default
   // resolver's [Disk], and not [Unknown].
-  let assert Ok(results) = graded.run("test/fixtures")
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == "test/fixtures/builder_field.gleam" })
-  let assert Ok(v) =
-    list.find(r.violations, fn(v) { v.function == "run_replaced" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  builder_field_actual("run_replaced")
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn builder_field_inherited_default_test() {
   // builder_field.run_default calls `annotate(_, default_options())` with no
   // override, so the field call inherits the default resolver's [Disk].
-  let assert Ok(results) = graded.run("test/fixtures")
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == "test/fixtures/builder_field.gleam" })
-  let assert Ok(v) =
-    list.find(r.violations, fn(v) { v.function == "run_default" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Disk"])))
+  builder_field_actual("run_default")
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
 }
 
 pub fn builder_field_cross_package_test() {
@@ -1445,12 +1437,8 @@ effects dep.with_resolver : []
 pub fn builder_field_inline_argument_test() {
   // The builder call inline as annotate's argument (not let-bound) resolves the
   // overridden resolver to [Stdout], the same as the let-bound form.
-  let assert Ok(results) = graded.run("test/fixtures")
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == "test/fixtures/builder_field.gleam" })
-  let assert Ok(v) =
-    list.find(r.violations, fn(v) { v.function == "run_inline_arg" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  builder_field_actual("run_inline_arg")
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn builder_field_labeled_reordered_arguments_test() {
@@ -1458,12 +1446,8 @@ pub fn builder_field_labeled_reordered_arguments_test() {
   // arguments in the reverse of the parameter order (`resolver:` before
   // `options:`). The labels route each argument to its parameter position, so
   // the overlay still replaces the resolver — [Stdout], not the default [Disk].
-  let assert Ok(results) = graded.run("test/fixtures")
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == "test/fixtures/builder_field.gleam" })
-  let assert Ok(v) =
-    list.find(r.violations, fn(v) { v.function == "run_labeled_reordered" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  builder_field_actual("run_labeled_reordered")
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn builder_field_whole_caller_union_test() {
@@ -1486,20 +1470,25 @@ pub fn builder_field_whole_caller_union_test() {
   union |> should.equal(set.from_list(["Disk", "Stdout"]))
 }
 
-fn builder_chain_actual(function: String) -> types.EffectSet {
+// The reported effect of `function`'s violation in one `test/fixtures` file.
+fn fixture_actual(file: String, function: String) -> types.EffectSet {
   let assert Ok(results) = graded.run("test/fixtures")
   let assert Ok(r) =
-    list.find(results, fn(r) { r.file == "test/fixtures/builder_chain.gleam" })
+    list.find(results, fn(r) { r.file == "test/fixtures/" <> file })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == function })
   v.actual
 }
 
+fn builder_field_actual(function: String) -> types.EffectSet {
+  fixture_actual("builder_field.gleam", function)
+}
+
+fn builder_chain_actual(function: String) -> types.EffectSet {
+  fixture_actual("builder_chain.gleam", function)
+}
+
 fn builder_shadow_actual(function: String) -> types.EffectSet {
-  let assert Ok(results) = graded.run("test/fixtures")
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == "test/fixtures/builder_shadow.gleam" })
-  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == function })
-  v.actual
+  fixture_actual("builder_shadow.gleam", function)
 }
 
 pub fn builder_shadow_rebound_param_is_unknown_test() {
@@ -1623,11 +1612,8 @@ pub fn shadow_field_does_not_borrow_function_effect_test() {
   // That local shadows the top-level `handler` (pure []). The field call
   // `c.run()` must stay [Unknown] — never borrow the shadowed function's effect,
   // which would under-report (the field is really an untraceable value).
-  let assert Ok(results) = graded.run("test/fixtures")
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == "test/fixtures/shadow_field.gleam" })
-  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "go" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  fixture_actual("shadow_field.gleam", "go")
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 // Callback arguments and local resolution

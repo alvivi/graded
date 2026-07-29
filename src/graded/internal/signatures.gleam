@@ -428,30 +428,43 @@ fn is_function_type(t: glance.Type) -> Bool {
 // this registry and the update-builder map — from a single read and parse per
 // file. Unreadable or unparseable files are skipped rather than failing the run.
 
-// Parse every `.gleam` file under `source_dir` with glance, each paired with the
-// module path its location denotes (`<source_dir>/gleam/list.gleam` →
-// `gleam/list`), in walk order.
+// Parse every `.gleam` file under `source_dir` with glance and fold it into
+// `initial`, in walk order. `step` receives the module path the file's location
+// denotes (`<source_dir>/gleam/list.gleam` → `gleam/list`) and the parsed
+// module. Folding rather than returning a list keeps one AST live at a time, so
+// a package's whole source never sits in memory at once.
 //
 // Failures (a missing directory, parse errors from version mismatches, FFI-only
 // Erlang packages) are silently skipped — the affected files contribute nothing,
 // so calls into them fall back to label-only argument matching at polymorphic
 // call sites.
-pub fn parse_source_dir(source_dir: String) -> List(#(String, Module)) {
+pub fn fold_source_dir(
+  source_dir: String,
+  initial: acc,
+  step: fn(acc, String, Module) -> acc,
+) -> acc {
   case simplifile.get_files(source_dir) {
-    Error(_) -> []
+    Error(_) -> initial
     Ok(files) ->
       files
       |> list.filter(fn(path) { string.ends_with(path, ".gleam") })
-      |> list.filter_map(fn(gleam_path) {
-        use source <- result.try(result.replace_error(
-          simplifile.read(gleam_path),
-          Nil,
-        ))
-        use module <- result.map(result.replace_error(
-          glance.module(source),
-          Nil,
-        ))
-        #(config.module_path_for_source(gleam_path, source_dir), module)
+      |> list.fold(initial, fn(acc, gleam_path) {
+        let parsed = {
+          use source <- result.try(result.replace_error(
+            simplifile.read(gleam_path),
+            Nil,
+          ))
+          result.replace_error(glance.module(source), Nil)
+        }
+        case parsed {
+          Ok(module) ->
+            step(
+              acc,
+              config.module_path_for_source(gleam_path, source_dir),
+              module,
+            )
+          Error(Nil) -> acc
+        }
       })
   }
 }

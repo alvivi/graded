@@ -291,20 +291,37 @@ pub fn build_constructor_type_map(module: Module) -> Dict(String, String) {
   })
 }
 
+// The signatures `of` recognises among `functions`, keyed by bare function name.
+// Shared by the factory and update-builder maps.
+fn signature_map(
+  functions: List(glance.Function),
+  context: ImportContext,
+  of: fn(glance.Function, ImportContext) -> Result(a, Nil),
+) -> Dict(String, a) {
+  list.fold(functions, dict.new(), fn(acc, function) {
+    case of(function, context) {
+      Ok(signature) -> dict.insert(acc, function.name, signature)
+      Error(Nil) -> acc
+    }
+  })
+}
+
+// A module's top-level functions, unwrapped from their definitions.
+fn module_functions(module: Module) -> List(glance.Function) {
+  list.map(module.functions, fn(definition) { definition.definition })
+}
+
 // Detect each function in a module that is a *factory*: its body's tail is a
 // constructor call with at least one field wired to a bare parameter. Purely
 // syntactic — no knowledge base — so the whole package's factories can be
 // precomputed up front (like the constructor-label map). Keyed by bare
 // function name.
 pub fn factory_map(module: Module) -> Dict(String, FactorySignature) {
-  let context = build_import_context(module)
-  list.fold(module.functions, dict.new(), fn(acc, definition) {
-    let function = definition.definition
-    case factory_signature(function, context) {
-      Ok(signature) -> dict.insert(acc, function.name, signature)
-      Error(Nil) -> acc
-    }
-  })
+  signature_map(
+    module_functions(module),
+    build_import_context(module),
+    factory_signature,
+  )
 }
 
 // The factory signature of a single function, or `Error` when it isn't a
@@ -367,20 +384,23 @@ pub fn public_update_signatures(
   module: Module,
   module_path: String,
 ) -> Dict(#(String, String), UpdateSignature) {
-  let publics = public_function_names(module)
-  update_map(module)
+  signature_map(
+    public_functions(module),
+    build_import_context(module),
+    update_signature,
+  )
   |> dict.to_list()
-  |> list.filter(fn(entry) { set.contains(publics, entry.0) })
   |> list.map(fn(entry) { #(#(module_path, entry.0), entry.1) })
   |> dict.from_list()
 }
 
-// The names of a module's public top-level functions.
-fn public_function_names(module: Module) -> Set(String) {
-  list.fold(module.functions, set.new(), fn(acc, definition) {
-    case definition.definition.publicity {
-      glance.Public -> set.insert(acc, definition.definition.name)
-      glance.Private -> acc
+// A module's public top-level functions.
+fn public_functions(module: Module) -> List(glance.Function) {
+  module_functions(module)
+  |> list.filter(fn(function) {
+    case function.publicity {
+      glance.Public -> True
+      glance.Private -> False
     }
   })
 }
@@ -389,14 +409,11 @@ fn public_function_names(module: Module) -> Set(String) {
 // is a record update of one of its parameters, with every updated field wired to
 // a parameter. Purely syntactic, precomputed up front. Keyed by bare name.
 pub fn update_map(module: Module) -> Dict(String, UpdateSignature) {
-  let context = build_import_context(module)
-  list.fold(module.functions, dict.new(), fn(acc, definition) {
-    let function = definition.definition
-    case update_signature(function, context) {
-      Ok(signature) -> dict.insert(acc, function.name, signature)
-      Error(Nil) -> acc
-    }
-  })
+  signature_map(
+    module_functions(module),
+    build_import_context(module),
+    update_signature,
+  )
 }
 
 // The update-builder signature of a single function, or `Error` when its tail
@@ -406,15 +423,17 @@ fn update_signature(
   function: glance.Function,
   context: ImportContext,
 ) -> Result(UpdateSignature, Nil) {
-  use #(tail, init) <- result.try(case list.reverse(function.body) {
-    [glance.Expression(tail), ..init_reversed] ->
-      Ok(#(tail, list.reverse(init_reversed)))
+  // Peek at the tail before splitting the body: every function in every scanned
+  // module reaches here, and all but a builder bails on this one match.
+  use #(record, fields) <- result.try(case list.last(function.body) {
+    Ok(glance.Expression(glance.RecordUpdate(record:, fields:, ..))) ->
+      Ok(#(record, fields))
     _ -> Error(Nil)
   })
-  use #(record, fields) <- result.try(case tail {
-    glance.RecordUpdate(record:, fields:, ..) -> Ok(#(record, fields))
-    _ -> Error(Nil)
-  })
+  let init = case list.reverse(function.body) {
+    [_tail, ..init_reversed] -> list.reverse(init_reversed)
+    [] -> []
+  }
   // Classify the tail with the lexical environment in effect there — parameters
   // seeded, the body's leading `let`s threaded — so a parameter rebound before
   // the update (`let resolver = impure; Options(..o, resolver:)`) no longer looks
@@ -438,11 +457,9 @@ fn update_signature(
   // receiver widens to Unknown).
   use field_to_param <- result.try(
     list.try_fold(fields, dict.new(), fn(acc, field) {
-      let value = case field.item {
-        Some(item) -> classify_expression(item, context, env)
-        None -> classify_variable(field.label, context, env)
-      }
-      use position <- result.map(live_param(value))
+      use position <- result.map(
+        live_param(record_update_field_value(field, context, env)),
+      )
       dict.insert(acc, field.label, position)
     }),
   )
@@ -1366,7 +1383,7 @@ fn classify_rhs(
         // direct construction; otherwise fall through to the generic ref path.
         False ->
           factory_or_ref(
-            unshadowed(name, env, lookup_factory_bare(name, context)),
+            lookup_factory_bare(name, env, context),
             expression,
             arguments,
             context,
@@ -1389,11 +1406,7 @@ fn classify_rhs(
         }
         False ->
           factory_or_ref(
-            unshadowed(
-              alias,
-              env,
-              lookup_factory_qualified(alias, ctor, context),
-            ),
+            lookup_factory_qualified(alias, ctor, env, context),
             expression,
             arguments,
             context,
@@ -1424,35 +1437,6 @@ fn factory_or_ref(
   }
 }
 
-// The factory signature for a bare callee — a same-module factory, or an
-// unqualified-imported one resolved through the cross-module map.
-fn lookup_factory_bare(
-  name: String,
-  context: ImportContext,
-) -> Result(FactorySignature, Nil) {
-  case dict.get(context.factories, name) {
-    Ok(signature) -> Ok(signature)
-    Error(Nil) ->
-      case dict.get(context.unqualified, name) {
-        Ok(QualifiedName(module:, function:)) ->
-          dict.get(context.cross_factories, #(module, function))
-        Error(Nil) -> Error(Nil)
-      }
-  }
-}
-
-// The factory signature for a qualified callee `alias.name`.
-fn lookup_factory_qualified(
-  alias: String,
-  name: String,
-  context: ImportContext,
-) -> Result(FactorySignature, Nil) {
-  case dict.get(context.aliases, alias) {
-    Ok(module) -> dict.get(context.cross_factories, #(module, name))
-    Error(Nil) -> Error(Nil)
-  }
-}
-
 // A factory/update signature applies only when its callee name resolves to the
 // top-level function it describes. A name bound in the local environment — a
 // parameter, or a `let`-bound closure/alias — shadows that top-level function, so
@@ -1462,41 +1446,87 @@ fn lookup_factory_qualified(
 fn unshadowed(
   name: String,
   env: Env,
-  signature: Result(a, Nil),
+  then: fn() -> Result(a, Nil),
 ) -> Result(a, Nil) {
   case dict.has_key(env, name) {
     True -> Error(Nil)
-    False -> signature
+    False -> then()
   }
 }
 
-// The update signature for a bare callee — a same-module builder, or an
-// unqualified-imported one resolved through the cross-module map.
-fn lookup_update_bare(
+// The signature for a bare callee — a same-module one from `local`, or an
+// unqualified-imported one resolved through the cross-module map. Shared by the
+// factory and update-builder lookups, which differ only in the maps they read.
+fn lookup_bare(
   name: String,
+  env: Env,
+  local: Dict(String, a),
+  cross: Dict(#(String, String), a),
   context: ImportContext,
-) -> Result(UpdateSignature, Nil) {
-  case dict.get(context.updates, name) {
+) -> Result(a, Nil) {
+  use <- unshadowed(name, env)
+  case dict.get(local, name) {
     Ok(signature) -> Ok(signature)
     Error(Nil) ->
       case dict.get(context.unqualified, name) {
         Ok(QualifiedName(module:, function:)) ->
-          dict.get(context.cross_updates, #(module, function))
+          dict.get(cross, #(module, function))
         Error(Nil) -> Error(Nil)
       }
   }
+}
+
+// The signature for a qualified callee `alias.name`.
+fn lookup_qualified(
+  alias: String,
+  name: String,
+  env: Env,
+  cross: Dict(#(String, String), a),
+  context: ImportContext,
+) -> Result(a, Nil) {
+  use <- unshadowed(alias, env)
+  case dict.get(context.aliases, alias) {
+    Ok(module) -> dict.get(cross, #(module, name))
+    Error(Nil) -> Error(Nil)
+  }
+}
+
+// The factory signature for a bare callee.
+fn lookup_factory_bare(
+  name: String,
+  env: Env,
+  context: ImportContext,
+) -> Result(FactorySignature, Nil) {
+  lookup_bare(name, env, context.factories, context.cross_factories, context)
+}
+
+// The factory signature for a qualified callee `alias.name`.
+fn lookup_factory_qualified(
+  alias: String,
+  name: String,
+  env: Env,
+  context: ImportContext,
+) -> Result(FactorySignature, Nil) {
+  lookup_qualified(alias, name, env, context.cross_factories, context)
+}
+
+// The update signature for a bare callee.
+fn lookup_update_bare(
+  name: String,
+  env: Env,
+  context: ImportContext,
+) -> Result(UpdateSignature, Nil) {
+  lookup_bare(name, env, context.updates, context.cross_updates, context)
 }
 
 // The update signature for a qualified callee `alias.name`.
 fn lookup_update_qualified(
   alias: String,
   name: String,
+  env: Env,
   context: ImportContext,
 ) -> Result(UpdateSignature, Nil) {
-  case dict.get(context.aliases, alias) {
-    Ok(module) -> dict.get(context.cross_updates, #(module, name))
-    Error(Nil) -> Error(Nil)
-  }
+  lookup_qualified(alias, name, env, context.cross_updates, context)
 }
 
 // Build a `BoundConstructor` from a factory call: route each wired field to the
@@ -2383,8 +2413,8 @@ fn classify_expression(
       classify_constructor_or_factory(
         name,
         None,
-        unshadowed(name, env, lookup_factory_bare(name, context)),
-        unshadowed(name, env, lookup_update_bare(name, context)),
+        lookup_factory_bare(name, env, context),
+        lookup_update_bare(name, env, context),
         function,
         arguments,
         context,
@@ -2402,8 +2432,8 @@ fn classify_expression(
       classify_constructor_or_factory(
         name,
         dict.get(context.aliases, alias) |> option.from_result,
-        unshadowed(alias, env, lookup_factory_qualified(alias, name, context)),
-        unshadowed(alias, env, lookup_update_qualified(alias, name, context)),
+        lookup_factory_qualified(alias, name, env, context),
+        lookup_update_qualified(alias, name, env, context),
         function,
         arguments,
         context,
@@ -2570,15 +2600,28 @@ fn classify_record_update(
   let base = classify_expression(record, context, env)
   let updated =
     list.fold(fields, dict.new(), fn(acc, field) {
-      let value = case field.item {
-        Some(item) -> classify_expression(item, context, env)
-        None -> classify_variable(field.label, context, env)
-      }
-      dict.insert(acc, field.label, value)
+      dict.insert(
+        acc,
+        field.label,
+        record_update_field_value(field, context, env),
+      )
     })
   case dict.is_empty(updated) {
     True -> base
     False -> types.Updated(base:, fields: field_values(updated, env))
+  }
+}
+
+// The value a record-update field wires: its expression, or — for the shorthand
+// form (`resolver:`) — the variable the label names.
+fn record_update_field_value(
+  field: glance.RecordUpdateField(Expression),
+  context: ImportContext,
+  env: Env,
+) -> types.ArgumentValue {
+  case field.item {
+    Some(item) -> classify_expression(item, context, env)
+    None -> classify_variable(field.label, context, env)
   }
 }
 

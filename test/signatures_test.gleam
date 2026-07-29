@@ -226,11 +226,11 @@ pub fn make() -> foo.Resolver { todo }
 fn registry_from_source_dir(
   source_dir: String,
 ) -> signatures.SignatureRegistry {
-  signatures.parse_source_dir(source_dir)
-  |> list.fold(signatures.empty(), fn(acc, entry) {
-    let #(module_path, module) = entry
-    signatures.merge(acc, signatures.from_glance_module(module_path, module))
-  })
+  use acc, module_path, module <- signatures.fold_source_dir(
+    source_dir,
+    signatures.empty(),
+  )
+  signatures.merge(acc, signatures.from_glance_module(module_path, module))
 }
 
 pub fn parse_source_dir_walks_dep_sources_test() {
