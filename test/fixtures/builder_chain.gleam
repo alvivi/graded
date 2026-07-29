@@ -1,7 +1,8 @@
-// Chained builders and overlays over an untraceable base. Each `with_*` builder
-// replaces one field of its options parameter; the overlays compose, an updated
-// field is read field-selectively (last-write-wins, never grounding the base),
-// and an inherited field over an opaque base stays [Unknown].
+// Chained builders and overlays. Each `with_*` builder replaces one field of its
+// options parameter; the overlays compose, an updated field is read
+// field-selectively (last-write-wins, never grounding the base), an inherited
+// field over a traceable base grounds through the producer's wiring, and an
+// inherited field over an opaque base stays [Unknown].
 import gleam/io
 
 pub type Options {
@@ -34,6 +35,13 @@ pub fn opaque_options() -> Options {
 
 fn passthrough(options: Options) -> Options {
   options
+}
+
+// A traceable producer: its tail is the construction itself, so its return
+// provenance grounds and an inherited field can be read through an overlay.
+@target(erlang)
+pub fn traceable_options() -> Options {
+  Options(resolver: disk_resolver, reporter: silent_reporter)
 }
 
 pub fn with_resolver(options: Options, resolver: fn(String) -> Nil) -> Options {
@@ -127,4 +135,31 @@ pub fn run_closure_forwarded() -> Nil {
   let opts =
     with_resolver(opaque_options(), fn(message) { io.println(message) })
   annotate("x", opts)
+}
+
+// An inherited (not updated) field over a TRACEABLE base grounds through the
+// producer's wiring: the overlay replaces `reporter`, so reading `resolver`
+// falls through to `traceable_options`'s [Disk] rather than [Unknown].
+@target(erlang)
+pub fn run_traceable_inherited() -> Nil {
+  let opts = traceable_options() |> with_reporter(silent_reporter)
+  annotate("x", opts)
+}
+
+// The same inherited field read directly off the overlay.
+@target(erlang)
+pub fn run_traceable_inherited_direct() -> Nil {
+  let opts = traceable_options() |> with_reporter(silent_reporter)
+  opts.resolver("x")
+}
+
+// Chained overlays over a traceable base: the inherited field still grounds
+// through both layers.
+@target(erlang)
+pub fn run_traceable_inherited_chained() -> Nil {
+  let opts =
+    traceable_options()
+    |> with_reporter(silent_reporter)
+    |> with_reporter(logging_resolver)
+  opts.resolver("x")
 }

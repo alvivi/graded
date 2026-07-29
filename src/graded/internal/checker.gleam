@@ -2122,6 +2122,20 @@ fn grounded_receiver(
       ))
       ground_provenance(provenance, positional)
     }
+    // A record-update overlay: ground its base too, so a field the overlay
+    // doesn't replace can still be read through it (`default_options() |>
+    // with_reporter(r)` keeps a traceable `resolver`). Updated fields are read
+    // from the overlay first and don't depend on this; a base that won't ground
+    // keeps the overlay as-is, so an inherited field over an untraceable base
+    // stays `[Unknown]` exactly as before. Chained builders unwrap one layer per
+    // step.
+    types.Updated(base:, fields:) ->
+      case
+        grounded_receiver(base, function_map, context, knowledge_base, registry)
+      {
+        Ok(grounded) -> Ok(types.Updated(base: grounded, fields:))
+        Error(Nil) -> Ok(value)
+      }
     types.FunctionRef(_)
     | types.LocalRef(_)
     | types.ConstructorRef
@@ -2130,7 +2144,6 @@ fn grounded_receiver(
     | types.ReturnedOperator(..)
     | types.ReceiverPath(_)
     | types.Constructed(_)
-    | types.Updated(..)
     | types.OtherExpression -> Ok(value)
   }
 }
