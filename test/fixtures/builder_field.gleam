@@ -32,6 +32,15 @@ pub fn with_resolver(options: Options, resolver: fn(String) -> Nil) -> Options {
   Options(..options, resolver:)
 }
 
+// The same builder with labeled parameters, so callers can pass the base and
+// the replacement in any order.
+pub fn with_resolver_labeled(
+  options options: Options,
+  resolver resolver: fn(String) -> Nil,
+) -> Options {
+  Options(..options, resolver:)
+}
+
 pub fn annotate(source: String, options: Options) -> Nil {
   options.resolver(source)
 }
@@ -50,6 +59,18 @@ pub fn run_default() -> Nil {
 // The builder call inline as the argument, not let-bound: resolves the same.
 pub fn run_inline_arg() -> Nil {
   annotate("x", with_resolver(default_options(), logging_resolver))
+}
+
+// Labeled arguments in the reverse of the parameter order: the labels route the
+// base and the replacement to their positions, so the builder-set [Stdout]
+// resolver still wins over the default [Disk].
+pub fn run_labeled_reordered() -> Nil {
+  let opts =
+    with_resolver_labeled(
+      resolver: logging_resolver,
+      options: default_options(),
+    )
+  annotate("x", opts)
 }
 
 // Whole-caller union: a construction-side effect ([Disk]) alongside the
