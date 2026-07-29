@@ -1509,3 +1509,92 @@ pub fn shout(value: String) -> String {
 
   cleanup(root)
 }
+
+// Field functions keep their defining module
+//
+// A constructor field wired to a same-module function is recorded in the
+// producer's return-provenance summary. That summary is read by *consumers*
+// while they check their own module, so the reference must carry the module
+// that defined it — a bare name would be re-resolved against the consumer.
+
+// Materialise a two-module project: `app/producer` wires its own `write` into a
+// `Logger` field, and `app/consumer` reads that field off a `producer.make()`
+// receiver while defining its own `write` with a different effect.
+fn field_module_fixture(name: String, consumer_write: String) -> String {
+  make_fixture(name, [
+    #("gleam.toml", "name = \"app\"\n"),
+    #(
+      "app.graded",
+      "external effects app/consumer.disk_read : [Disk]\n"
+        <> "check app/consumer.run : []\n",
+    ),
+    #(
+      "app/producer.gleam",
+      "import gleam/io
+
+pub type Logger {
+  Logger(emit: fn(String) -> Nil)
+}
+
+pub fn write(message: String) -> Nil {
+  io.println(message)
+}
+
+pub fn make() -> Logger {
+  Logger(emit: write)
+}
+",
+    ),
+    #("app/consumer.gleam", "import app/producer
+
+@external(erlang, \"graded_test_ffi\", \"read\")
+fn disk_read(path: String) -> Nil
+
+" <> consumer_write <> "
+
+pub fn run() -> Nil {
+  let logger = producer.make()
+  logger.emit(\"x\")
+}
+"),
+  ])
+}
+
+fn field_module_actual(directory: String) -> EffectSet {
+  let assert Ok(results) = graded.run(directory)
+  let assert Ok(r) =
+    list.find(results, fn(r) { string.ends_with(r.file, "app/consumer.gleam") })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
+  v.actual
+}
+
+// A consumer whose own same-named function is *pure* must not silence the
+// producer's [Stdout]: resolving the field against the consumer's `write`
+// would report [] and let the empty budget pass.
+pub fn field_function_not_resolved_against_pure_consumer_test() {
+  let root =
+    field_module_fixture(
+      "field_module_pure",
+      "pub fn write(_message: String) -> Nil {\n  Nil\n}",
+    )
+
+  field_module_actual(root)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+
+  cleanup(root)
+}
+
+// The same collision with an *impure* consumer function: the field must still
+// report the producer's [Stdout], never the consumer's [Disk].
+pub fn field_function_not_resolved_against_impure_consumer_test() {
+  let root =
+    field_module_fixture(
+      "field_module_impure",
+      "pub fn write(message: String) -> Nil {\n  disk_read(message)\n}",
+    )
+
+  field_module_actual(root)
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+
+  cleanup(root)
+}

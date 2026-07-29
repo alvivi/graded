@@ -2752,17 +2752,13 @@ pub fn return_provenance(
   context: ImportContext,
 ) -> types.ReturnProvenance {
   let positions = param_position_map(function)
+  let scope =
+    ModuleScope(module: context.module_path, functions: context.functions)
   case return_tail_value(function, context) {
     Ok(value) ->
       case contains_self_call(value, function.name) {
-        True ->
-          recursive_provenance(
-            value,
-            function.name,
-            positions,
-            context.functions,
-          )
-        False -> provenance_of_value(value, positions, context.functions)
+        True -> recursive_provenance(value, function.name, positions, scope)
+        False -> provenance_of_value(value, positions, scope)
       }
     Error(Nil) -> types.Opaque
   }
@@ -2805,6 +2801,16 @@ fn classify_return_tail(
   }
 }
 
+// The module a provenance is being folded in: its path plus its top-level
+// function names. A summary outlives the module it was folded in — a consumer
+// reads it from the knowledge base while checking its *own* module — so a
+// same-module function wired into a field is qualified with `module` at fold
+// time rather than kept as a bare name the consumer would re-resolve against
+// itself.
+type ModuleScope {
+  ModuleScope(module: String, functions: Set(String))
+}
+
 // Fold a classified tail value into a `ReturnProvenance` by matching its root
 // against the parameter positions. Only a bare parameter, a parameter-rooted
 // receiver path, or a constructor rebuilt entirely from parameter-rooted fields
@@ -2812,10 +2818,10 @@ fn classify_return_tail(
 fn provenance_of_value(
   value: ArgumentValue,
   positions: Dict(String, Int),
-  functions: Set(String),
+  scope: ModuleScope,
 ) -> types.ReturnProvenance {
   case value {
-    Constructed(fields) -> build_provenance(fields, positions, functions)
+    Constructed(fields) -> build_provenance(fields, positions, scope)
     LocalRef(..) | types.ReceiverPath(..) ->
       case param_rooted(value, positions) {
         Ok(#(position, Some(tail))) -> types.Path(position, tail)
@@ -2825,7 +2831,7 @@ fn provenance_of_value(
     // A `case`/`if` whose branches are all function-like values is a `Choice`;
     // fold each branch to a provenance and join them. Any untraceable branch
     // (its provenance `Opaque`) widens the whole join to `Opaque`.
-    types.Choice(options) -> join_provenance(options, positions, functions)
+    types.Choice(options) -> join_provenance(options, positions, scope)
     // A record-update tail is captured at the call site as an overlay via the
     // function's update signature, not through return provenance, so folding it
     // here would be redundant — it stays `Opaque`.
@@ -2844,9 +2850,9 @@ fn provenance_of_value(
 fn join_provenance(
   options: List(ArgumentValue),
   positions: Dict(String, Int),
-  functions: Set(String),
+  scope: ModuleScope,
 ) -> types.ReturnProvenance {
-  let branches = list.map(options, provenance_of_value(_, positions, functions))
+  let branches = list.map(options, provenance_of_value(_, positions, scope))
   normalize_provenance(types.Join(branches))
 }
 
@@ -2876,16 +2882,9 @@ fn recursive_provenance(
   value: ArgumentValue,
   self_name: String,
   positions: Dict(String, Int),
-  functions: Set(String),
+  scope: ModuleScope,
 ) -> types.ReturnProvenance {
-  recursion_fixpoint(
-    value,
-    self_name,
-    positions,
-    functions,
-    None,
-    recursion_fuel,
-  )
+  recursion_fixpoint(value, self_name, positions, scope, None, recursion_fuel)
 }
 
 // Kleene iteration from bottom (`None`). Each step re-folds the tail against the
@@ -2895,25 +2894,18 @@ fn recursion_fixpoint(
   value: ArgumentValue,
   self_name: String,
   positions: Dict(String, Int),
-  functions: Set(String),
+  scope: ModuleScope,
   current: Option(types.ReturnProvenance),
   fuel: Int,
 ) -> types.ReturnProvenance {
   case fuel <= 0 {
     True -> types.Opaque
     False -> {
-      let next = eval_recursive(value, self_name, positions, functions, current)
+      let next = eval_recursive(value, self_name, positions, scope, current)
       case next == current {
         True -> option.unwrap(current, types.Opaque)
         False ->
-          recursion_fixpoint(
-            value,
-            self_name,
-            positions,
-            functions,
-            next,
-            fuel - 1,
-          )
+          recursion_fixpoint(value, self_name, positions, scope, next, fuel - 1)
       }
     }
   }
@@ -2927,20 +2919,19 @@ fn eval_recursive(
   value: ArgumentValue,
   self_name: String,
   positions: Dict(String, Int),
-  functions: Set(String),
+  scope: ModuleScope,
   current: Option(types.ReturnProvenance),
 ) -> Option(types.ReturnProvenance) {
   case value {
     types.CallResult(callee, args) ->
       case callee.module == "" && callee.function == self_name {
-        True ->
-          option.map(current, ground_recursive(_, args, positions, functions))
-        False -> Some(provenance_of_value(value, positions, functions))
+        True -> option.map(current, ground_recursive(_, args, positions, scope))
+        False -> Some(provenance_of_value(value, positions, scope))
       }
     types.Choice(options) -> {
       let reached =
         list.filter_map(options, fn(option) {
-          eval_recursive(option, self_name, positions, functions, current)
+          eval_recursive(option, self_name, positions, scope, current)
           |> option.to_result(Nil)
         })
       case reached {
@@ -2948,7 +2939,7 @@ fn eval_recursive(
         _ -> Some(normalize_provenance(types.Join(reached)))
       }
     }
-    _ -> Some(provenance_of_value(value, positions, functions))
+    _ -> Some(provenance_of_value(value, positions, scope))
   }
 }
 
@@ -2960,24 +2951,24 @@ fn ground_recursive(
   provenance: types.ReturnProvenance,
   args: List(CallArgument),
   positions: Dict(String, Int),
-  functions: Set(String),
+  scope: ModuleScope,
 ) -> types.ReturnProvenance {
   case provenance {
     types.Passthrough(position) ->
       case arg_value_at_position(args, position) {
-        Ok(value) -> provenance_of_value(value, positions, functions)
+        Ok(value) -> provenance_of_value(value, positions, scope)
         Error(Nil) -> types.Opaque
       }
     types.Path(position, tail) ->
       case arg_value_at_position(args, position) {
         Ok(value) ->
-          provenance_of_value(extend_path(value, tail), positions, functions)
+          provenance_of_value(extend_path(value, tail), positions, scope)
         Error(Nil) -> types.Opaque
       }
     types.Join(branches) ->
       normalize_provenance(
         types.Join(
-          list.map(branches, ground_recursive(_, args, positions, functions)),
+          list.map(branches, ground_recursive(_, args, positions, scope)),
         ),
       )
     types.Build(_) -> types.Opaque
@@ -3073,11 +3064,11 @@ fn param_rooted(
 fn build_provenance(
   fields: Dict(String, ArgumentValue),
   positions: Dict(String, Int),
-  functions: Set(String),
+  scope: ModuleScope,
 ) -> types.ReturnProvenance {
   let built =
     dict.fold(fields, dict.new(), fn(accumulator, label, value) {
-      case field_provenance_of_value(value, positions, functions) {
+      case field_provenance_of_value(value, positions, scope) {
         types.FieldOpaque -> accumulator
         provenance -> dict.insert(accumulator, label, provenance)
       }
@@ -3096,7 +3087,7 @@ fn build_provenance(
 fn field_provenance_of_value(
   value: ArgumentValue,
   positions: Dict(String, Int),
-  functions: Set(String),
+  scope: ModuleScope,
 ) -> types.FieldProvenance {
   case param_rooted(value, positions) {
     Ok(#(position, Some(tail))) -> types.FieldPath(position, tail)
@@ -3110,10 +3101,13 @@ fn field_provenance_of_value(
         | Constructed(..) -> types.FieldValue(value)
         // A bare identifier is traceable only when it names a same-module
         // function (`Logger(emit: my_logger)`); a destructured or otherwise
-        // opaque local of the same shape stays `FieldOpaque`.
+        // opaque local of the same shape stays `FieldOpaque`. The name is
+        // qualified with the defining module so a consumer reading this summary
+        // resolves the producer's function, not a same-named one of its own.
         LocalRef(name) ->
-          case set.contains(functions, name) {
-            True -> types.FieldValue(value)
+          case set.contains(scope.functions, name) {
+            True ->
+              types.FieldValue(qualified_field_function(scope.module, name))
             False -> types.FieldOpaque
           }
         ConstructorRef
@@ -3122,6 +3116,17 @@ fn field_provenance_of_value(
         | types.Updated(..)
         | OtherExpression -> types.FieldOpaque
       }
+  }
+}
+
+// A same-module function captured into a constructor field, qualified with the
+// module that defines it so the reference survives being read from another
+// module. An empty module path (a synthetic test module) has nothing to qualify
+// with, so the bare reference is kept and resolves module-locally as before.
+fn qualified_field_function(module: String, name: String) -> ArgumentValue {
+  case module {
+    "" -> LocalRef(name)
+    _ -> FunctionRef(types.QualifiedName(module:, function: name))
   }
 }
 
