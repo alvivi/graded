@@ -1269,6 +1269,84 @@ pub fn caller(resolver: fn() -> Nil) -> Nil {
   cleanup(app_dir)
 }
 
+// A path dependency with no committed spec is inferred from source. When the
+// dependency defines a builder in one module and uses it in another, that
+// inference needs the dependency's own builder signatures already in hand:
+// attaching them after the fallback runs leaves the widened result in place,
+// and nothing recomputes it. `dep_user.wrapped` resolves its field read only
+// through `dep_builder.with_run`'s overlay, so the consumer must see [Stdout]
+// rather than [Stdout, Unknown].
+pub fn run_resolves_path_dependency_builder_test() {
+  let dep_dir =
+    write_fixture("/tmp/graded_pathdep_builder_dep", [
+      #("gleam.toml", "name = \"dep\"\n"),
+      #(
+        "src/dep_builder.gleam",
+        "pub type ZOpts {
+  ZOpts(run: fn(String) -> Nil)
+}
+
+fn passthrough(options: ZOpts) -> ZOpts {
+  options
+}
+
+fn silent(_message: String) -> Nil {
+  Nil
+}
+
+pub fn opaque_opts() -> ZOpts {
+  passthrough(ZOpts(run: silent))
+}
+
+pub fn with_run(options: ZOpts, run: fn(String) -> Nil) -> ZOpts {
+  ZOpts(..options, run:)
+}
+",
+      ),
+      #(
+        "src/dep_user.gleam",
+        "import dep_builder
+import gleam/io
+
+pub fn wrapped() -> Nil {
+  let options =
+    dep_builder.with_run(dep_builder.opaque_opts(), fn(m) { io.println(m) })
+  options.run(\"x\")
+}
+",
+      ),
+    ])
+  let app_dir =
+    write_fixture("/tmp/graded_pathdep_builder_app", [
+      stdlib_manifest(),
+      #(
+        "gleam.toml",
+        "name = \"app\"\n\n[dependencies]\ndep = { path = \""
+          <> dep_dir
+          <> "\" }\n",
+      ),
+      #("app.graded", "check src/main.run : []\n"),
+      #(
+        "src/main.gleam",
+        "import dep_user
+
+pub fn run() -> Nil {
+  dep_user.wrapped()
+}
+",
+      ),
+    ])
+
+  let assert Ok(results) = graded.run(app_dir)
+  let assert Ok(r) =
+    list.find(results, fn(r) { string.ends_with(r.file, "src/main.gleam") })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
+  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+
+  cleanup(dep_dir)
+  cleanup(app_dir)
+}
+
 // Polymorphic end-to-end
 //
 // Effect-polymorphic functions resolve at call sites where the caller passes
