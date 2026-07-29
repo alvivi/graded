@@ -174,6 +174,14 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     |> effects.with_foreign_returned_operators(
       effects.load_spec_returns_from_file(spec),
     )
+    // Builders derived from installed and path dependency source; the current
+    // package's own builders win over both (module namespaces don't overlap).
+    // Seeded here, ahead of the in-memory pass below, so a module inferred there
+    // composes builder overlays the same way the final pass does — otherwise the
+    // pre-pass result is stale and a consumer reads its widened effect.
+    |> effects.with_updates(installed_sources.updates)
+    |> effects.with_updates(path_sources.updates)
+    |> effects.with_updates(qualify_by_module(index, extract.update_map))
   // Fill gaps for project modules not (yet) in the spec by inferring them in
   // memory, so `check` resolves cross-module calls without a prior `graded infer`.
   // Committed effects are never overridden; fresh returns win over committed
@@ -196,11 +204,6 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     ))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
-    // Builders derived from installed and path dependency source; the current
-    // package's own builders win over both (module namespaces don't overlap).
-    |> effects.with_updates(installed_sources.updates)
-    |> effects.with_updates(path_sources.updates)
-    |> effects.with_updates(qualify_by_module(index, extract.update_map))
 
   let results =
     list.map(parsed, fn(entry) {
@@ -1048,6 +1051,18 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   use parsed <- result.try(parse_all_files(gleam_files))
   let index = build_module_index(parsed, directory)
 
+  // Build a signature registry covering every project module so the checker can
+  // do positional argument matching for cross-module polymorphic calls. Hoisted
+  // above `kb_base` because the builders below, the constructor-field index (Fix
+  // B), and the C-B pre-pass all consume these; they need only
+  // `index`/`package_root`.
+  let installed_sources = packages_dir_sources(packages_dir(package_root))
+  let path_sources = path_dep_sources(package_root)
+  let dep_registry =
+    signatures.merge(installed_sources.registry, path_sources.registry)
+  let registry = signatures.merge(dep_registry, build_project_registry(index))
+  let type_info = build_type_index(index, package_root)
+
   let kb_base =
     effects.load_knowledge_base(
       packages_dir(package_root),
@@ -1058,18 +1073,14 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     // inference, not only at the final lookup.
     |> effects.with_externals(annotation.extract_externals(spec))
     |> enrich_with_path_deps(package_root, declared_modules)
-
-  // Build a signature registry covering every project module so the checker can
-  // do positional argument matching for cross-module polymorphic calls. Hoisted
-  // above `construction_kb` because the constructor-field index (Fix B) and the
-  // C-B pre-pass both consume `registry`/`type_info`; they need only
-  // `index`/`package_root`.
-  let installed_sources = packages_dir_sources(packages_dir(package_root))
-  let path_sources = path_dep_sources(package_root)
-  let dep_registry =
-    signatures.merge(installed_sources.registry, path_sources.registry)
-  let registry = signatures.merge(dep_registry, build_project_registry(index))
-  let type_info = build_type_index(index, package_root)
+    // Builders derived from installed and path dependency source; the current
+    // package's own builders win over both (module namespaces don't overlap).
+    // Seeded here, ahead of the pre-pass below, so a module inferred there
+    // composes builder overlays the same way the final pass does — otherwise the
+    // pre-pass result is stale and a consumer reads its widened effect.
+    |> effects.with_updates(installed_sources.updates)
+    |> effects.with_updates(path_sources.updates)
+    |> effects.with_updates(qualify_by_module(index, extract.update_map))
 
   // Fix C-B: a metadata pre-pass so a field wired from *another project module's*
   // producer resolves on a first-ever `infer`. Runs the same in-memory inference
@@ -1118,11 +1129,6 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     ))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
-    // Builders derived from installed and path dependency source; the current
-    // package's own builders win over both (module namespaces don't overlap).
-    |> effects.with_updates(installed_sources.updates)
-    |> effects.with_updates(path_sources.updates)
-    |> effects.with_updates(qualify_by_module(index, extract.update_map))
 
   let graph = build_dependency_graph(index)
   use sorted <- result.try(
