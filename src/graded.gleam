@@ -159,6 +159,15 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
     |> effects.with_externals(annotation.extract_externals(spec))
+    // Builders derived from installed and path dependency source; the current
+    // package's own builders win over both (module namespaces don't overlap).
+    // Seeded ahead of every inference below — the path-dep fallback on the next
+    // line and the in-memory project pass further down — so each composes builder
+    // overlays the same way the final pass does. Attaching them later leaves a
+    // widened result that is never recomputed.
+    |> effects.with_updates(installed_sources.updates)
+    |> effects.with_updates(path_sources.updates)
+    |> effects.with_updates(qualify_by_module(index, extract.update_map))
     |> enrich_with_path_deps(package_root, declared_modules)
     // Committed `effects` lines for a module-level-external module are dropped
     // so they can't reshadow the declaration (which lives in `module_effects`,
@@ -174,14 +183,6 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     |> effects.with_foreign_returned_operators(
       effects.load_spec_returns_from_file(spec),
     )
-    // Builders derived from installed and path dependency source; the current
-    // package's own builders win over both (module namespaces don't overlap).
-    // Seeded here, ahead of the in-memory pass below, so a module inferred there
-    // composes builder overlays the same way the final pass does — otherwise the
-    // pre-pass result is stale and a consumer reads its widened effect.
-    |> effects.with_updates(installed_sources.updates)
-    |> effects.with_updates(path_sources.updates)
-    |> effects.with_updates(qualify_by_module(index, extract.update_map))
   // Fill gaps for project modules not (yet) in the spec by inferring them in
   // memory, so `check` resolves cross-module calls without a prior `graded infer`.
   // Committed effects are never overridden; fresh returns win over committed
@@ -1072,15 +1073,16 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
     |> effects.with_externals(annotation.extract_externals(spec))
-    |> enrich_with_path_deps(package_root, declared_modules)
     // Builders derived from installed and path dependency source; the current
     // package's own builders win over both (module namespaces don't overlap).
-    // Seeded here, ahead of the pre-pass below, so a module inferred there
-    // composes builder overlays the same way the final pass does — otherwise the
-    // pre-pass result is stale and a consumer reads its widened effect.
+    // Seeded ahead of every inference below — the path-dep fallback on the next
+    // line and the C-B pre-pass further down — so each composes builder overlays
+    // the same way the final pass does. Attaching them later leaves a widened
+    // result that is never recomputed.
     |> effects.with_updates(installed_sources.updates)
     |> effects.with_updates(path_sources.updates)
     |> effects.with_updates(qualify_by_module(index, extract.update_map))
+    |> enrich_with_path_deps(package_root, declared_modules)
 
   // Fix C-B: a metadata pre-pass so a field wired from *another project module's*
   // producer resolves on a first-ever `infer`. Runs the same in-memory inference
