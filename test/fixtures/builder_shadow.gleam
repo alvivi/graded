@@ -82,3 +82,27 @@ pub fn run_param_collision(handler: fn(String) -> Nil) -> Nil {
   let opts = Options(..opaque_options(), resolver: handler)
   annotate("x", opts)
 }
+
+// P1: the same collision one lexical scope deeper — a *closure* parameter named
+// after the pure module function `handler`. The field is wired to neither the
+// function nor an enclosing parameter, so it stays [Unknown]; the closure is
+// applied with the [Disk] resolver, which the module function's [] would hide.
+@target(erlang)
+pub fn run_closure_param_collision() -> Nil {
+  let build = fn(handler: fn(String) -> Nil) {
+    let opts = Options(..opaque_options(), resolver: handler)
+    opts.resolver("x")
+  }
+  build(disk_resolver)
+}
+
+// P1: the closure-parameter collision read through a forwarding callee rather
+// than directly — `annotate` re-keys its own field call onto the overlay.
+@target(erlang)
+pub fn run_closure_param_collision_forwarded() -> Nil {
+  let build = fn(handler: fn(String) -> Nil) {
+    let opts = Options(..opaque_options(), resolver: handler)
+    annotate("x", opts)
+  }
+  build(disk_resolver)
+}
