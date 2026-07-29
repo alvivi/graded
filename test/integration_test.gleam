@@ -1591,6 +1591,26 @@ pub fn builder_chain_closure_replacement_forwarded_test() {
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn builder_chain_inherited_field_over_traceable_base_test() {
+  // The inherited resolver (only the reporter was updated) over a *traceable*
+  // producer grounds through that producer's wiring to [Disk], forwarded through
+  // `annotate` — the base is groundable, so the overlay must not discard it.
+  builder_chain_actual("run_traceable_inherited")
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+pub fn builder_chain_inherited_field_over_traceable_base_direct_test() {
+  // The same inherited field read directly off the overlay.
+  builder_chain_actual("run_traceable_inherited_direct")
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+pub fn builder_chain_inherited_field_over_chained_traceable_base_test() {
+  // Two stacked overlays: the inherited field grounds through both layers.
+  builder_chain_actual("run_traceable_inherited_chained")
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
 pub fn builder_chain_inherited_field_over_opaque_base_test() {
   // The inherited reporter (not updated) over the opaque base falls through to
   // the untraceable base and stays [Unknown] — sound, never guessed.

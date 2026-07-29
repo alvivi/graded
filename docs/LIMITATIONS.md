@@ -108,6 +108,14 @@ dependency composes the same overlay. A dependency whose source graded can't par
 stays `[Unknown]` for the builder's field — sound, since forwarding then has no
 parameter positions to work with either.
 
+A field the overlay does *not* replace is read from the base. It resolves when the
+base is traceable — a producer whose return is the construction itself
+(`default_options() |> with_reporter(r)` keeps `resolver` at what
+`default_options` wired) — on a direct read, forwarded through another function,
+and through chained overlays. Over an **untraceable** base (a producer whose
+return graded can't trace, such as one whose tail is a call) the inherited field
+stays `[Unknown]`; only the fields the overlay itself sets resolve there.
+
 A builder-set value that is itself a *call result* or *closure*
 (`with_resolver(o, make_resolver())`) resolves the same per-value way a function
 reference does, both on a direct read (`opts.resolver()`) and forwarded through
