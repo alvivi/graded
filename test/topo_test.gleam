@@ -1598,3 +1598,73 @@ pub fn field_function_not_resolved_against_impure_consumer_test() {
 
   cleanup(root)
 }
+
+// Builder signatures are seeded before the inference pre-pass
+//
+// A module whose effect depends on a builder overlay must be inferred with the
+// builder map already in the knowledge base. Inferring it first and attaching
+// builders afterwards leaves a widened result that consumers then read.
+
+pub fn builder_seeded_before_prepass_test() {
+  // `helper.wrapped` resolves its field read only through `builder.with_run`'s
+  // overlay. `consumer.run` calls it, so it must see the same [Stdout] the
+  // helper resolves to — not the [Stdout, Unknown] of a pre-pass that ran
+  // before the builder map existed.
+  let directory =
+    make_fixture("builder_prepass", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "app/builder.gleam",
+        "pub type ZOpts {
+  ZOpts(run: fn(String) -> Nil)
+}
+
+fn passthrough(options: ZOpts) -> ZOpts {
+  options
+}
+
+fn silent(_message: String) -> Nil {
+  Nil
+}
+
+pub fn opaque_opts() -> ZOpts {
+  passthrough(ZOpts(run: silent))
+}
+
+pub fn with_run(options: ZOpts, run: fn(String) -> Nil) -> ZOpts {
+  ZOpts(..options, run:)
+}
+",
+      ),
+      #(
+        "app/helper.gleam",
+        "import app/builder
+import gleam/io
+
+pub fn wrapped() -> Nil {
+  let options =
+    builder.with_run(builder.opaque_opts(), fn(m) { io.println(m) })
+  options.run(\"x\")
+}
+",
+      ),
+      #(
+        "app/consumer.gleam",
+        "import app/helper
+
+pub fn run() -> Nil {
+  helper.wrapped()
+}
+",
+      ),
+      #("app.graded", "check app/consumer.run : []\n"),
+    ])
+
+  let assert Ok(results) = graded.run(directory)
+  let assert Ok(r) =
+    list.find(results, fn(r) { string.ends_with(r.file, "app/consumer.gleam") })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
+  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+
+  cleanup(directory)
+}
