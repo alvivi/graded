@@ -142,11 +142,9 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.try(parse_all_files(gleam_files))
   let index = build_module_index(parsed, directory)
-  let installed_sources = packages_dir_sources(packages_dir(package_root))
-  let path_sources = path_dep_sources(package_root)
-  let dep_registry =
-    signatures.merge(installed_sources.registry, path_sources.registry)
-  let registry = signatures.merge(dep_registry, build_project_registry(index))
+  let dep_sources = dependency_sources(package_root)
+  let registry =
+    signatures.merge(dep_sources.registry, build_project_registry(index))
   let type_info = build_type_index(index, package_root)
 
   // Hand-written `type` lines (last) win over the inferred construction index.
@@ -159,15 +157,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
     |> effects.with_externals(annotation.extract_externals(spec))
-    // Builders derived from installed and path dependency source; the current
-    // package's own builders win over both (module namespaces don't overlap).
-    // Seeded ahead of every inference below — the path-dep fallback on the next
-    // line and the in-memory project pass further down — so each composes builder
-    // overlays the same way the final pass does. Attaching them later leaves a
-    // widened result that is never recomputed.
-    |> effects.with_updates(installed_sources.updates)
-    |> effects.with_updates(path_sources.updates)
-    |> effects.with_updates(qualify_by_module(index, extract.update_map))
+    |> with_builders(index, dep_sources)
     |> enrich_with_path_deps(package_root, declared_modules)
     // Committed `effects` lines for a module-level-external module are dropped
     // so they can't reshadow the declaration (which lives in `module_effects`,
@@ -1057,11 +1047,9 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   // above `kb_base` because the builders below, the constructor-field index (Fix
   // B), and the C-B pre-pass all consume these; they need only
   // `index`/`package_root`.
-  let installed_sources = packages_dir_sources(packages_dir(package_root))
-  let path_sources = path_dep_sources(package_root)
-  let dep_registry =
-    signatures.merge(installed_sources.registry, path_sources.registry)
-  let registry = signatures.merge(dep_registry, build_project_registry(index))
+  let dep_sources = dependency_sources(package_root)
+  let registry =
+    signatures.merge(dep_sources.registry, build_project_registry(index))
   let type_info = build_type_index(index, package_root)
 
   let kb_base =
@@ -1073,15 +1061,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
     |> effects.with_externals(annotation.extract_externals(spec))
-    // Builders derived from installed and path dependency source; the current
-    // package's own builders win over both (module namespaces don't overlap).
-    // Seeded ahead of every inference below — the path-dep fallback on the next
-    // line and the C-B pre-pass further down — so each composes builder overlays
-    // the same way the final pass does. Attaching them later leaves a widened
-    // result that is never recomputed.
-    |> effects.with_updates(installed_sources.updates)
-    |> effects.with_updates(path_sources.updates)
-    |> effects.with_updates(qualify_by_module(index, extract.update_map))
+    |> with_builders(index, dep_sources)
     |> enrich_with_path_deps(package_root, declared_modules)
 
   // Fix C-B: a metadata pre-pass so a field wired from *another project module's*
@@ -1592,6 +1572,31 @@ fn merge_dependency_sources(
   )
 }
 
+// Every dependency's source-derived signatures: installed packages under
+// `build/packages`, then path dependencies, which win on key conflict.
+fn dependency_sources(package_root: String) -> DependencySources {
+  merge_dependency_sources(
+    packages_dir_sources(packages_dir(package_root)),
+    path_dep_sources(package_root),
+  )
+}
+
+// Attach the builders derived from dependency source and from the current
+// package's own modules; the package's own win (module namespaces don't
+// overlap). Seeded ahead of every inference pass — the path-dep fallback and
+// the in-memory project pass — so each composes builder overlays the same way
+// the final pass does. Attaching them later leaves a widened result that is
+// never recomputed.
+fn with_builders(
+  knowledge_base: KnowledgeBase,
+  index: Dict(String, #(String, glance.Module)),
+  dep_sources: DependencySources,
+) -> KnowledgeBase {
+  knowledge_base
+  |> effects.with_updates(dep_sources.updates)
+  |> effects.with_updates(qualify_by_module(index, extract.update_map))
+}
+
 // Scan the `src/` tree of every installed dependency under `build/packages`.
 fn packages_dir_sources(packages_directory: String) -> DependencySources {
   case simplifile.read_directory(packages_directory) {
@@ -1609,17 +1614,17 @@ fn packages_dir_sources(packages_directory: String) -> DependencySources {
 // and into the update-builder map. Only public builders cross a package
 // boundary, so only those land in `updates`.
 fn source_dir_sources(source_dir: String) -> DependencySources {
-  signatures.parse_source_dir(source_dir)
-  |> list.fold(empty_dependency_sources(), fn(acc, entry) {
-    let #(module_path, module) = entry
-    merge_dependency_sources(
-      acc,
-      DependencySources(
-        registry: signatures.from_glance_module(module_path, module),
-        updates: extract.public_update_signatures(module, module_path),
-      ),
-    )
-  })
+  use acc, module_path, module <- signatures.fold_source_dir(
+    source_dir,
+    empty_dependency_sources(),
+  )
+  merge_dependency_sources(
+    acc,
+    DependencySources(
+      registry: signatures.from_glance_module(module_path, module),
+      updates: extract.public_update_signatures(module, module_path),
+    ),
+  )
 }
 
 fn find_gleam_toml_dir(dir: String, original: String) -> String {

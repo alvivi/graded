@@ -1991,23 +1991,15 @@ fn concrete_field_effect(
   registry: SignatureRegistry,
   cache: LocalCache,
 ) -> option.Option(EffectTerm) {
-  let #(closure_effect, call_result_effect) =
-    field_analysis_callbacks(
+  let field_effect =
+    value_field_effect(
+      value,
+      set.from_list(dict.keys(function_map)),
       context,
-      function_map,
       knowledge_base,
+      function_map,
       registry,
       cache,
-    )
-  let module_functions = set.from_list(dict.keys(function_map))
-  let field_effect =
-    field_effect_of(
-      knowledge_base,
-      value,
-      context.module_path,
-      module_functions,
-      closure_effect,
-      call_result_effect,
     )
   case field_effect.source, is_operator_valued(field_effect.effects) {
     // A wired effect-polymorphic function (a decorator), or an operator-valued
@@ -2294,37 +2286,27 @@ fn value_at_path(
 ) -> Result(types.ArgumentValue, Nil) {
   case tail {
     "" -> Ok(value)
-    _ ->
+    _ -> {
+      // The head field and the path remaining under it, empty at the last step
+      // — which the `""` base case above then returns unchanged.
+      let #(field, rest) = case string.split_once(tail, ".") {
+        Ok(split) -> split
+        Error(Nil) -> #(tail, "")
+      }
       case value {
         types.Constructed(fields) -> {
-          let #(field, rest) = case string.split_once(tail, ".") {
-            Ok(#(field, rest)) -> #(field, Some(rest))
-            Error(Nil) -> #(tail, None)
-          }
           use wired <- result.try(dict.get(fields, field))
-          case rest {
-            Some(rest) -> value_at_path(wired, rest)
-            None -> Ok(wired)
-          }
+          value_at_path(wired, rest)
         }
         // A record-update overlay: read the head field selectively. An updated
         // field takes its replacement; any other falls through to the base —
         // without requiring the base to be traceable, so an updated field
         // resolves even over an opaque base.
-        types.Updated(base, fields) -> {
-          let #(field, rest) = case string.split_once(tail, ".") {
-            Ok(#(field, rest)) -> #(field, Some(rest))
-            Error(Nil) -> #(tail, None)
-          }
+        types.Updated(base, fields) ->
           case dict.get(fields, field) {
-            Ok(wired) ->
-              case rest {
-                Some(rest) -> value_at_path(wired, rest)
-                None -> Ok(wired)
-              }
+            Ok(wired) -> value_at_path(wired, rest)
             Error(Nil) -> value_at_path(base, tail)
           }
-        }
         types.LocalRef(name) -> Ok(types.ReceiverPath(name <> "." <> tail))
         types.ReceiverPath(path) -> Ok(types.ReceiverPath(path <> "." <> tail))
         types.FunctionRef(_)
@@ -2335,6 +2317,7 @@ fn value_at_path(
         | types.CallResult(..)
         | types.OtherExpression -> Error(Nil)
       }
+    }
   }
 }
 
@@ -3728,6 +3711,37 @@ fn collapsed_member(
 // `[Unknown]`. Relocated from the top-level orchestration layer so both the
 // construction-index build and per-receiver field-call resolution share it; the
 // two analysis callbacks stay parameters so each caller wires its own context.
+// `field_effect_of` for one wired value, with the analysis callbacks wired from
+// the enclosing module's context. `module_functions` is the set of same-module
+// function names a `LocalRef` field value may resolve to — each caller narrows
+// it to what is visible at its own site.
+fn value_field_effect(
+  value: types.ArgumentValue,
+  module_functions: Set(String),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  function_map: dict.Dict(String, Definition(Function)),
+  registry: SignatureRegistry,
+  cache: LocalCache,
+) -> types.TypeFieldEffect {
+  let #(closure_effect, call_result_effect) =
+    field_analysis_callbacks(
+      context,
+      function_map,
+      knowledge_base,
+      registry,
+      cache,
+    )
+  field_effect_of(
+    knowledge_base,
+    value,
+    context.module_path,
+    module_functions,
+    closure_effect,
+    call_result_effect,
+  )
+}
+
 pub fn field_effect_of(
   knowledge_base: KnowledgeBase,
   value: types.ArgumentValue,
@@ -3793,17 +3807,6 @@ pub fn field_effect_of(
   }
 }
 
-// The names of a function's named parameters (discards excluded).
-fn param_name_set(function: Function) -> Set(String) {
-  list.filter_map(function.parameters, fn(parameter) {
-    case parameter.name {
-      glance.Named(name) -> Ok(name)
-      glance.Discarded(_) -> Error(Nil)
-    }
-  })
-  |> set.from_list()
-}
-
 // The qualified function a field value refers to, if any: a `FunctionRef`
 // directly, or a `LocalRef` naming one of the current module's own functions.
 // A `LocalRef` that isn't a module function is a parameter (or other local),
@@ -3840,17 +3843,37 @@ fn resolve_field_call(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
-  // A field value that is one of the enclosing function's own parameters (a
-  // `LocalRef` naming it) is that parameter — even when a module function shares
-  // the name, since the parameter shadows it lexically. Excluding these names
-  // keeps a proven field value from borrowing a same-named module function's
-  // effect (an under-report); the parameter resolves polymorphically instead.
-  let caller_param_names = param_name_set(function)
-  case field_call.provenance {
-    // Rule 1: a value proven wired to this field at this receiver's
-    // construction. Concrete evidence — resolved per receiver, beating any
-    // annotation.
-    types.ProvenValue(value) ->
+  // The value proven wired to this field, if any:
+  //
+  //   - Rule 1: a value proven at this receiver's construction. Concrete
+  //     evidence — resolved per receiver, beating any annotation.
+  //   - Rule 1, receiver form: the whole receiver is a traced value (a let-bound
+  //     call result or a record-update overlay). Read the queried field's value
+  //     out of it — grounding a call result through its callee's return
+  //     provenance, an overlay field-selectively. An untraceable receiver
+  //     (opaque callee, field neither updated nor inherited) proves nothing.
+  let proven = case field_call.provenance {
+    types.ProvenValue(value) -> Some(Ok(value))
+    types.ProvenReceiver(receiver) ->
+      Some(field_value_of_receiver(
+        receiver,
+        field_call.label,
+        context,
+        knowledge_base,
+        function_map,
+        registry,
+      ))
+    _ -> None
+  }
+  case proven {
+    Some(Ok(value)) -> {
+      // A field value that is one of the enclosing function's own parameters (a
+      // `LocalRef` naming it) is that parameter — even when a module function
+      // shares the name, since the parameter shadows it lexically. Excluding
+      // these names keeps a proven field value from borrowing a same-named
+      // module function's effect (an under-report); the parameter resolves
+      // polymorphically instead.
+      let caller_param_names = named_function_params(function)
       resolve_proven_field(
         value,
         field_call,
@@ -3865,41 +3888,10 @@ fn resolve_field_call(
         lift_operator_arg,
         memo,
       )
-    // Rule 1, receiver form: the whole receiver is a traced value (a let-bound
-    // call result or a record-update overlay). Read the queried field's value
-    // out of it — grounding a call result through its callee's return
-    // provenance, an overlay field-selectively — then resolve per receiver. An
-    // untraceable receiver (opaque callee, field neither updated nor inherited)
-    // leaves the field `[Unknown]`.
-    types.ProvenReceiver(receiver) ->
-      case
-        field_value_of_receiver(
-          receiver,
-          field_call.label,
-          context,
-          knowledge_base,
-          function_map,
-          registry,
-        )
-      {
-        Ok(value) ->
-          resolve_proven_field(
-            value,
-            field_call,
-            context,
-            knowledge_base,
-            function_map,
-            caller_param_names,
-            call_args,
-            caller_param_bounds,
-            registry,
-            scc_ids,
-            lift_operator_arg,
-            memo,
-          )
-        Error(Nil) -> #(effect_term.unknown(), memo)
-      }
-    _ ->
+    }
+    // A traced receiver that couldn't be followed leaves the field `[Unknown]`.
+    Some(Error(Nil)) -> #(effect_term.unknown(), memo)
+    None ->
       resolve_unproven_field(
         field_call,
         function,
@@ -3960,26 +3952,19 @@ fn resolve_proven_field(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
-  let #(closure_effect, call_result_effect) =
-    field_analysis_callbacks(
-      context,
-      function_map,
-      knowledge_base,
-      registry,
-      scc_ids,
-    )
   // A name that is one of the enclosing function's parameters resolves to that
   // parameter, not a same-named module function — the parameter shadows it.
   let module_functions =
     set.difference(set.from_list(dict.keys(function_map)), caller_param_names)
   let field_effect =
-    field_effect_of(
-      knowledge_base,
+    value_field_effect(
       value,
-      context.module_path,
       module_functions,
-      closure_effect,
-      call_result_effect,
+      context,
+      knowledge_base,
+      function_map,
+      registry,
+      scc_ids,
     )
   resolve_field_effect(
     field_effect,
