@@ -137,7 +137,7 @@ Add or update a test with every behaviour change.
 Follow [the seven rules of a great commit message](https://chris.beams.io/posts/git-commit/#seven-rules):
 
 1. Separate subject from body with a blank line.
-2. Limit the subject line to 50 characters.
+2. Aim for a 50-character subject line; 72 is the enforced ceiling.
 3. Capitalize the subject line.
 4. Do not end the subject line with a period.
 5. Use the imperative mood in the subject line ("Resolve …", not "Resolved …").
