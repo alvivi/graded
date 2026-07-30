@@ -1448,10 +1448,8 @@ fn unshadowed(
   env: Env,
   then: fn() -> Result(a, Nil),
 ) -> Result(a, Nil) {
-  case dict.has_key(env, name) {
-    True -> Error(Nil)
-    False -> then()
-  }
+  use <- bool.guard(dict.has_key(env, name), Error(Nil))
+  then()
 }
 
 // The signature for a bare callee — a same-module one from `local`, or an
