@@ -36,13 +36,11 @@ means green on CI:
 gleam format --check src/ test/    # formatting (test/ too, not just src/)
 gleam build --warnings-as-errors   # no warnings allowed
 gleam test                         # full suite
+gleam run -m glinter               # lint (warnings are errors)
 ```
 
-The glinter lint gate is temporarily disabled: glinter pins glance < 7.0.0,
-which conflicts with girard 2.0.0. Restore it (dev dependency + CI step +
-this dev loop) once glinter allows glance 7.x.
-
-`gleam format src/ test/` (no `--check`) fixes formatting in place.
+`gleam format src/ test/` (no `--check`) fixes formatting in place. Lint rules and
+the `warnings_as_errors` setting live under `[tools.glinter]` in `gleam.toml`.
 
 ## Adding a catalog entry
 
