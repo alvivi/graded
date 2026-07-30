@@ -388,14 +388,19 @@ pub fn returned_callback_positions(
   type_: glance.Type,
   alias_map: Dict(String, glance.Type),
 ) -> Result(List(Int), Nil) {
-  use resolved <- result.map(resolve_function_type(type_, alias_map))
-  let assert FunctionType(_, param_types, _) = resolved
-  param_types
-  |> list.index_map(fn(t, i) {
-    #(i, resolve_function_type(t, alias_map) |> result.is_ok)
-  })
-  |> list.filter(fn(pair) { pair.1 })
-  |> list.map(fn(pair) { pair.0 })
+  use resolved <- result.try(resolve_function_type(type_, alias_map))
+  case resolved {
+    FunctionType(_, param_types, _) ->
+      Ok(
+        param_types
+        |> list.index_map(fn(t, i) {
+          #(i, resolve_function_type(t, alias_map) |> result.is_ok)
+        })
+        |> list.filter(fn(pair) { pair.1 })
+        |> list.map(fn(pair) { pair.0 }),
+      )
+    _ -> Error(Nil)
+  }
 }
 
 pub fn assignment_name(name: glance.AssignmentName) -> Option(String) {

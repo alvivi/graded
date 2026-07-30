@@ -4059,30 +4059,40 @@ fn resolve_unproven_field(
             memo,
           )
         None ->
-          case field_call.provenance {
-            // Rule 4: the receiver is rooted at a live parameter — stay
-            // polymorphic in the field, forwarding a receiver-keyed field
-            // variable that grounds to `[Unknown]` if never bound. Keyed on the
-            // canonical parameter path (an alias `let f = options` resolves to
-            // `options.field`, not the dead `f.field`).
-            types.ParameterRoot(path) -> {
-              let #(module, type_name) = option.unwrap(receiver_type, #("", ""))
-              #(
-                field_fallback(
-                  path,
-                  field_call.label,
-                  module,
-                  type_name,
-                  context,
-                ),
-                memo,
-              )
-            }
-            // Rule 5: an untraceable/opaque/computed receiver — `[Unknown]`.
-            _ -> #(effect_term.unknown(), memo)
-          }
+          resolve_undeclared_field(field_call, receiver_type, context, memo)
       }
     }
+  }
+}
+
+// Rules 4 and 5, for a field call with no `check` bound, no declared `type` line,
+// and no proven value.
+//
+// Rule 4: a receiver rooted at a live parameter stays polymorphic in the field —
+// a receiver-keyed field variable that grounds to `[Unknown]` if never bound,
+// keyed on the canonical parameter path (an alias `let f = options` resolves to
+// `options.field`, not the dead `f.field`). Rule 5: any other receiver
+// (untraceable, opaque, computed) is `[Unknown]`. A proven provenance never
+// reaches here — `resolve_unproven_field` runs only after the proven path
+// declines — and resolves to `[Unknown]` if it somehow does.
+fn resolve_undeclared_field(
+  field_call: types.FieldCall,
+  receiver_type: option.Option(#(String, String)),
+  context: ImportContext,
+  memo: Memo,
+) -> #(EffectTerm, Memo) {
+  case field_call.provenance {
+    types.ParameterRoot(path) -> {
+      let #(module, type_name) = option.unwrap(receiver_type, #("", ""))
+      #(
+        field_fallback(path, field_call.label, module, type_name, context),
+        memo,
+      )
+    }
+    types.ProvenValue(..) | types.ProvenReceiver(..) | types.Untraceable -> #(
+      effect_term.unknown(),
+      memo,
+    )
   }
 }
 
