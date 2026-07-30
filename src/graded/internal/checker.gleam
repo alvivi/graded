@@ -3863,7 +3863,7 @@ fn resolve_field_call(
         function_map,
         registry,
       ))
-    _ -> None
+    types.ParameterRoot(..) | types.Untraceable -> None
   }
   case proven {
     Some(Ok(value)) -> {

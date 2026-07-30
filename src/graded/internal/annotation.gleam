@@ -558,14 +558,23 @@ pub fn merge_inferred(
     names_of_lines(file.lines, fn(line) {
       case line {
         AnnotationLine(a) if a.kind == Effects -> Ok(a.function)
-        _ -> Error(Nil)
+        AnnotationLine(_) -> Error(Nil)
+        TypeFieldLine(_) -> Error(Nil)
+        ExternalLine(_) -> Error(Nil)
+        ReturnsLine(_) -> Error(Nil)
+        CommentLine(_) -> Error(Nil)
+        BlankLine -> Error(Nil)
       }
     })
   let present_returns =
     names_of_lines(file.lines, fn(line) {
       case line {
         ReturnsLine(r) -> Ok(r.function)
-        _ -> Error(Nil)
+        AnnotationLine(_) -> Error(Nil)
+        TypeFieldLine(_) -> Error(Nil)
+        ExternalLine(_) -> Error(Nil)
+        CommentLine(_) -> Error(Nil)
+        BlankLine -> Error(Nil)
       }
     })
 
