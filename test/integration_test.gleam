@@ -1340,6 +1340,87 @@ pub fn local_field_value_resolved_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+// Same-module wiring
+//
+// A function wired into a record field by the very module being inferred. It is
+// not in the knowledge base yet — that holds the spec file, the dependencies and
+// the project modules already inferred — so resolution falls back to the
+// module's own definitions. Each assertion is on the exact effect set: the
+// difference this covers is a stray `Unknown` alongside the real effect.
+
+fn local_wired_actual(function: String) -> types.EffectSet {
+  fixture_actual("local_wired.gleam", function)
+}
+
+pub fn local_wired_direct_construction_test() {
+  // `perform(Reader(read: disk_read, ..), "x")` wires a private same-module
+  // function straight into the constructor. Constructor arguments are skipped
+  // during extraction, so the field call is the only route to [Disk] — nothing
+  // else in the body can contribute it.
+  local_wired_actual("run_direct")
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+pub fn local_wired_inherited_construction_test() {
+  // The receiver is a call result (`default_reader()`) whose construction wired
+  // the field to a same-module private function. `disk_read` is named nowhere in
+  // the calling body, so [Disk] can only come from resolving the field.
+  local_wired_actual("run_inherited")
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+pub fn local_wired_builder_overlay_test() {
+  // A builder overlay replaces the constructor's default with another
+  // same-module function. The override's [Stdout] resolves and the default's
+  // [Disk] is gone — last-write-wins, and no `Unknown` from the unlisted
+  // override.
+  local_wired_actual("run_replaced")
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn local_wired_producer_call_test() {
+  // The field is wired from a same-module producer call
+  // (`Reader(read: make_read(), ..)`): the returned closure's [Disk] resolves.
+  local_wired_actual("run_producer")
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+pub fn local_wired_closure_test() {
+  // A let-bound closure wired into the field by shorthand resolves to the
+  // closure body's [Disk], with no `Unknown` for the field call.
+  local_wired_actual("run_closure")
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+pub fn local_wired_parameter_stays_polymorphic_test() {
+  // A field wired to the caller's own parameter is not a module function:
+  // it stays polymorphic in that parameter instead of borrowing a same-module
+  // definition.
+  local_wired_actual("run_unresolved")
+  |> should.equal(types.Polymorphic(set.new(), set.from_list(["read"])))
+}
+
+pub fn local_wired_opaque_producer_is_unknown_test() {
+  // The field is wired from an external producer graded can't see into. There is
+  // no definition to lift, so the field call stays [Unknown].
+  local_wired_actual("run_opaque")
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn local_wired_self_reference_terminates_test() {
+  // A function wiring *itself* into the field it then calls. Resolution stops at
+  // the cycle rather than looping, leaving [Unknown].
+  local_wired_actual("run_self_wired")
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn local_wired_mutual_reference_terminates_test() {
+  // Two functions wiring each other into the field they call: the cycle is cut
+  // the same way, [Unknown], and the analysis terminates.
+  local_wired_actual("run_mutual")
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
 pub fn builder_field_replaced_is_precise_test() {
   // builder_field.run_replaced binds `opts = default_options() |>
   // with_resolver(logging_resolver)` and calls `annotate(_, opts)`. Tier 2's

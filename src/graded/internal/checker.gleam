@@ -344,19 +344,68 @@ pub fn call_result_field_operator(
   ).0
 }
 
-// The two field-value analysis callbacks `field_effect_of` needs: one analysing
-// an inline closure's body, one resolving a call result's returned operator.
-// Shared by the construction-index build and per-receiver field-call resolution
-// so both wire the same module context to the same operators.
-pub fn field_analysis_callbacks(
+// The ground effect of a function from the module under inference wired into a
+// record field. Sibling functions aren't in the knowledge base during their
+// module's inference pass, so a knowledge-base *miss* on a same-module name
+// lifts the definition out of `function_map` instead of collapsing to
+// `[Unknown]` — the field-value analogue of the `lift_local_function` path an
+// operator argument already takes.
+//
+// Only a ground lift is taken. A term carrying binders or free variables is an
+// operator awaiting the field call's arguments, or a summary whose sentinel
+// variables are never collapsed; carrying either into a `TypeFieldEffect` can
+// resolve *narrower* than `[Unknown]`, so those keep the knowledge-base answer.
+// `visited` is the enclosing call stack, so a field wired to a function already
+// under analysis lifts nothing and the wiring stays `[Unknown]`.
+fn local_function_field_effect(
+  name: types.QualifiedName,
   context: ImportContext,
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
+  visited: Set(String),
+  registry: SignatureRegistry,
+  scc_ids: LocalCache,
+) -> option.Option(EffectTerm) {
+  use <- bool.guard(when: name.module != context.module_path, return: None)
+  use <- bool.guard(when: set.contains(visited, name.function), return: None)
+  use definition <- option.then(
+    option.from_result(dict.get(function_map, name.function)),
+  )
+  let #(term, _memo) =
+    lift_local_function(
+      name.function,
+      definition,
+      context,
+      function_map,
+      knowledge_base,
+      visited,
+      registry,
+      dict.new(),
+      scc_ids,
+      new_memo(),
+    )
+  case is_operator_valued(term) || has_vars(term) {
+    True -> None
+    False -> Some(term)
+  }
+}
+
+// The three field-value analysis callbacks `field_effect_of` needs: one
+// analysing an inline closure's body, one resolving a call result's returned
+// operator, and one lifting a same-module function the knowledge base doesn't
+// hold yet. Built once per resolution site so every callback sees the same
+// module context.
+fn field_analysis_callbacks(
+  context: ImportContext,
+  function_map: dict.Dict(String, Definition(Function)),
+  knowledge_base: KnowledgeBase,
+  visited: Set(String),
   registry: SignatureRegistry,
   scc_ids: LocalCache,
 ) -> #(
   fn(List(String), List(Statement)) -> EffectTerm,
   fn(types.QualifiedName, List(types.CallArgument)) -> Result(EffectTerm, Nil),
+  fn(types.QualifiedName) -> option.Option(EffectTerm),
 ) {
   let closure_effect = fn(params, body) {
     closure_field_operator(
@@ -379,7 +428,18 @@ pub fn field_analysis_callbacks(
       scc_ids,
     )
   }
-  #(closure_effect, call_result_effect)
+  let local_effect = fn(name) {
+    local_function_field_effect(
+      name,
+      context,
+      function_map,
+      knowledge_base,
+      visited,
+      registry,
+      scc_ids,
+    )
+  }
+  #(closure_effect, call_result_effect, local_effect)
 }
 
 // Shared analysis helpers
@@ -1079,6 +1139,7 @@ fn collect_effects(
           function_map,
           context,
           knowledge_base,
+          visited,
           param_bounds,
           caller_param_names,
           caller_field_bindings,
@@ -1148,6 +1209,7 @@ fn collect_effects(
             function_map,
             context,
             knowledge_base,
+            visited,
             param_bounds,
             caller_param_names,
             caller_field_bindings,
@@ -1174,6 +1236,7 @@ fn collect_effects(
           context,
           knowledge_base,
           function_map,
+          visited,
           module_types,
           result.call_args,
           param_bounds,
@@ -1652,6 +1715,7 @@ fn substitute_local_call_effects(
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
+  visited: Set(String),
   caller_param_bounds: List(ParamBound),
   caller_param_names: Set(String),
   caller_field_bindings: dict.Dict(String, EffectTerm),
@@ -1708,6 +1772,7 @@ fn substitute_local_call_effects(
           function_map,
           context,
           knowledge_base,
+          visited,
           cache,
         )
       let forwarded = forwarded_field_vars(field_bindings)
@@ -1750,6 +1815,7 @@ fn substitute_at_call_site(
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
+  visited: Set(String),
   caller_param_bounds: List(ParamBound),
   caller_param_names: Set(String),
   caller_field_bindings: dict.Dict(String, EffectTerm),
@@ -1798,6 +1864,7 @@ fn substitute_at_call_site(
       function_map,
       context,
       knowledge_base,
+      visited,
       cache,
     )
   let forwarded = forwarded_field_vars(field_bindings)
@@ -1862,6 +1929,7 @@ fn field_forwarding_bindings(
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
+  visited: Set(String),
   cache: LocalCache,
 ) -> dict.Dict(String, EffectTerm) {
   effect
@@ -1879,6 +1947,7 @@ fn field_forwarding_bindings(
         function_map,
         context,
         knowledge_base,
+        visited,
         cache,
       )
     {
@@ -1898,6 +1967,7 @@ fn field_forwarding_binding(
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
+  visited: Set(String),
   cache: LocalCache,
 ) -> option.Option(#(String, EffectTerm)) {
   use #(receiver, tail) <- option.then(
@@ -1963,6 +2033,7 @@ fn field_forwarding_binding(
                 context,
                 knowledge_base,
                 function_map,
+                visited,
                 registry,
                 cache,
               )
@@ -1988,6 +2059,7 @@ fn concrete_field_effect(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   function_map: dict.Dict(String, Definition(Function)),
+  visited: Set(String),
   registry: SignatureRegistry,
   cache: LocalCache,
 ) -> option.Option(EffectTerm) {
@@ -1998,20 +2070,42 @@ fn concrete_field_effect(
       context,
       knowledge_base,
       function_map,
+      visited,
       registry,
       cache,
     )
-  case field_effect.source, is_operator_valued(field_effect.effects) {
-    // A wired effect-polymorphic function (a decorator), or an operator-valued
-    // field (a higher-order resolver): its effect depends on the field call's own
-    // arguments, bound at the call site and unavailable here — leave the variable
-    // to concretize to `[Unknown]`.
-    Some(_), _ | _, True -> None
+  case field_effect.source, ground_field_operator(field_effect.effects) {
+    // A wired effect-polymorphic function (a decorator), or a higher-order
+    // field whose effect depends on the field call's own arguments: those are
+    // bound at the call site and unavailable here — leave the variable to
+    // concretize to `[Unknown]`.
+    Some(_), _ | _, None -> None
     // A ground effect — including the resolved effect of a first-order closure or
     // call-result field value, which `field_effect_of` grounds via the same
     // per-value resolution the direct-read path uses. Residual variables ground
     // to `[Unknown]`; never a narrower set than the true effect.
-    None, False -> Some(concretize(field_effect.effects))
+    None, Some(effects) -> Some(concretize(effects))
+  }
+}
+
+// The effect a forwarding site can bind a field variable to: the term itself
+// when it is already ground, or the body of an operator whose binders are all
+// vacuous. A vacuous binder never appears in the body, so every application
+// β-reduces to that same body — `λm. [Stdout]`, the operator a first-order
+// closure wired into a field lifts to, binds `[Stdout]` however the field is
+// called. `λnext. [next]` does depend on its argument and binds nothing.
+fn ground_field_operator(term: EffectTerm) -> option.Option(EffectTerm) {
+  case term {
+    types.TAbs(param, body) ->
+      case set.contains(effect_term.free_vars(body), param) {
+        True -> None
+        False -> ground_field_operator(body)
+      }
+    _ ->
+      case is_operator_valued(term) {
+        True -> None
+        False -> Some(term)
+      }
   }
 }
 
@@ -3721,14 +3815,16 @@ fn value_field_effect(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   function_map: dict.Dict(String, Definition(Function)),
+  visited: Set(String),
   registry: SignatureRegistry,
   cache: LocalCache,
 ) -> types.TypeFieldEffect {
-  let #(closure_effect, call_result_effect) =
+  let #(closure_effect, call_result_effect, local_effect) =
     field_analysis_callbacks(
       context,
       function_map,
       knowledge_base,
+      visited,
       registry,
       cache,
     )
@@ -3739,10 +3835,11 @@ fn value_field_effect(
     module_functions,
     closure_effect,
     call_result_effect,
+    local_effect,
   )
 }
 
-pub fn field_effect_of(
+fn field_effect_of(
   knowledge_base: KnowledgeBase,
   value: types.ArgumentValue,
   module_path: String,
@@ -3750,23 +3847,22 @@ pub fn field_effect_of(
   closure_effect: fn(List(String), List(Statement)) -> EffectTerm,
   call_result_effect: fn(types.QualifiedName, List(types.CallArgument)) ->
     Result(EffectTerm, Nil),
+  local_effect: fn(types.QualifiedName) -> option.Option(EffectTerm),
 ) -> types.TypeFieldEffect {
   case field_value_function(value, module_path, module_functions) {
-    Some(name) -> {
-      let field_effects = effects.lookup_effects(knowledge_base, name)
-      case set.is_empty(effect_term.free_vars(field_effects)) {
-        // Concrete effect: no bounds or source to carry.
-        True -> types.TypeFieldEffect(field_effects, [], None, types.Inferred)
-        // Effect-polymorphic: keep the wired function's bounds and identity.
-        False ->
-          types.TypeFieldEffect(
-            field_effects,
-            effects.lookup_param_bounds(knowledge_base, name),
-            Some(name),
-            types.Inferred,
-          )
+    // A wired function the knowledge base doesn't hold — the module under
+    // inference isn't in it — resolves from its own definition, when that lifts
+    // to a ground effect. Everything else stays on the knowledge-base answer.
+    Some(name) ->
+      case effects.lookup(knowledge_base, name) {
+        effects.Known(_) -> known_field_effect(knowledge_base, name)
+        effects.Unknown ->
+          case local_effect(name) {
+            Some(effect) ->
+              types.TypeFieldEffect(effect, [], None, types.Inferred)
+            None -> known_field_effect(knowledge_base, name)
+          }
       }
-    }
     None -> {
       // The default for an unrecognised field value: its argument-value effects
       // with no bounds or source (the `[Unknown]` a plain lookup would give).
@@ -3807,6 +3903,26 @@ pub fn field_effect_of(
   }
 }
 
+// The field effect of a wired function as the knowledge base reports it: a
+// concrete effect carries no bounds or source; an effect-polymorphic one keeps
+// the wired function's bounds and identity for substitution at the field call.
+fn known_field_effect(
+  knowledge_base: KnowledgeBase,
+  name: types.QualifiedName,
+) -> types.TypeFieldEffect {
+  let field_effects = effects.lookup_effects(knowledge_base, name)
+  case has_vars(field_effects) {
+    False -> types.TypeFieldEffect(field_effects, [], None, types.Inferred)
+    True ->
+      types.TypeFieldEffect(
+        field_effects,
+        effects.lookup_param_bounds(knowledge_base, name),
+        Some(name),
+        types.Inferred,
+      )
+  }
+}
+
 // The qualified function a field value refers to, if any: a `FunctionRef`
 // directly, or a `LocalRef` naming one of the current module's own functions.
 // A `LocalRef` that isn't a module function is a parameter (or other local),
@@ -3834,6 +3950,7 @@ fn resolve_field_call(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   function_map: dict.Dict(String, Definition(Function)),
+  visited: Set(String),
   module_types: dict.Dict(#(Int, Int), girard.Type),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
@@ -3880,6 +3997,7 @@ fn resolve_field_call(
         context,
         knowledge_base,
         function_map,
+        visited,
         caller_param_names,
         call_args,
         caller_param_bounds,
@@ -3943,6 +4061,7 @@ fn resolve_proven_field(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   function_map: dict.Dict(String, Definition(Function)),
+  visited: Set(String),
   caller_param_names: Set(String),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
@@ -3963,6 +4082,7 @@ fn resolve_proven_field(
       context,
       knowledge_base,
       function_map,
+      visited,
       registry,
       scc_ids,
     )
