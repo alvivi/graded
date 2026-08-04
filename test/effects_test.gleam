@@ -2,7 +2,7 @@ import generators
 import gleam/dict
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option
 import gleam/order
 import gleam/set
 import gleam/string
@@ -11,7 +11,7 @@ import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/types.{
   type EffectSet, ConstructorRef, FunctionRef, OtherExpression, Polymorphic,
-  QualifiedName, Specific, TypeFieldEffect, Wildcard,
+  QualifiedName, Specific, Wildcard,
 }
 import qcheck
 import simplifile
@@ -537,24 +537,18 @@ pub fn argument_value_effects_other_is_unknown_test() {
 pub fn type_fields_distinguish_modules_test() {
   // Two `Validator` types in different modules, same field — must NOT conflate.
   let kb =
-    effects.with_inferred_type_fields(knowledge_base(), [
-      #(
-        #("app/a", "Validator", "f"),
-        TypeFieldEffect(
-          effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
-          [],
-          None,
-          types.Inferred,
-        ),
+    effects.with_type_fields(knowledge_base(), [
+      types.TypeFieldAnnotation(
+        option.Some("app/a"),
+        "Validator",
+        "f",
+        effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
       ),
-      #(
-        #("app/b", "Validator", "f"),
-        TypeFieldEffect(
-          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
-          [],
-          None,
-          types.Inferred,
-        ),
+      types.TypeFieldAnnotation(
+        option.Some("app/b"),
+        "Validator",
+        "f",
+        effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       ),
     ])
   let assert Ok(a) = effects.lookup_type_field(kb, "app/a", "Validator", "f")

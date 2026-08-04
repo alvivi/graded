@@ -166,23 +166,6 @@ pub fn with_type_fields(
   KnowledgeBase(..knowledge_base, type_fields: merged)
 }
 
-// Merge inferred type fields (from constructor sites) into a knowledge base.
-// Each entry is `#(#(module, type_name, field), TypeFieldEffect)` and may carry
-// the wired function's bounds + source for variable substitution at field
-// calls. Applied before `with_type_fields(spec)` so hand-written lines win.
-pub fn with_inferred_type_fields(
-  knowledge_base: KnowledgeBase,
-  inferred: List(#(#(String, String, String), TypeFieldEffect)),
-) -> KnowledgeBase {
-  KnowledgeBase(
-    ..knowledge_base,
-    type_fields: dict.merge(
-      knowledge_base.type_fields,
-      dict.from_list(inferred),
-    ),
-  )
-}
-
 // Merge external annotations into a knowledge base.
 // Module-level externals record the whole module's declared effect.
 // Function-level externals are added to all_effects.
