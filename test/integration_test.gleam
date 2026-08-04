@@ -286,11 +286,11 @@ pub fn opaque_fn_typed_field_round_trips_as_field_bound_test() {
   annotation.effects |> should.equal(types.TVar("r.run"))
 }
 
-pub fn field_call_param_receiver_not_specialized_by_index_test() {
-  // Soundness invariant, full pipeline: the construction index holds
-  // `Options.resolver : [Stdout]` from `default_options`, but `annotate`'s receiver
-  // is a *parameter* — a caller can build the record differently — so the field
-  // call must NOT be specialized to [Stdout]. It stays polymorphic and, against the
+pub fn field_call_param_receiver_not_specialized_by_type_test() {
+  // Soundness invariant, full pipeline: `default_options` wires
+  // `Options.resolver` to a [Stdout] value, but `annotate`'s receiver is a
+  // *parameter* — a caller can build the record differently — so the field call
+  // must NOT be specialized to [Stdout]. It stays polymorphic and, against the
   // [] budget with no field bound, surfaces as [Unknown], never [Stdout]. This is
   // the girard options-builder understatement the precedence fix closes.
   let root = "build/field_poly_soundness_proj"
@@ -1407,6 +1407,14 @@ pub fn local_wired_opaque_producer_is_unknown_test() {
   |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
+pub fn local_wired_undeclared_external_is_unknown_test() {
+  // The field is wired to a same-module bodyless `@external` with no
+  // `external effects` line. There is no body to lift — reading its empty one
+  // as pure would understate it — so it stays [Unknown].
+  local_wired_actual("run_undeclared_external")
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
 pub fn local_wired_self_reference_terminates_test() {
   // A function wiring *itself* into the field it then calls. Resolution stops at
   // the cycle rather than looping, leaving [Unknown].
@@ -2278,14 +2286,13 @@ pub fn project_module_external_infer_omits_lines_and_governs_test() {
   go.effects |> should.equal(types.TLabels(set.from_list(["Database"])))
 }
 
-pub fn project_module_external_infer_filters_construction_kb_test() {
-  // A field wired to a declared-external module's function resolves through the
-  // construction index. The spec still carries a STALE `effects db.touch :
-  // [Stdout]` line; since function effects outrank module effects, that stale
-  // entry would pollute the construction knowledge base and make `graded infer`
-  // resolve `Runner.act` (and its caller `go`) to [Stdout] — disagreeing with
-  // `check`, which filters it. With the stale line dropped from the construction
-  // KB too, the field resolves to the declared [Database].
+pub fn project_module_external_infer_filters_stale_effects_test() {
+  // A field is wired to a function of a module declared as a module-level
+  // external. The spec still carries a STALE `effects db.touch : [Stdout]` line;
+  // since function effects outrank module effects, that stale entry would make
+  // `graded infer` resolve `Runner.act` (and its caller `go`) to [Stdout] —
+  // disagreeing with `check`, which filters it. With the stale line dropped, the
+  // field resolves to the declared [Database].
   let root = "build/modext_construction_proj"
   write_project(
     root,

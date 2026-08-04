@@ -83,6 +83,17 @@ pub fn run_unresolved(read: fn(String) -> Nil) -> Nil {
 }
 
 @target(erlang)
+@external(erlang, "some_ffi_module", "raw")
+fn undeclared_read(path: String) -> Nil
+
+// A sibling `@external` with no `external effects` line has no body to analyse.
+// Reading one as pure would understate it, so it stays [Unknown].
+@target(erlang)
+pub fn run_undeclared_external() -> Nil {
+  perform(Reader(read: undeclared_read, label: "raw"), "x")
+}
+
+@target(erlang)
 @external(erlang, "some_ffi_module", "reader")
 fn opaque_read() -> fn(String) -> Nil
 

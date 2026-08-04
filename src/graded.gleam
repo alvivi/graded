@@ -146,7 +146,6 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     signatures.merge(dep_sources.registry, build_project_registry(index))
   let type_info = build_type_index(index, package_root)
 
-  // Hand-written `type` lines (last) win over the inferred construction index.
   let kb_base =
     effects.load_knowledge_base(
       packages_dir(package_root),
@@ -177,7 +176,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   // Committed effects are never overridden; fresh returns win over committed
   // Foreign ones (Fix E). The deltas aren't needed here — the pre-pass already
   // folded them into `kb_base`. Nothing is written to disk.
-  let #(kb_base, _fresh_returns, _fresh_bounds) =
+  let kb_base =
     infer_project_in_memory(
       kb_base,
       index,
@@ -907,8 +906,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
 
   // Build a signature registry covering every project module so the checker can
   // do positional argument matching for cross-module polymorphic calls. Hoisted
-  // above `kb_base` because the builders below, the constructor-field index (Fix
-  // B), and the C-B pre-pass all consume these; they need only
+  // above `kb_base` because the builders below consume it; it needs only
   // `index`/`package_root`.
   let dep_sources = dependency_sources(package_root)
   let registry =
@@ -1022,7 +1020,7 @@ fn infer_one_module(
   // call sites targeting this module's functions. A module-level-external module
   // resolves via its declaration, so later modules calling into it agree with
   // `check`.
-  let #(threaded_kb, _returns_delta, _bounds_delta) =
+  let threaded_kb =
     thread_inferred_into_kb(
       knowledge_base,
       inferred,
@@ -1072,35 +1070,22 @@ fn infer_project_in_memory(
   registry: SignatureRegistry,
   type_info: typeinfo.TypeInfo,
   declared_modules: Set(String),
-) -> #(
-  KnowledgeBase,
-  Dict(QualifiedName, types.EffectTerm),
-  Dict(QualifiedName, List(types.ParamBound)),
-) {
-  let empty = #(base_kb, dict.new(), dict.new())
+) -> KnowledgeBase {
   case topo.sort(build_dependency_graph(index)) {
-    Error(_) -> empty
+    Error(_) -> base_kb
     Ok(sorted) ->
-      list.fold(sorted, empty, fn(state, module_path) {
-        let #(kb, returns_delta, bounds_delta) = state
+      list.fold(sorted, base_kb, fn(kb, module_path) {
         case dict.get(index, module_path) {
-          Error(_) -> state
-          Ok(#(_gleam_path, module)) -> {
-            let #(new_kb, mod_returns, mod_bounds) =
-              fold_inferred_module(
-                kb,
-                module,
-                module_path,
-                registry,
-                type_info,
-                declared_modules,
-              )
-            #(
-              new_kb,
-              dict.merge(returns_delta, mod_returns),
-              dict.merge(bounds_delta, mod_bounds),
+          Error(_) -> kb
+          Ok(#(_gleam_path, module)) ->
+            fold_inferred_module(
+              kb,
+              module,
+              module_path,
+              registry,
+              type_info,
+              declared_modules,
             )
-          }
         }
       })
   }
@@ -1116,11 +1101,7 @@ fn fold_inferred_module(
   registry: SignatureRegistry,
   type_info: typeinfo.TypeInfo,
   declared_modules: Set(String),
-) -> #(
-  KnowledgeBase,
-  Dict(QualifiedName, types.EffectTerm),
-  Dict(QualifiedName, List(types.ParamBound)),
-) {
+) -> KnowledgeBase {
   let #(inferred, returned_operators, provenance) =
     checker.infer_with_returns(
       module,
@@ -1131,10 +1112,7 @@ fn fold_inferred_module(
       typeinfo.for_module(type_info, module_path),
       typeinfo.fn_typed_for_module(type_info, module_path),
     )
-  // Fold into the KB and reuse the returns/param-bound deltas it qualifies, so
-  // the caller can fold them Fresh into a cold `infer`'s `construction_kb` (Fix
-  // C-B) without laundering the whole KB.
-  let #(threaded_kb, returns_delta, bounds_delta) =
+  let threaded_kb =
     thread_inferred_into_kb(
       kb,
       inferred,
@@ -1142,12 +1120,10 @@ fn fold_inferred_module(
       module_path,
       declared_modules,
     )
-  let new_kb =
-    effects.with_provenance(
-      threaded_kb,
-      qualify_bare_names(provenance, module_path),
-    )
-  #(new_kb, returns_delta, bounds_delta)
+  effects.with_provenance(
+    threaded_kb,
+    qualify_bare_names(provenance, module_path),
+  )
 }
 
 // Re-key a bare-name map (a module's inferred returned operators or return-value
@@ -1172,34 +1148,25 @@ fn qualify_bare_names(
 // `drop_declared_modules` in `infer_path_dep_module`. Returned-operator and
 // parameter-bound metadata describe what a function returns and how it consumes
 // operator arguments, not its call effect, so they are kept.
-// Returns the threaded knowledge base alongside the module's qualified returns
-// and param-bound deltas (before `drop_declared_modules`), so a cold `infer`'s
-// pre-pass (Fix C-B) can reuse them without re-deriving via `qualified_inferred`.
 fn thread_inferred_into_kb(
   knowledge_base: KnowledgeBase,
   inferred: List(EffectAnnotation),
   returned_operators: Dict(String, types.EffectTerm),
   module_path: String,
   declared_modules: Set(String),
-) -> #(
-  KnowledgeBase,
-  Dict(QualifiedName, types.EffectTerm),
-  Dict(QualifiedName, List(types.ParamBound)),
-) {
+) -> KnowledgeBase {
   let #(effects_dict, params_dict, returns_dict) =
     qualified_inferred(inferred, returned_operators, module_path)
   let effects_dict = drop_declared_modules(effects_dict, declared_modules)
   // Main project topo loop + the in-memory pre-pass: results inferred this run,
   // hence Fresh.
-  let kb =
-    fold_inferred_into_kb(
-      knowledge_base,
-      effects_dict,
-      params_dict,
-      returns_dict,
-      effects.Fresh,
-    )
-  #(kb, returns_dict, params_dict)
+  fold_inferred_into_kb(
+    knowledge_base,
+    effects_dict,
+    params_dict,
+    returns_dict,
+    effects.Fresh,
+  )
 }
 
 // Qualify a module's freshly inferred effects, polymorphic param bounds, and

@@ -3991,7 +3991,7 @@ pub fn plain(x: String) -> String {
 "
   let assert Ok(module) = glance.module(source)
   let context = extract.build_import_context(module)
-  let cache = checker.build_scc_ids(module, context, dict.new(), True)
+  let cache = checker.build_scc_ids(module, context, dict.new())
 
   // `apply` takes an alias-typed function parameter — excluded from collapse
   // even with no girard input.
