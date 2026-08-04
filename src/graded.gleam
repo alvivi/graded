@@ -35,7 +35,6 @@ import gleam/string
 import graded/internal/annotation
 import graded/internal/checker
 import graded/internal/config
-import graded/internal/effect_term
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
 import graded/internal/signatures.{type SignatureRegistry}
@@ -188,11 +187,6 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     )
   let knowledge_base =
     kb_base
-    |> effects.with_inferred_type_fields(build_constructor_field_index(
-      index,
-      kb_base,
-      registry,
-    ))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
 
@@ -706,77 +700,6 @@ fn build_project_registry(
   })
 }
 
-// Constructor-field index
-
-// Derive `type Foo.field : [...]` annotations from constructor call
-// sites across the package. `Validator(to_error: io.println)` anywhere makes
-// `Validator.to_error` carry io.println's effects (unioned across all sites),
-// so a field call resolves without a hand-written annotation. Resolved via
-// girard's receiver typing at the use site; hand-written `type` lines still
-// win, since they are merged over these.
-fn build_constructor_field_index(
-  index: Dict(String, #(String, glance.Module)),
-  knowledge_base: KnowledgeBase,
-  registry: SignatureRegistry,
-) -> List(#(#(String, String, String), types.TypeFieldEffect)) {
-  // Package-wide #(defining module, constructor) -> type name. Keyed by module
-  // so same-named constructors in different modules stay distinct; the call
-  // site's resolved module (or the current module for an unqualified call)
-  // picks the right entry.
-  let constructor_types =
-    qualify_by_module(index, extract.build_constructor_type_map)
-
-  // Package-wide #(defining module, constructor) -> field labels, so a
-  // cross-module positional constructor call routes its arguments to fields.
-  let cross_constructors =
-    qualify_by_module(index, extract.constructor_label_map)
-
-  // Accumulate (module, type_name, field) -> effect, unioning across sites.
-  // `path` is the module being walked — used to qualify same-module function
-  // values wired into fields.
-  dict.fold(index, dict.new(), fn(acc, path, entry) {
-    let #(_gleam_path, module) = entry
-    let context =
-      extract.build_import_context(module)
-      |> extract.with_cross_constructors(cross_constructors)
-    // Resolve a field wired to an inline/let-bound closure by analysing the
-    // closure body in this module's context (same-module calls via its
-    // function map), instead of collapsing to `[Unknown]`.
-    let function_map = checker.build_function_map(module)
-    // Built once per module and shared across every field closure analysed
-    // below, rather than rebuilt per closure. The two analysis callbacks resolve
-    // a field wired to an inline closure (by analysing its body) or to a call
-    // (`Options(resolver: disk_resolver())`, by the callee's returned-operator
-    // summary) instead of collapsing to `[Unknown]`.
-    let scc_ids = checker.build_scc_ids(module, context, dict.new(), False)
-    let #(closure_effect, call_result_effect) =
-      checker.field_analysis_callbacks(
-        context,
-        function_map,
-        knowledge_base,
-        registry,
-        scc_ids,
-      )
-    // The module's own function names, so a field wired to a bare name can be
-    // told apart from one wired to a parameter (the latter is polymorphic).
-    let module_functions = set.from_list(dict.keys(function_map))
-    extract.collect_constructor_bindings(module, context)
-    |> list.fold(acc, fn(inner, binding) {
-      accumulate_constructor_binding(
-        inner,
-        binding,
-        constructor_types,
-        knowledge_base,
-        path,
-        module_functions,
-        closure_effect,
-        call_result_effect,
-      )
-    })
-  })
-  |> dict.to_list()
-}
-
 // Build a package-wide map keyed by `#(defining module, name)` from a per-module
 // `name -> value` map, qualifying each entry with the module it came from.
 fn qualify_by_module(
@@ -789,66 +712,6 @@ fn qualify_by_module(
       dict.insert(inner, #(path, name), value)
     })
   })
-}
-
-// Fold one constructor call's field bindings into the (module, type, field) ->
-// effect accumulator, unioning with any effect already recorded for that field.
-// The defining module is the call's resolved module (qualified) or the current
-// module (unqualified) — so same-named constructors in different modules don't
-// collide.
-fn accumulate_constructor_binding(
-  acc: Dict(#(String, String, String), types.TypeFieldEffect),
-  binding: extract.ConstructorBinding,
-  constructor_types: Dict(#(String, String), String),
-  knowledge_base: KnowledgeBase,
-  module_path: String,
-  module_functions: Set(String),
-  closure_effect: fn(List(String), List(glance.Statement)) -> types.EffectTerm,
-  call_result_effect: fn(types.QualifiedName, List(types.CallArgument)) ->
-    Result(types.EffectTerm, Nil),
-) -> Dict(#(String, String, String), types.TypeFieldEffect) {
-  let extract.ConstructorBinding(binding_module, constructor, fields) = binding
-  let module = option.unwrap(binding_module, module_path)
-  case dict.get(constructor_types, #(module, constructor)) {
-    Error(Nil) -> acc
-    Ok(type_name) ->
-      dict.fold(fields, acc, fn(inner, label, value) {
-        let field_effect =
-          checker.field_effect_of(
-            knowledge_base,
-            value,
-            module_path,
-            module_functions,
-            closure_effect,
-            call_result_effect,
-          )
-        let key = #(module, type_name, label)
-        let merged = case dict.get(inner, key) {
-          Ok(existing) -> merge_field_effect(existing, field_effect)
-          Error(Nil) -> field_effect
-        }
-        dict.insert(inner, key, merged)
-      })
-  }
-}
-
-// Union two field-effect contributions for the same field across sites. Keeps
-// the first polymorphic source — conflicting polymorphism across sites is rare,
-// and unbound variables collapse to `[Unknown]` at the call site.
-fn merge_field_effect(
-  existing: types.TypeFieldEffect,
-  new: types.TypeFieldEffect,
-) -> types.TypeFieldEffect {
-  let #(bounds, source) = case existing.source {
-    Some(_) -> #(existing.bounds, existing.source)
-    None -> #(new.bounds, new.source)
-  }
-  types.TypeFieldEffect(
-    effect_term.normalize(types.TUnion([existing.effects, new.effects])),
-    bounds,
-    source,
-    types.Inferred,
-  )
 }
 
 // Type index
@@ -1064,51 +927,8 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     |> with_builders(index, dep_sources)
     |> enrich_with_path_deps(package_root, declared_modules)
 
-  // Fix C-B: a metadata pre-pass so a field wired from *another project module's*
-  // producer resolves on a first-ever `infer`. Runs the same in-memory inference
-  // `check` uses, but folds **only** its fresh returns + param-bound deltas into
-  // `construction_kb` — its committed-only *effect* view is unchanged (cross-run
-  // field-effect convergence). Returns are fresh-wins (a re-inferred, Fix-D-
-  // sanitized summary replaces a committed Foreign one); effects stay committed.
-  let #(_prepass, fresh_returns, fresh_bounds) =
-    infer_project_in_memory(
-      kb_base,
-      index,
-      registry,
-      type_info,
-      declared_modules,
-    )
-
-  // Resolve constructor-field values against the same view `run` uses — catalog
-  // + externals + the spec's *existing* inferred effects — so `infer` and
-  // `check` agree on a field wired to a qualified project function, converging
-  // across runs. The inferred effects are NOT seeded into `base_kb` below: the
-  // topo loop recomputes them fresh, threading each module's result forward.
-  // Stale `effects` lines for a module-level-external module are dropped, exactly
-  // as `run` does, so a field wired to such a function resolves to the
-  // declaration rather than the outranking-but-stale per-function effect.
-  let construction_kb =
-    effects.with_inferred(
-      kb_base,
-      drop_declared_modules(
-        effects.load_spec_effects_from_file(spec),
-        declared_modules,
-      ),
-    )
-    // Committed project returns (Foreign), then the fresh pre-pass delta which
-    // overrides them (Fix E fresh-wins); fresh directly-derived param bounds.
-    |> effects.with_foreign_returned_operators(
-      effects.load_spec_returns_from_file(spec),
-    )
-    |> effects.with_fresh_returned_operators(fresh_returns)
-    |> effects.with_inferred_params(fresh_bounds)
   let base_kb =
     kb_base
-    |> effects.with_inferred_type_fields(build_constructor_field_index(
-      index,
-      construction_kb,
-      registry,
-    ))
     |> effects.with_type_fields(annotation.extract_type_fields(spec))
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
 
