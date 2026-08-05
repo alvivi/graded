@@ -646,6 +646,180 @@ pub fn field_call_construction_without_annotation_resolves_test() {
   violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
+// Same-module wired fields under girard's types
+//
+// A function wired into a record field is lifted out of the module's own
+// definitions. That lift runs under the same `module_types` as every other
+// analysis of the module, so a field call in the lifted body whose receiver only
+// girard can type resolves there exactly as it does when the function is
+// inferred directly.
+
+// `config.inner` is a nested field access: the syntax-level path can't name its
+// type, so `config.inner.run(message)` reaches the `Box.run` line only through
+// girard's inferred type. `raw_invoke` is a bodyless `@external` with no
+// `external effects` line — there is no body to lift.
+fn wired_receiver_source(wired_first: Bool) -> String {
+  let types =
+    "pub type Box {
+  Box(run: fn(String) -> Nil)
+}
+
+pub type Config {
+  Config(inner: Box)
+}
+
+pub type Handler {
+  Handler(go: fn(Config, String) -> Nil)
+}
+
+@external(erlang, \"ffi_mod\", \"raw\")
+fn raw_invoke(config: Config, message: String) -> Nil
+
+pub fn perform(handler: Handler, config: Config, message: String) -> Nil {
+  handler.go(config, message)
+}
+
+pub fn run_external(config: Config, message: String) -> Nil {
+  perform(Handler(go: raw_invoke), config, message)
+}
+"
+  let invoke =
+    "pub fn invoke(config: Config, message: String) -> Nil {
+  config.inner.run(message)
+}
+"
+  let wired =
+    "pub fn run_wired(config: Config, message: String) -> Nil {
+  perform(Handler(go: invoke), config, message)
+}
+"
+  case wired_first {
+    True -> types <> wired <> invoke
+    False -> types <> invoke <> wired
+  }
+}
+
+fn box_run_stdout() -> List(types.TypeFieldAnnotation) {
+  [
+    types.TypeFieldAnnotation(
+      module: None,
+      type_name: "Box",
+      field: "run",
+      effects: effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    ),
+  ]
+}
+
+// Infer with girard's real types and a type-field annotation, returning each
+// public function's inferred effect set by name.
+fn infer_effects_with_girard(
+  source: String,
+  type_fields: List(types.TypeFieldAnnotation),
+) -> dict.Dict(String, types.EffectSet) {
+  let assert Ok(module) = glance.module(source)
+  checker.infer(
+    module,
+    "",
+    effects.with_type_fields(knowledge_base(), type_fields),
+    [],
+    signatures.from_glance_module("", module),
+    girard_types(module),
+    dict.new(),
+  )
+  |> list.fold(dict.new(), fn(acc, a) {
+    dict.insert(acc, a.function, effect_term.to_effect_set(a.effects))
+  })
+}
+
+fn wired_receiver_effects(
+  wired_first: Bool,
+) -> dict.Dict(String, types.EffectSet) {
+  infer_effects_with_girard(
+    wired_receiver_source(wired_first),
+    box_run_stdout(),
+  )
+}
+
+pub fn wired_local_function_lift_uses_module_types_test() {
+  // Direct inference and the same-module wired lift agree: both reach [Stdout]
+  // through `type Box.run`. Lifting without the module's types would leave a
+  // residual `config.inner.run` variable, which is rejected as non-ground and
+  // degrades to [Unknown].
+  let inferred = wired_receiver_effects(False)
+  dict.get(inferred, "invoke")
+  |> should.equal(Ok(Specific(set.from_list(["Stdout"]))))
+  dict.get(inferred, "run_wired")
+  |> should.equal(Ok(Specific(set.from_list(["Stdout"]))))
+}
+
+pub fn wired_local_function_lift_is_order_independent_test() {
+  // The lift shares the enclosing memo, whose `lifts` are keyed on
+  // `#(name, ancestors)` with no type-environment component. Declaring the wired
+  // site before the function it wires must not change either result.
+  wired_receiver_effects(True)
+  |> should.equal(wired_receiver_effects(False))
+}
+
+pub fn wired_bodyless_external_stays_unknown_test() {
+  // A field wired to a bodyless `@external` with no `external effects` line has
+  // no body to analyse; reading its empty one as pure would understate it.
+  wired_receiver_effects(False)
+  |> dict.get("run_external")
+  |> should.equal(Ok(Specific(set.from_list(["Unknown"]))))
+}
+
+// The other two field-value shapes analysed away from their creation site: an
+// inline closure and a producer call. Each body reaches `Box.run` only through
+// girard's type for the closure parameter `c`.
+const wired_operator_source = "
+pub type Box {
+  Box(run: fn(String) -> Nil)
+}
+
+pub type Config {
+  Config(inner: Box)
+}
+
+pub type Handler {
+  Handler(go: fn(Config, String) -> Nil)
+}
+
+pub fn perform(handler: Handler, config: Config, message: String) -> Nil {
+  handler.go(config, message)
+}
+
+fn make_go() -> fn(Config, String) -> Nil {
+  fn(c, m) { c.inner.run(m) }
+}
+
+pub fn run_closure(config: Config, message: String) -> Nil {
+  perform(Handler(go: fn(c, m) { c.inner.run(m) }), config, message)
+}
+
+pub fn run_producer(config: Config, message: String) -> Nil {
+  perform(Handler(go: make_go()), config, message)
+}
+"
+
+pub fn wired_closure_field_uses_module_types_test() {
+  // The closure is lifted into an operator away from its creation site.
+  // Analysing it without the module's types leaves `c.inner.run` unresolved and
+  // unions an [Unknown] into the caller alongside the [Stdout] the enclosing
+  // body contributes.
+  infer_effects_with_girard(wired_operator_source, box_run_stdout())
+  |> dict.get("run_closure")
+  |> should.equal(Ok(Specific(set.from_list(["Stdout"]))))
+}
+
+pub fn wired_producer_call_field_uses_module_types_test() {
+  // Same for a field wired from a producer call: the returned-operator summary
+  // is computed from the producer's body, which needs the module's types to
+  // resolve the field call inside the closure it returns.
+  infer_effects_with_girard(wired_operator_source, box_run_stdout())
+  |> dict.get("run_producer")
+  |> should.equal(Ok(Specific(set.from_list(["Stdout"]))))
+}
+
 // Field effects exceed declared budget → violation
 pub fn field_call_violates_check_test() {
   let source = "pub fn view(handler: Handler) { handler.on_click(event) }"

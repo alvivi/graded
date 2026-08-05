@@ -275,20 +275,25 @@ pub fn infer_with_returns(
 // the field call's argument gives `[Stdout]` back); a higher-order field
 // (`run: fn(next) { next() }`) becomes `λnext. [next]` (applying it gives the
 // callback's effect). `resolve_field_effect` applies the operator at the field
-// call. `function_map` resolves same-module calls; a minimal registry/types is
-// enough for the common case of a closure calling library/qualified functions.
+// call. `function_map` resolves same-module calls, and `module_types` is the
+// enclosing module's own type environment, so a field call in the closure body
+// whose receiver only girard can type (`c.inner.run(m)`) resolves here as it
+// does in an ordinary body. A minimal registry is enough for the common case of
+// a closure calling library/qualified functions.
 fn closure_field_operator(
   params: List(String),
   body: List(Statement),
   context: ImportContext,
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   // The module's SCC ids, built once by the caller (`build_scc_ids`) and reused
   // across every field closure it analyses.
   scc_ids: LocalCache,
 ) -> EffectTerm {
   // A fresh memo per closure: these bodies are shallow, so not sharing
-  // sub-results across the fields of one module costs nothing.
+  // sub-results across the fields of one module costs nothing. It is discarded,
+  // so nothing computed here is reused under a different type environment.
   // Abstract over every parameter (positions 0..n-1), in order.
   let positions = list.index_map(params, fn(_, index) { index })
   analyze_closure(
@@ -301,7 +306,7 @@ fn closure_field_operator(
     knowledge_base,
     set.new(),
     signatures.empty(),
-    dict.new(),
+    module_types,
     dict.new(),
     set.new(),
     scc_ids,
@@ -317,7 +322,9 @@ fn closure_field_operator(
 // read from the knowledge base, and a polymorphic summary is bound to the
 // construction-site `args`. `scc_ids` carries Fix A's alias map so an aliased
 // return type resolves; the real `registry` lets a cross-module producer's
-// annotated operator params be detected at bind time.
+// annotated operator params be detected at bind time; `module_types` is the
+// enclosing module's own type environment, so a field call in the producer's
+// returned closure resolves against girard's types rather than degrading.
 fn call_result_field_operator(
   callee: types.QualifiedName,
   args: List(types.CallArgument),
@@ -325,6 +332,7 @@ fn call_result_field_operator(
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   scc_ids: LocalCache,
 ) -> Result(EffectTerm, Nil) {
   resolve_returned_operator(
@@ -335,7 +343,7 @@ fn call_result_field_operator(
     knowledge_base,
     set.new(),
     registry,
-    dict.new(),
+    module_types,
     [],
     scc_ids,
     new_memo(),
@@ -357,6 +365,16 @@ fn call_result_field_operator(
 // pure — so it keeps the knowledge-base answer too, as `resolve_unknown_local`
 // does for a direct call. `visited` is the enclosing call stack, so a field
 // wired to a function already under analysis lifts nothing.
+//
+// The lift runs under the module's own `module_types`, the same environment
+// every other analysis of this module uses. A field call in the lifted body
+// whose receiver only girard can type — `config.inner.run()` against a
+// `type Config.inner`/`type Box.run` pair — then resolves here exactly as it
+// does when the function is inferred directly, instead of leaving a residual
+// field variable that `has_vars` rejects into `[Unknown]`. Sharing the enclosing
+// memo is sound for the same reason: `memo.lifts` is keyed on
+// `#(name, ancestors)` with no type-environment component, so every lift of a
+// given function must run under one environment.
 fn local_function_field_effect(
   name: types.QualifiedName,
   context: ImportContext,
@@ -364,6 +382,7 @@ fn local_function_field_effect(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   scc_ids: LocalCache,
   memo: Memo,
 ) -> #(option.Option(EffectTerm), Memo) {
@@ -384,7 +403,7 @@ fn local_function_field_effect(
               knowledge_base,
               visited,
               registry,
-              dict.new(),
+              module_types,
               scc_ids,
               memo,
             )
@@ -1094,6 +1113,7 @@ fn collect_effects(
           caller_param_names,
           caller_field_bindings,
           registry,
+          module_types,
           cache,
           lift_operator_arg,
           memo,
@@ -1164,6 +1184,7 @@ fn collect_effects(
             caller_param_names,
             caller_field_bindings,
             registry,
+            module_types,
             cache,
             lift_operator_arg,
             memo,
@@ -1670,6 +1691,7 @@ fn substitute_local_call_effects(
   caller_param_names: Set(String),
   caller_field_bindings: dict.Dict(String, EffectTerm),
   registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
@@ -1723,6 +1745,7 @@ fn substitute_local_call_effects(
           context,
           knowledge_base,
           visited,
+          module_types,
           cache,
           memo,
         )
@@ -1771,6 +1794,7 @@ fn substitute_at_call_site(
   caller_param_names: Set(String),
   caller_field_bindings: dict.Dict(String, EffectTerm),
   registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
@@ -1816,6 +1840,7 @@ fn substitute_at_call_site(
       context,
       knowledge_base,
       visited,
+      module_types,
       cache,
       memo,
     )
@@ -1882,6 +1907,7 @@ fn field_forwarding_bindings(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   visited: Set(String),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(dict.Dict(String, EffectTerm), Memo) {
@@ -1902,6 +1928,7 @@ fn field_forwarding_bindings(
         context,
         knowledge_base,
         visited,
+        module_types,
         cache,
         memo,
       )
@@ -1923,6 +1950,7 @@ fn field_forwarding_binding(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   visited: Set(String),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(option.Option(#(String, EffectTerm)), Memo) {
@@ -1950,6 +1978,7 @@ fn field_forwarding_binding(
         context,
         knowledge_base,
         visited,
+        module_types,
         cache,
         memo,
       )
@@ -2004,6 +2033,7 @@ fn forwarded_var_binding(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   visited: Set(String),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(option.Option(#(String, EffectTerm)), Memo) {
@@ -2051,6 +2081,7 @@ fn forwarded_var_binding(
             function_map,
             visited,
             registry,
+            module_types,
             cache,
             memo,
           )
@@ -2068,6 +2099,7 @@ fn wired_value_binding(
   function_map: dict.Dict(String, Definition(Function)),
   visited: Set(String),
   registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(option.Option(#(String, EffectTerm)), Memo) {
@@ -2082,6 +2114,7 @@ fn wired_value_binding(
           function_map,
           visited,
           registry,
+          module_types,
           cache,
           memo,
         )
@@ -2107,6 +2140,7 @@ fn concrete_field_effect(
   function_map: dict.Dict(String, Definition(Function)),
   visited: Set(String),
   registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(option.Option(EffectTerm), Memo) {
@@ -2119,6 +2153,7 @@ fn concrete_field_effect(
       function_map,
       visited,
       registry,
+      module_types,
       cache,
       memo,
     )
@@ -3860,6 +3895,7 @@ fn value_field_effect(
   function_map: dict.Dict(String, Definition(Function)),
   visited: Set(String),
   registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
 ) -> #(types.TypeFieldEffect, Memo) {
@@ -3882,6 +3918,7 @@ fn value_field_effect(
               knowledge_base,
               visited,
               registry,
+              module_types,
               cache,
               memo,
             )
@@ -3918,6 +3955,7 @@ fn value_field_effect(
               context,
               function_map,
               knowledge_base,
+              module_types,
               cache,
             ),
             [],
@@ -3941,6 +3979,7 @@ fn value_field_effect(
               function_map,
               knowledge_base,
               registry,
+              module_types,
               cache,
             )
           {
@@ -4050,6 +4089,7 @@ fn resolve_field_call(
         knowledge_base,
         function_map,
         visited,
+        module_types,
         caller_param_names,
         call_args,
         caller_param_bounds,
@@ -4114,6 +4154,7 @@ fn resolve_proven_field(
   knowledge_base: KnowledgeBase,
   function_map: dict.Dict(String, Definition(Function)),
   visited: Set(String),
+  module_types: dict.Dict(#(Int, Int), girard.Type),
   caller_param_names: Set(String),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
@@ -4136,6 +4177,7 @@ fn resolve_proven_field(
       function_map,
       visited,
       registry,
+      module_types,
       scc_ids,
       memo,
     )
