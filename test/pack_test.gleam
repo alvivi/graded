@@ -129,6 +129,15 @@ pub fn pack_scratch_collision_is_an_error_test() {
   let assert Error(_) = graded.pack_project(root, None)
   simplifile.read(work_marker <> "/keep.txt") |> should.equal(Ok("precious\n"))
   simplifile.is_file(tarball <> ".packing") |> should.equal(Ok(False))
+  let assert Ok(Nil) = simplifile.delete(work_marker)
+
+  // A dangling symlink at the temp path is rejected atomically, not followed:
+  // the pack fails and nothing is written through to the symlink's target.
+  let assert Ok(Nil) =
+    simplifile.create_symlink("dangling_target", packing_marker)
+  let assert Error(_) = graded.pack_project(root, None)
+  simplifile.is_file(root <> "/build/dangling_target")
+  |> should.equal(Ok(False))
 
   cleanup(root)
 }
