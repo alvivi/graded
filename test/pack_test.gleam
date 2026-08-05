@@ -107,6 +107,32 @@ pub fn pack_rerun_is_idempotent_test() {
   cleanup(root)
 }
 
+// The scratch paths are invocation-owned: a pre-existing user path with the
+// same deterministic name is an error, never a recursive delete.
+pub fn pack_scratch_collision_is_an_error_test() {
+  let root = "build/pack_scratch"
+  let tarball =
+    setup_dep(root, "dep", "1.0.0", "dep.graded", "effects dep.work : []\n")
+
+  // A user directory at the `.packing` temp path survives the failed pack.
+  let packing_marker = tarball <> ".packing"
+  write_file(packing_marker <> "/keep.txt", "precious\n")
+  let assert Error(_) = graded.pack_project(root, None)
+  simplifile.read(packing_marker <> "/keep.txt")
+  |> should.equal(Ok("precious\n"))
+  let assert Ok(Nil) = simplifile.delete(packing_marker)
+
+  // A user directory at the FFI work-directory path gets the same guarantee,
+  // and the failed run cleans up its own temp file.
+  let work_marker = tarball <> ".packing.work"
+  write_file(work_marker <> "/keep.txt", "precious\n")
+  let assert Error(_) = graded.pack_project(root, None)
+  simplifile.read(work_marker <> "/keep.txt") |> should.equal(Ok("precious\n"))
+  simplifile.is_file(tarball <> ".packing") |> should.equal(Ok(False))
+
+  cleanup(root)
+}
+
 pub fn pack_default_tarball_identity_mismatch_test() {
   let root = "build/pack_mismatch"
   let _ = simplifile.delete(root)
