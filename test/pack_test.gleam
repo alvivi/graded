@@ -43,9 +43,11 @@ pub fn pack_injects_and_reports_test() {
 
   let assert Ok(message) = graded.pack_project(root, None)
   string.contains(message, "injected dep.graded") |> should.be_true()
-  // The publish guidance names the Hex API, never `gleam publish`.
+  // The publish guidance names the Hex API, never `gleam publish`, and
+  // shell-quotes the tarball path.
   string.contains(message, "hex.pm/api/publish") |> should.be_true()
   string.contains(message, "gleam publish") |> should.be_true()
+  string.contains(message, "--data-binary @'") |> should.be_true()
 
   // The patched tarball unpacks with the injected spec present and intact.
   let dest = root <> "/unpacked"
@@ -55,6 +57,53 @@ pub fn pack_injects_and_reports_test() {
   // The original source survived the round-trip.
   simplifile.is_file(dest <> "/src/dep.gleam") |> should.equal(Ok(True))
 
+  cleanup(root)
+}
+
+// Existing entry modes survive the transform: an executable runtime asset in
+// the original tarball stays executable after the spec is injected.
+pub fn pack_preserves_entry_modes_test() {
+  let root = "build/pack_modes"
+  let _ = simplifile.delete(root)
+  write_file(root <> "/gleam.toml", "name = \"dep\"\nversion = \"1.0.0\"\n")
+  write_file(root <> "/dep.graded", "effects dep.work : []\n")
+  let tarball = root <> "/build/dep-1.0.0.tar"
+  ensure_parent(tarball)
+  build_tarball_with_modes(tarball, "dep", "1.0.0", [
+    #("src/dep.gleam", "pub fn work() {\n  Nil\n}\n", 0o644),
+    #("priv/helper", "#!/bin/sh\n", 0o755),
+  ])
+
+  let assert Ok(_) = graded.pack_project(root, None)
+
+  let dest = root <> "/unpacked"
+  unpack_inner(tarball, dest)
+  let assert Ok(info) = simplifile.file_info(dest <> "/priv/helper")
+  simplifile.file_info_permissions_octal(info) |> should.equal(0o755)
+  cleanup(root)
+}
+
+// Re-packing an already-patched tarball replaces the spec entry rather than
+// appending a duplicate: the files list stays canonical and the fresh spec
+// content wins.
+pub fn pack_rerun_is_idempotent_test() {
+  let root = "build/pack_rerun"
+  let tarball =
+    setup_dep(root, "dep", "1.0.0", "dep.graded", "effects dep.work : []\n")
+
+  let assert Ok(_) = graded.pack_project(root, None)
+  write_file(root <> "/dep.graded", "effects dep.work : [Stdout]\n")
+  let assert Ok(_) = graded.pack_project(root, None)
+
+  metadata_files(tarball)
+  |> list.filter(fn(file) { file == "dep.graded" })
+  |> list.length
+  |> should.equal(1)
+
+  let dest = root <> "/unpacked"
+  unpack_inner(tarball, dest)
+  let assert Ok(spec) = simplifile.read(dest <> "/dep.graded")
+  spec |> should.equal("effects dep.work : [Stdout]\n")
   cleanup(root)
 }
 
@@ -178,5 +227,16 @@ fn build_tarball(
   inner_files: List(#(String, String)),
 ) -> Nil
 
+@external(erlang, "graded_pack_test_ffi", "build_tarball_with_modes")
+fn build_tarball_with_modes(
+  out_path: String,
+  name: String,
+  version: String,
+  inner_files: List(#(String, String, Int)),
+) -> Nil
+
 @external(erlang, "graded_pack_test_ffi", "unpack_inner")
 fn unpack_inner(tarball: String, dest_dir: String) -> Nil
+
+@external(erlang, "graded_pack_test_ffi", "metadata_files")
+fn metadata_files(tarball: String) -> List(String)
