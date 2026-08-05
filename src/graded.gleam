@@ -266,8 +266,20 @@ pub fn pack_project(
   ))
 
   // Inject into a temp, verify, then replace the tarball in place, so a failed
-  // transform never leaves a corrupt archive behind.
+  // transform never leaves a corrupt archive behind. The temp is created
+  // exclusively: a pre-existing path with the same name is an error, so the
+  // cleanup below can only ever delete what this run created.
   let temp = tarball_path <> ".packing"
+  use _ <- result.try(
+    simplifile.create_file(temp)
+    |> result.map_error(fn(_) {
+      PackError(
+        "scratch path "
+        <> temp
+        <> " already exists or is not writable; remove it and retry",
+      )
+    }),
+  )
   use checksum <- result.try(
     inject_spec(tarball_path, spec, entry_name, temp)
     |> result.map_error(fn(message) {

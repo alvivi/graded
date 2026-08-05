@@ -13,68 +13,81 @@
 % Returns {ok, Checksum} (uppercase hex) or {error, Reason} (a binary message).
 inject_spec(InTar, SpecBin, EntryName, OutTar) ->
     OutTarPath = unicode:characters_to_list(OutTar),
-    InnerTmp = OutTarPath ++ ".inner",
-    InnerDir = OutTarPath ++ ".contents",
-    try
-        InTarPath = unicode:characters_to_list(InTar),
-        {ok, Outer} = erl_tar:extract(InTarPath, [memory]),
-        Version = proplists:get_value("VERSION", Outer),
-        MetaBin = proplists:get_value("metadata.config", Outer),
-        Contents = proplists:get_value("contents.tar.gz", Outer),
-        Entry = unicode:characters_to_list(EntryName),
-
-        % inner tar: unpack to disk (restoring each entry's mode), re-add every
-        % entry by path — erl_tar only takes modes from the filesystem, a binary
-        % add silently writes 0644 — and replace any existing spec entry.
-        InnerRaw = zlib:gunzip(Contents),
-        ok = filelib:ensure_path(InnerDir),
-        ok = erl_tar:extract({binary, InnerRaw}, [{cwd, InnerDir}]),
-        {ok, Table} = erl_tar:table({binary, InnerRaw}, [verbose]),
-        Names = [N || {N, regular, _, _, _, _, _} <- Table, N =/= Entry],
-        {ok, T} = erl_tar:open(InnerTmp, [write]),
-        lists:foreach(fun(N) ->
-            ok = erl_tar:add(T, filename:join(InnerDir, N), N, [])
-        end, Names),
-        ok = erl_tar:add(T, SpecBin, Entry, []),
-        ok = erl_tar:close(T),
-        {ok, InnerBytes} = file:read_file(InnerTmp),
-        NewContents = zlib:gzip(InnerBytes),
-
-        % metadata: textually insert the spec path as the first files entry,
-        % preserving hex's <<"..."/utf8>> formatting and all other bytes. A
-        % re-run finds the path already listed and leaves the metadata alone.
-        NewMeta = case lists:member(Entry, files_of(MetaBin)) of
-            true -> MetaBin;
-            false ->
-                Marker = <<"{<<\"files\">>, [\n">>,
-                NewLine = iolist_to_binary(["  <<\"", EntryName, "\"/utf8>>,\n"]),
-                Spliced = binary:replace(MetaBin, Marker,
-                    <<Marker/binary, NewLine/binary>>),
-                Spliced =:= MetaBin andalso throw({graded_error,
-                    <<"metadata.config files-list marker not found">>}),
-                Spliced
-        end,
-
-        assert_files_match(NewMeta, [Entry | Names]),
-
-        % inner checksum over the final bytes.
-        Checksum = checksum(Version, NewMeta, NewContents),
-
-        % rebuild outer tar.
-        {ok, O} = erl_tar:open(OutTarPath, [write]),
-        ok = erl_tar:add(O, Version, "VERSION", []),
-        ok = erl_tar:add(O, NewMeta, "metadata.config", []),
-        ok = erl_tar:add(O, NewContents, "contents.tar.gz", []),
-        ok = erl_tar:add(O, Checksum, "CHECKSUM", []),
-        ok = erl_tar:close(O),
-        {ok, Checksum}
-    catch
-        throw:{graded_error, Msg} -> {error, Msg};
-        _:Reason -> {error, format_reason(Reason)}
-    after
-        file:del_dir_r(InnerDir),
-        file:delete(InnerTmp)
+    % All scratch state lives inside one exclusively-created work directory, so
+    % cleanup only ever deletes what this invocation created — a pre-existing
+    % path with the same name is an error, never a recursive delete.
+    WorkDir = OutTarPath ++ ".work",
+    case file:make_dir(WorkDir) of
+        ok ->
+            try
+                do_inject(unicode:characters_to_list(InTar), SpecBin,
+                    unicode:characters_to_list(EntryName), OutTarPath, WorkDir)
+            catch
+                throw:{graded_error, Msg} -> {error, Msg};
+                _:Reason -> {error, format_reason(Reason)}
+            after
+                file:del_dir_r(WorkDir)
+            end;
+        {error, eexist} ->
+            {error, iolist_to_binary(["scratch directory already exists: ",
+                WorkDir, "; remove it and retry"])};
+        {error, Reason} ->
+            {error, format_reason(Reason)}
     end.
+
+do_inject(InTarPath, SpecBin, Entry, OutTarPath, WorkDir) ->
+    InnerTmp = filename:join(WorkDir, "inner.tar"),
+    InnerDir = filename:join(WorkDir, "contents"),
+    {ok, Outer} = erl_tar:extract(InTarPath, [memory]),
+    Version = proplists:get_value("VERSION", Outer),
+    MetaBin = proplists:get_value("metadata.config", Outer),
+    Contents = proplists:get_value("contents.tar.gz", Outer),
+
+    % inner tar: unpack to disk (restoring each entry's mode), re-add every
+    % entry by path — erl_tar only takes modes from the filesystem, a binary
+    % add silently writes 0644 — and replace any existing spec entry.
+    InnerRaw = zlib:gunzip(Contents),
+    ok = file:make_dir(InnerDir),
+    ok = erl_tar:extract({binary, InnerRaw}, [{cwd, InnerDir}]),
+    {ok, Table} = erl_tar:table({binary, InnerRaw}, [verbose]),
+    Names = [N || {N, regular, _, _, _, _, _} <- Table, N =/= Entry],
+    {ok, T} = erl_tar:open(InnerTmp, [write]),
+    lists:foreach(fun(N) ->
+        ok = erl_tar:add(T, filename:join(InnerDir, N), N, [])
+    end, Names),
+    ok = erl_tar:add(T, SpecBin, Entry, []),
+    ok = erl_tar:close(T),
+    {ok, InnerBytes} = file:read_file(InnerTmp),
+    NewContents = zlib:gzip(InnerBytes),
+
+    % metadata: textually insert the spec path as the first files entry,
+    % preserving hex's <<"..."/utf8>> formatting and all other bytes. A
+    % re-run finds the path already listed and leaves the metadata alone.
+    NewMeta = case lists:member(Entry, files_of(MetaBin)) of
+        true -> MetaBin;
+        false ->
+            Marker = <<"{<<\"files\">>, [\n">>,
+            NewLine = iolist_to_binary(["  <<\"", Entry, "\"/utf8>>,\n"]),
+            Spliced = binary:replace(MetaBin, Marker,
+                <<Marker/binary, NewLine/binary>>),
+            Spliced =:= MetaBin andalso throw({graded_error,
+                <<"metadata.config files-list marker not found">>}),
+            Spliced
+    end,
+
+    assert_files_match(NewMeta, [Entry | Names]),
+
+    % inner checksum over the final bytes.
+    Checksum = checksum(Version, NewMeta, NewContents),
+
+    % rebuild outer tar.
+    {ok, O} = erl_tar:open(OutTarPath, [write]),
+    ok = erl_tar:add(O, Version, "VERSION", []),
+    ok = erl_tar:add(O, NewMeta, "metadata.config", []),
+    ok = erl_tar:add(O, NewContents, "contents.tar.gz", []),
+    ok = erl_tar:add(O, Checksum, "CHECKSUM", []),
+    ok = erl_tar:close(O),
+    {ok, Checksum}.
 
 % Assert a written tarball is internally consistent: the stored CHECKSUM equals
 % the recomputed inner checksum, the metadata files list equals the inner tar
