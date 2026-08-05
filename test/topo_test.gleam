@@ -9,7 +9,6 @@
 // exercises clean-slate inference (modules without prior `.graded` files
 // still get processed).
 
-import filepath
 import gleam/dict
 import gleam/int
 import gleam/list
@@ -24,6 +23,7 @@ import graded/internal/types.{
   type EffectAnnotation, type EffectSet, Polymorphic, QualifiedName, Specific,
 }
 import simplifile
+import support.{cleanup, write_fixture}
 
 // Helpers
 //
@@ -47,21 +47,6 @@ fn stdlib_manifest() -> #(String, String) {
 ]
 ",
   )
-}
-
-// Materialise a tree of files at `directory`, replacing any prior contents.
-// Used by both project-style fixtures (under `/tmp/graded_topo_*`) and the
-// path-dep smoke test which writes to its own directory.
-fn write_fixture(directory: String, files: List(#(String, String))) -> String {
-  let _ = simplifile.delete(directory)
-  list.each(files, fn(entry) {
-    let #(relative_path, contents) = entry
-    let full_path = directory <> "/" <> relative_path
-    let parent = filepath.directory_name(full_path)
-    let assert Ok(Nil) = simplifile.create_directory_all(parent)
-    let assert Ok(Nil) = simplifile.write(full_path, contents)
-  })
-  directory
 }
 
 // Four-module pure chain `a -> b -> c -> d` where `d` calls `string.uppercase`
@@ -149,11 +134,6 @@ pub fn run(value: String) -> Nil {
 ",
     ),
   ]
-}
-
-fn cleanup(directory: String) -> Nil {
-  let _ = simplifile.delete(directory)
-  Nil
 }
 
 fn read_inferred(graded_path: String) -> List(EffectAnnotation) {

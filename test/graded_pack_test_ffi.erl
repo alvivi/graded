@@ -21,7 +21,7 @@ build_tarball(OutPath, Name, Version, InnerFiles) ->
 
     Version0 = <<"3">>,
     Meta = metadata(Name, Version, Paths),
-    Hash = crypto:hash(sha256, <<Version0/binary, Meta/binary, Contents/binary>>),
+    Hash = crypto:hash(sha256, [Version0, Meta, Contents]),
     Checksum = binary:encode_hex(Hash, uppercase),
 
     {ok, O} = erl_tar:open(Out, [write]),

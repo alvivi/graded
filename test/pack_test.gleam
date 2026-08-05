@@ -11,6 +11,7 @@ import gleeunit/should
 import graded
 import graded/internal/types.{Specific}
 import simplifile
+import support.{cleanup, ensure_parent, write_file}
 
 // A tarball with one inner source file, plus a gleam.toml and the spec to be
 // injected, materialised at `root`. Returns the tarball path.
@@ -22,11 +23,11 @@ fn setup_dep(
   spec: String,
 ) -> String {
   let _ = simplifile.delete(root)
-  write(
+  write_file(
     root <> "/gleam.toml",
     "name = \"" <> name <> "\"\nversion = \"" <> version <> "\"\n",
   )
-  write(root <> "/" <> spec_file, spec)
+  write_file(root <> "/" <> spec_file, spec)
   let tarball = root <> "/build/" <> name <> "-" <> version <> ".tar"
   ensure_parent(tarball)
   build_tarball(tarball, name, version, [
@@ -35,29 +36,9 @@ fn setup_dep(
   tarball
 }
 
-fn write(path: String, contents: String) -> Nil {
-  ensure_parent(path)
-  let assert Ok(Nil) = simplifile.write(path, contents)
-  Nil
-}
-
-fn ensure_parent(path: String) -> Nil {
-  let dir = case string.split(path, "/") {
-    [] -> "."
-    parts -> string.join(list.take(parts, list.length(parts) - 1), "/")
-  }
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  Nil
-}
-
-fn cleanup(root: String) -> Nil {
-  let _ = simplifile.delete(root)
-  Nil
-}
-
 pub fn pack_injects_and_reports_test() {
   let root = "build/pack_inject"
-  let _ =
+  let tarball =
     setup_dep(root, "dep", "1.0.0", "dep.graded", "effects dep.work : []\n")
 
   let assert Ok(message) = graded.pack_project(root, None)
@@ -68,7 +49,7 @@ pub fn pack_injects_and_reports_test() {
 
   // The patched tarball unpacks with the injected spec present and intact.
   let dest = root <> "/unpacked"
-  unpack_inner(root <> "/build/dep-1.0.0.tar", dest)
+  unpack_inner(tarball, dest)
   let assert Ok(spec) = simplifile.read(dest <> "/dep.graded")
   string.contains(spec, "effects dep.work : []") |> should.be_true()
   // The original source survived the round-trip.
@@ -83,8 +64,8 @@ pub fn pack_default_tarball_identity_mismatch_test() {
   // Project declares version 2.0.0, but only a 1.0.0 tarball exists — the
   // default path build/dep-2.0.0.tar is missing, so pack errors rather than
   // patching the wrong archive.
-  write(root <> "/gleam.toml", "name = \"dep\"\nversion = \"2.0.0\"\n")
-  write(root <> "/dep.graded", "effects dep.work : []\n")
+  write_file(root <> "/gleam.toml", "name = \"dep\"\nversion = \"2.0.0\"\n")
+  write_file(root <> "/dep.graded", "effects dep.work : []\n")
   let tarball = root <> "/build/dep-1.0.0.tar"
   ensure_parent(tarball)
   build_tarball(tarball, "dep", "1.0.0", [
@@ -108,11 +89,11 @@ pub fn pack_explicit_tarball_test() {
 pub fn pack_custom_spec_file_test() {
   let root = "build/pack_custom_spec"
   let _ = simplifile.delete(root)
-  write(
+  write_file(
     root <> "/gleam.toml",
     "name = \"dep\"\nversion = \"1.0.0\"\n\n[tools.graded]\nspec_file = \"effects/api.graded\"\n",
   )
-  write(root <> "/effects/api.graded", "effects dep.work : []\n")
+  write_file(root <> "/effects/api.graded", "effects dep.work : []\n")
   let tarball = root <> "/build/dep-1.0.0.tar"
   ensure_parent(tarball)
   build_tarball(tarball, "dep", "1.0.0", [
@@ -132,7 +113,7 @@ pub fn pack_custom_spec_file_test() {
 pub fn pack_rejects_absolute_spec_path_test() {
   let root = "build/pack_absolute"
   let _ = simplifile.delete(root)
-  write(
+  write_file(
     root <> "/gleam.toml",
     "name = \"dep\"\n\n[tools.graded]\nspec_file = \"/etc/dep.graded\"\n",
   )
@@ -143,7 +124,7 @@ pub fn pack_rejects_absolute_spec_path_test() {
 pub fn pack_rejects_escaping_spec_path_test() {
   let root = "build/pack_escape"
   let _ = simplifile.delete(root)
-  write(
+  write_file(
     root <> "/gleam.toml",
     "name = \"dep\"\n\n[tools.graded]\nspec_file = \"../escape.graded\"\n",
   )
@@ -154,7 +135,7 @@ pub fn pack_rejects_escaping_spec_path_test() {
 // End-to-end: a consumer resolves a dependency call through the injected spec.
 pub fn pack_consumer_resolves_injected_spec_test() {
   let dep_root = "build/pack_e2e_dep"
-  let _ =
+  let tarball =
     setup_dep(
       dep_root,
       "packdep",
@@ -168,14 +149,11 @@ pub fn pack_consumer_resolves_injected_spec_test() {
   // tarball's inner contents into the consumer's build/packages/packdep/.
   let consumer = "build/pack_e2e_consumer"
   let _ = simplifile.delete(consumer)
-  unpack_inner(
-    dep_root <> "/build/packdep-1.0.0.tar",
-    consumer <> "/build/packages/packdep",
-  )
+  unpack_inner(tarball, consumer <> "/build/packages/packdep")
 
-  write(consumer <> "/gleam.toml", "name = \"consumer\"\n")
-  write(consumer <> "/consumer.graded", "check main.run : []\n")
-  write(
+  write_file(consumer <> "/gleam.toml", "name = \"consumer\"\n")
+  write_file(consumer <> "/consumer.graded", "check main.run : []\n")
+  write_file(
     consumer <> "/src/main.gleam",
     "import packdep\n\npub fn run() -> Nil {\n  packdep.work()\n}\n",
   )

@@ -76,7 +76,7 @@ gleam export hex-tarball        # build the release tarball
 gleam run -m graded pack        # inject <spec_file> into it, then publish as printed
 ```
 
-`pack` places your spec at `build/packages/<your-package>/<spec_file>` in downstream projects — where graded's resolver already looks — so consumers need no setup. It patches `build/<name>-<version>.tar` in place (or an explicit tarball path) and prints the Hex publish API command to run next. Do **not** run `gleam publish` afterwards: it rebuilds the tarball from source and drops the injected spec. Documentation still publishes via `gleam docs publish`. The cache directory under `build/` is gitignored and never ships.
+`pack` places your spec at `build/packages/<your-package>/<spec_file>` in downstream projects — where graded's resolver already looks — so consumers need no setup. It patches `build/<name>-<version>.tar` in place (the `graded.pack_project` API also accepts an explicit tarball path) and prints the Hex publish API command to run next. Do **not** run `gleam publish` afterwards: it rebuilds the tarball from source and drops the injected spec. Documentation still publishes via `gleam docs publish`. The cache directory under `build/` is gitignored and never ships.
 
 Two cases need no packing:
 
