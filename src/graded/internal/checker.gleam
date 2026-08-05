@@ -4144,7 +4144,7 @@ fn field_value_of_receiver(
 
 // Resolve a field call whose receiver's construction directly wired the queried
 // field to `value` (rule 1). Resolves the value's effect per receiver via
-// `field_effect_of`, then applies the field call's own arguments — the same
+// `value_field_effect`, then applies the field call's own arguments — the same
 // call-site substitution the `type`-line path uses. Never consults the
 // nominal-type index, so a different receiver never borrows this one's value.
 fn resolve_proven_field(
