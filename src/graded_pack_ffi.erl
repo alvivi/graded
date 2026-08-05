@@ -1,5 +1,19 @@
 -module(graded_pack_ffi).
--export([inject_spec/4, verify_tarball/2, read_package_identity/1, files_of/1]).
+-export([inject_spec/4, verify_tarball/2, read_package_identity/1, files_of/1,
+         reserve_path/1]).
+
+% Atomically reserve Path for this invocation: an O_EXCL create, which fails
+% with eexist on any existing path and refuses to follow symlinks — a dangling
+% symlink is rejected rather than followed and written through. Returns
+% {ok, nil} or {error, Reason}.
+reserve_path(Path) ->
+    case file:open(unicode:characters_to_list(Path), [write, exclusive]) of
+        {ok, Fd} ->
+            ok = file:close(Fd),
+            {ok, nil};
+        {error, Reason} ->
+            {error, format_reason(Reason)}
+    end.
 
 % Inject a `.graded` spec into a hex tarball, following hex_tarball.erl's
 % mechanics:

@@ -16,3 +16,7 @@ export function verify_tarball(_tar, _entry_name) {
 export function read_package_identity(_tar) {
   return new GError(unsupported);
 }
+
+export function reserve_path(_path) {
+  return new GError(unsupported);
+}
