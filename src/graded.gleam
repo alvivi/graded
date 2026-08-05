@@ -105,10 +105,7 @@ pub fn main() -> Nil {
       with_directory(rest, fn(directory) {
         case run_format_check(directory) {
           Ok(Nil) -> Nil
-          Error(error) -> {
-            io.println_error("graded: error: " <> format_error(error))
-            halt(1)
-          }
+          Error(error) -> fail(error)
         }
       })
 
@@ -116,10 +113,7 @@ pub fn main() -> Nil {
       with_directory(rest, fn(directory) {
         case run_format(directory) {
           Ok(Nil) -> Nil
-          Error(error) -> {
-            io.println_error("graded: error: " <> format_error(error))
-            halt(1)
-          }
+          Error(error) -> fail(error)
         }
       })
 
@@ -127,41 +121,34 @@ pub fn main() -> Nil {
       with_directory(rest, fn(directory) {
         case run_infer(directory) {
           Ok(Nil) -> io.println("graded: inferred effects written")
-          Error(error) -> {
-            io.println_error("graded: error: " <> format_error(error))
-            halt(1)
-          }
+          Error(error) -> fail(error)
         }
       })
 
     ["check", ..rest] -> with_directory(rest, run_check)
 
-    ["pack", ..rest] ->
-      case rest {
-        [] -> pack_and_report("src")
-        [argument, ..] ->
-          case string.starts_with(argument, "-") {
-            True -> usage_error("unknown option `" <> argument <> "`")
-            False -> pack_and_report(argument)
-          }
-      }
+    ["pack", ..rest] -> with_directory(rest, pack_and_report)
 
     [first, ..] -> dispatch_unknown(first)
   }
 }
 
 fn pack_and_report(directory: String) -> Nil {
-  case run_pack(directory) {
+  case pack_project(resolve_package_root(directory), None) {
     Ok(message) -> io.println(message)
-    Error(error) -> {
-      io.println_error("graded: error: " <> format_error(error))
-      halt(1)
-    }
+    Error(error) -> fail(error)
   }
 }
 
-// Resolve the optional directory argument shared by check/infer/format, then run
-// `command` with it (default `src`). A leading `-…` token is an unknown option,
+// Print an error to stderr and exit non-zero: the shared failure path for
+// every command.
+fn fail(error: GradedError) -> Nil {
+  io.println_error("graded: error: " <> format_error(error))
+  halt(1)
+}
+
+// Resolve the optional directory argument shared by check/infer/format/pack,
+// then run `command` with it (default `src`). A leading `-…` token is an unknown option,
 // not a directory: reject it rather than treat it as a path, so a stray flag like
 // `graded infer --dry-run` errors instead of inferring a directory named
 // `--dry-run`.
@@ -179,8 +166,7 @@ fn with_directory(rest: List(String), command: fn(String) -> Nil) -> Nil {
 // A first token that is neither a known command nor a flag: treat an existing
 // directory as `check <dir>` (the bare-directory shorthand), and anything else as
 // an unknown command — exiting non-zero rather than silently checking a directory
-// that isn't there. A future subcommand (e.g. `pack`) adds its own branch above
-// this fallback.
+// that isn't there. A new subcommand adds its own branch above this fallback.
 fn dispatch_unknown(first: String) -> Nil {
   case string.starts_with(first, "-") {
     True -> usage_error("unknown option `" <> first <> "`")
@@ -220,13 +206,6 @@ Usage:
 // patches and rehashes the tarball; the user builds it (`gleam export
 // hex-tarball`) and publishes it (via the Hex publish API, never `gleam
 // publish`, which rebuilds the tarball and drops the injected file).
-
-// Inject the configured spec into the hex tarball of the project rooted at
-// `directory` (default the current project). The tarball defaults to
-// `build/<name>-<version>.tar`; `pack_project` still accepts an explicit path.
-fn run_pack(directory: String) -> Result(String, GradedError) {
-  pack_project(resolve_package_root(directory), None)
-}
 
 /// Inject the configured `.graded` spec into `project_root`'s hex tarball.
 /// `tarball` overrides the default `build/<name>-<version>.tar`. Returns a
@@ -270,7 +249,7 @@ pub fn pack_project(
     tarball,
     project_root,
     gleam_toml,
-    raw_cfg.package_name,
+    raw_cfg,
   ))
 
   // Inject into a temp, verify, then replace the tarball in place, so a failed
@@ -306,8 +285,9 @@ fn resolve_pack_tarball(
   tarball: option.Option(String),
   project_root: String,
   gleam_toml: String,
-  package_name: String,
+  cfg: config.GradedConfig,
 ) -> Result(String, GradedError) {
+  let package_name = cfg.package_name
   case tarball {
     Some(path) -> {
       use _ <- result.try(
@@ -319,14 +299,14 @@ fn resolve_pack_tarball(
       Ok(path)
     }
     None -> {
-      use version <- result.try(
-        config.read_version(gleam_toml)
-        |> result.replace_error(PackError(
+      use version <- result.try(option.to_result(
+        cfg.version,
+        PackError(
           "no `version` in "
           <> gleam_toml
           <> "; pass the tarball path explicitly",
-        )),
-      )
+        ),
+      ))
       let path =
         filepath.join(
           project_root,
@@ -1590,11 +1570,13 @@ fn read_config(directory: String) -> Result(config.GradedConfig, GradedError) {
       Ok(config.defaults_for(default_package_name(project_root)))
     Error(cause) -> Error(InvalidConfig(path: toml_path, cause:))
   })
-  Ok(config.GradedConfig(
-    package_name: raw.package_name,
-    spec_file: resolve_path(project_root, raw.spec_file),
-    cache_dir: resolve_path(project_root, raw.cache_dir),
-  ))
+  Ok(
+    config.GradedConfig(
+      ..raw,
+      spec_file: resolve_path(project_root, raw.spec_file),
+      cache_dir: resolve_path(project_root, raw.cache_dir),
+    ),
+  )
 }
 
 // Where the spec and cache live: the nearest ancestor `gleam.toml`, found by
@@ -2104,10 +2086,7 @@ fn run_check(directory: String) -> Nil {
         }
       }
     }
-    Error(error) -> {
-      io.println_error("graded: error: " <> format_error(error))
-      halt(1)
-    }
+    Error(error) -> fail(error)
   }
 }
 

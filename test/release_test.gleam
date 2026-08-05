@@ -6,7 +6,6 @@
 
 import gleam/list
 import gleam/set
-import gleam/string
 import gleeunit/should
 import graded
 import graded/internal/annotation
@@ -16,33 +15,13 @@ import graded/internal/types.{
   UnmatchedTypeFieldWarning,
 }
 import simplifile
+import support.{cleanup, write_fixture}
 
 // Helpers
 //
 // Fixture-project scaffolding shared by all tests below: materialise a project
 // under `/tmp/`, run the checker or inferrer, and read back warnings or
 // inferred effects.
-
-fn write_fixture(directory: String, files: List(#(String, String))) -> String {
-  let _ = simplifile.delete(directory)
-  list.each(files, fn(entry) {
-    let #(relative_path, contents) = entry
-    let full_path = directory <> "/" <> relative_path
-    let segments = string.split(full_path, "/")
-    let parent =
-      segments
-      |> list.take(list.length(segments) - 1)
-      |> string.join("/")
-    let assert Ok(_) = simplifile.create_directory_all(parent)
-    let assert Ok(Nil) = simplifile.write(full_path, contents)
-  })
-  directory
-}
-
-fn cleanup(directory: String) -> Nil {
-  let _ = simplifile.delete(directory)
-  Nil
-}
 
 // A fixture project must carry its own `gleam.toml` so package-root resolution
 // stops at the fixture (and reads the fixture's `manifest.toml`) instead of

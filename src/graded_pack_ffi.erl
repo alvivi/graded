@@ -34,21 +34,15 @@ inject_spec(InTar, SpecBin, EntryName, OutTar) ->
         % preserving hex's <<"..."/utf8>> formatting and all other bytes.
         Marker = <<"{<<\"files\">>, [\n">>,
         NewLine = iolist_to_binary(["  <<\"", EntryName, "\"/utf8>>,\n"]),
-        NewMeta = binary_replace_once(MetaBin, Marker,
+        NewMeta = binary:replace(MetaBin, Marker,
             <<Marker/binary, NewLine/binary>>),
         NewMeta =:= MetaBin andalso throw({graded_error,
             <<"metadata.config files-list marker not found">>}),
 
-        % assert the metadata files list matches the inner contents as sets.
-        InnerNames = lists:sort([Entry | [N || {N, _} <- Inner]]),
-        MetaFiles = lists:sort(files_of(NewMeta)),
-        InnerNames =:= MetaFiles orelse throw({graded_error,
-            <<"metadata files list does not match inner tar contents">>}),
+        assert_files_match(NewMeta, [Entry | [N || {N, _} <- Inner]]),
 
         % inner checksum over the final bytes.
-        Hash = crypto:hash(sha256,
-            <<Version/binary, NewMeta/binary, NewContents/binary>>),
-        Checksum = binary:encode_hex(Hash, uppercase),
+        Checksum = checksum(Version, NewMeta, NewContents),
 
         % rebuild outer tar.
         {ok, O} = erl_tar:open(OutTarPath, [write]),
@@ -75,17 +69,12 @@ verify_tarball(TarPath, EntryName) ->
         Stored = proplists:get_value("CHECKSUM", Outer),
         Entry = unicode:characters_to_list(EntryName),
 
-        Hash = crypto:hash(sha256,
-            <<Version/binary, MetaBin/binary, Contents/binary>>),
-        Recomputed = binary:encode_hex(Hash, uppercase),
-        Stored =:= Recomputed orelse throw({graded_error,
+        Stored =:= checksum(Version, MetaBin, Contents) orelse throw({graded_error,
             <<"stored CHECKSUM does not match recomputed inner checksum">>}),
 
         {ok, Inner} = erl_tar:extract({binary, zlib:gunzip(Contents)}, [memory]),
-        InnerNames = lists:sort([N || {N, _} <- Inner]),
-        MetaFiles = lists:sort(files_of(MetaBin)),
-        InnerNames =:= MetaFiles orelse throw({graded_error,
-            <<"metadata files list does not match inner tar contents">>}),
+        InnerNames = [N || {N, _} <- Inner],
+        assert_files_match(MetaBin, InnerNames),
         lists:member(Entry, InnerNames) orelse throw({graded_error,
             <<"injected spec not present in the tarball">>}),
         {ok, nil}
@@ -98,7 +87,10 @@ verify_tarball(TarPath, EntryName) ->
 % as binaries. {error, Reason} if the tarball or fields can't be read.
 read_package_identity(TarPath) ->
     try
-        {ok, Outer} = erl_tar:extract(unicode:characters_to_list(TarPath), [memory]),
+        % Only metadata.config is needed; skip materialising the (dominant)
+        % contents.tar.gz member.
+        {ok, Outer} = erl_tar:extract(unicode:characters_to_list(TarPath),
+            [memory, {files, ["metadata.config"]}]),
         MetaBin = proplists:get_value("metadata.config", Outer),
         Terms = config_terms(MetaBin),
         Name = to_binary(proplists:get_value(<<"name">>, Terms)),
@@ -135,13 +127,16 @@ to_binary(undefined) -> undefined;
 to_binary(V) when is_binary(V) -> V;
 to_binary(V) when is_list(V) -> unicode:characters_to_binary(V).
 
-binary_replace_once(Bin, From, To) ->
-    case binary:match(Bin, From) of
-        nomatch -> Bin;
-        {Start, Len} ->
-            <<Pre:Start/binary, _:Len/binary, Post/binary>> = Bin,
-            <<Pre/binary, To/binary, Post/binary>>
-    end.
+% The inner checksum: uppercase-hex sha256 over VERSION ++ metadata ++
+% contents.tar.gz, hashed as iodata so the tarball bytes are never copied.
+checksum(Version, Meta, Contents) ->
+    binary:encode_hex(crypto:hash(sha256, [Version, Meta, Contents]), uppercase).
+
+% Throw unless the metadata files list equals the inner tar names as sets.
+assert_files_match(MetaBin, InnerNames) ->
+    lists:sort(files_of(MetaBin)) =:= lists:sort(InnerNames) orelse
+        throw({graded_error,
+            <<"metadata files list does not match inner tar contents">>}).
 
 format_reason(Reason) ->
     unicode:characters_to_binary(io_lib:format("~p", [Reason])).
