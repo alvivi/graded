@@ -92,7 +92,7 @@ pub fn main() -> Nil {
 
     ["--version", ..] -> io.println("graded " <> version())
 
-    ["format", "--stdin", ..] ->
+    ["format", "--stdin"] ->
       case run_format_stdin(read_stdin()) {
         Ok(output) -> io.print(output)
         Error(_) -> {
@@ -129,7 +129,13 @@ pub fn main() -> Nil {
 
     ["pack", ..rest] -> with_directory(rest, pack_and_report)
 
-    [first, ..] -> dispatch_unknown(first)
+    [first] -> dispatch_unknown(first)
+
+    [first, extra, ..] ->
+      case string.starts_with(first, "-") {
+        True -> usage_error("unknown option `" <> first <> "`")
+        False -> usage_error("unexpected argument `" <> extra <> "`")
+      }
   }
 }
 
@@ -148,17 +154,24 @@ fn fail(error: GradedError) -> Nil {
 }
 
 // Resolve the optional directory argument shared by check/infer/format/pack,
-// then run `command` with it (default `src`). A leading `-…` token is an unknown option,
-// not a directory: reject it rather than treat it as a path, so a stray flag like
-// `graded infer --dry-run` errors instead of inferring a directory named
-// `--dry-run`.
+// then run `command` with it (default `src`). A leading `-…` token is an
+// unknown option, not a directory: reject it rather than treat it as a path,
+// so a stray flag like `graded infer --dry-run` errors instead of inferring a
+// directory named `--dry-run`. Each command takes at most one directory, so
+// anything after it is rejected too — `graded infer src --dry-run` must not
+// silently succeed.
 fn with_directory(rest: List(String), command: fn(String) -> Nil) -> Nil {
   case rest {
     [] -> command("src")
-    [argument, ..] ->
+    [argument] ->
       case string.starts_with(argument, "-") {
         True -> usage_error("unknown option `" <> argument <> "`")
         False -> command(argument)
+      }
+    [argument, extra, ..] ->
+      case string.starts_with(argument, "-") {
+        True -> usage_error("unknown option `" <> argument <> "`")
+        False -> usage_error("unexpected argument `" <> extra <> "`")
       }
   }
 }
@@ -375,8 +388,15 @@ fn pack_success_message(
   <> "    -H \"authorization: $HEX_API_KEY\" \\\n"
   <> "    -H \"content-type: application/octet-stream\" \\\n"
   <> "    --data-binary @"
-  <> tarball
+  <> shell_quote(tarball)
   <> "\n\nDocumentation still publishes via `gleam docs publish`."
+}
+
+// Quote a path for a POSIX shell: single-quoted, with embedded single quotes
+// escaped as `'\''`, so the printed publish command survives paths with
+// whitespace or shell metacharacters.
+fn shell_quote(path: String) -> String {
+  "'" <> string.replace(path, "'", "'\\''") <> "'"
 }
 
 // Checking

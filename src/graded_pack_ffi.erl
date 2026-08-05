@@ -1,5 +1,5 @@
 -module(graded_pack_ffi).
--export([inject_spec/4, verify_tarball/2, read_package_identity/1]).
+-export([inject_spec/4, verify_tarball/2, read_package_identity/1, files_of/1]).
 
 % Inject a `.graded` spec into a hex tarball, following hex_tarball.erl's
 % mechanics:
@@ -8,38 +8,54 @@
 %   - assert the metadata files list equals the inner tar contents
 %   - recompute the inner checksum over VERSION ++ metadata ++ contents.tar.gz
 %   - rebuild the outer tar (VERSION, metadata.config, contents.tar.gz, CHECKSUM)
+% Re-running on an already-packed tarball replaces the spec entry rather than
+% appending a duplicate, so the result stays canonical.
 % Returns {ok, Checksum} (uppercase hex) or {error, Reason} (a binary message).
 inject_spec(InTar, SpecBin, EntryName, OutTar) ->
+    OutTarPath = unicode:characters_to_list(OutTar),
+    InnerTmp = OutTarPath ++ ".inner",
+    InnerDir = OutTarPath ++ ".contents",
     try
         InTarPath = unicode:characters_to_list(InTar),
-        OutTarPath = unicode:characters_to_list(OutTar),
         {ok, Outer} = erl_tar:extract(InTarPath, [memory]),
         Version = proplists:get_value("VERSION", Outer),
         MetaBin = proplists:get_value("metadata.config", Outer),
         Contents = proplists:get_value("contents.tar.gz", Outer),
         Entry = unicode:characters_to_list(EntryName),
 
-        % inner tar: extract, add spec, re-create, re-gzip.
-        {ok, Inner} = erl_tar:extract({binary, zlib:gunzip(Contents)}, [memory]),
-        InnerTmp = OutTarPath ++ ".inner",
+        % inner tar: unpack to disk (restoring each entry's mode), re-add every
+        % entry by path — erl_tar only takes modes from the filesystem, a binary
+        % add silently writes 0644 — and replace any existing spec entry.
+        InnerRaw = zlib:gunzip(Contents),
+        ok = filelib:ensure_path(InnerDir),
+        ok = erl_tar:extract({binary, InnerRaw}, [{cwd, InnerDir}]),
+        {ok, Table} = erl_tar:table({binary, InnerRaw}, [verbose]),
+        Names = [N || {N, regular, _, _, _, _, _} <- Table, N =/= Entry],
         {ok, T} = erl_tar:open(InnerTmp, [write]),
-        lists:foreach(fun({N, B}) -> ok = erl_tar:add(T, B, N, []) end, Inner),
+        lists:foreach(fun(N) ->
+            ok = erl_tar:add(T, filename:join(InnerDir, N), N, [])
+        end, Names),
         ok = erl_tar:add(T, SpecBin, Entry, []),
         ok = erl_tar:close(T),
         {ok, InnerBytes} = file:read_file(InnerTmp),
-        ok = file:delete(InnerTmp),
         NewContents = zlib:gzip(InnerBytes),
 
         % metadata: textually insert the spec path as the first files entry,
-        % preserving hex's <<"..."/utf8>> formatting and all other bytes.
-        Marker = <<"{<<\"files\">>, [\n">>,
-        NewLine = iolist_to_binary(["  <<\"", EntryName, "\"/utf8>>,\n"]),
-        NewMeta = binary:replace(MetaBin, Marker,
-            <<Marker/binary, NewLine/binary>>),
-        NewMeta =:= MetaBin andalso throw({graded_error,
-            <<"metadata.config files-list marker not found">>}),
+        % preserving hex's <<"..."/utf8>> formatting and all other bytes. A
+        % re-run finds the path already listed and leaves the metadata alone.
+        NewMeta = case lists:member(Entry, files_of(MetaBin)) of
+            true -> MetaBin;
+            false ->
+                Marker = <<"{<<\"files\">>, [\n">>,
+                NewLine = iolist_to_binary(["  <<\"", EntryName, "\"/utf8>>,\n"]),
+                Spliced = binary:replace(MetaBin, Marker,
+                    <<Marker/binary, NewLine/binary>>),
+                Spliced =:= MetaBin andalso throw({graded_error,
+                    <<"metadata.config files-list marker not found">>}),
+                Spliced
+        end,
 
-        assert_files_match(NewMeta, [Entry | [N || {N, _} <- Inner]]),
+        assert_files_match(NewMeta, [Entry | Names]),
 
         % inner checksum over the final bytes.
         Checksum = checksum(Version, NewMeta, NewContents),
@@ -55,6 +71,9 @@ inject_spec(InTar, SpecBin, EntryName, OutTar) ->
     catch
         throw:{graded_error, Msg} -> {error, Msg};
         _:Reason -> {error, format_reason(Reason)}
+    after
+        file:del_dir_r(InnerDir),
+        file:delete(InnerTmp)
     end.
 
 % Assert a written tarball is internally consistent: the stored CHECKSUM equals
