@@ -654,11 +654,18 @@ pub fn field_call_construction_without_annotation_resolves_test() {
 // girard can type resolves there exactly as it does when the function is
 // inferred directly.
 
+// Which of the two comes first in the source: the function that is wired into
+// the field, or the site that wires it.
+type DeclarationOrder {
+  WiredFirst
+  InvokeFirst
+}
+
 // `config.inner` is a nested field access: the syntax-level path can't name its
 // type, so `config.inner.run(message)` reaches the `Box.run` line only through
 // girard's inferred type. `raw_invoke` is a bodyless `@external` with no
 // `external effects` line — there is no body to lift.
-fn wired_receiver_source(wired_first: Bool) -> String {
+fn wired_receiver_source(order: DeclarationOrder) -> String {
   let types =
     "pub type Box {
   Box(run: fn(String) -> Nil)
@@ -693,9 +700,9 @@ pub fn run_external(config: Config, message: String) -> Nil {
   perform(Handler(go: invoke), config, message)
 }
 "
-  case wired_first {
-    True -> types <> wired <> invoke
-    False -> types <> invoke <> wired
+  case order {
+    WiredFirst -> types <> wired <> invoke
+    InvokeFirst -> types <> invoke <> wired
   }
 }
 
@@ -732,12 +739,9 @@ fn infer_effects_with_girard(
 }
 
 fn wired_receiver_effects(
-  wired_first: Bool,
+  order: DeclarationOrder,
 ) -> dict.Dict(String, types.EffectSet) {
-  infer_effects_with_girard(
-    wired_receiver_source(wired_first),
-    box_run_stdout(),
-  )
+  infer_effects_with_girard(wired_receiver_source(order), box_run_stdout())
 }
 
 pub fn wired_local_function_lift_uses_module_types_test() {
@@ -745,7 +749,7 @@ pub fn wired_local_function_lift_uses_module_types_test() {
   // through `type Box.run`. Lifting without the module's types would leave a
   // residual `config.inner.run` variable, which is rejected as non-ground and
   // degrades to [Unknown].
-  let inferred = wired_receiver_effects(False)
+  let inferred = wired_receiver_effects(InvokeFirst)
   dict.get(inferred, "invoke")
   |> should.equal(Ok(Specific(set.from_list(["Stdout"]))))
   dict.get(inferred, "run_wired")
@@ -756,14 +760,14 @@ pub fn wired_local_function_lift_is_order_independent_test() {
   // The lift shares the enclosing memo, whose `lifts` are keyed on
   // `#(name, ancestors)` with no type-environment component. Declaring the wired
   // site before the function it wires must not change either result.
-  wired_receiver_effects(True)
-  |> should.equal(wired_receiver_effects(False))
+  wired_receiver_effects(WiredFirst)
+  |> should.equal(wired_receiver_effects(InvokeFirst))
 }
 
 pub fn wired_bodyless_external_stays_unknown_test() {
   // A field wired to a bodyless `@external` with no `external effects` line has
   // no body to analyse; reading its empty one as pure would understate it.
-  wired_receiver_effects(False)
+  wired_receiver_effects(InvokeFirst)
   |> dict.get("run_external")
   |> should.equal(Ok(Specific(set.from_list(["Unknown"]))))
 }

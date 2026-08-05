@@ -2055,10 +2055,22 @@ fn forwarded_var_binding(
           Some(#(var, effect_term.normalize(TUnion(effects)))),
           memo,
         )
-        _ -> #(None, memo)
+        // A branch that can't re-key widens the join to Top (`None`), and a
+        // `Choice` carrying no options proves nothing (`Some([])`); both leave
+        // the field variable in place.
+        None | Some([]) -> #(None, memo)
       }
     }
-    _ ->
+    types.FunctionRef(..)
+    | types.LocalRef(..)
+    | types.ConstructorRef
+    | types.Closure(..)
+    | types.ReturnedOperator(..)
+    | types.ReceiverPath(..)
+    | types.Constructed(..)
+    | types.CallResult(..)
+    | types.Updated(..)
+    | types.OtherExpression ->
       case
         forwarded_binding_term(
           base,
