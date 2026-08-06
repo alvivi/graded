@@ -29,12 +29,13 @@ Tests use **gleeunit** with **qcheck** property generators in `test/generators.g
 
 ## Architecture
 
-Twelve modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
+Thirteen modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
 
 | File | Responsibility |
 |---|---|
 | `src/graded.gleam` | CLI entry point + public API: orchestrate `run_infer` (write spec + cache), `run` (check the spec against source), and `run_effect` (look up one name, read-only); run girard type inference; scan dependency sources once into the signature registry and the update-builder map |
 | `src/graded/internal/cli.gleam` | Pure command-line argument decoders for `main`'s dispatch branches |
+| `src/graded/internal/answer.gleam` | One `graded effect` lookup held as data (`EffectAnswer`), plus the prose and `.graded` renderers over it |
 | `src/graded/internal/types.gleam` | Shared types: QualifiedName, EffectSet, EffectTerm, EffectAnnotation, ParamBound, FieldCall, TypeFieldAnnotation, Violation |
 | `src/graded/internal/effect_term.gleam` | `EffectTerm` operations: normalize (beta + union laws), capture-avoiding substitution, free vars, `EffectSet`↔`EffectTerm` bridges (second-order resolution) |
 | `src/graded/internal/config.gleam` | Read `[tools.graded]` from `gleam.toml`, resolve `spec_file` and `cache_dir` paths |

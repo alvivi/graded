@@ -36,6 +36,7 @@ import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import graded/internal/annotation
+import graded/internal/answer.{type EffectAnswer}
 import graded/internal/checker
 import graded/internal/cli
 import graded/internal/config
@@ -971,12 +972,33 @@ pub fn run_effect(
   directory: String,
   name: String,
 ) -> Result(String, GradedError) {
+  run_effect_formatted(directory, name, answer.Graded)
+}
+
+/// Look up one name's effect and render it in `format`: `answer.Graded` for
+/// the `.graded` line above, `answer.Prose` for sentences describing the same
+/// answer. Both render one structured answer, so they can differ in wording but
+/// never in what they report.
+pub fn run_effect_formatted(
+  directory: String,
+  name: String,
+  format: answer.Format,
+) -> Result(String, GradedError) {
+  effect_answer(directory, name)
+  |> result.map(answer.render(_, format))
+}
+
+// Resolve `name` to a structured answer, trying the spec-only fast path first.
+fn effect_answer(
+  directory: String,
+  name: String,
+) -> Result(EffectAnswer, GradedError) {
   let directory = scope_to_source_directory(directory)
   use cfg <- result.try(read_config(directory))
   let spec = read_spec(cfg.spec_file)
   case spec_answer(directory, spec, name) {
-    Ok(output) -> Ok(output)
-    Error(Nil) -> run_effect_from_project(directory, name)
+    Ok(found) -> Ok(found)
+    Error(Nil) -> project_answer(directory, name)
   }
 }
 
@@ -992,21 +1014,31 @@ pub fn run_effect_from_project(
   directory: String,
   name: String,
 ) -> Result(String, GradedError) {
+  project_answer(scope_to_source_directory(directory), name)
+  |> result.map(answer.render_graded)
+}
+
+// Answer from the full project context: every module parsed, dependency sources
+// scanned, girard run package-wide.
+fn project_answer(
+  directory: String,
+  name: String,
+) -> Result(EffectAnswer, GradedError) {
   use ctx <- result.try(load_project_context(directory))
   answer_from(ctx.knowledge_base, name)
   |> result.replace_error(EffectNotFound(name))
 }
 
-// Render `name` against one knowledge base. The function interpretation is
+// Resolve `name` against one knowledge base. The function interpretation is
 // tried first: a module path never contains a `.`, so a type-field name splits
 // to a module that can't exist and falls through, while a plain function name
 // resolves before it can be misread as `type.field`.
 fn answer_from(
   knowledge_base: KnowledgeBase,
   name: String,
-) -> Result(String, Nil) {
+) -> Result(EffectAnswer, Nil) {
   case function_effect(knowledge_base, name) {
-    Ok(output) -> Ok(output)
+    Ok(found) -> Ok(found)
     Error(Nil) -> type_field_effect(knowledge_base, name)
   }
 }
@@ -1040,7 +1072,7 @@ fn spec_answer(
   directory: String,
   spec: GradedFile,
   name: String,
-) -> Result(String, Nil) {
+) -> Result(EffectAnswer, Nil) {
   let knowledge_base = spec_knowledge_base(spec)
   case annotation.split_function_name(name) {
     // A name the function grammar accepts. The full path resolves it as a
@@ -1114,42 +1146,31 @@ fn project_module_paths(directory: String) -> Set(String) {
 fn function_effect(
   knowledge_base: KnowledgeBase,
   name: String,
-) -> Result(String, Nil) {
+) -> Result(EffectAnswer, Nil) {
   use #(module, function) <- result.try(annotation.split_function_name(name))
   let qualified = QualifiedName(module:, function:)
   case effects.lookup(knowledge_base, qualified) {
     effects.Unknown -> Error(Nil)
-    // A module-level external answers for every function in its module and
-    // carries no per-function bounds, so its answer is rendered without them
-    // and labelled. Which map answered is reported by the lookup itself, so the
-    // label can't disagree with the term beside it.
+    // A module-level external carries no per-function bounds, so none travel
+    // with its answer. Which map answered is reported by the lookup itself, so
+    // the recorded source can't disagree with the term beside it.
     effects.Known(term, effects.ModuleExternalEntry) ->
-      Ok(
-        effects_line(name, [], term)
-        <> "\n// resolved via module-level external for "
-        <> module,
-      )
+      Ok(answer.FunctionAnswer(
+        name:,
+        module:,
+        bounds: [],
+        term:,
+        source: answer.ModuleExternalEntry,
+      ))
     effects.Known(term, effects.FunctionEntry) ->
-      Ok(effects_line(
-        name,
-        effects.lookup_param_bounds(knowledge_base, qualified),
-        term,
+      Ok(answer.FunctionAnswer(
+        name:,
+        module:,
+        bounds: effects.lookup_param_bounds(knowledge_base, qualified),
+        term:,
+        source: answer.FunctionEntry,
       ))
   }
-}
-
-// Render one `effects` line for a queried name.
-fn effects_line(
-  name: String,
-  params: List(types.ParamBound),
-  term: types.EffectTerm,
-) -> String {
-  annotation.format_annotation(EffectAnnotation(
-    kind: types.Effects,
-    function: name,
-    params:,
-    effects: term,
-  ))
 }
 
 // Render `name` as a `type` line, or `Error(Nil)` when it isn't a declared type
@@ -1166,7 +1187,7 @@ fn effects_line(
 fn type_field_effect(
   knowledge_base: KnowledgeBase,
   name: String,
-) -> Result(String, Nil) {
+) -> Result(EffectAnswer, Nil) {
   use #(module, type_name, field) <- result.try(
     annotation.split_type_field_name(name),
   )
@@ -1185,25 +1206,13 @@ fn type_field_effect(
     type_name,
     field,
   ))
-  let line =
-    annotation.format_type_field(types.TypeFieldAnnotation(
-      module: declared_module,
-      type_name:,
-      field:,
-      effects: type_field.effects,
-    ))
-  Ok(line <> "\n// " <> type_field_provenance(type_field.origin))
-}
-
-// How a type field's effect was established, for the provenance comment. Only
-// `Declared` entries reach the knowledge base today — `with_type_fields` is its
-// only writer — so the `Inferred` wording describes a shape the query can't
-// currently return.
-fn type_field_provenance(origin: types.TypeFieldOrigin) -> String {
-  case origin {
-    types.Declared -> "declared by a type line"
-    types.Inferred -> "inferred from construction"
-  }
+  Ok(answer.TypeFieldAnswer(
+    module: declared_module,
+    type_name:,
+    field:,
+    term: type_field.effects,
+    origin: type_field.origin,
+  ))
 }
 
 // Formatting
