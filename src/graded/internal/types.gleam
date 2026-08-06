@@ -32,6 +32,11 @@ pub fn is_upper_initial(name: String) -> Bool {
 // The ground effect representation — sets of string labels ordered by subset
 // inclusion — and its lattice operations.
 
+// The label every unresolvable path collapses to. Minted by
+// `effect_term.unknown` and by the stuck-term collapse in
+// `effect_term.to_effect_set`.
+pub const unknown_label = "Unknown"
+
 // An effect set: either a concrete set of named effects, the universal
 // wildcard [_], or a polymorphic set with effect variables.
 //
@@ -99,6 +104,17 @@ pub fn has_variables(effect_set: EffectSet) -> Bool {
   case effect_set {
     Polymorphic(_, variables) -> !set.is_empty(variables)
     _ -> False
+  }
+}
+
+// True iff this effect set carries the `Unknown` label — some part of it came
+// from a path graded could not resolve. `Wildcard` is a declared permission
+// rather than an unresolved effect, so it is False.
+pub fn contains_unknown(effect_set: EffectSet) -> Bool {
+  case effect_set {
+    Wildcard -> False
+    Specific(labels) -> set.contains(labels, unknown_label)
+    Polymorphic(labels, _) -> set.contains(labels, unknown_label)
   }
 }
 

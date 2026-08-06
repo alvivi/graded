@@ -32,7 +32,7 @@ pub fn pure() -> EffectTerm {
 
 // The `[Unknown]` term — the conservative collapse for anything unresolvable.
 pub fn unknown() -> EffectTerm {
-  TLabels(set.from_list(["Unknown"]))
+  TLabels(set.from_list([types.unknown_label]))
 }
 
 // Reserved prefix for internal sentinel `TVar` names (Fix D). `$` is
@@ -79,8 +79,8 @@ fn term_to_set(normalized: EffectTerm) -> EffectSet {
     TVar(name) -> Polymorphic(set.new(), set.from_list([name]))
     // A stuck application or a bare operator can't be a ground set; both
     // collapse conservatively to [Unknown].
-    TApp(_, _) -> Specific(set.from_list(["Unknown"]))
-    TAbs(_, _) -> Specific(set.from_list(["Unknown"]))
+    TApp(_, _) -> Specific(set.from_list([types.unknown_label]))
+    TAbs(_, _) -> Specific(set.from_list([types.unknown_label]))
     TUnion(members) ->
       list.fold(members, types.empty(), fn(acc, member) {
         types.union(acc, term_to_set(member))
