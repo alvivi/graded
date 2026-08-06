@@ -657,6 +657,42 @@ pub fn format_second_order_application_test() {
   |> should.equal("effects with_logger(action: [action]) : [action([Stdout])]")
 }
 
+pub fn residual_abstraction_in_an_effect_set_renders_parseably_test() {
+  // An under-applied operator left in *effect* position. The effect-set grammar
+  // has no `fn(..) -> ..` atom, so rendering the abstraction would emit a line
+  // the parser rejects — `graded infer` would write a spec that fails to read
+  // back. It grounds to the conservative collapse instead.
+  let ann = EffectAnnotation(Effects, "probe.caller", [], TAbs("b", TVar("b")))
+  let line = annotation.format_annotation(ann)
+  line |> should.equal("effects probe.caller : [Unknown]")
+  let assert Ok([reparsed]) = annotation.parse(line)
+  annotation.format_annotation(reparsed) |> should.equal(line)
+}
+
+pub fn residual_abstraction_beside_a_label_renders_parseably_test() {
+  // The same residual unioned with a resolved label: the label survives, only
+  // the abstraction collapses.
+  let ann =
+    EffectAnnotation(
+      Effects,
+      "probe.caller",
+      [],
+      TUnion([TLabels(set.from_list(["Stdout"])), TAbs("b", TVar("b"))]),
+    )
+  let line = annotation.format_annotation(ann)
+  line |> should.equal("effects probe.caller : [Stdout, Unknown]")
+  let assert Ok(_) = annotation.parse(line)
+}
+
+pub fn operator_bound_still_renders_its_binders_test() {
+  // Grounding a residual must not touch a *bound*, where `fn(a) -> [..]` is
+  // legal syntax and round-trips: the spine walk consumes the binders before
+  // the effect-set renderer ever sees them.
+  let line = "effects run(f: fn(a) -> [a]) : [Stdout]"
+  let assert Ok([ann]) = annotation.parse(line)
+  annotation.format_annotation(ann) |> should.equal(line)
+}
+
 pub fn parse_second_order_application_test() {
   let assert Ok([ann]) =
     annotation.parse(

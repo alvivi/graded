@@ -856,7 +856,14 @@ fn term_atoms(term: EffectTerm) -> List(String) {
     TTop -> ["_"]
     TApp(_, _) -> [render_application(term)]
     TUnion(members) -> list.flat_map(members, term_atoms)
-    TAbs(_, _) -> [render_abstraction(term)]
+    // A residual abstraction *inside* an effect set is an under-applied
+    // operator, not a resolved effect: an operator bound renders through
+    // `format_param_bound`, whose spine walk consumes every binder, so nothing
+    // legitimately reaches here. The effect-set grammar has no `fn(..) -> ..`
+    // atom, so rendering one would emit a line the parser rejects; ground it to
+    // the conservative collapse instead, keeping every rendered line readable
+    // back in.
+    TAbs(_, _) -> [types.unknown_label]
   }
 }
 
