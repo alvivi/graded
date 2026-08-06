@@ -37,11 +37,12 @@ fn prose(answer_value: answer.EffectAnswer) -> String {
 // Effects a function forwards from an argument
 
 pub fn a_bare_bound_variable_forwards_test() {
-  // The term is exactly the bound variable, so every effect is the argument's.
+  // The term is exactly the bound variable, so the function's effects are the
+  // argument's — which is a claim about effects, not about `f` being called.
   function([ParamBound("f", TVar("f"))], TVar("f"))
   |> prose
   |> should.equal(
-    "app.run does whatever its `f` argument does, and nothing of its own",
+    "app.run has the effects of its `f` argument, and none of its own",
   )
 }
 
@@ -52,7 +53,7 @@ pub fn a_bound_variable_beside_labels_forwards_and_adds_test() {
   )
   |> prose
   |> should.equal(
-    "app.run does whatever its `f` argument does, plus [Stdout] of its own",
+    "app.run has the effects of its `f` argument, plus [Stdout] of its own",
   )
 }
 

@@ -116,10 +116,11 @@ fn graded_origin(origin: types.TypeFieldOrigin) -> String {
 // `[Stdout]` is the spec's vocabulary, and unbracketed it stops reading as a
 // set.
 //
-// Each sentence states only what the answer proves. A term that is exactly a
-// bound variable proves the effects *come from* that argument; a ground term
-// beside a bound proves a total and an assumption about the argument, and is
-// described as such.
+// Each sentence states only what the answer proves, and states it as a claim
+// about effects rather than about behaviour: a term that is exactly a bound
+// variable proves the function's effects *are* that argument's, not that the
+// argument is ever called. A ground term beside a bound proves a total and an
+// assumption about the argument, and is described as such.
 
 pub fn render_prose(answer: EffectAnswer) -> String {
   case answer {
@@ -143,14 +144,14 @@ fn function_sentence(
   case forwarding(bounds, term) {
     ForwardsOnly(argument) ->
       name
-      <> " does whatever its `"
+      <> " has the effects of its `"
       <> argument
-      <> "` argument does, and nothing of its own"
+      <> "` argument, and none of its own"
     ForwardsPlus(argument, own) ->
       name
-      <> " does whatever its `"
+      <> " has the effects of its `"
       <> argument
-      <> "` argument does, plus "
+      <> "` argument, plus "
       <> annotation.format_effect_set(types.Specific(own))
       <> " of its own"
     Total -> name <> " " <> total_effects(term)
@@ -290,7 +291,8 @@ fn prose_origin(origin: types.TypeFieldOrigin) -> String {
 // causality prose is allowed to make.
 
 type Forwarding {
-  // The term is exactly a bound variable: every effect is that argument's.
+  // The term is exactly a bound variable: the function's effects are that
+  // argument's, and it contributes none itself.
   ForwardsOnly(argument: String)
   // That variable unioned with ground labels the function contributes itself.
   ForwardsPlus(argument: String, own: Set(String))

@@ -397,12 +397,13 @@ field `find` on type `Repo` (myapp/repo) has effects [Storage]
 ### Output formats
 
 The default, `--format=prose`, describes the answer in sentences. It states only
-what the answer proves. A term that is exactly a bound variable means the effects
-*are* the argument's:
+what the answer proves, as a claim about effects rather than about behaviour. A
+term that is exactly a bound variable means the function's effects *are* the
+argument's — not that the argument is called:
 
 ```sh
 $ gleam run -m graded effect myapp.forward
-myapp.forward does whatever its `f` argument does, and nothing of its own
+myapp.forward has the effects of its `f` argument, and none of its own
 ```
 
 A ground term beside a bound is a total and an assumption, not a cause — the
