@@ -17,6 +17,7 @@ gleam build    # compile
 gleam test     # run full test suite
 gleam run -m graded check [dir]            # check effect annotations
 gleam run -m graded infer [dir]            # infer and write the spec file + cache
+gleam run -m graded effect <name> [dir]    # look up one function/type-field effect
 gleam run -m graded format [dir]           # format the spec file
 gleam run -m graded format --check [dir]   # CI mode, exits non-zero on diffs
 gleam run -m graded format --stdin         # editor integration: format from stdin
@@ -28,11 +29,12 @@ Tests use **gleeunit** with **qcheck** property generators in `test/generators.g
 
 ## Architecture
 
-Eleven modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
+Twelve modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
 
 | File | Responsibility |
 |---|---|
-| `src/graded.gleam` | CLI entry point + public API: orchestrate `run_infer` (write spec + cache) and `run` (check the spec against source); run girard type inference; scan dependency sources once into the signature registry and the update-builder map |
+| `src/graded.gleam` | CLI entry point + public API: orchestrate `run_infer` (write spec + cache), `run` (check the spec against source), and `run_effect` (look up one name, read-only); run girard type inference; scan dependency sources once into the signature registry and the update-builder map |
+| `src/graded/internal/cli.gleam` | Pure command-line argument decoders for `main`'s dispatch branches |
 | `src/graded/internal/types.gleam` | Shared types: QualifiedName, EffectSet, EffectTerm, EffectAnnotation, ParamBound, FieldCall, TypeFieldAnnotation, Violation |
 | `src/graded/internal/effect_term.gleam` | `EffectTerm` operations: normalize (beta + union laws), capture-avoiding substitution, free vars, `EffectSet`↔`EffectTerm` bridges (second-order resolution) |
 | `src/graded/internal/config.gleam` | Read `[tools.graded]` from `gleam.toml`, resolve `spec_file` and `cache_dir` paths |

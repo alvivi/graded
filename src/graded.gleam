@@ -7,16 +7,19 @@
 //// ## Usage
 ////
 //// ```sh
-//// gleam run -m graded check [directory]   # enforce check annotations (default)
-//// gleam run -m graded infer [directory]   # infer and write effect annotations
-//// gleam run -m graded format [directory]  # normalize .graded file formatting
+//// gleam run -m graded check [directory]         # enforce check annotations (default)
+//// gleam run -m graded infer [directory]         # infer and write effect annotations
+//// gleam run -m graded effect <name> [directory] # look up one effect, writing nothing
+//// gleam run -m graded format [directory]        # normalize .graded file formatting
 //// ```
 ////
 //// ## Programmatic API
 ////
 //// Use `run` to check a directory and get back a list of `CheckResult` values,
 //// each containing any violations found per file. Use `run_infer` to infer
-//// effects and write `.graded` files.
+//// effects and write `.graded` files. Use `run_effect` to resolve one
+//// function or type-field name and get its `.graded` line back, touching
+//// nothing on disk.
 ////
 
 import argv
@@ -34,6 +37,7 @@ import gleam/set.{type Set}
 import gleam/string
 import graded/internal/annotation
 import graded/internal/checker
+import graded/internal/cli
 import graded/internal/config
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
@@ -78,6 +82,9 @@ pub type GradedError {
   /// practice — if it ever fires it indicates a bug in the dependency edge
   /// extraction rather than user code.
   CyclicImports(modules: List(String))
+  /// `graded effect` found no effect for the queried name: it names no public
+  /// function and no declared type field.
+  EffectNotFound(name: String)
   /// `graded pack` could not inject the spec into the hex tarball: the tarball
   /// was missing, its identity didn't match the project, the configured
   /// `spec_file` path was unsafe, or the tarball transform failed.
@@ -129,6 +136,16 @@ pub fn main() -> Nil {
 
     ["pack", ..rest] -> with_directory(rest, pack_and_report)
 
+    ["effect", ..rest] ->
+      case cli.parse_effect_args(rest) {
+        Error(error) -> usage_error(cli.format_argument_error(error))
+        Ok(#(name, directory)) ->
+          case run_effect(directory, name) {
+            Ok(output) -> io.println(output)
+            Error(error) -> fail(error)
+          }
+      }
+
     [first] -> dispatch_unknown(first)
 
     [first, extra, ..] ->
@@ -153,26 +170,13 @@ fn fail(error: GradedError) -> Nil {
   halt(1)
 }
 
-// Resolve the optional directory argument shared by check/infer/format/pack,
-// then run `command` with it (default `src`). A leading `-…` token is an
-// unknown option, not a directory: reject it rather than treat it as a path,
-// so a stray flag like `graded infer --dry-run` errors instead of inferring a
-// directory named `--dry-run`. Each command takes at most one directory, so
-// anything after it is rejected too — `graded infer src --dry-run` must not
-// silently succeed.
+// Run `command` with the optional directory argument shared by
+// check/infer/format/pack, or print the usage error `cli.parse_directory_args`
+// rejected it with.
 fn with_directory(rest: List(String), command: fn(String) -> Nil) -> Nil {
-  case rest {
-    [] -> command("src")
-    [argument] ->
-      case string.starts_with(argument, "-") {
-        True -> usage_error("unknown option `" <> argument <> "`")
-        False -> command(argument)
-      }
-    [argument, extra, ..] ->
-      case string.starts_with(argument, "-") {
-        True -> usage_error("unknown option `" <> argument <> "`")
-        False -> usage_error("unexpected argument `" <> extra <> "`")
-      }
+  case cli.parse_directory_args(rest) {
+    Ok(directory) -> command(directory)
+    Error(error) -> usage_error(cli.format_argument_error(error))
   }
 }
 
@@ -203,6 +207,7 @@ fn usage_text() -> String {
 Usage:
   graded [check] [directory]    Check effect annotations (default: src)
   graded infer [directory]      Infer effects; write the spec file and cache
+  graded effect <name> [dir]    Look up a function or type-field effect (read-only)
   graded pack [directory]       Inject the spec into the hex tarball for release
   graded format [directory]     Format the spec file
   graded format --check [dir]   Verify formatting without writing (CI mode)
@@ -425,63 +430,19 @@ fn shell_quote(path: String) -> String {
 /// hints, and `type` field annotations, then reports violations per source
 /// file.
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
-  let directory = scope_to_source_directory(directory)
-  use cfg <- result.try(read_config(directory))
-  let package_root = resolve_package_root(directory)
-  let spec = read_spec(cfg.spec_file)
+  use ctx <- result.try(load_project_context(directory))
+  let ProjectContext(
+    source_directory: directory,
+    cfg:,
+    spec:,
+    parsed:,
+    index:,
+    registry:,
+    type_info:,
+    package_root:,
+    knowledge_base:,
+  ) = ctx
   let checks_by_module = checks_grouped_by_module(spec)
-  let declared_modules = annotation.module_external_modules(spec)
-
-  use gleam_files <- result.try(find_gleam_files(directory))
-  use parsed <- result.try(parse_all_files(gleam_files))
-  let index = build_module_index(parsed, directory)
-  let dep_sources = dependency_sources(package_root)
-  let registry =
-    signatures.merge(dep_sources.registry, build_project_registry(index))
-  let type_info = build_type_index(index, package_root)
-
-  let kb_base =
-    effects.load_knowledge_base(
-      packages_dir(package_root),
-      manifest_path(package_root),
-    )
-    // Consumer externals are applied before path-dep inference so a module-level
-    // external governs a path dependency's module during that dep's own
-    // inference, not only at the final lookup.
-    |> effects.with_externals(annotation.extract_externals(spec))
-    |> with_builders(index, dep_sources)
-    |> enrich_with_path_deps(package_root, declared_modules)
-    // Committed `effects` lines for a module-level-external module are dropped
-    // so they can't reshadow the declaration (which lives in `module_effects`,
-    // consulted only when `all_effects` misses). `graded infer` no longer writes
-    // such lines; this guards a stale or hand-written one.
-    |> effects.with_inferred(drop_declared_modules(
-      effects.load_spec_effects_from_file(spec),
-      declared_modules,
-    ))
-    // Committed project returns are Foreign (Fix E): serialized, unsanitized. The
-    // fresh in-memory pass below re-infers project returns and, being Fresh, wins
-    // over these for the same key.
-    |> effects.with_foreign_returned_operators(
-      effects.load_spec_returns_from_file(spec),
-    )
-  // Fill gaps for project modules not (yet) in the spec by inferring them in
-  // memory, so `check` resolves cross-module calls without a prior `graded infer`.
-  // Committed effects are never overridden; fresh returns win over committed
-  // Foreign ones (Fix E). The deltas aren't needed here — the pre-pass already
-  // folded them into `kb_base`. Nothing is written to disk.
-  let kb_base =
-    infer_project_in_memory(
-      kb_base,
-      index,
-      registry,
-      type_info,
-      declared_modules,
-    )
-  let knowledge_base =
-    kb_base
-    |> effects.with_type_fields(annotation.extract_type_fields(spec))
-    |> effects.with_factories(qualify_by_module(index, extract.factory_map))
 
   let results =
     list.map(parsed, fn(entry) {
@@ -516,6 +477,110 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   }
 
   Ok(results)
+}
+
+// Everything a read-only command needs about a project: the parsed sources, the
+// indexes derived from them, and the assembled knowledge base. Built by
+// `load_project_context`, which writes nothing — `check` and `effect` share it.
+type ProjectContext {
+  ProjectContext(
+    // The `scope_to_source_directory` result, not the caller's raw argument:
+    // module paths derive from it, so it travels with the rest of the context.
+    source_directory: String,
+    cfg: config.GradedConfig,
+    spec: GradedFile,
+    parsed: List(#(String, glance.Module)),
+    index: Dict(String, #(String, glance.Module)),
+    registry: SignatureRegistry,
+    type_info: typeinfo.TypeInfo,
+    package_root: String,
+    knowledge_base: KnowledgeBase,
+  )
+}
+
+// Assemble a project's knowledge base without writing anything: read the config
+// and spec, parse every source file, scan dependency sources, run girard, and
+// fold the spec, dependencies, catalog, and an in-memory inference pass into one
+// knowledge base.
+fn load_project_context(
+  directory: String,
+) -> Result(ProjectContext, GradedError) {
+  let directory = scope_to_source_directory(directory)
+  use cfg <- result.try(read_config(directory))
+  let package_root = resolve_package_root(directory)
+  let spec = read_spec(cfg.spec_file)
+  let declared_modules = annotation.module_external_modules(spec)
+
+  use gleam_files <- result.try(find_gleam_files(directory))
+  use parsed <- result.try(parse_all_files(gleam_files))
+  let index = build_module_index(parsed, directory)
+  let dep_sources = dependency_sources(package_root)
+  let registry =
+    signatures.merge(dep_sources.registry, build_project_registry(index))
+  let type_info = build_type_index(index, package_root)
+
+  let kb_base =
+    effects.load_knowledge_base(
+      packages_dir(package_root),
+      manifest_path(package_root),
+    )
+    // Consumer externals are applied before path-dep inference so a module-level
+    // external governs a path dependency's module during that dep's own
+    // inference, not only at the final lookup.
+    |> effects.with_externals(annotation.extract_externals(spec))
+    |> with_builders(index, dep_sources)
+    |> enrich_with_path_deps(package_root, declared_modules)
+    // Committed `effects` lines for a module-level-external module are dropped
+    // so they can't reshadow the declaration (which lives in `module_effects`,
+    // consulted only when `all_effects` misses). `graded infer` no longer writes
+    // such lines; this guards a stale or hand-written one.
+    |> effects.with_inferred(drop_declared_modules(
+      effects.load_spec_effects_from_file(spec),
+      declared_modules,
+    ))
+    // A committed higher-order line's bounds are loaded with its effect term, so
+    // the pair the checker substitutes with always comes from one annotation
+    // source. Without this the committed term would pair with freshly inferred
+    // bounds, whose variable names need not match it.
+    |> effects.with_inferred_params(drop_declared_modules(
+      effects.load_spec_params_from_file(spec),
+      declared_modules,
+    ))
+    // Committed project returns are Foreign (Fix E): serialized, unsanitized. The
+    // fresh in-memory pass below re-infers project returns and, being Fresh, wins
+    // over these for the same key.
+    |> effects.with_foreign_returned_operators(
+      effects.load_spec_returns_from_file(spec),
+    )
+  // Fill gaps for project modules not (yet) in the spec by inferring them in
+  // memory, so `check` resolves cross-module calls without a prior `graded infer`.
+  // Committed effects are never overridden; fresh returns win over committed
+  // Foreign ones (Fix E). The deltas aren't needed here — the pre-pass already
+  // folded them into `kb_base`. Nothing is written to disk.
+  let kb_base =
+    infer_project_in_memory(
+      kb_base,
+      index,
+      registry,
+      type_info,
+      declared_modules,
+    )
+  let knowledge_base =
+    kb_base
+    |> effects.with_type_fields(annotation.extract_type_fields(spec))
+    |> effects.with_factories(qualify_by_module(index, extract.factory_map))
+
+  Ok(ProjectContext(
+    source_directory: directory,
+    cfg:,
+    spec:,
+    parsed:,
+    index:,
+    registry:,
+    type_info:,
+    package_root:,
+    knowledge_base:,
+  ))
 }
 
 // Group a parsed spec file's `check` annotations by their module path. Used
@@ -882,6 +947,126 @@ fn classify_in_module(
           classify_named_type(original, real_module, module_info, seen)
         False, Error(Nil) -> NotCallable
       }
+  }
+}
+
+// Effect queries
+//
+// The `effect` command: resolve one name against the project's knowledge base
+// and render it as spec syntax, writing nothing.
+
+/// Look up one name's effect in `directory`'s project and render it as a
+/// `.graded` line.
+///
+/// `name` is either a module-qualified function (`myapp/router.handle`) or a
+/// type field (`myapp/repo.Repo.find`). Functions resolve from the spec file,
+/// dependencies, the catalog, and an in-memory inference pass, so a public
+/// function resolves without a prior `graded infer`; type fields resolve from
+/// declared `type` lines. Any provenance is appended as a `//` comment line, so
+/// the whole output parses as `.graded` syntax. Nothing is written to disk.
+///
+/// Returns `EffectNotFound` when the name is neither a public function nor a
+/// declared type field.
+pub fn run_effect(
+  directory: String,
+  name: String,
+) -> Result(String, GradedError) {
+  use ctx <- result.try(load_project_context(directory))
+  // The function interpretation is tried first: a module path never contains a
+  // `.`, so a type-field name splits to a module that can't exist and falls
+  // through, while a plain function name resolves before it can be misread as
+  // `type.field`.
+  case function_effect(ctx.knowledge_base, name) {
+    Ok(output) -> Ok(output)
+    Error(Nil) ->
+      type_field_effect(ctx.knowledge_base, name)
+      |> result.replace_error(EffectNotFound(name))
+  }
+}
+
+// Render `name` as an `effects` line, or `Error(Nil)` when it isn't a known
+// qualified function. A function known to have `[Unknown]` effects is still a
+// hit — only a name the knowledge base has never heard of misses.
+fn function_effect(
+  knowledge_base: KnowledgeBase,
+  name: String,
+) -> Result(String, Nil) {
+  use #(module, function) <- result.try(annotation.split_qualified_name(name))
+  let qualified = QualifiedName(module:, function:)
+  case effects.lookup(knowledge_base, qualified) {
+    effects.Unknown -> Error(Nil)
+    // A module-level external answers for every function in its module and
+    // carries no per-function bounds, so its answer is rendered without them
+    // and labelled.
+    effects.Known(term) ->
+      case effects.is_module_level_external(knowledge_base, qualified) {
+        True ->
+          Ok(
+            effects_line(name, [], term)
+            <> "\n// resolved via module-level external for "
+            <> module,
+          )
+        False ->
+          Ok(effects_line(
+            name,
+            effects.lookup_param_bounds(knowledge_base, qualified),
+            term,
+          ))
+      }
+  }
+}
+
+// Render one `effects` line for a queried name.
+fn effects_line(
+  name: String,
+  params: List(types.ParamBound),
+  term: types.EffectTerm,
+) -> String {
+  annotation.format_annotation(EffectAnnotation(
+    kind: types.Effects,
+    function: name,
+    params:,
+    effects: term,
+  ))
+}
+
+// Render `name` as a `type` line, or `Error(Nil)` when it isn't a declared type
+// field. The name splits twice: once into `module.Type` and the field, once
+// more into the module and the type name.
+fn type_field_effect(
+  knowledge_base: KnowledgeBase,
+  name: String,
+) -> Result(String, Nil) {
+  use #(module_and_type, field) <- result.try(annotation.split_qualified_name(
+    name,
+  ))
+  use #(module, type_name) <- result.try(annotation.split_qualified_name(
+    module_and_type,
+  ))
+  use type_field <- result.try(effects.lookup_type_field(
+    knowledge_base,
+    module,
+    type_name,
+    field,
+  ))
+  let line =
+    annotation.format_type_field(types.TypeFieldAnnotation(
+      module: Some(module),
+      type_name:,
+      field:,
+      effects: type_field.effects,
+    ))
+  Ok(line <> "\n// " <> type_field_provenance(type_field.origin))
+}
+
+// How a type field's effect was established, for the provenance comment. Only
+// `Declared` entries reach the knowledge base today — `with_type_fields` is its
+// only writer — so the `Inferred` wording describes a shape the query can't
+// currently return.
+fn type_field_provenance(origin: types.TypeFieldOrigin) -> String {
+  case origin {
+    types.Declared -> "declared by a type line"
+    types.Inferred -> "inferred from construction"
   }
 }
 
@@ -2139,6 +2324,8 @@ fn format_error(error: GradedError) -> String {
     CyclicImports(modules:) ->
       "Cyclic project imports detected (this should be unreachable — Gleam disallows circular imports):\n"
       <> string.join(list.map(modules, fn(m) { "  " <> m }), "\n")
+    EffectNotFound(name:) ->
+      "no public function or type field named `" <> name <> "`"
     PackError(message:) -> message
   }
 }

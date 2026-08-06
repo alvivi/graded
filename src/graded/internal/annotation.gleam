@@ -456,6 +456,22 @@ pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
   })
 }
 
+// The `<module>.<function>` names a file declares with a function-level
+// `external effects <module>.<function> : [...]` line. Module-level externals
+// (`external effects <module> : [...]`) don't count — they target a whole
+// module, not one function. That line is authoritative for the function it
+// names, so both `merge_inferred` and the committed-bounds load treat an
+// `effects` line for the same name as stale.
+pub fn external_function_names(file: GradedFile) -> set.Set(String) {
+  list.filter_map(extract_externals(file), fn(ext) {
+    case ext.target {
+      FunctionExternal(name) -> Ok(ext.module <> "." <> name)
+      ModuleExternal -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+}
+
 // The modules a file declares with a module-level `external effects
 // <module> : [...]` line (no `.`). Per-function externals (`<module>.<fn>`)
 // don't count — they target one function, not the whole module. These are the
@@ -520,18 +536,7 @@ pub fn merge_inferred(
   // inferred `effects mod.fn` line for it so the opaque-FFI `[Unknown]` default
   // neither shadows nor duplicates the author's declaration (and a stale prior
   // inferred line is cleaned up on re-infer).
-  let external_functions =
-    list.filter_map(file.lines, fn(line) {
-      case line {
-        ExternalLine(ext) ->
-          case ext.target {
-            FunctionExternal(name) -> Ok(ext.module <> "." <> name)
-            ModuleExternal -> Error(Nil)
-          }
-        _ -> Error(Nil)
-      }
-    })
-    |> set.from_list()
+  let external_functions = external_function_names(file)
   // A module-level `external effects mod : [...]` declares the whole module's
   // effect, so every inferred `effects mod.fn` line is likewise redundant and
   // would shadow the declaration. Drop them all for the declared module.

@@ -378,6 +378,33 @@ check my_app/api.handle_request : [Http, Email]
 preserving your `check`, `type`, `external`, comments, and blank lines.
 `graded format` normalizes spacing and sorting.
 
+## Querying one name
+
+`graded effect <name> [directory]` prints what graded resolves for a single name
+and writes nothing — no spec file, no cache:
+
+```sh
+$ gleam run -m graded effect myapp/router.handle
+effects myapp/router.handle : [Stdout]
+
+$ gleam run -m graded effect myapp/repo.Repo.find
+type myapp/repo.Repo.find : [Storage]
+// declared by a type line
+```
+
+`<name>` is a module-qualified function or a `module.Type.field` type field. The
+output is spec syntax, provenance included: a higher-order function prints its
+parameter bounds (`effects myapp.apply(f: [Stdout]) : [Stdout]`), and any note
+about how the answer was reached is a `//` comment line, so the whole output can
+be fed back through the parser.
+
+Functions resolve through the same order as `check`, including the in-memory
+inference pass, so a public function answers on a fresh checkout with no prior
+`graded infer`. Type fields resolve from declared `type` lines only. A private
+function, an undeclared field, or an unknown name exits non-zero with
+``no public function or type field named `<name>` ``. A function graded knows
+about but can't resolve is a *hit*: it prints `[Unknown]`.
+
 ## Effect catalog
 
 graded ships versioned catalog files for common Gleam packages, so you get effect
