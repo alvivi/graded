@@ -32,7 +32,7 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
@@ -534,22 +534,7 @@ fn load_project_context(
     |> effects.with_externals(annotation.extract_externals(spec))
     |> with_builders(index, dep_sources)
     |> enrich_with_path_deps(package_root, declared_modules)
-    // Committed `effects` lines for a module-level-external module are dropped
-    // so they can't reshadow the declaration (which lives in `module_effects`,
-    // consulted only when `all_effects` misses). `graded infer` no longer writes
-    // such lines; this guards a stale or hand-written one.
-    |> effects.with_inferred(drop_declared_modules(
-      effects.load_spec_effects_from_file(spec),
-      declared_modules,
-    ))
-    // A committed higher-order line's bounds are loaded with its effect term, so
-    // the pair the checker substitutes with always comes from one annotation
-    // source. Without this the committed term would pair with freshly inferred
-    // bounds, whose variable names need not match it.
-    |> effects.with_inferred_params(drop_declared_modules(
-      effects.load_spec_params_from_file(spec),
-      declared_modules,
-    ))
+    |> with_committed_spec(spec, declared_modules)
     // Committed project returns are Foreign (Fix E): serialized, unsanitized. The
     // fresh in-memory pass below re-infers project returns and, being Fresh, wins
     // over these for the same key.
@@ -1103,36 +1088,24 @@ fn spec_answer(
     // declare it. So the spec decides this name only if it declares it
     // qualified; a bare line is left to the full context, which weighs it
     // against every dependency's `type` lines.
-    Error(Nil) -> {
-      use #(module, type_name, field) <- result.try(
-        annotation.split_type_field_name(name),
-      )
-      use module <- result.try(option.to_result(module, Nil))
-      use _declared <- result.try(effects.lookup_type_field(
-        knowledge_base,
-        module,
-        type_name,
-        field,
-      ))
-      type_field_effect(knowledge_base, name)
-    }
+    // An answer carrying the queried module is one the exact key produced; one
+    // carrying none fell back to the bare key, so it isn't the spec's decision.
+    Error(Nil) ->
+      case type_field_effect(knowledge_base, name) {
+        Ok(answer.TypeFieldAnswer(module: Some(_), ..) as found) -> Ok(found)
+        Ok(answer.TypeFieldAnswer(module: None, ..))
+        | Ok(answer.FunctionAnswer(..))
+        | Error(Nil) -> Error(Nil)
+      }
   }
 }
 
 // The spec-derived layers of `load_project_context`'s knowledge base, folded in
 // the same order and by the same functions, over nothing else.
 fn spec_knowledge_base(spec: GradedFile) -> KnowledgeBase {
-  let declared_modules = annotation.module_external_modules(spec)
   effects.new_knowledge_base()
   |> effects.with_externals(annotation.extract_externals(spec))
-  |> effects.with_inferred(drop_declared_modules(
-    effects.load_spec_effects_from_file(spec),
-    declared_modules,
-  ))
-  |> effects.with_inferred_params(drop_declared_modules(
-    effects.load_spec_params_from_file(spec),
-    declared_modules,
-  ))
+  |> with_committed_spec(spec, annotation.module_external_modules(spec))
   |> effects.with_type_fields(annotation.extract_type_fields(spec))
 }
 
@@ -1162,21 +1135,21 @@ fn function_effect(
     // A module-level external carries no per-function bounds, so none travel
     // with its answer. Which map answered is reported by the lookup itself, so
     // the recorded source can't disagree with the term beside it.
-    effects.Known(term, effects.ModuleExternalEntry) ->
+    effects.Known(term, types.ModuleExternalEntry) ->
       Ok(answer.FunctionAnswer(
         name:,
         module:,
         bounds: [],
         term:,
-        source: answer.ModuleExternalEntry,
+        source: types.ModuleExternalEntry,
       ))
-    effects.Known(term, effects.FunctionEntry) ->
+    effects.Known(term, types.FunctionEntry) ->
       Ok(answer.FunctionAnswer(
         name:,
         module:,
         bounds: effects.lookup_param_bounds(knowledge_base, qualified),
         term:,
-        source: answer.FunctionEntry,
+        source: types.FunctionEntry,
       ))
   }
 }
@@ -1199,21 +1172,15 @@ fn type_field_effect(
   use #(module, type_name, field) <- result.try(
     annotation.split_type_field_name(name),
   )
-  let declared_module = case module {
+  let declared = case module {
     Some(module) ->
       case effects.lookup_type_field(knowledge_base, module, type_name, field) {
-        Ok(_) -> Some(module)
-        Error(Nil) -> None
+        Ok(type_field) -> Ok(#(Some(module), type_field))
+        Error(Nil) -> bare_type_field(knowledge_base, type_name, field)
       }
-    None -> None
+    None -> bare_type_field(knowledge_base, type_name, field)
   }
-  let key = option.unwrap(declared_module, "")
-  use type_field <- result.try(effects.lookup_type_field(
-    knowledge_base,
-    key,
-    type_name,
-    field,
-  ))
+  use #(declared_module, type_field) <- result.try(declared)
   Ok(answer.TypeFieldAnswer(
     module: declared_module,
     type_name:,
@@ -1221,6 +1188,16 @@ fn type_field_effect(
     term: type_field.effects,
     origin: type_field.origin,
   ))
+}
+
+// A bare `type Type.field` line, keyed under no module.
+fn bare_type_field(
+  knowledge_base: KnowledgeBase,
+  type_name: String,
+  field: String,
+) -> Result(#(Option(String), types.TypeFieldEffect), Nil) {
+  effects.lookup_type_field(knowledge_base, "", type_name, field)
+  |> result.map(fn(type_field) { #(None, type_field) })
 }
 
 // Formatting
@@ -2411,6 +2388,37 @@ fn infer_path_dep_module(
       )
     }
   }
+}
+
+// Fold a spec file's committed `effects` lines and their parameter bounds into
+// a knowledge base. The two travel together: a committed higher-order line's
+// bounds are loaded with its effect term, so the pair the checker substitutes
+// with always comes from one annotation source — otherwise the committed term
+// would pair with freshly inferred bounds, whose variable names need not match
+// it.
+//
+// Lines for a module-level-external module are dropped from both, so they can't
+// reshadow the declaration (which lives in `module_effects`, consulted only when
+// `all_effects` misses). `graded infer` no longer writes such lines; this guards
+// a stale or hand-written one.
+//
+// Shared by the full project context and the `effect` query's spec-only fast
+// path, which must fold the spec exactly as the full context does for its answer
+// to be the one the full context would have given.
+fn with_committed_spec(
+  knowledge_base: KnowledgeBase,
+  spec: GradedFile,
+  declared_modules: Set(String),
+) -> KnowledgeBase {
+  knowledge_base
+  |> effects.with_inferred(drop_declared_modules(
+    effects.load_spec_effects_from_file(spec),
+    declared_modules,
+  ))
+  |> effects.with_inferred_params(drop_declared_modules(
+    effects.load_spec_params_from_file(spec),
+    declared_modules,
+  ))
 }
 
 // Drop every `QualifiedName`-keyed entry whose module the consumer declared

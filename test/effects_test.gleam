@@ -51,7 +51,7 @@ pub fn lookup_known_variant_test() {
   effects.lookup(knowledge_base(), QualifiedName("gleam/io", "debug"))
   |> should.equal(effects.Known(
     effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
-    effects.FunctionEntry,
+    types.FunctionEntry,
   ))
 }
 

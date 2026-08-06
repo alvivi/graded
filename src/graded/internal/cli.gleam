@@ -69,18 +69,21 @@ pub fn parse_effect_args(
 fn take_format(
   arguments: List(String),
 ) -> Result(#(answer.Format, List(String)), ArgumentError) {
-  list.fold(arguments, Ok(#(answer.Prose, [])), fn(acc, argument) {
-    use #(format, positional) <- result.try(acc)
-    case argument {
-      "--format=" <> value ->
-        case value {
-          "prose" -> Ok(#(answer.Prose, positional))
-          "graded" -> Ok(#(answer.Graded, positional))
-          _ -> Error(UnknownFormat(value))
-        }
-      _ -> Ok(#(format, list.append(positional, [argument])))
-    }
-  })
+  use #(format, reversed) <- result.map(
+    list.fold(arguments, Ok(#(answer.Prose, [])), fn(acc, argument) {
+      use #(format, positional) <- result.try(acc)
+      case argument {
+        "--format=" <> value ->
+          case value {
+            "prose" -> Ok(#(answer.Prose, positional))
+            "graded" -> Ok(#(answer.Graded, positional))
+            _ -> Error(UnknownFormat(value))
+          }
+        _ -> Ok(#(format, [argument, ..positional]))
+      }
+    }),
+  )
+  #(format, list.reverse(reversed))
 }
 
 // The message a rejected argument list prints.
