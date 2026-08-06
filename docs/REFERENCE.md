@@ -415,11 +415,15 @@ myapp.apply has effects [Stdout]
   calls to argument `f` are treated as having effects [Stdout]
 ```
 
-And `[Unknown]` is a resolved answer, distinct from a name that isn't there:
+A pure function is named as pure, and `[Unknown]` is a resolved answer — an
+effect graded could not settle, not a missing name:
 
 ```sh
+$ gleam run -m graded effect myapp.helper
+myapp.helper is pure — no effects ([])
+
 $ gleam run -m graded effect myapp.opaque
-myapp.opaque was found, but its effects could not be determined: [Unknown]
+myapp.opaque has effects that could not be determined: [Unknown]
 ```
 
 `--format=graded` prints the same answer as a `.graded` line, with provenance on
