@@ -92,6 +92,7 @@ The `.graded` spec language and graded's analysis model are documented in full i
 ```sh
 gleam run -m graded check [directory]         # enforce check annotations (default)
 gleam run -m graded infer [directory]         # infer and write effects annotations
+gleam run -m graded effect <name> [directory] # look up one effect, writing nothing
 gleam run -m graded format [directory]        # normalize .graded file formatting
 gleam run -m graded format --check [directory] # verify formatting (CI mode)
 gleam run -m graded format --stdin            # format from stdin (editor integration)
@@ -100,6 +101,8 @@ gleam run -m graded -- --version              # show the installed version
 ```
 
 An unknown command or option is a usage error, not a silently-checked directory.
+
+`effect` answers a single lookup in spec syntax and writes nothing — the spec file and the cache are left untouched. Its `<name>` is either a module-qualified function (`myapp/router.handle`) or a type field (`myapp/repo.Repo.find`); a higher-order function's parameter bounds are printed alongside its effect, and anything graded knows about how the answer was reached follows on a `//` comment line, so the whole output parses as `.graded`. Public functions resolve without a prior `graded infer`; private functions and undeclared type fields report that the name wasn't found.
 
 `check` and `infer` scope to the passed directory (default `src/`), recursing into it but never into `build/`. Passing the package root — `graded check .` — scopes to the root's `src/`, so module names come out as they appear in `import` statements (`app`, not `src/app`). To check another project, run graded from that project's root or point it at its `src/`.
 

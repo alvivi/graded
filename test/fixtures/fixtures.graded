@@ -95,6 +95,9 @@ external effects builder_shadow.disk_read : [Disk]
 external effects local_wired.read_disk : [Disk]
 external effects local_wired.opaque_read : []
 external effects shadow_field.split : []
+// A module-level external: every function under `fake_clock` resolves to
+// [Time], including names no fixture module defines.
+external effects fake_clock : [Time]
 
 // Type field annotations (the effect source for type-directed field calls).
 type opaque_receiver.Validator.to_error : [Stdout]
@@ -121,3 +124,9 @@ effects builder_shadow.handler : []
 effects shadow_field.handler : []
 effects shadow_field.go : [Unknown]
 effects factory_field.run : [Stdout]
+// Committed bounds whose variable is deliberately named apart from the source
+// parameter (`f`): a query must render this pair, not a freshly inferred one.
+effects nested_higher_order.pure_forward(g: [g]) : [g]
+// Stale beside the authoritative `external effects external_same_module.now`
+// line above: neither the term nor the bounds may reach the knowledge base.
+effects external_same_module.now(cb: [cb]) : [cb]

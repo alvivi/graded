@@ -1,4 +1,5 @@
 import filepath
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/io
@@ -6,6 +7,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/order
 import gleam/result
+import gleam/set
 import gleam/string
 import graded/internal/annotation
 import graded/internal/config
@@ -219,6 +221,18 @@ pub fn lookup(
         Error(Nil) -> Unknown
       }
   }
+}
+
+// Whether `name`'s effect comes from its module's `external effects <module>`
+// declaration rather than from an entry for the function itself. `lookup`
+// consults `module_effects` only when `all_effects` misses, so this is what
+// separates a whole-module answer from a per-function one.
+pub fn is_module_level_external(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  !dict.has_key(knowledge_base.all_effects, name)
+  && dict.has_key(knowledge_base.module_effects, name.module)
 }
 
 // Look up effects as an `EffectTerm`, returning `[Unknown]` for unrecognized
@@ -508,6 +522,37 @@ pub fn load_spec_effects_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, EffectTerm) {
   fold_spec_effects(annotation.extract_annotations(file))
+}
+
+// Load a package's own committed parameter bounds from its parsed spec file,
+// keyed the same way `load_spec_effects_from_file` keys effects so a
+// higher-order line's bounds travel with the line's own effect term. Three
+// kinds of line are skipped:
+//
+// - `check` lines: their bounds are a budget scoped to that check, not a
+//   global fact about the function.
+// - `effects` lines with no bounds: an empty entry would block the freshly
+//   inferred bounds for a first-order committed line.
+// - functions declared `external effects <module>.<function>`: the external
+//   term wins in `all_effects`, so a leftover `effects` line's bounds would
+//   pair with a term from another source.
+pub fn load_spec_params_from_file(
+  file: types.GradedFile,
+) -> Dict(QualifiedName, List(ParamBound)) {
+  let external_functions = annotation.external_function_names(file)
+  list.fold(annotation.extract_annotations(file), dict.new(), fn(acc, ann) {
+    use <- bool.guard(when: ann.kind == Check, return: acc)
+    use <- bool.guard(when: ann.params == [], return: acc)
+    use <- bool.guard(
+      when: set.contains(external_functions, ann.function),
+      return: acc,
+    )
+    case annotation.split_qualified_name(ann.function) {
+      Ok(#(module, function)) ->
+        dict.insert(acc, QualifiedName(module:, function:), ann.params)
+      Error(_) -> acc
+    }
+  })
 }
 
 // Load one package's spec into its effects, polymorphic param bounds,
