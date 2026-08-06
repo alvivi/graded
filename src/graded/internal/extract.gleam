@@ -983,6 +983,11 @@ fn resolve_constructor_field_call(
   }
 }
 
+// The `object` of a field call whose receiver has no source path to name
+// (`make().field()` — a call result). No `check` bound can name it, so every
+// consumer treats it as "a computed value" rather than as a receiver path.
+pub const computed_receiver = "<expr>"
+
 // A *nested* field-access call `<receiver>.label(args)` whose receiver is itself
 // a field access or a call (not a bare variable): `d.svc.find(..)`,
 // `make_svc().find(..)`. Emits a `FieldCall` whose `receiver_span` is the
@@ -1005,7 +1010,7 @@ fn resolve_nested_field_call(
     False -> {
       let object = case receiver_path(receiver) {
         Some(path) -> path
-        None -> "<expr>"
+        None -> computed_receiver
       }
       // An inline-construction receiver (`Options(resolver: r).resolver()` or an
       // inline factory call) directly wires the queried field, so route it

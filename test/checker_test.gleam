@@ -4719,14 +4719,34 @@ pub fn call_kind_field_sentinel_without_label_is_unclassified_test() {
   |> should.equal(checker.UnclassifiedCall)
 }
 
+// A receiver with no source path carries the computed-receiver sentinel, which
+// names nothing the user wrote — so it decodes to the computed-receiver kind
+// rather than a receiver called `<expr>`.
+pub fn call_kind_field_sentinel_computed_receiver_test() {
+  checker.call_kind(QualifiedName(
+    "<field>",
+    extract.computed_receiver <> ".handler",
+  ))
+  |> should.equal(checker.ComputedFieldCall("handler"))
+}
+
 pub fn call_kind_returned_sentinel_test() {
   checker.call_kind(QualifiedName("<returned>", "pick"))
-  |> should.equal(checker.ReturnedOperatorCall("pick"))
+  |> should.equal(checker.ReturnedOperatorCall(QualifiedName("", "pick")))
+}
+
+// A producer in another module keeps that module, so a local `pick` and a
+// dependency's `pick` don't decode alike.
+pub fn call_kind_returned_sentinel_keeps_producer_module_test() {
+  checker.call_kind(QualifiedName("<returned>", "somedep/api.make"))
+  |> should.equal(
+    checker.ReturnedOperatorCall(QualifiedName("somedep/api", "make")),
+  )
 }
 
 pub fn call_kind_pipe_sentinel_test() {
   checker.call_kind(QualifiedName("<pipe>", "<operator>"))
-  |> should.equal(checker.PipeTargetCall)
+  |> should.equal(checker.InlineFunctionCall)
 }
 
 pub fn call_kind_apply_sentinel_test() {
@@ -4736,12 +4756,12 @@ pub fn call_kind_apply_sentinel_test() {
 
 pub fn call_kind_closure_sentinel_test() {
   checker.call_kind(QualifiedName("<closure>", "<applied>"))
-  |> should.equal(checker.AppliedClosureCall)
+  |> should.equal(checker.LetBoundValueCall)
 }
 
 pub fn call_kind_local_sentinel_test() {
   checker.call_kind(QualifiedName("<local>", "helper"))
-  |> should.equal(checker.UndefinedLocalCall("helper"))
+  |> should.equal(checker.UnresolvedLocalCall("helper"))
 }
 
 pub fn call_kind_unrecognised_sentinel_is_unclassified_test() {
@@ -4796,6 +4816,22 @@ pub fn format_violation_field_call_resolved_test() {
   )
 }
 
+// A call-result receiver has no path to print, so the prose describes it
+// instead of leaking the sentinel the extractor keys it on.
+pub fn format_violation_computed_receiver_field_call_test() {
+  let message =
+    violation(
+      QualifiedName("<field>", extract.computed_receiver <> ".handler"),
+      Specific(set.from_list(["Unknown"])),
+    )
+    |> checker.format_violation("src/app.gleam", _)
+  message
+  |> should.equal(
+    "src/app.gleam: run calls field `handler` on a computed value with unresolved effects [Unknown] but declared []",
+  )
+  string.contains(message, extract.computed_receiver) |> should.be_false()
+}
+
 pub fn format_violation_partially_resolved_effects_test() {
   violation(
     QualifiedName("<apply>", "<unknown>"),
@@ -4823,6 +4859,9 @@ pub fn format_violation_polymorphic_keeps_variables_hint_test() {
   )
 }
 
+// The sentinel says the name matched no parameter bound and no function of this
+// module — not that the name is undefined, which it often is (a destructured
+// binding, a module constant, a record field path).
 pub fn format_violation_local_call_test() {
   violation(
     QualifiedName("<local>", "helper"),
@@ -4830,7 +4869,7 @@ pub fn format_violation_local_call_test() {
   )
   |> checker.format_violation("src/app.gleam", _)
   |> should.equal(
-    "src/app.gleam: run calls `helper`, which is not defined in this module, with unresolved effects [Unknown] but declared []",
+    "src/app.gleam: run calls `helper`, which is neither a bound parameter nor a function in this module, with unresolved effects [Unknown] but declared []",
   )
 }
 
@@ -4845,25 +4884,40 @@ pub fn format_violation_returned_operator_test() {
   )
 }
 
-pub fn format_violation_pipe_target_test() {
+pub fn format_violation_returned_operator_qualifies_producer_test() {
+  violation(
+    QualifiedName("<returned>", "somedep/api.make"),
+    Specific(set.from_list(["Stdout"])),
+  )
+  |> checker.format_violation("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: run calls a function returned by `somedep/api.make` with effects [Stdout] but declared []",
+  )
+}
+
+// The same sentinel covers a pipe target and an immediately-invoked function,
+// so the prose claims only what both shapes share.
+pub fn format_violation_inline_function_test() {
   violation(
     QualifiedName("<pipe>", "<operator>"),
     Specific(set.from_list(["Stdout"])),
   )
   |> checker.format_violation("src/app.gleam", _)
   |> should.equal(
-    "src/app.gleam: run pipes into an inline function with effects [Stdout] but declared []",
+    "src/app.gleam: run calls an inline function with effects [Stdout] but declared []",
   )
 }
 
-pub fn format_violation_applied_closure_test() {
+// Covers a let-bound closure *and* a let-bound `case` of functions, which is
+// not a closure.
+pub fn format_violation_let_bound_value_test() {
   violation(
     QualifiedName("<closure>", "<applied>"),
     Specific(set.from_list(["Stdout"])),
   )
   |> checker.format_violation("src/app.gleam", _)
   |> should.equal(
-    "src/app.gleam: run calls a let-bound closure with effects [Stdout] but declared []",
+    "src/app.gleam: run calls a let-bound function value with effects [Stdout] but declared []",
   )
 }
 
@@ -4927,4 +4981,195 @@ pub fn format_violation_decodes_computed_application_source_test() {
   |> should.be_true()
   string.contains(message, "<apply>.") |> should.be_false()
   string.contains(message, "calls <") |> should.be_false()
+}
+
+// A call-result receiver has no source path, so the extractor keys it on the
+// computed-receiver sentinel — which the message describes, never prints.
+pub fn format_violation_decodes_computed_receiver_source_test() {
+  let source =
+    "import gleam/io
+pub type Handler {
+  Handler(handler: fn(String) -> Nil)
+}
+fn make() -> Handler {
+  Handler(handler: io.println)
+}
+pub fn run() -> Nil {
+  make().handler(\"x\")
+}"
+  let assert [message] = formatted_violations(source, [pure_check("run")])
+  string.contains(message, "calls field `handler` on a computed value")
+  |> should.be_true()
+  string.contains(message, extract.computed_receiver) |> should.be_false()
+}
+
+// A destructured binding is bound three lines up, so the message reports what
+// failed to resolve rather than claiming the name is undefined.
+pub fn format_violation_destructured_binding_source_test() {
+  let source =
+    "fn first(ops: List(fn() -> Nil)) -> Result(fn() -> Nil, Nil) {
+  Error(Nil)
+}
+pub fn run(ops: List(fn() -> Nil)) -> Nil {
+  let assert Ok(h) = first(ops)
+  h()
+}"
+  let assert [message] = formatted_violations(source, [pure_check("run")])
+  string.contains(
+    message,
+    "calls `h`, which is neither a bound parameter nor a function in this module,",
+  )
+  |> should.be_true()
+  string.contains(message, "not defined in this module") |> should.be_false()
+}
+
+// A module constant *is* defined in this module; only the effect resolution
+// failed, since the function map indexes functions alone.
+pub fn format_violation_module_constant_source_test() {
+  let source =
+    "import gleam/io
+const log = io.println
+
+pub fn run() -> Nil {
+  log(\"x\")
+}"
+  let assert [message] = formatted_violations(source, [pure_check("run")])
+  string.contains(
+    message,
+    "calls `log`, which is neither a bound parameter nor a function in this module,",
+  )
+  |> should.be_true()
+  string.contains(message, "not defined in this module") |> should.be_false()
+}
+
+// An unbounded record field path names no function at all, so the same wording
+// covers it.
+pub fn format_violation_unbounded_field_path_source_test() {
+  let source =
+    "pub fn run(options) -> Nil {
+  let f = options.svc
+  f(\"x\")
+}"
+  let assert [message] = formatted_violations(source, [pure_check("run")])
+  string.contains(
+    message,
+    "calls `options.svc`, which is neither a bound parameter nor a function in this module,",
+  )
+  |> should.be_true()
+  string.contains(message, "not defined in this module") |> should.be_false()
+}
+
+// A dotted bound in `param_bounds` is a *field* bound, so calling it through an
+// alias reads exactly like the un-aliased field call it stands for.
+pub fn format_violation_aliased_field_bound_reads_as_field_test() {
+  let bounded =
+    EffectAnnotation(
+      Check,
+      "run",
+      [
+        ParamBound(
+          "options.svc",
+          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        ),
+      ],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
+  let expected =
+    "src/app.gleam: run calls field `svc` on `options` with effects [Stdout] but declared []"
+  let aliased =
+    "pub fn run(options) -> Nil {
+  let f = options.svc
+  f(\"x\")
+}"
+  formatted_violations(aliased, [bounded]) |> should.equal([expected])
+  let direct =
+    "pub fn run(options) -> Nil {
+  options.svc(\"x\")
+}"
+  formatted_violations(direct, [bounded]) |> should.equal([expected])
+}
+
+// The pipe sentinel is minted for any inline function applied to arguments, so
+// the prose can't promise a `|>` — here there is none.
+pub fn format_violation_immediately_invoked_function_source_test() {
+  let source =
+    "import gleam/io
+pub fn run() -> Nil {
+  fn(a, cb) { cb(a) }(\"x\", io.println)
+}"
+  let assert [message] = formatted_violations(source, [pure_check("run")])
+  string.contains(message, "calls an inline function") |> should.be_true()
+  string.contains(message, "pipes into") |> should.be_false()
+}
+
+// The same wording covers the pipe shape the sentinel is also minted for.
+pub fn format_violation_pipe_target_source_test() {
+  let source =
+    "import gleam/io
+pub fn run() -> Nil {
+  \"x\" |> fn(m) { io.println(m) }
+}"
+  let assert [message] = formatted_violations(source, [pure_check("run")])
+  string.contains(message, "calls an inline function") |> should.be_true()
+}
+
+// A let-bound `case` of functions shares the closure sentinel without being a
+// closure, so the prose says "function value".
+pub fn format_violation_let_bound_choice_source_test() {
+  let source =
+    "import gleam/io
+pub fn run(flag: Bool) -> Nil {
+  let h = case flag {
+    True -> fn(cb) { cb(\"a\") }
+    False -> fn(cb) { cb(\"b\") }
+  }
+  h(io.println)
+}"
+  let assert [message] = formatted_violations(source, [pure_check("run")])
+  string.contains(message, "calls a let-bound function value")
+  |> should.be_true()
+  string.contains(message, "closure") |> should.be_false()
+}
+
+// A producer in a dependency keeps its module, so it doesn't read like a
+// same-module producer of the same name.
+pub fn format_violation_dependency_producer_keeps_module_test() {
+  let assert Ok(spec) = annotation.parse_file("returns dep.make : [Stdout]")
+  let source =
+    "
+import dep
+pub fn run() -> Nil {
+  let f = dep.make()
+  f()
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let kb =
+    knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(
+          QualifiedName("dep", "make"),
+          effect_term.from_effect_set(types.empty()),
+        ),
+      ]),
+    )
+    |> effects.with_fresh_returned_operators(
+      effects.load_spec_returns_from_file(spec),
+    )
+  let #(violations, _) =
+    checker.check(
+      module,
+      "",
+      [pure_check("run")],
+      kb,
+      signatures.from_glance_module("app", module),
+      dict.new(),
+      dict.new(),
+    )
+  let assert [violation] = violations
+  checker.format_violation("src/app.gleam", violation)
+  |> should.equal(
+    "src/app.gleam: run calls a function returned by `dep.make` with effects [Stdout] but declared []",
+  )
 }

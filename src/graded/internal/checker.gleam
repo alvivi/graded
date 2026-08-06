@@ -420,9 +420,38 @@ fn local_function_field_effect(
 
 // Violation reporting
 //
-// The prose rendering of a `Violation`. Synthetic call sites are minted here
-// with a sentinel module (see `sentinel_call`), so decoding one back into a
-// description of the call belongs here too.
+// The prose rendering of a `Violation`. Synthetic call sites are minted as a
+// `CallKind` (see `sentinel_call`) and carried on the violation as a sentinel
+// qualified name, so the encoder and the decoder that reads one back into a
+// description of the call both belong here.
+
+// The sentinel modules a synthetic call site is encoded with. `<` can't start a
+// Gleam module path, so a sentinel never collides with a real qualified call.
+// `sentinel_name` writes them and `call_kind` reads them — both from here, so a
+// mint site can't drift from the classifier.
+const param_sentinel = "<param>"
+
+const field_sentinel = "<field>"
+
+const returned_sentinel = "<returned>"
+
+const pipe_sentinel = "<pipe>"
+
+const apply_sentinel = "<apply>"
+
+const closure_sentinel = "<closure>"
+
+const local_sentinel = "<local>"
+
+// The sentinel for a kind that carries no name of its own, and the placeholder
+// payloads of the kinds whose identity is the sentinel module alone.
+const unclassified_sentinel = "<call>"
+
+const operator_payload = "<operator>"
+
+const applied_payload = "<applied>"
+
+const unknown_payload = "<unknown>"
 
 // What a violating call site is. `DirectCall` is an ordinary qualified call;
 // every other variant is one of the synthetic forms `sentinel_call` mints.
@@ -433,14 +462,21 @@ pub type CallKind {
   ParameterCall(parameter: String)
   // A field call `receiver.label(args)`. `receiver` may itself be a dotted path.
   FieldAccessCall(receiver: String, label: String)
-  // An unqualified call to a name the enclosing module does not define.
-  UndefinedLocalCall(function: String)
+  // A field call whose receiver is a computed value (`make().label(args)`), so
+  // it has no source path to name.
+  ComputedFieldCall(label: String)
+  // An unqualified call that matched no parameter bound and no function of the
+  // enclosing module, so nothing resolved its effects.
+  UnresolvedLocalCall(function: String)
   // A direct application of a let-bound function that `producer` returned.
-  ReturnedOperatorCall(producer: String)
-  // An inline function or `case` used as a pipe target.
-  PipeTargetCall
-  // A direct application of a let-bound closure.
-  AppliedClosureCall
+  // `producer.module` is `""` for a producer in the calling module.
+  ReturnedOperatorCall(producer: QualifiedName)
+  // An application of an inline function value: a pipe target (`x |> fn(f) {
+  // .. }`) or an immediately-invoked closure / `case` of functions.
+  InlineFunctionCall
+  // A direct application of a let-bound function value — a closure or a `case`
+  // of functions.
+  LetBoundValueCall
   // An application of an opaque computed function value.
   ComputedValueCall
   // A synthetic call site this classifier doesn't recognise, or a recognised one
@@ -449,18 +485,41 @@ pub type CallKind {
   UnclassifiedCall
 }
 
+// The sentinel qualified name a synthetic call site carries for `kind` — the
+// inverse of `call_kind`.
+fn sentinel_name(kind: CallKind) -> QualifiedName {
+  case kind {
+    DirectCall(module:, function:) -> QualifiedName(module:, function:)
+    ParameterCall(parameter:) -> QualifiedName(param_sentinel, parameter)
+    FieldAccessCall(receiver:, label:) ->
+      QualifiedName(field_sentinel, receiver <> "." <> label)
+    ComputedFieldCall(label:) ->
+      QualifiedName(field_sentinel, extract.computed_receiver <> "." <> label)
+    UnresolvedLocalCall(function:) -> QualifiedName(local_sentinel, function)
+    ReturnedOperatorCall(producer:) ->
+      QualifiedName(returned_sentinel, dotted_name(producer))
+    InlineFunctionCall -> QualifiedName(pipe_sentinel, operator_payload)
+    LetBoundValueCall -> QualifiedName(closure_sentinel, applied_payload)
+    ComputedValueCall -> QualifiedName(apply_sentinel, unknown_payload)
+    UnclassifiedCall -> QualifiedName(unclassified_sentinel, "")
+  }
+}
+
 // Classify a call site by its (possibly sentinel) qualified name. A module
 // starting with `<` that matches no sentinel is `UnclassifiedCall`; only a
 // module that cannot be a sentinel is a `DirectCall`.
 pub fn call_kind(call: QualifiedName) -> CallKind {
   case call.module {
-    "<param>" -> payload_kind(call.function, ParameterCall)
-    "<field>" -> field_access_kind(call.function)
-    "<returned>" -> payload_kind(call.function, ReturnedOperatorCall)
-    "<pipe>" -> PipeTargetCall
-    "<apply>" -> ComputedValueCall
-    "<closure>" -> AppliedClosureCall
-    "<local>" -> payload_kind(call.function, UndefinedLocalCall)
+    module if module == param_sentinel ->
+      payload_kind(call.function, ParameterCall)
+    module if module == field_sentinel -> field_access_kind(call.function)
+    module if module == returned_sentinel ->
+      returned_operator_kind(call.function)
+    module if module == pipe_sentinel -> InlineFunctionCall
+    module if module == apply_sentinel -> ComputedValueCall
+    module if module == closure_sentinel -> LetBoundValueCall
+    module if module == local_sentinel ->
+      payload_kind(call.function, UnresolvedLocalCall)
     module -> {
       use <- bool.guard(
         when: string.starts_with(module, "<"),
@@ -492,12 +551,20 @@ fn call_clause(violation: Violation) -> String {
     ParameterCall(parameter:) -> "calls parameter `" <> parameter <> "`"
     FieldAccessCall(receiver:, label:) ->
       "calls field `" <> label <> "` on `" <> receiver <> "`"
-    UndefinedLocalCall(function:) ->
-      "calls `" <> function <> "`, which is not defined in this module,"
+    ComputedFieldCall(label:) ->
+      "calls field `" <> label <> "` on a computed value"
+    // States only what the sentinel establishes. The name may well be bound in
+    // the body (a destructured binding, a module constant, a record field
+    // path) — what failed is resolving it to a parameter bound or to a function
+    // of this module.
+    UnresolvedLocalCall(function:) ->
+      "calls `"
+      <> function
+      <> "`, which is neither a bound parameter nor a function in this module,"
     ReturnedOperatorCall(producer:) ->
-      "calls a function returned by `" <> producer <> "`"
-    PipeTargetCall -> "pipes into an inline function"
-    AppliedClosureCall -> "calls a let-bound closure"
+      "calls a function returned by `" <> dotted_name(producer) <> "`"
+    InlineFunctionCall -> "calls an inline function"
+    LetBoundValueCall -> "calls a let-bound function value"
     ComputedValueCall -> "calls a computed function value"
     UnclassifiedCall -> "calls an unclassified call site"
   }
@@ -530,11 +597,38 @@ fn payload_kind(payload: String, build: fn(String) -> CallKind) -> CallKind {
 
 // Split a `<field>` payload into receiver and label at its *last* dot, so a
 // nested receiver stays whole (`config.inner.run` -> `config.inner` / `run`).
-// A payload missing either half is the generic kind rather than a crash.
+// A payload missing either half is the generic kind rather than a crash. The
+// receiver sentinel a call-result receiver carries names no source path, so it
+// describes the receiver as computed instead of printing the sentinel.
 fn field_access_kind(payload: String) -> CallKind {
   case annotation.split_qualified_name(payload) {
-    Ok(#(receiver, label)) -> FieldAccessCall(receiver:, label:)
+    Ok(#(receiver, label)) ->
+      case receiver == extract.computed_receiver {
+        True -> ComputedFieldCall(label:)
+        False -> FieldAccessCall(receiver:, label:)
+      }
     Error(Nil) -> UnclassifiedCall
+  }
+}
+
+// Split a `<returned>` payload into the producer's module and function at its
+// last dot. A payload with no dot names a producer in the calling module.
+fn returned_operator_kind(payload: String) -> CallKind {
+  case payload, annotation.split_qualified_name(payload) {
+    "", _ -> UnclassifiedCall
+    _, Ok(#(module, function)) ->
+      ReturnedOperatorCall(QualifiedName(module:, function:))
+    _, Error(Nil) ->
+      ReturnedOperatorCall(QualifiedName(module: "", function: payload))
+  }
+}
+
+// A qualified name as one dotted string, bare when the module is `""` (the
+// calling module). Used both for the `<returned>` payload and for the prose.
+fn dotted_name(name: QualifiedName) -> String {
+  case name.module {
+    "" -> name.function
+    module -> module <> "." <> name.function
   }
 }
 
@@ -554,11 +648,22 @@ fn call_args_for(
 }
 
 // A synthetic resolved call carrying an inferred effect that isn't an ordinary
-// catalog lookup. `module` is a sentinel (`<param>`, `<field>`, `<returned>`,
-// `<pipe>`, `<apply>`, `<closure>`, `<local>`) marking how the effect was
-// derived; `call_kind` decodes it back for diagnostics.
-fn sentinel_call(module: String, function: String, span: Span) -> ResolvedCall {
-  types.ResolvedCall(name: QualifiedName(module:, function:), span:)
+// catalog lookup. `kind` says how the effect was derived; it travels as the
+// sentinel name `sentinel_name` encodes, which `call_kind` decodes back for
+// diagnostics.
+fn sentinel_call(kind: CallKind, span: Span) -> ResolvedCall {
+  types.ResolvedCall(name: sentinel_name(kind), span:)
+}
+
+// How to describe a call resolved through `param_bounds`. That one list holds
+// parameter bounds *and* dotted field bounds, so a dotted name is a field
+// access (`let f = config.resolver; f("x")`) and describes as one — matching
+// what the un-aliased `config.resolver("x")` reports.
+fn bound_call_kind(name: String) -> CallKind {
+  case annotation.split_qualified_name(name) {
+    Ok(#(receiver, label)) -> FieldAccessCall(receiver:, label:)
+    Error(Nil) -> ParameterCall(name)
+  }
 }
 
 // The receiver path a field call keys its bound, field variable, and diagnostics
@@ -576,6 +681,17 @@ fn field_call_receiver(field_call: types.FieldCall) -> String {
 
 fn field_call_target(field_call: types.FieldCall) -> String {
   field_call_receiver(field_call) <> "." <> field_call.label
+}
+
+// How to describe a field call. A receiver with no source path (`make().f()`)
+// carries the computed-receiver sentinel, which names nothing the user wrote,
+// so the call describes its receiver as computed rather than by path.
+fn field_call_kind(field_call: types.FieldCall) -> CallKind {
+  let receiver = field_call_receiver(field_call)
+  case receiver == extract.computed_receiver {
+    True -> ComputedFieldCall(label: field_call.label)
+    False -> FieldAccessCall(receiver:, label: field_call.label)
+  }
 }
 
 // A bound whose effect is the single variable named after the param
@@ -1253,7 +1369,7 @@ fn collect_effects(
       {
         Ok(bound) -> {
           let synthetic_call =
-            sentinel_call("<param>", local_call.function, local_call.span)
+            sentinel_call(bound_call_kind(bound.name), local_call.span)
           // A call to a fn-typed parameter contributes that parameter's effect
           // variable. If the parameter is *second-order* (an operator — its own
           // type takes one or more functions), the call is a *curried*
@@ -1321,7 +1437,7 @@ fn collect_effects(
   let #(memo, field_effects) =
     list.map_fold(result.field, memo, fn(memo, field_call) {
       let synthetic_call =
-        sentinel_call("<field>", field_call_target(field_call), field_call.span)
+        sentinel_call(field_call_kind(field_call), field_call.span)
       let #(effect_set, memo) =
         resolve_field_call(
           field_call,
@@ -1348,7 +1464,7 @@ fn collect_effects(
   let #(memo, direct_op_effects) =
     list.map_fold(result.direct_ops, memo, fn(memo, op) {
       let synthetic_call =
-        sentinel_call("<returned>", op.callee.function, op.span)
+        sentinel_call(ReturnedOperatorCall(op.callee), op.span)
       let #(resolved_op, memo) =
         resolve_returned_operator(
           op.callee,
@@ -1394,7 +1510,7 @@ fn collect_effects(
   // argument, so each argument's effect reaches the matching parameter.
   let #(memo, direct_pipe_effects) =
     list.map_fold(result.direct_pipe_ops, memo, fn(memo, op) {
-      let synthetic_call = sentinel_call("<pipe>", "<operator>", op.span)
+      let synthetic_call = sentinel_call(InlineFunctionCall, op.span)
       let positions =
         call_args_for(result.call_args, op.span)
         |> list.map(fn(a) { a.position })
@@ -1429,7 +1545,7 @@ fn collect_effects(
   // never silently pure.
   let unknown_app_effects =
     list.map(result.unknown_apps, fn(span) {
-      let synthetic_call = sentinel_call("<apply>", "<unknown>", span)
+      let synthetic_call = sentinel_call(ComputedValueCall, span)
       #(synthetic_call, effect_term.unknown())
     })
 
@@ -1446,7 +1562,7 @@ fn collect_effects(
   // captured names (which resolve only under the binding-site environment).
   let #(memo, direct_closure_effects) =
     list.map_fold(result.direct_closure_ops, memo, fn(memo, op) {
-      let synthetic_call = sentinel_call("<closure>", "<applied>", op.span)
+      let synthetic_call = sentinel_call(LetBoundValueCall, op.span)
       let positions = direct_call_positions(op.value)
       let #(operator, memo) =
         operator_term_for_argument(
@@ -1827,13 +1943,13 @@ fn substitute_local_call_effects(
       let bounds = local_polymorphic_bounds(local_definition.definition)
       let args = call_args_for(call_args, local_call.span)
       let callee_name =
-        QualifiedName(module: "<local>", function: local_call.function)
-      // The synthetic `<local>` module isn't in `registry`, so build a
+        QualifiedName(module: local_sentinel, function: local_call.function)
+      // The synthetic local module isn't in `registry`, so build a
       // single-entry registry from this local function's glance AST so
       // positional argument matching has parameter info to work with.
       let local_registry =
         signatures.from_glance_module(
-          "<local>",
+          local_sentinel,
           glance.Module(
             imports: [],
             custom_types: [],
@@ -3410,6 +3526,8 @@ fn analyze_closure_uncached(
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
+  // A display name for the synthetic glance function wrapping the closure body,
+  // not a call-site sentinel: nothing decodes it, so it stays a plain literal.
   let synthetic =
     Function(
       location: Span(0, 0),
@@ -3798,7 +3916,7 @@ fn resolve_unknown_local(
   case dict.get(function_map, local_call.function) {
     Error(Nil) -> {
       let synthetic_call =
-        sentinel_call("<local>", local_call.function, local_call.span)
+        sentinel_call(UnresolvedLocalCall(local_call.function), local_call.span)
       #([#(synthetic_call, effect_term.unknown())], memo)
     }
     Ok(local_definition) ->
@@ -4463,9 +4581,10 @@ fn field_fallback(
   context: ImportContext,
 ) -> EffectTerm {
   // A receiver with no clean access path (`make().field` — a call result) gets
-  // the `<expr>` sentinel object; never mint a `<expr>.field` variable for it,
-  // since no `check` bound can name it and an inferred spec shouldn't carry one.
-  let has_path = object != "<expr>"
+  // the computed-receiver sentinel object; never mint a `<expr>.field` variable
+  // for it, since no `check` bound can name it and an inferred spec shouldn't
+  // carry one.
+  let has_path = object != extract.computed_receiver
   // The field registry holds only the current module's types. An imported
   // receiver type sharing a name with a local fn-typed type must not borrow the
   // local field. `module` is the receiver type's defining module (from girard);
