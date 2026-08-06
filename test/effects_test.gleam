@@ -7,11 +7,12 @@ import gleam/order
 import gleam/set
 import gleam/string
 import gleeunit/should
+import graded/internal/annotation
 import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/types.{
-  type EffectSet, ConstructorRef, FunctionRef, OtherExpression, Polymorphic,
-  QualifiedName, Specific, Wildcard,
+  type EffectSet, type ParamBound, type QualifiedName, ConstructorRef,
+  FunctionRef, OtherExpression, Polymorphic, QualifiedName, Specific, Wildcard,
 }
 import qcheck
 import simplifile
@@ -604,6 +605,73 @@ pub fn load_knowledge_base_loads_dependency_type_fields_test() {
   |> should.equal(Specific(set.from_list(["Storage"])))
 
   let _ = simplifile.delete("build/eff_dep_typefield")
+  Nil
+}
+
+// Committed parameter bounds
+//
+// Whichever annotation decides a function's effect term decides its bounds too.
+// The reader records an entry for every function a spec speaks for — empty
+// where the deciding line carries no bounds — because an empty entry is what
+// stops a later inference pass from gap-filling a mismatched pair.
+
+fn spec_params(source: String) -> dict.Dict(QualifiedName, List(ParamBound)) {
+  let assert Ok(file) = annotation.parse_file(source)
+  effects.load_spec_params_from_file(file)
+}
+
+pub fn bound_less_effects_line_records_an_empty_entry_test() {
+  spec_params("effects app.run : [Stdout]\n")
+  |> dict.get(QualifiedName("app", "run"))
+  |> should.equal(Ok([]))
+}
+
+pub fn effects_line_bounds_are_recorded_test() {
+  let assert Ok(bounds) =
+    spec_params("effects app.run(f: [f]) : [f]\n")
+    |> dict.get(QualifiedName("app", "run"))
+  bounds |> list.map(fn(bound) { bound.name }) |> should.equal(["f"])
+}
+
+pub fn check_line_bounds_are_not_recorded_test() {
+  // A `check` line's bounds are a budget scoped to that check, not a global
+  // fact about the function, and the line doesn't decide the term either.
+  spec_params("check app.run(f: [Stdout]) : []\n")
+  |> dict.get(QualifiedName("app", "run"))
+  |> should.equal(Error(Nil))
+}
+
+pub fn externally_declared_function_records_an_empty_entry_test() {
+  // The external term wins in `all_effects` and is ground by construction, so
+  // the stale `effects` line's bounds must not pair with it.
+  spec_params(
+    "external effects app.run : [Time]\neffects app.run(cb: [cb]) : [cb]\n",
+  )
+  |> dict.get(QualifiedName("app", "run"))
+  |> should.equal(Ok([]))
+}
+
+pub fn dependency_check_line_bounds_stay_out_of_the_knowledge_base_test() {
+  // The same scoping one package boundary away: a dependency's `check` budget
+  // is local to that check, so loading its spec must not install the budget as
+  // a global fact about `dep.run`. Its `effects` line decides both halves.
+  let packages = "build/eff_dep_checkbounds/packages"
+  let _ = simplifile.delete("build/eff_dep_checkbounds")
+  let assert Ok(Nil) = simplifile.create_directory_all(packages <> "/dep")
+  let assert Ok(Nil) =
+    simplifile.write(
+      packages <> "/dep/dep.graded",
+      "check dep.run(f: [Stdout]) : []\neffects dep.run : [Time]\n",
+    )
+
+  let kb = effects.load_knowledge_base(packages, "missing_manifest.toml")
+  effects.lookup_param_bounds(kb, QualifiedName("dep", "run"))
+  |> should.equal([])
+  effects.lookup_effects(kb, QualifiedName("dep", "run"))
+  |> effect_term.to_effect_set
+  |> should.equal(Specific(set.from_list(["Time"])))
+
+  let _ = simplifile.delete("build/eff_dep_checkbounds")
   Nil
 }
 

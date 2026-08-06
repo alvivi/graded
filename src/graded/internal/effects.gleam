@@ -526,23 +526,34 @@ pub fn load_spec_effects_from_file(
 
 // Load a package's own committed parameter bounds from its parsed spec file,
 // keyed the same way `load_spec_effects_from_file` keys effects so a
-// higher-order line's bounds travel with the line's own effect term. Three
-// kinds of line are skipped:
+// higher-order line's bounds travel with the line's own effect term.
 //
-// - `check` lines: their bounds are a budget scoped to that check, not a
-//   global fact about the function.
-// - `effects` lines with no bounds: an empty entry would block the freshly
-//   inferred bounds for a first-order committed line.
-// - functions declared `external effects <module>.<function>`: the external
-//   term wins in `all_effects`, so a leftover `effects` line's bounds would
-//   pair with a term from another source.
+// Whichever annotation supplies a function's effect term must also supply its
+// bounds, so this records an entry — an *empty* one where the line carries no
+// bounds — for every function whose term this file decides. An empty entry is
+// what pins the pair together: `with_inferred_params` keeps existing entries, so
+// it stops a later inference pass from gap-filling bounds whose variables answer
+// to a term this file never wrote.
+//
+// - `check` lines are skipped: their bounds are a budget scoped to that check,
+//   not a global fact about the function, and they don't decide the term.
+// - functions declared `external effects <module>.<function>` record an empty
+//   entry: the external term wins in `all_effects` and is ground by
+//   construction, so any bounds pairing with it come from another source.
 pub fn load_spec_params_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, List(ParamBound)) {
   let external_functions = annotation.external_function_names(file)
-  list.fold(annotation.extract_annotations(file), dict.new(), fn(acc, ann) {
+  let from_externals =
+    set.fold(external_functions, dict.new(), fn(acc, name) {
+      case annotation.split_function_name(name) {
+        Ok(#(module, function)) ->
+          dict.insert(acc, QualifiedName(module:, function:), [])
+        Error(_) -> acc
+      }
+    })
+  list.fold(annotation.extract_annotations(file), from_externals, fn(acc, ann) {
     use <- bool.guard(when: ann.kind == Check, return: acc)
-    use <- bool.guard(when: ann.params == [], return: acc)
     use <- bool.guard(
       when: set.contains(external_functions, ann.function),
       return: acc,
@@ -577,20 +588,19 @@ pub fn load_dep_spec(
 ) {
   case read_spec_file(config.spec_file_for(dep_root, package_name)) {
     Error(_) -> #(dict.new(), dict.new(), dict.new(), [])
-    Ok(file) -> {
-      let #(effect_map, param_map) =
-        list.fold(
-          annotation.extract_annotations(file),
-          #(dict.new(), dict.new()),
-          fold_qualified_annotation,
-        )
+    Ok(file) ->
+      // Loaded through the same two readers a package uses for its *own* spec,
+      // so a dependency's `check` budgets and externally-declared functions are
+      // scoped identically one package boundary away: a `check` line's bounds
+      // stay local to that check instead of becoming a global fact about the
+      // dependency's function, and every term still travels with the bounds
+      // from its own annotation.
       #(
-        effect_map,
-        param_map,
+        load_spec_effects_from_file(file),
+        load_spec_params_from_file(file),
         load_spec_returns_from_file(file),
         annotation.extract_type_fields(file),
       )
-    }
   }
 }
 
@@ -679,34 +689,6 @@ fn load_dependencies(
       )
     },
   )
-}
-
-fn fold_qualified_annotation(
-  accumulator: #(
-    Dict(QualifiedName, EffectTerm),
-    Dict(QualifiedName, List(ParamBound)),
-  ),
-  ann: EffectAnnotation,
-) -> #(Dict(QualifiedName, EffectTerm), Dict(QualifiedName, List(ParamBound))) {
-  let #(effect_map, param_map) = accumulator
-  case annotation.split_qualified_name(ann.function) {
-    Error(_) -> accumulator
-    Ok(#(module, function)) -> {
-      let qualified_name = QualifiedName(module:, function:)
-      let new_effect_map = case ann.kind {
-        Effects -> dict.insert(effect_map, qualified_name, ann.effects)
-        Check -> effect_map
-      }
-      // Both `effects` (auto-inferred polymorphic) and `check`
-      // (user-declared) annotations can carry param bounds; store
-      // them all so call-site substitution can resolve variables.
-      let new_param_map = case ann.params {
-        [] -> param_map
-        params -> dict.insert(param_map, qualified_name, params)
-      }
-      #(new_effect_map, new_param_map)
-    }
-  }
 }
 
 // Catalog
@@ -816,12 +798,18 @@ fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
               ),
               annotation.extract_externals(graded_file),
             )
-          let #(poly_effects, poly_params) =
-            list.fold(
-              annotation.extract_annotations(graded_file),
-              #(acc.poly_effects, acc.poly_params),
-              fold_qualified_annotation,
+          // Same two readers as a package's own spec and as `load_dep_spec`, so
+          // a catalog entry's `check` budgets and externally-declared functions
+          // are scoped like everyone else's. Merging with the new file second
+          // keeps the later file winning on a clash, as folding per-annotation
+          // did.
+          let poly_effects =
+            dict.merge(
+              acc.poly_effects,
+              load_spec_effects_from_file(graded_file),
             )
+          let poly_params =
+            dict.merge(acc.poly_params, load_spec_params_from_file(graded_file))
           CatalogAcc(
             ext_effects: kb.all_effects,
             module_effects: kb.module_effects,

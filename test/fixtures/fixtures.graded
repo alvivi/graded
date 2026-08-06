@@ -127,6 +127,9 @@ effects factory_field.run : [Stdout]
 // Committed bounds whose variable is deliberately named apart from the source
 // parameter (`f`): a query must render this pair, not a freshly inferred one.
 effects nested_higher_order.pure_forward(g: [g]) : [g]
+// Committed with no bounds though the source is higher-order: this line decides
+// the term, so it decides the (absent) bounds too — inference must not fill them.
+effects nested_higher_order.log_and_map : [Stdout]
 // Stale beside the authoritative `external effects external_same_module.now`
 // line above: neither the term nor the bounds may reach the knowledge base.
 effects external_same_module.now(cb: [cb]) : [cb]
