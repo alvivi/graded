@@ -128,6 +128,17 @@ pub fn external_suppresses_stale_committed_bounds_test() {
   string.contains(output, "cb") |> should.be_false
 }
 
+pub fn bound_less_committed_line_suppresses_inferred_bounds_test() {
+  // `log_and_map` is higher-order in source, so inference derives `(f: [f])`.
+  // Its committed line carries no bounds, so it decides both halves: gap-filling
+  // the inferred ones would pair a first-order committed term with a variable
+  // nothing in that term mentions.
+  let output = lookup("nested_higher_order.log_and_map")
+  output
+  |> should.equal("effects nested_higher_order.log_and_map : [Stdout]")
+  string.contains(output, "f:") |> should.be_false
+}
+
 // Name grammar
 //
 // A spec function name has exactly one dot — module paths use slashes. Reading
