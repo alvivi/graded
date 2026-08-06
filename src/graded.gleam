@@ -1022,8 +1022,10 @@ fn answer_from(
 //
 // It only answers where the spec's word is final:
 //
-// - A `type` line: spec `type` fields are merged last of all, so they win
-//   outright.
+// - A `type` line declaring a field under its own module: spec `type` fields
+//   are merged last of all, so an exact key wins outright. A bare line's
+//   module-less key is a fallback, not a decision, and stays with the full
+//   context.
 // - A per-function `external effects <module>.<function>`: `with_externals`
 //   inserts over whatever came before, and every later layer keeps existing
 //   entries, so nothing can displace it.
@@ -1053,9 +1055,27 @@ fn spec_answer(
       )
       answer_from(knowledge_base, name)
     }
-    // Not a function name — only a type field can answer, and a spec `type`
-    // line outranks every other source, so the spec's word is already final.
-    Error(Nil) -> type_field_effect(knowledge_base, name)
+    // Not a function name — only a type field can answer. A spec `type` line is
+    // merged last of all, so an entry under the queried name's *own* module is
+    // final. The module-less key a bare line lands under is not: it is only the
+    // fallback `type_field_effect` reaches for when nothing declares the exact
+    // module, and a dependency's spec — which the fast path never reads — can
+    // declare it. So the spec decides this name only if it declares it
+    // qualified; a bare line is left to the full context, which weighs it
+    // against every dependency's `type` lines.
+    Error(Nil) -> {
+      use #(module, type_name, field) <- result.try(
+        annotation.split_type_field_name(name),
+      )
+      use module <- result.try(option.to_result(module, Nil))
+      use _declared <- result.try(effects.lookup_type_field(
+        knowledge_base,
+        module,
+        type_name,
+        field,
+      ))
+      type_field_effect(knowledge_base, name)
+    }
   }
 }
 
