@@ -591,7 +591,7 @@ fn checks_grouped_by_module(
   spec: GradedFile,
 ) -> Dict(String, List(EffectAnnotation)) {
   list.fold(annotation.extract_checks(spec), dict.new(), fn(acc, ann) {
-    case annotation.split_qualified_name(ann.function) {
+    case annotation.split_function_name(ann.function) {
       Error(_) -> acc
       Ok(#(module, function)) -> {
         let bare = EffectAnnotation(..ann, function:)
@@ -991,7 +991,7 @@ fn function_effect(
   knowledge_base: KnowledgeBase,
   name: String,
 ) -> Result(String, Nil) {
-  use #(module, function) <- result.try(annotation.split_qualified_name(name))
+  use #(module, function) <- result.try(annotation.split_function_name(name))
   let qualified = QualifiedName(module:, function:)
   case effects.lookup(knowledge_base, qualified) {
     effects.Unknown -> Error(Nil)
@@ -1031,27 +1031,41 @@ fn effects_line(
 }
 
 // Render `name` as a `type` line, or `Error(Nil)` when it isn't a declared type
-// field. The name splits twice: once into `module.Type` and the field, once
-// more into the module and the type name.
+// field. `name` is split by the same grammar that parses a `type` line, so both
+// declared forms can be queried back: `module.Type.field` and the bare
+// `Type.field` of a cache file.
+//
+// A bare line is keyed under no module, so a qualified query falls back to the
+// `""` key rather than reporting a field the spec plainly declares as missing.
+// Resolving a *call* still needs the module — a receiver's nominal type always
+// carries one, which is why `graded check` warns that a bare line is dead — but
+// the query answers what the spec says, and says it in the form that declared
+// it.
 fn type_field_effect(
   knowledge_base: KnowledgeBase,
   name: String,
 ) -> Result(String, Nil) {
-  use #(module_and_type, field) <- result.try(annotation.split_qualified_name(
-    name,
-  ))
-  use #(module, type_name) <- result.try(annotation.split_qualified_name(
-    module_and_type,
-  ))
+  use #(module, type_name, field) <- result.try(
+    annotation.split_type_field_name(name),
+  )
+  let declared_module = case module {
+    Some(module) ->
+      case effects.lookup_type_field(knowledge_base, module, type_name, field) {
+        Ok(_) -> Some(module)
+        Error(Nil) -> None
+      }
+    None -> None
+  }
+  let key = option.unwrap(declared_module, "")
   use type_field <- result.try(effects.lookup_type_field(
     knowledge_base,
-    module,
+    key,
     type_name,
     field,
   ))
   let line =
     annotation.format_type_field(types.TypeFieldAnnotation(
-      module: Some(module),
+      module: declared_module,
       type_name:,
       field:,
       effects: type_field.effects,
