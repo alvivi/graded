@@ -209,6 +209,27 @@ pub fn spec_fast_path_matches_the_full_project_context_test() {
   })
 }
 
+pub fn dependency_type_field_outranks_a_bare_project_line_test() {
+  // The project declares the field bare — keyed under no module, so a qualified
+  // query falls back to it — while an installed dependency declares the same
+  // field under its real module. Only the full knowledge base holds the
+  // dependency's line, and its exact key outranks the bare fallback, so the
+  // spec alone does not decide this name and the fast path must decline it.
+  let project =
+    write_fixture("/tmp/graded_effect_depfield", [
+      #("gleam.toml", "name = \"probe\"\nversion = \"1.0.0\"\n"),
+      #("probe.graded", "type Repo.find : [Disk]\n"),
+      #("build/packages/dep/dep.graded", "type dep.Repo.find : [Storage]\n"),
+      #("src/app.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+    ])
+  let expected = "type dep.Repo.find : [Storage]\n// declared by a type line"
+  graded.run_effect(project, "dep.Repo.find")
+  |> should.equal(Ok(expected))
+  graded.run_effect_from_project(project, "dep.Repo.find")
+  |> should.equal(Ok(expected))
+  cleanup(project)
+}
+
 // Argument decoding
 //
 // `main`'s branches print and exit, so the rules for `graded effect`'s
