@@ -10,6 +10,7 @@
 //// gleam run -m graded check [directory]         # enforce check annotations (default)
 //// gleam run -m graded infer [directory]         # infer and write effect annotations
 //// gleam run -m graded effect <name> [directory] # look up one effect, writing nothing
+//// gleam run -m graded effect <name> --format=graded  # ... as a .graded line
 //// gleam run -m graded format [directory]        # normalize .graded file formatting
 //// ```
 ////
@@ -140,8 +141,8 @@ pub fn main() -> Nil {
     ["effect", ..rest] ->
       case cli.parse_effect_args(rest) {
         Error(error) -> usage_error(cli.format_argument_error(error))
-        Ok(#(name, directory)) ->
-          case run_effect(directory, name) {
+        Ok(#(name, directory, format)) ->
+          case run_effect_formatted(directory, name, format) {
             Ok(output) -> io.println(output)
             Error(error) -> fail(error)
           }
@@ -209,6 +210,8 @@ Usage:
   graded [check] [directory]    Check effect annotations (default: src)
   graded infer [directory]      Infer effects; write the spec file and cache
   graded effect <name> [dir]    Look up a function or type-field effect (read-only)
+    --format=prose              Describe the answer in sentences (default)
+    --format=graded             Print it as a `.graded` line, provenance in a comment
   graded pack [directory]       Inject the spec into the hex tarball for release
   graded format [directory]     Format the spec file
   graded format --check [dir]   Verify formatting without writing (CI mode)
@@ -954,7 +957,8 @@ fn classify_in_module(
 // Effect queries
 //
 // The `effect` command: resolve one name against the project's knowledge base
-// and render it as spec syntax, writing nothing.
+// into a structured answer, writing nothing. The CLI prints it as prose; this
+// module's API renders it as spec syntax.
 
 /// Look up one name's effect in `directory`'s project and render it as a
 /// `.graded` line.
@@ -965,6 +969,10 @@ fn classify_in_module(
 /// function resolves without a prior `graded infer`; type fields resolve from
 /// declared `type` lines. Any provenance is appended as a `//` comment line, so
 /// the whole output parses as `.graded` syntax. Nothing is written to disk.
+///
+/// The CLI defaults to `--format=prose` for the person reading a terminal; this
+/// function keeps returning the parseable form, which is what a caller linking
+/// against the module wants. `run_effect_formatted` takes the format.
 ///
 /// Returns `EffectNotFound` when the name is neither a public function nor a
 /// declared type field.

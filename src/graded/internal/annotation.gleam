@@ -865,7 +865,7 @@ pub fn format_param_bound(param: ParamBound) -> String {
 // Atoms are sorted; since labels are upper-initial and variables lower-initial
 // (so labels sort first), a first-order term formats byte-identically to its
 // `EffectSet`.
-fn format_effect_term(term: EffectTerm) -> String {
+pub fn format_effect_term(term: EffectTerm) -> String {
   case effect_term.normalize(term) {
     TTop -> "[_]"
     normalized ->

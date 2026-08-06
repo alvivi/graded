@@ -385,31 +385,69 @@ and writes nothing — no spec file, no cache:
 
 ```sh
 $ gleam run -m graded effect myapp/router.handle
-effects myapp/router.handle : [Stdout]
+myapp/router.handle has effects [Stdout]
 
 $ gleam run -m graded effect myapp/repo.Repo.find
-type myapp/repo.Repo.find : [Storage]
-// declared by a type line
+field `find` on type `Repo` (myapp/repo) has effects [Storage]
+  source: declared by a `type` line
 ```
 
-`<name>` is a module-qualified function or a `module.Type.field` type field. The
-output is spec syntax, provenance included: a higher-order function prints its
-parameter bounds (`effects myapp.apply(f: [Stdout]) : [Stdout]`), and any note
-about how the answer was reached is a `//` comment line, so the whole output can
-be fed back through the parser.
+`<name>` is a module-qualified function or a `module.Type.field` type field.
+
+### Output formats
+
+The default, `--format=prose`, describes the answer in sentences. It states only
+what the answer proves. A term that is exactly a bound variable means the effects
+*are* the argument's:
+
+```sh
+$ gleam run -m graded effect myapp.forward
+myapp.forward does whatever its `f` argument does, and nothing of its own
+```
+
+A ground term beside a bound is a total and an assumption, not a cause — the
+function may do those effects itself — so the bound is stated separately:
+
+```sh
+$ gleam run -m graded effect myapp.apply
+myapp.apply has effects [Stdout]
+  calls to argument `f` are treated as having effects [Stdout]
+```
+
+And `[Unknown]` is a resolved answer, distinct from a name that isn't there:
+
+```sh
+$ gleam run -m graded effect myapp.opaque
+myapp.opaque was found, but its effects could not be determined: [Unknown]
+```
+
+`--format=graded` prints the same answer as a `.graded` line, with provenance on
+a `//` comment, so the whole output parses back — the format to pipe into a spec
+file or hand to a tool that already reads `.graded`:
+
+```sh
+$ gleam run -m graded effect myapp/repo.Repo.find --format=graded
+type myapp/repo.Repo.find : [Storage]
+// declared by a type line
+
+$ gleam run -m graded effect myapp.apply --format=graded
+effects myapp.apply(f: [Stdout]) : [Stdout]
+```
+
+Both formats render one structured answer, so they differ in wording but never
+in what they report. Any other `--format` value is a usage error.
 
 Functions resolve through the same order as `check`, including the in-memory
 inference pass, so a public function answers on a fresh checkout with no prior
 `graded infer`. Type fields resolve from declared `type` lines only. A private
 function, an undeclared field, or an unknown name exits non-zero with
 ``no public function or type field named `<name>` ``. A function graded knows
-about but can't resolve is a *hit*: it prints `[Unknown]`.
+about but can't resolve is a *hit*: it reports `[Unknown]`.
 
 One carve-out: a module-level `external effects <module> : [...]` answers for
 every name in that module that nothing else keys, so under such a module a name
 resolves — including one that doesn't exist. With `external effects fake_clock : [Time]`,
-`graded effect fake_clock.zzz_nope` prints `effects fake_clock.zzz_nope : [Time]`
-and exits zero. `effect` reports what the spec says about a name; it isn't a
+`graded effect fake_clock.zzz_nope` reports `[Time]` and exits zero. `effect` reports what the spec says about a name; it isn't a
 check that the name exists.
 
 ## Effect catalog
