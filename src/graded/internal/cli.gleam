@@ -1,6 +1,8 @@
 import gleam/bool
+import gleam/list
 import gleam/result
 import gleam/string
+import graded/internal/answer
 
 // Command-line argument decoding
 //
@@ -18,6 +20,8 @@ pub type ArgumentError {
   UnknownOption(argument: String)
   // A token past the last one the command accepts.
   UnexpectedArgument(argument: String)
+  // `--format=` given a value that names no output format.
+  UnknownFormat(value: String)
 }
 
 // Decode the optional directory argument shared by check/infer/format/pack
@@ -41,20 +45,42 @@ pub fn parse_directory_args(
   }
 }
 
-// Decode the arguments of `graded effect <name> [directory]`. The name is
-// required; the directory follows the same default and rejection rules as
-// `parse_directory_args`.
+// Decode the arguments of `graded effect <name> [directory] [--format=…]`. The
+// name is required; the directory follows the same default and rejection rules
+// as `parse_directory_args`. `--format` may sit anywhere after the command,
+// since it qualifies the output rather than naming one of the positions.
 pub fn parse_effect_args(
   rest: List(String),
-) -> Result(#(String, String), ArgumentError) {
-  case rest {
+) -> Result(#(String, String, answer.Format), ArgumentError) {
+  use #(format, positional) <- result.try(take_format(rest))
+  case positional {
     [] -> Error(MissingName)
     [name, ..directory_args] -> {
       use <- reject_option(name)
       use directory <- result.map(parse_directory_args(directory_args))
-      #(name, directory)
+      #(name, directory, format)
     }
   }
+}
+
+// Pull `--format=<value>` out of the argument list, leaving the positional
+// arguments in order. Prose is the default: the flagless invocation is the one
+// a person types.
+fn take_format(
+  arguments: List(String),
+) -> Result(#(answer.Format, List(String)), ArgumentError) {
+  list.fold(arguments, Ok(#(answer.Prose, [])), fn(acc, argument) {
+    use #(format, positional) <- result.try(acc)
+    case argument {
+      "--format=" <> value ->
+        case value {
+          "prose" -> Ok(#(answer.Prose, positional))
+          "graded" -> Ok(#(answer.Graded, positional))
+          _ -> Error(UnknownFormat(value))
+        }
+      _ -> Ok(#(format, list.append(positional, [argument])))
+    }
+  })
 }
 
 // The message a rejected argument list prints.
@@ -63,6 +89,8 @@ pub fn format_argument_error(error: ArgumentError) -> String {
     MissingName -> "missing name for `effect`"
     UnknownOption(argument:) -> "unknown option `" <> argument <> "`"
     UnexpectedArgument(argument:) -> "unexpected argument `" <> argument <> "`"
+    UnknownFormat(value:) ->
+      "unknown format `" <> value <> "` (expected `prose` or `graded`)"
   }
 }
 

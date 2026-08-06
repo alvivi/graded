@@ -5,6 +5,7 @@ import gleam/string
 import gleeunit/should
 import graded
 import graded/internal/annotation
+import graded/internal/answer
 import graded/internal/cli
 import graded/internal/config
 import simplifile
@@ -230,6 +231,85 @@ pub fn dependency_type_field_outranks_a_bare_project_line_test() {
   cleanup(project)
 }
 
+// Output formats
+//
+// Prose is what the CLI prints by default; `--format=graded` is the spec syntax
+// every other test in this module asserts. Both render one structured answer,
+// so they may differ in wording but never in what they report.
+
+fn prose(name: String) -> String {
+  let assert Ok(output) =
+    graded.run_effect_formatted(fixtures, name, answer.Prose)
+  output
+}
+
+pub fn prose_states_a_resolved_effect_test() {
+  prose("impure_view.view")
+  |> should.equal("impure_view.view has effects [Stdout]")
+}
+
+pub fn prose_attributes_a_forwarded_effect_test() {
+  // The committed term is exactly the bound variable, so the effects are the
+  // argument's — the one causal claim the annotation supports.
+  prose("nested_higher_order.pure_forward")
+  |> should.equal(
+    "nested_higher_order.pure_forward does whatever its `g` argument does, and nothing of its own",
+  )
+}
+
+pub fn prose_separates_a_found_name_from_an_undetermined_effect_test() {
+  // `[Unknown]` is a resolved answer. Spec syntax can't say that the name was
+  // found and only its effects weren't; prose can, and must.
+  prose("shadow_field.go")
+  |> should.equal(
+    "shadow_field.go was found, but its effects could not be determined: [Unknown]",
+  )
+}
+
+pub fn prose_states_module_external_precedence_test() {
+  prose("fake_clock.now")
+  |> should.equal(
+    "fake_clock.now has effects [Time]
+  source: module-level external for `fake_clock`
+          used when no per-function entry exists",
+  )
+}
+
+pub fn prose_names_a_type_field_as_a_field_test() {
+  prose("opaque_receiver.Validator.to_error")
+  |> should.equal(
+    "field `to_error` on type `Validator` (opaque_receiver) has effects [Stdout]
+  source: declared by a `type` line",
+  )
+}
+
+pub fn graded_format_still_round_trips_test() {
+  // The parseable contract now belongs to `--format=graded`, and holds for the
+  // provenance-carrying answers too.
+  let assert Ok(output) =
+    graded.run_effect_formatted(fixtures, "fake_clock.now", answer.Graded)
+  should_parse(output)
+  |> should.equal(
+    "effects fake_clock.now : [Time]\n// resolved via module-level external for fake_clock",
+  )
+}
+
+pub fn the_formats_agree_on_the_effect_set_test() {
+  // Every name the suite queries, in both formats: whatever the wording, the
+  // rendered effect set has to appear in each.
+  ["impure_view.view", "fake_clock.now", "external_same_module.read_clock"]
+  |> list.each(fn(name) {
+    let assert Ok(graded_output) =
+      graded.run_effect_formatted(fixtures, name, answer.Graded)
+    let assert Ok(prose_output) =
+      graded.run_effect_formatted(fixtures, name, answer.Prose)
+    let assert Ok(effect_set) = string.split_once(graded_output, " : ")
+    let assert Ok(#(rendered, _)) =
+      string.split_once(effect_set.1 <> "\n", "\n")
+    string.contains(prose_output, rendered) |> should.be_true
+  })
+}
+
 // Argument decoding
 //
 // `main`'s branches print and exit, so the rules for `graded effect`'s
@@ -244,12 +324,40 @@ pub fn parse_effect_args_requires_a_name_test() {
 
 pub fn parse_effect_args_defaults_the_directory_test() {
   cli.parse_effect_args(["a.b"])
-  |> should.equal(Ok(#("a.b", "src")))
+  |> should.equal(Ok(#("a.b", "src", answer.Prose)))
 }
 
 pub fn parse_effect_args_takes_a_directory_test() {
   cli.parse_effect_args(["a.b", "dir"])
-  |> should.equal(Ok(#("a.b", "dir")))
+  |> should.equal(Ok(#("a.b", "dir", answer.Prose)))
+}
+
+pub fn parse_effect_args_defaults_to_prose_test() {
+  // The flagless invocation is the one a person types, so it gets the format a
+  // person reads.
+  let assert Ok(#(_, _, format)) = cli.parse_effect_args(["a.b"])
+  format |> should.equal(answer.Prose)
+}
+
+pub fn parse_effect_args_takes_a_format_test() {
+  cli.parse_effect_args(["a.b", "--format=graded"])
+  |> should.equal(Ok(#("a.b", "src", answer.Graded)))
+  cli.parse_effect_args(["a.b", "dir", "--format=prose"])
+  |> should.equal(Ok(#("a.b", "dir", answer.Prose)))
+}
+
+pub fn parse_effect_args_takes_a_format_anywhere_test() {
+  // `--format` qualifies the output rather than filling a position, so it may
+  // precede the name without being read as one.
+  cli.parse_effect_args(["--format=graded", "a.b", "dir"])
+  |> should.equal(Ok(#("a.b", "dir", answer.Graded)))
+}
+
+pub fn parse_effect_args_rejects_an_unknown_format_test() {
+  cli.parse_effect_args(["a.b", "--format=json"])
+  |> should.equal(Error(cli.UnknownFormat("json")))
+  cli.format_argument_error(cli.UnknownFormat("json"))
+  |> should.equal("unknown format `json` (expected `prose` or `graded`)")
 }
 
 pub fn parse_effect_args_rejects_a_flag_name_test() {

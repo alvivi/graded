@@ -8,6 +8,7 @@
 
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import graded/internal/annotation
@@ -191,23 +192,41 @@ fn field_sentence(
 // How a term reads when it states a total rather than a source. `[]` and
 // `[Unknown]` are answers in their own right, not absences, and a set that is
 // only *partly* unknown must not read as though none of it resolved.
+//
+// Only a ground term is classified. A term still carrying a variable, an
+// application or an operator is stated as the `.graded` renderer states it —
+// collapsing it to a set here would report `[Unknown]` for a term that is
+// symbolic, not unresolved, and the two formats would then disagree about what
+// was found rather than about how to say it.
 fn total_effects(term: EffectTerm) -> String {
-  let effect_set = effect_term.to_effect_set(term)
-  let rendered = annotation.format_effect_set(effect_set)
-  case effect_set {
-    types.Specific(labels) -> specific_effects(labels, rendered)
-    // Still carrying variables or a wildcard: state it, narrate nothing.
-    types.Polymorphic(_, _) | types.Wildcard -> "has effects " <> rendered
+  case ground_labels(term) {
+    Ok(labels) -> ground_sentence(labels)
+    Error(Nil) -> "has effects " <> annotation.format_effect_term(term)
   }
 }
 
-fn specific_effects(labels: Set(String), rendered: String) -> String {
+fn ground_sentence(labels: Set(String)) -> String {
+  let rendered = annotation.format_effect_set(types.Specific(labels))
   case set.size(labels), set.contains(labels, types.unknown_label) {
     0, _ -> "has no effects ([])"
     1, True -> "was found, but its effects could not be determined: [Unknown]"
     _, True ->
       "has effects " <> rendered <> "; part of them could not be determined"
     _, False -> "has effects " <> rendered
+  }
+}
+
+// The labels of a term that is ground: plain labels, or a union of ground
+// terms. Anything else has no set to classify.
+fn ground_labels(term: EffectTerm) -> Result(Set(String), Nil) {
+  case effect_term.normalize(term) {
+    types.TLabels(labels) -> Ok(labels)
+    types.TUnion(members) ->
+      members
+      |> list.try_map(ground_labels)
+      |> result.map(list.fold(_, set.new(), set.union))
+    types.TTop | types.TVar(_) | types.TApp(_, _) | types.TAbs(_, _) ->
+      Error(Nil)
   }
 }
 
@@ -225,7 +244,25 @@ fn detail_lines(
     ]
     // A bound is an assumption applied to the argument at call sites, not a
     // claim about where this function's own effects came from.
-    FunctionEntry -> list.map(bounds, bound_line)
+    FunctionEntry ->
+      bounds
+      |> list.filter(constrains)
+      |> list.map(bound_line)
+  }
+}
+
+// Whether a bound says anything a reader doesn't already have. The identity
+// bound `f: [f]` — what inference writes for an unconstrained callback — states
+// that `f`'s effects are `f`'s effects, and the sentence above it already
+// attributes them. A bound with content is a real budget and is stated.
+fn constrains(bound: ParamBound) -> Bool {
+  case bound.effects {
+    types.TVar(name) -> name != bound.name
+    types.TLabels(_)
+    | types.TTop
+    | types.TApp(_, _)
+    | types.TAbs(_, _)
+    | types.TUnion(_) -> True
   }
 }
 
@@ -247,7 +284,7 @@ fn bound_line(bound: ParamBound) -> String {
       "  calls to argument `"
       <> bound.name
       <> "` are treated as having effects "
-      <> annotation.format_effect_set(effect_term.to_effect_set(bound.effects))
+      <> annotation.format_effect_term(bound.effects)
   }
 }
 
