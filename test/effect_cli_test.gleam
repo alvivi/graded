@@ -250,10 +250,11 @@ pub fn prose_states_a_resolved_effect_test() {
 
 pub fn prose_attributes_a_forwarded_effect_test() {
   // The committed term is exactly the bound variable, so the effects are the
-  // argument's — the one causal claim the annotation supports.
+  // argument's. The sentence attributes effects, not calls: the term doesn't
+  // prove `pure_forward` ever applies `g`.
   prose("nested_higher_order.pure_forward")
   |> should.equal(
-    "nested_higher_order.pure_forward does whatever its `g` argument does, and nothing of its own",
+    "nested_higher_order.pure_forward has the effects of its `g` argument, and none of its own",
   )
 }
 
