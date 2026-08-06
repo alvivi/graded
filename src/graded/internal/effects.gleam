@@ -34,8 +34,9 @@ import tom
 pub type EffectSource {
   // An entry keyed by the function itself, from any of the merged sources.
   FunctionEntry
-  // The function's module carries `external effects <module> : [...]`, which
-  // answers for every name in that module and carries no per-function bounds.
+  // The function's module carries `external effects <module> : [...]`. Reached
+  // only when nothing keys the function itself, so a per-function external or a
+  // catalog line for it takes precedence; it carries no per-function bounds.
   ModuleExternalEntry
 }
 
