@@ -405,9 +405,9 @@ function, an undeclared field, or an unknown name exits non-zero with
 ``no public function or type field named `<name>` ``. A function graded knows
 about but can't resolve is a *hit*: it prints `[Unknown]`.
 
-One carve-out: a module-level `external effects <module> : [...]` declares the
-effect of *every* name in that module, so under such a module any name resolves
-— including one that doesn't exist. With `external effects fake_clock : [Time]`,
+One carve-out: a module-level `external effects <module> : [...]` answers for
+every name in that module that nothing else keys, so under such a module a name
+resolves — including one that doesn't exist. With `external effects fake_clock : [Time]`,
 `graded effect fake_clock.zzz_nope` prints `effects fake_clock.zzz_nope : [Time]`
 and exits zero. `effect` reports what the spec says about a name; it isn't a
 check that the name exists.
