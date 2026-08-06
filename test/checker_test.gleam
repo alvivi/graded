@@ -4650,3 +4650,281 @@ pub fn run(b: Bool) -> Nil {
   infer_effect_set(source, "run")
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
+
+// Violation reporting
+//
+// Classifying a call site from its (possibly sentinel) name, and the prose the
+// CLI prints for a violation.
+
+// A violation of `run`'s `[]` budget, for asserting on the rendered message.
+fn violation(call: types.QualifiedName, actual: EffectSet) -> types.Violation {
+  types.Violation(
+    function: "run",
+    call:,
+    span: glance.Span(0, 0),
+    declared: Specific(set.new()),
+    actual:,
+  )
+}
+
+fn pure_check(function: String) -> EffectAnnotation {
+  EffectAnnotation(
+    Check,
+    function,
+    [],
+    effect_term.from_effect_set(Specific(set.new())),
+  )
+}
+
+fn formatted_violations(
+  source: String,
+  annotations: List(EffectAnnotation),
+) -> List(String) {
+  check_source(source, annotations)
+  |> list.map(checker.format_violation("src/app.gleam", _))
+}
+
+pub fn call_kind_qualified_call_is_direct_test() {
+  checker.call_kind(QualifiedName("gleam/io", "println"))
+  |> should.equal(checker.DirectCall("gleam/io", "println"))
+}
+
+pub fn call_kind_param_sentinel_test() {
+  checker.call_kind(QualifiedName("<param>", "f"))
+  |> should.equal(checker.ParameterCall("f"))
+}
+
+pub fn call_kind_field_sentinel_test() {
+  checker.call_kind(QualifiedName("<field>", "config.resolver"))
+  |> should.equal(checker.FieldAccessCall("config", "resolver"))
+}
+
+pub fn call_kind_field_sentinel_keeps_nested_receiver_test() {
+  checker.call_kind(QualifiedName("<field>", "config.inner.run"))
+  |> should.equal(checker.FieldAccessCall("config.inner", "run"))
+}
+
+pub fn call_kind_field_sentinel_without_dot_is_unclassified_test() {
+  checker.call_kind(QualifiedName("<field>", "run"))
+  |> should.equal(checker.UnclassifiedCall)
+}
+
+pub fn call_kind_field_sentinel_without_receiver_is_unclassified_test() {
+  checker.call_kind(QualifiedName("<field>", ".run"))
+  |> should.equal(checker.UnclassifiedCall)
+}
+
+pub fn call_kind_field_sentinel_without_label_is_unclassified_test() {
+  checker.call_kind(QualifiedName("<field>", "config."))
+  |> should.equal(checker.UnclassifiedCall)
+}
+
+pub fn call_kind_returned_sentinel_test() {
+  checker.call_kind(QualifiedName("<returned>", "pick"))
+  |> should.equal(checker.ReturnedOperatorCall("pick"))
+}
+
+pub fn call_kind_pipe_sentinel_test() {
+  checker.call_kind(QualifiedName("<pipe>", "<operator>"))
+  |> should.equal(checker.PipeTargetCall)
+}
+
+pub fn call_kind_apply_sentinel_test() {
+  checker.call_kind(QualifiedName("<apply>", "<unknown>"))
+  |> should.equal(checker.ComputedValueCall)
+}
+
+pub fn call_kind_closure_sentinel_test() {
+  checker.call_kind(QualifiedName("<closure>", "<applied>"))
+  |> should.equal(checker.AppliedClosureCall)
+}
+
+pub fn call_kind_local_sentinel_test() {
+  checker.call_kind(QualifiedName("<local>", "helper"))
+  |> should.equal(checker.UndefinedLocalCall("helper"))
+}
+
+pub fn call_kind_unrecognised_sentinel_is_unclassified_test() {
+  checker.call_kind(QualifiedName("<bogus>", "whatever"))
+  |> should.equal(checker.UnclassifiedCall)
+}
+
+// A resolved qualified call keeps the format the README documents.
+pub fn format_violation_direct_call_test() {
+  violation(
+    QualifiedName("gleam/io", "println"),
+    Specific(set.from_list(["Stdout"])),
+  )
+  |> checker.format_violation("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: run calls gleam/io.println with effects [Stdout] but declared []",
+  )
+}
+
+pub fn format_violation_direct_call_with_unknown_test() {
+  violation(
+    QualifiedName("somedep/api", "fetch"),
+    Specific(set.from_list(["Unknown"])),
+  )
+  |> checker.format_violation("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: run calls somedep/api.fetch with unresolved effects [Unknown] but declared []",
+  )
+}
+
+pub fn format_violation_field_call_with_unknown_test() {
+  violation(
+    QualifiedName("<field>", "config.resolver"),
+    Specific(set.from_list(["Unknown"])),
+  )
+  |> checker.format_violation("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: run calls field `resolver` on `config` with unresolved effects [Unknown] but declared []",
+  )
+}
+
+// A field call can resolve cleanly and still exceed its budget: the effects are
+// over the budget, not unresolved.
+pub fn format_violation_field_call_resolved_test() {
+  violation(
+    QualifiedName("<field>", "config.resolver"),
+    Specific(set.from_list(["Stdout"])),
+  )
+  |> checker.format_violation("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: run calls field `resolver` on `config` with effects [Stdout] but declared []",
+  )
+}
+
+pub fn format_violation_partially_resolved_effects_test() {
+  violation(
+    QualifiedName("<apply>", "<unknown>"),
+    Specific(set.from_list(["Stdout", "Unknown"])),
+  )
+  |> checker.format_violation("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: run calls a computed function value with unresolved effects [Stdout, Unknown] but declared []",
+  )
+}
+
+// A polymorphic actual carries no `Unknown` label, so the clause stays "with
+// effects" and the pre-existing variables hint is what explains it.
+pub fn format_violation_polymorphic_keeps_variables_hint_test() {
+  violation(
+    QualifiedName("<param>", "f"),
+    Polymorphic(set.new(), set.from_list(["e"])),
+  )
+  |> checker.format_violation("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: run calls parameter `f` with effects [e] but declared []"
+    <> "\n  hint: actual effects contain unresolved variables; add a `check "
+    <> "run(<param>: [...])` bound, or pass a function reference / constructor"
+    <> " whose effects are known",
+  )
+}
+
+pub fn format_violation_local_call_test() {
+  violation(
+    QualifiedName("<local>", "helper"),
+    Specific(set.from_list(["Unknown"])),
+  )
+  |> checker.format_violation("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: run calls `helper`, which is not defined in this module, with unresolved effects [Unknown] but declared []",
+  )
+}
+
+pub fn format_violation_returned_operator_test() {
+  violation(
+    QualifiedName("<returned>", "pick"),
+    Specific(set.from_list(["Unknown"])),
+  )
+  |> checker.format_violation("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: run calls a function returned by `pick` with unresolved effects [Unknown] but declared []",
+  )
+}
+
+pub fn format_violation_pipe_target_test() {
+  violation(
+    QualifiedName("<pipe>", "<operator>"),
+    Specific(set.from_list(["Stdout"])),
+  )
+  |> checker.format_violation("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: run pipes into an inline function with effects [Stdout] but declared []",
+  )
+}
+
+pub fn format_violation_applied_closure_test() {
+  violation(
+    QualifiedName("<closure>", "<applied>"),
+    Specific(set.from_list(["Stdout"])),
+  )
+  |> checker.format_violation("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: run calls a let-bound closure with effects [Stdout] but declared []",
+  )
+}
+
+// An unrecognised sentinel is described generically rather than printed. The
+// assertion targets the call identity, not `<` anywhere: the variables hint
+// carries a literal `(<param>: [...])` placeholder.
+pub fn format_violation_unrecognised_sentinel_does_not_leak_test() {
+  let message =
+    violation(
+      QualifiedName("<bogus>", "whatever"),
+      Specific(set.from_list(["Unknown"])),
+    )
+    |> checker.format_violation("src/app.gleam", _)
+  message
+  |> should.equal(
+    "src/app.gleam: run calls an unclassified call site with unresolved effects [Unknown] but declared []",
+  )
+  string.contains(message, "calls <") |> should.be_false()
+  string.contains(message, "<bogus>") |> should.be_false()
+}
+
+// Sentinels decoded end-to-end
+//
+// Unit tests build `Violation`s by hand; these run the checker over source so
+// the real mint sites are what gets decoded.
+
+pub fn format_violation_decodes_field_call_source_test() {
+  let source =
+    "pub fn run(config) -> Nil {
+  config.resolver(\"x\")
+}"
+  let assert [message] = formatted_violations(source, [pure_check("run")])
+  string.contains(message, "calls field `resolver` on `config`")
+  |> should.be_true()
+  string.contains(message, "<field>.") |> should.be_false()
+  string.contains(message, "calls <") |> should.be_false()
+}
+
+pub fn format_violation_decodes_returned_operator_source_test() {
+  let source =
+    "import gleam/io
+fn pick() -> fn(String) -> Nil { io.println }
+pub fn run() -> Nil {
+  let h = pick()
+  h(\"x\")
+}"
+  let assert [message] = formatted_violations(source, [pure_check("run")])
+  string.contains(message, "calls a function returned by `pick`")
+  |> should.be_true()
+  string.contains(message, "<returned>.") |> should.be_false()
+  string.contains(message, "calls <") |> should.be_false()
+}
+
+pub fn format_violation_decodes_computed_application_source_test() {
+  let source =
+    "pub fn run(funcs: #(fn(String) -> Nil)) -> Nil {
+  funcs.0(\"x\")
+}"
+  let assert [message] = formatted_violations(source, [pure_check("run")])
+  string.contains(message, "calls a computed function value")
+  |> should.be_true()
+  string.contains(message, "<apply>.") |> should.be_false()
+  string.contains(message, "calls <") |> should.be_false()
+}

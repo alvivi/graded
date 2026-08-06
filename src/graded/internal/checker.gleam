@@ -11,6 +11,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
+import graded/internal/annotation
 import graded/internal/effect_term
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract.{type ImportContext}
@@ -19,9 +20,10 @@ import graded/internal/topo
 import graded/internal/typeinfo
 import graded/internal/types.{
   type EffectAnnotation, type EffectTerm, type LocalCall, type ParamBound,
-  type ResolvedCall, type Violation, type Warning, EffectAnnotation, Effects,
-  ParamBound, QualifiedName, TUnion, TVar, UnmatchedFieldBoundWarning,
-  UnmatchedParamBoundWarning, UntrackedEffectWarning, Violation,
+  type QualifiedName, type ResolvedCall, type Violation, type Warning,
+  EffectAnnotation, Effects, ParamBound, QualifiedName, TUnion, TVar,
+  UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning, UntrackedEffectWarning,
+  Violation,
 }
 
 // Entry points
@@ -416,6 +418,126 @@ fn local_function_field_effect(
   }
 }
 
+// Violation reporting
+//
+// The prose rendering of a `Violation`. Synthetic call sites are minted here
+// with a sentinel module (see `sentinel_call`), so decoding one back into a
+// description of the call belongs here too.
+
+// What a violating call site is. `DirectCall` is an ordinary qualified call;
+// every other variant is one of the synthetic forms `sentinel_call` mints.
+pub type CallKind {
+  // A qualified call to a module function.
+  DirectCall(module: String, function: String)
+  // A call to a fn-typed parameter of the enclosing function.
+  ParameterCall(parameter: String)
+  // A field call `receiver.label(args)`. `receiver` may itself be a dotted path.
+  FieldAccessCall(receiver: String, label: String)
+  // An unqualified call to a name the enclosing module does not define.
+  UndefinedLocalCall(function: String)
+  // A direct application of a let-bound function that `producer` returned.
+  ReturnedOperatorCall(producer: String)
+  // An inline function or `case` used as a pipe target.
+  PipeTargetCall
+  // A direct application of a let-bound closure.
+  AppliedClosureCall
+  // An application of an opaque computed function value.
+  ComputedValueCall
+  // A synthetic call site this classifier doesn't recognise, or a recognised one
+  // whose payload is malformed. Rendered generically, so a sentinel is never
+  // shown as the call's identity.
+  UnclassifiedCall
+}
+
+// Classify a call site by its (possibly sentinel) qualified name. A module
+// starting with `<` that matches no sentinel is `UnclassifiedCall`; only a
+// module that cannot be a sentinel is a `DirectCall`.
+pub fn call_kind(call: QualifiedName) -> CallKind {
+  case call.module {
+    "<param>" -> payload_kind(call.function, ParameterCall)
+    "<field>" -> field_access_kind(call.function)
+    "<returned>" -> payload_kind(call.function, ReturnedOperatorCall)
+    "<pipe>" -> PipeTargetCall
+    "<apply>" -> ComputedValueCall
+    "<closure>" -> AppliedClosureCall
+    "<local>" -> payload_kind(call.function, UndefinedLocalCall)
+    module -> {
+      use <- bool.guard(
+        when: string.starts_with(module, "<"),
+        return: UnclassifiedCall,
+      )
+      DirectCall(module:, function: call.function)
+    }
+  }
+}
+
+// Render a violation as the line `graded check` reports.
+pub fn format_violation(file: String, violation: Violation) -> String {
+  file
+  <> ": "
+  <> violation.function
+  <> " "
+  <> call_clause(violation)
+  <> " but declared "
+  <> effects.format_effect_set(violation.declared)
+  <> variables_hint(violation)
+}
+
+// What the function did and the effects it picked up doing it. The effects are
+// `unresolved` exactly when the set carries the `Unknown` label — a call that
+// resolves cleanly and still blows its budget is not an unresolved one.
+fn call_clause(violation: Violation) -> String {
+  let action = case call_kind(violation.call) {
+    DirectCall(module:, function:) -> "calls " <> module <> "." <> function
+    ParameterCall(parameter:) -> "calls parameter `" <> parameter <> "`"
+    FieldAccessCall(receiver:, label:) ->
+      "calls field `" <> label <> "` on `" <> receiver <> "`"
+    UndefinedLocalCall(function:) ->
+      "calls `" <> function <> "`, which is not defined in this module,"
+    ReturnedOperatorCall(producer:) ->
+      "calls a function returned by `" <> producer <> "`"
+    PipeTargetCall -> "pipes into an inline function"
+    AppliedClosureCall -> "calls a let-bound closure"
+    ComputedValueCall -> "calls a computed function value"
+    UnclassifiedCall -> "calls an unclassified call site"
+  }
+  let effects_word = case types.contains_unknown(violation.actual) {
+    True -> " with unresolved effects "
+    False -> " with effects "
+  }
+  action <> effects_word <> effects.format_effect_set(violation.actual)
+}
+
+// When the actual set still contains effect variables, the substitution
+// couldn't bind them (e.g. caller's own param has no declared bound).
+// Hint at the fix instead of letting the user puzzle over `[e_xxx]`.
+fn variables_hint(violation: Violation) -> String {
+  use <- bool.guard(when: !types.has_variables(violation.actual), return: "")
+  "\n  hint: actual effects contain unresolved variables; add a `check "
+  <> violation.function
+  <> "(<param>: [...])` bound, or pass a function reference / constructor"
+  <> " whose effects are known"
+}
+
+// A sentinel kind that carries a name, or the generic kind when the name is
+// missing.
+fn payload_kind(payload: String, build: fn(String) -> CallKind) -> CallKind {
+  case payload {
+    "" -> UnclassifiedCall
+    name -> build(name)
+  }
+}
+
+// Split a `<field>` payload into receiver and label at its *last* dot, so a
+// nested receiver stays whole (`config.inner.run` -> `config.inner` / `run`).
+// A payload missing either half is the generic kind rather than a crash.
+fn field_access_kind(payload: String) -> CallKind {
+  case annotation.split_qualified_name(payload) {
+    Ok(#(receiver, label)) -> FieldAccessCall(receiver:, label:)
+    Error(Nil) -> UnclassifiedCall
+  }
+}
+
 // Shared analysis helpers
 //
 // Small utilities shared across every resolution path: call-argument lookup,
@@ -433,8 +555,8 @@ fn call_args_for(
 
 // A synthetic resolved call carrying an inferred effect that isn't an ordinary
 // catalog lookup. `module` is a sentinel (`<param>`, `<field>`, `<returned>`,
-// `<pipe>`, `<apply>`, `<local>`) marking how the effect was derived, surfaced
-// in diagnostics.
+// `<pipe>`, `<apply>`, `<closure>`, `<local>`) marking how the effect was
+// derived; `call_kind` decodes it back for diagnostics.
 fn sentinel_call(module: String, function: String, span: Span) -> ResolvedCall {
   types.ResolvedCall(name: QualifiedName(module:, function:), span:)
 }

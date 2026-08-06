@@ -62,7 +62,8 @@ pub fn recursive_returned_operator_resolves_pure_test() {
   // that branch as neutral, not [Unknown]: the producer is already on the
   // returned-operator analysis stack, so it contributes no effect — matching
   // `X = [] union X`, whose least solution is `[]`. Before the fix `run` failed
-  // the `check run : []` budget with `<returned>.pick : [Unknown]`.
+  // the `check run : []` budget with an unresolved effect from the function
+  // returned by `pick`.
   //
   // Covers both the first-order producer (`pick`/`run`, returning `fn() -> Nil`)
   // and the second-order one (`pick_cb`/`run_cb`, returning a callback-taking
@@ -580,7 +581,8 @@ pub fn nested_field_resolves_via_type_line_test() {
   // receiver `o.inner` is itself a field access, not a bare variable. girard
   // types the `o.inner` span as `Inner`, so the `type nested_field.Inner.run :
   // [Disk]` line resolves it, and the [] budget fails with the precise [Disk].
-  // Before nested extraction this collapsed to <apply>.<unknown> ([Unknown]).
+  // Before nested extraction this collapsed to a computed application
+  // ([Unknown]).
   let assert Ok(results) = graded.run("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/nested_field.gleam" })

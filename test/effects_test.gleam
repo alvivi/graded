@@ -243,8 +243,8 @@ pub fn subset_union_compatibility_test() {
 
 // Polymorphic effect sets
 //
-// Effect sets carrying variables: variable detection and how union merges
-// labels and variables across operands.
+// Effect sets carrying variables: variable detection, `Unknown`-label
+// detection, and how union merges labels and variables across operands.
 
 pub fn has_variables_specific_is_false_test() {
   types.has_variables(types.from_labels(["Stdout"])) |> should.be_false()
@@ -257,6 +257,30 @@ pub fn has_variables_wildcard_is_false_test() {
 pub fn has_variables_polymorphic_is_true_test() {
   let set: EffectSet = Polymorphic(set.new(), set.from_list(["e"]))
   types.has_variables(set) |> should.be_true()
+}
+
+pub fn contains_unknown_specific_with_label_is_true_test() {
+  types.contains_unknown(types.from_labels(["Stdout", "Unknown"]))
+  |> should.be_true()
+}
+
+pub fn contains_unknown_specific_without_label_is_false_test() {
+  types.contains_unknown(types.from_labels(["Stdout"])) |> should.be_false()
+}
+
+pub fn contains_unknown_polymorphic_with_label_is_true_test() {
+  let set: EffectSet =
+    Polymorphic(set.from_list(["Unknown"]), set.from_list(["e"]))
+  types.contains_unknown(set) |> should.be_true()
+}
+
+pub fn contains_unknown_polymorphic_without_label_is_false_test() {
+  let set: EffectSet = Polymorphic(set.new(), set.from_list(["e"]))
+  types.contains_unknown(set) |> should.be_false()
+}
+
+pub fn contains_unknown_wildcard_is_false_test() {
+  types.contains_unknown(Wildcard) |> should.be_false()
 }
 
 pub fn union_polymorphic_merges_both_test() {
