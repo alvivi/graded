@@ -101,18 +101,16 @@ pub fn an_operator_bound_is_quoted_not_collapsed_test() {
 
 // Totals
 
-pub fn an_empty_set_is_an_answer_test() {
+pub fn an_empty_set_is_purity_test() {
   function([], labels([]))
   |> prose
-  |> should.equal("app.run has no effects ([])")
+  |> should.equal("app.run is pure — no effects ([])")
 }
 
 pub fn a_wholly_unknown_term_reads_as_undetermined_test() {
   function([], labels(["Unknown"]))
   |> prose
-  |> should.equal(
-    "app.run was found, but its effects could not be determined: [Unknown]",
-  )
+  |> should.equal("app.run has effects that could not be determined: [Unknown]")
 }
 
 pub fn a_partly_unknown_term_keeps_what_resolved_test() {

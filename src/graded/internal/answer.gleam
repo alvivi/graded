@@ -178,9 +178,10 @@ fn field_sentence(
   <> total_effects(term)
 }
 
-// How a term reads when it states a total rather than a source. `[]` and
-// `[Unknown]` are answers in their own right, not absences, and a set that is
-// only *partly* unknown must not read as though none of it resolved.
+// How a term reads when it states a total rather than a source. `[]` is purity
+// and `[Unknown]` is an effect graded could not determine — both answers in
+// their own right, not absences — and a set that is only *partly* unknown must
+// not read as though none of it resolved.
 //
 // Only a ground term is classified. A term still carrying a variable, an
 // application or an operator is stated as the `.graded` renderer states it —
@@ -198,8 +199,8 @@ fn total_effects(term: EffectTerm) -> String {
 fn ground_sentence(labels: Set(String)) -> String {
   let rendered = annotation.format_effect_set(types.Specific(labels))
   case set.size(labels), set.contains(labels, types.unknown_label) {
-    0, _ -> "has no effects ([])"
-    1, True -> "was found, but its effects could not be determined: [Unknown]"
+    0, _ -> "is pure — no effects ([])"
+    1, True -> "has effects that could not be determined: [Unknown]"
     _, True ->
       "has effects " <> rendered <> "; part of them could not be determined"
     _, False -> "has effects " <> rendered

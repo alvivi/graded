@@ -258,12 +258,12 @@ pub fn prose_attributes_a_forwarded_effect_test() {
   )
 }
 
-pub fn prose_separates_a_found_name_from_an_undetermined_effect_test() {
-  // `[Unknown]` is a resolved answer. Spec syntax can't say that the name was
-  // found and only its effects weren't; prose can, and must.
+pub fn prose_states_an_undetermined_effect_test() {
+  // `[Unknown]` is a resolved answer, and prose says which part of it graded
+  // couldn't settle. A name that isn't there is the error path, not this.
   prose("shadow_field.go")
   |> should.equal(
-    "shadow_field.go was found, but its effects could not be determined: [Unknown]",
+    "shadow_field.go has effects that could not be determined: [Unknown]",
   )
 }
 
