@@ -971,16 +971,120 @@ pub fn run_effect(
   directory: String,
   name: String,
 ) -> Result(String, GradedError) {
-  use ctx <- result.try(load_project_context(directory))
-  // The function interpretation is tried first: a module path never contains a
-  // `.`, so a type-field name splits to a module that can't exist and falls
-  // through, while a plain function name resolves before it can be misread as
-  // `type.field`.
-  case function_effect(ctx.knowledge_base, name) {
+  let directory = scope_to_source_directory(directory)
+  use cfg <- result.try(read_config(directory))
+  let spec = read_spec(cfg.spec_file)
+  case spec_answer(directory, spec, name) {
     Ok(output) -> Ok(output)
-    Error(Nil) ->
-      type_field_effect(ctx.knowledge_base, name)
-      |> result.replace_error(EffectNotFound(name))
+    Error(Nil) -> run_effect_from_project(directory, name)
+  }
+}
+
+/// Look up `name` the long way: assemble the whole project context — every
+/// module parsed, dependency sources scanned, girard run package-wide — and
+/// answer from its knowledge base, skipping the spec-only fast path
+/// `run_effect` tries first.
+///
+/// Exposed (pub) primarily so a test can assert the two paths agree. A
+/// fast-path answer is only correct if it is what the full context would have
+/// said, byte for byte; nothing else about the two is allowed to differ.
+pub fn run_effect_from_project(
+  directory: String,
+  name: String,
+) -> Result(String, GradedError) {
+  use ctx <- result.try(load_project_context(directory))
+  answer_from(ctx.knowledge_base, name)
+  |> result.replace_error(EffectNotFound(name))
+}
+
+// Render `name` against one knowledge base. The function interpretation is
+// tried first: a module path never contains a `.`, so a type-field name splits
+// to a module that can't exist and falls through, while a plain function name
+// resolves before it can be misread as `type.field`.
+fn answer_from(
+  knowledge_base: KnowledgeBase,
+  name: String,
+) -> Result(String, Nil) {
+  case function_effect(knowledge_base, name) {
+    Ok(output) -> Ok(output)
+    Error(Nil) -> type_field_effect(knowledge_base, name)
+  }
+}
+
+// Answer from the spec file alone, skipping the project context entirely.
+//
+// Building a context glance-parses every module, scans dependency sources and
+// runs girard package-wide — all of it wasted when the spec already decides the
+// name. The answer is rendered by the same two renderers the full path uses,
+// against a knowledge base folded in the same order `load_project_context`
+// folds its spec-derived layers, so a hit here is byte-identical to what the
+// full context would have produced.
+//
+// It only answers where the spec's word is final:
+//
+// - A `type` line: spec `type` fields are merged last of all, so they win
+//   outright.
+// - A per-function `external effects <module>.<function>`: `with_externals`
+//   inserts over whatever came before, and every later layer keeps existing
+//   entries, so nothing can displace it.
+// - Any name in one of this package's own modules: dependency, catalog and
+//   path-dependency entries are keyed by *their* module paths, which Gleam
+//   forbids from colliding with this package's, so no other source can key it
+//   and the in-memory inference pass keeps existing entries.
+//
+// Anything else — a name needing the in-memory pass, or a dependency function —
+// misses here and falls through.
+fn spec_answer(
+  directory: String,
+  spec: GradedFile,
+  name: String,
+) -> Result(String, Nil) {
+  let knowledge_base = spec_knowledge_base(spec)
+  case annotation.split_function_name(name) {
+    // A name the function grammar accepts. The full path resolves it as a
+    // function *before* it considers a type field, so the fast path may not
+    // answer at all — from either renderer — until it knows no other source can
+    // key that function.
+    Ok(#(module, _function)) -> {
+      use <- bool.guard(
+        when: !set.contains(annotation.external_function_names(spec), name)
+          && !set.contains(project_module_paths(directory), module),
+        return: Error(Nil),
+      )
+      answer_from(knowledge_base, name)
+    }
+    // Not a function name — only a type field can answer, and a spec `type`
+    // line outranks every other source, so the spec's word is already final.
+    Error(Nil) -> type_field_effect(knowledge_base, name)
+  }
+}
+
+// The spec-derived layers of `load_project_context`'s knowledge base, folded in
+// the same order and by the same functions, over nothing else.
+fn spec_knowledge_base(spec: GradedFile) -> KnowledgeBase {
+  let declared_modules = annotation.module_external_modules(spec)
+  effects.new_knowledge_base()
+  |> effects.with_externals(annotation.extract_externals(spec))
+  |> effects.with_inferred(drop_declared_modules(
+    effects.load_spec_effects_from_file(spec),
+    declared_modules,
+  ))
+  |> effects.with_inferred_params(drop_declared_modules(
+    effects.load_spec_params_from_file(spec),
+    declared_modules,
+  ))
+  |> effects.with_type_fields(annotation.extract_type_fields(spec))
+}
+
+// The module paths of this package's own source files. Listing the file names
+// costs a directory walk and no parsing, so it stays on the fast path.
+fn project_module_paths(directory: String) -> Set(String) {
+  case find_gleam_files(directory) {
+    Error(_) -> set.new()
+    Ok(paths) ->
+      paths
+      |> list.map(config.module_path_for_source(_, directory))
+      |> set.from_list()
   }
 }
 
