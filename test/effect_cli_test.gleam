@@ -185,6 +185,30 @@ pub fn bare_type_line_answers_both_query_forms_test() {
   cleanup(project)
 }
 
+// The spec-only fast path
+//
+// A name the spec decides is answered without parsing the package. That is only
+// sound if it gives the same answer the full project context would.
+
+pub fn spec_fast_path_matches_the_full_project_context_test() {
+  // One name per kind the fast path claims, plus two it must decline: a name
+  // needing the in-memory pass, and one the spec never mentions.
+  [
+    "impure_view.view",
+    "nested_higher_order.pure_forward",
+    "nested_higher_order.log_and_map",
+    "external_same_module.now",
+    "fake_clock.now",
+    "opaque_receiver.Validator.to_error",
+    "external_same_module.read_clock",
+    "no_such.thing",
+  ]
+  |> list.each(fn(name) {
+    graded.run_effect(fixtures, name)
+    |> should.equal(graded.run_effect_from_project(fixtures, name))
+  })
+}
+
 // Argument decoding
 //
 // `main`'s branches print and exit, so the rules for `graded effect`'s

@@ -122,6 +122,22 @@ pub fn load_knowledge_base(
   |> with_type_fields(list.append(cat_type_fields, dep_type_fields))
 }
 
+// A knowledge base holding nothing at all — no dependencies, no catalog. The
+// base for a caller that wants only what it folds in itself, such as the
+// spec-only lookup `run_effect` answers from before building a project context.
+pub fn new_knowledge_base() -> KnowledgeBase {
+  KnowledgeBase(
+    all_effects: dict.new(),
+    param_bounds: dict.new(),
+    type_fields: dict.new(),
+    returned_operators: dict.new(),
+    factories: dict.new(),
+    updates: dict.new(),
+    module_effects: dict.new(),
+    provenance: dict.new(),
+  )
+}
+
 // Build a knowledge base from the catalog only (no dependency scanning).
 pub fn empty_knowledge_base() -> KnowledgeBase {
   let catalog_dir = find_catalog_directory()
