@@ -49,11 +49,10 @@ pub fn unknown_function_test() {
 
 pub fn lookup_known_variant_test() {
   effects.lookup(knowledge_base(), QualifiedName("gleam/io", "debug"))
-  |> should.equal(
-    effects.Known(
-      effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
-    ),
-  )
+  |> should.equal(effects.Known(
+    effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+    effects.FunctionEntry,
+  ))
 }
 
 pub fn lookup_unknown_variant_test() {

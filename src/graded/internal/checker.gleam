@@ -1247,7 +1247,7 @@ fn collect_reference_warnings(
 ) -> List(Warning) {
   list.filter_map(references, fn(ref) {
     case effects.lookup(knowledge_base, ref.name) {
-      effects.Known(term) -> {
+      effects.Known(term, _) -> {
         let effect_set = effect_term.to_effect_set(term)
         case effect_set == types.empty() {
           True -> Error(Nil)
@@ -4157,7 +4157,7 @@ fn value_field_effect(
     // to a ground effect. Everything else stays on the knowledge-base answer.
     Some(name) ->
       case effects.lookup(knowledge_base, name) {
-        effects.Known(effect) -> #(
+        effects.Known(effect, _) -> #(
           known_field_effect(effect, knowledge_base, name),
           memo,
         )

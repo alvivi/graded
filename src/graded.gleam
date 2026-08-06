@@ -997,22 +997,20 @@ fn function_effect(
     effects.Unknown -> Error(Nil)
     // A module-level external answers for every function in its module and
     // carries no per-function bounds, so its answer is rendered without them
-    // and labelled.
-    effects.Known(term) ->
-      case effects.is_module_level_external(knowledge_base, qualified) {
-        True ->
-          Ok(
-            effects_line(name, [], term)
-            <> "\n// resolved via module-level external for "
-            <> module,
-          )
-        False ->
-          Ok(effects_line(
-            name,
-            effects.lookup_param_bounds(knowledge_base, qualified),
-            term,
-          ))
-      }
+    // and labelled. Which map answered is reported by the lookup itself, so the
+    // label can't disagree with the term beside it.
+    effects.Known(term, effects.ModuleExternalEntry) ->
+      Ok(
+        effects_line(name, [], term)
+        <> "\n// resolved via module-level external for "
+        <> module,
+      )
+    effects.Known(term, effects.FunctionEntry) ->
+      Ok(effects_line(
+        name,
+        effects.lookup_param_bounds(knowledge_base, qualified),
+        term,
+      ))
   }
 }
 

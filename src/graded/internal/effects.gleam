@@ -28,8 +28,19 @@ import tom
 // catalog, externals, inferred data), with the lookup and merge operations
 // the checker and inference passes use against it.
 
+// Which of `lookup`'s two maps answered. Reported by `lookup` itself so a
+// caller that renders provenance can't drift out of step with the branch order
+// that actually produced the term.
+pub type EffectSource {
+  // An entry keyed by the function itself, from any of the merged sources.
+  FunctionEntry
+  // The function's module carries `external effects <module> : [...]`, which
+  // answers for every name in that module and carries no per-function bounds.
+  ModuleExternalEntry
+}
+
 pub type EffectLookup {
-  Known(EffectTerm)
+  Known(term: EffectTerm, source: EffectSource)
   Unknown
 }
 
@@ -214,25 +225,13 @@ pub fn lookup(
   name: QualifiedName,
 ) -> EffectLookup {
   case dict.get(knowledge_base.all_effects, name) {
-    Ok(effect_set) -> Known(effect_set)
+    Ok(effect_set) -> Known(effect_set, FunctionEntry)
     Error(Nil) ->
       case dict.get(knowledge_base.module_effects, name.module) {
-        Ok(effect_set) -> Known(effect_set)
+        Ok(effect_set) -> Known(effect_set, ModuleExternalEntry)
         Error(Nil) -> Unknown
       }
   }
-}
-
-// Whether `name`'s effect comes from its module's `external effects <module>`
-// declaration rather than from an entry for the function itself. `lookup`
-// consults `module_effects` only when `all_effects` misses, so this is what
-// separates a whole-module answer from a per-function one.
-pub fn is_module_level_external(
-  knowledge_base: KnowledgeBase,
-  name: QualifiedName,
-) -> Bool {
-  !dict.has_key(knowledge_base.all_effects, name)
-  && dict.has_key(knowledge_base.module_effects, name.module)
 }
 
 // Look up effects as an `EffectTerm`, returning `[Unknown]` for unrecognized
@@ -243,7 +242,7 @@ pub fn lookup_effects(
   name: QualifiedName,
 ) -> EffectTerm {
   case lookup(knowledge_base, name) {
-    Known(effect_term) -> effect_term
+    Known(effect_term, _) -> effect_term
     Unknown -> effect_term.unknown()
   }
 }
