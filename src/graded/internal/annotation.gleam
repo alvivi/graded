@@ -853,7 +853,7 @@ fn collect_comments(lines: List(GradedLine)) -> List(String) {
 // Format a parameter bound. A first-order bound renders as `name: [effects]`;
 // a second-order *operator* bound (a curried `TAbs`) renders as
 // `name: fn(a, b) -> [body]`.
-fn format_param_bound(param: ParamBound) -> String {
+pub fn format_param_bound(param: ParamBound) -> String {
   case param.effects {
     TAbs(_, _) -> param.name <> ": " <> render_abstraction(param.effects)
     other -> param.name <> ": " <> format_effect_term(other)
