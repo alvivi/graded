@@ -28,7 +28,7 @@ pub type EffectAnswer {
     module: String,
     bounds: List(ParamBound),
     term: EffectTerm,
-    source: AnswerSource,
+    source: types.EffectSource,
   )
   // A field of a custom type, declared by a `type` line. `module` is `None` for
   // a bare declaration, which is keyed under no module.
@@ -39,16 +39,6 @@ pub type EffectAnswer {
     term: EffectTerm,
     origin: types.TypeFieldOrigin,
   )
-}
-
-// Which knowledge-base entry answered a function lookup. Mirrors
-// `effects.EffectSource`, which reports it from the lookup itself.
-pub type AnswerSource {
-  // An entry keyed by the function itself.
-  FunctionEntry
-  // The function's module carries `external effects <module>`, reached only
-  // when nothing keys the function itself.
-  ModuleExternalEntry
 }
 
 // Rendering
@@ -78,11 +68,11 @@ pub fn render_graded(answer: EffectAnswer) -> String {
   case answer {
     // A module-level external carries no per-function bounds, so its line is
     // rendered without them and labelled.
-    FunctionAnswer(name:, module:, term:, source: ModuleExternalEntry, ..) ->
+    FunctionAnswer(name:, module:, term:, source: types.ModuleExternalEntry, ..) ->
       effects_line(name, [], term)
       <> "\n// resolved via module-level external for "
       <> module
-    FunctionAnswer(name:, bounds:, term:, source: FunctionEntry, ..) ->
+    FunctionAnswer(name:, bounds:, term:, source: types.FunctionEntry, ..) ->
       effects_line(name, bounds, term)
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
       annotation.format_type_field(TypeFieldAnnotation(
@@ -151,19 +141,17 @@ fn function_sentence(
   term: EffectTerm,
 ) -> String {
   case forwarding(bounds, term) {
-    // The term is exactly one bound variable: every effect is the argument's.
-    Forwards(argument, []) ->
+    ForwardsOnly(argument) ->
       name
       <> " does whatever its `"
       <> argument
       <> "` argument does, and nothing of its own"
-    // That variable unioned with labels the function contributes itself.
-    Forwards(argument, own) ->
+    ForwardsPlus(argument, own) ->
       name
       <> " does whatever its `"
       <> argument
       <> "` argument does, plus "
-      <> bracket(own)
+      <> annotation.format_effect_set(types.Specific(own))
       <> " of its own"
     Total -> name <> " " <> total_effects(term)
   }
@@ -199,9 +187,10 @@ fn field_sentence(
 // symbolic, not unresolved, and the two formats would then disagree about what
 // was found rather than about how to say it.
 fn total_effects(term: EffectTerm) -> String {
-  case ground_labels(term) {
+  let normalized = effect_term.normalize(term)
+  case ground_labels(normalized) {
     Ok(labels) -> ground_sentence(labels)
-    Error(Nil) -> "has effects " <> annotation.format_effect_term(term)
+    Error(Nil) -> "has effects " <> annotation.format_effect_term(normalized)
   }
 }
 
@@ -216,10 +205,10 @@ fn ground_sentence(labels: Set(String)) -> String {
   }
 }
 
-// The labels of a term that is ground: plain labels, or a union of ground
-// terms. Anything else has no set to classify.
+// The labels of an already-normalized term that is ground: plain labels, or a
+// union of ground terms. Anything else has no set to classify.
 fn ground_labels(term: EffectTerm) -> Result(Set(String), Nil) {
-  case effect_term.normalize(term) {
+  case term {
     types.TLabels(labels) -> Ok(labels)
     types.TUnion(members) ->
       members
@@ -235,16 +224,16 @@ fn ground_labels(term: EffectTerm) -> Result(Set(String), Nil) {
 fn detail_lines(
   bounds: List(ParamBound),
   module: String,
-  source: AnswerSource,
+  source: types.EffectSource,
 ) -> List(String) {
   case source {
-    ModuleExternalEntry -> [
+    types.ModuleExternalEntry -> [
       "  source: module-level external for `" <> module <> "`",
       "          used when no per-function entry exists",
     ]
     // A bound is an assumption applied to the argument at call sites, not a
     // claim about where this function's own effects came from.
-    FunctionEntry ->
+    types.FunctionEntry ->
       bounds
       |> list.filter(constrains)
       |> list.map(bound_line)
@@ -301,9 +290,10 @@ fn prose_origin(origin: types.TypeFieldOrigin) -> String {
 // causality prose is allowed to make.
 
 type Forwarding {
-  // The term is a bound variable, optionally unioned with ground labels the
-  // function contributes itself.
-  Forwards(argument: String, own: List(String))
+  // The term is exactly a bound variable: every effect is that argument's.
+  ForwardsOnly(argument: String)
+  // That variable unioned with ground labels the function contributes itself.
+  ForwardsPlus(argument: String, own: Set(String))
   // Anything else: the term states a total, not where it came from.
   Total
 }
@@ -313,7 +303,7 @@ fn forwarding(bounds: List(ParamBound), term: EffectTerm) -> Forwarding {
   case term {
     types.TVar(name) ->
       case list.contains(bound_names, name) {
-        True -> Forwards(name, [])
+        True -> ForwardsOnly(name)
         False -> Total
       }
     types.TUnion(members) -> union_forwarding(bound_names, members)
@@ -322,56 +312,61 @@ fn forwarding(bounds: List(ParamBound), term: EffectTerm) -> Forwarding {
 }
 
 // A union forwards when exactly one member is a bound variable and every other
-// member is ground labels. Two variables, or a nested application, is a shape
-// prose doesn't characterize.
+// member is ground labels. Two variables, or a member of any other shape, is
+// something prose doesn't characterize.
 fn union_forwarding(
   bound_names: List(String),
   members: List(EffectTerm),
 ) -> Forwarding {
-  let variables =
-    list.filter_map(members, fn(member) {
+  let classified = list.map(members, classify_member(bound_names, _))
+  let arguments =
+    list.filter_map(classified, fn(member) {
       case member {
-        types.TVar(name) ->
-          case list.contains(bound_names, name) {
-            True -> Ok(name)
-            False -> Error(Nil)
-          }
-        types.TLabels(_)
-        | types.TTop
-        | types.TApp(_, _)
-        | types.TAbs(_, _)
-        | types.TUnion(_) -> Error(Nil)
+        BoundVariable(name) -> Ok(name)
+        GroundLabels(_) | Uncharacterized -> Error(Nil)
       }
     })
-  let label_members =
-    list.filter_map(members, fn(member) {
-      case member {
-        types.TLabels(labels) -> Ok(labels)
-        types.TVar(_)
-        | types.TTop
-        | types.TApp(_, _)
-        | types.TAbs(_, _)
-        | types.TUnion(_) -> Error(Nil)
+  case arguments, list.contains(classified, Uncharacterized) {
+    [argument], False ->
+      case set.is_empty(union_labels(classified)) {
+        True -> ForwardsOnly(argument)
+        False -> ForwardsPlus(argument, union_labels(classified))
       }
-    })
-  let all_members_accounted_for =
-    list.length(variables) + list.length(label_members) == list.length(members)
-  case variables, all_members_accounted_for {
-    [argument], True -> Forwards(argument, sorted_labels(label_members))
     // A member prose can't characterize means the union states a total: those
     // effects are not the argument's.
-    [_argument], False -> Total
+    [_argument], True -> Total
     [], _ | [_, _, ..], _ -> Total
   }
 }
 
-fn sorted_labels(label_members: List(Set(String))) -> List(String) {
-  label_members
-  |> list.fold(set.new(), set.union)
-  |> set.to_list
-  |> list.sort(string.compare)
+// One member of a union, as prose sees it.
+type UnionMember {
+  BoundVariable(name: String)
+  GroundLabels(labels: Set(String))
+  Uncharacterized
 }
 
-fn bracket(labels: List(String)) -> String {
-  "[" <> string.join(labels, ", ") <> "]"
+fn classify_member(
+  bound_names: List(String),
+  member: EffectTerm,
+) -> UnionMember {
+  case member {
+    types.TVar(name) ->
+      case list.contains(bound_names, name) {
+        True -> BoundVariable(name)
+        False -> Uncharacterized
+      }
+    types.TLabels(labels) -> GroundLabels(labels)
+    types.TTop | types.TApp(_, _) | types.TAbs(_, _) | types.TUnion(_) ->
+      Uncharacterized
+  }
+}
+
+fn union_labels(classified: List(UnionMember)) -> Set(String) {
+  list.fold(classified, set.new(), fn(acc, member) {
+    case member {
+      GroundLabels(labels) -> set.union(acc, labels)
+      BoundVariable(_) | Uncharacterized -> acc
+    }
+  })
 }

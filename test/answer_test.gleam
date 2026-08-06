@@ -2,7 +2,10 @@ import gleam/option.{None, Some}
 import gleam/set
 import gleeunit/should
 import graded/internal/answer
-import graded/internal/types.{Declared, ParamBound, TAbs, TLabels, TUnion, TVar}
+import graded/internal/types.{
+  Declared, FunctionEntry, ModuleExternalEntry, ParamBound, TAbs, TLabels,
+  TUnion, TVar,
+}
 
 // Rendering one lookup
 //
@@ -23,7 +26,7 @@ fn function(
     module: "app",
     bounds:,
     term:,
-    source: answer.FunctionEntry,
+    source: FunctionEntry,
   )
 }
 
@@ -130,7 +133,7 @@ pub fn a_module_level_external_states_its_precedence_test() {
     module: "fake_clock",
     bounds: [],
     term: labels(["Time"]),
-    source: answer.ModuleExternalEntry,
+    source: ModuleExternalEntry,
   )
   |> prose
   |> should.equal(

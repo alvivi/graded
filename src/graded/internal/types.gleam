@@ -227,6 +227,18 @@ pub type TypeFieldOrigin {
   Inferred
 }
 
+// Which of the knowledge base's two maps answered a function lookup. Reported
+// by the lookup itself, so a caller that renders provenance can't drift out of
+// step with the branch order that produced the term.
+pub type EffectSource {
+  // An entry keyed by the function itself, from any of the merged sources.
+  FunctionEntry
+  // The function's module carries `external effects <module> : [...]`. Reached
+  // only when nothing keys the function itself, so a per-function external or a
+  // catalog line for it takes precedence; it carries no per-function bounds.
+  ModuleExternalEntry
+}
+
 // A type field's resolved effect in the knowledge base. `effects` is the field
 // call's effect set. When the field was inferred from a constructor site that
 // wired an effect-polymorphic function, `bounds` and `source` carry that

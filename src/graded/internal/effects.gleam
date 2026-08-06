@@ -28,20 +28,8 @@ import tom
 // catalog, externals, inferred data), with the lookup and merge operations
 // the checker and inference passes use against it.
 
-// Which of `lookup`'s two maps answered. Reported by `lookup` itself so a
-// caller that renders provenance can't drift out of step with the branch order
-// that actually produced the term.
-pub type EffectSource {
-  // An entry keyed by the function itself, from any of the merged sources.
-  FunctionEntry
-  // The function's module carries `external effects <module> : [...]`. Reached
-  // only when nothing keys the function itself, so a per-function external or a
-  // catalog line for it takes precedence; it carries no per-function bounds.
-  ModuleExternalEntry
-}
-
 pub type EffectLookup {
-  Known(term: EffectTerm, source: EffectSource)
+  Known(term: EffectTerm, source: types.EffectSource)
   Unknown
 }
 
@@ -242,10 +230,10 @@ pub fn lookup(
   name: QualifiedName,
 ) -> EffectLookup {
   case dict.get(knowledge_base.all_effects, name) {
-    Ok(effect_set) -> Known(effect_set, FunctionEntry)
+    Ok(effect_set) -> Known(effect_set, types.FunctionEntry)
     Error(Nil) ->
       case dict.get(knowledge_base.module_effects, name.module) {
-        Ok(effect_set) -> Known(effect_set, ModuleExternalEntry)
+        Ok(effect_set) -> Known(effect_set, types.ModuleExternalEntry)
         Error(Nil) -> Unknown
       }
   }
