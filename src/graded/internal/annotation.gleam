@@ -175,43 +175,14 @@ fn parse_params_suffix(
   }
 }
 
-// Parse a type field annotation. Two forms are accepted:
-//
-//   `TypeName.field_name : [effects]`               (bare — implicit module)
-//   `module/path.TypeName.field_name : [effects]`   (qualified — spec file)
-//
-// The bare form is used in per-module cache files where the type's module is
-// implied by the file's location. The qualified form is used in spec files
-// where annotations from many modules share one file. The dot is the
-// boundary between module path and `TypeName.field`; module path itself uses
-// slashes (matching the `external effects` convention).
+// Parse a type field annotation, in either the bare
+// (`TypeName.field : [effects]`) or the qualified
+// (`module/path.TypeName.field : [effects]`) form. `split_type_field_name`
+// holds the grammar.
 fn parse_type_field_line(rest: String) -> Result(TypeFieldAnnotation, Nil) {
   use #(qualified, effects) <- result.try(parse_name_colon_effects(rest))
-  case string.split(qualified, ".") {
-    [type_name, field] if type_name != "" && field != "" ->
-      Ok(TypeFieldAnnotation(module: None, type_name:, field:, effects:))
-    segments -> {
-      // 3+ segments → qualified form. Last two are TypeName and field; the
-      // rest joined back with `.` is the module path.
-      let count = list.length(segments)
-      use <- bool.guard(count < 3, Error(Nil))
-      let module_segments = list.take(segments, count - 2)
-      let trailing = list.drop(segments, count - 2)
-      case trailing {
-        [type_name, field] if type_name != "" && field != "" -> {
-          let module = string.join(module_segments, ".")
-          use <- bool.guard(module == "", Error(Nil))
-          Ok(TypeFieldAnnotation(
-            module: Some(module),
-            type_name:,
-            field:,
-            effects:,
-          ))
-        }
-        _ -> Error(Nil)
-      }
-    }
-  }
+  use #(module, type_name, field) <- result.try(split_type_field_name(qualified))
+  Ok(TypeFieldAnnotation(module:, type_name:, field:, effects:))
 }
 
 // No "." → module-level external (e.g., `external effects gleam/list : []`)
@@ -510,6 +481,63 @@ pub fn split_qualified_name(
       case module == "" || function == "" {
         True -> Error(Nil)
         False -> Ok(#(module, function))
+      }
+    }
+  }
+}
+
+// Split a spec-file *function* name into its module path and function name.
+// Stricter than `split_qualified_name`: the module path uses slashes, so a
+// qualified function name has exactly one `.`. A name with more is a type field
+// (`module.Type.field`) or malformed, and is rejected here rather than being
+// keyed under a dotted module that would shadow the `type` line declaring it.
+//
+// `split_qualified_name` stays the lenient last-dot split for the payloads that
+// legitimately carry dotted left-hand sides (nested field receivers such as
+// `config.inner.run`).
+pub fn split_function_name(
+  qualified: String,
+) -> Result(#(String, String), Nil) {
+  case string.split(qualified, ".") {
+    [module, function] if module != "" && function != "" ->
+      Ok(#(module, function))
+    _ -> Error(Nil)
+  }
+}
+
+// Split a type-field name into its optional module path, type name, and field.
+// Two forms are accepted, matching the `type` line grammar:
+//
+//   `TypeName.field`             -> #(None, TypeName, field)
+//   `module/path.TypeName.field` -> #(Some(module/path), TypeName, field)
+//
+// The bare form is used in per-module cache files where the type's module is
+// implied by the file's location; the qualified form is used in spec files where
+// annotations from many modules share one file.
+//
+// The last two segments are always the type name and the field. A real module
+// path uses slashes, so the qualified form is three segments in practice, but
+// any leading segments are joined back with `.` rather than rejected — a `type`
+// line that fails to parse fails the *whole* file, which `read_spec` then
+// silently reads as an empty spec, losing every hand-written line.
+//
+// The single authority on this grammar: `parse_type_field_line` reads a `type`
+// line with it, and the `effect` query splits a queried name with it, so the
+// two can't drift into disagreeing about what names a `type` line covers.
+pub fn split_type_field_name(
+  qualified: String,
+) -> Result(#(option.Option(String), String, String), Nil) {
+  case string.split(qualified, ".") {
+    [type_name, field] if type_name != "" && field != "" ->
+      Ok(#(None, type_name, field))
+    segments -> {
+      let count = list.length(segments)
+      use <- bool.guard(count < 3, Error(Nil))
+      let module = segments |> list.take(count - 2) |> string.join(".")
+      case list.drop(segments, count - 2) {
+        [type_name, field] if module != "" && type_name != "" && field != "" ->
+          Ok(#(Some(module), type_name, field))
+        _ -> Error(Nil)
       }
     }
   }

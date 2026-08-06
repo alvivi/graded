@@ -8,6 +8,7 @@ import graded/internal/annotation
 import graded/internal/cli
 import graded/internal/config
 import simplifile
+import support.{cleanup, write_fixture}
 
 // The `effect` query command
 //
@@ -125,6 +126,52 @@ pub fn external_suppresses_stale_committed_bounds_test() {
   // external is authoritative, so neither the stale term nor its bounds show.
   let output = lookup("external_same_module.now")
   string.contains(output, "cb") |> should.be_false
+}
+
+// Name grammar
+//
+// A spec function name has exactly one dot — module paths use slashes. Reading
+// one any looser lets a malformed line claim a name that belongs to another
+// annotation kind. Both cases below are malformed or dead spec states, so they
+// get their own throwaway project rather than a line in the shared fixture.
+
+// A project holding just a spec file. No `gleam.toml`, so the spec path comes
+// from the directory's own name, exactly as `test/fixtures` resolves its own.
+fn spec_only_project(name: String, spec: String) -> String {
+  let package = "graded_effect_" <> name
+  write_fixture("/tmp/" <> package, [
+    #(package <> ".graded", spec),
+    #("box.gleam", "pub type Box {\n  Box(run: fn() -> Nil)\n}\n"),
+  ])
+}
+
+pub fn dotted_module_effects_line_does_not_shadow_a_type_line_test() {
+  // A malformed 3-segment `effects` line beside the real `type` line for the
+  // same field. Split on the last dot it would key itself under the module
+  // `box.Box` and answer first; the function grammar rejects it instead, so the
+  // `type` line still answers.
+  let project =
+    spec_only_project(
+      "shadow",
+      "type box.Box.run : [Stdout]\neffects box.Box.run : [Disk]\n",
+    )
+  let assert Ok(output) = graded.run_effect(project, "box.Box.run")
+  should_parse(output)
+  |> should.equal("type box.Box.run : [Stdout]\n// declared by a type line")
+  cleanup(project)
+}
+
+pub fn bare_type_line_answers_both_query_forms_test() {
+  // A bare `type Box.run` line is keyed under no module. Both the bare query
+  // and a module-qualified one find it, and the answer is rendered in the bare
+  // form that declared it — the form that parses back to the same line.
+  let project = spec_only_project("bare", "type Box.run : [Disk]\n")
+  let bare = "type Box.run : [Disk]\n// declared by a type line"
+  let assert Ok(qualified_query) = graded.run_effect(project, "box.Box.run")
+  let assert Ok(bare_query) = graded.run_effect(project, "Box.run")
+  should_parse(qualified_query) |> should.equal(bare)
+  should_parse(bare_query) |> should.equal(bare)
+  cleanup(project)
 }
 
 // Argument decoding

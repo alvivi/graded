@@ -547,7 +547,7 @@ pub fn load_spec_params_from_file(
       when: set.contains(external_functions, ann.function),
       return: acc,
     )
-    case annotation.split_qualified_name(ann.function) {
+    case annotation.split_function_name(ann.function) {
       Ok(#(module, function)) ->
         dict.insert(acc, QualifiedName(module:, function:), ann.params)
       Error(_) -> acc
@@ -600,7 +600,7 @@ fn fold_spec_effects(
   list.fold(annotations, dict.new(), fn(acc, ann) {
     case ann.kind {
       Effects ->
-        case annotation.split_qualified_name(ann.function) {
+        case annotation.split_function_name(ann.function) {
           Ok(#(module, function)) ->
             dict.insert(acc, QualifiedName(module:, function:), ann.effects)
           Error(_) -> acc
@@ -636,7 +636,7 @@ fn fold_spec_returns(
   returns: List(types.ReturnsAnnotation),
 ) -> Dict(QualifiedName, EffectTerm) {
   list.fold(returns, dict.new(), fn(acc, returns) {
-    case annotation.split_qualified_name(returns.function) {
+    case annotation.split_function_name(returns.function) {
       Ok(#(module, function)) ->
         dict.insert(acc, QualifiedName(module:, function:), returns.operator)
       Error(_) -> acc
