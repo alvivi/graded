@@ -106,9 +106,17 @@ order and takes the first hit:
 3. **Dependency spec files** — shipped by libraries at
    `build/packages/<dep>/<dep_spec_file>` (each dep's spec path comes from its own
    `[tools.graded]` config). A dependency's own spec outranks the bundled catalog.
+   Its `external effects` lines count: a per-function one resolves here, and a
+   module-level one joins the module-external fallback tier — consulted only for
+   names nothing else keys, so it sits below every per-function entry, the
+   catalog's included.
 4. **Path dependencies** — local deps declared with `path = "..."` in `gleam.toml`.
-   graded reads their spec files; if a path dep ships none, it falls back to
-   inferring from that dep's source.
+   graded reads their spec files, `external effects` lines and all; if a path dep
+   ships none, it falls back to inferring from that dep's source. The two branches
+   rank differently against the catalog: a *committed* path-dep spec outranks a
+   catalog entry for the same function, while a spec-less path dep's
+   source-inferred effects sit **below** one — inference yields `[Unknown]` for
+   the FFI bodies a catalog entry describes precisely.
 5. **Bundled catalog** — the versioned catalog files shipped with graded (see
    [Effect catalog](#effect-catalog)).
 6. **Conservative default** — anything still unresolved gets `[Unknown]`.
@@ -319,6 +327,13 @@ external effects gleam/otp/actor.start : [Process]
 
 These are merged into the knowledge base before both `infer` and `check`, so
 callers resolve them instead of getting `[Unknown]`.
+
+A library's `external effects` lines are part of what its spec ships: a consumer
+of a published or path dependency reads them the same way it reads that
+dependency's `effects` lines, so declaring your FFI once resolves it for everyone
+downstream. Within one spec the `external effects` line is authoritative — it
+decides the function's effect (and its bounds) over any `effects` line for the
+same name, which is why `graded infer` writes none.
 
 A name with no `.` is a **module-level** external: it declares the whole module's
 effect at once, so every function in it resolves to that set without a per-function

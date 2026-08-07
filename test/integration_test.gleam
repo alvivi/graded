@@ -1,6 +1,7 @@
 import glance
 import gleam/dict
 import gleam/list
+import gleam/option.{Some}
 import gleam/result
 import gleam/set
 import gleam/string
@@ -1977,6 +1978,29 @@ fn run_path_dep_fixture(
   spec: String,
   app_src: String,
 ) -> types.CheckResult {
+  run_path_dep_project(name, dep_files, option.None, spec, app_src)
+}
+
+// The same fixture with the dependency shipping a committed `dep.graded` of its
+// own — the branch a consumer takes when the dep author already ran `graded
+// infer`, rather than the source-inference fallback.
+fn run_path_dep_spec_fixture(
+  name: String,
+  dep_files: List(#(String, String)),
+  dep_spec: String,
+  spec: String,
+  app_src: String,
+) -> types.CheckResult {
+  run_path_dep_project(name, dep_files, option.Some(dep_spec), spec, app_src)
+}
+
+fn run_path_dep_project(
+  name: String,
+  dep_files: List(#(String, String)),
+  dep_spec: option.Option(String),
+  spec: String,
+  app_src: String,
+) -> types.CheckResult {
   let app_root = "build/" <> name <> "_app"
   let dep_root = "build/" <> name <> "_dep"
   let _ = simplifile.delete(app_root)
@@ -1990,6 +2014,10 @@ fn run_path_dep_fixture(
     let assert Ok(Nil) = simplifile.write(dep_root <> "/src/" <> path, content)
     Nil
   })
+  let assert Ok(Nil) = case dep_spec {
+    option.Some(content) -> simplifile.write(dep_root <> "/dep.graded", content)
+    option.None -> Ok(Nil)
+  }
 
   let assert Ok(Nil) = simplifile.create_directory_all(app_root)
   let assert Ok(Nil) =
@@ -2047,6 +2075,60 @@ pub fn path_dep_module_level_external_preserves_effect_test() {
     )
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
   v.actual |> should.equal(types.Specific(set.from_list(["Database"])))
+}
+
+pub fn path_dep_shipped_function_external_resolves_test() {
+  // The dep's own `external effects` line for its FFI, read from the spec it
+  // ships. Before those lines were consumed, `ffi.now` resolved to [Unknown] for
+  // every consumer even though the dep author had declared it.
+  let r =
+    run_path_dep_spec_fixture(
+      "pd_shipped_fn_ext",
+      [#("ffi.gleam", "@external(erlang, \"d\", \"n\")\npub fn now() -> Nil\n")],
+      "external effects ffi.now : [Time]\n",
+      "check app.caller : []\n",
+      "import ffi\n\npub fn caller() -> Nil {\n  ffi.now()\n}\n",
+    )
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Time"])))
+  v.origin |> should.equal(Some(types.PathDependency("dep")))
+}
+
+pub fn path_dep_shipped_module_external_resolves_test() {
+  // A module-level line in the shipped spec governs every function in that
+  // module for the consumer, and names the dep it came from.
+  let r =
+    run_path_dep_spec_fixture(
+      "pd_shipped_mod_ext",
+      [#("ffi.gleam", "@external(erlang, \"d\", \"n\")\npub fn now() -> Nil\n")],
+      "external effects ffi : [Time]\n",
+      "check app.caller : []\n",
+      "import ffi\n\npub fn caller() -> Nil {\n  ffi.now()\n}\n",
+    )
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Time"])))
+  v.origin
+  |> should.equal(
+    Some(types.ModuleExternalOrigin(source: types.PathDependency("dep"))),
+  )
+}
+
+pub fn consumer_module_external_beats_a_shipped_one_test() {
+  // Both sides declare the same module. The consumer's own line is applied
+  // before path deps are folded in, and the dep's spec overrides only what the
+  // catalog wrote — so the consumer keeps the last word on the module.
+  let r =
+    run_path_dep_spec_fixture(
+      "pd_shipped_mod_ext_shadowed",
+      [#("ffi.gleam", "@external(erlang, \"d\", \"n\")\npub fn now() -> Nil\n")],
+      "external effects ffi : [Time]\n",
+      "external effects ffi : [Mocked]\n\ncheck app.caller : []\n",
+      "import ffi\n\npub fn caller() -> Nil {\n  ffi.now()\n}\n",
+    )
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.actual |> should.equal(types.Specific(set.from_list(["Mocked"])))
+  v.origin
+  |> should.equal(Some(types.ModuleExternalOrigin(source: types.UserExternal)))
 }
 
 pub fn path_dep_module_external_propagates_through_wrapper_test() {

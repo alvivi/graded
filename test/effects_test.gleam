@@ -13,7 +13,8 @@ import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/types.{
   type EffectSet, type ParamBound, type QualifiedName, ConstructorRef,
-  FunctionRef, OtherExpression, Polymorphic, QualifiedName, Specific, Wildcard,
+  FunctionRef, OtherExpression, ParamBound, Polymorphic, QualifiedName, Specific,
+  Wildcard,
 }
 import qcheck
 import simplifile
@@ -712,6 +713,331 @@ pub fn a_catalog_effects_line_beats_another_packages_external_test() {
 
   let _ = simplifile.delete(root)
   Nil
+}
+
+// Dependency-declared externals
+//
+// A dependency's own `external effects` lines are part of what it ships: the
+// function-level ones key `all_effects`, the module-level ones the fallback
+// tier. These pin where those lines land against every other source, and that a
+// term the external decides brings its (empty) bounds with it.
+
+// Build a package's spec on disk and read it back through `load_dep_spec`, so a
+// test states what the dependency ships as spec text rather than as records.
+fn dep_spec(root: String, package: String, source: String) -> effects.DepSpec {
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/" <> package <> ".graded", source)
+  let spec = effects.load_dep_spec(root, package)
+  let _ = simplifile.delete(root)
+  spec
+}
+
+// Install a package's spec under a `build/packages`-shaped tree and load the
+// knowledge base from it, with no catalog in reach.
+fn installed_dep(
+  root: String,
+  package: String,
+  source: String,
+) -> effects.KnowledgeBase {
+  let packages = root <> "/packages"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(packages <> "/" <> package)
+  let assert Ok(Nil) =
+    simplifile.write(
+      packages <> "/" <> package <> "/" <> package <> ".graded",
+      source,
+    )
+  let kb =
+    effects.load_knowledge_base(packages, root <> "/missing_manifest.toml")
+  let _ = simplifile.delete(root)
+  kb
+}
+
+pub fn a_dependency_function_external_resolves_test() {
+  // The line the dep author wrote for its FFI. Before it was read, every
+  // consumer resolved `dep/ffi.now` to [Unknown].
+  installed_dep(
+    "build/eff_dep_fn_external",
+    "dep",
+    "external effects dep/ffi.now : [Time]\n",
+  )
+  |> entry_of(QualifiedName("dep/ffi", "now"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Time"])), types.DependencySpec("dep"))),
+  )
+}
+
+pub fn a_dependency_module_external_resolves_test() {
+  // A dep's module-level external governs every function in that module, and is
+  // reported as the module entry naming the shipped spec it sits in.
+  installed_dep(
+    "build/eff_dep_module_external",
+    "dep",
+    "external effects dep/internal : [Db]\n",
+  )
+  |> effects.lookup(QualifiedName("dep/internal", "anything"))
+  |> should.equal(effects.Known(
+    effect_term.from_effect_set(Specific(set.from_list(["Db"]))),
+    types.ModuleExternalEntry(
+      origin: types.ModuleExternalOrigin(source: types.DependencySpec("dep")),
+    ),
+  ))
+}
+
+pub fn a_dependency_external_beats_its_own_effects_line_test() {
+  // A well-formed spec never carries both — `graded infer` writes no `effects`
+  // line for an externally-declared function — so the clash means a stale line
+  // and the external is the one the author opted into. The bounds must follow
+  // the same decision: the spec reader empties the bounds of an
+  // externally-declared function, and pairing those with the `effects` line's
+  // polymorphic term would leave `cb` free with nothing left to bind it.
+  let kb =
+    installed_dep(
+      "build/eff_dep_external_clash",
+      "dep",
+      "effects dep.run(cb: [cb]) : [cb]\nexternal effects dep.run : [Time]\n",
+    )
+  entry_of(kb, QualifiedName("dep", "run"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Time"])), types.DependencySpec("dep"))),
+  )
+  effects.lookup_param_bounds(kb, QualifiedName("dep", "run"))
+  |> should.equal([])
+}
+
+pub fn a_user_external_beats_a_dependency_external_test() {
+  // The composition `load_project_context` performs: the knowledge base is built
+  // from the deps, then the consumer's own externals are applied over it.
+  installed_dep(
+    "build/eff_dep_vs_user_external",
+    "dep",
+    "external effects dep/ffi.now : [Time]\n",
+  )
+  |> effects.with_externals(
+    [external("dep/ffi", "now", ["Mocked"])],
+    types.UserExternal,
+  )
+  |> entry_of(QualifiedName("dep/ffi", "now"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Mocked"])), types.UserExternal)),
+  )
+}
+
+pub fn a_dependency_external_beats_the_catalog_test() {
+  // A shipped external is the package author's own word on its FFI, so it
+  // outranks graded's bundled description of the same function.
+  let root = "build/eff_dep_external_vs_catalog"
+  let packages = root <> "/packages"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(packages <> "/gleam_stdlib")
+  let assert Ok(Nil) =
+    simplifile.write(
+      packages <> "/gleam_stdlib/gleam_stdlib.graded",
+      "external effects gleam/io.println : [Shipped]\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/manifest.toml",
+      "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
+    )
+
+  effects.load_knowledge_base(packages, root <> "/manifest.toml")
+  |> entry_of(QualifiedName("gleam/io", "println"))
+  |> should.equal(
+    Ok(#(
+      Specific(set.from_list(["Shipped"])),
+      types.DependencySpec("gleam_stdlib"),
+    )),
+  )
+
+  let _ = simplifile.delete(root)
+  Nil
+}
+
+// Path-dependency spec precedence
+//
+// A path dep's spec is folded in after the catalog is already loaded, so its
+// merge decides the order by origin rather than by arrival: it overrides what
+// the catalog wrote and yields to everything the consumer wrote.
+
+pub fn a_path_dep_spec_overrides_a_catalog_entry_test() {
+  // Both kinds of line the spec can decide a term with, against the catalog
+  // entry the documented order puts below them. The `effects` line's bounds
+  // travel with its term — a term that binds `cb` is useless without them.
+  let kb =
+    effects.new_knowledge_base()
+    |> effects.with_externals(
+      [external("dep/ffi", "now", ["Catalogued"]), external("dep", "run", [])],
+      types.Catalog("dep"),
+    )
+    |> effects.with_path_dep_spec(
+      dep_spec(
+        "build/eff_path_dep_over_catalog",
+        "dep",
+        "external effects dep/ffi.now : [Time]\neffects dep.run(cb: [cb]) : [cb]\n",
+      ),
+      "dep",
+    )
+  entry_of(kb, QualifiedName("dep/ffi", "now"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Time"])), types.PathDependency("dep"))),
+  )
+  origin_of(kb, QualifiedName("dep", "run"))
+  |> should.equal(option.Some(types.PathDependency("dep")))
+  effects.lookup_param_bounds(kb, QualifiedName("dep", "run"))
+  |> should.equal([
+    ParamBound(
+      name: "cb",
+      effects: effect_term.from_effect_set(Polymorphic(
+        set.new(),
+        set.from_list(["cb"]),
+      )),
+    ),
+  ])
+}
+
+pub fn a_path_dep_spec_yields_to_a_user_external_test() {
+  // The consumer's own declaration is not overridable by a dependency, and the
+  // bounds standing beside it stay put too: the kept term is the one they were
+  // recorded for.
+  let bounds = [
+    ParamBound(
+      name: "cb",
+      effects: effect_term.from_effect_set(Specific(set.from_list(["Ui"]))),
+    ),
+  ]
+  let kb =
+    effects.new_knowledge_base()
+    |> effects.with_externals(
+      [external("dep", "run", ["Mocked"])],
+      types.UserExternal,
+    )
+    |> effects.with_inferred_params(
+      dict.from_list([#(QualifiedName("dep", "run"), bounds)]),
+    )
+    |> effects.with_path_dep_spec(
+      dep_spec(
+        "build/eff_path_dep_under_user",
+        "dep",
+        "effects dep.run(cb: [cb]) : [cb]\n",
+      ),
+      "dep",
+    )
+  entry_of(kb, QualifiedName("dep", "run"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Mocked"])), types.UserExternal)),
+  )
+  effects.lookup_param_bounds(kb, QualifiedName("dep", "run"))
+  |> should.equal(bounds)
+}
+
+pub fn a_path_dep_module_external_overrides_only_the_catalogs_test() {
+  // The same origin rule one tier down: a path dep's module-level external
+  // replaces the catalog's word on that module and yields to the consumer's.
+  let spec =
+    dep_spec(
+      "build/eff_path_dep_module_external",
+      "dep",
+      "external effects dep/catalogued : [Time]\nexternal effects dep/declared : [Time]\n",
+    )
+  let kb =
+    effects.new_knowledge_base()
+    |> effects.with_externals(
+      [
+        types.ExternalAnnotation(
+          module: "dep/catalogued",
+          target: types.ModuleExternal,
+          effects: Specific(set.from_list(["Catalogued"])),
+        ),
+      ],
+      types.Catalog("dep"),
+    )
+    |> effects.with_externals(
+      [
+        types.ExternalAnnotation(
+          module: "dep/declared",
+          target: types.ModuleExternal,
+          effects: Specific(set.from_list(["Mocked"])),
+        ),
+      ],
+      types.UserExternal,
+    )
+    |> effects.with_path_dep_spec(spec, "dep")
+  entry_of(kb, QualifiedName("dep/catalogued", "anything"))
+  |> should.equal(
+    Ok(#(
+      Specific(set.from_list(["Time"])),
+      types.ModuleExternalOrigin(source: types.PathDependency("dep")),
+    )),
+  )
+  entry_of(kb, QualifiedName("dep/declared", "anything"))
+  |> should.equal(
+    Ok(#(
+      Specific(set.from_list(["Mocked"])),
+      types.ModuleExternalOrigin(source: types.UserExternal),
+    )),
+  )
+}
+
+pub fn a_path_dep_function_entry_beats_a_module_external_test() {
+  // A consumer's module-level external lives in the fallback tier `lookup`
+  // reaches only after `all_effects` misses, so a path dep's function-keyed
+  // entry answers first — per-function beats module-level, whoever wrote it.
+  let kb =
+    effects.new_knowledge_base()
+    |> effects.with_externals(
+      [
+        types.ExternalAnnotation(
+          module: "dep/ffi",
+          target: types.ModuleExternal,
+          effects: Specific(set.from_list(["Mocked"])),
+        ),
+      ],
+      types.UserExternal,
+    )
+    |> effects.with_path_dep_spec(
+      dep_spec(
+        "build/eff_path_dep_over_module_external",
+        "dep",
+        "external effects dep/ffi.now : [Time]\n",
+      ),
+      "dep",
+    )
+  effects.lookup(kb, QualifiedName("dep/ffi", "now"))
+  |> should.equal(effects.Known(
+    effect_term.from_effect_set(Specific(set.from_list(["Time"]))),
+    types.FunctionEntry(origin: types.PathDependency("dep")),
+  ))
+  // Every other function in the module still answers from the consumer's line.
+  origin_of(kb, QualifiedName("dep/ffi", "later"))
+  |> should.equal(
+    option.Some(types.ModuleExternalOrigin(source: types.UserExternal)),
+  )
+}
+
+pub fn a_source_inferred_path_dep_yields_to_the_catalog_test() {
+  // The asymmetry the spec branch does not share: a spec-less path dep is
+  // inferred from source through `with_inferred`, which gap-fills, so a catalog
+  // entry for the same function keeps the term and the origin. Inference yields
+  // [Unknown] for the FFI bodies a catalog entry describes precisely, so
+  // reordering this needs its own design.
+  effects.new_knowledge_base()
+  |> effects.with_externals(
+    [external("dep/ffi", "now", ["Catalogued"])],
+    types.Catalog("dep"),
+  )
+  |> effects.with_inferred(
+    inferred_entry("dep/ffi", "now", ["Unknown"]),
+    types.PathDependency("dep"),
+  )
+  |> entry_of(QualifiedName("dep/ffi", "now"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Catalogued"])), types.Catalog("dep"))),
+  )
 }
 
 // Catalog version selection
