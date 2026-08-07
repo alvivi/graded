@@ -433,8 +433,9 @@ myapp.opaque has effects that could not be determined: [Unknown]
 
 The `source:` line names which source answered: `your spec`, `your spec's
 external declaration`, `in-memory inference`, `<pkg>'s shipped spec`, `path
-dependency <pkg>`, `<pkg>'s catalog entry`, or `a module-level external`. It is
-omitted when the answer carries no recorded source.
+dependency <pkg>`, or `<pkg>'s catalog entry`. A name answered by a module-level
+`external effects` declaration reads "module-level external for" that module
+instead, with the precedence note below it. Every answer names a source.
 
 `--format=graded` prints the same answer as a `.graded` line, with provenance on
 a `//` comment, so the whole output parses back — the format to pipe into a spec
@@ -517,12 +518,20 @@ source that answered it (`with effects [Stdout] (from gleam_stdlib's catalog
 entry)`), and an unresolved one says what stopped the resolution — a receiver
 whose type nothing annotates for that field, a receiver whose type or value
 couldn't be traced, a call no spec, external, or catalog declares, an external
-with no declared effects, or a returned operator whose producer couldn't be
-resolved:
+with no declared effects, a returned operator whose producer couldn't be
+resolved, or an argument this call site passed that nothing resolves:
 
 ```
 src/app.gleam: run calls field `find` on `repo` of type `dep/repo.Repo`, which has no effect annotation for that field, with unresolved effects [Unknown] but declared []
 ```
+
+The `(from ...)` suffix uses the same vocabulary as `graded effect`'s `source:`
+line, plus two phrases for the declarations that only resolve a field call: `a
+type line in <source>` and `a module-level external in <source>`, where
+`<source>` names the file the line sits in (`your spec`, `<pkg>'s shipped spec`,
+`<pkg>'s catalog entry`, `path dependency <pkg>`). An effect an *argument* left
+unresolved names no source: the entry that answered resolved, so blaming it
+would point at a line that is fine.
 
 On top of the syntax layer, graded runs [girard](https://hexdocs.pm/girard) — a
 Hindley-Milner type annotator for Gleam — over the whole package to learn the

@@ -222,8 +222,10 @@ pub type TypeFieldAnnotation {
 // call on a parameter/opaque receiver consults only `Declared` lines — an
 // inferred, nominal-type-keyed entry never resolves such a receiver, since it
 // holds package-wide evidence keyed by type rather than proof for this receiver.
+// Whether a type field's effect was written by hand or read off a construction
+// site. `Declared` carries the source that holds the `type` line.
 pub type TypeFieldOrigin {
-  Declared
+  Declared(source: LookupOrigin)
   Inferred
 }
 
@@ -255,6 +257,10 @@ pub type UnknownReason {
   // A direct application of a returned operator whose producer could not be
   // resolved.
   UntraceableProducer
+  // A call whose own effect resolved, and whose effect variable call-site
+  // substitution then bound to `[Unknown]` — an argument this call site passed
+  // that nothing resolves.
+  UntraceableArgument
 }
 
 // Where a resolved effect came from: which source wrote the winning
@@ -272,12 +278,14 @@ pub type LookupOrigin {
   PathDependency(package: String)
   // The bundled versioned catalog entry for a package.
   Catalog(package: String)
-  // The `module_effects` fallback answered. Named apart from
+  // An `external effects <module>` line answered for a name nothing else keys.
+  // `source` is the file that declares it. Named apart from
   // `ExternalTarget.ModuleExternal`, which shares this module's namespace.
-  ModuleExternalOrigin
-  // A hand-written `type` line resolved a field call. Set only by the field
-  // path, never stored in the knowledge base's origins map.
-  TypeLine
+  ModuleExternalOrigin(source: LookupOrigin)
+  // A hand-written `type` line resolved a field call. `source` is the file that
+  // declares it. Set only by the field path, never stored beside a function
+  // entry.
+  TypeLine(source: LookupOrigin)
 }
 
 // Which of the knowledge base's two maps answered a function lookup. Reported
@@ -285,13 +293,12 @@ pub type LookupOrigin {
 // step with the branch order that produced the term.
 pub type EffectSource {
   // An entry keyed by the function itself, from any of the merged sources.
-  // `origin` names the source that wrote it, and is `None` when the parallel
-  // origins map has no entry for the name.
-  FunctionEntry(origin: Option(LookupOrigin))
+  // `origin` names the source that wrote it.
+  FunctionEntry(origin: LookupOrigin)
   // The function's module carries `external effects <module> : [...]`. Reached
   // only when nothing keys the function itself, so a per-function external or a
   // catalog line for it takes precedence; it carries no per-function bounds.
-  ModuleExternalEntry
+  ModuleExternalEntry(origin: LookupOrigin)
 }
 
 // A type field's resolved effect in the knowledge base. `effects` is the field

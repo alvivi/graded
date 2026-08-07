@@ -465,7 +465,8 @@ fn check_source_with_type_fields(
   type_fields: List(types.TypeFieldAnnotation),
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
-  let kb = effects.with_type_fields(knowledge_base(), type_fields)
+  let kb =
+    effects.with_type_fields(knowledge_base(), type_fields, types.CommittedSpec)
   let #(violations, _warnings) =
     checker.check(
       module,
@@ -513,7 +514,8 @@ fn check_source_with_girard(
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
   let module_types = girard_types(module)
-  let kb = effects.with_type_fields(knowledge_base(), type_fields)
+  let kb =
+    effects.with_type_fields(knowledge_base(), type_fields, types.CommittedSpec)
   let #(violations, _warnings) =
     checker.check(
       module,
@@ -727,7 +729,7 @@ fn infer_effects_with_girard(
   checker.infer(
     module,
     "",
-    effects.with_type_fields(knowledge_base(), type_fields),
+    effects.with_type_fields(knowledge_base(), type_fields, types.CommittedSpec),
     [],
     signatures.from_glance_module("", module),
     girard_types(module),
@@ -1687,21 +1689,14 @@ fn build_kb(calls: List(#(String, String, String))) -> effects.KnowledgeBase {
     |> list.map(fn(c) {
       #(
         types.QualifiedName(module: c.0, function: c.1),
-        effect_term.from_effect_set(types.from_labels([c.2])),
+        #(
+          effect_term.from_effect_set(types.from_labels([c.2])),
+          types.CommittedSpec,
+        ),
       )
     })
     |> dict.from_list()
-  effects.KnowledgeBase(
-    all_effects:,
-    param_bounds: dict.new(),
-    type_fields: dict.new(),
-    returned_operators: dict.new(),
-    factories: dict.new(),
-    updates: dict.new(),
-    module_effects: dict.new(),
-    provenance: dict.new(),
-    origins: dict.new(),
-  )
+  effects.KnowledgeBase(..bare_knowledge_base(), all_effects:)
 }
 
 fn actual_effects(calls: List(#(String, String, String))) -> EffectSet {
@@ -1969,17 +1964,7 @@ fn build_cycle_source(graph: List(#(String, List(String)))) -> String {
 }
 
 fn bare_knowledge_base() -> effects.KnowledgeBase {
-  effects.KnowledgeBase(
-    all_effects: dict.new(),
-    param_bounds: dict.new(),
-    type_fields: dict.new(),
-    returned_operators: dict.new(),
-    factories: dict.new(),
-    updates: dict.new(),
-    module_effects: dict.new(),
-    provenance: dict.new(),
-    origins: dict.new(),
-  )
+  effects.new_knowledge_base()
 }
 
 pub fn infer_terminates_with_cycles_test() {
@@ -5130,10 +5115,10 @@ pub fn format_violation_states_a_reason_and_an_origin_together_test() {
     QualifiedName("<field>", "repo.find"),
     Specific(set.from_list(["Unknown"])),
     Some(types.FieldNotAnnotated("dep/repo", "Repo")),
-    Some(types.ModuleExternalOrigin),
+    Some(types.ModuleExternalOrigin(source: types.UserExternal)),
   )
   |> should.equal(
-    "src/app.gleam: run calls field `find` on `repo` of type `dep/repo.Repo`, which has no effect annotation for that field, with unresolved effects [Unknown] (from a module-level external) but declared []",
+    "src/app.gleam: run calls field `find` on `repo` of type `dep/repo.Repo`, which has no effect annotation for that field, with unresolved effects [Unknown] (from a module-level external in your spec) but declared []",
   )
 }
 
@@ -5590,4 +5575,128 @@ pub fn run() -> Nil {
   |> should.equal(
     "src/app.gleam: run calls a function returned by `dep.make` with effects [Stdout] but declared []",
   )
+}
+
+pub fn a_forwarded_field_carries_the_wired_value_source_test() {
+  // The same field call as `a_proven_field_carries_the_wired_value_source_test`,
+  // reached through a helper instead of read directly: the caller's
+  // substitution binds the field variable to the wired value, so the source
+  // that answered for that value travels with it.
+  let violation =
+    field_violation(
+      "import gleam/io
+
+pub type Handler {
+  Handler(handler: fn(String) -> Nil)
+}
+
+fn helper(h: Handler) -> Nil {
+  h.handler(\"x\")
+}
+
+pub fn run() -> Nil {
+  let h = Handler(handler: io.println)
+  helper(h)
+}",
+    )
+  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  violation.origin |> should.equal(Some(types.Catalog("gleam_stdlib")))
+}
+
+pub fn a_type_line_names_the_spec_that_declared_it_test() {
+  // The `type` line resolved the field call, so the message names the file the
+  // line sits in rather than the bare kind of line.
+  let source =
+    "pub type Repo {
+  Repo(find: fn(String) -> Nil)
+}
+
+pub fn run(repo: Repo) -> Nil {
+  repo.find(\"x\")
+}"
+  let type_fields = [
+    types.TypeFieldAnnotation(
+      module: None,
+      type_name: "Repo",
+      field: "find",
+      effects: effect_term.from_effect_set(Specific(set.from_list(["Storage"]))),
+    ),
+  ]
+  let assert [violation] =
+    check_source_with_type_fields(source, [pure_check("run")], type_fields)
+  violation.origin
+  |> should.equal(Some(types.TypeLine(source: types.CommittedSpec)))
+  checker.format_violation("src/app.gleam", violation)
+  |> should.equal(
+    "src/app.gleam: run calls field `find` on `repo` with effects [Storage] (from a type line in your spec) but declared []",
+  )
+}
+
+pub fn records_an_untraceable_argument_test() {
+  // `validate_range`'s own term resolved — the entry gives it its callback's
+  // effects — and the callback this call passes is an expression nothing
+  // resolves. The `[Unknown]` is the argument's, so the entry that answered is
+  // not named for it.
+  let source =
+    "
+import validation
+pub fn new() {
+  validation.validate_range(42, to_error: 1 + 2)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(violations, _) =
+    checker.check(
+      module,
+      "",
+      [pure_check("new")],
+      polymorphic_kb(),
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
+  let assert [violation] = violations
+  violation.reason |> should.equal(Some(types.UntraceableArgument))
+  violation.origin |> should.equal(None)
+  checker.format_violation("src/app.gleam", violation)
+  |> should.equal(
+    "src/app.gleam: new calls validation.validate_range, whose effects depend on an argument that could not be resolved, with unresolved effects [Unknown] but declared []",
+  )
+}
+
+pub fn an_entry_that_states_unknown_keeps_its_source_test() {
+  // The entry's own term is `[Unknown]`, so substitution did not put it there
+  // and the source that committed it is the whole explanation.
+  let source =
+    "
+import vault
+pub fn new() {
+  vault.query()
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let kb =
+    effects.with_inferred(
+      knowledge_base(),
+      dict.from_list([
+        #(
+          QualifiedName("vault", "query"),
+          effect_term.from_effect_set(Specific(set.from_list(["Unknown"]))),
+        ),
+      ]),
+      types.CommittedSpec,
+    )
+  let #(violations, _) =
+    checker.check(
+      module,
+      "",
+      [pure_check("new")],
+      kb,
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
+  let assert [violation] = violations
+  violation.reason |> should.equal(None)
+  violation.origin |> should.equal(Some(types.CommittedSpec))
 }
