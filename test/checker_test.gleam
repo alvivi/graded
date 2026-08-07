@@ -3832,6 +3832,7 @@ pub fn caller() -> Nil {
       dict.from_list([
         #(QualifiedName("dep", "pick"), types.TAbs("cb", types.TVar("cb"))),
       ]),
+      types.ProjectInferred,
     )
   let registry = signatures.from_glance_module("app", module)
   let pass =
@@ -3888,6 +3889,7 @@ pub fn caller() -> Nil {
     )
     |> effects.with_fresh_returned_operators(
       effects.load_spec_returns_from_file(spec),
+      types.CommittedSpec,
     )
   let registry = signatures.from_glance_module("app", module)
   let pass =
@@ -3989,6 +3991,7 @@ pub fn caller() -> Nil {
     )
     |> effects.with_fresh_returned_operators(
       effects.load_spec_returns_from_file(spec),
+      types.CommittedSpec,
     )
   let registry = signatures.from_glance_module("app", module)
   let pass =
@@ -5557,8 +5560,9 @@ pub fn run() -> Nil {
       ]),
       types.ProjectInferred,
     )
-    |> effects.with_fresh_returned_operators(
+    |> effects.with_foreign_returned_operators(
       effects.load_spec_returns_from_file(spec),
+      types.DependencySpec("dep"),
     )
   let #(violations, _) =
     checker.check(
@@ -5571,9 +5575,12 @@ pub fn run() -> Nil {
       dict.new(),
     )
   let assert [violation] = violations
+  // The latent effect was decided by the dependency's `returns` line, so the
+  // message names it.
+  violation.origin |> should.equal(Some(types.DependencySpec("dep")))
   checker.format_violation("src/app.gleam", violation)
   |> should.equal(
-    "src/app.gleam: run calls a function returned by `dep.make` with effects [Stdout] but declared []",
+    "src/app.gleam: run calls a function returned by `dep.make` with effects [Stdout] (from dep's shipped spec) but declared []",
   )
 }
 
@@ -5699,4 +5706,70 @@ pub fn new() {
   let assert [violation] = violations
   violation.reason |> should.equal(None)
   violation.origin |> should.equal(Some(types.CommittedSpec))
+}
+
+pub fn records_an_untraceable_argument_through_a_helper_test() {
+  // The dependency call resolved inside `helper`; the caller's unresolvable
+  // callback is what took it to `[Unknown]`, so the dependency entry is not
+  // named for it — the same account the direct call gives.
+  let source =
+    "
+import validation
+fn helper(cb: fn(String) -> Nil) {
+  validation.validate_range(42, to_error: cb)
+}
+pub fn new() {
+  helper(1 + 2)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(violations, _) =
+    checker.check(
+      module,
+      "",
+      [pure_check("new")],
+      polymorphic_kb(),
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
+  let assert [violation] = violations
+  violation.reason |> should.equal(Some(types.UntraceableArgument))
+  violation.origin |> should.equal(None)
+  checker.format_violation("src/app.gleam", violation)
+  |> should.equal(
+    "src/app.gleam: new calls validation.validate_range, whose effects depend on an argument that could not be resolved, with unresolved effects [Unknown] but declared []",
+  )
+}
+
+pub fn a_same_module_producer_names_no_source_test() {
+  // The producer is analysed from this module's own source this run, not read
+  // from a spec, so there is no source to name.
+  let source =
+    "
+import gleam/io
+fn make() -> fn() -> Nil {
+  fn() { io.println(\"x\") }
+}
+
+pub fn run() -> Nil {
+  let f = make()
+  f()
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(violations, _) =
+    checker.check(
+      module,
+      "",
+      [pure_check("run")],
+      knowledge_base(),
+      signatures.from_glance_module("app", module),
+      dict.new(),
+      dict.new(),
+    )
+  let assert Ok(violation) =
+    list.find(violations, fn(v) { v.call.module == "<returned>" })
+  violation.origin |> should.equal(None)
+  violation.reason |> should.equal(None)
 }

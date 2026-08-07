@@ -59,7 +59,7 @@ pub type KnowledgeBase {
     // `compute_returned_operator`, so a polymorphic one is not trusted for
     // synthesis — it resolves to `[Unknown]`; a **Fresh** one produced this run,
     // and any ground summary, is safe.
-    returned_operators: Dict(QualifiedName, #(EffectTerm, SummaryOrigin)),
+    returned_operators: Dict(QualifiedName, ReturnedOperator),
     // Package-wide factory signatures, keyed by `#(defining module, function)`:
     // each constructor field a function wires to one of its parameters, mapped
     // to that parameter's position. Lets a let-bound *cross-module* factory call
@@ -102,8 +102,9 @@ pub fn load_knowledge_base(
     all_effects: dict.merge(cat_effects, dep_effects),
     param_bounds: dict.merge(cat_params, dep_params),
     type_fields: dict.new(),
-    // Every dependency summary is Foreign (loaded from a serialized dep spec).
-    returned_operators: tag_returns(dep_returns, Foreign),
+    // Every dependency summary is Foreign (loaded from a serialized dep spec),
+    // tagged by `load_dependencies` with the package whose spec held it.
+    returned_operators: dep_returns,
     factories: dict.new(),
     // Update builders are derived from dependency source at run time, not loaded
     // from specs (a serialized signature could skew from the source a consumer
@@ -401,6 +402,18 @@ pub type SummaryOrigin {
   Foreign
 }
 
+// A function's returned-operator summary as the knowledge base holds it: the
+// operator, whether this run produced it, and the source that wrote it. The
+// three are one value, so a lookup can report the summary it used and where it
+// came from together.
+pub type ReturnedOperator {
+  ReturnedOperator(
+    operator: EffectTerm,
+    summary: SummaryOrigin,
+    source: LookupOrigin,
+  )
+}
+
 // Pair every term of a bare effect map with the source that wrote it, giving
 // the shape `all_effects` holds.
 fn with_origin(
@@ -410,13 +423,16 @@ fn with_origin(
   dict.map_values(entries, fn(_name, term) { #(term, origin) })
 }
 
-// Tag every summary in a bare `name -> operator` map with a single origin, ready
-// to merge into `returned_operators`.
+// Pair every summary in a bare `name -> operator` map with how it was produced
+// and the source that wrote it, giving the shape `returned_operators` holds.
 fn tag_returns(
   returns: Dict(QualifiedName, EffectTerm),
-  origin: SummaryOrigin,
-) -> Dict(QualifiedName, #(EffectTerm, SummaryOrigin)) {
-  dict.map_values(returns, fn(_, operator) { #(operator, origin) })
+  summary: SummaryOrigin,
+  source: LookupOrigin,
+) -> Dict(QualifiedName, ReturnedOperator) {
+  dict.map_values(returns, fn(_, operator) {
+    ReturnedOperator(operator:, summary:, source:)
+  })
 }
 
 // Merge **Foreign** returned-operator summaries (from a serialized `.graded`)
@@ -425,10 +441,11 @@ fn tag_returns(
 pub fn with_foreign_returned_operators(
   knowledge_base: KnowledgeBase,
   inferred: Dict(QualifiedName, EffectTerm),
+  source: LookupOrigin,
 ) -> KnowledgeBase {
   let merged =
     dict.merge(
-      tag_returns(inferred, Foreign),
+      tag_returns(inferred, Foreign, source),
       knowledge_base.returned_operators,
     )
   KnowledgeBase(..knowledge_base, returned_operators: merged)
@@ -441,9 +458,13 @@ pub fn with_foreign_returned_operators(
 pub fn with_fresh_returned_operators(
   knowledge_base: KnowledgeBase,
   inferred: Dict(QualifiedName, EffectTerm),
+  source: LookupOrigin,
 ) -> KnowledgeBase {
   let merged =
-    dict.merge(knowledge_base.returned_operators, tag_returns(inferred, Fresh))
+    dict.merge(
+      knowledge_base.returned_operators,
+      tag_returns(inferred, Fresh, source),
+    )
   KnowledgeBase(..knowledge_base, returned_operators: merged)
 }
 
@@ -488,12 +509,13 @@ pub fn updates(
   knowledge_base.updates
 }
 
-// Look up the operator a function returns, if known, with its origin (Fix E).
-// `Error(Nil)` when the callee doesn't return a (tracked) operator.
+// Look up the operator a function returns, if known, with how it was produced
+// (Fix E) and the source that wrote it. `Error(Nil)` when the callee doesn't
+// return a (tracked) operator.
 pub fn lookup_returned_operator(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
-) -> Result(#(EffectTerm, SummaryOrigin), Nil) {
+) -> Result(ReturnedOperator, Nil) {
   dict.get(knowledge_base.returned_operators, name)
 }
 
@@ -754,7 +776,7 @@ fn load_dependencies(
 ) -> #(
   Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
   Dict(QualifiedName, List(ParamBound)),
-  Dict(QualifiedName, EffectTerm),
+  Dict(QualifiedName, ReturnedOperator),
   List(#(TypeFieldAnnotation, LookupOrigin)),
 ) {
   let entries = case simplifile.read_directory(packages_directory) {
@@ -773,7 +795,7 @@ fn load_dependencies(
       #(
         dict.merge(effect_map, with_origin(new_effects, origin)),
         dict.merge(param_map, new_params),
-        dict.merge(returns_map, new_returns),
+        dict.merge(returns_map, tag_returns(new_returns, Foreign, origin)),
         list.append(
           type_fields,
           list.map(new_type_fields, fn(field) { #(field, origin) }),
