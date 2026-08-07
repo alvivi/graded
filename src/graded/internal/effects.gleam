@@ -92,30 +92,31 @@ pub fn load_knowledge_base(
   packages_directory: String,
   manifest_path: String,
 ) -> KnowledgeBase {
-  let #(dep_effects, dep_params, dep_returns, dep_type_fields) =
-    load_dependencies(packages_directory)
+  let deps = load_dependencies(packages_directory)
   let catalog_dir = find_catalog_directory()
   let #(cat_effects, cat_module_effects, cat_params, cat_type_fields) =
     load_catalog(catalog_dir, manifest_path)
   KnowledgeBase(
     // Dependency entries win on a clash: dict.merge keeps its second argument.
-    all_effects: dict.merge(cat_effects, dep_effects),
-    param_bounds: dict.merge(cat_params, dep_params),
+    all_effects: dict.merge(cat_effects, deps.effects),
+    param_bounds: dict.merge(cat_params, deps.params),
     type_fields: dict.new(),
     // Every dependency summary is Foreign (loaded from a serialized dep spec),
     // tagged by `load_dependencies` with the package whose spec held it.
-    returned_operators: dep_returns,
+    returned_operators: deps.returns,
     factories: dict.new(),
     // Update builders are derived from dependency source at run time, not loaded
     // from specs (a serialized signature could skew from the source a consumer
     // compiled against); this starts empty.
     updates: dict.new(),
-    module_effects: cat_module_effects,
+    // A dependency's module-level external wins over a catalog one for the same
+    // module, matching `all_effects`.
+    module_effects: dict.merge(cat_module_effects, deps.module_effects),
     provenance: dict.new(),
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
-  |> with_sourced_type_fields(list.append(cat_type_fields, dep_type_fields))
+  |> with_sourced_type_fields(list.append(cat_type_fields, deps.type_fields))
 }
 
 // A knowledge base holding nothing at all — no dependencies, no catalog. The
@@ -221,33 +222,53 @@ pub fn with_externals(
   externals: List(ExternalAnnotation),
   origin: LookupOrigin,
 ) -> KnowledgeBase {
-  let #(effect_map, module_effs) =
-    list.fold(
-      externals,
-      #(knowledge_base.all_effects, knowledge_base.module_effects),
-      fn(accumulator, external_annotation) {
-        let #(effect_map, module_effs) = accumulator
-        let term = effect_term.from_effect_set(external_annotation.effects)
-        case external_annotation.target {
-          ModuleExternal -> #(
-            effect_map,
-            dict.insert(module_effs, external_annotation.module, #(
-              term,
-              ModuleExternalOrigin(source: origin),
-            )),
-          )
-          FunctionExternal(function) -> {
-            let name = QualifiedName(external_annotation.module, function)
-            #(dict.insert(effect_map, name, #(term, origin)), module_effs)
-          }
-        }
-      },
-    )
+  let #(function_externals, module_externals) =
+    split_externals(externals, origin)
   KnowledgeBase(
     ..knowledge_base,
-    all_effects: effect_map,
-    module_effects: module_effs,
+    all_effects: dict.merge(knowledge_base.all_effects, function_externals),
+    module_effects: dict.merge(knowledge_base.module_effects, module_externals),
   )
+}
+
+// Sort external annotations into the two maps they feed, each term already
+// paired with the source that declared it: function-level externals keyed by
+// `QualifiedName` for `all_effects`, module-level ones keyed by module name for
+// the `module_effects` fallback tier (wrapped in `ModuleExternalOrigin`, which
+// names both the kind of line and the file it sits in).
+//
+// Splitting is separate from merging so each caller decides its own precedence:
+// `with_externals` inserts over what the knowledge base already holds, while a
+// dependency's externals merge against that dependency's own `effects` lines
+// before meeting the knowledge base.
+fn split_externals(
+  externals: List(ExternalAnnotation),
+  origin: LookupOrigin,
+) -> #(
+  Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+  Dict(String, #(EffectTerm, LookupOrigin)),
+) {
+  list.fold(externals, #(dict.new(), dict.new()), fn(accumulator, external) {
+    let #(function_externals, module_externals) = accumulator
+    let term = effect_term.from_effect_set(external.effects)
+    case external.target {
+      ModuleExternal -> #(
+        function_externals,
+        dict.insert(module_externals, external.module, #(
+          term,
+          ModuleExternalOrigin(source: origin),
+        )),
+      )
+      FunctionExternal(function) -> #(
+        dict.insert(
+          function_externals,
+          QualifiedName(external.module, function),
+          #(term, origin),
+        ),
+        module_externals,
+      )
+    }
+  })
 }
 
 // Look up the effect set for a qualified function name, with the source that
@@ -676,28 +697,32 @@ pub fn load_spec_params_from_file(
   })
 }
 
-// Load one package's spec into its effects, polymorphic param bounds,
-// returned-operator maps, and hand-written `type` field annotations. The first
-// three are keyed by `QualifiedName`; the `type` fields stay a list (applied via
-// `with_type_fields`, whose insert order decides priority against the project
-// spec). Reads the spec via the package's own `[tools.graded]` config
-// (defaulting to `<package_name>.graded`) at `dep_root`, once. Empty when the
-// spec is missing or unparseable. Shared by the `build/packages` dependency scan
-// and path-dependency enrichment so both dep kinds load identical metadata —
+// Everything one dependency's spec file declares. The three `QualifiedName`-keyed
+// maps hold the terms, bounds and returned-operator summaries; `type_fields` and
+// `externals` stay lists, since where each lands in the knowledge base is the
+// merging caller's decision (`with_type_fields`'s insert order against the
+// project spec; `split_externals`'s two tiers).
+pub type DepSpec {
+  DepSpec(
+    effects: Dict(QualifiedName, EffectTerm),
+    params: Dict(QualifiedName, List(ParamBound)),
+    returns: Dict(QualifiedName, EffectTerm),
+    type_fields: List(TypeFieldAnnotation),
+    externals: List(ExternalAnnotation),
+  )
+}
+
+// Load one package's spec. Reads the spec via the package's own `[tools.graded]`
+// config (defaulting to `<package_name>.graded`) at `dep_root`, once. Empty when
+// the spec is missing or unparseable. Shared by the `build/packages` dependency
+// scan and path-dependency enrichment so both dep kinds load identical metadata —
 // effects alone would drop the bounds a higher-order callee needs to discharge
-// its callback's effect, or the `type` fields a capability record on the dep's
-// own types needs to resolve at a consumer's call site.
-pub fn load_dep_spec(
-  dep_root: String,
-  package_name: String,
-) -> #(
-  Dict(QualifiedName, EffectTerm),
-  Dict(QualifiedName, List(ParamBound)),
-  Dict(QualifiedName, EffectTerm),
-  List(TypeFieldAnnotation),
-) {
+// its callback's effect, the `type` fields a capability record on the dep's own
+// types needs to resolve at a consumer's call site, or the `external effects`
+// lines the dep author wrote for its FFI.
+pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
   case read_spec_file(config.spec_file_for(dep_root, package_name)) {
-    Error(_) -> #(dict.new(), dict.new(), dict.new(), [])
+    Error(_) -> DepSpec(dict.new(), dict.new(), dict.new(), [], [])
     Ok(file) ->
       // Loaded through the same two readers a package uses for its *own* spec,
       // so a dependency's `check` budgets and externally-declared functions are
@@ -705,12 +730,94 @@ pub fn load_dep_spec(
       // stay local to that check instead of becoming a global fact about the
       // dependency's function, and every term still travels with the bounds
       // from its own annotation.
-      #(
-        load_spec_effects_from_file(file),
-        load_spec_params_from_file(file),
-        load_spec_returns_from_file(file),
-        annotation.extract_type_fields(file),
+      DepSpec(
+        effects: load_spec_effects_from_file(file),
+        params: load_spec_params_from_file(file),
+        returns: load_spec_returns_from_file(file),
+        type_fields: annotation.extract_type_fields(file),
+        externals: annotation.extract_externals(file),
       )
+  }
+}
+
+// Fold a path dependency's spec-decided terms, bounds and externals into the
+// knowledge base under the documented resolution order: below per-function user
+// externals and the project's own entries, above the catalog. An existing entry
+// is overridden only when its origin is the catalog, so a consumer's own
+// declarations survive a merge that runs after the catalog is already loaded.
+//
+// A decided term brings its own bounds entry with it — `load_spec_params_from_file`
+// records one (possibly empty) for every name the spec decides — so a
+// polymorphic term never pairs with bounds another source wrote. Within the
+// spec, a function's `external effects` line beats its `effects` line, as it
+// does for an installed dependency.
+//
+// A consumer's *module-level* external stays in the `module_effects` fallback
+// tier, which `lookup` consults only after `all_effects` misses, so these
+// function-keyed entries outrank it — the per-function-beats-module-level rule.
+pub fn with_path_dep_spec(
+  knowledge_base: KnowledgeBase,
+  dep: DepSpec,
+  package: String,
+) -> KnowledgeBase {
+  let origin = PathDependency(package:)
+  let #(function_externals, module_externals) =
+    split_externals(dep.externals, origin)
+  let decided = dict.merge(with_origin(dep.effects, origin), function_externals)
+  let #(all_effects, param_bounds) =
+    dict.fold(
+      decided,
+      #(knowledge_base.all_effects, knowledge_base.param_bounds),
+      fn(accumulator, name, entry) {
+        let #(all_effects, param_bounds) = accumulator
+        case overridable(dict.get(all_effects, name)) {
+          False -> accumulator
+          True -> {
+            let bounds = dict.get(dep.params, name) |> result.unwrap([])
+            #(
+              dict.insert(all_effects, name, entry),
+              dict.insert(param_bounds, name, bounds),
+            )
+          }
+        }
+      },
+    )
+  let module_effects =
+    dict.fold(
+      module_externals,
+      knowledge_base.module_effects,
+      fn(accumulator, module, entry) {
+        case overridable(dict.get(accumulator, module)) {
+          False -> accumulator
+          True -> dict.insert(accumulator, module, entry)
+        }
+      },
+    )
+  KnowledgeBase(..knowledge_base, all_effects:, param_bounds:, module_effects:)
+}
+
+// Whether a path dependency's spec may write over what a knowledge-base tier
+// already holds for a key: it may when nothing holds it, or when what holds it
+// came from the catalog.
+fn overridable(existing: Result(#(EffectTerm, LookupOrigin), Nil)) -> Bool {
+  case existing {
+    Error(Nil) -> True
+    Ok(#(_term, origin)) -> is_catalog_origin(origin)
+  }
+}
+
+// Whether an entry was written by the bundled catalog, directly or as the source
+// of a module-level external.
+fn is_catalog_origin(origin: LookupOrigin) -> Bool {
+  case origin {
+    Catalog(..) -> True
+    ModuleExternalOrigin(source:) | TypeLine(source:) ->
+      is_catalog_origin(source)
+    UserExternal
+    | CommittedSpec
+    | ProjectInferred
+    | DependencySpec(..)
+    | PathDependency(..) -> False
   }
 }
 
@@ -764,42 +871,62 @@ fn fold_spec_returns(
   })
 }
 
+// The installed dependencies' specs, gathered into the shapes the knowledge
+// base holds: every term already tagged with the package whose spec declared it.
+type Dependencies {
+  Dependencies(
+    effects: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+    params: Dict(QualifiedName, List(ParamBound)),
+    returns: Dict(QualifiedName, ReturnedOperator),
+    type_fields: List(#(TypeFieldAnnotation, LookupOrigin)),
+    module_effects: Dict(String, #(EffectTerm, LookupOrigin)),
+  )
+}
+
 // For each installed package, locate its spec file via the package's own
 // `[tools.graded]` config (defaulting to `<package_name>.graded`), then read
 // and parse it *once*, folding its qualified `effects`/`check` annotations
 // into the global effect/param maps, its `returns` lines into the
-// returned-operator map, and its `type` field lines into a flat list. Packages
+// returned-operator map, its `type` field lines into a flat list, and its
+// `external effects` lines into the function and module tiers. Packages
 // with no spec file are silently skipped — same fail-soft semantics as the
 // catalog and the old per-module reader.
-fn load_dependencies(
-  packages_directory: String,
-) -> #(
-  Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
-  Dict(QualifiedName, List(ParamBound)),
-  Dict(QualifiedName, ReturnedOperator),
-  List(#(TypeFieldAnnotation, LookupOrigin)),
-) {
+//
+// Within one package's spec a function's `external effects` line beats its
+// `effects` line: `graded infer` writes no `effects` line for an
+// externally-declared function, so a spec carrying both has a stale one, and
+// only the external's term pairs with the empty bounds
+// `load_spec_params_from_file` records for it. Across packages the later one in
+// the directory fold wins, as effects lines do.
+fn load_dependencies(packages_directory: String) -> Dependencies {
   let entries = case simplifile.read_directory(packages_directory) {
     Ok(found) -> found
     Error(_) -> []
   }
   list.fold(
     entries,
-    #(dict.new(), dict.new(), dict.new(), []),
+    Dependencies(dict.new(), dict.new(), dict.new(), [], dict.new()),
     fn(acc, package_name) {
-      let #(effect_map, param_map, returns_map, type_fields) = acc
       let origin = DependencySpec(package: package_name)
       let dep_root = packages_directory <> "/" <> package_name
-      let #(new_effects, new_params, new_returns, new_type_fields) =
-        load_dep_spec(dep_root, package_name)
-      #(
-        dict.merge(effect_map, with_origin(new_effects, origin)),
-        dict.merge(param_map, new_params),
-        dict.merge(returns_map, tag_returns(new_returns, Foreign, origin)),
-        list.append(
-          type_fields,
-          list.map(new_type_fields, fn(field) { #(field, origin) }),
+      let dep = load_dep_spec(dep_root, package_name)
+      let #(function_externals, module_externals) =
+        split_externals(dep.externals, origin)
+      Dependencies(
+        effects: dict.merge(
+          acc.effects,
+          dict.merge(with_origin(dep.effects, origin), function_externals),
         ),
+        params: dict.merge(acc.params, dep.params),
+        returns: dict.merge(
+          acc.returns,
+          tag_returns(dep.returns, Foreign, origin),
+        ),
+        type_fields: list.append(
+          acc.type_fields,
+          list.map(dep.type_fields, fn(field) { #(field, origin) }),
+        ),
+        module_effects: dict.merge(acc.module_effects, module_externals),
       )
     },
   )

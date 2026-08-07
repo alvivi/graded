@@ -2154,19 +2154,22 @@ fn read_spec(spec_path: String) -> GradedFile {
 //
 // 1. Try to load its spec file (via the dep's own `[tools.graded]`
 //    config, defaulting to `<package_name>.graded`) and fold its
-//    annotations into the knowledge base. This is the fast, intended
-//    path: the dep author already ran `graded infer`, committed the
-//    spec file, and the consumer just reads it.
+//    annotations into the knowledge base via `with_path_dep_spec`, which
+//    places them below the consumer's own entries and above the catalog.
+//    This is the fast, intended path: the dep author already ran `graded
+//    infer`, committed the spec file, and the consumer just reads it.
 //
 // 2. If the dep has no spec file, fall back to inferring from source via
-//    `infer_path_dep` so path deps without graded set up still work.
+//    `infer_path_dep` so path deps without graded set up still work. These
+//    results gap-fill: a catalog entry for the same name still wins.
 //    Cross-path-dep imports are not currently merged into a single graph
 //    — each dep is processed sequentially.
 //
 // A module the consumer declared with a module-level external (in
 // `consumer_modules`) is not inferred over during step 2 (see `infer_path_dep`),
 // so the consumer's declaration governs it. The spec-file branch is left
-// untouched: an authoritative dep spec (or catalog) effect still wins.
+// untouched: a function-keyed entry from an authoritative dep spec still wins
+// over a module-level external, per-function beating module-level.
 fn enrich_with_path_deps(
   knowledge_base: KnowledgeBase,
   package_root: String,
@@ -2186,19 +2189,15 @@ fn enrich_with_path_deps(
         // dep's own types; load them so a consumer resolves those fields without
         // re-declaring them. The infer-from-source fallback has no spec, so no
         // hand-written `type` lines to load.
-        let #(effs, params, returns, type_fields) =
-          effects.load_dep_spec(resolved_dep_path, name)
+        let dep = effects.load_dep_spec(resolved_dep_path, name)
         // A committed path-dependency spec is serialized → Foreign.
-        fold_inferred_into_kb(
-          kb,
-          effs,
-          params,
-          returns,
-          effects.Foreign,
+        effects.with_path_dep_spec(kb, dep, name)
+        |> effects.with_foreign_returned_operators(
+          dep.returns,
           types.PathDependency(package: name),
         )
         |> effects.with_type_fields(
-          type_fields,
+          dep.type_fields,
           types.PathDependency(package: name),
         )
       }
