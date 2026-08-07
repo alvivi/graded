@@ -390,7 +390,7 @@ myapp/router.handle has effects [Stdout]
 
 $ gleam run -m graded effect myapp/repo.Repo.find
 field `find` on type `Repo` (myapp/repo) has effects [Storage]
-  source: declared by a `type` line
+  source: declared by a `type` line in your spec
 ```
 
 `<name>` is a module-qualified function or a `module.Type.field` type field.
@@ -435,7 +435,9 @@ The `source:` line names which source answered: `your spec`, `your spec's
 external declaration`, `in-memory inference`, `<pkg>'s shipped spec`, `path
 dependency <pkg>`, or `<pkg>'s catalog entry`. A name answered by a module-level
 `external effects` declaration reads "module-level external for" that module
-instead, with the precedence note below it. Every answer names a source.
+instead, with the precedence note below it. A type field names the file its
+`type` line sits in the same way (`declared by a `type` line in wisp's shipped
+spec`). Every answer names a source.
 
 `--format=graded` prints the same answer as a `.graded` line, with provenance on
 a `//` comment, so the whole output parses back — the format to pipe into a spec
@@ -444,7 +446,7 @@ file or hand to a tool that already reads `.graded`:
 ```sh
 $ gleam run -m graded effect myapp/repo.Repo.find --format=graded
 type myapp/repo.Repo.find : [Storage]
-// declared by a type line
+// declared by a type line in your spec
 
 $ gleam run -m graded effect myapp.apply --format=graded
 effects myapp.apply(f: [Stdout]) : [Stdout]
