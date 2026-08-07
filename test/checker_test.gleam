@@ -1213,7 +1213,8 @@ fn check_source_with_externals(
   externals: List(types.ExternalAnnotation),
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
-  let kb = effects.with_externals(knowledge_base(), externals)
+  let kb =
+    effects.with_externals(knowledge_base(), externals, types.UserExternal)
   let #(violations, _warnings) =
     checker.check(
       module,
@@ -1310,7 +1311,11 @@ pub fn external_same_module_resolves_declared_effects_test() {
       Specific(set.from_list(["Time"])),
     ),
   ]
-  infer_external_wrapper(effects.with_externals(knowledge_base(), externals))
+  infer_external_wrapper(effects.with_externals(
+    knowledge_base(),
+    externals,
+    types.UserExternal,
+  ))
   |> should.equal(Specific(set.from_list(["Time"])))
 }
 
@@ -1695,6 +1700,7 @@ fn build_kb(calls: List(#(String, String, String))) -> effects.KnowledgeBase {
     updates: dict.new(),
     module_effects: dict.new(),
     provenance: dict.new(),
+    origins: dict.new(),
   )
 }
 
@@ -1972,6 +1978,7 @@ fn bare_knowledge_base() -> effects.KnowledgeBase {
     updates: dict.new(),
     module_effects: dict.new(),
     provenance: dict.new(),
+    origins: dict.new(),
   )
 }
 
@@ -2195,6 +2202,7 @@ fn polymorphic_kb() -> effects.KnowledgeBase {
   effects.empty_knowledge_base()
   |> effects.with_inferred(
     dict.map_values(effects_map, fn(_, v) { effect_term.from_effect_set(v) }),
+    types.ProjectInferred,
   )
   |> effects.with_inferred_params(params_map)
 }
@@ -2376,6 +2384,7 @@ fn two_callback_kb() -> effects.KnowledgeBase {
   effects.empty_knowledge_base()
   |> effects.with_inferred(
     dict.map_values(effects_map, fn(_, v) { effect_term.from_effect_set(v) }),
+    types.ProjectInferred,
   )
   |> effects.with_inferred_params(params_map)
 }
@@ -2495,6 +2504,7 @@ fn apply_twice_kb_and_registry() -> #(
           )),
         ),
       ]),
+      types.ProjectInferred,
     )
     |> effects.with_inferred_params(
       dict.from_list([
@@ -2645,6 +2655,7 @@ pub fn mixed_tracked_and_closure_args_test() {
           effect_term.from_effect_set(types.empty()),
         ),
       ]),
+      types.ProjectInferred,
     )
   let source =
     "
@@ -2791,6 +2802,7 @@ pub fn caller() -> Nil {
           effect_term.from_effect_set(types.empty()),
         ),
       ]),
+      types.ProjectInferred,
     )
     |> effects.with_factories(
       dict.from_list([
@@ -2896,6 +2908,7 @@ pub fn runner(cb: fn(String) -> Nil) -> Nil { Nil }"
         ),
         #(QualifiedName("app", "runner"), types.TVar("cb")),
       ]),
+      types.ProjectInferred,
     )
     |> effects.with_inferred_params(
       dict.from_list([
@@ -3017,7 +3030,12 @@ pub fn infer_operator_param_threads_all_callbacks_test() {
   // An operator parameter taking two function arguments threads BOTH callbacks
   // as a curried application `((action [Stdout]) [FileSystem])` — neither is
   // dropped (the previous single-callback behaviour lost `fs.read`).
-  let kb = effects.with_externals(knowledge_base(), [fs_read_external()])
+  let kb =
+    effects.with_externals(
+      knowledge_base(),
+      [fs_read_external()],
+      types.UserExternal,
+    )
   let source =
     "
 import gleam/io
@@ -3048,7 +3066,12 @@ pub fn run(action: fn(fn(String) -> Nil, fn(String) -> Nil) -> Nil) -> Nil {
 pub fn infer_operator_param_non_adjacent_callbacks_test() {
   // Callbacks interleaved with non-function arguments (positions 1 and 3) still
   // thread in order.
-  let kb = effects.with_externals(knowledge_base(), [fs_read_external()])
+  let kb =
+    effects.with_externals(
+      knowledge_base(),
+      [fs_read_external()],
+      types.UserExternal,
+    )
   let source =
     "
 import gleam/io
@@ -3818,6 +3841,7 @@ pub fn caller() -> Nil {
           effect_term.from_effect_set(types.empty()),
         ),
       ]),
+      types.ProjectInferred,
     )
     |> effects.with_fresh_returned_operators(
       dict.from_list([
@@ -3875,6 +3899,7 @@ pub fn caller() -> Nil {
           effect_term.from_effect_set(types.empty()),
         ),
       ]),
+      types.ProjectInferred,
     )
     |> effects.with_fresh_returned_operators(
       effects.load_spec_returns_from_file(spec),
@@ -3975,6 +4000,7 @@ pub fn caller() -> Nil {
           effect_term.from_effect_set(types.empty()),
         ),
       ]),
+      types.ProjectInferred,
     )
     |> effects.with_fresh_returned_operators(
       effects.load_spec_returns_from_file(spec),
@@ -4128,7 +4154,12 @@ fn second_order_violations(
   budget: List(String),
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
-  let kb = effects.with_externals(knowledge_base(), [fs_read_external()])
+  let kb =
+    effects.with_externals(
+      knowledge_base(),
+      [fs_read_external()],
+      types.UserExternal,
+    )
   let registry = signatures.from_glance_module("app", module)
   let ann =
     EffectAnnotation(
@@ -5153,6 +5184,7 @@ pub fn run() -> Nil {
           effect_term.from_effect_set(types.empty()),
         ),
       ]),
+      types.ProjectInferred,
     )
     |> effects.with_fresh_returned_operators(
       effects.load_spec_returns_from_file(spec),

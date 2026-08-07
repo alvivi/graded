@@ -13,6 +13,7 @@ import gleam/set.{type Set}
 import gleam/string
 import graded/internal/annotation
 import graded/internal/effect_term
+import graded/internal/effects
 import graded/internal/types.{
   type EffectTerm, type ParamBound, EffectAnnotation, TypeFieldAnnotation,
 }
@@ -72,8 +73,24 @@ pub fn render_graded(answer: EffectAnswer) -> String {
       effects_line(name, [], term)
       <> "\n// resolved via module-level external for "
       <> module
-    FunctionAnswer(name:, bounds:, term:, source: types.FunctionEntry, ..) ->
+    // The source that wrote the winning entry, when the lookup recorded one.
+    FunctionAnswer(
+      name:,
+      bounds:,
+      term:,
+      source: types.FunctionEntry(origin: Some(origin)),
+      ..,
+    ) ->
       effects_line(name, bounds, term)
+      <> "\n// resolved from "
+      <> effects.describe_origin(origin)
+    FunctionAnswer(
+      name:,
+      bounds:,
+      term:,
+      source: types.FunctionEntry(origin: None),
+      ..,
+    ) -> effects_line(name, bounds, term)
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
       annotation.format_type_field(TypeFieldAnnotation(
         module:,
@@ -228,17 +245,20 @@ fn detail_lines(
   module: String,
   source: types.EffectSource,
 ) -> List(String) {
+  // A bound is an assumption applied to the argument at call sites, not a
+  // claim about where this function's own effects came from, so it follows the
+  // source line rather than standing in for it.
+  let bound_lines = bounds |> list.filter(constrains) |> list.map(bound_line)
   case source {
     types.ModuleExternalEntry -> [
       "  source: module-level external for `" <> module <> "`",
       "          used when no per-function entry exists",
     ]
-    // A bound is an assumption applied to the argument at call sites, not a
-    // claim about where this function's own effects came from.
-    types.FunctionEntry ->
-      bounds
-      |> list.filter(constrains)
-      |> list.map(bound_line)
+    types.FunctionEntry(origin: Some(origin)) -> [
+      "  source: " <> effects.describe_origin(origin),
+      ..bound_lines
+    ]
+    types.FunctionEntry(origin: None) -> bound_lines
   }
 }
 

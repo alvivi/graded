@@ -227,12 +227,67 @@ pub type TypeFieldOrigin {
   Inferred
 }
 
+// Why a call's effect could not be resolved. Recorded by the resolver that
+// decided it, at the moment it decided — never reconstructed afterwards.
+pub type UnknownReason {
+  // A qualified call no knowledge-base source keys: no spec line, no external,
+  // no dependency spec, no catalog entry. The module is on the violation's
+  // `call`, so this carries no payload.
+  NoKnownEffects
+  // A same-module call to a bodyless `@external` function with no
+  // `external effects` declaration.
+  UndeclaredExternal
+  // A field call whose receiver girard could not type and no syntactic
+  // parameter annotation names.
+  ReceiverTypeUnresolved
+  // A field call on a receiver of a known type that no `type` line, check
+  // bound, or wired value decides. The payload names the receiver type; the
+  // module is "" for the syntactic fallback, which has none.
+  FieldNotAnnotated(module: String, type_name: String)
+  // A field call whose receiver's construction could not be traced or grounded.
+  UntraceableReceiver
+  // A field call whose receiver's construction was traced, but the wired
+  // value's effect still carries `Unknown` after substitution with no origin
+  // explaining it: a wired function no source resolves, an unrecognised wired
+  // value, a bare local name whose polymorphic marker concretized unbound, or a
+  // locally analysed value whose effect is partly unknown.
+  UnresolvedFieldValue
+  // A direct application of a returned operator whose producer could not be
+  // resolved.
+  UntraceableProducer
+}
+
+// Where a resolved effect came from: which source wrote the winning
+// knowledge-base entry, or — for a field call — which rule decided it.
+pub type LookupOrigin {
+  // A per-function `external effects` line in this project's spec.
+  UserExternal
+  // A committed `effects` line in this project's spec.
+  CommittedSpec
+  // In-memory inference over this project's source, this run.
+  ProjectInferred
+  // A dependency's shipped spec under `build/packages`.
+  DependencySpec(package: String)
+  // A path dependency's spec file, or inference over its source.
+  PathDependency(package: String)
+  // The bundled versioned catalog entry for a package.
+  Catalog(package: String)
+  // The `module_effects` fallback answered. Named apart from
+  // `ExternalTarget.ModuleExternal`, which shares this module's namespace.
+  ModuleExternalOrigin
+  // A hand-written `type` line resolved a field call. Set only by the field
+  // path, never stored in the knowledge base's origins map.
+  TypeLine
+}
+
 // Which of the knowledge base's two maps answered a function lookup. Reported
 // by the lookup itself, so a caller that renders provenance can't drift out of
 // step with the branch order that produced the term.
 pub type EffectSource {
   // An entry keyed by the function itself, from any of the merged sources.
-  FunctionEntry
+  // `origin` names the source that wrote it, and is `None` when the parallel
+  // origins map has no entry for the name.
+  FunctionEntry(origin: Option(LookupOrigin))
   // The function's module carries `external effects <module> : [...]`. Reached
   // only when nothing keys the function itself, so a per-function external or a
   // catalog line for it takes precedence; it carries no per-function bounds.

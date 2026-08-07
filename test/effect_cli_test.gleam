@@ -34,14 +34,18 @@ fn lookup(name: String) -> String {
 
 pub fn known_function_test() {
   lookup("impure_view.view")
-  |> should.equal("effects impure_view.view : [Stdout]")
+  |> should.equal(
+    "effects impure_view.view : [Stdout]\n// resolved from your spec",
+  )
 }
 
 pub fn function_known_as_unknown_is_found_test() {
   // `[Unknown]` is a resolved answer, not a miss: the query must report it
   // rather than claim the function doesn't exist.
   lookup("shadow_field.go")
-  |> should.equal("effects shadow_field.go : [Unknown]")
+  |> should.equal(
+    "effects shadow_field.go : [Unknown]\n// resolved from your spec",
+  )
 }
 
 pub fn declared_type_field_test() {
@@ -56,12 +60,16 @@ pub fn unspecced_function_resolves_from_memory_test() {
   // can only resolve through the in-memory inference pass — no prior
   // `graded infer` needed.
   lookup("external_same_module.read_clock")
-  |> should.equal("effects external_same_module.read_clock : [Time]")
+  |> should.equal(
+    "effects external_same_module.read_clock : [Time]\n// resolved from in-memory inference",
+  )
 }
 
 pub fn function_level_external_test() {
   lookup("external_same_module.now")
-  |> should.equal("effects external_same_module.now : [Time]")
+  |> should.equal(
+    "effects external_same_module.now : [Time]\n// resolved from your spec's external declaration",
+  )
 }
 
 pub fn module_level_external_fallback_is_labelled_test() {
@@ -98,7 +106,9 @@ pub fn private_function_is_not_found_test() {
 
 pub fn freshly_inferred_bounds_are_rendered_test() {
   lookup("nested_higher_order.apply_twice")
-  |> should.equal("effects nested_higher_order.apply_twice(f: [f]) : [f]")
+  |> should.equal(
+    "effects nested_higher_order.apply_twice(f: [f]) : [f]\n// resolved from in-memory inference",
+  )
 }
 
 pub fn committed_bounds_win_as_a_pair_test() {
@@ -106,7 +116,9 @@ pub fn committed_bounds_win_as_a_pair_test() {
   // named `f`. The committed bounds travel with the committed term, so the
   // query renders `g` on both sides rather than a mixed pair.
   lookup("nested_higher_order.pure_forward")
-  |> should.equal("effects nested_higher_order.pure_forward(g: [g]) : [g]")
+  |> should.equal(
+    "effects nested_higher_order.pure_forward(g: [g]) : [g]\n// resolved from your spec",
+  )
 }
 
 pub fn check_line_bounds_stay_out_of_the_knowledge_base_test() {
@@ -116,7 +128,7 @@ pub fn check_line_bounds_stay_out_of_the_knowledge_base_test() {
   let output = lookup("factory_forward.caller")
   output
   |> should.equal(
-    "effects factory_forward.caller(resolver: [resolver]) : [resolver]",
+    "effects factory_forward.caller(resolver: [resolver]) : [resolver]\n// resolved from in-memory inference",
   )
   string.contains(output, "[Stdout]") |> should.be_false
 }
@@ -136,7 +148,9 @@ pub fn bound_less_committed_line_suppresses_inferred_bounds_test() {
   // nothing in that term mentions.
   let output = lookup("nested_higher_order.log_and_map")
   output
-  |> should.equal("effects nested_higher_order.log_and_map : [Stdout]")
+  |> should.equal(
+    "effects nested_higher_order.log_and_map : [Stdout]\n// resolved from your spec",
+  )
   string.contains(output, "f:") |> should.be_false
 }
 
@@ -194,6 +208,11 @@ pub fn bare_type_line_answers_both_query_forms_test() {
 pub fn spec_fast_path_matches_the_full_project_context_test() {
   // One name per kind the fast path claims, plus two it must decline: a name
   // needing the in-memory pass, and one the spec never mentions.
+  //
+  // The rendered provenance is part of the compared output, so a committed
+  // line (`impure_view.view`) and an external (`external_same_module.now`) also
+  // pin that both paths tag the same origin — they fold the spec through the
+  // same writers.
   [
     "impure_view.view",
     "nested_higher_order.pure_forward",
@@ -231,6 +250,40 @@ pub fn dependency_type_field_outranks_a_bare_project_line_test() {
   cleanup(project)
 }
 
+pub fn a_path_dependency_answer_names_the_dependency_test() {
+  // A path dep's committed spec decides `dep.shout`; the answer says which
+  // package that was, so a reader knows the line to edit is the dep's, not
+  // this project's.
+  let dep_dir =
+    write_fixture("/tmp/graded_effect_pathdep_dep", [
+      #("gleam.toml", "name = \"dep\"\n"),
+      #("dep.graded", "effects dep.shout : [Stdout]\n"),
+      #(
+        "src/dep.gleam",
+        "import gleam/io\n\npub fn shout() -> Nil {\n  io.println(\"x\")\n}\n",
+      ),
+    ])
+  let app_dir =
+    write_fixture("/tmp/graded_effect_pathdep_app", [
+      #(
+        "gleam.toml",
+        "name = \"app\"\n\n[dependencies]\ndep = { path = \""
+          <> dep_dir
+          <> "\" }\n",
+      ),
+      #("app.graded", ""),
+      #("src/main.gleam", "pub fn run() -> Nil {\n  Nil\n}\n"),
+    ])
+
+  graded.run_effect_from_project(app_dir, "dep.shout")
+  |> should.equal(Ok(
+    "effects dep.shout : [Stdout]\n// resolved from path dependency dep",
+  ))
+
+  cleanup(dep_dir)
+  cleanup(app_dir)
+}
+
 // Output formats
 //
 // Prose is what the CLI prints by default; `--format=graded` is the spec syntax
@@ -245,7 +298,7 @@ fn prose(name: String) -> String {
 
 pub fn prose_states_a_resolved_effect_test() {
   prose("impure_view.view")
-  |> should.equal("impure_view.view has effects [Stdout]")
+  |> should.equal("impure_view.view has effects [Stdout]\n  source: your spec")
 }
 
 pub fn prose_attributes_a_forwarded_effect_test() {
@@ -254,7 +307,7 @@ pub fn prose_attributes_a_forwarded_effect_test() {
   // prove `pure_forward` ever applies `g`.
   prose("nested_higher_order.pure_forward")
   |> should.equal(
-    "nested_higher_order.pure_forward has the effects of its `g` argument, and none of its own",
+    "nested_higher_order.pure_forward has the effects of its `g` argument, and none of its own\n  source: your spec",
   )
 }
 
@@ -263,7 +316,7 @@ pub fn prose_states_an_undetermined_effect_test() {
   // couldn't settle. A name that isn't there is the error path, not this.
   prose("shadow_field.go")
   |> should.equal(
-    "shadow_field.go has effects that could not be determined: [Unknown]",
+    "shadow_field.go has effects that could not be determined: [Unknown]\n  source: your spec",
   )
 }
 

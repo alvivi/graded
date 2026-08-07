@@ -51,7 +51,7 @@ pub fn lookup_known_variant_test() {
   effects.lookup(knowledge_base(), QualifiedName("gleam/io", "debug"))
   |> should.equal(effects.Known(
     effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
-    types.FunctionEntry,
+    types.FunctionEntry(origin: option.Some(types.Catalog("gleam_stdlib"))),
   ))
 }
 
@@ -444,7 +444,7 @@ pub fn with_inferred_does_not_overwrite_test() {
         effect_term.from_effect_set(types.empty()),
       ),
     ])
-  let enriched = effects.with_inferred(kb, inferred)
+  let enriched = effects.with_inferred(kb, inferred, types.ProjectInferred)
   // Existing KB entry should take priority (Stdout), not be overwritten to []
   effects.lookup_effects(enriched, QualifiedName("gleam/io", "println"))
   |> effect_term.to_effect_set
@@ -477,10 +477,212 @@ pub fn with_inferred_adds_new_entries_test() {
         effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
       ),
     ])
-  let enriched = effects.with_inferred(kb, inferred)
+  let enriched = effects.with_inferred(kb, inferred, types.ProjectInferred)
   effects.lookup_effects(enriched, QualifiedName("mylib/foo", "bar"))
   |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Http"])))
+}
+
+// Entry origins
+//
+// Every `all_effects` writer records which source wrote the entry it admitted,
+// and `lookup` reports it. The tag is written at the merge that admitted the
+// entry, so an entry and its origin can never come from different sources.
+
+fn external(
+  module: String,
+  function: String,
+  labels: List(String),
+) -> types.ExternalAnnotation {
+  types.ExternalAnnotation(
+    module:,
+    target: types.FunctionExternal(function),
+    effects: Specific(set.from_list(labels)),
+  )
+}
+
+fn inferred_entry(
+  module: String,
+  function: String,
+  labels: List(String),
+) -> dict.Dict(QualifiedName, types.EffectTerm) {
+  dict.from_list([
+    #(
+      QualifiedName(module, function),
+      effect_term.from_effect_set(Specific(set.from_list(labels))),
+    ),
+  ])
+}
+
+fn origin_of(
+  kb: effects.KnowledgeBase,
+  name: QualifiedName,
+) -> option.Option(types.LookupOrigin) {
+  case effects.lookup(kb, name) {
+    effects.Known(_, types.FunctionEntry(origin:)) -> origin
+    effects.Known(_, types.ModuleExternalEntry) | effects.Unknown -> option.None
+  }
+}
+
+pub fn function_external_records_its_origin_test() {
+  effects.with_externals(
+    effects.new_knowledge_base(),
+    [external("app", "now", ["Time"])],
+    types.UserExternal,
+  )
+  |> origin_of(QualifiedName("app", "now"))
+  |> should.equal(option.Some(types.UserExternal))
+}
+
+pub fn inferred_entry_records_its_origin_test() {
+  effects.with_inferred(
+    effects.new_knowledge_base(),
+    inferred_entry("app", "run", ["Stdout"]),
+    types.CommittedSpec,
+  )
+  |> origin_of(QualifiedName("app", "run"))
+  |> should.equal(option.Some(types.CommittedSpec))
+}
+
+pub fn an_existing_entry_keeps_its_own_origin_test() {
+  // `with_inferred` is existing-wins, so the second merge decides neither the
+  // term nor the origin: a losing source must not label an entry it didn't
+  // write.
+  let kb =
+    effects.new_knowledge_base()
+    |> effects.with_inferred(
+      inferred_entry("app", "run", ["Stdout"]),
+      types.CommittedSpec,
+    )
+    |> effects.with_inferred(
+      inferred_entry("app", "run", ["Disk"]),
+      types.ProjectInferred,
+    )
+  origin_of(kb, QualifiedName("app", "run"))
+  |> should.equal(option.Some(types.CommittedSpec))
+  effects.lookup_effects(kb, QualifiedName("app", "run"))
+  |> effect_term.to_effect_set
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn an_untagged_entry_is_not_relabelled_test() {
+  // An `all_effects` entry with no origins entry: the losing merge must leave
+  // it originless rather than claim it. The renderers then say nothing about
+  // its source, which is the truth.
+  let untagged =
+    effects.KnowledgeBase(
+      ..effects.new_knowledge_base(),
+      all_effects: inferred_entry("app", "run", ["Stdout"]),
+    )
+  effects.with_inferred(
+    untagged,
+    inferred_entry("app", "run", ["Disk"]),
+    types.ProjectInferred,
+  )
+  |> origin_of(QualifiedName("app", "run"))
+  |> should.equal(option.None)
+}
+
+pub fn a_module_external_answers_without_an_origin_test() {
+  // Module-level externals live in their own map and are reported as the
+  // module entry, which names the module itself.
+  let kb =
+    effects.with_externals(
+      effects.new_knowledge_base(),
+      [
+        types.ExternalAnnotation(
+          module: "fake_clock",
+          target: types.ModuleExternal,
+          effects: Specific(set.from_list(["Time"])),
+        ),
+      ],
+      types.UserExternal,
+    )
+  effects.lookup(kb, QualifiedName("fake_clock", "now"))
+  |> should.equal(effects.Known(
+    effect_term.from_effect_set(Specific(set.from_list(["Time"]))),
+    types.ModuleExternalEntry,
+  ))
+}
+
+pub fn a_dependency_spec_entry_names_its_package_test() {
+  let packages = "build/eff_dep_origin/packages"
+  let _ = simplifile.delete("build/eff_dep_origin")
+  let assert Ok(Nil) = simplifile.create_directory_all(packages <> "/dep")
+  let assert Ok(Nil) =
+    simplifile.write(
+      packages <> "/dep/dep.graded",
+      "effects dep.run : [Time]\n",
+    )
+
+  effects.load_knowledge_base(packages, "missing_manifest.toml")
+  |> origin_of(QualifiedName("dep", "run"))
+  |> should.equal(option.Some(types.DependencySpec("dep")))
+
+  let _ = simplifile.delete("build/eff_dep_origin")
+  Nil
+}
+
+pub fn a_catalog_entry_names_its_package_test() {
+  // `gleam/io.println` is an `external effects` line in the bundled catalog, so
+  // this covers the catalog's route through `with_externals` — the one that
+  // made the origin a parameter rather than a constant.
+  let root = "build/eff_catalog_origin"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/manifest.toml",
+      "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
+    )
+
+  effects.load_knowledge_base(root <> "/packages", root <> "/manifest.toml")
+  |> origin_of(QualifiedName("gleam/io", "println"))
+  |> should.equal(option.Some(types.Catalog("gleam_stdlib")))
+
+  let _ = simplifile.delete(root)
+  Nil
+}
+
+pub fn every_known_function_has_an_origin_test() {
+  // The invariant the parallel map is meant to hold on a knowledge base
+  // composed the way a run composes one: catalog, dependency spec, externals,
+  // and an inference pass.
+  let packages = "build/eff_origin_invariant/packages"
+  let _ = simplifile.delete("build/eff_origin_invariant")
+  let assert Ok(Nil) = simplifile.create_directory_all(packages <> "/dep")
+  let assert Ok(Nil) =
+    simplifile.write(
+      packages <> "/dep/dep.graded",
+      "effects dep.run : [Time]\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      "build/eff_origin_invariant/manifest.toml",
+      "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
+    )
+
+  let kb =
+    effects.load_knowledge_base(
+      packages,
+      "build/eff_origin_invariant/manifest.toml",
+    )
+    |> effects.with_externals(
+      [external("app", "now", ["Time"])],
+      types.UserExternal,
+    )
+    |> effects.with_inferred(
+      inferred_entry("app", "run", ["Stdout"]),
+      types.ProjectInferred,
+    )
+
+  kb.all_effects
+  |> dict.keys
+  |> list.all(dict.has_key(kb.origins, _))
+  |> should.be_true
+
+  let _ = simplifile.delete("build/eff_origin_invariant")
+  Nil
 }
 
 // Catalog version selection
@@ -532,6 +734,7 @@ pub fn argument_value_effects_resolves_function_ref_test() {
           effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
         ),
       ]),
+      types.ProjectInferred,
     )
   effects.argument_value_effects(
     kb,

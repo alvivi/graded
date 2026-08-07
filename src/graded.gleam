@@ -531,7 +531,10 @@ fn load_project_context(
     // Consumer externals are applied before path-dep inference so a module-level
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
-    |> effects.with_externals(annotation.extract_externals(spec))
+    |> effects.with_externals(
+      annotation.extract_externals(spec),
+      types.UserExternal,
+    )
     |> with_builders(index, dep_sources)
     |> enrich_with_path_deps(package_root, declared_modules)
     |> with_committed_spec(spec, declared_modules)
@@ -1104,7 +1107,10 @@ fn spec_answer(
 // the same order and by the same functions, over nothing else.
 fn spec_knowledge_base(spec: GradedFile) -> KnowledgeBase {
   effects.new_knowledge_base()
-  |> effects.with_externals(annotation.extract_externals(spec))
+  |> effects.with_externals(
+    annotation.extract_externals(spec),
+    types.UserExternal,
+  )
   |> with_committed_spec(spec, annotation.module_external_modules(spec))
   |> effects.with_type_fields(annotation.extract_type_fields(spec))
 }
@@ -1143,13 +1149,13 @@ fn function_effect(
         term:,
         source: types.ModuleExternalEntry,
       ))
-    effects.Known(term, types.FunctionEntry) ->
+    effects.Known(term, types.FunctionEntry(origin:)) ->
       Ok(answer.FunctionAnswer(
         name:,
         module:,
         bounds: effects.lookup_param_bounds(knowledge_base, qualified),
         term:,
-        source: types.FunctionEntry,
+        source: types.FunctionEntry(origin:),
       ))
   }
 }
@@ -1574,7 +1580,10 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     // Consumer externals are applied before path-dep inference so a module-level
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
-    |> effects.with_externals(annotation.extract_externals(spec))
+    |> effects.with_externals(
+      annotation.extract_externals(spec),
+      types.UserExternal,
+    )
     |> with_builders(index, dep_sources)
     |> enrich_with_path_deps(package_root, declared_modules)
 
@@ -1812,13 +1821,14 @@ fn thread_inferred_into_kb(
     qualified_inferred(inferred, returned_operators, module_path)
   let effects_dict = drop_declared_modules(effects_dict, declared_modules)
   // Main project topo loop + the in-memory pre-pass: results inferred this run,
-  // hence Fresh.
+  // hence Fresh, and originating in this project's own inference.
   fold_inferred_into_kb(
     knowledge_base,
     effects_dict,
     params_dict,
     returns_dict,
     effects.Fresh,
+    types.ProjectInferred,
   )
 }
 
@@ -2169,7 +2179,14 @@ fn enrich_with_path_deps(
         let #(effs, params, returns, type_fields) =
           effects.load_dep_spec(resolved_dep_path, name)
         // A committed path-dependency spec is serialized → Foreign.
-        fold_inferred_into_kb(kb, effs, params, returns, effects.Foreign)
+        fold_inferred_into_kb(
+          kb,
+          effs,
+          params,
+          returns,
+          effects.Foreign,
+          types.PathDependency(package: name),
+        )
         |> effects.with_type_fields(type_fields)
       }
       _ ->
@@ -2179,7 +2196,14 @@ fn enrich_with_path_deps(
           // Fresh (trusting it is sound and more precise than blanket cross-package
           // conservatism).
           Ok(#(effs, params, returns, provenance)) ->
-            fold_inferred_into_kb(kb, effs, params, returns, effects.Fresh)
+            fold_inferred_into_kb(
+              kb,
+              effs,
+              params,
+              returns,
+              effects.Fresh,
+              types.PathDependency(package: name),
+            )
             |> effects.with_provenance(provenance)
         }
     }
@@ -2209,23 +2233,27 @@ fn path_dep_sources(package_root: String) -> DependencySources {
 // tail of `thread_inferred_into_kb` and the path-dep loaders: effects alone
 // would leave a higher-order callee's bound unloaded, so its callback's effect
 // variable would leak unsubstituted into every caller. Existing entries win.
-// `origin` (Fix E) classifies the returned-operator summaries being folded: a
-// committed serialized spec is `Foreign`; results freshly inferred this run are
-// `Fresh` (and win over a committed Foreign entry for the same key). Effects and
-// param bounds keep committed-wins regardless — the asymmetry is deliberate.
+// `summary_origin` (Fix E) classifies the returned-operator summaries being
+// folded: a committed serialized spec is `Foreign`; results freshly inferred
+// this run are `Fresh` (and win over a committed Foreign entry for the same
+// key). Effects and param bounds keep committed-wins regardless — the asymmetry
+// is deliberate. `lookup_origin` names the source of the effect terms
+// themselves, recorded for the keys this merge wins; the two classify different
+// things and are passed separately.
 fn fold_inferred_into_kb(
   knowledge_base: KnowledgeBase,
   effs: Dict(QualifiedName, types.EffectTerm),
   params: Dict(QualifiedName, List(types.ParamBound)),
   returns: Dict(QualifiedName, types.EffectTerm),
-  origin: effects.SummaryOrigin,
+  summary_origin: effects.SummaryOrigin,
+  lookup_origin: types.LookupOrigin,
 ) -> KnowledgeBase {
-  let with_returns = case origin {
+  let with_returns = case summary_origin {
     effects.Fresh -> effects.with_fresh_returned_operators
     effects.Foreign -> effects.with_foreign_returned_operators
   }
   knowledge_base
-  |> effects.with_inferred(effs)
+  |> effects.with_inferred(effs, lookup_origin)
   |> effects.with_inferred_params(params)
   |> with_returns(returns)
 }
@@ -2304,6 +2332,10 @@ pub fn infer_path_dep(
     })
 
   use sorted <- result.try(topo.sort(graph) |> result.map_error(fn(_) { Nil }))
+  // The dep's own KB is internal to this pass; its entries are re-folded by the
+  // caller under the package name `gleam.toml` declared. The directory name is
+  // what this entry point knows the dep by.
+  let origin = types.PathDependency(package: filepath.base_name(dep_path))
   let #(effs, params, returns, provenance, _final_kb) =
     list.fold(
       sorted,
@@ -2315,6 +2347,7 @@ pub fn infer_path_dep(
           index,
           registry,
           consumer_modules,
+          origin,
         )
       },
     )
@@ -2333,6 +2366,7 @@ fn infer_path_dep_module(
   index: Dict(String, #(glance.Module, List(types.EffectAnnotation))),
   registry: SignatureRegistry,
   consumer_modules: Set(String),
+  lookup_origin: types.LookupOrigin,
 ) -> #(
   Dict(QualifiedName, types.EffectTerm),
   Dict(QualifiedName, List(types.ParamBound)),
@@ -2377,6 +2411,7 @@ fn infer_path_dep_module(
           inferred_returns,
           // Path-dep modules inferred from source this run → Fresh.
           effects.Fresh,
+          lookup_origin,
         )
         |> effects.with_provenance(inferred_provenance)
       #(
@@ -2411,10 +2446,13 @@ fn with_committed_spec(
   declared_modules: Set(String),
 ) -> KnowledgeBase {
   knowledge_base
-  |> effects.with_inferred(drop_declared_modules(
-    effects.load_spec_effects_from_file(spec),
-    declared_modules,
-  ))
+  |> effects.with_inferred(
+    drop_declared_modules(
+      effects.load_spec_effects_from_file(spec),
+      declared_modules,
+    ),
+    types.CommittedSpec,
+  )
   |> effects.with_inferred_params(drop_declared_modules(
     effects.load_spec_params_from_file(spec),
     declared_modules,

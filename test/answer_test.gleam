@@ -3,8 +3,8 @@ import gleam/set
 import gleeunit/should
 import graded/internal/answer
 import graded/internal/types.{
-  Declared, FunctionEntry, ModuleExternalEntry, ParamBound, TAbs, TLabels,
-  TUnion, TVar,
+  Catalog, CommittedSpec, Declared, DependencySpec, FunctionEntry,
+  ModuleExternalEntry, ParamBound, TAbs, TLabels, TUnion, TVar, UserExternal,
 }
 
 // Rendering one lookup
@@ -26,7 +26,7 @@ fn function(
     module: "app",
     bounds:,
     term:,
-    source: FunctionEntry,
+    source: FunctionEntry(origin: None),
   )
 }
 
@@ -142,6 +142,57 @@ pub fn a_module_level_external_states_its_precedence_test() {
   )
 }
 
+// A source line names which knowledge-base source wrote the entry, in the same
+// vocabulary the `.graded` comment and the violation suffix use.
+
+fn from(origin: types.LookupOrigin) -> answer.EffectAnswer {
+  answer.FunctionAnswer(
+    name: "app.run",
+    module: "app",
+    bounds: [],
+    term: labels(["Stdout"]),
+    source: FunctionEntry(origin: Some(origin)),
+  )
+}
+
+pub fn a_resolved_entry_names_its_source_test() {
+  from(CommittedSpec)
+  |> prose
+  |> should.equal("app.run has effects [Stdout]\n  source: your spec")
+}
+
+pub fn a_dependency_entry_names_its_package_test() {
+  from(DependencySpec("wisp"))
+  |> prose
+  |> should.equal("app.run has effects [Stdout]\n  source: wisp's shipped spec")
+}
+
+pub fn a_source_line_precedes_the_bounds_test() {
+  // The bounds describe what is assumed of the arguments; the source describes
+  // where the term came from. Both are stated, and the source first.
+  answer.FunctionAnswer(
+    name: "app.run",
+    module: "app",
+    bounds: [ParamBound("f", labels(["Stdout"]))],
+    term: labels(["Stdout"]),
+    source: FunctionEntry(origin: Some(Catalog("gleam_stdlib"))),
+  )
+  |> prose
+  |> should.equal(
+    "app.run has effects [Stdout]
+  source: gleam_stdlib's catalog entry
+  calls to argument `f` are treated as having effects [Stdout]",
+  )
+}
+
+pub fn an_untagged_entry_states_no_source_test() {
+  // The origins map is parallel to the effects map, so a lookup may find a term
+  // with no origin beside it. Nothing is stated rather than a guess.
+  function([], labels(["Stdout"]))
+  |> prose
+  |> should.equal("app.run has effects [Stdout]")
+}
+
 pub fn a_type_field_names_its_kind_test() {
   answer.TypeFieldAnswer(
     module: Some("myapp/repo"),
@@ -178,6 +229,16 @@ pub fn the_graded_renderer_writes_spec_syntax_test() {
   function([ParamBound("f", TVar("f"))], TVar("f"))
   |> answer.render(answer.Graded)
   |> should.equal("effects app.run(f: [f]) : [f]")
+}
+
+pub fn the_graded_renderer_comments_the_source_test() {
+  // The same vocabulary as prose, inside a comment, so the whole answer still
+  // parses as `.graded`.
+  from(UserExternal)
+  |> answer.render(answer.Graded)
+  |> should.equal(
+    "effects app.run : [Stdout]\n// resolved from your spec's external declaration",
+  )
 }
 
 pub fn the_formats_report_the_same_effects_test() {
