@@ -206,7 +206,7 @@ pub fn a_type_field_names_its_kind_test() {
   |> prose
   |> should.equal(
     "field `find` on type `Repo` (myapp/repo) has effects [Storage]
-  source: declared by a `type` line",
+  source: declared by a `type` line in your spec",
   )
 }
 
@@ -221,7 +221,7 @@ pub fn a_bare_type_field_carries_no_module_test() {
   |> prose
   |> should.equal(
     "field `run` on type `Box` has effects [Disk]
-  source: declared by a `type` line",
+  source: declared by a `type` line in your spec",
   )
 }
 

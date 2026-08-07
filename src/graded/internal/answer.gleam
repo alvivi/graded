@@ -121,7 +121,8 @@ fn graded_source(origin: types.LookupOrigin) -> String {
 // can't currently return.
 fn graded_origin(origin: types.TypeFieldOrigin) -> String {
   case origin {
-    types.Declared(..) -> "declared by a type line"
+    types.Declared(source:) ->
+      "declared by a type line in " <> effects.describe_source_file(source)
     types.Inferred -> "inferred from construction"
   }
 }
@@ -299,7 +300,9 @@ fn bound_line(bound: ParamBound) -> String {
 
 fn prose_origin(origin: types.TypeFieldOrigin) -> String {
   case origin {
-    types.Declared(..) -> "  source: declared by a `type` line"
+    types.Declared(source:) ->
+      "  source: declared by a `type` line in "
+      <> effects.describe_source_file(source)
     types.Inferred -> "  source: inferred from construction"
   }
 }

@@ -336,25 +336,27 @@ pub fn describe_origin(origin: LookupOrigin) -> String {
   case origin {
     UserExternal -> "your spec's external declaration"
     ModuleExternalOrigin(source:) ->
-      "a module-level external in " <> describe_file(source)
-    TypeLine(source:) -> "a type line in " <> describe_file(source)
+      "a module-level external in " <> describe_source_file(source)
+    TypeLine(source:) -> "a type line in " <> describe_source_file(source)
     CommittedSpec
     | ProjectInferred
     | DependencySpec(..)
     | PathDependency(..)
-    | Catalog(..) -> describe_file(origin)
+    | Catalog(..) -> describe_source_file(origin)
   }
 }
 
 // The file a declaration was read from, as the noun phrase that follows "in".
-fn describe_file(origin: LookupOrigin) -> String {
+// Shared with the surfaces that name a *kind* of line and the file it sits in.
+pub fn describe_source_file(origin: LookupOrigin) -> String {
   case origin {
     UserExternal | CommittedSpec -> "your spec"
     ProjectInferred -> "in-memory inference"
     DependencySpec(package:) -> package <> "'s shipped spec"
     PathDependency(package:) -> "path dependency " <> package
     Catalog(package:) -> package <> "'s catalog entry"
-    ModuleExternalOrigin(source:) | TypeLine(source:) -> describe_file(source)
+    ModuleExternalOrigin(source:) | TypeLine(source:) ->
+      describe_source_file(source)
   }
 }
 
