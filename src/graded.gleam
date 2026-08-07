@@ -1831,13 +1831,12 @@ fn thread_inferred_into_kb(
     qualified_inferred(inferred, returned_operators, module_path)
   let effects_dict = drop_declared_modules(effects_dict, declared_modules)
   // Main project topo loop + the in-memory pre-pass: results inferred this run,
-  // hence Fresh, and originating in this project's own inference.
+  // originating in this project's own inference.
   fold_inferred_into_kb(
     knowledge_base,
     effects_dict,
     params_dict,
     returns_dict,
-    effects.Fresh,
     types.ProjectInferred,
   )
 }
@@ -2183,23 +2182,18 @@ fn enrich_with_path_deps(
     // except an absolute `path`, which `resolve_path` leaves untouched.
     let resolved_dep_path = resolve_path(package_root, dep_path)
     let spec_path = config.spec_file_for(resolved_dep_path, name)
+    let origin = types.PathDependency(package: name)
     case simplifile.is_file(spec_path) {
       Ok(True) -> {
         // A committed path-dep spec can also ship `type` field effects for the
         // dep's own types; load them so a consumer resolves those fields without
         // re-declaring them. The infer-from-source fallback has no spec, so no
         // hand-written `type` lines to load.
-        let dep = effects.load_dep_spec(resolved_dep_path, name)
+        let spec = effects.load_dep_spec(resolved_dep_path, name)
         // A committed path-dependency spec is serialized → Foreign.
-        effects.with_path_dep_spec(kb, dep, name)
-        |> effects.with_foreign_returned_operators(
-          dep.returns,
-          types.PathDependency(package: name),
-        )
-        |> effects.with_type_fields(
-          dep.type_fields,
-          types.PathDependency(package: name),
-        )
+        effects.with_path_dep_spec(kb, spec, name)
+        |> effects.with_foreign_returned_operators(spec.returns, origin)
+        |> effects.with_type_fields(spec.type_fields, origin)
       }
       _ ->
         case infer_path_dep(resolved_dep_path, kb, consumer_modules) {
@@ -2208,14 +2202,7 @@ fn enrich_with_path_deps(
           // Fresh (trusting it is sound and more precise than blanket cross-package
           // conservatism).
           Ok(#(effs, params, returns, provenance)) ->
-            fold_inferred_into_kb(
-              kb,
-              effs,
-              params,
-              returns,
-              effects.Fresh,
-              types.PathDependency(package: name),
-            )
+            fold_inferred_into_kb(kb, effs, params, returns, origin)
             |> effects.with_provenance(provenance)
         }
     }
@@ -2242,32 +2229,24 @@ fn path_dep_sources(package_root: String) -> DependencySources {
 
 // Apply three `QualifiedName`-keyed inferred maps — effects, polymorphic param
 // bounds, and returned-operator signatures — to the knowledge base. The shared
-// tail of `thread_inferred_into_kb` and the path-dep loaders: effects alone
-// would leave a higher-order callee's bound unloaded, so its callback's effect
-// variable would leak unsubstituted into every caller. Existing entries win.
-// `summary_origin` (Fix E) classifies the returned-operator summaries being
-// folded: a committed serialized spec is `Foreign`; results freshly inferred
-// this run are `Fresh` (and win over a committed Foreign entry for the same
-// key). Effects and param bounds keep committed-wins regardless — the asymmetry
-// is deliberate. `lookup_origin` names the source of the effect terms
-// themselves, recorded for the keys this merge wins; the two classify different
-// things and are passed separately.
+// tail of `thread_inferred_into_kb` and the infer-from-source path-dep branch:
+// effects alone would leave a higher-order callee's bound unloaded, so its
+// callback's effect variable would leak unsubstituted into every caller.
+// Existing effects and param bounds win; the returned-operator summaries are
+// `Fresh` (Fix E) — inferred this run, so they win over a committed Foreign
+// entry for the same key. `lookup_origin` names the source of the effect terms,
+// recorded for the keys this merge wins.
 fn fold_inferred_into_kb(
   knowledge_base: KnowledgeBase,
   effs: Dict(QualifiedName, types.EffectTerm),
   params: Dict(QualifiedName, List(types.ParamBound)),
   returns: Dict(QualifiedName, types.EffectTerm),
-  summary_origin: effects.SummaryOrigin,
   lookup_origin: types.LookupOrigin,
 ) -> KnowledgeBase {
-  let with_returns = case summary_origin {
-    effects.Fresh -> effects.with_fresh_returned_operators
-    effects.Foreign -> effects.with_foreign_returned_operators
-  }
   knowledge_base
   |> effects.with_inferred(effs, lookup_origin)
   |> effects.with_inferred_params(params)
-  |> with_returns(returns, lookup_origin)
+  |> effects.with_fresh_returned_operators(returns, lookup_origin)
 }
 
 /// Build the dependency-graph index for a single path dep, topo-sort it,
@@ -2421,8 +2400,6 @@ fn infer_path_dep_module(
           inferred_effs,
           inferred_params,
           inferred_returns,
-          // Path-dep modules inferred from source this run → Fresh.
-          effects.Fresh,
           lookup_origin,
         )
         |> effects.with_provenance(inferred_provenance)

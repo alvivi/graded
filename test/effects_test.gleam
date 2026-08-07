@@ -18,6 +18,7 @@ import graded/internal/types.{
 }
 import qcheck
 import simplifile
+import support.{cleanup, write_fixture}
 
 // Knowledge-base lookups
 //
@@ -507,6 +508,17 @@ fn external(
   )
 }
 
+fn module_external(
+  module: String,
+  labels: List(String),
+) -> types.ExternalAnnotation {
+  types.ExternalAnnotation(
+    module:,
+    target: types.ModuleExternal,
+    effects: Specific(set.from_list(labels)),
+  )
+}
+
 fn inferred_entry(
   module: String,
   function: String,
@@ -590,13 +602,7 @@ pub fn a_module_external_names_the_file_that_declared_it_test() {
   let kb =
     effects.with_externals(
       effects.new_knowledge_base(),
-      [
-        types.ExternalAnnotation(
-          module: "fake_clock",
-          target: types.ModuleExternal,
-          effects: Specific(set.from_list(["Time"])),
-        ),
-      ],
+      [module_external("fake_clock", ["Time"])],
       types.Catalog("fake_clock_pkg"),
     )
   effects.lookup(kb, QualifiedName("fake_clock", "now"))
@@ -725,12 +731,9 @@ pub fn a_catalog_effects_line_beats_another_packages_external_test() {
 // Build a package's spec on disk and read it back through `load_dep_spec`, so a
 // test states what the dependency ships as spec text rather than as records.
 fn dep_spec(root: String, package: String, source: String) -> effects.DepSpec {
-  let _ = simplifile.delete(root)
-  let assert Ok(Nil) = simplifile.create_directory_all(root)
-  let assert Ok(Nil) =
-    simplifile.write(root <> "/" <> package <> ".graded", source)
+  write_fixture(root, [#(package <> ".graded", source)])
   let spec = effects.load_dep_spec(root, package)
-  let _ = simplifile.delete(root)
+  cleanup(root)
   spec
 }
 
@@ -741,19 +744,20 @@ fn installed_dep(
   package: String,
   source: String,
 ) -> effects.KnowledgeBase {
-  let packages = root <> "/packages"
-  let _ = simplifile.delete(root)
-  let assert Ok(Nil) =
-    simplifile.create_directory_all(packages <> "/" <> package)
-  let assert Ok(Nil) =
-    simplifile.write(
-      packages <> "/" <> package <> "/" <> package <> ".graded",
-      source,
-    )
+  write_fixture(root, [#(dep_spec_path(package), source)])
   let kb =
-    effects.load_knowledge_base(packages, root <> "/missing_manifest.toml")
-  let _ = simplifile.delete(root)
+    effects.load_knowledge_base(
+      root <> "/packages",
+      root <> "/missing_manifest.toml",
+    )
+  cleanup(root)
   kb
+}
+
+// One installed package's spec, at its `build/packages`-shaped location under a
+// fixture root.
+fn dep_spec_path(package: String) -> String {
+  "packages/" <> package <> "/" <> package <> ".graded"
 }
 
 pub fn a_dependency_function_external_resolves_test() {
@@ -830,22 +834,18 @@ pub fn a_dependency_external_beats_the_catalog_test() {
   // A shipped external is the package author's own word on its FFI, so it
   // outranks graded's bundled description of the same function.
   let root = "build/eff_dep_external_vs_catalog"
-  let packages = root <> "/packages"
-  let _ = simplifile.delete(root)
-  let assert Ok(Nil) =
-    simplifile.create_directory_all(packages <> "/gleam_stdlib")
-  let assert Ok(Nil) =
-    simplifile.write(
-      packages <> "/gleam_stdlib/gleam_stdlib.graded",
+  write_fixture(root, [
+    #(
+      dep_spec_path("gleam_stdlib"),
       "external effects gleam/io.println : [Shipped]\n",
-    )
-  let assert Ok(Nil) =
-    simplifile.write(
-      root <> "/manifest.toml",
+    ),
+    #(
+      "manifest.toml",
       "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
-    )
+    ),
+  ])
 
-  effects.load_knowledge_base(packages, root <> "/manifest.toml")
+  effects.load_knowledge_base(root <> "/packages", root <> "/manifest.toml")
   |> entry_of(QualifiedName("gleam/io", "println"))
   |> should.equal(
     Ok(#(
@@ -854,8 +854,7 @@ pub fn a_dependency_external_beats_the_catalog_test() {
     )),
   )
 
-  let _ = simplifile.delete(root)
-  Nil
+  cleanup(root)
 }
 
 // Path-dependency spec precedence
@@ -947,23 +946,11 @@ pub fn a_path_dep_module_external_overrides_only_the_catalogs_test() {
   let kb =
     effects.new_knowledge_base()
     |> effects.with_externals(
-      [
-        types.ExternalAnnotation(
-          module: "dep/catalogued",
-          target: types.ModuleExternal,
-          effects: Specific(set.from_list(["Catalogued"])),
-        ),
-      ],
+      [module_external("dep/catalogued", ["Catalogued"])],
       types.Catalog("dep"),
     )
     |> effects.with_externals(
-      [
-        types.ExternalAnnotation(
-          module: "dep/declared",
-          target: types.ModuleExternal,
-          effects: Specific(set.from_list(["Mocked"])),
-        ),
-      ],
+      [module_external("dep/declared", ["Mocked"])],
       types.UserExternal,
     )
     |> effects.with_path_dep_spec(spec, "dep")
@@ -990,13 +977,7 @@ pub fn a_path_dep_function_entry_beats_a_module_external_test() {
   let kb =
     effects.new_knowledge_base()
     |> effects.with_externals(
-      [
-        types.ExternalAnnotation(
-          module: "dep/ffi",
-          target: types.ModuleExternal,
-          effects: Specific(set.from_list(["Mocked"])),
-        ),
-      ],
+      [module_external("dep/ffi", ["Mocked"])],
       types.UserExternal,
     )
     |> effects.with_path_dep_spec(
