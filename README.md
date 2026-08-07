@@ -48,7 +48,7 @@ check app.view : []
 
 ```sh
 $ gleam run -m graded check
-src/app.gleam: view calls gleam/io.println with effects [Stdout] but declared []
+src/app.gleam: view calls gleam/io.println with effects [Stdout] (from gleam_stdlib's catalog entry) but declared []
 
 graded: 1 violation(s) found
 ```

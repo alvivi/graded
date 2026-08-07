@@ -3,7 +3,7 @@ import girard
 import glance
 import gleam/dict
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/set
 import gleam/string
@@ -4688,6 +4688,8 @@ pub fn run(b: Bool) -> Nil {
 // CLI prints for a violation.
 
 // A violation of `run`'s `[]` budget, for asserting on the rendered message.
+// The resolver recorded nothing about it, so the message states what the call
+// kind alone establishes.
 fn violation(call: types.QualifiedName, actual: EffectSet) -> types.Violation {
   types.Violation(
     function: "run",
@@ -4695,7 +4697,19 @@ fn violation(call: types.QualifiedName, actual: EffectSet) -> types.Violation {
     span: glance.Span(0, 0),
     declared: Specific(set.new()),
     actual:,
+    reason: option.None,
+    origin: option.None,
   )
+}
+
+// The same violation with what the resolver recorded about the call.
+fn explained_violation(
+  call: types.QualifiedName,
+  actual: EffectSet,
+  reason: option.Option(types.UnknownReason),
+  origin: option.Option(types.LookupOrigin),
+) -> types.Violation {
+  types.Violation(..violation(call, actual), reason:, origin:)
 }
 
 fn pure_check(function: String) -> EffectAnnotation {
@@ -4968,6 +4982,378 @@ pub fn format_violation_unrecognised_sentinel_does_not_leak_test() {
   )
   string.contains(message, "calls <") |> should.be_false()
   string.contains(message, "<bogus>") |> should.be_false()
+}
+
+// Explained violations
+//
+// What the resolver recorded, in the message: the reason refines the action
+// phrase, the origin follows the effect set. A reason is stated only for a set
+// that is still unresolved; an origin whenever one was recorded.
+
+// The message for a `run` violation carrying `reason` and `origin`.
+fn explained_message(
+  call: types.QualifiedName,
+  actual: EffectSet,
+  reason: option.Option(types.UnknownReason),
+  origin: option.Option(types.LookupOrigin),
+) -> String {
+  explained_violation(call, actual, reason, origin)
+  |> checker.format_violation("src/app.gleam", _)
+}
+
+fn unresolved_field(reason: types.UnknownReason) -> String {
+  explained_message(
+    QualifiedName("<field>", "repo.find"),
+    Specific(set.from_list(["Unknown"])),
+    Some(reason),
+    None,
+  )
+}
+
+pub fn format_violation_names_the_unannotated_receiver_type_test() {
+  unresolved_field(types.FieldNotAnnotated("dep/repo", "Repo"))
+  |> should.equal(
+    "src/app.gleam: run calls field `find` on `repo` of type `dep/repo.Repo`, which has no effect annotation for that field, with unresolved effects [Unknown] but declared []",
+  )
+}
+
+pub fn format_violation_leaves_a_module_less_type_bare_test() {
+  // The syntactic fallback types a receiver by its annotation alone, which
+  // carries no module to qualify it with.
+  unresolved_field(types.FieldNotAnnotated("", "Config"))
+  |> should.equal(
+    "src/app.gleam: run calls field `find` on `repo` of type `Config`, which has no effect annotation for that field, with unresolved effects [Unknown] but declared []",
+  )
+}
+
+pub fn format_violation_says_the_receiver_type_is_unresolved_test() {
+  unresolved_field(types.ReceiverTypeUnresolved)
+  |> should.equal(
+    "src/app.gleam: run calls field `find` on `repo`, whose type could not be resolved, with unresolved effects [Unknown] but declared []",
+  )
+}
+
+pub fn format_violation_says_the_receiver_is_untraceable_test() {
+  unresolved_field(types.UntraceableReceiver)
+  |> should.equal(
+    "src/app.gleam: run calls field `find` on `repo`, whose value could not be traced, with unresolved effects [Unknown] but declared []",
+  )
+}
+
+pub fn format_violation_says_the_wired_value_is_unresolved_test() {
+  unresolved_field(types.UnresolvedFieldValue)
+  |> should.equal(
+    "src/app.gleam: run calls field `find` on `repo`, whose wired value's effects could not be resolved, with unresolved effects [Unknown] but declared []",
+  )
+}
+
+pub fn format_violation_keeps_the_computed_receiver_wording_test() {
+  // "on a computed value" already states the untraceability every field reason
+  // would repeat, so the reason adds nothing to it.
+  explained_message(
+    QualifiedName("<field>", extract.computed_receiver <> ".find"),
+    Specific(set.from_list(["Unknown"])),
+    Some(types.UntraceableReceiver),
+    None,
+  )
+  |> should.equal(
+    "src/app.gleam: run calls field `find` on a computed value with unresolved effects [Unknown] but declared []",
+  )
+}
+
+pub fn format_violation_says_nothing_declares_the_call_test() {
+  explained_message(
+    QualifiedName("somedep/api", "fetch"),
+    Specific(set.from_list(["Unknown"])),
+    Some(types.NoKnownEffects),
+    None,
+  )
+  |> should.equal(
+    "src/app.gleam: run calls somedep/api.fetch, which no spec, external, or catalog declares, with unresolved effects [Unknown] but declared []",
+  )
+}
+
+pub fn format_violation_says_the_external_is_undeclared_test() {
+  explained_message(
+    QualifiedName("app", "now"),
+    Specific(set.from_list(["Unknown"])),
+    Some(types.UndeclaredExternal),
+    None,
+  )
+  |> should.equal(
+    "src/app.gleam: run calls app.now, an external with no declared effects, with unresolved effects [Unknown] but declared []",
+  )
+}
+
+pub fn format_violation_says_the_producer_is_unresolved_test() {
+  explained_message(
+    QualifiedName("<returned>", "somedep/api.pick"),
+    Specific(set.from_list(["Unknown"])),
+    Some(types.UntraceableProducer),
+    None,
+  )
+  |> should.equal(
+    "src/app.gleam: run calls a function returned by `somedep/api.pick`, whose producer could not be resolved, with unresolved effects [Unknown] but declared []",
+  )
+}
+
+pub fn format_violation_names_the_source_that_answered_test() {
+  explained_message(
+    QualifiedName("gleam/io", "println"),
+    Specific(set.from_list(["Stdout"])),
+    None,
+    Some(types.Catalog("gleam_stdlib")),
+  )
+  |> should.equal(
+    "src/app.gleam: run calls gleam/io.println with effects [Stdout] (from gleam_stdlib's catalog entry) but declared []",
+  )
+}
+
+pub fn format_violation_names_the_source_of_a_known_unknown_test() {
+  // A committed `effects f : [Unknown]` line is a resolved answer whose origin
+  // is the whole explanation, so it is stated even though the set is unknown.
+  explained_message(
+    QualifiedName("app/db", "query"),
+    Specific(set.from_list(["Unknown"])),
+    None,
+    Some(types.CommittedSpec),
+  )
+  |> should.equal(
+    "src/app.gleam: run calls app/db.query with unresolved effects [Unknown] (from your spec) but declared []",
+  )
+}
+
+pub fn format_violation_states_a_reason_and_an_origin_together_test() {
+  // Nothing keyed the function itself, so its module's declaration answered —
+  // and the field it was wired through has no annotation of its own.
+  explained_message(
+    QualifiedName("<field>", "repo.find"),
+    Specific(set.from_list(["Unknown"])),
+    Some(types.FieldNotAnnotated("dep/repo", "Repo")),
+    Some(types.ModuleExternalOrigin),
+  )
+  |> should.equal(
+    "src/app.gleam: run calls field `find` on `repo` of type `dep/repo.Repo`, which has no effect annotation for that field, with unresolved effects [Unknown] (from a module-level external) but declared []",
+  )
+}
+
+pub fn format_violation_holds_a_reason_back_from_a_resolved_set_test() {
+  // The reason is recorded whether or not a bound later discharges the term;
+  // nothing about a resolved set is unexplained, so the plain phrase stands.
+  explained_message(
+    QualifiedName("<field>", "repo.find"),
+    Specific(set.from_list(["Stdout"])),
+    Some(types.FieldNotAnnotated("dep/repo", "Repo")),
+    None,
+  )
+  |> should.equal(
+    "src/app.gleam: run calls field `find` on `repo` with effects [Stdout] but declared []",
+  )
+}
+
+// What a violation records
+//
+// The resolver that decided a call's effect records why it could not resolve it
+// and which source answered, at the moment it decides. These run the real mint
+// sites and assert the record, not the wording.
+
+// The single violation `run`'s `[]` budget produces for `source`.
+fn only_violation(source: String) -> types.Violation {
+  let assert [violation] = check_source(source, [pure_check("run")])
+  violation
+}
+
+// The violation `run` reports for a call carrying `sentinel`, where the body
+// also violates elsewhere (the producer call, the wired value's own call).
+fn violation_of_kind(source: String, sentinel: String) -> types.Violation {
+  let assert Ok(violation) =
+    check_source(source, [pure_check("run")])
+    |> list.find(fn(v) { v.call.module == sentinel })
+  violation
+}
+
+// The violation `run` reports for its field call.
+fn field_violation(source: String) -> types.Violation {
+  violation_of_kind(source, "<field>")
+}
+
+pub fn records_that_no_source_keys_the_call_test() {
+  only_violation(
+    "import somedep/api
+pub fn run() { api.fetch() }",
+  ).reason
+  |> should.equal(Some(types.NoKnownEffects))
+}
+
+pub fn records_an_undeclared_external_test() {
+  // A same-module bodyless `@external` with no `external effects` line: the
+  // body says nothing and no declaration speaks for it.
+  only_violation(
+    "@external(erlang, \"ffi\", \"now\")
+pub fn now() -> Int
+
+pub fn run() { now() }",
+  ).reason
+  |> should.equal(Some(types.UndeclaredExternal))
+}
+
+pub fn records_the_source_that_answered_test() {
+  // A resolved call is over budget, not unresolved: it carries an origin and no
+  // reason.
+  let violation =
+    only_violation(
+      "import gleam/io
+pub fn run() { io.println(\"x\") }",
+    )
+  violation.origin |> should.equal(Some(types.Catalog("gleam_stdlib")))
+  violation.reason |> should.equal(None)
+}
+
+pub fn records_an_unresolved_receiver_type_test() {
+  // No girard types are passed and the parameter carries no annotation, so
+  // nothing names the receiver's type.
+  only_violation(
+    "pub fn run(config) -> Nil {
+  config.resolver(\"x\")
+}",
+  ).reason
+  |> should.equal(Some(types.ReceiverTypeUnresolved))
+}
+
+pub fn records_an_unannotated_field_test() {
+  // The syntactic fallback types the receiver but has no module to qualify it
+  // with, and no `type` line decides the field.
+  only_violation(
+    "pub type Config {
+  Config(resolver: fn(String) -> Nil)
+}
+
+pub fn run(config: Config) -> Nil {
+  config.resolver(\"x\")
+}",
+  ).reason
+  |> should.equal(
+    Some(types.FieldNotAnnotated(module: "", type_name: "Config")),
+  )
+}
+
+pub fn records_an_untraceable_receiver_test() {
+  // The receiver is rooted at a shadowing opaque `let`, so the construction it
+  // came from can't be traced.
+  only_violation(
+    "pub type Inner {
+  Inner(resolver: fn() -> Nil)
+}
+
+pub type Wrapper {
+  Wrapper(inner: Inner)
+}
+
+pub fn external_wrapper() -> Wrapper {
+  Wrapper(inner: Inner(resolver: fn() { Nil }))
+}
+
+pub fn run(options: Wrapper) -> Nil {
+  let options = external_wrapper()
+  let x = options.inner
+  x.resolver()
+}",
+  ).reason
+  |> should.equal(Some(types.UntraceableReceiver))
+}
+
+pub fn records_an_unresolved_wired_value_test() {
+  // The receiver's construction is traced, but the value wired into the field
+  // is a call no source resolves, so nothing grounds the field. The reason is
+  // read off the term the field call resolved to, after substitution and
+  // concretization — the point where a wired value's effect is finally known.
+  let source =
+    "import somedep/api
+
+pub type Handler {
+  Handler(handler: fn(String) -> Nil)
+}
+
+pub fn run() -> Nil {
+  let h = Handler(handler: api.pick())
+  h.handler(\"x\")
+}"
+  field_violation(source).reason
+  |> should.equal(Some(types.UnresolvedFieldValue))
+}
+
+pub fn records_an_untraceable_producer_test() {
+  // The producer call is a violation of its own; this is the application of
+  // what it returned.
+  let source =
+    "import somedep/api
+pub fn run() -> Nil {
+  let h = api.pick()
+  h(\"x\")
+}"
+  violation_of_kind(source, "<returned>").reason
+  |> should.equal(Some(types.UntraceableProducer))
+}
+
+pub fn a_proven_field_carries_the_wired_value_source_test() {
+  // The field is wired to a function the knowledge base holds, so the field
+  // call reports where that function's effect came from.
+  let violation =
+    only_violation(
+      "import gleam/io
+
+pub type Handler {
+  Handler(handler: fn(String) -> Nil)
+}
+
+pub fn run() -> Nil {
+  let h = Handler(handler: io.println)
+  h.handler(\"x\")
+}",
+    )
+  violation.origin |> should.equal(Some(types.Catalog("gleam_stdlib")))
+  violation.reason |> should.equal(None)
+}
+
+pub fn a_reason_survives_substitution_unrendered_test() {
+  // An unannotated helper's field call mints a field variable and a reason; the
+  // caller's field bound grounds the variable to a concrete over-budget effect.
+  // The reason is still recorded — the message just doesn't state it, because
+  // nothing about the reported set is unresolved.
+  let source =
+    "pub type Config {
+  Config(resolver: fn(String) -> Nil)
+}
+
+fn helper(config: Config) -> Nil {
+  config.resolver(\"x\")
+}
+
+pub fn run(config: Config) -> Nil {
+  helper(config)
+}"
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "run",
+      [
+        ParamBound(
+          "config.resolver",
+          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        ),
+      ],
+      effect_term.from_effect_set(Specific(set.new())),
+    )
+  let assert [violation] = check_source(source, [annotation])
+  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  violation.reason
+  |> should.equal(
+    Some(types.FieldNotAnnotated(module: "", type_name: "Config")),
+  )
+  checker.format_violation("src/app.gleam", violation)
+  |> should.equal(
+    "src/app.gleam: run calls field `resolver` on `config` with effects [Stdout] but declared []",
+  )
 }
 
 // Sentinels decoded end-to-end
