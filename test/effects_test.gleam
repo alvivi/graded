@@ -459,9 +459,12 @@ pub fn returned_operators_round_trip_test() {
     effects.with_fresh_returned_operators(
       kb,
       dict.from_list([#(QualifiedName("mylib/foo", "pick"), operator)]),
+      types.ProjectInferred,
     )
   effects.lookup_returned_operator(enriched, QualifiedName("mylib/foo", "pick"))
-  |> should.equal(Ok(#(operator, effects.Fresh)))
+  |> should.equal(
+    Ok(effects.ReturnedOperator(operator, effects.Fresh, types.ProjectInferred)),
+  )
   effects.lookup_returned_operator(
     enriched,
     QualifiedName("mylib/foo", "absent"),

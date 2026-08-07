@@ -352,6 +352,7 @@ fn call_result_field_operator(
     scc_ids,
     new_memo(),
   ).0
+  |> result.map(fn(found) { found.0 })
 }
 
 // The ground effect of a function from the module under inference wired into a
@@ -1177,6 +1178,25 @@ fn substituted(looked_up: Resolution, term: EffectTerm) -> Resolution {
   Resolution(term:, reason: Some(UntraceableArgument), origin: None)
 }
 
+// The same, for a collected call of a callee's body whose term this caller's
+// bindings have rewritten, plus — for a term that resolved — the source of the
+// wired value one of its field variables bound to.
+fn rebound(
+  collected: Resolution,
+  term: EffectTerm,
+  field_origins: dict.Dict(String, LookupOrigin),
+) -> Resolution {
+  let resolution = substituted(collected, term)
+  use <- bool.guard(when: carries_unknown(term), return: resolution)
+  Resolution(
+    ..resolution,
+    origin: option.or(
+      resolution.origin,
+      bound_field_origin(collected.term, field_origins),
+    ),
+  )
+}
+
 // Whether a term names the `Unknown` label itself, as opposed to grounding to
 // it because a variable stayed free or an application stayed stuck.
 fn states_unknown(term: EffectTerm) -> Bool {
@@ -1660,13 +1680,15 @@ fn collect_effects(
           memo,
         )
       // A producer nothing resolves leaves the applied operator unknown; the
-      // kind names the producer, so the reason says what failed about it.
-      let reason = case resolved_op {
-        Ok(_) -> None
-        Error(Nil) -> Some(UntraceableProducer)
+      // kind names the producer, so the reason says what failed about it. A
+      // producer that resolved from a serialized summary names the spec that
+      // holds it.
+      let #(reason, origin) = case resolved_op {
+        Ok(#(_, origin)) -> #(None, origin)
+        Error(Nil) -> #(Some(UntraceableProducer), None)
       }
       let #(effect, memo) = case resolved_op {
-        Ok(operator) -> {
+        Ok(#(operator, _)) -> {
           // The returned operator's outer arguments have no tracked type here, so
           // their own callback positions are unknown — lift each over nothing.
           let shape =
@@ -1690,7 +1712,7 @@ fn collect_effects(
         memo,
         CollectedCall(
           call: synthetic_call,
-          resolution: Resolution(term: effect, reason:, origin: None),
+          resolution: Resolution(term: effect, reason:, origin:),
         ),
       )
     })
@@ -2180,10 +2202,10 @@ fn substitute_local_call_effects(
           memo,
         )
       let forwarded = forwarded_field_vars(field_bindings.terms)
-      // The reason travels through untouched: why the callee's own resolver
-      // could not resolve a site doesn't change with the arguments this caller
-      // passes. The origin does — a field variable the callee left open is
-      // answered here, by the source of the value this caller wired.
+      // Each site is re-attributed against the term this caller's bindings
+      // produced: an `[Unknown]` they introduced is this call's argument, and a
+      // field variable the callee left open is answered by the source of the
+      // value this caller wired.
       let substituted =
         list.map(recursive, fn(one) {
           let term =
@@ -2196,14 +2218,7 @@ fn substitute_local_call_effects(
             )
           CollectedCall(
             ..one,
-            resolution: Resolution(
-              ..one.resolution,
-              term:,
-              origin: option.or(
-                one.resolution.origin,
-                bound_field_origin(collected_term(one), field_bindings.origins),
-              ),
-            ),
+            resolution: rebound(one.resolution, term, field_bindings.origins),
           )
         })
       #(substituted, memo)
@@ -3347,20 +3362,23 @@ fn build_lift_operator_arg(
           True, Ok(_) -> #(Ok(pure_operator(positions)), memo)
           _, _ -> #(Error(Nil), memo)
         }
-      types.ReturnedOperator(callee, args) | types.CallResult(callee, args) ->
-        resolve_returned_operator(
-          callee,
-          args,
-          context,
-          function_map,
-          knowledge_base,
-          visited,
-          registry,
-          module_types,
-          [],
-          cache,
-          memo,
-        )
+      types.ReturnedOperator(callee, args) | types.CallResult(callee, args) -> {
+        let #(resolved, memo) =
+          resolve_returned_operator(
+            callee,
+            args,
+            context,
+            function_map,
+            knowledge_base,
+            visited,
+            registry,
+            module_types,
+            [],
+            cache,
+            memo,
+          )
+        #(result.map(resolved, fn(found) { found.0 }), memo)
+      }
       _ -> #(Error(Nil), memo)
     }
   }
@@ -3386,9 +3404,10 @@ fn resolve_returned_operator(
   caller_param_bounds: List(ParamBound),
   cache: LocalCache,
   memo: Memo,
-) -> #(Result(EffectTerm, Nil), Memo) {
-  // A same-module (`""`) summary is computed on demand now, hence Fresh; a
-  // cross-module one is read from the KB with its recorded origin (Fix E).
+) -> #(Result(#(EffectTerm, option.Option(LookupOrigin)), Nil), Memo) {
+  // A same-module (`""`) summary is computed on demand now, hence Fresh and
+  // sourced by nothing but this run's analysis; a cross-module one is read from
+  // the KB with its recorded origin (Fix E) and the source that wrote it.
   let #(lookup, memo) = case callee.module {
     "" ->
       case
@@ -3408,7 +3427,7 @@ fn resolve_returned_operator(
               cache,
               memo,
             )
-          #(result.map(result, fn(op) { #(op, effects.Fresh) }), memo)
+          #(result.map(result, fn(op) { #(op, effects.Fresh, None) }), memo)
         }
         // A recursive producer call — the producer is already on the analysis
         // stack, so this branch contributes the neutral operator (pure over the
@@ -3418,17 +3437,23 @@ fn resolve_returned_operator(
         // type, stay conservative.
         True, Ok(definition) -> #(
           neutral_returned_operator(definition.definition, cache.fn_alias_types)
-            |> result.map(fn(op) { #(op, effects.Fresh) }),
+            |> result.map(fn(op) { #(op, effects.Fresh, None) }),
           memo,
         )
         _, _ -> #(Error(Nil), memo)
       }
-    _ -> #(effects.lookup_returned_operator(knowledge_base, callee), memo)
+    _ -> #(
+      effects.lookup_returned_operator(knowledge_base, callee)
+        |> result.map(fn(found) {
+          #(found.operator, found.summary, Some(found.source))
+        }),
+      memo,
+    )
   }
   case lookup {
     Error(Nil) -> #(Error(Nil), memo)
-    Ok(#(operator, origin)) ->
-      case set.is_empty(effect_term.free_vars(operator)), origin {
+    Ok(#(operator, summary, source)) ->
+      case set.is_empty(effect_term.free_vars(operator)), summary {
         // Ground operator (no free vars): trusted regardless of origin. A Fresh
         // one is sanitized by this run (callback binders can't have captured a
         // residual). A Foreign one — a serialized summary, including this
@@ -3439,7 +3464,7 @@ fn resolve_returned_operator(
         // version). Re-running `infer` with a current graded regenerates a sound
         // summary; a stale dependency spec is the residual soundness gap (see
         // docs/LIMITATIONS.md).
-        True, _ -> #(Ok(operator), memo)
+        True, _ -> #(Ok(#(operator, source)), memo)
         // Polymorphic + Fresh: Fix D guarantees the free vars are the producer's
         // own params — bind them to the producer call's arguments.
         False, effects.Fresh -> {
@@ -3458,7 +3483,7 @@ fn resolve_returned_operator(
               cache,
               memo,
             )
-          #(Ok(bound), memo)
+          #(Ok(#(bound, source)), memo)
         }
         // Polymorphic + Foreign (Fix E): an unsanitized serialized summary whose
         // free vars may be residuals coinciding with a param name — not trusted

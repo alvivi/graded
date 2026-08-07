@@ -543,6 +543,7 @@ fn load_project_context(
     // over these for the same key.
     |> effects.with_foreign_returned_operators(
       effects.load_spec_returns_from_file(spec),
+      types.CommittedSpec,
     )
   // Fill gaps for project modules not (yet) in the spec by inferring them in
   // memory, so `check` resolves cross-module calls without a prior `graded infer`.
@@ -2267,7 +2268,7 @@ fn fold_inferred_into_kb(
   knowledge_base
   |> effects.with_inferred(effs, lookup_origin)
   |> effects.with_inferred_params(params)
-  |> with_returns(returns)
+  |> with_returns(returns, lookup_origin)
 }
 
 /// Build the dependency-graph index for a single path dep, topo-sort it,
