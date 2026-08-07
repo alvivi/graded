@@ -581,6 +581,11 @@ pub type DirectPipeOp {
 
 // A single effect violation: an annotated function called something
 // that exceeds its declared effect budget.
+//
+// `reason` and `origin` are what the resolver recorded about this call: why its
+// effect could not be resolved, and which knowledge-base source answered.
+// Either may be absent — a call whose kind already states the whole story
+// records no reason, and a term no source keyed carries no origin.
 pub type Violation {
   Violation(
     function: String,
@@ -588,6 +593,8 @@ pub type Violation {
     span: Span,
     declared: EffectSet,
     actual: EffectSet,
+    reason: Option(UnknownReason),
+    origin: Option(LookupOrigin),
   )
 }
 

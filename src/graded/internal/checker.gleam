@@ -19,11 +19,13 @@ import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/topo
 import graded/internal/typeinfo
 import graded/internal/types.{
-  type EffectAnnotation, type EffectTerm, type LocalCall, type ParamBound,
-  type QualifiedName, type ResolvedCall, type Violation, type Warning,
-  EffectAnnotation, Effects, ParamBound, QualifiedName, TUnion, TVar,
-  UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning, UntrackedEffectWarning,
-  Violation,
+  type EffectAnnotation, type EffectTerm, type LocalCall, type LookupOrigin,
+  type ParamBound, type QualifiedName, type ResolvedCall, type UnknownReason,
+  type Violation, type Warning, EffectAnnotation, Effects, FieldNotAnnotated,
+  ModuleExternalOrigin, NoKnownEffects, ParamBound, QualifiedName,
+  ReceiverTypeUnresolved, TUnion, TVar, TypeLine, UndeclaredExternal,
+  UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning, UnresolvedFieldValue,
+  UntraceableProducer, UntraceableReceiver, UntrackedEffectWarning, Violation,
 }
 
 // Entry points
@@ -545,8 +547,31 @@ pub fn format_violation(file: String, violation: Violation) -> String {
 // What the function did and the effects it picked up doing it. The effects are
 // `unresolved` exactly when the set carries the `Unknown` label — a call that
 // resolves cleanly and still blows its budget is not an unresolved one.
+//
+// The recorded reason refines the action only for a set that stayed unresolved:
+// a reason discharged by a bound describes nothing the reader can still see.
+// The origin is stated whenever one was recorded, including beside an
+// `[Unknown]` a source claims — there, naming the source *is* the explanation.
 fn call_clause(violation: Violation) -> String {
-  let action = case call_kind(violation.call) {
+  let kind = call_kind(violation.call)
+  let unresolved = types.contains_unknown(violation.actual)
+  let action = case unresolved, violation.reason {
+    True, Some(reason) -> refined_action(kind, reason)
+    True, None | False, _ -> plain_action(kind)
+  }
+  let effects_word = case unresolved {
+    True -> " with unresolved effects "
+    False -> " with effects "
+  }
+  action
+  <> effects_word
+  <> effects.format_effect_set(violation.actual)
+  <> origin_suffix(violation.origin)
+}
+
+// What a call site is, stated from its kind alone.
+fn plain_action(kind: CallKind) -> String {
+  case kind {
     DirectCall(module:, function:) -> "calls " <> module <> "." <> function
     ParameterCall(parameter:) -> "calls parameter `" <> parameter <> "`"
     FieldAccessCall(receiver:, label:) ->
@@ -568,11 +593,159 @@ fn call_clause(violation: Violation) -> String {
     ComputedValueCall -> "calls a computed function value"
     UnclassifiedCall -> "calls an unclassified call site"
   }
-  let effects_word = case types.contains_unknown(violation.actual) {
-    True -> " with unresolved effects "
-    False -> " with effects "
+}
+
+// The action phrase a recorded reason refines. Each reason sharpens the one
+// kind it was minted for; against any other kind it adds nothing the kind's own
+// phrase doesn't already say, so that phrase stands. A computed receiver keeps
+// its wording throughout — "on a computed value" already states the
+// untraceability every field reason would repeat.
+fn refined_action(kind: CallKind, reason: UnknownReason) -> String {
+  case reason {
+    NoKnownEffects ->
+      case kind {
+        DirectCall(module:, function:) ->
+          "calls "
+          <> module
+          <> "."
+          <> function
+          <> ", which no spec, external, or catalog declares,"
+        ParameterCall(..)
+        | FieldAccessCall(..)
+        | ComputedFieldCall(..)
+        | UnresolvedLocalCall(..)
+        | ReturnedOperatorCall(..)
+        | InlineFunctionCall
+        | LetBoundValueCall
+        | ComputedValueCall
+        | UnclassifiedCall -> plain_action(kind)
+      }
+    UndeclaredExternal ->
+      case kind {
+        DirectCall(module:, function:) ->
+          "calls "
+          <> module
+          <> "."
+          <> function
+          <> ", an external with no declared effects,"
+        ParameterCall(..)
+        | FieldAccessCall(..)
+        | ComputedFieldCall(..)
+        | UnresolvedLocalCall(..)
+        | ReturnedOperatorCall(..)
+        | InlineFunctionCall
+        | LetBoundValueCall
+        | ComputedValueCall
+        | UnclassifiedCall -> plain_action(kind)
+      }
+    FieldNotAnnotated(module:, type_name:) ->
+      case kind {
+        FieldAccessCall(receiver:, label:) ->
+          "calls field `"
+          <> label
+          <> "` on `"
+          <> receiver
+          <> "` of type `"
+          <> qualified_type_name(module, type_name)
+          <> "`, which has no effect annotation for that field,"
+        DirectCall(..)
+        | ParameterCall(..)
+        | ComputedFieldCall(..)
+        | UnresolvedLocalCall(..)
+        | ReturnedOperatorCall(..)
+        | InlineFunctionCall
+        | LetBoundValueCall
+        | ComputedValueCall
+        | UnclassifiedCall -> plain_action(kind)
+      }
+    ReceiverTypeUnresolved ->
+      case kind {
+        FieldAccessCall(receiver:, label:) ->
+          "calls field `"
+          <> label
+          <> "` on `"
+          <> receiver
+          <> "`, whose type could not be resolved,"
+        DirectCall(..)
+        | ParameterCall(..)
+        | ComputedFieldCall(..)
+        | UnresolvedLocalCall(..)
+        | ReturnedOperatorCall(..)
+        | InlineFunctionCall
+        | LetBoundValueCall
+        | ComputedValueCall
+        | UnclassifiedCall -> plain_action(kind)
+      }
+    UntraceableReceiver ->
+      case kind {
+        FieldAccessCall(receiver:, label:) ->
+          "calls field `"
+          <> label
+          <> "` on `"
+          <> receiver
+          <> "`, whose value could not be traced,"
+        DirectCall(..)
+        | ParameterCall(..)
+        | ComputedFieldCall(..)
+        | UnresolvedLocalCall(..)
+        | ReturnedOperatorCall(..)
+        | InlineFunctionCall
+        | LetBoundValueCall
+        | ComputedValueCall
+        | UnclassifiedCall -> plain_action(kind)
+      }
+    UnresolvedFieldValue ->
+      case kind {
+        FieldAccessCall(receiver:, label:) ->
+          "calls field `"
+          <> label
+          <> "` on `"
+          <> receiver
+          <> "`, whose wired value's effects could not be resolved,"
+        DirectCall(..)
+        | ParameterCall(..)
+        | ComputedFieldCall(..)
+        | UnresolvedLocalCall(..)
+        | ReturnedOperatorCall(..)
+        | InlineFunctionCall
+        | LetBoundValueCall
+        | ComputedValueCall
+        | UnclassifiedCall -> plain_action(kind)
+      }
+    UntraceableProducer ->
+      case kind {
+        ReturnedOperatorCall(producer:) ->
+          "calls a function returned by `"
+          <> dotted_name(producer)
+          <> "`, whose producer could not be resolved,"
+        DirectCall(..)
+        | ParameterCall(..)
+        | FieldAccessCall(..)
+        | ComputedFieldCall(..)
+        | UnresolvedLocalCall(..)
+        | InlineFunctionCall
+        | LetBoundValueCall
+        | ComputedValueCall
+        | UnclassifiedCall -> plain_action(kind)
+      }
   }
-  action <> effects_word <> effects.format_effect_set(violation.actual)
+}
+
+// A receiver type as written in a spec: qualified by its defining module, or
+// bare when the type came from the syntactic fallback, which has no module.
+fn qualified_type_name(module: String, type_name: String) -> String {
+  case module {
+    "" -> type_name
+    module -> module <> "." <> type_name
+  }
+}
+
+// The source that answered, after the effect set it produced.
+fn origin_suffix(origin: option.Option(LookupOrigin)) -> String {
+  case origin {
+    Some(origin) -> " (from " <> effects.describe_origin(origin) <> ")"
+    None -> ""
+  }
 }
 
 // When the actual set still contains effect variables, the substitution
@@ -735,9 +908,9 @@ fn has_vars(term: EffectTerm) -> Bool {
   !set.is_empty(effect_term.free_vars(term))
 }
 
-// Union the effect terms of a list of `(call, term)` pairs, normalizing once.
-fn union_of(pairs: List(#(types.ResolvedCall, EffectTerm))) -> EffectTerm {
-  effect_term.normalize(TUnion(list.map(pairs, fn(pair) { pair.1 })))
+// Union the effect terms of a list of collected calls, normalizing once.
+fn union_of(collected: List(CollectedCall)) -> EffectTerm {
+  effect_term.normalize(TUnion(list.map(collected, fn(one) { one.term })))
 }
 
 // Synthesise a self-referential polymorphic bound for each auto-detected
@@ -1013,16 +1186,37 @@ fn memo_key(
 // the next module's analysis. Threading a value beats a process-dictionary memo:
 // the analysis stays referentially transparent and the persistent-dict cost is
 // negligible.
+// One call site collected from a function body: the call, the effect term the
+// resolver produced for it, and what that resolver established about the term —
+// why it is unresolved (`reason`) or which knowledge-base source answered
+// (`origin`). Both are recorded at the moment the branch decides, and only where
+// they add to what the call's `CallKind` already states.
+//
+// Reason and origin are properties of the callee's own body sites, not of the
+// call site that reached them, so a memoized analysis carries them verbatim
+// across every caller sharing its key — as the cached spans already do.
+type CollectedCall {
+  CollectedCall(
+    call: ResolvedCall,
+    term: EffectTerm,
+    reason: option.Option(UnknownReason),
+    origin: option.Option(LookupOrigin),
+  )
+}
+
+// A collected call whose kind states the whole story: the sentinel names what
+// happened, so there is nothing to add.
+fn plain_call(call: ResolvedCall, term: EffectTerm) -> CollectedCall {
+  CollectedCall(call:, term:, reason: None, origin: None)
+}
+
 type Memo {
   Memo(
     // Polymorphic same-module call analyses, keyed by callee + same-SCC
     // ancestors (see `memo_key`).
-    locals: dict.Dict(
-      #(String, List(String)),
-      List(#(ResolvedCall, EffectTerm)),
-    ),
+    locals: dict.Dict(#(String, List(String)), List(CollectedCall)),
     // Collapsible-SCC full-reachability analyses, keyed by SCC id.
-    sccs: dict.Dict(Int, List(#(ResolvedCall, EffectTerm))),
+    sccs: dict.Dict(Int, List(CollectedCall)),
     // Operator-lifts of same-module function references, keyed by name +
     // same-SCC ancestors.
     lifts: dict.Dict(#(String, List(String)), EffectTerm),
@@ -1145,22 +1339,23 @@ fn check_annotation(
       let declared = effect_term.to_effect_set(annotation.effects)
       let violations =
         body_effects
-        |> list.filter_map(fn(pair) {
-          let #(call, call_term) = pair
+        |> list.filter_map(fn(collected) {
           // A field-effect variable that reached the subset check undischarged
           // (no `check`-line field bound bound it) collapses to `[Unknown]`, so a
           // `fn`-typed field call on an opaque receiver is never silently `[]`.
           let actual =
-            effect_term.to_effect_set(concretize_field_vars(call_term))
+            effect_term.to_effect_set(concretize_field_vars(collected.term))
           case types.is_subset(actual, declared) {
             True -> Error(Nil)
             False ->
               Ok(Violation(
                 function: annotation.function,
-                call: call.name,
-                span: call.span,
+                call: collected.call.name,
+                span: collected.call.span,
                 declared:,
                 actual:,
+                reason: collected.reason,
+                origin: collected.origin,
               ))
           }
         })
@@ -1309,7 +1504,7 @@ fn collect_effects(
   captures: List(#(String, types.ArgumentValue)),
   // Threaded memo state, extended as memoizable sub-analyses are computed.
   memo: Memo,
-) -> #(List(#(types.ResolvedCall, EffectTerm)), Memo) {
+) -> #(List(CollectedCall), Memo) {
   let result =
     extract.extract_function_calls_with_captures(function, context, captures)
   let caller_param_names = named_function_params(function)
@@ -1337,7 +1532,25 @@ fn collect_effects(
   // parameter positions and substitute for concrete effects.
   let #(memo, resolved_effects) =
     list.map_fold(result.resolved, memo, fn(memo, call) {
-      let effect_set = effects.lookup_effects(knowledge_base, call.name)
+      // Which map answered is reported by the lookup, so the effect term and
+      // the source recorded beside it can't disagree. A name no source keys is
+      // the one case with a reason of its own; a variable that collapses to
+      // `[Unknown]` during substitution is `variables_hint`'s to explain.
+      let #(effect_set, reason, origin) = case
+        effects.lookup(knowledge_base, call.name)
+      {
+        effects.Known(term, types.FunctionEntry(origin:)) -> #(
+          term,
+          None,
+          origin,
+        )
+        effects.Known(term, types.ModuleExternalEntry) -> #(
+          term,
+          None,
+          Some(ModuleExternalOrigin),
+        )
+        effects.Unknown -> #(effect_term.unknown(), Some(NoKnownEffects), None)
+      }
       let #(concrete, memo) =
         substitute_at_call_site(
           call,
@@ -1356,7 +1569,7 @@ fn collect_effects(
           lift_operator_arg,
           memo,
         )
-      #(memo, #(call, concrete))
+      #(memo, CollectedCall(call:, term: concrete, reason:, origin:))
     })
 
   // Local calls: check param bounds first (user-declared and auto-detected
@@ -1395,7 +1608,7 @@ fn collect_effects(
                 memo,
               )
           }
-          #(memo, [#(synthetic_call, effect)])
+          #(memo, [plain_call(synthetic_call, effect)])
         }
         Error(Nil) -> {
           let #(recursive, memo) =
@@ -1438,7 +1651,7 @@ fn collect_effects(
     list.map_fold(result.field, memo, fn(memo, field_call) {
       let synthetic_call =
         sentinel_call(field_call_kind(field_call), field_call.span)
-      let #(effect_set, memo) =
+      let #(resolution, memo) =
         resolve_field_call(
           field_call,
           function,
@@ -1454,7 +1667,15 @@ fn collect_effects(
           lift_operator_arg,
           memo,
         )
-      #(memo, #(synthetic_call, effect_set))
+      #(
+        memo,
+        CollectedCall(
+          call: synthetic_call,
+          term: resolution.term,
+          reason: resolution.reason,
+          origin: resolution.origin,
+        ),
+      )
     })
 
   // Direct applications of a let-bound returned operator: `let h = pick(); h(cb)`.
@@ -1479,6 +1700,12 @@ fn collect_effects(
           cache,
           memo,
         )
+      // A producer nothing resolves leaves the applied operator unknown; the
+      // kind names the producer, so the reason says what failed about it.
+      let reason = case resolved_op {
+        Ok(_) -> None
+        Error(Nil) -> Some(UntraceableProducer)
+      }
       let #(effect, memo) = case resolved_op {
         Ok(operator) -> {
           // The returned operator's outer arguments have no tracked type here, so
@@ -1500,7 +1727,10 @@ fn collect_effects(
         }
         Error(Nil) -> #(effect_term.unknown(), memo)
       }
-      #(memo, #(synthetic_call, effect))
+      #(
+        memo,
+        CollectedCall(call: synthetic_call, term: effect, reason:, origin: None),
+      )
     })
 
   // An inline closure / `case` of functions applied to arguments — a pipe target
@@ -1537,7 +1767,7 @@ fn collect_effects(
           lift_operator_arg,
           memo,
         )
-      #(memo, #(synthetic_call, effect))
+      #(memo, plain_call(synthetic_call, effect))
     })
 
   // Applications of an opaque computed function value (`funcs.0(x)`): the callee
@@ -1545,8 +1775,7 @@ fn collect_effects(
   // never silently pure.
   let unknown_app_effects =
     list.map(result.unknown_apps, fn(span) {
-      let synthetic_call = sentinel_call(ComputedValueCall, span)
-      #(synthetic_call, effect_term.unknown())
+      plain_call(sentinel_call(ComputedValueCall, span), effect_term.unknown())
     })
 
   // Direct applications of a let-bound closure / case-of-functions: `let h =
@@ -1585,7 +1814,7 @@ fn collect_effects(
           lift_operator_arg,
           memo,
         )
-      #(memo, #(synthetic_call, effect))
+      #(memo, plain_call(synthetic_call, effect))
     })
 
   #(
@@ -1918,7 +2147,7 @@ fn named_function_params(function: Function) -> Set(String) {
 // `[<var>]` upward — only cross-module calls (which go through
 // `substitute_at_call_site`) would get bound.
 fn substitute_local_call_effects(
-  recursive: List(#(types.ResolvedCall, EffectTerm)),
+  recursive: List(CollectedCall),
   local_call: LocalCall,
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   function_map: dict.Dict(String, Definition(Function)),
@@ -1934,8 +2163,8 @@ fn substitute_local_call_effects(
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
-) -> #(List(#(types.ResolvedCall, EffectTerm)), Memo) {
-  let any_polymorphic = list.any(recursive, fn(p) { has_vars(p.1) })
+) -> #(List(CollectedCall), Memo) {
+  let any_polymorphic = list.any(recursive, fn(one) { has_vars(one.term) })
   use <- bool.guard(when: !any_polymorphic, return: #(recursive, memo))
   case dict.get(function_map, local_call.function) {
     Error(Nil) -> #(recursive, memo)
@@ -1970,7 +2199,7 @@ fn substitute_local_call_effects(
           lift_operator_arg,
           memo,
         )
-      let callee_terms = list.map(recursive, fn(pair) { pair.1 })
+      let callee_terms = list.map(recursive, fn(one) { one.term })
       let #(field_bindings, memo) =
         field_forwarding_bindings(
           callee_name,
@@ -1988,13 +2217,15 @@ fn substitute_local_call_effects(
           memo,
         )
       let forwarded = forwarded_field_vars(field_bindings)
+      // Substitution rewrites the term only: what the callee's own resolver
+      // established about a site is unchanged by the arguments this caller
+      // passes, so reason and origin travel through untouched.
       let substituted =
-        list.map(recursive, fn(pair) {
-          let #(call, term) = pair
-          #(
-            call,
-            apply_call_bindings(
-              term,
+        list.map(recursive, fn(one) {
+          CollectedCall(
+            ..one,
+            term: apply_call_bindings(
+              one.term,
               bindings,
               field_bindings,
               caller_field_bindings,
@@ -2394,7 +2625,9 @@ fn concrete_field_effect(
   cache: LocalCache,
   memo: Memo,
 ) -> #(option.Option(EffectTerm), Memo) {
-  let #(field_effect, memo) =
+  // A forwarding site binds a ground effect, not a collected call, so the
+  // source that answered has nothing to travel with here.
+  let #(field_effect, _origin, memo) =
     value_field_effect(
       value,
       set.from_list(dict.keys(function_map)),
@@ -3905,7 +4138,7 @@ fn resolve_unknown_local(
   module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
-) -> #(List(#(ResolvedCall, EffectTerm)), Memo) {
+) -> #(List(CollectedCall), Memo) {
   // Cycle detected — already analysing this function up the call stack. Return
   // empty rather than looping; the effects will be captured by the outer frame
   // that started the analysis.
@@ -3917,7 +4150,7 @@ fn resolve_unknown_local(
     Error(Nil) -> {
       let synthetic_call =
         sentinel_call(UnresolvedLocalCall(local_call.function), local_call.span)
-      #([#(synthetic_call, effect_term.unknown())], memo)
+      #([plain_call(synthetic_call, effect_term.unknown())], memo)
     }
     Ok(local_definition) ->
       case is_opaque_external(local_definition) {
@@ -3932,12 +4165,32 @@ fn resolve_unknown_local(
               module: context.module_path,
               function: local_call.function,
             )
-          let term = effects.lookup_effects(knowledge_base, qualified)
+          let #(term, reason, origin) = case
+            effects.lookup(knowledge_base, qualified)
+          {
+            effects.Known(term, types.FunctionEntry(origin:)) -> #(
+              term,
+              None,
+              origin,
+            )
+            effects.Known(term, types.ModuleExternalEntry) -> #(
+              term,
+              None,
+              Some(ModuleExternalOrigin),
+            )
+            effects.Unknown -> #(
+              effect_term.unknown(),
+              Some(UndeclaredExternal),
+              None,
+            )
+          }
           #(
             [
-              #(
-                types.ResolvedCall(name: qualified, span: local_call.span),
-                term,
+              CollectedCall(
+                call: types.ResolvedCall(name: qualified, span: local_call.span),
+                term:,
+                reason:,
+                origin:,
               ),
             ],
             memo,
@@ -3988,7 +4241,7 @@ fn memoized_local(
   module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
-) -> #(List(#(ResolvedCall, EffectTerm)), Memo) {
+) -> #(List(CollectedCall), Memo) {
   let scc = dict.get(cache.scc_id, local_call.function) |> result.unwrap(-1)
   case set.contains(cache.collapsible, scc) {
     True ->
@@ -4052,7 +4305,7 @@ fn collapsed_scc(
   module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
-) -> #(List(#(ResolvedCall, EffectTerm)), Memo) {
+) -> #(List(CollectedCall), Memo) {
   case dict.get(memo.sccs, scc) {
     Ok(cached) -> #(cached, memo)
     Error(Nil) -> {
@@ -4084,7 +4337,7 @@ fn collapsed_scc(
 // immediately and each member's direct effects are gathered exactly once.
 fn collapsed_member(
   name: String,
-  acc: List(#(ResolvedCall, EffectTerm)),
+  acc: List(CollectedCall),
   scc_set: Set(String),
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
@@ -4093,7 +4346,7 @@ fn collapsed_member(
   module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
-) -> #(List(#(ResolvedCall, EffectTerm)), Memo) {
+) -> #(List(CollectedCall), Memo) {
   case dict.get(function_map, name) {
     Ok(definition) -> {
       let #(member_effects, memo) =
@@ -4129,6 +4382,21 @@ fn collapsed_member(
 //   4. A live parameter root → a receiver-keyed field variable (polymorphic).
 //   5. Otherwise → `[Unknown]`.
 
+// What a field call resolved to: the effect term, plus what the rule that
+// decided it established — the source that answered, or why nothing did.
+type Resolution {
+  Resolution(
+    term: EffectTerm,
+    reason: option.Option(UnknownReason),
+    origin: option.Option(LookupOrigin),
+  )
+}
+
+// A resolution whose deciding rule adds nothing to the call's own description.
+fn plain_resolution(term: EffectTerm) -> Resolution {
+  Resolution(term:, reason: None, origin: None)
+}
+
 // The effect a constructor field's value contributes, resolved per receiver. A
 // function reference (or a same-module function, qualified by the module under
 // inference) resolves via the knowledge base — capturing its param bounds +
@@ -4139,6 +4407,12 @@ fn collapsed_member(
 // `module_functions` is the set of same-module function names a `LocalRef`
 // field value may resolve to — each caller narrows it to what is visible at its
 // own site.
+//
+// The knowledge-base source that answered travels out beside the field effect —
+// it belongs to the wired value, not inside `TypeFieldEffect`, whose own
+// `origin` classifies something else. A value analysed here rather than looked
+// up (a closure body, a call result, the module's own definition) is this run's
+// analysis, not a source's claim, so it carries no origin.
 fn value_field_effect(
   value: types.ArgumentValue,
   module_functions: Set(String),
@@ -4150,15 +4424,16 @@ fn value_field_effect(
   module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
-) -> #(types.TypeFieldEffect, Memo) {
+) -> #(types.TypeFieldEffect, option.Option(LookupOrigin), Memo) {
   case field_value_function(value, context.module_path, module_functions) {
     // A wired function the knowledge base doesn't hold — the module under
     // inference isn't in it — resolves from its own definition, when that lifts
     // to a ground effect. Everything else stays on the knowledge-base answer.
     Some(name) ->
       case effects.lookup(knowledge_base, name) {
-        effects.Known(effect, _) -> #(
+        effects.Known(effect, source) -> #(
           known_field_effect(effect, knowledge_base, name),
+          lookup_origin(source),
           memo,
         )
         effects.Unknown -> {
@@ -4177,10 +4452,12 @@ fn value_field_effect(
           case local {
             Some(effect) -> #(
               types.TypeFieldEffect(effect, [], None, types.Inferred),
+              None,
               memo,
             )
             None -> #(
               known_field_effect(effect_term.unknown(), knowledge_base, name),
+              None,
               memo,
             )
           }
@@ -4241,8 +4518,17 @@ fn value_field_effect(
           }
         _ -> fallback
       }
-      #(effect, memo)
+      #(effect, None, memo)
     }
+  }
+}
+
+// The origin a lookup's source names, for a resolver that records provenance
+// beside a term rather than rendering it.
+fn lookup_origin(source: types.EffectSource) -> option.Option(LookupOrigin) {
+  case source {
+    types.FunctionEntry(origin:) -> origin
+    types.ModuleExternalEntry -> Some(ModuleExternalOrigin)
   }
 }
 
@@ -4302,7 +4588,7 @@ fn resolve_field_call(
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
-) -> #(EffectTerm, Memo) {
+) -> #(Resolution, Memo) {
   // The value proven wired to this field, if any:
   //
   //   - Rule 1: a value proven at this receiver's construction. Concrete
@@ -4352,7 +4638,14 @@ fn resolve_field_call(
       )
     }
     // A traced receiver that couldn't be followed leaves the field `[Unknown]`.
-    Some(Error(Nil)) -> #(effect_term.unknown(), memo)
+    Some(Error(Nil)) -> #(
+      Resolution(
+        term: effect_term.unknown(),
+        reason: Some(UntraceableReceiver),
+        origin: None,
+      ),
+      memo,
+    )
     None ->
       resolve_unproven_field(
         field_call,
@@ -4415,12 +4708,12 @@ fn resolve_proven_field(
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
-) -> #(EffectTerm, Memo) {
+) -> #(Resolution, Memo) {
   // A name that is one of the enclosing function's parameters resolves to that
   // parameter, not a same-named module function — the parameter shadows it.
   let module_functions =
     set.difference(set.from_list(dict.keys(function_map)), caller_param_names)
-  let #(field_effect, memo) =
+  let #(field_effect, origin, memo) =
     value_field_effect(
       value,
       module_functions,
@@ -4433,16 +4726,33 @@ fn resolve_proven_field(
       scc_ids,
       memo,
     )
-  resolve_field_effect(
-    field_effect,
-    field_call,
-    call_args,
-    knowledge_base,
-    caller_param_bounds,
-    registry,
-    lift_operator_arg,
-    memo,
-  )
+  let #(term, memo) =
+    resolve_field_effect(
+      field_effect,
+      field_call,
+      call_args,
+      knowledge_base,
+      caller_param_bounds,
+      registry,
+      lift_operator_arg,
+      memo,
+    )
+  // The one place the proven path records why a wired value stayed unknown.
+  // Deciding it per branch would miss the `LocalRef` shape: that value takes
+  // the polymorphic self marker, which only becomes `[Unknown]` here, when
+  // `resolve_field_effect` concretizes it. An `[Unknown]` a source claims is
+  // left alone — its origin already explains it.
+  let reason = case origin, carries_unknown(term) {
+    None, True -> Some(UnresolvedFieldValue)
+    None, False | Some(_), _ -> None
+  }
+  #(Resolution(term:, reason:, origin:), memo)
+}
+
+// Whether a term's ground normal form carries the `Unknown` label — the same
+// question the violation renderer asks of the effect set it prints.
+fn carries_unknown(term: EffectTerm) -> Bool {
+  types.contains_unknown(effect_term.to_effect_set(term))
 }
 
 // Resolve a field call with no proven value (rule 2 onward): a hand-written
@@ -4486,7 +4796,7 @@ fn resolve_unproven_field(
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
-) -> #(EffectTerm, Memo) {
+) -> #(Resolution, Memo) {
   // The canonical receiver — a parameter alias (`let f = options`) resolves
   // through the parameter it stands for — so bound matching, `type`-line lookup,
   // and the field variable all key on the path the bare parameter would use.
@@ -4497,7 +4807,7 @@ fn resolve_unproven_field(
   // concrete effect set, no call-site substitution.
   let field_target = field_call_target(field_call)
   case list.find(caller_param_bounds, fn(b) { b.name == field_target }) {
-    Ok(bound) -> #(bound.effects, memo)
+    Ok(bound) -> #(plain_resolution(bound.effects), memo)
     Error(Nil) -> {
       let receiver_type =
         typeinfo.receiver_type(
@@ -4514,17 +4824,20 @@ fn resolve_unproven_field(
       let declared =
         declared_type_field(knowledge_base, receiver_type, field_call.label)
       case declared {
-        Some(field_effect) ->
-          resolve_field_effect(
-            field_effect,
-            field_call,
-            call_args,
-            knowledge_base,
-            caller_param_bounds,
-            registry,
-            lift_operator_arg,
-            memo,
-          )
+        Some(field_effect) -> {
+          let #(term, memo) =
+            resolve_field_effect(
+              field_effect,
+              field_call,
+              call_args,
+              knowledge_base,
+              caller_param_bounds,
+              registry,
+              lift_operator_arg,
+              memo,
+            )
+          #(Resolution(term:, reason: None, origin: Some(TypeLine)), memo)
+        }
         None ->
           resolve_undeclared_field(field_call, receiver_type, context, memo)
       }
@@ -4542,22 +4855,45 @@ fn resolve_unproven_field(
 // (untraceable, opaque, computed) is `[Unknown]`. A proven provenance never
 // reaches here — `resolve_unproven_field` runs only after the proven path
 // declines — and resolves to `[Unknown]` if it somehow does.
+// The reason is recorded here, where the receiver's type is in scope: a
+// receiver graded could not type at all, and one whose type nothing annotates
+// for this field, fail differently and are fixed differently. It is recorded
+// whether or not `field_fallback` mints a variable — a bound may still discharge
+// it, and the renderer prints the reason only for a set that stayed unknown.
 fn resolve_undeclared_field(
   field_call: types.FieldCall,
   receiver_type: option.Option(#(String, String)),
   context: ImportContext,
   memo: Memo,
-) -> #(EffectTerm, Memo) {
+) -> #(Resolution, Memo) {
   case field_call.provenance {
     types.ParameterRoot(path) -> {
+      let reason = case receiver_type {
+        None -> ReceiverTypeUnresolved
+        Some(#(module, type_name)) -> FieldNotAnnotated(module:, type_name:)
+      }
       let #(module, type_name) = option.unwrap(receiver_type, #("", ""))
       #(
-        field_fallback(path, field_call.label, module, type_name, context),
+        Resolution(
+          term: field_fallback(
+            path,
+            field_call.label,
+            module,
+            type_name,
+            context,
+          ),
+          reason: Some(reason),
+          origin: None,
+        ),
         memo,
       )
     }
     types.ProvenValue(..) | types.ProvenReceiver(..) | types.Untraceable -> #(
-      effect_term.unknown(),
+      Resolution(
+        term: effect_term.unknown(),
+        reason: Some(UntraceableReceiver),
+        origin: None,
+      ),
       memo,
     )
   }

@@ -386,6 +386,7 @@ and writes nothing — no spec file, no cache:
 ```sh
 $ gleam run -m graded effect myapp/router.handle
 myapp/router.handle has effects [Stdout]
+  source: your spec
 
 $ gleam run -m graded effect myapp/repo.Repo.find
 field `find` on type `Repo` (myapp/repo) has effects [Storage]
@@ -404,6 +405,7 @@ argument's — not that the argument is called:
 ```sh
 $ gleam run -m graded effect myapp.forward
 myapp.forward has the effects of its `f` argument, and none of its own
+  source: in-memory inference
 ```
 
 A ground term beside a bound is a total and an assumption, not a cause — the
@@ -412,6 +414,7 @@ function may do those effects itself — so the bound is stated separately:
 ```sh
 $ gleam run -m graded effect myapp.apply
 myapp.apply has effects [Stdout]
+  source: your spec
   calls to argument `f` are treated as having effects [Stdout]
 ```
 
@@ -421,10 +424,17 @@ effect graded could not settle, not a missing name:
 ```sh
 $ gleam run -m graded effect myapp.helper
 myapp.helper is pure — no effects ([])
+  source: in-memory inference
 
 $ gleam run -m graded effect myapp.opaque
 myapp.opaque has effects that could not be determined: [Unknown]
+  source: your spec
 ```
+
+The `source:` line names which source answered: `your spec`, `your spec's
+external declaration`, `in-memory inference`, `<pkg>'s shipped spec`, `path
+dependency <pkg>`, `<pkg>'s catalog entry`, or `a module-level external`. It is
+omitted when the answer carries no recorded source.
 
 `--format=graded` prints the same answer as a `.graded` line, with provenance on
 a `//` comment, so the whole output parses back — the format to pipe into a spec
@@ -437,6 +447,7 @@ type myapp/repo.Repo.find : [Storage]
 
 $ gleam run -m graded effect myapp.apply --format=graded
 effects myapp.apply(f: [Stdout]) : [Stdout]
+// resolved from your spec
 ```
 
 Both formats render one structured answer, so they differ in wording but never
@@ -500,6 +511,18 @@ imports, follows local calls transitively, and unions the effect sets it finds.
 Composition is set union; checking is subset inclusion — if a function's actual
 effects aren't a subset of its declared budget, that's a violation, reported with
 the call site.
+
+A violation names what it can about the call. A resolved effect carries the
+source that answered it (`with effects [Stdout] (from gleam_stdlib's catalog
+entry)`), and an unresolved one says what stopped the resolution — a receiver
+whose type nothing annotates for that field, a receiver whose type or value
+couldn't be traced, a call no spec, external, or catalog declares, an external
+with no declared effects, or a returned operator whose producer couldn't be
+resolved:
+
+```
+src/app.gleam: run calls field `find` on `repo` of type `dep/repo.Repo`, which has no effect annotation for that field, with unresolved effects [Unknown] but declared []
+```
 
 On top of the syntax layer, graded runs [girard](https://hexdocs.pm/girard) — a
 Hindley-Milner type annotator for Gleam — over the whole package to learn the
