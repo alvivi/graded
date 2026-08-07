@@ -231,16 +231,10 @@ pub fn with_externals(
   )
 }
 
-// Sort external annotations into the two maps they feed, each term already
-// paired with the source that declared it: function-level externals keyed by
-// `QualifiedName` for `all_effects`, module-level ones keyed by module name for
-// the `module_effects` fallback tier (wrapped in `ModuleExternalOrigin`, which
-// names both the kind of line and the file it sits in).
-//
-// Splitting is separate from merging so each caller decides its own precedence:
-// `with_externals` inserts over what the knowledge base already holds, while a
-// dependency's externals merge against that dependency's own `effects` lines
-// before meeting the knowledge base.
+// Sort external annotations into the two maps they feed, each term paired with
+// the source that declared it: function-level externals keyed by
+// `QualifiedName`, module-level ones keyed by module name. Splitting is
+// separate from merging so each caller decides its own precedence.
 fn split_externals(
   externals: List(ExternalAnnotation),
   origin: LookupOrigin,
@@ -740,17 +734,40 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
   }
 }
 
-// Fold a path dependency's spec-decided terms, bounds and externals into the
-// knowledge base under the documented resolution order: below per-function user
-// externals and the project's own entries, above the catalog. An existing entry
-// is overridden only when its origin is the catalog, so a consumer's own
-// declarations survive a merge that runs after the catalog is already loaded.
+// The entries one dependency spec decides, each tagged with the source that
+// shipped it: the function-keyed terms for `all_effects` and the module-keyed
+// ones for the `module_effects` fallback tier.
 //
-// A decided term brings its own bounds entry with it — `load_spec_params_from_file`
-// records one (possibly empty) for every name the spec decides — so a
-// polymorphic term never pairs with bounds another source wrote. Within the
-// spec, a function's `external effects` line beats its `effects` line, as it
-// does for an installed dependency.
+// A function's `external effects` line wins over an `effects` line for the same
+// name. `graded infer` writes no `effects` line for an externally-declared
+// function, so a spec carrying both has a stale one, and only the external's
+// ground term pairs with the empty bounds `load_spec_params_from_file` records
+// for it.
+fn decided_entries(
+  dep: DepSpec,
+  origin: LookupOrigin,
+) -> #(
+  Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+  Dict(String, #(EffectTerm, LookupOrigin)),
+) {
+  let #(function_externals, module_externals) =
+    split_externals(dep.externals, origin)
+  #(
+    dict.merge(with_origin(dep.effects, origin), function_externals),
+    module_externals,
+  )
+}
+
+// Fold a path dependency's spec into the knowledge base under the documented
+// resolution order: below per-function user externals and the project's own
+// entries, above the catalog. An existing entry is overridden only when its
+// origin is the catalog, so a consumer's own declarations survive a merge that
+// runs after the catalog is already loaded.
+//
+// A term this merge decides brings its own bounds entry with it —
+// `load_spec_params_from_file` records one (possibly empty) for every name the
+// spec decides — so a polymorphic term never pairs with bounds another source
+// wrote. Names whose existing term is kept keep their existing bounds.
 //
 // A consumer's *module-level* external stays in the `module_effects` fallback
 // tier, which `lookup` consults only after `all_effects` misses, so these
@@ -760,40 +777,28 @@ pub fn with_path_dep_spec(
   dep: DepSpec,
   package: String,
 ) -> KnowledgeBase {
-  let origin = PathDependency(package:)
-  let #(function_externals, module_externals) =
-    split_externals(dep.externals, origin)
-  let decided = dict.merge(with_origin(dep.effects, origin), function_externals)
-  let #(all_effects, param_bounds) =
-    dict.fold(
-      decided,
-      #(knowledge_base.all_effects, knowledge_base.param_bounds),
-      fn(accumulator, name, entry) {
-        let #(all_effects, param_bounds) = accumulator
-        case overridable(dict.get(all_effects, name)) {
-          False -> accumulator
-          True -> {
-            let bounds = dict.get(dep.params, name) |> result.unwrap([])
-            #(
-              dict.insert(all_effects, name, entry),
-              dict.insert(param_bounds, name, bounds),
-            )
-          }
-        }
-      },
-    )
-  let module_effects =
-    dict.fold(
-      module_externals,
+  let #(decided, module_externals) =
+    decided_entries(dep, PathDependency(package:))
+  let winning =
+    dict.filter(decided, fn(name, _entry) {
+      overridable(dict.get(knowledge_base.all_effects, name))
+    })
+  KnowledgeBase(
+    ..knowledge_base,
+    all_effects: dict.merge(knowledge_base.all_effects, winning),
+    param_bounds: dict.merge(
+      knowledge_base.param_bounds,
+      dict.map_values(winning, fn(name, _entry) {
+        dict.get(dep.params, name) |> result.unwrap([])
+      }),
+    ),
+    module_effects: dict.merge(
       knowledge_base.module_effects,
-      fn(accumulator, module, entry) {
-        case overridable(dict.get(accumulator, module)) {
-          False -> accumulator
-          True -> dict.insert(accumulator, module, entry)
-        }
-      },
-    )
-  KnowledgeBase(..knowledge_base, all_effects:, param_bounds:, module_effects:)
+      dict.filter(module_externals, fn(module, _entry) {
+        overridable(dict.get(knowledge_base.module_effects, module))
+      }),
+    ),
+  )
 }
 
 // Whether a path dependency's spec may write over what a knowledge-base tier
@@ -890,14 +895,8 @@ type Dependencies {
 // returned-operator map, its `type` field lines into a flat list, and its
 // `external effects` lines into the function and module tiers. Packages
 // with no spec file are silently skipped — same fail-soft semantics as the
-// catalog and the old per-module reader.
-//
-// Within one package's spec a function's `external effects` line beats its
-// `effects` line: `graded infer` writes no `effects` line for an
-// externally-declared function, so a spec carrying both has a stale one, and
-// only the external's term pairs with the empty bounds
-// `load_spec_params_from_file` records for it. Across packages the later one in
-// the directory fold wins, as effects lines do.
+// catalog and the old per-module reader. Across packages the later one in the
+// directory fold wins, as effects lines do.
 fn load_dependencies(packages_directory: String) -> Dependencies {
   let entries = case simplifile.read_directory(packages_directory) {
     Ok(found) -> found
@@ -910,13 +909,9 @@ fn load_dependencies(packages_directory: String) -> Dependencies {
       let origin = DependencySpec(package: package_name)
       let dep_root = packages_directory <> "/" <> package_name
       let dep = load_dep_spec(dep_root, package_name)
-      let #(function_externals, module_externals) =
-        split_externals(dep.externals, origin)
+      let #(decided, module_externals) = decided_entries(dep, origin)
       Dependencies(
-        effects: dict.merge(
-          acc.effects,
-          dict.merge(with_origin(dep.effects, origin), function_externals),
-        ),
+        effects: dict.merge(acc.effects, decided),
         params: dict.merge(acc.params, dep.params),
         returns: dict.merge(
           acc.returns,
@@ -1037,16 +1032,8 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
         Error(_) -> acc
         Ok(graded_file) -> {
           let origin = Catalog(package:)
-          let kb =
-            with_externals(
-              KnowledgeBase(
-                ..new_knowledge_base(),
-                all_effects: acc.ext_effects,
-                module_effects: acc.module_effects,
-              ),
-              annotation.extract_externals(graded_file),
-              origin,
-            )
+          let #(function_externals, module_externals) =
+            split_externals(annotation.extract_externals(graded_file), origin)
           // Same two readers as a package's own spec and as `load_dep_spec`, so
           // a catalog entry's `check` budgets and externally-declared functions
           // are scoped like everyone else's. Merging with the new file second
@@ -1055,8 +1042,8 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
           let file_poly_effects =
             with_origin(load_spec_effects_from_file(graded_file), origin)
           CatalogAcc(
-            ext_effects: kb.all_effects,
-            module_effects: kb.module_effects,
+            ext_effects: dict.merge(acc.ext_effects, function_externals),
+            module_effects: dict.merge(acc.module_effects, module_externals),
             poly_effects: dict.merge(acc.poly_effects, file_poly_effects),
             poly_params: dict.merge(
               acc.poly_params,

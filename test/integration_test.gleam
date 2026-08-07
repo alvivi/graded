@@ -2077,6 +2077,15 @@ pub fn path_dep_module_level_external_preserves_effect_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Database"])))
 }
 
+// The dep source and consumer call the three shipped-external tests share: an
+// opaque FFI body graded can only infer as [Unknown], and an app whose `caller`
+// budget is [] until the dep's declaration resolves it.
+fn ffi_dep_files() -> List(#(String, String)) {
+  [#("ffi.gleam", "@external(erlang, \"d\", \"n\")\npub fn now() -> Nil\n")]
+}
+
+const ffi_caller_src = "import ffi\n\npub fn caller() -> Nil {\n  ffi.now()\n}\n"
+
 pub fn path_dep_shipped_function_external_resolves_test() {
   // The dep's own `external effects` line for its FFI, read from the spec it
   // ships. Before those lines were consumed, `ffi.now` resolved to [Unknown] for
@@ -2084,10 +2093,10 @@ pub fn path_dep_shipped_function_external_resolves_test() {
   let r =
     run_path_dep_spec_fixture(
       "pd_shipped_fn_ext",
-      [#("ffi.gleam", "@external(erlang, \"d\", \"n\")\npub fn now() -> Nil\n")],
+      ffi_dep_files(),
       "external effects ffi.now : [Time]\n",
       "check app.caller : []\n",
-      "import ffi\n\npub fn caller() -> Nil {\n  ffi.now()\n}\n",
+      ffi_caller_src,
     )
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
   v.actual |> should.equal(types.Specific(set.from_list(["Time"])))
@@ -2100,10 +2109,10 @@ pub fn path_dep_shipped_module_external_resolves_test() {
   let r =
     run_path_dep_spec_fixture(
       "pd_shipped_mod_ext",
-      [#("ffi.gleam", "@external(erlang, \"d\", \"n\")\npub fn now() -> Nil\n")],
+      ffi_dep_files(),
       "external effects ffi : [Time]\n",
       "check app.caller : []\n",
-      "import ffi\n\npub fn caller() -> Nil {\n  ffi.now()\n}\n",
+      ffi_caller_src,
     )
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
   v.actual |> should.equal(types.Specific(set.from_list(["Time"])))
@@ -2120,10 +2129,10 @@ pub fn consumer_module_external_beats_a_shipped_one_test() {
   let r =
     run_path_dep_spec_fixture(
       "pd_shipped_mod_ext_shadowed",
-      [#("ffi.gleam", "@external(erlang, \"d\", \"n\")\npub fn now() -> Nil\n")],
+      ffi_dep_files(),
       "external effects ffi : [Time]\n",
       "external effects ffi : [Mocked]\n\ncheck app.caller : []\n",
-      "import ffi\n\npub fn caller() -> Nil {\n  ffi.now()\n}\n",
+      ffi_caller_src,
     )
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
   v.actual |> should.equal(types.Specific(set.from_list(["Mocked"])))
