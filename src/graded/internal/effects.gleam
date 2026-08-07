@@ -14,10 +14,13 @@ import graded/internal/config
 import graded/internal/effect_term
 import graded/internal/types.{
   type ArgumentValue, type EffectAnnotation, type EffectSet, type EffectTerm,
-  type ExternalAnnotation, type FactorySignature, type ParamBound,
-  type QualifiedName, type ReturnProvenance, type TypeFieldAnnotation,
-  type TypeFieldEffect, type UpdateSignature, Check, ConstructorRef, Effects,
-  FunctionExternal, FunctionRef, ModuleExternal, QualifiedName, TypeFieldEffect,
+  type ExternalAnnotation, type FactorySignature, type LookupOrigin,
+  type ParamBound, type QualifiedName, type ReturnProvenance,
+  type TypeFieldAnnotation, type TypeFieldEffect, type UpdateSignature, Catalog,
+  Check, CommittedSpec, ConstructorRef, DependencySpec, Effects,
+  FunctionExternal, FunctionRef, ModuleExternal, ModuleExternalOrigin,
+  PathDependency, ProjectInferred, QualifiedName, TypeFieldEffect, TypeLine,
+  UserExternal,
 }
 import simplifile
 import tom
@@ -76,6 +79,11 @@ pub type KnowledgeBase {
     // at the function's inference time and threaded forward by the topological
     // pass. (Same-module private helpers resolve on demand from the AST instead.)
     provenance: Dict(QualifiedName, ReturnProvenance),
+    // Which source wrote each `all_effects` entry, keyed the same way. Written
+    // by every `all_effects` writer, at the merge that admitted the entry, so
+    // the origin beside a term agrees with the merge that produced it. Reported
+    // by `lookup` and rendered by diagnostics and `graded effect`.
+    origins: Dict(QualifiedName, LookupOrigin),
   )
 }
 
@@ -86,11 +94,16 @@ pub fn load_knowledge_base(
   packages_directory: String,
   manifest_path: String,
 ) -> KnowledgeBase {
-  let #(dep_effects, dep_params, dep_returns, dep_type_fields) =
+  let #(dep_effects, dep_params, dep_returns, dep_type_fields, dep_origins) =
     load_dependencies(packages_directory)
   let catalog_dir = find_catalog_directory()
-  let #(cat_effects, cat_module_effects, cat_params, cat_type_fields) =
-    load_catalog(catalog_dir, manifest_path)
+  let #(
+    cat_effects,
+    cat_module_effects,
+    cat_params,
+    cat_type_fields,
+    cat_origins,
+  ) = load_catalog(catalog_dir, manifest_path)
   KnowledgeBase(
     // Dependency entries win on a clash: dict.merge keeps its second argument.
     all_effects: dict.merge(cat_effects, dep_effects),
@@ -105,6 +118,9 @@ pub fn load_knowledge_base(
     updates: dict.new(),
     module_effects: cat_module_effects,
     provenance: dict.new(),
+    // Merged in the same direction as `all_effects`, so each entry's origin is
+    // the source that won it.
+    origins: dict.merge(cat_origins, dep_origins),
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
@@ -124,14 +140,20 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     updates: dict.new(),
     module_effects: dict.new(),
     provenance: dict.new(),
+    origins: dict.new(),
   )
 }
 
 // Build a knowledge base from the catalog only (no dependency scanning).
 pub fn empty_knowledge_base() -> KnowledgeBase {
   let catalog_dir = find_catalog_directory()
-  let #(cat_effects, cat_module_effects, cat_params, cat_type_fields) =
-    load_catalog(catalog_dir, "manifest.toml")
+  let #(
+    cat_effects,
+    cat_module_effects,
+    cat_params,
+    cat_type_fields,
+    cat_origins,
+  ) = load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
     all_effects: cat_effects,
     param_bounds: cat_params,
@@ -141,6 +163,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     updates: dict.new(),
     module_effects: cat_module_effects,
     provenance: dict.new(),
+    origins: cat_origins,
   )
   |> with_type_fields(cat_type_fields)
 }
@@ -187,16 +210,27 @@ pub fn with_type_fields(
 // Merge external annotations into a knowledge base.
 // Module-level externals record the whole module's declared effect.
 // Function-level externals are added to all_effects.
+//
+// `origin` is the source of these declarations: this project's spec passes
+// `UserExternal`, the bundled catalog passes `Catalog(package)`. Each
+// function-level insert records it beside the effect — the insert admits every
+// key, so every key is tagged. Module-level externals are answered from
+// `module_effects` and carry no origins entry.
 pub fn with_externals(
   knowledge_base: KnowledgeBase,
   externals: List(ExternalAnnotation),
+  origin: LookupOrigin,
 ) -> KnowledgeBase {
-  let #(effect_map, module_effs) =
+  let #(effect_map, module_effs, origin_map) =
     list.fold(
       externals,
-      #(knowledge_base.all_effects, knowledge_base.module_effects),
+      #(
+        knowledge_base.all_effects,
+        knowledge_base.module_effects,
+        knowledge_base.origins,
+      ),
       fn(accumulator, external_annotation) {
-        let #(effect_map, module_effs) = accumulator
+        let #(effect_map, module_effs, origin_map) = accumulator
         case external_annotation.target {
           ModuleExternal -> #(
             effect_map,
@@ -205,15 +239,20 @@ pub fn with_externals(
               external_annotation.module,
               effect_term.from_effect_set(external_annotation.effects),
             ),
+            origin_map,
           )
-          FunctionExternal(function) -> #(
-            dict.insert(
-              effect_map,
-              QualifiedName(external_annotation.module, function),
-              effect_term.from_effect_set(external_annotation.effects),
-            ),
-            module_effs,
-          )
+          FunctionExternal(function) -> {
+            let name = QualifiedName(external_annotation.module, function)
+            #(
+              dict.insert(
+                effect_map,
+                name,
+                effect_term.from_effect_set(external_annotation.effects),
+              ),
+              module_effs,
+              dict.insert(origin_map, name, origin),
+            )
+          }
         }
       },
     )
@@ -221,16 +260,25 @@ pub fn with_externals(
     ..knowledge_base,
     all_effects: effect_map,
     module_effects: module_effs,
+    origins: origin_map,
   )
 }
 
-// Look up the effect set for a qualified function name.
+// Look up the effect set for a qualified function name. A function entry
+// reports the origin recorded beside it, and `None` when the parallel origins
+// map has no entry — a miss renders nothing rather than a wrong source.
 pub fn lookup(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> EffectLookup {
   case dict.get(knowledge_base.all_effects, name) {
-    Ok(effect_set) -> Known(effect_set, types.FunctionEntry)
+    Ok(effect_set) ->
+      Known(
+        effect_set,
+        types.FunctionEntry(
+          origin: option.from_result(dict.get(knowledge_base.origins, name)),
+        ),
+      )
     Error(Nil) ->
       case dict.get(knowledge_base.module_effects, name.module) {
         Ok(effect_set) -> Known(effect_set, types.ModuleExternalEntry)
@@ -292,14 +340,46 @@ pub fn format_effect_set(effect_set: EffectSet) -> String {
   annotation.format_effect_set(effect_set)
 }
 
+// Name the source that answered a lookup, as a noun phrase. Every surface that
+// states provenance — the violation suffix `(from ...)`, the `graded effect`
+// prose `source:` line, and its `.graded` `// resolved from ...` comment —
+// reads from this one vocabulary.
+pub fn describe_origin(origin: LookupOrigin) -> String {
+  case origin {
+    UserExternal -> "your spec's external declaration"
+    CommittedSpec -> "your spec"
+    ProjectInferred -> "in-memory inference"
+    DependencySpec(package:) -> package <> "'s shipped spec"
+    PathDependency(package:) -> "path dependency " <> package
+    Catalog(package:) -> package <> "'s catalog entry"
+    ModuleExternalOrigin -> "a module-level external"
+    TypeLine -> "a type line"
+  }
+}
+
 // Merge inferred effects into a knowledge base.
 // Existing entries in the knowledge base take priority.
+//
+// `origin` is the source of the incoming terms, recorded for the keys this
+// merge actually admits: existing keys keep whatever origin they were written
+// with, so a losing source can never label an entry it did not write.
 pub fn with_inferred(
   knowledge_base: KnowledgeBase,
   inferred: Dict(QualifiedName, EffectTerm),
+  origin: LookupOrigin,
 ) -> KnowledgeBase {
   let merged = dict.merge(inferred, knowledge_base.all_effects)
-  KnowledgeBase(..knowledge_base, all_effects: merged)
+  let won =
+    inferred
+    |> dict.filter(fn(name, _term) {
+      !dict.has_key(knowledge_base.all_effects, name)
+    })
+    |> dict.map_values(fn(_name, _term) { origin })
+  KnowledgeBase(
+    ..knowledge_base,
+    all_effects: merged,
+    origins: dict.merge(knowledge_base.origins, won),
+  )
 }
 
 // Merge inferred param bounds into a knowledge base. Used so that
@@ -672,6 +752,7 @@ fn load_dependencies(
   Dict(QualifiedName, List(ParamBound)),
   Dict(QualifiedName, EffectTerm),
   List(TypeFieldAnnotation),
+  Dict(QualifiedName, LookupOrigin),
 ) {
   let entries = case simplifile.read_directory(packages_directory) {
     Ok(found) -> found
@@ -679,9 +760,9 @@ fn load_dependencies(
   }
   list.fold(
     entries,
-    #(dict.new(), dict.new(), dict.new(), []),
+    #(dict.new(), dict.new(), dict.new(), [], dict.new()),
     fn(acc, package_name) {
-      let #(effect_map, param_map, returns_map, type_fields) = acc
+      let #(effect_map, param_map, returns_map, type_fields, origin_map) = acc
       let dep_root = packages_directory <> "/" <> package_name
       let #(new_effects, new_params, new_returns, new_type_fields) =
         load_dep_spec(dep_root, package_name)
@@ -690,6 +771,13 @@ fn load_dependencies(
         dict.merge(param_map, new_params),
         dict.merge(returns_map, new_returns),
         list.append(type_fields, new_type_fields),
+        // Tagged and merged in the same direction as the effects themselves.
+        dict.merge(
+          origin_map,
+          dict.map_values(new_effects, fn(_name, _term) {
+            DependencySpec(package: package_name)
+          }),
+        ),
       )
     },
   )
@@ -750,6 +838,7 @@ type CatalogAcc {
     poly_effects: Dict(QualifiedName, EffectTerm),
     poly_params: Dict(QualifiedName, List(ParamBound)),
     type_fields: List(TypeFieldAnnotation),
+    origins: Dict(QualifiedName, LookupOrigin),
   )
 }
 
@@ -761,6 +850,7 @@ fn load_catalog(
   Dict(String, EffectTerm),
   Dict(QualifiedName, List(ParamBound)),
   List(TypeFieldAnnotation),
+  Dict(QualifiedName, LookupOrigin),
 ) {
   let installed_versions = parse_manifest_versions(manifest_path)
   let catalog_files = case simplifile.get_files(catalog_dir) {
@@ -769,19 +859,28 @@ fn load_catalog(
     Error(_) -> []
   }
   let selected = resolve_catalog_files(catalog_files, installed_versions)
-  let initial = CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new(), [])
+  let initial =
+    CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new(), [], dict.new())
   let acc = list.fold(selected, initial, fold_catalog_file)
   // Explicit `effects` annotations in the catalog take precedence over the
   // module-level `external effects` markers.
   let all_effects = dict.merge(acc.ext_effects, acc.poly_effects)
-  #(all_effects, acc.module_effects, acc.poly_params, acc.type_fields)
+  #(
+    all_effects,
+    acc.module_effects,
+    acc.poly_params,
+    acc.type_fields,
+    acc.origins,
+  )
 }
 
-// Fold one catalog file into the accumulator. `external effects` lines
-// feed module-level pure markers and specific function effects; `effects`
-// lines with param bounds feed polymorphic higher-order entries. Files
-// that fail to read or parse are silently skipped.
-fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
+// Fold one selected catalog file — its package name and path — into the
+// accumulator. `external effects` lines feed module-level pure markers and
+// specific function effects; `effects` lines with param bounds feed polymorphic
+// higher-order entries. Both kinds of function entry are tagged
+// `Catalog(package)`. Files that fail to read or parse are silently skipped.
+fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
+  let #(package, file_path) = entry
   case simplifile.read(file_path) {
     Error(_) -> acc
     Ok(content) ->
@@ -799,19 +898,18 @@ fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
                 updates: dict.new(),
                 module_effects: acc.module_effects,
                 provenance: dict.new(),
+                origins: acc.origins,
               ),
               annotation.extract_externals(graded_file),
+              Catalog(package:),
             )
           // Same two readers as a package's own spec and as `load_dep_spec`, so
           // a catalog entry's `check` budgets and externally-declared functions
           // are scoped like everyone else's. Merging with the new file second
           // keeps the later file winning on a clash, as folding per-annotation
           // did.
-          let poly_effects =
-            dict.merge(
-              acc.poly_effects,
-              load_spec_effects_from_file(graded_file),
-            )
+          let file_poly_effects = load_spec_effects_from_file(graded_file)
+          let poly_effects = dict.merge(acc.poly_effects, file_poly_effects)
           let poly_params =
             dict.merge(acc.poly_params, load_spec_params_from_file(graded_file))
           CatalogAcc(
@@ -823,16 +921,25 @@ fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
               acc.type_fields,
               annotation.extract_type_fields(graded_file),
             ),
+            origins: dict.merge(
+              kb.origins,
+              dict.map_values(file_poly_effects, fn(_name, _term) {
+                Catalog(package:)
+              }),
+            ),
           )
         }
       }
   }
 }
 
+// Each selected file as `#(package, path)`: the package name the catalog's
+// `{package}@{version}.graded` file name carries, which the fold records as the
+// origin of that file's entries.
 fn resolve_catalog_files(
   catalog_files: List(String),
   installed_versions: Dict(String, String),
-) -> List(String) {
+) -> List(#(String, String)) {
   // Parse filenames: "path/to/gleam_stdlib@0.70.0.graded" → #("gleam_stdlib", #(0,70,0), path)
   let parsed =
     list.filter_map(catalog_files, fn(path) {
@@ -864,7 +971,7 @@ fn resolve_catalog_files(
         let installed = parse_semver(installed_str)
         let best = pick_best_version(versions, installed)
         case best {
-          Ok(path) -> [path, ..selected]
+          Ok(path) -> [#(package, path), ..selected]
           Error(Nil) -> selected
         }
       }
