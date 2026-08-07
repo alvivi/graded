@@ -4,6 +4,7 @@ import gleam/int
 import gleam/list
 import gleam/option
 import gleam/order
+import gleam/result
 import gleam/set
 import gleam/string
 import gleeunit/should
@@ -51,7 +52,7 @@ pub fn lookup_known_variant_test() {
   effects.lookup(knowledge_base(), QualifiedName("gleam/io", "debug"))
   |> should.equal(effects.Known(
     effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
-    types.FunctionEntry(origin: option.Some(types.Catalog("gleam_stdlib"))),
+    types.FunctionEntry(origin: types.Catalog("gleam_stdlib")),
   ))
 }
 
@@ -485,9 +486,10 @@ pub fn with_inferred_adds_new_entries_test() {
 
 // Entry origins
 //
-// Every `all_effects` writer records which source wrote the entry it admitted,
-// and `lookup` reports it. The tag is written at the merge that admitted the
-// entry, so an entry and its origin can never come from different sources.
+// A term and the source that wrote it are one value in `all_effects`, so the
+// merge that picks a term picks its origin with it and `lookup` reports the
+// pair. These pin what each writer records, and that a losing source labels
+// nothing.
 
 fn external(
   module: String,
@@ -519,8 +521,21 @@ fn origin_of(
   name: QualifiedName,
 ) -> option.Option(types.LookupOrigin) {
   case effects.lookup(kb, name) {
-    effects.Known(_, types.FunctionEntry(origin:)) -> origin
-    effects.Known(_, types.ModuleExternalEntry) | effects.Unknown -> option.None
+    effects.Known(_, source) -> option.Some(effects.origin_of(source))
+    effects.Unknown -> option.None
+  }
+}
+
+// The term and the origin `lookup` answers with, so a test can assert that the
+// pair agrees rather than that each is separately plausible.
+fn entry_of(
+  kb: effects.KnowledgeBase,
+  name: QualifiedName,
+) -> Result(#(EffectSet, types.LookupOrigin), Nil) {
+  case effects.lookup(kb, name) {
+    effects.Known(term, source) ->
+      Ok(#(effect_term.to_effect_set(term), effects.origin_of(source)))
+    effects.Unknown -> Error(Nil)
   }
 }
 
@@ -565,27 +580,9 @@ pub fn an_existing_entry_keeps_its_own_origin_test() {
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
-pub fn an_untagged_entry_is_not_relabelled_test() {
-  // An `all_effects` entry with no origins entry: the losing merge must leave
-  // it originless rather than claim it. The renderers then say nothing about
-  // its source, which is the truth.
-  let untagged =
-    effects.KnowledgeBase(
-      ..effects.new_knowledge_base(),
-      all_effects: inferred_entry("app", "run", ["Stdout"]),
-    )
-  effects.with_inferred(
-    untagged,
-    inferred_entry("app", "run", ["Disk"]),
-    types.ProjectInferred,
-  )
-  |> origin_of(QualifiedName("app", "run"))
-  |> should.equal(option.None)
-}
-
-pub fn a_module_external_answers_without_an_origin_test() {
-  // Module-level externals live in their own map and are reported as the
-  // module entry, which names the module itself.
+pub fn a_module_external_names_the_file_that_declared_it_test() {
+  // Module-level externals live in their own map and are reported as the module
+  // entry, whose origin names both the kind of line and the file it sits in.
   let kb =
     effects.with_externals(
       effects.new_knowledge_base(),
@@ -596,12 +593,14 @@ pub fn a_module_external_answers_without_an_origin_test() {
           effects: Specific(set.from_list(["Time"])),
         ),
       ],
-      types.UserExternal,
+      types.Catalog("fake_clock_pkg"),
     )
   effects.lookup(kb, QualifiedName("fake_clock", "now"))
   |> should.equal(effects.Known(
     effect_term.from_effect_set(Specific(set.from_list(["Time"]))),
-    types.ModuleExternalEntry,
+    types.ModuleExternalEntry(
+      origin: types.ModuleExternalOrigin(source: types.Catalog("fake_clock_pkg")),
+    ),
   ))
 }
 
@@ -644,44 +643,71 @@ pub fn a_catalog_entry_names_its_package_test() {
   Nil
 }
 
-pub fn every_known_function_has_an_origin_test() {
-  // The invariant the parallel map is meant to hold on a knowledge base
-  // composed the way a run composes one: catalog, dependency spec, externals,
-  // and an inference pass.
-  let packages = "build/eff_origin_invariant/packages"
-  let _ = simplifile.delete("build/eff_origin_invariant")
-  let assert Ok(Nil) = simplifile.create_directory_all(packages <> "/dep")
+pub fn a_dependency_spec_overriding_the_catalog_reports_both_test() {
+  // The term and the origin come out of one merge, so the source named is the
+  // one whose term won — not the source the losing merge would have named.
+  let root = "build/eff_origin_agreement"
+  let packages = root <> "/packages"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(packages <> "/gleam_stdlib")
   let assert Ok(Nil) =
     simplifile.write(
-      packages <> "/dep/dep.graded",
-      "effects dep.run : [Time]\n",
+      packages <> "/gleam_stdlib/gleam_stdlib.graded",
+      "effects gleam/io.println : [Shipped]\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
-      "build/eff_origin_invariant/manifest.toml",
+      root <> "/manifest.toml",
       "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
     )
 
-  let kb =
-    effects.load_knowledge_base(
-      packages,
-      "build/eff_origin_invariant/manifest.toml",
+  effects.load_knowledge_base(packages, root <> "/manifest.toml")
+  |> entry_of(QualifiedName("gleam/io", "println"))
+  |> should.equal(
+    Ok(#(
+      Specific(set.from_list(["Shipped"])),
+      types.DependencySpec("gleam_stdlib"),
+    )),
+  )
+
+  let _ = simplifile.delete(root)
+  Nil
+}
+
+pub fn a_catalog_effects_line_beats_another_packages_external_test() {
+  // Two catalog files key the same function: one with an `effects` line, one
+  // with an `external effects` line. The `effects` line decides the term, so it
+  // must decide the origin too — the external's package never claims it.
+  let root = "build/eff_catalog_clash"
+  let catalog = root <> "/catalog"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(catalog)
+  let assert Ok(Nil) =
+    simplifile.write(
+      catalog <> "/a_pkg@1.0.0.graded",
+      "effects shared/mod.run : [Http]\n",
     )
-    |> effects.with_externals(
-      [external("app", "now", ["Time"])],
-      types.UserExternal,
+  let assert Ok(Nil) =
+    simplifile.write(
+      catalog <> "/b_pkg@1.0.0.graded",
+      "external effects shared/mod.run : [Disk]\n",
     )
-    |> effects.with_inferred(
-      inferred_entry("app", "run", ["Stdout"]),
-      types.ProjectInferred,
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/manifest.toml",
+      "packages = [\n  { name = \"a_pkg\", version = \"1.0.0\" },\n  { name = \"b_pkg\", version = \"1.0.0\" },\n]\n",
     )
 
-  kb.all_effects
-  |> dict.keys
-  |> list.all(dict.has_key(kb.origins, _))
-  |> should.be_true
+  let #(all_effects, _module_effects, _params, _type_fields) =
+    effects.load_catalog(catalog, root <> "/manifest.toml")
+  dict.get(all_effects, QualifiedName("shared/mod", "run"))
+  |> result.map(fn(entry) { #(effect_term.to_effect_set(entry.0), entry.1) })
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Http"])), types.Catalog("a_pkg"))),
+  )
 
-  let _ = simplifile.delete("build/eff_origin_invariant")
+  let _ = simplifile.delete(root)
   Nil
 }
 
@@ -764,20 +790,24 @@ pub fn argument_value_effects_other_is_unknown_test() {
 pub fn type_fields_distinguish_modules_test() {
   // Two `Validator` types in different modules, same field — must NOT conflate.
   let kb =
-    effects.with_type_fields(knowledge_base(), [
-      types.TypeFieldAnnotation(
-        option.Some("app/a"),
-        "Validator",
-        "f",
-        effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
-      ),
-      types.TypeFieldAnnotation(
-        option.Some("app/b"),
-        "Validator",
-        "f",
-        effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
-      ),
-    ])
+    effects.with_type_fields(
+      knowledge_base(),
+      [
+        types.TypeFieldAnnotation(
+          option.Some("app/a"),
+          "Validator",
+          "f",
+          effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
+        ),
+        types.TypeFieldAnnotation(
+          option.Some("app/b"),
+          "Validator",
+          "f",
+          effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        ),
+      ],
+      types.CommittedSpec,
+    )
   let assert Ok(a) = effects.lookup_type_field(kb, "app/a", "Validator", "f")
   effect_term.to_effect_set(a.effects)
   |> should.equal(Specific(set.from_list(["Http"])))

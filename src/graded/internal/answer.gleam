@@ -69,7 +69,13 @@ pub fn render_graded(answer: EffectAnswer) -> String {
   case answer {
     // A module-level external carries no per-function bounds, so its line is
     // rendered without them and labelled.
-    FunctionAnswer(name:, module:, term:, source: types.ModuleExternalEntry, ..) ->
+    FunctionAnswer(
+      name:,
+      module:,
+      term:,
+      source: types.ModuleExternalEntry(..),
+      ..,
+    ) ->
       effects_line(name, [], term)
       <> "\n// resolved via module-level external for "
       <> module
@@ -105,13 +111,9 @@ fn effects_line(
   ))
 }
 
-// The comment naming the source that wrote the winning entry, or nothing when
-// the lookup recorded none.
-fn graded_source(origin: Option(types.LookupOrigin)) -> String {
-  case origin {
-    Some(origin) -> "\n// resolved from " <> effects.describe_origin(origin)
-    None -> ""
-  }
+// The comment naming the source that wrote the winning entry.
+fn graded_source(origin: types.LookupOrigin) -> String {
+  "\n// resolved from " <> effects.describe_origin(origin)
 }
 
 // Only `Declared` entries reach the knowledge base today — `with_type_fields`
@@ -119,7 +121,7 @@ fn graded_source(origin: Option(types.LookupOrigin)) -> String {
 // can't currently return.
 fn graded_origin(origin: types.TypeFieldOrigin) -> String {
   case origin {
-    types.Declared -> "declared by a type line"
+    types.Declared(..) -> "declared by a type line"
     types.Inferred -> "inferred from construction"
   }
 }
@@ -243,20 +245,18 @@ fn detail_lines(
   module: String,
   source: types.EffectSource,
 ) -> List(String) {
-  // A bound is an assumption applied to the argument at call sites, not a
-  // claim about where this function's own effects came from, so it follows the
-  // source line rather than standing in for it.
+  // The bound lines follow the source line: each states an assumption the
+  // checker applies to that argument at call sites.
   let bound_lines = bounds |> list.filter(constrains) |> list.map(bound_line)
   case source {
-    types.ModuleExternalEntry -> [
+    types.ModuleExternalEntry(..) -> [
       "  source: module-level external for `" <> module <> "`",
       "          used when no per-function entry exists",
     ]
-    types.FunctionEntry(origin: Some(origin)) -> [
+    types.FunctionEntry(origin:) -> [
       "  source: " <> effects.describe_origin(origin),
       ..bound_lines
     ]
-    types.FunctionEntry(origin: None) -> bound_lines
   }
 }
 
@@ -299,7 +299,7 @@ fn bound_line(bound: ParamBound) -> String {
 
 fn prose_origin(origin: types.TypeFieldOrigin) -> String {
   case origin {
-    types.Declared -> "  source: declared by a `type` line"
+    types.Declared(..) -> "  source: declared by a `type` line"
     types.Inferred -> "  source: inferred from construction"
   }
 }

@@ -4,7 +4,8 @@ import gleeunit/should
 import graded/internal/answer
 import graded/internal/types.{
   Catalog, CommittedSpec, Declared, DependencySpec, FunctionEntry,
-  ModuleExternalEntry, ParamBound, TAbs, TLabels, TUnion, TVar, UserExternal,
+  ModuleExternalEntry, ModuleExternalOrigin, ParamBound, TAbs, TLabels, TUnion,
+  TVar, UserExternal,
 }
 
 // Rendering one lookup
@@ -26,7 +27,7 @@ fn function(
     module: "app",
     bounds:,
     term:,
-    source: FunctionEntry(origin: None),
+    source: FunctionEntry(origin: CommittedSpec),
   )
 }
 
@@ -42,7 +43,8 @@ pub fn a_bare_bound_variable_forwards_test() {
   function([ParamBound("f", TVar("f"))], TVar("f"))
   |> prose
   |> should.equal(
-    "app.run has the effects of its `f` argument, and none of its own",
+    "app.run has the effects of its `f` argument, and none of its own
+  source: your spec",
   )
 }
 
@@ -53,7 +55,8 @@ pub fn a_bound_variable_beside_labels_forwards_and_adds_test() {
   )
   |> prose
   |> should.equal(
-    "app.run has the effects of its `f` argument, plus [Stdout] of its own",
+    "app.run has the effects of its `f` argument, plus [Stdout] of its own
+  source: your spec",
   )
 }
 
@@ -65,6 +68,7 @@ pub fn a_ground_term_beside_a_bound_states_a_total_test() {
   |> prose
   |> should.equal(
     "app.run has effects [Stdout]
+  source: your spec
   calls to argument `f` are treated as having effects [Stdout]",
   )
 }
@@ -74,7 +78,7 @@ pub fn an_unbound_variable_does_not_forward_test() {
   // to attribute it to.
   function([], TVar("g"))
   |> prose
-  |> should.equal("app.run has effects [g]")
+  |> should.equal("app.run has effects [g]\n  source: your spec")
 }
 
 pub fn a_two_variable_union_states_a_total_test() {
@@ -85,7 +89,7 @@ pub fn a_two_variable_union_states_a_total_test() {
     TUnion([TVar("f"), TVar("g")]),
   )
   |> prose
-  |> should.equal("app.run has effects [f, g]")
+  |> should.equal("app.run has effects [f, g]\n  source: your spec")
 }
 
 pub fn an_operator_bound_is_quoted_not_collapsed_test() {
@@ -95,6 +99,7 @@ pub fn an_operator_bound_is_quoted_not_collapsed_test() {
   |> prose
   |> should.equal(
     "app.run has effects [Stdout]
+  source: your spec
   argument `f` carries the operator bound `f: fn(a) -> [a]`",
   )
 }
@@ -104,13 +109,15 @@ pub fn an_operator_bound_is_quoted_not_collapsed_test() {
 pub fn an_empty_set_is_purity_test() {
   function([], labels([]))
   |> prose
-  |> should.equal("app.run is pure — no effects ([])")
+  |> should.equal("app.run is pure — no effects ([])\n  source: your spec")
 }
 
 pub fn a_wholly_unknown_term_reads_as_undetermined_test() {
   function([], labels(["Unknown"]))
   |> prose
-  |> should.equal("app.run has effects that could not be determined: [Unknown]")
+  |> should.equal(
+    "app.run has effects that could not be determined: [Unknown]\n  source: your spec",
+  )
 }
 
 pub fn a_partly_unknown_term_keeps_what_resolved_test() {
@@ -118,7 +125,8 @@ pub fn a_partly_unknown_term_keeps_what_resolved_test() {
   function([], labels(["Stdout", "Unknown"]))
   |> prose
   |> should.equal(
-    "app.run has effects [Stdout, Unknown]; part of them could not be determined",
+    "app.run has effects [Stdout, Unknown]; part of them could not be determined
+  source: your spec",
   )
 }
 
@@ -132,7 +140,9 @@ pub fn a_module_level_external_states_its_precedence_test() {
     module: "fake_clock",
     bounds: [],
     term: labels(["Time"]),
-    source: ModuleExternalEntry,
+    source: ModuleExternalEntry(origin: ModuleExternalOrigin(
+      source: UserExternal,
+    )),
   )
   |> prose
   |> should.equal(
@@ -151,7 +161,7 @@ fn from(origin: types.LookupOrigin) -> answer.EffectAnswer {
     module: "app",
     bounds: [],
     term: labels(["Stdout"]),
-    source: FunctionEntry(origin: Some(origin)),
+    source: FunctionEntry(origin:),
   )
 }
 
@@ -175,7 +185,7 @@ pub fn a_source_line_precedes_the_bounds_test() {
     module: "app",
     bounds: [ParamBound("f", labels(["Stdout"]))],
     term: labels(["Stdout"]),
-    source: FunctionEntry(origin: Some(Catalog("gleam_stdlib"))),
+    source: FunctionEntry(origin: Catalog("gleam_stdlib")),
   )
   |> prose
   |> should.equal(
@@ -185,21 +195,13 @@ pub fn a_source_line_precedes_the_bounds_test() {
   )
 }
 
-pub fn an_untagged_entry_states_no_source_test() {
-  // The origins map is parallel to the effects map, so a lookup may find a term
-  // with no origin beside it. Nothing is stated rather than a guess.
-  function([], labels(["Stdout"]))
-  |> prose
-  |> should.equal("app.run has effects [Stdout]")
-}
-
 pub fn a_type_field_names_its_kind_test() {
   answer.TypeFieldAnswer(
     module: Some("myapp/repo"),
     type_name: "Repo",
     field: "find",
     term: labels(["Storage"]),
-    origin: Declared,
+    origin: Declared(source: CommittedSpec),
   )
   |> prose
   |> should.equal(
@@ -214,7 +216,7 @@ pub fn a_bare_type_field_carries_no_module_test() {
     type_name: "Box",
     field: "run",
     term: labels(["Disk"]),
-    origin: Declared,
+    origin: Declared(source: CommittedSpec),
   )
   |> prose
   |> should.equal(
@@ -228,7 +230,7 @@ pub fn a_bare_type_field_carries_no_module_test() {
 pub fn the_graded_renderer_writes_spec_syntax_test() {
   function([ParamBound("f", TVar("f"))], TVar("f"))
   |> answer.render(answer.Graded)
-  |> should.equal("effects app.run(f: [f]) : [f]")
+  |> should.equal("effects app.run(f: [f]) : [f]\n// resolved from your spec")
 }
 
 pub fn the_graded_renderer_comments_the_source_test() {
@@ -245,7 +247,9 @@ pub fn the_formats_report_the_same_effects_test() {
   // Wording may differ; the effect set may not.
   let answer_value = function([], labels(["Stdout", "Time"]))
   answer.render(answer_value, answer.Graded)
-  |> should.equal("effects app.run : [Stdout, Time]")
+  |> should.equal(
+    "effects app.run : [Stdout, Time]\n// resolved from your spec",
+  )
   answer.render(answer_value, answer.Prose)
-  |> should.equal("app.run has effects [Stdout, Time]")
+  |> should.equal("app.run has effects [Stdout, Time]\n  source: your spec")
 }

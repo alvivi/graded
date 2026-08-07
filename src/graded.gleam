@@ -559,7 +559,10 @@ fn load_project_context(
     )
   let knowledge_base =
     kb_base
-    |> effects.with_type_fields(annotation.extract_type_fields(spec))
+    |> effects.with_type_fields(
+      annotation.extract_type_fields(spec),
+      types.CommittedSpec,
+    )
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
 
   Ok(ProjectContext(
@@ -1112,7 +1115,10 @@ fn spec_knowledge_base(spec: GradedFile) -> KnowledgeBase {
     types.UserExternal,
   )
   |> with_committed_spec(spec, annotation.module_external_modules(spec))
-  |> effects.with_type_fields(annotation.extract_type_fields(spec))
+  |> effects.with_type_fields(
+    annotation.extract_type_fields(spec),
+    types.CommittedSpec,
+  )
 }
 
 // The module paths of this package's own source files. Listing the file names
@@ -1141,13 +1147,13 @@ fn function_effect(
     // A module-level external carries no per-function bounds, so none travel
     // with its answer. Which map answered is reported by the lookup itself, so
     // the recorded source can't disagree with the term beside it.
-    effects.Known(term, types.ModuleExternalEntry) ->
+    effects.Known(term, types.ModuleExternalEntry(origin:)) ->
       Ok(answer.FunctionAnswer(
         name:,
         module:,
         bounds: [],
         term:,
-        source: types.ModuleExternalEntry,
+        source: types.ModuleExternalEntry(origin:),
       ))
     effects.Known(term, types.FunctionEntry(origin:)) ->
       Ok(answer.FunctionAnswer(
@@ -1589,7 +1595,10 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
 
   let base_kb =
     kb_base
-    |> effects.with_type_fields(annotation.extract_type_fields(spec))
+    |> effects.with_type_fields(
+      annotation.extract_type_fields(spec),
+      types.CommittedSpec,
+    )
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
 
   let graph = build_dependency_graph(index)
@@ -2187,7 +2196,10 @@ fn enrich_with_path_deps(
           effects.Foreign,
           types.PathDependency(package: name),
         )
-        |> effects.with_type_fields(type_fields)
+        |> effects.with_type_fields(
+          type_fields,
+          types.PathDependency(package: name),
+        )
       }
       _ ->
         case infer_path_dep(resolved_dep_path, kb, consumer_modules) {
