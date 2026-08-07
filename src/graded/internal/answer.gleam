@@ -73,24 +73,13 @@ pub fn render_graded(answer: EffectAnswer) -> String {
       effects_line(name, [], term)
       <> "\n// resolved via module-level external for "
       <> module
-    // The source that wrote the winning entry, when the lookup recorded one.
     FunctionAnswer(
       name:,
       bounds:,
       term:,
-      source: types.FunctionEntry(origin: Some(origin)),
+      source: types.FunctionEntry(origin:),
       ..,
-    ) ->
-      effects_line(name, bounds, term)
-      <> "\n// resolved from "
-      <> effects.describe_origin(origin)
-    FunctionAnswer(
-      name:,
-      bounds:,
-      term:,
-      source: types.FunctionEntry(origin: None),
-      ..,
-    ) -> effects_line(name, bounds, term)
+    ) -> effects_line(name, bounds, term) <> graded_source(origin)
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
       annotation.format_type_field(TypeFieldAnnotation(
         module:,
@@ -114,6 +103,15 @@ fn effects_line(
     params: bounds,
     effects: term,
   ))
+}
+
+// The comment naming the source that wrote the winning entry, or nothing when
+// the lookup recorded none.
+fn graded_source(origin: Option(types.LookupOrigin)) -> String {
+  case origin {
+    Some(origin) -> "\n// resolved from " <> effects.describe_origin(origin)
+    None -> ""
+  }
 }
 
 // Only `Declared` entries reach the knowledge base today — `with_type_fields`

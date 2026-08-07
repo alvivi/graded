@@ -22,10 +22,10 @@ import graded/internal/types.{
   type EffectAnnotation, type EffectTerm, type LocalCall, type LookupOrigin,
   type ParamBound, type QualifiedName, type ResolvedCall, type UnknownReason,
   type Violation, type Warning, EffectAnnotation, Effects, FieldNotAnnotated,
-  ModuleExternalOrigin, NoKnownEffects, ParamBound, QualifiedName,
-  ReceiverTypeUnresolved, TUnion, TVar, TypeLine, UndeclaredExternal,
-  UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning, UnresolvedFieldValue,
-  UntraceableProducer, UntraceableReceiver, UntrackedEffectWarning, Violation,
+  NoKnownEffects, ParamBound, QualifiedName, ReceiverTypeUnresolved, TUnion,
+  TVar, TypeLine, UndeclaredExternal, UnmatchedFieldBoundWarning,
+  UnmatchedParamBoundWarning, UnresolvedFieldValue, UntraceableProducer,
+  UntraceableReceiver, UntrackedEffectWarning, Violation,
 }
 
 // Entry points
@@ -595,52 +595,35 @@ fn plain_action(kind: CallKind) -> String {
   }
 }
 
-// The action phrase a recorded reason refines. Each reason sharpens the one
-// kind it was minted for; against any other kind it adds nothing the kind's own
-// phrase doesn't already say, so that phrase stands. A computed receiver keeps
-// its wording throughout — "on a computed value" already states the
-// untraceability every field reason would repeat.
+// The action phrase a recorded reason refines. Only the three kinds a reason is
+// ever minted for can be sharpened; against any other kind — and against a
+// reason minted for a different one — the kind's own phrase already says
+// everything the reason would, so it stands.
 fn refined_action(kind: CallKind, reason: UnknownReason) -> String {
-  case reason {
-    NoKnownEffects ->
-      case kind {
-        DirectCall(module:, function:) ->
+  case kind {
+    DirectCall(module:, function:) ->
+      case reason {
+        NoKnownEffects ->
           "calls "
           <> module
           <> "."
           <> function
           <> ", which no spec, external, or catalog declares,"
-        ParameterCall(..)
-        | FieldAccessCall(..)
-        | ComputedFieldCall(..)
-        | UnresolvedLocalCall(..)
-        | ReturnedOperatorCall(..)
-        | InlineFunctionCall
-        | LetBoundValueCall
-        | ComputedValueCall
-        | UnclassifiedCall -> plain_action(kind)
-      }
-    UndeclaredExternal ->
-      case kind {
-        DirectCall(module:, function:) ->
+        UndeclaredExternal ->
           "calls "
           <> module
           <> "."
           <> function
           <> ", an external with no declared effects,"
-        ParameterCall(..)
-        | FieldAccessCall(..)
-        | ComputedFieldCall(..)
-        | UnresolvedLocalCall(..)
-        | ReturnedOperatorCall(..)
-        | InlineFunctionCall
-        | LetBoundValueCall
-        | ComputedValueCall
-        | UnclassifiedCall -> plain_action(kind)
+        FieldNotAnnotated(..)
+        | ReceiverTypeUnresolved
+        | UntraceableReceiver
+        | UnresolvedFieldValue
+        | UntraceableProducer -> plain_action(kind)
       }
-    FieldNotAnnotated(module:, type_name:) ->
-      case kind {
-        FieldAccessCall(receiver:, label:) ->
+    FieldAccessCall(receiver:, label:) ->
+      case reason {
+        FieldNotAnnotated(module:, type_name:) ->
           "calls field `"
           <> label
           <> "` on `"
@@ -648,86 +631,49 @@ fn refined_action(kind: CallKind, reason: UnknownReason) -> String {
           <> "` of type `"
           <> qualified_type_name(module, type_name)
           <> "`, which has no effect annotation for that field,"
-        DirectCall(..)
-        | ParameterCall(..)
-        | ComputedFieldCall(..)
-        | UnresolvedLocalCall(..)
-        | ReturnedOperatorCall(..)
-        | InlineFunctionCall
-        | LetBoundValueCall
-        | ComputedValueCall
-        | UnclassifiedCall -> plain_action(kind)
-      }
-    ReceiverTypeUnresolved ->
-      case kind {
-        FieldAccessCall(receiver:, label:) ->
+        ReceiverTypeUnresolved ->
           "calls field `"
           <> label
           <> "` on `"
           <> receiver
           <> "`, whose type could not be resolved,"
-        DirectCall(..)
-        | ParameterCall(..)
-        | ComputedFieldCall(..)
-        | UnresolvedLocalCall(..)
-        | ReturnedOperatorCall(..)
-        | InlineFunctionCall
-        | LetBoundValueCall
-        | ComputedValueCall
-        | UnclassifiedCall -> plain_action(kind)
-      }
-    UntraceableReceiver ->
-      case kind {
-        FieldAccessCall(receiver:, label:) ->
+        UntraceableReceiver ->
           "calls field `"
           <> label
           <> "` on `"
           <> receiver
           <> "`, whose value could not be traced,"
-        DirectCall(..)
-        | ParameterCall(..)
-        | ComputedFieldCall(..)
-        | UnresolvedLocalCall(..)
-        | ReturnedOperatorCall(..)
-        | InlineFunctionCall
-        | LetBoundValueCall
-        | ComputedValueCall
-        | UnclassifiedCall -> plain_action(kind)
-      }
-    UnresolvedFieldValue ->
-      case kind {
-        FieldAccessCall(receiver:, label:) ->
+        UnresolvedFieldValue ->
           "calls field `"
           <> label
           <> "` on `"
           <> receiver
           <> "`, whose wired value's effects could not be resolved,"
-        DirectCall(..)
-        | ParameterCall(..)
-        | ComputedFieldCall(..)
-        | UnresolvedLocalCall(..)
-        | ReturnedOperatorCall(..)
-        | InlineFunctionCall
-        | LetBoundValueCall
-        | ComputedValueCall
-        | UnclassifiedCall -> plain_action(kind)
+        NoKnownEffects | UndeclaredExternal | UntraceableProducer ->
+          plain_action(kind)
       }
-    UntraceableProducer ->
-      case kind {
-        ReturnedOperatorCall(producer:) ->
+    ReturnedOperatorCall(producer:) ->
+      case reason {
+        UntraceableProducer ->
           "calls a function returned by `"
           <> dotted_name(producer)
           <> "`, whose producer could not be resolved,"
-        DirectCall(..)
-        | ParameterCall(..)
-        | FieldAccessCall(..)
-        | ComputedFieldCall(..)
-        | UnresolvedLocalCall(..)
-        | InlineFunctionCall
-        | LetBoundValueCall
-        | ComputedValueCall
-        | UnclassifiedCall -> plain_action(kind)
+        NoKnownEffects
+        | UndeclaredExternal
+        | FieldNotAnnotated(..)
+        | ReceiverTypeUnresolved
+        | UntraceableReceiver
+        | UnresolvedFieldValue -> plain_action(kind)
       }
+    // A computed receiver keeps its wording throughout — "on a computed value"
+    // already states the untraceability every field reason would repeat.
+    ParameterCall(..)
+    | ComputedFieldCall(..)
+    | UnresolvedLocalCall(..)
+    | InlineFunctionCall
+    | LetBoundValueCall
+    | ComputedValueCall
+    | UnclassifiedCall -> plain_action(kind)
   }
 }
 
@@ -1210,6 +1156,22 @@ fn plain_call(call: ResolvedCall, term: EffectTerm) -> CollectedCall {
   CollectedCall(call:, term:, reason: None, origin: None)
 }
 
+// A knowledge-base lookup as a collected call's three parts: the term, the
+// reason a miss deserves, and the source a hit came from. Which map answered is
+// reported by the lookup itself, so the term and the source recorded beside it
+// can't disagree. Only `if_unknown` differs between call sites — what a miss
+// means depends on the call shape that missed.
+fn lookup_parts(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+  if_unknown: UnknownReason,
+) -> #(EffectTerm, option.Option(UnknownReason), option.Option(LookupOrigin)) {
+  case effects.lookup(knowledge_base, name) {
+    effects.Known(term, source) -> #(term, None, effects.origin_of(source))
+    effects.Unknown -> #(effect_term.unknown(), Some(if_unknown), None)
+  }
+}
+
 type Memo {
   Memo(
     // Polymorphic same-module call analyses, keyed by callee + same-SCC
@@ -1532,25 +1494,11 @@ fn collect_effects(
   // parameter positions and substitute for concrete effects.
   let #(memo, resolved_effects) =
     list.map_fold(result.resolved, memo, fn(memo, call) {
-      // Which map answered is reported by the lookup, so the effect term and
-      // the source recorded beside it can't disagree. A name no source keys is
-      // the one case with a reason of its own; a variable that collapses to
-      // `[Unknown]` during substitution is `variables_hint`'s to explain.
-      let #(effect_set, reason, origin) = case
-        effects.lookup(knowledge_base, call.name)
-      {
-        effects.Known(term, types.FunctionEntry(origin:)) -> #(
-          term,
-          None,
-          origin,
-        )
-        effects.Known(term, types.ModuleExternalEntry) -> #(
-          term,
-          None,
-          Some(ModuleExternalOrigin),
-        )
-        effects.Unknown -> #(effect_term.unknown(), Some(NoKnownEffects), None)
-      }
+      // A name no source keys is the one case with a reason of its own; a
+      // variable that collapses to `[Unknown]` during substitution is
+      // `variables_hint`'s to explain.
+      let #(effect_set, reason, origin) =
+        lookup_parts(knowledge_base, call.name, NoKnownEffects)
       let #(concrete, memo) =
         substitute_at_call_site(
           call,
@@ -4165,25 +4113,8 @@ fn resolve_unknown_local(
               module: context.module_path,
               function: local_call.function,
             )
-          let #(term, reason, origin) = case
-            effects.lookup(knowledge_base, qualified)
-          {
-            effects.Known(term, types.FunctionEntry(origin:)) -> #(
-              term,
-              None,
-              origin,
-            )
-            effects.Known(term, types.ModuleExternalEntry) -> #(
-              term,
-              None,
-              Some(ModuleExternalOrigin),
-            )
-            effects.Unknown -> #(
-              effect_term.unknown(),
-              Some(UndeclaredExternal),
-              None,
-            )
-          }
+          let #(term, reason, origin) =
+            lookup_parts(knowledge_base, qualified, UndeclaredExternal)
           #(
             [
               CollectedCall(
@@ -4433,7 +4364,7 @@ fn value_field_effect(
       case effects.lookup(knowledge_base, name) {
         effects.Known(effect, source) -> #(
           known_field_effect(effect, knowledge_base, name),
-          lookup_origin(source),
+          effects.origin_of(source),
           memo,
         )
         effects.Unknown -> {
@@ -4520,15 +4451,6 @@ fn value_field_effect(
       }
       #(effect, None, memo)
     }
-  }
-}
-
-// The origin a lookup's source names, for a resolver that records provenance
-// beside a term rather than rendering it.
-fn lookup_origin(source: types.EffectSource) -> option.Option(LookupOrigin) {
-  case source {
-    types.FunctionEntry(origin:) -> origin
-    types.ModuleExternalEntry -> Some(ModuleExternalOrigin)
   }
 }
 
@@ -4742,9 +4664,13 @@ fn resolve_proven_field(
   // the polymorphic self marker, which only becomes `[Unknown]` here, when
   // `resolve_field_effect` concretizes it. An `[Unknown]` a source claims is
   // left alone — its origin already explains it.
-  let reason = case origin, carries_unknown(term) {
-    None, True -> Some(UnresolvedFieldValue)
-    None, False | Some(_), _ -> None
+  let reason = case origin {
+    Some(_) -> None
+    None ->
+      case carries_unknown(term) {
+        True -> Some(UnresolvedFieldValue)
+        False -> None
+      }
   }
   #(Resolution(term:, reason:, origin:), memo)
 }

@@ -287,6 +287,16 @@ pub fn lookup(
   }
 }
 
+// The origin a lookup's source names, for a caller that records provenance
+// beside a term rather than rendering it. Lives beside `lookup`, which decides
+// the source, so which map answered and how it is named stay one decision.
+pub fn origin_of(source: types.EffectSource) -> option.Option(LookupOrigin) {
+  case source {
+    types.FunctionEntry(origin:) -> origin
+    types.ModuleExternalEntry -> Some(ModuleExternalOrigin)
+  }
+}
+
 // Look up effects as an `EffectTerm`, returning `[Unknown]` for unrecognized
 // functions. The term may be second-order (carry operator applications) for
 // higher-order functions; callers reduce it at the resolution boundary.
@@ -368,18 +378,22 @@ pub fn with_inferred(
   inferred: Dict(QualifiedName, EffectTerm),
   origin: LookupOrigin,
 ) -> KnowledgeBase {
-  let merged = dict.merge(inferred, knowledge_base.all_effects)
-  let won =
-    inferred
-    |> dict.filter(fn(name, _term) {
-      !dict.has_key(knowledge_base.all_effects, name)
-    })
-    |> dict.map_values(fn(_name, _term) { origin })
-  KnowledgeBase(
-    ..knowledge_base,
-    all_effects: merged,
-    origins: dict.merge(knowledge_base.origins, won),
-  )
+  let #(all_effects, origins) =
+    dict.fold(
+      inferred,
+      #(knowledge_base.all_effects, knowledge_base.origins),
+      fn(accumulator, name, term) {
+        let #(all_effects, origins) = accumulator
+        case dict.has_key(all_effects, name) {
+          True -> accumulator
+          False -> #(
+            dict.insert(all_effects, name, term),
+            dict.insert(origins, name, origin),
+          )
+        }
+      },
+    )
+  KnowledgeBase(..knowledge_base, all_effects:, origins:)
 }
 
 // Merge inferred param bounds into a knowledge base. Used so that
@@ -404,6 +418,16 @@ pub type SummaryOrigin {
   // Loaded from a serialized `.graded` (dependency or committed project spec),
   // unsanitized; a polymorphic Foreign summary is not trusted for synthesis.
   Foreign
+}
+
+// Tag every key of an effect map with a single origin, ready to merge into
+// `origins`. Used where one source decides a whole map — a dependency's spec, a
+// catalog file — as opposed to a merge that admits only some keys.
+fn tag_origins(
+  entries: Dict(QualifiedName, EffectTerm),
+  origin: LookupOrigin,
+) -> Dict(QualifiedName, LookupOrigin) {
+  dict.map_values(entries, fn(_name, _term) { origin })
 }
 
 // Tag every summary in a bare `name -> operator` map with a single origin, ready
@@ -774,9 +798,7 @@ fn load_dependencies(
         // Tagged and merged in the same direction as the effects themselves.
         dict.merge(
           origin_map,
-          dict.map_values(new_effects, fn(_name, _term) {
-            DependencySpec(package: package_name)
-          }),
+          tag_origins(new_effects, DependencySpec(package: package_name)),
         ),
       )
     },
@@ -923,9 +945,7 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
             ),
             origins: dict.merge(
               kb.origins,
-              dict.map_values(file_poly_effects, fn(_name, _term) {
-                Catalog(package:)
-              }),
+              tag_origins(file_poly_effects, Catalog(package:)),
             ),
           )
         }
