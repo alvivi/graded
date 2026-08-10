@@ -1560,6 +1560,31 @@ fn build_dependency_graph(
 /// analysed after every other project module it imports — a single pass
 /// resolves transitive chains of any depth.
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
+  use outcome <- result.try(compute_infer(directory))
+  use Nil <- result.try(
+    list.try_each(outcome.cache_files, fn(entry) {
+      let #(cache_path, cache_file) = entry
+      write_cache_file(cache_path, cache_file)
+    }),
+  )
+  write_spec_file(outcome.cfg.spec_file, outcome.merged_spec)
+}
+
+// Everything `infer` derives before anything is written: the resolved config,
+// the spec file with the fresh inference already merged in, and the per-module
+// cache files in topological order.
+type InferOutcome {
+  InferOutcome(
+    cfg: config.GradedConfig,
+    merged_spec: GradedFile,
+    cache_files: List(#(String, GradedFile)),
+  )
+}
+
+// Run the whole of inference without touching disk beyond reads, so both
+// `run_infer` and `run_infer_dry_run` decide what would be written from one
+// shared computation.
+fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   let directory = scope_to_source_directory(directory)
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
@@ -1611,41 +1636,57 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     }),
   )
 
-  use #(_kb, public_annotations, public_returns) <- result.try(
-    list.try_fold(sorted, #(base_kb, [], []), fn(state, module_path) {
-      let #(kb, acc, returns_acc) = state
+  let #(_kb, public_annotations, public_returns, cache_files) =
+    list.fold(sorted, #(base_kb, [], [], []), fn(state, module_path) {
+      let #(kb, acc, returns_acc, cache_acc) = state
       case dict.get(index, module_path) {
-        Error(_) -> Ok(state)
+        Error(_) -> state
         Ok(#(_gleam_path, module)) -> {
-          use #(new_kb, new_public, new_returns) <- result.try(infer_one_module(
-            module,
-            module_path,
-            cfg.cache_dir,
-            kb,
-            registry,
-            typeinfo.for_module(type_info, module_path),
-            typeinfo.fn_typed_for_module(type_info, module_path),
-            declared_modules,
-          ))
+          let #(new_kb, new_public, new_returns, cache_entry) =
+            infer_one_module(
+              module,
+              module_path,
+              cfg.cache_dir,
+              kb,
+              registry,
+              typeinfo.for_module(type_info, module_path),
+              typeinfo.fn_typed_for_module(type_info, module_path),
+              declared_modules,
+            )
           // Prepend new entries so each iteration is O(|new|) instead of
           // O(|acc|); final order doesn't matter, merge_inferred keys by name.
-          Ok(#(
+          // The cache accumulator is reversed back into topological order
+          // before the write phase walks it.
+          #(
             new_kb,
             list.append(new_public, acc),
             list.append(new_returns, returns_acc),
-          ))
+            case cache_entry {
+              None -> cache_acc
+              Some(entry) -> [entry, ..cache_acc]
+            },
+          )
         }
       }
-    }),
-  )
+    })
 
-  write_spec_file(cfg.spec_file, spec, public_annotations, public_returns)
+  Ok(InferOutcome(
+    cfg:,
+    merged_spec: annotation.merge_inferred(
+      spec,
+      public_annotations,
+      public_returns,
+    ),
+    cache_files: list.reverse(cache_files),
+  ))
 }
 
-// Infer effects for a single module, write its cache file (with bare
-// names), and return the new knowledge base + the module's *public*
-// inferred annotations qualified with the module path. The caller
-// accumulates the public annotations for the eventual spec file write.
+// Infer effects for a single module and return the new knowledge base, the
+// module's *public* inferred annotations qualified with the module path, and
+// the cache file (with bare names) the write phase would write for it — `None`
+// when the module inferred nothing, so no cache file and no directory for it
+// are created. The caller accumulates the public annotations for the eventual
+// spec file write.
 fn infer_one_module(
   module: glance.Module,
   module_path: String,
@@ -1655,9 +1696,11 @@ fn infer_one_module(
   module_types: Dict(#(Int, Int), girard.Type),
   girard_fn_typed: Dict(String, Set(String)),
   declared_modules: Set(String),
-) -> Result(
-  #(KnowledgeBase, List(EffectAnnotation), List(types.ReturnsAnnotation)),
-  GradedError,
+) -> #(
+  KnowledgeBase,
+  List(EffectAnnotation),
+  List(types.ReturnsAnnotation),
+  Option(#(String, GradedFile)),
 ) {
   let #(inferred, returned_operators, provenance) =
     checker.infer_with_returns(
@@ -1670,22 +1713,16 @@ fn infer_one_module(
       girard_fn_typed,
     )
 
-  let cache_path = filepath.join(cache_dir, module_path <> ".graded")
-
-  // Skip the cache write when there's nothing to record. Saves an mkdir
-  // syscall per stdlib-only module.
-  use Nil <- result.try(case inferred {
-    [] -> Ok(Nil)
-    _ -> {
-      let parent_directory = filepath.directory_name(cache_path)
-      use Nil <- result.try(
-        simplifile.create_directory_all(parent_directory)
-        |> result.map_error(DirectoryCreateError(parent_directory, _)),
-      )
-      let cache_file = GradedFile(lines: list.map(inferred, AnnotationLine))
-      write_graded_file(cache_path, cache_file)
-    }
-  })
+  // Skip the cache file when there's nothing to record. Saves an mkdir syscall
+  // per stdlib-only module.
+  let cache_entry = case inferred {
+    [] -> None
+    _ ->
+      Some(#(
+        filepath.join(cache_dir, module_path <> ".graded"),
+        GradedFile(lines: list.map(inferred, AnnotationLine)),
+      ))
+  }
 
   // Thread inferred effects, polymorphic param bounds, and returned-operator
   // signatures into the KB so later modules in the topo-sort pass can resolve
@@ -1726,7 +1763,7 @@ fn infer_one_module(
       )
     })
 
-  Ok(#(new_kb, public_annotations, public_returns))
+  #(new_kb, public_annotations, public_returns, cache_entry)
 }
 
 // Infer project modules in topological order, in memory, folding their
@@ -1881,18 +1918,25 @@ fn public_function_names(module: glance.Module) -> set.Set(String) {
   })
 }
 
-// Write the project's spec file. Reads the existing spec (if any),
-// preserves all `check`/`external`/`type` lines plus comments and blank
-// lines, replaces the inferred `effects` lines with the freshly inferred
-// public-function annotations, and writes the result back.
+// Write one module's cache file, creating the directory it lives in.
+fn write_cache_file(
+  cache_path: String,
+  cache_file: GradedFile,
+) -> Result(Nil, GradedError) {
+  let parent_directory = filepath.directory_name(cache_path)
+  use Nil <- result.try(
+    simplifile.create_directory_all(parent_directory)
+    |> result.map_error(DirectoryCreateError(parent_directory, _)),
+  )
+  write_graded_file(cache_path, cache_file)
+}
+
+// Write the project's spec file — the merge with the existing spec has already
+// happened in `compute_infer`.
 fn write_spec_file(
   spec_path: String,
-  existing: GradedFile,
-  inferred: List(EffectAnnotation),
-  inferred_returns: List(types.ReturnsAnnotation),
+  merged: GradedFile,
 ) -> Result(Nil, GradedError) {
-  let merged = annotation.merge_inferred(existing, inferred, inferred_returns)
-
   // create_directory_all is a no-op when the parent already exists, so it's
   // safe to call unconditionally — and necessary when the user has
   // configured a non-default spec_file in a subdirectory.
