@@ -1,7 +1,7 @@
 import glance
 import gleam/dict
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
 import gleam/string
@@ -1978,7 +1978,7 @@ fn run_path_dep_fixture(
   spec: String,
   app_src: String,
 ) -> types.CheckResult {
-  run_path_dep_project(name, dep_files, option.None, spec, app_src)
+  run_path_dep_project(name, dep_files, None, spec, app_src)
 }
 
 // The same fixture with the dependency shipping a committed `dep.graded` of its
@@ -1991,13 +1991,13 @@ fn run_path_dep_spec_fixture(
   spec: String,
   app_src: String,
 ) -> types.CheckResult {
-  run_path_dep_project(name, dep_files, option.Some(dep_spec), spec, app_src)
+  run_path_dep_project(name, dep_files, Some(dep_spec), spec, app_src)
 }
 
 fn run_path_dep_project(
   name: String,
   dep_files: List(#(String, String)),
-  dep_spec: option.Option(String),
+  dep_spec: Option(String),
   spec: String,
   app_src: String,
 ) -> types.CheckResult {
@@ -2014,9 +2014,12 @@ fn run_path_dep_project(
     let assert Ok(Nil) = simplifile.write(dep_root <> "/src/" <> path, content)
     Nil
   })
-  let assert Ok(Nil) = case dep_spec {
-    option.Some(content) -> simplifile.write(dep_root <> "/dep.graded", content)
-    option.None -> Ok(Nil)
+  case dep_spec {
+    Some(content) -> {
+      let assert Ok(Nil) = simplifile.write(dep_root <> "/dep.graded", content)
+      Nil
+    }
+    None -> Nil
   }
 
   let assert Ok(Nil) = simplifile.create_directory_all(app_root)
