@@ -12,6 +12,7 @@
 //// gleam run -m graded infer --dry-run [dir]     # preview the spec changes, writing nothing
 //// gleam run -m graded effect <name> [directory] # look up one effect, writing nothing
 //// gleam run -m graded effect <name> --format=graded  # ... as a .graded line
+//// gleam run -m graded why <name> [directory]    # explain a function's effects
 //// gleam run -m graded format [directory]        # normalize .graded file formatting
 //// ```
 ////
@@ -22,7 +23,8 @@
 //// effects and write `.graded` files, or `run_infer_dry_run` to get back a
 //// diff of what that write would change without performing it. Use
 //// `run_effect` to resolve one function or type-field name and get its
-//// `.graded` line back, touching nothing on disk.
+//// `.graded` line back, or `run_why` to get the effects of one function
+//// explained call by call — both touching nothing on disk.
 ////
 
 import argv
@@ -90,6 +92,9 @@ pub type GradedError {
   /// `graded effect` found no effect for the queried name: it names no public
   /// function and no declared type field.
   EffectNotFound(name: String)
+  /// `graded why` found no function to explain: the name isn't module-qualified,
+  /// names no module of this project, or names no function of that module.
+  FunctionNotFound(name: String)
   /// `graded pack` could not inject the spec into the hex tarball: the tarball
   /// was missing, its identity didn't match the project, the configured
   /// `spec_file` path was unsafe, or the tarball transform failed.
@@ -148,6 +153,16 @@ pub fn main() -> Nil {
         Error(error) -> usage_error(cli.format_argument_error(error))
         Ok(#(name, directory, format)) ->
           case run_effect_formatted(directory, name, format) {
+            Ok(output) -> io.println(output)
+            Error(error) -> fail(error)
+          }
+      }
+
+    ["why", ..rest] ->
+      case cli.parse_why_args(rest) {
+        Error(error) -> usage_error(cli.format_argument_error(error))
+        Ok(#(name, directory)) ->
+          case run_why(directory, name) {
             Ok(output) -> io.println(output)
             Error(error) -> fail(error)
           }
@@ -218,6 +233,7 @@ Usage:
   graded effect <name> [dir]    Look up a function or type-field effect (read-only)
     --format=prose              Describe the answer in sentences (default)
     --format=graded             Print it as a `.graded` line, provenance in a comment
+  graded why <name> [dir]       Explain where a function's effects come from (read-only)
   graded pack [directory]       Inject the spec into the hex tarball for release
   graded format [directory]     Format the spec file
   graded format --check [dir]   Verify formatting without writing (CI mode)
@@ -1217,6 +1233,118 @@ fn bare_type_field(
 ) -> Result(#(Option(String), types.TypeFieldEffect), Nil) {
   effects.lookup_type_field(knowledge_base, "", type_name, field)
   |> result.map(fn(type_field) { #(None, type_field) })
+}
+
+// Explanations
+//
+// The `why` command: re-walk one function's body and report every effect
+// contributor the checker reaches, with the vocabulary violations already use.
+// Writes nothing.
+
+/// Explain where one function's effects come from, as prose.
+///
+/// `name` is a module-qualified function in one of this project's own modules
+/// (`myapp/router.handle`) — `why` re-walks a body, so there has to be one.
+/// Private functions are accepted: the walk is over source this project holds,
+/// unlike `run_effect`, which answers from the public knowledge base.
+///
+/// The output holds one block per `check` line declared for the function, each
+/// with that line's own bounds fed to the analysis, in spec-file order — two
+/// `check` lines can substitute the same body differently, so neither block
+/// speaks for the other. With no `check` line there is one block, analysed with
+/// no bounds. A block states the function's total effect, the `check` line it
+/// came from (informationally — the subset verdict is `graded check`'s), and one
+/// line per contributing call: what the call is, the effects it contributes, and
+/// either why they stayed unresolved or which source resolved them.
+///
+/// Contributors are the calls the checker reaches, not the call sites written
+/// in the body: a resolved call to a same-module function is replaced by that
+/// function's own calls, so those surface instead, at spans inside it.
+///
+/// Returns `FunctionNotFound` when the name isn't a function of a project
+/// module. Nothing is written to disk.
+pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
+  use #(module_path, function) <- result.try(
+    annotation.split_function_name(name)
+    |> result.replace_error(FunctionNotFound(name)),
+  )
+  use ctx <- result.try(load_project_context(directory))
+  use #(_gleam_path, module) <- result.try(
+    dict.get(ctx.index, module_path)
+    |> result.replace_error(FunctionNotFound(name)),
+  )
+  // Straight from the spec's `check` lines rather than the per-module grouping
+  // `run` builds, whose lists are prepend-reversed — the blocks are printed in
+  // the order the spec declares them. A function with no line still gets one
+  // block, analysed with no bounds.
+  //
+  // Raw equality is the whole match: `split_function_name` accepted `name`, so
+  // it is `module.function` under the same grammar spec names are written in,
+  // and normalizing it would rejoin the parts it was just split into.
+  let checks = case
+    annotation.extract_checks(ctx.spec)
+    |> list.filter(fn(ann) { ann.function == name })
+  {
+    [] -> [None]
+    checks -> list.map(checks, Some)
+  }
+  checker.explain(
+    module,
+    module_path,
+    function,
+    list.map(checks, check_bounds),
+    ctx.knowledge_base,
+    ctx.registry,
+    typeinfo.for_module(ctx.type_info, module_path),
+    typeinfo.fn_typed_for_module(ctx.type_info, module_path),
+  )
+  |> result.replace_error(FunctionNotFound(name))
+  |> result.map(fn(explained) {
+    list.map2(checks, explained, fn(check, explanations) {
+      why_block(name, check, explanations)
+    })
+    |> string.join("\n\n")
+  })
+}
+
+// The bounds a block is analysed under: the `check` line's own, or none.
+fn check_bounds(check: Option(EffectAnnotation)) -> List(types.ParamBound) {
+  case check {
+    Some(ann) -> ann.params
+    None -> []
+  }
+}
+
+// One `check` line's explanation: the function's total effect, the declaration
+// the analysis ran under, and its contributors.
+fn why_block(
+  name: String,
+  check: Option(EffectAnnotation),
+  explanations: List(checker.CallExplanation),
+) -> String {
+  let total =
+    list.fold(explanations, types.empty(), fn(acc, explanation) {
+      types.union(acc, explanation.actual)
+    })
+  let header = name <> " has effects " <> effects.format_effect_set(total)
+  // The whole declaration, bounds included: two `check` lines can share a budget
+  // and differ only in what they bind, and the budget alone wouldn't say which
+  // block is which.
+  let declaration = case check {
+    Some(ann) -> ["declared " <> annotation.format_annotation(ann)]
+    None -> []
+  }
+  // Not "makes no calls": a caller of a pure local helper does call something —
+  // the helper contributes no effects, so nothing of it is reached.
+  let lines = case explanations {
+    [] -> ["  has no reachable effect contributors"]
+    explanations ->
+      list.map(explanations, fn(explanation) {
+        "  " <> checker.format_call_explanation(explanation)
+      })
+  }
+  list.flatten([[header], declaration, lines])
+  |> string.join("\n")
 }
 
 // Formatting
@@ -2617,6 +2745,10 @@ fn format_error(error: GradedError) -> String {
       <> string.join(list.map(modules, fn(m) { "  " <> m }), "\n")
     EffectNotFound(name:) ->
       "no public function or type field named `" <> name <> "`"
+    FunctionNotFound(name:) ->
+      "no function named `"
+      <> name
+      <> "` (`why` explains functions defined in this project's modules, named as `module/path.function`)"
     PackError(message:) -> message
   }
 }

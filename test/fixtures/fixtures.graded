@@ -86,6 +86,8 @@ check provenance_branch_path.caller(resolver: [Stdout]) : []
 check provenance_branch_build.caller(resolver: [Stdout]) : []
 check provenance_computed_deep.caller : []
 check provenance_external.caller : []
+check why_target.two_bounds(f: [Stdout]) : [Stdout]
+check why_target.two_bounds(g: [Stdout]) : [Stdout]
 
 // External effects (third-party / FFI functions graded can't see into).
 external effects external_same_module.now : [Time]

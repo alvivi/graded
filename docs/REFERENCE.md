@@ -484,6 +484,49 @@ resolves — including one that doesn't exist. With `external effects fake_clock
 `graded effect fake_clock.zzz_nope` reports `[Time]` and exits zero. `effect` reports what the spec says about a name; it isn't a
 check that the name exists.
 
+## Explaining one function
+
+`graded why <name> [directory]` explains where one function's effects come from,
+writing nothing. Where `effect` answers *what* a name's effects are, `why`
+accounts for them call by call:
+
+```sh
+$ gleam run -m graded why myapp/router.handle_request
+myapp/router.handle_request has effects [Http, Log, Unknown]
+declared check myapp/router.handle_request(f: [Log]) : [Http, Log]
+  calls parameter `f` with effects [Log]
+  calls wisp/client.send with effects [Http] (from wisp's catalog entry)
+  calls field `run` on `config.inner`, whose type could not be resolved, with unresolved effects [Unknown]
+```
+
+The header states the function's total effect. When the function has a `check`
+line, the whole declaration follows — bounds included, since they decide what the
+analysis substitutes. No subset verdict is printed: whether the total fits the
+budget is `graded check`'s answer, and `why` explains a function whether or not
+it has a budget at all.
+
+Each remaining line is one **effect contributor**, in source order, phrased
+exactly as a violation phrases it: what the call is, the effects it contributes,
+and either the reason they stayed unresolved or the source that resolved them.
+
+`<name>` is a module-qualified function in one of your own modules. Private
+functions are explained too — `why` walks source your project holds, unlike
+`effect`, which answers from the public surface. A dependency function, a type
+field, or an unqualified name exits non-zero: there is no body here to walk.
+
+Two things about the contributor list are worth knowing:
+
+- **Contributors are not the call sites you wrote.** A resolved call to a
+  function of the same module is replaced by *that* function's calls, so a
+  helper's calls surface in its caller's list, at spans inside the helper — the
+  same substitution that lets a violation point into a helper. A function whose
+  helpers are all pure therefore reports `has no reachable effect contributors`
+  even though it plainly calls something.
+- **One block per `check` line.** Each line is analysed under its own bounds, so
+  two lines can resolve the same body differently; `why` runs once per line and
+  prints a block for each, in spec-file order. With no `check` line there is a
+  single block, analysed with no bounds.
+
 ## Effect catalog
 
 graded ships versioned catalog files for common Gleam packages, so you get effect
