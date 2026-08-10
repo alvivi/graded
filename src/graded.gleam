@@ -9,6 +9,7 @@
 //// ```sh
 //// gleam run -m graded check [directory]         # enforce check annotations (default)
 //// gleam run -m graded infer [directory]         # infer and write effect annotations
+//// gleam run -m graded infer --dry-run [dir]     # preview the spec changes, writing nothing
 //// gleam run -m graded effect <name> [directory] # look up one effect, writing nothing
 //// gleam run -m graded effect <name> --format=graded  # ... as a .graded line
 //// gleam run -m graded format [directory]        # normalize .graded file formatting
@@ -18,9 +19,10 @@
 ////
 //// Use `run` to check a directory and get back a list of `CheckResult` values,
 //// each containing any violations found per file. Use `run_infer` to infer
-//// effects and write `.graded` files. Use `run_effect` to resolve one
-//// function or type-field name and get its `.graded` line back, touching
-//// nothing on disk.
+//// effects and write `.graded` files, or `run_infer_dry_run` to get back a
+//// diff of what that write would change without performing it. Use
+//// `run_effect` to resolve one function or type-field name and get its
+//// `.graded` line back, touching nothing on disk.
 ////
 
 import argv
@@ -41,6 +43,7 @@ import graded/internal/answer.{type EffectAnswer}
 import graded/internal/checker
 import graded/internal/cli
 import graded/internal/config
+import graded/internal/diff
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
 import graded/internal/signatures.{type SignatureRegistry}
@@ -127,12 +130,14 @@ pub fn main() -> Nil {
       })
 
     ["infer", ..rest] ->
-      with_directory(rest, fn(directory) {
-        case run_infer(directory) {
-          Ok(Nil) -> io.println("graded: inferred effects written")
-          Error(error) -> fail(error)
-        }
-      })
+      case cli.parse_infer_args(rest) {
+        Error(error) -> usage_error(cli.format_argument_error(error))
+        Ok(#(directory, mode)) ->
+          case run_infer_command(mode, directory) {
+            Ok(message) -> io.println(message)
+            Error(error) -> fail(error)
+          }
+      }
 
     ["check", ..rest] -> with_directory(rest, run_check)
 
@@ -209,6 +214,7 @@ fn usage_text() -> String {
 Usage:
   graded [check] [directory]    Check effect annotations (default: src)
   graded infer [directory]      Infer effects; write the spec file and cache
+  graded infer --dry-run [dir]  Preview spec changes without writing
   graded effect <name> [dir]    Look up a function or type-field effect (read-only)
     --format=prose              Describe the answer in sentences (default)
     --format=graded             Print it as a `.graded` line, provenance in a comment
@@ -1561,6 +1567,46 @@ fn build_dependency_graph(
 /// resolves transitive chains of any depth.
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   use outcome <- result.try(compute_infer(directory))
+  write_infer_outcome(outcome)
+}
+
+/// Preview what `run_infer` would change: a line diff of the spec file, or a
+/// message saying there is nothing to change. Runs the same inference
+/// `run_infer` does and writes nothing — neither the spec file nor the cache.
+///
+/// The diff's old side is the spec file exactly as it sits on disk, so the
+/// re-rendering `run_infer` applies to every line it writes shows up in the
+/// preview too.
+pub fn run_infer_dry_run(directory: String) -> Result(String, GradedError) {
+  use outcome <- result.try(compute_infer(directory))
+  // A spec file that isn't there yet reads as empty, so a first-ever infer
+  // previews as an all-additions diff rather than an error.
+  let on_disk = simplifile.read(outcome.cfg.spec_file) |> result.unwrap("")
+  case diff.unified(on_disk, annotation.format_file(outcome.merged_spec)) {
+    None -> Ok("graded: no changes")
+    Some(preview) -> Ok(preview)
+  }
+}
+
+// Run `infer` in one of its two modes, returning the message to print. The
+// seam `main`'s `infer` branch dispatches through, so both modes are reachable
+// from tests.
+@internal
+pub fn run_infer_command(
+  mode: cli.InferMode,
+  directory: String,
+) -> Result(String, GradedError) {
+  case mode {
+    cli.Write ->
+      run_infer(directory)
+      |> result.replace("graded: inferred effects written")
+    cli.DryRun -> run_infer_dry_run(directory)
+  }
+}
+
+// Write everything the compute phase derived: each module's cache file in
+// topological order, then the merged spec.
+fn write_infer_outcome(outcome: InferOutcome) -> Result(Nil, GradedError) {
   use Nil <- result.try(
     list.try_each(outcome.cache_files, fn(entry) {
       let #(cache_path, cache_file) = entry

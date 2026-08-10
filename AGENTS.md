@@ -17,6 +17,7 @@ gleam build    # compile
 gleam test     # run full test suite
 gleam run -m graded check [dir]            # check effect annotations
 gleam run -m graded infer [dir]            # infer and write the spec file + cache
+gleam run -m graded infer --dry-run [dir]  # preview the spec changes, writing nothing
 gleam run -m graded effect <name> [dir]    # look up one function/type-field effect
 gleam run -m graded format [dir]           # format the spec file
 gleam run -m graded format --check [dir]   # CI mode, exits non-zero on diffs
