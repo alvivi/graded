@@ -14,8 +14,9 @@ import graded/internal/answer
 // Why a command's arguments were rejected. Rendered by `format_argument_error`
 // into the message the usage error prints.
 pub type ArgumentError {
-  // The `effect` command's required name was not given.
-  MissingName
+  // A command's required name was not given. `command` is the command that
+  // wanted one, so the message names it.
+  MissingName(command: String)
   // A token that looks like a flag where a name or directory was expected.
   UnknownOption(argument: String)
   // A token past the last one the command accepts.
@@ -84,12 +85,34 @@ pub fn parse_effect_args(
   rest: List(String),
 ) -> Result(#(String, String, answer.Format), ArgumentError) {
   use #(format, positional) <- result.try(take_format(rest))
+  use #(name, directory) <- result.map(parse_name_and_directory(
+    "effect",
+    positional,
+  ))
+  #(name, directory, format)
+}
+
+// Decode the arguments of `graded why <name> [directory]`. Same positions as
+// `effect` without its output-format flag: the explanation is prose only.
+pub fn parse_why_args(
+  rest: List(String),
+) -> Result(#(String, String), ArgumentError) {
+  parse_name_and_directory("why", rest)
+}
+
+// The positions a name-taking command shares: a required name, then the
+// optional directory `parse_directory_args` decodes. `command` names the one
+// asking, so a missing name reports the command the user typed.
+fn parse_name_and_directory(
+  command: String,
+  positional: List(String),
+) -> Result(#(String, String), ArgumentError) {
   case positional {
-    [] -> Error(MissingName)
+    [] -> Error(MissingName(command))
     [name, ..directory_args] -> {
       use <- reject_option(name)
       use directory <- result.map(parse_directory_args(directory_args))
-      #(name, directory, format)
+      #(name, directory)
     }
   }
 }
@@ -120,7 +143,7 @@ fn take_format(
 // The message a rejected argument list prints.
 pub fn format_argument_error(error: ArgumentError) -> String {
   case error {
-    MissingName -> "missing name for `effect`"
+    MissingName(command:) -> "missing name for `" <> command <> "`"
     UnknownOption(argument:) -> "unknown option `" <> argument <> "`"
     UnexpectedArgument(argument:) -> "unexpected argument `" <> argument <> "`"
     UnknownFormat(value:) ->

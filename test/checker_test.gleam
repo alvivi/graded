@@ -5773,3 +5773,218 @@ pub fn run() -> Nil {
   violation.origin |> should.equal(None)
   violation.reason |> should.equal(None)
 }
+
+// Explaining a function
+//
+// `explain` re-walks a body and reports every contributor the subset check
+// would weigh, budget or no budget. What it reports about a call has to be what
+// a violation for that same call reports.
+
+fn explain_source(
+  source: String,
+  function: String,
+  bounds: List(types.ParamBound),
+) -> List(checker.CallExplanation) {
+  let assert Ok(module) = glance.module(source)
+  let assert Ok([explanations]) =
+    checker.explain(
+      module,
+      "",
+      function,
+      [bounds],
+      knowledge_base(),
+      signatures.from_glance_module("app", module),
+      dict.new(),
+      dict.new(),
+    )
+  explanations
+}
+
+pub fn explain_orders_contributors_by_span_test() {
+  // Source order, so the enclosing `io.println` precedes the `string.append` it
+  // takes its argument from, and the second statement's call comes last.
+  let source =
+    "import gleam/io
+import gleam/string
+pub fn run(a) {
+  io.println(string.append(a, \"b\"))
+  io.println(\"c\")
+}"
+  explain_source(source, "run", [])
+  |> list.map(fn(explanation) { explanation.call })
+  |> should.equal([
+    QualifiedName("gleam/io", "println"),
+    QualifiedName("gleam/string", "append"),
+    QualifiedName("gleam/io", "println"),
+  ])
+}
+
+pub fn explain_shares_one_analysis_across_bound_sets_test() {
+  // Each bound set explains the same body under its own bounds — the reason
+  // `why` prints a block per `check` line instead of picking one — and one walk
+  // answers them all.
+  let source =
+    "pub fn run(f: fn() -> Nil, g: fn() -> Nil) -> Nil {
+  f()
+  g()
+}"
+  let assert Ok(module) = glance.module(source)
+  let assert Ok([bound_f, bound_g]) =
+    checker.explain(
+      module,
+      "",
+      "run",
+      [[ParamBound("f", stdout_term())], [ParamBound("g", stdout_term())]],
+      knowledge_base(),
+      signatures.from_glance_module("app", module),
+      dict.new(),
+      dict.new(),
+    )
+  bound_f
+  |> list.map(fn(explanation) { explanation.actual })
+  |> should.equal([
+    Specific(set.from_list(["Stdout"])),
+    Specific(set.from_list(["Unknown"])),
+  ])
+  bound_g
+  |> list.map(fn(explanation) { explanation.actual })
+  |> should.equal([
+    Specific(set.from_list(["Unknown"])),
+    Specific(set.from_list(["Stdout"])),
+  ])
+}
+
+pub fn explain_orders_same_start_by_end_test() {
+  // `f()()` puts two calls at one offset: the inner application and the
+  // application of what it returns. Ordering on the start alone would leave
+  // which comes first to the order the collector concatenates its categories in.
+  let source =
+    "pub fn run(f: fn() -> fn() -> Nil) -> Nil {
+  f()()
+}"
+  let assert [inner, outer] = explain_source(source, "run", [])
+  inner.span.start |> should.equal(outer.span.start)
+  { inner.span.end < outer.span.end } |> should.be_true()
+  checker.call_kind(inner.call)
+  |> should.equal(checker.UnresolvedLocalCall("f"))
+  checker.call_kind(outer.call)
+  |> should.equal(checker.ReturnedOperatorCall(QualifiedName("", "f")))
+}
+
+pub fn explain_reports_a_private_function_test() {
+  // The walk is over source this module holds, so publicity decides nothing —
+  // unlike an `effect` query, which answers from the public surface.
+  let source =
+    "import gleam/io
+fn helper() -> Nil {
+  io.println(\"x\")
+}"
+  let assert [explanation] = explain_source(source, "helper", [])
+  explanation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn explain_replaces_a_local_call_with_its_own_sites_test() {
+  // The helper's call surfaces at its own span; the call to the helper does not
+  // appear as itself. A caller of a *pure* helper therefore has no contributors
+  // at all, though it plainly makes a call.
+  let source =
+    "import gleam/io
+pub fn run() -> Nil {
+  noisy()
+}
+
+fn noisy() -> Nil {
+  io.println(\"x\")
+}
+
+pub fn quiet() -> Nil {
+  pure()
+}
+
+fn pure() -> Nil {
+  Nil
+}"
+  let assert [explanation] = explain_source(source, "run", [])
+  explanation.call |> should.equal(QualifiedName("gleam/io", "println"))
+  explain_source(source, "quiet", []) |> should.equal([])
+}
+
+pub fn explain_bounds_resolve_a_parameter_call_test() {
+  let source =
+    "pub fn run(f: fn() -> Nil) -> Nil {
+  f()
+}"
+  let assert [bounded] =
+    explain_source(source, "run", [ParamBound("f", stdout_term())])
+  bounded.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  // Without the bound nothing resolves the same call: the bounds a `check` line
+  // carries decide what the walk substitutes, which is why `why` runs once per
+  // line rather than picking one.
+  let assert [unbounded] = explain_source(source, "run", [])
+  unbounded.actual |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+pub fn explain_misses_an_unknown_function_test() {
+  let source = "pub fn run() -> Nil { Nil }"
+  let assert Ok(module) = glance.module(source)
+  checker.explain(
+    module,
+    "",
+    "absent",
+    [[]],
+    knowledge_base(),
+    signatures.empty(),
+    dict.new(),
+    dict.new(),
+  )
+  |> should.equal(Error(Nil))
+}
+
+pub fn explain_agrees_with_the_violation_for_the_same_call_test() {
+  // One vocabulary: the reason and origin `why` prints for a call are the ones
+  // the violation carries, and both render to the same clause.
+  let source =
+    "
+import validation
+pub fn new() {
+  validation.validate_range(42, to_error: 1 + 2)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(violations, _) =
+    checker.check(
+      module,
+      "",
+      [pure_check("new")],
+      polymorphic_kb(),
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
+  let assert [violation] = violations
+  let assert Ok([explanations]) =
+    checker.explain(
+      module,
+      "",
+      "new",
+      [[]],
+      polymorphic_kb(),
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
+  let assert Ok(explanation) =
+    list.find(explanations, fn(e) { e.call == violation.call })
+  explanation.reason |> should.equal(violation.reason)
+  explanation.origin |> should.equal(violation.origin)
+  explanation.actual |> should.equal(violation.actual)
+  string.contains(
+    checker.format_violation("src/app.gleam", violation),
+    checker.format_call_explanation(explanation),
+  )
+  |> should.be_true()
+}
+
+fn stdout_term() -> types.EffectTerm {
+  effect_term.from_effect_set(Specific(set.from_list(["Stdout"])))
+}

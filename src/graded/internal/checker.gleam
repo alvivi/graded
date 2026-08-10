@@ -8,6 +8,7 @@ import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/order
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
@@ -44,19 +45,14 @@ pub fn check(
   module_types: dict.Dict(#(Int, Int), girard.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
 ) -> #(List(Violation), List(Warning)) {
-  let context =
-    extract.build_import_context(module)
-    |> extract.with_module_path(module_path)
-    |> extract.with_factories(extract.factory_map(module))
-    |> extract.with_updates(extract.update_map(module))
-    |> extract.with_cross_factories(effects.factories(knowledge_base))
-    |> extract.with_cross_updates(effects.updates(knowledge_base))
-    |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(
+  let ModuleContext(context:, function_map:, cache:) =
+    module_context(
       module,
-      function_type_aliases(module.type_aliases),
-    ))
-  let function_map = build_function_map(module)
-  let cache = build_scc_ids(module, context, girard_fn_typed)
+      module_path,
+      knowledge_base,
+      girard_fn_typed,
+      build_function_map(module),
+    )
 
   // One memo table threaded across every annotation: same-module callees shared
   // between annotations are analysed once.
@@ -119,19 +115,14 @@ pub fn infer_with_returns(
   dict.Dict(String, EffectTerm),
   dict.Dict(String, types.ReturnProvenance),
 ) {
-  let context =
-    extract.build_import_context(module)
-    |> extract.with_module_path(module_path)
-    |> extract.with_factories(extract.factory_map(module))
-    |> extract.with_updates(extract.update_map(module))
-    |> extract.with_cross_factories(effects.factories(knowledge_base))
-    |> extract.with_cross_updates(effects.updates(knowledge_base))
-    |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(
+  let ModuleContext(context:, function_map:, cache:) =
+    module_context(
       module,
-      function_type_aliases(module.type_aliases),
-    ))
-  let function_map = build_function_map(module)
-  let cache = build_scc_ids(module, context, girard_fn_typed)
+      module_path,
+      knowledge_base,
+      girard_fn_typed,
+      build_function_map(module),
+    )
 
   let public_functions =
     list.filter(module.functions, fn(definition) {
@@ -271,6 +262,206 @@ pub fn infer_with_returns(
       )
     })
   #(annotations, returned_operators, provenance)
+}
+
+// One reachable effect contributor of a function body: the call site, its
+// position, the ground effect set it contributes, and — as a violation carries
+// them — why the set stayed unresolved and which source answered.
+pub type CallExplanation {
+  CallExplanation(
+    call: QualifiedName,
+    span: Span,
+    actual: types.EffectSet,
+    reason: option.Option(UnknownReason),
+    origin: option.Option(LookupOrigin),
+  )
+}
+
+// Explain one function: every effect contributor `check` would subset-check,
+// whether or not it fits a budget. One entry per set of bounds — the parameter
+// and field bounds of one `check` line, or a single empty set for a function
+// with no line — since the bounds decide what the analysis substitutes, and two
+// lines can therefore explain one body differently.
+//
+// `Error(Nil)` when the module defines no function by that name. Publicity is
+// not consulted: the walk is over a body this module holds, so a private
+// function explains exactly as a public one does.
+//
+// Contributors are the calls `collect_effects` reaches, not the call sites of
+// the body — a resolved same-module call is replaced by the callee's own sites,
+// so a helper's calls surface with spans inside the helper, as violations
+// already report them.
+pub fn explain(
+  module: Module,
+  module_path: String,
+  function_name: String,
+  bounds: List(List(ParamBound)),
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  girard_fn_typed: dict.Dict(String, Set(String)),
+) -> Result(List(List(CallExplanation)), Nil) {
+  // The lookup comes before the rest of the module analysis, so a name this
+  // module does not define costs one map build rather than a whole-module walk.
+  let function_map = build_function_map(module)
+  use definition <- result.map(dict.get(function_map, function_name))
+  let ModuleContext(context:, cache:, ..) =
+    module_context(
+      module,
+      module_path,
+      knowledge_base,
+      girard_fn_typed,
+      function_map,
+    )
+  // A bodyless `@external` — or one whose Gleam fallback the foreign code may
+  // not match — has no body to explain. Walking it anyway would report the
+  // fallback's `[]`, contradicting the `[Unknown]` its own callers are told it
+  // contributes. Its one contributor is the declaration itself, resolved as a
+  // same-module call into it resolves: a declared `external effects` line wins,
+  // and without one the effects stay unresolved. Bounds bind nothing here, so
+  // every block gets the same line.
+  use <- bool.lazy_guard(when: is_opaque_external(definition), return: fn() {
+    list.map(bounds, fn(_bounds) {
+      [external_explanation(function_name, context, knowledge_base, definition)]
+    })
+  })
+  // One memo across every bound set, as `check` threads one across every
+  // annotation: a callee's own analysis is seeded from its signature, so the
+  // caller's bounds neither key it nor reach it.
+  let #(_memo, explained) =
+    list.map_fold(bounds, new_memo(), fn(memo, bounds) {
+      let #(body_effects, memo) =
+        collect_effects(
+          without_returned_closure(definition.definition),
+          function_map,
+          context,
+          knowledge_base,
+          set.new(),
+          bounds,
+          registry,
+          module_types,
+          dict.new(),
+          cache,
+          [],
+          memo,
+        )
+      #(memo, explained_calls(body_effects))
+    })
+  explained
+}
+
+// What an opaque `@external` contributes, keyed by its own qualified name and
+// spanning its declaration. The same knowledge-base lookup a same-module call
+// into it makes, so the two can't disagree about what the external does.
+fn external_explanation(
+  function_name: String,
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  definition: Definition(Function),
+) -> CallExplanation {
+  let qualified =
+    QualifiedName(module: context.module_path, function: function_name)
+  let resolution = lookup_parts(knowledge_base, qualified, UndeclaredExternal)
+  CallExplanation(
+    call: qualified,
+    span: definition.definition.location,
+    actual: effect_term.to_effect_set(resolution.term),
+    reason: resolution.reason,
+    origin: resolution.origin,
+  )
+}
+
+// A collected body's contributors, ordered and deduplicated for reporting.
+fn explained_calls(collected: List(CollectedCall)) -> List(CallExplanation) {
+  collected
+  |> list.map(call_explanation)
+  // Calling one helper twice repeats its body's sites verbatim. Only a wholly
+  // identical entry is a repetition: two calls can substitute the same span to
+  // different effects, and both of those are contributions.
+  |> dedupe_explanations
+  // By the whole span: nested calls can share a start offset, and ordering on
+  // the start alone would leave them at the mercy of the category order the
+  // collection concatenates in. Sorting after the deduplication keeps entries
+  // that share a span in the order they were collected, the sort being stable.
+  |> list.sort(fn(a, b) {
+    order.break_tie(
+      int.compare(a.span.start, b.span.start),
+      int.compare(a.span.end, b.span.end),
+    )
+  })
+}
+
+// Drop repeated entries, keeping the first of each. Through a set rather than
+// `list.unique`, whose pairwise scan is quadratic in a contributor count that
+// grows with every call a helper's body makes.
+fn dedupe_explanations(
+  explanations: List(CallExplanation),
+) -> List(CallExplanation) {
+  let #(_seen, kept) =
+    list.fold(explanations, #(set.new(), []), fn(acc, explanation) {
+      let #(seen, kept) = acc
+      case set.contains(seen, explanation) {
+        True -> acc
+        False -> #(set.insert(seen, explanation), [explanation, ..kept])
+      }
+    })
+  list.reverse(kept)
+}
+
+// What one collected call contributes, in ground form. `check_annotation`
+// subset-checks this projection and `explain` prints it, so the two can't
+// disagree about what a call did.
+//
+// A field-effect variable that reached here undischarged (no `check`-line field
+// bound bound it) concretizes to `[Unknown]`, so a `fn`-typed field call on an
+// opaque receiver is never silently `[]`.
+fn call_explanation(collected: CollectedCall) -> CallExplanation {
+  CallExplanation(
+    call: collected.call.name,
+    span: collected.call.span,
+    actual: effect_term.to_effect_set(
+      concretize_field_vars(collected_term(collected)),
+    ),
+    reason: collected.resolution.reason,
+    origin: collected.resolution.origin,
+  )
+}
+
+// Everything the body walker needs about the module it walks. Built the same
+// way for every entry point, so a function explained is a function checked.
+type ModuleContext {
+  ModuleContext(
+    context: ImportContext,
+    function_map: dict.Dict(String, Definition(Function)),
+    cache: LocalCache,
+  )
+}
+
+// `function_map` is passed in rather than built here: `explain` needs it before
+// the expensive parts, to answer an unknown name without them.
+fn module_context(
+  module: Module,
+  module_path: String,
+  knowledge_base: KnowledgeBase,
+  girard_fn_typed: dict.Dict(String, Set(String)),
+  function_map: dict.Dict(String, Definition(Function)),
+) -> ModuleContext {
+  let context =
+    extract.build_import_context(module)
+    |> extract.with_module_path(module_path)
+    |> extract.with_factories(extract.factory_map(module))
+    |> extract.with_updates(extract.update_map(module))
+    |> extract.with_cross_factories(effects.factories(knowledge_base))
+    |> extract.with_cross_updates(effects.updates(knowledge_base))
+    |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(
+      module,
+      function_type_aliases(module.type_aliases),
+    ))
+  ModuleContext(
+    context:,
+    function_map:,
+    cache: build_scc_ids(module, context, girard_fn_typed),
+  )
 }
 
 // Lift a record field wired to an inline closure into an effect *operator*,
@@ -539,10 +730,22 @@ pub fn format_violation(file: String, violation: Violation) -> String {
   <> ": "
   <> violation.function
   <> " "
-  <> call_clause(violation)
+  <> format_call_explanation(violation_explanation(violation))
   <> " but declared "
   <> effects.format_effect_set(violation.declared)
   <> variables_hint(violation)
+}
+
+// The violating call as an explanation — the projection `format_violation` and
+// `why` share, so one call reads the same in both.
+fn violation_explanation(violation: Violation) -> CallExplanation {
+  CallExplanation(
+    call: violation.call,
+    span: violation.span,
+    actual: violation.actual,
+    reason: violation.reason,
+    origin: violation.origin,
+  )
 }
 
 // What the function did and the effects it picked up doing it. The effects are
@@ -553,10 +756,10 @@ pub fn format_violation(file: String, violation: Violation) -> String {
 // a reason discharged by a bound describes nothing the reader can still see.
 // The origin is stated whenever one was recorded, including beside an
 // `[Unknown]` a source claims — there, naming the source *is* the explanation.
-fn call_clause(violation: Violation) -> String {
-  let kind = call_kind(violation.call)
-  let unresolved = types.contains_unknown(violation.actual)
-  let action = case unresolved, violation.reason {
+pub fn format_call_explanation(explanation: CallExplanation) -> String {
+  let kind = call_kind(explanation.call)
+  let unresolved = types.contains_unknown(explanation.actual)
+  let action = case unresolved, explanation.reason {
     True, Some(reason) -> refined_action(kind, reason)
     True, None | False, _ -> plain_action(kind)
   }
@@ -566,8 +769,8 @@ fn call_clause(violation: Violation) -> String {
   }
   action
   <> effects_word
-  <> effects.format_effect_set(violation.actual)
-  <> origin_suffix(violation.origin)
+  <> effects.format_effect_set(explanation.actual)
+  <> origin_suffix(explanation.origin)
 }
 
 // What a call site is, stated from its kind alone.
@@ -1339,25 +1542,19 @@ fn check_annotation(
       let declared = effect_term.to_effect_set(annotation.effects)
       let violations =
         body_effects
-        |> list.filter_map(fn(collected) {
-          // A field-effect variable that reached the subset check undischarged
-          // (no `check`-line field bound bound it) collapses to `[Unknown]`, so a
-          // `fn`-typed field call on an opaque receiver is never silently `[]`.
-          let actual =
-            effect_term.to_effect_set(
-              concretize_field_vars(collected_term(collected)),
-            )
-          case types.is_subset(actual, declared) {
+        |> list.map(call_explanation)
+        |> list.filter_map(fn(explanation) {
+          case types.is_subset(explanation.actual, declared) {
             True -> Error(Nil)
             False ->
               Ok(Violation(
                 function: annotation.function,
-                call: collected.call.name,
-                span: collected.call.span,
+                call: explanation.call,
+                span: explanation.span,
                 declared:,
-                actual:,
-                reason: collected.resolution.reason,
-                origin: collected.resolution.origin,
+                actual: explanation.actual,
+                reason: explanation.reason,
+                origin: explanation.origin,
               ))
           }
         })

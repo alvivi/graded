@@ -374,8 +374,8 @@ pub fn the_formats_agree_on_the_effect_set_test() {
 
 pub fn parse_effect_args_requires_a_name_test() {
   cli.parse_effect_args([])
-  |> should.equal(Error(cli.MissingName))
-  cli.format_argument_error(cli.MissingName)
+  |> should.equal(Error(cli.MissingName("effect")))
+  cli.format_argument_error(cli.MissingName("effect"))
   |> should.equal("missing name for `effect`")
 }
 
