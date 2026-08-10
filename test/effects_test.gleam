@@ -879,7 +879,7 @@ pub fn a_path_dep_spec_overrides_a_catalog_entry_test() {
         "dep",
         "external effects dep/ffi.now : [Time]\neffects dep.run(cb: [cb]) : [cb]\n",
       ),
-      "dep",
+      types.PathDependency("dep"),
     )
   entry_of(kb, QualifiedName("dep/ffi", "now"))
   |> should.equal(
@@ -924,7 +924,7 @@ pub fn a_path_dep_spec_yields_to_a_user_external_test() {
         "dep",
         "effects dep.run(cb: [cb]) : [cb]\n",
       ),
-      "dep",
+      types.PathDependency("dep"),
     )
   entry_of(kb, QualifiedName("dep", "run"))
   |> should.equal(
@@ -953,7 +953,7 @@ pub fn a_path_dep_module_external_overrides_only_the_catalogs_test() {
       [module_external("dep/declared", ["Mocked"])],
       types.UserExternal,
     )
-    |> effects.with_path_dep_spec(spec, "dep")
+    |> effects.with_path_dep_spec(spec, types.PathDependency("dep"))
   entry_of(kb, QualifiedName("dep/catalogued", "anything"))
   |> should.equal(
     Ok(#(
@@ -986,7 +986,7 @@ pub fn a_path_dep_function_entry_beats_a_module_external_test() {
         "dep",
         "external effects dep/ffi.now : [Time]\n",
       ),
-      "dep",
+      types.PathDependency("dep"),
     )
   effects.lookup(kb, QualifiedName("dep/ffi", "now"))
   |> should.equal(effects.Known(

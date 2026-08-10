@@ -231,17 +231,21 @@ pub fn with_externals(
   )
 }
 
+// The two tiers a set of `external effects` lines feeds: function-level entries
+// keyed by `QualifiedName`, module-level ones keyed by module name.
+type ExternalTiers =
+  #(
+    Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+    Dict(String, #(EffectTerm, LookupOrigin)),
+  )
+
 // Sort external annotations into the two maps they feed, each term paired with
-// the source that declared it: function-level externals keyed by
-// `QualifiedName`, module-level ones keyed by module name. Splitting is
-// separate from merging so each caller decides its own precedence.
+// the source that declared it. Splitting is separate from merging so each
+// caller decides its own precedence.
 fn split_externals(
   externals: List(ExternalAnnotation),
   origin: LookupOrigin,
-) -> #(
-  Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
-  Dict(String, #(EffectTerm, LookupOrigin)),
-) {
+) -> ExternalTiers {
   list.fold(externals, #(dict.new(), dict.new()), fn(accumulator, external) {
     let #(function_externals, module_externals) = accumulator
     let term = effect_term.from_effect_set(external.effects)
@@ -743,13 +747,7 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
 // function, so a spec carrying both has a stale one, and only the external's
 // ground term pairs with the empty bounds `load_spec_params_from_file` records
 // for it.
-fn decided_entries(
-  dep: DepSpec,
-  origin: LookupOrigin,
-) -> #(
-  Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
-  Dict(String, #(EffectTerm, LookupOrigin)),
-) {
+fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> ExternalTiers {
   let #(function_externals, module_externals) =
     split_externals(dep.externals, origin)
   #(
@@ -758,16 +756,14 @@ fn decided_entries(
   )
 }
 
-// Fold a path dependency's spec into the knowledge base under the documented
-// resolution order: below per-function user externals and the project's own
-// entries, above the catalog. An existing entry is overridden only when its
-// origin is the catalog, so a consumer's own declarations survive a merge that
-// runs after the catalog is already loaded.
-//
-// A term this merge decides brings its own bounds entry with it —
-// `load_spec_params_from_file` records one (possibly empty) for every name the
-// spec decides — so a polymorphic term never pairs with bounds another source
-// wrote. Names whose existing term is kept keep their existing bounds.
+// Fold everything a path dependency's spec declares — terms, bounds, externals,
+// returned-operator summaries and `type` lines — into the knowledge base under
+// the documented resolution order: below per-function user externals and the
+// project's own entries, above the catalog. An existing entry is overridden only
+// when its origin is the catalog, so a consumer's own declarations survive a
+// merge that runs after the catalog is already loaded, and a term this merge
+// decides brings its own bounds entry with it. The summaries merge as `Foreign`:
+// a committed spec is serialized, not inferred this run.
 //
 // A consumer's *module-level* external stays in the `module_effects` fallback
 // tier, which `lookup` consults only after `all_effects` misses, so these
@@ -775,14 +771,10 @@ fn decided_entries(
 pub fn with_path_dep_spec(
   knowledge_base: KnowledgeBase,
   dep: DepSpec,
-  package: String,
+  origin: LookupOrigin,
 ) -> KnowledgeBase {
-  let #(decided, module_externals) =
-    decided_entries(dep, PathDependency(package:))
-  let winning =
-    dict.filter(decided, fn(name, _entry) {
-      overridable(dict.get(knowledge_base.all_effects, name))
-    })
+  let #(decided, module_externals) = decided_entries(dep, origin)
+  let winning = over_catalog(knowledge_base.all_effects, decided)
   KnowledgeBase(
     ..knowledge_base,
     all_effects: dict.merge(knowledge_base.all_effects, winning),
@@ -794,21 +786,25 @@ pub fn with_path_dep_spec(
     ),
     module_effects: dict.merge(
       knowledge_base.module_effects,
-      dict.filter(module_externals, fn(module, _entry) {
-        overridable(dict.get(knowledge_base.module_effects, module))
-      }),
+      over_catalog(knowledge_base.module_effects, module_externals),
     ),
   )
+  |> with_foreign_returned_operators(dep.returns, origin)
+  |> with_type_fields(dep.type_fields, origin)
 }
 
-// Whether a path dependency's spec may write over what a knowledge-base tier
-// already holds for a key: it may when nothing holds it, or when what holds it
-// came from the catalog.
-fn overridable(existing: Result(#(EffectTerm, LookupOrigin), Nil)) -> Bool {
-  case existing {
-    Error(Nil) -> True
-    Ok(#(_term, origin)) -> is_catalog_origin(origin)
-  }
+// The incoming entries a path dependency's spec may write over a knowledge-base
+// tier: those whose key nothing holds, and those whose key the catalog holds.
+fn over_catalog(
+  existing: Dict(k, #(EffectTerm, LookupOrigin)),
+  incoming: Dict(k, #(EffectTerm, LookupOrigin)),
+) -> Dict(k, #(EffectTerm, LookupOrigin)) {
+  dict.filter(incoming, fn(key, _entry) {
+    case dict.get(existing, key) {
+      Error(Nil) -> True
+      Ok(#(_term, origin)) -> is_catalog_origin(origin)
+    }
+  })
 }
 
 // Whether an entry was written by the bundled catalog, directly or as the source

@@ -2184,23 +2184,15 @@ fn enrich_with_path_deps(
     let spec_path = config.spec_file_for(resolved_dep_path, name)
     let origin = types.PathDependency(package: name)
     case simplifile.is_file(spec_path) {
-      Ok(True) -> {
-        // A committed path-dep spec can also ship `type` field effects for the
-        // dep's own types; load them so a consumer resolves those fields without
-        // re-declaring them. The infer-from-source fallback has no spec, so no
-        // hand-written `type` lines to load.
-        let spec = effects.load_dep_spec(resolved_dep_path, name)
-        // A committed path-dependency spec is serialized → Foreign.
-        effects.with_path_dep_spec(kb, spec, name)
-        |> effects.with_foreign_returned_operators(spec.returns, origin)
-        |> effects.with_type_fields(spec.type_fields, origin)
-      }
+      Ok(True) ->
+        effects.with_path_dep_spec(
+          kb,
+          effects.load_dep_spec(resolved_dep_path, name),
+          origin,
+        )
       _ ->
         case infer_path_dep(resolved_dep_path, kb, consumer_modules) {
           Error(Nil) -> kb
-          // A path dependency inferred from source this run is Fix-D-sanitized →
-          // Fresh (trusting it is sound and more precise than blanket cross-package
-          // conservatism).
           Ok(#(effs, params, returns, provenance)) ->
             fold_inferred_into_kb(kb, effs, params, returns, origin)
             |> effects.with_provenance(provenance)
