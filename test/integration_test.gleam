@@ -689,6 +689,30 @@ fn expect_field_bound(
   annotation.effects |> should.equal(types.TVar(field_path))
 }
 
+// Unreadable spec files
+//
+// A spec file that is there but cannot be read is not the same as a package
+// with no spec file: checking against no annotations at all would pass every
+// module by skipping it.
+
+pub fn check_over_an_unreadable_spec_errors_test() {
+  let root = "build/check_unreadable_spec"
+  write_project(
+    root,
+    [#("proj.gleam", "pub fn main() -> Nil {\n  Nil\n}\n")],
+    "",
+  )
+  let assert Ok(Nil) = simplifile.delete(root <> "/proj.graded")
+  let assert Ok(Nil) = simplifile.create_directory(root <> "/proj.graded")
+
+  graded.run(root)
+  |> should.equal(
+    Error(graded.FileReadError(root <> "/proj.graded", simplifile.Eisdir)),
+  )
+  let _ = simplifile.delete(root)
+  Nil
+}
+
 // Field-effect forwarding through call hops
 //
 // A callee's field-effect variable re-keys onto the caller's receiver across

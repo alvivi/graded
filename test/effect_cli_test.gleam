@@ -475,6 +475,20 @@ pub fn effect_query_writes_nothing_test() {
   |> should.equal(before)
 }
 
+// A spec file that is there but cannot be read is reported, rather than
+// answering from a package that looks like it has no annotations.
+pub fn effect_query_over_an_unreadable_spec_errors_test() {
+  let root = "build/effect_unreadable_spec"
+  write_fixture(root, [#("gleam.toml", "name = \"proj\"\n")])
+  let assert Ok(Nil) = simplifile.create_directory(root <> "/proj.graded")
+
+  graded.run_effect(root, "proj.anything")
+  |> should.equal(
+    Error(graded.FileReadError(root <> "/proj.graded", simplifile.Eisdir)),
+  )
+  cleanup(root)
+}
+
 // Every file under `path` paired with its content, sorted. `Error` when the
 // directory is absent — which compares equal across a call that creates it.
 fn directory_snapshot(path: String) -> Result(List(#(String, String)), Nil) {

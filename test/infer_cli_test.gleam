@@ -160,6 +160,21 @@ pub fn dry_run_over_an_unparseable_spec_previews_the_clobber_test() {
   support.cleanup(root)
 }
 
+// A spec file that is there but cannot be read is not the same as no spec
+// file at all: previewing against empty bytes would hide the existing lines
+// and promise a write that would fail, so the read error surfaces instead.
+pub fn dry_run_over_an_unreadable_spec_errors_test() {
+  let root = "build/infer_dry_run_unreadable"
+  write_project(root, source(), NoSpec)
+  let assert Ok(Nil) = simplifile.create_directory(root <> "/proj.graded")
+
+  graded.run_infer_command(cli.DryRun, root)
+  |> should.equal(
+    Error(graded.FileReadError(root <> "/proj.graded", simplifile.Eisdir)),
+  )
+  support.cleanup(root)
+}
+
 // The preview is exactly the diff the write turns out to produce: capture one,
 // perform the write, and diff the bytes before against the bytes after.
 pub fn dry_run_predicts_the_write_test() {
