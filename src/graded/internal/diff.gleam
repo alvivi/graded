@@ -22,7 +22,7 @@ import gleam/string
 // folded into the last line.
 
 // Diff `old` against `new`, or `None` when the two are byte-identical.
-pub fn unified(old: String, new: String) -> Option(String) {
+pub fn contextual(old: String, new: String) -> Option(String) {
   use <- bool.guard(when: old == new, return: None)
   let old_side = split_side(old)
   let new_side = split_side(new)
@@ -54,13 +54,11 @@ fn split_side(text: String) -> Side {
     "" -> Side(lines: [], ending: Terminated)
     _ ->
       case string.ends_with(text, "\n") {
-        True -> {
-          let lines = string.split(text, "\n")
+        True ->
           Side(
-            lines: list.take(lines, list.length(lines) - 1),
+            lines: string.split(string.drop_end(text, 1), "\n"),
             ending: Terminated,
           )
-        }
         False -> Side(lines: string.split(text, "\n"), ending: Unterminated)
       }
   }
@@ -132,16 +130,15 @@ fn mark_side(
   case ending {
     Terminated -> edits
     Unterminated -> {
-      let #(_marked, edits) =
-        list.fold(list.reverse(edits), #(False, []), fn(state, edit) {
-          let #(marked, acc) = state
-          case marked, belongs(edit) {
-            False, True -> #(True, [with_no_newline(edit), ..acc])
-            False, False -> #(False, [edit, ..acc])
-            True, _ -> #(True, [edit, ..acc])
-          }
-        })
-      edits
+      // Walking from the end, the side's last diff line is the first one the
+      // walk meets that belongs to it.
+      let #(tail, rest) =
+        list.split_while(list.reverse(edits), fn(edit) { !belongs(edit) })
+      case rest {
+        [] -> edits
+        [last, ..head] ->
+          list.reverse(list.append(tail, [with_no_newline(last), ..head]))
+      }
     }
   }
 }
@@ -371,23 +368,25 @@ fn render_note(note: Note) -> List(String) {
 // Cut the edit script down to the changed lines and the context around them,
 // merging stretches of context too short to separate two hunks.
 fn hunks(edits: List(Edit)) -> List(List(Edit)) {
-  let indexed = list.index_map(edits, fn(edit, index) { #(index, edit) })
   let last_index = list.length(edits) - 1
   let ranges =
-    indexed
-    |> list.filter(fn(entry) { is_change(entry.1) })
-    |> list.map(fn(entry) {
-      #(
-        int.max(0, entry.0 - context_lines),
-        int.min(last_index, entry.0 + context_lines),
-      )
+    edits
+    |> list.index_map(fn(edit, index) { #(index, edit) })
+    |> list.filter_map(fn(entry) {
+      let #(index, edit) = entry
+      case is_change(edit) {
+        True ->
+          Ok(#(
+            int.max(0, index - context_lines),
+            int.min(last_index, index + context_lines),
+          ))
+        False -> Error(Nil)
+      }
     })
     |> merge_ranges
   list.map(ranges, fn(range) {
     let #(start, end) = range
-    indexed
-    |> list.filter(fn(entry) { entry.0 >= start && entry.0 <= end })
-    |> list.map(fn(entry) { entry.1 })
+    edits |> list.drop(start) |> list.take(end - start + 1)
   })
 }
 

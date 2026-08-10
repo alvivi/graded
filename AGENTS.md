@@ -30,11 +30,11 @@ Tests use **gleeunit** with **qcheck** property generators in `test/generators.g
 
 ## Architecture
 
-Thirteen modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
+Fourteen modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
 
 | File | Responsibility |
 |---|---|
-| `src/graded.gleam` | CLI entry point + public API: orchestrate `run_infer` (write spec + cache), `run` (check the spec against source), and `run_effect` (look up one name, read-only); run girard type inference; scan dependency sources once into the signature registry and the update-builder map |
+| `src/graded.gleam` | CLI entry point + public API: orchestrate `run_infer` (write spec + cache), `run_infer_dry_run` (preview it), `run` (check the spec against source), and `run_effect` (look up one name, read-only); run girard type inference; scan dependency sources once into the signature registry and the update-builder map |
 | `src/graded/internal/cli.gleam` | Pure command-line argument decoders for `main`'s dispatch branches |
 | `src/graded/internal/answer.gleam` | One `graded effect` lookup held as data (`EffectAnswer`), plus the prose and `.graded` renderers over it |
 | `src/graded/internal/types.gleam` | Shared types: QualifiedName, EffectSet, EffectTerm, EffectAnnotation, ParamBound, FieldCall, TypeFieldAnnotation, Violation |
@@ -47,6 +47,7 @@ Thirteen modules, no circular dependencies. Only `src/graded.gleam` is the publi
 | `src/graded/internal/typeinfo.gleam` | Hold girard's per-expression inferred types, keyed by `#(start, end)` span, for receiver-type lookup |
 | `src/graded/internal/signatures.gleam` | Glance-backed parameter signatures: fn-typed and operator (second-order) parameter detection, positions, for call-site substitution |
 | `src/graded/internal/topo.gleam` | Kahn's-algorithm topological sort over a string-keyed dependency graph |
+| `src/graded/internal/diff.gleam` | Line diff between two renderings of a spec file, for `infer --dry-run` |
 
 ## .graded Annotation Syntax
 

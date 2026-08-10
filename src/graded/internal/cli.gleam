@@ -68,15 +68,12 @@ pub fn parse_infer_args(
 // Pull `--dry-run` out of the argument list, leaving the positional arguments
 // in order. Repeating the flag says nothing more than giving it once.
 fn take_dry_run(arguments: List(String)) -> #(InferMode, List(String)) {
-  let #(mode, reversed) =
-    list.fold(arguments, #(Write, []), fn(acc, argument) {
-      let #(mode, positional) = acc
-      case argument {
-        "--dry-run" -> #(DryRun, positional)
-        _ -> #(mode, [argument, ..positional])
-      }
-    })
-  #(mode, list.reverse(reversed))
+  let #(flags, positional) =
+    list.partition(arguments, fn(argument) { argument == "--dry-run" })
+  case flags {
+    [] -> #(Write, positional)
+    [_, ..] -> #(DryRun, positional)
+  }
 }
 
 // Decode the arguments of `graded effect <name> [directory] [--format=…]`. The

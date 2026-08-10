@@ -127,7 +127,7 @@ pub fn dry_run_predicts_the_write_test() {
   let assert Ok(_) = graded.run_infer(root)
   let assert Ok(after) = simplifile.read(root <> "/proj.graded")
 
-  diff.unified(before, after) |> should.equal(Some(preview))
+  diff.contextual(before, after) |> should.equal(Some(preview))
   support.cleanup(root)
 }
 
@@ -148,6 +148,18 @@ pub fn write_mode_writes_the_spec_and_cache_test() {
   support.cleanup(root)
 }
 
+// A project with no spec file starts from no lines at all, not from the single
+// blank line an empty file parses to.
+pub fn write_mode_starts_a_spec_without_a_leading_blank_line_test() {
+  let root = "build/infer_write_fresh_spec"
+  write_project(root, source(), NoSpec)
+
+  let assert Ok(_) = graded.run_infer_command(cli.Write, root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  string.starts_with(written, "\n") |> should.be_false()
+  support.cleanup(root)
+}
+
 // Fixture projects
 //
 // A one-module project whose effects come from a declared external, so the
@@ -156,6 +168,19 @@ pub fn write_mode_writes_the_spec_and_cache_test() {
 type SpecFile {
   NoSpec
   Spec(contents: String)
+}
+
+fn write_project(root: String, module: String, spec_file: SpecFile) -> Nil {
+  let spec_entry = case spec_file {
+    NoSpec -> []
+    Spec(contents:) -> [#("proj.graded", contents)]
+  }
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.gleam", module),
+    ..spec_entry
+  ])
+  Nil
 }
 
 fn source() -> String {
@@ -173,16 +198,6 @@ pub fn quiet() -> Nil {
 
 fn spec() -> String {
   "external effects ffi/console.log : [Stdout]\n"
-}
-
-fn write_project(root: String, module: String, spec_file: SpecFile) -> Nil {
-  support.cleanup(root)
-  support.write_file(root <> "/gleam.toml", "name = \"proj\"\n")
-  support.write_file(root <> "/proj.gleam", module)
-  case spec_file {
-    NoSpec -> Nil
-    Spec(contents:) -> support.write_file(root <> "/proj.graded", contents)
-  }
 }
 
 // The `-`/`+` lines of a preview, dropping the context around them.
