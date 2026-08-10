@@ -92,6 +92,7 @@ The `.graded` spec language and graded's analysis model are documented in full i
 ```sh
 gleam run -m graded check [directory]         # enforce check annotations (default)
 gleam run -m graded infer [directory]         # infer and write effects annotations
+gleam run -m graded infer --dry-run [directory] # preview the spec changes, writing nothing
 gleam run -m graded effect <name> [directory] # look up one effect, writing nothing
 gleam run -m graded effect <name> --format=graded # ... as a .graded line instead of prose
 gleam run -m graded format [directory]        # normalize .graded file formatting
@@ -104,6 +105,8 @@ gleam run -m graded -- --version              # show the installed version
 An unknown command or option is a usage error, not a silently-checked directory.
 
 `effect` answers a single lookup and writes nothing — the spec file and the cache are left untouched. Its `<name>` is either a module-qualified function (`myapp/router.handle`) or a type field (`myapp/repo.Repo.find`). It prints prose by default (`myapp/router.handle has effects [Stdout]`), describing where a higher-order function's effects come from and what its bounds assume, and stating a `[Unknown]` result as a name that was found whose effects weren't determined. `--format=graded` prints the same answer as a `.graded` line with provenance on a `//` comment, so it parses back — the format to pipe into a spec file. Public functions resolve without a prior `graded infer`; private functions and undeclared type fields report that the name wasn't found. A module covered by a module-level `external effects <module>` declaration is the exception: that declaration answers for every name in the module that nothing else keys, so such a name resolves to the declared effect whether or not it exists.
+
+`infer --dry-run` previews the same inference as a line diff of the spec file — the `-`/`+` lines with a couple of lines of context around them, or `graded: no changes` — and writes nothing, neither the spec file nor the cache. It exits 0 either way; `format --check` is the CI gate.
 
 `check` and `infer` scope to the passed directory (default `src/`), recursing into it but never into `build/`. Passing the package root — `graded check .` — scopes to the root's `src/`, so module names come out as they appear in `import` statements (`app`, not `src/app`). To check another project, run graded from that project's root or point it at its `src/`.
 

@@ -26,9 +26,11 @@ pub type ArgumentError {
 
 // Decode the optional directory argument shared by check/infer/format/pack
 // (default `src`). A leading `-…` token is an unknown option, not a directory,
-// so a stray flag like `graded infer --dry-run` is rejected rather than taken
-// as a directory named `--dry-run`. Each of these commands takes at most one
-// directory, so anything after it is rejected too.
+// so a stray flag like `graded check --quiet` is rejected rather than taken as
+// a directory named `--quiet`. Each of these commands takes at most one
+// directory, so anything after it is rejected too. A command with flags of its
+// own pulls them out first and passes on what is left (see
+// `parse_infer_args`).
 pub fn parse_directory_args(
   rest: List(String),
 ) -> Result(String, ArgumentError) {
@@ -43,6 +45,38 @@ pub fn parse_directory_args(
       Error(UnexpectedArgument(extra))
     }
   }
+}
+
+// Whether `infer` writes its results or only previews them.
+pub type InferMode {
+  Write
+  DryRun
+}
+
+// Decode the arguments of `graded infer [directory] [--dry-run]`. The directory
+// follows the same default and rejection rules as `parse_directory_args`;
+// `--dry-run` may sit anywhere after the command, since it says how the command
+// runs rather than naming one of the positions.
+pub fn parse_infer_args(
+  rest: List(String),
+) -> Result(#(String, InferMode), ArgumentError) {
+  let #(mode, positional) = take_dry_run(rest)
+  use directory <- result.map(parse_directory_args(positional))
+  #(directory, mode)
+}
+
+// Pull `--dry-run` out of the argument list, leaving the positional arguments
+// in order. Repeating the flag says nothing more than giving it once.
+fn take_dry_run(arguments: List(String)) -> #(InferMode, List(String)) {
+  let #(mode, reversed) =
+    list.fold(arguments, #(Write, []), fn(acc, argument) {
+      let #(mode, positional) = acc
+      case argument {
+        "--dry-run" -> #(DryRun, positional)
+        _ -> #(mode, [argument, ..positional])
+      }
+    })
+  #(mode, list.reverse(reversed))
 }
 
 // Decode the arguments of `graded effect <name> [directory] [--format=…]`. The

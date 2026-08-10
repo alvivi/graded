@@ -1,0 +1,195 @@
+// Tests for the `infer` command's arguments and its two modes: the decoder
+// that separates `--dry-run` from the directory, and end-to-end runs of both
+// modes over throwaway projects — including the requirement dry-run exists
+// for, that a preview writes nothing at all.
+
+import gleam/list
+import gleam/option.{Some}
+import gleam/string
+import gleeunit/should
+import graded
+import graded/internal/cli
+import graded/internal/diff
+import simplifile
+import support
+
+// Argument decoding
+//
+// `--dry-run` selects a mode rather than filling a position, so it is accepted
+// wherever it sits and the directory keeps its usual default.
+
+pub fn infer_args_default_to_writing_src_test() {
+  cli.parse_infer_args([]) |> should.equal(Ok(#("src", cli.Write)))
+}
+
+pub fn infer_args_directory_only_test() {
+  cli.parse_infer_args(["lib"]) |> should.equal(Ok(#("lib", cli.Write)))
+}
+
+pub fn infer_args_dry_run_alone_test() {
+  cli.parse_infer_args(["--dry-run"]) |> should.equal(Ok(#("src", cli.DryRun)))
+}
+
+pub fn infer_args_dry_run_before_directory_test() {
+  cli.parse_infer_args(["--dry-run", "lib"])
+  |> should.equal(Ok(#("lib", cli.DryRun)))
+}
+
+pub fn infer_args_dry_run_after_directory_test() {
+  cli.parse_infer_args(["lib", "--dry-run"])
+  |> should.equal(Ok(#("lib", cli.DryRun)))
+}
+
+pub fn infer_args_repeated_dry_run_test() {
+  cli.parse_infer_args(["--dry-run", "lib", "--dry-run"])
+  |> should.equal(Ok(#("lib", cli.DryRun)))
+}
+
+pub fn infer_args_reject_unknown_option_test() {
+  cli.parse_infer_args(["--dry-runx"])
+  |> should.equal(Error(cli.UnknownOption("--dry-runx")))
+}
+
+pub fn infer_args_reject_extra_argument_test() {
+  cli.parse_infer_args(["lib", "extra"])
+  |> should.equal(Error(cli.UnexpectedArgument("extra")))
+}
+
+pub fn infer_args_reject_extra_argument_beside_dry_run_test() {
+  cli.parse_infer_args(["--dry-run", "lib", "extra"])
+  |> should.equal(Error(cli.UnexpectedArgument("extra")))
+}
+
+// Previewing
+//
+// `run_infer_command(cli.DryRun, …)` — the seam `main` dispatches to — over
+// projects at each of the states a preview has to describe: no spec file yet,
+// a spec file that already matches, and one holding a stale line.
+
+pub fn dry_run_writes_nothing_test() {
+  let root = "build/infer_dry_run_fresh"
+  write_project(root, source(), NoSpec)
+  let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
+
+  // Nothing on disk yet, so every changed line is an addition.
+  let changes = changed_lines(preview)
+  changes |> should.not_equal([])
+  changes |> list.all(string.starts_with(_, "+ ")) |> should.be_true()
+
+  simplifile.is_file(root <> "/proj.graded") |> should.equal(Ok(False))
+  simplifile.is_directory(root <> "/build/.graded") |> should.equal(Ok(False))
+  support.cleanup(root)
+}
+
+pub fn dry_run_after_infer_reports_no_changes_test() {
+  let root = "build/infer_dry_run_unchanged"
+  write_project(root, source(), Spec(spec()))
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+
+  graded.run_infer_command(cli.DryRun, root)
+  |> should.equal(Ok("graded: no changes"))
+  simplifile.read(root <> "/proj.graded") |> should.equal(Ok(written))
+  support.cleanup(root)
+}
+
+pub fn dry_run_shows_only_the_stale_line_test() {
+  let root = "build/infer_dry_run_stale"
+  write_project(root, source(), Spec(spec()))
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/proj.graded",
+      string.replace(
+        written,
+        "effects proj.greet : [Stdout]",
+        "effects proj.greet : [Db]",
+      ),
+    )
+
+  let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
+  changed_lines(preview)
+  |> should.equal([
+    "- effects proj.greet : [Db]", "+ effects proj.greet : [Stdout]",
+  ])
+  support.cleanup(root)
+}
+
+// The preview is exactly the diff the write turns out to produce: capture one,
+// perform the write, and diff the bytes before against the bytes after.
+pub fn dry_run_predicts_the_write_test() {
+  let root = "build/infer_dry_run_prediction"
+  write_project(root, source(), Spec(spec()))
+  let assert Ok(before) = simplifile.read(root <> "/proj.graded")
+
+  let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(after) = simplifile.read(root <> "/proj.graded")
+
+  diff.unified(before, after) |> should.equal(Some(preview))
+  support.cleanup(root)
+}
+
+// Writing
+//
+// The other half of the mode switch: `cli.Write` still writes both outputs and
+// reports what it did.
+
+pub fn write_mode_writes_the_spec_and_cache_test() {
+  let root = "build/infer_write_mode"
+  write_project(root, source(), NoSpec)
+
+  graded.run_infer_command(cli.Write, root)
+  |> should.equal(Ok("graded: inferred effects written"))
+  simplifile.is_file(root <> "/proj.graded") |> should.equal(Ok(True))
+  simplifile.is_file(root <> "/build/.graded/proj.graded")
+  |> should.equal(Ok(True))
+  support.cleanup(root)
+}
+
+// Fixture projects
+//
+// A one-module project whose effects come from a declared external, so the
+// inferred lines don't depend on dependency sources being installed.
+
+type SpecFile {
+  NoSpec
+  Spec(contents: String)
+}
+
+fn source() -> String {
+  "import ffi/console
+
+pub fn greet() -> Nil {
+  console.log(\"hi\")
+}
+
+pub fn quiet() -> Nil {
+  Nil
+}
+"
+}
+
+fn spec() -> String {
+  "external effects ffi/console.log : [Stdout]\n"
+}
+
+fn write_project(root: String, module: String, spec_file: SpecFile) -> Nil {
+  support.cleanup(root)
+  support.write_file(root <> "/gleam.toml", "name = \"proj\"\n")
+  support.write_file(root <> "/proj.gleam", module)
+  case spec_file {
+    NoSpec -> Nil
+    Spec(contents:) -> support.write_file(root <> "/proj.graded", contents)
+  }
+}
+
+// The `-`/`+` lines of a preview, dropping the context around them.
+fn changed_lines(preview: String) -> List(String) {
+  preview
+  |> string.split("\n")
+  |> list.filter(fn(line) {
+    string.starts_with(line, "- ") || string.starts_with(line, "+ ")
+  })
+}
