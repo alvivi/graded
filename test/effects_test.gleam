@@ -899,6 +899,40 @@ pub fn a_path_dep_spec_overrides_a_catalog_entry_test() {
   ])
 }
 
+pub fn a_path_dep_external_drops_a_catalog_entrys_bounds_test() {
+  // The bounds a name carries are the ones recorded for the term that won: a
+  // bound-less `external effects` line overriding a polymorphic catalog entry
+  // leaves its ground term standing alone, with the catalog's bounds gone.
+  let name = QualifiedName("dep", "run")
+  // The catalog's `effects dep.run(cb: [cb]) : [cb]`: a term binding `cb`, and
+  // the bound that discharges it.
+  let cb =
+    effect_term.from_effect_set(Polymorphic(set.new(), set.from_list(["cb"])))
+  let kb =
+    effects.new_knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([#(name, cb)]),
+      types.Catalog("dep"),
+    )
+    |> effects.with_inferred_params(
+      dict.from_list([#(name, [ParamBound(name: "cb", effects: cb)])]),
+    )
+    |> effects.with_path_dep_spec(
+      dep_spec(
+        "build/eff_path_dep_drops_catalog_bounds",
+        "dep",
+        "external effects dep.run : [Time]\n",
+      ),
+      types.PathDependency("dep"),
+    )
+  entry_of(kb, name)
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Time"])), types.PathDependency("dep"))),
+  )
+  effects.lookup_param_bounds(kb, name)
+  |> should.equal([])
+}
+
 pub fn a_path_dep_spec_yields_to_a_user_external_test() {
   // The consumer's own declaration is not overridable by a dependency, and the
   // bounds standing beside it stay put too: the kept term is the one they were
