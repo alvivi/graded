@@ -447,13 +447,13 @@ pub fn parse_directory_args_takes_one_directory_test() {
 }
 
 pub fn parse_directory_args_rejects_a_flag_test() {
-  cli.parse_directory_args(["--dry-run"])
-  |> should.equal(Error(cli.UnknownOption("--dry-run")))
+  cli.parse_directory_args(["--quiet"])
+  |> should.equal(Error(cli.UnknownOption("--quiet")))
 }
 
 pub fn parse_directory_args_rejects_a_second_directory_test() {
-  cli.parse_directory_args(["dir", "--dry-run"])
-  |> should.equal(Error(cli.UnexpectedArgument("--dry-run")))
+  cli.parse_directory_args(["dir", "--quiet"])
+  |> should.equal(Error(cli.UnexpectedArgument("--quiet")))
 }
 
 // Read-only

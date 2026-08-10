@@ -1579,13 +1579,12 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
 /// preview too.
 pub fn run_infer_dry_run(directory: String) -> Result(String, GradedError) {
   use outcome <- result.try(compute_infer(directory))
-  // A spec file that isn't there yet reads as empty, so a first-ever infer
-  // previews as an all-additions diff rather than an error.
-  let on_disk = simplifile.read(outcome.cfg.spec_file) |> result.unwrap("")
-  case diff.unified(on_disk, annotation.format_file(outcome.merged_spec)) {
-    None -> Ok("graded: no changes")
-    Some(preview) -> Ok(preview)
-  }
+  diff.contextual(
+    outcome.spec_on_disk,
+    annotation.format_file(outcome.merged_spec),
+  )
+  |> option.unwrap("graded: no changes")
+  |> Ok
 }
 
 // Run `infer` in one of its two modes, returning the message to print. The
@@ -1607,23 +1606,36 @@ pub fn run_infer_command(
 // Write everything the compute phase derived: each module's cache file in
 // topological order, then the merged spec.
 fn write_infer_outcome(outcome: InferOutcome) -> Result(Nil, GradedError) {
-  use Nil <- result.try(
-    list.try_each(outcome.cache_files, fn(entry) {
-      let #(cache_path, cache_file) = entry
-      write_cache_file(cache_path, cache_file)
-    }),
-  )
+  use Nil <- result.try(list.try_each(outcome.cache_files, write_cache_file))
   write_spec_file(outcome.cfg.spec_file, outcome.merged_spec)
 }
 
 // Everything `infer` derives before anything is written: the resolved config,
-// the spec file with the fresh inference already merged in, and the per-module
-// cache files in topological order.
+// the spec file as it sits on disk and as the fresh inference would leave it,
+// and the per-module cache files in topological order.
 type InferOutcome {
   InferOutcome(
     cfg: config.GradedConfig,
+    spec_on_disk: String,
     merged_spec: GradedFile,
-    cache_files: List(#(String, GradedFile)),
+    cache_files: List(CacheFile),
+  )
+}
+
+// One module's inferred effects as the cache file they would be written to.
+type CacheFile {
+  CacheFile(path: String, file: GradedFile)
+}
+
+// What inferring one module produces: the knowledge base later modules resolve
+// against, the module's public annotations and returned operators for the spec
+// file, and its cache file.
+type ModuleInference {
+  ModuleInference(
+    knowledge_base: KnowledgeBase,
+    public: List(EffectAnnotation),
+    returns: List(types.ReturnsAnnotation),
+    cache: Option(CacheFile),
   )
 }
 
@@ -1634,7 +1646,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   let directory = scope_to_source_directory(directory)
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
-  let spec = read_spec(cfg.spec_file)
+  let #(spec_on_disk, spec) = read_spec_on_disk(cfg.spec_file)
   let declared_modules = annotation.module_external_modules(spec)
 
   use gleam_files <- result.try(find_gleam_files(directory))
@@ -1688,7 +1700,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       case dict.get(index, module_path) {
         Error(_) -> state
         Ok(#(_gleam_path, module)) -> {
-          let #(new_kb, new_public, new_returns, cache_entry) =
+          let inference =
             infer_one_module(
               module,
               module_path,
@@ -1704,12 +1716,12 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
           // The cache accumulator is reversed back into topological order
           // before the write phase walks it.
           #(
-            new_kb,
-            list.append(new_public, acc),
-            list.append(new_returns, returns_acc),
-            case cache_entry {
+            inference.knowledge_base,
+            list.append(inference.public, acc),
+            list.append(inference.returns, returns_acc),
+            case inference.cache {
               None -> cache_acc
-              Some(entry) -> [entry, ..cache_acc]
+              Some(cache) -> [cache, ..cache_acc]
             },
           )
         }
@@ -1718,6 +1730,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
 
   Ok(InferOutcome(
     cfg:,
+    spec_on_disk:,
     merged_spec: annotation.merge_inferred(
       spec,
       public_annotations,
@@ -1727,12 +1740,11 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   ))
 }
 
-// Infer effects for a single module and return the new knowledge base, the
-// module's *public* inferred annotations qualified with the module path, and
-// the cache file (with bare names) the write phase would write for it — `None`
-// when the module inferred nothing, so no cache file and no directory for it
-// are created. The caller accumulates the public annotations for the eventual
-// spec file write.
+// Infer effects for a single module. Public annotations come back qualified
+// with the module path, and the cache file (with bare names) carries what the
+// write phase would write for the module — `None` when the module inferred
+// nothing, so no cache file and no directory for it are created. The caller
+// accumulates the public annotations for the eventual spec file write.
 fn infer_one_module(
   module: glance.Module,
   module_path: String,
@@ -1742,12 +1754,7 @@ fn infer_one_module(
   module_types: Dict(#(Int, Int), girard.Type),
   girard_fn_typed: Dict(String, Set(String)),
   declared_modules: Set(String),
-) -> #(
-  KnowledgeBase,
-  List(EffectAnnotation),
-  List(types.ReturnsAnnotation),
-  Option(#(String, GradedFile)),
-) {
+) -> ModuleInference {
   let #(inferred, returned_operators, provenance) =
     checker.infer_with_returns(
       module,
@@ -1761,12 +1768,12 @@ fn infer_one_module(
 
   // Skip the cache file when there's nothing to record. Saves an mkdir syscall
   // per stdlib-only module.
-  let cache_entry = case inferred {
+  let cache = case inferred {
     [] -> None
     _ ->
-      Some(#(
-        filepath.join(cache_dir, module_path <> ".graded"),
-        GradedFile(lines: list.map(inferred, AnnotationLine)),
+      Some(CacheFile(
+        path: filepath.join(cache_dir, module_path <> ".graded"),
+        file: GradedFile(lines: list.map(inferred, AnnotationLine)),
       ))
   }
 
@@ -1809,7 +1816,12 @@ fn infer_one_module(
       )
     })
 
-  #(new_kb, public_annotations, public_returns, cache_entry)
+  ModuleInference(
+    knowledge_base: new_kb,
+    public: public_annotations,
+    returns: public_returns,
+    cache:,
+  )
 }
 
 // Infer project modules in topological order, in memory, folding their
@@ -1965,16 +1977,13 @@ fn public_function_names(module: glance.Module) -> set.Set(String) {
 }
 
 // Write one module's cache file, creating the directory it lives in.
-fn write_cache_file(
-  cache_path: String,
-  cache_file: GradedFile,
-) -> Result(Nil, GradedError) {
-  let parent_directory = filepath.directory_name(cache_path)
+fn write_cache_file(cache: CacheFile) -> Result(Nil, GradedError) {
+  let parent_directory = filepath.directory_name(cache.path)
   use Nil <- result.try(
     simplifile.create_directory_all(parent_directory)
     |> result.map_error(DirectoryCreateError(parent_directory, _)),
   )
-  write_graded_file(cache_path, cache_file)
+  write_graded_file(cache.path, cache.file)
 }
 
 // Write the project's spec file — the merge with the existing spec has already
@@ -2224,13 +2233,19 @@ fn default_package_name(project_root: String) -> String {
 }
 
 fn read_spec(spec_path: String) -> GradedFile {
+  read_spec_on_disk(spec_path).1
+}
+
+// The spec file's bytes and the parse of them. A spec file that isn't there
+// yet reads as no bytes and no lines — not as an empty file, which parses to
+// one blank line — so a project with no spec is inferred from scratch.
+fn read_spec_on_disk(spec_path: String) -> #(String, GradedFile) {
   case simplifile.read(spec_path) {
-    Error(_) -> GradedFile(lines: [])
-    Ok(content) ->
-      case annotation.parse_file(content) {
-        Ok(file) -> file
-        Error(_) -> GradedFile(lines: [])
-      }
+    Error(_) -> #("", GradedFile(lines: []))
+    Ok(content) -> #(
+      content,
+      annotation.parse_file(content) |> result.unwrap(GradedFile(lines: [])),
+    )
   }
 }
 
