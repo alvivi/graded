@@ -78,6 +78,30 @@ pub fn contextual_losing_trailing_newline_test() {
   |> should.equal(Some("  a\n- b\n+ b\n\\ No newline at end of file"))
 }
 
+// A line that gains a following line also gains a newline, so it is not a
+// context line: it leaves the old side unterminated and enters the new side
+// terminated.
+pub fn contextual_appending_after_an_unterminated_line_test() {
+  diff.contextual("a\nb", "a\nb\nc")
+  |> should.equal(Some(
+    "  a\n- b\n\\ No newline at end of file\n+ b\n+ c\n\\ No newline at end of file",
+  ))
+}
+
+pub fn contextual_removing_an_unterminated_line_test() {
+  diff.contextual("a\nb\nc", "a\nb")
+  |> should.equal(Some(
+    "  a\n- b\n- c\n\\ No newline at end of file\n+ b\n\\ No newline at end of file",
+  ))
+}
+
+// Both sides ending without a newline on the same unchanged line is no delta:
+// one marker, on the context line they share.
+pub fn contextual_shared_unterminated_line_stays_context_test() {
+  diff.contextual("x\nb", "y\nb")
+  |> should.equal(Some("- x\n+ y\n  b\n\\ No newline at end of file"))
+}
+
 pub fn contextual_empty_against_one_blank_line_test() {
   diff.contextual("", "\n") |> should.equal(Some("+ "))
 }
