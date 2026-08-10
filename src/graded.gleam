@@ -518,7 +518,7 @@ fn load_project_context(
   let directory = scope_to_source_directory(directory)
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
-  let spec = read_spec(cfg.spec_file)
+  use spec <- result.try(read_spec(cfg.spec_file))
   let declared_modules = annotation.module_external_modules(spec)
 
   use gleam_files <- result.try(find_gleam_files(directory))
@@ -1001,7 +1001,7 @@ fn effect_answer(
 ) -> Result(EffectAnswer, GradedError) {
   let directory = scope_to_source_directory(directory)
   use cfg <- result.try(read_config(directory))
-  let spec = read_spec(cfg.spec_file)
+  use spec <- result.try(read_spec(cfg.spec_file))
   case spec_answer(directory, spec, name) {
     Ok(found) -> Ok(found)
     Error(Nil) -> project_answer(directory, name)
@@ -1646,7 +1646,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   let directory = scope_to_source_directory(directory)
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
-  let #(spec_on_disk, spec) = read_spec_on_disk(cfg.spec_file)
+  use #(spec_on_disk, spec) <- result.try(read_spec_on_disk(cfg.spec_file))
   let declared_modules = annotation.module_external_modules(spec)
 
   use gleam_files <- result.try(find_gleam_files(directory))
@@ -2232,20 +2232,26 @@ fn default_package_name(project_root: String) -> String {
   }
 }
 
-fn read_spec(spec_path: String) -> GradedFile {
-  read_spec_on_disk(spec_path).1
+fn read_spec(spec_path: String) -> Result(GradedFile, GradedError) {
+  read_spec_on_disk(spec_path) |> result.map(fn(spec) { spec.1 })
 }
 
 // The spec file's bytes and the parse of them. A spec file that isn't there
 // yet reads as no bytes and no lines — not as an empty file, which parses to
-// one blank line — so a project with no spec is inferred from scratch.
-fn read_spec_on_disk(spec_path: String) -> #(String, GradedFile) {
+// one blank line — so a project with no spec is inferred from scratch. A spec
+// file that is there but cannot be read is an error, so no command carries on
+// as though the package had no annotations at all.
+fn read_spec_on_disk(
+  spec_path: String,
+) -> Result(#(String, GradedFile), GradedError) {
   case simplifile.read(spec_path) {
-    Error(_) -> #("", GradedFile(lines: []))
-    Ok(content) -> #(
-      content,
-      annotation.parse_file(content) |> result.unwrap(GradedFile(lines: [])),
-    )
+    Error(simplifile.Enoent) -> Ok(#("", GradedFile(lines: [])))
+    Error(cause) -> Error(FileReadError(spec_path, cause))
+    Ok(content) ->
+      Ok(#(
+        content,
+        annotation.parse_file(content) |> result.unwrap(GradedFile(lines: [])),
+      ))
   }
 }
 
