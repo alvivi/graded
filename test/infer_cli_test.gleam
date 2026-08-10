@@ -64,7 +64,8 @@ pub fn infer_args_reject_extra_argument_beside_dry_run_test() {
 //
 // `run_infer_command(cli.DryRun, …)` — the seam `main` dispatches to — over
 // projects at each of the states a preview has to describe: no spec file yet,
-// a spec file that already matches, and one holding a stale line.
+// a spec file that already matches, one holding a stale line, one gaining a
+// line after its unterminated last one, and one the parser rejects.
 
 pub fn dry_run_writes_nothing_test() {
   let root = "build/infer_dry_run_fresh"
@@ -113,6 +114,49 @@ pub fn dry_run_shows_only_the_stale_line_test() {
   |> should.equal([
     "- effects proj.greet : [Db]", "+ effects proj.greet : [Stdout]",
   ])
+  support.cleanup(root)
+}
+
+// A spec file is written without a trailing newline, so a public function
+// added afterwards leaves the formerly-last line terminated on the new side
+// only: it is previewed as a `-`/`+` pair carrying the marker on the `-` side.
+pub fn dry_run_repairs_the_formerly_last_line_test() {
+  let root = "build/infer_dry_run_append"
+  write_project(root, source(), Spec(spec()))
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(last) = written |> string.split("\n") |> list.last
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/proj.gleam", source_with_added_function())
+
+  let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
+  last_lines(preview, 5)
+  |> should.equal([
+    "- " <> last,
+    "\\ No newline at end of file",
+    "+ " <> last,
+    "+ effects proj.shout : [Stdout]",
+    "\\ No newline at end of file",
+  ])
+  support.cleanup(root)
+}
+
+// A spec file the parser rejects merges as if it held no lines, so the write
+// would clobber it. The preview shows that: every line already on disk is a
+// removal.
+pub fn dry_run_over_an_unparseable_spec_previews_the_clobber_test() {
+  let root = "build/infer_dry_run_unparseable"
+  let existing = spec() <> "this line is not a graded annotation\n"
+  write_project(root, source(), Spec(existing))
+
+  let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
+  changed_lines(preview)
+  |> list.filter(string.starts_with(_, "- "))
+  |> should.equal([
+    "- external effects ffi/console.log : [Stdout]",
+    "- this line is not a graded annotation",
+  ])
+  simplifile.read(root <> "/proj.graded") |> should.equal(Ok(existing))
   support.cleanup(root)
 }
 
@@ -196,8 +240,24 @@ pub fn quiet() -> Nil {
 "
 }
 
+// The same module with one more public function, as it looks after a spec has
+// already been written for the original.
+fn source_with_added_function() -> String {
+  source() <> "
+pub fn shout() -> Nil {
+  console.log(\"HI\")
+}
+"
+}
+
 fn spec() -> String {
   "external effects ffi/console.log : [Stdout]\n"
+}
+
+// The final `count` lines of a preview, markers included.
+fn last_lines(preview: String, count: Int) -> List(String) {
+  let lines = string.split(preview, "\n")
+  list.drop(lines, list.length(lines) - count)
 }
 
 // The `-`/`+` lines of a preview, dropping the context around them.

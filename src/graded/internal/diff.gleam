@@ -12,32 +12,25 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/string
 
 // Diffing
 //
-// The entry point and the line model underneath it. The trailing newline is
-// part of what a write would change, so it is modelled explicitly rather than
-// folded into the last line.
+// The entry point and the line model underneath it. Whether a line ends in a
+// newline is part of its identity, so an unterminated last line never matches
+// a terminated counterpart and a trailing-newline change always surfaces as a
+// removal and an addition.
 
 // Diff `old` against `new`, or `None` when the two are byte-identical.
 pub fn contextual(old: String, new: String) -> Option(String) {
   use <- bool.guard(when: old == new, return: None)
-  let old_side = split_side(old)
-  let new_side = split_side(new)
-  Some(
-    diff_lines(old_side.lines, new_side.lines)
-    |> split_final_keep(old_side.ending, new_side.ending)
-    |> mark_endings(old_side.ending, new_side.ending)
-    |> render,
-  )
+  Some(diff_lines(split_side(old), split_side(new)) |> render)
 }
 
-// One side of the diff: its content lines, and whether the text they came from
-// ended in a newline.
-type Side {
-  Side(lines: List(String), ending: Ending)
+// One content line of a side, and whether it ends in a newline. Only a side's
+// last line can be `Unterminated`.
+type Line {
+  Line(text: String, ending: Ending)
 }
 
 type Ending {
@@ -45,23 +38,32 @@ type Ending {
   Unterminated
 }
 
-// Split text into content lines plus its ending. The empty string is zero
-// lines; every other text keeps one content line per line of input, dropping
-// only the sentinel a trailing newline splits off — `"x\n"` is the single
-// content line `"x"`, and `"\n"` is a single empty content line.
-fn split_side(text: String) -> Side {
-  case text {
-    "" -> Side(lines: [], ending: Terminated)
-    _ ->
-      case string.ends_with(text, "\n") {
-        True ->
-          Side(
-            lines: string.split(string.drop_end(text, 1), "\n"),
-            ending: Terminated,
-          )
-        False -> Side(lines: string.split(text, "\n"), ending: Unterminated)
-      }
+// Split text into content lines. The empty string is zero lines; every other
+// text keeps one content line per line of input, dropping only the sentinel a
+// trailing newline splits off — `"x\n"` is the single content line `"x"`, and
+// `"\n"` is a single empty content line.
+fn split_side(text: String) -> List(Line) {
+  case text, string.ends_with(text, "\n") {
+    "", _ -> []
+    _, True ->
+      string.drop_end(text, 1) |> string.split("\n") |> list.map(terminated)
+    _, False -> tag_last_unterminated(string.split(text, "\n"))
   }
+}
+
+// Mark the final line as the one the text stopped at without a newline.
+fn tag_last_unterminated(lines: List(String)) -> List(Line) {
+  let last_index = list.length(lines) - 1
+  list.index_map(lines, fn(line, index) {
+    case index == last_index {
+      True -> Line(text: line, ending: Unterminated)
+      False -> terminated(line)
+    }
+  })
+}
+
+fn terminated(text: String) -> Line {
+  Line(text:, ending: Terminated)
 }
 
 // Edit script
@@ -82,86 +84,25 @@ type Note {
   NoNewline
 }
 
-fn keep(line: String) -> Edit {
-  Keep(line:, note: NoNote)
+fn keep(line: Line) -> Edit {
+  Keep(line: line.text, note: note_for(line))
 }
 
-fn remove(line: String) -> Edit {
-  Remove(line:, note: NoNote)
+fn remove(line: Line) -> Edit {
+  Remove(line: line.text, note: note_for(line))
 }
 
-fn add(line: String) -> Edit {
-  Add(line:, note: NoNote)
+fn add(line: Line) -> Edit {
+  Add(line: line.text, note: note_for(line))
 }
 
-// When only the trailing newline changed, the shared final line is still a
-// change: render it as a removal followed by an addition so each side's
-// marker has a line of its own to follow.
-fn split_final_keep(
-  edits: List(Edit),
-  old_ending: Ending,
-  new_ending: Ending,
-) -> List(Edit) {
-  use <- bool.guard(when: old_ending == new_ending, return: edits)
-  case list.reverse(edits) {
-    [Keep(line:, note: _), ..rest] ->
-      list.reverse([add(line), remove(line), ..rest])
-    [] | [Remove(..), ..] | [Add(..), ..] -> edits
-  }
-}
-
-// Attach the no-newline marker to the last diff line belonging to a side that
-// ends without one.
-fn mark_endings(
-  edits: List(Edit),
-  old_ending: Ending,
-  new_ending: Ending,
-) -> List(Edit) {
-  edits
-  |> mark_side(old_ending, in_old)
-  |> mark_side(new_ending, in_new)
-}
-
-fn mark_side(
-  edits: List(Edit),
-  ending: Ending,
-  belongs: fn(Edit) -> Bool,
-) -> List(Edit) {
-  case ending {
-    Terminated -> edits
-    Unterminated -> {
-      // Walking from the end, the side's last diff line is the first one the
-      // walk meets that belongs to it.
-      let #(tail, rest) =
-        list.split_while(list.reverse(edits), fn(edit) { !belongs(edit) })
-      case rest {
-        [] -> edits
-        [last, ..head] ->
-          list.reverse(list.append(tail, [with_no_newline(last), ..head]))
-      }
-    }
-  }
-}
-
-fn in_old(edit: Edit) -> Bool {
-  case edit {
-    Keep(..) | Remove(..) -> True
-    Add(..) -> False
-  }
-}
-
-fn in_new(edit: Edit) -> Bool {
-  case edit {
-    Keep(..) | Add(..) -> True
-    Remove(..) -> False
-  }
-}
-
-fn with_no_newline(edit: Edit) -> Edit {
-  case edit {
-    Keep(line:, note: _) -> Keep(line:, note: NoNewline)
-    Remove(line:, note: _) -> Remove(line:, note: NoNewline)
-    Add(line:, note: _) -> Add(line:, note: NoNewline)
+// A line that ends without a newline is marked wherever it lands. A `Keep`
+// carries the marker only when both sides end that way on the same line, which
+// is the one case git prints a single marker after a context line.
+fn note_for(line: Line) -> Note {
+  case line.ending {
+    Terminated -> NoNote
+    Unterminated -> NoNewline
   }
 }
 
@@ -172,14 +113,17 @@ fn with_no_newline(edit: Edit) -> Edit {
 // quadratic search only runs over the part that actually differs.
 
 // The two sides indexed by position, so the search can address a line by
-// index instead of walking a list.
+// index instead of walking a list. Indices run from zero without gaps, so a
+// lookup misses exactly when it has walked past the end of that side — which
+// makes the lookup itself the bounds check.
 type Grid {
-  Grid(
-    old: Dict(Int, String),
-    new: Dict(Int, String),
-    old_size: Int,
-    new_size: Int,
-  )
+  Grid(old: Dict(Int, Line), new: Dict(Int, Line))
+}
+
+// Which side a step at a disagreeing line advances.
+type Move {
+  DropOld
+  DropNew
 }
 
 // Lengths of the longest common subsequence of the two suffixes, keyed by
@@ -187,7 +131,7 @@ type Grid {
 type Memo =
   Dict(#(Int, Int), Int)
 
-fn diff_lines(old: List(String), new: List(String)) -> List(Edit) {
+fn diff_lines(old: List(Line), new: List(Line)) -> List(Edit) {
   let #(prefix, old_rest, new_rest) = take_common_prefix(old, new, [])
   let #(suffix, old_middle, new_middle) = take_common_suffix(old_rest, new_rest)
   list.flatten([
@@ -198,10 +142,10 @@ fn diff_lines(old: List(String), new: List(String)) -> List(Edit) {
 }
 
 fn take_common_prefix(
-  old: List(String),
-  new: List(String),
-  acc: List(String),
-) -> #(List(String), List(String), List(String)) {
+  old: List(Line),
+  new: List(Line),
+  acc: List(Line),
+) -> #(List(Line), List(Line), List(Line)) {
   case old, new {
     [old_line, ..old_rest], [new_line, ..new_rest] if old_line == new_line ->
       take_common_prefix(old_rest, new_rest, [old_line, ..acc])
@@ -210,40 +154,36 @@ fn take_common_prefix(
 }
 
 fn take_common_suffix(
-  old: List(String),
-  new: List(String),
-) -> #(List(String), List(String), List(String)) {
+  old: List(Line),
+  new: List(Line),
+) -> #(List(Line), List(Line), List(Line)) {
   let #(suffix, old_rest, new_rest) =
     take_common_prefix(list.reverse(old), list.reverse(new), [])
   #(list.reverse(suffix), list.reverse(old_rest), list.reverse(new_rest))
 }
 
 // Diff the part left over once the shared ends are matched off.
-fn middle_edits(old: List(String), new: List(String)) -> List(Edit) {
+fn middle_edits(old: List(Line), new: List(Line)) -> List(Edit) {
   case old, new {
     [], _ -> list.map(new, add)
     _, [] -> list.map(old, remove)
     _, _ -> {
-      let grid =
-        Grid(
-          old: index_lines(old),
-          new: index_lines(new),
-          old_size: list.length(old),
-          new_size: list.length(new),
-        )
+      let grid = Grid(old: index_lines(old), new: index_lines(new))
       let #(edits, _memo) = walk(grid, 0, 0, dict.new(), [])
       list.reverse(edits)
     }
   }
 }
 
-fn index_lines(lines: List(String)) -> Dict(Int, String) {
+fn index_lines(lines: List(Line)) -> Dict(Int, Line) {
   list.index_fold(lines, dict.new(), fn(acc, line, index) {
     dict.insert(acc, index, line)
   })
 }
 
-// Walk both sides from the front, emitting one edit per step.
+// Walk both sides from the front, emitting one edit per step. A side whose
+// lookup misses is exhausted, so the other side's remaining lines are all
+// additions or all removals.
 fn walk(
   grid: Grid,
   old_index: Int,
@@ -251,60 +191,42 @@ fn walk(
   memo: Memo,
   acc: List(Edit),
 ) -> #(List(Edit), Memo) {
-  case old_index < grid.old_size, new_index < grid.new_size {
-    False, False -> #(acc, memo)
-    False, True ->
-      walk(grid, old_index, new_index + 1, memo, [
-        add(line_at(grid.new, new_index)),
-        ..acc
-      ])
-    True, False ->
-      walk(grid, old_index + 1, new_index, memo, [
-        remove(line_at(grid.old, old_index)),
-        ..acc
-      ])
-    True, True -> {
-      let old_line = line_at(grid.old, old_index)
-      case old_line == line_at(grid.new, new_index) {
-        True ->
-          walk(grid, old_index + 1, new_index + 1, memo, [keep(old_line), ..acc])
-        False -> walk_change(grid, old_index, new_index, memo, acc)
+  case dict.get(grid.old, old_index), dict.get(grid.new, new_index) {
+    Error(Nil), Error(Nil) -> #(acc, memo)
+    Error(Nil), Ok(new_line) ->
+      walk(grid, old_index, new_index + 1, memo, [add(new_line), ..acc])
+    Ok(old_line), Error(Nil) ->
+      walk(grid, old_index + 1, new_index, memo, [remove(old_line), ..acc])
+    Ok(old_line), Ok(new_line) if old_line == new_line ->
+      walk(grid, old_index + 1, new_index + 1, memo, [keep(old_line), ..acc])
+    Ok(old_line), Ok(new_line) ->
+      case better_move(grid, old_index, new_index, memo) {
+        #(DropOld, memo) ->
+          walk(grid, old_index + 1, new_index, memo, [remove(old_line), ..acc])
+        #(DropNew, memo) ->
+          walk(grid, old_index, new_index + 1, memo, [add(new_line), ..acc])
       }
-    }
   }
 }
 
-// One step at a line the two sides disagree on: take whichever move leaves the
-// longer common subsequence behind, preferring the removal on a tie so a
+// The step to take at a line the two sides disagree on: whichever move leaves
+// the longer common subsequence behind, preferring the removal on a tie so a
 // replacement renders as a `-` line followed by its `+`.
-fn walk_change(
+fn better_move(
   grid: Grid,
   old_index: Int,
   new_index: Int,
   memo: Memo,
-  acc: List(Edit),
-) -> #(List(Edit), Memo) {
+) -> #(Move, Memo) {
   let #(without_old, memo) = lcs(grid, old_index + 1, new_index, memo)
   let #(without_new, memo) = lcs(grid, old_index, new_index + 1, memo)
   case without_old >= without_new {
-    True ->
-      walk(grid, old_index + 1, new_index, memo, [
-        remove(line_at(grid.old, old_index)),
-        ..acc
-      ])
-    False ->
-      walk(grid, old_index, new_index + 1, memo, [
-        add(line_at(grid.new, new_index)),
-        ..acc
-      ])
+    True -> #(DropOld, memo)
+    False -> #(DropNew, memo)
   }
 }
 
 fn lcs(grid: Grid, old_index: Int, new_index: Int, memo: Memo) -> #(Int, Memo) {
-  use <- bool.guard(
-    when: old_index >= grid.old_size || new_index >= grid.new_size,
-    return: #(0, memo),
-  )
   case dict.get(memo, #(old_index, new_index)) {
     Ok(length) -> #(length, memo)
     Error(Nil) -> {
@@ -314,27 +236,26 @@ fn lcs(grid: Grid, old_index: Int, new_index: Int, memo: Memo) -> #(Int, Memo) {
   }
 }
 
+// Past the end of either side nothing is left to share, which is what stops
+// the recursion.
 fn compute_lcs(
   grid: Grid,
   old_index: Int,
   new_index: Int,
   memo: Memo,
 ) -> #(Int, Memo) {
-  case line_at(grid.old, old_index) == line_at(grid.new, new_index) {
-    True -> {
+  case dict.get(grid.old, old_index), dict.get(grid.new, new_index) {
+    Ok(old_line), Ok(new_line) if old_line == new_line -> {
       let #(rest, memo) = lcs(grid, old_index + 1, new_index + 1, memo)
       #(rest + 1, memo)
     }
-    False -> {
+    Ok(_), Ok(_) -> {
       let #(without_old, memo) = lcs(grid, old_index + 1, new_index, memo)
       let #(without_new, memo) = lcs(grid, old_index, new_index + 1, memo)
       #(int.max(without_old, without_new), memo)
     }
+    _, _ -> #(0, memo)
   }
-}
-
-fn line_at(lines: Dict(Int, String), index: Int) -> String {
-  dict.get(lines, index) |> result.unwrap("")
 }
 
 // Rendering
@@ -367,6 +288,11 @@ fn render_note(note: Note) -> List(String) {
 
 // Cut the edit script down to the changed lines and the context around them,
 // merging stretches of context too short to separate two hunks.
+//
+// A no-newline marker sitting on a context line outside every window is
+// dropped with that line; only a `Keep` carries one, and a `Keep` carries one
+// only when both sides end without a newline on the same line, which is no
+// delta to report.
 fn hunks(edits: List(Edit)) -> List(List(Edit)) {
   let last_index = list.length(edits) - 1
   let ranges =
