@@ -45,14 +45,9 @@ pub fn check(
   module_types: dict.Dict(#(Int, Int), girard.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
 ) -> #(List(Violation), List(Warning)) {
-  let ModuleContext(context:, function_map:, cache:) =
-    module_context(
-      module,
-      module_path,
-      knowledge_base,
-      girard_fn_typed,
-      build_function_map(module),
-    )
+  let function_map = build_function_map(module)
+  let ModuleContext(context:, cache:) =
+    module_context(module, module_path, knowledge_base, girard_fn_typed)
 
   // One memo table threaded across every annotation: same-module callees shared
   // between annotations are analysed once.
@@ -115,14 +110,9 @@ pub fn infer_with_returns(
   dict.Dict(String, EffectTerm),
   dict.Dict(String, types.ReturnProvenance),
 ) {
-  let ModuleContext(context:, function_map:, cache:) =
-    module_context(
-      module,
-      module_path,
-      knowledge_base,
-      girard_fn_typed,
-      build_function_map(module),
-    )
+  let function_map = build_function_map(module)
+  let ModuleContext(context:, cache:) =
+    module_context(module, module_path, knowledge_base, girard_fn_typed)
 
   let public_functions =
     list.filter(module.functions, fn(definition) {
@@ -305,87 +295,110 @@ pub fn explain(
   // module does not define costs one map build rather than a whole-module walk.
   let function_map = build_function_map(module)
   use definition <- result.map(dict.get(function_map, function_name))
-  let ModuleContext(context:, cache:, ..) =
-    module_context(
-      module,
-      module_path,
-      knowledge_base,
-      girard_fn_typed,
-      function_map,
-    )
-  // A bodyless `@external` — or one whose Gleam fallback the foreign code may
-  // not match — has no body to explain. Walking it anyway would report the
-  // fallback's `[]`, contradicting the `[Unknown]` its own callers are told it
-  // contributes. Its one contributor is the declaration itself, resolved as a
-  // same-module call into it resolves: a declared `external effects` line wins,
-  // and without one the effects stay unresolved. Bounds bind nothing here, so
-  // every block gets the same line.
+  // An external is answered by its declaration alone, which binds no bounds and
+  // needs no walking apparatus: answered here, ahead of the call graph and the
+  // SCC pass `module_context` builds, and repeated per block unchanged.
   use <- bool.lazy_guard(when: is_opaque_external(definition), return: fn() {
-    list.map(bounds, fn(_bounds) {
-      [external_explanation(function_name, context, knowledge_base, definition)]
-    })
+    let explanation =
+      external_explanation(module_path, knowledge_base, definition)
+    list.map(bounds, fn(_bounds) { [explanation] })
   })
+  let ModuleContext(context:, cache:) =
+    module_context(module, module_path, knowledge_base, girard_fn_typed)
   // One memo across every bound set, as `check` threads one across every
   // annotation: a callee's own analysis is seeded from its signature, so the
   // caller's bounds neither key it nor reach it.
   let #(_memo, explained) =
     list.map_fold(bounds, new_memo(), fn(memo, bounds) {
-      let #(body_effects, memo) =
-        collect_effects(
-          without_returned_closure(definition.definition),
+      let #(explanations, memo) =
+        contributors(
+          definition,
+          bounds,
           function_map,
           context,
           knowledge_base,
-          set.new(),
-          bounds,
           registry,
           module_types,
-          dict.new(),
           cache,
-          [],
           memo,
         )
-      #(memo, explained_calls(body_effects))
+      #(memo, ordered_explanations(explanations))
     })
   explained
+}
+
+// Every effect contributor of one function under one set of bounds: `check`
+// subset-checks these and `why` prints them, so the two can't disagree about
+// what a function does.
+//
+// An `@external` is answered by what declares it rather than by a body: a
+// bodyless one has none, and the Gleam fallback one may carry is not the
+// foreign code that runs — walking it would report the fallback's `[]`,
+// contradicting the `[Unknown]` its own callers are charged. Whether the
+// foreign code matches its declaration is the FFI author's to establish; what
+// graded weighs is the budget against the declaration.
+fn contributors(
+  definition: Definition(Function),
+  bounds: List(ParamBound),
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  cache: LocalCache,
+  memo: Memo,
+) -> #(List(CallExplanation), Memo) {
+  use <- bool.lazy_guard(when: is_opaque_external(definition), return: fn() {
+    #(
+      [external_explanation(context.module_path, knowledge_base, definition)],
+      memo,
+    )
+  })
+  let #(body_effects, memo) =
+    collect_effects(
+      without_returned_closure(definition.definition),
+      function_map,
+      context,
+      knowledge_base,
+      set.new(),
+      bounds,
+      registry,
+      module_types,
+      dict.new(),
+      cache,
+      [],
+      memo,
+    )
+  #(list.map(body_effects, call_explanation), memo)
 }
 
 // What an opaque `@external` contributes, keyed by its own qualified name and
 // spanning its declaration. The same knowledge-base lookup a same-module call
 // into it makes, so the two can't disagree about what the external does.
 fn external_explanation(
-  function_name: String,
-  context: ImportContext,
+  module_path: String,
   knowledge_base: KnowledgeBase,
   definition: Definition(Function),
 ) -> CallExplanation {
   let qualified =
-    QualifiedName(module: context.module_path, function: function_name)
+    QualifiedName(module: module_path, function: definition.definition.name)
+  let looked_up = lookup_parts(knowledge_base, qualified, UndeclaredExternal)
   // A resolved `[Unknown]` is the absence of a declaration however it was
   // reached: the inference pass records exactly that for an external, and
   // naming it as the source would credit graded's own guess as an answer. What
   // declares foreign code is an `external effects` line or a catalog entry, so
   // anything else grounding to bare `[Unknown]` reports as undeclared.
-  let resolution = case
-    lookup_parts(knowledge_base, qualified, UndeclaredExternal)
-  {
-    resolution if resolution.reason == None ->
-      case is_bare_unknown(resolution.term) {
-        True ->
-          Resolution(
-            term: effect_term.unknown(),
-            reason: Some(UndeclaredExternal),
-            origin: None,
-          )
-        False -> resolution
-      }
-    resolution -> resolution
+  let resolution = case looked_up.reason, is_bare_unknown(looked_up.term) {
+    None, True ->
+      Resolution(
+        term: effect_term.unknown(),
+        reason: Some(UndeclaredExternal),
+        origin: None,
+      )
+    _, _ -> looked_up
   }
   CallExplanation(
-    call: sentinel_name(ExternalDeclaration(
-      module: context.module_path,
-      function: function_name,
-    )),
+    call: sentinel_name(ExternalDeclaration(dotted_name(qualified))),
     span: definition.definition.location,
     actual: effect_term.to_effect_set(resolution.term),
     reason: resolution.reason,
@@ -396,14 +409,14 @@ fn external_explanation(
 // Whether a term grounds to `[Unknown]` and nothing else — an effect that was
 // never determined, as opposed to one declared alongside real labels.
 fn is_bare_unknown(term: EffectTerm) -> Bool {
-  effect_term.to_effect_set(term)
-  == types.Specific(set.from_list([types.unknown_label]))
+  effect_term.to_effect_set(term) == types.from_labels([types.unknown_label])
 }
 
-// A collected body's contributors, ordered and deduplicated for reporting.
-fn explained_calls(collected: List(CollectedCall)) -> List(CallExplanation) {
-  collected
-  |> list.map(call_explanation)
+// A body's contributors, ordered and deduplicated for reporting.
+fn ordered_explanations(
+  explanations: List(CallExplanation),
+) -> List(CallExplanation) {
+  explanations
   // Calling one helper twice repeats its body's sites verbatim. Only a wholly
   // identical entry is a repetition: two calls can substitute the same span to
   // different effects, and both of those are contributions.
@@ -459,21 +472,14 @@ fn call_explanation(collected: CollectedCall) -> CallExplanation {
 // Everything the body walker needs about the module it walks. Built the same
 // way for every entry point, so a function explained is a function checked.
 type ModuleContext {
-  ModuleContext(
-    context: ImportContext,
-    function_map: dict.Dict(String, Definition(Function)),
-    cache: LocalCache,
-  )
+  ModuleContext(context: ImportContext, cache: LocalCache)
 }
 
-// `function_map` is passed in rather than built here: `explain` needs it before
-// the expensive parts, to answer an unknown name without them.
 fn module_context(
   module: Module,
   module_path: String,
   knowledge_base: KnowledgeBase,
   girard_fn_typed: dict.Dict(String, Set(String)),
-  function_map: dict.Dict(String, Definition(Function)),
 ) -> ModuleContext {
   let context =
     extract.build_import_context(module)
@@ -488,7 +494,6 @@ fn module_context(
     ))
   ModuleContext(
     context:,
-    function_map:,
     cache: build_scc_ids(module, context, girard_fn_typed),
   )
 }
@@ -699,8 +704,9 @@ pub type CallKind {
   // The `@external` declaration of the function under analysis, not a call in
   // its body: what an external contributes is what declares it. Carried as a
   // kind of its own so the prose says the function *is* an external rather
-  // than that it calls one.
-  ExternalDeclaration(module: String, function: String)
+  // than that it calls one. `name` is the declaration's own dotted name, which
+  // identifies the entry — the prose states it from the enclosing function.
+  ExternalDeclaration(name: String)
   // An application of an inline function value: a pipe target (`x |> fn(f) {
   // .. }`) or an immediately-invoked closure / `case` of functions.
   InlineFunctionCall
@@ -728,11 +734,7 @@ fn sentinel_name(kind: CallKind) -> QualifiedName {
     UnresolvedLocalCall(function:) -> QualifiedName(local_sentinel, function)
     ReturnedOperatorCall(producer:) ->
       QualifiedName(returned_sentinel, dotted_name(producer))
-    ExternalDeclaration(module:, function:) ->
-      QualifiedName(
-        external_sentinel,
-        dotted_name(QualifiedName(module:, function:)),
-      )
+    ExternalDeclaration(name:) -> QualifiedName(external_sentinel, name)
     InlineFunctionCall -> QualifiedName(pipe_sentinel, operator_payload)
     LetBoundValueCall -> QualifiedName(closure_sentinel, applied_payload)
     ComputedValueCall -> QualifiedName(apply_sentinel, unknown_payload)
@@ -750,8 +752,7 @@ pub fn call_kind(call: QualifiedName) -> CallKind {
     module if module == field_sentinel -> field_access_kind(call.function)
     module if module == returned_sentinel ->
       returned_operator_kind(call.function)
-    module if module == external_sentinel ->
-      external_declaration_kind(call.function)
+    module if module == external_sentinel -> ExternalDeclaration(call.function)
     module if module == pipe_sentinel -> InlineFunctionCall
     module if module == apply_sentinel -> ComputedValueCall
     module if module == closure_sentinel -> LetBoundValueCall
@@ -966,16 +967,6 @@ fn field_access_kind(payload: String) -> CallKind {
 
 // Split a `<returned>` payload into the producer's module and function at its
 // last dot. A payload with no dot names a producer in the calling module.
-// Split an `<external>` payload back into the declaring module and function. A
-// payload that carries no module is the generic kind: the name is what the
-// description would state, so half of one states nothing.
-fn external_declaration_kind(payload: String) -> CallKind {
-  case annotation.split_qualified_name(payload) {
-    Ok(#(module, function)) -> ExternalDeclaration(module:, function:)
-    Error(Nil) -> UnclassifiedCall
-  }
-}
-
 fn returned_operator_kind(payload: String) -> CallKind {
   case payload, annotation.split_qualified_name(payload) {
     "", _ -> UnclassifiedCall
@@ -1589,43 +1580,22 @@ fn check_annotation(
     // build target. Missing functions are not an error.
     Error(Nil) -> #(#([], []), memo)
     Ok(function_definition) -> {
-      // An `@external` is checked against what declares it, not against a body:
-      // there is none to walk, and the Gleam fallback one may carry is not the
-      // foreign code that runs. Whether that code matches its declaration is the
-      // FFI author's to establish; graded checks the budget against the
-      // declaration, so a `check` line contradicting it is a violation, as is one
-      // over an external nothing declares.
-      let #(explanations, memo) = case is_opaque_external(function_definition) {
-        True -> #(
-          [
-            external_explanation(
-              annotation.function,
-              context,
-              knowledge_base,
-              function_definition,
-            ),
-          ],
+      // The same contributors `why` explains — including the declaration that
+      // stands in for an `@external`'s absent body, so a `check` line
+      // contradicting a declaration is a violation, as is one over an external
+      // nothing declares.
+      let #(explanations, memo) =
+        contributors(
+          function_definition,
+          annotation.params,
+          function_map,
+          context,
+          knowledge_base,
+          registry,
+          module_types,
+          cache,
           memo,
         )
-        False -> {
-          let #(body_effects, memo) =
-            collect_effects(
-              without_returned_closure(function_definition.definition),
-              function_map,
-              context,
-              knowledge_base,
-              set.new(),
-              annotation.params,
-              registry,
-              module_types,
-              dict.new(),
-              cache,
-              [],
-              memo,
-            )
-          #(list.map(body_effects, call_explanation), memo)
-        }
-      }
       // A call is a violation when its effect set is not a subset of the
       // declared budget — i.e. it performs effects the caller didn't allow.
       // Both sides are reduced to their ground normal form first.
