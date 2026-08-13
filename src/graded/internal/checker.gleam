@@ -361,14 +361,43 @@ fn external_explanation(
 ) -> CallExplanation {
   let qualified =
     QualifiedName(module: context.module_path, function: function_name)
-  let resolution = lookup_parts(knowledge_base, qualified, UndeclaredExternal)
+  // A resolved `[Unknown]` is the absence of a declaration however it was
+  // reached: the inference pass records exactly that for an external, and
+  // naming it as the source would credit graded's own guess as an answer. What
+  // declares foreign code is an `external effects` line or a catalog entry, so
+  // anything else grounding to bare `[Unknown]` reports as undeclared.
+  let resolution = case
+    lookup_parts(knowledge_base, qualified, UndeclaredExternal)
+  {
+    resolution if resolution.reason == None ->
+      case is_bare_unknown(resolution.term) {
+        True ->
+          Resolution(
+            term: effect_term.unknown(),
+            reason: Some(UndeclaredExternal),
+            origin: None,
+          )
+        False -> resolution
+      }
+    resolution -> resolution
+  }
   CallExplanation(
-    call: qualified,
+    call: sentinel_name(ExternalDeclaration(
+      module: context.module_path,
+      function: function_name,
+    )),
     span: definition.definition.location,
     actual: effect_term.to_effect_set(resolution.term),
     reason: resolution.reason,
     origin: resolution.origin,
   )
+}
+
+// Whether a term grounds to `[Unknown]` and nothing else — an effect that was
+// never determined, as opposed to one declared alongside real labels.
+fn is_bare_unknown(term: EffectTerm) -> Bool {
+  effect_term.to_effect_set(term)
+  == types.Specific(set.from_list([types.unknown_label]))
 }
 
 // A collected body's contributors, ordered and deduplicated for reporting.
@@ -637,6 +666,8 @@ const closure_sentinel = "<closure>"
 
 const local_sentinel = "<local>"
 
+const external_sentinel = "<external>"
+
 // The sentinel for a kind that carries no name of its own, and the placeholder
 // payloads of the kinds whose identity is the sentinel module alone.
 const unclassified_sentinel = "<call>"
@@ -665,6 +696,11 @@ pub type CallKind {
   // A direct application of a let-bound function that `producer` returned.
   // `producer.module` is `""` for a producer in the calling module.
   ReturnedOperatorCall(producer: QualifiedName)
+  // The `@external` declaration of the function under analysis, not a call in
+  // its body: what an external contributes is what declares it. Carried as a
+  // kind of its own so the prose says the function *is* an external rather
+  // than that it calls one.
+  ExternalDeclaration(module: String, function: String)
   // An application of an inline function value: a pipe target (`x |> fn(f) {
   // .. }`) or an immediately-invoked closure / `case` of functions.
   InlineFunctionCall
@@ -692,6 +728,11 @@ fn sentinel_name(kind: CallKind) -> QualifiedName {
     UnresolvedLocalCall(function:) -> QualifiedName(local_sentinel, function)
     ReturnedOperatorCall(producer:) ->
       QualifiedName(returned_sentinel, dotted_name(producer))
+    ExternalDeclaration(module:, function:) ->
+      QualifiedName(
+        external_sentinel,
+        dotted_name(QualifiedName(module:, function:)),
+      )
     InlineFunctionCall -> QualifiedName(pipe_sentinel, operator_payload)
     LetBoundValueCall -> QualifiedName(closure_sentinel, applied_payload)
     ComputedValueCall -> QualifiedName(apply_sentinel, unknown_payload)
@@ -709,6 +750,8 @@ pub fn call_kind(call: QualifiedName) -> CallKind {
     module if module == field_sentinel -> field_access_kind(call.function)
     module if module == returned_sentinel ->
       returned_operator_kind(call.function)
+    module if module == external_sentinel ->
+      external_declaration_kind(call.function)
     module if module == pipe_sentinel -> InlineFunctionCall
     module if module == apply_sentinel -> ComputedValueCall
     module if module == closure_sentinel -> LetBoundValueCall
@@ -792,6 +835,9 @@ fn plain_action(kind: CallKind) -> String {
       <> "`, which is neither a bound parameter nor a function in this module,"
     ReturnedOperatorCall(producer:) ->
       "calls a function returned by `" <> dotted_name(producer) <> "`"
+    // Not the call's name: the enclosing function *is* this external, and the
+    // line already leads with that function's name.
+    ExternalDeclaration(..) -> "is an external"
     InlineFunctionCall -> "calls an inline function"
     LetBoundValueCall -> "calls a let-bound function value"
     ComputedValueCall -> "calls a computed function value"
@@ -834,6 +880,18 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
           ", whose wired value's effects could not be resolved,"
         UntraceableArgument -> untraceable_argument_clause
         NoKnownEffects | UndeclaredExternal | UntraceableProducer -> ""
+      }
+    // An undeclared external is the one reason worth stating: nothing said what
+    // the foreign code does, which is why the effects stayed unresolved.
+    ExternalDeclaration(..) ->
+      case reason {
+        UndeclaredExternal | NoKnownEffects -> " with no declared effects,"
+        FieldNotAnnotated(..)
+        | ReceiverTypeUnresolved
+        | UntraceableReceiver
+        | UnresolvedFieldValue
+        | UntraceableProducer
+        | UntraceableArgument -> ""
       }
     ReturnedOperatorCall(..) ->
       case reason {
@@ -908,6 +966,16 @@ fn field_access_kind(payload: String) -> CallKind {
 
 // Split a `<returned>` payload into the producer's module and function at its
 // last dot. A payload with no dot names a producer in the calling module.
+// Split an `<external>` payload back into the declaring module and function. A
+// payload that carries no module is the generic kind: the name is what the
+// description would state, so half of one states nothing.
+fn external_declaration_kind(payload: String) -> CallKind {
+  case annotation.split_qualified_name(payload) {
+    Ok(#(module, function)) -> ExternalDeclaration(module:, function:)
+    Error(Nil) -> UnclassifiedCall
+  }
+}
+
 fn returned_operator_kind(payload: String) -> CallKind {
   case payload, annotation.split_qualified_name(payload) {
     "", _ -> UnclassifiedCall
@@ -1521,28 +1589,49 @@ fn check_annotation(
     // build target. Missing functions are not an error.
     Error(Nil) -> #(#([], []), memo)
     Ok(function_definition) -> {
-      let #(body_effects, memo) =
-        collect_effects(
-          without_returned_closure(function_definition.definition),
-          function_map,
-          context,
-          knowledge_base,
-          set.new(),
-          annotation.params,
-          registry,
-          module_types,
-          dict.new(),
-          cache,
-          [],
+      // An `@external` is checked against what declares it, not against a body:
+      // there is none to walk, and the Gleam fallback one may carry is not the
+      // foreign code that runs. Whether that code matches its declaration is the
+      // FFI author's to establish; graded checks the budget against the
+      // declaration, so a `check` line contradicting it is a violation, as is one
+      // over an external nothing declares.
+      let #(explanations, memo) = case is_opaque_external(function_definition) {
+        True -> #(
+          [
+            external_explanation(
+              annotation.function,
+              context,
+              knowledge_base,
+              function_definition,
+            ),
+          ],
           memo,
         )
+        False -> {
+          let #(body_effects, memo) =
+            collect_effects(
+              without_returned_closure(function_definition.definition),
+              function_map,
+              context,
+              knowledge_base,
+              set.new(),
+              annotation.params,
+              registry,
+              module_types,
+              dict.new(),
+              cache,
+              [],
+              memo,
+            )
+          #(list.map(body_effects, call_explanation), memo)
+        }
+      }
       // A call is a violation when its effect set is not a subset of the
       // declared budget — i.e. it performs effects the caller didn't allow.
       // Both sides are reduced to their ground normal form first.
       let declared = effect_term.to_effect_set(annotation.effects)
       let violations =
-        body_effects
-        |> list.map(call_explanation)
+        explanations
         |> list.filter_map(fn(explanation) {
           case types.is_subset(explanation.actual, declared) {
             True -> Error(Nil)
