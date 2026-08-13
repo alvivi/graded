@@ -88,9 +88,15 @@ check provenance_computed_deep.caller : []
 check provenance_external.caller : []
 check why_target.two_bounds(f: [Stdout]) : [Stdout]
 check why_target.two_bounds(g: [Stdout]) : [Stdout]
+// Budgets on the externals themselves, checked against what declares them.
+check external_budget.declared_over_budget : []
+check external_budget.declared_within_budget : [Time]
+check external_budget.undeclared : []
 
 // External effects (third-party / FFI functions graded can't see into).
 external effects external_same_module.now : [Time]
+external effects external_budget.declared_over_budget : [Time]
+external effects external_budget.declared_within_budget : [Time]
 external effects builder_field.read_disk : [Disk]
 external effects builder_chain.disk_read : [Disk]
 external effects builder_shadow.disk_read : [Disk]

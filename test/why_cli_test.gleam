@@ -113,7 +113,7 @@ pub fn an_opaque_external_is_not_explained_as_pure_test() {
   |> lines
   |> should.equal([
     "ffi_external.ffi_op has effects [Unknown]",
-    "  calls ffi_external.ffi_op with unresolved effects [Unknown] (from in-memory inference)",
+    "  is an external with no declared effects, with unresolved effects [Unknown]",
   ])
   why("ffi_external.ffi_with_body")
   |> string.contains("has effects [Unknown]")
@@ -128,23 +128,37 @@ pub fn an_external_declaration_explains_the_external_test() {
   |> lines
   |> should.equal([
     "external_same_module.now has effects [Time]",
-    "  calls external_same_module.now with effects [Time] (from your spec's external declaration)",
+    "  is an external with effects [Time] (from your spec's external declaration)",
   ])
   why("local_wired.opaque_read")
   |> string.contains("has effects []")
   |> should.be_true()
 }
 
-pub fn an_external_agrees_with_its_callers_line_test() {
-  // The same external, explained directly and as a contributor to the function
-  // calling it: one lookup, so one line.
-  let assert Ok(direct) =
-    why("ffi_external.ffi_op")
-    |> lines
-    |> list.find(string.contains(_, "calls"))
+pub fn an_external_agrees_with_the_violation_for_it_test() {
+  // One vocabulary, as for an ordinary call: the clause `check` prints when an
+  // external blows the budget on its own `check` line is the line `why` prints
+  // for that external, phrase for phrase.
+  let assert Ok(results) = graded.run(fixtures)
+  let assert Ok(result) =
+    list.find(results, fn(r) { r.file == fixtures <> "/external_budget.gleam" })
+  let assert Ok(violation) =
+    list.find(result.violations, fn(v) { v.function == "declared_over_budget" })
+  let rendered = checker.format_violation(result.file, violation)
+  let assert [_header, _declaration, line] =
+    why("external_budget.declared_over_budget") |> lines
+  string.contains(rendered, string.trim(line)) |> should.be_true()
+}
+
+pub fn an_external_reads_differently_from_a_call_into_it_test() {
+  // The external's own line states what it *is*; its caller's line states a call
+  // into it. Same effects and same source, different sentence — the caller does
+  // make a call, and the declaration is not one.
+  why("ffi_external.ffi_op")
+  |> string.contains("is an external")
+  |> should.be_true()
   why("ffi_external.run")
-  |> lines
-  |> list.contains(direct)
+  |> string.contains("calls ffi_external.ffi_op")
   |> should.be_true()
 }
 

@@ -360,6 +360,13 @@ foreign implementation may do anything (this holds even when the `@external`
 carries a pure-looking Gleam fallback body). Declare its real effect with an
 `external effects` line to make callers propagate correctly.
 
+A `check` line on the external itself is checked against that declaration, never
+against a body: `check myapp/ffi.now : []` fails against a declared
+`external effects myapp/ffi.now : [Time]`, and fails as `[Unknown]` when nothing
+declares the external. Whether the foreign code matches its declaration is the
+FFI author's to establish — graded checks the budget against what was declared,
+and `graded why myapp/ffi.now` reports the same, as `is an external with …`.
+
 ## Effect labels
 
 Effect labels are plain strings — you can use any name. The bundled catalog uses

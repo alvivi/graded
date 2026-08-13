@@ -207,6 +207,28 @@ pub fn external_same_module_declared_effects_test() {
   v.actual |> should.equal(types.Specific(set.from_list(["Time"])))
 }
 
+pub fn check_line_on_an_external_checks_its_declaration_test() {
+  // A `check` line on the external *itself*. There is no body to check it
+  // against, so the budget is checked against what declares the external: the
+  // spec's `external effects [Time]` exceeds a `[]` budget, and an external
+  // nothing declares carries `[Unknown]`, which exceeds it too — including the
+  // one whose pure-looking Gleam fallback body would otherwise pass it. A budget
+  // that covers the declaration passes.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/external_budget.gleam" })
+  r.violations
+  |> list.map(fn(v) { v.function })
+  |> list.sort(string.compare)
+  |> should.equal(["declared_over_budget", "undeclared"])
+  let assert Ok(declared) =
+    list.find(r.violations, fn(v) { v.function == "declared_over_budget" })
+  declared.actual |> should.equal(types.Specific(set.from_list(["Time"])))
+  let assert Ok(undeclared) =
+    list.find(r.violations, fn(v) { v.function == "undeclared" })
+  undeclared.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
 // Opaque receivers and field bounds
 //
 // Field calls whose receiver has no visible construction site: `type` lines
