@@ -22,11 +22,13 @@ import graded/internal/typeinfo
 import graded/internal/types.{
   type EffectAnnotation, type EffectTerm, type LocalCall, type LookupOrigin,
   type ParamBound, type QualifiedName, type ResolvedCall, type UnknownReason,
-  type Violation, type Warning, EffectAnnotation, Effects, FieldNotAnnotated,
-  NoKnownEffects, ParamBound, QualifiedName, ReceiverTypeUnresolved, TUnion,
-  TVar, TypeLine, UndeclaredExternal, UnmatchedFieldBoundWarning,
-  UnmatchedParamBoundWarning, UnresolvedFieldValue, UntraceableArgument,
-  UntraceableProducer, UntraceableReceiver, UntrackedEffectWarning, Violation,
+  type Violation, type Warning, Catalog, CommittedSpec, DependencySpec,
+  EffectAnnotation, Effects, FieldNotAnnotated, ModuleExternalOrigin,
+  NoKnownEffects, ParamBound, PathDependency, ProjectInferred, QualifiedName,
+  ReceiverTypeUnresolved, TUnion, TVar, TypeLine, UndeclaredExternal,
+  UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning, UnresolvedFieldValue,
+  UntraceableArgument, UntraceableProducer, UntraceableReceiver,
+  UntrackedEffectWarning, UserExternal, Violation,
 }
 
 // Entry points
@@ -383,19 +385,22 @@ fn external_explanation(
   let qualified =
     QualifiedName(module: module_path, function: definition.definition.name)
   let looked_up = lookup_parts(knowledge_base, qualified, UndeclaredExternal)
-  // A resolved `[Unknown]` is the absence of a declaration however it was
-  // reached: the inference pass records exactly that for an external, and
-  // naming it as the source would credit graded's own guess as an answer. What
-  // declares foreign code is an `external effects` line or a catalog entry, so
-  // anything else grounding to bare `[Unknown]` reports as undeclared.
-  let resolution = case looked_up.reason, is_bare_unknown(looked_up.term) {
-    None, True ->
+  // Only a declaration answers for an external, and which entry won says so —
+  // its effect value does not. Anything else the knowledge base holds describes
+  // a body the foreign implementation needn't match, so it leaves the effects
+  // unresolved however concrete it looks.
+  let declared = case looked_up.origin {
+    Some(origin) -> declares_foreign_code(origin)
+    None -> False
+  }
+  let resolution = case declared {
+    True -> looked_up
+    False ->
       Resolution(
         term: effect_term.unknown(),
         reason: Some(UndeclaredExternal),
         origin: None,
       )
-    _, _ -> looked_up
   }
   CallExplanation(
     call: sentinel_name(ExternalDeclaration(dotted_name(qualified))),
@@ -406,10 +411,27 @@ fn external_explanation(
   )
 }
 
-// Whether a term grounds to `[Unknown]` and nothing else — an effect that was
-// never determined, as opposed to one declared alongside real labels.
-fn is_bare_unknown(term: EffectTerm) -> Bool {
-  effect_term.to_effect_set(term) == types.from_labels([types.unknown_label])
+// Whether an origin speaks for code graded cannot see. An `external effects`
+// line, a module-level external and a catalog entry all declare what foreign
+// code does; an `effects` line does not — for an `@external` it is inference
+// over a body the foreign implementation needn't match, so trusting one would
+// pass a budget nothing backs (a function that becomes `@external` leaves
+// exactly such a line behind until the spec is regenerated).
+//
+// Told from the winning entry rather than from its effects: a declaration of
+// `[Unknown]` is still a declaration and still names its source, and an
+// inferred `[]` is not one however concrete it reads.
+fn declares_foreign_code(origin: LookupOrigin) -> Bool {
+  case origin {
+    // A dependency's spec speaks for foreign code as the catalog does, though
+    // neither keys a function of the project module under analysis today.
+    UserExternal
+    | Catalog(_)
+    | ModuleExternalOrigin(_)
+    | DependencySpec(_)
+    | PathDependency(_) -> True
+    CommittedSpec | ProjectInferred | TypeLine(_) -> False
+  }
 }
 
 // A body's contributors, ordered and deduplicated for reporting.

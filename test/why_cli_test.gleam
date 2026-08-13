@@ -150,6 +150,36 @@ pub fn an_external_agrees_with_the_violation_for_it_test() {
   string.contains(rendered, string.trim(line)) |> should.be_true()
 }
 
+pub fn a_committed_effects_line_does_not_explain_an_external_test() {
+  // The spec carries `effects external_budget.stale_inferred : []`, left behind
+  // by a function that became an `@external`. It is inference over a body, not
+  // a statement about foreign code, so it neither answers nor gets credited —
+  // reporting its `[]` would claim the spec declared a purity it never did.
+  why("external_budget.stale_inferred")
+  |> lines
+  |> should.equal([
+    "external_budget.stale_inferred has effects [Unknown]",
+    "declared check external_budget.stale_inferred : []",
+    "  is an external with no declared effects, with unresolved effects [Unknown]",
+  ])
+}
+
+pub fn a_declared_unknown_external_names_its_declaration_test() {
+  // `external effects … : [Unknown]` is a declaration that the effect isn't
+  // known — still a declaration, so the line names it rather than reporting the
+  // external as undeclared. Told from the entry that won, not from its value:
+  // an undeclared external carries the same `[Unknown]` and reads differently.
+  why("external_budget.declared_unknown")
+  |> lines
+  |> should.equal([
+    "external_budget.declared_unknown has effects [Unknown]",
+    "  is an external with unresolved effects [Unknown] (from your spec's external declaration)",
+  ])
+  why("ffi_external.ffi_op")
+  |> string.contains("with no declared effects")
+  |> should.be_true()
+}
+
 pub fn an_external_reads_differently_from_a_call_into_it_test() {
   // The external's own line states what it *is*; its caller's line states a call
   // into it. Same effects and same source, different sentence — the caller does

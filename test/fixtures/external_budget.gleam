@@ -24,3 +24,17 @@ pub fn declared_within_budget() -> Nil
 pub fn undeclared() -> Nil {
   Nil
 }
+
+// An `effects` line the spec still carries from when this was an ordinary Gleam
+// function (see fixtures.graded). Inference over a body is not a statement
+// about foreign code, so it declares nothing and the budget is still checked
+// against the `[Unknown]` an undeclared external carries.
+@target(erlang)
+@external(erlang, "some_ffi_module", "clock")
+pub fn stale_inferred() -> Nil
+
+// Declared `[Unknown]` on purpose — an admission that the effect isn't known,
+// which is still a declaration and still names the line it came from.
+@target(erlang)
+@external(erlang, "some_ffi_module", "clock")
+pub fn declared_unknown() -> Nil

@@ -220,13 +220,31 @@ pub fn check_line_on_an_external_checks_its_declaration_test() {
   r.violations
   |> list.map(fn(v) { v.function })
   |> list.sort(string.compare)
-  |> should.equal(["declared_over_budget", "undeclared"])
+  |> should.equal(["declared_over_budget", "stale_inferred", "undeclared"])
   let assert Ok(declared) =
     list.find(r.violations, fn(v) { v.function == "declared_over_budget" })
   declared.actual |> should.equal(types.Specific(set.from_list(["Time"])))
   let assert Ok(undeclared) =
     list.find(r.violations, fn(v) { v.function == "undeclared" })
   undeclared.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn a_committed_effects_line_does_not_declare_an_external_test() {
+  // A `check` line on an external the spec carries an ordinary `effects` line
+  // for — what a Gleam function that later became an `@external` leaves behind.
+  // Inference over a body says nothing about foreign code, so the line declares
+  // nothing and the budget is checked against `[Unknown]`; trusting its `[]`
+  // would pass a budget no declaration backs.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/external_budget.gleam" })
+  let assert Ok(stale) =
+    list.find(r.violations, fn(v) { v.function == "stale_inferred" })
+  stale.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  stale.reason |> should.equal(Some(types.UndeclaredExternal))
+  // No source is named: the committed line is not the answer, so crediting it
+  // would point at a line that proves nothing.
+  stale.origin |> should.equal(None)
 }
 
 // Opaque receivers and field bounds
