@@ -5780,6 +5780,28 @@ pub fn run() -> Nil {
 // would weigh, budget or no budget. What it reports about a call has to be what
 // a violation for that same call reports.
 
+// One block per bound set, with the arguments that vary between these tests.
+// girard contributes no types here: the fixtures resolve at the syntax level.
+fn explain_blocks(
+  module: glance.Module,
+  function: String,
+  bounds: List(List(types.ParamBound)),
+  knowledge_base: effects.KnowledgeBase,
+  registry: signatures.SignatureRegistry,
+) -> Result(List(List(checker.CallExplanation)), Nil) {
+  checker.explain(
+    module,
+    "",
+    function,
+    bounds,
+    knowledge_base,
+    registry,
+    dict.new(),
+    dict.new(),
+  )
+}
+
+// The common case: one bound set, the empty knowledge base, one block back.
 fn explain_source(
   source: String,
   function: String,
@@ -5787,15 +5809,12 @@ fn explain_source(
 ) -> List(checker.CallExplanation) {
   let assert Ok(module) = glance.module(source)
   let assert Ok([explanations]) =
-    checker.explain(
+    explain_blocks(
       module,
-      "",
       function,
       [bounds],
       knowledge_base(),
       signatures.from_glance_module("app", module),
-      dict.new(),
-      dict.new(),
     )
   explanations
 }
@@ -5830,15 +5849,12 @@ pub fn explain_shares_one_analysis_across_bound_sets_test() {
 }"
   let assert Ok(module) = glance.module(source)
   let assert Ok([bound_f, bound_g]) =
-    checker.explain(
+    explain_blocks(
       module,
-      "",
       "run",
       [[ParamBound("f", stdout_term())], [ParamBound("g", stdout_term())]],
       knowledge_base(),
       signatures.from_glance_module("app", module),
-      dict.new(),
-      dict.new(),
     )
   bound_f
   |> list.map(fn(explanation) { explanation.actual })
@@ -5927,16 +5943,7 @@ pub fn explain_bounds_resolve_a_parameter_call_test() {
 pub fn explain_misses_an_unknown_function_test() {
   let source = "pub fn run() -> Nil { Nil }"
   let assert Ok(module) = glance.module(source)
-  checker.explain(
-    module,
-    "",
-    "absent",
-    [[]],
-    knowledge_base(),
-    signatures.empty(),
-    dict.new(),
-    dict.new(),
-  )
+  explain_blocks(module, "absent", [[]], knowledge_base(), signatures.empty())
   |> should.equal(Error(Nil))
 }
 
@@ -5963,16 +5970,7 @@ pub fn new() {
     )
   let assert [violation] = violations
   let assert Ok([explanations]) =
-    checker.explain(
-      module,
-      "",
-      "new",
-      [[]],
-      polymorphic_kb(),
-      signatures.empty(),
-      dict.new(),
-      dict.new(),
-    )
+    explain_blocks(module, "new", [[]], polymorphic_kb(), signatures.empty())
   let assert Ok(explanation) =
     list.find(explanations, fn(e) { e.call == violation.call })
   explanation.reason |> should.equal(violation.reason)

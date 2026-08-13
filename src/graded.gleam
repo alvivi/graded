@@ -135,38 +135,26 @@ pub fn main() -> Nil {
       })
 
     ["infer", ..rest] ->
-      case cli.parse_infer_args(rest) {
-        Error(error) -> usage_error(cli.format_argument_error(error))
-        Ok(#(directory, mode)) ->
-          case run_infer_command(mode, directory) {
-            Ok(message) -> io.println(message)
-            Error(error) -> fail(error)
-          }
-      }
+      report(cli.parse_infer_args(rest), fn(arguments) {
+        let #(directory, mode) = arguments
+        run_infer_command(mode, directory)
+      })
 
     ["check", ..rest] -> with_directory(rest, run_check)
 
     ["pack", ..rest] -> with_directory(rest, pack_and_report)
 
     ["effect", ..rest] ->
-      case cli.parse_effect_args(rest) {
-        Error(error) -> usage_error(cli.format_argument_error(error))
-        Ok(#(name, directory, format)) ->
-          case run_effect_formatted(directory, name, format) {
-            Ok(output) -> io.println(output)
-            Error(error) -> fail(error)
-          }
-      }
+      report(cli.parse_effect_args(rest), fn(arguments) {
+        let #(name, directory, format) = arguments
+        run_effect_formatted(directory, name, format)
+      })
 
     ["why", ..rest] ->
-      case cli.parse_why_args(rest) {
-        Error(error) -> usage_error(cli.format_argument_error(error))
-        Ok(#(name, directory)) ->
-          case run_why(directory, name) {
-            Ok(output) -> io.println(output)
-            Error(error) -> fail(error)
-          }
-      }
+      report(cli.parse_why_args(rest), fn(arguments) {
+        let #(name, directory) = arguments
+        run_why(directory, name)
+      })
 
     [first] -> dispatch_unknown(first)
 
@@ -190,6 +178,23 @@ fn pack_and_report(directory: String) -> Nil {
 fn fail(error: GradedError) -> Nil {
   io.println_error("graded: error: " <> format_error(error))
   halt(1)
+}
+
+// Run `command` on decoded arguments and print what it returns, or print the
+// usage error the decoder rejected them with: the shared path for every command
+// whose output is one string — infer/effect/why.
+fn report(
+  arguments: Result(a, cli.ArgumentError),
+  command: fn(a) -> Result(String, GradedError),
+) -> Nil {
+  case arguments {
+    Error(error) -> usage_error(cli.format_argument_error(error))
+    Ok(arguments) ->
+      case command(arguments) {
+        Ok(output) -> io.println(output)
+        Error(error) -> fail(error)
+      }
+  }
 }
 
 // Run `command` with the optional directory argument shared by
