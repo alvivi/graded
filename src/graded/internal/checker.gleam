@@ -120,11 +120,23 @@ pub fn infer_with_returns(
       definition.definition.publicity == glance.Public
     })
 
+  // The value channels describe what a function *returns*, which for an
+  // `@external` only its foreign implementation decides — a summary lifted from
+  // a fallback body would state something no caller can rely on, and there is no
+  // declaration to union it with as the effects channel unions one. So foreign
+  // names produce neither a returned operator nor provenance, and a consumer of
+  // one resolves `[Unknown]`. This is the gate that stops such a line being
+  // written into the spec at all.
+  let value_channel_functions =
+    list.filter(public_functions, fn(definition) {
+      !is_opaque_external(definition)
+    })
+
   // Returned operators of public functions that return a function — recorded so
   // downstream consumers resolve `let h = producer(); with(h)`. One memo table
   // is threaded through this pass and reused for the inference pass below.
   let #(memo, returned_pairs) =
-    list.map_fold(public_functions, new_memo(), fn(memo, definition) {
+    list.map_fold(value_channel_functions, new_memo(), fn(memo, definition) {
       let #(returned, memo) =
         compute_returned_operator(
           definition.definition,
@@ -151,7 +163,7 @@ pub fn infer_with_returns(
   // module's computed receiver resolves the callee's return path. Opaque
   // provenance is dropped: a lookup miss is treated as opaque anyway.
   let provenance =
-    public_functions
+    value_channel_functions
     |> list.filter_map(fn(definition) {
       case extract.return_provenance(definition.definition, context) {
         types.Opaque -> Error(Nil)
@@ -1454,6 +1466,22 @@ type CollectedCall {
   CollectedCall(call: ResolvedCall, resolution: Resolution)
 }
 
+// The same-module definition of `function`, or `Error(Nil)` when this module
+// defines no such function or defines it `@external`. The value channels resolve
+// through this rather than the raw function map: a fallback body describes
+// neither what the foreign implementation returns nor how, so a same-module
+// consumer of one is charged `[Unknown]` exactly as a cross-module consumer is.
+fn local_native_definition(
+  function_map: dict.Dict(String, Definition(Function)),
+  function: String,
+) -> Result(Definition(Function), Nil) {
+  use definition <- result.try(dict.get(function_map, function))
+  case is_opaque_external(definition) {
+    True -> Error(Nil)
+    False -> Ok(definition)
+  }
+}
+
 // A collected call whose kind states the whole story: the sentinel names what
 // happened, so there is nothing to add.
 fn plain_call(call: ResolvedCall, term: EffectTerm) -> CollectedCall {
@@ -1622,20 +1650,21 @@ fn recursion_edges(
 // run and the foreign implementation may differ from it, so trusting it would be
 // unsound.
 fn is_opaque_external(definition: Definition(Function)) -> Bool {
-  list.any(definition.attributes, fn(attribute) { attribute.name == "external" })
+  extract.is_foreign_definition(definition)
 }
 
 // The module's functions whose implementation is foreign code, qualified by
-// `module_path` and each paired with whether the package exports it. What a
-// knowledge base records so that every consumer — a caller's resolution,
+// `module_path` and each paired with what a knowledge base records about it.
+// What a knowledge base holds so that every consumer — a caller's resolution,
 // `check`, `why`, `effect` — reads one of these names as only its declaration
 // describes it. The visibility rides along because `graded effect` answers for
 // the public API alone, while the others resolve a private `@external` exactly
-// as they resolve a public one.
+// as they resolve a public one; whether the fallback body runs rides along for
+// the consumers that never walk this source, a dependency's away.
 pub fn foreign_functions(
   module: Module,
   module_path: String,
-) -> dict.Dict(QualifiedName, types.Visibility) {
+) -> dict.Dict(QualifiedName, types.ForeignFunction) {
   module.functions
   |> list.filter(is_opaque_external)
   |> list.map(fn(definition) {
@@ -1645,7 +1674,13 @@ pub fn foreign_functions(
       glance.Public -> types.Exported
       glance.Private -> types.Internal
     }
-    #(name, visibility)
+    #(
+      name,
+      types.ForeignFunction(
+        visibility:,
+        runs_fallback_body: runs_fallback_body(definition),
+      ),
+    )
   })
   |> dict.from_list()
 }
@@ -3315,7 +3350,7 @@ fn callee_provenance(
 ) -> Result(types.ReturnProvenance, Nil) {
   case callee.module {
     "" ->
-      case dict.get(function_map, callee.function) {
+      case local_native_definition(function_map, callee.function) {
         Ok(definition) ->
           Ok(extract.return_provenance(definition.definition, context))
         Error(Nil) -> Error(Nil)
@@ -3798,7 +3833,7 @@ fn resolve_returned_operator(
     "" ->
       case
         set.contains(visited, callee.function),
-        dict.get(function_map, callee.function)
+        local_native_definition(function_map, callee.function)
       {
         False, Ok(definition) -> {
           let #(result, memo) =

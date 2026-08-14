@@ -419,6 +419,352 @@ fn sink() -> Nil
   support.cleanup(root)
 }
 
+// Foreign code on the value channels
+//
+// A declaration says what calling foreign code costs. It says nothing about the
+// value that code hands back, and there is no declaring form that does — so the
+// operator an FFI producer returns, the provenance of the record it builds, and
+// the fields its factory and update-builder shapes wire are all [Unknown],
+// however precise the fallback body beside them reads.
+
+pub fn foreign_value_channels_are_opaque_test() {
+  // Five channels, each paired in the fixture with the same shape written as
+  // ordinary Gleam. Only the foreign half exceeds the budget the pair shares —
+  // the rule refuses foreign values, not values.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/foreign_values.gleam" })
+  r.violations
+  |> list.map(fn(v) { v.function })
+  |> list.sort(string.compare)
+  |> should.equal([
+    "calls_built_field", "calls_partial_operator", "calls_returned_operator",
+    "calls_updated_field", "calls_via_provenance",
+  ])
+  list.each(r.violations, fn(v) {
+    v.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  })
+}
+
+pub fn a_cross_module_foreign_producer_is_opaque_test() {
+  // The same channels one module away, where each reads from the knowledge base
+  // rather than from the module's own AST — including a committed `returns` line
+  // for the external, which is what a function that *became* `@external` leaves
+  // behind until the next `infer`.
+  let root = "build/foreign_values_cross_module"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.calls_returned_operator : [Disk]
+check app.calls_built_field : [Disk]
+check app.calls_native_built_field : [Disk]
+check app.calls_via_provenance : [Disk]
+external effects ffi.disk_read : [Disk]
+external effects ffi.make : []
+external effects ffi.builds : []
+returns ffi.make : []
+",
+    ),
+    #(
+      "ffi.gleam",
+      "pub type Handler {
+  Handler(run: fn() -> Nil, name: String)
+}
+
+@external(erlang, \"ffi_module\", \"disk_read\")
+pub fn disk_read() -> Nil
+
+@external(erlang, \"ffi_module\", \"make\")
+pub fn make() -> fn() -> Nil {
+  fn() { disk_read() }
+}
+
+@external(erlang, \"ffi_module\", \"builds\")
+pub fn builds(run: fn() -> Nil) -> Handler {
+  Handler(run: run, name: \"ffi\")
+}
+
+pub fn native_builds(run: fn() -> Nil) -> Handler {
+  Handler(run: run, name: \"native\")
+}
+
+pub fn inner(handler: Handler) -> Nil {
+  handler.run()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+
+pub fn calls_returned_operator() -> Nil {
+  let handle = ffi.make()
+  handle()
+}
+
+pub fn calls_built_field() -> Nil {
+  let handler = ffi.builds(fn() { ffi.disk_read() })
+  handler.run()
+}
+
+pub fn calls_native_built_field() -> Nil {
+  let handler = ffi.native_builds(fn() { ffi.disk_read() })
+  handler.run()
+}
+
+pub fn calls_via_provenance() -> Nil {
+  ffi.inner(ffi.builds(fn() { ffi.disk_read() }))
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  r.violations
+  |> list.map(fn(v) { v.function })
+  |> list.sort(string.compare)
+  |> should.equal([
+    "calls_built_field", "calls_returned_operator", "calls_via_provenance",
+  ])
+  support.cleanup(root)
+}
+
+pub fn a_dependency_returns_line_for_its_own_external_is_refused_test() {
+  // A dependency published before this rule existed ships a `returns` line for
+  // its own `@external`. The consumer's evidence is the dependency's source,
+  // scanned under `build/packages`, so the line stops being believed the moment
+  // the consumer upgrades graded — no republish needed.
+  let root = "build/foreign_values_dep_returns"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "check app.wrapper : []\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "external effects dep/ffi.make : []\nreturns dep/ffi.make : []\n",
+    ),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "@target(erlang)
+@external(erlang, \"dep_ffi\", \"make\")
+pub fn make() -> fn() -> Nil {
+  fn() { Nil }
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+pub fn wrapper() -> Nil {
+  let handle = ffi.make()
+  handle()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  support.cleanup(root)
+}
+
+pub fn a_dependency_effects_line_for_its_own_external_is_refused_test() {
+  // The effects channel of the same hole: a dependency's stale `effects` line
+  // for a function its own source declares `@external`. An ordinary dependency
+  // function's `effects` line is untouched, so the rule is scoped to foreign
+  // code rather than to dependencies.
+  let root = "build/foreign_values_dep_effects"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "check app.wrapper : []\ncheck app.plain_wrapper : []\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "effects dep/ffi.now : []\neffects dep/ffi.plain : []\n",
+    ),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "@target(erlang)
+@external(erlang, \"dep_ffi\", \"now\")
+pub fn now() -> Nil
+
+pub fn plain() -> Nil {
+  Nil
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+pub fn wrapper() -> Nil {
+  ffi.now()
+}
+
+pub fn plain_wrapper() -> Nil {
+  ffi.plain()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("wrapper")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  support.cleanup(root)
+}
+
+pub fn a_declared_dependency_external_with_a_running_fallback_widens_test() {
+  // The union a consumer cannot compute. On erlang the dependency's fallback
+  // body is what runs, and no consumer walks a dependency's bodies — so the
+  // declaration is widened by the [Unknown] that body stands for, rather than
+  // read as the whole story.
+  let root = "build/foreign_values_dep_fallback"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "check app.wrapper : [Time]\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "external effects dep/ffi.run : [Time]\n",
+    ),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "@external(javascript, \"dep_ffi\", \"run\")
+pub fn run() -> Nil {
+  Nil
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+pub fn wrapper() -> Nil {
+  ffi.run()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Time", "Unknown"])))
+  support.cleanup(root)
+}
+
+pub fn a_path_dependency_spec_is_sanitized_against_its_source_test() {
+  // A committed path dependency, whose spec is loaded through a different fold
+  // than an installed package's. Its source sits at the declared `path`, so the
+  // same evidence is in hand and the same lines are refused.
+  let root = "build/foreign_values_path_dep"
+  support.write_fixture(root, [
+    #(
+      "proj/gleam.toml",
+      "name = \"proj\"\n\n[dependencies]\npdep = { path = \"../pdep\" }\n",
+    ),
+    #("proj/proj.graded", "check app.wrapper : []\n"),
+    #(
+      "proj/src/app.gleam",
+      "import pdep/ffi
+
+pub fn wrapper() -> Nil {
+  let handle = ffi.make()
+  handle()
+}
+",
+    ),
+    #("pdep/gleam.toml", "name = \"pdep\"\n"),
+    #(
+      "pdep/pdep.graded",
+      "effects pdep/ffi.make : []\nreturns pdep/ffi.make : []\n",
+    ),
+    #(
+      "pdep/src/pdep/ffi.gleam",
+      "@target(erlang)
+@external(erlang, \"pdep_ffi\", \"make\")
+pub fn make() -> fn() -> Nil {
+  fn() { Nil }
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root <> "/proj")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/proj/src/app.gleam" })
+  { r.violations != [] } |> should.be_true()
+  list.each(r.violations, fn(v) {
+    v.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  })
+  support.cleanup(root)
+}
+
+pub fn a_spec_less_path_dependency_cannot_inherit_a_stale_operator_test() {
+  // Why the dependency half of the rule is attached before path-dependency
+  // inference rather than after: a spec-less path dep is inferred against the
+  // knowledge base, so a wrapper of an installed dependency's stale returned
+  // operator would otherwise be inferred pure and folded in at that strength,
+  // where no later gate can reach it.
+  let root = "build/foreign_values_path_dep_order"
+  support.write_fixture(root, [
+    #(
+      "proj/gleam.toml",
+      "name = \"proj\"\n\n[dependencies]\npdep = { path = \"../pdep\" }\n",
+    ),
+    #("proj/proj.graded", "check app.wrapper : []\n"),
+    #(
+      "proj/build/packages/dep/dep.graded",
+      "external effects dep/ffi.make : []\nreturns dep/ffi.make : []\n",
+    ),
+    #(
+      "proj/build/packages/dep/src/dep/ffi.gleam",
+      "@target(erlang)
+@external(erlang, \"dep_ffi\", \"make\")
+pub fn make() -> fn() -> Nil {
+  fn() { Nil }
+}
+",
+    ),
+    #(
+      "proj/src/app.gleam",
+      "import pdep/wrap
+
+pub fn wrapper() -> Nil {
+  wrap.run()
+}
+",
+    ),
+    #("pdep/gleam.toml", "name = \"pdep\"\n"),
+    #(
+      "pdep/src/pdep/wrap.gleam",
+      "import dep/ffi
+
+pub fn run() -> Nil {
+  let handle = ffi.make()
+  handle()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root <> "/proj")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/proj/src/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  support.cleanup(root)
+}
+
 pub fn one_helper_called_twice_is_reported_once_test() {
   // Two calls into one helper collect that helper's single site twice, and both
   // copies say the same thing. `why` prints one line for it, so `check` reports

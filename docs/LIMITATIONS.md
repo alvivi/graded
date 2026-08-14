@@ -343,6 +343,21 @@ For common third-party packages, the [bundled catalog](./REFERENCE.md#effect-cat
 already supplies these declarations, so you only need `external effects` for your
 own FFI and for packages the catalog doesn't cover.
 
+An `external effects` line covers the *call*, and there is no form that covers
+the **value** foreign code returns. A closure an FFI producer hands back, the
+record it builds, and the fields either wires stay `[Unknown]` at every use —
+declared or not, fallback body or not — because nothing states what the foreign
+implementation returns:
+
+```gleam
+@external(erlang, "my_ffi", "make_client")
+pub fn make_client() -> fn(Request) -> Response
+```
+
+**How to avoid it** — wrap the producer in ordinary Gleam, so the value graded
+resolves is one it can see built, or annotate the *field* the returned function
+lands in with a `type` line.
+
 ## 6. A returned-operator summary written by an older graded
 
 A `returns` line records the effect operator a producer returns, e.g.

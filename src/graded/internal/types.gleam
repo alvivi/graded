@@ -329,6 +329,17 @@ pub type Visibility {
   Internal
 }
 
+// What a knowledge base records about one `@external` it has seen the source
+// of: whether the package exports it, and whether its Gleam fallback body is
+// code that runs on some target the function is compiled for. Both travel with
+// the name because both decide an answer no other entry can supply — the
+// visibility decides whether `graded effect` speaks for it, and a running
+// fallback widens a declaration downstream, where the body itself is never
+// walked.
+pub type ForeignFunction {
+  ForeignFunction(visibility: Visibility, runs_fallback_body: Bool)
+}
+
 // Whether an external targets a whole module or a specific function.
 pub type ExternalTarget {
   // `external effects gleam/list : []` — the entire module is pure.

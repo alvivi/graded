@@ -627,7 +627,7 @@ pub fn a_dependency_spec_entry_names_its_package_test() {
       "effects dep.run : [Time]\n",
     )
 
-  effects.load_knowledge_base(packages, "missing_manifest.toml")
+  effects.load_knowledge_base(packages, "missing_manifest.toml", dict.new())
   |> origin_of(QualifiedName("dep", "run"))
   |> should.equal(option.Some(types.DependencySpec("dep")))
 
@@ -648,7 +648,11 @@ pub fn a_catalog_entry_names_its_package_test() {
       "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
     )
 
-  effects.load_knowledge_base(root <> "/packages", root <> "/manifest.toml")
+  effects.load_knowledge_base(
+    root <> "/packages",
+    root <> "/manifest.toml",
+    dict.new(),
+  )
   |> origin_of(QualifiedName("gleam/io", "println"))
   |> should.equal(option.Some(types.Catalog("gleam_stdlib")))
 
@@ -675,7 +679,7 @@ pub fn a_dependency_spec_overriding_the_catalog_reports_both_test() {
       "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
     )
 
-  effects.load_knowledge_base(packages, root <> "/manifest.toml")
+  effects.load_knowledge_base(packages, root <> "/manifest.toml", dict.new())
   |> entry_of(QualifiedName("gleam/io", "println"))
   |> should.equal(
     Ok(#(
@@ -752,6 +756,7 @@ fn installed_dep(
     effects.load_knowledge_base(
       root <> "/packages",
       root <> "/missing_manifest.toml",
+      dict.new(),
     )
   cleanup(root)
   kb
@@ -848,7 +853,11 @@ pub fn a_dependency_external_beats_the_catalog_test() {
     ),
   ])
 
-  effects.load_knowledge_base(root <> "/packages", root <> "/manifest.toml")
+  effects.load_knowledge_base(
+    root <> "/packages",
+    root <> "/manifest.toml",
+    dict.new(),
+  )
   |> entry_of(QualifiedName("gleam/io", "println"))
   |> should.equal(
     Ok(#(
@@ -1177,7 +1186,8 @@ pub fn load_knowledge_base_loads_dependency_type_fields_test() {
       "type dep/repo.Repo.find : [Storage]\n",
     )
 
-  let kb = effects.load_knowledge_base(packages, "missing_manifest.toml")
+  let kb =
+    effects.load_knowledge_base(packages, "missing_manifest.toml", dict.new())
   let assert Ok(field) =
     effects.lookup_type_field(kb, "dep/repo", "Repo", "find")
   effect_term.to_effect_set(field.effects)
@@ -1243,7 +1253,8 @@ pub fn dependency_check_line_bounds_stay_out_of_the_knowledge_base_test() {
       "check dep.run(f: [Stdout]) : []\neffects dep.run : [Time]\n",
     )
 
-  let kb = effects.load_knowledge_base(packages, "missing_manifest.toml")
+  let kb =
+    effects.load_knowledge_base(packages, "missing_manifest.toml", dict.new())
   effects.lookup_param_bounds(kb, QualifiedName("dep", "run"))
   |> should.equal([])
   effects.declared_effects(kb, QualifiedName("dep", "run"))
@@ -1276,5 +1287,174 @@ pub fn catalog_directory_anchored_on_install_location_test() {
   |> should.equal(Ok(True))
   let assert Ok(files) = simplifile.get_files(directory)
   list.any(files, string.ends_with(_, ".graded"))
+  |> should.be_true()
+}
+
+// Foreign code a dependency ships
+//
+// A dependency's spec is as capable of carrying a stale line for its own
+// `@external` as this package's spec is for its own — and the consumer's
+// evidence for which of its functions are foreign is the dependency's source,
+// not its spec. These pin what survives the sanitizing that runs as each spec
+// loads: a declaration does, inference over a fallback body does not, and a
+// dropped entry uncovers whatever tier the merges would otherwise have buried.
+
+// A `build/packages`-shaped tree holding one package's spec, loaded with
+// `foreign` standing in for what a scan of that package's source found.
+fn installed_dep_over_source(
+  root: String,
+  package: String,
+  source: String,
+  manifest: String,
+  foreign: List(#(QualifiedName, types.ForeignFunction)),
+) -> effects.KnowledgeBase {
+  write_fixture(root, [
+    #(dep_spec_path(package), source),
+    #("manifest.toml", manifest),
+  ])
+  let kb =
+    effects.load_knowledge_base(
+      root <> "/packages",
+      root <> "/manifest.toml",
+      dict.from_list(foreign),
+    )
+  cleanup(root)
+  kb
+}
+
+fn exported_foreign(runs_fallback_body: Bool) -> types.ForeignFunction {
+  types.ForeignFunction(
+    visibility: types.Exported,
+    runs_fallback_body: runs_fallback_body,
+  )
+}
+
+pub fn a_dependency_effects_line_for_its_own_external_is_dropped_test() {
+  // The dep's source declares `dep/ffi.now` `@external`, so its shipped
+  // `effects` line is inference over a fallback body its FFI needn't match.
+  // Nothing else keys the name, so it resolves to [Unknown].
+  installed_dep_over_source(
+    "build/eff_dep_stale_external",
+    "dep",
+    "effects dep/ffi.now : []\n",
+    "",
+    [#(QualifiedName("dep/ffi", "now"), exported_foreign(False))],
+  )
+  |> entry_of(QualifiedName("dep/ffi", "now"))
+  |> should.equal(Error(Nil))
+}
+
+pub fn a_dependency_external_line_for_its_own_external_answers_test() {
+  // The declaring form of the same line still answers: what the rule refuses is
+  // inference over a body, not the dependency author's declaration.
+  installed_dep_over_source(
+    "build/eff_dep_declared_external",
+    "dep",
+    "external effects dep/ffi.now : [Time]\n",
+    "",
+    [#(QualifiedName("dep/ffi", "now"), exported_foreign(False))],
+  )
+  |> entry_of(QualifiedName("dep/ffi", "now"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Time"])), types.DependencySpec("dep"))),
+  )
+}
+
+pub fn a_dependency_effects_line_on_an_ordinary_function_answers_test() {
+  // The rule is scoped to the dep's foreign names. An `effects` line for an
+  // ordinary dep function is inference over a body every caller runs, and
+  // answers exactly as before.
+  installed_dep_over_source(
+    "build/eff_dep_ordinary",
+    "dep",
+    "effects dep/ffi.now : [Time]\neffects dep/ffi.plain : [Disk]\n",
+    "",
+    [#(QualifiedName("dep/ffi", "now"), exported_foreign(False))],
+  )
+  |> entry_of(QualifiedName("dep/ffi", "plain"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Disk"])), types.DependencySpec("dep"))),
+  )
+}
+
+pub fn a_stale_dependency_effects_line_does_not_bury_the_catalog_test() {
+  // The reason the sanitizing runs as the spec loads rather than at lookup: the
+  // dependency tier is merged *over* the catalog, so refusing the stale line
+  // afterwards would answer [Unknown] with the catalog's declaration of the same
+  // name sitting underneath it, unreachable.
+  installed_dep_over_source(
+    "build/eff_dep_over_catalog",
+    "gleam_stdlib",
+    "effects gleam/io.println : [Shipped]\n",
+    "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
+    [#(QualifiedName("gleam/io", "println"), exported_foreign(False))],
+  )
+  |> entry_of(QualifiedName("gleam/io", "println"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Stdout"])), types.Catalog("gleam_stdlib"))),
+  )
+}
+
+pub fn a_dropped_dependency_effects_line_takes_its_bounds_with_it_test() {
+  // Terms and bounds are merged in two independent passes, so dropping a term
+  // without its bounds would pair the catalog's term with the dependency's
+  // bounds — a budget answering to a variable the winning term never mentions.
+  let kb =
+    installed_dep_over_source(
+      "build/eff_dep_bounds_atomic",
+      "gleam_stdlib",
+      "effects gleam/io.println(cb: [cb]) : [cb]\n",
+      "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
+      [#(QualifiedName("gleam/io", "println"), exported_foreign(False))],
+    )
+  kb
+  |> entry_of(QualifiedName("gleam/io", "println"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Stdout"])), types.Catalog("gleam_stdlib"))),
+  )
+  effects.lookup_param_bounds(kb, QualifiedName("gleam/io", "println"))
+  |> should.equal([])
+}
+
+pub fn a_declared_dependency_external_with_a_running_fallback_is_widened_test() {
+  // Where the source is walked, a declaration is unioned with the fallback body
+  // that runs beside it. A consumer never walks a dependency's bodies, so the
+  // union has no second operand there: [Unknown] stands in for the body that
+  // ran, and the declaration alone does not read as the whole story.
+  installed_dep_over_source(
+    "build/eff_dep_partial_fallback",
+    "dep",
+    "external effects dep/ffi.run : [Time]\n",
+    "",
+    [#(QualifiedName("dep/ffi", "run"), exported_foreign(True))],
+  )
+  |> entry_of(QualifiedName("dep/ffi", "run"))
+  |> should.equal(
+    Ok(#(
+      Specific(set.from_list(["Time", "Unknown"])),
+      types.DependencySpec("dep"),
+    )),
+  )
+}
+
+pub fn a_dependency_returns_line_for_its_own_external_is_refused_test() {
+  // The value channel, one package away. Nothing declares the operator an FFI
+  // producer returns, so a shipped `returns` line for one describes a fallback
+  // body the foreign implementation needn't match — refused whether or not the
+  // call itself is declared.
+  let kb =
+    installed_dep_over_source(
+      "build/eff_dep_returns",
+      "dep",
+      "external effects dep/ffi.make : []\nreturns dep/ffi.make : []\nreturns dep/ffi.plain : []\n",
+      "",
+      [#(QualifiedName("dep/ffi", "make"), exported_foreign(False))],
+    )
+  effects.lookup_returned_operator(kb, QualifiedName("dep/ffi", "make"))
+  |> result.is_ok
+  |> should.be_false()
+  // An ordinary dep producer's summary still answers.
+  effects.lookup_returned_operator(kb, QualifiedName("dep/ffi", "plain"))
+  |> result.is_ok
   |> should.be_true()
 }

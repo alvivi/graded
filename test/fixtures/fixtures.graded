@@ -100,6 +100,19 @@ check external_budget.wrapper : []
 // than called: as a callback, and wired into a record field.
 check external_budget.passes_external_as_callback : []
 check external_budget.calls_wired_external : []
+// The value channels of foreign code: the operator it returns, the provenance of
+// what it builds, and the fields its factory and update-builder shapes wire. The
+// budget each pair shares is what the ordinary twin costs, so the foreign half
+// exceeds it only by resolving to [Unknown].
+check foreign_values.calls_returned_operator : [Disk]
+check foreign_values.calls_partial_operator : [Disk]
+check foreign_values.calls_native_operator : [Disk]
+check foreign_values.calls_built_field : [Disk]
+check foreign_values.calls_native_built_field : [Disk]
+check foreign_values.calls_updated_field : [Disk]
+check foreign_values.calls_native_updated_field : [Disk]
+check foreign_values.calls_via_provenance : [Disk]
+check foreign_values.calls_native_via_provenance : [Disk]
 
 // External effects (third-party / FFI functions graded can't see into).
 external effects external_same_module.now : [Time]
@@ -112,6 +125,13 @@ external effects builder_shadow.disk_read : [Disk]
 external effects local_wired.read_disk : [Disk]
 external effects local_wired.opaque_read : []
 external effects shadow_field.split : []
+external effects foreign_values.disk_read : [Disk]
+// Declared, and still refused on every value channel: what a declaration says
+// about calling a function says nothing about the value it returns.
+external effects foreign_values.returns_operator : []
+external effects foreign_values.partial_returns_operator : []
+external effects foreign_values.builds : []
+external effects foreign_values.with_run : []
 // A module-level external: every function under `fake_clock` resolves to
 // [Time], including names no fixture module defines.
 external effects fake_clock : [Time]

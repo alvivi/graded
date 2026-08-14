@@ -283,3 +283,60 @@ fn changed_lines(preview: String) -> List(String) {
     string.starts_with(line, "- ") || string.starts_with(line, "+ ")
   })
 }
+
+// Foreign producers and the spec `infer` writes
+//
+// A `returns` line describes the operator a producer hands back. For an
+// `@external` no such line can be true — only the foreign implementation
+// decides what it returns — so `infer` writes none, and removes one a function
+// that has since become `@external` left behind.
+
+pub fn infer_writes_no_returns_line_for_an_external_test() {
+  let root = "build/infer_external_returns"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.gleam",
+      "@target(erlang)
+@external(erlang, \"proj_ffi\", \"make\")
+pub fn make() -> fn() -> Nil {
+  fn() { Nil }
+}
+
+pub fn native_make() -> fn() -> Nil {
+  fn() { Nil }
+}
+",
+    ),
+  ])
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+
+  string.contains(written, "returns proj.make") |> should.be_false()
+  // The ordinary producer beside it still gets one, so what is refused is the
+  // foreign half rather than the channel.
+  string.contains(written, "returns proj.native_make") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn infer_removes_a_returns_line_a_new_external_left_behind_test() {
+  let root = "build/infer_external_returns_stale"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "returns proj.make : []\n"),
+    #(
+      "proj.gleam",
+      "@target(erlang)
+@external(erlang, \"proj_ffi\", \"make\")
+pub fn make() -> fn() -> Nil {
+  fn() { Nil }
+}
+",
+    ),
+  ])
+  let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
+  changed_lines(preview)
+  |> list.contains("- returns proj.make : []")
+  |> should.be_true()
+  support.cleanup(root)
+}
