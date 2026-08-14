@@ -393,7 +393,9 @@ fn contributors(
 // An `@external` attribute makes a function foreign whatever the knowledge base
 // holds — an undeclared one is `[Unknown]`, not the `[]` a stale `effects` line
 // claims. A function without one is foreign only where a declaration covers it,
-// which today is the `external effects <module>` line a project module can carry.
+// which for a project module is the module-level `external effects <module>`
+// line: the per-function form naming a Gleam-bodied function of this package
+// declares nothing and never reaches the base.
 fn declaration_explanation(
   module_path: String,
   knowledge_base: KnowledgeBase,
@@ -1885,13 +1887,21 @@ fn check_annotation(
   }
 }
 
+// A warning quotes an effect, so it goes through the boundary that decides what
+// an effect *is* — `lookup_declared`, not the raw map. Otherwise a reference to
+// an `@external` a stale `effects` line names would be reported as carrying that
+// line's effects, which is the one thing no caller of the same name is charged.
+//
+// Held to `Unknown` meaning silence, as it already was: an unresolved reference
+// warns about nothing, so a foreign name the rule collapses to `[Unknown]` warns
+// about nothing either, rather than newly warning about an unknown.
 fn collect_reference_warnings(
   function_name: String,
   references: List(types.ResolvedCall),
   knowledge_base: KnowledgeBase,
 ) -> List(Warning) {
   list.filter_map(references, fn(ref) {
-    case effects.lookup(knowledge_base, ref.name) {
+    case effects.lookup_declared(knowledge_base, ref.name) {
       effects.Known(term, _) -> {
         let effect_set = effect_term.to_effect_set(term)
         case effect_set == types.empty() {
