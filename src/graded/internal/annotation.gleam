@@ -433,6 +433,11 @@ pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
 // module, not one function. That line is authoritative for the function it
 // names, so both `merge_inferred` and the committed-bounds load treat an
 // `effects` line for the same name as stale.
+//
+// Not every such line is valid. One naming a function of this package's own
+// source that has a visible Gleam body declares nothing — the callers see that
+// body — and its name reaches both readers as `stale`, which restores the
+// `effects` line to authority over it.
 pub fn external_function_names(file: GradedFile) -> set.Set(String) {
   list.filter_map(extract_externals(file), fn(ext) {
     case ext.target {
@@ -558,13 +563,23 @@ pub fn merge_inferred(
   file: GradedFile,
   inferred: List(EffectAnnotation),
   inferred_returns: List(ReturnsAnnotation),
+  stale_externals: set.Set(String),
 ) -> GradedFile {
   // A function the author declared with `external effects mod.fn : [...]` is
   // authoritative — that line is their opt-in to a precise FFI effect. Drop any
   // inferred `effects mod.fn` line for it so the opaque-FFI `[Unknown]` default
   // neither shadows nor duplicates the author's declaration (and a stale prior
   // inferred line is cleaned up on re-infer).
-  let external_functions = external_function_names(file)
+  //
+  // Except where the line names one of this package's own ordinary functions.
+  // Nothing there is foreign, so the line is stale rather than authoritative: it
+  // is dropped below and the inferred `effects` line written in its place, which
+  // is what stops `check` warning about it forever while the spec under-reports
+  // the function.
+  let external_functions =
+    set.filter(external_function_names(file), fn(name) {
+      !set.contains(stale_externals, name)
+    })
   // A module-level `external effects mod : [...]` declares the whole module's
   // effect, so every inferred `effects mod.fn` line is likewise redundant and
   // would shadow the declaration. Drop them all for the declared module.
@@ -621,6 +636,15 @@ pub fn merge_inferred(
           dict.get(inferred_map, a.function) |> result.map(AnnotationLine)
         ReturnsLine(r) ->
           dict.get(returns_map, r.function) |> result.map(ReturnsLine)
+        ExternalLine(e) ->
+          case external_line_name(e) {
+            Ok(name) ->
+              case set.contains(stale_externals, name) {
+                True -> Error(Nil)
+                False -> Ok(line)
+              }
+            Error(Nil) -> Ok(line)
+          }
         _ -> Ok(line)
       }
     })
@@ -637,6 +661,15 @@ pub fn merge_inferred(
   GradedFile(
     lines: list.flatten([new_lines, remaining_effects, remaining_returns]),
   )
+}
+
+// The `<module>.<function>` a per-function external names, or `Error(Nil)` for
+// a module-level one.
+fn external_line_name(external: ExternalAnnotation) -> Result(String, Nil) {
+  case external.target {
+    FunctionExternal(function) -> Ok(external.module <> "." <> function)
+    ModuleExternal -> Error(Nil)
+  }
 }
 
 // The set of names a filter extracts from a list of lines.

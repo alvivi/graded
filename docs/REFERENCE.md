@@ -337,6 +337,18 @@ downstream. Within one spec the `external effects` line is authoritative — it
 decides the function's effect (and its bounds) over any `effects` line for the
 same name, which is why `graded infer` writes none.
 
+**Except where it names one of your own functions with a Gleam body.** The line
+declares code graded cannot see; a function of this package whose body is right
+there has nothing foreign to declare, and the body is what every caller runs. A
+per-function line naming one is stale: `check` warns about it once, the body is
+walked instead — for the function's own `check`/`why`/`effect` and for every
+caller, same-module or not — and `graded infer` deletes the line and writes the
+`effects` line it was suppressing. There is no replacement: `external effects` is
+not an override for inference over your own code. If inference is wrong for one
+of your functions, fix the source or widen the `check` budget. (A *dependency*
+function with a visible body is unaffected — declaring one is what the line is
+for.)
+
 A name with no `.` is a **module-level** external: it declares the whole module's
 effect at once, so every function in it resolves to that set without a per-function
 line.
@@ -351,10 +363,20 @@ project modules**. For a dependency or project module graded would otherwise inf
 the declaration suppresses that inference: every function in the module resolves to
 the declared set instead of an inferred `[Unknown]`, and `graded infer` writes no
 per-function `effects` lines for it (just as a per-function external suppresses its
-own line). Use the per-function form when functions in a module differ; use the
-module-level form when one budget fits the module. A per-function
-`external effects mod.fn` or a catalog `effects` line for the same function takes
-precedence over a module-level external.
+own line). Use the module-level form when one budget fits the module. A
+per-function `external effects mod.fn` or a catalog `effects` line for the same
+function takes precedence over a module-level external.
+
+For a *dependency* module whose functions differ, use the per-function form. For
+one of **your own** modules, the per-function form is not the answer — it names a
+function graded can see the body of, so it is stale (above). The module-level form
+is the one that governs your own code, and it is a whole-module budget by design.
+
+A module-level line whose module is neither a dependency nor one of your own is
+flagged as a probable typo: no call can resolve into a module that isn't there.
+(`graded effect` still answers from such a line — see
+[Looking up one effect](#looking-up-one-effect) — it reports what the spec says
+about a name rather than checking that the name exists.)
 
 This is also the mechanism for **FFI**. A bodyless `@external` function is opaque —
 graded infers `[Unknown]`, never the `[]` an empty body would suggest, since the

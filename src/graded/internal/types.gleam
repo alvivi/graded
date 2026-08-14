@@ -671,6 +671,21 @@ pub type Warning {
   // flagged. `name` is the annotation as written (`Opts.on_change` when
   // unqualified, `myapp/opts.Opts.on_change` when qualified).
   UnmatchedTypeFieldWarning(name: String)
+  // A per-function `external effects <module>.<function>` line naming one of
+  // this package's own ordinary Gleam functions — a body graded can see and
+  // every caller runs. The syntax declares foreign code, so the line describes
+  // nothing the body does not; it is ignored and the body is walked instead.
+  // Scoped to modules the project index holds: declaring a *dependency*
+  // function with a visible body is the line's documented use.
+  StaleFunctionExternalWarning(function: String)
+  // A per-function `external effects <module>.<function>` line whose name
+  // resolves nowhere — no dependency, no catalog entry, no project module. The
+  // declaration then covers nothing, so it is a typo rather than a budget.
+  UnmatchedFunctionExternalWarning(function: String)
+  // A module-level `external effects <module>` line whose module is neither an
+  // installed dependency, a path dependency, nor a project module. Same
+  // reasoning one tier up: the declaration governs no module at all.
+  UnmatchedModuleExternalWarning(module: String)
 }
 
 // Result of checking one file.

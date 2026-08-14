@@ -573,7 +573,7 @@ pub fn merge_inferred_invariants_test() {
       fn(f, i) { #(f, i) },
     ),
   )
-  let merged = annotation.merge_inferred(file, inferred, [])
+  let merged = annotation.merge_inferred(file, inferred, [], set.new())
   let merged_effects =
     annotation.extract_annotations(merged)
     |> list.filter(fn(a) { a.kind == Effects })
@@ -630,7 +630,7 @@ pub fn merge_inferred_drops_effect_for_external_test() {
     EffectAnnotation(Effects, "app.other", [], effect_term.pure()),
   ]
   let effects_fns =
-    annotation.merge_inferred(file, inferred, [])
+    annotation.merge_inferred(file, inferred, [], set.new())
     |> annotation.extract_annotations
     |> list.filter(fn(a) { a.kind == Effects })
     |> list.map(fn(a) { a.function })

@@ -132,8 +132,11 @@ external effects foreign_values.returns_operator : []
 external effects foreign_values.partial_returns_operator : []
 external effects foreign_values.builds : []
 external effects foreign_values.with_run : []
-// A module-level external: every function under `fake_clock` resolves to
-// [Time], including names no fixture module defines.
+// A module-level external over a module that is not a project module and not a
+// dependency: every name under `fake_clock` resolves to [Time], including ones
+// nothing defines, which is what `graded effect`'s carve-out answers from. The
+// spec lint flags the same line as a probable typo — deliberately: the two say
+// different things, and nothing here should silence either.
 external effects fake_clock : [Time]
 
 // Type field annotations (the effect source for type-directed field calls).
