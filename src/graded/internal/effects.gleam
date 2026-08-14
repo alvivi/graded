@@ -98,6 +98,16 @@ pub type KnowledgeBase {
     // no value channel may speak for it at all, and that a running fallback
     // widens whatever declaration does.
     dependency_foreign: Dict(QualifiedName, types.ForeignFunction),
+    // Every function of every project module graded parsed, keyed by module and
+    // then by function, with whether the package exports it. Consulted by
+    // `graded effect`, which answers for the public API alone and so has to tell
+    // a private name from one this package never defined — two cases a
+    // hand-written spec line states identically.
+    //
+    // Nested rather than keyed by `QualifiedName` because the absences differ: a
+    // function missing from a module that *is* here is a name the package does
+    // not define, while a module missing entirely is no evidence at all.
+    project_functions: Dict(String, Dict(String, types.Visibility)),
   )
 }
 
@@ -140,6 +150,7 @@ pub fn load_knowledge_base(
     // Scanned from the source under analysis, which no dependency spec carries.
     foreign_functions: dict.new(),
     dependency_foreign:,
+    project_functions: dict.new(),
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
@@ -161,6 +172,7 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     provenance: dict.new(),
     foreign_functions: dict.new(),
     dependency_foreign: dict.new(),
+    project_functions: dict.new(),
   )
 }
 
@@ -180,6 +192,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     provenance: dict.new(),
     foreign_functions: dict.new(),
     dependency_foreign: dict.new(),
+    project_functions: dict.new(),
   )
   |> with_sourced_type_fields(cat_type_fields)
 }
@@ -376,6 +389,47 @@ pub fn is_foreign_function(
   name: QualifiedName,
 ) -> Bool {
   dict.has_key(knowledge_base.foreign_functions, name)
+}
+
+// What this package's own source says about a name: that it defines it with
+// this visibility, that the module it names defines no such function, or that
+// there is no evidence either way — the module is not this package's, or was
+// never parsed.
+//
+// The third case is why the first two can be trusted. A miss is only a fact
+// about the package where the module was read; anywhere else it is silence, and
+// silence must not decide anything.
+pub type ProjectVisibility {
+  ProjectFunction(visibility: types.Visibility)
+  NotProjectFunction
+  NoProjectEvidence
+}
+
+// Record what this package's parsed modules define, keyed by module. Merged into
+// what is already recorded, so a caller that parses a second module adds to it.
+pub fn with_project_functions(
+  knowledge_base: KnowledgeBase,
+  modules: Dict(String, Dict(String, types.Visibility)),
+) -> KnowledgeBase {
+  KnowledgeBase(
+    ..knowledge_base,
+    project_functions: dict.merge(knowledge_base.project_functions, modules),
+  )
+}
+
+// This package's own source's answer for `name` — see `ProjectVisibility`.
+pub fn project_visibility(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> ProjectVisibility {
+  case dict.get(knowledge_base.project_functions, name.module) {
+    Error(Nil) -> NoProjectEvidence
+    Ok(functions) ->
+      case dict.get(functions, name.function) {
+        Ok(visibility) -> ProjectFunction(visibility:)
+        Error(Nil) -> NotProjectFunction
+      }
+  }
 }
 
 // Whether `name` is foreign code the package *exports*. Asked by `graded

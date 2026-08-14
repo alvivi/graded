@@ -120,10 +120,31 @@ pub fn bare_name_is_not_found_test() {
 }
 
 pub fn private_function_is_not_found_test() {
-  // `nested_higher_order.middle` is private: the inference pass records public
-  // functions only, and the query serves what the knowledge base holds.
+  // `nested_higher_order.middle` is private, so it is no part of the public API
+  // the command answers for.
   graded.run_effect(fixtures, "nested_higher_order.middle")
   |> should.equal(Error(graded.EffectNotFound("nested_higher_order.middle")))
+}
+
+pub fn a_private_function_with_a_committed_line_is_not_found_test() {
+  // `builder_shadow.disk_resolver` is private and the spec carries an `effects`
+  // line for it. Publicity is a fact of the source, and it decides the question
+  // before any entry is weighed — otherwise a hand-written line would export a
+  // name the package does not.
+  graded.run_effect(fixtures, "builder_shadow.disk_resolver")
+  |> should.equal(Error(graded.EffectNotFound("builder_shadow.disk_resolver")))
+  graded.run_effect_from_project(fixtures, "builder_shadow.disk_resolver")
+  |> should.equal(Error(graded.EffectNotFound("builder_shadow.disk_resolver")))
+}
+
+pub fn a_name_no_project_module_defines_is_not_found_test() {
+  // A line naming nothing — a typo, or a function since deleted. Its module is
+  // one of this package's and parses, so the absence is evidence: the package
+  // defines no such name, however precise the line's effect set reads.
+  graded.run_effect(fixtures, "impure_view.no_such_function")
+  |> should.equal(Error(graded.EffectNotFound("impure_view.no_such_function")))
+  graded.run_effect_from_project(fixtures, "impure_view.no_such_function")
+  |> should.equal(Error(graded.EffectNotFound("impure_view.no_such_function")))
 }
 
 pub fn private_external_is_not_found_test() {
@@ -139,6 +160,95 @@ pub fn private_external_is_not_found_test() {
   |> should.equal(
     "effects ffi_external.ffi_op : [Unknown]\n// an external with no declared effects",
   )
+}
+
+pub fn a_private_external_with_a_declaration_is_not_found_test() {
+  // A private `@external` its own spec declares. A declaration describes what
+  // the foreign code does for the callers that reach it; it does not export the
+  // name, so the query still declines — and callers still charge the [Time].
+  let project =
+    write_fixture("/tmp/graded_effect_private_declared", [
+      #("gleam.toml", "name = \"probe\"\nversion = \"1.0.0\"\n"),
+      #("probe.graded", "external effects m.hidden : [Time]\n"),
+      #(
+        "src/m.gleam",
+        "@target(erlang)
+@external(erlang, \"x\", \"hidden\")
+fn hidden() -> Nil
+
+@target(erlang)
+pub fn shown() -> Nil {
+  hidden()
+}
+",
+      ),
+    ])
+  graded.run_effect(project, "m.hidden")
+  |> should.equal(Error(graded.EffectNotFound("m.hidden")))
+  graded.run_effect_from_project(project, "m.hidden")
+  |> should.equal(Error(graded.EffectNotFound("m.hidden")))
+  // The public caller still resolves it, so nothing about caller resolution moved.
+  graded.run_effect(project, "m.shown")
+  |> should.equal(Ok(
+    "effects m.shown : [Time]\n// resolved from in-memory inference",
+  ))
+  cleanup(project)
+}
+
+pub fn a_module_level_external_does_not_export_a_project_name_test() {
+  // The documented carve-out — a module-level external answers for any name in
+  // its module — is what a module graded has no source for needs. Where the
+  // source is here, publicity outranks it: the private ordinary function, the
+  // private `@external`, and a name the module does not define all decline,
+  // with and without a per-function entry, while the public function answers
+  // from the declaration as before.
+  let project =
+    write_fixture("/tmp/graded_effect_module_external_scope", [
+      #("gleam.toml", "name = \"probe\"\nversion = \"1.0.0\"\n"),
+      #(
+        "probe.graded",
+        "external effects m : [Disk]\nexternal effects m.hidden_ffi : [Time]\neffects m.helper : []\nexternal effects offsite : [Http]\n",
+      ),
+      #(
+        "src/m.gleam",
+        "@target(erlang)
+@external(erlang, \"x\", \"hidden_ffi\")
+fn hidden_ffi() -> Nil
+
+fn helper() -> Nil {
+  Nil
+}
+
+@target(erlang)
+pub fn run() -> Nil {
+  hidden_ffi()
+  helper()
+}
+",
+      ),
+    ])
+  [
+    #("m.hidden_ffi", Error(graded.EffectNotFound("m.hidden_ffi"))),
+    #("m.helper", Error(graded.EffectNotFound("m.helper"))),
+    #("m.absent", Error(graded.EffectNotFound("m.absent"))),
+    #(
+      "m.run",
+      Ok("effects m.run : [Disk]\n// resolved via module-level external for m"),
+    ),
+    // A module with no source to consult keeps the carve-out whole.
+    #(
+      "offsite.anything",
+      Ok(
+        "effects offsite.anything : [Http]\n// resolved via module-level external for offsite",
+      ),
+    ),
+  ]
+  |> list.each(fn(expected) {
+    let #(name, answer) = expected
+    graded.run_effect(project, name) |> should.equal(answer)
+    graded.run_effect_from_project(project, name) |> should.equal(answer)
+  })
+  cleanup(project)
 }
 
 // Higher-order bounds
@@ -273,6 +383,11 @@ pub fn spec_fast_path_matches_the_full_project_context_test() {
     // A private `@external`: both paths learn its publicity from that same
     // source, so both decline it rather than one answering `[Unknown]`.
     "ffi_external.hidden_ffi",
+    // A private ordinary function the spec carries a line for, and a line
+    // naming nothing at all: publicity and existence are facts of the source
+    // too, so both paths have to consult it to decline them together.
+    "builder_shadow.disk_resolver",
+    "impure_view.no_such_function",
     "no_such.thing",
   ]
   |> list.each(fn(name) {

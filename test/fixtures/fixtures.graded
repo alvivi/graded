@@ -159,7 +159,6 @@ effects builder_field.run_default : [Disk]
 effects builder_field.run_inline_arg : [Stdout]
 effects builder_field.run_labeled_reordered : [Stdout]
 effects builder_field.run_union : [Disk, Stdout]
-effects builder_shadow.disk_resolver : [Disk]
 effects builder_shadow.silent : []
 effects builder_shadow.handler : []
 effects shadow_field.handler : []
@@ -174,3 +173,9 @@ effects nested_higher_order.log_and_map : [Stdout]
 // Stale beside the authoritative `external effects external_same_module.now`
 // line above: neither the term nor the bounds may reach the knowledge base.
 effects external_same_module.now(cb: [cb]) : [cb]
+// Names nothing: `impure_view` is a project module that parses and defines no
+// such function, so `graded effect` declines the name rather than quote this.
+effects impure_view.no_such_function : []
+// A *private* function of a project module. Same rule, other absence: the
+// package does not export it, so the query declines it too.
+effects builder_shadow.disk_resolver : [Disk]
