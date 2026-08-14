@@ -3763,3 +3763,71 @@ external effects dep/io : [Disk]
   ])
   support.cleanup(root)
 }
+
+// Reference warnings and foreign code
+//
+// The "passed as a value" warning quotes an effect, so it reads that effect
+// through the same boundary a charge does. Otherwise it would report a
+// reference as carrying effects no caller of the same name is charged.
+
+pub fn a_reference_warning_never_quotes_a_stale_foreign_effect_test() {
+  // A stale `effects` line for an `@external` — what a function that became one
+  // leaves behind. Its callers are charged `[Unknown]`, so a reference to it
+  // must not be reported as carrying the line's `[Disk]`. An unresolved
+  // reference warns about nothing, as it already did.
+  let root = "build/reference_warning_foreign"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "effects ffi.stale : [Disk]\nexternal effects ffi.declared : [Disk]\ncheck app.go : [_]\ncheck app.declared_go : [_]\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@target(erlang)
+@external(erlang, \"proj_ffi\", \"stale\")
+pub fn stale() -> Nil
+
+@target(erlang)
+@external(erlang, \"proj_ffi\", \"declared\")
+pub fn declared() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+
+pub fn apply_callback(f: fn() -> Nil) -> Nil {
+  f()
+}
+
+pub fn go() -> Nil {
+  apply_callback(ffi.stale)
+}
+
+pub fn declared_go() -> Nil {
+  apply_callback(ffi.declared)
+}
+",
+    ),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  // Only the declared external is quoted, and it is quoted with what declares it.
+  r.warnings
+  |> list.map(fn(warning) {
+    let assert types.UntrackedEffectWarning(function:, reference:, effects:, ..) =
+      warning
+    #(function, reference, effects)
+  })
+  |> should.equal([
+    #(
+      "declared_go",
+      types.QualifiedName("ffi", "declared"),
+      types.Specific(set.from_list(["Disk"])),
+    ),
+  ])
+  support.cleanup(root)
+}

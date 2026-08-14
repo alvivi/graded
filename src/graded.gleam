@@ -1505,7 +1505,7 @@ fn function_effect(
     when: checker.undeclared_external(knowledge_base, qualified),
     return: Ok(answer.UndeclaredExternalAnswer(name:, module:)),
   )
-  case effects.lookup(knowledge_base, qualified) {
+  case effects.lookup_declared(knowledge_base, qualified) {
     effects.Unknown -> Error(Nil)
     // A module-level external carries no per-function bounds, so none travel
     // with its answer. Which map answered is reported by the lookup itself, so
