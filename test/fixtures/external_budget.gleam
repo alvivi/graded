@@ -46,3 +46,36 @@ pub fn wrapper() -> Nil {
 @target(erlang)
 @external(erlang, "some_ffi_module", "clock")
 pub fn declared_unknown() -> Nil
+
+// The same external passed as a *value* rather than called. A function value is
+// charged what declares the code it names, exactly as a call site is, so the
+// helper it is handed to inherits the `[Unknown]` — lifting the external's
+// bodyless declaration instead would read as the `[]` an empty body yields, and
+// the budget would pass here while failing on `wrapper`'s direct call.
+@target(erlang)
+pub fn apply_callback(f: fn() -> Nil) -> Nil {
+  f()
+}
+
+@target(erlang)
+pub fn passes_external_as_callback() -> Nil {
+  apply_callback(stale_inferred)
+}
+
+// The same external wired into a record field. Resolving the field through its
+// construction site reaches the external as a value, which is charged what
+// declares it — so calling the field carries `[Unknown]` too.
+pub type Clock {
+  Clock(read: fn() -> Nil)
+}
+
+@target(erlang)
+pub fn wired_clock() -> Clock {
+  Clock(read: stale_inferred)
+}
+
+@target(erlang)
+pub fn calls_wired_external() -> Nil {
+  let clock = wired_clock()
+  clock.read()
+}

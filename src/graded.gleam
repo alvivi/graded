@@ -657,9 +657,9 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
 // whose effects only a declaration speaks for.
 fn project_foreign_functions(
   index: Dict(String, #(String, glance.Module)),
-) -> Set(QualifiedName) {
-  use names, module_path, #(_gleam_path, module) <- dict.fold(index, set.new())
-  set.union(names, checker.foreign_functions(module, module_path))
+) -> Dict(QualifiedName, types.Visibility) {
+  use names, module_path, #(_gleam_path, module) <- dict.fold(index, dict.new())
+  dict.merge(names, checker.foreign_functions(module, module_path))
 }
 
 // Group a parsed spec file's `check` annotations by their module path. Used
@@ -1236,7 +1236,7 @@ fn project_module_files(directory: String) -> Dict(String, String) {
 fn foreign_functions_of(
   project_modules: Dict(String, String),
   module_path: String,
-) -> Set(QualifiedName) {
+) -> Dict(QualifiedName, types.Visibility) {
   let parsed = {
     use path <- result.try(
       dict.get(project_modules, module_path) |> result.replace_error(Nil),
@@ -1246,7 +1246,7 @@ fn foreign_functions_of(
   }
   case parsed {
     Ok(module) -> checker.foreign_functions(module, module_path)
-    Error(Nil) -> set.new()
+    Error(Nil) -> dict.new()
   }
 }
 

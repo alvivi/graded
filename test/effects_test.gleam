@@ -30,19 +30,22 @@ fn knowledge_base() -> effects.KnowledgeBase {
 }
 
 pub fn known_effectful_test() {
-  effects.lookup_effects(knowledge_base(), QualifiedName("gleam/io", "println"))
+  effects.declared_effects(
+    knowledge_base(),
+    QualifiedName("gleam/io", "println"),
+  )
   |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 pub fn known_pure_module_test() {
-  effects.lookup_effects(knowledge_base(), QualifiedName("gleam/list", "map"))
+  effects.declared_effects(knowledge_base(), QualifiedName("gleam/list", "map"))
   |> effect_term.to_effect_set
   |> should.equal(Specific(set.new()))
 }
 
 pub fn unknown_function_test() {
-  effects.lookup_effects(
+  effects.declared_effects(
     knowledge_base(),
     QualifiedName("some/unknown", "thing"),
   )
@@ -449,7 +452,7 @@ pub fn with_inferred_does_not_overwrite_test() {
     ])
   let enriched = effects.with_inferred(kb, inferred, types.ProjectInferred)
   // Existing KB entry should take priority (Stdout), not be overwritten to []
-  effects.lookup_effects(enriched, QualifiedName("gleam/io", "println"))
+  effects.declared_effects(enriched, QualifiedName("gleam/io", "println"))
   |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
@@ -484,7 +487,7 @@ pub fn with_inferred_adds_new_entries_test() {
       ),
     ])
   let enriched = effects.with_inferred(kb, inferred, types.ProjectInferred)
-  effects.lookup_effects(enriched, QualifiedName("mylib/foo", "bar"))
+  effects.declared_effects(enriched, QualifiedName("mylib/foo", "bar"))
   |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Http"])))
 }
@@ -591,7 +594,7 @@ pub fn an_existing_entry_keeps_its_own_origin_test() {
     )
   origin_of(kb, QualifiedName("app", "run"))
   |> should.equal(option.Some(types.CommittedSpec))
-  effects.lookup_effects(kb, QualifiedName("app", "run"))
+  effects.declared_effects(kb, QualifiedName("app", "run"))
   |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Stdout"])))
 }
@@ -1243,7 +1246,7 @@ pub fn dependency_check_line_bounds_stay_out_of_the_knowledge_base_test() {
   let kb = effects.load_knowledge_base(packages, "missing_manifest.toml")
   effects.lookup_param_bounds(kb, QualifiedName("dep", "run"))
   |> should.equal([])
-  effects.lookup_effects(kb, QualifiedName("dep", "run"))
+  effects.declared_effects(kb, QualifiedName("dep", "run"))
   |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Time"])))
 

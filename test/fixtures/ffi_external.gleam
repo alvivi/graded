@@ -18,8 +18,16 @@ pub fn ffi_with_body() -> Nil {
   Nil
 }
 
+// A *private* external. Callers resolve it exactly as they resolve a public
+// one, but it is no more part of the queryable public API than a private
+// ordinary function is.
+@target(erlang)
+@external(erlang, "some_ffi_module", "do_hidden")
+fn hidden_ffi() -> Nil
+
 @target(erlang)
 pub fn run() -> Nil {
   ffi_op()
   ffi_with_body()
+  hidden_ffi()
 }

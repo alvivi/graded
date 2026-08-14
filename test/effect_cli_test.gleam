@@ -126,6 +126,21 @@ pub fn private_function_is_not_found_test() {
   |> should.equal(Error(graded.EffectNotFound("nested_higher_order.middle")))
 }
 
+pub fn private_external_is_not_found_test() {
+  // `ffi_external.hidden_ffi` is a private `@external`. Being foreign code is
+  // not what makes a name queryable: the command answers for the public API,
+  // so a private external reports the same miss the private ordinary function
+  // above does, rather than the `[Unknown]` a public undeclared one carries.
+  graded.run_effect(fixtures, "ffi_external.hidden_ffi")
+  |> should.equal(Error(graded.EffectNotFound("ffi_external.hidden_ffi")))
+  // The public undeclared external in the same module still answers, so the
+  // gate is on publicity and not on the rule that governs foreign code.
+  lookup("ffi_external.ffi_op")
+  |> should.equal(
+    "effects ffi_external.ffi_op : [Unknown]\n// an external with no declared effects",
+  )
+}
+
 // Higher-order bounds
 //
 // A polymorphic effect term is useless without the bounds that bind its
@@ -255,6 +270,9 @@ pub fn spec_fast_path_matches_the_full_project_context_test() {
     // package's functions are foreign is a fact of its source, so the fast path
     // has to consult that source to answer it as the full context does.
     "external_budget.stale_inferred",
+    // A private `@external`: both paths learn its publicity from that same
+    // source, so both decline it rather than one answering `[Unknown]`.
+    "ffi_external.hidden_ffi",
     "no_such.thing",
   ]
   |> list.each(fn(name) {
