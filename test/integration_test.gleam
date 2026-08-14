@@ -10,6 +10,7 @@ import gleeunit/should
 import graded
 import graded/internal/annotation
 import graded/internal/checker
+import graded/internal/cli
 import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/signatures
@@ -3585,4 +3586,180 @@ pub fn now() -> Nil
   violation.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Time"])))
   support.cleanup("build/scoped_standalone")
+}
+
+// Per-function externals over ordinary project functions
+//
+// `external effects` declares code graded cannot see. A line naming a function
+// of this package whose Gleam body is right there declares nothing: it is stale,
+// the body is walked instead, and `infer` deletes the line rather than preserve
+// a spec that under-reports the function forever.
+
+fn stale_external_project(root: String) -> Nil {
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects m.logs : []
+external effects ffi.write : [Disk]
+check m.logs : []
+check caller.go : []
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@target(erlang)
+@external(erlang, \"proj_ffi\", \"write\")
+pub fn write() -> Nil
+",
+    ),
+    #("m.gleam", "import ffi\n\npub fn logs() -> Nil {\n  ffi.write()\n}\n"),
+    #("caller.gleam", "import m\n\npub fn go() -> Nil {\n  m.logs()\n}\n"),
+  ])
+  Nil
+}
+
+pub fn a_stale_project_external_is_ignored_everywhere_test() {
+  // One rule, every path: the function's own `check`, a cross-module caller's,
+  // `why` and `effect` all report the body's call, where the line used to
+  // silence all four while same-module callers walked the body anyway.
+  let root = "build/stale_external_project"
+  stale_external_project(root)
+  let disk = types.Specific(set.from_list(["Disk"]))
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(own) =
+    list.find(results, fn(r) { r.file == root <> "/m.gleam" })
+  let assert [violation] = own.violations
+  violation.function |> should.equal("logs")
+  violation.explanation.actual |> should.equal(disk)
+
+  let assert Ok(caller) =
+    list.find(results, fn(r) { r.file == root <> "/caller.gleam" })
+  let assert [call] = caller.violations
+  call.explanation.actual |> should.equal(disk)
+
+  let assert Ok(why) = graded.run_why(root, "m.logs")
+  why |> string.contains("calls ffi.write") |> should.be_true()
+  graded.run_effect(root, "m.logs")
+  |> should.equal(Ok(
+    "effects m.logs : [Disk]\n// resolved from in-memory inference",
+  ))
+  graded.run_effect_from_project(root, "m.logs")
+  |> should.equal(Ok(
+    "effects m.logs : [Disk]\n// resolved from in-memory inference",
+  ))
+  support.cleanup(root)
+}
+
+pub fn a_stale_project_external_warns_once_test() {
+  let root = "build/stale_external_warning"
+  stale_external_project(root)
+
+  let assert Ok(results) = graded.run(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([types.StaleFunctionExternalWarning(function: "m.logs")])
+  support.cleanup(root)
+}
+
+pub fn infer_repairs_a_stale_project_external_test() {
+  // The warning would otherwise recur forever while the spec kept
+  // under-reporting the function, so `infer` deletes the line and writes the
+  // `effects` line it was suppressing.
+  let root = "build/stale_external_infer"
+  stale_external_project(root)
+
+  let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
+  let changed =
+    preview
+    |> string.split("\n")
+    |> list.filter(fn(line) {
+      string.starts_with(line, "- ") || string.starts_with(line, "+ ")
+    })
+  changed |> list.contains("- external effects m.logs : []") |> should.be_true()
+  changed |> list.contains("+ effects m.logs : [Disk]") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_dependency_external_over_a_visible_body_is_untouched_test() {
+  // Declaring a dependency function is what the line is for, and dependency
+  // sources are scanned, so "has a body" is knowable there too — a rule phrased
+  // as "has a body" rather than "is one of this package's" would break every
+  // legitimate use.
+  let root = "build/stale_external_dependency"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "external effects dep/io.writes : []\ncheck app.go : []\n"),
+    #(
+      "build/packages/dep/src/dep/io.gleam",
+      "pub fn writes() -> Nil {\n  Nil\n}\n",
+    ),
+    #(
+      "app.gleam",
+      "import dep/io as dep_io\n\npub fn go() -> Nil {\n  dep_io.writes()\n}\n",
+    ),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_module_level_external_over_a_project_module_is_untouched_test() {
+  // The module-level form is the one that governs your own code, and it stays
+  // authoritative: no warning, and the declaration answers for every function.
+  let root = "build/module_external_project"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "external effects m : [Disk]\ncheck m.logs : []\n"),
+    #("m.gleam", "pub fn logs() -> Nil {\n  Nil\n}\n"),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
+  let assert Ok(r) = list.find(results, fn(r) { r.file == root <> "/m.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn an_external_naming_nothing_is_flagged_test() {
+  // Existence detection at both tiers. A line that resolves nowhere covers
+  // nothing, so it is a typo rather than a budget — while the catalog- and
+  // dependency-resolving lines beside it are left alone, which is the caveat
+  // that keeps the lint from flagging what it cannot introspect.
+  let root = "build/external_lint"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "manifest.toml",
+      "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
+    ),
+    #(
+      "proj.graded",
+      "external effects m.no_such : []
+external effects nowhere/mod : []
+external effects gleam/io.println : [Stdout]
+external effects dep/io.writes : [Disk]
+external effects dep/io : [Disk]
+",
+    ),
+    #(
+      "build/packages/dep/src/dep/io.gleam",
+      "pub fn writes() -> Nil {\n  Nil\n}\n",
+    ),
+    #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.UnmatchedFunctionExternalWarning(function: "m.no_such"),
+    types.UnmatchedModuleExternalWarning(module: "nowhere/mod"),
+  ])
+  support.cleanup(root)
 }

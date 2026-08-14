@@ -1206,7 +1206,7 @@ pub fn load_knowledge_base_loads_dependency_type_fields_test() {
 
 fn spec_params(source: String) -> dict.Dict(QualifiedName, List(ParamBound)) {
   let assert Ok(file) = annotation.parse_file(source)
-  effects.load_spec_params_from_file(file)
+  effects.load_spec_params_from_file(file, set.new())
 }
 
 pub fn bound_less_effects_line_records_an_empty_entry_test() {

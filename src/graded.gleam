@@ -56,7 +56,9 @@ import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type GradedFile, type QualifiedName,
   type TypeFieldAnnotation, type Violation, type Warning, AnnotationLine,
   CheckResult, EffectAnnotation, GradedFile, QualifiedName,
-  UnmatchedCheckWarning, UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning,
+  StaleFunctionExternalWarning, UnmatchedCheckWarning,
+  UnmatchedFieldBoundWarning, UnmatchedFunctionExternalWarning,
+  UnmatchedModuleExternalWarning, UnmatchedParamBoundWarning,
   UnmatchedTypeFieldWarning, UntrackedEffectWarning,
 }
 import simplifile
@@ -606,6 +608,8 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     package_root:,
   ) = sources
   let declared_modules = annotation.module_external_modules(spec)
+  let stale_externals =
+    stale_project_externals(spec, native_functions_of(index))
   let dep_sources = dependency_sources(package_root)
   let registry =
     signatures.merge(dep_sources.registry, build_project_registry(index))
@@ -621,12 +625,12 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
     |> effects.with_externals(
-      annotation.extract_externals(spec),
+      declaring_externals(spec, stale_externals),
       types.UserExternal,
     )
     |> with_builders(index, dep_sources)
     |> enrich_with_path_deps(package_root, declared_modules)
-    |> with_committed_spec(spec, declared_modules)
+    |> with_committed_spec(spec, declared_modules, stale_externals)
     // Recorded before the inference pass below, so an `@external` resolves to
     // what declares it while this project's own modules are being inferred, not
     // only when they are later checked.
@@ -682,6 +686,71 @@ fn project_foreign_functions(
 ) -> Dict(QualifiedName, types.ForeignFunction) {
   use names, module_path, #(_gleam_path, module) <- dict.fold(index, dict.new())
   dict.merge(names, checker.foreign_functions(module, module_path))
+}
+
+// The per-function `external effects <module>.<function>` lines that declare
+// nothing: those naming one of this package's own functions whose Gleam body is
+// right there, visible and run by every caller.
+//
+// The one place validity is decided. Everything downstream is a consequence:
+// the knowledge base is assembled without these lines, so no lookup can reach
+// around the rule and none of them can bury the body-derived term; `check`
+// warns once about each; and `infer` deletes them and writes the `effects` line
+// they were suppressing.
+//
+// `native_of` answers with a module's Gleam-bodied function names, and
+// `Error(Nil)` where there is no source to consult. That absence is not
+// evidence: a module outside this package (declaring a *dependency* function
+// with a body is the line's documented use, and dep sources are scanned, so
+// "has a body" is knowable there too), one outside a scoped run, or one that
+// would not parse all leave the line standing.
+fn stale_project_externals(
+  spec: GradedFile,
+  native_of: fn(String) -> Result(Set(String), Nil),
+) -> Set(String) {
+  annotation.extract_externals(spec)
+  |> list.filter_map(fn(external) {
+    use function <- result.try(case external.target {
+      types.FunctionExternal(function) -> Ok(function)
+      types.ModuleExternal -> Error(Nil)
+    })
+    use native <- result.try(native_of(external.module))
+    case set.contains(native, function) {
+      True -> Ok(external.module <> "." <> function)
+      False -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+}
+
+// A module's Gleam-bodied function names as the project index holds them, in
+// the shape `stale_project_externals` asks for.
+fn native_functions_of(
+  index: Dict(String, #(String, glance.Module)),
+) -> fn(String) -> Result(Set(String), Nil) {
+  fn(module_path) {
+    dict.get(index, module_path)
+    |> result.map(fn(entry) { checker.native_function_names(entry.1) })
+  }
+}
+
+// The spec's external declarations minus the ones that declare nothing.
+fn declaring_externals(
+  spec: GradedFile,
+  stale: Set(String),
+) -> List(types.ExternalAnnotation) {
+  use <- bool.guard(
+    when: set.is_empty(stale),
+    return: annotation.extract_externals(spec),
+  )
+  annotation.extract_externals(spec)
+  |> list.filter(fn(external) {
+    case external.target {
+      types.FunctionExternal(function) ->
+        !set.contains(stale, external.module <> "." <> function)
+      types.ModuleExternal -> True
+    }
+  })
 }
 
 // Every function this project defines, keyed by module then by function: what
@@ -745,11 +814,14 @@ fn check_one_file(
 
 // Spec lint
 
-// Flag `check`/`type` spec lines whose target resolves nothing. A `check` line
-// names a function that must exist in some project module; a `type` line names
-// a `module.Type.field` that must be a callable (function-typed) field. When
-// the qualifier is missing or wrong, or the field plainly can't be called, the
-// line is silently dead, so surface it as a warning.
+// Flag `check`/`type`/`external` spec lines whose target resolves nothing. A
+// `check` line names a function that must exist in some project module; a `type`
+// line names a `module.Type.field` that must be a callable (function-typed)
+// field; an `external effects` line names foreign code, so it must name
+// something graded cannot see the body of, and something that exists at all.
+// When the qualifier is missing or wrong, the field plainly can't be called, or
+// the declaration covers a body sitting in plain sight, the line is silently
+// dead or silently ignored, so surface it as a warning.
 fn validate_spec_annotations(
   spec: GradedFile,
   index: Dict(String, #(String, glance.Module)),
@@ -761,6 +833,9 @@ fn validate_spec_annotations(
     annotation.extract_checks(spec)
     |> list.filter(fn(ann) { !set.contains(known_functions, ann.function) })
     |> list.map(fn(ann) { UnmatchedCheckWarning(function: ann.function) })
+
+  let external_warnings =
+    external_warnings(spec, index, known_functions, package_root)
 
   // Resolving `type` lines needs the dependency module map and per-module type
   // info; build them only when there are `type` lines to check, so a project
@@ -783,7 +858,72 @@ fn validate_spec_annotations(
     }
   }
 
-  list.append(check_warnings, type_field_warnings)
+  list.flatten([check_warnings, external_warnings, type_field_warnings])
+}
+
+// One walk of the spec's `external effects` lines, yielding the three ways such
+// a line can be dead. Both tiers are covered, since a typo is as likely in the
+// module name as in the function name:
+//
+//   - a per-function line naming one of *this package's* Gleam-bodied functions:
+//     valid syntax, nothing foreign to declare, so it is ignored and the body
+//     walked (see `stale_project_externals`);
+//   - a per-function line whose `module.function` resolves nowhere at all —
+//     dependency, catalog, or project index;
+//   - a module-level line whose module is neither a dependency nor a project
+//     module.
+//
+// Existence only. A name that resolves but that graded cannot introspect is
+// exactly what the line is for, and is never flagged.
+fn external_warnings(
+  spec: GradedFile,
+  index: Dict(String, #(String, glance.Module)),
+  known_functions: Set(String),
+  package_root: String,
+) -> List(Warning) {
+  let externals = annotation.extract_externals(spec)
+  use <- bool.guard(when: externals == [], return: [])
+  let stale = stale_project_externals(spec, native_functions_of(index))
+  // Built once, and only when there is a line to weigh: each costs a
+  // `build/packages` scan or a catalog load. The catalog is read against *this*
+  // project's manifest, so a line naming a catalogued function of a package this
+  // project depends on resolves exactly as `check` resolves it.
+  let dep_modules =
+    set.from_list(dict.keys(dependency_module_files(package_root)))
+  let #(catalog_functions, catalog_modules, _params, _fields) =
+    effects.load_catalog(
+      effects.catalog_directory(),
+      manifest_path(package_root),
+    )
+  list.filter_map(externals, fn(external) {
+    case external.target {
+      types.FunctionExternal(function) -> {
+        let name = external.module <> "." <> function
+        let resolves =
+          set.contains(known_functions, name)
+          || set.contains(dep_modules, external.module)
+          || dict.has_key(
+            catalog_functions,
+            QualifiedName(external.module, function),
+          )
+          || dict.has_key(catalog_modules, external.module)
+        case set.contains(stale, name), resolves {
+          True, _ -> Ok(StaleFunctionExternalWarning(function: name))
+          False, False -> Ok(UnmatchedFunctionExternalWarning(function: name))
+          False, True -> Error(Nil)
+        }
+      }
+      types.ModuleExternal ->
+        case
+          dict.has_key(index, external.module)
+          || set.contains(dep_modules, external.module)
+          || dict.has_key(catalog_modules, external.module)
+        {
+          True -> Error(Nil)
+          False -> Ok(UnmatchedModuleExternalWarning(module: external.module))
+        }
+    }
+  })
 }
 
 // Map of module path -> source file for every installed dependency (under
@@ -1190,7 +1330,6 @@ fn spec_answer(
   spec: GradedFile,
   name: String,
 ) -> Result(EffectAnswer, Nil) {
-  let knowledge_base = spec_knowledge_base(spec)
   case annotation.split_function_name(name) {
     // A name the function grammar accepts. The full path resolves it as a
     // function *before* it considers a type field, so the fast path may not
@@ -1203,12 +1342,23 @@ fn spec_answer(
           && !dict.has_key(project_modules, module),
         return: Error(Nil),
       )
-      // Which of this package's functions are foreign code is a fact of its
-      // source, not of the spec — and one an `effects` line left behind for an
-      // `@external` would otherwise be read as answering. One file is parsed to
-      // settle it: the module the queried name lives in.
+      // What this package's source says about the queried module — which of its
+      // functions are foreign code, which it exports, and which of them a
+      // per-function external names in vain — is a fact of that source, not of
+      // the spec, and the spec is folded against it. One file is parsed to
+      // settle all three: the module the queried name lives in.
       use parsed <- result.try(module_source_facts(project_modules, module))
-      answer_from(with_module_facts(knowledge_base, parsed), name)
+      let stale =
+        stale_project_externals(spec, fn(queried) {
+          case queried == module {
+            True -> Ok(parsed.native)
+            False -> Error(Nil)
+          }
+        })
+      answer_from(
+        with_module_facts(spec_knowledge_base(spec, stale), parsed),
+        name,
+      )
     }
     // Not a function name — only a type field can answer. A spec `type` line is
     // merged last of all, so an entry under the queried name's *own* module is
@@ -1221,7 +1371,7 @@ fn spec_answer(
     // An answer carrying the queried module is one the exact key produced; one
     // carrying none fell back to the bare key, so it isn't the spec's decision.
     Error(Nil) ->
-      case type_field_effect(knowledge_base, name) {
+      case type_field_effect(spec_knowledge_base(spec, set.new()), name) {
         Ok(answer.TypeFieldAnswer(module: Some(_), ..) as found) -> Ok(found)
         Ok(answer.TypeFieldAnswer(module: None, ..))
         | Ok(answer.FunctionAnswer(..))
@@ -1233,13 +1383,20 @@ fn spec_answer(
 
 // The spec-derived layers of `load_project_context`'s knowledge base, folded in
 // the same order and by the same functions, over nothing else.
-fn spec_knowledge_base(spec: GradedFile) -> KnowledgeBase {
+fn spec_knowledge_base(
+  spec: GradedFile,
+  stale_externals: Set(String),
+) -> KnowledgeBase {
   effects.new_knowledge_base()
   |> effects.with_externals(
-    annotation.extract_externals(spec),
+    declaring_externals(spec, stale_externals),
     types.UserExternal,
   )
-  |> with_committed_spec(spec, annotation.module_external_modules(spec))
+  |> with_committed_spec(
+    spec,
+    annotation.module_external_modules(spec),
+    stale_externals,
+  )
   |> effects.with_type_fields(
     annotation.extract_type_fields(spec),
     types.CommittedSpec,
@@ -1269,6 +1426,7 @@ type ModuleFacts {
   ModuleFacts(
     foreign: Dict(QualifiedName, types.ForeignFunction),
     visibility: Dict(String, Dict(String, types.Visibility)),
+    native: Set(String),
   )
 }
 
@@ -1287,7 +1445,12 @@ fn module_source_facts(
   module_path: String,
 ) -> Result(ModuleFacts, Nil) {
   case dict.get(project_modules, module_path) {
-    Error(Nil) -> Ok(ModuleFacts(foreign: dict.new(), visibility: dict.new()))
+    Error(Nil) ->
+      Ok(ModuleFacts(
+        foreign: dict.new(),
+        visibility: dict.new(),
+        native: set.new(),
+      ))
     Ok(path) -> {
       use source <- result.try(
         simplifile.read(path) |> result.replace_error(Nil),
@@ -1300,6 +1463,7 @@ fn module_source_facts(
         visibility: dict.from_list([
           #(module_path, checker.function_visibility(module)),
         ]),
+        native: checker.native_function_names(module),
       )
     }
   }
@@ -2058,6 +2222,8 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.try(parse_all_files(gleam_files))
   let index = build_module_index(parsed, directory)
+  let stale_externals =
+    stale_project_externals(spec, native_functions_of(index))
 
   // Build a signature registry covering every project module so the checker can
   // do positional argument matching for cross-module polymorphic calls. Hoisted
@@ -2078,7 +2244,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
     |> effects.with_externals(
-      annotation.extract_externals(spec),
+      declaring_externals(spec, stale_externals),
       types.UserExternal,
     )
     |> with_builders(index, dep_sources)
@@ -2143,6 +2309,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       spec,
       public_annotations,
       public_returns,
+      stale_externals,
     ),
     cache_files: list.reverse(cache_files),
   ))
@@ -2956,6 +3123,7 @@ fn with_committed_spec(
   knowledge_base: KnowledgeBase,
   spec: GradedFile,
   declared_modules: Set(String),
+  stale_externals: Set(String),
 ) -> KnowledgeBase {
   knowledge_base
   |> effects.with_inferred(
@@ -2966,7 +3134,7 @@ fn with_committed_spec(
     types.CommittedSpec,
   )
   |> effects.with_inferred_params(drop_declared_modules(
-    effects.load_spec_params_from_file(spec),
+    effects.load_spec_params_from_file(spec, stale_externals),
     declared_modules,
   ))
 }
@@ -3115,6 +3283,27 @@ fn print_warning(file: String, warning: Warning) -> Nil {
         <> ": warning: type "
         <> name
         <> " names no field of any project type — check the module qualifier; the field resolves to [Unknown]",
+      )
+    StaleFunctionExternalWarning(function:) ->
+      io.println(
+        file
+        <> ": warning: external effects "
+        <> function
+        <> " names a function of this package with a Gleam body — the line declares no foreign code and is ignored; the body is walked instead. There is no replacement: fix the source, or widen the check budget",
+      )
+    UnmatchedFunctionExternalWarning(function:) ->
+      io.println(
+        file
+        <> ": warning: external effects "
+        <> function
+        <> " names no dependency, catalog, or project function — check the module qualifier; the declaration covers nothing",
+      )
+    UnmatchedModuleExternalWarning(module:) ->
+      io.println(
+        file
+        <> ": warning: external effects "
+        <> module
+        <> " names no dependency or project module — check the module path; the declaration covers nothing",
       )
   }
 }

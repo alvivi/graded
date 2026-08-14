@@ -895,10 +895,19 @@ pub fn load_spec_effects_from_file(
 // - functions declared `external effects <module>.<function>` record an empty
 //   entry: the external term wins in `all_effects` and is ground by
 //   construction, so any bounds pairing with it come from another source.
+//
+// `stale_externals` names the per-function external lines that declare nothing —
+// those naming one of this package's own ordinary functions. Their `effects`
+// line decides the term, so it decides the bounds too, and they take no empty
+// entry here.
 pub fn load_spec_params_from_file(
   file: types.GradedFile,
+  stale_externals: set.Set(String),
 ) -> Dict(QualifiedName, List(ParamBound)) {
-  let external_functions = annotation.external_function_names(file)
+  let external_functions =
+    set.filter(annotation.external_function_names(file), fn(name) {
+      !set.contains(stale_externals, name)
+    })
   let from_externals =
     set.fold(external_functions, dict.new(), fn(acc, name) {
       case annotation.split_function_name(name) {
@@ -956,7 +965,9 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
       // from its own annotation.
       DepSpec(
         effects: load_spec_effects_from_file(file),
-        params: load_spec_params_from_file(file),
+        // A dependency's per-function external is never stale by this rule: its
+        // own body is the documented case for the line.
+        params: load_spec_params_from_file(file, set.new()),
         returns: load_spec_returns_from_file(file),
         type_fields: annotation.extract_type_fields(file),
         externals: annotation.extract_externals(file),
@@ -1322,7 +1333,9 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
             poly_effects: dict.merge(acc.poly_effects, file_poly_effects),
             poly_params: dict.merge(
               acc.poly_params,
-              load_spec_params_from_file(graded_file),
+              // A catalog entry describes a package graded has no source for,
+              // so none of its externals can be stale by the visible-body rule.
+              load_spec_params_from_file(graded_file, set.new()),
             ),
             type_fields: list.append(
               acc.type_fields,

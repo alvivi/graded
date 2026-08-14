@@ -1684,6 +1684,17 @@ pub fn foreign_functions(
   |> dict.from_list()
 }
 
+// The module's functions whose body is what every caller runs: the ones it
+// defines in Gleam rather than declares `@external`. What tells a per-function
+// `external effects` line that declares real foreign code from one that names a
+// body sitting in plain sight.
+pub fn native_function_names(module: Module) -> Set(String) {
+  module.functions
+  |> list.filter(fn(definition) { !is_opaque_external(definition) })
+  |> list.map(fn(definition) { definition.definition.name })
+  |> set.from_list()
+}
+
 // Every function the module defines, with whether the package exports it. What
 // `graded effect` needs to tell a private name from one this package's source
 // never defined — two cases a hand-written spec line reads the same way, and
