@@ -31,6 +31,12 @@ pub type EffectAnswer {
     term: EffectTerm,
     source: types.EffectSource,
   )
+  // A function whose implementation is foreign code — an `@external` — that
+  // nothing declares. The entries the knowledge base holds for such a name were
+  // inferred over a body the foreign implementation needn't match, so none of
+  // them answers, and the effects are the `[Unknown]` `check` and `why` charge
+  // for it.
+  UndeclaredExternalAnswer(name: String, module: String)
   // A field of a custom type, declared by a `type` line. `module` is `None` for
   // a bare declaration, which is keyed under no module.
   TypeFieldAnswer(
@@ -86,6 +92,9 @@ pub fn render_graded(answer: EffectAnswer) -> String {
       source: types.FunctionEntry(origin:),
       ..,
     ) -> effects_line(name, bounds, term) <> graded_source(origin)
+    UndeclaredExternalAnswer(name:, ..) ->
+      effects_line(name, [], effect_term.unknown())
+      <> "\n// an external with no declared effects"
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
       annotation.format_type_field(TypeFieldAnnotation(
         module:,
@@ -148,6 +157,14 @@ pub fn render_prose(answer: EffectAnswer) -> String {
         ..detail_lines(bounds, module, source)
       ]
       |> string.join("\n")
+    // The same two lines the `check`/`why` vocabulary gives it: what the effects
+    // are, and that nothing declared them.
+    UndeclaredExternalAnswer(name:, ..) ->
+      [
+        name <> " " <> total_effects(effect_term.unknown()),
+        "  source: an external with no declared effects",
+      ]
+      |> string.join("\n")
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
       [field_sentence(module, type_name, field, term), prose_origin(origin)]
       |> string.join("\n")
@@ -206,7 +223,11 @@ fn field_sentence(
 // collapsing it to a set here would report `[Unknown]` for a term that is
 // symbolic, not unresolved, and the two formats would then disagree about what
 // was found rather than about how to say it.
-fn total_effects(term: EffectTerm) -> String {
+//
+// Public so `why`'s header states a function's total in the words `effect`
+// states one in: two commands answering about one function's effects say the
+// same thing about them.
+pub fn total_effects(term: EffectTerm) -> String {
   let normalized = effect_term.normalize(term)
   case ground_labels(normalized) {
     Ok(labels) -> ground_sentence(labels)

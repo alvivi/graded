@@ -2,9 +2,11 @@ import gleam/list
 import gleam/string
 import gleeunit/should
 import graded
+import graded/internal/answer
 import graded/internal/checker
 import graded/internal/cli
 import simplifile
+import support
 
 // The `why` explanation command
 //
@@ -78,7 +80,7 @@ pub fn explains_one_block_per_check_line_test() {
   first
   |> lines
   |> should.equal([
-    "why_target.two_bounds has effects [Stdout, Unknown]",
+    "why_target.two_bounds has effects [Stdout, Unknown]; part of them could not be determined",
     "declared check why_target.two_bounds(f: [Stdout]) : [Stdout]",
     "  calls parameter `f` with effects [Stdout]",
     "  calls `g`, which is neither a bound parameter nor a function in this module, with unresolved effects [Unknown]",
@@ -86,7 +88,7 @@ pub fn explains_one_block_per_check_line_test() {
   second
   |> lines
   |> should.equal([
-    "why_target.two_bounds has effects [Stdout, Unknown]",
+    "why_target.two_bounds has effects [Stdout, Unknown]; part of them could not be determined",
     "declared check why_target.two_bounds(g: [Stdout]) : [Stdout]",
     "  calls `f`, which is neither a bound parameter nor a function in this module, with unresolved effects [Unknown]",
     "  calls parameter `g` with effects [Stdout]",
@@ -112,11 +114,11 @@ pub fn an_opaque_external_is_not_explained_as_pure_test() {
   why("ffi_external.ffi_op")
   |> lines
   |> should.equal([
-    "ffi_external.ffi_op has effects [Unknown]",
+    "ffi_external.ffi_op has effects that could not be determined: [Unknown]",
     "  is an external with no declared effects, with unresolved effects [Unknown]",
   ])
   why("ffi_external.ffi_with_body")
-  |> string.contains("has effects [Unknown]")
+  |> string.contains("has effects that could not be determined: [Unknown]")
   |> should.be_true()
 }
 
@@ -131,7 +133,7 @@ pub fn an_external_declaration_explains_the_external_test() {
     "  is an external with effects [Time] (from your spec's external declaration)",
   ])
   why("local_wired.opaque_read")
-  |> string.contains("has effects []")
+  |> string.contains("is pure — no effects ([])")
   |> should.be_true()
 }
 
@@ -158,7 +160,7 @@ pub fn a_committed_effects_line_does_not_explain_an_external_test() {
   why("external_budget.stale_inferred")
   |> lines
   |> should.equal([
-    "external_budget.stale_inferred has effects [Unknown]",
+    "external_budget.stale_inferred has effects that could not be determined: [Unknown]",
     "declared check external_budget.stale_inferred : []",
     "  is an external with no declared effects, with unresolved effects [Unknown]",
   ])
@@ -172,7 +174,7 @@ pub fn a_declared_unknown_external_names_its_declaration_test() {
   why("external_budget.declared_unknown")
   |> lines
   |> should.equal([
-    "external_budget.declared_unknown has effects [Unknown]",
+    "external_budget.declared_unknown has effects that could not be determined: [Unknown]",
     "  is an external with unresolved effects [Unknown] (from your spec's external declaration)",
   ])
   why("ffi_external.ffi_op")
@@ -192,13 +194,44 @@ pub fn an_external_reads_differently_from_a_call_into_it_test() {
   |> should.be_true()
 }
 
+pub fn a_module_external_explains_an_ordinary_function_test() {
+  // An `external effects <module>` line over a project module declares what
+  // every function under it does, and suppresses inference over their bodies for
+  // every caller. So it answers here too: walking this body would report the
+  // `[]` it contains and contradict the `[Disk]` a caller — and `graded effect` —
+  // is charged for the same name.
+  let root = "build/why_module_external"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "external effects probe : [Disk]\n"),
+    #(
+      "probe.gleam",
+      "pub fn helper() -> Nil {\n  quiet()\n}\n\nfn quiet() -> Nil {\n  Nil\n}\n",
+    ),
+  ])
+  let assert Ok(output) = graded.run_why(root, "probe.helper")
+  output
+  |> lines
+  |> should.equal([
+    "probe.helper has effects [Disk]",
+    "  is an external with effects [Disk] (from a module-level external in your spec)",
+  ])
+  // The one answer, in each command's own words.
+  let assert Ok(effect) =
+    graded.run_effect_formatted(root, "probe.helper", answer.Prose)
+  effect
+  |> string.contains("probe.helper has effects [Disk]")
+  |> should.be_true()
+  support.cleanup(root)
+}
+
 pub fn a_function_with_no_contributors_says_so_test() {
   // The helper is pure, so its caller collects nothing — though it does call
   // something, which is why the line doesn't claim otherwise.
   why("why_target.calls_pure_helper")
   |> lines
   |> should.equal([
-    "why_target.calls_pure_helper has effects []",
+    "why_target.calls_pure_helper is pure — no effects ([])",
     "  has no reachable effect contributors",
   ])
 }

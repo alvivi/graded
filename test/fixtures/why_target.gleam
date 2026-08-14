@@ -25,6 +25,14 @@ fn noisy_helper(message: String) -> Nil {
   io.println(message)
 }
 
+// The same shape under a `check` line (see fixtures.graded): the helper's site
+// is collected once per call, so the budget it blows is reported once — the one
+// line `why` prints for it.
+pub fn checked_calls_helper_twice() -> Nil {
+  noisy_helper("first")
+  noisy_helper("second")
+}
+
 // One helper site, two substitutions: the callback each call passes decides what
 // that site contributes, so the same position reports two different effects.
 pub fn passes_two_callbacks() -> Nil {

@@ -506,7 +506,8 @@ fn with_logger(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
   let assert Ok(main_result) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/main.gleam") })
   let assert [violation, ..] = main_result.violations
-  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Stdout"])))
 
   cleanup(directory)
 }
@@ -551,7 +552,8 @@ pub fn use_resolver() -> Nil {
   let assert Ok(config_result) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/config.gleam") })
   let assert [violation, ..] = config_result.violations
-  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Stdout"])))
   cleanup(directory)
 }
 
@@ -607,7 +609,7 @@ pub fn use_resolver() -> Nil {
   // The residual `ext.raw` effect is not dropped: the field carries [Stdout,
   // Unknown]. A sentinel merge would bind the merged var to io.println and yield
   // just [Stdout], silently dropping the residual — the discriminating case.
-  violation.actual
+  violation.explanation.actual
   |> should.equal(Specific(set.from_list(["Stdout", "Unknown"])))
   cleanup(directory)
 }
@@ -666,7 +668,7 @@ pub fn use_runner() -> Nil {
   let assert [violation, ..] = factory_result.violations
   // Applying the returned closure to `io.println` carries [Stdout, Unknown]: the
   // residual is not captured by the `handler` binder and dropped to [Stdout].
-  violation.actual
+  violation.explanation.actual
   |> should.equal(Specific(set.from_list(["Stdout", "Unknown"])))
   cleanup(directory)
 }
@@ -713,7 +715,8 @@ pub fn use_run() -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/factory.gleam") })
   let assert [violation, ..] = r.violations
-  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Stdout"])))
   cleanup(directory)
 }
 
@@ -765,7 +768,7 @@ pub fn use_run() -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/factory.gleam") })
   let assert [violation, ..] = r.violations
-  violation.actual
+  violation.explanation.actual
   |> should.equal(Specific(set.from_list(["Stdout", "Unknown"])))
   cleanup(directory)
 }
@@ -818,7 +821,8 @@ pub fn use_field() -> Nil {
   let assert Ok(c_result) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/c.gleam") })
   let assert [violation, ..] = c_result.violations
-  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Stdout"])))
   cleanup(directory)
 }
 
@@ -874,7 +878,8 @@ pub fn use_field() -> Nil {
   let assert Ok(c_result) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/c.gleam") })
   let assert [violation, ..] = c_result.violations
-  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Stdout"])))
   cleanup(directory)
 }
 
@@ -912,7 +917,8 @@ pub fn use_field(r: Rec) -> Nil {
     list.find(results, fn(r) { string.ends_with(r.file, "app/factory.gleam") })
   let assert [violation, ..] = r.violations
   // No summary for the un-annotated producer → the field is [Unknown].
-  violation.actual |> should.equal(Specific(set.from_list(["Unknown"])))
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Unknown"])))
   cleanup(directory)
 }
 
@@ -954,7 +960,8 @@ pub fn run() -> Nil {
   let assert Ok(a_result) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/a.gleam") })
   let assert [violation, ..] = a_result.violations
-  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Stdout"])))
 
   cleanup(directory)
 }
@@ -1179,7 +1186,7 @@ pub fn run_resolves_absolute_path_dependency_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "src/main.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
-  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  v.explanation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 
   cleanup(dep_dir)
   cleanup(app_dir)
@@ -1243,7 +1250,7 @@ pub fn caller(resolver: fn() -> Nil) -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "src/main.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  v.explanation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 
   cleanup(dep_dir)
   cleanup(app_dir)
@@ -1321,7 +1328,7 @@ pub fn run() -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "src/main.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
-  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  v.explanation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 
   cleanup(dep_dir)
   cleanup(app_dir)
@@ -1623,7 +1630,7 @@ fn field_module_actual(directory: String) -> EffectSet {
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/consumer.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
-  v.actual
+  v.explanation.actual
 }
 
 // A consumer whose own same-named function is *pure* must not silence the
@@ -1722,7 +1729,7 @@ pub fn run() -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/consumer.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
-  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  v.explanation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 
   cleanup(directory)
 }
@@ -1804,7 +1811,7 @@ pub fn leak() -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "src/app.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "leak" })
-  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  v.explanation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 
   cleanup(root)
 }
