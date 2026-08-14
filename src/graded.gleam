@@ -1174,12 +1174,8 @@ fn spec_answer(
       // source, not of the spec — and one an `effects` line left behind for an
       // `@external` would otherwise be read as answering. One file is parsed to
       // settle it: the module the queried name lives in.
-      let knowledge_base =
-        effects.with_foreign_functions(
-          knowledge_base,
-          foreign_functions_of(project_modules, module),
-        )
-      answer_from(knowledge_base, name)
+      use foreign <- result.try(foreign_functions_of(project_modules, module))
+      answer_from(effects.with_foreign_functions(knowledge_base, foreign), name)
     }
     // Not a function name — only a type field can answer. A spec `type` line is
     // merged last of all, so an entry under the queried name's *own* module is
@@ -1231,23 +1227,31 @@ fn project_module_files(directory: String) -> Dict(String, String) {
   }
 }
 
-// The `@external` functions of one project module, parsed on demand. Empty for
-// a module that is not this package's or that does not parse — the fast path
-// then answers from the spec alone, as it did before the file was consulted.
+// The `@external` functions of one project module, parsed on demand.
+//
+// Three outcomes, not two. A module that is not this package's has no such
+// facts and never will: `Ok` with none, and the spec answers alone as it did
+// before any file was consulted. One of this package's that parses answers with
+// what its source says. One of this package's that will not read or parse is
+// `Error(Nil)`: the fast path declines the whole question rather than answer
+// from the spec, because the full context would report the parse failure
+// instead — and a fast-path answer is only correct if it is what the full
+// context would have said.
 fn foreign_functions_of(
   project_modules: Dict(String, String),
   module_path: String,
-) -> Dict(QualifiedName, types.ForeignFunction) {
-  let parsed = {
-    use path <- result.try(
-      dict.get(project_modules, module_path) |> result.replace_error(Nil),
-    )
-    use source <- result.try(simplifile.read(path) |> result.replace_error(Nil))
-    glance.module(source) |> result.replace_error(Nil)
-  }
-  case parsed {
-    Ok(module) -> checker.foreign_functions(module, module_path)
-    Error(Nil) -> dict.new()
+) -> Result(Dict(QualifiedName, types.ForeignFunction), Nil) {
+  case dict.get(project_modules, module_path) {
+    Error(Nil) -> Ok(dict.new())
+    Ok(path) -> {
+      use source <- result.try(
+        simplifile.read(path) |> result.replace_error(Nil),
+      )
+      use module <- result.map(
+        glance.module(source) |> result.replace_error(Nil),
+      )
+      checker.foreign_functions(module, module_path)
+    }
   }
 }
 

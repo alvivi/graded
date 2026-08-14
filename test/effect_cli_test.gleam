@@ -550,3 +550,59 @@ fn directory_snapshot(path: String) -> Result(List(#(String, String)), Nil) {
   |> list.map(fn(file) { #(file, simplifile.read(file) |> result.unwrap("")) })
   |> Ok
 }
+
+// A module that will not parse
+//
+// The fast path answers from the spec alone only where the spec's word is
+// final. It cannot be final about a module graded could not read, since the
+// full context reports the parse failure instead of any effect at all.
+
+pub fn an_unparseable_project_module_declines_the_fast_path_test() {
+  // `graded check` on this tree errors; `graded effect` must too, rather than
+  // quote the committed line for a module nothing could confirm it describes.
+  let project =
+    write_fixture("/tmp/graded_effect_unparseable", [
+      #("gleam.toml", "name = \"probe\"\nversion = \"1.0.0\"\n"),
+      #("probe.graded", "effects broken.foo : []\n"),
+      #(
+        "src/broken.gleam",
+        "pub fn foo() -> Nil {\n  this is not gleam !!\n}\n",
+      ),
+    ])
+  let broken = filepath.join(project, "src/broken.gleam")
+  let parse_failure = fn(answer) {
+    case answer {
+      Error(graded.GleamParseError(path:, ..)) -> path
+      _ -> "answered"
+    }
+  }
+
+  graded.run_effect(project, "broken.foo")
+  |> parse_failure
+  |> should.equal(broken)
+  graded.run_effect_from_project(project, "broken.foo")
+  |> parse_failure
+  |> should.equal(broken)
+  cleanup(project)
+}
+
+pub fn a_module_outside_the_package_still_answers_from_the_spec_test() {
+  // The other half of the tri-state: a module that is not this package's has no
+  // source to consult and never will, so the spec answers alone — the parse
+  // that settles a *project* module's foreign names is not attempted at all.
+  let project =
+    write_fixture("/tmp/graded_effect_foreign_module", [
+      #("gleam.toml", "name = \"probe\"\nversion = \"1.0.0\"\n"),
+      #("probe.graded", "external effects other/mod.bar : [Disk]\n"),
+      #("src/app.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+    ])
+  let expected =
+    Ok(
+      "effects other/mod.bar : [Disk]\n// resolved from your spec's external declaration",
+    )
+
+  graded.run_effect(project, "other/mod.bar") |> should.equal(expected)
+  graded.run_effect_from_project(project, "other/mod.bar")
+  |> should.equal(expected)
+  cleanup(project)
+}
