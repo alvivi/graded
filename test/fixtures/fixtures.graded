@@ -88,11 +88,14 @@ check provenance_computed_deep.caller : []
 check provenance_external.caller : []
 check why_target.two_bounds(f: [Stdout]) : [Stdout]
 check why_target.two_bounds(g: [Stdout]) : [Stdout]
+check why_target.checked_calls_helper_twice : []
 // Budgets on the externals themselves, checked against what declares them.
 check external_budget.declared_over_budget : []
 check external_budget.declared_within_budget : [Time]
 check external_budget.undeclared : []
 check external_budget.stale_inferred : []
+// A budget on a caller of an external, checked against the same declaration.
+check external_budget.wrapper : []
 
 // External effects (third-party / FFI functions graded can't see into).
 external effects external_same_module.now : [Time]

@@ -367,11 +367,20 @@ declares the external. Whether the foreign code matches its declaration is the
 FFI author's to establish — graded checks the budget against what was declared,
 and `graded why myapp/ffi.now` reports the same, as `is an external with …`.
 
+The one body graded does weigh is a Gleam fallback an `@external` reaches on a
+target it declares no implementation for: `@external(javascript, …)` on a
+function with a body means that body is what runs on Erlang, so the budget covers
+both the declaration and the fallback. An `@external` for every target it is
+compiled for (both, or the one a `@target` narrows it to) is answered by the
+declaration alone.
+
 Only an `external effects` line, a module-level external, or a catalog entry
 declares an external. An `effects` line does not, whatever it says: for an
 `@external` it is inference over a body the foreign implementation needn't
 match, so a function that became an `@external` after the spec was written is
-checked against `[Unknown]`, not against the `effects` line it left behind.
+checked against `[Unknown]`, not against the `effects` line it left behind — and
+so is every *call* into it, so `check`, `why`, `graded effect` and a caller's
+budget all report one name the same way.
 Declaring `external effects myapp/ffi.now : [Unknown]` is still a declaration —
 it names itself as the source rather than reporting the external as undeclared.
 

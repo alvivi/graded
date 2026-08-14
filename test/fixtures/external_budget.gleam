@@ -33,6 +33,14 @@ pub fn undeclared() -> Nil {
 @external(erlang, "some_ffi_module", "clock")
 pub fn stale_inferred() -> Nil
 
+// A caller of the external the stale line names. A call into foreign code is
+// charged what declares that code, exactly as the external's own `check` line
+// is, so this inherits the `[Unknown]` and not the line's `[]`.
+@target(erlang)
+pub fn wrapper() -> Nil {
+  stale_inferred()
+}
+
 // Declared `[Unknown]` on purpose — an admission that the effect isn't known,
 // which is still a declaration and still names the line it came from.
 @target(erlang)

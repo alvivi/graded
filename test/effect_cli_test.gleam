@@ -48,6 +48,34 @@ pub fn function_known_as_unknown_is_found_test() {
   )
 }
 
+pub fn a_committed_effects_line_does_not_answer_for_an_external_test() {
+  // The spec carries `effects external_budget.stale_inferred : []`, left behind
+  // by a function that became an `@external`. It is inference over a body the
+  // foreign implementation needn't match, so it answers here no more than it
+  // answers `check` or `why`: the query reports the same `[Unknown]` those do,
+  // and credits no source for it.
+  lookup("external_budget.stale_inferred")
+  |> should.equal(
+    "effects external_budget.stale_inferred : [Unknown]\n// an external with no declared effects",
+  )
+  let assert Ok(prose) =
+    graded.run_effect_formatted(
+      fixtures,
+      "external_budget.stale_inferred",
+      answer.Prose,
+    )
+  prose
+  |> should.equal(
+    "external_budget.stale_inferred has effects that could not be determined: [Unknown]\n  source: an external with no declared effects",
+  )
+  // A declaration still answers: the rule is about which entry won, not about
+  // the name.
+  lookup("external_budget.declared_within_budget")
+  |> should.equal(
+    "effects external_budget.declared_within_budget : [Time]\n// resolved from your spec's external declaration",
+  )
+}
+
 pub fn declared_type_field_test() {
   lookup("opaque_receiver.Validator.to_error")
   |> should.equal(
@@ -223,6 +251,10 @@ pub fn spec_fast_path_matches_the_full_project_context_test() {
     "fake_clock.now",
     "opaque_receiver.Validator.to_error",
     "external_same_module.read_clock",
+    // An `@external` the spec carries a stale `effects` line for: which of this
+    // package's functions are foreign is a fact of its source, so the fast path
+    // has to consult that source to answer it as the full context does.
+    "external_budget.stale_inferred",
     "no_such.thing",
   ]
   |> list.each(fn(name) {

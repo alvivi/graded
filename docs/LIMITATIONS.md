@@ -318,7 +318,9 @@ or declare the budget explicitly (`check app.caller : [_]`, or the precise set).
 
 graded can't see across an `@external` boundary, so FFI functions are `[Unknown]`
 — even when the declaration carries a pure-looking Gleam fallback body, since the
-foreign implementation may do anything. The same applies to dependencies that ship
+foreign implementation may do anything. (A fallback body an `@external` reaches on
+a target it declares no implementation for is ordinary Gleam that runs, so a
+`check` line on the function covers it as well as the declaration.) The same applies to dependencies that ship
 no `.graded` spec and aren't in the bundled catalog, and to dynamically dispatched
 calls.
 

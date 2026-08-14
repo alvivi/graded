@@ -586,23 +586,30 @@ pub type DirectPipeOp {
 // The violations and warnings the checker reports, and the per-file result
 // that carries them.
 
-// A single effect violation: an annotated function called something
-// that exceeds its declared effect budget.
+// One reachable effect contributor of a function body: the call site, its
+// position, the ground effect set it contributes, and why the set stayed
+// unresolved or which source answered.
 //
 // `reason` and `origin` are what the resolver recorded about this call: why its
 // effect could not be resolved, and which knowledge-base source answered.
 // Either may be absent — a call whose kind already states the whole story
 // records no reason, and a term no source keyed carries no origin.
-pub type Violation {
-  Violation(
-    function: String,
+pub type CallExplanation {
+  CallExplanation(
     call: QualifiedName,
     span: Span,
-    declared: EffectSet,
     actual: EffectSet,
     reason: Option(UnknownReason),
     origin: Option(LookupOrigin),
   )
+}
+
+// A single effect violation: an annotated function called something that
+// exceeds its declared effect budget. The call is held as the explanation
+// `why` prints for it, so a violation states what a contributor states and the
+// two can't drift apart.
+pub type Violation {
+  Violation(function: String, declared: EffectSet, explanation: CallExplanation)
 }
 
 // A warning surfaced during checking.

@@ -248,7 +248,7 @@ pub fn pack_consumer_resolves_injected_spec_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "src/main.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
-  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  v.explanation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 
   cleanup(dep_root)
   cleanup(consumer)

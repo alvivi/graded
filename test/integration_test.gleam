@@ -14,6 +14,7 @@ import graded/internal/effects
 import graded/internal/signatures
 import graded/internal/types
 import simplifile
+import support
 
 // Baseline fixture checks
 //
@@ -87,7 +88,7 @@ pub fn impure_view_fails_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("view")
-  v.call.function |> should.equal("println")
+  v.explanation.call.function |> should.equal("println")
 }
 
 pub fn transitive_violation_detected_test() {
@@ -115,7 +116,7 @@ pub fn validator_flow_violation_detected_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.call.function |> should.equal("println")
+  v.explanation.call.function |> should.equal("println")
 }
 
 pub fn factory_field_violation_detected_test() {
@@ -130,7 +131,7 @@ pub fn factory_field_violation_detected_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.call.function |> should.equal("println")
+  v.explanation.call.function |> should.equal("println")
 }
 
 pub fn inline_construction_field_resolves_through_construction_test() {
@@ -148,7 +149,8 @@ pub fn inline_construction_field_resolves_through_construction_test() {
     })
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn field_union_polymorphic_on_param_receiver_test() {
@@ -166,7 +168,8 @@ pub fn field_union_polymorphic_on_param_receiver_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 // External functions
@@ -186,7 +189,8 @@ pub fn external_is_unknown_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 pub fn external_same_module_declared_effects_test() {
@@ -204,7 +208,7 @@ pub fn external_same_module_declared_effects_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("read_clock")
-  v.actual |> should.equal(types.Specific(set.from_list(["Time"])))
+  v.explanation.actual |> should.equal(types.Specific(set.from_list(["Time"])))
 }
 
 pub fn check_line_on_an_external_checks_its_declaration_test() {
@@ -220,13 +224,17 @@ pub fn check_line_on_an_external_checks_its_declaration_test() {
   r.violations
   |> list.map(fn(v) { v.function })
   |> list.sort(string.compare)
-  |> should.equal(["declared_over_budget", "stale_inferred", "undeclared"])
+  |> should.equal([
+    "declared_over_budget", "stale_inferred", "undeclared", "wrapper",
+  ])
   let assert Ok(declared) =
     list.find(r.violations, fn(v) { v.function == "declared_over_budget" })
-  declared.actual |> should.equal(types.Specific(set.from_list(["Time"])))
+  declared.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Time"])))
   let assert Ok(undeclared) =
     list.find(r.violations, fn(v) { v.function == "undeclared" })
-  undeclared.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  undeclared.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 pub fn a_committed_effects_line_does_not_declare_an_external_test() {
@@ -240,11 +248,131 @@ pub fn a_committed_effects_line_does_not_declare_an_external_test() {
     list.find(results, fn(r) { r.file == "test/fixtures/external_budget.gleam" })
   let assert Ok(stale) =
     list.find(r.violations, fn(v) { v.function == "stale_inferred" })
-  stale.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
-  stale.reason |> should.equal(Some(types.UndeclaredExternal))
+  stale.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  stale.explanation.reason |> should.equal(Some(types.UndeclaredExternal))
   // No source is named: the committed line is not the answer, so crediting it
   // would point at a line that proves nothing.
-  stale.origin |> should.equal(None)
+  stale.explanation.origin |> should.equal(None)
+}
+
+pub fn a_caller_of_an_external_is_charged_what_declares_it_test() {
+  // The caller of an external the spec carries a stale `effects` line for. The
+  // line does not answer for the external, so it may not answer for a call into
+  // it either: the caller is charged the same `[Unknown]`, not the `[]` that
+  // would let a budget pass on the strength of a line nothing backs.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/external_budget.gleam" })
+  let assert Ok(wrapper) =
+    list.find(r.violations, fn(v) { v.function == "wrapper" })
+  wrapper.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  wrapper.explanation.reason |> should.equal(Some(types.UndeclaredExternal))
+  wrapper.explanation.origin |> should.equal(None)
+  // The same call, from the other side of a module boundary.
+  let root = "build/external_cross_module_caller"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "check app.wrapper : []\neffects ffi.clock : []\n"),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"clock\")\npub fn clock() -> Nil\n",
+    ),
+    #(
+      "app.gleam",
+      "import ffi\n\npub fn wrapper() -> Nil {\n  ffi.clock()\n}\n",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  violation.explanation.reason |> should.equal(Some(types.UndeclaredExternal))
+  support.cleanup(root)
+}
+
+pub fn a_target_conditional_fallback_body_is_checked_test() {
+  // An `@external` covering one target only: on the other, its Gleam body is
+  // what runs. The declaration answers for callers, but the body is ordinary
+  // code nothing else weighs, so the budget covers both — a fallback that reads
+  // the disk fails a `[]` budget its declaration alone would pass.
+  let root = "build/external_target_fallback"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check ext.log : []\nexternal effects ext.log : []\nexternal effects ext.sink : [Disk]\n",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"log\")
+pub fn log() -> Nil {
+  sink()
+}
+
+@external(erlang, \"ext_ffi\", \"sink\")
+@external(javascript, \"ext_ffi\", \"sink\")
+fn sink() -> Nil
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("log")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn an_external_covering_every_target_is_not_walked_test() {
+  // The same fallback body under `@external` declarations for both targets: it
+  // can never run, so the declaration is the whole answer and the `[]` budget
+  // holds.
+  let root = "build/external_every_target"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check ext.log : []\nexternal effects ext.log : []\nexternal effects ext.sink : [Disk]\n",
+    ),
+    #(
+      "ext.gleam",
+      "@external(erlang, \"ext_ffi\", \"log\")
+@external(javascript, \"ext_ffi\", \"log\")
+pub fn log() -> Nil {
+  sink()
+}
+
+@external(erlang, \"ext_ffi\", \"sink\")
+@external(javascript, \"ext_ffi\", \"sink\")
+fn sink() -> Nil
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  r.violations |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn one_helper_called_twice_is_reported_once_test() {
+  // Two calls into one helper collect that helper's single site twice, and both
+  // copies say the same thing. `why` prints one line for it, so `check` reports
+  // one violation for it.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/why_target.gleam" })
+  r.violations
+  |> list.filter(fn(v) { v.function == "checked_calls_helper_twice" })
+  |> list.map(fn(v) { checker.format_violation(r.file, v) })
+  |> list.length
+  |> should.equal(1)
 }
 
 // Opaque receivers and field bounds
@@ -268,7 +396,8 @@ pub fn opaque_receiver_violation_detected_test() {
   v.function |> should.equal("run")
   // Crucially the effect is the precise [Stdout] (resolved via the type
   // annotation), not the [Unknown] graded would fall back to without girard.
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn field_bound_resolves_untraceable_receiver_test() {
@@ -284,7 +413,8 @@ pub fn field_bound_resolves_untraceable_receiver_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("caller")
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn opaque_fn_typed_field_discharges_via_bound_test() {
@@ -297,7 +427,8 @@ pub fn opaque_fn_typed_field_discharges_via_bound_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/opaque_field.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "exec" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn opaque_fn_typed_field_unbound_is_unknown_test() {
@@ -311,7 +442,8 @@ pub fn opaque_fn_typed_field_unbound_is_unknown_test() {
     list.find(results, fn(r) { r.file == "test/fixtures/opaque_field.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "exec_unbound" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 pub fn opaque_fn_typed_field_round_trips_as_field_bound_test() {
@@ -362,7 +494,8 @@ pub fn annotate(options: Options) -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "proj.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "annotate" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 pub fn field_call_record_update_inherited_field_is_unknown_test() {
@@ -403,7 +536,8 @@ pub fn use_it() -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "proj.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "use_it" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 // Infer the opaque_field fixture module in isolation and return its public
@@ -443,7 +577,8 @@ pub fn factory_forward_resolves_through_factory_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn factory_forward_resolves_through_inline_constructor_test() {
@@ -454,7 +589,8 @@ pub fn factory_forward_resolves_through_inline_constructor_test() {
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "caller_ctor" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn factory_forward_resolves_through_labeled_factory_test() {
@@ -465,7 +601,8 @@ pub fn factory_forward_resolves_through_labeled_factory_test() {
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "caller_labeled" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn factory_forward_resolves_through_shorthand_factory_test() {
@@ -477,7 +614,8 @@ pub fn factory_forward_resolves_through_shorthand_factory_test() {
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "caller_shorthand" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn factory_forward_marker_survives_sibling_source_test() {
@@ -494,7 +632,8 @@ pub fn factory_forward_marker_survives_sibling_source_test() {
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "mixed_caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn factory_forward_resolves_through_factory_alias_test() {
@@ -508,7 +647,8 @@ pub fn factory_forward_resolves_through_factory_alias_test() {
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "caller_alias" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn factory_forward_resolves_through_constructor_alias_test() {
@@ -520,7 +660,8 @@ pub fn factory_forward_resolves_through_constructor_alias_test() {
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "caller_ctor_alias" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn factory_forward_resolves_through_nested_construction_test() {
@@ -533,7 +674,8 @@ pub fn factory_forward_resolves_through_nested_construction_test() {
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "caller_nested" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn factory_forward_computed_alias_stays_unknown_test() {
@@ -546,7 +688,8 @@ pub fn factory_forward_computed_alias_stays_unknown_test() {
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "caller_computed_alias" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 pub fn factory_forward_shadowed_alias_stays_unknown_test() {
@@ -560,7 +703,8 @@ pub fn factory_forward_shadowed_alias_stays_unknown_test() {
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "caller_shadow" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 pub fn factory_forward_computed_receiver_resolves_test() {
@@ -574,7 +718,8 @@ pub fn factory_forward_computed_receiver_resolves_test() {
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "caller_computed" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn factory_forward_round_trips_as_param_bound_test() {
@@ -628,7 +773,7 @@ pub fn nested_field_resolves_via_type_line_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/nested_field.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "via_type" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Disk"])))
+  v.explanation.actual |> should.equal(types.Specific(set.from_list(["Disk"])))
 }
 
 pub fn nested_field_discharges_via_dotted_bound_test() {
@@ -641,7 +786,8 @@ pub fn nested_field_discharges_via_dotted_bound_test() {
     list.find(results, fn(r) { r.file == "test/fixtures/nested_field.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "via_bound" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn nested_field_unbound_is_unknown_test() {
@@ -653,7 +799,8 @@ pub fn nested_field_unbound_is_unknown_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/nested_field.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "unbound" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 // Synthesized-project helpers
@@ -818,7 +965,8 @@ pub fn field_effect_forwarding_unbound_check_stays_unknown_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "one_hop" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 pub fn field_effect_forwarding_bound_check_uses_forwarded_bound_test() {
@@ -832,7 +980,8 @@ pub fn field_effect_forwarding_bound_check_uses_forwarded_bound_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "one_hop" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 // Cross-module provenance
@@ -872,7 +1021,8 @@ pub fn provenance_cross_module_getter_resolves_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_cross_module_getter_over_construction_resolves_test() {
@@ -907,7 +1057,8 @@ pub fn provenance_cross_module_getter_over_construction_resolves_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_cross_module_rebuild_resolves_test() {
@@ -942,7 +1093,8 @@ pub fn provenance_cross_module_rebuild_resolves_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_cross_module_labeled_resolves_test() {
@@ -977,7 +1129,8 @@ pub fn provenance_cross_module_labeled_resolves_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 // Receiver-path forwarding
@@ -1097,7 +1250,8 @@ pub fn receiver_path_forwarding_unbound_check_stays_unknown_test() {
     list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "forward_path" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 pub fn receiver_path_forwarding_bound_check_discharges_test() {
@@ -1112,7 +1266,8 @@ pub fn receiver_path_forwarding_bound_check_discharges_test() {
     list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "forward_path" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn receiver_path_forwarding_computed_receiver_resolves_test() {
@@ -1188,7 +1343,8 @@ pub fn receiver_path_forwarding_alias_bound_check_discharges_test() {
     list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "forward_alias" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn receiver_path_forwarding_param_alias_bound_check_discharges_test() {
@@ -1204,7 +1360,8 @@ pub fn receiver_path_forwarding_param_alias_bound_check_discharges_test() {
     list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "forward_param_alias" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 // Field-call shape variants
@@ -1247,7 +1404,7 @@ pub fn nested_field_pipe_target_resolves_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/pipe_field.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "via_pipe" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Disk"])))
+  v.explanation.actual |> should.equal(types.Specific(set.from_list(["Disk"])))
 }
 
 pub fn alias_typed_field_round_trips_as_field_bound_test() {
@@ -1336,7 +1493,8 @@ pub fn nested_field_resolves_cross_module_type_line_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/handler.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "handle" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Storage", "Time"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Storage", "Time"])))
 
   let _ = simplifile.delete(root)
   Nil
@@ -1359,7 +1517,8 @@ pub fn closure_field_effect_from_construction_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn operator_typed_closure_field_test() {
@@ -1373,7 +1532,8 @@ pub fn operator_typed_closure_field_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn inferred_field_effect_from_construction_test() {
@@ -1389,7 +1549,8 @@ pub fn inferred_field_effect_from_construction_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn local_field_value_resolved_test() {
@@ -1404,7 +1565,8 @@ pub fn local_field_value_resolved_test() {
   { r.violations != [] } |> should.be_true()
   let assert [v, ..] = r.violations
   v.function |> should.equal("run")
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 // Same-module wiring
@@ -1584,7 +1746,8 @@ effects dep.with_resolver : []
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 
   let _ = simplifile.delete(root)
   Nil
@@ -1618,7 +1781,7 @@ pub fn builder_field_whole_caller_union_test() {
     r.violations
     |> list.filter(fn(v) { v.function == "run_union" })
     |> list.fold(set.new(), fn(acc, v) {
-      case v.actual {
+      case v.explanation.actual {
         types.Specific(labels) -> set.union(acc, labels)
         _ -> acc
       }
@@ -1632,7 +1795,7 @@ fn fixture_actual(file: String, function: String) -> types.EffectSet {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/" <> file })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == function })
-  v.actual
+  v.explanation.actual
 }
 
 fn builder_field_actual(function: String) -> types.EffectSet {
@@ -1788,7 +1951,8 @@ pub fn named_fn_arg_resolves_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/named_fn_arg.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn labeled_callback_resolves_test() {
@@ -1802,7 +1966,8 @@ pub fn labeled_callback_resolves_test() {
       r.file == "test/fixtures/labeled_callback.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn record_update_field_walked_test() {
@@ -1815,7 +1980,8 @@ pub fn record_update_field_walked_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/record_update.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn shadowed_param_resolves_through_bound_test() {
@@ -1916,7 +2082,7 @@ pub fn run_resolves_deps_from_target_dir_test() {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Http"])))
+  v.explanation.actual |> should.equal(types.Specific(set.from_list(["Http"])))
 
   let assert Ok(Nil) = simplifile.delete(root)
 }
@@ -2003,7 +2169,8 @@ pub fn path_dep_hof_param_discharges_from_source_test() {
   // bound — not a leaked variable, not [Unknown].
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "caller_impure" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 
   let _ = simplifile.delete(app_root)
   let _ = simplifile.delete("build/pd_src_dep")
@@ -2025,7 +2192,8 @@ pub fn path_dep_hof_param_discharges_from_spec_test() {
   |> should.be_false()
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "caller_impure" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 
   let _ = simplifile.delete(app_root)
   let _ = simplifile.delete("build/pd_spec_dep")
@@ -2141,7 +2309,8 @@ pub fn path_dep_module_level_external_preserves_effect_test() {
       "import dep\n\npub fn caller() -> Nil {\n  dep.touch()\n}\n",
     )
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Database"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Database"])))
 }
 
 // The dep source and consumer call the three shipped-external tests share: an
@@ -2166,8 +2335,8 @@ pub fn path_dep_shipped_function_external_resolves_test() {
       ffi_caller_src,
     )
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Time"])))
-  v.origin |> should.equal(Some(types.PathDependency("dep")))
+  v.explanation.actual |> should.equal(types.Specific(set.from_list(["Time"])))
+  v.explanation.origin |> should.equal(Some(types.PathDependency("dep")))
 }
 
 pub fn path_dep_shipped_module_external_resolves_test() {
@@ -2182,8 +2351,8 @@ pub fn path_dep_shipped_module_external_resolves_test() {
       ffi_caller_src,
     )
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Time"])))
-  v.origin
+  v.explanation.actual |> should.equal(types.Specific(set.from_list(["Time"])))
+  v.explanation.origin
   |> should.equal(
     Some(types.ModuleExternalOrigin(source: types.PathDependency("dep"))),
   )
@@ -2202,8 +2371,9 @@ pub fn consumer_module_external_beats_a_shipped_one_test() {
       ffi_caller_src,
     )
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Mocked"])))
-  v.origin
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Mocked"])))
+  v.explanation.origin
   |> should.equal(Some(types.ModuleExternalOrigin(source: types.UserExternal)))
 }
 
@@ -2369,7 +2539,8 @@ pub fn project_module_level_external_preserves_effect_test() {
       "import db\n\npub fn caller() -> Nil {\n  db.touch()\n}\n",
     )
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Database"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Database"])))
 }
 
 pub fn project_module_external_propagates_through_wrapper_test() {
@@ -2500,7 +2671,8 @@ pub fn path_dep_type_field_resolves_from_consumer_spec_test() {
     )
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "use_field" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Storage"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Storage"])))
 }
 
 pub fn path_dep_ships_type_field_test() {
@@ -2547,7 +2719,8 @@ pub fn path_dep_ships_type_field_test() {
     list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "use_field" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Storage"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Storage"])))
 
   let _ = simplifile.delete(app_root)
   let _ = simplifile.delete(dep_root)
@@ -2591,7 +2764,8 @@ pub fn installed_dep_ships_type_field_test() {
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert Ok(v) =
     list.find(r.violations, fn(v) { v.function == "use_field" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Storage"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Storage"])))
 
   let _ = simplifile.delete(root)
   Nil
@@ -2615,7 +2789,8 @@ pub fn provenance_passthrough_resolves_test() {
       r.file == "test/fixtures/provenance_passthrough.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_getter_resolves_test() {
@@ -2629,7 +2804,8 @@ pub fn provenance_getter_resolves_test() {
       r.file == "test/fixtures/provenance_getter.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_rebuild_resolves_test() {
@@ -2646,7 +2822,8 @@ pub fn provenance_rebuild_resolves_test() {
       r.file == "test/fixtures/provenance_rebuild.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_partial_build_resolves_test() {
@@ -2664,7 +2841,8 @@ pub fn provenance_partial_build_resolves_test() {
       r.file == "test/fixtures/provenance_partial.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_shorthand_build_resolves_test() {
@@ -2679,7 +2857,8 @@ pub fn provenance_shorthand_build_resolves_test() {
       r.file == "test/fixtures/provenance_shorthand.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_labeled_resolves_test() {
@@ -2696,7 +2875,8 @@ pub fn provenance_labeled_resolves_test() {
       r.file == "test/fixtures/provenance_labeled.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_labeled_reorder_maps_position_test() {
@@ -2732,7 +2912,8 @@ pub fn caller(resolver: fn() -> Nil) -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_binding_resolves_test() {
@@ -2748,7 +2929,8 @@ pub fn provenance_binding_resolves_test() {
       r.file == "test/fixtures/provenance_binding.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_recursion_resolves_test() {
@@ -2764,7 +2946,8 @@ pub fn provenance_recursion_resolves_test() {
       r.file == "test/fixtures/provenance_recursion.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_branch_resolves_test() {
@@ -2779,7 +2962,8 @@ pub fn provenance_branch_resolves_test() {
       r.file == "test/fixtures/provenance_branch.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_branch_of_paths_resolves_test() {
@@ -2795,7 +2979,8 @@ pub fn provenance_branch_of_paths_resolves_test() {
       r.file == "test/fixtures/provenance_branch_path.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_branch_of_builds_resolves_test() {
@@ -2811,7 +2996,8 @@ pub fn provenance_branch_of_builds_resolves_test() {
       r.file == "test/fixtures/provenance_branch_build.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
 pub fn provenance_computed_deep_stays_unknown_test() {
@@ -2824,7 +3010,8 @@ pub fn provenance_computed_deep_stays_unknown_test() {
       r.file == "test/fixtures/provenance_computed_deep.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
 pub fn provenance_external_stays_unknown_test() {
@@ -2837,5 +3024,6 @@ pub fn provenance_external_stays_unknown_test() {
       r.file == "test/fixtures/provenance_external.gleam"
     })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }

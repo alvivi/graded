@@ -7,7 +7,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/order
 import gleam/result
-import gleam/set
+import gleam/set.{type Set}
 import gleam/string
 import graded/internal/annotation
 import graded/internal/config
@@ -82,6 +82,13 @@ pub type KnowledgeBase {
     // at the function's inference time and threaded forward by the topological
     // pass. (Same-module private helpers resolve on demand from the AST instead.)
     provenance: Dict(QualifiedName, ReturnProvenance),
+    // The functions whose implementation is foreign code — the `@external`
+    // declarations of the source under analysis. An entry here says nothing about
+    // a name's effects; it says that only a *declaration* speaks for them, since
+    // every other entry the base holds for one describes a body the foreign
+    // implementation needn't match. Weighed by `checker.undeclared_external`, so
+    // one name reads the same to `check`, `why`, `effect` and every caller.
+    foreign_functions: Set(QualifiedName),
   )
 }
 
@@ -113,6 +120,8 @@ pub fn load_knowledge_base(
     // module, matching `all_effects`.
     module_effects: dict.merge(cat_module_effects, deps.module_effects),
     provenance: dict.new(),
+    // Scanned from the source under analysis, which no dependency spec carries.
+    foreign_functions: set.new(),
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
@@ -132,6 +141,7 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     updates: dict.new(),
     module_effects: dict.new(),
     provenance: dict.new(),
+    foreign_functions: set.new(),
   )
 }
 
@@ -149,6 +159,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     updates: dict.new(),
     module_effects: cat_module_effects,
     provenance: dict.new(),
+    foreign_functions: set.new(),
   )
   |> with_sourced_type_fields(cat_type_fields)
 }
@@ -293,6 +304,30 @@ pub fn origin_of(source: types.EffectSource) -> LookupOrigin {
     types.FunctionEntry(origin:) -> origin
     types.ModuleExternalEntry(origin:) -> origin
   }
+}
+
+// Record the functions whose implementation is foreign code: the `@external`
+// declarations of the source under analysis. Unioned with what is already
+// recorded, so a caller scanning a second set of modules adds to it.
+pub fn with_foreign_functions(
+  knowledge_base: KnowledgeBase,
+  names: Set(QualifiedName),
+) -> KnowledgeBase {
+  KnowledgeBase(
+    ..knowledge_base,
+    foreign_functions: set.union(knowledge_base.foreign_functions, names),
+  )
+}
+
+// Whether `name`'s implementation is foreign code, so that only a declaration
+// speaks for its effects. False for a name from source nobody scanned: the base
+// reports what it was told, and a caller that wants the rule applied to an
+// `@external` it holds the definition of applies it from that definition.
+pub fn is_foreign_function(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  set.contains(knowledge_base.foreign_functions, name)
 }
 
 // Look up effects as an `EffectTerm`, returning `[Unknown]` for unrecognized

@@ -79,7 +79,8 @@ pub fn view() { io.println(\"oops\") }"
   violations |> list.length() |> should.equal(1)
   let assert [violation] = violations
   violation.function |> should.equal("view")
-  violation.call |> should.equal(QualifiedName("gleam/io", "println"))
+  violation.explanation.call
+  |> should.equal(QualifiedName("gleam/io", "println"))
 }
 
 pub fn declared_effects_pass_test() {
@@ -113,7 +114,8 @@ fn helper() { io.println(\"sneaky\") }"
     ])
   violations |> list.length() |> should.equal(1)
   let assert [violation] = violations
-  violation.call |> should.equal(QualifiedName("gleam/io", "println"))
+  violation.explanation.call
+  |> should.equal(QualifiedName("gleam/io", "println"))
 }
 
 pub fn multiple_effects_union_test() {
@@ -134,7 +136,7 @@ pub fn do_stuff() {
       ),
     ])
   violations
-  |> list.any(fn(violation) { violation.call.function == "sleep" })
+  |> list.any(fn(violation) { violation.explanation.call.function == "sleep" })
   |> should.be_true()
 }
 
@@ -185,7 +187,7 @@ pub fn unknown_local_function_test() {
   // Should flag as Unknown effect
   { violations != [] } |> should.be_true()
   let assert [violation] = violations
-  violation.call.function |> should.equal("missing")
+  violation.explanation.call.function |> should.equal("missing")
 }
 
 // Infer
@@ -594,7 +596,8 @@ pub fn field_call_opaque_receiver_violates_pure_test() {
       validator_to_error_stdout(),
     )
   let assert [violation] = violations
-  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 pub fn field_call_aliased_receiver_resolves_via_girard_test() {
@@ -645,7 +648,8 @@ pub fn field_call_construction_without_annotation_resolves_test() {
   let violations =
     check_source_with_girard(opaque_receiver_source, [annotation], [])
   let assert [violation] = violations
-  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 // Same-module wired fields under girard's types
@@ -1201,7 +1205,7 @@ pub fn caller() -> Nil {
       dict.new(),
     )
   let assert Ok(v) = list.find(violations, fn(v) { v.function == "caller" })
-  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  v.explanation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 // External declarations
@@ -1760,7 +1764,7 @@ fn provenance_caller_effect(src: String, label: String) -> EffectSet {
       dict.new(),
     )
   case list.find(violations, fn(v) { v.function == "caller" }) {
-    Ok(violation) -> violation.actual
+    Ok(violation) -> violation.explanation.actual
     Error(Nil) -> Specific(set.new())
   }
 }
@@ -2551,7 +2555,7 @@ pub fn two_hop_check_with_empty_budget_violates_test() {
   let violations = check_run_against_budget(Specific(set.new()))
   let assert [v, ..] = violations
   v.function |> should.equal("run")
-  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  v.explanation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 pub fn three_hop_local_chain_infers_polymorphic_test() {
@@ -2713,7 +2717,7 @@ pub fn field_call_binds_effectful_argument_test() {
   // free variable.
   let assert [v, ..] = check_field_call("io.println")
   v.function |> should.equal("main")
-  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  v.explanation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 pub fn field_call_binds_pure_argument_test() {
@@ -2734,7 +2738,7 @@ pub fn field_call_binds_effectful_closure_test() {
   // An effectful inline closure bound to a field parameter resolves to its body
   // effect: `fn(s) { io.println(s) }` ⟹ [Stdout].
   let assert [v, ..] = check_field_call("fn(s) { io.println(s) }")
-  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+  v.explanation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 // Factory field provenance
@@ -4679,15 +4683,7 @@ pub fn run(b: Bool) -> Nil {
 // The resolver recorded nothing about it, so the message states what the call
 // kind alone establishes.
 fn violation(call: types.QualifiedName, actual: EffectSet) -> types.Violation {
-  types.Violation(
-    function: "run",
-    call:,
-    span: glance.Span(0, 0),
-    declared: Specific(set.new()),
-    actual:,
-    reason: option.None,
-    origin: option.None,
-  )
+  explained_violation(call, actual, option.None, option.None)
 }
 
 // The same violation with what the resolver recorded about the call.
@@ -4697,7 +4693,17 @@ fn explained_violation(
   reason: option.Option(types.UnknownReason),
   origin: option.Option(types.LookupOrigin),
 ) -> types.Violation {
-  types.Violation(..violation(call, actual), reason:, origin:)
+  types.Violation(
+    function: "run",
+    declared: Specific(set.new()),
+    explanation: types.CallExplanation(
+      call:,
+      span: glance.Span(0, 0),
+      actual:,
+      reason:,
+      origin:,
+    ),
+  )
 }
 
 fn pure_check(function: String) -> EffectAnnotation {
@@ -5156,7 +5162,7 @@ fn only_violation(source: String) -> types.Violation {
 fn violation_of_kind(source: String, sentinel: String) -> types.Violation {
   let assert Ok(violation) =
     check_source(source, [pure_check("run")])
-    |> list.find(fn(v) { v.call.module == sentinel })
+    |> list.find(fn(v) { v.explanation.call.module == sentinel })
   violation
 }
 
@@ -5169,7 +5175,7 @@ pub fn records_that_no_source_keys_the_call_test() {
   only_violation(
     "import somedep/api
 pub fn run() { api.fetch() }",
-  ).reason
+  ).explanation.reason
   |> should.equal(Some(types.NoKnownEffects))
 }
 
@@ -5181,7 +5187,7 @@ pub fn records_an_undeclared_external_test() {
 pub fn now() -> Int
 
 pub fn run() { now() }",
-  ).reason
+  ).explanation.reason
   |> should.equal(Some(types.UndeclaredExternal))
 }
 
@@ -5193,8 +5199,9 @@ pub fn records_the_source_that_answered_test() {
       "import gleam/io
 pub fn run() { io.println(\"x\") }",
     )
-  violation.origin |> should.equal(Some(types.Catalog("gleam_stdlib")))
-  violation.reason |> should.equal(None)
+  violation.explanation.origin
+  |> should.equal(Some(types.Catalog("gleam_stdlib")))
+  violation.explanation.reason |> should.equal(None)
 }
 
 pub fn records_an_unresolved_receiver_type_test() {
@@ -5204,7 +5211,7 @@ pub fn records_an_unresolved_receiver_type_test() {
     "pub fn run(config) -> Nil {
   config.resolver(\"x\")
 }",
-  ).reason
+  ).explanation.reason
   |> should.equal(Some(types.ReceiverTypeUnresolved))
 }
 
@@ -5219,7 +5226,7 @@ pub fn records_an_unannotated_field_test() {
 pub fn run(config: Config) -> Nil {
   config.resolver(\"x\")
 }",
-  ).reason
+  ).explanation.reason
   |> should.equal(
     Some(types.FieldNotAnnotated(module: "", type_name: "Config")),
   )
@@ -5246,7 +5253,7 @@ pub fn run(options: Wrapper) -> Nil {
   let x = options.inner
   x.resolver()
 }",
-  ).reason
+  ).explanation.reason
   |> should.equal(Some(types.UntraceableReceiver))
 }
 
@@ -5266,7 +5273,7 @@ pub fn run() -> Nil {
   let h = Handler(handler: api.pick())
   h.handler(\"x\")
 }"
-  field_violation(source).reason
+  field_violation(source).explanation.reason
   |> should.equal(Some(types.UnresolvedFieldValue))
 }
 
@@ -5279,7 +5286,7 @@ pub fn run() -> Nil {
   let h = api.pick()
   h(\"x\")
 }"
-  violation_of_kind(source, "<returned>").reason
+  violation_of_kind(source, "<returned>").explanation.reason
   |> should.equal(Some(types.UntraceableProducer))
 }
 
@@ -5299,8 +5306,9 @@ pub fn run() -> Nil {
   h.handler(\"x\")
 }",
     )
-  violation.origin |> should.equal(Some(types.Catalog("gleam_stdlib")))
-  violation.reason |> should.equal(None)
+  violation.explanation.origin
+  |> should.equal(Some(types.Catalog("gleam_stdlib")))
+  violation.explanation.reason |> should.equal(None)
 }
 
 pub fn a_reason_survives_substitution_unrendered_test() {
@@ -5333,8 +5341,9 @@ pub fn run(config: Config) -> Nil {
       effect_term.from_effect_set(Specific(set.new())),
     )
   let assert [violation] = check_source(source, [annotation])
-  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
-  violation.reason
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+  violation.explanation.reason
   |> should.equal(
     Some(types.FieldNotAnnotated(module: "", type_name: "Config")),
   )
@@ -5577,7 +5586,8 @@ pub fn run() -> Nil {
   let assert [violation] = violations
   // The latent effect was decided by the dependency's `returns` line, so the
   // message names it.
-  violation.origin |> should.equal(Some(types.DependencySpec("dep")))
+  violation.explanation.origin
+  |> should.equal(Some(types.DependencySpec("dep")))
   checker.format_violation("src/app.gleam", violation)
   |> should.equal(
     "src/app.gleam: run calls a function returned by `dep.make` with effects [Stdout] (from dep's shipped spec) but declared []",
@@ -5606,8 +5616,10 @@ pub fn run() -> Nil {
   helper(h)
 }",
     )
-  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
-  violation.origin |> should.equal(Some(types.Catalog("gleam_stdlib")))
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+  violation.explanation.origin
+  |> should.equal(Some(types.Catalog("gleam_stdlib")))
 }
 
 pub fn a_type_line_names_the_spec_that_declared_it_test() {
@@ -5631,7 +5643,7 @@ pub fn run(repo: Repo) -> Nil {
   ]
   let assert [violation] =
     check_source_with_type_fields(source, [pure_check("run")], type_fields)
-  violation.origin
+  violation.explanation.origin
   |> should.equal(Some(types.TypeLine(source: types.CommittedSpec)))
   checker.format_violation("src/app.gleam", violation)
   |> should.equal(
@@ -5663,8 +5675,8 @@ pub fn new() {
       dict.new(),
     )
   let assert [violation] = violations
-  violation.reason |> should.equal(Some(types.UntraceableArgument))
-  violation.origin |> should.equal(None)
+  violation.explanation.reason |> should.equal(Some(types.UntraceableArgument))
+  violation.explanation.origin |> should.equal(None)
   checker.format_violation("src/app.gleam", violation)
   |> should.equal(
     "src/app.gleam: new calls validation.validate_range, whose effects depend on an argument that could not be resolved, with unresolved effects [Unknown] but declared []",
@@ -5704,8 +5716,8 @@ pub fn new() {
       dict.new(),
     )
   let assert [violation] = violations
-  violation.reason |> should.equal(None)
-  violation.origin |> should.equal(Some(types.CommittedSpec))
+  violation.explanation.reason |> should.equal(None)
+  violation.explanation.origin |> should.equal(Some(types.CommittedSpec))
 }
 
 pub fn records_an_untraceable_argument_through_a_helper_test() {
@@ -5734,8 +5746,8 @@ pub fn new() {
       dict.new(),
     )
   let assert [violation] = violations
-  violation.reason |> should.equal(Some(types.UntraceableArgument))
-  violation.origin |> should.equal(None)
+  violation.explanation.reason |> should.equal(Some(types.UntraceableArgument))
+  violation.explanation.origin |> should.equal(None)
   checker.format_violation("src/app.gleam", violation)
   |> should.equal(
     "src/app.gleam: new calls validation.validate_range, whose effects depend on an argument that could not be resolved, with unresolved effects [Unknown] but declared []",
@@ -5769,9 +5781,9 @@ pub fn run() -> Nil {
       dict.new(),
     )
   let assert Ok(violation) =
-    list.find(violations, fn(v) { v.call.module == "<returned>" })
-  violation.origin |> should.equal(None)
-  violation.reason |> should.equal(None)
+    list.find(violations, fn(v) { v.explanation.call.module == "<returned>" })
+  violation.explanation.origin |> should.equal(None)
+  violation.explanation.reason |> should.equal(None)
 }
 
 // Explaining a function
@@ -5788,7 +5800,7 @@ fn explain_blocks(
   bounds: List(List(types.ParamBound)),
   knowledge_base: effects.KnowledgeBase,
   registry: signatures.SignatureRegistry,
-) -> Result(List(List(checker.CallExplanation)), Nil) {
+) -> Result(List(List(types.CallExplanation)), Nil) {
   checker.explain(
     module,
     "",
@@ -5806,7 +5818,7 @@ fn explain_source(
   source: String,
   function: String,
   bounds: List(types.ParamBound),
-) -> List(checker.CallExplanation) {
+) -> List(types.CallExplanation) {
   let assert Ok(module) = glance.module(source)
   let assert Ok([explanations]) =
     explain_blocks(
@@ -5972,10 +5984,10 @@ pub fn new() {
   let assert Ok([explanations]) =
     explain_blocks(module, "new", [[]], polymorphic_kb(), signatures.empty())
   let assert Ok(explanation) =
-    list.find(explanations, fn(e) { e.call == violation.call })
-  explanation.reason |> should.equal(violation.reason)
-  explanation.origin |> should.equal(violation.origin)
-  explanation.actual |> should.equal(violation.actual)
+    list.find(explanations, fn(e) { e.call == violation.explanation.call })
+  explanation.reason |> should.equal(violation.explanation.reason)
+  explanation.origin |> should.equal(violation.explanation.origin)
+  explanation.actual |> should.equal(violation.explanation.actual)
   string.contains(
     checker.format_violation("src/app.gleam", violation),
     checker.format_call_explanation(explanation),

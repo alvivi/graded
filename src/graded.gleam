@@ -46,6 +46,7 @@ import graded/internal/checker
 import graded/internal/cli
 import graded/internal/config
 import graded/internal/diff
+import graded/internal/effect_term
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
 import graded/internal/signatures.{type SignatureRegistry}
@@ -529,6 +530,42 @@ type ProjectContext {
   )
 }
 
+// A project's own inputs: the config, the spec and every source file parsed.
+// The parse stage of a context, split out because a caller that only has to
+// decide whether a name exists needs this and nothing that follows it.
+type ProjectSources {
+  ProjectSources(
+    source_directory: String,
+    cfg: config.GradedConfig,
+    spec: GradedFile,
+    parsed: List(#(String, glance.Module)),
+    index: Dict(String, #(String, glance.Module)),
+    package_root: String,
+  )
+}
+
+// Read the config and spec and parse every source file. Touches no dependency,
+// runs no inference: the cheap half of `load_project_context`.
+fn load_project_sources(
+  directory: String,
+) -> Result(ProjectSources, GradedError) {
+  let directory = scope_to_source_directory(directory)
+  use cfg <- result.try(read_config(directory))
+  let package_root = resolve_package_root(directory)
+  use spec <- result.try(read_spec(cfg.spec_file))
+  use gleam_files <- result.try(find_gleam_files(directory))
+  use parsed <- result.map(parse_all_files(gleam_files))
+  let index = build_module_index(parsed, directory)
+  ProjectSources(
+    source_directory: directory,
+    cfg:,
+    spec:,
+    parsed:,
+    index:,
+    package_root:,
+  )
+}
+
 // Assemble a project's knowledge base without writing anything: read the config
 // and spec, parse every source file, scan dependency sources, run girard, and
 // fold the spec, dependencies, catalog, and an in-memory inference pass into one
@@ -536,15 +573,21 @@ type ProjectContext {
 fn load_project_context(
   directory: String,
 ) -> Result(ProjectContext, GradedError) {
-  let directory = scope_to_source_directory(directory)
-  use cfg <- result.try(read_config(directory))
-  let package_root = resolve_package_root(directory)
-  use spec <- result.try(read_spec(cfg.spec_file))
-  let declared_modules = annotation.module_external_modules(spec)
+  use sources <- result.map(load_project_sources(directory))
+  project_context(sources)
+}
 
-  use gleam_files <- result.try(find_gleam_files(directory))
-  use parsed <- result.try(parse_all_files(gleam_files))
-  let index = build_module_index(parsed, directory)
+// The expensive half: everything a context holds beyond the parsed sources.
+fn project_context(sources: ProjectSources) -> ProjectContext {
+  let ProjectSources(
+    source_directory: directory,
+    cfg:,
+    spec:,
+    parsed:,
+    index:,
+    package_root:,
+  ) = sources
+  let declared_modules = annotation.module_external_modules(spec)
   let dep_sources = dependency_sources(package_root)
   let registry =
     signatures.merge(dep_sources.registry, build_project_registry(index))
@@ -565,6 +608,10 @@ fn load_project_context(
     |> with_builders(index, dep_sources)
     |> enrich_with_path_deps(package_root, declared_modules)
     |> with_committed_spec(spec, declared_modules)
+    // Recorded before the inference pass below, so an `@external` resolves to
+    // what declares it while this project's own modules are being inferred, not
+    // only when they are later checked.
+    |> effects.with_foreign_functions(project_foreign_functions(index))
     // Committed project returns are Foreign (Fix E): serialized, unsanitized. The
     // fresh in-memory pass below re-infers project returns and, being Fresh, wins
     // over these for the same key.
@@ -593,7 +640,7 @@ fn load_project_context(
     )
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
 
-  Ok(ProjectContext(
+  ProjectContext(
     source_directory: directory,
     cfg:,
     spec:,
@@ -603,7 +650,16 @@ fn load_project_context(
     type_info:,
     package_root:,
     knowledge_base:,
-  ))
+  )
+}
+
+// Every `@external` this project declares, qualified by its module: the names
+// whose effects only a declaration speaks for.
+fn project_foreign_functions(
+  index: Dict(String, #(String, glance.Module)),
+) -> Set(QualifiedName) {
+  use names, module_path, #(_gleam_path, module) <- dict.fold(index, set.new())
+  set.union(names, checker.foreign_functions(module, module_path))
 }
 
 // Group a parsed spec file's `check` annotations by their module path. Used
@@ -1107,11 +1163,21 @@ fn spec_answer(
     // answer at all — from either renderer — until it knows no other source can
     // key that function.
     Ok(#(module, _function)) -> {
+      let project_modules = project_module_files(directory)
       use <- bool.guard(
         when: !set.contains(annotation.external_function_names(spec), name)
-          && !set.contains(project_module_paths(directory), module),
+          && !dict.has_key(project_modules, module),
         return: Error(Nil),
       )
+      // Which of this package's functions are foreign code is a fact of its
+      // source, not of the spec — and one an `effects` line left behind for an
+      // `@external` would otherwise be read as answering. One file is parsed to
+      // settle it: the module the queried name lives in.
+      let knowledge_base =
+        effects.with_foreign_functions(
+          knowledge_base,
+          foreign_functions_of(project_modules, module),
+        )
       answer_from(knowledge_base, name)
     }
     // Not a function name — only a type field can answer. A spec `type` line is
@@ -1129,6 +1195,7 @@ fn spec_answer(
         Ok(answer.TypeFieldAnswer(module: Some(_), ..) as found) -> Ok(found)
         Ok(answer.TypeFieldAnswer(module: None, ..))
         | Ok(answer.FunctionAnswer(..))
+        | Ok(answer.UndeclaredExternalAnswer(..))
         | Error(Nil) -> Error(Nil)
       }
   }
@@ -1149,15 +1216,37 @@ fn spec_knowledge_base(spec: GradedFile) -> KnowledgeBase {
   )
 }
 
-// The module paths of this package's own source files. Listing the file names
+// This package's own source files, keyed by module path. Listing the file names
 // costs a directory walk and no parsing, so it stays on the fast path.
-fn project_module_paths(directory: String) -> Set(String) {
+fn project_module_files(directory: String) -> Dict(String, String) {
   case find_gleam_files(directory) {
-    Error(_) -> set.new()
+    Error(_) -> dict.new()
     Ok(paths) ->
       paths
-      |> list.map(config.module_path_for_source(_, directory))
-      |> set.from_list()
+      |> list.map(fn(path) {
+        #(config.module_path_for_source(path, directory), path)
+      })
+      |> dict.from_list()
+  }
+}
+
+// The `@external` functions of one project module, parsed on demand. Empty for
+// a module that is not this package's or that does not parse — the fast path
+// then answers from the spec alone, as it did before the file was consulted.
+fn foreign_functions_of(
+  project_modules: Dict(String, String),
+  module_path: String,
+) -> Set(QualifiedName) {
+  let parsed = {
+    use path <- result.try(
+      dict.get(project_modules, module_path) |> result.replace_error(Nil),
+    )
+    use source <- result.try(simplifile.read(path) |> result.replace_error(Nil))
+    glance.module(source) |> result.replace_error(Nil)
+  }
+  case parsed {
+    Ok(module) -> checker.foreign_functions(module, module_path)
+    Error(Nil) -> set.new()
   }
 }
 
@@ -1170,6 +1259,14 @@ fn function_effect(
 ) -> Result(EffectAnswer, Nil) {
   use #(module, function) <- result.try(annotation.split_function_name(name))
   let qualified = QualifiedName(module:, function:)
+  // Foreign code is answered by what declares it, exactly as `check` and `why`
+  // answer for it: an entry inferred over an `@external`'s body describes
+  // something the foreign implementation needn't match, so it is no answer here
+  // either, however concrete it reads.
+  use <- bool.guard(
+    when: checker.undeclared_external(knowledge_base, qualified),
+    return: Ok(answer.UndeclaredExternalAnswer(name:, module:)),
+  )
   case effects.lookup(knowledge_base, qualified) {
     effects.Unknown -> Error(Nil)
     // A module-level external carries no per-function bounds, so none travel
@@ -1273,42 +1370,67 @@ pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
     annotation.split_function_name(name)
     |> result.replace_error(FunctionNotFound(name)),
   )
-  use ctx <- result.try(load_project_context(directory))
+  // The name is settled against the parsed sources alone: a name this project
+  // does not define is not found without paying for the dependency scan, the
+  // package-wide girard run and the knowledge base the explanation needs.
+  use sources <- result.try(load_project_sources(directory))
   use #(_gleam_path, module) <- result.try(
-    dict.get(ctx.index, module_path)
+    dict.get(sources.index, module_path)
     |> result.replace_error(FunctionNotFound(name)),
   )
+  use <- bool.guard(
+    when: !defines_function(module, function),
+    return: Error(FunctionNotFound(name)),
+  )
+  let ctx = project_context(sources)
   // Straight from the spec's `check` lines rather than the per-module grouping
   // `run` builds, whose lists are prepend-reversed — the blocks are printed in
   // the order the spec declares them. A function with no line still gets one
-  // block, analysed with no bounds.
-  //
-  // Raw equality is the whole match: `split_function_name` accepted `name`, so
-  // it is `module.function` under the same grammar spec names are written in,
-  // and normalizing it would rejoin the parts it was just split into.
+  // block, analysed with no bounds. Matched by the same split `run` groups them
+  // by, so one function's lines are the same set to both commands.
   let checks = case
     annotation.extract_checks(ctx.spec)
-    |> list.filter(fn(ann) { ann.function == name })
+    |> list.filter(fn(ann) {
+      annotation.split_function_name(ann.function)
+      == Ok(#(module_path, function))
+    })
   {
     [] -> [None]
     checks -> list.map(checks, Some)
   }
-  checker.explain(
-    module,
-    module_path,
-    function,
-    list.map(checks, check_bounds),
-    ctx.knowledge_base,
-    ctx.registry,
-    typeinfo.for_module(ctx.type_info, module_path),
-    typeinfo.fn_typed_for_module(ctx.type_info, module_path),
+  use explained <- result.map(
+    checker.explain(
+      module,
+      module_path,
+      function,
+      list.map(checks, check_bounds),
+      ctx.knowledge_base,
+      ctx.registry,
+      typeinfo.for_module(ctx.type_info, module_path),
+      typeinfo.fn_typed_for_module(ctx.type_info, module_path),
+    )
+    |> result.replace_error(FunctionNotFound(name)),
   )
-  |> result.replace_error(FunctionNotFound(name))
-  |> result.map(fn(explained) {
-    list.map2(checks, explained, fn(check, explanations) {
-      why_block(name, check, explanations)
-    })
-    |> string.join("\n\n")
+  // One block per bounds set is `explain`'s contract, so a length mismatch is a
+  // broken invariant rather than a case to render: `strict_zip` makes it a crash
+  // here instead of blocks silently dropped from the output.
+  // nolint: assert_ok_pattern -- a broken invariant, not an error to handle
+  let assert Ok(blocks) = list.strict_zip(checks, explained)
+    as "explain returns one block per bounds set"
+  blocks
+  |> list.map(fn(block) {
+    let #(check, explanations) = block
+    why_block(name, check, explanations)
+  })
+  |> string.join("\n\n")
+}
+
+// Whether the module defines a function by this name. Publicity is not
+// consulted: `why` walks a body this project holds, so a private function is
+// explained as a public one is.
+fn defines_function(module: glance.Module, function: String) -> Bool {
+  list.any(module.functions, fn(definition) {
+    definition.definition.name == function
   })
 }
 
@@ -1325,13 +1447,16 @@ fn check_bounds(check: Option(EffectAnnotation)) -> List(types.ParamBound) {
 fn why_block(
   name: String,
   check: Option(EffectAnnotation),
-  explanations: List(checker.CallExplanation),
+  explanations: List(types.CallExplanation),
 ) -> String {
   let total =
     list.fold(explanations, types.empty(), fn(acc, explanation) {
       types.union(acc, explanation.actual)
     })
-  let header = name <> " has effects " <> effects.format_effect_set(total)
+  // The sentence `graded effect` states a total in, so the two commands describe
+  // one function's effects in one wording.
+  let header =
+    name <> " " <> answer.total_effects(effect_term.from_effect_set(total))
   // The whole declaration, bounds included: two `check` lines can share a budget
   // and differ only in what they bind, and the budget alone wouldn't say which
   // block is which.
@@ -1809,6 +1934,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     )
     |> with_builders(index, dep_sources)
     |> enrich_with_path_deps(package_root, declared_modules)
+    |> effects.with_foreign_functions(project_foreign_functions(index))
 
   let base_kb =
     kb_base
