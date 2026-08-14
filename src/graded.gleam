@@ -597,6 +597,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     effects.load_knowledge_base(
       packages_dir(package_root),
       manifest_path(package_root),
+      dep_sources.foreign,
     )
     // Consumer externals are applied before path-dep inference so a module-level
     // external governs a path dependency's module during that dep's own
@@ -657,7 +658,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
 // whose effects only a declaration speaks for.
 fn project_foreign_functions(
   index: Dict(String, #(String, glance.Module)),
-) -> Dict(QualifiedName, types.Visibility) {
+) -> Dict(QualifiedName, types.ForeignFunction) {
   use names, module_path, #(_gleam_path, module) <- dict.fold(index, dict.new())
   dict.merge(names, checker.foreign_functions(module, module_path))
 }
@@ -1236,7 +1237,7 @@ fn project_module_files(directory: String) -> Dict(String, String) {
 fn foreign_functions_of(
   project_modules: Dict(String, String),
   module_path: String,
-) -> Dict(QualifiedName, types.Visibility) {
+) -> Dict(QualifiedName, types.ForeignFunction) {
   let parsed = {
     use path <- result.try(
       dict.get(project_modules, module_path) |> result.replace_error(Nil),
@@ -1924,6 +1925,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     effects.load_knowledge_base(
       packages_dir(package_root),
       manifest_path(package_root),
+      dep_sources.foreign,
     )
     // Consumer externals are applied before path-dep inference so a module-level
     // external governs a path dependency's module during that dep's own
@@ -2373,11 +2375,21 @@ type DependencySources {
   DependencySources(
     registry: SignatureRegistry,
     updates: Dict(#(String, String), types.UpdateSignature),
+    // Every `@external` the dependencies declare. Scanned here because this walk
+    // already parses each dependency module once, and because it is the only
+    // evidence a consumer has: a dependency's spec cannot be trusted to say
+    // which of its own functions are foreign, since a stale line for one is
+    // exactly what this set exists to refuse.
+    foreign: Dict(types.QualifiedName, types.ForeignFunction),
   )
 }
 
 fn empty_dependency_sources() -> DependencySources {
-  DependencySources(registry: signatures.empty(), updates: dict.new())
+  DependencySources(
+    registry: signatures.empty(),
+    updates: dict.new(),
+    foreign: dict.new(),
+  )
 }
 
 // Merge two scans; `b` wins on key conflict, matching `signatures.merge`.
@@ -2388,6 +2400,7 @@ fn merge_dependency_sources(
   DependencySources(
     registry: signatures.merge(a.registry, b.registry),
     updates: dict.merge(a.updates, b.updates),
+    foreign: dict.merge(a.foreign, b.foreign),
   )
 }
 
@@ -2442,6 +2455,7 @@ fn source_dir_sources(source_dir: String) -> DependencySources {
     DependencySources(
       registry: signatures.from_glance_module(module_path, module),
       updates: extract.public_update_signatures(module, module_path),
+      foreign: checker.foreign_functions(module, module_path),
     ),
   )
 }

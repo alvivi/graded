@@ -1130,7 +1130,11 @@ pub fn run(value: String) -> Nil {
   // catalog (which has io.println marked [Stdout]) without any project
   // externals layered on. The manifest selects catalog versions.
   let base_kb =
-    effects.load_knowledge_base("nonexistent_packages_dir", "manifest.toml")
+    effects.load_knowledge_base(
+      "nonexistent_packages_dir",
+      "manifest.toml",
+      dict.new(),
+    )
 
   let assert Ok(#(inferred, _params, _returns, _provenance)) =
     graded.infer_path_dep(dep_path, base_kb, set.new())

@@ -266,9 +266,27 @@ fn signature_map(
   })
 }
 
-// A module's top-level functions, unwrapped from their definitions.
-fn module_functions(module: Module) -> List(glance.Function) {
-  list.map(module.functions, fn(definition) { definition.definition })
+// Whether a definition is `@external`: its implementation is foreign code, so
+// graded cannot see what it does. A Gleam body it also carries is a fallback for
+// the targets the declaration doesn't cover — on a covered target it does not
+// run, and the foreign implementation may differ from it, so nothing derived
+// from that body describes the function every caller reaches.
+pub fn is_foreign_definition(
+  definition: glance.Definition(glance.Function),
+) -> Bool {
+  list.any(definition.attributes, fn(attribute) { attribute.name == "external" })
+}
+
+// A module's top-level functions minus the foreign ones: the functions whose
+// body is what every caller runs. What the factory and update-builder
+// signatures are derived from —
+// an `@external` whose fallback tail happens to be a constructor call or a
+// record update describes that fallback, not the foreign implementation, so
+// binding a caller's fields from it would state something nothing backs.
+fn native_functions(module: Module) -> List(glance.Function) {
+  module.functions
+  |> list.filter(fn(definition) { !is_foreign_definition(definition) })
+  |> list.map(fn(definition) { definition.definition })
 }
 
 // Detect each function in a module that is a *factory*: its body's tail is a
@@ -278,7 +296,7 @@ fn module_functions(module: Module) -> List(glance.Function) {
 // function name.
 pub fn factory_map(module: Module) -> Dict(String, FactorySignature) {
   signature_map(
-    module_functions(module),
+    native_functions(module),
     build_import_context(module),
     factory_signature,
   )
@@ -354,9 +372,9 @@ pub fn public_update_signatures(
   |> dict.from_list()
 }
 
-// A module's public top-level functions.
+// A module's public top-level functions, foreign ones excluded.
 fn public_functions(module: Module) -> List(glance.Function) {
-  module_functions(module)
+  native_functions(module)
   |> list.filter(fn(function) {
     case function.publicity {
       glance.Public -> True
@@ -370,7 +388,7 @@ fn public_functions(module: Module) -> List(glance.Function) {
 // a parameter. Purely syntactic, precomputed up front. Keyed by bare name.
 pub fn update_map(module: Module) -> Dict(String, UpdateSignature) {
   signature_map(
-    module_functions(module),
+    native_functions(module),
     build_import_context(module),
     update_signature,
   )

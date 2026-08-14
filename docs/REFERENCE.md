@@ -90,7 +90,9 @@ returns myapp.make_logger : [Stdout]
 Serialized by `graded infer` for functions that *return* a function. It lets the
 returned function's effect resolve at the call site (`let h = make_logger(); h()`)
 across module and package boundaries, not just within the defining module. Like
-`effects`, these lines are regenerated and shouldn't be hand-edited.
+`effects`, these lines are regenerated and shouldn't be hand-edited. No line is
+written for an `@external`, and one naming an `@external` is ignored — see
+[External declarations](#external-declarations-and-ffi).
 
 ## Effect resolution order
 
@@ -389,6 +391,39 @@ passing it as a callback (`apply(myapp/ffi.now)`) or wiring it into a record
 field (`Clock(read: now)`) charges the same effect a direct call is charged, so
 a helper handed an undeclared external contributes `[Unknown]` rather than the
 `[]` its bodyless declaration reads as.
+
+What it does *not* answer for is the value the external hands back. A declaration
+states what calling the function costs; nothing in it describes the closure an
+FFI producer returns, the record it builds, or the fields either wires. So an
+`@external` is opaque on every one of those channels — its `returns` summary, its
+return provenance, and its factory and update-builder signatures are all refused,
+whether or not it is declared and whether or not a Gleam fallback body beside it
+runs:
+
+```gleam
+@external(erlang, "my_ffi", "make_logger")
+pub fn make_logger() -> fn(String) -> Nil {
+  fn(_) { Nil }        // never runs on Erlang; describes nothing
+}
+
+pub fn caller() -> Nil {
+  let log = make_logger()
+  log("hi")            // [Unknown] — no declaring form describes this closure
+}
+```
+
+`graded infer` writes no `returns` line for an `@external`, and removes one a
+function that has since become `@external` left behind. There is no annotation
+that declares an FFI producer's return today; a call of the returned closure
+stays `[Unknown]`.
+
+A dependency is held to the same rule, against the dependency's *own* source
+under `build/packages`: a shipped `effects` or `returns` line for a function that
+package declares `@external` is refused, while its `external effects` line, a
+module-level external, and the catalog entry underneath keep answering. Where a
+dependency's external carries a fallback body that runs on some target, its
+declaration is widened by `[Unknown]` — the union graded performs against a
+walked fallback in the defining package has no second operand one package away.
 
 `graded effect` answers for the public API, so a *private* `@external` exits
 non-zero there as a private ordinary function does. Callers still resolve it

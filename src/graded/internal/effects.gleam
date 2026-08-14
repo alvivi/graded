@@ -89,18 +89,34 @@ pub type KnowledgeBase {
     // base holds for one describes a body the foreign implementation needn't
     // match. Weighed by `lookup_declared`, so one name reads the same to
     // `check`, `why`, `effect` and every caller.
-    foreign_functions: Dict(QualifiedName, types.Visibility),
+    foreign_functions: Dict(QualifiedName, types.ForeignFunction),
+    // The same fact about the *dependencies'* `@external` declarations, scanned
+    // from their sources under `build/packages` and at each path dependency's
+    // own location. Held apart from `foreign_functions` because the two answer
+    // different questions: a project name's entry decides which of *this*
+    // package's entries may speak for it, while a dependency name's decides that
+    // no value channel may speak for it at all, and that a running fallback
+    // widens whatever declaration does.
+    dependency_foreign: Dict(QualifiedName, types.ForeignFunction),
   )
 }
 
 // Build a knowledge base by scanning dependency .graded files under
 // `packages_directory` and loading versioned catalog files from priv/catalog/,
 // selecting versions from the manifest at `manifest_path`.
+//
+// `dependency_foreign` is what the dependencies' own sources say is `@external`,
+// scanned before this call. Each dep spec is sanitized against it *as it loads*,
+// which is the only place the sanitizing can happen: the merges below let a dep
+// entry bury the catalog entry for the same name, so refusing a stale dep line
+// at lookup time would answer `[Unknown]` where a valid catalog declaration was
+// waiting underneath it.
 pub fn load_knowledge_base(
   packages_directory: String,
   manifest_path: String,
+  dependency_foreign: Dict(QualifiedName, types.ForeignFunction),
 ) -> KnowledgeBase {
-  let deps = load_dependencies(packages_directory)
+  let deps = load_dependencies(packages_directory, dependency_foreign)
   let catalog_dir = find_catalog_directory()
   let #(cat_effects, cat_module_effects, cat_params, cat_type_fields) =
     load_catalog(catalog_dir, manifest_path)
@@ -123,6 +139,7 @@ pub fn load_knowledge_base(
     provenance: dict.new(),
     // Scanned from the source under analysis, which no dependency spec carries.
     foreign_functions: dict.new(),
+    dependency_foreign:,
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
@@ -143,6 +160,7 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     module_effects: dict.new(),
     provenance: dict.new(),
     foreign_functions: dict.new(),
+    dependency_foreign: dict.new(),
   )
 }
 
@@ -161,6 +179,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     module_effects: cat_module_effects,
     provenance: dict.new(),
     foreign_functions: dict.new(),
+    dependency_foreign: dict.new(),
   )
   |> with_sourced_type_fields(cat_type_fields)
 }
@@ -287,7 +306,7 @@ pub fn lookup(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> EffectLookup {
-  case dict.get(knowledge_base.all_effects, name) {
+  let found = case dict.get(knowledge_base.all_effects, name) {
     Ok(#(effect_set, origin)) -> Known(effect_set, types.FunctionEntry(origin:))
     Error(Nil) ->
       case dict.get(knowledge_base.module_effects, name.module) {
@@ -295,6 +314,33 @@ pub fn lookup(
           Known(effect_set, types.ModuleExternalEntry(origin:))
         Error(Nil) -> Unknown
       }
+  }
+  with_dependency_fallback(knowledge_base, name, found)
+}
+
+// Widen a dependency external's answer by the fallback body nobody walks.
+//
+// Where the source is walked — this package — a declaration is unioned with a
+// running fallback body's own effects, because that body is ordinary Gleam that
+// runs on the targets the declaration doesn't cover. A consumer never walks a
+// dependency's bodies, so the union has no second operand there and the
+// declaration alone would read as the whole story: `external effects dep.run :
+// []` over an `@external(javascript, …)` whose Erlang fallback prints would be
+// believed pure on Erlang. `[Unknown]` is that missing operand — the body ran,
+// and what it did is not knowable from here.
+fn with_dependency_fallback(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+  found: EffectLookup,
+) -> EffectLookup {
+  case dict.get(knowledge_base.dependency_foreign, name), found {
+    Ok(types.ForeignFunction(runs_fallback_body: True, ..)), Known(term, source)
+    ->
+      Known(
+        effect_term.normalize(types.TUnion([term, effect_term.unknown()])),
+        source,
+      )
+    Ok(_), _ | Error(Nil), _ -> found
   }
 }
 
@@ -313,7 +359,7 @@ pub fn origin_of(source: types.EffectSource) -> LookupOrigin {
 // second set of modules adds to it.
 pub fn with_foreign_functions(
   knowledge_base: KnowledgeBase,
-  names: Dict(QualifiedName, types.Visibility),
+  names: Dict(QualifiedName, types.ForeignFunction),
 ) -> KnowledgeBase {
   KnowledgeBase(
     ..knowledge_base,
@@ -340,7 +386,26 @@ pub fn exports_foreign_function(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Bool {
-  dict.get(knowledge_base.foreign_functions, name) == Ok(types.Exported)
+  case dict.get(knowledge_base.foreign_functions, name) {
+    Ok(types.ForeignFunction(visibility: types.Exported, ..)) -> True
+    Ok(_) | Error(Nil) -> False
+  }
+}
+
+// Whether `name` is foreign code on any *value* channel: an `@external` graded
+// has seen the source of, this package's or a dependency's.
+//
+// The effects channel can afford a narrower rule, because it unions a
+// declaration with a fallback body that runs. The value channels have no such
+// counterpart — nothing declares the operator an FFI factory returns, or the
+// provenance of the record it builds — so every `@external` is opaque to them,
+// declared or not, fallback or not.
+pub fn is_value_opaque(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  dict.has_key(knowledge_base.foreign_functions, name)
+  || dict.has_key(knowledge_base.dependency_foreign, name)
 }
 
 // Whether an origin speaks for code graded cannot see. An `external effects`
@@ -634,6 +699,10 @@ pub fn lookup_returned_operator(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Result(ReturnedOperator, Nil) {
+  use <- bool.guard(
+    when: is_value_opaque(knowledge_base, name),
+    return: Error(Nil),
+  )
   dict.get(knowledge_base.returned_operators, name)
 }
 
@@ -654,6 +723,10 @@ pub fn lookup_provenance(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Result(ReturnProvenance, Nil) {
+  use <- bool.guard(
+    when: is_value_opaque(knowledge_base, name),
+    return: Error(Nil),
+  )
   dict.get(knowledge_base.provenance, name)
 }
 
@@ -837,6 +910,51 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
   }
 }
 
+// A dependency spec minus the entries no dependency spec may state about its
+// own foreign code.
+//
+// A dep function the dep's *own source* declares `@external` is foreign code:
+// an `effects` line for it is inference over a fallback body the foreign
+// implementation needn't match — exactly what this package's own spec is barred
+// from believing about its own `@external` — and a `returns` line for it
+// describes a value only that implementation produces, so it is dropped whether
+// or not a declaration also covers the name. What survives for a declared name
+// is the declaration: the dep's own `external effects` line, a module-level
+// external, or the catalog entry underneath.
+//
+// A term and its bounds are dropped together. `load_knowledge_base` merges terms
+// and bounds in two independent passes, so a term dropped without its bounds
+// would revive the catalog's term paired with the dependency's bounds — the
+// pairing `load_spec_params_from_file` documents, broken.
+fn sanitize_dep_spec(
+  dep: DepSpec,
+  foreign: Dict(QualifiedName, types.ForeignFunction),
+) -> DepSpec {
+  let declared =
+    list.fold(dep.externals, set.new(), fn(acc, external) {
+      case external.target {
+        FunctionExternal(function) ->
+          set.insert(acc, QualifiedName(external.module, function))
+        ModuleExternal -> acc
+      }
+    })
+  let inferred_over_foreign = fn(name) {
+    dict.has_key(foreign, name) && !set.contains(declared, name)
+  }
+  DepSpec(
+    ..dep,
+    effects: dict.filter(dep.effects, fn(name, _term) {
+      !inferred_over_foreign(name)
+    }),
+    params: dict.filter(dep.params, fn(name, _bounds) {
+      !inferred_over_foreign(name)
+    }),
+    returns: dict.filter(dep.returns, fn(name, _operator) {
+      !dict.has_key(foreign, name)
+    }),
+  )
+}
+
 // The entries one dependency spec decides, each tagged with the source that
 // shipped it: the function-keyed terms for `all_effects` and the module-keyed
 // ones for the `module_effects` fallback tier.
@@ -872,6 +990,10 @@ pub fn with_path_dep_spec(
   dep: DepSpec,
   origin: LookupOrigin,
 ) -> KnowledgeBase {
+  // Sanitized against the path dependency's own source, scanned into
+  // `dependency_foreign` before this fold — a committed spec is as capable of
+  // carrying a stale line for its own `@external` as an installed one is.
+  let dep = sanitize_dep_spec(dep, knowledge_base.dependency_foreign)
   let #(decided, module_externals) = decided_entries(dep, origin)
   let winning = over_catalog(knowledge_base.all_effects, decided)
   KnowledgeBase(
@@ -992,7 +1114,10 @@ type Dependencies {
 // with no spec file are silently skipped — same fail-soft semantics as the
 // catalog and the old per-module reader. Across packages the later one in the
 // directory fold wins, as effects lines do.
-fn load_dependencies(packages_directory: String) -> Dependencies {
+fn load_dependencies(
+  packages_directory: String,
+  foreign: Dict(QualifiedName, types.ForeignFunction),
+) -> Dependencies {
   let entries = case simplifile.read_directory(packages_directory) {
     Ok(found) -> found
     Error(_) -> []
@@ -1003,7 +1128,8 @@ fn load_dependencies(packages_directory: String) -> Dependencies {
     fn(acc, package_name) {
       let origin = DependencySpec(package: package_name)
       let dep_root = packages_directory <> "/" <> package_name
-      let dep = load_dep_spec(dep_root, package_name)
+      let dep =
+        sanitize_dep_spec(load_dep_spec(dep_root, package_name), foreign)
       let #(decided, module_externals) = decided_entries(dep, origin)
       Dependencies(
         effects: dict.merge(acc.effects, decided),
