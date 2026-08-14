@@ -474,20 +474,19 @@ fn declaration_resolution(
   }
 }
 
-// Whether `name` is exported foreign code that nothing declares — an
-// `@external` whose effects therefore stay `[Unknown]`, however concrete an
-// inferred entry left behind for it reads. Asked by `graded effect`, so a
-// lookup answers what `check` and `why` say about the same name.
+// Whether `name` is foreign code that nothing declares — an `@external` whose
+// effects therefore stay `[Unknown]`, however concrete an inferred entry left
+// behind for it reads. Asked by `graded effect`, so a lookup answers what
+// `check` and `why` say about the same name.
 //
-// Exported, because this is the only answer `graded effect` gives that does not
-// come from an entry in the knowledge base, and the base keys the public API.
-// Without the publicity test a private `@external` would be queryable while the
-// private ordinary function beside it reports that no such public name exists.
+// Publicity is not weighed here. Whether the rule applies is a fact about the
+// implementation being foreign; whether the query may answer at all is a
+// separate question its caller settles first, for every project function alike.
 pub fn undeclared_external(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Bool {
-  effects.exports_foreign_function(knowledge_base, name)
+  effects.is_foreign_function(knowledge_base, name)
   && option.is_none(declaration_resolution(knowledge_base, name))
 }
 
@@ -1681,6 +1680,26 @@ pub fn foreign_functions(
         runs_fallback_body: runs_fallback_body(definition),
       ),
     )
+  })
+  |> dict.from_list()
+}
+
+// Every function the module defines, with whether the package exports it. What
+// `graded effect` needs to tell a private name from one this package's source
+// never defined — two cases a hand-written spec line reads the same way, and
+// which a knowledge base keyed by function alone cannot separate. Held per
+// module, because "absent here" means "this module defines no such function"
+// only for a module that was parsed at all.
+pub fn function_visibility(
+  module: Module,
+) -> dict.Dict(String, types.Visibility) {
+  module.functions
+  |> list.map(fn(definition) {
+    let visibility = case definition.definition.publicity {
+      glance.Public -> types.Exported
+      glance.Private -> types.Internal
+    }
+    #(definition.definition.name, visibility)
   })
   |> dict.from_list()
 }

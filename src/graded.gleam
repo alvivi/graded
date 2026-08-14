@@ -613,6 +613,8 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // what declares it while this project's own modules are being inferred, not
     // only when they are later checked.
     |> effects.with_foreign_functions(project_foreign_functions(index))
+    // What this package defines, for the query that answers from its public API.
+    |> effects.with_project_functions(project_function_visibility(index))
     // Committed project returns are Foreign (Fix E): serialized, unsanitized. The
     // fresh in-memory pass below re-infers project returns and, being Fresh, wins
     // over these for the same key.
@@ -661,6 +663,18 @@ fn project_foreign_functions(
 ) -> Dict(QualifiedName, types.ForeignFunction) {
   use names, module_path, #(_gleam_path, module) <- dict.fold(index, dict.new())
   dict.merge(names, checker.foreign_functions(module, module_path))
+}
+
+// Every function this project defines, keyed by module then by function: what
+// the package's public API is, as its source states it.
+fn project_function_visibility(
+  index: Dict(String, #(String, glance.Module)),
+) -> Dict(String, Dict(String, types.Visibility)) {
+  use modules, module_path, #(_gleam_path, module) <- dict.fold(
+    index,
+    dict.new(),
+  )
+  dict.insert(modules, module_path, checker.function_visibility(module))
 }
 
 // Group a parsed spec file's `check` annotations by their module path. Used
@@ -1174,8 +1188,8 @@ fn spec_answer(
       // source, not of the spec — and one an `effects` line left behind for an
       // `@external` would otherwise be read as answering. One file is parsed to
       // settle it: the module the queried name lives in.
-      use foreign <- result.try(foreign_functions_of(project_modules, module))
-      answer_from(effects.with_foreign_functions(knowledge_base, foreign), name)
+      use parsed <- result.try(module_source_facts(project_modules, module))
+      answer_from(with_module_facts(knowledge_base, parsed), name)
     }
     // Not a function name — only a type field can answer. A spec `type` line is
     // merged last of all, so an entry under the queried name's *own* module is
@@ -1227,7 +1241,19 @@ fn project_module_files(directory: String) -> Dict(String, String) {
   }
 }
 
-// The `@external` functions of one project module, parsed on demand.
+// What the fast path learns from one project module's source: which of its
+// functions are foreign code, and what each of its functions' visibility is.
+// Neither is a fact of the spec — an `effects` line left behind for an
+// `@external` would otherwise be read as answering, and a hand-written line for
+// a private name or a typo would be too.
+type ModuleFacts {
+  ModuleFacts(
+    foreign: Dict(QualifiedName, types.ForeignFunction),
+    visibility: Dict(String, Dict(String, types.Visibility)),
+  )
+}
+
+// One project module's source facts, parsed on demand.
 //
 // Three outcomes, not two. A module that is not this package's has no such
 // facts and never will: `Ok` with none, and the spec answers alone as it did
@@ -1237,12 +1263,12 @@ fn project_module_files(directory: String) -> Dict(String, String) {
 // from the spec, because the full context would report the parse failure
 // instead — and a fast-path answer is only correct if it is what the full
 // context would have said.
-fn foreign_functions_of(
+fn module_source_facts(
   project_modules: Dict(String, String),
   module_path: String,
-) -> Result(Dict(QualifiedName, types.ForeignFunction), Nil) {
+) -> Result(ModuleFacts, Nil) {
   case dict.get(project_modules, module_path) {
-    Error(Nil) -> Ok(dict.new())
+    Error(Nil) -> Ok(ModuleFacts(foreign: dict.new(), visibility: dict.new()))
     Ok(path) -> {
       use source <- result.try(
         simplifile.read(path) |> result.replace_error(Nil),
@@ -1250,9 +1276,25 @@ fn foreign_functions_of(
       use module <- result.map(
         glance.module(source) |> result.replace_error(Nil),
       )
-      checker.foreign_functions(module, module_path)
+      ModuleFacts(
+        foreign: checker.foreign_functions(module, module_path),
+        visibility: dict.from_list([
+          #(module_path, checker.function_visibility(module)),
+        ]),
+      )
     }
   }
+}
+
+// Fold one module's source facts into a knowledge base, in the same two calls
+// the full context makes over the whole package.
+fn with_module_facts(
+  knowledge_base: KnowledgeBase,
+  facts: ModuleFacts,
+) -> KnowledgeBase {
+  knowledge_base
+  |> effects.with_foreign_functions(facts.foreign)
+  |> effects.with_project_functions(facts.visibility)
 }
 
 // Render `name` as an `effects` line, or `Error(Nil)` when it isn't a known
@@ -1264,6 +1306,14 @@ fn function_effect(
 ) -> Result(EffectAnswer, Nil) {
   use #(module, function) <- result.try(annotation.split_function_name(name))
   let qualified = QualifiedName(module:, function:)
+  // The command answers for the public API, so what this package's source says
+  // about the name is settled before any entry is weighed — a hand-written line
+  // for a private function, or for one no module defines, describes nothing the
+  // package exports.
+  use <- bool.guard(
+    when: declined_by_publicity(knowledge_base, qualified),
+    return: Error(Nil),
+  )
   // Foreign code is answered by what declares it, exactly as `check` and `why`
   // answer for it: an entry inferred over an `@external`'s body describes
   // something the foreign implementation needn't match, so it is no answer here
@@ -1293,6 +1343,31 @@ fn function_effect(
         term:,
         source: types.FunctionEntry(origin:),
       ))
+  }
+}
+
+// Whether `graded effect` must decline `name` whatever the knowledge base holds.
+//
+// The command answers for the public API: a private function is not part of it,
+// and neither is a name this package's source never defines — a typo in a spec
+// line names nothing, however precise its effect set reads. Both are refusals
+// the entries themselves cannot express, since a hand-written line for a private
+// function and one for a real public function are the same line.
+//
+// This outranks the module-level-external carve-out. `external effects <module>`
+// answers for every name in its module, which is what a module graded has no
+// source for needs — but where the source *is* here, a declaration describes
+// behaviour for callers; it does not export a name. Nothing about how callers
+// resolve either name changes.
+fn declined_by_publicity(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  case effects.project_visibility(knowledge_base, name) {
+    effects.ProjectFunction(visibility: types.Internal)
+    | effects.NotProjectFunction -> True
+    effects.ProjectFunction(visibility: types.Exported)
+    | effects.NoProjectEvidence -> False
   }
 }
 

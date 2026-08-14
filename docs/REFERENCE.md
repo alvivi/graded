@@ -426,8 +426,11 @@ declaration is widened by `[Unknown]` — the union graded performs against a
 walked fallback in the defining package has no second operand one package away.
 
 `graded effect` answers for the public API, so a *private* `@external` exits
-non-zero there as a private ordinary function does. Callers still resolve it
-normally, and `graded why`, which accepts private functions, still explains it.
+non-zero there as a private ordinary function does — including one a valid
+`external effects` line declares, since a declaration describes what the foreign
+code does for its callers rather than exporting the name. Callers still resolve
+it normally, and `graded why`, which accepts private functions, still explains
+it.
 
 ## Effect labels
 
@@ -547,11 +550,20 @@ function, an undeclared field, or an unknown name exits non-zero with
 ``no public function or type field named `<name>` ``. A function graded knows
 about but can't resolve is a *hit*: it reports `[Unknown]`.
 
+Publicity and existence are read from your source, not from your spec. In a
+module of this package that graded parsed, a **private** function and a name the
+module **does not define** both exit non-zero — whatever a hand-written line
+says about them, and whether or not the function is an `@external`. A spec line
+cannot export a name the package doesn't.
+
 One carve-out: a module-level `external effects <module> : [...]` answers for
 every name in that module that nothing else keys, so under such a module a name
 resolves — including one that doesn't exist. With `external effects fake_clock : [Time]`,
 `graded effect fake_clock.zzz_nope` reports `[Time]` and exits zero. `effect` reports what the spec says about a name; it isn't a
-check that the name exists.
+check that the name exists. This holds where graded has no source to consult —
+a module outside the package, as `fake_clock` is. Over one of *your* modules the
+source decides: a module-level external answers for that module's public
+functions, and its private and undefined names still exit non-zero.
 
 ## Explaining one function
 
