@@ -318,6 +318,17 @@ pub type TypeFieldEffect {
   )
 }
 
+// Whether the package under analysis exports a function. Recorded beside the
+// `@external` declarations a knowledge base holds, because its two consumers
+// disagree about private foreign code: resolving a call charges a private
+// `@external` exactly as it charges a public one, while `graded effect` answers
+// for the public API alone and must not begin answering for a private name on
+// the strength of its being foreign.
+pub type Visibility {
+  Exported
+  Internal
+}
+
 // Whether an external targets a whole module or a specific function.
 pub type ExternalTarget {
   // `external effects gleam/list : []` — the entire module is pure.

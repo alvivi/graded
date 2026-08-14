@@ -22,13 +22,12 @@ import graded/internal/typeinfo
 import graded/internal/types.{
   type CallExplanation, type EffectAnnotation, type EffectTerm, type LocalCall,
   type LookupOrigin, type ParamBound, type QualifiedName, type ResolvedCall,
-  type UnknownReason, type Violation, type Warning, CallExplanation, Catalog,
-  CommittedSpec, DependencySpec, EffectAnnotation, Effects, FieldNotAnnotated,
-  ModuleExternalOrigin, NoKnownEffects, ParamBound, PathDependency,
-  ProjectInferred, QualifiedName, ReceiverTypeUnresolved, TUnion, TVar, TypeLine,
+  type UnknownReason, type Violation, type Warning, CallExplanation,
+  EffectAnnotation, Effects, FieldNotAnnotated, NoKnownEffects, ParamBound,
+  QualifiedName, ReceiverTypeUnresolved, TUnion, TVar, TypeLine,
   UndeclaredExternal, UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning,
   UnresolvedFieldValue, UntraceableArgument, UntraceableProducer,
-  UntraceableReceiver, UntrackedEffectWarning, UserExternal, Violation,
+  UntraceableReceiver, UntrackedEffectWarning, Violation,
 }
 
 // Entry points
@@ -442,7 +441,11 @@ fn foreign_resolution(
   }
 }
 
-// The declaration that answers for `name`, when the winning entry is one.
+// The declaration that answers for `name`, when the winning entry is one. Also
+// asked of names that are *not* foreign code — a module-level external can
+// cover an ordinary Gleam function — so it weighs the winning entry's origin
+// directly rather than going through the boundary, which only applies the rule
+// to names already known to be foreign.
 fn declaration_resolution(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -450,7 +453,7 @@ fn declaration_resolution(
   case effects.lookup(knowledge_base, name) {
     effects.Known(term, source) -> {
       let origin = effects.origin_of(source)
-      case declares_foreign_code(origin) {
+      case effects.declares_foreign_code(origin) {
         True -> Some(Resolution(term:, reason: None, origin: Some(origin)))
         False -> None
       }
@@ -459,39 +462,21 @@ fn declaration_resolution(
   }
 }
 
-// Whether `name` is foreign code that nothing declares — an `@external` whose
-// effects therefore stay `[Unknown]`, however concrete an inferred entry left
-// behind for it reads. Asked by `graded effect`, so a lookup answers what
-// `check` and `why` say about the same name.
+// Whether `name` is exported foreign code that nothing declares — an
+// `@external` whose effects therefore stay `[Unknown]`, however concrete an
+// inferred entry left behind for it reads. Asked by `graded effect`, so a
+// lookup answers what `check` and `why` say about the same name.
+//
+// Exported, because this is the only answer `graded effect` gives that does not
+// come from an entry in the knowledge base, and the base keys the public API.
+// Without the publicity test a private `@external` would be queryable while the
+// private ordinary function beside it reports that no such public name exists.
 pub fn undeclared_external(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Bool {
-  effects.is_foreign_function(knowledge_base, name)
+  effects.exports_foreign_function(knowledge_base, name)
   && option.is_none(declaration_resolution(knowledge_base, name))
-}
-
-// Whether an origin speaks for code graded cannot see. An `external effects`
-// line, a module-level external and a catalog entry all declare what foreign
-// code does; an `effects` line does not — for an `@external` it is inference
-// over a body the foreign implementation needn't match, so trusting one would
-// pass a budget nothing backs (a function that becomes `@external` leaves
-// exactly such a line behind until the spec is regenerated).
-//
-// Told from the winning entry rather than from its effects: a declaration of
-// `[Unknown]` is still a declaration and still names its source, and an
-// inferred `[]` is not one however concrete it reads.
-fn declares_foreign_code(origin: LookupOrigin) -> Bool {
-  case origin {
-    // A dependency's spec speaks for foreign code as the catalog does, though
-    // neither keys a function of the project module under analysis today.
-    UserExternal
-    | Catalog(_)
-    | ModuleExternalOrigin(_)
-    | DependencySpec(_)
-    | PathDependency(_) -> True
-    CommittedSpec | ProjectInferred | TypeLine(_) -> False
-  }
 }
 
 // A body's contributors, ordered and deduplicated for reporting.
@@ -1641,19 +1626,28 @@ fn is_opaque_external(definition: Definition(Function)) -> Bool {
 }
 
 // The module's functions whose implementation is foreign code, qualified by
-// `module_path`. What a knowledge base records so that every consumer — a
-// caller's resolution, `check`, `why`, `effect` — reads one of these names as
-// only its declaration describes it.
+// `module_path` and each paired with whether the package exports it. What a
+// knowledge base records so that every consumer — a caller's resolution,
+// `check`, `why`, `effect` — reads one of these names as only its declaration
+// describes it. The visibility rides along because `graded effect` answers for
+// the public API alone, while the others resolve a private `@external` exactly
+// as they resolve a public one.
 pub fn foreign_functions(
   module: Module,
   module_path: String,
-) -> Set(QualifiedName) {
+) -> dict.Dict(QualifiedName, types.Visibility) {
   module.functions
   |> list.filter(is_opaque_external)
   |> list.map(fn(definition) {
-    QualifiedName(module: module_path, function: definition.definition.name)
+    let name =
+      QualifiedName(module: module_path, function: definition.definition.name)
+    let visibility = case definition.definition.publicity {
+      glance.Public -> types.Exported
+      glance.Private -> types.Internal
+    }
+    #(name, visibility)
   })
-  |> set.from_list()
+  |> dict.from_list()
 }
 
 // Whether an `@external`'s Gleam fallback body is code that runs: it has one,
@@ -3573,8 +3567,11 @@ fn bind_variables(
 // Lift a call argument bound to an *operator* parameter into an effect operator
 // (`TAbs`, curried when the operator takes several callbacks) so the callee's
 // `op(cb1, cb2)` application beta-reduces. A function reference `g` becomes
-// `λp1. λp2. <g's effect>`, abstracting over all of `g`'s callback parameters in
-// order; an inline closure or a same-module named function is lifted by
+// `λp1. λp2. <g's declared effect>`, abstracting over all of `g`'s callback
+// parameters in order — the body comes through the boundary that holds foreign
+// code to what declares it, so an undeclared `@external` abstracts over
+// `[Unknown]` and every application of it stays `[Unknown]`. An inline closure
+// or a same-module named function is lifted by
 // `lift_operator_arg` (which has the analysis context). `positions` are the
 // operator parameter's callback argument indices, used to abstract a closure
 // over exactly those parameters. Anything else falls back to its flat effect
@@ -3591,7 +3588,7 @@ fn operator_term_for_argument(
 ) -> #(EffectTerm, Memo) {
   case arg.value {
     types.FunctionRef(name) -> {
-      let body = effects.lookup_effects(knowledge_base, name)
+      let body = effects.declared_effects(knowledge_base, name)
       // Abstract over `g`'s fn-typed params in declaration order. The outermost
       // binder is the first param, matching the left-nested application spine
       // built at the definition site.
@@ -4350,6 +4347,23 @@ fn lift_local_function(
 ) -> #(EffectTerm, Memo) {
   let function = definition.definition
   let fn_param_names = ordered_fn_typed_param_names(function)
+  // An `@external` has no body to lift. It is charged what declares the foreign
+  // code — the rule a direct same-module call into it already follows —
+  // abstracted over its own callback parameters so an application of the lifted
+  // operator still reduces. Walking the empty or fallback body instead would
+  // lift an undeclared external to `[]`, and a caller passing it to a
+  // higher-order helper would inherit that `[]` while a direct call to the same
+  // name inherits `[Unknown]`.
+  use <- bool.lazy_guard(when: is_opaque_external(definition), return: fn() {
+    let qualified = QualifiedName(module: context.module_path, function: name)
+    let declared = foreign_resolution(knowledge_base, qualified).term
+    #(
+      list.fold_right(fn_param_names, declared, fn(acc, param) {
+        types.TAbs(param, acc)
+      }),
+      memo,
+    )
+  })
   let scc = dict.get(cache.scc_id, name) |> result.unwrap(-1)
   case set.contains(cache.collapsible, scc) {
     // A first-order function in a collapsible SCC lifts to a ground term (no
@@ -4528,16 +4542,18 @@ fn param_info(
 }
 
 // Look up the effects of an argument value. Function references →
-// KB lookup; constructors → pure; local refs matching a caller param
-// bound (user-declared or auto-detected fn-typed) → that bound's
-// effects; otherwise [Unknown].
+// KB lookup, through the boundary that holds foreign code to what declares it
+// (so an undeclared `@external` passed as a callback carries the same
+// `[Unknown]` a direct call to it does); constructors → pure; local refs
+// matching a caller param bound (user-declared or auto-detected fn-typed) →
+// that bound's effects; otherwise [Unknown].
 fn resolve_argument_effects(
   arg: types.CallArgument,
   knowledge_base: KnowledgeBase,
   caller_param_bounds: List(ParamBound),
 ) -> EffectTerm {
   case arg.value {
-    types.FunctionRef(name) -> effects.lookup_effects(knowledge_base, name)
+    types.FunctionRef(name) -> effects.declared_effects(knowledge_base, name)
     types.ConstructorRef -> effect_term.pure()
     types.LocalRef(name) ->
       case list.find(caller_param_bounds, fn(b) { b.name == name }) {
@@ -4836,9 +4852,12 @@ fn value_field_effect(
   case field_value_function(value, context.module_path, module_functions) {
     // A wired function the knowledge base doesn't hold — the module under
     // inference isn't in it — resolves from its own definition, when that lifts
-    // to a ground effect. Everything else stays on the knowledge-base answer.
+    // to a ground effect. Everything else stays on the knowledge-base answer,
+    // taken through the boundary that holds foreign code to what declares it:
+    // an `@external` wired into a field is charged the same `[Unknown]` a call
+    // to it is, and `local_function_field_effect` declines to walk its body.
     Some(name) ->
-      case effects.lookup(knowledge_base, name) {
+      case effects.lookup_declared(knowledge_base, name) {
         effects.Known(effect, source) -> #(
           known_field_effect(effect, knowledge_base, name),
           Some(effects.origin_of(source)),

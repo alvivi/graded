@@ -225,7 +225,8 @@ pub fn check_line_on_an_external_checks_its_declaration_test() {
   |> list.map(fn(v) { v.function })
   |> list.sort(string.compare)
   |> should.equal([
-    "declared_over_budget", "stale_inferred", "undeclared", "wrapper",
+    "calls_wired_external", "declared_over_budget",
+    "passes_external_as_callback", "stale_inferred", "undeclared", "wrapper",
   ])
   let assert Ok(declared) =
     list.find(r.violations, fn(v) { v.function == "declared_over_budget" })
@@ -291,6 +292,63 @@ pub fn a_caller_of_an_external_is_charged_what_declares_it_test() {
   violation.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Unknown"])))
   violation.explanation.reason |> should.equal(Some(types.UndeclaredExternal))
+  support.cleanup(root)
+}
+
+pub fn an_external_passed_as_a_value_is_charged_what_declares_it_test() {
+  // The external reached as a *value* rather than through a call: handed to a
+  // higher-order helper, and wired into a record field. Both resolve it through
+  // the same declaration a direct call goes through, so both carry `[Unknown]`.
+  // Walking the bodyless `@external` instead would lift it to `[]` and let a
+  // budget pass here that `wrapper`'s direct call fails.
+  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/external_budget.gleam" })
+  let assert Ok(callback) =
+    list.find(r.violations, fn(v) {
+      v.function == "passes_external_as_callback"
+    })
+  callback.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  let assert Ok(wired) =
+    list.find(r.violations, fn(v) { v.function == "calls_wired_external" })
+  wired.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn a_cross_module_external_callback_is_charged_its_declaration_test() {
+  // The callback case across a module boundary, where the external is a
+  // qualified reference resolved through the knowledge base rather than a
+  // same-module name. The stale `effects ffi.clock : []` does not answer for
+  // foreign code, so it may not answer for a function value naming it either.
+  let root = "build/external_callback_cross_module"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "check app.wrapper : []\neffects ffi.clock : []\n"),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"clock\")\npub fn clock() -> Nil\n",
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+
+pub fn apply_callback(f: fn() -> Nil) -> Nil {
+  f()
+}
+
+pub fn wrapper() -> Nil {
+  apply_callback(ffi.clock)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
   support.cleanup(root)
 }
 

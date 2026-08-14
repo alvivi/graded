@@ -7,7 +7,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/order
 import gleam/result
-import gleam/set.{type Set}
+import gleam/set
 import gleam/string
 import graded/internal/annotation
 import graded/internal/config
@@ -83,12 +83,13 @@ pub type KnowledgeBase {
     // pass. (Same-module private helpers resolve on demand from the AST instead.)
     provenance: Dict(QualifiedName, ReturnProvenance),
     // The functions whose implementation is foreign code — the `@external`
-    // declarations of the source under analysis. An entry here says nothing about
-    // a name's effects; it says that only a *declaration* speaks for them, since
-    // every other entry the base holds for one describes a body the foreign
-    // implementation needn't match. Weighed by `checker.undeclared_external`, so
-    // one name reads the same to `check`, `why`, `effect` and every caller.
-    foreign_functions: Set(QualifiedName),
+    // declarations of the source under analysis — each with whether the package
+    // exports it. An entry here says nothing about a name's effects; it says
+    // that only a *declaration* speaks for them, since every other entry the
+    // base holds for one describes a body the foreign implementation needn't
+    // match. Weighed by `lookup_declared`, so one name reads the same to
+    // `check`, `why`, `effect` and every caller.
+    foreign_functions: Dict(QualifiedName, types.Visibility),
   )
 }
 
@@ -121,7 +122,7 @@ pub fn load_knowledge_base(
     module_effects: dict.merge(cat_module_effects, deps.module_effects),
     provenance: dict.new(),
     // Scanned from the source under analysis, which no dependency spec carries.
-    foreign_functions: set.new(),
+    foreign_functions: dict.new(),
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
@@ -141,7 +142,7 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     updates: dict.new(),
     module_effects: dict.new(),
     provenance: dict.new(),
-    foreign_functions: set.new(),
+    foreign_functions: dict.new(),
   )
 }
 
@@ -159,7 +160,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     updates: dict.new(),
     module_effects: cat_module_effects,
     provenance: dict.new(),
-    foreign_functions: set.new(),
+    foreign_functions: dict.new(),
   )
   |> with_sourced_type_fields(cat_type_fields)
 }
@@ -307,15 +308,16 @@ pub fn origin_of(source: types.EffectSource) -> LookupOrigin {
 }
 
 // Record the functions whose implementation is foreign code: the `@external`
-// declarations of the source under analysis. Unioned with what is already
-// recorded, so a caller scanning a second set of modules adds to it.
+// declarations of the source under analysis, each with whether the package
+// exports it. Merged into what is already recorded, so a caller scanning a
+// second set of modules adds to it.
 pub fn with_foreign_functions(
   knowledge_base: KnowledgeBase,
-  names: Set(QualifiedName),
+  names: Dict(QualifiedName, types.Visibility),
 ) -> KnowledgeBase {
   KnowledgeBase(
     ..knowledge_base,
-    foreign_functions: set.union(knowledge_base.foreign_functions, names),
+    foreign_functions: dict.merge(knowledge_base.foreign_functions, names),
   )
 }
 
@@ -327,17 +329,79 @@ pub fn is_foreign_function(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Bool {
-  set.contains(knowledge_base.foreign_functions, name)
+  dict.has_key(knowledge_base.foreign_functions, name)
 }
 
-// Look up effects as an `EffectTerm`, returning `[Unknown]` for unrecognized
-// functions. The term may be second-order (carry operator applications) for
-// higher-order functions; callers reduce it at the resolution boundary.
-pub fn lookup_effects(
+// Whether `name` is foreign code the package *exports*. Asked by `graded
+// effect`, which answers for the public API alone: a private `@external` is
+// resolved like any other name when a caller reaches it, but is no more
+// queryable than a private ordinary function.
+pub fn exports_foreign_function(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  dict.get(knowledge_base.foreign_functions, name) == Ok(types.Exported)
+}
+
+// Whether an origin speaks for code graded cannot see. An `external effects`
+// line, a module-level external and a catalog entry all declare what foreign
+// code does; an `effects` line does not — for an `@external` it is inference
+// over a body the foreign implementation needn't match, so trusting one would
+// pass a budget nothing backs (a function that becomes `@external` leaves
+// exactly such a line behind until the spec is regenerated).
+//
+// Told from the winning entry rather than from its effects: a declaration of
+// `[Unknown]` is still a declaration and still names its source, and an
+// inferred `[]` is not one however concrete it reads.
+pub fn declares_foreign_code(origin: LookupOrigin) -> Bool {
+  case origin {
+    // A dependency's spec speaks for foreign code as the catalog does, though
+    // neither keys a function of the project module under analysis today.
+    UserExternal
+    | Catalog(_)
+    | ModuleExternalOrigin(_)
+    | DependencySpec(_)
+    | PathDependency(_) -> True
+    CommittedSpec | ProjectInferred | TypeLine(_) -> False
+  }
+}
+
+// The base's answer for `name`, holding foreign code to what declares it: for
+// an `@external`, only a declaring entry answers, and anything else the base
+// holds describes a body the foreign implementation needn't match, so it leaves
+// the effects unresolved however concrete it looks.
+//
+// The one boundary through which a name is charged its effects. A call, a
+// function value passed to a higher-order callee, a function wired into a
+// record field and a `check` line all come through here, so no two of them can
+// charge one name differently — a raw `lookup` that skipped the rule is exactly
+// how a stale `effects` line for an `@external` used to be believed.
+pub fn lookup_declared(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> EffectLookup {
+  use <- bool.guard(
+    when: !is_foreign_function(knowledge_base, name),
+    return: lookup(knowledge_base, name),
+  )
+  case lookup(knowledge_base, name) {
+    Known(_, source) as known ->
+      case declares_foreign_code(origin_of(source)) {
+        True -> known
+        False -> Unknown
+      }
+    Unknown -> Unknown
+  }
+}
+
+// The same as an `EffectTerm`, `[Unknown]` where nothing answers for the name.
+// The term may be second-order (carry operator applications) for higher-order
+// functions; callers reduce it at the resolution boundary.
+pub fn declared_effects(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> EffectTerm {
-  case lookup(knowledge_base, name) {
+  case lookup_declared(knowledge_base, name) {
     Known(effect_term, _) -> effect_term
     Unknown -> effect_term.unknown()
   }
@@ -357,7 +421,7 @@ pub fn argument_value_effects(
   value: ArgumentValue,
 ) -> EffectTerm {
   case value {
-    FunctionRef(name:) -> lookup_effects(knowledge_base, name)
+    FunctionRef(name:) -> declared_effects(knowledge_base, name)
     ConstructorRef -> effect_term.pure()
     _ -> effect_term.unknown()
   }

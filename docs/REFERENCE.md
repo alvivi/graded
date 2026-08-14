@@ -384,6 +384,16 @@ budget all report one name the same way.
 Declaring `external effects myapp/ffi.now : [Unknown]` is still a declaration —
 it names itself as the source rather than reporting the external as undeclared.
 
+The declaration answers wherever the external is reached, not only at a call:
+passing it as a callback (`apply(myapp/ffi.now)`) or wiring it into a record
+field (`Clock(read: now)`) charges the same effect a direct call is charged, so
+a helper handed an undeclared external contributes `[Unknown]` rather than the
+`[]` its bodyless declaration reads as.
+
+`graded effect` answers for the public API, so a *private* `@external` exits
+non-zero there as a private ordinary function does. Callers still resolve it
+normally, and `graded why`, which accepts private functions, still explains it.
+
 ## Effect labels
 
 Effect labels are plain strings — you can use any name. The bundled catalog uses

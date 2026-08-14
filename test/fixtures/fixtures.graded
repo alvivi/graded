@@ -96,6 +96,10 @@ check external_budget.undeclared : []
 check external_budget.stale_inferred : []
 // A budget on a caller of an external, checked against the same declaration.
 check external_budget.wrapper : []
+// The same declaration answers where the external is passed as a value rather
+// than called: as a callback, and wired into a record field.
+check external_budget.passes_external_as_callback : []
+check external_budget.calls_wired_external : []
 
 // External effects (third-party / FFI functions graded can't see into).
 external effects external_same_module.now : [Time]
