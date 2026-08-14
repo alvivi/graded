@@ -465,6 +465,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   use ctx <- result.try(load_project_context(directory))
   let ProjectContext(
     source_directory: directory,
+    reported_directory:,
     cfg:,
     spec:,
     parsed:,
@@ -476,8 +477,19 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   ) = ctx
   let checks_by_module = checks_grouped_by_module(spec)
 
+  // Every module of the package was analysed, so a call out of the asked-about
+  // subtree resolved against the real callee and each module kept the path its
+  // `check` lines name. Only the results are narrowed back to what was asked.
+  let reported = case reported_directory == directory {
+    True -> parsed
+    False ->
+      list.filter(parsed, fn(entry) {
+        within_directory(reported_directory, entry.0)
+      })
+  }
+
   let results =
-    list.map(parsed, fn(entry) {
+    list.map(reported, fn(entry) {
       let #(gleam_path, module) = entry
       let module_path = config.module_path_for_source(gleam_path, directory)
       let module_checks = case dict.get(checks_by_module, module_path) {
@@ -516,9 +528,12 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
 // `load_project_context`, which writes nothing — `check` and `effect` share it.
 type ProjectContext {
   ProjectContext(
-    // The `scope_to_source_directory` result, not the caller's raw argument:
-    // module paths derive from it, so it travels with the rest of the context.
+    // The analysed directory, not the caller's raw argument: module paths derive
+    // from it, so it travels with the rest of the context.
     source_directory: String,
+    // The subtree the caller asked about, which the analysed directory may be
+    // wider than. Results outside it are analysed and not reported.
+    reported_directory: String,
     cfg: config.GradedConfig,
     spec: GradedFile,
     parsed: List(#(String, glance.Module)),
@@ -536,6 +551,7 @@ type ProjectContext {
 type ProjectSources {
   ProjectSources(
     source_directory: String,
+    reported_directory: String,
     cfg: config.GradedConfig,
     spec: GradedFile,
     parsed: List(#(String, glance.Module)),
@@ -549,7 +565,7 @@ type ProjectSources {
 fn load_project_sources(
   directory: String,
 ) -> Result(ProjectSources, GradedError) {
-  let directory = scope_to_source_directory(directory)
+  let SourceScope(analysed: directory, reported:) = source_scope(directory)
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
   use spec <- result.try(read_spec(cfg.spec_file))
@@ -558,6 +574,7 @@ fn load_project_sources(
   let index = build_module_index(parsed, directory)
   ProjectSources(
     source_directory: directory,
+    reported_directory: reported,
     cfg:,
     spec:,
     parsed:,
@@ -581,6 +598,7 @@ fn load_project_context(
 fn project_context(sources: ProjectSources) -> ProjectContext {
   let ProjectSources(
     source_directory: directory,
+    reported_directory:,
     cfg:,
     spec:,
     parsed:,
@@ -645,6 +663,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
 
   ProjectContext(
     source_directory: directory,
+    reported_directory:,
     cfg:,
     spec:,
     parsed:,
@@ -1091,7 +1110,7 @@ fn effect_answer(
   directory: String,
   name: String,
 ) -> Result(EffectAnswer, GradedError) {
-  let directory = scope_to_source_directory(directory)
+  let directory = source_scope(directory).analysed
   use cfg <- result.try(read_config(directory))
   use spec <- result.try(read_spec(cfg.spec_file))
   case spec_answer(directory, spec, name) {
@@ -1112,7 +1131,7 @@ pub fn run_effect_from_project(
   directory: String,
   name: String,
 ) -> Result(String, GradedError) {
-  project_answer(scope_to_source_directory(directory), name)
+  project_answer(source_scope(directory).analysed, name)
   |> result.map(answer.render_graded)
 }
 
@@ -1653,6 +1672,52 @@ fn under_build_dir(directory: String, path: String) -> Bool {
   }
 }
 
+// A command's target: the directory whose sources are analysed, and the subtree
+// whose results are reported.
+//
+// The two differ only for a directory nested inside its own package's `src/`.
+// Resolution is a fact of the whole package — imports, `@external` discovery and
+// module-path keying all are — so analysing a subtree alone re-keys every module
+// (`sub/inner` becomes `inner`, and the `check` lines naming it stop matching)
+// and resolves a call out of the subtree against nothing. The analysis therefore
+// widens to the package's `src/`, and the passed directory filters what is
+// reported.
+type SourceScope {
+  SourceScope(analysed: String, reported: String)
+}
+
+fn source_scope(directory: String) -> SourceScope {
+  let scoped = scope_to_source_directory(directory)
+  case enclosing_source_root(scoped) {
+    Some(root) -> SourceScope(analysed: root, reported: scoped)
+    None -> SourceScope(analysed: scoped, reported: scoped)
+  }
+}
+
+// The `src/` of the package `directory` sits strictly inside, if any.
+//
+// `None` for the package's own `src/`, and for a directory no package's `src/`
+// encloses — a standalone tree, an out-of-tree source directory, or a subtree of
+// the surrounding project that is not under its `src/`. Those keep acting as
+// their own root, which is what `spec_root_for`'s carve-out already promises
+// them and what this repo's own `test/fixtures` workflow depends on.
+fn enclosing_source_root(directory: String) -> Option(String) {
+  let root = resolve_package_root(directory)
+  let source_root = case root {
+    "." -> "src"
+    _ -> filepath.join(root, "src")
+  }
+  case string.starts_with(directory, source_root <> "/") {
+    True -> Some(source_root)
+    False -> None
+  }
+}
+
+// Whether `path` names a file inside `directory`'s subtree.
+fn within_directory(directory: String, path: String) -> Bool {
+  string.starts_with(path, directory <> "/")
+}
+
 // Scope a command's target directory to source files. When the argument is a
 // package root (a `gleam.toml` beside a `src/` directory), descend into `src/`
 // so module names derive unprefixed (`app`, not `src/app`) and the walk skips
@@ -1981,7 +2046,10 @@ type ModuleInference {
 // `run_infer` and `run_infer_dry_run` decide what would be written from one
 // shared computation.
 fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
-  let directory = scope_to_source_directory(directory)
+  // A package has one spec file, so a scoped `infer` is a whole-package `infer`:
+  // a spec written from a subtree's modules alone would state the package's
+  // public surface wrongly rather than partially.
+  let directory = source_scope(directory).analysed
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
   use #(spec_on_disk, spec) <- result.try(read_spec_on_disk(cfg.spec_file))

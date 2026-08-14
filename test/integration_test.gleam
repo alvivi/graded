@@ -1,3 +1,4 @@
+import filepath
 import glance
 import gleam/dict
 import gleam/list
@@ -3430,4 +3431,158 @@ pub fn provenance_external_stays_unknown_test() {
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
   v.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+// Nested source-directory scopes
+//
+// A directory inside a package's `src/` is a filter on what is reported, not on
+// what is analysed. Resolution is a fact of the whole package — imports,
+// `@external` discovery and module-path keying all are — so a scoped run charges
+// exactly what the whole-package run charges, and its `check` lines keep the
+// qualified names they were written with.
+
+// A package whose `src/` holds one module in a nested directory and one beside
+// it, both calling the same undeclared `@external`.
+fn scoped_package(root: String) -> Nil {
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"scoped\"\n"),
+    #(
+      "scoped.graded",
+      "effects ffi.now : []\ncheck sub/inner.go : []\ncheck outside.go : []\n",
+    ),
+    #(
+      "src/ffi.gleam",
+      "@target(erlang)
+@external(erlang, \"scoped_ffi\", \"now\")
+pub fn now() -> Nil
+",
+    ),
+    #(
+      "src/sub/inner.gleam",
+      "import ffi\n\npub fn go() -> Nil {\n  ffi.now()\n}\n",
+    ),
+    #(
+      "src/outside.gleam",
+      "import ffi\n\npub fn go() -> Nil {\n  ffi.now()\n}\n",
+    ),
+  ])
+  Nil
+}
+
+pub fn a_scoped_run_charges_what_the_whole_package_run_charges_test() {
+  // The `@external` lives outside the scope. Analysed from the subtree alone it
+  // was invisible, so the stale `effects ffi.now : []` answered and the check
+  // passed; the whole-package run charges `[Unknown]`. Both now agree, and the
+  // `check sub/inner.go` line still names the module it names package-wide.
+  let root = "build/scoped_subtree"
+  scoped_package(root)
+  let scoped = root <> "/src/sub"
+
+  let assert Ok(results) = graded.run(scoped)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == scoped <> "/inner.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("go")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  violation.explanation.reason |> should.equal(Some(types.UndeclaredExternal))
+
+  // Out-of-scope files are analysed — that is what resolved the call above —
+  // and not reported.
+  results
+  |> list.map(fn(r) { r.file })
+  |> list.contains(root <> "/src/outside.gleam")
+  |> should.be_false()
+
+  // And no spurious spec lint: the `check` lines match project modules again.
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_scoped_run_reads_the_same_result_from_an_absolute_path_test() {
+  // Which spec a scoped run reads used to depend on the path form: from the
+  // package root a relative subtree resolved its own (missing) spec, while an
+  // absolute one resolved the surrounding project's. Both now resolve the
+  // package the subtree is in.
+  let root = "build/scoped_subtree_abs"
+  scoped_package(root)
+  let assert Ok(cwd) = simplifile.current_directory()
+  let absolute = filepath.join(cwd, root <> "/src/sub")
+
+  let assert Ok(results) = graded.run(absolute)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == absolute <> "/inner.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  support.cleanup(root)
+}
+
+pub fn a_scoped_query_answers_for_the_whole_package_test() {
+  // `why` and `effect` are read-only lookups over the package's index, so they
+  // answer for a module outside the scope rather than declining a name the
+  // analysis had to resolve anyway.
+  let root = "build/scoped_subtree_query"
+  scoped_package(root)
+  let scoped = root <> "/src/sub"
+
+  graded.run_effect(scoped, "outside.go")
+  |> should.equal(Ok(
+    "effects outside.go : [Unknown]\n// resolved from in-memory inference",
+  ))
+  let assert Ok(explanation) = graded.run_why(scoped, "outside.go")
+  explanation |> string.contains("calls ffi.now") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_scoped_infer_writes_the_whole_package_spec_test() {
+  // A package has one spec file, and it states the package's public surface. A
+  // spec written from a subtree's modules alone would state that surface wrongly
+  // rather than partially, so a scoped `infer` is a whole-package `infer`, at the
+  // package root.
+  let root = "build/scoped_subtree_infer"
+  scoped_package(root)
+
+  let assert Ok(_) = graded.run_infer(root <> "/src/sub")
+  let assert Ok(written) = simplifile.read(root <> "/scoped.graded")
+  string.contains(written, "effects sub/inner.go : [Unknown]")
+  |> should.be_true()
+  string.contains(written, "effects outside.go : [Unknown]") |> should.be_true()
+  // The stale line for the external is repaired too, so the scoped run leaves
+  // the spec exactly as the unscoped one would.
+  string.contains(written, "effects ffi.now : [Unknown]") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_non_package_subtree_keeps_acting_as_its_own_root_test() {
+  // The carve-out this repo's own `test/fixtures` workflow depends on: a subtree
+  // of the surrounding project that is not under a package's `src/` is its own
+  // root, so its spec is read from inside it and its module paths are keyed from
+  // inside it. Widening here would write the fixture's spec into the project
+  // around it.
+  let root = "build/scoped_standalone/fixtures"
+  support.write_fixture(root, [
+    #(
+      "fixtures.graded",
+      "check app.go : []\nexternal effects ffi.now : [Time]\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@target(erlang)
+@external(erlang, \"standalone_ffi\", \"now\")
+pub fn now() -> Nil
+",
+    ),
+    #("app.gleam", "import ffi\n\npub fn go() -> Nil {\n  ffi.now()\n}\n"),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Time"])))
+  support.cleanup("build/scoped_standalone")
 }

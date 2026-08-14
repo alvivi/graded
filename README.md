@@ -111,7 +111,7 @@ An unknown command or option is a usage error, not a silently-checked directory.
 
 `infer --dry-run` previews the same inference as a line diff of the spec file — the `-`/`+` lines with a couple of lines of context around them, or `graded: no changes` — and writes nothing, neither the spec file nor the cache. It exits 0 either way; `format --check` is the CI gate.
 
-`check` and `infer` scope to the passed directory (default `src/`), recursing into it but never into `build/`. Passing the package root — `graded check .` — scopes to the root's `src/`, so module names come out as they appear in `import` statements (`app`, not `src/app`). To check another project, run graded from that project's root or point it at its `src/`.
+`check` and `infer` scope to the passed directory (default `src/`), recursing into it but never into `build/`. Passing the package root — `graded check .` — scopes to the root's `src/`, so module names come out as they appear in `import` statements (`app`, not `src/app`). A directory *inside* a package's `src/` narrows what is reported, not what is analysed: the whole package is resolved (module paths, imports and `@external` discovery are package-wide facts) and `check` reports only the passed subtree's files, while `infer`, which writes one package-level spec, writes the whole package's. To check another project, run graded from that project's root or point it at its `src/`.
 
 ## Limitations
 
