@@ -1633,9 +1633,15 @@ fn function_effect(
   // answer for it: an entry inferred over an `@external`'s body describes
   // something the foreign implementation needn't match, so it is no answer here
   // either, however concrete it reads.
+  //
+  // A running Gleam fallback body travels with the answer either way: nothing
+  // declares the external, but that body is ordinary code graded walked, and
+  // `check` and `why` charge its effects — so the query states them too rather
+  // than reporting a bare `[Unknown]` the other two disagree with.
+  let fallback = effects.fallback_contribution(knowledge_base, qualified)
   use <- bool.guard(
     when: checker.undeclared_external(knowledge_base, qualified),
-    return: Ok(answer.UndeclaredExternalAnswer(name:)),
+    return: Ok(answer.UndeclaredExternalAnswer(name:, fallback:)),
   )
   case effects.lookup_declared(knowledge_base, qualified) {
     effects.Unknown -> Error(Nil)
@@ -1649,6 +1655,7 @@ fn function_effect(
         bounds: [],
         term:,
         source: types.ModuleExternalEntry(origin:),
+        fallback:,
       ))
     effects.Known(term, types.FunctionEntry(origin:)) ->
       Ok(answer.FunctionAnswer(
@@ -1657,6 +1664,7 @@ fn function_effect(
         bounds: effects.lookup_param_bounds(knowledge_base, qualified),
         term:,
         source: types.FunctionEntry(origin:),
+        fallback:,
       ))
   }
 }
@@ -2487,6 +2495,15 @@ fn infer_one_module(
   girard_fn_typed: Dict(String, Set(String)),
   declared_modules: Set(String),
 ) -> ModuleInference {
+  let knowledge_base =
+    with_module_fallback_effects(
+      knowledge_base,
+      module,
+      module_path,
+      registry,
+      module_types,
+      girard_fn_typed,
+    )
   let #(inferred, returned_operators, provenance) =
     checker.infer_with_returns(
       module,
@@ -2601,24 +2618,14 @@ fn fold_inferred_module(
   type_info: typeinfo.TypeInfo,
   declared_modules: Set(String),
 ) -> KnowledgeBase {
-  // Before this module is inferred, so a caller in it — and every module after
-  // it in topological order — is charged what an `@external`'s running fallback
-  // body does, not the declaration alone. The walk needs only the callees
-  // already folded, which topological order guarantees.
   let kb =
-    effects.with_fallback_effects(
+    with_module_fallback_effects(
       kb,
-      qualify_bare_names(
-        checker.fallback_effects(
-          module,
-          module_path,
-          kb,
-          registry,
-          typeinfo.for_module(type_info, module_path),
-          typeinfo.fn_typed_for_module(type_info, module_path),
-        ),
-        module_path,
-      ),
+      module,
+      module_path,
+      registry,
+      typeinfo.for_module(type_info, module_path),
+      typeinfo.fn_typed_for_module(type_info, module_path),
     )
   let #(inferred, returned_operators, provenance) =
     checker.infer_with_returns(
@@ -2641,6 +2648,41 @@ fn fold_inferred_module(
   effects.with_provenance(
     threaded_kb,
     qualify_bare_names(provenance, module_path),
+  )
+}
+
+// Fold what the module's running Gleam fallback bodies do into `knowledge_base`,
+// before the module is inferred.
+//
+// Every pass that infers does this, so a caller of a target-conditional
+// `@external` is charged the same effects whichever pass ran: the one that
+// reports violations, and the one that writes the spec and cache. A write pass
+// that skipped it would publish a caller as pure over an external whose
+// fallback is not — and publish it for consumers, who have no body to walk.
+//
+// The walk needs only the callees already folded, which topological order
+// guarantees, so it belongs immediately before the module's own inference.
+fn with_module_fallback_effects(
+  knowledge_base: KnowledgeBase,
+  module: glance.Module,
+  module_path: String,
+  registry: SignatureRegistry,
+  module_types: Dict(#(Int, Int), girard.Type),
+  girard_fn_typed: Dict(String, Set(String)),
+) -> KnowledgeBase {
+  effects.with_fallback_effects(
+    knowledge_base,
+    qualify_bare_names(
+      checker.fallback_effects(
+        module,
+        module_path,
+        knowledge_base,
+        registry,
+        module_types,
+        girard_fn_typed,
+      ),
+      module_path,
+    ),
   )
 }
 

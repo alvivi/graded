@@ -421,6 +421,31 @@ pub fn with_running_fallback(
   }
 }
 
+// What a running Gleam fallback body added to `name`'s answer, if one did.
+//
+// `None` where no fallback runs, so the declaration is the whole story. Where
+// one does, the two halves came from different places and a renderer that
+// printed the union under the declaration's source alone would credit the
+// declaration with effects it never stated — so the contribution is reportable
+// on its own.
+//
+// One of *this package's* externals contributes what its body does, walked.
+// A dependency's contributes `[Unknown]`: the body runs and no consumer walks
+// it.
+pub fn fallback_contribution(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> option.Option(EffectTerm) {
+  case dict.get(knowledge_base.fallback_effects, name) {
+    Ok(term) -> Some(term)
+    Error(Nil) ->
+      case widens_with_dependency_fallback(knowledge_base, name) {
+        True -> Some(effect_term.unknown())
+        False -> None
+      }
+  }
+}
+
 // Record what a dependency's own source says is `@external`. Merged into what
 // is already recorded, so a caller scanning one more dependency module adds to
 // it — which is how a fast path that parses a single module reaches the same

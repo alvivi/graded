@@ -454,6 +454,116 @@ pub fn calls_it() -> Nil {
   support.cleanup(root)
 }
 
+pub fn infer_publishes_a_running_fallbacks_effects_test() {
+  // What `infer` writes is what consumers get, and they hold no body to walk.
+  // A pass that recorded the external but not what its fallback does would
+  // publish `effects ext.wrapper : []` over a caller that reaches the disk —
+  // the same under-reporting `check` was fixed for, committed to the spec.
+  let root = "build/external_fallback_infer"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.log : []\nexternal effects ext.sink : [Disk]\n",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"log\")
+pub fn log() -> Nil {
+  sink()
+}
+
+@external(erlang, \"ext_ffi\", \"sink\")
+@external(javascript, \"ext_ffi\", \"sink\")
+fn sink() -> Nil
+
+pub fn wrapper() -> Nil {
+  log()
+}
+",
+    ),
+  ])
+  let assert Ok(preview) = graded.run_infer_dry_run(root)
+  preview |> string.contains("effects ext.wrapper : [Disk]") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn an_undeclared_externals_fallback_is_reported_by_the_query_test() {
+  // Nothing declares the external, but its fallback body is ordinary code
+  // graded walked, so `check` and `why` charge `[Disk, Unknown]`. The query has
+  // to state the same total rather than the bare `[Unknown]` the undeclared
+  // shortcut used to return, and has to say which half came from the body.
+  let root = "build/external_fallback_undeclared"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects disk.write : [Disk]\ncheck ext.wrapper : []\n",
+    ),
+    #("disk.gleam", "@external(erlang, \"d\", \"w\")\npub fn write() -> Nil\n"),
+    #(
+      "ext.gleam",
+      "import disk
+
+@external(javascript, \"ext_ffi\", \"log\")
+pub fn log() -> Nil {
+  disk.write()
+}
+
+pub fn wrapper() -> Nil {
+  log()
+}
+",
+    ),
+  ])
+  // What the caller is charged.
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "wrapper" })
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk", "Unknown"])))
+  // The query answers the same total, and separates the two halves.
+  let assert Ok(answered) = graded.run_effect(root, "ext.log")
+  answered |> string.contains("[Disk, Unknown]") |> should.be_true()
+  answered |> string.contains("fallback body") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_declared_externals_fallback_is_not_credited_to_the_spec_test() {
+  // The declaration says `[]` and the body does `[Disk]`. Both travel under one
+  // term, so the answer has to name the half the declaration accounts for —
+  // otherwise it reads as though the spec line had stated `[Disk]`.
+  let root = "build/external_fallback_provenance"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.log : []\nexternal effects ext.sink : [Disk]\n",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"log\")
+pub fn log() -> Nil {
+  sink()
+}
+
+@external(erlang, \"ext_ffi\", \"sink\")
+@external(javascript, \"ext_ffi\", \"sink\")
+fn sink() -> Nil
+",
+    ),
+  ])
+  let assert Ok(answered) = graded.run_effect(root, "ext.log")
+  answered |> string.contains("effects ext.log : [Disk]") |> should.be_true()
+  answered
+  |> string.contains("resolved from your spec's external declaration")
+  |> should.be_true()
+  // The clause that keeps the declaration from being credited with [Disk].
+  answered |> string.contains("Gleam fallback body") |> should.be_true()
+  support.cleanup(root)
+}
+
 pub fn an_external_covering_every_target_is_not_walked_test() {
   // The same fallback body under `@external` declarations for both targets: it
   // can never run, so the declaration is the whole answer and the `[]` budget

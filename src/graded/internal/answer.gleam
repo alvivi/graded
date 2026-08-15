@@ -30,13 +30,23 @@ pub type EffectAnswer {
     bounds: List(ParamBound),
     term: EffectTerm,
     source: types.EffectSource,
+    // What a Gleam fallback body running on an uncovered target contributed to
+    // `term`, when the name is an `@external` that has one. `source` speaks for
+    // the declaration only, so without this the union would read as what the
+    // declaration said.
+    fallback: Option(EffectTerm),
   )
   // A function whose implementation is foreign code — an `@external` — that
   // nothing declares. The entries the knowledge base holds for such a name were
   // inferred over a body the foreign implementation needn't match, so none of
   // them answers, and the effects are the `[Unknown]` `check` and `why` charge
   // for it.
-  UndeclaredExternalAnswer(name: String)
+  //
+  // `fallback` is what its Gleam fallback body does where that body runs, when
+  // it has one. Nothing declares the external, but the fallback is ordinary code
+  // graded walked, so those effects are charged beside the `[Unknown]` — and the
+  // answer states them, as `check` and `why` do.
+  UndeclaredExternalAnswer(name: String, fallback: Option(EffectTerm))
   // A field of a custom type, declared by a `type` line. `module` is `None` for
   // a bare declaration, which is keyed under no module.
   TypeFieldAnswer(
@@ -80,21 +90,28 @@ pub fn render_graded(answer: EffectAnswer) -> String {
       module:,
       term:,
       source: types.ModuleExternalEntry(..),
+      fallback:,
       ..,
     ) ->
       effects_line(name, [], term)
       <> "\n// resolved via module-level external for "
       <> module
+      <> graded_fallback(fallback)
     FunctionAnswer(
       name:,
       bounds:,
       term:,
       source: types.FunctionEntry(origin:),
+      fallback:,
       ..,
-    ) -> effects_line(name, bounds, term) <> graded_source(origin)
-    UndeclaredExternalAnswer(name:) ->
-      effects_line(name, [], effect_term.unknown())
+    ) ->
+      effects_line(name, bounds, term)
+      <> graded_source(origin)
+      <> graded_fallback(fallback)
+    UndeclaredExternalAnswer(name:, fallback:) ->
+      effects_line(name, [], undeclared_term(fallback))
       <> "\n// an external with no declared effects"
+      <> graded_fallback(fallback)
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
       annotation.format_type_field(TypeFieldAnnotation(
         module:,
@@ -151,23 +168,60 @@ fn graded_origin(origin: types.TypeFieldOrigin) -> String {
 
 pub fn render_prose(answer: EffectAnswer) -> String {
   case answer {
-    FunctionAnswer(name:, module:, bounds:, term:, source:) ->
+    FunctionAnswer(name:, module:, bounds:, term:, source:, fallback:) ->
       [
         function_sentence(name, bounds, term),
-        ..detail_lines(bounds, module, source)
+        ..list.append(
+          detail_lines(bounds, module, source),
+          prose_fallback(fallback),
+        )
       ]
       |> string.join("\n")
-    // The same two lines the `check`/`why` vocabulary gives it: what the effects
-    // are, and that nothing declared them.
-    UndeclaredExternalAnswer(name:) ->
+    // The same lines the `check`/`why` vocabulary gives it: what the effects
+    // are, that nothing declared them, and what its fallback body added.
+    UndeclaredExternalAnswer(name:, fallback:) ->
       [
-        function_sentence(name, [], effect_term.unknown()),
+        function_sentence(name, [], undeclared_term(fallback)),
         "  source: an external with no declared effects",
+        ..prose_fallback(fallback)
       ]
       |> string.join("\n")
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
       [field_sentence(module, type_name, field, term), prose_origin(origin)]
       |> string.join("\n")
+  }
+}
+
+// What an undeclared external is charged: the conservative `[Unknown]`, plus
+// whatever its Gleam fallback body does where that body runs.
+fn undeclared_term(fallback: Option(EffectTerm)) -> EffectTerm {
+  case fallback {
+    None -> effect_term.unknown()
+    Some(term) ->
+      effect_term.normalize(types.TUnion([term, effect_term.unknown()]))
+  }
+}
+
+// The half of the answer the declaration does not account for, named apart from
+// it so neither is credited with the other's effects.
+fn graded_fallback(fallback: Option(EffectTerm)) -> String {
+  case fallback {
+    None -> ""
+    Some(term) ->
+      "\n// unioned with its Gleam fallback body, which runs on the targets its"
+      <> " `@external` declares no implementation for: "
+      <> annotation.format_effect_term(effect_term.normalize(term))
+  }
+}
+
+fn prose_fallback(fallback: Option(EffectTerm)) -> List(String) {
+  case fallback {
+    None -> []
+    Some(term) -> [
+      "  plus its Gleam fallback body, which runs on the targets its `@external`"
+      <> " declares no implementation for: "
+      <> annotation.format_effect_term(effect_term.normalize(term)),
+    ]
   }
 }
 
