@@ -25,9 +25,9 @@ import graded/internal/types.{
   type UnknownReason, type Violation, type Warning, CallExplanation,
   EffectAnnotation, Effects, FieldNotAnnotated, NoKnownEffects, ParamBound,
   QualifiedName, ReceiverTypeUnresolved, TUnion, TVar, TypeLine,
-  UnanalysedFallbackBody, UndeclaredExternal, UnmatchedFieldBoundWarning,
-  UnmatchedParamBoundWarning, UnresolvedFieldValue, UntraceableArgument,
-  UntraceableProducer, UntraceableReceiver, UntrackedEffectWarning, Violation,
+  UndeclaredExternal, UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning,
+  UnresolvedFieldValue, UntraceableArgument, UntraceableProducer,
+  UntraceableReceiver, UntrackedEffectWarning, Violation,
 }
 
 // Entry points
@@ -423,6 +423,9 @@ fn declaration_explanation(
     actual: effect_term.to_effect_set(resolution.term),
     reason: resolution.reason,
     origin: resolution.origin,
+    // The declaration's own line reports the declaration; the fallback body's
+    // effects reach it as the walked contributors beside it.
+    fallback: None,
   ))
 }
 
@@ -464,6 +467,7 @@ fn foreign_resolution(
   Resolution(
     ..declared,
     term: effects.with_running_fallback(knowledge_base, name, declared.term),
+    fallback: effects.fallback_contribution(knowledge_base, name),
   )
 }
 
@@ -474,6 +478,7 @@ fn undeclared_resolution() -> Resolution {
     term: effect_term.unknown(),
     reason: Some(UndeclaredExternal),
     origin: None,
+    fallback: None,
   )
 }
 
@@ -493,33 +498,15 @@ fn declaration_resolution(
         True ->
           Some(Resolution(
             term:,
-            reason: fallback_reason(knowledge_base, name),
+            reason: None,
             origin: Some(origin),
+            fallback: None,
           ))
         False -> None
       }
     }
     effects.Unknown -> None
   }
-}
-
-// The reason a declaration's answer needs beside it, when the answer is wider
-// than the declaration.
-//
-// A dependency's declared external whose fallback body runs is charged the
-// declaration unioned with `[Unknown]`, because no consumer walks that body.
-// Both halves then travel under the declaration's origin, so without a reason
-// the `Unknown` reads as part of what the dependency's spec stated. Naming the
-// fallback is what tells the two apart.
-fn fallback_reason(
-  knowledge_base: KnowledgeBase,
-  name: QualifiedName,
-) -> option.Option(UnknownReason) {
-  use <- bool.guard(
-    when: !effects.widens_with_dependency_fallback(knowledge_base, name),
-    return: None,
-  )
-  Some(UnanalysedFallbackBody)
 }
 
 // Whether `name` is foreign code that nothing declares — an `@external` whose
@@ -534,7 +521,10 @@ pub fn undeclared_external(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Bool {
-  effects.is_foreign_function(knowledge_base, name)
+  {
+    effects.is_foreign_function(knowledge_base, name)
+    || effects.is_dependency_foreign_function(knowledge_base, name)
+  }
   && option.is_none(declaration_resolution(knowledge_base, name))
 }
 
@@ -592,6 +582,9 @@ fn call_explanation(collected: CollectedCall) -> CallExplanation {
     ),
     reason: collected.resolution.reason,
     origin: collected.resolution.origin,
+    fallback: option.map(collected.resolution.fallback, fn(term) {
+      effect_term.to_effect_set(concretize_field_vars(term))
+    }),
   )
 }
 
@@ -624,26 +617,86 @@ pub fn fallback_effects(
   let function_map = build_function_map(module)
   let ModuleContext(context:, cache:) =
     module_context(module, module_path, knowledge_base, girard_fn_typed)
+  // One pass settles only the fallbacks that call no sibling fallback: a body
+  // reaching one is charged what the knowledge base says about it, and that is
+  // whatever earlier passes established. So the summaries are re-walked until
+  // they stop changing — a chain of N needs at most N passes, which also bounds
+  // a mutually recursive pair rather than letting it spin.
+  settle_fallback_effects(
+    dict.new(),
+    list.length(targets),
+    FallbackWalk(
+      targets:,
+      function_map:,
+      context:,
+      cache:,
+      module_path:,
+      knowledge_base:,
+      registry:,
+      module_types:,
+    ),
+  )
+}
+
+// Everything a fallback-summary pass re-uses across iterations. Only the
+// summaries settled so far change between passes, so the walking apparatus is
+// built once and travels whole.
+type FallbackWalk {
+  FallbackWalk(
+    targets: List(Definition(Function)),
+    function_map: dict.Dict(String, Definition(Function)),
+    context: ImportContext,
+    cache: LocalCache,
+    module_path: String,
+    knowledge_base: KnowledgeBase,
+    registry: SignatureRegistry,
+    module_types: dict.Dict(#(Int, Int), girard.Type),
+  )
+}
+
+fn settle_fallback_effects(
+  settled: dict.Dict(String, EffectTerm),
+  fuel: Int,
+  walk: FallbackWalk,
+) -> dict.Dict(String, EffectTerm) {
+  use <- bool.guard(when: fuel <= 0, return: settled)
+  // The summaries settled so far, so a body reaching a sibling fallback is
+  // charged what that sibling's own body does.
+  let knowledge_base =
+    effects.with_fallback_effects(
+      walk.knowledge_base,
+      dict.fold(settled, dict.new(), fn(acc, function, term) {
+        dict.insert(
+          acc,
+          QualifiedName(module: walk.module_path, function:),
+          term,
+        )
+      }),
+    )
   let #(_memo, entries) =
-    list.map_fold(targets, new_memo(), fn(memo, definition) {
+    list.map_fold(walk.targets, new_memo(), fn(memo, definition) {
       let #(pairs, memo) =
         collect_effects(
           without_returned_closure(definition.definition),
-          function_map,
-          context,
+          walk.function_map,
+          walk.context,
           knowledge_base,
           set.new(),
           [],
-          registry,
-          module_types,
+          walk.registry,
+          walk.module_types,
           dict.new(),
-          cache,
+          walk.cache,
           [],
           memo,
         )
       #(memo, #(definition.definition.name, union_of(pairs)))
     })
-  dict.from_list(entries)
+  let walked = dict.from_list(entries)
+  case walked == settled {
+    True -> settled
+    False -> settle_fallback_effects(walked, fuel - 1, walk)
+  }
 }
 
 // Everything the body walker needs about the module it walks. Built the same
@@ -979,7 +1032,7 @@ pub fn format_call_explanation(explanation: CallExplanation) -> String {
   action
   <> effects_word
   <> effects.format_effect_set(explanation.actual)
-  <> origin_suffix(explanation.origin)
+  <> origin_suffix(explanation.origin, explanation.fallback)
 }
 
 // What a call site is, stated from its kind alone.
@@ -1028,7 +1081,6 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         NoKnownEffects -> ", which no spec, external, or catalog declares,"
         UndeclaredExternal -> ", an external with no declared effects,"
         UntraceableArgument -> untraceable_argument_clause
-        UnanalysedFallbackBody -> unanalysed_fallback_clause
         FieldNotAnnotated(..)
         | ReceiverTypeUnresolved
         | UntraceableReceiver
@@ -1046,7 +1098,6 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         UnresolvedFieldValue ->
           ", whose wired value's effects could not be resolved,"
         UntraceableArgument -> untraceable_argument_clause
-        UnanalysedFallbackBody -> unanalysed_fallback_clause
         NoKnownEffects | UndeclaredExternal | UntraceableProducer -> ""
       }
     // An undeclared external is the one reason worth stating: nothing said what
@@ -1059,8 +1110,7 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         | UntraceableReceiver
         | UnresolvedFieldValue
         | UntraceableProducer
-        | UntraceableArgument
-        | UnanalysedFallbackBody -> ""
+        | UntraceableArgument -> ""
       }
     ReturnedOperatorCall(..) ->
       case reason {
@@ -1071,8 +1121,7 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         | ReceiverTypeUnresolved
         | UntraceableReceiver
         | UnresolvedFieldValue
-        | UntraceableArgument
-        | UnanalysedFallbackBody -> ""
+        | UntraceableArgument -> ""
       }
     // A computed receiver keeps its wording throughout — "on a computed value"
     // already states the untraceability every field reason would repeat.
@@ -1090,16 +1139,24 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
 // by the kinds that substitute arguments into a resolved term.
 const untraceable_argument_clause = ", whose effects depend on an argument that could not be resolved,"
 
-// The clause for the half of a dependency external's answer that its
-// declaration did not state: the fallback body running on the targets the
-// declaration leaves uncovered, which no consumer walks.
-const unanalysed_fallback_clause = ", whose Gleam fallback body no consumer analyses,"
-
 // The source that answered, after the effect set it produced.
-fn origin_suffix(origin: option.Option(LookupOrigin)) -> String {
-  case origin {
-    Some(origin) -> " (from " <> effects.describe_origin(origin) <> ")"
+fn origin_suffix(
+  origin: option.Option(LookupOrigin),
+  fallback: option.Option(types.EffectSet),
+) -> String {
+  // A running fallback body is a second source, and the origin speaks only for
+  // the declaration. Naming it is what stops a declaration of `[]` being read
+  // as where a `[Disk]` beside it came from.
+  let body = case fallback {
+    Some(_) -> "unioned with its Gleam fallback body"
     None -> ""
+  }
+  case origin, fallback {
+    Some(origin), None -> " (from " <> effects.describe_origin(origin) <> ")"
+    Some(origin), Some(_) ->
+      " (from " <> effects.describe_origin(origin) <> ", " <> body <> ")"
+    None, Some(_) -> " (" <> body <> ")"
+    None, None -> ""
   }
 }
 
@@ -1555,12 +1612,16 @@ type Resolution {
     term: EffectTerm,
     reason: option.Option(UnknownReason),
     origin: option.Option(LookupOrigin),
+    // What a running Gleam fallback body contributed to `term`. Carried beside
+    // the origin rather than folded into it: the declaration and the body are
+    // two sources, and one must not be credited with the other's effects.
+    fallback: option.Option(EffectTerm),
   )
 }
 
 // A resolution whose deciding rule adds nothing to the call's own description.
 fn plain_resolution(term: EffectTerm) -> Resolution {
-  Resolution(term:, reason: None, origin: None)
+  Resolution(term:, reason: None, origin: None, fallback: None)
 }
 
 // One call site collected from a function body: the call and what the resolver
@@ -1622,12 +1683,18 @@ fn lookup_parts(
   )
   case effects.lookup(knowledge_base, name) {
     effects.Known(term, source) ->
-      Resolution(term:, reason: None, origin: Some(effects.origin_of(source)))
+      Resolution(
+        term:,
+        reason: None,
+        origin: Some(effects.origin_of(source)),
+        fallback: None,
+      )
     effects.Unknown ->
       Resolution(
         term: effect_term.unknown(),
         reason: Some(if_unknown),
         origin: None,
+        fallback: None,
       )
   }
 }
@@ -1642,7 +1709,12 @@ fn substituted(looked_up: Resolution, term: EffectTerm) -> Resolution {
     when: !carries_unknown(term) || states_unknown(looked_up.term),
     return: Resolution(..looked_up, term:),
   )
-  Resolution(term:, reason: Some(UntraceableArgument), origin: None)
+  Resolution(
+    term:,
+    reason: Some(UntraceableArgument),
+    origin: None,
+    fallback: None,
+  )
 }
 
 // The same, for a collected call of a callee's body whose term this caller's
@@ -2262,7 +2334,7 @@ fn collect_effects(
         memo,
         CollectedCall(
           call: synthetic_call,
-          resolution: Resolution(term: effect, reason:, origin:),
+          resolution: Resolution(term: effect, reason:, origin:, fallback: None),
         ),
       )
     })
@@ -5231,6 +5303,7 @@ fn resolve_field_call(
         term: effect_term.unknown(),
         reason: Some(UntraceableReceiver),
         origin: None,
+        fallback: None,
       ),
       memo,
     )
@@ -5334,10 +5407,21 @@ fn resolve_proven_field(
     // not state came from applying this call's arguments.
     Some(_) ->
       substituted(
-        Resolution(term: field_effect.effects, reason: None, origin:),
+        Resolution(
+          term: field_effect.effects,
+          reason: None,
+          origin:,
+          fallback: None,
+        ),
         term,
       )
-    None -> Resolution(term:, reason: unresolved_value_reason(term), origin:)
+    None ->
+      Resolution(
+        term:,
+        reason: unresolved_value_reason(term),
+        origin:,
+        fallback: None,
+      )
   }
   #(resolution, memo)
 }
@@ -5444,6 +5528,7 @@ fn resolve_unproven_field(
               term: field_effect.effects,
               reason: None,
               origin: Some(TypeLine(source:)),
+              fallback: None,
             )
           #(substituted(looked_up, term), memo)
         }
@@ -5493,6 +5578,7 @@ fn resolve_undeclared_field(
           ),
           reason: Some(reason),
           origin: None,
+          fallback: None,
         ),
         memo,
       )
@@ -5502,6 +5588,7 @@ fn resolve_undeclared_field(
         term: effect_term.unknown(),
         reason: Some(UntraceableReceiver),
         origin: None,
+        fallback: None,
       ),
       memo,
     )

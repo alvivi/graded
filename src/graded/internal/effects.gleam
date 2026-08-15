@@ -600,8 +600,14 @@ pub fn lookup_declared(
   name: QualifiedName,
 ) -> EffectLookup {
   let found = lookup(knowledge_base, name)
+  // A dependency's `@external` is foreign for the same reason this package's
+  // is, and an entry inferred over one — as a spec-less path dependency's
+  // source inference produces — describes a body its FFI needn't match. The
+  // gate is one rule over both maps, so a name reads the same to a caller and
+  // to the query.
   use <- bool.guard(
-    when: !is_foreign_function(knowledge_base, name),
+    when: !is_foreign_function(knowledge_base, name)
+      && !is_dependency_foreign_function(knowledge_base, name),
     return: found,
   )
   case found {

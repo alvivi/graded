@@ -454,6 +454,101 @@ pub fn calls_it() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_fallback_reaching_a_sibling_fallback_is_charged_it_test() {
+  // `a`'s fallback calls `b`, whose fallback reaches the disk; both are
+  // declared `[]`. A single pass over the module summarised `a` against a
+  // knowledge base that did not yet know what `b`'s body does, so `a` recorded
+  // nothing, `check ext.wrapper : []` passed and `infer` published the caller
+  // as pure. The summaries are settled before they are published.
+  let root = "build/external_fallback_siblings"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects disk.write : [Disk]
+external effects ext.a : []
+external effects ext.b : []
+check ext.wrapper : []
+",
+    ),
+    #("disk.gleam", "@external(erlang, \"d\", \"w\")\npub fn write() -> Nil\n"),
+    #(
+      "ext.gleam",
+      "import disk
+
+@external(javascript, \"ext_ffi\", \"b\")
+pub fn b() -> Nil {
+  disk.write()
+}
+
+@external(javascript, \"ext_ffi\", \"a\")
+pub fn a() -> Nil {
+  b()
+}
+
+pub fn wrapper() -> Nil {
+  a()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "wrapper" })
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  // And the same total is what gets published.
+  let assert Ok(preview) = graded.run_infer_dry_run(root)
+  preview |> string.contains("effects ext.wrapper : [Disk]") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_callers_explanation_separates_the_fallback_test() {
+  // The declaration says `[]` and the body does `[Disk]`, and both travel under
+  // one term. The caller's message has to name the half the declaration
+  // accounts for, or it reads as though the spec line had stated `[Disk]`.
+  let root = "build/external_fallback_caller_provenance"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.log : []
+external effects ext.sink : [Disk]
+check ext.wrapper : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"log\")
+pub fn log() -> Nil {
+  sink()
+}
+
+@external(erlang, \"ext_ffi\", \"sink\")
+@external(javascript, \"ext_ffi\", \"sink\")
+fn sink() -> Nil
+
+pub fn wrapper() -> Nil {
+  log()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "wrapper" })
+  v.explanation.fallback
+  |> should.equal(Some(types.Specific(set.from_list(["Disk"]))))
+  checker.format_violation(r.file, v)
+  |> string.contains(
+    "(from your spec's external declaration, unioned with its Gleam fallback body)",
+  )
+  |> should.be_true()
+  support.cleanup(root)
+}
+
 pub fn infer_publishes_a_running_fallbacks_effects_test() {
   // What `infer` writes is what consumers get, and they hold no body to walk.
   // A pass that recorded the external but not what its fallback does would
@@ -837,12 +932,12 @@ pub fn wrapper() -> Nil {
   violation.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Time", "Unknown"])))
   // Both halves travel under the declaration's origin, so the message has to
-  // say which half the declaration accounts for. Without the reason the widened
-  // set reads as what the dependency's spec stated — it stated `[Time]`.
-  violation.explanation.reason
-  |> should.equal(Some(types.UnanalysedFallbackBody))
+  // say which half the declaration accounts for. Without it the widened set
+  // reads as what the dependency's spec stated — it stated `[Time]`.
+  violation.explanation.fallback
+  |> should.equal(Some(types.Specific(set.from_list(["Unknown"]))))
   checker.format_violation(r.file, violation)
-  |> string.contains("whose Gleam fallback body no consumer analyses")
+  |> string.contains("unioned with its Gleam fallback body")
   |> should.be_true()
   support.cleanup(root)
 }
@@ -2977,8 +3072,21 @@ pub fn a_spec_less_path_dep_external_is_not_a_declaration_test() {
           "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
         ),
       ],
-      "check app.caller : []\n",
-      "import dep\n\npub fn caller() -> Nil {\n  dep.touch()\n}\n",
+      "check app.caller : []\ncheck app.passes : []\n",
+      "import dep
+
+pub fn caller() -> Nil {
+  dep.touch()
+}
+
+pub fn passes() -> Nil {
+  apply(dep.touch)
+}
+
+fn apply(f: fn() -> Nil) -> Nil {
+  f()
+}
+",
     )
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
   v.explanation.actual
@@ -2986,6 +3094,15 @@ pub fn a_spec_less_path_dep_external_is_not_a_declaration_test() {
   v.explanation.reason |> should.equal(Some(types.UndeclaredExternal))
   // Not attributed to the path dependency: no declaration answered.
   v.explanation.origin |> should.equal(None)
+  // The query reads the same name through the same gate, rather than claiming
+  // the answer came from inference over the dependency's source.
+  let assert Ok(answered) =
+    graded.run_effect("build/pd_inferred_external_app", "dep.touch")
+  answered
+  |> string.contains("an external with no declared effects")
+  |> should.be_true()
+  // And a reference to it warns about nothing, as unresolved references do.
+  r.warnings |> should.equal([])
 }
 
 pub fn a_committed_path_dep_external_still_declares_test() {
