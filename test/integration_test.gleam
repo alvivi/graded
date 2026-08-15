@@ -3770,6 +3770,7 @@ pub fn an_external_naming_nothing_is_flagged_test() {
 external effects nowhere/mod : []
 external effects gleam/io.println : [Stdout]
 external effects dep/io.writes : [Disk]
+external effects dep/io.typo : [Disk]
 external effects dep/io : [Disk]
 ",
     ),
@@ -3786,7 +3787,27 @@ external effects dep/io : [Disk]
   |> should.equal([
     types.UnmatchedFunctionExternalWarning(function: "m.no_such"),
     types.UnmatchedModuleExternalWarning(module: "nowhere/mod"),
+    // `dep/io` is a real dependency module, but it defines `writes` and not
+    // `typo`. The module tier would have waved the misspelling through.
+    types.UnmatchedFunctionExternalWarning(function: "dep/io.typo"),
   ])
+  support.cleanup(root)
+}
+
+pub fn an_external_on_an_unreadable_dependency_is_not_flagged_test() {
+  // The function tier weighs a dependency by its source, so a module whose
+  // source will not parse has to keep answering for every name: the lint flags
+  // what it can prove dead, and a module it cannot read proves nothing.
+  let root = "build/external_lint_unreadable_dep"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "external effects broken/mod.whatever : [Disk]\n"),
+    #("build/packages/broken/src/broken/mod.gleam", "pub fn ( not gleam\n"),
+    #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
   support.cleanup(root)
 }
 

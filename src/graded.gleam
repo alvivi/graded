@@ -843,7 +843,7 @@ fn validate_spec_annotations(
       known_functions,
       package_root,
       stale_externals,
-      dep_modules,
+      dep_files,
     )
 
   // Resolving `type` lines also needs per-module type info; build it only when
@@ -879,6 +879,12 @@ fn validate_spec_annotations(
 //   - a module-level line whose module is neither a dependency nor a project
 //     module.
 //
+// A dependency is weighed by the function, not by the module: graded holds that
+// dependency's source, so `external effects dep/io.typo` over a `dep/io` that
+// defines only `writes` is as dead as one naming no module at all, and the
+// module tier would wave every misspelling through. A module-level line has no
+// function to weigh and is settled by the module alone.
+//
 // Existence only. A name that resolves but that graded cannot introspect is
 // exactly what the line is for, and is never flagged.
 fn external_warnings(
@@ -887,7 +893,7 @@ fn external_warnings(
   known_functions: Set(String),
   package_root: String,
   stale: Set(String),
-  dep_modules: Set(String),
+  dep_files: Dict(String, String),
 ) -> List(Warning) {
   use <- bool.guard(when: externals == [], return: [])
   // Loaded only when there is a line to weigh. The catalog is read against
@@ -898,13 +904,19 @@ fn external_warnings(
       effects.catalog_directory(),
       manifest_path(package_root),
     )
+  let dep_functions = dependency_function_names(externals, dep_files)
   list.filter_map(externals, fn(external) {
     case external.target {
       types.FunctionExternal(function) -> {
         let name = external.module <> "." <> function
         let resolves =
           set.contains(known_functions, name)
-          || set.contains(dep_modules, external.module)
+          || declares_dependency_function(
+            dep_functions,
+            dep_files,
+            external.module,
+            function,
+          )
           || dict.has_key(
             catalog_functions,
             QualifiedName(external.module, function),
@@ -919,11 +931,66 @@ fn external_warnings(
       types.ModuleExternal ->
         case
           dict.has_key(index, external.module)
-          || set.contains(dep_modules, external.module)
+          || dict.has_key(dep_files, external.module)
           || dict.has_key(catalog_modules, external.module)
         {
           True -> Error(Nil)
           False -> Ok(UnmatchedModuleExternalWarning(module: external.module))
+        }
+    }
+  })
+}
+
+// Whether a dependency module answers for `function`.
+//
+// True only where the module's source was read: there the module defines what
+// it defines, and a name it doesn't is a typo. A module graded holds no readable
+// source for keeps answering for every name, so a dependency it could not parse
+// is never reported as a typo — the lint flags what it can prove dead, and
+// silence is not proof.
+fn declares_dependency_function(
+  dep_functions: Dict(String, Set(String)),
+  dep_files: Dict(String, String),
+  module: String,
+  function: String,
+) -> Bool {
+  case dict.get(dep_functions, module) {
+    Ok(functions) -> set.contains(functions, function)
+    Error(Nil) -> dict.has_key(dep_files, module)
+  }
+}
+
+// The functions each dependency module named by a per-function line defines,
+// private ones included: the question is whether the name exists, and a line
+// naming a private dependency function is dead for a different reason than a
+// typo is. Parsed once per module, and only for the modules a line names, so a
+// spec with no dependency external reads no dependency source.
+fn dependency_function_names(
+  externals: List(types.ExternalAnnotation),
+  dep_files: Dict(String, String),
+) -> Dict(String, Set(String)) {
+  externals
+  |> list.filter_map(fn(external) {
+    case external.target {
+      types.FunctionExternal(_) -> Ok(external.module)
+      types.ModuleExternal -> Error(Nil)
+    }
+  })
+  |> list.fold(dict.new(), fn(acc, module) {
+    use <- bool.guard(when: dict.has_key(acc, module), return: acc)
+    case dict.get(dep_files, module) {
+      Error(Nil) -> acc
+      Ok(file) ->
+        case read_and_parse_gleam(file) {
+          Ok(parsed) ->
+            dict.insert(
+              acc,
+              module,
+              set.from_list(dict.keys(checker.function_visibility(parsed))),
+            )
+          // Unreadable or unparseable: no evidence either way, so the module
+          // goes on answering for every name it is asked about.
+          Error(_) -> acc
         }
     }
   })
