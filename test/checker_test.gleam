@@ -4702,6 +4702,7 @@ fn explained_violation(
       actual:,
       reason:,
       origin:,
+      fallback: None,
     ),
   )
 }

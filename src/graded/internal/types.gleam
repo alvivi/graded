@@ -261,12 +261,6 @@ pub type UnknownReason {
   // substitution then bound to `[Unknown]` — an argument this call site passed
   // that nothing resolves.
   UntraceableArgument
-  // A dependency's declared external whose Gleam fallback body runs on some
-  // target its declaration does not cover. No consumer walks a dependency's
-  // bodies, so the declaration is widened by `[Unknown]` — and that `Unknown`
-  // is the fallback, not something the declaration left out. Without this the
-  // widened set reads as though the dependency's spec had stated it.
-  UnanalysedFallbackBody
 }
 
 // Where a resolved effect came from: which source wrote the winning
@@ -631,6 +625,11 @@ pub type CallExplanation {
     actual: EffectSet,
     reason: Option(UnknownReason),
     origin: Option(LookupOrigin),
+    // What a running Gleam fallback body contributed to `actual`, when the call
+    // reaches an `@external` that has one. `origin` speaks for the declaration
+    // only, so without this the union would be credited to a declaration that
+    // never stated it — `[]` reported as the source of a `[Disk]`.
+    fallback: Option(EffectSet),
   )
 }
 
