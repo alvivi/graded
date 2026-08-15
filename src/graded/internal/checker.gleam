@@ -5402,6 +5402,17 @@ fn resolve_proven_field(
   // `resolve_field_effect` has applied the field call's arguments — the point
   // where a `LocalRef` value's polymorphic self marker has become `[Unknown]`
   // if nothing bound it.
+  // A field wired to an `@external` whose Gleam body runs carries that body's
+  // effects exactly as a direct call to the same name does, so the field call
+  // names the two sources apart too — the origin speaks for the declaration
+  // alone. Read off the wired value, which is what the field's effect came
+  // from.
+  let wired_fallback = case
+    field_value_function(value, context.module_path, module_functions)
+  {
+    Some(name) -> effects.fallback_contribution(knowledge_base, name)
+    None -> None
+  }
   let resolution = case origin {
     // A source answered for the wired value, so an `Unknown` its own term does
     // not state came from applying this call's arguments.
@@ -5411,7 +5422,7 @@ fn resolve_proven_field(
           term: field_effect.effects,
           reason: None,
           origin:,
-          fallback: None,
+          fallback: wired_fallback,
         ),
         term,
       )

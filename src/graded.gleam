@@ -643,12 +643,24 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
       effects.load_spec_returns_from_file(spec),
       types.CommittedSpec,
     )
+    // Before the inference pass, not after it, and in the order `infer` folds
+    // them: a body walked during inference resolves its field calls through the
+    // same `type` lines and factory signatures a body walked at check time
+    // does. Installed afterwards, the pass ran without them and a function
+    // whose effects it settled — an `@external`'s running fallback, whose
+    // callers read the summary and never the body — kept an answer the two
+    // commands would then disagree about.
+    |> effects.with_type_fields(
+      annotation.extract_type_fields(spec),
+      types.CommittedSpec,
+    )
+    |> effects.with_factories(qualify_by_module(index, extract.factory_map))
   // Fill gaps for project modules not (yet) in the spec by inferring them in
   // memory, so `check` resolves cross-module calls without a prior `graded infer`.
   // Committed effects are never overridden; fresh returns win over committed
   // Foreign ones (Fix E). The deltas aren't needed here — the pre-pass already
   // folded them into `kb_base`. Nothing is written to disk.
-  let kb_base =
+  let knowledge_base =
     infer_project_in_memory(
       kb_base,
       index,
@@ -656,13 +668,6 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
       type_info,
       declared_modules,
     )
-  let knowledge_base =
-    kb_base
-    |> effects.with_type_fields(
-      annotation.extract_type_fields(spec),
-      types.CommittedSpec,
-    )
-    |> effects.with_factories(qualify_by_module(index, extract.factory_map))
 
   ProjectContext(
     sources:,

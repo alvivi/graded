@@ -504,6 +504,127 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_fallback_resolves_field_calls_through_type_lines_test() {
+  // The fallback body reaches a field a `type` line decides. The pass that
+  // summarises it used to run before those lines were installed, so the
+  // summary its callers read disagreed with what the external's own `check`
+  // line reported — and with what `infer` wrote, whose pass installed them
+  // first. Every pass now folds them in the same order.
+  let root = "build/external_fallback_type_line"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "type runner.Runner.run : [Disk]
+external effects ext.log : []
+check ext.log : []
+check ext.wrapper : []
+",
+    ),
+    #("runner.gleam", "pub type Runner {\n  Runner(run: fn() -> Nil)\n}\n"),
+    #(
+      "ext.gleam",
+      "import runner
+
+fn helper(r: runner.Runner) -> Nil {
+  r.run()
+}
+
+@external(javascript, \"ext_ffi\", \"log\")
+pub fn log() -> Nil {
+  helper(blank())
+}
+
+fn blank() -> runner.Runner {
+  runner.Runner(run: noop)
+}
+
+fn noop() -> Nil {
+  Nil
+}
+
+pub fn wrapper() -> Nil {
+  log()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let disk = types.Specific(set.from_list(["Disk"]))
+  // The external's own line and its caller settle on the same effect.
+  let assert Ok(own) = list.find(r.violations, fn(v) { v.function == "log" })
+  own.explanation.actual |> should.equal(disk)
+  let assert Ok(caller) =
+    list.find(r.violations, fn(v) { v.function == "wrapper" })
+  caller.explanation.actual |> should.equal(disk)
+  // And so does what would be written.
+  let assert Ok(preview) = graded.run_infer_dry_run(root)
+  preview |> string.contains("effects ext.wrapper : [Disk]") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_wired_field_separates_the_fallback_test() {
+  // A field wired to a target-conditional external carries the same two sources
+  // a direct call to it does. Reporting the union under the declaration alone
+  // credits an `external effects ext.log : []` line with the `[Disk]` its
+  // fallback body did.
+  let root = "build/external_fallback_wired_field"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.log : []
+external effects ext.sink : [Disk]
+check app.uses : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"log\")
+pub fn log() -> Nil {
+  sink()
+}
+
+@external(erlang, \"ext_ffi\", \"sink\")
+@external(javascript, \"ext_ffi\", \"sink\")
+fn sink() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+pub type Runner {
+  Runner(run: fn() -> Nil)
+}
+
+pub fn make() -> Runner {
+  Runner(run: ext.log)
+}
+
+pub fn uses() -> Nil {
+  let r = make()
+  r.run()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [v] = r.violations
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  v.explanation.fallback
+  |> should.equal(Some(types.Specific(set.from_list(["Disk"]))))
+  checker.format_violation(r.file, v)
+  |> string.contains("unioned with its Gleam fallback body")
+  |> should.be_true()
+  support.cleanup(root)
+}
+
 pub fn a_callers_explanation_separates_the_fallback_test() {
   // The declaration says `[]` and the body does `[Disk]`, and both travel under
   // one term. The caller's message has to name the half the declaration
