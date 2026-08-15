@@ -661,6 +661,53 @@ pub fn wrapper() -> Nil {
   let assert [violation] = r.violations
   violation.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Time", "Unknown"])))
+  // Both halves travel under the declaration's origin, so the message has to
+  // say which half the declaration accounts for. Without the reason the widened
+  // set reads as what the dependency's spec stated — it stated `[Time]`.
+  violation.explanation.reason
+  |> should.equal(Some(types.UnanalysedFallbackBody))
+  checker.format_violation(r.file, violation)
+  |> string.contains("whose Gleam fallback body no consumer analyses")
+  |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn an_undeclared_dependency_external_reports_as_an_external_test() {
+  // The dependency's own source says `run` is foreign, so nothing graded holds
+  // describes what it does. That is an external with no declared effects, not a
+  // name that merely went unkeyed — the knowledge base already recorded which
+  // of the dependency's functions are foreign.
+  let root = "build/foreign_values_dep_undeclared"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "check app.wrapper : []\n"),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "@external(erlang, \"dep_ffi\", \"run\")
+pub fn run() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+pub fn wrapper() -> Nil {
+  ffi.run()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  violation.explanation.reason
+  |> should.equal(Some(types.UndeclaredExternal))
+  checker.format_violation(r.file, violation)
+  |> string.contains("an external with no declared effects")
+  |> should.be_true()
   support.cleanup(root)
 }
 
