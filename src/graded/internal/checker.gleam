@@ -451,9 +451,19 @@ fn foreign_resolution(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Resolution {
-  option.unwrap(
-    declaration_resolution(knowledge_base, name),
-    undeclared_resolution(),
+  let declared =
+    option.unwrap(
+      declaration_resolution(knowledge_base, name),
+      undeclared_resolution(),
+    )
+  // What a *caller* pays, which the declaration alone understates wherever a
+  // Gleam fallback body runs: that body is ordinary code, and composition is
+  // union. The external's own `check` line already covers both halves by
+  // walking the body beside the declaration; this is how every other caller
+  // comes to the same total.
+  Resolution(
+    ..declared,
+    term: effects.with_running_fallback(knowledge_base, name, declared.term),
   )
 }
 
@@ -583,6 +593,57 @@ fn call_explanation(collected: CollectedCall) -> CallExplanation {
     reason: collected.resolution.reason,
     origin: collected.resolution.origin,
   )
+}
+
+// What each of the module's running Gleam fallback bodies does, keyed by
+// function name.
+//
+// An `@external` that declares no implementation for some target it is compiled
+// for falls back to its Gleam body on that target. That body is ordinary code
+// that runs, so its effects are charged to every caller on top of whatever
+// declares the external — the declaration speaks for the targets it covers, and
+// says nothing about the rest.
+//
+// Walked here rather than left to each caller because a caller a module away
+// holds no body to walk. Empty, and free, for a module with no such external:
+// the walking apparatus is built only when there is one.
+pub fn fallback_effects(
+  module: Module,
+  module_path: String,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  girard_fn_typed: dict.Dict(String, Set(String)),
+) -> dict.Dict(String, EffectTerm) {
+  let targets =
+    list.filter(module.functions, fn(definition) {
+      extract.is_foreign_definition(definition)
+      && runs_fallback_body(definition)
+    })
+  use <- bool.guard(when: targets == [], return: dict.new())
+  let function_map = build_function_map(module)
+  let ModuleContext(context:, cache:) =
+    module_context(module, module_path, knowledge_base, girard_fn_typed)
+  let #(_memo, entries) =
+    list.map_fold(targets, new_memo(), fn(memo, definition) {
+      let #(pairs, memo) =
+        collect_effects(
+          without_returned_closure(definition.definition),
+          function_map,
+          context,
+          knowledge_base,
+          set.new(),
+          [],
+          registry,
+          module_types,
+          dict.new(),
+          cache,
+          [],
+          memo,
+        )
+      #(memo, #(definition.definition.name, union_of(pairs)))
+    })
+  dict.from_list(entries)
 }
 
 // Everything the body walker needs about the module it walks. Built the same

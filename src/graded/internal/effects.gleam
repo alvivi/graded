@@ -19,8 +19,8 @@ import graded/internal/types.{
   type TypeFieldAnnotation, type TypeFieldEffect, type UpdateSignature, Catalog,
   Check, CommittedSpec, ConstructorRef, DependencySpec, Effects,
   FunctionExternal, FunctionRef, ModuleExternal, ModuleExternalOrigin,
-  PathDependency, ProjectInferred, QualifiedName, TypeFieldEffect, TypeLine,
-  UserExternal,
+  PathDependency, PathDependencyInferred, ProjectInferred, QualifiedName,
+  TypeFieldEffect, TypeLine, UserExternal,
 }
 import simplifile
 import tom
@@ -108,6 +108,17 @@ pub type KnowledgeBase {
     // function missing from a module that *is* here is a name the package does
     // not define, while a module missing entirely is no evidence at all.
     project_functions: Dict(String, Dict(String, types.Visibility)),
+    // What the Gleam fallback body of one of *this package's* `@external`s
+    // does, where that body runs — the targets its declaration leaves
+    // uncovered. Ordinary Gleam that runs, so every caller is charged it on top
+    // of whatever declares the external, exactly as the external's own `check`
+    // line covers both. Held apart from `all_effects` because the declaration
+    // has to stay reportable on its own: the two are unioned when a name is
+    // charged, and told apart when its provenance is explained.
+    //
+    // The dependency counterpart is `[Unknown]` (see `with_dependency_fallback`)
+    // — no consumer walks a dependency's bodies. Here the body is in hand.
+    fallback_effects: Dict(QualifiedName, EffectTerm),
   )
 }
 
@@ -151,6 +162,7 @@ pub fn load_knowledge_base(
     foreign_functions: dict.new(),
     dependency_foreign:,
     project_functions: dict.new(),
+    fallback_effects: dict.new(),
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
@@ -173,6 +185,7 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     foreign_functions: dict.new(),
     dependency_foreign: dict.new(),
     project_functions: dict.new(),
+    fallback_effects: dict.new(),
   )
 }
 
@@ -193,6 +206,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     foreign_functions: dict.new(),
     dependency_foreign: dict.new(),
     project_functions: dict.new(),
+    fallback_effects: dict.new(),
   )
   |> with_sourced_type_fields(cat_type_fields)
 }
@@ -373,6 +387,54 @@ pub fn widens_with_dependency_fallback(
   }
 }
 
+// Record what one of this package's `@external`s does on the targets its
+// declaration leaves uncovered. Merged into what is already recorded, so the
+// topological pass adds a module at a time.
+pub fn with_fallback_effects(
+  knowledge_base: KnowledgeBase,
+  effects: Dict(QualifiedName, EffectTerm),
+) -> KnowledgeBase {
+  KnowledgeBase(
+    ..knowledge_base,
+    fallback_effects: dict.merge(knowledge_base.fallback_effects, effects),
+  )
+}
+
+// What `name` costs a caller, given what declares it.
+//
+// The declaration alone is the whole story only where it covers every target
+// the function is compiled for. Where it doesn't, a Gleam fallback body runs,
+// and that body is ordinary code whose effects the caller pays too — so the
+// charge is the union. Composition is union, so a caller inherits both.
+//
+// Applied where a name is *charged*, never where a declaration is *explained*:
+// the two halves come from different places, and a lookup that folded them
+// together could no longer say which half the declaration accounts for.
+pub fn with_running_fallback(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+  term: EffectTerm,
+) -> EffectTerm {
+  case dict.get(knowledge_base.fallback_effects, name) {
+    Error(Nil) -> term
+    Ok(fallback) -> effect_term.normalize(types.TUnion([term, fallback]))
+  }
+}
+
+// Record what a dependency's own source says is `@external`. Merged into what
+// is already recorded, so a caller scanning one more dependency module adds to
+// it — which is how a fast path that parses a single module reaches the same
+// answer the whole-package scan would.
+pub fn with_dependency_foreign(
+  knowledge_base: KnowledgeBase,
+  names: Dict(QualifiedName, types.ForeignFunction),
+) -> KnowledgeBase {
+  KnowledgeBase(
+    ..knowledge_base,
+    dependency_foreign: dict.merge(knowledge_base.dependency_foreign, names),
+  )
+}
+
 // Whether `name` is foreign code a *dependency's* source declares `@external`.
 pub fn is_dependency_foreign_function(
   knowledge_base: KnowledgeBase,
@@ -490,7 +552,11 @@ pub fn declares_foreign_code(origin: LookupOrigin) -> Bool {
     | ModuleExternalOrigin(_)
     | DependencySpec(_)
     | PathDependency(_) -> True
-    CommittedSpec | ProjectInferred | TypeLine(_) -> False
+    // Inference over a spec-less path dependency's source is not a declaration:
+    // it walked an `@external`'s body, which is exactly what no entry may speak
+    // for. It ranks below the catalog for the same reason.
+    CommittedSpec | ProjectInferred | PathDependencyInferred(_) | TypeLine(_) ->
+      False
   }
 }
 
@@ -514,12 +580,24 @@ pub fn lookup_declared(
     return: found,
   )
   case found {
-    Known(_, source) as known ->
+    Known(term, source) ->
       case declares_foreign_code(origin_of(source)) {
-        True -> known
+        True -> Known(with_running_fallback(knowledge_base, name, term), source)
         False -> Unknown
       }
-    Unknown -> Unknown
+    // Nothing declares it, but a fallback body that runs is still code that
+    // runs: what it does is charged even where no declaration answers.
+    Unknown ->
+      case dict.get(knowledge_base.fallback_effects, name) {
+        Ok(fallback) ->
+          Known(
+            effect_term.normalize(
+              types.TUnion([fallback, effect_term.unknown()]),
+            ),
+            types.FunctionEntry(origin: ProjectInferred),
+          )
+        Error(Nil) -> Unknown
+      }
   }
 }
 
@@ -590,6 +668,7 @@ pub fn describe_origin(origin: LookupOrigin) -> String {
     | ProjectInferred
     | DependencySpec(..)
     | PathDependency(..)
+    | PathDependencyInferred(..)
     | Catalog(..) -> describe_source_file(origin)
   }
 }
@@ -602,6 +681,8 @@ pub fn describe_source_file(origin: LookupOrigin) -> String {
     ProjectInferred -> "in-memory inference"
     DependencySpec(package:) -> package <> "'s shipped spec"
     PathDependency(package:) -> "path dependency " <> package
+    PathDependencyInferred(package:) ->
+      "inference over path dependency " <> package <> "'s source"
     Catalog(package:) -> package <> "'s catalog entry"
     ModuleExternalOrigin(source:) | TypeLine(source:) ->
       describe_source_file(source)
@@ -1112,7 +1193,8 @@ fn is_catalog_origin(origin: LookupOrigin) -> Bool {
     | CommittedSpec
     | ProjectInferred
     | DependencySpec(..)
-    | PathDependency(..) -> False
+    | PathDependency(..)
+    | PathDependencyInferred(..) -> False
   }
 }
 

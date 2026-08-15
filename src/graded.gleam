@@ -1425,8 +1425,22 @@ fn spec_answer(
             False -> Error(Nil)
           }
         })
+      // An `@external` of this package's whose Gleam fallback body runs is
+      // charged that body's effects on top of its declaration, and walking a
+      // body is exactly what the fast path exists not to do. Deferred whole, so
+      // the answer cannot be the declaration alone where the full context says
+      // more.
+      use <- bool.guard(
+        when: runs_a_fallback_body(parsed, module, name),
+        return: Error(Nil),
+      )
       answer_from(
-        with_module_facts(spec_knowledge_base(spec, stale), parsed),
+        with_module_facts(spec_knowledge_base(spec, stale), parsed)
+          |> effects.with_dependency_foreign(dependency_foreign_for(
+            directory,
+            project_modules,
+            module,
+          )),
         name,
       )
     }
@@ -1471,6 +1485,57 @@ fn spec_knowledge_base(
     annotation.extract_type_fields(spec),
     types.CommittedSpec,
   )
+}
+
+// Whether the queried name is one of this package's `@external`s that falls
+// back to Gleam on some target it is compiled for. The parsed module already
+// says so, so the test costs nothing beyond the file the fast path read anyway.
+fn runs_a_fallback_body(
+  parsed: ModuleFacts,
+  module: String,
+  name: String,
+) -> Bool {
+  case annotation.split_function_name(name) {
+    Error(Nil) -> False
+    Ok(#(_module, function)) ->
+      case dict.get(parsed.foreign, QualifiedName(module:, function:)) {
+        Ok(types.ForeignFunction(runs_fallback_body:)) -> runs_fallback_body
+        Error(Nil) -> False
+      }
+  }
+}
+
+// What a *dependency's* source says is `@external` in the queried module.
+//
+// Empty for one of this package's own modules: Gleam forbids a dependency from
+// keying one, so nothing over there can change the answer. For a dependency
+// module — which a per-function `external effects` line may name — the
+// declaration alone understates an `@external` whose Gleam fallback body runs,
+// because no consumer walks that body and the full context therefore charges
+// the declaration unioned with `[Unknown]`. One module is located and parsed to
+// settle it, so the fast path cannot answer where the full context would say
+// more.
+fn dependency_foreign_for(
+  directory: String,
+  project_modules: Dict(String, String),
+  module: String,
+) -> Dict(QualifiedName, types.ForeignFunction) {
+  use <- bool.guard(
+    when: dict.has_key(project_modules, module),
+    return: dict.new(),
+  )
+  let files = dependency_module_files(resolve_package_root(directory))
+  // A dependency graded cannot locate or parse is one the full context cannot
+  // read either, so both answer from the declaration alone.
+  use <- bool.guard(when: !dict.has_key(files, module), return: dict.new())
+  case dict.get(files, module) |> result.try(read_and_parse_gleam_or_nil) {
+    Ok(parsed) -> checker.foreign_functions(parsed, module)
+    Error(Nil) -> dict.new()
+  }
+}
+
+fn read_and_parse_gleam_or_nil(path: String) -> Result(glance.Module, Nil) {
+  read_and_parse_gleam(path) |> result.replace_error(Nil)
 }
 
 // This package's own source files, keyed by module path. Listing the file names
@@ -2536,6 +2601,25 @@ fn fold_inferred_module(
   type_info: typeinfo.TypeInfo,
   declared_modules: Set(String),
 ) -> KnowledgeBase {
+  // Before this module is inferred, so a caller in it — and every module after
+  // it in topological order — is charged what an `@external`'s running fallback
+  // body does, not the declaration alone. The walk needs only the callees
+  // already folded, which topological order guarantees.
+  let kb =
+    effects.with_fallback_effects(
+      kb,
+      qualify_bare_names(
+        checker.fallback_effects(
+          module,
+          module_path,
+          kb,
+          registry,
+          typeinfo.for_module(type_info, module_path),
+          typeinfo.fn_typed_for_module(type_info, module_path),
+        ),
+        module_path,
+      ),
+    )
   let #(inferred, returned_operators, provenance) =
     checker.infer_with_returns(
       module,
@@ -2975,19 +3059,26 @@ fn enrich_with_path_deps(
     // except an absolute `path`, which `resolve_path` leaves untouched.
     let resolved_dep_path = resolve_path(package_root, dep_path)
     let spec_path = config.spec_file_for(resolved_dep_path, name)
-    let origin = types.PathDependency(package: name)
     case simplifile.is_file(spec_path) {
       Ok(True) ->
         effects.with_path_dep_spec(
           kb,
           effects.load_dep_spec(resolved_dep_path, name),
-          origin,
+          types.PathDependency(package: name),
         )
       _ ->
         case infer_path_dep(resolved_dep_path, kb, consumer_modules) {
           Error(Nil) -> kb
+          // Inference over the dep's source, not a line its author wrote: the
+          // origin says so, so nothing downstream reads it as a declaration.
           Ok(#(effs, params, returns, provenance)) ->
-            fold_inferred_into_kb(kb, effs, params, returns, origin)
+            fold_inferred_into_kb(
+              kb,
+              effs,
+              params,
+              returns,
+              types.PathDependencyInferred(package: name),
+            )
             |> effects.with_provenance(provenance)
         }
     }
@@ -3111,7 +3202,8 @@ pub fn infer_path_dep(
   // The dep's own KB is internal to this pass; its entries are re-folded by the
   // caller under the package name `gleam.toml` declared. The directory name is
   // what this entry point knows the dep by.
-  let origin = types.PathDependency(package: filepath.base_name(dep_path))
+  let origin =
+    types.PathDependencyInferred(package: filepath.base_name(dep_path))
   let #(effs, params, returns, provenance, _final_kb) =
     list.fold(
       sorted,
