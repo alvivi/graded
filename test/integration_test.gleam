@@ -3521,6 +3521,32 @@ pub fn a_scoped_run_reads_the_same_result_from_an_absolute_path_test() {
   support.cleanup(root)
 }
 
+pub fn equivalent_spellings_of_a_scope_read_alike_test() {
+  // `src/sub`, `./src/sub` and `src/sub/` name one directory, but a raw prefix
+  // test read them as three: the trailing separator built a `src/sub//` prefix
+  // matching none of the walked files, and the `./` failed to match the
+  // package's `src/`, so the subtree was analysed as its own root under module
+  // paths the `check` lines no longer named. Either way the run reported success
+  // having verified nothing.
+  let root = "build/scoped_subtree_spellings"
+  scoped_package(root)
+  let scoped = root <> "/src/sub"
+
+  [scoped, scoped <> "/", scoped <> "//", "./" <> scoped, root <> "/src/./sub"]
+  |> list.each(fn(spelling) {
+    let assert Ok(results) = graded.run(spelling)
+    let assert Ok(r) =
+      list.find(results, fn(r) { r.file == scoped <> "/inner.gleam" })
+    let assert [violation] = r.violations
+    violation.function |> should.equal("go")
+    violation.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Unknown"])))
+    // The scope still widened to the package, so no `check` line went unmatched.
+    results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
+  })
+  support.cleanup(root)
+}
+
 pub fn a_scoped_query_answers_for_the_whole_package_test() {
   // `why` and `effect` are read-only lookups over the package's index, so they
   // answer for a module outside the scope rather than declining a name the
