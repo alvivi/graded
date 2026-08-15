@@ -1851,7 +1851,7 @@ type SourceScope {
 }
 
 fn source_scope(directory: String) -> SourceScope {
-  let scoped = scope_to_source_directory(directory)
+  let scoped = scope_to_source_directory(normalize_directory(directory))
   case enclosing_source_root(scoped) {
     Some(root) -> SourceScope(analysed: root, reported: scoped)
     None -> SourceScope(analysed: scoped, reported: scoped)
@@ -1878,8 +1878,33 @@ fn enclosing_source_root(directory: String) -> Option(String) {
 }
 
 // Whether `path` names a file inside `directory`'s subtree.
+//
+// A prefix test, so both sides must already be normalized — `normalize_directory`
+// settles the argument every scope derives from, and the paths compared against
+// it come from a walk of that same directory.
 fn within_directory(directory: String, path: String) -> Bool {
   string.starts_with(path, directory <> "/")
+}
+
+// The caller's directory argument in the one spelling everything downstream
+// compares against. `src/sub`, `./src/sub` and `src/sub/` name one directory,
+// but a raw prefix test reads them as three: a trailing separator builds a
+// `src/sub//` prefix that matches none of the walked files, and a `./` prefix
+// fails to match the package's `src/`, so the subtree is analysed as its own
+// root under the wrong module paths. Either way `check` lines stop matching and
+// the run reports success having verified nothing.
+//
+// `.` survives as itself rather than expanding to the empty string: it is the
+// production layout's root, which `scope_to_source_directory` and
+// `source_root_for` both key on by name.
+fn normalize_directory(directory: String) -> String {
+  case filepath.expand(directory) {
+    Ok("") -> "."
+    Ok(expanded) -> expanded
+    // Only a relative path climbing past its own root fails to expand. It names
+    // nothing to scan, so it travels on unchanged and fails where it is read.
+    Error(Nil) -> directory
+  }
 }
 
 // Scope a command's target directory to source files. When the argument is a
@@ -2603,7 +2628,10 @@ fn write_graded_file(
 // Resolved paths are returned in the same `GradedConfig` shape so callers
 // can use them as-is for I/O without further joining.
 fn read_config(directory: String) -> Result(config.GradedConfig, GradedError) {
-  let project_root = spec_root_for(directory)
+  // Normalized here too: `format` reaches the spec through this function
+  // without going through `source_scope`, so this is where its argument's
+  // spelling is settled. A no-op for the callers already scoped.
+  let project_root = spec_root_for(normalize_directory(directory))
   let toml_path = filepath.join(project_root, "gleam.toml")
   use raw <- result.try(case config.read(toml_path) {
     Ok(cfg) -> Ok(cfg)
