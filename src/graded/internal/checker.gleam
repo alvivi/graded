@@ -25,9 +25,9 @@ import graded/internal/types.{
   type UnknownReason, type Violation, type Warning, CallExplanation,
   EffectAnnotation, Effects, FieldNotAnnotated, NoKnownEffects, ParamBound,
   QualifiedName, ReceiverTypeUnresolved, TUnion, TVar, TypeLine,
-  UndeclaredExternal, UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning,
-  UnresolvedFieldValue, UntraceableArgument, UntraceableProducer,
-  UntraceableReceiver, UntrackedEffectWarning, Violation,
+  UnanalysedFallbackBody, UndeclaredExternal, UnmatchedFieldBoundWarning,
+  UnmatchedParamBoundWarning, UnresolvedFieldValue, UntraceableArgument,
+  UntraceableProducer, UntraceableReceiver, UntrackedEffectWarning, Violation,
 }
 
 // Entry points
@@ -480,12 +480,36 @@ fn declaration_resolution(
     effects.Known(term, source) -> {
       let origin = effects.origin_of(source)
       case effects.declares_foreign_code(origin) {
-        True -> Some(Resolution(term:, reason: None, origin: Some(origin)))
+        True ->
+          Some(Resolution(
+            term:,
+            reason: fallback_reason(knowledge_base, name),
+            origin: Some(origin),
+          ))
         False -> None
       }
     }
     effects.Unknown -> None
   }
+}
+
+// The reason a declaration's answer needs beside it, when the answer is wider
+// than the declaration.
+//
+// A dependency's declared external whose fallback body runs is charged the
+// declaration unioned with `[Unknown]`, because no consumer walks that body.
+// Both halves then travel under the declaration's origin, so without a reason
+// the `Unknown` reads as part of what the dependency's spec stated. Naming the
+// fallback is what tells the two apart.
+fn fallback_reason(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> option.Option(UnknownReason) {
+  use <- bool.guard(
+    when: !effects.widens_with_dependency_fallback(knowledge_base, name),
+    return: None,
+  )
+  Some(UnanalysedFallbackBody)
 }
 
 // Whether `name` is foreign code that nothing declares — an `@external` whose
@@ -943,6 +967,7 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         NoKnownEffects -> ", which no spec, external, or catalog declares,"
         UndeclaredExternal -> ", an external with no declared effects,"
         UntraceableArgument -> untraceable_argument_clause
+        UnanalysedFallbackBody -> unanalysed_fallback_clause
         FieldNotAnnotated(..)
         | ReceiverTypeUnresolved
         | UntraceableReceiver
@@ -960,6 +985,7 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         UnresolvedFieldValue ->
           ", whose wired value's effects could not be resolved,"
         UntraceableArgument -> untraceable_argument_clause
+        UnanalysedFallbackBody -> unanalysed_fallback_clause
         NoKnownEffects | UndeclaredExternal | UntraceableProducer -> ""
       }
     // An undeclared external is the one reason worth stating: nothing said what
@@ -972,7 +998,8 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         | UntraceableReceiver
         | UnresolvedFieldValue
         | UntraceableProducer
-        | UntraceableArgument -> ""
+        | UntraceableArgument
+        | UnanalysedFallbackBody -> ""
       }
     ReturnedOperatorCall(..) ->
       case reason {
@@ -983,7 +1010,8 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         | ReceiverTypeUnresolved
         | UntraceableReceiver
         | UnresolvedFieldValue
-        | UntraceableArgument -> ""
+        | UntraceableArgument
+        | UnanalysedFallbackBody -> ""
       }
     // A computed receiver keeps its wording throughout — "on a computed value"
     // already states the untraceability every field reason would repeat.
@@ -1000,6 +1028,11 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
 // The clause for an effect the call site's own argument left unresolved. Shared
 // by the kinds that substitute arguments into a resolved term.
 const untraceable_argument_clause = ", whose effects depend on an argument that could not be resolved,"
+
+// The clause for the half of a dependency external's answer that its
+// declaration did not state: the fallback body running on the targets the
+// declaration leaves uncovered, which no consumer walks.
+const unanalysed_fallback_clause = ", whose Gleam fallback body no consumer analyses,"
 
 // The source that answered, after the effect set it produced.
 fn origin_suffix(origin: option.Option(LookupOrigin)) -> String {
@@ -1516,9 +1549,14 @@ fn lookup_parts(
 ) -> Resolution {
   // A call into foreign code is charged what declares that code, exactly as the
   // external's own line is: an entry inferred over a body the foreign
-  // implementation needn't match answers for neither.
+  // implementation needn't match answers for neither. A *dependency's*
+  // `@external` is foreign for the same reason its own package's is, and the
+  // knowledge base already records which of a dependency's functions are — so
+  // an undeclared one reports as the external it is rather than as a name
+  // nothing happened to key.
   use <- bool.lazy_guard(
-    when: effects.is_foreign_function(knowledge_base, name),
+    when: effects.is_foreign_function(knowledge_base, name)
+      || effects.is_dependency_foreign_function(knowledge_base, name),
     return: fn() { foreign_resolution(knowledge_base, name) },
   )
   case effects.lookup(knowledge_base, name) {

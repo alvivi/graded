@@ -346,14 +346,39 @@ fn with_dependency_fallback(
   name: QualifiedName,
   found: EffectLookup,
 ) -> EffectLookup {
-  case dict.get(knowledge_base.dependency_foreign, name), found {
-    Ok(types.ForeignFunction(runs_fallback_body: True)), Known(term, source) ->
+  case widens_with_dependency_fallback(knowledge_base, name), found {
+    True, Known(term, source) ->
       Known(
         effect_term.normalize(types.TUnion([term, effect_term.unknown()])),
         source,
       )
-    Ok(_), _ | Error(Nil), _ -> found
+    True, Unknown | False, _ -> found
   }
+}
+
+// Whether a hit for `name` is widened by the fallback body above.
+//
+// The widening leaves no mark on the answer — the term gains `[Unknown]` and
+// keeps the declaration's source — so a caller that reports provenance asks
+// here to tell the two apart. Without it the widened `[Time, Unknown]` reads as
+// what the dependency's spec said, when the spec said `[Time]` and the
+// `Unknown` is a body nobody walked.
+pub fn widens_with_dependency_fallback(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  case dict.get(knowledge_base.dependency_foreign, name) {
+    Ok(types.ForeignFunction(runs_fallback_body:)) -> runs_fallback_body
+    Error(Nil) -> False
+  }
+}
+
+// Whether `name` is foreign code a *dependency's* source declares `@external`.
+pub fn is_dependency_foreign_function(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  dict.has_key(knowledge_base.dependency_foreign, name)
 }
 
 // The origin a lookup's source names, for a caller that records provenance
@@ -442,8 +467,8 @@ pub fn is_value_opaque(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Bool {
-  dict.has_key(knowledge_base.foreign_functions, name)
-  || dict.has_key(knowledge_base.dependency_foreign, name)
+  is_foreign_function(knowledge_base, name)
+  || is_dependency_foreign_function(knowledge_base, name)
 }
 
 // Whether an origin speaks for code graded cannot see. An `external effects`
