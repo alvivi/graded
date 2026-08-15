@@ -466,17 +466,21 @@ fn shell_quote(path: String) -> String {
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   use ctx <- result.try(load_project_context(directory))
   let ProjectContext(
+    sources:,
+    registry:,
+    type_info:,
+    stale_externals:,
+    knowledge_base:,
+  ) = ctx
+  let ProjectSources(
     source_directory: directory,
     reported_directory:,
     cfg:,
     spec:,
     parsed:,
     index:,
-    registry:,
-    type_info:,
     package_root:,
-    knowledge_base:,
-  ) = ctx
+  ) = sources
   let checks_by_module = checks_grouped_by_module(spec)
 
   // Every module of the package was analysed, so a call out of the asked-about
@@ -514,7 +518,9 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   // project module. These silently do nothing (a vacuous check, or a field
   // annotation that resolves to [Unknown]), so they're reported against the
   // spec file itself rather than any source file.
-  let results = case validate_spec_annotations(spec, index, package_root) {
+  let results = case
+    validate_spec_annotations(spec, index, package_root, stale_externals)
+  {
     [] -> results
     spec_warnings -> [
       CheckResult(file: cfg.spec_file, violations: [], warnings: spec_warnings),
@@ -530,19 +536,16 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
 // `load_project_context`, which writes nothing — `check` and `effect` share it.
 type ProjectContext {
   ProjectContext(
-    // The analysed directory, not the caller's raw argument: module paths derive
-    // from it, so it travels with the rest of the context.
-    source_directory: String,
-    // The subtree the caller asked about, which the analysed directory may be
-    // wider than. Results outside it are analysed and not reported.
-    reported_directory: String,
-    cfg: config.GradedConfig,
-    spec: GradedFile,
-    parsed: List(#(String, glance.Module)),
-    index: Dict(String, #(String, glance.Module)),
+    // The parse stage this context was built from, held whole rather than
+    // copied field by field, so a new project input is declared once.
+    sources: ProjectSources,
     registry: SignatureRegistry,
     type_info: typeinfo.TypeInfo,
-    package_root: String,
+    // The per-function `external effects` lines that declare nothing, because
+    // they name one of this package's own Gleam-bodied functions. Decided once
+    // here: the knowledge base is assembled without them, and the spec lint
+    // reports them, so the two can't disagree about which lines are live.
+    stale_externals: Set(String),
     knowledge_base: KnowledgeBase,
   )
 }
@@ -552,7 +555,11 @@ type ProjectContext {
 // decide whether a name exists needs this and nothing that follows it.
 type ProjectSources {
   ProjectSources(
+    // The analysed directory, not the caller's raw argument: module paths derive
+    // from it, so it travels with the rest of the context.
     source_directory: String,
+    // The subtree the caller asked about, which the analysed directory may be
+    // wider than. Results outside it are analysed and not reported.
     reported_directory: String,
     cfg: config.GradedConfig,
     spec: GradedFile,
@@ -598,15 +605,7 @@ fn load_project_context(
 
 // The expensive half: everything a context holds beyond the parsed sources.
 fn project_context(sources: ProjectSources) -> ProjectContext {
-  let ProjectSources(
-    source_directory: directory,
-    reported_directory:,
-    cfg:,
-    spec:,
-    parsed:,
-    index:,
-    package_root:,
-  ) = sources
+  let ProjectSources(spec:, index:, package_root:, ..) = sources
   let declared_modules = annotation.module_external_modules(spec)
   let stale_externals =
     stale_project_externals(spec, native_functions_of(index))
@@ -666,15 +665,10 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     |> effects.with_factories(qualify_by_module(index, extract.factory_map))
 
   ProjectContext(
-    source_directory: directory,
-    reported_directory:,
-    cfg:,
-    spec:,
-    parsed:,
-    index:,
+    sources:,
     registry:,
     type_info:,
-    package_root:,
+    stale_externals:,
     knowledge_base:,
   )
 }
@@ -739,10 +733,6 @@ fn declaring_externals(
   spec: GradedFile,
   stale: Set(String),
 ) -> List(types.ExternalAnnotation) {
-  use <- bool.guard(
-    when: set.is_empty(stale),
-    return: annotation.extract_externals(spec),
-  )
   annotation.extract_externals(spec)
   |> list.filter(fn(external) {
     case external.target {
@@ -826,6 +816,7 @@ fn validate_spec_annotations(
   spec: GradedFile,
   index: Dict(String, #(String, glance.Module)),
   package_root: String,
+  stale_externals: Set(String),
 ) -> List(Warning) {
   let known_functions = known_function_names(index)
 
@@ -834,17 +825,32 @@ fn validate_spec_annotations(
     |> list.filter(fn(ann) { !set.contains(known_functions, ann.function) })
     |> list.map(fn(ann) { UnmatchedCheckWarning(function: ann.function) })
 
-  let external_warnings =
-    external_warnings(spec, index, known_functions, package_root)
+  let externals = annotation.extract_externals(spec)
+  let type_fields = annotation.extract_type_fields(spec)
+  // Both lints tell a dependency module from a typo, and the scan behind that
+  // is the expensive part: walked once here and shared, and not at all for a
+  // spec holding neither kind of line.
+  let dep_files = case externals, type_fields {
+    [], [] -> dict.new()
+    _, _ -> dependency_module_files(package_root)
+  }
+  let dep_modules = set.from_list(dict.keys(dep_files))
 
-  // Resolving `type` lines needs the dependency module map and per-module type
-  // info; build them only when there are `type` lines to check, so a project
-  // without any pays no `build/packages` scan.
-  let type_field_warnings = case annotation.extract_type_fields(spec) {
+  let external_warnings =
+    external_warnings(
+      externals,
+      index,
+      known_functions,
+      package_root,
+      stale_externals,
+      dep_modules,
+    )
+
+  // Resolving `type` lines also needs per-module type info; build it only when
+  // there are `type` lines to check.
+  let type_field_warnings = case type_fields {
     [] -> []
     type_fields -> {
-      let dep_files = dependency_module_files(package_root)
-      let dep_modules = set.from_list(dict.keys(dep_files))
       let project_infos = project_module_infos(index)
       let module_info = fn(module_path) {
         lookup_module_info(module_path, project_infos, dep_files)
@@ -876,20 +882,17 @@ fn validate_spec_annotations(
 // Existence only. A name that resolves but that graded cannot introspect is
 // exactly what the line is for, and is never flagged.
 fn external_warnings(
-  spec: GradedFile,
+  externals: List(types.ExternalAnnotation),
   index: Dict(String, #(String, glance.Module)),
   known_functions: Set(String),
   package_root: String,
+  stale: Set(String),
+  dep_modules: Set(String),
 ) -> List(Warning) {
-  let externals = annotation.extract_externals(spec)
   use <- bool.guard(when: externals == [], return: [])
-  let stale = stale_project_externals(spec, native_functions_of(index))
-  // Built once, and only when there is a line to weigh: each costs a
-  // `build/packages` scan or a catalog load. The catalog is read against *this*
-  // project's manifest, so a line naming a catalogued function of a package this
-  // project depends on resolves exactly as `check` resolves it.
-  let dep_modules =
-    set.from_list(dict.keys(dependency_module_files(package_root)))
+  // Loaded only when there is a line to weigh. The catalog is read against
+  // *this* project's manifest, so a line naming a catalogued function of a
+  // package this project depends on resolves exactly as `check` resolves it.
   let #(catalog_functions, catalog_modules, _params, _fields) =
     effects.load_catalog(
       effects.catalog_directory(),
@@ -1452,11 +1455,8 @@ fn module_source_facts(
         native: set.new(),
       ))
     Ok(path) -> {
-      use source <- result.try(
-        simplifile.read(path) |> result.replace_error(Nil),
-      )
       use module <- result.map(
-        glance.module(source) |> result.replace_error(Nil),
+        read_and_parse_gleam(path) |> result.replace_error(Nil),
       )
       ModuleFacts(
         foreign: checker.foreign_functions(module, module_path),
@@ -1503,7 +1503,7 @@ fn function_effect(
   // either, however concrete it reads.
   use <- bool.guard(
     when: checker.undeclared_external(knowledge_base, qualified),
-    return: Ok(answer.UndeclaredExternalAnswer(name:, module:)),
+    return: Ok(answer.UndeclaredExternalAnswer(name:)),
   )
   case effects.lookup_declared(knowledge_base, qualified) {
     effects.Unknown -> Error(Nil)
@@ -1652,7 +1652,7 @@ pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
   // block, analysed with no bounds. Matched by the same split `run` groups them
   // by, so one function's lines are the same set to both commands.
   let checks = case
-    annotation.extract_checks(ctx.spec)
+    annotation.extract_checks(ctx.sources.spec)
     |> list.filter(fn(ann) {
       annotation.split_function_name(ann.function)
       == Ok(#(module_path, function))
@@ -1719,7 +1719,7 @@ fn why_block(
   // The sentence `graded effect` states a total in, so the two commands describe
   // one function's effects in one wording.
   let header =
-    name <> " " <> answer.total_effects(effect_term.from_effect_set(total))
+    answer.function_sentence(name, [], effect_term.from_effect_set(total))
   // The whole declaration, bounds included: two `check` lines can share a budget
   // and differ only in what they bind, and the budget alone wouldn't say which
   // block is which.
@@ -1871,7 +1871,7 @@ fn enclosing_source_root(directory: String) -> Option(String) {
     "." -> "src"
     _ -> filepath.join(root, "src")
   }
-  case string.starts_with(directory, source_root <> "/") {
+  case within_directory(source_root, directory) {
     True -> Some(source_root)
     False -> None
   }

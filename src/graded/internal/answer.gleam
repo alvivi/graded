@@ -36,7 +36,7 @@ pub type EffectAnswer {
   // inferred over a body the foreign implementation needn't match, so none of
   // them answers, and the effects are the `[Unknown]` `check` and `why` charge
   // for it.
-  UndeclaredExternalAnswer(name: String, module: String)
+  UndeclaredExternalAnswer(name: String)
   // A field of a custom type, declared by a `type` line. `module` is `None` for
   // a bare declaration, which is keyed under no module.
   TypeFieldAnswer(
@@ -92,7 +92,7 @@ pub fn render_graded(answer: EffectAnswer) -> String {
       source: types.FunctionEntry(origin:),
       ..,
     ) -> effects_line(name, bounds, term) <> graded_source(origin)
-    UndeclaredExternalAnswer(name:, ..) ->
+    UndeclaredExternalAnswer(name:) ->
       effects_line(name, [], effect_term.unknown())
       <> "\n// an external with no declared effects"
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
@@ -159,9 +159,9 @@ pub fn render_prose(answer: EffectAnswer) -> String {
       |> string.join("\n")
     // The same two lines the `check`/`why` vocabulary gives it: what the effects
     // are, and that nothing declared them.
-    UndeclaredExternalAnswer(name:, ..) ->
+    UndeclaredExternalAnswer(name:) ->
       [
-        name <> " " <> total_effects(effect_term.unknown()),
+        function_sentence(name, [], effect_term.unknown()),
         "  source: an external with no declared effects",
       ]
       |> string.join("\n")
@@ -171,7 +171,9 @@ pub fn render_prose(answer: EffectAnswer) -> String {
   }
 }
 
-fn function_sentence(
+// The sentence a total is stated in, shared by every command that reports one
+// so they cannot word a function's effects differently.
+pub fn function_sentence(
   name: String,
   bounds: List(ParamBound),
   term: EffectTerm,
@@ -227,7 +229,7 @@ fn field_sentence(
 // Public so `why`'s header states a function's total in the words `effect`
 // states one in: two commands answering about one function's effects say the
 // same thing about them.
-pub fn total_effects(term: EffectTerm) -> String {
+fn total_effects(term: EffectTerm) -> String {
   let normalized = effect_term.normalize(term)
   case ground_labels(normalized) {
     Ok(labels) -> ground_sentence(labels)

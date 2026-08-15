@@ -129,7 +129,7 @@ pub fn infer_with_returns(
   // written into the spec at all.
   let value_channel_functions =
     list.filter(public_functions, fn(definition) {
-      !is_opaque_external(definition)
+      !extract.is_foreign_definition(definition)
     })
 
   // Returned operators of public functions that return a function — recorded so
@@ -211,7 +211,9 @@ pub fn infer_with_returns(
         list.append(param_bounds, synthetic_fn_typed_bounds(fn_typed_params))
       // A bodyless `@external` is opaque FFI — conservatively `[Unknown]`, not
       // the `[]` its empty body would otherwise infer.
-      let #(effects_term, memo) = case is_opaque_external(definition) {
+      let #(effects_term, memo) = case
+        extract.is_foreign_definition(definition)
+      {
         True -> #(effect_term.unknown(), memo)
         False -> {
           let #(pairs, memo) =
@@ -296,14 +298,16 @@ pub fn explain(
   let function_map = build_function_map(module)
   use definition <- result.map(dict.get(function_map, function_name))
   case
-    declaration_explanation(module_path, knowledge_base, definition),
-    runs_fallback_body(definition)
+    standalone_declaration(
+      declaration_explanation(module_path, knowledge_base, definition),
+      definition,
+    )
   {
     // A declaration that stands in for the whole function binds no bounds and
     // needs no walking apparatus: answered here, ahead of the call graph and the
     // SCC pass `module_context` builds, and repeated per block unchanged.
-    Some(explanation), False -> list.map(bounds, fn(_bounds) { [explanation] })
-    _, _ -> {
+    Some(explanation) -> list.map(bounds, fn(_bounds) { [explanation] })
+    None -> {
       let ModuleContext(context:, cache:) =
         module_context(module, module_path, knowledge_base, girard_fn_typed)
       // One memo across every bound set, as `check` threads one across every
@@ -359,9 +363,9 @@ fn contributors(
 ) -> #(List(CallExplanation), Memo) {
   let declaration =
     declaration_explanation(context.module_path, knowledge_base, definition)
-  let #(walked, memo) = case declaration, runs_fallback_body(definition) {
-    Some(_declaration), False -> #([], memo)
-    _, _ -> {
+  let #(walked, memo) = case standalone_declaration(declaration, definition) {
+    Some(_declaration) -> #([], memo)
+    None -> {
       let #(body_effects, memo) =
         collect_effects(
           without_returned_closure(definition.definition),
@@ -403,33 +407,36 @@ fn declaration_explanation(
 ) -> option.Option(CallExplanation) {
   let qualified =
     QualifiedName(module: module_path, function: definition.definition.name)
-  case
-    is_opaque_external(definition)
-    || option.is_some(declaration_resolution(knowledge_base, qualified))
-  {
-    True -> Some(external_explanation(module_path, knowledge_base, definition))
-    False -> None
-  }
-}
-
-// What an opaque `@external` contributes, keyed by its own qualified name and
-// spanning its declaration. The same knowledge-base lookup a same-module call
-// into it makes, so the two can't disagree about what the external does.
-fn external_explanation(
-  module_path: String,
-  knowledge_base: KnowledgeBase,
-  definition: Definition(Function),
-) -> CallExplanation {
-  let qualified =
-    QualifiedName(module: module_path, function: definition.definition.name)
-  let resolution = foreign_resolution(knowledge_base, qualified)
-  CallExplanation(
+  let declared = declaration_resolution(knowledge_base, qualified)
+  use <- bool.guard(
+    when: !extract.is_foreign_definition(definition) && option.is_none(declared),
+    return: None,
+  )
+  // Keyed by the external's own qualified name and spanning its declaration.
+  // The resolution a same-module call into it makes, so the two can't disagree
+  // about what the external does — including the `[Unknown]` an `@external`
+  // nothing declares carries.
+  let resolution = option.unwrap(declared, undeclared_resolution())
+  Some(CallExplanation(
     call: sentinel_name(ExternalDeclaration(dotted_name(qualified))),
     span: definition.definition.location,
     actual: effect_term.to_effect_set(resolution.term),
     reason: resolution.reason,
     origin: resolution.origin,
-  )
+  ))
+}
+
+// Whether a declaration answers for the whole function, so nothing of the body
+// is walked. One rule, read by `explain`'s fast path and by the walk itself, so
+// the two can't disagree about which functions have a body worth weighing: an
+// `@external` whose Gleam fallback runs is walked *as well as* declared, and so
+// is not standalone.
+fn standalone_declaration(
+  declaration: option.Option(CallExplanation),
+  definition: Definition(Function),
+) -> option.Option(CallExplanation) {
+  use <- bool.guard(when: runs_fallback_body(definition), return: None)
+  declaration
 }
 
 // What the knowledge base says about foreign code: the declaration that answers
@@ -444,15 +451,20 @@ fn foreign_resolution(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Resolution {
-  case declaration_resolution(knowledge_base, name) {
-    Some(resolution) -> resolution
-    None ->
-      Resolution(
-        term: effect_term.unknown(),
-        reason: Some(UndeclaredExternal),
-        origin: None,
-      )
-  }
+  option.unwrap(
+    declaration_resolution(knowledge_base, name),
+    undeclared_resolution(),
+  )
+}
+
+// What foreign code nothing declares carries: the conservative `[Unknown]`, and
+// the reason that says why it stayed unresolved.
+fn undeclared_resolution() -> Resolution {
+  Resolution(
+    term: effect_term.unknown(),
+    reason: Some(UndeclaredExternal),
+    origin: None,
+  )
 }
 
 // The declaration that answers for `name`, when the winning entry is one. Also
@@ -701,7 +713,7 @@ fn local_function_field_effect(
   case dict.get(function_map, name.function) {
     Error(Nil) -> #(None, memo)
     Ok(definition) ->
-      case is_opaque_external(definition) {
+      case extract.is_foreign_definition(definition) {
         True -> #(None, memo)
         False -> {
           let #(term, memo) =
@@ -1311,7 +1323,7 @@ pub fn build_scc_ids(
         |> set.union(alias_fn_typed_params(definition.definition, fn_aliases))
         |> set.union(typeinfo.fn_typed_params(girard_fn_typed, name))
         |> set.is_empty()
-      case first_order && !is_opaque_external(definition) {
+      case first_order && !extract.is_foreign_definition(definition) {
         True -> Error(Nil)
         False -> Ok(name)
       }
@@ -1477,7 +1489,7 @@ fn local_native_definition(
   function: String,
 ) -> Result(Definition(Function), Nil) {
   use definition <- result.try(dict.get(function_map, function))
-  case is_opaque_external(definition) {
+  case extract.is_foreign_definition(definition) {
     True -> Error(Nil)
     False -> Ok(definition)
   }
@@ -1641,46 +1653,24 @@ fn recursion_edges(
   |> set.intersection(names)
 }
 
-// A function declared `@external(...)` is opaque foreign code: graded cannot see
-// what the native implementation does, so its effect is the conservative
-// `[Unknown]` by default — never the `[]` an empty (or pure-looking fallback)
-// body might suggest. Authors opt in to a precise effect by annotating it with
-// an `external effects … : [...]` line (or via the versioned catalog), which
-// wins at resolution time. This holds even when the `@external` also carries a
-// Gleam fallback body: on the target the declaration covers, that body does not
-// run and the foreign implementation may differ from it, so trusting it would be
-// unsound.
-fn is_opaque_external(definition: Definition(Function)) -> Bool {
-  extract.is_foreign_definition(definition)
-}
-
 // The module's functions whose implementation is foreign code, qualified by
 // `module_path` and each paired with what a knowledge base records about it.
 // What a knowledge base holds so that every consumer — a caller's resolution,
 // `check`, `why`, `effect` — reads one of these names as only its declaration
-// describes it. The visibility rides along because `graded effect` answers for
-// the public API alone, while the others resolve a private `@external` exactly
-// as they resolve a public one; whether the fallback body runs rides along for
-// the consumers that never walk this source, a dependency's away.
+// describes it. Whether the fallback body runs rides along for the consumers
+// that never walk this source, a dependency's away.
 pub fn foreign_functions(
   module: Module,
   module_path: String,
 ) -> dict.Dict(QualifiedName, types.ForeignFunction) {
   module.functions
-  |> list.filter(is_opaque_external)
+  |> list.filter(extract.is_foreign_definition)
   |> list.map(fn(definition) {
     let name =
       QualifiedName(module: module_path, function: definition.definition.name)
-    let visibility = case definition.definition.publicity {
-      glance.Public -> types.Exported
-      glance.Private -> types.Internal
-    }
     #(
       name,
-      types.ForeignFunction(
-        visibility:,
-        runs_fallback_body: runs_fallback_body(definition),
-      ),
+      types.ForeignFunction(runs_fallback_body: runs_fallback_body(definition)),
     )
   })
   |> dict.from_list()
@@ -1692,7 +1682,7 @@ pub fn foreign_functions(
 // body sitting in plain sight.
 pub fn native_function_names(module: Module) -> Set(String) {
   module.functions
-  |> list.filter(fn(definition) { !is_opaque_external(definition) })
+  |> list.filter(fn(definition) { !extract.is_foreign_definition(definition) })
   |> list.map(fn(definition) { definition.definition.name })
   |> set.from_list()
 }
@@ -1723,7 +1713,10 @@ pub fn function_visibility(
 // the declaration answers for every caller — so its effects are collected
 // alongside the declaration rather than instead of it.
 fn runs_fallback_body(definition: Definition(Function)) -> Bool {
-  use <- bool.guard(when: !is_opaque_external(definition), return: False)
+  use <- bool.guard(
+    when: !extract.is_foreign_definition(definition),
+    return: False,
+  )
   use <- bool.guard(when: definition.definition.body == [], return: False)
   set.difference(compiled_targets(definition), declared_targets(definition))
   |> set.is_empty
@@ -4429,16 +4422,19 @@ fn lift_local_function(
   // lift an undeclared external to `[]`, and a caller passing it to a
   // higher-order helper would inherit that `[]` while a direct call to the same
   // name inherits `[Unknown]`.
-  use <- bool.lazy_guard(when: is_opaque_external(definition), return: fn() {
-    let qualified = QualifiedName(module: context.module_path, function: name)
-    let declared = foreign_resolution(knowledge_base, qualified).term
-    #(
-      list.fold_right(fn_param_names, declared, fn(acc, param) {
-        types.TAbs(param, acc)
-      }),
-      memo,
-    )
-  })
+  use <- bool.lazy_guard(
+    when: extract.is_foreign_definition(definition),
+    return: fn() {
+      let qualified = QualifiedName(module: context.module_path, function: name)
+      let declared = foreign_resolution(knowledge_base, qualified).term
+      #(
+        list.fold_right(fn_param_names, declared, fn(acc, param) {
+          types.TAbs(param, acc)
+        }),
+        memo,
+      )
+    },
+  )
   let scc = dict.get(cache.scc_id, name) |> result.unwrap(-1)
   case set.contains(cache.collapsible, scc) {
     // A first-order function in a collapsible SCC lifts to a ground term (no
@@ -4688,7 +4684,7 @@ fn resolve_unknown_local(
       #([plain_call(synthetic_call, effect_term.unknown())], memo)
     }
     Ok(local_definition) ->
-      case is_opaque_external(local_definition) {
+      case extract.is_foreign_definition(local_definition) {
         // A same-module call into an `@external` has no body graded may weigh, so
         // it is charged what declares the foreign code — qualifying the bare name
         // with the current module. A declaration wins; without one (or when the
