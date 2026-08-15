@@ -280,8 +280,13 @@ pub type LookupOrigin {
   ProjectInferred
   // A dependency's shipped spec under `build/packages`.
   DependencySpec(package: String)
-  // A path dependency's spec file, or inference over its source.
+  // A path dependency's committed spec file. A declaration: its author wrote it.
   PathDependency(package: String)
+  // Inference over a spec-less path dependency's source. Held apart from the
+  // committed form because only one of the two is a declaration: inference over
+  // an `@external`'s body describes something the foreign implementation needn't
+  // match, so it must not answer for foreign code the way a written line does.
+  PathDependencyInferred(package: String)
   // The bundled versioned catalog entry for a package.
   Catalog(package: String)
   // An `external effects <module>` line answered for a name nothing else keys.

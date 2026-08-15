@@ -389,6 +389,71 @@ fn sink() -> Nil
   support.cleanup(root)
 }
 
+pub fn a_running_fallback_body_is_charged_to_every_caller_test() {
+  // The declaration alone is the whole story only where it covers every target.
+  // Where it does not, the Gleam fallback is what runs, and composition is
+  // union — so a caller inherits the declaration *and* that body, whether it
+  // sits in the same module or another one. Charging only the declaration let a
+  // `[]` budget pass over an external whose fallback reads the disk.
+  let root = "build/external_fallback_callers"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.log : []
+external effects ext.sink : [Disk]
+check ext.wrapper : []
+check other.calls_it : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"log\")
+pub fn log() -> Nil {
+  sink()
+}
+
+@external(erlang, \"ext_ffi\", \"sink\")
+@external(javascript, \"ext_ffi\", \"sink\")
+fn sink() -> Nil
+
+pub fn wrapper() -> Nil {
+  log()
+}
+",
+    ),
+    #(
+      "other.gleam",
+      "import ext
+
+pub fn calls_it() -> Nil {
+  ext.log()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let disk = types.Specific(set.from_list(["Disk"]))
+
+  let assert Ok(same_module) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let assert Ok(wrapper) =
+    list.find(same_module.violations, fn(v) { v.function == "wrapper" })
+  wrapper.explanation.actual |> should.equal(disk)
+
+  let assert Ok(cross_module) =
+    list.find(results, fn(r) { r.file == root <> "/other.gleam" })
+  let assert [calls_it] = cross_module.violations
+  calls_it.explanation.actual |> should.equal(disk)
+
+  // And every surface agrees on the one name: the query answers what the
+  // callers are charged, rather than the declaration the fast path could see
+  // without walking the body.
+  let assert Ok(answered) = graded.run_effect(root, "ext.log")
+  answered |> string.contains("[Disk]") |> should.be_true()
+  support.cleanup(root)
+}
+
 pub fn an_external_covering_every_target_is_not_walked_test() {
   // The same fallback body under `@external` declarations for both targets: it
   // can never run, so the declaration is the whole answer and the `[]` budget
@@ -669,6 +734,50 @@ pub fn wrapper() -> Nil {
   checker.format_violation(r.file, violation)
   |> string.contains("whose Gleam fallback body no consumer analyses")
   |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn the_effect_fast_path_widens_a_dependency_fallback_test() {
+  // The spec declares the dependency function, so the fast path could answer
+  // from the spec alone — but the dependency's own source says the name is
+  // `@external` with a running fallback, which widens the answer by the
+  // `[Unknown]` no consumer can walk. The query has to say what the callers are
+  // charged, so it reads that one dependency module before answering.
+  let root = "build/effect_fast_path_dep_fallback"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects dep/ffi.run : [Time]\ncheck app.wrapper : [Time]\n",
+    ),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "@external(javascript, \"dep_ffi\", \"run\")
+pub fn run() -> Nil {
+  Nil
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+pub fn wrapper() -> Nil {
+  ffi.run()
+}
+",
+    ),
+  ])
+  // What the caller is charged.
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Time", "Unknown"])))
+  // And what the query answers for the same name.
+  let assert Ok(answered) = graded.run_effect(root, "dep/ffi.run")
+  answered |> string.contains("Unknown") |> should.be_true()
   support.cleanup(root)
 }
 
@@ -2742,6 +2851,53 @@ pub fn path_dep_module_level_external_marks_pure_test() {
     )
   list.any(r.violations, fn(v) { v.function == "caller" })
   |> should.be_false()
+}
+
+pub fn a_spec_less_path_dep_external_is_not_a_declaration_test() {
+  // Inference over a spec-less path dependency's source records its bodyless
+  // `@external` as [Unknown]. That is a walk, not a written line, so it must not
+  // answer for foreign code the way a committed spec does — otherwise the call
+  // reads as resolved from the path dependency when nothing declared it.
+  let r =
+    run_path_dep_fixture(
+      "pd_inferred_external",
+      [
+        #(
+          "dep.gleam",
+          "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
+        ),
+      ],
+      "check app.caller : []\n",
+      "import dep\n\npub fn caller() -> Nil {\n  dep.touch()\n}\n",
+    )
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.reason |> should.equal(Some(types.UndeclaredExternal))
+  // Not attributed to the path dependency: no declaration answered.
+  v.explanation.origin |> should.equal(None)
+}
+
+pub fn a_committed_path_dep_external_still_declares_test() {
+  // The other half of the same rule: a line the dep author committed *is* a
+  // declaration, so it answers for the external and names itself as the source.
+  let r =
+    run_path_dep_spec_fixture(
+      "pd_committed_external",
+      [
+        #(
+          "dep.gleam",
+          "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
+        ),
+      ],
+      "external effects dep.touch : [Disk]\n",
+      "check app.caller : []\n",
+      "import dep\n\npub fn caller() -> Nil {\n  dep.touch()\n}\n",
+    )
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  v.explanation.origin |> should.equal(Some(types.PathDependency("dep")))
 }
 
 pub fn path_dep_module_level_external_preserves_effect_test() {
