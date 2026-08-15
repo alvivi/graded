@@ -83,8 +83,8 @@ pub type KnowledgeBase {
     // pass. (Same-module private helpers resolve on demand from the AST instead.)
     provenance: Dict(QualifiedName, ReturnProvenance),
     // The functions whose implementation is foreign code — the `@external`
-    // declarations of the source under analysis — each with whether the package
-    // exports it. An entry here says nothing about a name's effects; it says
+    // declarations of the source under analysis. An entry here says nothing
+    // about a name's effects; it says
     // that only a *declaration* speaks for them, since every other entry the
     // base holds for one describes a body the foreign implementation needn't
     // match. Weighed by `lookup_declared`, so one name reads the same to
@@ -347,8 +347,7 @@ fn with_dependency_fallback(
   found: EffectLookup,
 ) -> EffectLookup {
   case dict.get(knowledge_base.dependency_foreign, name), found {
-    Ok(types.ForeignFunction(runs_fallback_body: True, ..)), Known(term, source)
-    ->
+    Ok(types.ForeignFunction(runs_fallback_body: True)), Known(term, source) ->
       Known(
         effect_term.normalize(types.TUnion([term, effect_term.unknown()])),
         source,
@@ -367,9 +366,8 @@ pub fn origin_of(source: types.EffectSource) -> LookupOrigin {
 }
 
 // Record the functions whose implementation is foreign code: the `@external`
-// declarations of the source under analysis, each with whether the package
-// exports it. Merged into what is already recorded, so a caller scanning a
-// second set of modules adds to it.
+// declarations of the source under analysis. Merged into what is already
+// recorded, so a caller scanning a second set of modules adds to it.
 pub fn with_foreign_functions(
   knowledge_base: KnowledgeBase,
   names: Dict(QualifiedName, types.ForeignFunction),
@@ -432,20 +430,6 @@ pub fn project_visibility(
   }
 }
 
-// Whether `name` is foreign code the package *exports*. Asked by `graded
-// effect`, which answers for the public API alone: a private `@external` is
-// resolved like any other name when a caller reaches it, but is no more
-// queryable than a private ordinary function.
-pub fn exports_foreign_function(
-  knowledge_base: KnowledgeBase,
-  name: QualifiedName,
-) -> Bool {
-  case dict.get(knowledge_base.foreign_functions, name) {
-    Ok(types.ForeignFunction(visibility: types.Exported, ..)) -> True
-    Ok(_) | Error(Nil) -> False
-  }
-}
-
 // Whether `name` is foreign code on any *value* channel: an `@external` graded
 // has seen the source of, this package's or a dependency's.
 //
@@ -499,11 +483,12 @@ pub fn lookup_declared(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> EffectLookup {
+  let found = lookup(knowledge_base, name)
   use <- bool.guard(
     when: !is_foreign_function(knowledge_base, name),
-    return: lookup(knowledge_base, name),
+    return: found,
   )
-  case lookup(knowledge_base, name) {
+  case found {
     Known(_, source) as known ->
       case declares_foreign_code(origin_of(source)) {
         True -> known
@@ -905,9 +890,7 @@ pub fn load_spec_params_from_file(
   stale_externals: set.Set(String),
 ) -> Dict(QualifiedName, List(ParamBound)) {
   let external_functions =
-    set.filter(annotation.external_function_names(file), fn(name) {
-      !set.contains(stale_externals, name)
-    })
+    set.difference(annotation.external_function_names(file), stale_externals)
   let from_externals =
     set.fold(external_functions, dict.new(), fn(acc, name) {
       case annotation.split_function_name(name) {

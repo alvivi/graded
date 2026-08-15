@@ -318,26 +318,23 @@ pub type TypeFieldEffect {
   )
 }
 
-// Whether the package under analysis exports a function. Recorded beside the
-// `@external` declarations a knowledge base holds, because its two consumers
-// disagree about private foreign code: resolving a call charges a private
-// `@external` exactly as it charges a public one, while `graded effect` answers
-// for the public API alone and must not begin answering for a private name on
-// the strength of its being foreign.
+// Whether the package under analysis exports a function. Recorded for every
+// function its parsed modules define, because `graded effect` answers for the
+// public API alone and so has to tell a private name from one this package
+// never defined. Resolution weighs none of it: a caller charges a private
+// function exactly as it charges a public one.
 pub type Visibility {
   Exported
   Internal
 }
 
 // What a knowledge base records about one `@external` it has seen the source
-// of: whether the package exports it, and whether its Gleam fallback body is
-// code that runs on some target the function is compiled for. Both travel with
-// the name because both decide an answer no other entry can supply — the
-// visibility decides whether `graded effect` speaks for it, and a running
-// fallback widens a declaration downstream, where the body itself is never
-// walked.
+// of: whether its Gleam fallback body is code that runs on some target the
+// function is compiled for. It travels with the name because it decides an
+// answer no other entry can supply — a running fallback widens a declaration
+// downstream, where the body itself is never walked.
 pub type ForeignFunction {
-  ForeignFunction(visibility: Visibility, runs_fallback_body: Bool)
+  ForeignFunction(runs_fallback_body: Bool)
 }
 
 // Whether an external targets a whole module or a specific function.

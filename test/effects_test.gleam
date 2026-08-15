@@ -1322,13 +1322,6 @@ fn installed_dep_over_source(
   kb
 }
 
-fn exported_foreign(runs_fallback_body: Bool) -> types.ForeignFunction {
-  types.ForeignFunction(
-    visibility: types.Exported,
-    runs_fallback_body: runs_fallback_body,
-  )
-}
-
 pub fn a_dependency_effects_line_for_its_own_external_is_dropped_test() {
   // The dep's source declares `dep/ffi.now` `@external`, so its shipped
   // `effects` line is inference over a fallback body its FFI needn't match.
@@ -1338,7 +1331,12 @@ pub fn a_dependency_effects_line_for_its_own_external_is_dropped_test() {
     "dep",
     "effects dep/ffi.now : []\n",
     "",
-    [#(QualifiedName("dep/ffi", "now"), exported_foreign(False))],
+    [
+      #(
+        QualifiedName("dep/ffi", "now"),
+        types.ForeignFunction(runs_fallback_body: False),
+      ),
+    ],
   )
   |> entry_of(QualifiedName("dep/ffi", "now"))
   |> should.equal(Error(Nil))
@@ -1352,7 +1350,12 @@ pub fn a_dependency_external_line_for_its_own_external_answers_test() {
     "dep",
     "external effects dep/ffi.now : [Time]\n",
     "",
-    [#(QualifiedName("dep/ffi", "now"), exported_foreign(False))],
+    [
+      #(
+        QualifiedName("dep/ffi", "now"),
+        types.ForeignFunction(runs_fallback_body: False),
+      ),
+    ],
   )
   |> entry_of(QualifiedName("dep/ffi", "now"))
   |> should.equal(
@@ -1369,7 +1372,12 @@ pub fn a_dependency_effects_line_on_an_ordinary_function_answers_test() {
     "dep",
     "effects dep/ffi.now : [Time]\neffects dep/ffi.plain : [Disk]\n",
     "",
-    [#(QualifiedName("dep/ffi", "now"), exported_foreign(False))],
+    [
+      #(
+        QualifiedName("dep/ffi", "now"),
+        types.ForeignFunction(runs_fallback_body: False),
+      ),
+    ],
   )
   |> entry_of(QualifiedName("dep/ffi", "plain"))
   |> should.equal(
@@ -1387,7 +1395,12 @@ pub fn a_stale_dependency_effects_line_does_not_bury_the_catalog_test() {
     "gleam_stdlib",
     "effects gleam/io.println : [Shipped]\n",
     "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
-    [#(QualifiedName("gleam/io", "println"), exported_foreign(False))],
+    [
+      #(
+        QualifiedName("gleam/io", "println"),
+        types.ForeignFunction(runs_fallback_body: False),
+      ),
+    ],
   )
   |> entry_of(QualifiedName("gleam/io", "println"))
   |> should.equal(
@@ -1405,7 +1418,12 @@ pub fn a_dropped_dependency_effects_line_takes_its_bounds_with_it_test() {
       "gleam_stdlib",
       "effects gleam/io.println(cb: [cb]) : [cb]\n",
       "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
-      [#(QualifiedName("gleam/io", "println"), exported_foreign(False))],
+      [
+        #(
+          QualifiedName("gleam/io", "println"),
+          types.ForeignFunction(runs_fallback_body: False),
+        ),
+      ],
     )
   kb
   |> entry_of(QualifiedName("gleam/io", "println"))
@@ -1426,7 +1444,12 @@ pub fn a_declared_dependency_external_with_a_running_fallback_is_widened_test() 
     "dep",
     "external effects dep/ffi.run : [Time]\n",
     "",
-    [#(QualifiedName("dep/ffi", "run"), exported_foreign(True))],
+    [
+      #(
+        QualifiedName("dep/ffi", "run"),
+        types.ForeignFunction(runs_fallback_body: True),
+      ),
+    ],
   )
   |> entry_of(QualifiedName("dep/ffi", "run"))
   |> should.equal(
@@ -1448,7 +1471,12 @@ pub fn a_dependency_returns_line_for_its_own_external_is_refused_test() {
       "dep",
       "external effects dep/ffi.make : []\nreturns dep/ffi.make : []\nreturns dep/ffi.plain : []\n",
       "",
-      [#(QualifiedName("dep/ffi", "make"), exported_foreign(False))],
+      [
+        #(
+          QualifiedName("dep/ffi", "make"),
+          types.ForeignFunction(runs_fallback_body: False),
+        ),
+      ],
     )
   effects.lookup_returned_operator(kb, QualifiedName("dep/ffi", "make"))
   |> result.is_ok

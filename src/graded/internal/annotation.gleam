@@ -577,9 +577,7 @@ pub fn merge_inferred(
   // is what stops `check` warning about it forever while the spec under-reports
   // the function.
   let external_functions =
-    set.filter(external_function_names(file), fn(name) {
-      !set.contains(stale_externals, name)
-    })
+    set.difference(external_function_names(file), stale_externals)
   // A module-level `external effects mod : [...]` declares the whole module's
   // effect, so every inferred `effects mod.fn` line is likewise redundant and
   // would shadow the declaration. Drop them all for the declared module.
