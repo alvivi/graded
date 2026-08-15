@@ -909,6 +909,15 @@ fn external_warnings(
       effects.catalog_directory(),
       manifest_path(package_root),
     )
+  // A catalogued module is one the catalog *keys*, whether by a module-level
+  // line or by the per-function lines that are the usual form: the stdlib
+  // catalog holds `gleam/io.println` and no `gleam/io` line, so weighing module
+  // existence by `catalog_modules` alone calls a real module a typo wherever
+  // the dependency's own sources aren't installed to say otherwise.
+  let catalog_function_modules =
+    dict.fold(catalog_functions, set.new(), fn(acc, name, _entry) {
+      set.insert(acc, name.module)
+    })
   let dep_functions = dependency_function_names(externals, dep_files)
   list.filter_map(externals, fn(external) {
     case external.target {
@@ -938,6 +947,7 @@ fn external_warnings(
           dict.has_key(index, external.module)
           || dict.has_key(dep_files, external.module)
           || dict.has_key(catalog_modules, external.module)
+          || set.contains(catalog_function_modules, external.module)
         {
           True -> Error(Nil)
           False -> Ok(UnmatchedModuleExternalWarning(module: external.module))
@@ -2675,8 +2685,7 @@ fn with_module_fallback_effects(
   module_types: Dict(#(Int, Int), girard.Type),
   girard_fn_typed: Dict(String, Set(String)),
 ) -> KnowledgeBase {
-  effects.with_fallback_effects(
-    knowledge_base,
+  let summaries =
     qualify_bare_names(
       checker.fallback_effects(
         module,
@@ -2687,7 +2696,15 @@ fn with_module_fallback_effects(
         girard_fn_typed,
       ),
       module_path,
-    ),
+    )
+  knowledge_base
+  |> effects.with_fallback_effects(
+    dict.map_values(summaries, fn(_name, summary) { summary.0 }),
+  )
+  // The bounds the summary's own term is stated over, so a call into a
+  // higher-order fallback binds its callback rather than collapsing it.
+  |> effects.with_fallback_params(
+    dict.map_values(summaries, fn(_name, summary) { summary.1 }),
   )
 }
 

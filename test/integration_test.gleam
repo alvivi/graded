@@ -565,6 +565,91 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_higher_order_fallback_binds_its_callback_test() {
+  // The fallback calls a function-typed parameter. Summarised without the
+  // synthetic bound ordinary inference gives one, that call has nothing to
+  // bind and collapses to `[Unknown]`, so every caller inherits it and a
+  // demonstrably pure callback fails a `[]` budget. The summary is stated over
+  // the same bounds, and the call site binds them.
+  let root = "build/external_fallback_higher_order"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.run : []
+external effects app.disk : [Disk]
+check app.uses : []
+check app.uses_impure : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(action: fn() -> Nil) -> Nil {
+  action()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+fn pure_callback() -> Nil {
+  Nil
+}
+
+@external(erlang, \"d\", \"w\")
+fn disk() -> Nil
+
+pub fn uses() -> Nil {
+  ext.run(pure_callback)
+}
+
+pub fn uses_impure() -> Nil {
+  ext.run(disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  // The pure callback is not charged for the fallback's call to it.
+  list.any(r.violations, fn(v) { v.function == "uses" }) |> should.be_false()
+  // The effectful one still is, so the bound resolves rather than vanishing.
+  let assert Ok(v) =
+    list.find(r.violations, fn(v) { v.function == "uses_impure" })
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_module_external_resolves_from_catalog_functions_test() {
+  // The stdlib catalog keys `gleam/io.println` and no `gleam/io` line, which is
+  // the usual shape. Weighing module existence by module-level entries alone
+  // called a real module a typo whenever the dependency's own sources were not
+  // installed to say otherwise.
+  let root = "build/external_lint_catalog_module"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "manifest.toml",
+      "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
+    ),
+    #(
+      "proj.graded",
+      "external effects gleam/io : []\nexternal effects nowhere/mod : []\n",
+    ),
+    #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+  ])
+  let assert Ok(results) = graded.run(root)
+  // Only the module that really resolves nowhere is flagged.
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([types.UnmatchedModuleExternalWarning(module: "nowhere/mod")])
+  support.cleanup(root)
+}
+
 pub fn a_wired_field_separates_the_fallback_test() {
   // A field wired to a target-conditional external carries the same two sources
   // a direct call to it does. Reporting the union under the declaration alone

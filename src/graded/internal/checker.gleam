@@ -607,7 +607,7 @@ pub fn fallback_effects(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
-) -> dict.Dict(String, EffectTerm) {
+) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
   let targets =
     list.filter(module.functions, fn(definition) {
       extract.is_foreign_definition(definition)
@@ -634,6 +634,7 @@ pub fn fallback_effects(
       knowledge_base:,
       registry:,
       module_types:,
+      girard_fn_typed:,
     ),
   )
 }
@@ -651,30 +652,40 @@ type FallbackWalk {
     knowledge_base: KnowledgeBase,
     registry: SignatureRegistry,
     module_types: dict.Dict(#(Int, Int), girard.Type),
+    girard_fn_typed: dict.Dict(String, Set(String)),
   )
 }
 
 fn settle_fallback_effects(
-  settled: dict.Dict(String, EffectTerm),
+  settled: dict.Dict(String, #(EffectTerm, List(ParamBound))),
   fuel: Int,
   walk: FallbackWalk,
-) -> dict.Dict(String, EffectTerm) {
+) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
   use <- bool.guard(when: fuel <= 0, return: settled)
   // The summaries settled so far, so a body reaching a sibling fallback is
   // charged what that sibling's own body does.
   let knowledge_base =
     effects.with_fallback_effects(
       walk.knowledge_base,
-      dict.fold(settled, dict.new(), fn(acc, function, term) {
+      dict.fold(settled, dict.new(), fn(acc, function, summary) {
         dict.insert(
           acc,
           QualifiedName(module: walk.module_path, function:),
-          term,
+          summary.0,
         )
       }),
     )
   let #(_memo, entries) =
     list.map_fold(walk.targets, new_memo(), fn(memo, definition) {
+      // The same synthetic bounds ordinary inference gives a function-typed
+      // parameter, so a fallback that calls one is charged that argument's
+      // effects rather than the `[Unknown]` an unbound call collapses to.
+      let fn_typed_params =
+        signatures.fn_typed_params_from_function(definition.definition)
+        |> set.union(typeinfo.fn_typed_params(
+          walk.girard_fn_typed,
+          definition.definition.name,
+        ))
       let #(pairs, memo) =
         collect_effects(
           without_returned_closure(definition.definition),
@@ -682,7 +693,7 @@ fn settle_fallback_effects(
           walk.context,
           knowledge_base,
           set.new(),
-          [],
+          synthetic_fn_typed_bounds(fn_typed_params),
           walk.registry,
           walk.module_types,
           dict.new(),
@@ -690,7 +701,14 @@ fn settle_fallback_effects(
           [],
           memo,
         )
-      #(memo, #(definition.definition.name, union_of(pairs)))
+      let term = union_of(pairs)
+      #(
+        memo,
+        #(
+          definition.definition.name,
+          #(term, polymorphic_param_bounds(term, fn_typed_params)),
+        ),
+      )
     })
   let walked = dict.from_list(entries)
   case walked == settled {
