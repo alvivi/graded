@@ -28,6 +28,7 @@ fn function(
     bounds:,
     term:,
     source: FunctionEntry(origin: CommittedSpec),
+    fallback: None,
   )
 }
 
@@ -143,6 +144,7 @@ pub fn a_module_level_external_states_its_precedence_test() {
     source: ModuleExternalEntry(origin: ModuleExternalOrigin(
       source: UserExternal,
     )),
+    fallback: None,
   )
   |> prose
   |> should.equal(
@@ -162,6 +164,7 @@ fn from(origin: types.LookupOrigin) -> answer.EffectAnswer {
     bounds: [],
     term: labels(["Stdout"]),
     source: FunctionEntry(origin:),
+    fallback: None,
   )
 }
 
@@ -186,6 +189,7 @@ pub fn a_source_line_precedes_the_bounds_test() {
     bounds: [ParamBound("f", labels(["Stdout"]))],
     term: labels(["Stdout"]),
     source: FunctionEntry(origin: Catalog("gleam_stdlib")),
+    fallback: None,
   )
   |> prose
   |> should.equal(
