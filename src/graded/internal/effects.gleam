@@ -400,6 +400,26 @@ pub fn with_fallback_effects(
   )
 }
 
+// The parameter bounds a running fallback body's own effects are stated over.
+//
+// These *override* what is already recorded, unlike every other bound writer.
+// A declaring `external effects` line records an empty entry for its function,
+// because a declaration's term is ground by construction — but a fallback body
+// is not, and a call into one that reaches a function-typed parameter states
+// that parameter's effects. Without the bound the variable binds to nothing at
+// the call site and collapses to `[Unknown]`, charging a caller for a callback
+// it can see is pure. An `external effects` line cannot express the bound
+// itself, so nothing an author wrote is being displaced.
+pub fn with_fallback_params(
+  knowledge_base: KnowledgeBase,
+  bounds: Dict(QualifiedName, List(ParamBound)),
+) -> KnowledgeBase {
+  KnowledgeBase(
+    ..knowledge_base,
+    param_bounds: dict.merge(knowledge_base.param_bounds, bounds),
+  )
+}
+
 // What `name` costs a caller, given what declares it.
 //
 // The declaration alone is the whole story only where it covers every target
