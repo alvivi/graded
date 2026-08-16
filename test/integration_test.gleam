@@ -5312,6 +5312,83 @@ pub fn declared_go() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_governed_native_body_still_warns_about_its_references_test() {
+  // The opposite case to the covered `@external` below, and the distinction the
+  // warning turns on. `external effects governed : [Net]` answers for every
+  // function in the module, so a `check` line on one is judged against the
+  // declaration and the body's `[Disk]` is never weighed — but these bodies are
+  // ordinary Gleam that *runs*, so the effectful reference one passes is as
+  // untracked as it would be anywhere else.
+  let root = "build/reference_warning_governed_module"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ffi.disk : [Disk]
+external effects governed : [Net]
+check governed.wrapped : [Net]
+check governed.strict : []
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+pub fn disk() -> Nil
+",
+    ),
+    #(
+      "governed.gleam",
+      "import ffi
+
+fn helper(f: fn() -> Nil) -> Nil {
+  f()
+}
+
+pub fn wrapped() -> Nil {
+  helper(ffi.disk)
+}
+
+pub fn strict() -> Nil {
+  helper(ffi.disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/governed.gleam" })
+
+  // Budgets answer from the declaration, which is what every caller is charged:
+  // the `[Net]` line holds, and the `[]` line fails on `[Net]` rather than on
+  // the `[Disk]` sitting in the body.
+  let assert [violation] = r.violations
+  violation.function |> should.equal("strict")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Net"])))
+
+  // Both bodies still pass the reference, so both warn.
+  r.warnings
+  |> list.map(fn(warning) {
+    let assert types.UntrackedEffectWarning(function:, reference:, effects:, ..) =
+      warning
+    #(function, reference, effects)
+  })
+  |> should.equal([
+    #(
+      "strict",
+      types.QualifiedName("ffi", "disk"),
+      types.Specific(set.from_list(["Disk"])),
+    ),
+    #(
+      "wrapped",
+      types.QualifiedName("ffi", "disk"),
+      types.Specific(set.from_list(["Disk"])),
+    ),
+  ])
+  support.cleanup(root)
+}
+
 pub fn a_covered_fallback_body_reference_warns_about_nothing_test() {
   // `covered` declares an implementation for every target it compiles for, so
   // its Gleam body is dead text the declaration alone answers for — the `disk`
