@@ -2363,7 +2363,13 @@ fn weighed_actual(
 //
 // Held to `Unknown` meaning silence, as it already was: an unresolved reference
 // warns about nothing, so a foreign name the rule collapses to `[Unknown]` warns
-// about nothing either, rather than newly warning about an unknown.
+// about nothing either, rather than newly warning about an unknown. Silence is
+// decided on the *set*, not on which lookup variant carried it — an undeclared
+// external with a running fallback answers `Known([…, Unknown])`, so reading the
+// variant alone let one warn that its effects `[Unknown]` won't be tracked.
+//
+// A set that mixes the two (`[Disk, Unknown]`) still warns: the known half is a
+// real effect the reference carries past anything that tracks it.
 fn collect_reference_warnings(
   function_name: String,
   references: List(types.ResolvedCall),
@@ -2373,7 +2379,9 @@ fn collect_reference_warnings(
     case effects.lookup_declared(knowledge_base, ref.name) {
       effects.Known(term, _) -> {
         let effect_set = effect_term.to_effect_set(term)
-        case effect_set == types.empty() {
+        case
+          effect_set == types.empty() || types.is_wholly_unknown(effect_set)
+        {
           True -> Error(Nil)
           False ->
             Ok(UntrackedEffectWarning(
