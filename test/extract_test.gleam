@@ -932,3 +932,40 @@ pub fn target() { <<io.println(\"x\")>> }",
   )
   |> should.equal([QualifiedName("gleam/io", "println")])
 }
+
+// Foreign declarations
+//
+// Which definitions `is_foreign_definition` holds foreign, and what an
+// `@external` whose target argument cannot be read counts as.
+
+fn is_foreign(src: String) -> Bool {
+  let assert Ok(module) = glance.module(src)
+  let assert Ok(definition) =
+    list.find(module.functions, fn(def) { def.definition.name == "target" })
+  extract.is_foreign_definition(definition)
+}
+
+pub fn a_declaration_naming_its_target_is_foreign_test() {
+  is_foreign("@external(erlang, \"m\", \"f\")\npub fn target() { Nil }")
+  |> should.be_true()
+}
+
+pub fn a_target_excluded_declaration_is_not_foreign_test() {
+  // No implementation is compiled for a target the function is not built for,
+  // so the Gleam body is the only one that exists.
+  is_foreign(
+    "@target(erlang)\n@external(javascript, \"m\", \"f\")\npub fn target() { Nil }",
+  )
+  |> should.be_false()
+}
+
+pub fn an_unreadable_target_argument_stays_foreign_test() {
+  // A string where the target belongs declares a target this cannot read, and
+  // "unreadable" is the same empty set as "none declared". Read as the latter,
+  // the declaration counted as excluded from every compiled target — making
+  // the Gleam body the trusted implementation of foreign code and publishing
+  // its `[]` in place of `[Unknown]`. The compiler rejects this source, so the
+  // conservative reading stands behind an assumption rather than a live case.
+  is_foreign("@external(\"erlang\", \"m\", \"f\")\npub fn target() { Nil }")
+  |> should.be_true()
+}
