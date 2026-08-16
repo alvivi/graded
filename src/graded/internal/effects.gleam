@@ -110,15 +110,18 @@ pub type KnowledgeBase {
     project_functions: Dict(String, Dict(String, types.Visibility)),
     // What the Gleam fallback body of one of *this package's* `@external`s
     // does, where that body runs — the targets its declaration leaves
-    // uncovered. Ordinary Gleam that runs, so every caller is charged it on top
-    // of whatever declares the external, exactly as the external's own `check`
+    // uncovered — paired with the parameter bounds the term is stated over.
+    // Ordinary Gleam that runs, so every caller is charged it on top of
+    // whatever declares the external, exactly as the external's own `check`
     // line covers both. Held apart from `all_effects` because the declaration
     // has to stay reportable on its own: the two are unioned when a name is
-    // charged, and told apart when its provenance is explained.
+    // charged, and told apart when its provenance is explained. The bounds
+    // stay beside the term they bind: which bounds are a fallback's is a
+    // provenance question every reader answers structurally from this one map.
     //
     // The dependency counterpart is `[Unknown]` (see `with_dependency_fallback`)
     // — no consumer walks a dependency's bodies. Here the body is in hand.
-    fallback_effects: Dict(QualifiedName, EffectTerm),
+    fallback_summaries: Dict(QualifiedName, #(EffectTerm, List(ParamBound))),
   )
 }
 
@@ -162,7 +165,7 @@ pub fn load_knowledge_base(
     foreign_functions: dict.new(),
     dependency_foreign:,
     project_functions: dict.new(),
-    fallback_effects: dict.new(),
+    fallback_summaries: dict.new(),
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
@@ -185,7 +188,7 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     foreign_functions: dict.new(),
     dependency_foreign: dict.new(),
     project_functions: dict.new(),
-    fallback_effects: dict.new(),
+    fallback_summaries: dict.new(),
   )
 }
 
@@ -206,7 +209,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     foreign_functions: dict.new(),
     dependency_foreign: dict.new(),
     project_functions: dict.new(),
-    fallback_effects: dict.new(),
+    fallback_summaries: dict.new(),
   )
   |> with_sourced_type_fields(cat_type_fields)
 }
@@ -388,35 +391,16 @@ pub fn widens_with_dependency_fallback(
 }
 
 // Record what one of this package's `@external`s does on the targets its
-// declaration leaves uncovered. Merged into what is already recorded, so the
-// topological pass adds a module at a time.
-pub fn with_fallback_effects(
+// declaration leaves uncovered, each term paired with the parameter bounds it
+// is stated over. Merged into what is already recorded, so the topological
+// pass adds a module at a time.
+pub fn with_fallback_summaries(
   knowledge_base: KnowledgeBase,
-  effects: Dict(QualifiedName, EffectTerm),
+  summaries: Dict(QualifiedName, #(EffectTerm, List(ParamBound))),
 ) -> KnowledgeBase {
   KnowledgeBase(
     ..knowledge_base,
-    fallback_effects: dict.merge(knowledge_base.fallback_effects, effects),
-  )
-}
-
-// The parameter bounds a running fallback body's own effects are stated over.
-//
-// These *override* what is already recorded, unlike every other bound writer.
-// A declaring `external effects` line records an empty entry for its function,
-// because a declaration's term is ground by construction — but a fallback body
-// is not, and a call into one that reaches a function-typed parameter states
-// that parameter's effects. Without the bound the variable binds to nothing at
-// the call site and collapses to `[Unknown]`, charging a caller for a callback
-// it can see is pure. An `external effects` line cannot express the bound
-// itself, so nothing an author wrote is being displaced.
-pub fn with_fallback_params(
-  knowledge_base: KnowledgeBase,
-  bounds: Dict(QualifiedName, List(ParamBound)),
-) -> KnowledgeBase {
-  KnowledgeBase(
-    ..knowledge_base,
-    param_bounds: dict.merge(knowledge_base.param_bounds, bounds),
+    fallback_summaries: dict.merge(knowledge_base.fallback_summaries, summaries),
   )
 }
 
@@ -435,9 +419,10 @@ pub fn with_running_fallback(
   name: QualifiedName,
   term: EffectTerm,
 ) -> EffectTerm {
-  case dict.get(knowledge_base.fallback_effects, name) {
+  case dict.get(knowledge_base.fallback_summaries, name) {
     Error(Nil) -> term
-    Ok(fallback) -> effect_term.normalize(types.TUnion([term, fallback]))
+    Ok(#(fallback, _bounds)) ->
+      effect_term.normalize(types.TUnion([term, fallback]))
   }
 }
 
@@ -456,13 +441,29 @@ pub fn fallback_contribution(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> option.Option(EffectTerm) {
-  case dict.get(knowledge_base.fallback_effects, name) {
-    Ok(term) -> Some(term)
+  case dict.get(knowledge_base.fallback_summaries, name) {
+    Ok(#(term, _bounds)) -> Some(term)
     Error(Nil) ->
       case widens_with_dependency_fallback(knowledge_base, name) {
         True -> Some(effect_term.unknown())
         False -> None
       }
+  }
+}
+
+// The parameter bounds a running fallback body's own effects are stated over
+// — empty where no fallback of this package's runs for `name`. The summary's
+// term is not ground the way a declaration's is: a fallback that calls a
+// function-typed parameter states that parameter's effects, and without the
+// bound the variable binds to nothing at the call site and collapses to
+// `[Unknown]`, charging a caller for a callback it can see is pure.
+pub fn fallback_param_bounds(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> List(types.ParamBound) {
+  case dict.get(knowledge_base.fallback_summaries, name) {
+    Ok(#(_term, bounds)) -> bounds
+    Error(Nil) -> []
   }
 }
 
@@ -651,8 +652,8 @@ fn undeclared_lookup(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> EffectLookup {
-  case dict.get(knowledge_base.fallback_effects, name) {
-    Ok(fallback) ->
+  case dict.get(knowledge_base.fallback_summaries, name) {
+    Ok(#(fallback, _bounds)) ->
       Known(
         effect_term.normalize(types.TUnion([fallback, effect_term.unknown()])),
         types.FunctionEntry(origin: ProjectInferred),
@@ -697,13 +698,24 @@ pub fn argument_value_effects(
 // Look up a function's parameter bounds. Used during call-site
 // substitution to know which parameters of the callee are effect-typed
 // so arguments at those positions can bind effect variables.
+//
+// A running fallback's recorded bounds outrank every other writer's: its
+// summary's term is stated over exactly those parameters — including a
+// girard-typed callback no other source names — while a declaring line's
+// entry is empty because its term is ground by construction. An `external
+// effects` line cannot express the bound itself, so nothing an author wrote
+// is being displaced.
 pub fn lookup_param_bounds(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> List(types.ParamBound) {
-  case dict.get(knowledge_base.param_bounds, name) {
-    Ok(bounds) -> bounds
-    Error(Nil) -> []
+  case dict.get(knowledge_base.fallback_summaries, name) {
+    Ok(#(_term, bounds)) -> bounds
+    Error(Nil) ->
+      case dict.get(knowledge_base.param_bounds, name) {
+        Ok(bounds) -> bounds
+        Error(Nil) -> []
+      }
   }
 }
 
@@ -1047,16 +1059,13 @@ pub fn load_spec_effects_from_file(
 //   entry: the external term wins in `all_effects` and is ground by
 //   construction, so any bounds pairing with it come from another source.
 //
-// `stale_externals` names the per-function external lines that declare nothing —
-// those naming one of this package's own ordinary functions. Their `effects`
-// line decides the term, so it decides the bounds too, and they take no empty
-// entry here.
+// Entries for a name a *stale* per-function external also names are the
+// project-spec caller's to drop, with the same filter it applies to the
+// effects map beside this one.
 pub fn load_spec_params_from_file(
   file: types.GradedFile,
-  stale_externals: set.Set(String),
 ) -> Dict(QualifiedName, List(ParamBound)) {
-  let external_functions =
-    set.difference(annotation.external_function_names(file), stale_externals)
+  let external_functions = annotation.external_function_names(file)
   let from_externals =
     set.fold(external_functions, dict.new(), fn(acc, name) {
       case annotation.split_function_name(name) {
@@ -1116,7 +1125,7 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
         effects: load_spec_effects_from_file(file),
         // A dependency's per-function external is never stale by this rule: its
         // own body is the documented case for the line.
-        params: load_spec_params_from_file(file, set.new()),
+        params: load_spec_params_from_file(file),
         returns: load_spec_returns_from_file(file),
         type_fields: annotation.extract_type_fields(file),
         externals: annotation.extract_externals(file),
@@ -1485,7 +1494,7 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
               acc.poly_params,
               // A catalog entry describes a package graded has no source for,
               // so none of its externals can be stale by the visible-body rule.
-              load_spec_params_from_file(graded_file, set.new()),
+              load_spec_params_from_file(graded_file),
             ),
             type_fields: list.append(
               acc.type_fields,

@@ -335,22 +335,20 @@ fn detail_lines(
   module: String,
   source: types.EffectSource,
 ) -> List(String) {
-  // The bound lines follow the source line: each states an assumption the
+  // The bound lines follow the source lines: each states an assumption the
   // checker applies to that argument at call sites. They follow either source —
   // a module-level external declares none itself, but a running fallback body
   // under it does, and the assumption holds however the entry was reached.
-  let bound_lines = bound_lines(bounds)
-  case source {
+  let source_lines = case source {
     types.ModuleExternalEntry(..) -> [
       "  source: module-level external for `" <> module <> "`",
       "          used when no per-function entry exists",
-      ..bound_lines
     ]
     types.FunctionEntry(origin:) -> [
       "  source: " <> effects.describe_origin(origin),
-      ..bound_lines
     ]
   }
+  list.append(source_lines, bound_lines(bounds))
 }
 
 fn bound_lines(bounds: List(ParamBound)) -> List(String) {

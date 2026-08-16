@@ -922,17 +922,24 @@ fn external_warnings(
     case external.target {
       types.FunctionExternal(function) -> {
         let name = external.module <> "." <> function
+        // The catalog is a stand-in for sources graded cannot read, so it is
+        // weighed only where the dependency's own source says nothing: a
+        // parsed module defines what it defines, and a name it provably lacks
+        // is a typo whatever the catalog keys for the module. A module graded
+        // holds no readable source for keeps answering for every name — the
+        // lint flags what it can prove dead, and silence is not proof.
         let resolves =
-          function_external_resolves(
-            name,
-            external.module,
-            function,
-            known_functions,
-            dep_functions,
-            dep_files,
-            catalog_functions,
-            catalog_modules,
-          )
+          set.contains(known_functions, name)
+          || case dict.get(dep_functions, external.module) {
+            Ok(functions) -> set.contains(functions, function)
+            Error(Nil) ->
+              dict.has_key(dep_files, external.module)
+              || dict.has_key(
+                catalog_functions,
+                QualifiedName(external.module, function),
+              )
+              || dict.has_key(catalog_modules, external.module)
+          }
         case set.contains(stale, name), resolves {
           True, _ -> Ok(StaleFunctionExternalWarning(function: name))
           False, False -> Ok(UnmatchedFunctionExternalWarning(function: name))
@@ -951,62 +958,6 @@ fn external_warnings(
         }
     }
   })
-}
-
-// Whether the function a per-function `external effects` line names exists.
-//
-// The catalog is a stand-in for sources graded cannot read, so it is weighed
-// only where the dependency's own source says nothing: a parsed module defines
-// what it defines, and a catalog entry — module-level or stale per-function —
-// must not wave through a name the source proves absent.
-fn function_external_resolves(
-  name: String,
-  module: String,
-  function: String,
-  known_functions: Set(String),
-  dep_functions: Dict(String, Set(String)),
-  dep_files: Dict(String, String),
-  catalog_functions: Dict(QualifiedName, a),
-  catalog_modules: Dict(String, b),
-) -> Bool {
-  use <- bool.guard(when: set.contains(known_functions, name), return: True)
-  case dependency_evidence(dep_functions, dep_files, module, function) {
-    SourceSettles(defines:) -> defines
-    UnreadableSource -> True
-    NoDependencySource ->
-      dict.has_key(catalog_functions, QualifiedName(module, function))
-      || dict.has_key(catalog_modules, module)
-  }
-}
-
-// What the dependency sources say about the function a per-function line names.
-type DependencyEvidence {
-  // The module's parsed source settles the question: it defines the function,
-  // or provably does not. Either answer is definitive — a name the source
-  // proves absent is a typo whatever the catalog keys for the module.
-  SourceSettles(defines: Bool)
-  // A source file exists but could not be read or parsed: no evidence either
-  // way, and silence is not proof, so the name is never flagged.
-  UnreadableSource
-  // No source at all — the module is not an installed dependency's, so the
-  // catalog is all that is left to weigh.
-  NoDependencySource
-}
-
-fn dependency_evidence(
-  dep_functions: Dict(String, Set(String)),
-  dep_files: Dict(String, String),
-  module: String,
-  function: String,
-) -> DependencyEvidence {
-  case dict.get(dep_functions, module) {
-    Ok(functions) -> SourceSettles(defines: set.contains(functions, function))
-    Error(Nil) ->
-      case dict.has_key(dep_files, module) {
-        True -> UnreadableSource
-        False -> NoDependencySource
-      }
-  }
 }
 
 // The functions each dependency module named by a per-function line defines,
@@ -1691,14 +1642,11 @@ fn function_effect(
   // The bounds a running fallback body states its effects over, for the answers
   // whose own term is ground: a fallback that calls a function-typed parameter
   // names that parameter, and without its bound the line names a variable
-  // nothing introduces. Only a fallback's bounds travel with those answers — a
-  // per-function bound from anywhere else was written over a body the foreign
-  // implementation needn't match, exactly like the entry beside it, so it is no
-  // more an answer here than that entry is.
-  let fallback_bounds = case fallback {
-    option.Some(_) -> effects.lookup_param_bounds(knowledge_base, qualified)
-    option.None -> []
-  }
+  // nothing introduces. Only a fallback's own recorded bounds travel with
+  // those answers — a per-function bound from anywhere else was written over a
+  // body the foreign implementation needn't match, exactly like the entry
+  // beside it, so it is no more an answer here than that entry is.
+  let fallback_bounds = effects.fallback_param_bounds(knowledge_base, qualified)
   use <- bool.guard(
     when: checker.undeclared_external(knowledge_base, qualified),
     return: Ok(answer.UndeclaredExternalAnswer(
@@ -1885,7 +1833,7 @@ pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
     as "explain returns one block per bounds set"
   blocks
   |> list.map(fn(block) {
-    let #(check, #(bounds, total, explanations)) = block
+    let #(check, checker.ExplainedBlock(bounds:, total:, explanations:)) = block
     why_block(name, check, bounds, total, explanations)
   })
   |> string.join("\n\n")
@@ -2737,7 +2685,8 @@ fn with_module_fallback_effects(
   module_types: Dict(#(Int, Int), girard.Type),
   girard_fn_typed: Dict(String, Set(String)),
 ) -> KnowledgeBase {
-  let summaries =
+  effects.with_fallback_summaries(
+    knowledge_base,
     qualify_bare_names(
       checker.fallback_effects(
         module,
@@ -2748,15 +2697,7 @@ fn with_module_fallback_effects(
         girard_fn_typed,
       ),
       module_path,
-    )
-  knowledge_base
-  |> effects.with_fallback_effects(
-    dict.map_values(summaries, fn(_name, summary) { summary.0 }),
-  )
-  // The bounds the summary's own term is stated over, so a call into a
-  // higher-order fallback binds its callback rather than collapsing it.
-  |> effects.with_fallback_params(
-    dict.map_values(summaries, fn(_name, summary) { summary.1 }),
+    ),
   )
 }
 
@@ -3444,7 +3385,7 @@ fn with_committed_spec(
     types.CommittedSpec,
   )
   |> effects.with_inferred_params(
-    effects.load_spec_params_from_file(spec, stale_externals)
+    effects.load_spec_params_from_file(spec)
     |> drop_declared_modules(declared_modules)
     |> drop_stale_names(stale_externals),
   )
