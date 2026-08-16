@@ -14,6 +14,17 @@ pub type QualifiedName {
   QualifiedName(module: String, function: String)
 }
 
+// A qualified name written the way a spec line and a diagnostic write it. The
+// one place the dot is put in, so a name reads the same wherever it is printed
+// or keyed. An unqualified name — a sentinel, a same-module local — is its
+// function alone rather than a leading dot.
+pub fn dotted_name(name: QualifiedName) -> String {
+  case name.module {
+    "" -> name.function
+    module -> module <> "." <> name.function
+  }
+}
+
 // Whether a name's first character is an uppercase letter. This single
 // lexical rule distinguishes effect labels from effect variables and record
 // constructors from ordinary functions — the comparison against both cases

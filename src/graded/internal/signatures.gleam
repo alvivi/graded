@@ -44,6 +44,11 @@ pub type ParameterInfo {
     label: Option(String),
     name: Option(String),
     is_fn_typed: Bool,
+    // Whether the parameter carries a type annotation at all. An unannotated
+    // one is the girard-typed case — nothing in the source says what it is, so
+    // a bound naming it is the only evidence it is a callback. An annotated
+    // parameter that is not `fn(..)` plainly is not one.
+    is_annotated: Bool,
     // True when the parameter is *second-order* — its own type takes a
     // function (`fn(fn(..) -> _) -> _`). Calls to it are effect-operator
     // applications, and arguments bound to it are lifted to operators.
@@ -159,10 +164,19 @@ pub fn fn_typed_param_names_ordered(
           [p.name, p.label]
           |> list.filter_map(option.to_result(_, Nil))
           |> list.find(set.contains(bound_names, _))
-        case bound, p.is_fn_typed {
-          Ok(name), _ -> Ok(name)
-          Error(Nil), True -> option.to_result(option.or(p.label, p.name), Nil)
-          Error(Nil), False -> Error(Nil)
+        // And only where the parameter could be a callback at all: fn-typed,
+        // or unannotated, which is the girard-typed case the registry never
+        // sees a type for. A bound that merely shares a name with an annotated
+        // non-function parameter is a coincidence, and binding it would give
+        // the operator one binder too many — an arity the application spine
+        // cannot match, which goes stuck and collapses to `[Unknown]`.
+        let could_be_callback = p.is_fn_typed || !p.is_annotated
+        let own_name = option.to_result(option.or(p.label, p.name), Nil)
+        case bound, could_be_callback, p.is_fn_typed {
+          Ok(name), True, _ -> Ok(name)
+          Ok(_), False, _ -> Error(Nil)
+          Error(Nil), _, True -> own_name
+          Error(Nil), _, False -> Error(Nil)
         }
       })
   }
@@ -220,6 +234,7 @@ pub fn from_glance_module(
               Some(FunctionType(_, _, _)) -> True
               _ -> False
             },
+            is_annotated: option.is_some(param.type_),
             is_operator: callback_positions != [],
             callback_positions:,
           )
