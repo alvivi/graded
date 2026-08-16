@@ -292,9 +292,9 @@ fn field_sentence(
 // symbolic, not unresolved, and the two formats would then disagree about what
 // was found rather than about how to say it.
 //
-// Public so `why`'s header states a function's total in the words `effect`
-// states one in: two commands answering about one function's effects say the
-// same thing about them.
+// Reached through `function_sentence`, which `why`'s header calls so that it
+// states a function's total in the words `effect` states one in: two commands
+// answering about one function's effects say the same thing about them.
 fn total_effects(term: EffectTerm) -> String {
   let normalized = effect_term.normalize(term)
   case ground_labels(normalized) {

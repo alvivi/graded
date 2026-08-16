@@ -441,7 +441,8 @@ pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
 pub fn external_function_names(file: GradedFile) -> set.Set(String) {
   list.filter_map(extract_externals(file), fn(ext) {
     case ext.target {
-      FunctionExternal(name) -> Ok(ext.module <> "." <> name)
+      FunctionExternal(name) ->
+        Ok(types.dotted_name(types.QualifiedName(ext.module, name)))
       ModuleExternal -> Error(Nil)
     }
   })
@@ -665,7 +666,8 @@ pub fn merge_inferred(
 // a module-level one.
 fn external_line_name(external: ExternalAnnotation) -> Result(String, Nil) {
   case external.target {
-    FunctionExternal(function) -> Ok(external.module <> "." <> function)
+    FunctionExternal(function) ->
+      Ok(types.dotted_name(types.QualifiedName(external.module, function)))
     ModuleExternal -> Error(Nil)
   }
 }
@@ -846,7 +848,11 @@ pub fn format_external(external_annotation: ExternalAnnotation) -> String {
 fn external_sort_key(external_annotation: ExternalAnnotation) -> String {
   case external_annotation.target {
     ModuleExternal -> external_annotation.module
-    FunctionExternal(function) -> external_annotation.module <> "." <> function
+    FunctionExternal(function) ->
+      types.dotted_name(types.QualifiedName(
+        external_annotation.module,
+        function,
+      ))
   }
 }
 

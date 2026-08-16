@@ -140,10 +140,46 @@ pub fn load_knowledge_base(
   manifest_path: String,
   dependency_foreign: Dict(QualifiedName, types.ForeignFunction),
 ) -> KnowledgeBase {
+  knowledge_base_from_catalog(
+    packages_directory,
+    load_project_catalog(manifest_path),
+    dependency_foreign,
+  )
+}
+
+// The bundled catalog as one value. Held together so a caller needing it twice
+// — the knowledge base and the spec lint both do — locates the directory once,
+// and so a missing catalog is reported once rather than per reader.
+pub type BundledCatalog {
+  BundledCatalog(
+    functions: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+    modules: Dict(String, #(EffectTerm, LookupOrigin)),
+    param_bounds: Dict(QualifiedName, List(ParamBound)),
+    type_fields: List(#(TypeFieldAnnotation, LookupOrigin)),
+  )
+}
+
+// The catalog graded ships, selected against `manifest_path`'s installed
+// versions.
+pub fn load_project_catalog(manifest_path: String) -> BundledCatalog {
+  let #(functions, modules, param_bounds, type_fields) =
+    load_catalog(find_catalog_directory(), manifest_path)
+  BundledCatalog(functions:, modules:, param_bounds:, type_fields:)
+}
+
+// The same as `load_knowledge_base`, over a catalog the caller already loaded.
+pub fn knowledge_base_from_catalog(
+  packages_directory: String,
+  catalog: BundledCatalog,
+  dependency_foreign: Dict(QualifiedName, types.ForeignFunction),
+) -> KnowledgeBase {
   let deps = load_dependencies(packages_directory, dependency_foreign)
-  let catalog_dir = find_catalog_directory()
-  let #(cat_effects, cat_module_effects, cat_params, cat_type_fields) =
-    load_catalog(catalog_dir, manifest_path)
+  let BundledCatalog(
+    functions: cat_effects,
+    modules: cat_module_effects,
+    param_bounds: cat_params,
+    type_fields: cat_type_fields,
+  ) = catalog
   KnowledgeBase(
     // Dependency entries win on a clash: dict.merge keeps its second argument.
     all_effects: dict.merge(cat_effects, deps.effects),

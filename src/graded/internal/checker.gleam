@@ -527,7 +527,7 @@ fn declaration_explanation(
   // nothing declares carries.
   let resolution = option.unwrap(declared, undeclared_resolution())
   Some(CallExplanation(
-    call: sentinel_name(ExternalDeclaration(dotted_name(qualified))),
+    call: sentinel_name(ExternalDeclaration(types.dotted_name(qualified))),
     span: definition.definition.location,
     actual: effect_term.to_effect_set(resolution.term),
     reason: resolution.reason,
@@ -1267,7 +1267,7 @@ fn sentinel_name(kind: CallKind) -> QualifiedName {
       QualifiedName(field_sentinel, extract.computed_receiver <> "." <> label)
     UnresolvedLocalCall(function:) -> QualifiedName(local_sentinel, function)
     ReturnedOperatorCall(producer:) ->
-      QualifiedName(returned_sentinel, dotted_name(producer))
+      QualifiedName(returned_sentinel, types.dotted_name(producer))
     ExternalDeclaration(name:) -> QualifiedName(external_sentinel, name)
     InlineFunctionCall -> QualifiedName(pipe_sentinel, operator_payload)
     LetBoundValueCall -> QualifiedName(closure_sentinel, applied_payload)
@@ -1357,7 +1357,7 @@ fn plain_action(kind: CallKind) -> String {
       <> function
       <> "`, which is neither a bound parameter nor a function in this module,"
     ReturnedOperatorCall(producer:) ->
-      "calls a function returned by `" <> dotted_name(producer) <> "`"
+      "calls a function returned by `" <> types.dotted_name(producer) <> "`"
     // Not the call's name: the enclosing function *is* this external, and the
     // line already leads with that function's name.
     ExternalDeclaration(..) -> "is an external"
@@ -1395,7 +1395,7 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
       case reason {
         FieldNotAnnotated(module:, type_name:) ->
           " of type `"
-          <> dotted_name(QualifiedName(module:, function: type_name))
+          <> types.dotted_name(QualifiedName(module:, function: type_name))
           <> "`, which has no effect annotation for that field,"
         ReceiverTypeUnresolved -> ", whose type could not be resolved,"
         UntraceableReceiver -> ", whose value could not be traced,"
@@ -1522,12 +1522,6 @@ fn returned_operator_kind(payload: String) -> CallKind {
 // calling module for a function, and the syntactic fallback (which resolves no
 // module) for a receiver type. Used for the `<returned>` payload, for a
 // receiver's type, and for the prose.
-fn dotted_name(name: QualifiedName) -> String {
-  case name.module {
-    "" -> name.function
-    module -> module <> "." <> name.function
-  }
-}
 
 // Shared analysis helpers
 //

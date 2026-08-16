@@ -470,6 +470,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     type_info:,
     stale_externals:,
     knowledge_base:,
+    catalog:,
   ) = ctx
   let ProjectSources(
     source_directory: directory,
@@ -518,7 +519,13 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   // annotation that resolves to [Unknown]), so they're reported against the
   // spec file itself rather than any source file.
   let results = case
-    validate_spec_annotations(spec, index, package_root, stale_externals)
+    validate_spec_annotations(
+      spec,
+      index,
+      package_root,
+      stale_externals,
+      catalog,
+    )
   {
     [] -> results
     spec_warnings -> [
@@ -546,6 +553,11 @@ type ProjectContext {
     // reports them, so the two can't disagree about which lines are live.
     stale_externals: Set(String),
     knowledge_base: KnowledgeBase,
+    // The bundled catalog this context was assembled against. Held rather than
+    // re-read by the spec lint, which weighs the same entries the knowledge
+    // base was built from — and which, reading it a second time, reported a
+    // missing catalog twice.
+    catalog: effects.BundledCatalog,
   )
 }
 
@@ -613,10 +625,14 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     signatures.merge(dep_sources.registry, build_project_registry(index))
   let type_info = build_type_index(index, package_root)
 
+  // Read once and kept: the knowledge base is built from it and the spec lint
+  // weighs the same entries.
+  let catalog = effects.load_project_catalog(manifest_path(package_root))
+
   let kb_base =
-    effects.load_knowledge_base(
+    effects.knowledge_base_from_catalog(
       packages_dir(package_root),
-      manifest_path(package_root),
+      catalog,
       dep_sources.foreign,
     )
     // Consumer externals are applied before path-dep inference so a module-level
@@ -674,6 +690,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     type_info:,
     stale_externals:,
     knowledge_base:,
+    catalog:,
   )
 }
 
@@ -714,7 +731,7 @@ fn stale_project_externals(
     })
     use native <- result.try(native_of(external.module))
     case set.contains(native, function) {
-      True -> Ok(external.module <> "." <> function)
+      True -> Ok(types.dotted_name(QualifiedName(external.module, function)))
       False -> Error(Nil)
     }
   })
@@ -741,7 +758,10 @@ fn declaring_externals(
   |> list.filter(fn(external) {
     case external.target {
       types.FunctionExternal(function) ->
-        !set.contains(stale, external.module <> "." <> function)
+        !set.contains(
+          stale,
+          types.dotted_name(QualifiedName(external.module, function)),
+        )
       types.ModuleExternal -> True
     }
   })
@@ -821,6 +841,7 @@ fn validate_spec_annotations(
   index: Dict(String, #(String, glance.Module)),
   package_root: String,
   stale_externals: Set(String),
+  catalog: effects.BundledCatalog,
 ) -> List(Warning) {
   let known_functions = known_function_names(index)
 
@@ -848,6 +869,7 @@ fn validate_spec_annotations(
       package_root,
       stale_externals,
       dep_files,
+      catalog,
     )
 
   // Resolving `type` lines also needs per-module type info; build it only when
@@ -898,16 +920,17 @@ fn external_warnings(
   package_root: String,
   stale: Set(String),
   dep_files: Dict(String, String),
+  catalog: effects.BundledCatalog,
 ) -> List(Warning) {
   use <- bool.guard(when: externals == [], return: [])
-  // Loaded only when there is a line to weigh. The catalog is read against
-  // *this* project's manifest, so a line naming a catalogued function of a
-  // package this project depends on resolves exactly as `check` resolves it.
-  let #(catalog_functions, catalog_modules, _params, _fields) =
-    effects.load_catalog(
-      effects.catalog_directory(),
-      manifest_path(package_root),
-    )
+  // The catalog the knowledge base was assembled from, selected against *this*
+  // project's manifest — so a line naming a catalogued function of a package
+  // this project depends on resolves exactly as `check` resolves it.
+  let effects.BundledCatalog(
+    functions: catalog_functions,
+    modules: catalog_modules,
+    ..,
+  ) = catalog
   // A catalogued module is one the catalog *keys*, whether by a module-level
   // line or by the per-function lines that are the usual form: the stdlib
   // catalog holds `gleam/io.println` and no `gleam/io` line, so weighing module
@@ -939,7 +962,7 @@ fn external_warnings(
     let placed = dict.has_key(index, external.module) || claimed
     case external.target {
       types.FunctionExternal(function) -> {
-        let name = external.module <> "." <> function
+        let name = types.dotted_name(QualifiedName(external.module, function))
         // What answers for the name where no parsed source settles it: a module
         // something outside this package speaks for, a catalog entry for the
         // exact name, or a module the lint cannot place at all while the tree
@@ -3443,7 +3466,7 @@ fn drop_stale_names(
 ) -> Dict(QualifiedName, a) {
   use <- bool.guard(set.is_empty(stale_externals), entries)
   dict.filter(entries, fn(name, _value) {
-    !set.contains(stale_externals, name.module <> "." <> name.function)
+    !set.contains(stale_externals, types.dotted_name(name))
   })
 }
 
