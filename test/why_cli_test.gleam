@@ -123,6 +123,21 @@ pub fn explains_one_block_per_check_line_test() {
   ])
 }
 
+pub fn a_declared_bound_variable_survives_in_the_header_test() {
+  // The block's total is groomed against the names the block's own bounds can
+  // bind, which includes the ones the `check` line declared — not the
+  // synthesised ones alone. Grooming against those left a `[Unknown]` header
+  // over a contributor stating `[action]`: the per-call projection less
+  // conservative than the total it is part of.
+  why("why_target.bound_forwards")
+  |> lines
+  |> should.equal([
+    "why_target.bound_forwards has the effects of its `action` argument, and none of its own",
+    "declared check why_target.bound_forwards(action: [action]) : [action]",
+    "  calls parameter `action` with effects [action]",
+  ])
+}
+
 pub fn a_higher_order_function_explains_as_the_query_answers_it_test() {
   // `why` and `effect` answer about one function, so they cannot disagree about
   // its total. `two_bounds` calls both its function-typed parameters and has no
