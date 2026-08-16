@@ -929,6 +929,54 @@ pub fn via_helper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_phantom_binder_is_weighed_as_the_unknown_it_is_test() {
+  // `lib.leaky`'s committed term carries a variable that is nobody's parameter
+  // — the shape an application graded could not resolve leaves behind. A caller
+  // can never bind it, so it grounds to `[Unknown]`: the budget admitting that
+  // holds, and the one admitting nothing fails on `[Unknown]` rather than on an
+  // internal name with a hint advising a bound for a parameter `run` hasn't got.
+  let root = "build/check_phantom_binder"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "effects lib.leaky : [e_17]
+check app.run : [Unknown]
+check app.strict : []
+",
+    ),
+    #("lib.gleam", "pub fn leaky() -> Nil {\n  Nil\n}\n"),
+    #(
+      "app.gleam",
+      "import lib
+
+pub fn run() -> Nil {
+  lib.leaky()
+}
+
+pub fn strict() -> Nil {
+  lib.leaky()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("strict")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  // The wording still says the effects are unresolved, and no longer advises a
+  // bound for a parameter the function does not have.
+  let rendered = checker.format_violation("app.gleam", violation)
+  rendered
+  |> string.contains("with unresolved effects [Unknown]")
+  |> should.be_true()
+  rendered |> string.contains("hint:") |> should.be_false()
+  support.cleanup(root)
+}
+
 pub fn an_undeclared_fallback_is_charged_on_every_value_channel_test() {
   // The same undeclared external reached three ways: called, wired into a
   // record field, and passed as a callback. A call charged the fallback's
