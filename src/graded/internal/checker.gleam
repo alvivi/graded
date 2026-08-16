@@ -1287,7 +1287,10 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         UnresolvedFieldValue ->
           ", whose wired value's effects could not be resolved,"
         UntraceableArgument -> untraceable_argument_clause
-        NoKnownEffects | UndeclaredExternal | UntraceableProducer -> ""
+        // The value wired into the field is foreign code nothing declares, so
+        // the field call says what a direct call to that name says.
+        UndeclaredExternal -> ", wired to an external with no declared effects,"
+        NoKnownEffects | UntraceableProducer -> ""
       }
     // An undeclared external is the one reason worth stating: nothing said what
     // the foreign code does, which is why the effects stayed unresolved.
@@ -5813,16 +5816,34 @@ fn resolve_proven_field(
   // names the two sources apart too — the origin speaks for the declaration
   // alone. Read off the wired value, which is what the field's effect came
   // from.
-  let wired_fallback = case
-    field_value_function(value, context.module_path, module_functions)
-  {
+  let wired = field_value_function(value, context.module_path, module_functions)
+  let wired_fallback = case wired {
     Some(name) -> effects.fallback_contribution(knowledge_base, name)
     None -> None
   }
-  let resolution = case origin {
+  // An external nothing declares is answered by an entry the lookup mints to
+  // carry its running fallback, whose origin no source ever claimed. A direct
+  // call to the same name reports `an external with no declared effects`, and
+  // one name cannot have two provenance stories — so this channel reads it off
+  // the same predicate the direct one does.
+  let undeclared = case wired {
+    Some(name) -> undeclared_external(knowledge_base, name)
+    None -> False
+  }
+  let resolution = case origin, undeclared {
+    _, True ->
+      substituted(
+        Resolution(
+          term: field_effect.effects,
+          reason: Some(UndeclaredExternal),
+          origin: None,
+          fallback: wired_fallback,
+        ),
+        term,
+      )
     // A source answered for the wired value, so an `Unknown` its own term does
     // not state came from applying this call's arguments.
-    Some(_) ->
+    Some(_), False ->
       substituted(
         Resolution(
           term: field_effect.effects,
@@ -5832,7 +5853,7 @@ fn resolve_proven_field(
         ),
         term,
       )
-    None ->
+    None, False ->
       Resolution(
         term:,
         reason: unresolved_value_reason(term),
