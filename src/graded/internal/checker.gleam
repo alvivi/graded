@@ -2148,6 +2148,12 @@ fn check_annotation(
     // build target. Missing functions are not an error.
     Error(Nil) -> #(#([], []), memo)
     Ok(function_definition) -> {
+      let fn_typed_params =
+        unbound_fn_typed_params(
+          function_definition,
+          annotation.params,
+          girard_fn_typed,
+        )
       // The same contributors `why` explains — including the declaration that
       // stands in for an `@external`'s absent body, so a `check` line
       // contradicting a declaration is a violation, as is one over an external
@@ -2156,11 +2162,7 @@ fn check_annotation(
         contributors(
           function_definition,
           annotation.params,
-          unbound_fn_typed_params(
-            function_definition,
-            annotation.params,
-            girard_fn_typed,
-          ),
+          fn_typed_params,
           function_map,
           context,
           knowledge_base,
@@ -2176,7 +2178,12 @@ fn check_annotation(
       let violations =
         contribution.explanations
         |> list.filter_map(fn(explanation) {
-          case types.is_subset(explanation.actual, declared) {
+          case
+            types.is_subset(
+              weighed_actual(explanation.actual, fn_typed_params),
+              declared,
+            )
+          {
             True -> Error(Nil)
             False ->
               Ok(Violation(
@@ -2266,6 +2273,45 @@ fn check_annotation(
         |> list.append(unmatched_param_bound_warnings)
 
       #(#(violations, warnings), memo)
+    }
+  }
+}
+
+// What a budget weighs one contributor against: the set `why` prints, with
+// every variable *this walk synthesised* grounded to `[Unknown]`.
+//
+// An unbound function-typed parameter carries the identity bound the walk gives
+// every one of them, so a call to it contributes the symbolic `[cb]` — and no
+// symbolic set is a subset of a concrete budget. The author wrote that budget
+// against a parameter no line names, whose call is the `[Unknown]` an unbound
+// call collapses to, so that is what it is weighed against: `check m.run :
+// [Unknown]` over `pub fn run(cb: fn() -> Nil) { cb() }` passes.
+//
+// A variable an author *declared* a bound for is untouched, so `check
+// m.run(cb: [cb]) : [Unknown]` states a symbolic effect against a concrete
+// budget and stays the violation it has always been. The violation reports the
+// ungroomed set either way — the wording names the bound to add, which is the
+// variable itself.
+//
+// Grounding here rather than in `types.is_subset`: every other caller compares
+// terms where a variable genuinely means "unbound", and widening the shared
+// primitive would answer for them too.
+fn weighed_actual(
+  actual: types.EffectSet,
+  synthesized: Set(String),
+) -> types.EffectSet {
+  case actual {
+    types.Wildcard | types.Specific(_) -> actual
+    types.Polymorphic(labels:, variables:) -> {
+      let remaining = set.difference(variables, synthesized)
+      let labels = case set.is_empty(set.intersection(variables, synthesized)) {
+        True -> labels
+        False -> set.insert(labels, types.unknown_label)
+      }
+      case set.is_empty(remaining) {
+        True -> types.Specific(labels)
+        False -> types.Polymorphic(labels:, variables: remaining)
+      }
     }
   }
 }

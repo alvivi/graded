@@ -403,6 +403,73 @@ pub fn param_call_without_bound_is_unknown_test() {
   |> should.be_true()
 }
 
+// Case 1c: an unbound fn-typed parameter's own variable is weighed as the
+// `[Unknown]` the caller could see, so an `[Unknown]`-admitting budget passes.
+pub fn unbound_param_call_meets_an_unknown_budget_test() {
+  let source =
+    "pub fn run(cb: fn() -> Nil) -> Nil {
+  cb()
+}"
+  check_source(source, [
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Unknown"]))),
+    ),
+  ])
+  |> should.equal([])
+}
+
+// The same call against a budget that admits nothing is still the violation it
+// was, and it reports the parameter rather than the grounding the weighing did:
+// the wording names the bound to add.
+pub fn unbound_param_call_still_violates_a_pure_budget_test() {
+  let source =
+    "pub fn run(cb: fn() -> Nil) -> Nil {
+  cb()
+}"
+  let assert [violation] =
+    check_source(source, [
+      EffectAnnotation(
+        Check,
+        "run",
+        [],
+        effect_term.from_effect_set(Specific(set.new())),
+      ),
+    ])
+  violation.explanation.actual
+  |> should.equal(Polymorphic(set.new(), set.from_list(["cb"])))
+}
+
+// A bound the author *declared* is not the walk's own synthesis, so it is not
+// grounded: a symbolic effect stated against a concrete budget stays a
+// violation, whatever labels that budget admits.
+pub fn a_declared_bound_variable_still_violates_an_unknown_budget_test() {
+  let source =
+    "pub fn run(cb: fn() -> Nil) -> Nil {
+  cb()
+}"
+  check_source(source, [
+    EffectAnnotation(
+      Check,
+      "run",
+      [
+        ParamBound(
+          "cb",
+          effect_term.from_effect_set(Polymorphic(
+            set.new(),
+            set.from_list(["cb"]),
+          )),
+        ),
+      ],
+      effect_term.from_effect_set(Specific(set.from_list(["Unknown"]))),
+    ),
+  ])
+  |> { fn(vs) { vs != [] } }
+  |> should.be_true()
+}
+
 // Case 2: declared bound of [] means param must be pure — pure arg passes
 pub fn param_bound_pure_passes_test() {
   let source =
