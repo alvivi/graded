@@ -634,21 +634,30 @@ pub fn lookup_declared(
     Known(term, source) ->
       case declares_foreign_code(origin_of(source)) {
         True -> Known(with_running_fallback(knowledge_base, name, term), source)
-        False -> Unknown
+        // A non-declaring entry — inference over the body — answers no more
+        // than no entry at all, and no less either: rejecting it leaves the
+        // external undeclared, not silent, so the fallback its body runs is
+        // still charged.
+        False -> undeclared_lookup(knowledge_base, name)
       }
-    // Nothing declares it, but a fallback body that runs is still code that
-    // runs: what it does is charged even where no declaration answers.
-    Unknown ->
-      case dict.get(knowledge_base.fallback_effects, name) {
-        Ok(fallback) ->
-          Known(
-            effect_term.normalize(
-              types.TUnion([fallback, effect_term.unknown()]),
-            ),
-            types.FunctionEntry(origin: ProjectInferred),
-          )
-        Error(Nil) -> Unknown
-      }
+    Unknown -> undeclared_lookup(knowledge_base, name)
+  }
+}
+
+// What an external nothing declares answers: `[Unknown]`, unioned with its
+// Gleam fallback body where one runs — that body is still code that runs, so
+// what it does is charged even where no declaration answers.
+fn undeclared_lookup(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> EffectLookup {
+  case dict.get(knowledge_base.fallback_effects, name) {
+    Ok(fallback) ->
+      Known(
+        effect_term.normalize(types.TUnion([fallback, effect_term.unknown()])),
+        types.FunctionEntry(origin: ProjectInferred),
+      )
+    Error(Nil) -> Unknown
   }
 }
 

@@ -44,9 +44,26 @@ fn run(action: fn() -> Nil) -> Nil {
   action()
 }
 
+// A function-typed parameter and no `check` line naming it: its call is what
+// the argument does, which is what every command has to say about it.
+pub fn forwards(action: fn() -> Nil) -> Nil {
+  action()
+}
+
 // Two `check` lines bind one parameter each (see fixtures.graded), so they share
 // a budget and differ only in which call they resolve.
 pub fn two_bounds(f: fn() -> Nil, g: fn() -> Nil) -> Nil {
   f()
   g()
+}
+
+// A second-order shape: the operator parameter applied to the callback one.
+// The application resolves only symbolically, so the block's total keeps the
+// term the spec's inferred line states, while the printed contributor line
+// grounds the same call to `[Unknown]`.
+pub fn applies_operator(
+  action: fn(fn() -> Nil) -> Nil,
+  cb: fn() -> Nil,
+) -> Nil {
+  action(cb)
 }

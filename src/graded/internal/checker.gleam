@@ -62,6 +62,7 @@ pub fn check(
           knowledge_base,
           registry,
           module_types,
+          girard_fn_typed,
           cache,
           memo,
         )
@@ -191,24 +192,13 @@ pub fn infer_with_returns(
       let param_bounds =
         dict.get(bounds_map, definition.definition.name)
         |> result.unwrap([])
-      // Auto-detect fn-typed parameters from glance type annotations so
-      // calls to them produce effect variables instead of [Unknown].
-      // Parameters that already have a user-declared bound take priority
-      // and are excluded from auto-detection.
-      let declared_bound_names =
-        param_bounds |> list.map(fn(b) { b.name }) |> set.from_list()
-      // Function-typed parameters: girard's inferred signature (covers params
-      // with no `fn(...)` annotation) unioned with the syntactic detection (the
-      // fallback when girard skipped this function).
+      // Auto-detected fn-typed parameters, so calls to them produce effect
+      // variables instead of [Unknown]. The same bounds every other walk of a
+      // body uses.
       let fn_typed_params =
-        signatures.fn_typed_params_from_function(definition.definition)
-        |> set.union(typeinfo.fn_typed_params(
-          girard_fn_typed,
-          definition.definition.name,
-        ))
-        |> set.filter(fn(name) { !set.contains(declared_bound_names, name) })
+        unbound_fn_typed_params(definition, param_bounds, girard_fn_typed)
       let effective_bounds =
-        list.append(param_bounds, synthetic_fn_typed_bounds(fn_typed_params))
+        effective_bounds(definition, param_bounds, girard_fn_typed)
       // A bodyless `@external` is opaque FFI — conservatively `[Unknown]`, not
       // the `[]` its empty body would otherwise infer.
       let #(effects_term, memo) = case
@@ -275,6 +265,11 @@ pub fn infer_with_returns(
 // with no line — since the bounds decide what the analysis substitutes, and two
 // lines can therefore explain one body differently.
 //
+// Each block carries the bounds the walk actually ran under — the declared ones
+// plus the identity bound synthesised for every other function-typed parameter —
+// so a renderer stating the block's total states it over the same bounds, and a
+// term that is exactly a parameter's variable reads as the forwarding it is.
+//
 // `Error(Nil)` when the module defines no function by that name. Publicity is
 // not consulted: the walk is over a body this module holds, so a private
 // function explains exactly as a public one does.
@@ -292,7 +287,7 @@ pub fn explain(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
-) -> Result(List(List(CallExplanation)), Nil) {
+) -> Result(List(#(List(ParamBound), EffectTerm, List(CallExplanation))), Nil) {
   // The lookup comes before the rest of the module analysis, so a name this
   // module does not define costs one map build rather than a whole-module walk.
   let function_map = build_function_map(module)
@@ -306,7 +301,12 @@ pub fn explain(
     // A declaration that stands in for the whole function binds no bounds and
     // needs no walking apparatus: answered here, ahead of the call graph and the
     // SCC pass `module_context` builds, and repeated per block unchanged.
-    Some(explanation) -> list.map(bounds, fn(_bounds) { [explanation] })
+    Some(explanation) ->
+      list.map(bounds, fn(bounds) {
+        #(bounds, effect_term.from_effect_set(explanation.actual), [
+          explanation,
+        ])
+      })
     None -> {
       let ModuleContext(context:, cache:) =
         module_context(module, module_path, knowledge_base, girard_fn_typed)
@@ -315,7 +315,7 @@ pub fn explain(
       // caller's bounds neither key it nor reach it.
       let #(_memo, explained) =
         list.map_fold(bounds, new_memo(), fn(memo, bounds) {
-          let #(explanations, memo) =
+          let #(explanations, total, memo) =
             contributors(
               definition,
               bounds,
@@ -324,10 +324,39 @@ pub fn explain(
               knowledge_base,
               registry,
               module_types,
+              girard_fn_typed,
               cache,
               memo,
             )
-          #(memo, explanations)
+          // The same grooming inference gives a function's term before the
+          // spec states it: variables that are neither the function's own
+          // fn-typed parameters nor field-effect variables can never be bound
+          // and collapse to `[Unknown]`, the rest survive — so the block's
+          // total is the term `graded effect` answers with, not the ground
+          // projection the per-call lines print.
+          let fn_typed_params =
+            unbound_fn_typed_params(definition, bounds, girard_fn_typed)
+          let field_vars =
+            effect_term.free_vars(total) |> set.filter(is_field_path_var)
+          let total =
+            collapse_phantom_vars(total, set.union(fn_typed_params, field_vars))
+          // A field-effect variable surviving in the total gets the identity
+          // bound inference writes beside it, exactly as the fn-typed params
+          // already carry theirs in the effective bounds: a renderer stating
+          // the total over these bounds then reads a bare `r.run` as
+          // forwarding that field's effects — the sentence `graded effect`
+          // answers with — instead of as an effect named after the path.
+          #(
+            memo,
+            #(
+              list.append(
+                effective_bounds(definition, bounds, girard_fn_typed),
+                polymorphic_param_bounds(total, field_vars),
+              ),
+              total,
+              explanations,
+            ),
+          )
         })
       explained
     }
@@ -358,14 +387,18 @@ fn contributors(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
+  girard_fn_typed: dict.Dict(String, Set(String)),
   cache: LocalCache,
   memo: Memo,
-) -> #(List(CallExplanation), Memo) {
+) -> #(List(CallExplanation), EffectTerm, Memo) {
   let declaration =
     declaration_explanation(context.module_path, knowledge_base, definition)
-  let #(walked, memo) = case standalone_declaration(declaration, definition) {
-    Some(_declaration) -> #([], memo)
+  let #(walked, body_term, memo) = case
+    standalone_declaration(declaration, definition)
+  {
+    Some(_declaration) -> #([], effect_term.pure(), memo)
     None -> {
+      let effective = effective_bounds(definition, bounds, girard_fn_typed)
       let #(body_effects, memo) =
         collect_effects(
           without_returned_closure(definition.definition),
@@ -373,7 +406,7 @@ fn contributors(
           context,
           knowledge_base,
           set.new(),
-          bounds,
+          effective,
           registry,
           module_types,
           dict.new(),
@@ -381,14 +414,35 @@ fn contributors(
           [],
           memo,
         )
-      #(list.map(body_effects, call_explanation), memo)
+      // Each printed effect is groomed against the variables this function's
+      // bounds can actually bind: any other free variable — a nested closure's
+      // binder an unresolved application left behind in a knowledge-base term —
+      // is a phantom, and a contributor keeping it would print the internal
+      // name beside a header that grounds the same variable to `[Unknown]`.
+      let permitted =
+        effective |> list.map(fn(bound) { bound.name }) |> set.from_list()
+      #(
+        list.map(body_effects, call_explanation(_, permitted)),
+        union_of(body_effects),
+        memo,
+      )
     }
   }
   let declared = case declaration {
     Some(explanation) -> [explanation]
     None -> []
   }
-  #(ordered_explanations(list.append(declared, walked)), memo)
+  // The total as a *term*, beside the per-call explanations: each explanation
+  // grounds its own effect for printing, which concretizes a still-symbolic
+  // operator application to `[Unknown]` — the term keeps it, so a renderer
+  // stating the function's total states the same polymorphic effect the
+  // inferred spec line holds.
+  let declared_term = case declaration {
+    Some(explanation) -> effect_term.from_effect_set(explanation.actual)
+    None -> effect_term.pure()
+  }
+  let total = effect_term.normalize(types.TUnion([declared_term, body_term]))
+  #(ordered_explanations(list.append(declared, walked)), total, memo)
 }
 
 // What stands in for a body graded does not weigh: the declaration that answers
@@ -573,18 +627,27 @@ fn dedupe_explanations(
 // A field-effect variable that reached here undischarged (no `check`-line field
 // bound bound it) concretizes to `[Unknown]`, so a `fn`-typed field call on an
 // opaque receiver is never silently `[]`.
-fn call_explanation(collected: CollectedCall) -> CallExplanation {
+fn call_explanation(
+  collected: CollectedCall,
+  permitted: Set(String),
+) -> CallExplanation {
+  // Besides the field-variable concretization, every variable outside
+  // `permitted` — the caller's own bound names — grounds to `[Unknown]`: such
+  // a variable can never be bound here, so printing it would leak an internal
+  // binder as an effect named after it.
+  let ground = fn(term) {
+    effect_term.to_effect_set(collapse_phantom_vars(
+      concretize_field_vars(term),
+      permitted,
+    ))
+  }
   CallExplanation(
     call: collected.call.name,
     span: collected.call.span,
-    actual: effect_term.to_effect_set(
-      concretize_field_vars(collected_term(collected)),
-    ),
+    actual: ground(collected_term(collected)),
     reason: collected.resolution.reason,
     origin: collected.resolution.origin,
-    fallback: option.map(collected.resolution.fallback, fn(term) {
-      effect_term.to_effect_set(concretize_field_vars(term))
-    }),
+    fallback: option.map(collected.resolution.fallback, ground),
   )
 }
 
@@ -620,11 +683,17 @@ pub fn fallback_effects(
   // One pass settles only the fallbacks that call no sibling fallback: a body
   // reaching one is charged what the knowledge base says about it, and that is
   // whatever earlier passes established. So the summaries are re-walked until
-  // they stop changing — a chain of N needs at most N passes, which also bounds
-  // a mutually recursive pair rather than letting it spin.
+  // they stop changing. The fuel is a cap on divergence, not the number of
+  // passes convergence takes: a chain of N fallbacks propagates in N passes,
+  // but a recursive one keeps moving past that — its first pass sees no
+  // summary for the call into itself, so the effects that call substitutes
+  // arrive a pass later, and a cycle circulates each label one member per
+  // pass. Anything still moving when the fuel runs out is widened to
+  // `[Unknown]` rather than reported as the under-approximation the last
+  // pass walked.
   settle_fallback_effects(
     dict.new(),
-    list.length(targets),
+    2 * list.length(targets) + 2,
     FallbackWalk(
       targets:,
       function_map:,
@@ -661,31 +730,42 @@ fn settle_fallback_effects(
   fuel: Int,
   walk: FallbackWalk,
 ) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
-  use <- bool.guard(when: fuel <= 0, return: settled)
+  // Reached only while the summaries are still changing, so what `settled`
+  // holds is not a fixed point: some effect is still travelling and the next
+  // pass would have added it. Every summary is widened to `[Unknown]` — which
+  // ones were still moving is unknowable without the passes the fuel denies —
+  // so a caller is charged conservatively rather than a pass-count under-count.
+  use <- bool.guard(when: fuel <= 0, return: widen_unsettled(settled))
   // The summaries settled so far, so a body reaching a sibling fallback is
-  // charged what that sibling's own body does.
+  // charged what that sibling's own body does. The bounds are installed with
+  // the terms: a sibling's summary is stated over its parameters, and without
+  // the bound the call into it has nothing to re-key its variable onto the
+  // calling fallback's own parameter — a girard-typed parameter carries no
+  // annotation for the syntactic fallback to find.
+  let qualified = fn(function) {
+    QualifiedName(module: walk.module_path, function:)
+  }
   let knowledge_base =
     effects.with_fallback_effects(
       walk.knowledge_base,
       dict.fold(settled, dict.new(), fn(acc, function, summary) {
-        dict.insert(
-          acc,
-          QualifiedName(module: walk.module_path, function:),
-          summary.0,
-        )
+        dict.insert(acc, qualified(function), summary.0)
+      }),
+    )
+    |> effects.with_fallback_params(
+      dict.fold(settled, dict.new(), fn(acc, function, summary) {
+        dict.insert(acc, qualified(function), summary.1)
       }),
     )
   let #(_memo, entries) =
     list.map_fold(walk.targets, new_memo(), fn(memo, definition) {
       // The same synthetic bounds ordinary inference gives a function-typed
       // parameter, so a fallback that calls one is charged that argument's
-      // effects rather than the `[Unknown]` an unbound call collapses to.
+      // effects rather than the `[Unknown]` an unbound call collapses to. A
+      // fallback has no `check` line of its own to declare any, so every one of
+      // them is synthesised.
       let fn_typed_params =
-        signatures.fn_typed_params_from_function(definition.definition)
-        |> set.union(typeinfo.fn_typed_params(
-          walk.girard_fn_typed,
-          definition.definition.name,
-        ))
+        unbound_fn_typed_params(definition, [], walk.girard_fn_typed)
       let #(pairs, memo) =
         collect_effects(
           without_returned_closure(definition.definition),
@@ -693,7 +773,7 @@ fn settle_fallback_effects(
           walk.context,
           knowledge_base,
           set.new(),
-          synthetic_fn_typed_bounds(fn_typed_params),
+          effective_bounds(definition, [], walk.girard_fn_typed),
           walk.registry,
           walk.module_types,
           dict.new(),
@@ -701,20 +781,53 @@ fn settle_fallback_effects(
           [],
           memo,
         )
+      // The same phantom collapse inference applies before a term is stated
+      // anywhere: a free variable that is neither one of the fallback's own
+      // fn-typed parameters nor a field-effect variable — a nested closure's
+      // binder an unresolved application left behind — can never be bound at a
+      // call site, and a summary keeping it would make `graded effect` report
+      // the internal name while callers and `why` groom the same term to
+      // `[Unknown]`.
       let term = union_of(pairs)
-      #(
-        memo,
-        #(
-          definition.definition.name,
-          #(term, polymorphic_param_bounds(term, fn_typed_params)),
-        ),
-      )
+      let field_vars =
+        effect_term.free_vars(term) |> set.filter(is_field_path_var)
+      let term =
+        collapse_phantom_vars(term, set.union(fn_typed_params, field_vars))
+      // The bounds carry the fallback's *whole* callback shape — every
+      // fn-typed parameter, invoked by the body or not — plus a binder for
+      // each field-effect variable the term keeps. A lift rebuilding the
+      // abstraction reads the parameters off these names, and filtering to
+      // the variables surviving in the term would drop an uninvoked callback
+      // and shift every later binder onto the wrong argument. A bound whose
+      // variable the term never mentions binds vacuously everywhere else, so
+      // the fuller list costs nothing.
+      let bounds =
+        list.append(
+          synthetic_fn_typed_bounds(fn_typed_params),
+          polymorphic_param_bounds(term, field_vars),
+        )
+      #(memo, #(definition.definition.name, #(term, bounds)))
     })
   let walked = dict.from_list(entries)
   case walked == settled {
     True -> settled
     False -> settle_fallback_effects(walked, fuel - 1, walk)
   }
+}
+
+// Union `[Unknown]` into every summary term. The bounds stay: the term's
+// variables still substitute at call sites, so a caller passing an effectful
+// callback is charged it beside the conservative widening.
+fn widen_unsettled(
+  settled: dict.Dict(String, #(EffectTerm, List(ParamBound))),
+) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
+  dict.map_values(settled, fn(_function, summary) {
+    let #(term, bounds) = summary
+    #(
+      effect_term.normalize(types.TUnion([term, effect_term.unknown()])),
+      bounds,
+    )
+  })
 }
 
 // Everything the body walker needs about the module it walks. Built the same
@@ -1358,6 +1471,52 @@ fn synthetic_fn_typed_bounds(fn_typed_params: Set(String)) -> List(ParamBound) {
   |> list.map(self_referential_bound)
 }
 
+// The function-typed parameters a set of declared bounds leaves unbound: the
+// ones a walk resolves to an effect variable of their own name. A parameter the
+// bounds already name is left to what was declared for it, which is the more
+// specific claim.
+//
+// Detected from the glance signature and from girard's inferred one, which
+// covers a parameter carrying no `fn(...)` annotation.
+fn unbound_fn_typed_params(
+  definition: Definition(Function),
+  declared: List(ParamBound),
+  girard_fn_typed: dict.Dict(String, Set(String)),
+) -> Set(String) {
+  let declared_names =
+    declared |> list.map(fn(bound) { bound.name }) |> set.from_list()
+  signatures.fn_typed_params_from_function(definition.definition)
+  |> set.union(typeinfo.fn_typed_params(
+    girard_fn_typed,
+    definition.definition.name,
+  ))
+  |> set.filter(fn(name) { !set.contains(declared_names, name) })
+}
+
+// The bounds a body is walked under: what was declared for it, plus a
+// self-referential bound for every function-typed parameter left over.
+//
+// One rule for every walk of a body — inference, a running fallback's summary,
+// `check` and `why` — so no two of them can disagree about what one function
+// does. A call to a function-typed parameter is what the argument does; without
+// the bound it collapses to `[Unknown]`, which reports a parameter in plain
+// sight as a name the module does not define and charges a caller passing a
+// demonstrably pure callback for it.
+fn effective_bounds(
+  definition: Definition(Function),
+  declared: List(ParamBound),
+  girard_fn_typed: dict.Dict(String, Set(String)),
+) -> List(ParamBound) {
+  list.append(
+    declared,
+    synthetic_fn_typed_bounds(unbound_fn_typed_params(
+      definition,
+      declared,
+      girard_fn_typed,
+    )),
+  )
+}
+
 // Build a `ParamBound` for each free effect variable in `term` whose name is
 // a fn-typed parameter. Each is self-referential (`TVar(name)`), resolved by
 // substitution at call sites — so the polymorphic signature round-trips.
@@ -1735,6 +1894,20 @@ fn substituted(looked_up: Resolution, term: EffectTerm) -> Resolution {
   )
 }
 
+// Replace a resolution's fallback share with the one the call-site bindings
+// rewrote, where the resolution still reports one. `substituted`'s
+// untraceable-argument branch drops the fallback along with the origin — the
+// call reports the argument, not the source — and it stays dropped here.
+fn with_substituted_fallback(
+  resolution: Resolution,
+  fallback: option.Option(EffectTerm),
+) -> Resolution {
+  case resolution.fallback {
+    option.Some(_) -> Resolution(..resolution, fallback:)
+    option.None -> resolution
+  }
+}
+
 // The same, for a collected call of a callee's body whose term this caller's
 // bindings have rewritten, plus — for a term that resolved — the source of the
 // wired value one of its field variables bound to.
@@ -1907,36 +2080,12 @@ fn runs_fallback_body(definition: Definition(Function)) -> Bool {
     return: False,
   )
   use <- bool.guard(when: definition.definition.body == [], return: False)
-  set.difference(compiled_targets(definition), declared_targets(definition))
+  set.difference(
+    extract.compiled_targets(definition),
+    extract.declared_targets(definition),
+  )
   |> set.is_empty
   |> bool.negate
-}
-
-// The targets a function is compiled for: both, unless `@target` narrows it.
-fn compiled_targets(definition: Definition(Function)) -> Set(String) {
-  case attribute_targets(definition, "target") {
-    [] -> set.from_list(["erlang", "javascript"])
-    targets -> set.from_list(targets)
-  }
-}
-
-// The targets the function's `@external` attributes declare an implementation
-// for. A target argument that isn't a plain name states nothing this can read,
-// so it declares no target and the fallback stays covered by the walk.
-fn declared_targets(definition: Definition(Function)) -> Set(String) {
-  attribute_targets(definition, "external") |> set.from_list()
-}
-
-// The target named by the first argument of each `name` attribute.
-fn attribute_targets(
-  definition: Definition(Function),
-  name: String,
-) -> List(String) {
-  use attribute <- list.filter_map(definition.attributes)
-  case attribute.name == name, attribute.arguments {
-    True, [glance.Variable(name: target, ..), ..] -> Ok(target)
-    True, _ | False, _ -> Error(Nil)
-  }
 }
 
 // Annotation checking
@@ -1952,6 +2101,7 @@ fn check_annotation(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
+  girard_fn_typed: dict.Dict(String, Set(String)),
   cache: LocalCache,
   memo: Memo,
 ) -> #(#(List(Violation), List(Warning)), Memo) {
@@ -1964,7 +2114,7 @@ fn check_annotation(
       // stands in for an `@external`'s absent body, so a `check` line
       // contradicting a declaration is a violation, as is one over an external
       // nothing declares.
-      let #(explanations, memo) =
+      let #(explanations, _total, memo) =
         contributors(
           function_definition,
           annotation.params,
@@ -1973,6 +2123,7 @@ fn check_annotation(
           knowledge_base,
           registry,
           module_types,
+          girard_fn_typed,
           cache,
           memo,
         )
@@ -1994,15 +2145,32 @@ fn check_annotation(
           }
         })
 
-      // Warn about function references passed as values with known non-pure effects.
+      // Warn about function references passed as values with known non-pure
+      // effects. A reference sits in the Gleam body, and where the declaration
+      // stands alone that body never runs — an `@external` covering every
+      // compiled target keeps its body as dead text — so nothing it references
+      // is ever passed anywhere. The predicate that decides whether the body
+      // is walked decides whether it warns.
       let extract_result =
         extract.extract_function_calls(function_definition.definition, context)
-      let reference_warnings =
-        collect_reference_warnings(
-          annotation.function,
-          extract_result.references,
-          knowledge_base,
+      let reference_warnings = case
+        standalone_declaration(
+          declaration_explanation(
+            context.module_path,
+            knowledge_base,
+            function_definition,
+          ),
+          function_definition,
         )
+      {
+        Some(_) -> []
+        None ->
+          collect_reference_warnings(
+            annotation.function,
+            extract_result.references,
+            knowledge_base,
+          )
+      }
 
       let param_names =
         function_definition.definition.parameters
@@ -2175,10 +2343,11 @@ fn collect_effects(
   let #(memo, resolved_effects) =
     list.map_fold(result.resolved, memo, fn(memo, call) {
       let looked_up = lookup_parts(knowledge_base, call.name, NoKnownEffects)
-      let #(concrete, memo) =
+      let #(concrete, concrete_fallback, memo) =
         substitute_at_call_site(
           call,
           looked_up.term,
+          looked_up.fallback,
           result.call_args,
           function_map,
           context,
@@ -2193,10 +2362,10 @@ fn collect_effects(
           lift_operator_arg,
           memo,
         )
-      #(
-        memo,
-        CollectedCall(call:, resolution: substituted(looked_up, concrete)),
-      )
+      let resolution =
+        substituted(looked_up, concrete)
+        |> with_substituted_fallback(concrete_fallback)
+      #(memo, CollectedCall(call:, resolution:))
     })
 
   // Local calls: check param bounds first (user-declared and auto-detected
@@ -2794,7 +2963,13 @@ fn substitute_local_call_effects(
   case dict.get(function_map, local_call.function) {
     Error(Nil) -> #(recursive, memo)
     Ok(local_definition) -> {
-      let bounds = local_polymorphic_bounds(local_definition.definition)
+      let bounds =
+        local_substitution_bounds(
+          local_definition,
+          local_call.function,
+          context,
+          knowledge_base,
+        )
       let args = call_args_for(call_args, local_call.span)
       let callee_name =
         QualifiedName(module: local_sentinel, function: local_call.function)
@@ -2845,21 +3020,28 @@ fn substitute_local_call_effects(
       // Each site is re-attributed against the term this caller's bindings
       // produced: an `[Unknown]` they introduced is this call's argument, and a
       // field variable the callee left open is answered by the source of the
-      // value this caller wired.
+      // value this caller wired. A fallback share rides the same bindings as
+      // the term it is a component of.
       let substituted =
         list.map(recursive, fn(one) {
-          let term =
+          let bind = fn(term) {
             apply_call_bindings(
-              collected_term(one),
+              term,
               bindings,
               field_bindings.terms,
               caller_field_bindings,
               forwarded,
             )
-          CollectedCall(
-            ..one,
-            resolution: rebound(one.resolution, term, field_bindings.origins),
-          )
+          }
+          let resolution =
+            rebound(one.resolution, bind(collected_term(one)), {
+              field_bindings.origins
+            })
+            |> with_substituted_fallback(option.map(
+              one.resolution.fallback,
+              bind,
+            ))
+          CollectedCall(..one, resolution:)
         })
       #(substituted, memo)
     }
@@ -2873,6 +3055,35 @@ fn local_polymorphic_bounds(function: Function) -> List(ParamBound) {
   synthetic_fn_typed_bounds(signatures.fn_typed_params_from_function(function))
 }
 
+// The bounds a same-module call site substitutes with. For an ordinary sibling
+// they are derived from its signature, as its own analysis derived them. A
+// foreign sibling's term came from the knowledge base instead — the settled
+// summary of its running fallback — so the bounds recorded beside that summary
+// are the ones its variables answer to: they cover a girard-typed parameter the
+// syntactic derivation cannot see, which is what keeps a same-module `run(pure)`
+// bound exactly as the qualified call from another module is.
+fn local_substitution_bounds(
+  local_definition: Definition(Function),
+  function: String,
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+) -> List(ParamBound) {
+  let syntactic = fn() { local_polymorphic_bounds(local_definition.definition) }
+  use <- bool.lazy_guard(
+    when: !extract.is_foreign_definition(local_definition),
+    return: syntactic,
+  )
+  case
+    effects.lookup_param_bounds(
+      knowledge_base,
+      QualifiedName(module: context.module_path, function:),
+    )
+  {
+    [] -> syntactic()
+    recorded -> recorded
+  }
+}
+
 // Resolve effect variables at a call site. If the callee's effects
 // carry variables, match arguments to the callee's param bounds and
 // bind each variable to the concrete effect set of the corresponding
@@ -2882,6 +3093,7 @@ fn local_polymorphic_bounds(function: Function) -> List(ParamBound) {
 fn substitute_at_call_site(
   call: types.ResolvedCall,
   effect: EffectTerm,
+  fallback: option.Option(EffectTerm),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
@@ -2896,14 +3108,18 @@ fn substitute_at_call_site(
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
-) -> #(EffectTerm, Memo) {
+) -> #(EffectTerm, option.Option(EffectTerm), Memo) {
   let callee_kb_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
   // Fast path: concrete effect with declared bounds — nothing to
   // substitute. With no declared bounds we still need to fall through
   // in case the registry flags auto-injectable fn-typed params.
+  //
+  // The early exits return `fallback` untouched: it is a component of the
+  // term's union, so a term with no free variables has none hiding in its
+  // fallback share either.
   use <- bool.guard(
     when: !has_vars(effect) && callee_kb_bounds != [],
-    return: #(effect, memo),
+    return: #(effect, fallback, memo),
   )
   let args = call_args_for(call_args, call.span)
   let #(effective_effects, effective_bounds) = case callee_kb_bounds {
@@ -2912,6 +3128,7 @@ fn substitute_at_call_site(
   }
   use <- bool.guard(when: !has_vars(effective_effects), return: #(
     effective_effects,
+    fallback,
     memo,
   ))
   let #(bindings, memo) =
@@ -2942,15 +3159,19 @@ fn substitute_at_call_site(
       memo,
     )
   let forwarded = forwarded_field_vars(field_bindings.terms)
-  let substituted =
+  let bind = fn(term) {
     apply_call_bindings(
-      effective_effects,
+      term,
       bindings,
       field_bindings.terms,
       caller_field_bindings,
       forwarded,
     )
-  #(substituted, memo)
+  }
+  // The fallback share is rewritten by the same bindings as the total it is a
+  // component of: the two describe one call, and a variable the total resolved
+  // must not survive in the share a structured consumer reads beside it.
+  #(bind(effective_effects), option.map(fallback, bind), memo)
 }
 
 // Finish a call-site effect: bind the callee's effect variables, re-key any
@@ -3848,9 +4069,16 @@ fn operator_term_for_argument(
       let body = effects.declared_effects(knowledge_base, name)
       // Abstract over `g`'s fn-typed params in declaration order. The outermost
       // binder is the first param, matching the left-nested application spine
-      // built at the definition site.
+      // built at the definition site. The recorded bounds count as fn-typed
+      // too: a running fallback's girard-typed callback has no `fn(...)`
+      // annotation for the registry to see, and without its binder the
+      // summary's variable stays free and the application goes stuck.
       let operator =
-        signatures.fn_typed_param_names_ordered(registry, name)
+        signatures.fn_typed_param_names_ordered(
+          registry,
+          name,
+          recorded_bound_names(knowledge_base, name),
+        )
         |> list.fold_right(body, fn(acc, param) { types.TAbs(param, acc) })
       #(operator, memo)
     }
@@ -4610,14 +4838,22 @@ fn lift_local_function(
   // operator still reduces. Walking the empty or fallback body instead would
   // lift an undeclared external to `[]`, and a caller passing it to a
   // higher-order helper would inherit that `[]` while a direct call to the same
-  // name inherits `[Unknown]`.
+  // name inherits `[Unknown]`. The recorded bounds name callback parameters
+  // too: a running fallback's girard-typed callback has no `fn(...)`
+  // annotation, and without its binder the summary's variable stays free and
+  // the application goes stuck.
   use <- bool.lazy_guard(
     when: extract.is_foreign_definition(definition),
     return: fn() {
       let qualified = QualifiedName(module: context.module_path, function: name)
       let declared = foreign_resolution(knowledge_base, qualified).term
+      let params =
+        ordered_callback_param_names(
+          function,
+          recorded_bound_names(knowledge_base, qualified),
+        )
       #(
-        list.fold_right(fn_param_names, declared, fn(acc, param) {
+        list.fold_right(params, declared, fn(acc, param) {
           types.TAbs(param, acc)
         }),
         memo,
@@ -4722,6 +4958,38 @@ fn ordered_fn_typed_param_names(function: Function) -> List(String) {
       _, _ -> Error(Nil)
     }
   })
+}
+
+// The same, counting parameters named in `bound_names` as fn-typed too — a
+// running fallback's girard-typed callback carries no `fn(...)` annotation and
+// exists only as the bound recorded beside its settled summary.
+fn ordered_callback_param_names(
+  function: Function,
+  bound_names: Set(String),
+) -> List(String) {
+  list.filter_map(function.parameters, fn(param) {
+    case param.type_, param.name {
+      Some(glance.FunctionType(..)), glance.Named(name) -> Ok(name)
+      _, glance.Named(name) ->
+        case set.contains(bound_names, name) {
+          True -> Ok(name)
+          False -> Error(Nil)
+        }
+      _, _ -> Error(Nil)
+    }
+  })
+}
+
+// The parameter names `name`'s recorded bounds state effects over. For one of
+// this package's running fallbacks these carry the girard-typed callbacks no
+// syntactic signature shows.
+fn recorded_bound_names(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Set(String) {
+  effects.lookup_param_bounds(knowledge_base, name)
+  |> list.map(fn(bound) { bound.name })
+  |> set.from_list()
 }
 
 // Argument matching

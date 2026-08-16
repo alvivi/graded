@@ -50,6 +50,19 @@ pub fn explains_a_function_without_a_check_line_test() {
   ])
 }
 
+pub fn explains_a_second_order_function_test() {
+  // `action(cb)` resolves only symbolically. The header states the term the
+  // spec's inferred line holds — the same sentence `graded effect` answers
+  // with — while the contributor line grounds the still-symbolic application
+  // to the conservative `[Unknown]` every printed effect set is.
+  why("why_target.applies_operator")
+  |> lines
+  |> should.equal([
+    "why_target.applies_operator has effects [action([cb])]",
+    "  calls parameter `action` with unresolved effects [Unknown]",
+  ])
+}
+
 pub fn explains_a_private_function_test() {
   // `transitive.helper` is private: `graded effect` declines it, since it
   // answers from the public surface, but `why` walks a body this project holds.
@@ -71,28 +84,65 @@ pub fn explains_an_unresolved_call_test() {
   |> should.be_true()
 }
 
+pub fn explains_a_field_variable_total_as_forwarding_test() {
+  // The total is the synthetic `r.run` field variable, and the block's bounds
+  // carry its identity binder — so the header reads it as forwarding that
+  // field's effects, the sentence `graded effect` answers with, rather than
+  // as `has effects [r.run]`, an effect named after the path.
+  why("opaque_field.exec_unbound")
+  |> lines
+  |> list.first
+  |> should.equal(Ok(
+    "opaque_field.exec_unbound has the effects of its `r.run` argument, and none of its own",
+  ))
+}
+
 pub fn explains_one_block_per_check_line_test() {
   // `two_bounds` has two `check` lines that share a budget and bind a different
   // parameter each, so only the declarations tell the blocks apart — and each
-  // block's contributors are the ones its own bounds resolved.
+  // block's contributors are the ones its own bounds resolved. The parameter a
+  // line does not bind keeps the identity bound inference gives it, so each
+  // block names both parameters and differs in what it knows about them.
   let assert [first, second] =
     string.split(why("why_target.two_bounds"), "\n\n")
   first
   |> lines
   |> should.equal([
-    "why_target.two_bounds has effects [Stdout, Unknown]; part of them could not be determined",
+    "why_target.two_bounds has the effects of its `g` argument, plus [Stdout] of its own",
     "declared check why_target.two_bounds(f: [Stdout]) : [Stdout]",
     "  calls parameter `f` with effects [Stdout]",
-    "  calls `g`, which is neither a bound parameter nor a function in this module, with unresolved effects [Unknown]",
+    "  calls parameter `g` with effects [g]",
   ])
   second
   |> lines
   |> should.equal([
-    "why_target.two_bounds has effects [Stdout, Unknown]; part of them could not be determined",
+    "why_target.two_bounds has the effects of its `f` argument, plus [Stdout] of its own",
     "declared check why_target.two_bounds(g: [Stdout]) : [Stdout]",
-    "  calls `f`, which is neither a bound parameter nor a function in this module, with unresolved effects [Unknown]",
+    "  calls parameter `f` with effects [f]",
     "  calls parameter `g` with effects [Stdout]",
   ])
+}
+
+pub fn a_higher_order_function_explains_as_the_query_answers_it_test() {
+  // `why` and `effect` answer about one function, so they cannot disagree about
+  // its total. `two_bounds` calls both its function-typed parameters and has no
+  // `check` line binding either here, so the walk states its effects over the
+  // identity bounds inference gives them — where it used to report a parameter
+  // in plain sight as a name the module does not define, and collapse the total
+  // to `[Unknown]`. The header reads those bounds too, so a total that is
+  // exactly the callback's variable is worded as the forwarding it is.
+  let assert Ok(explained) = graded.run_why(fixtures, "why_target.forwards")
+  explained
+  |> lines
+  |> should.equal([
+    "why_target.forwards has the effects of its `action` argument, and none of its own",
+    "  calls parameter `action` with effects [action]",
+  ])
+  let assert Ok(answered) =
+    graded.run_effect_formatted(fixtures, "why_target.forwards", answer.Graded)
+  answered
+  |> string.contains("effects why_target.forwards(action: [action]) : [action]")
+  |> should.be_true()
 }
 
 pub fn differing_substitutions_at_one_site_both_survive_test() {

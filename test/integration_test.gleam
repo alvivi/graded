@@ -389,6 +389,64 @@ fn sink() -> Nil
   support.cleanup(root)
 }
 
+pub fn a_target_excluded_external_is_ordinary_gleam_test() {
+  // `@target(erlang)` with a javascript-only `@external`: the foreign
+  // implementation is never compiled, so the Gleam body is the only one that
+  // exists and the function is ordinary Gleam on every channel. Weighing the
+  // declaration beside it charged callers `[Unknown]` for code that is not
+  // built — a false violation on a body plainly within its budget — and held
+  // the values it hands back opaque for the same absent reason.
+  let root = "build/external_target_excluded"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check ext.log : []
+check ext.calls_built_field : [Disk]
+external effects ext.disk : [Disk]
+",
+    ),
+    #(
+      "ext.gleam",
+      "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+@external(erlang, \"ext_ffi\", \"disk\")
+@external(javascript, \"ext_ffi\", \"disk\")
+pub fn disk() -> Nil
+
+@target(erlang)
+@external(javascript, \"ext_ffi\", \"log\")
+pub fn log() -> Nil {
+  Nil
+}
+
+@target(erlang)
+@external(javascript, \"ext_ffi\", \"builds\")
+pub fn builds(run: fn() -> Nil) -> Handler {
+  Handler(run: run)
+}
+
+@target(erlang)
+pub fn calls_built_field() -> Nil {
+  let handler = builds(fn() { disk() })
+  handler.run()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  r.violations |> should.equal([])
+  // And the query says what the body does, rather than the `[Unknown]` an
+  // undeclared external carries.
+  let assert Ok(answered) = graded.run_effect(root, "ext.log")
+  answered |> string.contains("effects ext.log : []") |> should.be_true()
+  support.cleanup(root)
+}
+
 pub fn a_running_fallback_body_is_charged_to_every_caller_test() {
   // The declaration alone is the whole story only where it covers every target.
   // Where it does not, the Gleam fallback is what runs, and composition is
@@ -454,6 +512,492 @@ pub fn calls_it() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_girard_typed_fallback_callback_binds_in_the_same_module_test() {
+  // The fallback's parameter carries no `fn(...)` annotation — only girard
+  // knows it is function-typed, so its bound exists only as the one recorded
+  // beside the settled summary. A same-module `run(pure_cb)` substituted with
+  // syntax-derived bounds alone, found none, and kept `[action]` free — failing
+  // a `[]` budget the qualified call from another module passed. The local path
+  // now substitutes with the recorded bounds, and the effectful callback still
+  // fails, so the bound resolves rather than vanishing.
+  let root = "build/external_fallback_girard_local"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.run : []
+external effects ext.disk : [Disk]
+check ext.uses : []
+check ext.uses_impure : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(action) -> Nil {
+  action()
+}
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+pub fn disk() -> Nil
+
+fn pure_cb() -> Nil {
+  Nil
+}
+
+pub fn uses() -> Nil {
+  run(pure_cb)
+}
+
+pub fn uses_impure() -> Nil {
+  run(disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("uses_impure")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_girard_typed_sibling_fallback_rekeys_its_callback_test() {
+  // `a`'s fallback forwards its callback into sibling fallback `b`, and both
+  // parameters are girard-typed only. Settling installed each summary's term
+  // without its bounds, so the pass walking `a` had nothing to re-key `b`'s
+  // `action` onto `a`'s `callback` — the variable leaked into `a`'s summary and
+  // a cross-module `ext.a(pure)` failed a `[]` budget it plainly meets.
+  let root = "build/external_fallback_girard_siblings"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.a : []
+external effects ext.b : []
+check app.go : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"b\")
+pub fn b(action) -> Nil {
+  action()
+}
+
+@external(javascript, \"ext_ffi\", \"a\")
+pub fn a(callback) -> Nil {
+  b(callback)
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+fn pure_cb() -> Nil {
+  Nil
+}
+
+pub fn go() -> Nil {
+  ext.a(pure_cb)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_girard_typed_fallback_lifts_as_an_operator_test() {
+  // `run`'s callback parameter is girard-typed only, and `run` travels as a
+  // *value* into a higher-order `invoke` that applies it. The lift abstracted
+  // over syntactically fn-typed parameters alone, so the summary's `action`
+  // variable stayed free, the application went stuck, and a `[]` budget the
+  // pure callback plainly meets failed with `[Unknown]`. The recorded fallback
+  // bound names the binder, so the application reduces to the callback's own
+  // effects — and the effectful callback still fails.
+  let root = "build/external_fallback_girard_operator"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.run : []
+external effects app.disk : [Disk]
+check app.go : []
+check app.go_impure : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(action) -> Nil {
+  action()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+fn pure_cb() -> Nil {
+  Nil
+}
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+fn disk() -> Nil
+
+fn invoke(op: fn(fn() -> Nil) -> Nil, cb: fn() -> Nil) -> Nil {
+  op(cb)
+}
+
+pub fn go() -> Nil {
+  invoke(ext.run, pure_cb)
+}
+
+pub fn go_impure() -> Nil {
+  invoke(ext.run, disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("go_impure")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_fallback_lift_keeps_its_callback_arity_test() {
+  // `run` has two girard-typed callbacks and invokes only the second; the
+  // first contributes no variable to the settled term, so recording bounds
+  // for surviving variables alone dropped it — and the lift rebuilt from the
+  // recorded names abstracted over `second` only, binding the *first* passed
+  // callback to it and leaving the second application stuck. Both budgets
+  // below then failed: the disk callback's effects landed on the wrong
+  // parameter and `[Unknown]` covered the rest. The bounds keep the full
+  // callback shape, so each argument reaches its own binder.
+  let root = "build/external_fallback_callback_arity"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.run : []
+external effects app.disk : [Disk]
+check app.go : [Disk]
+check app.go_swapped : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(first, second) -> Nil {
+  keep(first)
+  second()
+}
+
+fn keep(f: fn() -> Nil) -> Nil {
+  Nil
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+fn pure_cb() -> Nil {
+  Nil
+}
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+fn disk() -> Nil
+
+fn invoke(
+  op: fn(fn() -> Nil, fn() -> Nil) -> Nil,
+  x: fn() -> Nil,
+  y: fn() -> Nil,
+) -> Nil {
+  op(x, y)
+}
+
+pub fn go() -> Nil {
+  invoke(ext.run, pure_cb, disk)
+}
+
+pub fn go_swapped() -> Nil {
+  invoke(ext.run, disk, pure_cb)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_labeled_fallback_callback_lifts_under_its_bound_name_test() {
+  // `run`'s callback parameter is labeled (`with action:`), and the settled
+  // fallback term is stated over the in-body name `action` — the name the
+  // recorded bound carries. The lift abstracted over the label `with`, so
+  // `action` stayed free, the application went stuck, and a `[]` budget the
+  // pure callback plainly meets failed with `[Unknown]`. The binder is the
+  // bound's name, so the application reduces — and the effectful callback
+  // still fails.
+  let root = "build/external_fallback_labeled_operator"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.run : []
+external effects app.disk : [Disk]
+check app.go : []
+check app.go_impure : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(with action: fn() -> Nil) -> Nil {
+  action()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+fn pure_cb() -> Nil {
+  Nil
+}
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+fn disk() -> Nil
+
+fn invoke(op: fn(fn() -> Nil) -> Nil, cb: fn() -> Nil) -> Nil {
+  op(cb)
+}
+
+pub fn go() -> Nil {
+  invoke(ext.run, pure_cb)
+}
+
+pub fn go_impure() -> Nil {
+  invoke(ext.run, disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("go_impure")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_girard_typed_fallback_lifts_locally_as_an_operator_test() {
+  // The same shape inside one module: `run` is handed to a sibling `invoke`
+  // rather than referenced across a boundary, so the lift goes through the
+  // same-module path. It, too, must abstract over the recorded fallback bound
+  // a girard-typed callback exists only as.
+  let root = "build/external_fallback_girard_operator_local"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.run : []
+external effects ext.disk : [Disk]
+check ext.go : []
+check ext.go_impure : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(action) -> Nil {
+  action()
+}
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+fn disk() -> Nil
+
+fn pure_cb() -> Nil {
+  Nil
+}
+
+fn invoke(op: fn(fn() -> Nil) -> Nil, cb: fn() -> Nil) -> Nil {
+  op(cb)
+}
+
+pub fn go() -> Nil {
+  invoke(run, pure_cb)
+}
+
+pub fn go_impure() -> Nil {
+  invoke(run, disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("go_impure")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_substituted_call_reports_a_substituted_fallback_test() {
+  // A higher-order external whose fallback calls its function-typed parameter,
+  // called with a `[Disk]` callback. The caller's total substitutes the
+  // callback into the term — `[Disk, Time]` — and the explanation's `fallback`
+  // states the body's share of that total, so it substitutes too: `[Disk]`,
+  // not the polymorphic `[action]` the knowledge base holds before any
+  // arguments are bound. The two fields describe one call, and a structured
+  // consumer must not read a variable the actual set already resolved.
+  let root = "build/external_fallback_substituted"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.run : [Time]
+external effects app.disk : [Disk]
+check app.uses_impure : []
+check app.via_helper : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(action: fn() -> Nil) -> Nil {
+  action()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+
+pub fn uses_impure() -> Nil {
+  ext.run(disk)
+}
+
+fn helper(f: fn() -> Nil) -> Nil {
+  ext.run(f)
+}
+
+pub fn via_helper() -> Nil {
+  helper(disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  // Directly, and re-bound through a helper whose own walk left the share
+  // stated over the helper's parameter: both substitute at every step.
+  ["uses_impure", "via_helper"]
+  |> list.each(fn(function) {
+    let assert Ok(violation) =
+      list.find(r.violations, fn(v) { v.function == function })
+    violation.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+    violation.explanation.fallback
+    |> should.equal(Some(types.Specific(set.from_list(["Disk"]))))
+  })
+  support.cleanup(root)
+}
+
+pub fn an_undeclared_fallback_is_charged_on_every_value_channel_test() {
+  // The same undeclared external reached three ways: called, wired into a
+  // record field, and passed as a callback. A call charged the fallback's
+  // `[Disk]` beside the `[Unknown]`, but the value channels read the external
+  // through `lookup_declared`, where the non-declaring entry inference leaves
+  // for it was rejected straight to a bare `[Unknown]` — dropping effects
+  // graded had walked, and charging one name differently per channel.
+  let root = "build/external_fallback_channels"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects disk.write : [Disk]
+check app.direct : []
+check app.wired : []
+check app.as_callback : []
+",
+    ),
+    #("disk.gleam", "@external(erlang, \"d\", \"w\")\npub fn write() -> Nil\n"),
+    #(
+      "ext.gleam",
+      "import disk
+
+@external(javascript, \"ext_ffi\", \"log\")
+pub fn log() -> Nil {
+  disk.write()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+pub fn direct() -> Nil {
+  ext.log()
+}
+
+pub fn wired() -> Nil {
+  let handler = Handler(run: ext.log)
+  handler.run()
+}
+
+fn helper(f: fn() -> Nil) -> Nil {
+  f()
+}
+
+pub fn as_callback() -> Nil {
+  helper(ext.log)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let total = types.Specific(set.from_list(["Disk", "Unknown"]))
+  ["direct", "wired", "as_callback"]
+  |> list.each(fn(function) {
+    let assert Ok(violation) =
+      list.find(r.violations, fn(v) { v.function == function })
+    violation.explanation.actual |> should.equal(total)
+  })
+  support.cleanup(root)
+}
+
 pub fn a_fallback_reaching_a_sibling_fallback_is_charged_it_test() {
   // `a`'s fallback calls `b`, whose fallback reaches the disk; both are
   // declared `[]`. A single pass over the module summarised `a` against a
@@ -501,6 +1045,56 @@ pub fn wrapper() -> Nil {
   // And the same total is what gets published.
   let assert Ok(preview) = graded.run_infer_dry_run(root)
   preview |> string.contains("effects ext.wrapper : [Disk]") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_recursive_fallback_summary_reaches_a_fixed_point_test() {
+  // `retry`'s fallback recurses into itself with `disk` substituted for its
+  // own callback, so the summary is only complete once the recursive call is
+  // charged against a settled summary of `retry` — which itself took a pass to
+  // exist. Settling stopped after one pass per fallback, so the summary stayed
+  // `[f]` and a wrapper passing a pure callback met a `[]` budget over a body
+  // that reaches the disk.
+  let root = "build/external_fallback_recursive"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.retry : []
+external effects ext.disk : [Disk]
+check ext.wrapper : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+fn disk() -> Nil
+
+@external(javascript, \"ext_ffi\", \"retry\")
+pub fn retry(f: fn() -> Nil, n: Int) -> Nil {
+  case n {
+    0 -> f()
+    _ -> retry(disk, n - 1)
+  }
+}
+
+fn pure_cb() -> Nil {
+  Nil
+}
+
+pub fn wrapper() -> Nil {
+  retry(pure_cb, 1)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "wrapper" })
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
   support.cleanup(root)
 }
 
@@ -621,6 +1215,71 @@ pub fn uses_impure() -> Nil {
     list.find(r.violations, fn(v) { v.function == "uses_impure" })
   v.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_fallback_bound_travels_with_every_answer_form_test() {
+  // The same higher-order fallback under each of the three ways a `graded
+  // effect` answer is reached: undeclared, declared per function, and declared
+  // by a module-level line. Only the per-function form read the bounds the
+  // fallback recorded, so the other two stated a term over a `action` variable
+  // nothing in the line introduced — losing the budget, and the forwarding the
+  // sentence is meant to explain.
+  let root = "build/external_fallback_answer_forms"
+  let sources = [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(action: fn() -> Nil) -> Nil {
+  action()
+}
+",
+    ),
+  ]
+  let answer_for = fn(spec) {
+    support.write_fixture(root, [#("proj.graded", spec), ..sources])
+    let assert Ok(answered) = graded.run_effect(root, "ext.run")
+    answered
+  }
+
+  // Undeclared: the `[Unknown]` it carries, stated over the bound.
+  answer_for("")
+  |> string.contains("effects ext.run(action: [action]) : [Unknown, action]")
+  |> should.be_true()
+
+  // A module-level line, whose own declaration has no per-function bounds to
+  // state — the ones here are the fallback body's.
+  answer_for("external effects ext : [Time]\n")
+  |> string.contains("effects ext.run(action: [action]) : [Time, action]")
+  |> should.be_true()
+
+  // The per-function form, unchanged.
+  answer_for("external effects ext.run : []\n")
+  |> string.contains("effects ext.run(action: [action]) : [action]")
+  |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_committed_bound_does_not_travel_with_a_foreign_answer_test() {
+  // A bound from an `effects` line over an `@external`'s body, with no fallback
+  // to have recorded one. The entry beside it is refused as an answer because
+  // the foreign implementation needn't match the body it was inferred over, and
+  // the bound states an assumption about an argument on exactly that authority.
+  let root = "build/external_committed_bound"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "effects ext.run(action: [Stdout]) : [Stdout]\n"),
+    #(
+      "ext.gleam",
+      "@external(erlang, \"ext_ffi\", \"run\")
+@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(action: fn() -> Nil) -> Nil
+",
+    ),
+  ])
+  let assert Ok(answered) = graded.run_effect(root, "ext.run")
+  answered |> string.contains("action") |> should.be_false()
   support.cleanup(root)
 }
 
@@ -4314,6 +4973,48 @@ pub fn a_stale_project_external_is_ignored_everywhere_test() {
   support.cleanup(root)
 }
 
+pub fn a_committed_line_beside_a_stale_external_is_dropped_too_test() {
+  // The same spec with a committed `effects m.logs : []` line beside the stale
+  // external — a pair no `infer` ever writes, so the spec's state for the name
+  // is not one to trust. The committed term used to survive the external's
+  // rejection and outrank the fresh walk, so a cross-module caller and the
+  // query read `[]` from the spec while the warning promised the body was
+  // walked instead.
+  let root = "build/stale_external_committed"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects m.logs : []
+external effects ffi.write : [Disk]
+effects m.logs : []
+check caller.go : []
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@target(erlang)
+@external(erlang, \"proj_ffi\", \"write\")
+pub fn write() -> Nil
+",
+    ),
+    #("m.gleam", "import ffi\n\npub fn logs() -> Nil {\n  ffi.write()\n}\n"),
+    #("caller.gleam", "import m\n\npub fn go() -> Nil {\n  m.logs()\n}\n"),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(caller) =
+    list.find(results, fn(r) { r.file == root <> "/caller.gleam" })
+  let assert [call] = caller.violations
+  call.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  graded.run_effect(root, "m.logs")
+  |> should.equal(Ok(
+    "effects m.logs : [Disk]\n// resolved from in-memory inference",
+  ))
+  support.cleanup(root)
+}
+
 pub fn a_stale_project_external_warns_once_test() {
   let root = "build/stale_external_warning"
   stale_external_project(root)
@@ -4430,6 +5131,39 @@ external effects dep/io : [Disk]
   support.cleanup(root)
 }
 
+pub fn a_parsed_dependency_source_outranks_the_catalog_in_the_lint_test() {
+  // `gleam/list` is catalogued module-level, which answers for every name in
+  // the module wherever no source says otherwise — but here the dependency's
+  // source is installed and parses, and it proves `typo` does not exist. The
+  // catalog tier used to wave the misspelling through anyway; the source is
+  // the installed version, so its answer is definitive both ways.
+  let root = "build/external_lint_source_over_catalog"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "manifest.toml",
+      "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
+    ),
+    #(
+      "proj.graded",
+      "external effects gleam/list.typo : []\nexternal effects gleam/list.real_fn : []\n",
+    ),
+    #(
+      "build/packages/gleam_stdlib/src/gleam/list.gleam",
+      "pub fn real_fn() -> Nil {\n  Nil\n}\n",
+    ),
+    #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.UnmatchedFunctionExternalWarning(function: "gleam/list.typo"),
+  ])
+  support.cleanup(root)
+}
+
 pub fn an_external_on_an_unreadable_dependency_is_not_flagged_test() {
   // The function tier weighs a dependency by its source, so a module whose
   // source will not parse has to keep answering for every name: the lint flags
@@ -4509,6 +5243,72 @@ pub fn declared_go() -> Nil {
     #(
       "declared_go",
       types.QualifiedName("ffi", "declared"),
+      types.Specific(set.from_list(["Disk"])),
+    ),
+  ])
+  support.cleanup(root)
+}
+
+pub fn a_covered_fallback_body_reference_warns_about_nothing_test() {
+  // `covered` declares an implementation for every target it compiles for, so
+  // its Gleam body is dead text the declaration alone answers for — the `disk`
+  // reference in it is never passed anywhere, and a warning would quote an
+  // effect no run of the function performs. `running` declares javascript
+  // only, so the same body is what runs on erlang and its reference still
+  // warns.
+  let root = "build/reference_warning_dead_fallback"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ffi.disk : [Disk]
+external effects ext.covered : []
+external effects ext.running : []
+check ext.covered : []
+check ext.running : [_]
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+pub fn disk() -> Nil
+",
+    ),
+    #(
+      "ext.gleam",
+      "import ffi
+
+fn helper(f: fn() -> Nil) -> Nil {
+  f()
+}
+
+@external(erlang, \"e\", \"c\")
+@external(javascript, \"e\", \"c\")
+pub fn covered() -> Nil {
+  helper(ffi.disk)
+}
+
+@external(javascript, \"e\", \"r\")
+pub fn running() -> Nil {
+  helper(ffi.disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  r.warnings
+  |> list.map(fn(warning) {
+    let assert types.UntrackedEffectWarning(function:, reference:, effects:, ..) =
+      warning
+    #(function, reference, effects)
+  })
+  |> should.equal([
+    #(
+      "running",
+      types.QualifiedName("ffi", "disk"),
       types.Specific(set.from_list(["Disk"])),
     ),
   ])

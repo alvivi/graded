@@ -5812,6 +5812,10 @@ fn explain_blocks(
     dict.new(),
     dict.new(),
   )
+  // These tests assert on contributors; the effective bounds and total term
+  // paired with each block are `why`'s headline concern and are exercised
+  // through it.
+  |> result.map(list.map(_, fn(block) { block.2 }))
 }
 
 // The common case: one bound set, the empty knowledge base, one block back.
@@ -5830,6 +5834,134 @@ fn explain_source(
       signatures.from_glance_module("app", module),
     )
   explanations
+}
+
+pub fn explain_grounds_phantom_variables_in_contributors_test() {
+  // The knowledge base can answer a call with a term still carrying a variable
+  // the calling function has no parameter for — an unresolved higher-order
+  // shape leaves a nested closure's binder behind. The block total collapses
+  // it to `[Unknown]`; the contributor line states the same collapse rather
+  // than leaking the internal binder as an effect named after it.
+  let source =
+    "import helper/lib
+pub fn run() {
+  lib.use_op(1)
+}"
+  let assert Ok(module) = glance.module(source)
+  let knowledge_base =
+    effects.empty_knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(QualifiedName("helper/lib", "use_op"), types.TVar("cb")),
+      ]),
+      types.ProjectInferred,
+    )
+  let assert Ok([#(_bounds, total, [explanation])]) =
+    checker.explain(
+      module,
+      "app",
+      "run",
+      [[]],
+      knowledge_base,
+      signatures.from_glance_module("app", module),
+      dict.new(),
+      dict.new(),
+    )
+  total |> should.equal(effect_term.unknown())
+  explanation.actual |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+pub fn explain_returns_field_variable_bounds_test() {
+  // A field-effect variable survives the total (unlike a phantom), so the
+  // block's bounds carry its identity binder beside the effective bounds —
+  // the same pairing inference writes — and a renderer stating the total over
+  // them reads `[r.run]` as forwarding that field's effects.
+  let source =
+    "pub type Runner {
+  Runner(run: fn() -> Nil)
+}
+
+pub fn go(r: Runner) -> Nil {
+  r.run()
+}"
+  let assert Ok(module) = glance.module(source)
+  let assert Ok([#(bounds, total, _explanations)]) =
+    checker.explain(
+      module,
+      "app",
+      "go",
+      [[]],
+      effects.empty_knowledge_base(),
+      signatures.from_glance_module("app", module),
+      dict.new(),
+      dict.new(),
+    )
+  total |> should.equal(types.TVar("r.run"))
+  bounds
+  |> list.contains(ParamBound("r.run", types.TVar("r.run")))
+  |> should.be_true()
+}
+
+pub fn fallback_summary_records_field_variable_bounds_test() {
+  // The same pairing through the fallback channel: the summary's term keeps
+  // the field variable, so the recorded bounds keep its binder — without it
+  // the emitted `effects` line states `[r.run]` over nothing and the prose
+  // has an unexplained symbolic total.
+  let source =
+    "pub type Runner {
+  Runner(run: fn() -> Nil)
+}
+
+@external(javascript, \"e\", \"r\")
+pub fn run(r: Runner) -> Nil {
+  r.run()
+}"
+  let assert Ok(module) = glance.module(source)
+  checker.fallback_effects(
+    module,
+    "app",
+    effects.empty_knowledge_base(),
+    signatures.from_glance_module("app", module),
+    dict.new(),
+    dict.new(),
+  )
+  |> dict.get("run")
+  |> should.equal(
+    Ok(#(types.TVar("r.run"), [ParamBound("r.run", types.TVar("r.run"))])),
+  )
+}
+
+pub fn fallback_summary_collapses_phantom_variables_test() {
+  // The same class through the fallback channel: the summary is published to
+  // every caller and to `graded effect`, so a variable that is no parameter of
+  // the external is grounded before the summary is stored — otherwise the
+  // query would report `[cb]` while callers and `why` groom the same term to
+  // `[Unknown]`.
+  let source =
+    "import helper/lib
+@external(javascript, \"e\", \"r\")
+pub fn run() -> Nil {
+  lib.use_op(1)
+}"
+  let assert Ok(module) = glance.module(source)
+  let knowledge_base =
+    effects.empty_knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(QualifiedName("helper/lib", "use_op"), types.TVar("cb")),
+      ]),
+      types.ProjectInferred,
+    )
+  checker.fallback_effects(
+    module,
+    "app",
+    knowledge_base,
+    signatures.from_glance_module("app", module),
+    dict.new(),
+    dict.new(),
+  )
+  |> dict.get("run")
+  |> should.equal(Ok(#(effect_term.unknown(), [])))
 }
 
 pub fn explain_orders_contributors_by_span_test() {
@@ -5869,16 +6001,18 @@ pub fn explain_shares_one_analysis_across_bound_sets_test() {
       knowledge_base(),
       signatures.from_glance_module("app", module),
     )
+  // The parameter each set does not name keeps the identity bound inference
+  // gives it, so it reports as the parameter it is rather than as `[Unknown]`.
   bound_f
   |> list.map(fn(explanation) { explanation.actual })
   |> should.equal([
     Specific(set.from_list(["Stdout"])),
-    Specific(set.from_list(["Unknown"])),
+    Polymorphic(set.new(), set.from_list(["g"])),
   ])
   bound_g
   |> list.map(fn(explanation) { explanation.actual })
   |> should.equal([
-    Specific(set.from_list(["Unknown"])),
+    Polymorphic(set.new(), set.from_list(["f"])),
     Specific(set.from_list(["Stdout"])),
   ])
 }
@@ -5895,7 +6029,7 @@ pub fn explain_orders_same_start_by_end_test() {
   inner.span.start |> should.equal(outer.span.start)
   { inner.span.end < outer.span.end } |> should.be_true()
   checker.call_kind(inner.call)
-  |> should.equal(checker.UnresolvedLocalCall("f"))
+  |> should.equal(checker.ParameterCall("f"))
   checker.call_kind(outer.call)
   |> should.equal(checker.ReturnedOperatorCall(QualifiedName("", "f")))
 }
@@ -5946,11 +6080,13 @@ pub fn explain_bounds_resolve_a_parameter_call_test() {
   let assert [bounded] =
     explain_source(source, "run", [ParamBound("f", stdout_term())])
   bounded.actual |> should.equal(Specific(set.from_list(["Stdout"])))
-  // Without the bound nothing resolves the same call: the bounds a `check` line
-  // carries decide what the walk substitutes, which is why `why` runs once per
-  // line rather than picking one.
+  // A declared bound decides what the walk substitutes for the same call, which
+  // is why `why` runs once per `check` line rather than picking one. Without
+  // one the call still resolves — to the identity bound inference synthesises,
+  // which says the effects are the argument's — rather than to `[Unknown]`.
   let assert [unbounded] = explain_source(source, "run", [])
-  unbounded.actual |> should.equal(Specific(set.from_list(["Unknown"])))
+  unbounded.actual
+  |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
 }
 
 pub fn explain_misses_an_unknown_function_test() {
