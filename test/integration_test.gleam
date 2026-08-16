@@ -945,6 +945,7 @@ pub fn an_undeclared_fallback_is_charged_on_every_value_channel_test() {
 check app.direct : []
 check app.wired : []
 check app.as_callback : []
+check app.via_factory : []
 ",
     ),
     #("disk.gleam", "@external(erlang, \"d\", \"w\")\npub fn write() -> Nil\n"),
@@ -959,19 +960,29 @@ pub fn log() -> Nil {
 ",
     ),
     #(
-      "app.gleam",
+      "maker.gleam",
       "import ext
 
 pub type Handler {
   Handler(run: fn() -> Nil)
 }
 
+pub fn make() -> Handler {
+  Handler(run: ext.log)
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+import maker
+
 pub fn direct() -> Nil {
   ext.log()
 }
 
 pub fn wired() -> Nil {
-  let handler = Handler(run: ext.log)
+  let handler = maker.Handler(run: ext.log)
   handler.run()
 }
 
@@ -982,6 +993,11 @@ fn helper(f: fn() -> Nil) -> Nil {
 pub fn as_callback() -> Nil {
   helper(ext.log)
 }
+
+pub fn via_factory() -> Nil {
+  let handler = maker.make()
+  handler.run()
+}
 ",
     ),
   ])
@@ -989,11 +1005,27 @@ pub fn as_callback() -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let total = types.Specific(set.from_list(["Disk", "Unknown"]))
-  ["direct", "wired", "as_callback"]
+  ["direct", "wired", "as_callback", "via_factory"]
   |> list.each(fn(function) {
     let assert Ok(violation) =
       list.find(r.violations, fn(v) { v.function == function })
     violation.explanation.actual |> should.equal(total)
+  })
+
+  // And they agree about *why*, not only about the total. A field call whose
+  // receiver came from another module's factory reported `from in-memory
+  // inference` — an origin no source claimed, minted by the lookup to carry
+  // the running fallback — beside a direct call's `an external with no
+  // declared effects`: two provenance stories for one name. (`as_callback`'s
+  // contributor is the parameter call inside `helper`, so it reports that
+  // argument rather than the external.)
+  ["direct", "wired", "via_factory"]
+  |> list.each(fn(function) {
+    let assert Ok(violation) =
+      list.find(r.violations, fn(v) { v.function == function })
+    violation.explanation.reason
+    |> should.equal(Some(types.UndeclaredExternal))
+    violation.explanation.origin |> should.equal(None)
   })
   support.cleanup(root)
 }
