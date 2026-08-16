@@ -25,6 +25,18 @@ pub fn dotted_name(name: QualifiedName) -> String {
   }
 }
 
+// Compilation targets
+//
+// The targets a Gleam package can be built for, and the widest reading of them.
+
+// Every target a Gleam package can be compiled for. What a package that names
+// none in its `gleam.toml`, or whose config could not be read, is taken to be
+// built for — the widest reading, which charges a declaration and its running
+// fallback body alike rather than deciding either away.
+pub fn every_target() -> Set(String) {
+  set.from_list(["erlang", "javascript"])
+}
+
 // Whether a name's first character is an uppercase letter. This single
 // lexical rule distinguishes effect labels from effect variables and record
 // constructors from ordinary functions — the comparison against both cases

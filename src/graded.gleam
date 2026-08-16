@@ -511,6 +511,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
         registry,
         typeinfo.for_module(type_info, module_path),
         typeinfo.fn_typed_for_module(type_info, module_path),
+        cfg.targets,
       )
     })
 
@@ -616,11 +617,17 @@ fn load_project_context(
 
 // The expensive half: everything a context holds beyond the parsed sources.
 fn project_context(sources: ProjectSources) -> ProjectContext {
-  let ProjectSources(spec:, index:, package_root:, ..) = sources
+  let ProjectSources(cfg:, spec:, index:, package_root:, ..) = sources
   let declared_modules = annotation.module_external_modules(spec)
+  // What the package declares it is compiled for, which decides whether an
+  // `@external` is ever built and so whether a function is foreign code or the
+  // Gleam body is its only implementation. One value for the whole run, this
+  // package and its dependencies alike: a dependency is compiled for the
+  // consumer's target, not its own.
+  let package_targets = cfg.targets
   let stale_externals =
-    stale_project_externals(spec, native_functions_of(index))
-  let dep_sources = dependency_sources(package_root)
+    stale_project_externals(spec, native_functions_of(index, package_targets))
+  let dep_sources = dependency_sources(package_root, package_targets)
   let registry =
     signatures.merge(dep_sources.registry, build_project_registry(index))
   let type_info = build_type_index(index, package_root)
@@ -642,13 +649,16 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
       declaring_externals(spec, stale_externals),
       types.UserExternal,
     )
-    |> with_builders(index, dep_sources)
-    |> enrich_with_path_deps(package_root, declared_modules)
+    |> with_builders(index, dep_sources, package_targets)
+    |> enrich_with_path_deps(package_root, declared_modules, package_targets)
     |> with_committed_spec(spec, declared_modules, stale_externals)
     // Recorded before the inference pass below, so an `@external` resolves to
     // what declares it while this project's own modules are being inferred, not
     // only when they are later checked.
-    |> effects.with_foreign_functions(project_foreign_functions(index))
+    |> effects.with_foreign_functions(project_foreign_functions(
+      index,
+      package_targets,
+    ))
     // What this package defines, for the query that answers from its public API.
     |> effects.with_project_functions(project_function_visibility(index))
     // Committed project returns are Foreign (Fix E): serialized, unsanitized. The
@@ -669,7 +679,9 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
       annotation.extract_type_fields(spec),
       types.CommittedSpec,
     )
-    |> effects.with_factories(qualify_by_module(index, extract.factory_map))
+    |> effects.with_factories(
+      qualify_by_module(index, extract.factory_map(_, package_targets)),
+    )
   // Fill gaps for project modules not (yet) in the spec by inferring them in
   // memory, so `check` resolves cross-module calls without a prior `graded infer`.
   // Committed effects are never overridden; fresh returns win over committed
@@ -682,6 +694,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
       registry,
       type_info,
       declared_modules,
+      package_targets,
     )
 
   ProjectContext(
@@ -698,9 +711,13 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
 // whose effects only a declaration speaks for.
 fn project_foreign_functions(
   index: Dict(String, #(String, glance.Module)),
+  package_targets: Set(String),
 ) -> Dict(QualifiedName, types.ForeignFunction) {
   use names, module_path, #(_gleam_path, module) <- dict.fold(index, dict.new())
-  dict.merge(names, checker.foreign_functions(module, module_path))
+  dict.merge(
+    names,
+    checker.foreign_functions(module, module_path, package_targets),
+  )
 }
 
 // The per-function `external effects <module>.<function>` lines that declare
@@ -742,10 +759,13 @@ fn stale_project_externals(
 // the shape `stale_project_externals` asks for.
 fn native_functions_of(
   index: Dict(String, #(String, glance.Module)),
+  package_targets: Set(String),
 ) -> fn(String) -> Result(Set(String), Nil) {
   fn(module_path) {
     dict.get(index, module_path)
-    |> result.map(fn(entry) { checker.native_function_names(entry.1) })
+    |> result.map(fn(entry) {
+      checker.native_function_names(entry.1, package_targets)
+    })
   }
 }
 
@@ -812,6 +832,7 @@ fn check_one_file(
   registry: SignatureRegistry,
   module_types: Dict(#(Int, Int), girard.Type),
   girard_fn_typed: Dict(String, Set(String)),
+  package_targets: Set(String),
 ) -> CheckResult {
   let #(violations, warnings) =
     checker.check(
@@ -822,6 +843,7 @@ fn check_one_file(
       registry,
       module_types,
       girard_fn_typed,
+      package_targets,
     )
   CheckResult(file: gleam_path, violations:, warnings:)
 }
@@ -1485,7 +1507,15 @@ fn spec_answer(
       // per-function external names in vain — is a fact of that source, not of
       // the spec, and the spec is folded against it. One file is parsed to
       // settle all three: the module the queried name lives in.
-      use parsed <- result.try(module_source_facts(project_modules, module))
+      // The package's declared targets, read straight from its `gleam.toml`:
+      // the fast path has no assembled context to take them from, and which
+      // functions of the queried module are foreign code depends on them.
+      let package_targets = config.targets_for(resolve_package_root(directory))
+      use parsed <- result.try(module_source_facts(
+        project_modules,
+        module,
+        package_targets,
+      ))
       let stale =
         stale_project_externals(spec, fn(queried) {
           case queried == module {
@@ -1508,6 +1538,7 @@ fn spec_answer(
             directory,
             project_modules,
             module,
+            package_targets,
           )),
         name,
       )
@@ -1587,6 +1618,7 @@ fn dependency_foreign_for(
   directory: String,
   project_modules: Dict(String, String),
   module: String,
+  package_targets: Set(String),
 ) -> Dict(QualifiedName, types.ForeignFunction) {
   use <- bool.guard(
     when: dict.has_key(project_modules, module),
@@ -1597,7 +1629,7 @@ fn dependency_foreign_for(
   // read either, so both answer from the declaration alone.
   use <- bool.guard(when: !dict.has_key(files, module), return: dict.new())
   case dict.get(files, module) |> result.try(read_and_parse_gleam_or_nil) {
-    Ok(parsed) -> checker.foreign_functions(parsed, module)
+    Ok(parsed) -> checker.foreign_functions(parsed, module, package_targets)
     Error(Nil) -> dict.new()
   }
 }
@@ -1646,6 +1678,7 @@ type ModuleFacts {
 fn module_source_facts(
   project_modules: Dict(String, String),
   module_path: String,
+  package_targets: Set(String),
 ) -> Result(ModuleFacts, Nil) {
   case dict.get(project_modules, module_path) {
     Error(Nil) ->
@@ -1659,11 +1692,11 @@ fn module_source_facts(
         read_and_parse_gleam(path) |> result.replace_error(Nil),
       )
       ModuleFacts(
-        foreign: checker.foreign_functions(module, module_path),
+        foreign: checker.foreign_functions(module, module_path, package_targets),
         visibility: dict.from_list([
           #(module_path, checker.function_visibility(module)),
         ]),
-        native: checker.native_function_names(module),
+        native: checker.native_function_names(module, package_targets),
       )
     }
   }
@@ -1890,6 +1923,7 @@ pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
       ctx.registry,
       typeinfo.for_module(ctx.type_info, module_path),
       typeinfo.fn_typed_for_module(ctx.type_info, module_path),
+      ctx.sources.cfg.targets,
     )
     |> result.replace_error(FunctionNotFound(name)),
   )
@@ -2470,14 +2504,17 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.try(parse_all_files(gleam_files))
   let index = build_module_index(parsed, directory)
+  // As in `project_context`: one target set for the package and every
+  // dependency it is built with.
+  let package_targets = cfg.targets
   let stale_externals =
-    stale_project_externals(spec, native_functions_of(index))
+    stale_project_externals(spec, native_functions_of(index, package_targets))
 
   // Build a signature registry covering every project module so the checker can
   // do positional argument matching for cross-module polymorphic calls. Hoisted
   // above `kb_base` because the builders below consume it; it needs only
   // `index`/`package_root`.
-  let dep_sources = dependency_sources(package_root)
+  let dep_sources = dependency_sources(package_root, package_targets)
   let registry =
     signatures.merge(dep_sources.registry, build_project_registry(index))
   let type_info = build_type_index(index, package_root)
@@ -2495,9 +2532,12 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       declaring_externals(spec, stale_externals),
       types.UserExternal,
     )
-    |> with_builders(index, dep_sources)
-    |> enrich_with_path_deps(package_root, declared_modules)
-    |> effects.with_foreign_functions(project_foreign_functions(index))
+    |> with_builders(index, dep_sources, package_targets)
+    |> enrich_with_path_deps(package_root, declared_modules, package_targets)
+    |> effects.with_foreign_functions(project_foreign_functions(
+      index,
+      package_targets,
+    ))
 
   let base_kb =
     kb_base
@@ -2505,7 +2545,9 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       annotation.extract_type_fields(spec),
       types.CommittedSpec,
     )
-    |> effects.with_factories(qualify_by_module(index, extract.factory_map))
+    |> effects.with_factories(
+      qualify_by_module(index, extract.factory_map(_, package_targets)),
+    )
 
   let graph = build_dependency_graph(index)
   use sorted <- result.try(
@@ -2532,6 +2574,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
               typeinfo.for_module(type_info, module_path),
               typeinfo.fn_typed_for_module(type_info, module_path),
               declared_modules,
+              package_targets,
             )
           // Prepend new entries so each iteration is O(|new|) instead of
           // O(|acc|); final order doesn't matter, merge_inferred keys by name.
@@ -2577,6 +2620,7 @@ fn infer_one_module(
   module_types: Dict(#(Int, Int), girard.Type),
   girard_fn_typed: Dict(String, Set(String)),
   declared_modules: Set(String),
+  package_targets: Set(String),
 ) -> ModuleInference {
   let knowledge_base =
     with_module_fallback_effects(
@@ -2586,6 +2630,7 @@ fn infer_one_module(
       registry,
       module_types,
       girard_fn_typed,
+      package_targets,
     )
   let #(inferred, returned_operators, provenance) =
     checker.infer_with_returns(
@@ -2596,6 +2641,7 @@ fn infer_one_module(
       registry,
       module_types,
       girard_fn_typed,
+      package_targets,
     )
 
   // Skip the cache file when there's nothing to record. Saves an mkdir syscall
@@ -2669,6 +2715,7 @@ fn infer_project_in_memory(
   registry: SignatureRegistry,
   type_info: typeinfo.TypeInfo,
   declared_modules: Set(String),
+  package_targets: Set(String),
 ) -> KnowledgeBase {
   case topo.sort(build_dependency_graph(index)) {
     Error(_) -> base_kb
@@ -2684,6 +2731,7 @@ fn infer_project_in_memory(
               registry,
               type_info,
               declared_modules,
+              package_targets,
             )
         }
       })
@@ -2700,6 +2748,7 @@ fn fold_inferred_module(
   registry: SignatureRegistry,
   type_info: typeinfo.TypeInfo,
   declared_modules: Set(String),
+  package_targets: Set(String),
 ) -> KnowledgeBase {
   let kb =
     with_module_fallback_effects(
@@ -2709,6 +2758,7 @@ fn fold_inferred_module(
       registry,
       typeinfo.for_module(type_info, module_path),
       typeinfo.fn_typed_for_module(type_info, module_path),
+      package_targets,
     )
   let #(inferred, returned_operators, provenance) =
     checker.infer_with_returns(
@@ -2719,6 +2769,7 @@ fn fold_inferred_module(
       registry,
       typeinfo.for_module(type_info, module_path),
       typeinfo.fn_typed_for_module(type_info, module_path),
+      package_targets,
     )
   let threaded_kb =
     thread_inferred_into_kb(
@@ -2752,6 +2803,7 @@ fn with_module_fallback_effects(
   registry: SignatureRegistry,
   module_types: Dict(#(Int, Int), girard.Type),
   girard_fn_typed: Dict(String, Set(String)),
+  package_targets: Set(String),
 ) -> KnowledgeBase {
   effects.with_fallback_summaries(
     knowledge_base,
@@ -2763,6 +2815,7 @@ fn with_module_fallback_effects(
         registry,
         module_types,
         girard_fn_typed,
+        package_targets,
       ),
       module_path,
     ),
@@ -3024,10 +3077,13 @@ fn merge_dependency_sources(
 
 // Every dependency's source-derived signatures: installed packages under
 // `build/packages`, then path dependencies, which win on key conflict.
-fn dependency_sources(package_root: String) -> DependencySources {
+fn dependency_sources(
+  package_root: String,
+  package_targets: Set(String),
+) -> DependencySources {
   merge_dependency_sources(
-    packages_dir_sources(packages_dir(package_root)),
-    path_dep_sources(package_root),
+    packages_dir_sources(packages_dir(package_root), package_targets),
+    path_dep_sources(package_root, package_targets),
   )
 }
 
@@ -3041,21 +3097,30 @@ fn with_builders(
   knowledge_base: KnowledgeBase,
   index: Dict(String, #(String, glance.Module)),
   dep_sources: DependencySources,
+  package_targets: Set(String),
 ) -> KnowledgeBase {
   knowledge_base
   |> effects.with_updates(dep_sources.updates)
-  |> effects.with_updates(qualify_by_module(index, extract.update_map))
+  |> effects.with_updates(
+    qualify_by_module(index, extract.update_map(_, package_targets)),
+  )
 }
 
 // Scan the `src/` tree of every installed dependency under `build/packages`.
-fn packages_dir_sources(packages_directory: String) -> DependencySources {
+fn packages_dir_sources(
+  packages_directory: String,
+  package_targets: Set(String),
+) -> DependencySources {
   case simplifile.read_directory(packages_directory) {
     Error(_) -> empty_dependency_sources()
     Ok(entries) ->
       list.fold(entries, empty_dependency_sources(), fn(acc, dep) {
         let src_dir =
           filepath.join(filepath.join(packages_directory, dep), "src")
-        merge_dependency_sources(acc, source_dir_sources(src_dir))
+        merge_dependency_sources(
+          acc,
+          source_dir_sources(src_dir, package_targets),
+        )
       })
   }
 }
@@ -3063,7 +3128,10 @@ fn packages_dir_sources(packages_directory: String) -> DependencySources {
 // Scan one package's `src/` tree, folding each parsed module into the registry
 // and into the update-builder map. Only public builders cross a package
 // boundary, so only those land in `updates`.
-fn source_dir_sources(source_dir: String) -> DependencySources {
+fn source_dir_sources(
+  source_dir: String,
+  package_targets: Set(String),
+) -> DependencySources {
   use acc, module_path, module <- signatures.fold_source_dir(
     source_dir,
     empty_dependency_sources(),
@@ -3072,8 +3140,12 @@ fn source_dir_sources(source_dir: String) -> DependencySources {
     acc,
     DependencySources(
       registry: signatures.from_glance_module(module_path, module),
-      updates: extract.public_update_signatures(module, module_path),
-      foreign: checker.foreign_functions(module, module_path),
+      updates: extract.public_update_signatures(
+        module,
+        module_path,
+        package_targets,
+      ),
+      foreign: checker.foreign_functions(module, module_path, package_targets),
     ),
   )
 }
@@ -3175,6 +3247,7 @@ fn enrich_with_path_deps(
   knowledge_base: KnowledgeBase,
   package_root: String,
   consumer_modules: Set(String),
+  package_targets: Set(String),
 ) -> KnowledgeBase {
   let path_deps =
     effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
@@ -3192,7 +3265,14 @@ fn enrich_with_path_deps(
           types.PathDependency(package: name),
         )
       _ ->
-        case infer_path_dep(resolved_dep_path, kb, consumer_modules) {
+        case
+          infer_path_dep(
+            resolved_dep_path,
+            kb,
+            consumer_modules,
+            package_targets,
+          )
+        {
           Error(Nil) -> kb
           // Inference over the dep's source, not a line its author wrote: the
           // origin says so, so nothing downstream reads it as a declaration.
@@ -3216,14 +3296,17 @@ fn enrich_with_path_deps(
 // callees lack the parameter-position info that positional (unlabeled) argument
 // matching needs to bind effect variables at the call site, and their builders
 // resolve only from a serialized `update` line.
-fn path_dep_sources(package_root: String) -> DependencySources {
+fn path_dep_sources(
+  package_root: String,
+  package_targets: Set(String),
+) -> DependencySources {
   effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
   |> list.fold(empty_dependency_sources(), fn(acc, dep) {
     let #(_name, dep_path) = dep
     let resolved_dep_path = resolve_path(package_root, dep_path)
     merge_dependency_sources(
       acc,
-      source_dir_sources(resolved_dep_path <> "/src"),
+      source_dir_sources(resolved_dep_path <> "/src", package_targets),
     )
   })
 }
@@ -3269,6 +3352,7 @@ pub fn infer_path_dep(
   dep_path: String,
   base_kb: KnowledgeBase,
   consumer_modules: Set(String),
+  package_targets: Set(String),
 ) -> Result(
   #(
     Dict(QualifiedName, types.EffectTerm),
@@ -3341,6 +3425,7 @@ pub fn infer_path_dep(
           registry,
           consumer_modules,
           origin,
+          package_targets,
         )
       },
     )
@@ -3360,6 +3445,7 @@ fn infer_path_dep_module(
   registry: SignatureRegistry,
   consumer_modules: Set(String),
   lookup_origin: types.LookupOrigin,
+  package_targets: Set(String),
 ) -> #(
   Dict(QualifiedName, types.EffectTerm),
   Dict(QualifiedName, List(types.ParamBound)),
@@ -3381,6 +3467,7 @@ fn infer_path_dep_module(
           registry,
           dict.new(),
           dict.new(),
+          package_targets,
         )
       // Qualify the module's results once, then both fold them into the dep's
       // own KB (so later modules in its topo order resolve calls into this one)

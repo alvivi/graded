@@ -19,7 +19,7 @@ fn provenance_of(src: String) -> types.ReturnProvenance {
   let assert Ok(module) = glance.module(src)
   let ctx =
     extract.build_import_context(module)
-    |> extract.with_factories(extract.factory_map(module))
+    |> extract.with_factories(extract.factory_map(module, types.every_target()))
   let assert Ok(func) =
     list.find(module.functions, fn(def) { def.definition.name == "target" })
   extract.return_provenance(func.definition, ctx)
@@ -942,7 +942,7 @@ fn is_foreign(src: String) -> Bool {
   let assert Ok(module) = glance.module(src)
   let assert Ok(definition) =
     list.find(module.functions, fn(def) { def.definition.name == "target" })
-  extract.is_foreign_definition(definition)
+  extract.is_foreign_definition(definition, types.every_target())
 }
 
 pub fn a_declaration_naming_its_target_is_foreign_test() {

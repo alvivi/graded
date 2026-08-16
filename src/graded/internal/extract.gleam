@@ -117,7 +117,21 @@ pub type ImportContext {
     // (`with_resolver(base, http)`) builds an `Updated` overlay of its base.
     updates: Dict(String, UpdateSignature),
     cross_updates: Dict(#(String, String), UpdateSignature),
+    // The targets the package under analysis is compiled for. Carried here so
+    // every reader inside one walk classifies a definition as foreign or native
+    // the same way — a function foreign to one channel and ordinary Gleam to
+    // another is the disagreement this whole boundary exists to prevent. Every
+    // target until a caller narrows it.
+    package_targets: Set(String),
   )
+}
+
+// Record which targets the package under analysis is compiled for.
+pub fn with_package_targets(
+  context: ImportContext,
+  package_targets: Set(String),
+) -> ImportContext {
+  ImportContext(..context, package_targets:)
 }
 
 // Record which module the context describes, so same-module bare calls qualify.
@@ -224,6 +238,7 @@ pub fn build_import_context(module: Module) -> ImportContext {
     functions:,
     updates: dict.new(),
     cross_updates: dict.new(),
+    package_targets: types.every_target(),
   )
 }
 
@@ -278,8 +293,10 @@ fn signature_map(
 // charge callers for code that does not exist.
 pub fn is_foreign_definition(
   definition: glance.Definition(glance.Function),
+  package_targets: Set(String),
 ) -> Bool {
-  has_external_attribute(definition) && !declaration_is_excluded(definition)
+  has_external_attribute(definition)
+  && !declaration_is_excluded(definition, package_targets)
 }
 
 fn has_external_attribute(
@@ -294,6 +311,7 @@ fn has_external_attribute(
 // not Gleam the compiler accepts, so the conservative reading stays.
 fn declaration_is_excluded(
   definition: glance.Definition(glance.Function),
+  package_targets: Set(String),
 ) -> Bool {
   use <- bool.guard(when: definition.definition.body == [], return: False)
   // "No target declared" and "a target declared in a form this cannot read"
@@ -308,7 +326,10 @@ fn declaration_is_excluded(
     when: !every_declaration_names_a_readable_target(definition),
     return: False,
   )
-  set.intersection(compiled_targets(definition), declared_targets(definition))
+  set.intersection(
+    compiled_targets(definition, package_targets),
+    declared_targets(definition),
+  )
   |> set.is_empty
 }
 
@@ -324,17 +345,22 @@ fn every_declaration_names_a_readable_target(
   declarations == list.length(attribute_targets(definition, "external"))
 }
 
-// The targets a function is compiled for: both, unless `@target` narrows it.
+// The targets a function is compiled for: what its package declares, narrowed
+// further by a `@target` on the function itself.
 //
-// `gleam.toml`'s `target` narrows the build too, and is not read here: a
-// function this misses is one whose declaration graded still weighs, which is
-// the same answer it gave before targets were read at all.
+// Both narrowings answer the same question, so both are read here: a
+// javascript-only package compiles an `@external(erlang, …)` for nothing, and
+// its Gleam body is the sole implementation exactly as it is under
+// `@target(javascript)`. `package_targets` is what the package *declares* —
+// a build overriding it with `--target` is invisible to graded, so a package
+// whose `gleam.toml` names the target it is not built for reads wrongly here.
 pub fn compiled_targets(
   definition: glance.Definition(glance.Function),
+  package_targets: Set(String),
 ) -> Set(String) {
   case attribute_targets(definition, "target") {
-    [] -> set.from_list(["erlang", "javascript"])
-    targets -> set.from_list(targets)
+    [] -> package_targets
+    targets -> set.intersection(package_targets, set.from_list(targets))
   }
 }
 
@@ -365,9 +391,14 @@ fn attribute_targets(
 // an `@external` whose fallback tail happens to be a constructor call or a
 // record update describes that fallback, not the foreign implementation, so
 // binding a caller's fields from it would state something nothing backs.
-fn native_functions(module: Module) -> List(glance.Function) {
+fn native_functions(
+  module: Module,
+  package_targets: Set(String),
+) -> List(glance.Function) {
   module.functions
-  |> list.filter(fn(definition) { !is_foreign_definition(definition) })
+  |> list.filter(fn(definition) {
+    !is_foreign_definition(definition, package_targets)
+  })
   |> list.map(fn(definition) { definition.definition })
 }
 
@@ -376,9 +407,12 @@ fn native_functions(module: Module) -> List(glance.Function) {
 // syntactic — no knowledge base — so the whole package's factories can be
 // precomputed up front (like the constructor-label map). Keyed by bare
 // function name.
-pub fn factory_map(module: Module) -> Dict(String, FactorySignature) {
+pub fn factory_map(
+  module: Module,
+  package_targets: Set(String),
+) -> Dict(String, FactorySignature) {
   signature_map(
-    native_functions(module),
+    native_functions(module, package_targets),
     build_import_context(module),
     factory_signature,
   )
@@ -443,9 +477,10 @@ fn factory_signature(
 pub fn public_update_signatures(
   module: Module,
   module_path: String,
+  package_targets: Set(String),
 ) -> Dict(#(String, String), UpdateSignature) {
   signature_map(
-    public_functions(module),
+    public_functions(module, package_targets),
     build_import_context(module),
     update_signature,
   )
@@ -455,8 +490,11 @@ pub fn public_update_signatures(
 }
 
 // A module's public top-level functions, foreign ones excluded.
-fn public_functions(module: Module) -> List(glance.Function) {
-  native_functions(module)
+fn public_functions(
+  module: Module,
+  package_targets: Set(String),
+) -> List(glance.Function) {
+  native_functions(module, package_targets)
   |> list.filter(fn(function) {
     case function.publicity {
       glance.Public -> True
@@ -468,9 +506,12 @@ fn public_functions(module: Module) -> List(glance.Function) {
 // Detect each function in a module that is an *update builder*: its body's tail
 // is a record update of one of its parameters, with every updated field wired to
 // a parameter. Purely syntactic, precomputed up front. Keyed by bare name.
-pub fn update_map(module: Module) -> Dict(String, UpdateSignature) {
+pub fn update_map(
+  module: Module,
+  package_targets: Set(String),
+) -> Dict(String, UpdateSignature) {
   signature_map(
-    native_functions(module),
+    native_functions(module, package_targets),
     build_import_context(module),
     update_signature,
   )

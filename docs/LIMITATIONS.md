@@ -358,6 +358,25 @@ pub fn make_client() -> fn(Request) -> Response
 resolves is one it can see built, or annotate the *field* the returned function
 lands in with a `type` line.
 
+### Which targets an `@external` is built for
+
+Whether a declaration is foreign code at all depends on the targets the function
+is compiled for: one whose every `@external` names a target the function is never
+built for has no foreign implementation, so its Gleam body is the whole story and
+graded treats it as ordinary Gleam. graded reads both narrowings — a `@target`
+attribute on the function, and `gleam.toml`'s top-level `target` for the package.
+
+It cannot read the *build's* target. `gleam build --target javascript` against a
+package whose `gleam.toml` says `target = "erlang"` compiles declarations graded
+has ruled out, so a body it treats as the implementation is dead text there, and
+a declaration it ignored is what runs. Both readings then describe a build that
+did not happen.
+
+**How to avoid it** — keep `gleam.toml`'s `target` in step with how the package
+is actually built, or leave the field out. A package that declares no `target` is
+read as compiled for both, which charges a declaration and its running fallback
+body alike rather than deciding either away.
+
 ## 6. A returned-operator summary written by an older graded
 
 A `returns` line records the effect operator a producer returns, e.g.

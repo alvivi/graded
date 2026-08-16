@@ -3,8 +3,10 @@
 // Gleam compiler as project sources.
 
 import filepath
+import gleam/set
 import gleeunit/should
 import graded/internal/config
+import graded/internal/types
 import simplifile
 
 // Fixture setup
@@ -127,4 +129,43 @@ pub fn defaults_for_helper_test() {
   cfg.package_name |> should.equal("hello")
   cfg.spec_file |> should.equal("hello.graded")
   cfg.cache_dir |> should.equal("build/.graded")
+}
+
+// Compilation targets
+//
+// `gleam.toml`'s top-level `target`, which narrows which `@external`
+// declarations are ever built.
+
+pub fn no_target_field_means_every_target_test() {
+  let path = write_toml("no_target", "name = \"myapp\"\n")
+  let assert Ok(cfg) = config.read(path)
+  cfg.targets |> should.equal(types.every_target())
+}
+
+pub fn an_erlang_target_narrows_to_erlang_test() {
+  let path =
+    write_toml("erlang_target", "name = \"myapp\"\ntarget = \"erlang\"\n")
+  let assert Ok(cfg) = config.read(path)
+  cfg.targets |> should.equal(set.from_list(["erlang"]))
+}
+
+pub fn a_javascript_target_narrows_to_javascript_test() {
+  let path =
+    write_toml("js_target", "name = \"myapp\"\ntarget = \"javascript\"\n")
+  let assert Ok(cfg) = config.read(path)
+  cfg.targets |> should.equal(set.from_list(["javascript"]))
+}
+
+pub fn an_unrecognised_target_reads_as_every_target_test() {
+  // The widest reading, which is what every classification did before the
+  // field was read at all — a target graded does not know narrows nothing
+  // rather than narrowing to nothing.
+  let path = write_toml("odd_target", "name = \"myapp\"\ntarget = \"llvm\"\n")
+  let assert Ok(cfg) = config.read(path)
+  cfg.targets |> should.equal(types.every_target())
+}
+
+pub fn targets_for_a_missing_package_is_every_target_test() {
+  config.targets_for("/tmp/graded_config_absent_package")
+  |> should.equal(types.every_target())
 }
