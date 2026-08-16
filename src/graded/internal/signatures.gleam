@@ -132,20 +132,38 @@ pub fn operator_param_names(
 // In-body parameter names of a callee's fn-typed parameters, **in declaration
 // order** (label preferred, then in-body name). Unlike `fn_typed_param_names`
 // (a `Set`), this preserves order — needed to curry an operator argument's
-// abstraction so its binders line up with the application spine. Empty when the
-// callee isn't in the registry.
+// abstraction so its binders line up with the application spine. A parameter
+// named in `bound_names` counts as fn-typed too — a running fallback's
+// girard-typed callback carries no `fn(...)` annotation for the registry to
+// see, and exists only as the bound recorded beside its settled summary — and
+// any parameter a bound names binds under the matched bound name (in-body name
+// preferred), since that is the variable the recorded term holds free — a
+// labeled fallback callback included, whose label would otherwise name the
+// binder. Empty when the callee isn't in the registry.
 pub fn fn_typed_param_names_ordered(
   registry: SignatureRegistry,
   name: QualifiedName,
+  bound_names: Set(String),
 ) -> List(String) {
   case lookup(registry, name) {
     None -> []
     Some(params) ->
       params
-      |> list.filter(fn(p) { p.is_fn_typed })
       |> list.sort(fn(a, b) { int.compare(a.position, b.position) })
       |> list.filter_map(fn(p) {
-        option.to_result(option.or(p.label, p.name), Nil)
+        // The bound-name match wins for a syntactically fn-typed parameter
+        // too: a labeled fallback callback (`with action:`) records its bound
+        // — and states its settled term — over the in-body name, so a binder
+        // named after the label would leave the term's variable free.
+        let bound =
+          [p.name, p.label]
+          |> list.filter_map(option.to_result(_, Nil))
+          |> list.find(set.contains(bound_names, _))
+        case bound, p.is_fn_typed {
+          Ok(name), _ -> Ok(name)
+          Error(Nil), True -> option.to_result(option.or(p.label, p.name), Nil)
+          Error(Nil), False -> Error(Nil)
+        }
       })
   }
 }

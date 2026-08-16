@@ -23,6 +23,12 @@ pub type Handler {
 @external(erlang, "some_ffi_module", "disk_read")
 pub fn disk_read() -> Nil
 
+// The same, declared on both targets so it needs no gate: what the partially
+// covered external below reaches, whose own body compiles for both.
+@external(erlang, "some_ffi_module", "disk_read")
+@external(javascript, "some_ffi_module", "disk_read")
+pub fn portable_disk_read() -> Nil
+
 // Fully covered on the target it compiles for: the closure below never runs.
 @target(erlang)
 @external(erlang, "some_ffi_module", "make_handler")
@@ -30,14 +36,16 @@ pub fn returns_operator() -> fn() -> Nil {
   fn() { disk_read() }
 }
 
-// Partially covered: erlang declares no implementation, so this body *is* what
-// runs there. Its operator is still refused — the JavaScript implementation it
-// stands in for is the one no declaration describes, and there is no declared
-// operator to union a fallback-derived one with.
-@target(erlang)
+// Partially covered: it is compiled for both targets and declares javascript
+// only, so on erlang this body *is* what runs. Its operator is still refused —
+// the JavaScript implementation it stands in for is the one no declaration
+// describes, and there is no declared operator to union a fallback-derived one
+// with. Ungated, since partial coverage is what it is here for: gating it to
+// erlang would leave the declaration covering no target it compiles for, which
+// makes the body the sole implementation and the function ordinary Gleam.
 @external(javascript, "some_ffi_module", "make_handler")
 pub fn partial_returns_operator() -> fn() -> Nil {
-  fn() { disk_read() }
+  fn() { portable_disk_read() }
 }
 
 // A fallback body whose tail is a constructor call — a factory, were it native.
@@ -78,7 +86,6 @@ pub fn calls_returned_operator() -> Nil {
   handle()
 }
 
-@target(erlang)
 pub fn calls_partial_operator() -> Nil {
   let handle = partial_returns_operator()
   handle()

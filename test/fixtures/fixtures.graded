@@ -126,6 +126,7 @@ external effects local_wired.read_disk : [Disk]
 external effects local_wired.opaque_read : []
 external effects shadow_field.split : []
 external effects foreign_values.disk_read : [Disk]
+external effects foreign_values.portable_disk_read : [Disk]
 // Declared, and still refused on every value channel: what a declaration says
 // about calling a function says nothing about the value it returns.
 external effects foreign_values.returns_operator : []

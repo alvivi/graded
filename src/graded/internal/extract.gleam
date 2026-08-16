@@ -271,10 +271,68 @@ fn signature_map(
 // the targets the declaration doesn't cover — on a covered target it does not
 // run, and the foreign implementation may differ from it, so nothing derived
 // from that body describes the function every caller reaches.
+//
+// Unless `@target` excludes every target the declaration names. Then no foreign
+// implementation is ever compiled, the Gleam body is the sole implementation,
+// and the function is ordinary Gleam — weighing a declaration over it would
+// charge callers for code that does not exist.
 pub fn is_foreign_definition(
   definition: glance.Definition(glance.Function),
 ) -> Bool {
+  has_external_attribute(definition) && !declaration_is_excluded(definition)
+}
+
+fn has_external_attribute(
+  definition: glance.Definition(glance.Function),
+) -> Bool {
   list.any(definition.attributes, fn(attribute) { attribute.name == "external" })
+}
+
+// Whether every `@external` on a definition names a target it is not compiled
+// for. Only a definition that has a body qualifies: without one a declaration
+// excluded this way leaves the function with no implementation at all, which is
+// not Gleam the compiler accepts, so the conservative reading stays.
+fn declaration_is_excluded(
+  definition: glance.Definition(glance.Function),
+) -> Bool {
+  use <- bool.guard(when: definition.definition.body == [], return: False)
+  set.intersection(compiled_targets(definition), declared_targets(definition))
+  |> set.is_empty
+}
+
+// The targets a function is compiled for: both, unless `@target` narrows it.
+//
+// `gleam.toml`'s `target` narrows the build too, and is not read here: a
+// function this misses is one whose declaration graded still weighs, which is
+// the same answer it gave before targets were read at all.
+pub fn compiled_targets(
+  definition: glance.Definition(glance.Function),
+) -> Set(String) {
+  case attribute_targets(definition, "target") {
+    [] -> set.from_list(["erlang", "javascript"])
+    targets -> set.from_list(targets)
+  }
+}
+
+// The targets the function's `@external` attributes declare an implementation
+// for. A target argument that isn't a plain name states nothing this can read,
+// so it declares no target and the fallback stays covered by the walk.
+pub fn declared_targets(
+  definition: glance.Definition(glance.Function),
+) -> Set(String) {
+  attribute_targets(definition, "external") |> set.from_list()
+}
+
+// The target named by the first argument of each `name` attribute.
+fn attribute_targets(
+  definition: glance.Definition(glance.Function),
+  name: String,
+) -> List(String) {
+  use attribute <- list.filter_map(definition.attributes)
+  case attribute.name == name, attribute.arguments {
+    True, [glance.Variable(name: target, ..), ..] -> Ok(target)
+    True, _ | False, _ -> Error(Nil)
+  }
 }
 
 // A module's top-level functions minus the foreign ones: the functions whose

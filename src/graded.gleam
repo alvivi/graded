@@ -46,7 +46,6 @@ import graded/internal/checker
 import graded/internal/cli
 import graded/internal/config
 import graded/internal/diff
-import graded/internal/effect_term
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
 import graded/internal/signatures.{type SignatureRegistry}
@@ -924,18 +923,16 @@ fn external_warnings(
       types.FunctionExternal(function) -> {
         let name = external.module <> "." <> function
         let resolves =
-          set.contains(known_functions, name)
-          || declares_dependency_function(
-            dep_functions,
-            dep_files,
+          function_external_resolves(
+            name,
             external.module,
             function,
-          )
-          || dict.has_key(
+            known_functions,
+            dep_functions,
+            dep_files,
             catalog_functions,
-            QualifiedName(external.module, function),
+            catalog_modules,
           )
-          || dict.has_key(catalog_modules, external.module)
         case set.contains(stale, name), resolves {
           True, _ -> Ok(StaleFunctionExternalWarning(function: name))
           False, False -> Ok(UnmatchedFunctionExternalWarning(function: name))
@@ -956,22 +953,59 @@ fn external_warnings(
   })
 }
 
-// Whether a dependency module answers for `function`.
+// Whether the function a per-function `external effects` line names exists.
 //
-// True only where the module's source was read: there the module defines what
-// it defines, and a name it doesn't is a typo. A module graded holds no readable
-// source for keeps answering for every name, so a dependency it could not parse
-// is never reported as a typo — the lint flags what it can prove dead, and
-// silence is not proof.
-fn declares_dependency_function(
+// The catalog is a stand-in for sources graded cannot read, so it is weighed
+// only where the dependency's own source says nothing: a parsed module defines
+// what it defines, and a catalog entry — module-level or stale per-function —
+// must not wave through a name the source proves absent.
+fn function_external_resolves(
+  name: String,
+  module: String,
+  function: String,
+  known_functions: Set(String),
+  dep_functions: Dict(String, Set(String)),
+  dep_files: Dict(String, String),
+  catalog_functions: Dict(QualifiedName, a),
+  catalog_modules: Dict(String, b),
+) -> Bool {
+  use <- bool.guard(when: set.contains(known_functions, name), return: True)
+  case dependency_evidence(dep_functions, dep_files, module, function) {
+    SourceSettles(defines:) -> defines
+    UnreadableSource -> True
+    NoDependencySource ->
+      dict.has_key(catalog_functions, QualifiedName(module, function))
+      || dict.has_key(catalog_modules, module)
+  }
+}
+
+// What the dependency sources say about the function a per-function line names.
+type DependencyEvidence {
+  // The module's parsed source settles the question: it defines the function,
+  // or provably does not. Either answer is definitive — a name the source
+  // proves absent is a typo whatever the catalog keys for the module.
+  SourceSettles(defines: Bool)
+  // A source file exists but could not be read or parsed: no evidence either
+  // way, and silence is not proof, so the name is never flagged.
+  UnreadableSource
+  // No source at all — the module is not an installed dependency's, so the
+  // catalog is all that is left to weigh.
+  NoDependencySource
+}
+
+fn dependency_evidence(
   dep_functions: Dict(String, Set(String)),
   dep_files: Dict(String, String),
   module: String,
   function: String,
-) -> Bool {
+) -> DependencyEvidence {
   case dict.get(dep_functions, module) {
-    Ok(functions) -> set.contains(functions, function)
-    Error(Nil) -> dict.has_key(dep_files, module)
+    Ok(functions) -> SourceSettles(defines: set.contains(functions, function))
+    Error(Nil) ->
+      case dict.has_key(dep_files, module) {
+        True -> UnreadableSource
+        False -> NoDependencySource
+      }
   }
 }
 
@@ -1654,20 +1688,34 @@ fn function_effect(
   // `check` and `why` charge its effects — so the query states them too rather
   // than reporting a bare `[Unknown]` the other two disagree with.
   let fallback = effects.fallback_contribution(knowledge_base, qualified)
+  // The bounds a running fallback body states its effects over, for the answers
+  // whose own term is ground: a fallback that calls a function-typed parameter
+  // names that parameter, and without its bound the line names a variable
+  // nothing introduces. Only a fallback's bounds travel with those answers — a
+  // per-function bound from anywhere else was written over a body the foreign
+  // implementation needn't match, exactly like the entry beside it, so it is no
+  // more an answer here than that entry is.
+  let fallback_bounds = case fallback {
+    option.Some(_) -> effects.lookup_param_bounds(knowledge_base, qualified)
+    option.None -> []
+  }
   use <- bool.guard(
     when: checker.undeclared_external(knowledge_base, qualified),
-    return: Ok(answer.UndeclaredExternalAnswer(name:, fallback:)),
+    return: Ok(answer.UndeclaredExternalAnswer(
+      name:,
+      bounds: fallback_bounds,
+      fallback:,
+    )),
   )
   case effects.lookup_declared(knowledge_base, qualified) {
     effects.Unknown -> Error(Nil)
-    // A module-level external carries no per-function bounds, so none travel
-    // with its answer. Which map answered is reported by the lookup itself, so
-    // the recorded source can't disagree with the term beside it.
+    // Which map answered is reported by the lookup itself, so the recorded
+    // source can't disagree with the term beside it.
     effects.Known(term, types.ModuleExternalEntry(origin:)) ->
       Ok(answer.FunctionAnswer(
         name:,
         module:,
-        bounds: [],
+        bounds: fallback_bounds,
         term:,
         source: types.ModuleExternalEntry(origin:),
         fallback:,
@@ -1837,8 +1885,8 @@ pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
     as "explain returns one block per bounds set"
   blocks
   |> list.map(fn(block) {
-    let #(check, explanations) = block
-    why_block(name, check, explanations)
+    let #(check, #(bounds, total, explanations)) = block
+    why_block(name, check, bounds, total, explanations)
   })
   |> string.join("\n\n")
 }
@@ -1861,20 +1909,24 @@ fn check_bounds(check: Option(EffectAnnotation)) -> List(types.ParamBound) {
 }
 
 // One `check` line's explanation: the function's total effect, the declaration
-// the analysis ran under, and its contributors.
+// the analysis ran under, and its contributors. `bounds` are the ones the walk
+// actually substituted — declared plus synthesised — as `explain` returned
+// them, and `total` is the block's effect as a term: the per-call explanations
+// ground each effect for printing, which concretizes a still-symbolic operator
+// application to `[Unknown]`, so a total rebuilt from them would misstate a
+// second-order function the spec's inferred line states symbolically.
 fn why_block(
   name: String,
   check: Option(EffectAnnotation),
+  bounds: List(types.ParamBound),
+  total: types.EffectTerm,
   explanations: List(types.CallExplanation),
 ) -> String {
-  let total =
-    list.fold(explanations, types.empty(), fn(acc, explanation) {
-      types.union(acc, explanation.actual)
-    })
-  // The sentence `graded effect` states a total in, so the two commands describe
-  // one function's effects in one wording.
-  let header =
-    answer.function_sentence(name, [], effect_term.from_effect_set(total))
+  // The sentence `graded effect` states a total in, bounds included, so the two
+  // commands describe one function's effects in one wording — a total that is
+  // exactly a callback's variable reads as forwarding that argument, not as an
+  // effect named after it.
+  let header = answer.function_sentence(name, bounds, total)
   // The whole declaration, bounds included: two `check` lines can share a budget
   // and differ only in what they bind, and the budget alone wouldn't say which
   // block is which.
@@ -3367,6 +3419,14 @@ fn infer_path_dep_module(
 // `all_effects` misses). `graded infer` no longer writes such lines; this guards
 // a stale or hand-written one.
 //
+// Lines for a name a *stale* per-function external also names are dropped from
+// both too. A healthy spec never holds that pair — `infer` deletes the external
+// and rewrites the `effects` line in one pass — so where they coexist the spec's
+// state for the name is one no `infer` produced, and the committed term must not
+// outrank the fresh walk: the warning promises the body is walked instead, and a
+// committed entry surviving here is exactly what would silence it for every
+// cross-module caller and for the query.
+//
 // Shared by the full project context and the `effect` query's spec-only fast
 // path, which must fold the spec exactly as the full context does for its answer
 // to be the one the full context would have given.
@@ -3378,16 +3438,27 @@ fn with_committed_spec(
 ) -> KnowledgeBase {
   knowledge_base
   |> effects.with_inferred(
-    drop_declared_modules(
-      effects.load_spec_effects_from_file(spec),
-      declared_modules,
-    ),
+    effects.load_spec_effects_from_file(spec)
+      |> drop_declared_modules(declared_modules)
+      |> drop_stale_names(stale_externals),
     types.CommittedSpec,
   )
-  |> effects.with_inferred_params(drop_declared_modules(
-    effects.load_spec_params_from_file(spec, stale_externals),
-    declared_modules,
-  ))
+  |> effects.with_inferred_params(
+    effects.load_spec_params_from_file(spec, stale_externals)
+    |> drop_declared_modules(declared_modules)
+    |> drop_stale_names(stale_externals),
+  )
+}
+
+// Drop every entry whose dotted name a stale per-function external also names.
+fn drop_stale_names(
+  entries: Dict(QualifiedName, a),
+  stale_externals: Set(String),
+) -> Dict(QualifiedName, a) {
+  use <- bool.guard(set.is_empty(stale_externals), entries)
+  dict.filter(entries, fn(name, _value) {
+    !set.contains(stale_externals, name.module <> "." <> name.function)
+  })
 }
 
 // Drop every `QualifiedName`-keyed entry whose module the consumer declared

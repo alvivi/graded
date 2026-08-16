@@ -167,6 +167,14 @@ effects myapp.apply(f: [Stdout]) : [Stdout]
 A call to a bounded parameter (`f(x)` inside `apply`) uses the declared bound
 instead of `[Unknown]`.
 
+A function-typed parameter no bound names still resolves to a bound: the identity
+one, `f: [f]`, saying its effects are whatever the argument's are. So `check`,
+`why`, `graded effect` and `graded infer` all report `apply` as `[f]`, and a
+`check` line that names only some of a function's callbacks reports the rest as
+the parameters they are rather than as `[Unknown]`. A budget still has to account
+for them — `check myapp.apply : []` fails as `[f]`, since nothing said `f` is
+pure — which is what declaring `check myapp.apply(f: []) : []` is for.
+
 ### Field bounds
 
 A bound's name can be a `param.field` path, declaring the effect of a function-typed
@@ -374,7 +382,12 @@ is the one that governs your own code, and it is a whole-module budget by design
 
 A module-level line whose module is neither a dependency nor one of your own is
 flagged as a probable typo: no call can resolve into a module that isn't there.
-(`graded effect` still answers from such a line — see
+A per-function line is flagged the same way when its name resolves nowhere — and
+a dependency whose source is installed and parses settles that by what it
+defines, so `external effects gleam/list.typo : []` is flagged even though a
+catalog module-level entry for `gleam/list` would answer for any name in it. The
+catalog stands in only where graded holds no readable source. (`graded effect`
+still answers from a module-level line — see
 [Looking up one effect](#looking-up-one-effect) — it reports what the spec says
 about a name rather than checking that the name exists.)
 
@@ -397,6 +410,12 @@ function with a body means that body is what runs on Erlang, so the budget cover
 both the declaration and the fallback. An `@external` for every target it is
 compiled for (both, or the one a `@target` narrows it to) is answered by the
 declaration alone.
+
+Where `@target` excludes *every* target the declaration names — `@target(erlang)`
+on a function whose only `@external` is `@external(javascript, …)` — no foreign
+implementation is compiled at all. The Gleam body is the sole implementation, and
+the function is ordinary Gleam: its effects are inferred from that body, and the
+values it returns, builds and wires are traced like any other function's.
 
 Only an `external effects` line, a module-level external, or a catalog entry
 declares an external. An `effects` line does not, whatever it says: for an

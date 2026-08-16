@@ -46,7 +46,16 @@ pub type EffectAnswer {
   // it has one. Nothing declares the external, but the fallback is ordinary code
   // graded walked, so those effects are charged beside the `[Unknown]` — and the
   // answer states them, as `check` and `why` do.
-  UndeclaredExternalAnswer(name: String, fallback: Option(EffectTerm))
+  //
+  // `bounds` binds that fallback's variables. A fallback that calls a
+  // function-typed parameter states its effects over the parameter, so the
+  // bounds travel with the term the way they do for any other function; without
+  // them the line names a variable nothing introduces.
+  UndeclaredExternalAnswer(
+    name: String,
+    bounds: List(ParamBound),
+    fallback: Option(EffectTerm),
+  )
   // A field of a custom type, declared by a `type` line. `module` is `None` for
   // a bare declaration, which is keyed under no module.
   TypeFieldAnswer(
@@ -83,17 +92,19 @@ pub fn render(answer: EffectAnswer, format: Format) -> String {
 
 pub fn render_graded(answer: EffectAnswer) -> String {
   case answer {
-    // A module-level external carries no per-function bounds, so its line is
-    // rendered without them and labelled.
+    // A module-level external declares no per-function bounds itself, but a
+    // running fallback body under it states its own effects over the parameters
+    // it calls — so whatever bounds the lookup found are rendered, and the line
+    // is labelled with the module that answered.
     FunctionAnswer(
       name:,
       module:,
+      bounds:,
       term:,
       source: types.ModuleExternalEntry(..),
       fallback:,
-      ..,
     ) ->
-      effects_line(name, [], term)
+      effects_line(name, bounds, term)
       <> "\n// resolved via module-level external for "
       <> module
       <> graded_fallback(fallback)
@@ -108,8 +119,8 @@ pub fn render_graded(answer: EffectAnswer) -> String {
       effects_line(name, bounds, term)
       <> graded_source(origin)
       <> graded_fallback(fallback)
-    UndeclaredExternalAnswer(name:, fallback:) ->
-      effects_line(name, [], undeclared_term(fallback))
+    UndeclaredExternalAnswer(name:, bounds:, fallback:) ->
+      effects_line(name, bounds, undeclared_term(fallback))
       <> "\n// an external with no declared effects"
       <> graded_fallback(fallback)
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
@@ -178,12 +189,13 @@ pub fn render_prose(answer: EffectAnswer) -> String {
       ]
       |> string.join("\n")
     // The same lines the `check`/`why` vocabulary gives it: what the effects
-    // are, that nothing declared them, and what its fallback body added.
-    UndeclaredExternalAnswer(name:, fallback:) ->
+    // are, that nothing declared them, the bounds its fallback states them
+    // over, and what that body added.
+    UndeclaredExternalAnswer(name:, bounds:, fallback:) ->
       [
-        function_sentence(name, [], undeclared_term(fallback)),
+        function_sentence(name, bounds, undeclared_term(fallback)),
         "  source: an external with no declared effects",
-        ..prose_fallback(fallback)
+        ..list.append(bound_lines(bounds), prose_fallback(fallback))
       ]
       |> string.join("\n")
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
@@ -324,18 +336,25 @@ fn detail_lines(
   source: types.EffectSource,
 ) -> List(String) {
   // The bound lines follow the source line: each states an assumption the
-  // checker applies to that argument at call sites.
-  let bound_lines = bounds |> list.filter(constrains) |> list.map(bound_line)
+  // checker applies to that argument at call sites. They follow either source —
+  // a module-level external declares none itself, but a running fallback body
+  // under it does, and the assumption holds however the entry was reached.
+  let bound_lines = bound_lines(bounds)
   case source {
     types.ModuleExternalEntry(..) -> [
       "  source: module-level external for `" <> module <> "`",
       "          used when no per-function entry exists",
+      ..bound_lines
     ]
     types.FunctionEntry(origin:) -> [
       "  source: " <> effects.describe_origin(origin),
       ..bound_lines
     ]
   }
+}
+
+fn bound_lines(bounds: List(ParamBound)) -> List(String) {
+  bounds |> list.filter(constrains) |> list.map(bound_line)
 }
 
 // Whether a bound says anything a reader doesn't already have. The identity
