@@ -296,8 +296,32 @@ fn declaration_is_excluded(
   definition: glance.Definition(glance.Function),
 ) -> Bool {
   use <- bool.guard(when: definition.definition.body == [], return: False)
+  // "No target declared" and "a target declared in a form this cannot read"
+  // are the same empty set, and they mean opposite things: the first excludes
+  // the declaration, the second is a declaration whose target is simply
+  // unknown. Reading the second as the first would make the Gleam body the
+  // trusted implementation of foreign code and publish what it does in place
+  // of `[Unknown]`. Only compiler-accepted source reaches here, where every
+  // `@external` names a target as a plain word — so this is the conservative
+  // reading standing behind an assumption rather than a live case.
+  use <- bool.guard(
+    when: !every_declaration_names_a_readable_target(definition),
+    return: False,
+  )
   set.intersection(compiled_targets(definition), declared_targets(definition))
   |> set.is_empty
+}
+
+// Whether every `@external` attribute on the definition named a target
+// `attribute_targets` could read.
+fn every_declaration_names_a_readable_target(
+  definition: glance.Definition(glance.Function),
+) -> Bool {
+  let declarations =
+    list.count(definition.attributes, fn(attribute) {
+      attribute.name == "external"
+    })
+  declarations == list.length(attribute_targets(definition, "external"))
 }
 
 // The targets a function is compiled for: both, unless `@target` narrows it.
