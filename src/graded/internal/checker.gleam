@@ -759,10 +759,22 @@ fn settle_fallback_effects(
   // the bound the call into it has nothing to re-key its variable onto the
   // calling fallback's own parameter — a girard-typed parameter carries no
   // annotation for the syntactic fallback to find.
+  //
+  // Every target this pass will summarize has an entry, empty where no pass has
+  // settled it yet. What the base holds is then the iteration's own state rather
+  // than silence, and silence outside it means a walk that never ran — which is
+  // what `with_running_fallback` widens to `[Unknown]`. Left absent, that
+  // widening would enter a self-recursive fallback's first pass and no later
+  // pass would remove it.
   let knowledge_base =
     effects.with_fallback_summaries(
       walk.knowledge_base,
-      dict.fold(settled, dict.new(), fn(acc, function, summary) {
+      list.fold(walk.targets, dict.new(), fn(acc, definition) {
+        let function = definition.definition.name
+        let summary = case dict.get(settled, function) {
+          Ok(summary) -> summary
+          Error(Nil) -> #(effect_term.pure(), [])
+        }
         dict.insert(
           acc,
           QualifiedName(module: walk.module_path, function:),
