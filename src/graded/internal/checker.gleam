@@ -388,10 +388,21 @@ fn contributors(
 ) -> #(Contribution, Memo) {
   let declaration =
     declaration_explanation(context.module_path, knowledge_base, definition)
-  let #(walked, body_term, effective, body_walked, memo) = case
+  let #(walked, body_term, effective, body, memo) = case
     standalone_declaration(declaration, definition)
   {
-    Some(_declaration) -> #([], effect_term.pure(), bounds, False, memo)
+    // Which of the two standalone cases this is decides whether the body's
+    // *references* are still reported: an `@external` reaching here covers
+    // every target it is compiled for, so its Gleam body is text nothing runs.
+    // Anything else here is ordinary Gleam a declaration answers *for* — its
+    // body runs whatever the declaration says.
+    Some(_declaration) -> {
+      let body = case extract.is_foreign_definition(definition) {
+        True -> BodyIsDeadText
+        False -> BodySuppressed
+      }
+      #([], effect_term.pure(), bounds, body, memo)
+    }
     None -> {
       let effective = effective_bounds(bounds, fn_typed_params)
       let #(body_effects, memo) =
@@ -419,7 +430,7 @@ fn contributors(
         list.map(body_effects, call_explanation(_, permitted)),
         union_of(body_effects),
         effective,
-        True,
+        BodyWalked,
         memo,
       )
     }
@@ -443,23 +454,40 @@ fn contributors(
       explanations: ordered_explanations(list.append(declared, walked)),
       effective_bounds: effective,
       total:,
-      body_walked:,
+      body:,
     ),
     memo,
   )
 }
 
 // What one walk under one set of bounds established: the ordered contributors,
-// the bounds the walk actually substituted, the total as a term, and whether
-// the body was walked at all — `False` where a standalone declaration answered
-// for the whole function.
+// the bounds the walk actually substituted, the total as a term, and what
+// became of the function's Gleam body.
 type Contribution {
   Contribution(
     explanations: List(CallExplanation),
     effective_bounds: List(ParamBound),
     total: EffectTerm,
-    body_walked: Bool,
+    body: BodyStanding,
   )
+}
+
+// What the walk did with a function's Gleam body, and where it walked nothing,
+// why. Two questions that used to be one flag: whether the body's effects were
+// weighed, and whether that body is code that runs at all.
+//
+// They come apart on a declaration that answers for ordinary Gleam. The effects
+// are the declaration's — every caller is charged those and nothing else — but
+// the body still runs, so what it does with the values it holds is still real.
+type BodyStanding {
+  // Walked: its contributors are among the explanations.
+  BodyWalked
+  // An `@external` covering every target it is compiled for. The Gleam body is
+  // there, and nothing ever runs it.
+  BodyIsDeadText
+  // Ordinary Gleam a declaration answers for — a function under a module-level
+  // `external effects <module>` line. Not weighed, but run.
+  BodySuppressed
 }
 
 // What stands in for a body graded does not weigh: the declaration that answers
@@ -2195,16 +2223,18 @@ fn check_annotation(
         })
 
       // Warn about function references passed as values with known non-pure
-      // effects. A reference sits in the Gleam body, and where the declaration
-      // stands alone that body never runs — an `@external` covering every
-      // compiled target keeps its body as dead text — so nothing it references
-      // is ever passed anywhere. The walk that charged the contributors
-      // decided whether the body runs, so the same decision gates the warning.
+      // effects. A reference sits in the Gleam body, so the warning turns on
+      // whether that body is code that runs — not on whether its effects were
+      // weighed. An `@external` covering every compiled target keeps its body
+      // as dead text, and nothing it references is ever passed anywhere. A
+      // function under a module-level `external effects <module>` line is
+      // ordinary Gleam whose effects the declaration answers for: the body
+      // still runs, and a reference it passes is still untracked.
       let extract_result =
         extract.extract_function_calls(function_definition.definition, context)
-      let reference_warnings = case contribution.body_walked {
-        False -> []
-        True ->
+      let reference_warnings = case contribution.body {
+        BodyIsDeadText -> []
+        BodyWalked | BodySuppressed ->
           collect_reference_warnings(
             annotation.function,
             extract_result.references,
