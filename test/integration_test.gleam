@@ -1442,6 +1442,13 @@ pub fn a_module_external_resolves_from_catalog_functions_test() {
       "proj.graded",
       "external effects gleam/io : []\nexternal effects nowhere/mod : []\n",
     ),
+    // The manifest's one package yields sources, so a module the lint cannot
+    // place really is nowhere. `gleam/io` is not among them: the catalog's
+    // per-function entries are what answer for it.
+    #(
+      "build/packages/gleam_stdlib/src/gleam/list.gleam",
+      "pub fn go() -> Nil {\n  Nil\n}\n",
+    ),
     #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
   ])
   let assert Ok(results) = graded.run(root)
@@ -5232,6 +5239,108 @@ pub fn a_module_level_external_over_a_project_module_is_untouched_test() {
   support.cleanup(root)
 }
 
+pub fn a_catalogued_modules_uncatalogued_function_is_not_flagged_test() {
+  // The catalog keys some of `gleam/erlang/process`'s functions and not
+  // `subject_owner`. With that package's own sources not installed, nothing can
+  // prove the name absent — but the per-function tier weighed only the exact
+  // catalog key and the module-level one, so it called a real function a typo.
+  // The module tier has consulted the per-function-derived module set all
+  // along; both tiers now do.
+  let root = "build/external_lint_catalog_function_module"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "manifest.toml",
+      "packages = [\n  { name = \"gleam_erlang\", version = \"0.34.0\" },\n]\n",
+    ),
+    #(
+      "proj.graded",
+      "external effects gleam/erlang/process.subject_owner : [Process]\n",
+    ),
+    // The package is installed — the tree is complete — but this module is not
+    // among what it ships here, so only the catalog speaks for the name.
+    #(
+      "build/packages/gleam_erlang/src/gleam/erlang.gleam",
+      "pub fn go() -> Nil {\n  Nil\n}\n",
+    ),
+    #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_missing_packages_tree_silences_only_what_it_hides_test() {
+  // A fresh clone before `gleam deps download`: the manifest lists packages
+  // whose sources are nowhere on disk. Every dependency line was flagged as a
+  // typo, because "not found" was read as proof of absence over a tree that had
+  // read almost nothing. Project modules were parsed either way, so what they
+  // settle is settled.
+  let root = "build/external_lint_no_packages"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "manifest.toml",
+      "packages = [\n  { name = \"dep\", version = \"1.0.0\" },\n]\n",
+    ),
+    #(
+      "proj.graded",
+      "external effects dep/io.writes : [Disk]
+external effects dep/io : [Disk]
+external effects m.no_such : []
+external effects m.go : []
+",
+    ),
+    #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+  ])
+  let assert Ok(results) = graded.run(root)
+  // The dependency lines are silent; the project ones are unchanged — `m` was
+  // parsed, so it defines what it defines, and `m.go`'s Gleam body is right
+  // there for the stale lint to name.
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.UnmatchedFunctionExternalWarning(function: "m.no_such"),
+    types.StaleFunctionExternalWarning(function: "m.go"),
+  ])
+  support.cleanup(root)
+}
+
+pub fn a_partial_packages_tree_still_flags_what_it_can_prove_test() {
+  // Two manifest packages, one installed. A module of the *missing* one cannot
+  // be disproved — it may be exactly what is not on disk — while a name the
+  // installed package's own parsed source plainly lacks is dead whatever else
+  // is missing.
+  let root = "build/external_lint_partial_packages"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "manifest.toml",
+      "packages = [\n  { name = \"here\", version = \"1.0.0\" },\n  { name = \"absent\", version = \"1.0.0\" },\n]\n",
+    ),
+    #(
+      "proj.graded",
+      "external effects absent/thing.whatever : [Disk]
+external effects absent/thing : [Disk]
+external effects here/io.writes : [Disk]
+external effects here/io.typo : [Disk]
+",
+    ),
+    #(
+      "build/packages/here/src/here/io.gleam",
+      "pub fn writes() -> Nil {\n  Nil\n}\n",
+    ),
+    #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.UnmatchedFunctionExternalWarning(function: "here/io.typo"),
+  ])
+  support.cleanup(root)
+}
+
 pub fn an_external_naming_nothing_is_flagged_test() {
   // Existence detection at both tiers. A line that resolves nowhere covers
   // nothing, so it is a typo rather than a budget — while the catalog- and
@@ -5242,7 +5351,7 @@ pub fn an_external_naming_nothing_is_flagged_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "manifest.toml",
-      "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
+      "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n  { name = \"dep\", version = \"1.0.0\" },\n]\n",
     ),
     #(
       "proj.graded",
@@ -5257,6 +5366,13 @@ external effects dep/io : [Disk]
     #(
       "build/packages/dep/src/dep/io.gleam",
       "pub fn writes() -> Nil {\n  Nil\n}\n",
+    ),
+    // Every manifest package yields sources, so a module the lint cannot place
+    // really is nowhere. `gleam/io` itself is not among them — the catalog is
+    // what answers for it.
+    #(
+      "build/packages/gleam_stdlib/src/gleam/list.gleam",
+      "pub fn go() -> Nil {\n  Nil\n}\n",
     ),
     #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
   ])

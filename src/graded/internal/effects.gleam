@@ -7,7 +7,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/order
 import gleam/result
-import gleam/set
+import gleam/set.{type Set}
 import gleam/string
 import graded/internal/annotation
 import graded/internal/config
@@ -1001,6 +1001,30 @@ pub fn dependency_module_files(
         dict.merge(acc, source_dir_module_files(src_dir))
       })
   }
+}
+
+// The installed packages whose `src/` yielded at least one Gleam module — the
+// ones `dependency_module_files` could actually read. Told apart from the
+// packages a manifest lists so a caller can ask whether the tree it read is the
+// whole of what this project depends on, or a partial one whose gaps could hold
+// any module.
+pub fn packages_with_sources(packages_directory: String) -> Set(String) {
+  case simplifile.read_directory(packages_directory) {
+    Error(_) -> set.new()
+    Ok(packages) ->
+      packages
+      |> list.filter(fn(package_name) {
+        let src_dir = packages_directory <> "/" <> package_name <> "/src"
+        !dict.is_empty(source_dir_module_files(src_dir))
+      })
+      |> set.from_list
+  }
+}
+
+// The packages the manifest lists, by name. What an installed tree is measured
+// against.
+pub fn manifest_package_names(manifest_path: String) -> Set(String) {
+  parse_manifest_versions(manifest_path) |> dict.keys |> set.from_list
 }
 
 // Map of module path -> source file for every `.gleam` under `source_dir` (a
