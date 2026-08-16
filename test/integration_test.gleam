@@ -1128,6 +1128,68 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn mutually_recursive_fallbacks_settle_to_one_summary_test() {
+  // `a`'s fallback calls `b` and `b`'s calls `a`, so neither can be summarised
+  // against a settled summary of the other — the cycle circulates the disk one
+  // member per pass. Both land on the same total, and a caller of either is
+  // charged it, whichever the walk reaches first.
+  let root = "build/external_fallback_mutual"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects disk.write : [Disk]
+external effects ext.a : []
+external effects ext.b : []
+check ext.calls_a : []
+check ext.calls_b : []
+",
+    ),
+    #("disk.gleam", "@external(erlang, \"d\", \"w\")\npub fn write() -> Nil\n"),
+    #(
+      "ext.gleam",
+      "import disk
+
+@external(javascript, \"ext_ffi\", \"a\")
+pub fn a(n: Int) -> Nil {
+  case n {
+    0 -> disk.write()
+    _ -> b(n - 1)
+  }
+}
+
+@external(javascript, \"ext_ffi\", \"b\")
+pub fn b(n: Int) -> Nil {
+  a(n - 1)
+}
+
+pub fn calls_a() -> Nil {
+  a(1)
+}
+
+pub fn calls_b() -> Nil {
+  b(1)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let disk = types.Specific(set.from_list(["Disk"]))
+  ["calls_a", "calls_b"]
+  |> list.each(fn(function) {
+    let assert Ok(v) = list.find(r.violations, fn(v) { v.function == function })
+    v.explanation.actual |> should.equal(disk)
+  })
+  // And both summaries are published as the same total, not one pass short of
+  // each other.
+  let assert Ok(preview) = graded.run_infer_dry_run(root)
+  preview |> string.contains("effects ext.calls_a : [Disk]") |> should.be_true()
+  preview |> string.contains("effects ext.calls_b : [Disk]") |> should.be_true()
+  support.cleanup(root)
+}
+
 pub fn a_recursive_fallback_summary_reaches_a_fixed_point_test() {
   // `retry`'s fallback recurses into itself with `disk` substituted for its
   // own callback, so the summary is only complete once the recursive call is
