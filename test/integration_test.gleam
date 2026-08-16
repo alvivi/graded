@@ -5312,6 +5312,84 @@ pub fn declared_go() -> Nil {
   support.cleanup(root)
 }
 
+pub fn an_undeclared_fallbacks_reference_warns_only_about_what_it_knows_test() {
+  // An undeclared external with a running fallback resolves to that body's
+  // effects unioned with `[Unknown]`, and that answer arrives as a resolved
+  // lookup rather than as the unresolved variant. Reading the variant alone let
+  // `quiet` — whose fallback does nothing, so the whole set is the widening —
+  // warn that ``its effects [Unknown] won't be tracked``, quoting the one thing
+  // an unresolved reference is supposed to stay silent about. `loud`'s set has a
+  // known half, and that half is a real effect travelling past anything that
+  // tracks it, so it still warns.
+  let root = "build/reference_warning_undeclared_fallback"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ffi.disk : [Disk]
+check ext.pass_quiet : [_]
+check ext.pass_loud : [_]
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+pub fn disk() -> Nil
+",
+    ),
+    #(
+      "raw.gleam",
+      "import ffi
+
+@external(javascript, \"e\", \"q\")
+pub fn quiet() -> Nil {
+  Nil
+}
+
+@external(javascript, \"e\", \"l\")
+pub fn loud() -> Nil {
+  ffi.disk()
+}
+",
+    ),
+    #(
+      "ext.gleam",
+      "import raw
+
+fn helper(f: fn() -> Nil) -> Nil {
+  f()
+}
+
+pub fn pass_quiet() -> Nil {
+  helper(raw.quiet)
+}
+
+pub fn pass_loud() -> Nil {
+  helper(raw.loud)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  r.warnings
+  |> list.map(fn(warning) {
+    let assert types.UntrackedEffectWarning(function:, reference:, effects:, ..) =
+      warning
+    #(function, reference, effects)
+  })
+  |> should.equal([
+    #(
+      "pass_loud",
+      types.QualifiedName("raw", "loud"),
+      types.Specific(set.from_list(["Disk", "Unknown"])),
+    ),
+  ])
+  support.cleanup(root)
+}
+
 pub fn a_governed_native_body_still_warns_about_its_references_test() {
   // The opposite case to the covered `@external` below, and the distinction the
   // warning turns on. `external effects governed : [Net]` answers for every

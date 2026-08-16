@@ -118,6 +118,17 @@ pub fn contains_unknown(effect_set: EffectSet) -> Bool {
   }
 }
 
+// True iff this effect set is exactly `[Unknown]` and nothing else: the whole
+// of it came from a path graded could not resolve, so it names no effect a
+// reader could act on. Distinct from `contains_unknown`, which holds of a mixed
+// `[Disk, Unknown]` — there the known half is a real effect.
+pub fn is_wholly_unknown(effect_set: EffectSet) -> Bool {
+  case effect_set {
+    Wildcard | Polymorphic(_, _) -> False
+    Specific(labels) -> labels == set.from_list([unknown_label])
+  }
+}
+
 // Effect terms
 //
 // The lambda-calculus-with-union form of effects, whose ground normal form is
