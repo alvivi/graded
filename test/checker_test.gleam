@@ -5815,7 +5815,7 @@ fn explain_blocks(
   // These tests assert on contributors; the effective bounds and total term
   // paired with each block are `why`'s headline concern and are exercised
   // through it.
-  |> result.map(list.map(_, fn(block) { block.2 }))
+  |> result.map(list.map(_, fn(block) { block.explanations }))
 }
 
 // The common case: one bound set, the empty knowledge base, one block back.
@@ -5856,7 +5856,9 @@ pub fn run() {
       ]),
       types.ProjectInferred,
     )
-  let assert Ok([#(_bounds, total, [explanation])]) =
+  let assert Ok([
+    checker.ExplainedBlock(total:, explanations: [explanation], ..),
+  ]) =
     checker.explain(
       module,
       "app",
@@ -5885,7 +5887,7 @@ pub fn go(r: Runner) -> Nil {
   r.run()
 }"
   let assert Ok(module) = glance.module(source)
-  let assert Ok([#(bounds, total, _explanations)]) =
+  let assert Ok([checker.ExplainedBlock(bounds:, total:, ..)]) =
     checker.explain(
       module,
       "app",
