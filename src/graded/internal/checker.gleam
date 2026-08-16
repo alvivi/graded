@@ -735,37 +735,146 @@ pub fn fallback_effects(
   let function_map = build_function_map(module)
   let ModuleContext(context:, cache:) =
     module_context(module, module_path, knowledge_base, girard_fn_typed)
-  // One pass settles only the fallbacks that call no sibling fallback: a body
-  // reaching one is charged what the knowledge base says about it, and that is
-  // whatever earlier passes established. So the summaries are re-walked until
-  // they stop changing. The fuel is a cap on divergence, not the number of
-  // passes convergence takes: a chain of N fallbacks propagates in N passes,
-  // but a recursive one keeps moving past that — its first pass sees no
-  // summary for the call into itself, so the effects that call substitutes
-  // arrive a pass later, and a cycle circulates each label one member per
-  // pass. Anything still moving when the fuel runs out is widened to
-  // `[Unknown]` rather than reported as the under-approximation the last
-  // pass walked.
-  settle_fallback_effects(
-    dict.new(),
-    2 * list.length(targets) + 2,
-    FallbackWalk(
-      targets:,
-      function_map:,
-      context:,
-      cache:,
-      module_path:,
-      knowledge_base:,
-      registry:,
-      module_types:,
-      girard_fn_typed:,
-    ),
-  )
+  // One component at a time, callees first. A body reaching another fallback is
+  // charged what the knowledge base says about it, and the call graph already
+  // says which fallbacks that can be: a component's members reach only
+  // components settled before it, or each other. So a fallback on no cycle is
+  // done in one walk, and only a genuine cycle iterates to a fixed point —
+  // where every fallback in the module used to be re-walked until the module as
+  // a whole stopped changing, at least twice each and once more for every link
+  // in the longest chain.
+  let recursive = recursive_components(module.functions, context, cache)
+  let #(settled, _knowledge_base) =
+    fallback_components(targets, cache)
+    |> list.fold(#(dict.new(), knowledge_base), fn(state, entry) {
+      let #(settled, knowledge_base) = state
+      let #(component_id, component) = entry
+      // A component the cache names no id for is settled as a recursive one:
+      // nothing said it isn't.
+      let iterates = case component_id {
+        Ok(id) -> set.contains(recursive, id)
+        Error(Nil) -> True
+      }
+      let summaries =
+        settle_component(
+          iterates,
+          FallbackWalk(
+            targets: component,
+            function_map:,
+            context:,
+            cache:,
+            module_path:,
+            knowledge_base:,
+            registry:,
+            module_types:,
+            girard_fn_typed:,
+          ),
+        )
+      #(
+        dict.merge(settled, summaries),
+        // Read by the next component's walk, which is a caller of this one.
+        effects.with_fallback_summaries(
+          knowledge_base,
+          qualified_summaries(summaries, module_path),
+        ),
+      )
+    })
+  settled
 }
 
-// Everything a fallback-summary pass re-uses across iterations. Only the
-// summaries settled so far change between passes, so the walking apparatus is
-// built once and travels whole.
+// The module's fallback targets grouped into their call-graph components, in
+// callee-first order. `build_scc_ids` numbers the components in exactly that
+// order, so sorting on the id restores it. A target the cache names no
+// component for settles last, on its own — every definition is in the graph, so
+// this is an ordering for a state that does not arise rather than a case.
+fn fallback_components(
+  targets: List(Definition(Function)),
+  cache: LocalCache,
+) -> List(#(Result(Int, Nil), List(Definition(Function)))) {
+  targets
+  |> list.group(fn(definition) {
+    dict.get(cache.scc_id, definition.definition.name)
+  })
+  |> dict.to_list
+  |> list.sort(fn(left, right) {
+    case left.0, right.0 {
+      Ok(left), Ok(right) -> int.compare(left, right)
+      Ok(_), Error(Nil) -> order.Lt
+      Error(Nil), Ok(_) -> order.Gt
+      Error(Nil), Error(Nil) -> order.Eq
+    }
+  })
+}
+
+// The call-graph components that reach themselves: one holding more than a
+// single function, and one whose lone function calls itself. Only these need a
+// fixed point — anything else states its summary on the walk that first makes
+// it, and a second walk could only confirm what the knowledge base already
+// holds unchanged.
+fn recursive_components(
+  definitions: List(Definition(Function)),
+  context: ImportContext,
+  cache: LocalCache,
+) -> Set(Int) {
+  let names =
+    definitions
+    |> list.map(fn(definition) { definition.definition.name })
+    |> set.from_list
+  let multi_member =
+    dict.fold(cache.members, set.new(), fn(acc, id, members) {
+      case members {
+        [_, _, ..] -> set.insert(acc, id)
+        _ -> acc
+      }
+    })
+  list.fold(definitions, multi_member, fn(acc, definition) {
+    let name = definition.definition.name
+    let calls_itself =
+      set.contains(recursion_edges(definition.definition, context, names), name)
+    case calls_itself, dict.get(cache.scc_id, name) {
+      True, Ok(id) -> set.insert(acc, id)
+      True, Error(Nil) | False, _ -> acc
+    }
+  })
+}
+
+// Settle one component's summaries. A component that cannot reach itself is
+// walked once — nothing it could read changes after that walk. A recursive one
+// circulates each label one member per pass until nothing moves. The fuel is a
+// cap on divergence, not on the passes convergence takes: a member's first pass
+// sees no summary for the call back into the component, so what that call
+// substitutes arrives a pass later. Anything still moving when the fuel runs out
+// is widened to `[Unknown]` rather than reported as the under-approximation the
+// last pass walked.
+fn settle_component(
+  recursive: Bool,
+  walk: FallbackWalk,
+) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
+  case recursive {
+    False -> walk_component(dict.new(), walk)
+    True ->
+      settle_fallback_effects(
+        dict.new(),
+        2 * list.length(walk.targets) + 2,
+        walk,
+      )
+  }
+}
+
+// A module's settled summaries keyed the way a knowledge base holds them.
+fn qualified_summaries(
+  summaries: dict.Dict(String, #(EffectTerm, List(ParamBound))),
+  module_path: String,
+) -> dict.Dict(QualifiedName, #(EffectTerm, List(ParamBound))) {
+  dict.fold(summaries, dict.new(), fn(acc, function, summary) {
+    dict.insert(acc, QualifiedName(module: module_path, function:), summary)
+  })
+}
+
+// Everything a fallback-summary pass re-uses across iterations: `targets` is
+// one call-graph component's worth of them, and `knowledge_base` already holds
+// what every earlier component settled. Only the summaries settled so far change
+// between passes, so the walking apparatus is built once and travels whole.
 type FallbackWalk {
   FallbackWalk(
     targets: List(Definition(Function)),
@@ -791,9 +900,22 @@ fn settle_fallback_effects(
   // ones were still moving is unknowable without the passes the fuel denies —
   // so a caller is charged conservatively rather than a pass-count under-count.
   use <- bool.guard(when: fuel <= 0, return: widen_unsettled(settled))
-  // The summaries settled so far, so a body reaching a sibling fallback is
-  // charged what that sibling's own body does. The bounds travel inside the
-  // summaries: a sibling's summary is stated over its parameters, and without
+  let walked = walk_component(settled, walk)
+  case walked == settled {
+    True -> settled
+    False -> settle_fallback_effects(walked, fuel - 1, walk)
+  }
+}
+
+// One walk of every member of a component, each body summarised against what
+// the component has settled so far.
+fn walk_component(
+  settled: dict.Dict(String, #(EffectTerm, List(ParamBound))),
+  walk: FallbackWalk,
+) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
+  // What this component has settled so far, so a body reaching one of its own
+  // members is charged what that member's body does. The bounds travel inside
+  // the summaries: a member's summary is stated over its parameters, and without
   // the bound the call into it has nothing to re-key its variable onto the
   // calling fallback's own parameter — a girard-typed parameter carries no
   // annotation for the syntactic fallback to find.
@@ -813,12 +935,9 @@ fn settle_fallback_effects(
           Ok(summary) -> summary
           Error(Nil) -> #(effect_term.pure(), [])
         }
-        dict.insert(
-          acc,
-          QualifiedName(module: walk.module_path, function:),
-          summary,
-        )
-      }),
+        dict.insert(acc, function, summary)
+      })
+        |> qualified_summaries(walk.module_path),
     )
   let #(_memo, entries) =
     list.map_fold(walk.targets, new_memo(), fn(memo, definition) {
@@ -866,11 +985,7 @@ fn settle_fallback_effects(
         )
       #(memo, #(definition.definition.name, #(term, bounds)))
     })
-  let walked = dict.from_list(entries)
-  case walked == settled {
-    True -> settled
-    False -> settle_fallback_effects(walked, fuel - 1, walk)
-  }
+  dict.from_list(entries)
 }
 
 // Union `[Unknown]` into every summary term. The bounds stay: the term's
