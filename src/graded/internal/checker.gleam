@@ -45,10 +45,20 @@ pub fn check(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
+  // The targets the package under analysis is compiled for. Decides which
+  // `@external` declarations are ever built, and so which functions are foreign
+  // code and which are ordinary Gleam whose body is the only implementation.
+  package_targets: Set(String),
 ) -> #(List(Violation), List(Warning)) {
   let function_map = build_function_map(module)
   let ModuleContext(context:, cache:) =
-    module_context(module, module_path, knowledge_base, girard_fn_typed)
+    module_context(
+      module,
+      module_path,
+      knowledge_base,
+      girard_fn_typed,
+      package_targets,
+    )
 
   // One memo table threaded across every annotation: same-module callees shared
   // between annotations are analysed once.
@@ -83,6 +93,10 @@ pub fn infer(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
+  // The targets the package under analysis is compiled for. Decides which
+  // `@external` declarations are ever built, and so which functions are foreign
+  // code and which are ordinary Gleam whose body is the only implementation.
+  package_targets: Set(String),
 ) -> List(EffectAnnotation) {
   infer_with_returns(
     module,
@@ -92,6 +106,7 @@ pub fn infer(
     registry,
     module_types,
     girard_fn_typed,
+    package_targets,
   ).0
 }
 
@@ -107,6 +122,10 @@ pub fn infer_with_returns(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
+  // The targets the package under analysis is compiled for. Decides which
+  // `@external` declarations are ever built, and so which functions are foreign
+  // code and which are ordinary Gleam whose body is the only implementation.
+  package_targets: Set(String),
 ) -> #(
   List(EffectAnnotation),
   dict.Dict(String, EffectTerm),
@@ -114,7 +133,13 @@ pub fn infer_with_returns(
 ) {
   let function_map = build_function_map(module)
   let ModuleContext(context:, cache:) =
-    module_context(module, module_path, knowledge_base, girard_fn_typed)
+    module_context(
+      module,
+      module_path,
+      knowledge_base,
+      girard_fn_typed,
+      package_targets,
+    )
 
   let public_functions =
     list.filter(module.functions, fn(definition) {
@@ -130,7 +155,7 @@ pub fn infer_with_returns(
   // written into the spec at all.
   let value_channel_functions =
     list.filter(public_functions, fn(definition) {
-      !extract.is_foreign_definition(definition)
+      !extract.is_foreign_definition(definition, package_targets)
     })
 
   // Returned operators of public functions that return a function — recorded so
@@ -201,7 +226,7 @@ pub fn infer_with_returns(
       // A bodyless `@external` is opaque FFI — conservatively `[Unknown]`, not
       // the `[]` its empty body would otherwise infer.
       let #(effects_term, memo) = case
-        extract.is_foreign_definition(definition)
+        extract.is_foreign_definition(definition, package_targets)
       {
         True -> #(effect_term.unknown(), memo)
         False -> {
@@ -274,6 +299,10 @@ pub fn explain(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
+  // The targets the package under analysis is compiled for. Decides which
+  // `@external` declarations are ever built, and so which functions are foreign
+  // code and which are ordinary Gleam whose body is the only implementation.
+  package_targets: Set(String),
 ) -> Result(List(ExplainedBlock), Nil) {
   // The lookup comes before the rest of the module analysis, so a name this
   // module does not define costs one map build rather than a whole-module walk.
@@ -281,8 +310,14 @@ pub fn explain(
   use definition <- result.map(dict.get(function_map, function_name))
   case
     standalone_declaration(
-      declaration_explanation(module_path, knowledge_base, definition),
+      declaration_explanation(
+        module_path,
+        knowledge_base,
+        definition,
+        package_targets,
+      ),
       definition,
+      package_targets,
     )
   {
     // A declaration that stands in for the whole function binds no bounds and
@@ -298,7 +333,13 @@ pub fn explain(
       })
     None -> {
       let ModuleContext(context:, cache:) =
-        module_context(module, module_path, knowledge_base, girard_fn_typed)
+        module_context(
+          module,
+          module_path,
+          knowledge_base,
+          girard_fn_typed,
+          package_targets,
+        )
       // One memo across every bound set, as `check` threads one across every
       // annotation: a callee's own analysis is seeded from its signature, so the
       // caller's bounds neither key it nor reach it.
@@ -397,9 +438,14 @@ fn contributors(
   memo: Memo,
 ) -> #(Contribution, Memo) {
   let declaration =
-    declaration_explanation(context.module_path, knowledge_base, definition)
+    declaration_explanation(
+      context.module_path,
+      knowledge_base,
+      definition,
+      context.package_targets,
+    )
   let #(walked, body_term, effective, body, memo) = case
-    standalone_declaration(declaration, definition)
+    standalone_declaration(declaration, definition, context.package_targets)
   {
     // Which of the two standalone cases this is decides whether the body's
     // *references* are still reported: an `@external` reaching here covers
@@ -407,7 +453,9 @@ fn contributors(
     // Anything else here is ordinary Gleam a declaration answers *for* — its
     // body runs whatever the declaration says.
     Some(_declaration) -> {
-      let body = case extract.is_foreign_definition(definition) {
+      let body = case
+        extract.is_foreign_definition(definition, context.package_targets)
+      {
         True -> BodyIsDeadText
         False -> BodySuppressed
       }
@@ -513,12 +561,14 @@ fn declaration_explanation(
   module_path: String,
   knowledge_base: KnowledgeBase,
   definition: Definition(Function),
+  package_targets: Set(String),
 ) -> option.Option(CallExplanation) {
   let qualified =
     QualifiedName(module: module_path, function: definition.definition.name)
   let declared = declaration_resolution(knowledge_base, qualified)
   use <- bool.guard(
-    when: !extract.is_foreign_definition(definition) && option.is_none(declared),
+    when: !extract.is_foreign_definition(definition, package_targets)
+      && option.is_none(declared),
     return: None,
   )
   // Keyed by the external's own qualified name and spanning its declaration.
@@ -546,8 +596,12 @@ fn declaration_explanation(
 fn standalone_declaration(
   declaration: option.Option(CallExplanation),
   definition: Definition(Function),
+  package_targets: Set(String),
 ) -> option.Option(CallExplanation) {
-  use <- bool.guard(when: runs_fallback_body(definition), return: None)
+  use <- bool.guard(
+    when: runs_fallback_body(definition, package_targets),
+    return: None,
+  )
   declaration
 }
 
@@ -725,16 +779,26 @@ pub fn fallback_effects(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
+  // The targets the package under analysis is compiled for. Decides which
+  // `@external` declarations are ever built, and so which functions are foreign
+  // code and which are ordinary Gleam whose body is the only implementation.
+  package_targets: Set(String),
 ) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
   let targets =
     list.filter(module.functions, fn(definition) {
-      extract.is_foreign_definition(definition)
-      && runs_fallback_body(definition)
+      extract.is_foreign_definition(definition, package_targets)
+      && runs_fallback_body(definition, package_targets)
     })
   use <- bool.guard(when: targets == [], return: dict.new())
   let function_map = build_function_map(module)
   let ModuleContext(context:, cache:) =
-    module_context(module, module_path, knowledge_base, girard_fn_typed)
+    module_context(
+      module,
+      module_path,
+      knowledge_base,
+      girard_fn_typed,
+      package_targets,
+    )
   // One component at a time, callees first. A body reaching another fallback is
   // charged what the knowledge base says about it, and the call graph already
   // says which fallbacks that can be: a component's members reach only
@@ -1014,12 +1078,14 @@ fn module_context(
   module_path: String,
   knowledge_base: KnowledgeBase,
   girard_fn_typed: dict.Dict(String, Set(String)),
+  package_targets: Set(String),
 ) -> ModuleContext {
   let context =
     extract.build_import_context(module)
     |> extract.with_module_path(module_path)
-    |> extract.with_factories(extract.factory_map(module))
-    |> extract.with_updates(extract.update_map(module))
+    |> extract.with_package_targets(package_targets)
+    |> extract.with_factories(extract.factory_map(module, package_targets))
+    |> extract.with_updates(extract.update_map(module, package_targets))
     |> extract.with_cross_factories(effects.factories(knowledge_base))
     |> extract.with_cross_updates(effects.updates(knowledge_base))
     |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(
@@ -1155,7 +1221,7 @@ fn local_function_field_effect(
   case dict.get(function_map, name.function) {
     Error(Nil) -> #(None, memo)
     Ok(definition) ->
-      case extract.is_foreign_definition(definition) {
+      case extract.is_foreign_definition(definition, context.package_targets) {
         True -> #(None, memo)
         False -> {
           let #(term, memo) =
@@ -1839,7 +1905,10 @@ pub fn build_scc_ids(
         |> set.union(alias_fn_typed_params(definition.definition, fn_aliases))
         |> set.union(typeinfo.fn_typed_params(girard_fn_typed, name))
         |> set.is_empty()
-      case first_order && !extract.is_foreign_definition(definition) {
+      case
+        first_order
+        && !extract.is_foreign_definition(definition, context.package_targets)
+      {
         True -> Error(Nil)
         False -> Ok(name)
       }
@@ -2007,9 +2076,10 @@ type CollectedCall {
 fn local_native_definition(
   function_map: dict.Dict(String, Definition(Function)),
   function: String,
+  package_targets: Set(String),
 ) -> Result(Definition(Function), Nil) {
   use definition <- result.try(dict.get(function_map, function))
-  case extract.is_foreign_definition(definition) {
+  case extract.is_foreign_definition(definition, package_targets) {
     True -> Error(Nil)
     False -> Ok(definition)
   }
@@ -2212,15 +2282,19 @@ fn recursion_edges(
 pub fn foreign_functions(
   module: Module,
   module_path: String,
+  package_targets: Set(String),
 ) -> dict.Dict(QualifiedName, types.ForeignFunction) {
   module.functions
-  |> list.filter(extract.is_foreign_definition)
+  |> list.filter(extract.is_foreign_definition(_, package_targets))
   |> list.map(fn(definition) {
     let name =
       QualifiedName(module: module_path, function: definition.definition.name)
     #(
       name,
-      types.ForeignFunction(runs_fallback_body: runs_fallback_body(definition)),
+      types.ForeignFunction(runs_fallback_body: runs_fallback_body(
+        definition,
+        package_targets,
+      )),
     )
   })
   |> dict.from_list()
@@ -2230,9 +2304,14 @@ pub fn foreign_functions(
 // defines in Gleam rather than declares `@external`. What tells a per-function
 // `external effects` line that declares real foreign code from one that names a
 // body sitting in plain sight.
-pub fn native_function_names(module: Module) -> Set(String) {
+pub fn native_function_names(
+  module: Module,
+  package_targets: Set(String),
+) -> Set(String) {
   module.functions
-  |> list.filter(fn(definition) { !extract.is_foreign_definition(definition) })
+  |> list.filter(fn(definition) {
+    !extract.is_foreign_definition(definition, package_targets)
+  })
   |> list.map(fn(definition) { definition.definition.name })
   |> set.from_list()
 }
@@ -2262,14 +2341,17 @@ pub fn function_visibility(
 // declared for it. That body is ordinary Gleam — nothing else checks it, since
 // the declaration answers for every caller — so its effects are collected
 // alongside the declaration rather than instead of it.
-fn runs_fallback_body(definition: Definition(Function)) -> Bool {
+fn runs_fallback_body(
+  definition: Definition(Function),
+  package_targets: Set(String),
+) -> Bool {
   use <- bool.guard(
-    when: !extract.is_foreign_definition(definition),
+    when: !extract.is_foreign_definition(definition, package_targets),
     return: False,
   )
   use <- bool.guard(when: definition.definition.body == [], return: False)
   set.difference(
-    extract.compiled_targets(definition),
+    extract.compiled_targets(definition, package_targets),
     extract.declared_targets(definition),
   )
   |> set.is_empty
@@ -3309,7 +3391,10 @@ fn local_substitution_bounds(
 ) -> List(ParamBound) {
   let syntactic = fn() { local_polymorphic_bounds(local_definition.definition) }
   use <- bool.lazy_guard(
-    when: !extract.is_foreign_definition(local_definition),
+    when: !extract.is_foreign_definition(
+      local_definition,
+      context.package_targets,
+    ),
     return: syntactic,
   )
   case
@@ -4032,7 +4117,13 @@ fn callee_provenance(
 ) -> Result(types.ReturnProvenance, Nil) {
   case callee.module {
     "" ->
-      case local_native_definition(function_map, callee.function) {
+      case
+        local_native_definition(
+          function_map,
+          callee.function,
+          context.package_targets,
+        )
+      {
         Ok(definition) ->
           Ok(extract.return_provenance(definition.definition, context))
         Error(Nil) -> Error(Nil)
@@ -4522,7 +4613,11 @@ fn resolve_returned_operator(
     "" ->
       case
         set.contains(visited, callee.function),
-        local_native_definition(function_map, callee.function)
+        local_native_definition(
+          function_map,
+          callee.function,
+          context.package_targets,
+        )
       {
         False, Ok(definition) -> {
           let #(result, memo) =
@@ -5082,7 +5177,7 @@ fn lift_local_function(
   // annotation, and without its binder the summary's variable stays free and
   // the application goes stuck.
   use <- bool.lazy_guard(
-    when: extract.is_foreign_definition(definition),
+    when: extract.is_foreign_definition(definition, context.package_targets),
     return: fn() {
       let qualified = QualifiedName(module: context.module_path, function: name)
       let declared = foreign_resolution(knowledge_base, qualified).term
@@ -5373,7 +5468,9 @@ fn resolve_unknown_local(
       #([plain_call(synthetic_call, effect_term.unknown())], memo)
     }
     Ok(local_definition) ->
-      case extract.is_foreign_definition(local_definition) {
+      case
+        extract.is_foreign_definition(local_definition, context.package_targets)
+      {
         // A same-module call into an `@external` has no body graded may weigh, so
         // it is charged what declares the foreign code — qualifying the bare name
         // with the current module. A declaration wins; without one (or when the

@@ -447,6 +447,101 @@ pub fn calls_built_field() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_package_target_excludes_a_declaration_too_test() {
+  // The same carve-out as `@target`, stated once for the whole package:
+  // `target = "javascript"` never compiles an `@external(erlang, …)`, so its
+  // Gleam body is the only implementation that exists and the function is
+  // ordinary Gleam. Reading `gleam.toml`'s field as no narrowing at all held
+  // these functions foreign — charging callers the `[Unknown]` of an undeclared
+  // external over a body plainly within its budget, and keeping the values they
+  // hand back opaque for the same absent reason.
+  let root = "build/package_target_excluded"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"javascript\"\n"),
+    #(
+      "proj.graded",
+      "check ext.log : []
+check ext.calls_built_field : [Disk]
+external effects ext.disk : [Disk]
+",
+    ),
+    #(
+      "ext.gleam",
+      "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+@external(erlang, \"ext_ffi\", \"disk\")
+@external(javascript, \"ext_ffi\", \"disk\")
+pub fn disk() -> Nil
+
+@external(erlang, \"ext_ffi\", \"log\")
+pub fn log() -> Nil {
+  Nil
+}
+
+@external(erlang, \"ext_ffi\", \"builds\")
+pub fn builds(run: fn() -> Nil) -> Handler {
+  Handler(run: run)
+}
+
+pub fn calls_built_field() -> Nil {
+  let handler = builds(fn() { disk() })
+  handler.run()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  r.violations |> should.equal([])
+  // And the query says what the body does, rather than the `[Unknown]` an
+  // undeclared external carries.
+  let assert Ok(answered) = graded.run_effect(root, "ext.log")
+  answered |> string.contains("effects ext.log : []") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_package_target_leaves_no_fallback_to_run_test() {
+  // The other direction: `target = "erlang"` with an `@external(erlang, …)`
+  // leaves no uncovered target, so the Gleam body beside it is dead text. It
+  // was charged to every caller anyway — a `[Disk]` violation over a body that
+  // is never compiled, decided by a `gleam.toml` field nothing read.
+  let root = "build/package_target_covered"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #(
+      "proj.graded",
+      "external effects ffi.disk : [Disk]
+external effects ext.log : []
+check ext.wrapper : []
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"d\", \"w\")\n@external(javascript, \"d\", \"w\")\npub fn disk() -> Nil\n",
+    ),
+    #(
+      "ext.gleam",
+      "import ffi
+
+@external(erlang, \"e\", \"l\")
+pub fn log() -> Nil {
+  ffi.disk()
+}
+
+pub fn wrapper() -> Nil {
+  log()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  support.cleanup(root)
+}
+
 pub fn a_running_fallback_body_is_charged_to_every_caller_test() {
   // The declaration alone is the whole story only where it covers every target.
   // Where it does not, the Gleam fallback is what runs, and composition is
@@ -2401,6 +2496,7 @@ fn checker_infer_opaque_field() -> Result(List(types.EffectAnnotation), Nil) {
     signatures.empty(),
     dict.new(),
     dict.new(),
+    types.every_target(),
   ))
 }
 
@@ -2597,6 +2693,7 @@ fn checker_infer_factory_forward() -> Result(List(types.EffectAnnotation), Nil) 
     signatures.from_glance_module("factory_forward", module),
     dict.new(),
     dict.new(),
+    types.every_target(),
   ))
 }
 

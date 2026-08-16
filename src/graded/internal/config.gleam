@@ -9,12 +9,15 @@
 //
 // Both fields are optional. If `[tools.graded]` is missing entirely, both
 // defaults apply. The `name` field at the top of `gleam.toml` provides the
-// package name used to derive the default `spec_file`.
+// package name used to derive the default `spec_file`, and the top-level
+// `target` field narrows which targets the package is compiled for.
 
 import filepath
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
+import graded/internal/types
 import simplifile
 import tom
 
@@ -44,6 +47,15 @@ pub type GradedConfig {
     // and to verify a tarball's identity; checking and inference never need
     // it, so it stays optional.
     version: Option(String),
+    // The targets this package is compiled for, from `gleam.toml`'s top-level
+    // `target`. Both when the field is absent, unreadable, or names something
+    // other than a target graded knows — the widest reading, which is what
+    // every classification did before the field was read at all.
+    //
+    // A build overriding it (`gleam build --target javascript` against a
+    // `target = "erlang"` package) is not visible here, so this is what the
+    // package *declares*, not proof of what was built.
+    targets: Set(String),
   )
 }
 
@@ -83,7 +95,22 @@ pub fn read(gleam_toml_path: String) -> Result(GradedConfig, ConfigError) {
     Ok(value) -> Some(value)
     Error(_) -> None
   }
-  Ok(GradedConfig(package_name:, spec_file:, cache_dir:, version:))
+  let targets = case tom.get_string(toml, ["target"]) {
+    Ok("erlang") -> set.from_list(["erlang"])
+    Ok("javascript") -> set.from_list(["javascript"])
+    Ok(_) | Error(_) -> types.every_target()
+  }
+  Ok(GradedConfig(package_name:, spec_file:, cache_dir:, version:, targets:))
+}
+
+// The targets the package rooted at `package_root` declares. Falls back to
+// every target when its `gleam.toml` is missing or unreadable, which is the
+// reading every classification made before the field was read.
+pub fn targets_for(package_root: String) -> Set(String) {
+  case read(filepath.join(package_root, "gleam.toml")) {
+    Ok(cfg) -> cfg.targets
+    Error(_) -> types.every_target()
+  }
 }
 
 // Build a config using all defaults for a known package name. Useful in
@@ -94,6 +121,7 @@ pub fn defaults_for(package_name: String) -> GradedConfig {
     spec_file: default_spec_file(package_name),
     cache_dir: default_cache_dir(),
     version: None,
+    targets: types.every_target(),
   )
 }
 
