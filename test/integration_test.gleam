@@ -1098,6 +1098,69 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_cyclic_import_graph_still_charges_a_running_fallback_test() {
+  // A cycle in the import graph leaves the in-memory inference pass with no
+  // order to run in, so no fallback body is walked at all. The declaration was
+  // then the whole answer for an external whose body still runs — `[Stdout]`
+  // over a body that reaches the disk, silently, on a topology alone. What no
+  // walk reached reads as `[Unknown]`, the same thing a dependency's unwalkable
+  // fallback already answers.
+  let root = "build/external_fallback_cyclic"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.log : [Stdout]
+external effects ext.sink : [Disk]
+check other.calls_it : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "import other
+
+@external(javascript, \"ext_ffi\", \"log\")
+pub fn log() -> Nil {
+  sink()
+}
+
+@external(erlang, \"ext_ffi\", \"sink\")
+@external(javascript, \"ext_ffi\", \"sink\")
+fn sink() -> Nil
+
+pub fn ping() -> Nil {
+  other.pong()
+}
+",
+    ),
+    #(
+      "other.gleam",
+      "import ext
+
+pub fn pong() -> Nil {
+  Nil
+}
+
+pub fn calls_it() -> Nil {
+  ext.log()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(caller) =
+    list.find(results, fn(r) { r.file == root <> "/other.gleam" })
+  let assert [calls_it] = caller.violations
+  calls_it.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout", "Unknown"])))
+
+  // And the query says the same, rather than crediting the declaration with an
+  // answer the charge disagrees with.
+  let assert Ok(answered) = graded.run_effect(root, "ext.log")
+  answered |> string.contains("Unknown") |> should.be_true()
+  support.cleanup(root)
+}
+
 pub fn a_fallback_resolves_field_calls_through_type_lines_test() {
   // The fallback body reaches a field a `type` line decides. The pass that
   // summarises it used to run before those lines were installed, so the

@@ -420,9 +420,38 @@ pub fn with_running_fallback(
   term: EffectTerm,
 ) -> EffectTerm {
   case dict.get(knowledge_base.fallback_summaries, name) {
-    Error(Nil) -> term
     Ok(#(fallback, _bounds)) ->
       effect_term.normalize(types.TUnion([term, fallback]))
+    // A body that runs and nothing walked, which is what a dependency's
+    // fallback already answers. The source scan records that the fallback runs
+    // before anything walks it, so the two facts can disagree: a pass that
+    // never reached the walk — an import cycle bails the whole in-memory
+    // inference — leaves the declaration standing alone over a body that
+    // prints. `[Unknown]` is what that state knows.
+    Error(Nil) ->
+      case runs_own_fallback_body(knowledge_base, name) {
+        False -> term
+        True ->
+          effect_term.normalize(types.TUnion([term, effect_term.unknown()]))
+      }
+  }
+}
+
+// Whether `name` is one of *this package's* `@external`s whose Gleam fallback
+// body runs. What the source scan recorded, which is settled long before any
+// body is walked — so it is the evidence that a missing summary is a walk that
+// never happened rather than a fallback that does nothing.
+//
+// This package's map only: a dependency's running fallback is
+// `widens_with_dependency_fallback`'s, and answers `[Unknown]` by construction
+// rather than by backstop.
+fn runs_own_fallback_body(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  case dict.get(knowledge_base.foreign_functions, name) {
+    Ok(types.ForeignFunction(runs_fallback_body:)) -> runs_fallback_body
+    Error(Nil) -> False
   }
 }
 
@@ -436,7 +465,8 @@ pub fn with_running_fallback(
 //
 // One of *this package's* externals contributes what its body does, walked.
 // A dependency's contributes `[Unknown]`: the body runs and no consumer walks
-// it.
+// it — and so does one of this package's that no walk reached, matching what
+// `with_running_fallback` charges for it.
 pub fn fallback_contribution(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -444,7 +474,10 @@ pub fn fallback_contribution(
   case dict.get(knowledge_base.fallback_summaries, name) {
     Ok(#(term, _bounds)) -> Some(term)
     Error(Nil) ->
-      case widens_with_dependency_fallback(knowledge_base, name) {
+      case
+        widens_with_dependency_fallback(knowledge_base, name)
+        || runs_own_fallback_body(knowledge_base, name)
+      {
         True -> Some(effect_term.unknown())
         False -> None
       }
