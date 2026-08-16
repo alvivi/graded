@@ -918,27 +918,51 @@ fn external_warnings(
       set.insert(acc, name.module)
     })
   let dep_functions = dependency_function_names(externals, dep_files)
+  // Whether the tree the lint read is the whole of what this project depends
+  // on. A module it cannot place is a typo only if there was nowhere left for
+  // it to be: with a manifest package whose sources never turned up, the module
+  // may be that package's, and no reading of what is on disk disproves it.
+  let unplaceable_is_unknown = !dependency_sources_are_complete(package_root)
   list.filter_map(externals, fn(external) {
+    // Whether something *outside* this package's own parsed source speaks for
+    // the module: a dependency source the lint could read, or a catalog entry —
+    // keyed by a module-level line, or by the per-function lines that are the
+    // usual form. The stdlib catalog holds `gleam/io.println` and no `gleam/io`
+    // line, and reading the module tier alone calls a real module a typo
+    // wherever that dependency's own source is not installed to say otherwise.
+    let claimed =
+      dict.has_key(dep_files, external.module)
+      || dict.has_key(catalog_modules, external.module)
+      || set.contains(catalog_function_modules, external.module)
+    // And whether anything at all does. Nothing here is what "unplaceable"
+    // means.
+    let placed = dict.has_key(index, external.module) || claimed
     case external.target {
       types.FunctionExternal(function) -> {
         let name = external.module <> "." <> function
+        // What answers for the name where no parsed source settles it: a module
+        // something outside this package speaks for, a catalog entry for the
+        // exact name, or a module the lint cannot place at all while the tree
+        // is missing a package that could be holding it. A project module is
+        // *not* among them — it was parsed, and `known_functions` is what it
+        // defines.
+        let unparsed_answers =
+          claimed
+          || dict.has_key(
+            catalog_functions,
+            QualifiedName(external.module, function),
+          )
+          || { unplaceable_is_unknown && !placed }
         // The catalog is a stand-in for sources graded cannot read, so it is
         // weighed only where the dependency's own source says nothing: a
         // parsed module defines what it defines, and a name it provably lacks
-        // is a typo whatever the catalog keys for the module. A module graded
-        // holds no readable source for keeps answering for every name — the
-        // lint flags what it can prove dead, and silence is not proof.
+        // is a typo whatever the catalog keys for the module. The lint flags
+        // what it can prove dead, and silence is not proof.
         let resolves =
           set.contains(known_functions, name)
           || case dict.get(dep_functions, external.module) {
             Ok(functions) -> set.contains(functions, function)
-            Error(Nil) ->
-              dict.has_key(dep_files, external.module)
-              || dict.has_key(
-                catalog_functions,
-                QualifiedName(external.module, function),
-              )
-              || dict.has_key(catalog_modules, external.module)
+            Error(Nil) -> unparsed_answers
           }
         case set.contains(stale, name), resolves {
           True, _ -> Ok(StaleFunctionExternalWarning(function: name))
@@ -947,17 +971,38 @@ fn external_warnings(
         }
       }
       types.ModuleExternal ->
-        case
-          dict.has_key(index, external.module)
-          || dict.has_key(dep_files, external.module)
-          || dict.has_key(catalog_modules, external.module)
-          || set.contains(catalog_function_modules, external.module)
-        {
+        case placed || unplaceable_is_unknown {
           True -> Error(Nil)
           False -> Ok(UnmatchedModuleExternalWarning(module: external.module))
         }
     }
   })
+}
+
+// Whether every package the manifest lists yielded sources graded could read —
+// installed under `build/packages`, or at a path dependency's own location.
+//
+// The lint proves a name dead by reading source. A tree missing one of the
+// manifest's packages holds source it never read, so a module it cannot place
+// might be that package's: only over a complete tree does "nowhere to be found"
+// mean "not there". A project with no dependencies is trivially complete, and a
+// fresh clone before `gleam deps download` is not.
+fn dependency_sources_are_complete(package_root: String) -> Bool {
+  let manifest = effects.manifest_package_names(manifest_path(package_root))
+  use <- bool.guard(when: set.is_empty(manifest), return: True)
+  let located =
+    effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
+    |> list.filter_map(fn(dep) {
+      let #(name, dep_path) = dep
+      let src_dir = filepath.join(resolve_path(package_root, dep_path), "src")
+      case dict.is_empty(effects.source_dir_module_files(src_dir)) {
+        True -> Error(Nil)
+        False -> Ok(name)
+      }
+    })
+    |> set.from_list
+    |> set.union(effects.packages_with_sources(packages_dir(package_root)))
+  set.difference(manifest, located) |> set.is_empty
 }
 
 // The functions each dependency module named by a per-function line defines,
