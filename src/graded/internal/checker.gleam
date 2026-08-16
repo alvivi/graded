@@ -322,8 +322,18 @@ pub fn explain(
           // The same grooming inference gives a function's term before the
           // spec states it, so the block's total is the term `graded effect`
           // answers with, not the ground projection the per-call lines print.
+          //
+          // Against the same names the contributors were groomed against —
+          // declared bounds included, not the synthesised ones alone. A
+          // variable a `check` line's own bound names is one this function can
+          // bind, so grounding it in the total alone would head a block stating
+          // `[cb]` per call with an `[Unknown]` the projection is not a
+          // subset of, inverting the relationship between the two.
           let #(total, field_vars) =
-            groom_published_term(contribution.total, fn_typed_params)
+            groom_published_term(
+              contribution.total,
+              bound_name_set(contribution.effective_bounds),
+            )
           // A field-effect variable surviving in the total gets the identity
           // bound inference writes beside it, exactly as the fn-typed params
           // already carry theirs in the effective bounds: a renderer stating

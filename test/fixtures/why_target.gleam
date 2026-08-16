@@ -50,6 +50,13 @@ pub fn forwards(action: fn() -> Nil) -> Nil {
   action()
 }
 
+// The same shape under a `check` line whose bound is the identity one (see
+// fixtures.graded): the bound's value is a variable, so the block's total keeps
+// it rather than grounding a name the line itself declared.
+pub fn bound_forwards(action: fn() -> Nil) -> Nil {
+  action()
+}
+
 // Two `check` lines bind one parameter each (see fixtures.graded), so they share
 // a budget and differ only in which call they resolve.
 pub fn two_bounds(f: fn() -> Nil, g: fn() -> Nil) -> Nil {
