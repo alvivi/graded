@@ -411,6 +411,13 @@ both the declaration and the fallback. An `@external` for every target it is
 compiled for (both, or the one a `@target` narrows it to) is answered by the
 declaration alone.
 
+That body is weighed *on the targets it runs on*. A name it calls is reached from
+those targets and no others, so a fallback running on Erlang that calls another
+`@external(javascript, …)` reaches the callee's Gleam fallback, never the foreign
+implementation its declaration describes — the two are never built together. A
+callee whose declaration does cover a target this body runs on is charged that
+declaration as usual.
+
 Where `@target` excludes *every* target the declaration names — `@target(erlang)`
 on a function whose only `@external` is `@external(javascript, …)` — no foreign
 implementation is compiled at all. The Gleam body is the sole implementation, and

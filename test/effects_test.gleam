@@ -1299,6 +1299,26 @@ pub fn catalog_directory_anchored_on_install_location_test() {
 // loads: a declaration does, inference over a fallback body does not, and a
 // dropped entry uncovers whatever tier the merges would otherwise have buried.
 
+// A dependency `@external` declaring an implementation for every target it is
+// compiled for, so no fallback of its ever runs.
+fn foreign_declared_everywhere() -> types.ForeignFunction {
+  types.ForeignFunction(
+    runs_fallback_body: False,
+    compiled_targets: types.every_target(),
+    declared_targets: types.every_target(),
+  )
+}
+
+// One declaring an implementation for javascript alone, so its Gleam fallback
+// is what runs on erlang.
+fn foreign_with_running_fallback() -> types.ForeignFunction {
+  types.ForeignFunction(
+    runs_fallback_body: True,
+    compiled_targets: types.every_target(),
+    declared_targets: set.from_list(["javascript"]),
+  )
+}
+
 // A `build/packages`-shaped tree holding one package's spec, loaded with
 // `foreign` standing in for what a scan of that package's source found.
 fn installed_dep_over_source(
@@ -1332,10 +1352,7 @@ pub fn a_dependency_effects_line_for_its_own_external_is_dropped_test() {
     "effects dep/ffi.now : []\n",
     "",
     [
-      #(
-        QualifiedName("dep/ffi", "now"),
-        types.ForeignFunction(runs_fallback_body: False),
-      ),
+      #(QualifiedName("dep/ffi", "now"), foreign_declared_everywhere()),
     ],
   )
   |> entry_of(QualifiedName("dep/ffi", "now"))
@@ -1351,10 +1368,7 @@ pub fn a_dependency_external_line_for_its_own_external_answers_test() {
     "external effects dep/ffi.now : [Time]\n",
     "",
     [
-      #(
-        QualifiedName("dep/ffi", "now"),
-        types.ForeignFunction(runs_fallback_body: False),
-      ),
+      #(QualifiedName("dep/ffi", "now"), foreign_declared_everywhere()),
     ],
   )
   |> entry_of(QualifiedName("dep/ffi", "now"))
@@ -1373,10 +1387,7 @@ pub fn a_dependency_effects_line_on_an_ordinary_function_answers_test() {
     "effects dep/ffi.now : [Time]\neffects dep/ffi.plain : [Disk]\n",
     "",
     [
-      #(
-        QualifiedName("dep/ffi", "now"),
-        types.ForeignFunction(runs_fallback_body: False),
-      ),
+      #(QualifiedName("dep/ffi", "now"), foreign_declared_everywhere()),
     ],
   )
   |> entry_of(QualifiedName("dep/ffi", "plain"))
@@ -1396,10 +1407,7 @@ pub fn a_stale_dependency_effects_line_does_not_bury_the_catalog_test() {
     "effects gleam/io.println : [Shipped]\n",
     "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
     [
-      #(
-        QualifiedName("gleam/io", "println"),
-        types.ForeignFunction(runs_fallback_body: False),
-      ),
+      #(QualifiedName("gleam/io", "println"), foreign_declared_everywhere()),
     ],
   )
   |> entry_of(QualifiedName("gleam/io", "println"))
@@ -1419,10 +1427,7 @@ pub fn a_dropped_dependency_effects_line_takes_its_bounds_with_it_test() {
       "effects gleam/io.println(cb: [cb]) : [cb]\n",
       "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
       [
-        #(
-          QualifiedName("gleam/io", "println"),
-          types.ForeignFunction(runs_fallback_body: False),
-        ),
+        #(QualifiedName("gleam/io", "println"), foreign_declared_everywhere()),
       ],
     )
   kb
@@ -1445,10 +1450,7 @@ pub fn a_declared_dependency_external_with_a_running_fallback_is_widened_test() 
     "external effects dep/ffi.run : [Time]\n",
     "",
     [
-      #(
-        QualifiedName("dep/ffi", "run"),
-        types.ForeignFunction(runs_fallback_body: True),
-      ),
+      #(QualifiedName("dep/ffi", "run"), foreign_with_running_fallback()),
     ],
   )
   |> entry_of(QualifiedName("dep/ffi", "run"))
@@ -1472,10 +1474,7 @@ pub fn a_dependency_returns_line_for_its_own_external_is_refused_test() {
       "external effects dep/ffi.make : []\nreturns dep/ffi.make : []\nreturns dep/ffi.plain : []\n",
       "",
       [
-        #(
-          QualifiedName("dep/ffi", "make"),
-          types.ForeignFunction(runs_fallback_body: False),
-        ),
+        #(QualifiedName("dep/ffi", "make"), foreign_declared_everywhere()),
       ],
     )
   effects.lookup_returned_operator(kb, QualifiedName("dep/ffi", "make"))
@@ -1485,4 +1484,93 @@ pub fn a_dependency_returns_line_for_its_own_external_is_refused_test() {
   effects.lookup_returned_operator(kb, QualifiedName("dep/ffi", "plain"))
   |> result.is_ok
   |> should.be_true()
+}
+
+// Target-narrowed foreign lookups
+//
+// A Gleam fallback body runs only on the targets its own declaration leaves
+// uncovered, and the names it calls are read there. Which half of a foreign
+// callee's answer it reaches — the declaration, the callee's own fallback — is
+// what `with_active_targets` narrows the base to.
+
+// A base holding one foreign name: what the source scan recorded about it, the
+// summary its fallback walked to, and the targets the body doing the calling
+// runs on.
+fn narrowed_to(
+  name: QualifiedName,
+  entry: types.ForeignFunction,
+  fallback: List(String),
+  active: List(String),
+) -> effects.KnowledgeBase {
+  effects.new_knowledge_base()
+  |> effects.with_foreign_functions(dict.from_list([#(name, entry)]))
+  |> effects.with_fallback_summaries(
+    dict.from_list([
+      #(
+        name,
+        #(effect_term.from_effect_set(Specific(set.from_list(fallback))), []),
+      ),
+    ]),
+  )
+  |> effects.with_active_targets(option.Some(set.from_list(active)))
+}
+
+// The declared external's own entry, compiled for both targets.
+fn declared_for(targets: List(String)) -> types.ForeignFunction {
+  types.ForeignFunction(
+    runs_fallback_body: True,
+    compiled_targets: types.every_target(),
+    declared_targets: set.from_list(targets),
+  )
+}
+
+fn charged(base: effects.KnowledgeBase, name: QualifiedName) -> EffectSet {
+  effects.with_running_fallback(
+    base,
+    name,
+    effect_term.from_effect_set(Specific(set.from_list(["Disk"]))),
+  )
+  |> effect_term.to_effect_set
+}
+
+pub fn a_callee_declared_elsewhere_charges_its_fallback_alone_test() {
+  // The declaration covers javascript and the calling body runs on erlang, so
+  // the calling body reaches this name's Gleam fallback and never its foreign
+  // implementation. Charging the union attributed `[Disk]` — an effect of the
+  // javascript implementation — to a body that only ever runs on erlang.
+  let name = QualifiedName("app/ffi", "b")
+  narrowed_to(name, declared_for(["javascript"]), ["Time"], ["erlang"])
+  |> charged(name)
+  |> should.equal(Specific(set.from_list(["Time"])))
+}
+
+pub fn a_callee_declared_here_charges_its_declaration_alone_test() {
+  // The other direction: the declaration covers the target the calling body
+  // runs on, so the foreign implementation is what that body reaches and the
+  // callee's fallback runs where this body does not.
+  let name = QualifiedName("app/ffi", "b")
+  narrowed_to(name, declared_for(["erlang"]), ["Time"], ["erlang"])
+  |> charged(name)
+  |> should.equal(Specific(set.from_list(["Disk"])))
+}
+
+pub fn a_callee_reached_on_both_targets_charges_both_halves_test() {
+  // A body running on both targets reaches the declaration on one and the
+  // fallback on the other, which is the union the unnarrowed reading gives.
+  let name = QualifiedName("app/ffi", "b")
+  narrowed_to(name, declared_for(["javascript"]), ["Time"], [
+    "erlang", "javascript",
+  ])
+  |> charged(name)
+  |> should.equal(Specific(set.from_list(["Disk", "Time"])))
+}
+
+pub fn no_active_targets_charges_both_halves_test() {
+  // Outside a fallback walk nothing is narrowed: an ordinary caller is compiled
+  // for everything the package is, and pays whichever half each target has.
+  let name = QualifiedName("app/ffi", "b")
+  let base =
+    narrowed_to(name, declared_for(["javascript"]), ["Time"], ["erlang"])
+    |> effects.with_active_targets(option.None)
+  charged(base, name) |> should.equal(Specific(set.from_list(["Disk", "Time"])))
 }

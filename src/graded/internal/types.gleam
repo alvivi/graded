@@ -372,8 +372,20 @@ pub type Visibility {
 // function is compiled for. It travels with the name because it decides an
 // answer no other entry can supply — a running fallback widens a declaration
 // downstream, where the body itself is never walked.
+//
+// The target sets that decided it ride along, because a caller that runs on
+// only some of them needs the same question answered for *its* targets: a body
+// running where this name's declaration is compiled reaches foreign code, and
+// one running where it isn't reaches the Gleam fallback. Reading the summary
+// bool alone charges a caller both halves wherever either can happen.
 pub type ForeignFunction {
-  ForeignFunction(runs_fallback_body: Bool)
+  ForeignFunction(
+    runs_fallback_body: Bool,
+    // What the function is built for, and what its `@external` attributes
+    // declare an implementation for. The difference is where the fallback runs.
+    compiled_targets: Set(String),
+    declared_targets: Set(String),
+  )
 }
 
 // Whether an external targets a whole module or a specific function.
