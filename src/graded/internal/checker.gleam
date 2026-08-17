@@ -7,7 +7,7 @@ import gleam/bool
 import gleam/dict
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/order
 import gleam/result
 import gleam/set.{type Set}
@@ -163,6 +163,13 @@ pub fn infer_with_returns(
   // is threaded through this pass and reused for the inference pass below.
   let #(memo, returned_pairs) =
     list.map_fold(value_channel_functions, new_memo(), fn(memo, definition) {
+      // The operator a producer hands back is what its own body builds, so it
+      // is computed on the targets that body runs on. Read package-wide, a
+      // `@target(erlang)` producer returning a closure over a JavaScript-only
+      // external published that unreachable declaration's effect in its
+      // `returns` line -- and its `effects` line, narrowed, disagreed.
+      let #(knowledge_base, memo) =
+        body_walk(knowledge_base, memo, definition, package_targets)
       let #(returned, memo) =
         compute_returned_operator(
           definition.definition,
@@ -230,12 +237,14 @@ pub fn infer_with_returns(
       {
         True -> #(effect_term.unknown(), memo)
         False -> {
+          let #(knowledge_base, memo) =
+            body_walk(knowledge_base, memo, definition, package_targets)
           let #(pairs, memo) =
             collect_effects(
               without_returned_closure(definition.definition),
               function_map,
               context,
-              body_knowledge_base(knowledge_base, definition, package_targets),
+              knowledge_base,
               set.new(),
               effective_bounds,
               registry,
@@ -468,8 +477,8 @@ fn contributors(
       // Reading the names it calls package-wide here would charge this
       // function's own `check` line effects its callers, charged through that
       // summary, are not: one name, two totals.
-      let knowledge_base =
-        body_knowledge_base(knowledge_base, definition, context.package_targets)
+      let #(knowledge_base, memo) =
+        body_walk(knowledge_base, memo, definition, context.package_targets)
       let #(body_effects, memo) =
         collect_effects(
           without_returned_closure(definition.definition),
@@ -2261,6 +2270,13 @@ type Memo {
       #(Int, List(Int), List(String), List(String), List(String)),
       EffectTerm,
     ),
+    // The targets every entry above was analysed on. Not part of any key —
+    // which is why it has to be part of the table: a helper reached from a
+    // `@target(erlang)` body and from a `@target(javascript)` one is one name
+    // with two answers, and the keys name callees, positions and ancestors
+    // alone. Sharing the table across the two let whichever ran first answer
+    // for both.
+    targets: Option(Set(String)),
   )
 }
 
@@ -2270,7 +2286,31 @@ fn new_memo() -> Memo {
     sccs: dict.new(),
     lifts: dict.new(),
     closures: dict.new(),
+    targets: option.None,
   )
+}
+
+// The memo a body walked on `targets` may read: the one in hand where it was
+// filled on those same targets, and an empty one otherwise. Emptied rather than
+// keyed per target because a walk stays on one set start to finish, so the
+// entries a change strands would not be read again anyway.
+fn memo_on(memo: Memo, targets: Option(Set(String))) -> Memo {
+  use <- bool.guard(when: memo.targets == targets, return: memo)
+  Memo(..new_memo(), targets: targets)
+}
+
+// The base and the memo one definition's body is walked with: the base narrowed
+// to the targets that body runs on, and a memo holding only what was analysed
+// there.
+fn body_walk(
+  knowledge_base: KnowledgeBase,
+  memo: Memo,
+  definition: Definition(Function),
+  package_targets: Set(String),
+) -> #(KnowledgeBase, Memo) {
+  let knowledge_base =
+    body_knowledge_base(knowledge_base, definition, package_targets)
+  #(knowledge_base, memo_on(memo, knowledge_base.active_targets))
 }
 
 // The same-module functions a function actually calls or references as a

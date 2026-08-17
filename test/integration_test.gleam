@@ -2309,6 +2309,87 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn two_target_restricted_checks_do_not_share_a_helper_test() {
+  // One helper, two callers, opposite targets. The analysis of that helper is
+  // memoised by callee and ancestors and by nothing else, so the table carried
+  // across annotations handed whichever ran first its answer to the other --
+  // and the two answers differ, since the external the helper calls is foreign
+  // code on JavaScript and a pure Gleam fallback on Erlang. Each check alone
+  // was right; together the Erlang one failed on the JavaScript one's `[Disk]`.
+  let root = "build/target_restricted_memo"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.b : [Disk]\ncheck ext.e : []\ncheck ext.j : []\n",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"b\")
+pub fn b() -> Nil {
+  Nil
+}
+
+fn h() -> Nil {
+  b()
+}
+
+@target(erlang)
+pub fn e() -> Nil {
+  h()
+}
+
+@target(javascript)
+pub fn j() -> Nil {
+  h()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  // The JavaScript caller reaches the foreign implementation and fails; the
+  // Erlang one reaches the fallback and passes. One violation, and it is that
+  // one -- neither answer stands in for the other.
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("j")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_returns_line_is_computed_on_the_producer_targets_test() {
+  // The operator a producer hands back is what its own body builds, so a
+  // `@target(erlang)` producer's closure over a JavaScript-only external
+  // returns what that external's Erlang fallback does. Computed package-wide,
+  // the `returns` line published the unreachable declaration's effect -- and
+  // disagreed with the `effects` line beside it, which was narrowed.
+  let root = "build/returns_target_restricted"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "external effects ext.b : [Disk]\n"),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"b\")
+pub fn b() -> Nil {
+  Nil
+}
+
+@target(erlang)
+pub fn make() -> fn() -> Nil {
+  fn() { b() }
+}
+",
+    ),
+  ])
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  string.contains(written, "returns ext.make : []") |> should.be_true()
+  string.contains(written, "returns ext.make : [Disk]") |> should.be_false()
+  support.cleanup(root)
+}
+
 pub fn an_ordinary_target_restricted_body_narrows_too_test() {
   // `@target` restricts an ordinary function exactly as it restricts an
   // `@external`: this body is built for Erlang and nowhere else, so the
