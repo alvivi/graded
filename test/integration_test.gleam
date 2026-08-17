@@ -654,6 +654,154 @@ pub fn calls_it() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_fallback_reads_a_nested_external_on_its_own_targets_test() {
+  // A fallback body runs on the targets its own declaration leaves uncovered,
+  // and a target-conditional external it calls is reached there and nowhere
+  // else. Two externals declared `@external(javascript, …)` are both Erlang
+  // fallbacks, so `a`'s body calls `b`'s *body* — never the JavaScript
+  // implementation `b`'s declaration describes. Reading the callee as the
+  // package-wide union charged `a`, and every caller of it, a `[Disk]` no
+  // implementation either of them reaches can perform.
+  let root = "build/external_nested_target_conditional"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.a : []
+external effects ext.b : [Disk]
+check ext.a : []
+check ext.wrapper : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"b\")
+pub fn b() -> Nil {
+  Nil
+}
+
+@external(javascript, \"ext_ffi\", \"a\")
+pub fn a() -> Nil {
+  b()
+}
+
+pub fn wrapper() -> Nil {
+  a()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  // Both walks of `a`'s body agree — the summary its callers are charged
+  // through, and the walk its own `check` line performs.
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  let assert Ok(answered) = graded.run_effect(root, "ext.wrapper")
+  answered |> string.contains("effects ext.wrapper : []") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn two_fallbacks_on_opposite_targets_do_not_mix_test() {
+  // The same narrowing between two fallbacks of the *same* module whose active
+  // targets are disjoint: `c` is declared for Erlang, so its body runs on
+  // JavaScript alone, while `a` is declared for JavaScript and runs on Erlang.
+  // On Erlang `a` reaches `c`'s Erlang implementation, which its declaration
+  // answers for. Charging `c`'s summary there let a body that can only run on
+  // JavaScript contaminate one that can only run on Erlang.
+  let root = "build/external_disjoint_fallbacks"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.a : []
+external effects ext.c : []
+external effects ext.disk : [Disk]
+check ext.wrapper : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(erlang, \"ext_ffi\", \"disk\")
+@external(javascript, \"ext_ffi\", \"disk\")
+fn disk() -> Nil
+
+@external(erlang, \"ext_ffi\", \"c\")
+pub fn c() -> Nil {
+  disk()
+}
+
+@external(javascript, \"ext_ffi\", \"a\")
+pub fn a() -> Nil {
+  c()
+}
+
+pub fn wrapper() -> Nil {
+  a()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  // `c` itself is unchanged: an ordinary caller is compiled for both targets,
+  // so it pays the declaration on one and that same body on the other.
+  let assert Ok(answered) = graded.run_effect(root, "ext.c")
+  answered |> string.contains("[Disk]") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_nested_external_still_charges_what_the_fallback_reaches_test() {
+  // The narrowing sharpens only where the effect is unreachable. Both halves
+  // still arrive where the fallback runs into them: `b`'s own Erlang fallback
+  // touches the disk, and `d` declares an Erlang implementation that does —
+  // each reached by `a`'s Erlang body, each charged to it and to its caller.
+  let root = "build/external_nested_reachable"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.a : []
+external effects ext.b : []
+external effects ext.d : [Time]
+external effects ext.disk : [Disk]
+check ext.wrapper : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(erlang, \"ext_ffi\", \"disk\")
+@external(javascript, \"ext_ffi\", \"disk\")
+fn disk() -> Nil
+
+@external(javascript, \"ext_ffi\", \"b\")
+pub fn b() -> Nil {
+  disk()
+}
+
+@external(erlang, \"ext_ffi\", \"d\")
+pub fn d() -> Nil
+
+@external(javascript, \"ext_ffi\", \"a\")
+pub fn a() -> Nil {
+  b()
+  d()
+}
+
+pub fn wrapper() -> Nil {
+  a()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let assert Ok(violation) =
+    list.find(r.violations, fn(v) { v.function == "wrapper" })
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+  support.cleanup(root)
+}
+
 pub fn a_girard_typed_fallback_callback_binds_in_the_same_module_test() {
   // The fallback's parameter carries no `fn(...)` annotation — only girard
   // knows it is function-typed, so its bound exists only as the one recorded
@@ -2158,6 +2306,101 @@ pub fn wrapper() -> Nil {
   checker.format_violation(r.file, violation)
   |> string.contains("unioned with its Gleam fallback body")
   |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_dependency_fallback_out_of_reach_does_not_widen_test() {
+  // The widening stands in for a body that runs where the *calling* code does.
+  // Here the caller is itself a fallback running on Erlang alone, and the
+  // dependency's declaration covers Erlang — so the dependency's own fallback
+  // runs on JavaScript, which this body never reaches, and there is no unwalked
+  // body to stand `[Unknown]` in for. The union was applied before anything
+  // asked which targets were in reach, and it travels under the declaration's
+  // source, so nothing downstream could subtract it: a `[Disk]` budget over a
+  // call resolving to exactly `[Disk]` failed on a `[Disk, Unknown]`.
+  let root = "build/dep_fallback_out_of_reach"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects app.a : []
+check app.a : [Disk]
+check app.wrapper : [Disk]
+",
+    ),
+    #(
+      "build/packages/dep/dep.graded",
+      "external effects dep/ffi.run : [Disk]\n",
+    ),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "@external(erlang, \"dep_ffi\", \"run\")
+pub fn run() -> Nil {
+  Nil
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+@external(javascript, \"app_ffi\", \"a\")
+pub fn a() -> Nil {
+  ffi.run()
+}
+
+pub fn wrapper() -> Nil {
+  a()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_dependency_declaration_out_of_reach_answers_unknown_test() {
+  // The other direction, where the widening is *all* there is to say: the
+  // dependency's declaration covers JavaScript, this body runs on Erlang, and
+  // what runs there is the dependency's Gleam fallback — which no consumer
+  // walks. The declaration's `[Disk]` describes foreign code this call never
+  // reaches, so keeping it beside the `[Unknown]` charged the caller an effect
+  // of the wrong implementation, under a message already naming the body as
+  // the source.
+  let root = "build/dep_declaration_out_of_reach"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "external effects app.a : []\ncheck app.a : [Disk]\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "external effects dep/ffi.run : [Disk]\n",
+    ),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "@external(javascript, \"dep_ffi\", \"run\")
+pub fn run() -> Nil {
+  Nil
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+@external(javascript, \"app_ffi\", \"a\")
+pub fn a() -> Nil {
+  ffi.run()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
   support.cleanup(root)
 }
 

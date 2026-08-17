@@ -1598,7 +1598,7 @@ fn runs_a_fallback_body(
     Error(Nil) -> False
     Ok(#(_module, function)) ->
       case dict.get(parsed.foreign, QualifiedName(module:, function:)) {
-        Ok(types.ForeignFunction(runs_fallback_body:)) -> runs_fallback_body
+        Ok(types.ForeignFunction(runs_fallback_body:, ..)) -> runs_fallback_body
         Error(Nil) -> False
       }
   }

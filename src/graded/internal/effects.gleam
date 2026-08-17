@@ -4,7 +4,7 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/order
 import gleam/result
 import gleam/set.{type Set}
@@ -122,6 +122,19 @@ pub type KnowledgeBase {
     // The dependency counterpart is `[Unknown]` (see `with_dependency_fallback`)
     // — no consumer walks a dependency's bodies. Here the body is in hand.
     fallback_summaries: Dict(QualifiedName, #(EffectTerm, List(ParamBound))),
+    // The targets the code being walked runs on, where that is narrower than
+    // the package's own: a Gleam fallback body reached only on the targets its
+    // own declaration leaves uncovered. `None` outside such a walk, which is
+    // every ordinary function — compiled for everything the package is, and so
+    // charged every name on every target.
+    //
+    // Set because a foreign name reads differently from inside one: a fallback
+    // running on Erlang that calls a JavaScript-only `@external` reaches that
+    // callee's *Gleam fallback*, never the foreign implementation its
+    // declaration describes. Charging the union there attributes an effect to a
+    // body that provably cannot perform it — the two implementations are never
+    // built together.
+    active_targets: Option(Set(String)),
   )
 }
 
@@ -202,6 +215,7 @@ pub fn knowledge_base_from_catalog(
     dependency_foreign:,
     project_functions: dict.new(),
     fallback_summaries: dict.new(),
+    active_targets: None,
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
@@ -225,6 +239,7 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     dependency_foreign: dict.new(),
     project_functions: dict.new(),
     fallback_summaries: dict.new(),
+    active_targets: None,
   )
 }
 
@@ -246,6 +261,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     dependency_foreign: dict.new(),
     project_functions: dict.new(),
     fallback_summaries: dict.new(),
+    active_targets: None,
   )
   |> with_sourced_type_fields(cat_type_fields)
 }
@@ -394,18 +410,38 @@ pub fn lookup(
 // []` over an `@external(javascript, …)` whose Erlang fallback prints would be
 // believed pure on Erlang. `[Unknown]` is that missing operand — the body ran,
 // and what it did is not knowable from here.
+//
+// Which halves the *calling* body reaches decides this the way it decides one of
+// this package's own (see `reachable_halves`), and it is decided here because
+// the widening happens here: the `[Unknown]` travels under the declaration's
+// source, so nothing downstream can tell it back out of the term or subtract it.
 fn with_dependency_fallback(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
   found: EffectLookup,
 ) -> EffectLookup {
-  case widens_with_dependency_fallback(knowledge_base, name), found {
-    True, Known(term, source) ->
-      Known(
-        effect_term.normalize(types.TUnion([term, effect_term.unknown()])),
-        source,
-      )
-    True, Unknown | False, _ -> found
+  use <- bool.guard(
+    when: !widens_with_dependency_fallback(knowledge_base, name),
+    return: found,
+  )
+  case found {
+    Unknown -> found
+    Known(term, source) ->
+      case reachable_halves(knowledge_base, name) {
+        // The declaration covers every target the calling body runs on, so the
+        // dependency's fallback body runs only where that body does not. There
+        // is no unwalked body in reach to stand `[Unknown]` in for.
+        DeclarationOnly -> found
+        // And none of them: the dependency's body is what runs where this call
+        // is made, so it is the whole answer — while the declaration states what
+        // foreign code this call never reaches would have done.
+        FallbackOnly -> Known(effect_term.unknown(), source)
+        DeclarationAndFallback ->
+          Known(
+            effect_term.normalize(types.TUnion([term, effect_term.unknown()])),
+            source,
+          )
+      }
   }
 }
 
@@ -421,7 +457,7 @@ pub fn widens_with_dependency_fallback(
   name: QualifiedName,
 ) -> Bool {
   case dict.get(knowledge_base.dependency_foreign, name) {
-    Ok(types.ForeignFunction(runs_fallback_body:)) -> runs_fallback_body
+    Ok(types.ForeignFunction(runs_fallback_body:, ..)) -> runs_fallback_body
     Error(Nil) -> False
   }
 }
@@ -450,27 +486,133 @@ pub fn with_fallback_summaries(
 // Applied where a name is *charged*, never where a declaration is *explained*:
 // the two halves come from different places, and a lookup that folded them
 // together could no longer say which half the declaration accounts for.
+//
+// Both halves only where the charging code can reach both. From inside a
+// fallback body the targets are narrower than the package's, and the two halves
+// answer for different ones — see `reachable_halves`.
 pub fn with_running_fallback(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
   term: EffectTerm,
 ) -> EffectTerm {
-  case dict.get(knowledge_base.fallback_summaries, name) {
-    Ok(#(fallback, _bounds)) ->
-      effect_term.normalize(types.TUnion([term, fallback]))
-    // A body that runs and nothing walked, which is what a dependency's
-    // fallback already answers. The source scan records that the fallback runs
-    // before anything walks it, so the two facts can disagree: a pass that
-    // never reached the walk — an import cycle bails the whole in-memory
-    // inference — leaves the declaration standing alone over a body that
-    // prints. `[Unknown]` is what that state knows.
-    Error(Nil) ->
-      case runs_own_fallback_body(knowledge_base, name) {
-        False -> term
-        True ->
-          effect_term.normalize(types.TUnion([term, effect_term.unknown()]))
+  case reachable_halves(knowledge_base, name) {
+    // Every target this walk runs on has a foreign implementation for `name`,
+    // so its Gleam fallback runs only where this walk does not reach.
+    DeclarationOnly -> term
+    halves ->
+      case running_fallback_term(knowledge_base, name) {
+        None -> term
+        // No foreign implementation on any target this walk runs on: the
+        // fallback body is what it calls, and the declaration answers for
+        // targets it never reaches.
+        Some(fallback) if halves == FallbackOnly -> fallback
+        Some(fallback) -> effect_term.normalize(types.TUnion([term, fallback]))
       }
   }
+}
+
+// What a running fallback contributes to `name`'s charge, before any narrowing.
+//
+// `None` where no fallback of this package's runs. Where one does but no
+// summary was walked, `[Unknown]`: the source scan records that the fallback
+// runs before anything walks it, so the two facts can disagree — a pass that
+// never reached the walk (an import cycle bails the whole in-memory inference)
+// leaves the declaration standing alone over a body that prints.
+fn running_fallback_term(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Option(EffectTerm) {
+  case dict.get(knowledge_base.fallback_summaries, name) {
+    Ok(#(fallback, _bounds)) -> Some(fallback)
+    Error(Nil) ->
+      case runs_own_fallback_body(knowledge_base, name) {
+        True -> Some(effect_term.unknown())
+        False -> None
+      }
+  }
+}
+
+// Which halves of a foreign name's answer — its declaration, its running
+// fallback body — the code being walked can actually reach.
+type ReachableHalves {
+  // The unrestricted reading, and what every ordinary caller gets: compiled for
+  // everything the package is, it reaches whichever half each target has.
+  DeclarationAndFallback
+  DeclarationOnly
+  FallbackOnly
+}
+
+// Which halves a walk on `active_targets` reaches for `name`.
+//
+// A Gleam fallback body runs on the targets its own declaration leaves
+// uncovered, and a name it calls is reached from those and no others. So the
+// callee is read there: a target of its own that its `@external` covers reaches
+// foreign code, one it doesn't reaches the callee's Gleam fallback. Two
+// externals declared for opposite targets are never built together, and reading
+// their union charged each with what only the other can do.
+//
+// `DeclarationAndFallback` wherever the narrowing has nothing to say — outside
+// a fallback walk, for a name no scan recorded as foreign, and where the sets
+// leave the walk reaching neither half, which is source the compiler rejects.
+// Widening back to the union there keeps the conservative reading in every case
+// this cannot decide.
+fn reachable_halves(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> ReachableHalves {
+  case knowledge_base.active_targets, foreign_entry(knowledge_base, name) {
+    Some(active),
+      Some(types.ForeignFunction(compiled_targets:, declared_targets:, ..))
+    -> {
+      let reachable = set.intersection(active, compiled_targets)
+      let declared = set.intersection(reachable, declared_targets)
+      let undeclared = set.difference(reachable, declared_targets)
+      case set.is_empty(declared), set.is_empty(undeclared) {
+        False, True -> DeclarationOnly
+        True, False -> FallbackOnly
+        False, False | True, True -> DeclarationAndFallback
+      }
+    }
+    None, _ | _, None -> DeclarationAndFallback
+  }
+}
+
+// What either scan recorded about `name` being foreign code. This package's
+// externals first: a dependency's name cannot collide with one, and asking both
+// is what lets a fallback body read a dependency's target-conditional external
+// on its own targets too.
+fn foreign_entry(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Option(types.ForeignFunction) {
+  case dict.get(knowledge_base.foreign_functions, name) {
+    Ok(entry) -> Some(entry)
+    Error(Nil) ->
+      option.from_result(dict.get(knowledge_base.dependency_foreign, name))
+  }
+}
+
+// Whether `name`'s declaration answers for the targets being walked at all.
+//
+// `False` only from inside a fallback body that reaches none of the targets the
+// declaration covers. What it declares is then no part of the charge, so it is
+// no part of the provenance either — and neither is the `[Unknown]` an
+// undeclared external carries, which stands for a foreign implementation this
+// body never reaches.
+pub fn declaration_answers(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  reachable_halves(knowledge_base, name) != FallbackOnly
+}
+
+// Narrow every foreign lookup to the targets `active` names, for walking a body
+// that runs only there. `None` restores the package-wide reading.
+pub fn with_active_targets(
+  knowledge_base: KnowledgeBase,
+  active: Option(Set(String)),
+) -> KnowledgeBase {
+  KnowledgeBase(..knowledge_base, active_targets: active)
 }
 
 // Whether `name` is one of *this package's* `@external`s whose Gleam fallback
@@ -486,7 +628,7 @@ fn runs_own_fallback_body(
   name: QualifiedName,
 ) -> Bool {
   case dict.get(knowledge_base.foreign_functions, name) {
-    Ok(types.ForeignFunction(runs_fallback_body:)) -> runs_fallback_body
+    Ok(types.ForeignFunction(runs_fallback_body:, ..)) -> runs_fallback_body
     Error(Nil) -> False
   }
 }
@@ -507,6 +649,13 @@ pub fn fallback_contribution(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> option.Option(EffectTerm) {
+  // Nothing, where the walk reaches only the declaration: the same narrowing
+  // `with_running_fallback` charges by, so the explanation names exactly the
+  // halves the charge was made of.
+  use <- bool.guard(
+    when: reachable_halves(knowledge_base, name) == DeclarationOnly,
+    return: None,
+  )
   case dict.get(knowledge_base.fallback_summaries, name) {
     Ok(#(term, _bounds)) -> Some(term)
     Error(Nil) ->

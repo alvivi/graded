@@ -463,6 +463,13 @@ fn contributors(
     }
     None -> {
       let effective = effective_bounds(bounds, fn_typed_params)
+      // Where this body is an `@external`'s running fallback, it is walked on
+      // the targets it runs on — the same narrowing the summary walk performs.
+      // Reading the names it calls package-wide here would charge this
+      // function's own `check` line effects its callers, charged through that
+      // summary, are not: one name, two totals.
+      let knowledge_base =
+        body_knowledge_base(knowledge_base, definition, context.package_targets)
       let #(body_effects, memo) =
         collect_effects(
           without_returned_closure(definition.definition),
@@ -627,6 +634,14 @@ fn foreign_resolution(
   // union. The external's own `check` line already covers both halves by
   // walking the body beside the declaration; this is how every other caller
   // comes to the same total.
+  // What the declaration accounts for, where a body running on narrower targets
+  // than the package's reaches it at all. Where it doesn't, the Gleam fallback
+  // is the whole answer, and neither the declaration's source nor the
+  // `[Unknown]` an undeclared one carries describes any part of the charge.
+  let declared = case effects.declaration_answers(knowledge_base, name) {
+    True -> declared
+    False -> Resolution(..declared, reason: None, origin: None)
+  }
   Resolution(
     ..declared,
     term: effects.with_running_fallback(knowledge_base, name, declared.term),
@@ -832,6 +847,7 @@ pub fn fallback_effects(
             registry:,
             module_types:,
             girard_fn_typed:,
+            package_targets:,
           ),
         )
       #(
@@ -950,6 +966,9 @@ type FallbackWalk {
     registry: SignatureRegistry,
     module_types: dict.Dict(#(Int, Int), girard.Type),
     girard_fn_typed: dict.Dict(String, Set(String)),
+    // What decides the targets each member's body runs on, and so the targets
+    // every name that body calls is read on.
+    package_targets: Set(String),
   )
 }
 
@@ -1003,53 +1022,69 @@ fn walk_component(
       })
         |> qualified_summaries(walk.module_path),
     )
-  let #(_memo, entries) =
-    list.map_fold(walk.targets, new_memo(), fn(memo, definition) {
-      // The same synthetic bounds ordinary inference gives a function-typed
-      // parameter, so a fallback that calls one is charged that argument's
-      // effects rather than the `[Unknown]` an unbound call collapses to. A
-      // fallback has no `check` line of its own to declare any, so every one of
-      // them is synthesised.
-      let fn_typed_params =
-        unbound_fn_typed_params(definition, [], walk.girard_fn_typed)
-      let synthetic_bounds = synthetic_fn_typed_bounds(fn_typed_params)
-      let #(pairs, memo) =
-        collect_effects(
-          without_returned_closure(definition.definition),
-          walk.function_map,
-          walk.context,
-          knowledge_base,
-          set.new(),
-          synthetic_bounds,
-          walk.registry,
-          walk.module_types,
-          dict.new(),
-          walk.cache,
-          [],
-          memo,
-        )
-      // The same grooming inference applies before a term is stated anywhere:
-      // a summary keeping a phantom would make `graded effect` report the
-      // internal name while callers and `why` groom the same term to
-      // `[Unknown]`.
-      let #(term, field_vars) =
-        groom_published_term(union_of(pairs), fn_typed_params)
-      // The bounds carry the fallback's *whole* callback shape — every
-      // fn-typed parameter, invoked by the body or not — plus a binder for
-      // each field-effect variable the term keeps. A lift rebuilding the
-      // abstraction reads the parameters off these names, and filtering to
-      // the variables surviving in the term would drop an uninvoked callback
-      // and shift every later binder onto the wrong argument. A bound whose
-      // variable the term never mentions binds vacuously everywhere else, so
-      // the fuller list costs nothing.
-      let bounds =
-        list.append(
-          synthetic_bounds,
-          polymorphic_param_bounds(term, field_vars),
-        )
-      #(memo, #(definition.definition.name, #(term, bounds)))
-    })
-  dict.from_list(entries)
+  // Grouped by the targets each body runs on, because that is what decides how
+  // the names it calls read: a member reaching a target-conditional external
+  // reaches whichever of its halves is built alongside this body. The memo
+  // holding those readings is per group for the same reason — shared across two
+  // groups, it would hand one member an analysis performed on targets that
+  // member never runs on. A module's fallbacks nearly always share one set, so
+  // grouping costs the sharing nothing in practice.
+  walk.targets
+  |> list.group(fallback_targets(_, walk.package_targets))
+  |> dict.to_list
+  |> list.flat_map(fn(group) {
+    let #(active, definitions) = group
+    let knowledge_base =
+      effects.with_active_targets(knowledge_base, option.Some(active))
+    let #(_memo, entries) =
+      list.map_fold(definitions, new_memo(), fn(memo, definition) {
+        // The same synthetic bounds ordinary inference gives a function-typed
+        // parameter, so a fallback that calls one is charged that argument's
+        // effects rather than the `[Unknown]` an unbound call collapses to. A
+        // fallback has no `check` line of its own to declare any, so every one
+        // of them is synthesised.
+        let fn_typed_params =
+          unbound_fn_typed_params(definition, [], walk.girard_fn_typed)
+        let synthetic_bounds = synthetic_fn_typed_bounds(fn_typed_params)
+        let #(pairs, memo) =
+          collect_effects(
+            without_returned_closure(definition.definition),
+            walk.function_map,
+            walk.context,
+            knowledge_base,
+            set.new(),
+            synthetic_bounds,
+            walk.registry,
+            walk.module_types,
+            dict.new(),
+            walk.cache,
+            [],
+            memo,
+          )
+        // The same grooming inference applies before a term is stated anywhere:
+        // a summary keeping a phantom would make `graded effect` report the
+        // internal name while callers and `why` groom the same term to
+        // `[Unknown]`.
+        let #(term, field_vars) =
+          groom_published_term(union_of(pairs), fn_typed_params)
+        // The bounds carry the fallback's *whole* callback shape — every
+        // fn-typed parameter, invoked by the body or not — plus a binder for
+        // each field-effect variable the term keeps. A lift rebuilding the
+        // abstraction reads the parameters off these names, and filtering to
+        // the variables surviving in the term would drop an uninvoked callback
+        // and shift every later binder onto the wrong argument. A bound whose
+        // variable the term never mentions binds vacuously everywhere else, so
+        // the fuller list costs nothing.
+        let bounds =
+          list.append(
+            synthetic_bounds,
+            polymorphic_param_bounds(term, field_vars),
+          )
+        #(memo, #(definition.definition.name, #(term, bounds)))
+      })
+    entries
+  })
+  |> dict.from_list
 }
 
 // Union `[Unknown]` into every summary term. The bounds stay: the term's
@@ -1402,7 +1437,7 @@ pub fn format_call_explanation(explanation: CallExplanation) -> String {
   action
   <> effects_word
   <> effects.format_effect_set(explanation.actual)
-  <> origin_suffix(explanation.origin, explanation.fallback)
+  <> origin_suffix(explanation.origin, explanation.fallback, explanation.reason)
 }
 
 // What a call site is, stated from its kind alone.
@@ -1516,6 +1551,7 @@ const untraceable_argument_clause = ", whose effects depend on an argument that 
 fn origin_suffix(
   origin: option.Option(LookupOrigin),
   fallback: option.Option(types.EffectSet),
+  reason: option.Option(UnknownReason),
 ) -> String {
   // A running fallback body is a second source, and the origin speaks only for
   // the declaration. Naming it is what stops a declaration of `[]` being read
@@ -1528,7 +1564,16 @@ fn origin_suffix(
     Some(origin), None -> " (from " <> effects.describe_origin(origin) <> ")"
     Some(origin), Some(_) ->
       " (from " <> effects.describe_origin(origin) <> ", " <> body <> ")"
-    None, Some(_) -> " (" <> body <> ")"
+    // No origin and a body. Either nothing declared the external, and the
+    // `[Unknown]` the call's own clause already names is the union's other
+    // half — or a declaration exists and covers no target the calling body runs
+    // on, leaving that body as the whole of what was charged.
+    None, Some(_) ->
+      case reason {
+        Some(UndeclaredExternal) -> " (" <> body <> ")"
+        _ ->
+          " (from its Gleam fallback body, which is what runs on the targets this one does)"
+      }
     None, None -> ""
   }
 }
@@ -2291,10 +2336,11 @@ pub fn foreign_functions(
       QualifiedName(module: module_path, function: definition.definition.name)
     #(
       name,
-      types.ForeignFunction(runs_fallback_body: runs_fallback_body(
-        definition,
-        package_targets,
-      )),
+      types.ForeignFunction(
+        runs_fallback_body: runs_fallback_body(definition, package_targets),
+        compiled_targets: extract.compiled_targets(definition, package_targets),
+        declared_targets: extract.declared_targets(definition),
+      ),
     )
   })
   |> dict.from_list()
@@ -2350,12 +2396,40 @@ fn runs_fallback_body(
     return: False,
   )
   use <- bool.guard(when: definition.definition.body == [], return: False)
+  fallback_targets(definition, package_targets) |> set.is_empty |> bool.negate
+}
+
+// The knowledge base a definition's own body is walked against: narrowed to the
+// targets that body runs on where it is an `@external`'s Gleam fallback, and the
+// package's own reading everywhere else. An ordinary function is compiled for
+// everything the package is, so nothing about it is narrower.
+fn body_knowledge_base(
+  knowledge_base: KnowledgeBase,
+  definition: Definition(Function),
+  package_targets: Set(String),
+) -> KnowledgeBase {
+  use <- bool.guard(
+    when: !extract.is_foreign_definition(definition, package_targets),
+    return: knowledge_base,
+  )
+  effects.with_active_targets(
+    knowledge_base,
+    option.Some(fallback_targets(definition, package_targets)),
+  )
+}
+
+// The targets that body runs on: the ones the function is compiled for that its
+// `@external` attributes declare no implementation for. What the body is walked
+// *as* — a call it makes is reached from these targets and no others, so this is
+// the set every name it resolves has to be read on.
+fn fallback_targets(
+  definition: Definition(Function),
+  package_targets: Set(String),
+) -> Set(String) {
   set.difference(
     extract.compiled_targets(definition, package_targets),
     extract.declared_targets(definition),
   )
-  |> set.is_empty
-  |> bool.negate
 }
 
 // Annotation checking
