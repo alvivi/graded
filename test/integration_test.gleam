@@ -2309,6 +2309,116 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn an_ordinary_target_restricted_body_narrows_too_test() {
+  // `@target` restricts an ordinary function exactly as it restricts an
+  // `@external`: this body is built for Erlang and nowhere else, so the
+  // JavaScript-only external it calls answers with the Gleam fallback that runs
+  // there rather than with what its declaration says the foreign implementation
+  // does. Only fallback bodies were narrowed, so a plain function under a
+  // `@target` was charged an effect no build of it can perform.
+  let root = "build/ordinary_target_restricted_body"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "external effects ext.b : [Disk]\ncheck ext.w : []\n"),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"b\")
+pub fn b() -> Nil {
+  Nil
+}
+
+@target(erlang)
+pub fn w() -> Nil {
+  b()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  // And what `infer` publishes for it says the same.
+  let assert Ok(answered) = graded.run_effect(root, "ext.w")
+  answered |> string.contains("effects ext.w : []") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_dependency_declaration_the_build_excludes_is_unknown_test() {
+  // The consumer builds for Erlang alone, and the dependency hands only
+  // JavaScript to foreign code -- so what runs here is the dependency's Gleam
+  // body, which no consumer walks. Its declaration was trusted in full: the
+  // scan classified it excluded and dropped it, leaving the shipped
+  // `external effects` line keyed by nothing that knew it answers for a target
+  // this build never compiles. That under-reports as readily as it
+  // over-reports, since the body reached instead may do anything at all.
+  let root = "build/dep_declaration_build_excludes"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #("proj.graded", "check app.w : [Disk]\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "external effects dep/ffi.run : [Disk]\n",
+    ),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "@external(javascript, \"dep_ffi\", \"run\")
+pub fn run() -> Nil {
+  Nil
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+pub fn w() -> Nil {
+  ffi.run()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  support.cleanup(root)
+}
+
+pub fn a_dependency_declaration_the_build_compiles_still_answers_test() {
+  // The control: the same shape with the dependency declaring the target this
+  // build compiles. Its foreign implementation is what runs, so the declaration
+  // answers in full and no `[Unknown]` joins it.
+  let root = "build/dep_declaration_build_compiles"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #("proj.graded", "check app.w : [Disk]\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "external effects dep/ffi.run : [Disk]\n",
+    ),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "@external(erlang, \"dep_ffi\", \"run\")
+@external(javascript, \"dep_ffi\", \"run\")
+pub fn run() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+pub fn w() -> Nil {
+  ffi.run()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  support.cleanup(root)
+}
+
 pub fn a_dependency_fallback_out_of_reach_does_not_widen_test() {
   // The widening stands in for a body that runs where the *calling* code does.
   // Here the caller is itself a fallback running on Erlang alone, and the

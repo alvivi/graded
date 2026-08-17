@@ -296,11 +296,15 @@ pub fn is_foreign_definition(
   definition: glance.Definition(glance.Function),
   package_targets: Set(String),
 ) -> Bool {
-  has_external_attribute(definition)
+  declares_external(definition)
   && !declaration_is_excluded(definition, package_targets)
 }
 
-fn has_external_attribute(
+// Whether a definition hands its implementation to foreign code at all, whatever
+// targets it names. What `is_foreign_definition` asks before weighing those
+// targets, and what a reader with no body to walk asks on its own: a declaration
+// the reader's targets exclude still says the name is not ordinary Gleam *there*.
+pub fn declares_external(
   definition: glance.Definition(glance.Function),
 ) -> Bool {
   list.any(definition.attributes, fn(attribute) { attribute.name == "external" })

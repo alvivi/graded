@@ -1565,6 +1565,19 @@ pub fn a_callee_reached_on_both_targets_charges_both_halves_test() {
   |> should.equal(Specific(set.from_list(["Disk", "Time"])))
 }
 
+pub fn an_unreadable_declared_target_charges_both_halves_test() {
+  // A declaration whose target argument is not a plain name states nothing this
+  // can read, and "no target declared" is the same empty set. Narrowed on it,
+  // every target reaches the fallback and the declaration is dropped -- making
+  // the Gleam body the trusted implementation of foreign code whose declaration
+  // graded merely failed to parse, which is the reading
+  // `is_foreign_definition` refuses for the same reason.
+  let name = QualifiedName("app/ffi", "b")
+  narrowed_to(name, declared_for([]), ["Time"], ["erlang"])
+  |> charged(name)
+  |> should.equal(Specific(set.from_list(["Disk", "Time"])))
+}
+
 pub fn no_active_targets_charges_both_halves_test() {
   // Outside a fallback walk nothing is narrowed: an ordinary caller is compiled
   // for everything the package is, and pays whichever half each target has.
