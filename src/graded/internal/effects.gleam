@@ -552,10 +552,19 @@ type ReachableHalves {
 // their union charged each with what only the other can do.
 //
 // `DeclarationAndFallback` wherever the narrowing has nothing to say — outside
-// a fallback walk, for a name no scan recorded as foreign, and where the sets
-// leave the walk reaching neither half, which is source the compiler rejects.
-// Widening back to the union there keeps the conservative reading in every case
-// this cannot decide.
+// a walk that carries targets, for a name no scan recorded as foreign, and where
+// the sets leave the walk reaching neither half, which is source the compiler
+// rejects. Widening back to the union there keeps the conservative reading in
+// every case this cannot decide.
+//
+// A foreign name declaring *no* readable target is one of those. An `@external`
+// whose target argument is not a plain name states nothing this can read, and
+// "no target declared" is the same empty set as "a target declared in a form
+// this cannot read" — read as the first, every target reaches the fallback, and
+// the Gleam body becomes the trusted implementation of foreign code whose
+// declaration graded simply failed to parse. `extract.is_foreign_definition`
+// keeps such a declaration foreign for exactly this reason; keeping both halves
+// here is the same refusal to decide on an unread target.
 fn reachable_halves(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -564,6 +573,10 @@ fn reachable_halves(
     Some(active),
       Some(types.ForeignFunction(compiled_targets:, declared_targets:, ..))
     -> {
+      use <- bool.guard(
+        when: set.is_empty(declared_targets),
+        return: DeclarationAndFallback,
+      )
       let reachable = set.intersection(active, compiled_targets)
       let declared = set.intersection(reachable, declared_targets)
       let undeclared = set.difference(reachable, declared_targets)

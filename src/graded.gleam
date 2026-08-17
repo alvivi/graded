@@ -1629,7 +1629,8 @@ fn dependency_foreign_for(
   // read either, so both answer from the declaration alone.
   use <- bool.guard(when: !dict.has_key(files, module), return: dict.new())
   case dict.get(files, module) |> result.try(read_and_parse_gleam_or_nil) {
-    Ok(parsed) -> checker.foreign_functions(parsed, module, package_targets)
+    Ok(parsed) ->
+      checker.dependency_foreign_functions(parsed, module, package_targets)
     Error(Nil) -> dict.new()
   }
 }
@@ -3145,7 +3146,11 @@ fn source_dir_sources(
         module_path,
         package_targets,
       ),
-      foreign: checker.foreign_functions(module, module_path, package_targets),
+      foreign: checker.dependency_foreign_functions(
+        module,
+        module_path,
+        package_targets,
+      ),
     ),
   )
 }

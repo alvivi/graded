@@ -235,7 +235,7 @@ pub fn infer_with_returns(
               without_returned_closure(definition.definition),
               function_map,
               context,
-              knowledge_base,
+              body_knowledge_base(knowledge_base, definition, package_targets),
               set.new(),
               effective_bounds,
               registry,
@@ -1030,7 +1030,7 @@ fn walk_component(
   // member never runs on. A module's fallbacks nearly always share one set, so
   // grouping costs the sharing nothing in practice.
   walk.targets
-  |> list.group(fallback_targets(_, walk.package_targets))
+  |> list.group(body_targets(_, walk.package_targets))
   |> dict.to_list
   |> list.flat_map(fn(group) {
     let #(active, definitions) = group
@@ -2346,6 +2346,40 @@ pub fn foreign_functions(
   |> dict.from_list()
 }
 
+// The same, for a module of a *dependency*: every `@external` it declares,
+// including one the consumer's targets exclude.
+//
+// The consumer's own modules drop such a declaration, and rightly — no foreign
+// implementation is compiled, so the Gleam body is the sole one and the function
+// is ordinary Gleam whose body graded walks. A dependency's body it never walks.
+// Dropping the entry there left the name keyed by a shipped or catalogued
+// declaration with nothing to say that declaration answers for a target this
+// build does not compile, so `external effects dep/ffi.run : [Disk]` over an
+// `@external(javascript, …)` was charged in full to an Erlang-only consumer that
+// reaches only the Gleam body underneath it. Kept, the lookup narrows the
+// declaration out and charges the `[Unknown]` an unwalked body is worth.
+pub fn dependency_foreign_functions(
+  module: Module,
+  module_path: String,
+  package_targets: Set(String),
+) -> dict.Dict(QualifiedName, types.ForeignFunction) {
+  module.functions
+  |> list.filter(extract.declares_external)
+  |> list.map(fn(definition) {
+    let name =
+      QualifiedName(module: module_path, function: definition.definition.name)
+    #(
+      name,
+      types.ForeignFunction(
+        runs_fallback_body: has_running_fallback(definition, package_targets),
+        compiled_targets: extract.compiled_targets(definition, package_targets),
+        declared_targets: extract.declared_targets(definition),
+      ),
+    )
+  })
+  |> dict.from_list()
+}
+
 // The module's functions whose body is what every caller runs: the ones it
 // defines in Gleam rather than declares `@external`. What tells a per-function
 // `external effects` line that declares real foreign code from one that names a
@@ -2395,34 +2429,51 @@ fn runs_fallback_body(
     when: !extract.is_foreign_definition(definition, package_targets),
     return: False,
   )
-  use <- bool.guard(when: definition.definition.body == [], return: False)
-  fallback_targets(definition, package_targets) |> set.is_empty |> bool.negate
+  has_running_fallback(definition, package_targets)
 }
 
-// The knowledge base a definition's own body is walked against: narrowed to the
-// targets that body runs on where it is an `@external`'s Gleam fallback, and the
-// package's own reading everywhere else. An ordinary function is compiled for
-// everything the package is, so nothing about it is narrower.
+// Whether a definition carries a Gleam body that some target it is compiled for
+// reaches. The same question `runs_fallback_body` answers, minus the
+// this-package classification in front of it — a dependency's declaration the
+// consumer's targets exclude is not foreign code *to the consumer*, and its body
+// still runs where that declaration does not reach.
+fn has_running_fallback(
+  definition: Definition(Function),
+  package_targets: Set(String),
+) -> Bool {
+  use <- bool.guard(when: definition.definition.body == [], return: False)
+  body_targets(definition, package_targets) |> set.is_empty |> bool.negate
+}
+
+// The knowledge base a definition's own body is walked against, narrowed to the
+// targets that body runs on.
+//
+// Asked of every definition, because `@target` restricts an ordinary function
+// exactly as it restricts an `@external`: a `@target(erlang)` function's body is
+// reached from Erlang and nowhere else, so a JavaScript-only external it calls
+// answers with its Gleam fallback there, not with what its declaration says the
+// foreign implementation does. Restricting only fallback bodies charged such a
+// caller an effect no build of it can perform.
 fn body_knowledge_base(
   knowledge_base: KnowledgeBase,
   definition: Definition(Function),
   package_targets: Set(String),
 ) -> KnowledgeBase {
-  use <- bool.guard(
-    when: !extract.is_foreign_definition(definition, package_targets),
-    return: knowledge_base,
-  )
   effects.with_active_targets(
     knowledge_base,
-    option.Some(fallback_targets(definition, package_targets)),
+    option.Some(body_targets(definition, package_targets)),
   )
 }
 
-// The targets that body runs on: the ones the function is compiled for that its
-// `@external` attributes declare no implementation for. What the body is walked
-// *as* — a call it makes is reached from these targets and no others, so this is
-// the set every name it resolves has to be read on.
-fn fallback_targets(
+// The targets a definition's body runs on: the ones it is compiled for, less
+// those its own `@external` attributes hand to foreign code. What the body is
+// walked *as* — a call it makes is reached from these targets and no others, so
+// this is the set every name it resolves has to be read on.
+//
+// For an ordinary function the subtraction removes nothing and the answer is
+// simply what it is compiled for; for an `@external` with a Gleam body it is
+// where that fallback runs.
+fn body_targets(
   definition: Definition(Function),
   package_targets: Set(String),
 ) -> Set(String) {
@@ -2516,7 +2567,15 @@ fn check_annotation(
           collect_reference_warnings(
             annotation.function,
             extract_result.references,
-            knowledge_base,
+            // Read on the targets the body passing the reference runs on, like
+            // every other name that body reaches: a reference whose effects
+            // belong to an implementation this build never compiles is not one
+            // the caller is failing to track.
+            body_knowledge_base(
+              knowledge_base,
+              function_definition,
+              context.package_targets,
+            ),
           )
       }
 
