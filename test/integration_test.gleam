@@ -542,6 +542,53 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_function_built_for_no_target_stays_foreign_test() {
+  // The two narrowings can leave nothing between them: `target = "erlang"` with
+  // `@target(javascript)` builds the function on no channel at all, so Gleam
+  // compiles neither implementation. Reading that empty set as the carve-out
+  // above — "the declaration covers no compiled target, so the body is the only
+  // implementation" — walked a body nobody runs: the `external effects` line
+  // was dropped as stale with a warning telling the author to fix source that
+  // is correct, and `effect` answered with what the fallback does instead of
+  // the `[Unknown]` of foreign code.
+  let root = "build/external_no_compiled_target"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #(
+      "proj.graded",
+      "external effects ext.shout : [Stdout]
+check ext.wrapper : [Stdout]
+",
+    ),
+    #(
+      "ext.gleam",
+      "@target(javascript)
+@external(javascript, \"ext_ffi\", \"shout\")
+pub fn shout(message: String) -> Nil {
+  Nil
+}
+
+@target(javascript)
+pub fn wrapper() -> Nil {
+  shout(\"x\")
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  // The declaration stands: no violation against the budget it states, and no
+  // lint calling the line stale.
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
+  // And the query answers with the declaration rather than the `[]` of a body
+  // that is never built.
+  let assert Ok(answered) = graded.run_effect(root, "ext.shout")
+  answered
+  |> string.contains("effects ext.shout : [Stdout]")
+  |> should.be_true()
+  support.cleanup(root)
+}
+
 pub fn a_running_fallback_body_is_charged_to_every_caller_test() {
   // The declaration alone is the whole story only where it covers every target.
   // Where it does not, the Gleam fallback is what runs, and composition is

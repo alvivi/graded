@@ -287,10 +287,11 @@ fn signature_map(
 // run, and the foreign implementation may differ from it, so nothing derived
 // from that body describes the function every caller reaches.
 //
-// Unless `@target` excludes every target the declaration names. Then no foreign
-// implementation is ever compiled, the Gleam body is the sole implementation,
-// and the function is ordinary Gleam — weighing a declaration over it would
-// charge callers for code that does not exist.
+// Unless `@target` excludes every target the declaration names while leaving
+// the function compiled for one. Then no foreign implementation is ever
+// compiled, the Gleam body is the sole implementation, and the function is
+// ordinary Gleam — weighing a declaration over it would charge callers for code
+// that does not exist.
 pub fn is_foreign_definition(
   definition: glance.Definition(glance.Function),
   package_targets: Set(String),
@@ -305,8 +306,10 @@ fn has_external_attribute(
   list.any(definition.attributes, fn(attribute) { attribute.name == "external" })
 }
 
-// Whether every `@external` on a definition names a target it is not compiled
-// for. Only a definition that has a body qualifies: without one a declaration
+// Whether a definition is compiled for some target and every `@external` on it
+// names one it is not compiled for.
+//
+// Only a definition that has a body qualifies: without one a declaration
 // excluded this way leaves the function with no implementation at all, which is
 // not Gleam the compiler accepts, so the conservative reading stays.
 fn declaration_is_excluded(
@@ -324,6 +327,15 @@ fn declaration_is_excluded(
   // reading standing behind an assumption rather than a live case.
   use <- bool.guard(
     when: !every_declaration_names_a_readable_target(definition),
+    return: False,
+  )
+  // A `@target` disjoint from the package's own leaves the function compiled
+  // for nothing, so Gleam builds neither implementation and the body is nobody's
+  // either. Only a function that is built, and built without foreign code, is
+  // ordinary Gleam; reading "compiled for no target" as "excluded declaration"
+  // would walk a body no caller reaches and publish what it does.
+  use <- bool.guard(
+    when: set.is_empty(compiled_targets(definition, package_targets)),
     return: False,
   )
   set.intersection(
