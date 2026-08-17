@@ -1,6 +1,7 @@
 import glance
 import gleam/dict
 import gleam/list
+import gleam/set.{type Set}
 import gleeunit/should
 import graded/internal/extract
 import graded/internal/types.{
@@ -939,10 +940,14 @@ pub fn target() { <<io.println(\"x\")>> }",
 // `@external` whose target argument cannot be read counts as.
 
 fn is_foreign(src: String) -> Bool {
+  is_foreign_for(src, types.every_target())
+}
+
+fn is_foreign_for(src: String, package_targets: Set(String)) -> Bool {
   let assert Ok(module) = glance.module(src)
   let assert Ok(definition) =
     list.find(module.functions, fn(def) { def.definition.name == "target" })
-  extract.is_foreign_definition(definition, types.every_target())
+  extract.is_foreign_definition(definition, package_targets)
 }
 
 pub fn a_declaration_naming_its_target_is_foreign_test() {
@@ -957,6 +962,19 @@ pub fn a_target_excluded_declaration_is_not_foreign_test() {
     "@target(erlang)\n@external(javascript, \"m\", \"f\")\npub fn target() { Nil }",
   )
   |> should.be_false()
+}
+
+pub fn a_definition_built_for_no_target_stays_foreign_test() {
+  // A `@target` disjoint from the package's own: the function is compiled on no
+  // channel, so its body is nobody's implementation. "Compiled for no target"
+  // and "compiled without foreign code" are the same empty intersection and
+  // mean opposite things — read as the latter, this counted as ordinary Gleam
+  // and the body was walked for a function that is never built.
+  is_foreign_for(
+    "@target(javascript)\n@external(javascript, \"m\", \"f\")\npub fn target() { Nil }",
+    set.from_list(["erlang"]),
+  )
+  |> should.be_true()
 }
 
 pub fn an_unreadable_target_argument_stays_foreign_test() {
