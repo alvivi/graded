@@ -27,8 +27,7 @@ fn function(
     module: "app",
     bounds:,
     term:,
-    source: answer.Entry(FunctionEntry(origin: CommittedSpec)),
-    fallback: None,
+    source: answer.Entry(FunctionEntry(origin: CommittedSpec), None),
   )
 }
 
@@ -143,14 +142,33 @@ pub fn a_module_level_external_states_its_precedence_test() {
     term: labels(["Time"]),
     source: answer.Entry(
       ModuleExternalEntry(origin: ModuleExternalOrigin(source: UserExternal)),
+      None,
     ),
-    fallback: None,
   )
   |> prose
   |> should.equal(
     "fake_clock.now has effects [Time]
   source: module-level external for `fake_clock`
           used when no per-function entry exists",
+  )
+}
+
+pub fn a_fallback_body_is_stated_beside_the_source_it_adds_to_test() {
+  // A running fallback body is a half added to what the source names, so it is
+  // carried by that source and stated after it. The sources that account for
+  // the whole term carry none, which is why no answer can state both.
+  answer.FunctionAnswer(
+    name: "app.now",
+    module: "app",
+    bounds: [],
+    term: labels(["Time", "Stdout"]),
+    source: answer.UndeclaredExternal(Some(labels(["Stdout"]))),
+  )
+  |> prose
+  |> should.equal(
+    "app.now has effects [Stdout, Time]
+  source: an external with no declared effects
+  plus its Gleam fallback body, which runs on the targets its `@external` declares no implementation for: [Stdout]",
   )
 }
 
@@ -163,8 +181,7 @@ fn from(origin: types.LookupOrigin) -> answer.EffectAnswer {
     module: "app",
     bounds: [],
     term: labels(["Stdout"]),
-    source: answer.Entry(FunctionEntry(origin:)),
-    fallback: None,
+    source: answer.Entry(FunctionEntry(origin:), None),
   )
 }
 
@@ -188,8 +205,7 @@ pub fn a_source_line_precedes_the_bounds_test() {
     module: "app",
     bounds: [ParamBound("f", labels(["Stdout"]))],
     term: labels(["Stdout"]),
-    source: answer.Entry(FunctionEntry(origin: Catalog("gleam_stdlib"))),
-    fallback: None,
+    source: answer.Entry(FunctionEntry(origin: Catalog("gleam_stdlib")), None),
   )
   |> prose
   |> should.equal(

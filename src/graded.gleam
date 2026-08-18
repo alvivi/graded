@@ -1739,20 +1739,21 @@ fn function_effect(
   // that nothing declares it named a cause the other surfaces do not.
   use <- bool.guard(
     when: charge.declaration != effects.DeclarationCharged,
-    return: Ok(answer.FunctionAnswer(
-      name:,
-      module:,
-      bounds: fallback_bounds,
-      term: charge.term,
-      source: case fallback {
-        // The body running in the declaration's place is the whole of the
-        // term, not a half added to it, so it is named as the source and not
-        // beside one.
-        Some(_) -> answer.RunningFallbackBody
-        None -> answer.UnreachedDeclaration
-      },
-      fallback: None,
-    )),
+    return: Ok(
+      answer.FunctionAnswer(
+        name:,
+        module:,
+        bounds: fallback_bounds,
+        term: charge.term,
+        source: case fallback {
+          // The body running in the declaration's place is the whole of the
+          // term, not a half added to it, so it is named as the source and not
+          // beside one.
+          Some(_) -> answer.RunningFallbackBody
+          None -> answer.UnreachedDeclaration
+        },
+      ),
+    ),
   )
   use <- bool.guard(
     when: checker.undeclared_external(knowledge_base, qualified),
@@ -1761,8 +1762,7 @@ fn function_effect(
       module:,
       bounds: fallback_bounds,
       term: charge.term,
-      source: answer.UndeclaredExternal,
-      fallback:,
+      source: answer.UndeclaredExternal(fallback:),
     )),
   )
   case effects.lookup_declared(knowledge_base, qualified) {
@@ -1775,8 +1775,7 @@ fn function_effect(
         module:,
         bounds: fallback_bounds,
         term:,
-        source: answer.Entry(types.ModuleExternalEntry(origin:)),
-        fallback:,
+        source: answer.Entry(types.ModuleExternalEntry(origin:), fallback:),
       ))
     effects.Known(term, types.FunctionEntry(origin:)) ->
       Ok(answer.FunctionAnswer(
@@ -1784,8 +1783,7 @@ fn function_effect(
         module:,
         bounds: effects.lookup_param_bounds(knowledge_base, qualified),
         term:,
-        source: answer.Entry(types.FunctionEntry(origin:)),
-        fallback:,
+        source: answer.Entry(types.FunctionEntry(origin:), fallback:),
       ))
   }
 }
