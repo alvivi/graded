@@ -22,55 +22,20 @@ import graded/internal/types.{
 
 pub type EffectAnswer {
   // A qualified function: its effect term, the parameter bounds binding that
-  // term's variables, and which knowledge-base entry answered.
+  // term's variables, and what answered for it.
   FunctionAnswer(
     // The name as queried, module qualifier included.
     name: String,
     module: String,
     bounds: List(ParamBound),
     term: EffectTerm,
-    source: types.EffectSource,
+    source: AnswerSource,
     // What a Gleam fallback body running on an uncovered target contributed to
     // `term`, when the name is an `@external` that has one. `source` speaks for
     // the declaration only, so without this the union would read as what the
-    // declaration said.
-    fallback: Option(EffectTerm),
-  )
-  // A function whose implementation is foreign code — an `@external` — that
-  // nothing declares. The entries the knowledge base holds for such a name were
-  // inferred over a body the foreign implementation needn't match, so none of
-  // them answers, and the effects are the `[Unknown]` `check` and `why` charge
-  // for it.
-  //
-  // `fallback` is what its Gleam fallback body does where that body runs, when
-  // it has one. Nothing declares the external, but the fallback is ordinary code
-  // graded walked, so those effects are charged beside the `[Unknown]` — and the
-  // answer states them, as `check` and `why` do.
-  //
-  // `bounds` binds that fallback's variables. A fallback that calls a
-  // function-typed parameter states its effects over the parameter, so the
-  // bounds travel with the term the way they do for any other function; without
-  // them the line names a variable nothing introduces.
-  UndeclaredExternalAnswer(
-    name: String,
-    bounds: List(ParamBound),
-    fallback: Option(EffectTerm),
-  )
-  // A function whose implementation is foreign code, and whose declaration names
-  // only targets this build does not compile. What it declares is no part of
-  // what a caller pays, so neither its effects nor its source appear here —
-  // crediting a shipped spec with the conservative `[Unknown]` an out-of-reach
-  // declaration collapses to points the reader at the very line the answer ruled
-  // out.
-  //
-  // `term` is what the build does reach: a Gleam fallback body running in the
-  // declaration's place, or the `[Unknown]` standing for a name nothing in reach
-  // implements at all. `fallback` names that body where one runs, and tells the
-  // two apart.
-  UnreachedDeclarationAnswer(
-    name: String,
-    bounds: List(ParamBound),
-    term: EffectTerm,
+    // declaration said. `None` where the fallback is not a half added to a
+    // declaration but the whole of what was charged — `RunningFallbackBody`
+    // says so.
     fallback: Option(EffectTerm),
   )
   // A field of a custom type, declared by a `type` line. `module` is `None` for
@@ -82,6 +47,36 @@ pub type EffectAnswer {
     term: EffectTerm,
     origin: types.TypeFieldOrigin,
   )
+}
+
+// What answered for a function: the knowledge-base entry that keyed it, or —
+// for foreign code no entry may speak for — the standing that settled its term
+// instead.
+pub type AnswerSource {
+  // The entry the lookup returned, and which map it came from.
+  Entry(entry: types.EffectSource)
+  // A function whose implementation is foreign code — an `@external` — that
+  // nothing declares. The entries the knowledge base holds for such a name were
+  // inferred over a body the foreign implementation needn't match, so none of
+  // them answers, and the effects are the `[Unknown]` `check` and `why` charge
+  // for it, unioned with whatever a running Gleam fallback body does.
+  //
+  // The bounds beside it bind that fallback's variables: a fallback that calls
+  // a function-typed parameter states its effects over the parameter, and
+  // without them the line names a variable nothing introduces.
+  UndeclaredExternal
+  // A function whose implementation is foreign code, whose declaration names
+  // only targets this build does not compile, and which no Gleam body runs in
+  // the place of: nothing this build reaches implements the name at all. What
+  // the declaration says is no part of what a caller pays, so neither it nor
+  // its source is named — crediting a shipped spec with the conservative
+  // `[Unknown]` an out-of-reach declaration collapses to points the reader at
+  // the very line the answer ruled out.
+  UnreachedDeclaration
+  // The same out-of-reach declaration, with a Gleam fallback body running in
+  // its place. That body is the whole of the term, not a half added to a
+  // declaration.
+  RunningFallbackBody
 }
 
 // Rendering
@@ -109,41 +104,14 @@ pub fn render(answer: EffectAnswer, format: Format) -> String {
 
 pub fn render_graded(answer: EffectAnswer) -> String {
   case answer {
-    // A module-level external declares no per-function bounds itself, but a
+    // Whatever bounds the lookup found are rendered, whichever source answered:
+    // a module-level external declares no per-function bounds itself, but a
     // running fallback body under it states its own effects over the parameters
-    // it calls — so whatever bounds the lookup found are rendered, and the line
-    // is labelled with the module that answered.
-    FunctionAnswer(
-      name:,
-      module:,
-      bounds:,
-      term:,
-      source: types.ModuleExternalEntry(..),
-      fallback:,
-    ) ->
+    // it calls.
+    FunctionAnswer(name:, module:, bounds:, term:, source:, fallback:) ->
       effects_line(name, bounds, term)
-      <> "\n// resolved via module-level external for "
-      <> module
+      <> graded_source(module, source)
       <> graded_fallback(fallback)
-    FunctionAnswer(
-      name:,
-      bounds:,
-      term:,
-      source: types.FunctionEntry(origin:),
-      fallback:,
-      ..,
-    ) ->
-      effects_line(name, bounds, term)
-      <> graded_source(origin)
-      <> graded_fallback(fallback)
-    UndeclaredExternalAnswer(name:, bounds:, fallback:) ->
-      effects_line(name, bounds, undeclared_term(fallback))
-      <> "\n// an external with no declared effects"
-      <> graded_fallback(fallback)
-    UnreachedDeclarationAnswer(name:, bounds:, term:, fallback:) ->
-      effects_line(name, bounds, term)
-      <> "\n// "
-      <> unreached_declaration_source(fallback)
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
       annotation.format_type_field(TypeFieldAnnotation(
         module:,
@@ -169,9 +137,19 @@ fn effects_line(
   ))
 }
 
-// The comment naming the source that wrote the winning entry.
-fn graded_source(origin: types.LookupOrigin) -> String {
-  "\n// resolved from " <> effects.describe_origin(origin)
+// The comment naming what answered: the source that wrote the winning entry,
+// or the standing that settled the term where no entry could.
+fn graded_source(module: String, source: AnswerSource) -> String {
+  "\n// "
+  <> case source {
+    Entry(types.ModuleExternalEntry(..)) ->
+      "resolved via module-level external for " <> module
+    Entry(types.FunctionEntry(origin:)) ->
+      "resolved from " <> effects.describe_origin(origin)
+    UndeclaredExternal -> undeclared_external_source
+    UnreachedDeclaration -> unreached_declaration_source
+    RunningFallbackBody -> running_fallback_source
+  }
 }
 
 // Only `Declared` entries reach the knowledge base today — `with_type_fields`
@@ -209,55 +187,26 @@ pub fn render_prose(answer: EffectAnswer) -> String {
         )
       ]
       |> string.join("\n")
-    // The same lines the `check`/`why` vocabulary gives it: what the effects
-    // are, that nothing declared them, the bounds its fallback states them
-    // over, and what that body added.
-    UndeclaredExternalAnswer(name:, bounds:, fallback:) ->
-      [
-        function_sentence(name, bounds, undeclared_term(fallback)),
-        "  source: an external with no declared effects",
-        ..list.append(bound_lines(bounds), prose_fallback(fallback))
-      ]
-      |> string.join("\n")
-    // No `plus its Gleam fallback body` line beside the source: the body here is
-    // not a half added to a declaration, it is the whole of what was charged.
-    UnreachedDeclarationAnswer(name:, bounds:, term:, fallback:) ->
-      [
-        function_sentence(name, bounds, term),
-        "  source: " <> unreached_declaration_source(fallback),
-        ..bound_lines(bounds)
-      ]
-      |> string.join("\n")
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
       [field_sentence(module, type_name, field, term), prose_origin(origin)]
       |> string.join("\n")
   }
 }
 
+// The sentences for the sources no knowledge-base entry wrote, worded once so
+// the two formats state them identically.
+
 // The source a name answered by the Gleam body running in its declaration's
 // place names. `why` says the same of a call, stated from the calling body's
 // targets; the query answers for the package, so it names the build's.
 const running_fallback_source = "its Gleam fallback body, which is what runs on the targets this build compiles"
 
-// What answered for a name whose declaration this build reaches no part of: the
-// Gleam body running in the declaration's place, or nothing at all where there
-// is no such body.
-fn unreached_declaration_source(fallback: Option(EffectTerm)) -> String {
-  case fallback {
-    None -> "an external declared only for a target this build does not compile"
-    Some(_) -> running_fallback_source
-  }
-}
+// What answered for a name whose declaration this build reaches no part of and
+// which no Gleam body runs in the place of.
+const unreached_declaration_source = "an external declared only for a target this build does not compile"
 
-// What an undeclared external is charged: the conservative `[Unknown]`, plus
-// whatever its Gleam fallback body does where that body runs.
-fn undeclared_term(fallback: Option(EffectTerm)) -> EffectTerm {
-  case fallback {
-    None -> effect_term.unknown()
-    Some(term) ->
-      effect_term.normalize(types.TUnion([term, effect_term.unknown()]))
-  }
-}
+// What answered for foreign code nothing declares.
+const undeclared_external_source = "an external with no declared effects"
 
 // The half of the answer the declaration does not account for, named apart from
 // it so neither is credited with the other's effects.
@@ -378,20 +327,23 @@ fn ground_labels(term: EffectTerm) -> Result(Set(String), Nil) {
 fn detail_lines(
   bounds: List(ParamBound),
   module: String,
-  source: types.EffectSource,
+  source: AnswerSource,
 ) -> List(String) {
   // The bound lines follow the source lines: each states an assumption the
   // checker applies to that argument at call sites. They follow either source —
   // a module-level external declares none itself, but a running fallback body
   // under it does, and the assumption holds however the entry was reached.
   let source_lines = case source {
-    types.ModuleExternalEntry(..) -> [
+    Entry(types.ModuleExternalEntry(..)) -> [
       "  source: module-level external for `" <> module <> "`",
       "          used when no per-function entry exists",
     ]
-    types.FunctionEntry(origin:) -> [
+    Entry(types.FunctionEntry(origin:)) -> [
       "  source: " <> effects.describe_origin(origin),
     ]
+    UndeclaredExternal -> ["  source: " <> undeclared_external_source]
+    UnreachedDeclaration -> ["  source: " <> unreached_declaration_source]
+    RunningFallbackBody -> ["  source: " <> running_fallback_source]
   }
   list.append(source_lines, bound_lines(bounds))
 }

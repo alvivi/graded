@@ -497,6 +497,33 @@ pub fn prose_states_module_external_precedence_test() {
   )
 }
 
+// Both formats' answers for a dependency `@external` declared only for a target
+// this build does not compile. `body` is what the declaration sits over — `""`
+// for a bodiless one, a Gleam block for one the build runs in its place.
+fn out_of_reach_outputs(name: String, body: String) -> #(String, String) {
+  let project =
+    write_fixture("build/" <> name, [
+      #("gleam.toml", "name = \"" <> name <> "\"\ntarget = \"erlang\"\n"),
+      #(name <> ".graded", ""),
+      #(
+        "build/packages/dep/dep.graded",
+        "external effects dep/ffi.run : [Time]\n",
+      ),
+      #(
+        "build/packages/dep/src/dep/ffi.gleam",
+        "@external(javascript, \"dep_ffi\", \"run\")\npub fn run() -> Nil"
+          <> body
+          <> "\n",
+      ),
+    ])
+  let assert Ok(prose_output) =
+    graded.run_effect_formatted(project, "dep/ffi.run", answer.Prose)
+  let assert Ok(graded_output) =
+    graded.run_effect_formatted(project, "dep/ffi.run", answer.Graded)
+  cleanup(project)
+  #(prose_output, graded_output)
+}
+
 pub fn prose_names_an_out_of_reach_declaration_test() {
   // The dependency ships a declaration for JavaScript, this package names
   // Erlang, and `run` has no Gleam body to run in its place — so the charge is
@@ -504,37 +531,79 @@ pub fn prose_names_an_out_of_reach_declaration_test() {
   // declaration's source beside it credited dep's shipped `[Time]` line with a
   // set that line states no part of, sending the reader to a declaration the
   // answer had just ruled out.
+  out_of_reach_outputs("graded_effect_out_of_reach", "")
+  |> should.equal(#(
+    "dep/ffi.run has effects that could not be determined: [Unknown]
+  source: an external declared only for a target this build does not compile",
+    "effects dep/ffi.run : [Unknown]
+// an external declared only for a target this build does not compile",
+  ))
+}
+
+pub fn prose_names_the_body_running_in_a_declarations_place_test() {
+  // The same out-of-reach declaration, except `run` has a Gleam body to run in
+  // its place. That body is the whole of what the build reaches, so it is named
+  // as the source rather than beside one — no `plus its Gleam fallback body`
+  // line, which would read as a half added to a declaration that pays for none
+  // of it.
+  out_of_reach_outputs("graded_effect_fallback_in_reach", " {\n  Nil\n}")
+  |> should.equal(#(
+    "dep/ffi.run has effects that could not be determined: [Unknown]
+  source: its Gleam fallback body, which is what runs on the targets this build compiles",
+    "effects dep/ffi.run : [Unknown]
+// its Gleam fallback body, which is what runs on the targets this build compiles",
+  ))
+}
+
+pub fn an_undeclared_external_states_its_running_fallback_test() {
+  // Nothing declares `raw.op`, and its Gleam body runs on the target its
+  // `@external` leaves uncovered. The answer is the `[Unknown]` an undeclared
+  // external carries unioned with what that body does, and the body is named
+  // apart from that half so neither is credited with the other's effects.
   let project =
-    write_fixture("build/graded_effect_out_of_reach", [
+    write_fixture("build/graded_effect_undeclared_fallback", [
       #(
         "gleam.toml",
-        "name = \"graded_effect_out_of_reach\"\ntarget = \"erlang\"\n",
-      ),
-      #("graded_effect_out_of_reach.graded", ""),
-      #(
-        "build/packages/dep/dep.graded",
-        "external effects dep/ffi.run : [Time]\n",
+        support.dual_target_toml("graded_effect_undeclared_fallback"),
       ),
       #(
-        "build/packages/dep/src/dep/ffi.gleam",
-        "@external(javascript, \"dep_ffi\", \"run\")
-pub fn run() -> Nil
+        "graded_effect_undeclared_fallback.graded",
+        "external effects ffi.disk : [Disk]\n",
+      ),
+      #(
+        "ffi.gleam",
+        "@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+pub fn disk() -> Nil
+",
+      ),
+      #(
+        "raw.gleam",
+        "import ffi
+
+@external(javascript, \"e\", \"o\")
+pub fn op() -> Nil {
+  ffi.disk()
+}
 ",
       ),
     ])
   let assert Ok(prose_output) =
-    graded.run_effect_formatted(project, "dep/ffi.run", answer.Prose)
+    graded.run_effect_formatted(project, "raw.op", answer.Prose)
   prose_output
   |> should.equal(
-    "dep/ffi.run has effects that could not be determined: [Unknown]
-  source: an external declared only for a target this build does not compile",
+    "raw.op has effects [Disk, Unknown]; part of them could not be determined
+  source: an external with no declared effects
+  plus its Gleam fallback body, which runs on the targets its `@external` declares no implementation for: [Disk]",
   )
   let assert Ok(graded_output) =
-    graded.run_effect_formatted(project, "dep/ffi.run", answer.Graded)
+    graded.run_effect_formatted(project, "raw.op", answer.Graded)
   graded_output
+  |> should_parse
   |> should.equal(
-    "effects dep/ffi.run : [Unknown]
-// an external declared only for a target this build does not compile",
+    "effects raw.op : [Disk, Unknown]
+// an external with no declared effects
+// unioned with its Gleam fallback body, which runs on the targets its `@external` declares no implementation for: [Disk]",
   )
   cleanup(project)
 }

@@ -27,7 +27,7 @@ fn function(
     module: "app",
     bounds:,
     term:,
-    source: FunctionEntry(origin: CommittedSpec),
+    source: answer.Entry(FunctionEntry(origin: CommittedSpec)),
     fallback: None,
   )
 }
@@ -141,9 +141,9 @@ pub fn a_module_level_external_states_its_precedence_test() {
     module: "fake_clock",
     bounds: [],
     term: labels(["Time"]),
-    source: ModuleExternalEntry(origin: ModuleExternalOrigin(
-      source: UserExternal,
-    )),
+    source: answer.Entry(
+      ModuleExternalEntry(origin: ModuleExternalOrigin(source: UserExternal)),
+    ),
     fallback: None,
   )
   |> prose
@@ -163,7 +163,7 @@ fn from(origin: types.LookupOrigin) -> answer.EffectAnswer {
     module: "app",
     bounds: [],
     term: labels(["Stdout"]),
-    source: FunctionEntry(origin:),
+    source: answer.Entry(FunctionEntry(origin:)),
     fallback: None,
   )
 }
@@ -188,7 +188,7 @@ pub fn a_source_line_precedes_the_bounds_test() {
     module: "app",
     bounds: [ParamBound("f", labels(["Stdout"]))],
     term: labels(["Stdout"]),
-    source: FunctionEntry(origin: Catalog("gleam_stdlib")),
+    source: answer.Entry(FunctionEntry(origin: Catalog("gleam_stdlib"))),
     fallback: None,
   )
   |> prose
