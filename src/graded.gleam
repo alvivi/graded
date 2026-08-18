@@ -648,10 +648,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // Consumer externals are applied before path-dep inference so a module-level
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
-    |> effects.with_externals(
-      declaring_externals(spec, stale_externals),
-      types.UserExternal,
-    )
+    |> with_spec_externals(spec, stale_externals)
     |> with_builders(index, dep_sources, package_targets)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
     |> with_committed_spec(spec, declared_modules, stale_externals)
@@ -678,10 +675,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // whose effects it settled — an `@external`'s running fallback, whose
     // callers read the summary and never the body — kept an answer the two
     // commands would then disagree about.
-    |> effects.with_type_fields(
-      annotation.extract_type_fields(spec),
-      types.CommittedSpec,
-    )
+    |> with_spec_type_fields(spec)
     |> effects.with_factories(
       qualify_by_module(index, extract.factory_map(
         _,
@@ -1566,15 +1560,17 @@ fn spec_answer(
         Ok(answer.TypeFieldAnswer(module: Some(_), ..) as found) -> Ok(found)
         Ok(answer.TypeFieldAnswer(module: None, ..))
         | Ok(answer.FunctionAnswer(..))
-        | Ok(answer.UndeclaredExternalAnswer(..))
-        | Ok(answer.UnreachedDeclarationAnswer(..))
         | Error(Nil) -> Error(Nil)
       }
   }
 }
 
-// The spec-derived layers of `load_project_context`'s knowledge base, folded in
-// the same order and by the same functions, over nothing else.
+// The spec layers of `load_project_context`'s knowledge base, folded in the same
+// order and by the same functions, over nothing else.
+//
+// The spec's `returns` lines are not among them: a returned-operator summary is
+// consumed while walking a body, and a fast-path answer is one no body was
+// walked for.
 fn spec_knowledge_base(
   spec: GradedFile,
   stale_externals: Set(String),
@@ -1582,19 +1578,13 @@ fn spec_knowledge_base(
 ) -> KnowledgeBase {
   effects.new_knowledge_base()
   |> effects.with_package_targets(targets)
-  |> effects.with_externals(
-    declaring_externals(spec, stale_externals),
-    types.UserExternal,
-  )
+  |> with_spec_externals(spec, stale_externals)
   |> with_committed_spec(
     spec,
     annotation.module_external_modules(spec),
     stale_externals,
   )
-  |> effects.with_type_fields(
-    annotation.extract_type_fields(spec),
-    types.CommittedSpec,
-  )
+  |> with_spec_type_fields(spec)
 }
 
 // Whether the queried name is one of this package's `@external`s that falls
@@ -1776,18 +1766,29 @@ fn function_effect(
   // that nothing declares it named a cause the other surfaces do not.
   use <- bool.guard(
     when: charge.declaration != effects.DeclarationCharged,
-    return: Ok(answer.UnreachedDeclarationAnswer(
+    return: Ok(answer.FunctionAnswer(
       name:,
+      module:,
       bounds: fallback_bounds,
       term: charge.term,
-      fallback:,
+      source: case fallback {
+        // The body running in the declaration's place is the whole of the
+        // term, not a half added to it, so it is named as the source and not
+        // beside one.
+        Some(_) -> answer.RunningFallbackBody
+        None -> answer.UnreachedDeclaration
+      },
+      fallback: None,
     )),
   )
   use <- bool.guard(
     when: checker.undeclared_external(knowledge_base, qualified),
-    return: Ok(answer.UndeclaredExternalAnswer(
+    return: Ok(answer.FunctionAnswer(
       name:,
+      module:,
       bounds: fallback_bounds,
+      term: charge.term,
+      source: answer.UndeclaredExternal,
       fallback:,
     )),
   )
@@ -1801,7 +1802,7 @@ fn function_effect(
         module:,
         bounds: fallback_bounds,
         term:,
-        source: types.ModuleExternalEntry(origin:),
+        source: answer.Entry(types.ModuleExternalEntry(origin:)),
         fallback:,
       ))
     effects.Known(term, types.FunctionEntry(origin:)) ->
@@ -1810,7 +1811,7 @@ fn function_effect(
         module:,
         bounds: effects.lookup_param_bounds(knowledge_base, qualified),
         term:,
-        source: types.FunctionEntry(origin:),
+        source: answer.Entry(types.FunctionEntry(origin:)),
         fallback:,
       ))
   }
@@ -2564,10 +2565,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     // Consumer externals are applied before path-dep inference so a module-level
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
-    |> effects.with_externals(
-      declaring_externals(spec, stale_externals),
-      types.UserExternal,
-    )
+    |> with_spec_externals(spec, stale_externals)
     |> with_builders(index, dep_sources, package_targets)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
     |> effects.with_foreign_functions(project_foreign_functions(
@@ -2577,10 +2575,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
 
   let base_kb =
     kb_base
-    |> effects.with_type_fields(
-      annotation.extract_type_fields(spec),
-      types.CommittedSpec,
-    )
+    |> with_spec_type_fields(spec)
     |> effects.with_factories(
       qualify_by_module(index, extract.factory_map(
         _,
@@ -3547,6 +3542,41 @@ fn infer_path_dep_module(
       )
     }
   }
+}
+
+// The spec's layers of a knowledge base
+//
+// Three folds compose them: `check`'s, `infer`'s, and the `effect` query's
+// spec-only fast path, each interleaving its own layers between them. What
+// these hold is the derivation of a layer's arguments and the origin it is
+// tagged with — the halves that could disagree between folds. Which layers a
+// fold applies is the fold's own: the fast path is held to the full context's
+// answer by a test comparing the two, not by this grouping.
+
+// The spec's `external effects` declarations, minus the stale ones.
+fn with_spec_externals(
+  knowledge_base: KnowledgeBase,
+  spec: GradedFile,
+  stale_externals: Set(String),
+) -> KnowledgeBase {
+  effects.with_externals(
+    knowledge_base,
+    declaring_externals(spec, stale_externals),
+    types.UserExternal,
+  )
+}
+
+// The spec's `type` lines, which resolve a field call on any receiver of the
+// named type.
+fn with_spec_type_fields(
+  knowledge_base: KnowledgeBase,
+  spec: GradedFile,
+) -> KnowledgeBase {
+  effects.with_type_fields(
+    knowledge_base,
+    annotation.extract_type_fields(spec),
+    types.CommittedSpec,
+  )
 }
 
 // Fold a spec file's committed `effects` lines and their parameter bounds into
