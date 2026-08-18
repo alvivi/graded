@@ -658,7 +658,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     |> with_spec_externals(spec, stale_externals)
     |> with_builders(index, dep_sources, package_targets)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
-    |> with_committed_spec(spec, declared_modules, stale_externals)
+    |> with_committed_spec(spec, stale_externals)
     // Recorded before the inference pass below, so an `@external` resolves to
     // what declares it while this project's own modules are being inferred, not
     // only when they are later checked.
@@ -1552,11 +1552,7 @@ fn spec_knowledge_base(
   effects.new_knowledge_base()
   |> effects.with_package_targets(targets)
   |> with_spec_externals(spec, stale_externals)
-  |> with_committed_spec(
-    spec,
-    annotation.module_external_modules(spec),
-    stale_externals,
-  )
+  |> with_committed_spec(spec, stale_externals)
   |> with_spec_type_fields(spec)
 }
 
@@ -3617,9 +3613,12 @@ fn with_spec_type_fields(
 fn with_committed_spec(
   knowledge_base: KnowledgeBase,
   spec: GradedFile,
-  declared_modules: Set(String),
   stale_externals: Set(String),
 ) -> KnowledgeBase {
+  // Read off the spec being folded, not taken from the caller: the modules to
+  // drop are a property of that spec, and a caller passing any other set folds
+  // in the very lines this function exists to drop.
+  let declared_modules = annotation.module_external_modules(spec)
   knowledge_base
   |> effects.with_inferred(
     effects.load_spec_effects_from_file(spec)
