@@ -253,6 +253,39 @@ closures, `case`/`if` branches over function-like options, blocks, and functions
 returned from a call. The full design and the property suite are in
 [docs/SECOND_ORDER_EFFECTS.md](./SECOND_ORDER_EFFECTS.md).
 
+### References passed as values
+
+A function *reference* passed as a value rather than called — `list.map(lines,
+io.println)`, `Handler(on_click: dom.focus)` — carries its effects to wherever
+that value is finally called, which may be past anything graded checks. When the
+reference's effects are known and not pure, graded warns at the site that passes
+it:
+
+```
+src/app.gleam: warning: greet_all passes gleam/io.println as a value — its effects [Stdout] won't be tracked
+```
+
+The quoted set is what a *call* to that name resolves to, read through the same
+boundary a call goes through: a stale `effects` line over an `@external` is never
+quoted, since no caller of that name is charged it either.
+
+A set that mixes a known effect with `[Unknown]` warns and quotes both halves —
+the known half is a real effect travelling past whatever would track it:
+
+```
+src/app.gleam: warning: pass_loud passes dep/fs.read as a value — its effects [Disk, Unknown] won't be tracked
+```
+
+A reference whose whole effect set is `[Unknown]` stays **silent**, as does a
+pure one: an unresolved reference has nothing to report, and warning about it
+would read as a quoted effect. So does any reference in a body that never runs —
+an `@external` covering every target the build compiles keeps its Gleam body as
+dead text.
+
+Warnings are counted separately from violations and never fail a check: `graded
+check` prints them, reports `graded: N warning(s)`, and still exits zero when no
+budget was exceeded.
+
 ## Type field effects
 
 Custom types can have function-typed fields (a `Handler` with an `on_click`, a
