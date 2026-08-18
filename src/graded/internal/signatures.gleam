@@ -84,14 +84,6 @@ pub fn merge(a: SignatureRegistry, b: SignatureRegistry) -> SignatureRegistry {
   SignatureRegistry(signatures: dict.merge(a.signatures, b.signatures))
 }
 
-// Whether the registry holds a signature for `name`: whether the module it
-// names was parsed and defines the function. Every function of a parsed module
-// is registered, empty parameter list included, so this answers existence and
-// not just "has parameters worth recording".
-pub fn defines(registry: SignatureRegistry, name: QualifiedName) -> Bool {
-  dict.has_key(registry.signatures, name)
-}
-
 // Look up a function's parameter signatures.
 pub fn lookup(
   registry: SignatureRegistry,
@@ -476,18 +468,22 @@ fn is_function_type(t: glance.Type) -> Bool {
 
 // Parse every `.gleam` file under `source_dir` with glance and fold it into
 // `initial`, in walk order. `step` receives the module path the file's location
-// denotes (`<source_dir>/gleam/list.gleam` → `gleam/list`) and the parsed
-// module. Folding rather than returning a list keeps one AST live at a time, so
-// a package's whole source never sits in memory at once.
+// denotes (`<source_dir>/gleam/list.gleam` → `gleam/list`) and the parse of it,
+// or `Error(Nil)` where the file would not read or parse. Folding rather than
+// returning a list keeps one AST live at a time, so a package's whole source
+// never sits in memory at once.
 //
-// Failures (a missing directory, parse errors from version mismatches, FFI-only
-// Erlang packages) are silently skipped — the affected files contribute nothing,
-// so calls into them fall back to label-only argument matching at polymorphic
-// call sites.
+// A file that will not read or parse (a version mismatch, an FFI-only Erlang
+// package) is handed to `step` rather than skipped: it derives nothing, but it
+// still names a module path, and a caller recording which copy of a path it
+// read needs the copies it could not read too. A caller with nothing to record
+// for them drops them, and calls into them fall back to label-only argument
+// matching at polymorphic call sites. A missing directory yields `initial`,
+// with no step at all.
 pub fn fold_source_dir(
   source_dir: String,
   initial: acc,
-  step: fn(acc, String, Module) -> acc,
+  step: fn(acc, String, Result(Module, Nil)) -> acc,
 ) -> acc {
   case simplifile.get_files(source_dir) {
     Error(_) -> initial
@@ -502,15 +498,7 @@ pub fn fold_source_dir(
           ))
           result.replace_error(glance.module(source), Nil)
         }
-        case parsed {
-          Ok(module) ->
-            step(
-              acc,
-              config.module_path_for_source(gleam_path, source_dir),
-              module,
-            )
-          Error(Nil) -> acc
-        }
+        step(acc, config.module_path_for_source(gleam_path, source_dir), parsed)
       })
   }
 }

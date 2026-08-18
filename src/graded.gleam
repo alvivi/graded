@@ -636,7 +636,10 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     stale_project_externals(spec, native_functions_of(index, package_targets))
   let dep_sources = dependency_sources(package_root, package_targets)
   let registry =
-    signatures.merge(dep_sources.registry, build_project_registry(index))
+    signatures.merge(
+      dependency_registry(dep_sources),
+      build_project_registry(index),
+    )
   let type_info = build_type_index(index, package_root)
 
   // Read once and kept: the knowledge base is built from it and the spec lint
@@ -647,7 +650,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     effects.knowledge_base_from_catalog(
       packages_dir(package_root),
       catalog,
-      dep_sources.foreign,
+      dependency_foreign(dep_sources),
     )
     // Before anything is looked up: every foreign lookup is read on the targets
     // this build compiles, and every command reads them the same way.
@@ -2519,14 +2522,17 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   // `index`/`package_root`.
   let dep_sources = dependency_sources(package_root, package_targets)
   let registry =
-    signatures.merge(dep_sources.registry, build_project_registry(index))
+    signatures.merge(
+      dependency_registry(dep_sources),
+      build_project_registry(index),
+    )
   let type_info = build_type_index(index, package_root)
 
   let kb_base =
     effects.load_knowledge_base(
       packages_dir(package_root),
       manifest_path(package_root),
-      dep_sources.foreign,
+      dependency_foreign(dep_sources),
     )
     |> effects.with_package_targets(cfg.targets)
     // Consumer externals are applied before path-dep inference so a module-level
@@ -3032,92 +3038,132 @@ fn manifest_path(package_root: String) -> String {
 
 // Dependency sources
 //
-// What graded derives from a dependency's own `src/`: parameter positions for
-// positional argument matching, and the update-builder signatures its public
-// builders declare. One walk parses each file once and folds the parsed module
-// into both.
+// What graded derives from a dependency's own `src/`: the names each module
+// defines, parameter positions for positional argument matching, the
+// update-builder signatures its public builders declare, and the `@external`s
+// it declares. One walk parses each file once and derives all four from that
+// parse, under the module path the file sits at.
 
-// The signature registry and update-builder map derived from one or more
-// dependency source trees. Both come from the source the consumer compiled
-// against, so a builder resolved from `updates` can never skew from a stale
-// serialized `update` line — it takes precedence over the spec-loaded map. A
-// dependency whose source can't be parsed contributes to neither field and falls
-// back to its serialized signature.
+// What one or more dependency source trees yielded, held by module path rather
+// than flattened by name. Everything a module path contributes comes from the
+// single copy of it that won the scan: a dependency that moved to a path
+// dependency without a `gleam clean` leaves a stale copy under `build/packages`
+// beside the live one, and the copy this build compiles against is the only one
+// that speaks for the path — for what it defines, what its signatures are, what
+// builders it exports and what it declares foreign alike.
 type DependencySources {
-  DependencySources(
+  DependencySources(modules: Dict(String, ScannedModule))
+}
+
+// One scanned copy of a module path: everything derived from that single parse.
+type ScannedModule {
+  ParsedModule(
+    // The functions it defines, private ones included: the question is whether
+    // the name exists, and a line naming a private dependency function is dead
+    // for a different reason than a typo is.
+    functions: Set(String),
+    // Its parameter signatures, for positional argument matching at polymorphic
+    // call sites.
     registry: SignatureRegistry,
+    // The update builders it exports. Only public builders cross a package
+    // boundary, so only those are recorded. Read from the source the consumer
+    // compiled against, so a builder resolved from here can never skew from a
+    // stale serialized `update` line — it takes precedence over the spec-loaded
+    // map.
     updates: Dict(#(String, String), types.UpdateSignature),
-    // Every `@external` the dependencies declare. Scanned here because this walk
-    // already parses each dependency module once, and because it is the only
-    // evidence a consumer has: a dependency's spec cannot be trusted to say
-    // which of its own functions are foreign, since a stale line for one is
-    // exactly what this set exists to refuse.
+    // Every `@external` it declares. Scanned here because this walk already
+    // parses each dependency module once, and because it is the only evidence a
+    // consumer has: a dependency's spec cannot be trusted to say which of its
+    // own functions are foreign, since a stale line for one is exactly what
+    // this map exists to refuse.
     foreign: Dict(types.QualifiedName, types.ForeignFunction),
-    // The module paths this walk parsed. What the registry cannot express: a
-    // module that parsed and defines no function keys nothing in it, exactly
-    // like one that never parsed — and the spec lint owes those two different
-    // answers, since only the first proves a name absent.
-    parsed: Set(String),
   )
+  // The file would not read or parse. Recorded rather than dropped so it
+  // shadows any copy of the path scanned before it, and contributes nothing in
+  // its place: the shadowed copy is not the one this build compiles against,
+  // and a dependency graded cannot read falls back to its serialized signature.
+  UnreadableModule
 }
 
 fn empty_dependency_sources() -> DependencySources {
-  DependencySources(
-    registry: signatures.empty(),
-    updates: dict.new(),
-    foreign: dict.new(),
-    parsed: set.new(),
-  )
+  DependencySources(modules: dict.new())
+}
+
+// The three name-keyed views of a scan, each folded out of the winning copies
+// once the whole walk is in hand.
+
+// Parameter signatures for every function the scanned copies define.
+fn dependency_registry(sources: DependencySources) -> SignatureRegistry {
+  use acc, _path, scanned <- dict.fold(sources.modules, signatures.empty())
+  case scanned {
+    ParsedModule(registry:, ..) -> signatures.merge(acc, registry)
+    UnreadableModule -> acc
+  }
+}
+
+// The update builders the scanned copies export.
+fn dependency_updates(
+  sources: DependencySources,
+) -> Dict(#(String, String), types.UpdateSignature) {
+  use acc, _path, scanned <- dict.fold(sources.modules, dict.new())
+  case scanned {
+    ParsedModule(updates:, ..) -> dict.merge(acc, updates)
+    UnreadableModule -> acc
+  }
+}
+
+// The `@external`s the scanned copies declare.
+fn dependency_foreign(
+  sources: DependencySources,
+) -> Dict(types.QualifiedName, types.ForeignFunction) {
+  use acc, _path, scanned <- dict.fold(sources.modules, dict.new())
+  case scanned {
+    ParsedModule(foreign:, ..) -> dict.merge(acc, foreign)
+    UnreadableModule -> acc
+  }
 }
 
 // What a dependency's own source says about one name: the three answers the
 // spec lint owes a `module.function` it did not find in this package.
 type DependencyName {
-  // The module parsed and defines the function, private ones included: the
-  // question is whether the name exists, and a line naming a private dependency
-  // function is dead for a different reason than a typo is.
+  // The module's winning copy parsed and defines the function.
   DefinedByDependency
-  // The module parsed and defines no such function. The one answer that proves
-  // a name absent.
+  // It parsed and defines no such function. The one answer that proves a name
+  // absent.
   AbsentFromDependency
-  // No source graded read says anything: the module never parsed, or the walk
-  // never reached it. No evidence either way.
+  // No source graded read says anything: the winning copy would not parse, or
+  // the walk never reached the module. No evidence either way.
   UnreadDependency
 }
 
-// Answer for `name` from the scan. The two fields are read together and only
-// here: a registry miss means nothing without the `parsed` check beside it,
-// since a module that parses and defines no function keys as little as one that
-// never parsed.
+// Answer for `name` from the scan, read off the winning copy of its module and
+// that copy alone — the answer a name is owed is what the source this build
+// compiles against says, not what any copy left on disk beside it still holds.
 fn dependency_name(
   sources: DependencySources,
   name: QualifiedName,
 ) -> DependencyName {
-  use <- bool.guard(
-    when: !set.contains(sources.parsed, name.module),
-    return: UnreadDependency,
-  )
-  case signatures.defines(sources.registry, name) {
-    True -> DefinedByDependency
-    False -> AbsentFromDependency
+  case dict.get(sources.modules, name.module) {
+    Error(Nil) | Ok(UnreadableModule) -> UnreadDependency
+    Ok(ParsedModule(functions:, ..)) ->
+      case set.contains(functions, name.function) {
+        True -> DefinedByDependency
+        False -> AbsentFromDependency
+      }
   }
 }
 
-// Merge two scans; `b` wins on key conflict, matching `signatures.merge`.
+// Merge two scans; `b`'s copy of a module path replaces `a`'s whole, so no path
+// is ever spoken for by two copies at once.
 fn merge_dependency_sources(
   a: DependencySources,
   b: DependencySources,
 ) -> DependencySources {
-  DependencySources(
-    registry: signatures.merge(a.registry, b.registry),
-    updates: dict.merge(a.updates, b.updates),
-    foreign: dict.merge(a.foreign, b.foreign),
-    parsed: set.union(a.parsed, b.parsed),
-  )
+  DependencySources(modules: dict.merge(a.modules, b.modules))
 }
 
-// Every dependency's source-derived signatures: installed packages under
-// `build/packages`, then path dependencies, which win on key conflict.
+// Every dependency's source-derived entries: installed packages under
+// `build/packages`, then path dependencies, whose copy of a module path wins.
 fn dependency_sources(
   package_root: String,
   package_targets: types.PackageTargets,
@@ -3141,7 +3187,7 @@ fn with_builders(
   package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
   knowledge_base
-  |> effects.with_updates(dep_sources.updates)
+  |> effects.with_updates(dependency_updates(dep_sources))
   |> effects.with_updates(
     qualify_by_module(index, extract.update_map(
       _,
@@ -3169,34 +3215,43 @@ fn packages_dir_sources(
   }
 }
 
-// Scan one package's `src/` tree, folding each parsed module into the registry
-// and into the update-builder map. Only public builders cross a package
-// boundary, so only those land in `updates`.
+// Scan one package's `src/` tree, recording what each module derives under its
+// module path. A file that would not read or parse derives nothing, and is
+// recorded as the unreadable copy of its path.
 fn source_dir_sources(
   source_dir: String,
   package_targets: types.PackageTargets,
 ) -> DependencySources {
-  use acc, module_path, module <- signatures.fold_source_dir(
+  use acc, module_path, parsed <- signatures.fold_source_dir(
     source_dir,
     empty_dependency_sources(),
   )
-  merge_dependency_sources(
-    acc,
-    DependencySources(
-      registry: signatures.from_glance_module(module_path, module),
-      updates: extract.public_update_signatures(
-        module,
-        module_path,
-        types.declaration_targets(package_targets),
-      ),
-      foreign: checker.dependency_foreign_functions(
-        module,
-        module_path,
-        package_targets,
-      ),
-      parsed: set.from_list([module_path]),
-    ),
-  )
+  let scanned = case parsed {
+    Ok(module) ->
+      ParsedModule(
+        functions: module_function_names(module),
+        registry: signatures.from_glance_module(module_path, module),
+        updates: extract.public_update_signatures(
+          module,
+          module_path,
+          types.declaration_targets(package_targets),
+        ),
+        foreign: checker.dependency_foreign_functions(
+          module,
+          module_path,
+          package_targets,
+        ),
+      )
+    Error(Nil) -> UnreadableModule
+  }
+  DependencySources(modules: dict.insert(acc.modules, module_path, scanned))
+}
+
+// Every function a module defines, public and private alike.
+fn module_function_names(module: glance.Module) -> Set(String) {
+  list.fold(module.functions, set.new(), fn(acc, definition) {
+    set.insert(acc, definition.definition.name)
+  })
 }
 
 fn find_gleam_toml_dir(dir: String, original: String) -> String {

@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   higher-order entry another package declares `external effects` no longer
   loses its bounds — and with them its callers' effects — depending on which
   catalog file was read last.
+- A stale duplicate copy of a dependency module left under `build/packages` —
+  a dependency moved to a path dependency without a `gleam clean` — no longer
+  has a say in anything graded reads from dependency source. The copy the build
+  compiles against alone decides whether an `external effects` line naming one
+  of its functions is dead, which parameter signatures match at call sites,
+  which update builders resolve, and which of its functions are foreign; a
+  winning copy graded cannot read contributes nothing and still shadows the
+  stale one beside it.
 
 ## [0.12.0] - 2026-08-18
 
