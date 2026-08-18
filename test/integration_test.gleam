@@ -7153,6 +7153,32 @@ pub fn an_external_on_an_unreadable_dependency_is_not_flagged_test() {
   support.cleanup(root)
 }
 
+pub fn an_external_on_a_function_less_dependency_module_is_flagged_test() {
+  // A dependency module that parses and defines no function at all — a
+  // type-only module — proves the name absent just as a module full of other
+  // functions does. Reading "defines nothing" as "said nothing" is how a module
+  // graded read would come to answer for every name in it, which is the answer
+  // reserved for one it could not read.
+  let root = "build/external_lint_type_only_dep"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "external effects types_only/mod.whatever : [Disk]\n"),
+    #(
+      "build/packages/types_only/src/types_only/mod.gleam",
+      "pub type Handle {\n  Handle(id: Int)\n}\n",
+    ),
+    #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.UnmatchedFunctionExternalWarning(function: "types_only/mod.whatever"),
+  ])
+  support.cleanup(root)
+}
+
 // Reference warnings and foreign code
 //
 // The "passed as a value" warning quotes an effect, so it reads that effect
