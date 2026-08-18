@@ -56,6 +56,23 @@ pub type EffectAnswer {
     bounds: List(ParamBound),
     fallback: Option(EffectTerm),
   )
+  // A function whose implementation is foreign code, and whose declaration names
+  // only targets this build does not compile. What it declares is no part of
+  // what a caller pays, so neither its effects nor its source appear here —
+  // crediting a shipped spec with the conservative `[Unknown]` an out-of-reach
+  // declaration collapses to points the reader at the very line the answer ruled
+  // out.
+  //
+  // `term` is what the build does reach: a Gleam fallback body running in the
+  // declaration's place, or the `[Unknown]` standing for a name nothing in reach
+  // implements at all. `fallback` names that body where one runs, and tells the
+  // two apart.
+  UnreachedDeclarationAnswer(
+    name: String,
+    bounds: List(ParamBound),
+    term: EffectTerm,
+    fallback: Option(EffectTerm),
+  )
   // A field of a custom type, declared by a `type` line. `module` is `None` for
   // a bare declaration, which is keyed under no module.
   TypeFieldAnswer(
@@ -123,6 +140,10 @@ pub fn render_graded(answer: EffectAnswer) -> String {
       effects_line(name, bounds, undeclared_term(fallback))
       <> "\n// an external with no declared effects"
       <> graded_fallback(fallback)
+    UnreachedDeclarationAnswer(name:, bounds:, term:, fallback:) ->
+      effects_line(name, bounds, term)
+      <> "\n// "
+      <> unreached_declaration_source(fallback)
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
       annotation.format_type_field(TypeFieldAnnotation(
         module:,
@@ -198,9 +219,33 @@ pub fn render_prose(answer: EffectAnswer) -> String {
         ..list.append(bound_lines(bounds), prose_fallback(fallback))
       ]
       |> string.join("\n")
+    // No `plus its Gleam fallback body` line beside the source: the body here is
+    // not a half added to a declaration, it is the whole of what was charged.
+    UnreachedDeclarationAnswer(name:, bounds:, term:, fallback:) ->
+      [
+        function_sentence(name, bounds, term),
+        "  source: " <> unreached_declaration_source(fallback),
+        ..bound_lines(bounds)
+      ]
+      |> string.join("\n")
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
       [field_sentence(module, type_name, field, term), prose_origin(origin)]
       |> string.join("\n")
+  }
+}
+
+// The source a name answered by the Gleam body running in its declaration's
+// place names. `why` says the same of a call, stated from the calling body's
+// targets; the query answers for the package, so it names the build's.
+const running_fallback_source = "its Gleam fallback body, which is what runs on the targets this build compiles"
+
+// What answered for a name whose declaration this build reaches no part of: the
+// Gleam body running in the declaration's place, or nothing at all where there
+// is no such body.
+fn unreached_declaration_source(fallback: Option(EffectTerm)) -> String {
+  case fallback {
+    None -> "an external declared only for a target this build does not compile"
+    Some(_) -> running_fallback_source
   }
 }
 

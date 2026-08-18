@@ -5,6 +5,19 @@ import filepath
 import gleam/list
 import simplifile
 
+// A `gleam.toml` for a package built for both targets. What a library its
+// consumers compile either way declares, and the only configuration under which
+// an `@external` declared for one target and the Gleam fallback body that runs
+// on the other are both in reach: a plain `target` names exactly one, and where
+// no field names any, fallback bodies are read on the compiler's default alone.
+pub fn dual_target_toml(package_name: String) -> String {
+  "name = \"" <> package_name <> "\"
+
+[tools.graded]
+targets = [\"erlang\", \"javascript\"]
+"
+}
+
 // Write one file, creating its parent directories first.
 pub fn write_file(path: String, contents: String) -> Nil {
   ensure_parent(path)

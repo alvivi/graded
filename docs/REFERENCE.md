@@ -380,6 +380,20 @@ one of **your own** modules, the per-function form is not the answer — it name
 function graded can see the body of, so it is stale (above). The module-level form
 is the one that governs your own code, and it is a whole-module budget by design.
 
+Over a module of your own, the line governs what *callers* pay, not what its own
+functions may do. A caller of `myapp/db.connect` is charged exactly the declared
+set — never the union of the declaration and what `connect`'s body does — and
+`graded effect myapp/db.connect` reports that same declared set, since it answers
+what calling the name costs. A function in the declaring module is a caller like
+any other: `myapp/db.disconnect` calling `connect()` pays the declared set too.
+
+The function's own budget is a different question. Those bodies are visible Gleam
+that runs, so a `check` line on one of them is weighed against the declaration
+**and** the body: `external effects myapp/db : [Database]` with `check
+myapp/db.connect : [Database]` still reports a `connect` that writes to stdout,
+and `graded why myapp/db.connect` lists both halves. No line over source graded
+can read silences that source.
+
 A module-level line whose module is neither a dependency nor one of your own is
 flagged as a probable typo: no call can resolve into a module that isn't there.
 A per-function line is flagged the same way when its name resolves nowhere — and
@@ -410,6 +424,40 @@ function with a body means that body is what runs on Erlang, so the budget cover
 both the declaration and the fallback. An `@external` for every target it is
 compiled for (both, or the one a `@target` narrows it to) is answered by the
 declaration alone.
+
+Which targets your package is compiled for comes from `gleam.toml`: the top-level
+`target`, or `[tools.graded].targets` for a package really built for both, which
+is the only place it can say so since `target` names exactly one:
+
+```toml
+[tools.graded]
+targets = ["erlang", "javascript"]
+```
+
+Under a single declared target, an `@external` declaring that target is answered by
+its declaration and its Gleam body is dead text; one declaring only the *other*
+target runs its Gleam body and nothing else — its declaration describes foreign
+code your build never compiles, and where there is no body either, the call reads
+`[Unknown]`. Under two, both halves are in reach at once and a caller is charged
+their union. A value that is not a target graded knows — `target = "llvm"`, or a
+`targets` list it cannot read whole — reads as every target rather than narrowing
+to a guess.
+
+Where **neither** field names a target, graded holds two readings at once, because
+a `gleam build --target javascript` against such a package is invisible to it:
+
+- Gleam fallback bodies are read on `erlang`, the compiler's own default, in your
+  package and its dependencies alike. So an `@external(erlang, …)` with a Gleam
+  fallback — the shape most of the standard library uses, and the shape hand-written
+  FFI usually takes — is answered by its declaration alone: callers are charged it,
+  `graded why` and a `check` line on the external weigh it, and the body beside it
+  is dead text to all four.
+- What a declaration *states* is read on every target. So an
+  `@external(javascript, …)` with a Gleam fallback is still foreign code, an
+  `external effects` line for it still answers, `graded infer` keeps that line,
+  and callers are charged the declaration beside what the fallback body does.
+
+Declaring `[tools.graded].targets` replaces both readings with what you wrote.
 
 That body is weighed *on the targets it runs on*. A name it calls is reached from
 those targets and no others, so a fallback running on Erlang that calls another
@@ -573,6 +621,18 @@ dependency <pkg>`, or `<pkg>'s catalog entry`. A name answered by a module-level
 instead, with the precedence note below it. A type field names the file its
 `type` line sits in the same way (`declared by a `type` line in wisp's shipped
 spec`). Every answer names a source.
+
+Where no entry answered, the line names why instead: `an external declared only
+for a target this build does not compile` where what declares it is out of reach
+and no Gleam body runs in its place, `its Gleam fallback body, which is what runs
+on the targets this build compiles` where one does, and `an external with no
+declared effects` for foreign code this build compiles and nothing declares. In
+none of these three does the declaration account for the effects, so none of them
+names it — and an external that is both undeclared and out of reach reads as out
+of reach, that being what decides the charge. `graded check` and `graded why`
+name the same cause in the same words, a field call wired to such a name
+continuing the phrase (``calls field `read` on `c`, wired to an external with no
+declared effects, …``).
 
 `--format=graded` prints the same answer as a `.graded` line, with provenance on
 a `//` comment, so the whole output parses back — the format to pipe into a spec

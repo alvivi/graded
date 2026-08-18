@@ -133,39 +133,107 @@ pub fn defaults_for_helper_test() {
 
 // Compilation targets
 //
-// `gleam.toml`'s top-level `target`, which narrows which `@external`
-// declarations are ever built.
+// `gleam.toml`'s top-level `target` and `[tools.graded].targets`, which decide
+// which `@external` declarations are ever built, and which of the two readings
+// of them a package gets.
 
-pub fn no_target_field_means_every_target_test() {
+pub fn no_target_field_is_defaulted_test() {
+  // Neither field names a target: the compiler's default stands in for the
+  // build, and every target stands in wherever reading it narrowly could drop a
+  // declared effect.
   let path = write_toml("no_target", "name = \"myapp\"\n")
   let assert Ok(cfg) = config.read(path)
-  cfg.targets |> should.equal(types.every_target())
+  cfg.targets |> should.equal(types.DefaultedTargets)
+  types.build_targets(cfg.targets) |> should.equal(types.default_target())
+  types.declaration_targets(cfg.targets) |> should.equal(types.every_target())
+}
+
+pub fn a_declared_target_list_widens_past_the_compilers_one_test() {
+  // The only way a package built for both targets can say so: `target` names
+  // exactly one, and so does its absence.
+  let path =
+    write_toml(
+      "declared_targets",
+      "name = \"myapp\"\ntarget = \"erlang\"\n\n[tools.graded]\ntargets = [\"erlang\", \"javascript\"]\n",
+    )
+  let assert Ok(cfg) = config.read(path)
+  cfg.targets |> should.equal(types.NamedTargets(types.every_target()))
+}
+
+pub fn a_declared_target_list_can_narrow_too_test() {
+  let path =
+    write_toml(
+      "declared_targets_narrow",
+      "name = \"myapp\"\n\n[tools.graded]\ntargets = [\"javascript\"]\n",
+    )
+  let assert Ok(cfg) = config.read(path)
+  cfg.targets
+  |> should.equal(types.NamedTargets(set.from_list(["javascript"])))
+}
+
+pub fn an_unreadable_target_list_reads_as_every_target_test() {
+  // A list holding a target graded does not know states that the package is
+  // built for something and leaves graded unable to say which, so every target
+  // stays in reach — the same reading an unrecognised `target` gets, and the
+  // widest one. Falling through to `target` instead answered with one target for
+  // a package whose list plainly names two.
+  let path =
+    write_toml(
+      "declared_targets_odd",
+      "name = \"myapp\"\ntarget = \"javascript\"\n\n[tools.graded]\ntargets = [\"erlang\", \"llvm\"]\n",
+    )
+  let assert Ok(cfg) = config.read(path)
+  cfg.targets |> should.equal(types.NamedTargets(types.every_target()))
+}
+
+pub fn a_target_list_that_is_not_an_array_reads_as_every_target_test() {
+  let path =
+    write_toml(
+      "declared_targets_string",
+      "name = \"myapp\"\ntarget = \"javascript\"\n\n[tools.graded]\ntargets = \"erlang\"\n",
+    )
+  let assert Ok(cfg) = config.read(path)
+  cfg.targets |> should.equal(types.NamedTargets(types.every_target()))
+}
+
+pub fn an_empty_target_list_falls_back_to_the_target_field_test() {
+  // An empty list names no target the way an absent key does, so the reading
+  // falls to `target` rather than to the widest set.
+  let path =
+    write_toml(
+      "declared_targets_empty",
+      "name = \"myapp\"\n\n[tools.graded]\ntargets = []\n",
+    )
+  let assert Ok(cfg) = config.read(path)
+  cfg.targets |> should.equal(types.DefaultedTargets)
 }
 
 pub fn an_erlang_target_narrows_to_erlang_test() {
   let path =
     write_toml("erlang_target", "name = \"myapp\"\ntarget = \"erlang\"\n")
   let assert Ok(cfg) = config.read(path)
-  cfg.targets |> should.equal(set.from_list(["erlang"]))
+  cfg.targets |> should.equal(types.NamedTargets(set.from_list(["erlang"])))
 }
 
 pub fn a_javascript_target_narrows_to_javascript_test() {
   let path =
     write_toml("js_target", "name = \"myapp\"\ntarget = \"javascript\"\n")
   let assert Ok(cfg) = config.read(path)
-  cfg.targets |> should.equal(set.from_list(["javascript"]))
+  cfg.targets
+  |> should.equal(types.NamedTargets(set.from_list(["javascript"])))
 }
 
 pub fn an_unrecognised_target_reads_as_every_target_test() {
-  // The widest reading, which is what every classification did before the
-  // field was read at all — a target graded does not know narrows nothing
-  // rather than narrowing to nothing.
+  // A target graded does not know narrows nothing rather than narrowing to
+  // nothing.
   let path = write_toml("odd_target", "name = \"myapp\"\ntarget = \"llvm\"\n")
   let assert Ok(cfg) = config.read(path)
-  cfg.targets |> should.equal(types.every_target())
+  cfg.targets |> should.equal(types.NamedTargets(types.every_target()))
 }
 
-pub fn targets_for_a_missing_package_is_every_target_test() {
-  config.targets_for("/tmp/graded_config_absent_package")
-  |> should.equal(types.every_target())
+pub fn a_missing_gleam_toml_is_every_target_test() {
+  // A package with no `gleam.toml` at all: there is no field whose absence the
+  // compiler's default could stand in for, so both readings are every target.
+  config.defaults_for("myapp").targets
+  |> should.equal(types.NamedTargets(types.every_target()))
 }

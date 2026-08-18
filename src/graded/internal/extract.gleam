@@ -117,19 +117,21 @@ pub type ImportContext {
     // (`with_resolver(base, http)`) builds an `Updated` overlay of its base.
     updates: Dict(String, UpdateSignature),
     cross_updates: Dict(#(String, String), UpdateSignature),
-    // The targets the package under analysis is compiled for. Carried here so
-    // every reader inside one walk classifies a definition as foreign or native
-    // the same way — a function foreign to one channel and ordinary Gleam to
-    // another is the disagreement this whole boundary exists to prevent. Every
-    // target until a caller narrows it.
-    package_targets: Set(String),
+    // The targets the package under analysis is compiled for, and whether it
+    // named them. Carried whole so every reader inside one walk both classifies
+    // a definition as foreign or native the same way — a function foreign to one
+    // channel and ordinary Gleam to another is the disagreement this whole
+    // boundary exists to prevent — and reads the same targets for a question
+    // only one of the two readings answers. Every target until a caller narrows
+    // it.
+    package_targets: types.PackageTargets,
   )
 }
 
 // Record which targets the package under analysis is compiled for.
 pub fn with_package_targets(
   context: ImportContext,
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> ImportContext {
   ImportContext(..context, package_targets:)
 }
@@ -238,7 +240,7 @@ pub fn build_import_context(module: Module) -> ImportContext {
     functions:,
     updates: dict.new(),
     cross_updates: dict.new(),
-    package_targets: types.every_target(),
+    package_targets: types.all_targets(),
   )
 }
 
