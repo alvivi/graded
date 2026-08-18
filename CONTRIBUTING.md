@@ -123,8 +123,9 @@ Add or update a test with every behaviour change.
 
 - Record every notable change in [CHANGELOG.md](CHANGELOG.md). The format is
   [Keep a Changelog](https://keepachangelog.com/) and the project follows
-  [SemVer](https://semver.org/). Entries lead with a **bold one-sentence
-  summary** of the observable change, then explain — match the existing style.
+  [SemVer](https://semver.org/). One short bullet per change — one to three
+  sentences leading with the observable change, no mechanism walk-throughs —
+  match the existing style.
 - Version bumps and `Release vX.Y.Z` commits are cut by the maintainer.
 - Branch off `main` with a short, descriptive kebab-case name
   (`dependency-field-resolution`). This project does not use git-flow — no
