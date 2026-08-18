@@ -728,6 +728,40 @@ pub fn a_catalog_effects_line_beats_another_packages_external_test() {
   Nil
 }
 
+pub fn a_catalog_external_beats_its_own_files_effects_line_test() {
+  // One catalog file keys the same function both ways. The `external effects`
+  // line decides the term, pairing with the empty bounds the file's own reader
+  // records for a declared name — the `effects` line's polymorphic term would
+  // leave `cb` free with nothing left to bind it.
+  let root = "build/eff_catalog_same_file_clash"
+  let catalog = root <> "/catalog"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(catalog)
+  let assert Ok(Nil) =
+    simplifile.write(
+      catalog <> "/a_pkg@1.0.0.graded",
+      "effects shared/mod.run(cb: [cb]) : [cb]\nexternal effects shared/mod.run : [Disk]\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/manifest.toml",
+      "packages = [\n  { name = \"a_pkg\", version = \"1.0.0\" },\n]\n",
+    )
+
+  let #(all_effects, _module_effects, params, _type_fields) =
+    effects.load_catalog(catalog, root <> "/manifest.toml")
+  dict.get(all_effects, QualifiedName("shared/mod", "run"))
+  |> result.map(fn(entry) { #(effect_term.to_effect_set(entry.0), entry.1) })
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Disk"])), types.Catalog("a_pkg"))),
+  )
+  dict.get(params, QualifiedName("shared/mod", "run"))
+  |> should.equal(Ok([]))
+
+  let _ = simplifile.delete(root)
+  Nil
+}
+
 // Dependency-declared externals
 //
 // A dependency's own `external effects` lines are part of what it ships: the

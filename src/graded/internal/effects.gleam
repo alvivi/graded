@@ -1805,9 +1805,10 @@ pub fn load_catalog(
   let selected = resolve_catalog_files(catalog_files, installed_versions)
   let initial = CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new(), [])
   let acc = list.fold(selected, initial, fold_catalog_file)
-  // Explicit `effects` annotations in the catalog take precedence over the
-  // module-level `external effects` markers. Each term carries the package that
-  // wrote it, so the winner of this merge brings its own origin.
+  // Across files, an `effects` annotation takes precedence over another
+  // package's per-function `external effects` marker; within one file the
+  // external already won, in `fold_catalog_file`. Each term carries the package
+  // that wrote it, so the winner of this merge brings its own origin.
   #(
     dict.merge(acc.ext_effects, acc.poly_effects),
     acc.module_effects,
@@ -1837,8 +1838,16 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
           // are scoped like everyone else's. Merging with the new file second
           // keeps the later file winning on a clash, as folding per-annotation
           // did.
+          // A name this file keys both ways resolves to its `external
+          // effects` line, the rule `decided_entries` applies to a dependency's
+          // own spec: the external's ground term is what the empty bounds
+          // `load_spec_params_from_file` records for the name pair with.
           let file_poly_effects =
-            with_origin(load_spec_effects_from_file(graded_file), origin)
+            load_spec_effects_from_file(graded_file)
+            |> dict.filter(fn(name, _term) {
+              !dict.has_key(function_externals, name)
+            })
+            |> with_origin(origin)
           CatalogAcc(
             ext_effects: dict.merge(acc.ext_effects, function_externals),
             module_effects: dict.merge(acc.module_effects, module_externals),
