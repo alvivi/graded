@@ -7153,6 +7153,101 @@ pub fn an_external_on_an_unreadable_dependency_is_not_flagged_test() {
   support.cleanup(root)
 }
 
+pub fn a_stale_duplicate_dependency_copy_does_not_answer_for_a_name_test() {
+  // Two copies of `dep/mod` are on disk: the path dependency the project
+  // declares, and a hex copy left under `build/packages` by a `gleam clean`
+  // that never ran. The path dependency is what this build compiles against and
+  // it defines no `writes`, so the line is dead — the stale copy still defining
+  // the name is no evidence about the source in use.
+  let root = "build/external_lint_stale_dep_copy"
+  support.write_fixture(root, [
+    #(
+      "proj/gleam.toml",
+      "name = \"proj\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    ),
+    #("proj/proj.graded", "external effects dep/mod.writes : [Disk]\n"),
+    #(
+      "proj/build/packages/dep/src/dep/mod.gleam",
+      "pub fn writes() -> Nil {\n  Nil\n}\n",
+    ),
+    #("proj/src/m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+    #("dep/gleam.toml", "name = \"dep\"\n"),
+    #("dep/src/dep/mod.gleam", "pub fn reads() -> Nil {\n  Nil\n}\n"),
+  ])
+
+  let assert Ok(results) = graded.run(root <> "/proj")
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.UnmatchedFunctionExternalWarning(function: "dep/mod.writes"),
+  ])
+  support.cleanup(root)
+}
+
+pub fn a_stale_copy_does_not_stand_in_for_an_unreadable_one_test() {
+  // The mirror case: the copy this build compiles against will not parse, and
+  // the stale one under `build/packages` does. A module graded cannot read
+  // proves nothing about the names in it, and a copy it is not compiling
+  // against cannot prove it either — so the line naming a function only the
+  // unreadable copy defines is left alone.
+  let root = "build/external_lint_stale_copy_unreadable"
+  support.write_fixture(root, [
+    #(
+      "proj/gleam.toml",
+      "name = \"proj\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    ),
+    #("proj/proj.graded", "external effects dep/mod.writes : [Disk]\n"),
+    #(
+      "proj/build/packages/dep/src/dep/mod.gleam",
+      "pub fn reads() -> Nil {\n  Nil\n}\n",
+    ),
+    #("proj/src/m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+    #("dep/gleam.toml", "name = \"dep\"\n"),
+    #("dep/src/dep/mod.gleam", "pub fn ( not gleam\n"),
+  ])
+
+  let assert Ok(results) = graded.run(root <> "/proj")
+  results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_stale_duplicate_dependency_copy_declares_nothing_foreign_test() {
+  // Every map the dependency scan derives is read off the copy this build
+  // compiles against, not just the names it defines. A stale copy under
+  // `build/packages` declaring a function `@external` cannot refuse the effects
+  // the live copy's shipped spec states for it, since that copy runs Gleam.
+  let root = "build/stale_dep_copy_foreign"
+  support.write_fixture(root, [
+    #(
+      "proj/gleam.toml",
+      "name = \"proj\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    ),
+    #("proj/proj.graded", "check app.go : [Disk]\n"),
+    #(
+      "proj/src/app.gleam",
+      "import dep/mod
+
+pub fn go() -> Nil {
+  mod.writes()
+}
+",
+    ),
+    #(
+      "proj/build/packages/dep/src/dep/mod.gleam",
+      "@external(erlang, \"dep_ffi\", \"writes\")
+pub fn writes() -> Nil
+",
+    ),
+    #("dep/gleam.toml", "name = \"dep\"\n"),
+    #("dep/dep.graded", "effects dep/mod.writes : [Disk]\n"),
+    #("dep/src/dep/mod.gleam", "pub fn writes() -> Nil {\n  Nil\n}\n"),
+  ])
+
+  let assert Ok(results) = graded.run(root <> "/proj")
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  support.cleanup(root)
+}
+
 pub fn an_external_on_a_function_less_dependency_module_is_flagged_test() {
   // A dependency module that parses and defines no function at all — a
   // type-only module — proves the name absent just as a module full of other
