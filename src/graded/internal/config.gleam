@@ -3,16 +3,20 @@
 //
 // ```toml
 // [tools.graded]
-// spec_file = "myapp.graded"     # default: "<name>.graded"
-// cache_dir = "build/.graded"    # default: "build/.graded"
+// spec_file = "myapp.graded"          # default: "<name>.graded"
+// cache_dir = "build/.graded"         # default: "build/.graded"
+// targets = ["erlang", "javascript"]  # default: the top-level `target`
 // ```
 //
-// Both fields are optional. If `[tools.graded]` is missing entirely, both
+// Every field is optional. If `[tools.graded]` is missing entirely, all
 // defaults apply. The `name` field at the top of `gleam.toml` provides the
 // package name used to derive the default `spec_file`, and the top-level
-// `target` field narrows which targets the package is compiled for.
+// `target` field says which target the package is compiled for.
 
 import filepath
+import gleam/bool
+import gleam/dict.{type Dict}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set.{type Set}
@@ -47,15 +51,21 @@ pub type GradedConfig {
     // and to verify a tarball's identity; checking and inference never need
     // it, so it stays optional.
     version: Option(String),
-    // The targets this package is compiled for, from `gleam.toml`'s top-level
-    // `target`. Both when the field is absent, unreadable, or names something
-    // other than a target graded knows — the widest reading, which is what
-    // every classification did before the field was read at all.
+    // The targets this package is analysed on, and where they came from.
     //
-    // A build overriding it (`gleam build --target javascript` against a
-    // `target = "erlang"` package) is not visible here, so this is what the
-    // package *declares*, not proof of what was built.
-    targets: Set(String),
+    // `[tools.graded].targets` first: a package built for more than one target —
+    // a library its consumers compile either way — states them there, and every
+    // `@external` is read on each, so a declaration covering one target and a
+    // Gleam fallback body covering the other are both charged. Otherwise the
+    // top-level `target`, which names exactly one. Where neither field names a
+    // target, `types.DefaultedTargets`: the compiler's default stands in for the
+    // build, and every target stands in wherever a narrower reading could drop
+    // an effect a declaration states.
+    //
+    // A build overriding the field (`gleam build --target javascript` against a
+    // `target = "erlang"` package) is not visible here, so a named set is what
+    // the package *declares*, not proof of what was built.
+    targets: types.PackageTargets,
   )
 }
 
@@ -95,33 +105,97 @@ pub fn read(gleam_toml_path: String) -> Result(GradedConfig, ConfigError) {
     Ok(value) -> Some(value)
     Error(_) -> None
   }
-  let targets = case tom.get_string(toml, ["target"]) {
-    Ok("erlang") -> set.from_list(["erlang"])
-    Ok("javascript") -> set.from_list(["javascript"])
-    Ok(_) | Error(_) -> types.every_target()
-  }
+  let targets = read_targets(toml)
   Ok(GradedConfig(package_name:, spec_file:, cache_dir:, version:, targets:))
 }
 
-// The targets the package rooted at `package_root` declares. Falls back to
-// every target when its `gleam.toml` is missing or unreadable, which is the
-// reading every classification made before the field was read.
-pub fn targets_for(package_root: String) -> Set(String) {
-  case read(filepath.join(package_root, "gleam.toml")) {
-    Ok(cfg) -> cfg.targets
-    Error(_) -> types.every_target()
+// Which targets a parsed `gleam.toml` names, and how.
+//
+// `[tools.graded].targets` first: the only place a package built for more than
+// one target can say so, since the compiler's own `target` names exactly one.
+// A field that is there and states no target graded can read names every target:
+// it says the package is built for something, and a reading that picked one of
+// them would drop the declarations belonging to the others. Only silence in both
+// fields is `DefaultedTargets`.
+fn read_targets(toml: Dict(String, tom.Toml)) -> types.PackageTargets {
+  case declared_targets(toml) {
+    Ok(targets) -> types.NamedTargets(targets)
+    Error(TargetsUnreadable) -> types.all_targets()
+    Error(TargetsAbsent) ->
+      case tom.get_string(toml, ["target"]) {
+        Ok(name) ->
+          case known_target(name) {
+            Ok(target) -> types.NamedTargets(set.from_list([target]))
+            Error(Nil) -> types.all_targets()
+          }
+        Error(tom.NotFound(..)) -> types.DefaultedTargets
+        // Present and not a string.
+        Error(_) -> types.all_targets()
+      }
   }
+}
+
+// Why a `[tools.graded].targets` list named no set of targets.
+type TargetsMiss {
+  // No such key, or one holding an empty list — which states no target the way
+  // an absent key does, so it cannot narrow a package to no target at all.
+  TargetsAbsent
+  // A key that is there and graded cannot read whole: not an array, or holding
+  // an entry that is not a target it knows.
+  TargetsUnreadable
+}
+
+// The `[tools.graded].targets` list, when every entry of it names a target
+// graded knows.
+fn declared_targets(
+  toml: Dict(String, tom.Toml),
+) -> Result(Set(String), TargetsMiss) {
+  use entries <- result.try(
+    case tom.get_array(toml, ["tools", "graded", "targets"]) {
+      Ok(entries) -> Ok(entries)
+      Error(tom.NotFound(..)) -> Error(TargetsAbsent)
+      Error(_) -> Error(TargetsUnreadable)
+    },
+  )
+  use names <- result.try(
+    list.try_map(entries, fn(entry) {
+      case entry {
+        tom.String(name) -> known_target(name)
+        _ -> Error(Nil)
+      }
+    })
+    |> result.replace_error(TargetsUnreadable),
+  )
+  case names {
+    [] -> Error(TargetsAbsent)
+    _ -> Ok(set.from_list(names))
+  }
+}
+
+// `name`, when it is one of the targets a Gleam package can be built for. The
+// one place a target name is recognised, so the `target` field and the
+// `[tools.graded].targets` list cannot come to know different vocabularies.
+fn known_target(name: String) -> Result(String, Nil) {
+  use <- bool.guard(
+    when: !set.contains(types.every_target(), name),
+    return: Error(Nil),
+  )
+  Ok(name)
 }
 
 // Build a config using all defaults for a known package name. Useful in
 // tests where there's no real `gleam.toml` to read.
+//
+// Every target, under both readings: this stands in for a package with no
+// `gleam.toml` at all, where there is no field whose absence the compiler's
+// default could stand in for.
 pub fn defaults_for(package_name: String) -> GradedConfig {
   GradedConfig(
     package_name:,
     spec_file: default_spec_file(package_name),
     cache_dir: default_cache_dir(),
     version: None,
-    targets: types.every_target(),
+    targets: types.all_targets(),
   )
 }
 

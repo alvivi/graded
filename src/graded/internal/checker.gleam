@@ -24,7 +24,7 @@ import graded/internal/types.{
   type LookupOrigin, type ParamBound, type QualifiedName, type ResolvedCall,
   type UnknownReason, type Violation, type Warning, CallExplanation,
   EffectAnnotation, Effects, FieldNotAnnotated, NoKnownEffects, ParamBound,
-  QualifiedName, ReceiverTypeUnresolved, TUnion, TVar, TypeLine,
+  QualifiedName, ReceiverTypeUnresolved, TUnion, TVar, TypeLine, UnbuiltExternal,
   UndeclaredExternal, UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning,
   UnresolvedFieldValue, UntraceableArgument, UntraceableProducer,
   UntraceableReceiver, UntrackedEffectWarning, Violation,
@@ -48,7 +48,7 @@ pub fn check(
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> #(List(Violation), List(Warning)) {
   let function_map = build_function_map(module)
   let ModuleContext(context:, cache:) =
@@ -96,7 +96,7 @@ pub fn infer(
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> List(EffectAnnotation) {
   infer_with_returns(
     module,
@@ -125,7 +125,7 @@ pub fn infer_with_returns(
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> #(
   List(EffectAnnotation),
   dict.Dict(String, EffectTerm),
@@ -155,7 +155,7 @@ pub fn infer_with_returns(
   // written into the spec at all.
   let value_channel_functions =
     list.filter(public_functions, fn(definition) {
-      !extract.is_foreign_definition(definition, package_targets)
+      !foreign_definition(definition, package_targets)
     })
 
   // Returned operators of public functions that return a function — recorded so
@@ -233,7 +233,7 @@ pub fn infer_with_returns(
       // A bodyless `@external` is opaque FFI — conservatively `[Unknown]`, not
       // the `[]` its empty body would otherwise infer.
       let #(effects_term, memo) = case
-        extract.is_foreign_definition(definition, package_targets)
+        foreign_definition(definition, package_targets)
       {
         True -> #(effect_term.unknown(), memo)
         False -> {
@@ -311,7 +311,7 @@ pub fn explain(
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> Result(List(ExplainedBlock), Nil) {
   // The lookup comes before the rest of the module analysis, so a name this
   // module does not define costs one map build rather than a whole-module walk.
@@ -424,16 +424,18 @@ pub type ExplainedBlock {
 // times.
 //
 // Foreign code is answered by what declares it rather than by a body: an
-// `@external` has none graded may weigh, and a `external effects <module>` line
-// over a project module suppresses inference over its bodies for every caller,
-// so weighing one here would contradict what those callers are charged. Whether
-// the foreign code matches its declaration is the FFI author's to establish;
-// what graded weighs is the budget against the declaration.
+// `@external` has none graded may weigh. Whether the foreign code matches its
+// declaration is the FFI author's to establish; what graded weighs is the budget
+// against the declaration.
 //
-// The exception is a Gleam fallback body an `@external` reaches on a target it
-// declares no implementation for: that is ordinary Gleam that runs, so it is
-// walked *as well*, and the budget covers both what the declaration states and
-// what the fallback does.
+// A body graded *can* read is always weighed, and where a declaration answers
+// for it too, weighed *as well* — the budget then covers both what the
+// declaration states and what the body does. Two ways that happens: a Gleam
+// fallback an `@external` reaches on a target it declares no implementation for,
+// and ordinary Gleam under a module-level `external effects <module>` line. The
+// line still answers for every caller; here it answers beside the body rather
+// than instead of it, so a body over its own budget cannot pass by being
+// declared.
 fn contributors(
   definition: Definition(Function),
   bounds: List(ParamBound),
@@ -456,20 +458,16 @@ fn contributors(
   let #(walked, body_term, effective, body, memo) = case
     standalone_declaration(declaration, definition, context.package_targets)
   {
-    // Which of the two standalone cases this is decides whether the body's
-    // *references* are still reported: an `@external` reaching here covers
-    // every target it is compiled for, so its Gleam body is text nothing runs.
-    // Anything else here is ordinary Gleam a declaration answers *for* — its
-    // body runs whatever the declaration says.
-    Some(_declaration) -> {
-      let body = case
-        extract.is_foreign_definition(definition, context.package_targets)
-      {
-        True -> BodyIsDeadText
-        False -> BodySuppressed
-      }
-      #([], effect_term.pure(), bounds, body, memo)
-    }
+    // An `@external` reaching here covers every target it is compiled for, so
+    // the Gleam body beside it — if it has one at all — is text nothing runs,
+    // and neither its effects nor the references it passes are reported.
+    Some(_declaration) -> #(
+      [],
+      effect_term.pure(),
+      bounds,
+      BodyIsDeadText,
+      memo,
+    )
     None -> {
       let effective = effective_bounds(bounds, fn_typed_params)
       // Where this body is an `@external`'s running fallback, it is walked on
@@ -546,22 +544,14 @@ type Contribution {
   )
 }
 
-// What the walk did with a function's Gleam body, and where it walked nothing,
-// why. Two questions that used to be one flag: whether the body's effects were
-// weighed, and whether that body is code that runs at all.
-//
-// They come apart on a declaration that answers for ordinary Gleam. The effects
-// are the declaration's — every caller is charged those and nothing else — but
-// the body still runs, so what it does with the values it holds is still real.
+// What the walk did with a function's Gleam body: weighed it, or left it
+// unweighed because nothing runs it.
 type BodyStanding {
   // Walked: its contributors are among the explanations.
   BodyWalked
   // An `@external` covering every target it is compiled for. The Gleam body is
   // there, and nothing ever runs it.
   BodyIsDeadText
-  // Ordinary Gleam a declaration answers for — a function under a module-level
-  // `external effects <module>` line. Not weighed, but run.
-  BodySuppressed
 }
 
 // What stands in for a body graded does not weigh: the declaration that answers
@@ -577,23 +567,47 @@ fn declaration_explanation(
   module_path: String,
   knowledge_base: KnowledgeBase,
   definition: Definition(Function),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> option.Option(CallExplanation) {
   let qualified =
     QualifiedName(module: module_path, function: definition.definition.name)
   let declared = declaration_resolution(knowledge_base, qualified)
   use <- bool.guard(
-    when: !extract.is_foreign_definition(definition, package_targets)
+    when: !foreign_definition(definition, package_targets)
       && option.is_none(declared),
     return: None,
   )
-  // Keyed by the external's own qualified name and spanning its declaration.
-  // The resolution a same-module call into it makes, so the two can't disagree
-  // about what the external does — including the `[Unknown]` an `@external`
-  // nothing declares carries.
-  let resolution = option.unwrap(declared, undeclared_resolution())
+  // Keyed by the external's own qualified name and spanning its declaration. Read
+  // through the charge a same-module call into it is resolved through, so the two
+  // can't disagree about what the external does — including the `[Unknown]` an
+  // `@external` nothing declares carries, and the `[Unknown]` one declared for a
+  // target this build never compiles collapses to.
+  let ForeignCharge(resolution:, standing:) =
+    foreign_charge(knowledge_base, qualified)
+  use resolution <- option.then(case standing {
+    // The declaration's own term, not the charge's: a Gleam fallback body in
+    // reach beside it is walked, and reaches this line as the contributors
+    // beside it rather than unioned into it.
+    effects.DeclarationCharged ->
+      Some(option.unwrap(declared, undeclared_resolution()))
+    // Nothing this build compiles implements the name, so the line states what
+    // every caller of it is charged and says why.
+    effects.NothingImplementsName -> Some(resolution)
+    // The Gleam body running in the declaration's place is walked beside this
+    // line and its contributors state the whole charge. A line for the
+    // declaration as well would weigh against this function's own budget effects
+    // no caller of it pays.
+    effects.FallbackAnswersInstead -> None
+  })
+  // Which of the two the line is: foreign code the declaration answers for, or
+  // ordinary Gleam whose callers it answers for. Only the wording differs — the
+  // effects, the source and the total are the same either way.
+  let kind = case foreign_definition(definition, package_targets) {
+    True -> ExternalDeclaration(types.dotted_name(qualified))
+    False -> CallerDeclaration(types.dotted_name(qualified))
+  }
   Some(CallExplanation(
-    call: sentinel_name(ExternalDeclaration(types.dotted_name(qualified))),
+    call: sentinel_name(kind),
     span: definition.definition.location,
     actual: effect_term.to_effect_set(resolution.term),
     reason: resolution.reason,
@@ -606,19 +620,46 @@ fn declaration_explanation(
 
 // Whether a declaration answers for the whole function, so nothing of the body
 // is walked. One rule, read by `explain`'s fast path and by the walk itself, so
-// the two can't disagree about which functions have a body worth weighing: an
-// `@external` whose Gleam fallback runs is walked *as well as* declared, and so
-// is not standalone.
+// the two can't disagree about which functions have a body worth weighing.
+//
+// Only foreign code with no Gleam of its own that runs. Two ways a declaration
+// falls short of the whole function, and a body is walked *as well as* declared:
+//
+// - An `@external` whose Gleam fallback runs on some target it is compiled for.
+// - Ordinary Gleam a module-level `external effects <module>` line covers. The
+//   line answers for every *caller* of the function; the body is visible Gleam
+//   that runs, and a `check` line on that function is a budget for what the
+//   function does. No line an author writes over their own package's source
+//   silences a body graded can read — the per-function form naming one is
+//   rejected as declaring nothing, and this is the module-level form's half of
+//   that rule.
 fn standalone_declaration(
   declaration: option.Option(CallExplanation),
   definition: Definition(Function),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> option.Option(CallExplanation) {
   use <- bool.guard(
-    when: runs_fallback_body(definition, package_targets),
+    when: has_weighable_body(definition, package_targets),
     return: None,
   )
   declaration
+}
+
+// Whether this function has Gleam that graded can weigh — the question that
+// decides whether a declaration answers alone, stated once so no caller has to
+// assemble it from the predicates underneath.
+//
+// Ordinary Gleam always does: its body is the implementation, whatever else
+// declares it. Foreign code does only where its Gleam fallback runs, on a target
+// the build compiles and its declaration leaves uncovered — the reading the
+// knowledge base charges callers by, so the function's own budget covers what
+// every caller pays and nothing more.
+fn has_weighable_body(
+  definition: Definition(Function),
+  package_targets: types.PackageTargets,
+) -> Bool {
+  !foreign_definition(definition, package_targets)
+  || runs_fallback_body(definition, package_targets)
 }
 
 // What the knowledge base says about foreign code: the declaration that answers
@@ -633,29 +674,66 @@ fn foreign_resolution(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Resolution {
+  foreign_charge(knowledge_base, name).resolution
+}
+
+// The same, with the standing the charge was assembled under: what a channel
+// reads when it carries a term of its own — a wired field's, or the external's
+// own line — and needs to know which halves that term was made of.
+type ForeignCharge {
+  ForeignCharge(resolution: Resolution, standing: effects.DeclarationStanding)
+}
+
+// One derivation behind every channel that answers "what does this name charge,
+// and from where": a call site, the external's own `check`/`why` line, a local
+// call into a declared sibling, and a value wired into a record field. Each
+// takes what it needs from the one value, so no two of them can charge one name
+// differently or name a different cause for the same charge.
+fn foreign_charge(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> ForeignCharge {
   let declared =
     option.unwrap(
       declaration_resolution(knowledge_base, name),
       undeclared_resolution(),
     )
-  // What a *caller* pays, which the declaration alone understates wherever a
-  // Gleam fallback body runs: that body is ordinary code, and composition is
-  // union. The external's own `check` line already covers both halves by
-  // walking the body beside the declaration; this is how every other caller
-  // comes to the same total.
-  // What the declaration accounts for, where a body running on narrower targets
-  // than the package's reaches it at all. Where it doesn't, the Gleam fallback
-  // is the whole answer, and neither the declaration's source nor the
-  // `[Unknown]` an undeclared one carries describes any part of the charge.
-  let declared = case effects.declaration_answers(knowledge_base, name) {
-    True -> declared
-    False -> Resolution(..declared, reason: None, origin: None)
-  }
-  Resolution(
-    ..declared,
-    term: effects.with_running_fallback(knowledge_base, name, declared.term),
-    fallback: effects.fallback_contribution(knowledge_base, name),
+  // What a *caller* pays, in the halves it is made of: the declaration where the
+  // walk's targets reach it, and the Gleam fallback body beside it where they
+  // reach that — that body is ordinary code, and composition is union. The
+  // external's own `check` line covers both halves by walking the body beside
+  // the declaration; this is how every other caller comes to the same total.
+  let charge = effects.declared_charge(knowledge_base, name)
+  let declared = standing_provenance(declared, charge.declaration)
+  ForeignCharge(
+    resolution: Resolution(
+      ..declared,
+      term: charge.term,
+      fallback: charge.fallback,
+    ),
+    standing: charge.declaration,
   )
+}
+
+// What a declaration's standing leaves of the provenance a reader would quote
+// beside the charge.
+//
+// Out of reach, neither the declaration's source nor the `[Unknown]` an
+// undeclared external carries describes any part of what is charged: the
+// fallback contribution beside the term carries the story where a body runs, and
+// the unbuilt-declaration reason carries it where none does. Applied wherever a
+// channel states a cause, so one name reads the same on all of them.
+fn standing_provenance(
+  resolution: Resolution,
+  standing: effects.DeclarationStanding,
+) -> Resolution {
+  case standing {
+    effects.DeclarationCharged -> resolution
+    effects.FallbackAnswersInstead ->
+      Resolution(..resolution, reason: None, origin: None)
+    effects.NothingImplementsName ->
+      Resolution(..resolution, reason: Some(UnbuiltExternal), origin: None)
+  }
 }
 
 // What foreign code nothing declares carries: the conservative `[Unknown]`, and
@@ -806,11 +884,11 @@ pub fn fallback_effects(
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
   let targets =
     list.filter(module.functions, fn(definition) {
-      extract.is_foreign_definition(definition, package_targets)
+      foreign_definition(definition, package_targets)
       && runs_fallback_body(definition, package_targets)
     })
   use <- bool.guard(when: targets == [], return: dict.new())
@@ -977,7 +1055,7 @@ type FallbackWalk {
     girard_fn_typed: dict.Dict(String, Set(String)),
     // What decides the targets each member's body runs on, and so the targets
     // every name that body calls is read on.
-    package_targets: Set(String),
+    package_targets: types.PackageTargets,
   )
 }
 
@@ -1039,7 +1117,7 @@ fn walk_component(
   // member never runs on. A module's fallbacks nearly always share one set, so
   // grouping costs the sharing nothing in practice.
   walk.targets
-  |> list.group(body_targets(_, walk.package_targets))
+  |> list.group(body_targets(_, types.declaration_targets(walk.package_targets)))
   |> dict.to_list
   |> list.flat_map(fn(group) {
     let #(active, definitions) = group
@@ -1122,14 +1200,20 @@ fn module_context(
   module_path: String,
   knowledge_base: KnowledgeBase,
   girard_fn_typed: dict.Dict(String, Set(String)),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> ModuleContext {
   let context =
     extract.build_import_context(module)
     |> extract.with_module_path(module_path)
     |> extract.with_package_targets(package_targets)
-    |> extract.with_factories(extract.factory_map(module, package_targets))
-    |> extract.with_updates(extract.update_map(module, package_targets))
+    |> extract.with_factories(extract.factory_map(
+      module,
+      types.declaration_targets(package_targets),
+    ))
+    |> extract.with_updates(extract.update_map(
+      module,
+      types.declaration_targets(package_targets),
+    ))
     |> extract.with_cross_factories(effects.factories(knowledge_base))
     |> extract.with_cross_updates(effects.updates(knowledge_base))
     |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(
@@ -1265,7 +1349,7 @@ fn local_function_field_effect(
   case dict.get(function_map, name.function) {
     Error(Nil) -> #(None, memo)
     Ok(definition) ->
-      case extract.is_foreign_definition(definition, context.package_targets) {
+      case foreign_definition(definition, context.package_targets) {
         True -> #(None, memo)
         False -> {
           let #(term, memo) =
@@ -1317,6 +1401,8 @@ const local_sentinel = "<local>"
 
 const external_sentinel = "<external>"
 
+const declared_sentinel = "<declared>"
+
 // The sentinel for a kind that carries no name of its own, and the placeholder
 // payloads of the kinds whose identity is the sentinel module alone.
 const unclassified_sentinel = "<call>"
@@ -1351,6 +1437,14 @@ pub type CallKind {
   // than that it calls one. `name` is the declaration's own dotted name, which
   // identifies the entry — the prose states it from the enclosing function.
   ExternalDeclaration(name: String)
+  // The declaration that answers for an ordinary Gleam function of this
+  // package: a module-level `external effects <module>` line, which is what its
+  // callers pay whatever the body beside it does. Separate from
+  // `ExternalDeclaration` because the function is not foreign code — its Gleam
+  // body is right there and walked beside this line — and calling it an external
+  // contradicted the rule that rejects the per-function form over such a
+  // function for exactly that reason.
+  CallerDeclaration(name: String)
   // An application of an inline function value: a pipe target (`x |> fn(f) {
   // .. }`) or an immediately-invoked closure / `case` of functions.
   InlineFunctionCall
@@ -1379,6 +1473,7 @@ fn sentinel_name(kind: CallKind) -> QualifiedName {
     ReturnedOperatorCall(producer:) ->
       QualifiedName(returned_sentinel, types.dotted_name(producer))
     ExternalDeclaration(name:) -> QualifiedName(external_sentinel, name)
+    CallerDeclaration(name:) -> QualifiedName(declared_sentinel, name)
     InlineFunctionCall -> QualifiedName(pipe_sentinel, operator_payload)
     LetBoundValueCall -> QualifiedName(closure_sentinel, applied_payload)
     ComputedValueCall -> QualifiedName(apply_sentinel, unknown_payload)
@@ -1397,6 +1492,7 @@ pub fn call_kind(call: QualifiedName) -> CallKind {
     module if module == returned_sentinel ->
       returned_operator_kind(call.function)
     module if module == external_sentinel -> ExternalDeclaration(call.function)
+    module if module == declared_sentinel -> CallerDeclaration(call.function)
     module if module == pipe_sentinel -> InlineFunctionCall
     module if module == apply_sentinel -> ComputedValueCall
     module if module == closure_sentinel -> LetBoundValueCall
@@ -1471,6 +1567,10 @@ fn plain_action(kind: CallKind) -> String {
     // Not the call's name: the enclosing function *is* this external, and the
     // line already leads with that function's name.
     ExternalDeclaration(..) -> "is an external"
+    // Ordinary Gleam, so the phrase says what the declaration does rather than
+    // what the function is: it governs the callers, and the body walked beside
+    // it is the rest of the block.
+    CallerDeclaration(..) -> "is declared for its callers"
     InlineFunctionCall -> "calls an inline function"
     LetBoundValueCall -> "calls a let-bound function value"
     ComputedValueCall -> "calls a computed function value"
@@ -1494,6 +1594,8 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
       case reason {
         NoKnownEffects -> ", which no spec, external, or catalog declares,"
         UndeclaredExternal -> ", an external with no declared effects,"
+        UnbuiltExternal ->
+          ", an external declared only for a target this build does not compile,"
         UntraceableArgument -> untraceable_argument_clause
         FieldNotAnnotated(..)
         | ReceiverTypeUnresolved
@@ -1515,6 +1617,10 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         // The value wired into the field is foreign code nothing declares, so
         // the field call says what a direct call to that name says.
         UndeclaredExternal -> ", wired to an external with no declared effects,"
+        // The value wired into the field is foreign code this build never
+        // compiles, so the field call says what a direct call to that name says.
+        UnbuiltExternal ->
+          ", wired to an external declared only for a target this build does not compile,"
         NoKnownEffects | UntraceableProducer -> ""
       }
     // An undeclared external is the one reason worth stating: nothing said what
@@ -1522,6 +1628,8 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
     ExternalDeclaration(..) ->
       case reason {
         UndeclaredExternal | NoKnownEffects -> " with no declared effects,"
+        UnbuiltExternal ->
+          " declared only for a target this build does not compile,"
         FieldNotAnnotated(..)
         | ReceiverTypeUnresolved
         | UntraceableReceiver
@@ -1534,6 +1642,7 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         UntraceableProducer -> ", whose producer could not be resolved,"
         NoKnownEffects
         | UndeclaredExternal
+        | UnbuiltExternal
         | FieldNotAnnotated(..)
         | ReceiverTypeUnresolved
         | UntraceableReceiver
@@ -1541,8 +1650,12 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         | UntraceableArgument -> ""
       }
     // A computed receiver keeps its wording throughout — "on a computed value"
-    // already states the untraceability every field reason would repeat.
+    // already states the untraceability every field reason would repeat. A
+    // declaration over ordinary Gleam carries no reason at all: the line that
+    // answered is what makes it a contributor, and a name nothing declares is
+    // never one.
     ParameterCall(..)
+    | CallerDeclaration(..)
     | ComputedFieldCall(..)
     | UnresolvedLocalCall(..)
     | InlineFunctionCall
@@ -1960,8 +2073,7 @@ pub fn build_scc_ids(
         |> set.union(typeinfo.fn_typed_params(girard_fn_typed, name))
         |> set.is_empty()
       case
-        first_order
-        && !extract.is_foreign_definition(definition, context.package_targets)
+        first_order && !foreign_definition(definition, context.package_targets)
       {
         True -> Error(Nil)
         False -> Ok(name)
@@ -2130,10 +2242,10 @@ type CollectedCall {
 fn local_native_definition(
   function_map: dict.Dict(String, Definition(Function)),
   function: String,
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> Result(Definition(Function), Nil) {
   use definition <- result.try(dict.get(function_map, function))
-  case extract.is_foreign_definition(definition, package_targets) {
+  case foreign_definition(definition, package_targets) {
     True -> Error(Nil)
     False -> Ok(definition)
   }
@@ -2306,7 +2418,7 @@ fn body_walk(
   knowledge_base: KnowledgeBase,
   memo: Memo,
   definition: Definition(Function),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> #(KnowledgeBase, Memo) {
   let knowledge_base =
     body_knowledge_base(knowledge_base, definition, package_targets)
@@ -2367,10 +2479,10 @@ fn recursion_edges(
 pub fn foreign_functions(
   module: Module,
   module_path: String,
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> dict.Dict(QualifiedName, types.ForeignFunction) {
   module.functions
-  |> list.filter(extract.is_foreign_definition(_, package_targets))
+  |> list.filter(foreign_definition(_, package_targets))
   |> list.map(fn(definition) {
     let name =
       QualifiedName(module: module_path, function: definition.definition.name)
@@ -2378,7 +2490,10 @@ pub fn foreign_functions(
       name,
       types.ForeignFunction(
         runs_fallback_body: runs_fallback_body(definition, package_targets),
-        compiled_targets: extract.compiled_targets(definition, package_targets),
+        compiled_targets: extract.compiled_targets(
+          definition,
+          types.declaration_targets(package_targets),
+        ),
         declared_targets: extract.declared_targets(definition),
       ),
     )
@@ -2401,7 +2516,7 @@ pub fn foreign_functions(
 pub fn dependency_foreign_functions(
   module: Module,
   module_path: String,
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> dict.Dict(QualifiedName, types.ForeignFunction) {
   module.functions
   |> list.filter(extract.declares_external)
@@ -2412,7 +2527,10 @@ pub fn dependency_foreign_functions(
       name,
       types.ForeignFunction(
         runs_fallback_body: has_running_fallback(definition, package_targets),
-        compiled_targets: extract.compiled_targets(definition, package_targets),
+        compiled_targets: extract.compiled_targets(
+          definition,
+          types.declaration_targets(package_targets),
+        ),
         declared_targets: extract.declared_targets(definition),
       ),
     )
@@ -2426,11 +2544,11 @@ pub fn dependency_foreign_functions(
 // body sitting in plain sight.
 pub fn native_function_names(
   module: Module,
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> Set(String) {
   module.functions
   |> list.filter(fn(definition) {
-    !extract.is_foreign_definition(definition, package_targets)
+    !foreign_definition(definition, package_targets)
   })
   |> list.map(fn(definition) { definition.definition.name })
   |> set.from_list()
@@ -2456,6 +2574,20 @@ pub fn function_visibility(
   |> dict.from_list()
 }
 
+// Whether a definition's implementation is foreign code: an `@external` the
+// build compiles. Read on the targets a *declaration* is read on, the widest of
+// the two — reclassifying an external as ordinary Gleam drops what it declares,
+// and an assumption about the build may not do that.
+fn foreign_definition(
+  definition: Definition(Function),
+  package_targets: types.PackageTargets,
+) -> Bool {
+  extract.is_foreign_definition(
+    definition,
+    types.declaration_targets(package_targets),
+  )
+}
+
 // Whether an `@external`'s Gleam fallback body is code that runs: it has one,
 // and some target the function is compiled for has no foreign implementation
 // declared for it. That body is ordinary Gleam — nothing else checks it, since
@@ -2463,10 +2595,10 @@ pub fn function_visibility(
 // alongside the declaration rather than instead of it.
 fn runs_fallback_body(
   definition: Definition(Function),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> Bool {
   use <- bool.guard(
-    when: !extract.is_foreign_definition(definition, package_targets),
+    when: !foreign_definition(definition, package_targets),
     return: False,
   )
   has_running_fallback(definition, package_targets)
@@ -2477,12 +2609,21 @@ fn runs_fallback_body(
 // this-package classification in front of it — a dependency's declaration the
 // consumer's targets exclude is not foreign code *to the consumer*, and its body
 // still runs where that declaration does not reach.
+//
+// Read on the targets the build compiles, the narrower of the two: this decision
+// only ever *adds* a body's effects to what a declaration already states, so
+// where the package names no target the compiler's default stands in and an
+// `@external(erlang, …)` beside a Gleam body is answered by its declaration
+// alone. The same reading the knowledge base charges callers by, so the
+// function's own budget covers what every caller pays and nothing more.
 fn has_running_fallback(
   definition: Definition(Function),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> Bool {
   use <- bool.guard(when: definition.definition.body == [], return: False)
-  body_targets(definition, package_targets) |> set.is_empty |> bool.negate
+  body_targets(definition, types.build_targets(package_targets))
+  |> set.is_empty
+  |> bool.negate
 }
 
 // The knowledge base a definition's own body is walked against, narrowed to the
@@ -2497,28 +2638,32 @@ fn has_running_fallback(
 fn body_knowledge_base(
   knowledge_base: KnowledgeBase,
   definition: Definition(Function),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
   effects.with_active_targets(
     knowledge_base,
-    option.Some(body_targets(definition, package_targets)),
+    option.Some(body_targets(
+      definition,
+      types.declaration_targets(package_targets),
+    )),
   )
 }
 
-// The targets a definition's body runs on: the ones it is compiled for, less
-// those its own `@external` attributes hand to foreign code. What the body is
-// walked *as* — a call it makes is reached from these targets and no others, so
-// this is the set every name it resolves has to be read on.
+// The targets a definition's body runs on, out of the `targets` its package is
+// read on: the ones it is compiled for, less those its own `@external`
+// attributes hand to foreign code. What the body is walked *as* — a call it
+// makes is reached from these targets and no others, so this is the set every
+// name it resolves has to be read on.
 //
 // For an ordinary function the subtraction removes nothing and the answer is
 // simply what it is compiled for; for an `@external` with a Gleam body it is
 // where that fallback runs.
 fn body_targets(
   definition: Definition(Function),
-  package_targets: Set(String),
+  targets: Set(String),
 ) -> Set(String) {
   set.difference(
-    extract.compiled_targets(definition, package_targets),
+    extract.compiled_targets(definition, targets),
     extract.declared_targets(definition),
   )
 }
@@ -2593,17 +2738,14 @@ fn check_annotation(
 
       // Warn about function references passed as values with known non-pure
       // effects. A reference sits in the Gleam body, so the warning turns on
-      // whether that body is code that runs — not on whether its effects were
-      // weighed. An `@external` covering every compiled target keeps its body
-      // as dead text, and nothing it references is ever passed anywhere. A
-      // function under a module-level `external effects <module>` line is
-      // ordinary Gleam whose effects the declaration answers for: the body
-      // still runs, and a reference it passes is still untracked.
+      // whether that body is code that runs: an `@external` covering every
+      // compiled target keeps its body as dead text, and nothing it references
+      // is ever passed anywhere.
       let extract_result =
         extract.extract_function_calls(function_definition.definition, context)
       let reference_warnings = case contribution.body {
         BodyIsDeadText -> []
-        BodyWalked | BodySuppressed ->
+        BodyWalked ->
           collect_reference_warnings(
             annotation.function,
             extract_result.references,
@@ -3564,10 +3706,7 @@ fn local_substitution_bounds(
 ) -> List(ParamBound) {
   let syntactic = fn() { local_polymorphic_bounds(local_definition.definition) }
   use <- bool.lazy_guard(
-    when: !extract.is_foreign_definition(
-      local_definition,
-      context.package_targets,
-    ),
+    when: !foreign_definition(local_definition, context.package_targets),
     return: syntactic,
   )
   case
@@ -5350,7 +5489,7 @@ fn lift_local_function(
   // annotation, and without its binder the summary's variable stays free and
   // the application goes stuck.
   use <- bool.lazy_guard(
-    when: extract.is_foreign_definition(definition, context.package_targets),
+    when: foreign_definition(definition, context.package_targets),
     return: fn() {
       let qualified = QualifiedName(module: context.module_path, function: name)
       let declared = foreign_resolution(knowledge_base, qualified).term
@@ -5640,31 +5779,27 @@ fn resolve_unknown_local(
         sentinel_call(UnresolvedLocalCall(local_call.function), local_call.span)
       #([plain_call(synthetic_call, effect_term.unknown())], memo)
     }
-    Ok(local_definition) ->
-      case
-        extract.is_foreign_definition(local_definition, context.package_targets)
-      {
-        // A same-module call into an `@external` has no body graded may weigh, so
-        // it is charged what declares the foreign code — qualifying the bare name
-        // with the current module. A declaration wins; without one (or when the
-        // module is unknown) it falls back to the conservative `[Unknown]`, not
-        // the `[]` an empty or fallback body would yield.
-        True -> {
-          let qualified =
-            QualifiedName(
-              module: context.module_path,
-              function: local_call.function,
-            )
-          #(
-            [
-              CollectedCall(
-                call: types.ResolvedCall(name: qualified, span: local_call.span),
-                resolution: foreign_resolution(knowledge_base, qualified),
-              ),
-            ],
-            memo,
-          )
-        }
+    Ok(local_definition) -> {
+      let qualified =
+        QualifiedName(
+          module: context.module_path,
+          function: local_call.function,
+        )
+      case declares_for_callers(local_definition, context, knowledge_base) {
+        // A call into a name a declaration answers for is charged what that
+        // declaration states — qualifying the bare name with the current module.
+        // A declaration wins; without one (or when the module is unknown) it
+        // falls back to the conservative `[Unknown]`, not the `[]` an empty or
+        // fallback body would yield.
+        True -> #(
+          [
+            CollectedCall(
+              call: types.ResolvedCall(name: qualified, span: local_call.span),
+              resolution: foreign_resolution(knowledge_base, qualified),
+            ),
+          ],
+          memo,
+        )
         // A genuine same-module body: memoize its transitive analysis,
         // keyed by callee + same-SCC ancestors (see `memo_key`). The cached
         // list holds in-body call spans, which are call-site-independent, so
@@ -5683,7 +5818,32 @@ fn resolve_unknown_local(
             memo,
           )
       }
+    }
   }
+}
+
+// Whether a declaration answers for every caller of a same-module name, so a
+// local call is charged it rather than the body beside it.
+//
+// An `@external` has no body graded may weigh at all. Ordinary Gleam under a
+// module-level `external effects <module>` line has one, and the line still
+// answers for its callers — the body is weighed against that function's own
+// budget and against nothing else. Read here so a sibling and a cross-module
+// caller, which resolves through the knowledge base, pay the same name the same
+// set.
+fn declares_for_callers(
+  local_definition: Definition(Function),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+) -> Bool {
+  foreign_definition(local_definition, context.package_targets)
+  || option.is_some(declaration_resolution(
+    knowledge_base,
+    QualifiedName(
+      module: context.module_path,
+      function: local_definition.definition.name,
+    ),
+  ))
 }
 
 // Resolve a same-module non-external call, memoized.
@@ -6196,9 +6356,19 @@ fn resolve_proven_field(
   // alone. Read off the wired value, which is what the field's effect came
   // from.
   let wired = field_value_function(value, context.module_path, module_functions)
-  let wired_fallback = case wired {
-    Some(name) -> effects.fallback_contribution(knowledge_base, name)
+  // The same charge a direct call to the wired name is resolved through, so the
+  // field call reports the halves and the cause that call reports: the fallback
+  // body apart from the declaration, and — where this build reaches no part of
+  // the declaration — the reason that says so instead of a source the
+  // `[Unknown]` beside it has ruled out.
+  let wired_charge = option.map(wired, foreign_charge(knowledge_base, _))
+  let wired_fallback = case wired_charge {
+    Some(ForeignCharge(resolution:, ..)) -> resolution.fallback
     None -> None
+  }
+  let wired_standing = case wired_charge {
+    Some(ForeignCharge(standing:, ..)) -> standing
+    None -> effects.DeclarationCharged
   }
   // An external nothing declares is answered by an entry the lookup mints to
   // carry its running fallback, whose origin no source ever claimed. A direct
@@ -6212,11 +6382,14 @@ fn resolve_proven_field(
   let resolution = case origin, undeclared {
     _, True ->
       substituted(
-        Resolution(
-          term: field_effect.effects,
-          reason: Some(UndeclaredExternal),
-          origin: None,
-          fallback: wired_fallback,
+        standing_provenance(
+          Resolution(
+            term: field_effect.effects,
+            reason: Some(UndeclaredExternal),
+            origin: None,
+            fallback: wired_fallback,
+          ),
+          wired_standing,
         ),
         term,
       )
@@ -6224,11 +6397,14 @@ fn resolve_proven_field(
     // not state came from applying this call's arguments.
     Some(_), False ->
       substituted(
-        Resolution(
-          term: field_effect.effects,
-          reason: None,
-          origin:,
-          fallback: wired_fallback,
+        standing_provenance(
+          Resolution(
+            term: field_effect.effects,
+            reason: None,
+            origin:,
+            fallback: wired_fallback,
+          ),
+          wired_standing,
         ),
         term,
       )

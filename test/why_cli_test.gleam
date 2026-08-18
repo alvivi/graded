@@ -261,10 +261,16 @@ pub fn an_external_reads_differently_from_a_call_into_it_test() {
 
 pub fn a_module_external_explains_an_ordinary_function_test() {
   // An `external effects <module>` line over a project module declares what
-  // every function under it does, and suppresses inference over their bodies for
-  // every caller. So it answers here too: walking this body would report the
-  // `[]` it contains and contradict the `[Disk]` a caller — and `graded effect` —
-  // is charged for the same name.
+  // every function under it does, and answers for every caller of them. So it
+  // answers here twice: for `helper` itself, and for the sibling `helper` calls
+  // — a same-module call pays the declared `[Disk]` exactly as a call from any
+  // other module does, and reading the sibling's body instead charged one name
+  // two sets depending on where it was called from.
+  //
+  // Named as what it is. `helper` is ordinary Gleam, and calling it an external
+  // contradicted the rule that rejects a per-function `external effects` line
+  // over a function whose body is right there: the line governs callers, and the
+  // wording says so.
   let root = "build/why_module_external"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
@@ -279,14 +285,46 @@ pub fn a_module_external_explains_an_ordinary_function_test() {
   |> lines
   |> should.equal([
     "probe.helper has effects [Disk]",
-    "  is an external with effects [Disk] (from a module-level external in your spec)",
+    "  is declared for its callers with effects [Disk] (from a module-level external in your spec)",
+    "  calls probe.quiet with effects [Disk] (from a module-level external in your spec)",
   ])
+  output |> string.contains("is an external") |> should.be_false()
   // The one answer, in each command's own words.
   let assert Ok(effect) =
     graded.run_effect_formatted(root, "probe.helper", answer.Prose)
   effect
   |> string.contains("probe.helper has effects [Disk]")
   |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_module_external_violation_uses_the_same_wording_test() {
+  // One vocabulary, as for every other contributor: the clause `check` prints
+  // when the declaration blows the function's own budget is the line `why`
+  // prints for it, phrase for phrase.
+  let root = "build/why_module_external_violation"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects probe : [Disk]\ncheck probe.helper : []\n",
+    ),
+    #("probe.gleam", "pub fn helper() -> Nil {\n  Nil\n}\n"),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(result) =
+    list.find(results, fn(r) { r.file == root <> "/probe.gleam" })
+  let assert [violation] = result.violations
+  let rendered = checker.format_violation(result.file, violation)
+  rendered
+  |> should.equal(
+    root
+    <> "/probe.gleam: helper is declared for its callers with effects [Disk]"
+    <> " (from a module-level external in your spec) but declared []",
+  )
+  let assert Ok(output) = graded.run_why(root, "probe.helper")
+  let assert [_header, _declaration, line] = lines(output)
+  string.contains(rendered, string.trim(line)) |> should.be_true()
   support.cleanup(root)
 }
 

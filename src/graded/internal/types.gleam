@@ -27,14 +27,64 @@ pub fn dotted_name(name: QualifiedName) -> String {
 
 // Compilation targets
 //
-// The targets a Gleam package can be built for, and the widest reading of them.
+// The targets a Gleam package is analysed on. Two readings of them, because one
+// of the two sources they come from is an assumption rather than a statement.
 
-// Every target a Gleam package can be compiled for. What a package that names
-// none in its `gleam.toml`, or whose config could not be read, is taken to be
-// built for — the widest reading, which charges a declaration and its running
-// fallback body alike rather than deciding either away.
+// Every target a Gleam package can be compiled for. The widest reading, which
+// charges a declaration and its running fallback body alike rather than
+// deciding either away.
 pub fn every_target() -> Set(String) {
   set.from_list(["erlang", "javascript"])
+}
+
+// The target the Gleam compiler builds when nothing says otherwise.
+pub fn default_target() -> Set(String) {
+  set.from_list(["erlang"])
+}
+
+// Where the targets a package is analysed on came from.
+//
+// `gleam.toml`'s `target` field is optional, and a package that leaves it out is
+// still compiled for whatever `--target` the build passes — a flag graded never
+// sees. So the two readings below come apart for such a package, and a decision
+// reads whichever one it cannot be wrong about.
+pub type PackageTargets {
+  // Targets `gleam.toml` names, in `target` or `[tools.graded].targets`, and
+  // every target where there is no `gleam.toml` to name any. Both readings are
+  // this set.
+  NamedTargets(targets: Set(String))
+  // No field names a target.
+  DefaultedTargets
+}
+
+// Every target under both readings. What a package graded holds no `gleam.toml`
+// for is analysed on: no field is absent there for the compiler's default to
+// stand in for, so nothing is assumed and nothing is narrowed.
+pub fn all_targets() -> PackageTargets {
+  NamedTargets(every_target())
+}
+
+// The targets a build compiles: what the package names, or the compiler's
+// default where it names none. Read by decisions that only ever *add* to a
+// charge — whether a Gleam fallback body runs beside a declaration, which
+// unioned it — so an assumption too narrow costs precision and nothing else.
+pub fn build_targets(targets: PackageTargets) -> Set(String) {
+  case targets {
+    NamedTargets(targets:) -> targets
+    DefaultedTargets -> default_target()
+  }
+}
+
+// The targets a declaration is read on: every target where the package names
+// none. Read by decisions that can *drop* what a declaration states — a
+// `@external` reclassified as ordinary Gleam, a spec line called stale, a
+// foreign half left out of a charge — so an assumption never loses a declared
+// effect the build performs.
+pub fn declaration_targets(targets: PackageTargets) -> Set(String) {
+  case targets {
+    NamedTargets(targets:) -> targets
+    DefaultedTargets -> every_target()
+  }
 }
 
 // Whether a name's first character is an uppercase letter. This single
@@ -273,6 +323,10 @@ pub type UnknownReason {
   // A same-module call to a bodyless `@external` function with no
   // `external effects` declaration.
   UndeclaredExternal
+  // A call to an `@external` whose declaration names only targets this build
+  // does not compile, and which has no Gleam body to run in their place. Nothing
+  // in reach implements the name, so what it declares is no part of the charge.
+  UnbuiltExternal
   // A field call whose receiver girard could not type and no syntactic
   // parameter annotation names.
   ReceiverTypeUnresolved

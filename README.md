@@ -59,13 +59,16 @@ Function names in the spec file are **module-qualified**: `app.view` means the `
 
 ## Configuration
 
-graded reads its configuration from a `[tools.graded]` table in `gleam.toml`. Both fields are optional — omit them to get the defaults.
+graded reads its configuration from a `[tools.graded]` table in `gleam.toml`. Every field is optional — omit them to get the defaults.
 
 ```toml
 [tools.graded]
-spec_file = "myapp.graded"      # default: "<package_name>.graded"
-cache_dir = "build/.graded"     # default: "build/.graded"
+spec_file = "myapp.graded"          # default: "<package_name>.graded"
+cache_dir = "build/.graded"         # default: "build/.graded"
+targets = ["erlang", "javascript"]  # default: the top-level `target`, or "erlang"
 ```
+
+`targets` decides which `@external` declarations graded treats as built. By default it follows `gleam.toml`'s top-level `target`; where that is absent too, graded reads Gleam fallback bodies on `erlang` — what the compiler builds when nothing says otherwise — while still reading every `@external` declaration on both targets, since a `--target` build is invisible to it. Set it if your package is really built for both: an `@external` declared for one target then has its Gleam fallback body reached on the other, and callers are charged both.
 
 ## Publishing your spec file to consumers
 

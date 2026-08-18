@@ -619,11 +619,11 @@ fn load_project_context(
 fn project_context(sources: ProjectSources) -> ProjectContext {
   let ProjectSources(cfg:, spec:, index:, package_root:, ..) = sources
   let declared_modules = annotation.module_external_modules(spec)
-  // What the package declares it is compiled for, which decides whether an
-  // `@external` is ever built and so whether a function is foreign code or the
-  // Gleam body is its only implementation. One value for the whole run, this
-  // package and its dependencies alike: a dependency is compiled for the
-  // consumer's target, not its own.
+  // The package's targets under both readings, which together decide whether a
+  // function is foreign code or the Gleam body is its only implementation, and
+  // whether a fallback body beside a declaration runs. One value for the whole
+  // run, this package and its dependencies alike: a dependency is compiled for
+  // the consumer's target, not its own.
   let package_targets = cfg.targets
   let stale_externals =
     stale_project_externals(spec, native_functions_of(index, package_targets))
@@ -642,6 +642,9 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
       catalog,
       dep_sources.foreign,
     )
+    // Before anything is looked up: every foreign lookup is read on the targets
+    // this build compiles, and every command reads them the same way.
+    |> effects.with_package_targets(cfg.targets)
     // Consumer externals are applied before path-dep inference so a module-level
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
@@ -680,7 +683,10 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
       types.CommittedSpec,
     )
     |> effects.with_factories(
-      qualify_by_module(index, extract.factory_map(_, package_targets)),
+      qualify_by_module(index, extract.factory_map(
+        _,
+        types.declaration_targets(package_targets),
+      )),
     )
   // Fill gaps for project modules not (yet) in the spec by inferring them in
   // memory, so `check` resolves cross-module calls without a prior `graded infer`.
@@ -711,7 +717,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
 // whose effects only a declaration speaks for.
 fn project_foreign_functions(
   index: Dict(String, #(String, glance.Module)),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> Dict(QualifiedName, types.ForeignFunction) {
   use names, module_path, #(_gleam_path, module) <- dict.fold(index, dict.new())
   dict.merge(
@@ -759,7 +765,7 @@ fn stale_project_externals(
 // the shape `stale_project_externals` asks for.
 fn native_functions_of(
   index: Dict(String, #(String, glance.Module)),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> fn(String) -> Result(Set(String), Nil) {
   fn(module_path) {
     dict.get(index, module_path)
@@ -832,7 +838,7 @@ fn check_one_file(
   registry: SignatureRegistry,
   module_types: Dict(#(Int, Int), girard.Type),
   girard_fn_typed: Dict(String, Set(String)),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> CheckResult {
   let #(violations, warnings) =
     checker.check(
@@ -1413,7 +1419,7 @@ fn effect_answer(
   let directory = source_scope(directory).analysed
   use cfg <- result.try(read_config(directory))
   use spec <- result.try(read_spec(cfg.spec_file))
-  case spec_answer(directory, spec, name) {
+  case spec_answer(directory, spec, cfg.targets, name) {
     Ok(found) -> Ok(found)
     Error(Nil) -> project_answer(directory, name)
   }
@@ -1488,6 +1494,10 @@ fn answer_from(
 fn spec_answer(
   directory: String,
   spec: GradedFile,
+  // The package's targets, from the one config read this command makes. Which
+  // functions of the queried module are foreign code depends on them, and so
+  // does which half of a target-conditional `@external` answers.
+  targets: types.PackageTargets,
   name: String,
 ) -> Result(EffectAnswer, Nil) {
   case annotation.split_function_name(name) {
@@ -1507,14 +1517,10 @@ fn spec_answer(
       // per-function external names in vain — is a fact of that source, not of
       // the spec, and the spec is folded against it. One file is parsed to
       // settle all three: the module the queried name lives in.
-      // The package's declared targets, read straight from its `gleam.toml`:
-      // the fast path has no assembled context to take them from, and which
-      // functions of the queried module are foreign code depends on them.
-      let package_targets = config.targets_for(resolve_package_root(directory))
       use parsed <- result.try(module_source_facts(
         project_modules,
         module,
-        package_targets,
+        targets,
       ))
       let stale =
         stale_project_externals(spec, fn(queried) {
@@ -1533,12 +1539,12 @@ fn spec_answer(
         return: Error(Nil),
       )
       answer_from(
-        with_module_facts(spec_knowledge_base(spec, stale), parsed)
+        with_module_facts(spec_knowledge_base(spec, stale, targets), parsed)
           |> effects.with_dependency_foreign(dependency_foreign_for(
             directory,
             project_modules,
             module,
-            package_targets,
+            targets,
           )),
         name,
       )
@@ -1554,11 +1560,14 @@ fn spec_answer(
     // An answer carrying the queried module is one the exact key produced; one
     // carrying none fell back to the bare key, so it isn't the spec's decision.
     Error(Nil) ->
-      case type_field_effect(spec_knowledge_base(spec, set.new()), name) {
+      case
+        type_field_effect(spec_knowledge_base(spec, set.new(), targets), name)
+      {
         Ok(answer.TypeFieldAnswer(module: Some(_), ..) as found) -> Ok(found)
         Ok(answer.TypeFieldAnswer(module: None, ..))
         | Ok(answer.FunctionAnswer(..))
         | Ok(answer.UndeclaredExternalAnswer(..))
+        | Ok(answer.UnreachedDeclarationAnswer(..))
         | Error(Nil) -> Error(Nil)
       }
   }
@@ -1569,8 +1578,10 @@ fn spec_answer(
 fn spec_knowledge_base(
   spec: GradedFile,
   stale_externals: Set(String),
+  targets: types.PackageTargets,
 ) -> KnowledgeBase {
   effects.new_knowledge_base()
+  |> effects.with_package_targets(targets)
   |> effects.with_externals(
     declaring_externals(spec, stale_externals),
     types.UserExternal,
@@ -1618,7 +1629,7 @@ fn dependency_foreign_for(
   directory: String,
   project_modules: Dict(String, String),
   module: String,
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> Dict(QualifiedName, types.ForeignFunction) {
   use <- bool.guard(
     when: dict.has_key(project_modules, module),
@@ -1679,7 +1690,7 @@ type ModuleFacts {
 fn module_source_facts(
   project_modules: Dict(String, String),
   module_path: String,
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> Result(ModuleFacts, Nil) {
   case dict.get(project_modules, module_path) {
     Error(Nil) ->
@@ -1740,7 +1751,12 @@ fn function_effect(
   // declares the external, but that body is ordinary code graded walked, and
   // `check` and `why` charge its effects — so the query states them too rather
   // than reporting a bare `[Unknown]` the other two disagree with.
-  let fallback = effects.fallback_contribution(knowledge_base, qualified)
+  //
+  // One derivation for all three halves — what the name charges, what a running
+  // fallback contributed to that, and where the declaration stands in it — which
+  // is what keeps the answer reading as `check` and `why` read the same name.
+  let charge = effects.declared_charge(knowledge_base, qualified)
+  let fallback = charge.fallback
   // The bounds a running fallback body states its effects over, for the answers
   // whose own term is ground: a fallback that calls a function-typed parameter
   // names that parameter, and without its bound the line names a variable
@@ -1749,6 +1765,24 @@ fn function_effect(
   // body the foreign implementation needn't match, exactly like the entry
   // beside it, so it is no more an answer here than that entry is.
   let fallback_bounds = effects.fallback_param_bounds(knowledge_base, qualified)
+  // A declaration this build reaches no part of accounts for none of the charge,
+  // so the answer names neither it nor its source — the same clearing `check`
+  // and `why` make when they charge the name. The lookup still holds the entry
+  // that keyed it, and quoting that entry credited a dependency's shipped
+  // `[Time]` line with the `[Unknown]` its being out of reach collapsed to.
+  //
+  // Asked ahead of what declares the name, as the walk asks it: an external that
+  // is both undeclared and out of reach is out of reach first, and answering
+  // that nothing declares it named a cause the other surfaces do not.
+  use <- bool.guard(
+    when: charge.declaration != effects.DeclarationCharged,
+    return: Ok(answer.UnreachedDeclarationAnswer(
+      name:,
+      bounds: fallback_bounds,
+      term: charge.term,
+      fallback:,
+    )),
+  )
   use <- bool.guard(
     when: checker.undeclared_external(knowledge_base, qualified),
     return: Ok(answer.UndeclaredExternalAnswer(
@@ -2526,6 +2560,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       manifest_path(package_root),
       dep_sources.foreign,
     )
+    |> effects.with_package_targets(cfg.targets)
     // Consumer externals are applied before path-dep inference so a module-level
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
@@ -2547,7 +2582,10 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       types.CommittedSpec,
     )
     |> effects.with_factories(
-      qualify_by_module(index, extract.factory_map(_, package_targets)),
+      qualify_by_module(index, extract.factory_map(
+        _,
+        types.declaration_targets(package_targets),
+      )),
     )
 
   let graph = build_dependency_graph(index)
@@ -2621,7 +2659,7 @@ fn infer_one_module(
   module_types: Dict(#(Int, Int), girard.Type),
   girard_fn_typed: Dict(String, Set(String)),
   declared_modules: Set(String),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> ModuleInference {
   let knowledge_base =
     with_module_fallback_effects(
@@ -2716,7 +2754,7 @@ fn infer_project_in_memory(
   registry: SignatureRegistry,
   type_info: typeinfo.TypeInfo,
   declared_modules: Set(String),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
   case topo.sort(build_dependency_graph(index)) {
     Error(_) -> base_kb
@@ -2749,7 +2787,7 @@ fn fold_inferred_module(
   registry: SignatureRegistry,
   type_info: typeinfo.TypeInfo,
   declared_modules: Set(String),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
   let kb =
     with_module_fallback_effects(
@@ -2804,7 +2842,7 @@ fn with_module_fallback_effects(
   registry: SignatureRegistry,
   module_types: Dict(#(Int, Int), girard.Type),
   girard_fn_typed: Dict(String, Set(String)),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
   effects.with_fallback_summaries(
     knowledge_base,
@@ -3080,7 +3118,7 @@ fn merge_dependency_sources(
 // `build/packages`, then path dependencies, which win on key conflict.
 fn dependency_sources(
   package_root: String,
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> DependencySources {
   merge_dependency_sources(
     packages_dir_sources(packages_dir(package_root), package_targets),
@@ -3098,19 +3136,22 @@ fn with_builders(
   knowledge_base: KnowledgeBase,
   index: Dict(String, #(String, glance.Module)),
   dep_sources: DependencySources,
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
   knowledge_base
   |> effects.with_updates(dep_sources.updates)
   |> effects.with_updates(
-    qualify_by_module(index, extract.update_map(_, package_targets)),
+    qualify_by_module(index, extract.update_map(
+      _,
+      types.declaration_targets(package_targets),
+    )),
   )
 }
 
 // Scan the `src/` tree of every installed dependency under `build/packages`.
 fn packages_dir_sources(
   packages_directory: String,
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> DependencySources {
   case simplifile.read_directory(packages_directory) {
     Error(_) -> empty_dependency_sources()
@@ -3131,7 +3172,7 @@ fn packages_dir_sources(
 // boundary, so only those land in `updates`.
 fn source_dir_sources(
   source_dir: String,
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> DependencySources {
   use acc, module_path, module <- signatures.fold_source_dir(
     source_dir,
@@ -3144,7 +3185,7 @@ fn source_dir_sources(
       updates: extract.public_update_signatures(
         module,
         module_path,
-        package_targets,
+        types.declaration_targets(package_targets),
       ),
       foreign: checker.dependency_foreign_functions(
         module,
@@ -3252,7 +3293,7 @@ fn enrich_with_path_deps(
   knowledge_base: KnowledgeBase,
   package_root: String,
   consumer_modules: Set(String),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
   let path_deps =
     effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
@@ -3303,7 +3344,7 @@ fn enrich_with_path_deps(
 // resolve only from a serialized `update` line.
 fn path_dep_sources(
   package_root: String,
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> DependencySources {
   effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
   |> list.fold(empty_dependency_sources(), fn(acc, dep) {
@@ -3357,7 +3398,7 @@ pub fn infer_path_dep(
   dep_path: String,
   base_kb: KnowledgeBase,
   consumer_modules: Set(String),
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> Result(
   #(
     Dict(QualifiedName, types.EffectTerm),
@@ -3450,7 +3491,7 @@ fn infer_path_dep_module(
   registry: SignatureRegistry,
   consumer_modules: Set(String),
   lookup_origin: types.LookupOrigin,
-  package_targets: Set(String),
+  package_targets: types.PackageTargets,
 ) -> #(
   Dict(QualifiedName, types.EffectTerm),
   Dict(QualifiedName, List(types.ParamBound)),

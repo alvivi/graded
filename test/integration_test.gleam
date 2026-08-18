@@ -664,7 +664,7 @@ pub fn a_fallback_reads_a_nested_external_on_its_own_targets_test() {
   // implementation either of them reaches can perform.
   let root = "build/external_nested_target_conditional"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ext.a : []
@@ -709,7 +709,7 @@ pub fn two_fallbacks_on_opposite_targets_do_not_mix_test() {
   // JavaScript contaminate one that can only run on Erlang.
   let root = "build/external_disjoint_fallbacks"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ext.a : []
@@ -756,7 +756,7 @@ pub fn a_nested_external_still_charges_what_the_fallback_reaches_test() {
   // each reached by `a`'s Erlang body, each charged to it and to its caller.
   let root = "build/external_nested_reachable"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ext.a : []
@@ -812,7 +812,7 @@ pub fn a_girard_typed_fallback_callback_binds_in_the_same_module_test() {
   // fails, so the bound resolves rather than vanishing.
   let root = "build/external_fallback_girard_local"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ext.run : []
@@ -864,7 +864,7 @@ pub fn a_girard_typed_sibling_fallback_rekeys_its_callback_test() {
   // a cross-module `ext.a(pure)` failed a `[]` budget it plainly meets.
   let root = "build/external_fallback_girard_siblings"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ext.a : []
@@ -978,7 +978,7 @@ pub fn a_fallback_lift_keeps_its_callback_arity_test() {
   // callback shape, so each argument reaches its own binder.
   let root = "build/external_fallback_callback_arity"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ext.run : []
@@ -1105,7 +1105,7 @@ pub fn a_girard_typed_fallback_lifts_locally_as_an_operator_test() {
   // a girard-typed callback exists only as.
   let root = "build/external_fallback_girard_operator_local"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ext.run : []
@@ -1163,7 +1163,7 @@ pub fn a_substituted_call_reports_a_substituted_fallback_test() {
   // consumer must not read a variable the actual set already resolved.
   let root = "build/external_fallback_substituted"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ext.run : [Time]
@@ -1276,7 +1276,7 @@ pub fn an_undeclared_fallback_is_charged_on_every_value_channel_test() {
   // graded had walked, and charging one name differently per channel.
   let root = "build/external_fallback_channels"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects disk.write : [Disk]
@@ -1489,7 +1489,7 @@ pub fn a_recursive_fallback_summary_reaches_a_fixed_point_test() {
   // that reaches the disk.
   let root = "build/external_fallback_recursive"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ext.retry : []
@@ -1539,7 +1539,7 @@ pub fn a_cyclic_import_graph_still_charges_a_running_fallback_test() {
   // fallback already answers.
   let root = "build/external_fallback_cyclic"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ext.log : [Stdout]
@@ -1722,7 +1722,7 @@ pub fn a_fallback_bound_travels_with_every_answer_form_test() {
   // sentence is meant to explain.
   let root = "build/external_fallback_answer_forms"
   let sources = [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "ext.gleam",
       "@external(javascript, \"ext_ffi\", \"run\")
@@ -1818,7 +1818,7 @@ pub fn a_wired_field_separates_the_fallback_test() {
   // fallback body did.
   let root = "build/external_fallback_wired_field"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ext.log : []
@@ -1877,7 +1877,7 @@ pub fn a_callers_explanation_separates_the_fallback_test() {
   // accounts for, or it reads as though the spec line had stated `[Disk]`.
   let root = "build/external_fallback_caller_provenance"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ext.log : []
@@ -1957,7 +1957,7 @@ pub fn an_undeclared_externals_fallback_is_reported_by_the_query_test() {
   // shortcut used to return, and has to say which half came from the body.
   let root = "build/external_fallback_undeclared"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects disk.write : [Disk]\ncheck ext.wrapper : []\n",
@@ -1998,7 +1998,7 @@ pub fn a_declared_externals_fallback_is_not_credited_to_the_spec_test() {
   // otherwise it reads as though the spec line had stated `[Disk]`.
   let root = "build/external_fallback_provenance"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ext.log : []\nexternal effects ext.sink : [Disk]\n",
@@ -2268,7 +2268,7 @@ pub fn a_declared_dependency_external_with_a_running_fallback_widens_test() {
   // read as the whole story.
   let root = "build/foreign_values_dep_fallback"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #("proj.graded", "check app.wrapper : [Time]\n"),
     #(
       "build/packages/dep/dep.graded",
@@ -2309,6 +2309,1035 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_dependency_external_this_build_never_reaches_is_unknown_test() {
+  // The declaration is for JavaScript, this package names Erlang, and `run` has
+  // no Gleam body to run in its place — so nothing this build compiles
+  // implements the name, and `[Unknown]` is the whole charge. The message says
+  // so: charging `[Time]` named an implementation provably not built, and
+  // reporting it as an external with no declared effects sent the reader looking
+  // for a declaration the dependency plainly ships.
+  let root = "build/foreign_values_dep_unreachable"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #("proj.graded", "check app.wrapper : [Time]\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "external effects dep/ffi.run : [Time]\n",
+    ),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "@external(javascript, \"dep_ffi\", \"run\")
+pub fn run() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+pub fn wrapper() -> Nil {
+  ffi.run()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  violation.explanation.reason
+  |> should.equal(Some(types.UnbuiltExternal))
+  let message = checker.format_violation(root <> "/app.gleam", violation)
+  message
+  |> string.contains(
+    "an external declared only for a target this build does not compile",
+  )
+  |> should.be_true()
+  message
+  |> string.contains("with no declared effects")
+  |> should.be_false()
+  // And the query says the same thing about the same name. Carrying the
+  // declaration's source alongside the `[Unknown]` it collapsed to credited
+  // dep's shipped `[Time]` line with a charge that line states no part of.
+  let assert Ok(answered) = graded.run_effect(root, "dep/ffi.run")
+  answered
+  |> string.contains(
+    "an external declared only for a target this build does not compile",
+  )
+  |> should.be_true()
+  answered |> string.contains("shipped spec") |> should.be_false()
+  answered
+  |> should.equal(
+    graded.run_effect_from_project(root, "dep/ffi.run") |> should.be_ok(),
+  )
+  support.cleanup(root)
+}
+
+pub fn a_default_target_package_keeps_a_dependency_fallback_out_of_reach_test() {
+  // The reading that decides it: a package naming no `target` reads Gleam
+  // fallback bodies on the compiler's own default, so the dependency's erlang
+  // declaration is the whole answer and the body beside it never runs. Reading
+  // bodies on *every* target instead ran this one on the other target and
+  // unioned an unwalked `[Unknown]` into a large part of the standard library.
+  let root = "build/foreign_values_dep_default_target"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "check app.wrapper : [Time]\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "external effects dep/ffi.run : [Time]\n",
+    ),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "@external(erlang, \"dep_ffi\", \"run\")
+pub fn run() -> Nil {
+  Nil
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+pub fn wrapper() -> Nil {
+  ffi.run()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_defaulted_target_package_keeps_a_declared_external_test() {
+  // `gleam.toml` names no target, so the compiler's default stands in for the
+  // build — and a `gleam build --target javascript` graded never sees compiles
+  // this declaration. So the assumed default decides nothing that would drop it:
+  // `now` stays foreign code, the author's line keeps answering for it, and a
+  // caller is charged the `[Time]` beside the pure fallback body's nothing.
+  let root = "build/defaulted_target_declared_external"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects ffi.now : [Time]
+check app.wrapper : []
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(javascript, \"ffi_js\", \"now\")
+pub fn now() -> Nil {
+  Nil
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+
+pub fn wrapper() -> Nil {
+  ffi.now()
+}
+",
+    ),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Time"])))
+  // And nothing calls the line stale — the spec file is reported on only when it
+  // has a warning — so `infer` leaves it where it is rather than replacing it
+  // with what the fallback body does.
+  list.find(results, fn(r) { r.file == root <> "/proj.graded" })
+  |> should.equal(Error(Nil))
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  written
+  |> string.contains("external effects ffi.now : [Time]")
+  |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn every_command_reads_a_dependency_external_on_the_same_targets_test() {
+  // One name, three surfaces. The dependency's declaration is for JavaScript,
+  // this package names Erlang, and what runs there is the dependency's Gleam
+  // body that no consumer walks — so all three answer `[Unknown]`. The walk
+  // narrowed and the query did not, so `check` charged the caller `[Unknown]`
+  // while `effect` answered with the declaration's `[Time]`.
+  let root = "build/dep_external_command_agreement"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #("proj.graded", "check app.wrapper : []\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "external effects dep/ffi.run : [Time]\n",
+    ),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "@external(javascript, \"dep_ffi\", \"run\")
+pub fn run() -> Nil {
+  Nil
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+pub fn wrapper() -> Nil {
+  ffi.run()
+}
+",
+    ),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+
+  let assert Ok(answered) = graded.run_effect(root, "dep/ffi.run")
+  answered |> string.contains("[Unknown]") |> should.be_true()
+  answered |> string.contains("Time") |> should.be_false()
+  // The source line names what the charge came from, in `why`'s words: the body
+  // running in the declaration's place. Naming the shipped spec instead pointed
+  // at the very line the `[Unknown]` beside it had ruled out.
+  answered
+  |> string.contains(
+    "its Gleam fallback body, which is what runs on the targets this build"
+    <> " compiles",
+  )
+  |> should.be_true()
+  answered |> string.contains("shipped spec") |> should.be_false()
+  // The fast path and the full context agree, as they must for any name.
+  answered
+  |> should.equal(
+    graded.run_effect_from_project(root, "dep/ffi.run")
+    |> should.be_ok(),
+  )
+
+  let assert Ok(why) = graded.run_why(root, "app.wrapper")
+  why |> string.contains("[Unknown]") |> should.be_true()
+  why |> string.contains("Time") |> should.be_false()
+  support.cleanup(root)
+}
+
+pub fn a_defaulted_target_package_reads_its_own_fallback_the_same_way_test() {
+  // One `@external(erlang, …)` of this package's, with a Gleam fallback that
+  // reaches the disk, under a `gleam.toml` naming no target. Erlang is what the
+  // compiler builds when nothing says otherwise, and the declaration covers it,
+  // so nothing runs that body: `check`, `why`, `effect` and the caller's charge
+  // all say `[Time]`.
+  //
+  // The walk read the body on every target and the knowledge base read it on the
+  // default, so a `check` line matching what every caller pays failed on a
+  // `[Disk]` the assumed build never performs — and `why` totalled a set
+  // `effect` disagreed with, for the stdlib-shaped FFI a default-configured
+  // project writes.
+  let defaulted = "build/defaulted_target_own_fallback"
+  let named = "build/named_target_own_fallback"
+  let sources = [
+    #(
+      "proj.graded",
+      "external effects ffi.now : [Time]
+external effects sink.disk : [Disk]
+check ffi.now : [Time]
+",
+    ),
+    #(
+      "sink.gleam",
+      "@external(erlang, \"sink_ffi\", \"disk\")
+pub fn disk() -> Nil
+",
+    ),
+    #(
+      "ffi.gleam",
+      "import sink
+
+@external(erlang, \"ffi_ffi\", \"now\")
+pub fn now() -> Nil {
+  sink.disk()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+
+pub fn tick() -> Nil {
+  ffi.now()
+}
+",
+    ),
+  ]
+  support.write_fixture(defaulted, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    ..sources
+  ])
+  // The same package saying out loud what the default assumed, which is the
+  // configuration the fix aligns the defaulted one with.
+  support.write_fixture(named, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    ..sources
+  ])
+
+  let assert Ok(results) = graded.run(defaulted)
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
+
+  let assert Ok(why) = graded.run_why(defaulted, "ffi.now")
+  why |> string.contains("[Time]") |> should.be_true()
+  why |> string.contains("Disk") |> should.be_false()
+
+  let assert Ok(answered) = graded.run_effect(defaulted, "ffi.now")
+  answered |> string.contains("[Time]") |> should.be_true()
+  answered |> string.contains("Disk") |> should.be_false()
+  answered
+  |> should.equal(
+    graded.run_effect_from_project(defaulted, "ffi.now") |> should.be_ok(),
+  )
+
+  let assert Ok(caller) = graded.run_why(defaulted, "app.tick")
+  caller |> string.contains("[Time]") |> should.be_true()
+  caller |> string.contains("Disk") |> should.be_false()
+
+  // And every one of them reads as the named-target package does, word for word.
+  let assert Ok(named_results) = graded.run(named)
+  named_results
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([])
+  graded.run_why(named, "ffi.now") |> should.equal(Ok(why))
+  graded.run_effect(named, "ffi.now") |> should.equal(Ok(answered))
+  graded.run_why(named, "app.tick") |> should.equal(Ok(caller))
+
+  support.cleanup(defaulted)
+  support.cleanup(named)
+}
+
+pub fn an_unbuilt_own_external_reads_the_same_on_every_surface_test() {
+  // `jsonly` declares JavaScript, the build compiles Erlang, and there is no
+  // Gleam body to run in its place — so nothing this build reaches implements
+  // the name. Every caller is charged `[Unknown]`, and the function's own budget
+  // is charged the same: weighing the spec's `[Time]` against it alone held the
+  // function to a declaration the same build had ruled out for everyone calling
+  // it, so `check` and `why` said `[Time]` where `effect` and the callers said
+  // `[Unknown]`.
+  let root = "build/unbuilt_own_external_surfaces"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #(
+      "proj.graded",
+      "external effects ffi.jsonly : [Time]
+check ffi.jsonly : []
+check app.wrapper : []
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(javascript, \"ffi_js\", \"jsonly\")
+pub fn jsonly() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+
+pub fn wrapper() -> Nil {
+  ffi.jsonly()
+}
+",
+    ),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(own) =
+    list.find(results, fn(r) { r.file == root <> "/ffi.gleam" })
+  let assert [own_violation] = own.violations
+  own_violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  own_violation.explanation.reason |> should.equal(Some(types.UnbuiltExternal))
+  own_violation.explanation.origin |> should.equal(None)
+  // The caller pays what the function's own line was weighed against, for the
+  // same recorded reason.
+  let assert Ok(caller) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [caller_violation] = caller.violations
+  caller_violation.explanation.actual
+  |> should.equal(own_violation.explanation.actual)
+  caller_violation.explanation.reason
+  |> should.equal(own_violation.explanation.reason)
+
+  let assert Ok(why) = graded.run_why(root, "ffi.jsonly")
+  why |> string.contains("[Unknown]") |> should.be_true()
+  why |> string.contains("Time") |> should.be_false()
+  why
+  |> string.contains("declared only for a target this build does not compile")
+  |> should.be_true()
+
+  let assert Ok(answered) = graded.run_effect(root, "ffi.jsonly")
+  answered |> string.contains("[Unknown]") |> should.be_true()
+  answered |> string.contains("Time") |> should.be_false()
+  answered
+  |> string.contains(
+    "an external declared only for a target this build does not compile",
+  )
+  |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_wired_field_reads_a_foreign_value_as_a_call_does_test() {
+  // Two dependency `@external`s reaching their call sites wired into a record
+  // field rather than named, each with a cause of its own. `unbuilt` is shipped
+  // as `[Time]` over a JavaScript-only declaration this Erlang build never
+  // compiles; `bare` is compiled here and declared nowhere. Both are charged
+  // what a direct call to them is charged and say why in the same words —
+  // naming the shipped spec pointed the reader at the very line the `[Unknown]`
+  // beside it had ruled out, and reporting the unbuilt one as undeclared named
+  // a cause the other surfaces do not.
+  let root = "build/wired_field_foreign_value"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #("proj.graded", "check app.tick : []\ncheck app.tock : []\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "external effects dep/ffi.unbuilt : [Time]\n",
+    ),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "@external(javascript, \"dep_ffi\", \"unbuilt\")
+pub fn unbuilt() -> Nil
+
+@external(erlang, \"dep_ffi\", \"bare\")
+pub fn bare() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+pub type Clock {
+  Clock(read: fn() -> Nil)
+}
+
+pub fn build_unbuilt() -> Clock {
+  Clock(read: ffi.unbuilt)
+}
+
+pub fn build_bare() -> Clock {
+  Clock(read: ffi.bare)
+}
+
+pub fn tick() -> Nil {
+  let c = build_unbuilt()
+  c.read()
+}
+
+pub fn tock() -> Nil {
+  let c = build_bare()
+  c.read()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+
+  let assert Ok(unbuilt) =
+    list.find(r.violations, fn(violation) { violation.function == "tick" })
+  unbuilt.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  unbuilt.explanation.reason |> should.equal(Some(types.UnbuiltExternal))
+  unbuilt.explanation.origin |> should.equal(None)
+  let unbuilt_message = checker.format_violation(r.file, unbuilt)
+  unbuilt_message
+  |> string.contains(
+    "wired to an external declared only for a target this build does not"
+    <> " compile",
+  )
+  |> should.be_true()
+  unbuilt_message |> string.contains("shipped spec") |> should.be_false()
+
+  let assert Ok(bare) =
+    list.find(r.violations, fn(violation) { violation.function == "tock" })
+  bare.explanation.reason |> should.equal(Some(types.UndeclaredExternal))
+  checker.format_violation(r.file, bare)
+  |> string.contains("wired to an external with no declared effects")
+  |> should.be_true()
+
+  // And `why` prints the line each violation does, as it does for every other
+  // contributor.
+  let assert Ok(why) = graded.run_why(root, "app.tick")
+  why
+  |> string.contains(
+    "wired to an external declared only for a target this build does not"
+    <> " compile",
+  )
+  |> should.be_true()
+  let assert Ok(why) = graded.run_why(root, "app.tock")
+  why
+  |> string.contains("wired to an external with no declared effects")
+  |> should.be_true()
+  support.cleanup(root)
+}
+
+// The `why` line reporting `name` as a contributor, or `Error(Nil)` where no
+// line names it.
+fn contributor_line(output: String, name: String) -> Result(String, Nil) {
+  string.split(output, "\n")
+  |> list.filter(string.contains(_, " " <> name <> " "))
+  |> list.first
+}
+
+pub fn a_governed_sibling_charges_its_module_what_it_charges_everyone_test() {
+  // `external effects m : [Disk]` answers for every caller of `m.logs`, and a
+  // sibling is a caller. Walking the body for the sibling and reading the
+  // declaration for everyone else charged one name two sets depending on where
+  // it was called from — `m.wrapper` failed its `[Disk]` on the body's
+  // `[Stdout]` while `app.xwrapper` passed the same budget.
+  let root = "build/module_external_local_caller"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects m : [Disk]
+external effects loud.shout : [Stdout]
+check m.wrapper : [Disk]
+check app.xwrapper : [Disk]
+check m.logs : [Disk]
+",
+    ),
+    #(
+      "m.gleam",
+      "import loud
+
+pub fn logs() -> Nil {
+  loud.shout()
+}
+
+pub fn wrapper() -> Nil {
+  logs()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import m
+
+pub fn xwrapper() -> Nil {
+  m.logs()
+}
+",
+    ),
+    #(
+      "loud.gleam",
+      "@external(erlang, \"l\", \"s\")
+@external(javascript, \"l\", \"s\")
+pub fn shout() -> Nil
+",
+    ),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  // Neither caller pays more than the declaration.
+  let assert Ok(caller) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  caller.violations |> should.equal([])
+  // The one line `m.logs`'s own budget fails on is its body, which no caller of
+  // it is charged.
+  let assert Ok(governed) =
+    list.find(results, fn(r) { r.file == root <> "/m.gleam" })
+  governed.violations
+  |> list.map(fn(violation) {
+    #(violation.function, violation.explanation.actual)
+  })
+  |> should.equal([#("logs", types.Specific(set.from_list(["Stdout"])))])
+
+  // Word for word the same contributor line, whichever module the call sits in.
+  let assert Ok(local) = graded.run_why(root, "m.wrapper")
+  let assert Ok(cross) = graded.run_why(root, "app.xwrapper")
+  contributor_line(local, "m.logs")
+  |> should.equal(contributor_line(cross, "m.logs"))
+  contributor_line(cross, "m.logs")
+  |> should.equal(Ok(
+    "  calls m.logs with effects [Disk] (from a module-level external in your"
+    <> " spec)",
+  ))
+  support.cleanup(root)
+}
+
+pub fn an_undeclared_unbuilt_external_names_one_cause_test() {
+  // Both true of `nothing` at once: no `external effects` line declares it, and
+  // its `@external` names a target this build does not compile. Out of reach is
+  // the cause every surface reports, because it is the one that decides the
+  // charge — answering that nothing declares it named a cause `check` and `why`
+  // do not, over a set all three agreed on.
+  let root = "build/undeclared_unbuilt_provenance"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #("proj.graded", "check app.wrapper : []\n"),
+    #(
+      "ffi.gleam",
+      "@external(javascript, \"ffi_js\", \"nothing\")
+pub fn nothing() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+
+pub fn wrapper() -> Nil {
+  ffi.nothing()
+}
+",
+    ),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  violation.explanation.reason |> should.equal(Some(types.UnbuiltExternal))
+
+  let assert Ok(why) = graded.run_why(root, "app.wrapper")
+  let assert Ok(answered) = graded.run_effect(root, "ffi.nothing")
+  [why, answered]
+  |> list.each(fn(output) {
+    output
+    |> string.contains("declared only for a target this build does not compile")
+    |> should.be_true()
+    output |> string.contains("with no declared effects") |> should.be_false()
+  })
+  support.cleanup(root)
+}
+
+// The agreement matrix
+//
+// Every name shape a foreign charge can take, under every shape a package's
+// target configuration can take, read on all four surfaces at once: the charge
+// a `check` line weighs, the total `why` states, the set `graded effect`
+// answers, and what a caller — in another module, in the name's own, and
+// through a record field — pays. Three rounds of fixes had this invariant come
+// back on whichever channel the last round did not name; the rows below are
+// what a fourth would have to get past.
+
+// One name under one configuration: what every surface must charge for it, and
+// the wording they must agree on where no declaration answered.
+type MatrixRow {
+  MatrixRow(
+    // The name every surface is asked about.
+    name: String,
+    // Functions charged for `name` — in another module, in its own, and through
+    // a field wired to it.
+    callers: List(String),
+    // What a caller pays, and what the query answers.
+    charge: List(String),
+    // What `name`'s own `check` line is weighed against: the charge, plus
+    // whatever Gleam body of its own runs beside the declaration.
+    own_total: List(String),
+    // A phrase every surface naming the cause must print, where the charge came
+    // from no declaration.
+    cause: Option(String),
+    // A phrase no surface describing the charge may print.
+    absent: List(String),
+  )
+}
+
+pub fn every_surface_charges_one_name_one_set_test() {
+  // A package naming no target reads fallback bodies on the compiler's default
+  // and declarations on every target, so a JavaScript declaration answers and
+  // the Erlang body beside it runs too.
+  let defaulted = [
+    MatrixRow(
+      name: "ffi.declared_bodyless",
+      callers: ["call_declared_bodyless", "local_declared_bodyless", "tick"],
+      charge: ["Time"],
+      own_total: ["Time"],
+      cause: None,
+      absent: ["Unknown"],
+    ),
+    MatrixRow(
+      name: "ffi.declared_fallback",
+      callers: ["call_declared_fallback", "local_declared_fallback"],
+      charge: ["Disk", "Time"],
+      own_total: ["Disk", "Time"],
+      cause: None,
+      absent: ["Unknown"],
+    ),
+    MatrixRow(
+      name: "ffi.undeclared_bodyless",
+      callers: ["call_undeclared_bodyless", "local_undeclared_bodyless"],
+      charge: ["Unknown"],
+      own_total: ["Unknown"],
+      cause: Some(undeclared_cause),
+      absent: [unbuilt_cause],
+    ),
+    MatrixRow(
+      name: "ffi.undeclared_fallback",
+      callers: ["call_undeclared_fallback", "local_undeclared_fallback"],
+      charge: ["Disk", "Unknown"],
+      own_total: ["Disk", "Unknown"],
+      cause: Some(undeclared_cause),
+      absent: [unbuilt_cause],
+    ),
+    MatrixRow(
+      name: "gov.governed",
+      callers: ["call_governed", "local_governed"],
+      charge: ["Net"],
+      // The line answers for callers; the visible body is weighed beside it
+      // against this function's own budget and nothing else.
+      own_total: ["Disk", "Net"],
+      cause: None,
+      absent: ["Disk"],
+    ),
+  ]
+  // One declared target: a JavaScript declaration describes an implementation
+  // this build never compiles, so what runs is the Gleam body beside it — or
+  // nothing at all.
+  let single = [
+    MatrixRow(
+      name: "ffi.declared_bodyless",
+      callers: ["call_declared_bodyless", "local_declared_bodyless", "tick"],
+      charge: ["Unknown"],
+      own_total: ["Unknown"],
+      cause: Some(unbuilt_cause),
+      absent: ["Time"],
+    ),
+    MatrixRow(
+      name: "ffi.declared_fallback",
+      callers: ["call_declared_fallback", "local_declared_fallback"],
+      charge: ["Disk"],
+      own_total: ["Disk"],
+      cause: None,
+      absent: ["Time", "Unknown"],
+    ),
+    MatrixRow(
+      name: "ffi.undeclared_bodyless",
+      callers: ["call_undeclared_bodyless", "local_undeclared_bodyless"],
+      charge: ["Unknown"],
+      own_total: ["Unknown"],
+      // Undeclared and out of reach at once: out of reach is what decides the
+      // charge, so it is the cause every surface names.
+      cause: Some(unbuilt_cause),
+      absent: [undeclared_cause],
+    ),
+    MatrixRow(
+      name: "ffi.undeclared_fallback",
+      callers: ["call_undeclared_fallback", "local_undeclared_fallback"],
+      charge: ["Disk"],
+      own_total: ["Disk"],
+      cause: None,
+      absent: ["Unknown"],
+    ),
+    MatrixRow(
+      name: "gov.governed",
+      callers: ["call_governed", "local_governed"],
+      charge: ["Net"],
+      own_total: ["Disk", "Net"],
+      cause: None,
+      absent: ["Disk"],
+    ),
+  ]
+  // Both targets declared: each half is in reach on its own target, and a caller
+  // is charged their union.
+  let dual = [
+    MatrixRow(
+      name: "ffi.declared_bodyless",
+      callers: ["call_declared_bodyless", "local_declared_bodyless", "tick"],
+      charge: ["Time"],
+      own_total: ["Time"],
+      cause: None,
+      absent: ["Unknown"],
+    ),
+    MatrixRow(
+      name: "ffi.declared_fallback",
+      callers: ["call_declared_fallback", "local_declared_fallback"],
+      charge: ["Disk", "Time"],
+      own_total: ["Disk", "Time"],
+      cause: None,
+      absent: ["Unknown"],
+    ),
+    MatrixRow(
+      name: "ffi.undeclared_bodyless",
+      callers: ["call_undeclared_bodyless", "local_undeclared_bodyless"],
+      charge: ["Unknown"],
+      own_total: ["Unknown"],
+      cause: Some(undeclared_cause),
+      absent: [unbuilt_cause],
+    ),
+    MatrixRow(
+      name: "ffi.undeclared_fallback",
+      callers: ["call_undeclared_fallback", "local_undeclared_fallback"],
+      charge: ["Disk", "Unknown"],
+      own_total: ["Disk", "Unknown"],
+      cause: Some(undeclared_cause),
+      absent: [unbuilt_cause],
+    ),
+    MatrixRow(
+      name: "gov.governed",
+      callers: ["call_governed", "local_governed"],
+      charge: ["Net"],
+      own_total: ["Disk", "Net"],
+      cause: None,
+      absent: ["Disk"],
+    ),
+  ]
+
+  [
+    #("build/agreement_matrix_defaulted", "name = \"proj\"\n", defaulted),
+    #(
+      "build/agreement_matrix_single",
+      "name = \"proj\"\ntarget = \"erlang\"\n",
+      single,
+    ),
+    #("build/agreement_matrix_dual", support.dual_target_toml("proj"), dual),
+  ]
+  |> list.each(fn(configuration) {
+    let #(root, toml, rows) = configuration
+    support.write_fixture(root, [#("gleam.toml", toml), ..matrix_sources()])
+    let assert Ok(results) = graded.run(root)
+    list.each(rows, check_matrix_row(root, results, _))
+    support.cleanup(root)
+  })
+}
+
+// The two causes a surface names where no declaration accounts for the charge.
+// Read by both the direct-call wording and the wired-field wording, which
+// continues the same phrase.
+const undeclared_cause = "an external with no declared effects"
+
+const unbuilt_cause = "an external declared only for a target this build does not compile"
+
+// The package every configuration of the matrix is written over: one name of
+// each shape a foreign charge takes, each with a caller in another module, a
+// caller in its own, and — for the bodyless declared one — a record field wired
+// to it. Every `check` line is `[]`, so each function's violations report the
+// whole of what it is charged.
+fn matrix_sources() -> List(#(String, String)) {
+  [
+    #(
+      "proj.graded",
+      "external effects sink.disk : [Disk]
+external effects ffi.declared_bodyless : [Time]
+external effects ffi.declared_fallback : [Time]
+external effects gov : [Net]
+check ffi.declared_bodyless : []
+check ffi.declared_fallback : []
+check ffi.undeclared_bodyless : []
+check ffi.undeclared_fallback : []
+check ffi.local_declared_bodyless : []
+check ffi.local_declared_fallback : []
+check ffi.local_undeclared_bodyless : []
+check ffi.local_undeclared_fallback : []
+check gov.governed : []
+check gov.local_governed : []
+check app.call_declared_bodyless : []
+check app.call_declared_fallback : []
+check app.call_undeclared_bodyless : []
+check app.call_undeclared_fallback : []
+check app.call_governed : []
+check wired.tick : []
+",
+    ),
+    #(
+      "sink.gleam",
+      "@external(erlang, \"s\", \"d\")
+@external(javascript, \"s\", \"d\")
+pub fn disk() -> Nil
+",
+    ),
+    #(
+      "ffi.gleam",
+      "import sink
+
+@external(javascript, \"f\", \"db\")
+pub fn declared_bodyless() -> Nil
+
+@external(javascript, \"f\", \"df\")
+pub fn declared_fallback() -> Nil {
+  sink.disk()
+}
+
+@external(javascript, \"f\", \"ub\")
+pub fn undeclared_bodyless() -> Nil
+
+@external(javascript, \"f\", \"uf\")
+pub fn undeclared_fallback() -> Nil {
+  sink.disk()
+}
+
+pub fn local_declared_bodyless() -> Nil {
+  declared_bodyless()
+}
+
+pub fn local_declared_fallback() -> Nil {
+  declared_fallback()
+}
+
+pub fn local_undeclared_bodyless() -> Nil {
+  undeclared_bodyless()
+}
+
+pub fn local_undeclared_fallback() -> Nil {
+  undeclared_fallback()
+}
+",
+    ),
+    #(
+      "gov.gleam",
+      "import sink
+
+pub fn governed() -> Nil {
+  sink.disk()
+}
+
+pub fn local_governed() -> Nil {
+  governed()
+}
+",
+    ),
+    #(
+      "wired.gleam",
+      "import ffi
+
+pub type Clock {
+  Clock(read: fn() -> Nil)
+}
+
+pub fn build() -> Clock {
+  Clock(read: ffi.declared_bodyless)
+}
+
+pub fn tick() -> Nil {
+  let c = build()
+  c.read()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+import gov
+
+pub fn call_declared_bodyless() -> Nil {
+  ffi.declared_bodyless()
+}
+
+pub fn call_declared_fallback() -> Nil {
+  ffi.declared_fallback()
+}
+
+pub fn call_undeclared_bodyless() -> Nil {
+  ffi.undeclared_bodyless()
+}
+
+pub fn call_undeclared_fallback() -> Nil {
+  ffi.undeclared_fallback()
+}
+
+pub fn call_governed() -> Nil {
+  gov.governed()
+}
+",
+    ),
+  ]
+}
+
+// One row of the matrix, on all four surfaces.
+fn check_matrix_row(
+  root: String,
+  results: List(types.CheckResult),
+  row: MatrixRow,
+) -> Nil {
+  let charge = types.Specific(set.from_list(row.charge))
+  let label = root <> " " <> row.name
+  // `check`, for the name itself and for every caller of it.
+  #(label, checked_set(results, function_of(row.name)))
+  |> should.equal(#(label, types.Specific(set.from_list(row.own_total))))
+  list.each(row.callers, fn(caller) {
+    #(label <> " <- " <> caller, checked_set(results, caller))
+    |> should.equal(#(label <> " <- " <> caller, charge))
+  })
+  // `why`, for the name's own total and for every caller's telling of it.
+  let rendered = rendered_set(row.charge)
+  let assert Ok(own_why) = graded.run_why(root, row.name)
+  #(label, string.contains(own_why, rendered_set(row.own_total)))
+  |> should.equal(#(label, True))
+  // `graded effect`, in the one wording the fast path answers in too.
+  let assert Ok(query) = graded.run_effect(root, row.name)
+  #(label, string.contains(query, "effects " <> row.name <> " : " <> rendered))
+  |> should.equal(#(label, True))
+  #(label, graded.run_effect_from_project(root, row.name))
+  |> should.equal(#(label, Ok(query)))
+  // And the cause, wherever two surfaces describe the same one.
+  let callers_why =
+    list.map(row.callers, fn(caller) {
+      let assert Ok(output) = graded.run_why(root, caller_name(caller))
+      output
+    })
+  list.each([query, ..callers_why], fn(output) {
+    case row.cause {
+      Some(cause) ->
+        #(label, cause, string.contains(output, cause))
+        |> should.equal(#(label, cause, True))
+      None -> Nil
+    }
+    list.each(row.absent, fn(absent) {
+      #(label, absent, string.contains(output, absent))
+      |> should.equal(#(label, absent, False))
+    })
+  })
+}
+
+// The effect set a function's `check` line was weighed against: every
+// contributor it reported, unioned — which under a `[]` budget is the whole of
+// what the function is charged.
+fn checked_set(
+  results: List(types.CheckResult),
+  function: String,
+) -> types.EffectSet {
+  results
+  |> list.flat_map(fn(result) { result.violations })
+  |> list.filter(fn(violation) { violation.function == function })
+  |> list.fold(types.Specific(set.new()), fn(total, violation) {
+    types.union(total, violation.explanation.actual)
+  })
+}
+
+// An effect set as every surface prints it, so an expectation is compared
+// against the printed form rather than a guess at its ordering.
+fn rendered_set(labels: List(String)) -> String {
+  annotation.format_effect_term(
+    effect_term.from_effect_set(types.Specific(set.from_list(labels))),
+  )
+}
+
+// The bare function name a `check` line's violations are keyed by.
+fn function_of(name: String) -> String {
+  let assert Ok(#(_module, function)) = annotation.split_function_name(name)
+  function
+}
+
+// The module each matrix caller lives in, which its bare name does not carry.
+fn caller_name(caller: String) -> String {
+  case caller {
+    "tick" -> "wired.tick"
+    "local_governed" -> "gov.local_governed"
+    "call_" <> _ -> "app." <> caller
+    _ -> "ffi." <> caller
+  }
+}
+
 pub fn two_target_restricted_checks_do_not_share_a_helper_test() {
   // One helper, two callers, opposite targets. The analysis of that helper is
   // memoised by callee and ancestors and by nothing else, so the table carried
@@ -2318,7 +3347,7 @@ pub fn two_target_restricted_checks_do_not_share_a_helper_test() {
   // was right; together the Erlang one failed on the JavaScript one's `[Disk]`.
   let root = "build/target_restricted_memo"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ext.b : [Disk]\ncheck ext.e : []\ncheck ext.j : []\n",
@@ -2367,7 +3396,7 @@ pub fn a_returns_line_is_computed_on_the_producer_targets_test() {
   // disagreed with the `effects` line beside it, which was narrowed.
   let root = "build/returns_target_restricted"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #("proj.graded", "external effects ext.b : [Disk]\n"),
     #(
       "ext.gleam",
@@ -2399,7 +3428,7 @@ pub fn an_ordinary_target_restricted_body_narrows_too_test() {
   // `@target` was charged an effect no build of it can perform.
   let root = "build/ordinary_target_restricted_body"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #("proj.graded", "external effects ext.b : [Disk]\ncheck ext.w : []\n"),
     #(
       "ext.gleam",
@@ -2561,7 +3590,7 @@ pub fn a_dependency_declaration_out_of_reach_answers_unknown_test() {
   // the source.
   let root = "build/dep_declaration_out_of_reach"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #("proj.graded", "external effects app.a : []\ncheck app.a : [Disk]\n"),
     #(
       "build/packages/dep/dep.graded",
@@ -2603,7 +3632,7 @@ pub fn the_effect_fast_path_widens_a_dependency_fallback_test() {
   // charged, so it reads that one dependency module before answering.
   let root = "build/effect_fast_path_dep_fallback"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects dep/ffi.run : [Time]\ncheck app.wrapper : [Time]\n",
@@ -2977,7 +4006,7 @@ fn checker_infer_opaque_field() -> Result(List(types.EffectAnnotation), Nil) {
     signatures.empty(),
     dict.new(),
     dict.new(),
-    types.every_target(),
+    types.all_targets(),
   ))
 }
 
@@ -3174,7 +4203,7 @@ fn checker_infer_factory_forward() -> Result(List(types.EffectAnnotation), Nil) 
     signatures.from_glance_module("factory_forward", module),
     dict.new(),
     dict.new(),
-    types.every_target(),
+    types.all_targets(),
   ))
 }
 
@@ -5879,6 +6908,50 @@ pub fn a_module_level_external_over_a_project_module_is_untouched_test() {
   support.cleanup(root)
 }
 
+pub fn a_module_level_external_does_not_excuse_a_visible_body_test() {
+  // The line answers for every *caller* of `logs`, and a caller is charged
+  // `[Disk]` and nothing else. `logs`'s own budget is another question: the body
+  // is visible Gleam that runs, so a `check` line on it weighs what the body
+  // does beside what the line declares. Trusting the line alone let a body
+  // demonstrably over its budget report nothing at all — while the per-function
+  // form over the same body is already rejected as declaring nothing.
+  let root = "build/module_external_visible_body"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external effects m : [Disk]
+external effects loud.shout : [Stdout]
+check m.logs : [Disk]
+",
+    ),
+    #(
+      "m.gleam",
+      "import loud
+
+pub fn logs() -> Nil {
+  loud.shout()
+}
+",
+    ),
+    #(
+      "loud.gleam",
+      "@external(erlang, \"l\", \"s\")
+@external(javascript, \"l\", \"s\")
+pub fn shout() -> Nil
+",
+    ),
+  ])
+
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) = list.find(results, fn(r) { r.file == root <> "/m.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("logs")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  support.cleanup(root)
+}
+
 pub fn a_catalogued_modules_uncatalogued_function_is_not_flagged_test() {
   // The catalog keys some of `gleam/erlang/process`'s functions and not
   // `subject_owner`. With that package's own sources not installed, nothing can
@@ -6159,7 +7232,7 @@ pub fn an_undeclared_fallbacks_reference_warns_only_about_what_it_knows_test() {
   // tracks it, so it still warns.
   let root = "build/reference_warning_undeclared_fallback"
   support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
+    #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
       "external effects ffi.disk : [Disk]
@@ -6226,13 +7299,95 @@ pub fn pass_loud() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_reference_warning_quotes_only_the_half_in_reach_test() {
+  // A reference sits in a body that runs on Erlang alone, so the two externals it
+  // passes read there and nowhere else. `js_only`'s declaration is for
+  // JavaScript, so what runs here is its Gleam body and the warning quotes
+  // exactly that body's `[Disk]`. `erlang_only`'s declaration covers Erlang, so
+  // nothing declares what runs and the reference carries the `[Unknown]` a
+  // warning stays silent about — its Gleam body runs on the target this one
+  // never reaches. Quoting both halves regardless announced a `[Disk]` no
+  // implementation in reach performs, and paired it with an `[Unknown]` the walk
+  // does not charge.
+  let root = "build/reference_warning_half_in_reach"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "external effects ffi.disk : [Disk]
+check ext.pass_js_only : [_]
+check ext.pass_erlang_only : [_]
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+pub fn disk() -> Nil
+",
+    ),
+    #(
+      "raw.gleam",
+      "import ffi
+
+@external(javascript, \"e\", \"j\")
+pub fn js_only() -> Nil {
+  ffi.disk()
+}
+
+@external(erlang, \"e\", \"e\")
+pub fn erlang_only() -> Nil {
+  ffi.disk()
+}
+",
+    ),
+    #(
+      "ext.gleam",
+      "import raw
+
+fn helper(f: fn() -> Nil) -> Nil {
+  f()
+}
+
+@target(erlang)
+pub fn pass_js_only() -> Nil {
+  helper(raw.js_only)
+}
+
+@target(erlang)
+pub fn pass_erlang_only() -> Nil {
+  helper(raw.erlang_only)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  r.warnings
+  |> list.map(fn(warning) {
+    let assert types.UntrackedEffectWarning(function:, reference:, effects:, ..) =
+      warning
+    #(function, reference, effects)
+  })
+  |> should.equal([
+    #(
+      "pass_js_only",
+      types.QualifiedName("raw", "js_only"),
+      types.Specific(set.from_list(["Disk"])),
+    ),
+  ])
+  support.cleanup(root)
+}
+
 pub fn a_governed_native_body_still_warns_about_its_references_test() {
   // The opposite case to the covered `@external` below, and the distinction the
   // warning turns on. `external effects governed : [Net]` answers for every
-  // function in the module, so a `check` line on one is judged against the
-  // declaration and the body's `[Disk]` is never weighed — but these bodies are
-  // ordinary Gleam that *runs*, so the effectful reference one passes is as
-  // untracked as it would be anywhere else.
+  // *caller* of the module's functions, but these bodies are ordinary Gleam
+  // that runs: a `check` line on one is judged against the declaration and the
+  // body alike, and the effectful reference one passes is as untracked as it
+  // would be anywhere else — the reference is handed to code the declaration
+  // speaks for, which is exactly what a warning is for.
   let root = "build/reference_warning_governed_module"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
@@ -6273,13 +7428,19 @@ pub fn strict() -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/governed.gleam" })
 
-  // Budgets answer from the declaration, which is what every caller is charged:
-  // the `[Net]` line holds, and the `[]` line fails on `[Net]` rather than on
-  // the `[Disk]` sitting in the body.
-  let assert [violation] = r.violations
-  violation.function |> should.equal("strict")
-  violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Net"])))
+  // A budget covers both halves: the declaration, and the visible body beside
+  // it. Both bodies call `helper`, a sibling the same line governs, so both
+  // halves are the `[Net]` a caller of `helper` from anywhere pays — `strict`
+  // breaks its `[]` on each and `wrapped` meets its `[Net]` on both.
+  r.violations
+  |> list.map(fn(violation) {
+    let assert types.Specific(effects) = violation.explanation.actual
+    violation.function
+    <> ": "
+    <> string.join(set.to_list(effects) |> list.sort(string.compare), ",")
+  })
+  |> list.sort(string.compare)
+  |> should.equal(["strict: Net", "strict: Net"])
 
   // Both bodies still pass the reference, so both warn.
   r.warnings

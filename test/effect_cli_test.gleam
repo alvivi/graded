@@ -497,6 +497,48 @@ pub fn prose_states_module_external_precedence_test() {
   )
 }
 
+pub fn prose_names_an_out_of_reach_declaration_test() {
+  // The dependency ships a declaration for JavaScript, this package names
+  // Erlang, and `run` has no Gleam body to run in its place — so the charge is
+  // the `[Unknown]` of a name nothing in reach implements. Carrying the
+  // declaration's source beside it credited dep's shipped `[Time]` line with a
+  // set that line states no part of, sending the reader to a declaration the
+  // answer had just ruled out.
+  let project =
+    write_fixture("build/graded_effect_out_of_reach", [
+      #(
+        "gleam.toml",
+        "name = \"graded_effect_out_of_reach\"\ntarget = \"erlang\"\n",
+      ),
+      #("graded_effect_out_of_reach.graded", ""),
+      #(
+        "build/packages/dep/dep.graded",
+        "external effects dep/ffi.run : [Time]\n",
+      ),
+      #(
+        "build/packages/dep/src/dep/ffi.gleam",
+        "@external(javascript, \"dep_ffi\", \"run\")
+pub fn run() -> Nil
+",
+      ),
+    ])
+  let assert Ok(prose_output) =
+    graded.run_effect_formatted(project, "dep/ffi.run", answer.Prose)
+  prose_output
+  |> should.equal(
+    "dep/ffi.run has effects that could not be determined: [Unknown]
+  source: an external declared only for a target this build does not compile",
+  )
+  let assert Ok(graded_output) =
+    graded.run_effect_formatted(project, "dep/ffi.run", answer.Graded)
+  graded_output
+  |> should.equal(
+    "effects dep/ffi.run : [Unknown]
+// an external declared only for a target this build does not compile",
+  )
+  cleanup(project)
+}
+
 pub fn prose_names_a_type_field_as_a_field_test() {
   prose("opaque_receiver.Validator.to_error")
   |> should.equal(
@@ -698,6 +740,43 @@ pub fn an_unparseable_project_module_declines_the_fast_path_test() {
   graded.run_effect_from_project(project, "broken.foo")
   |> parse_failure
   |> should.equal(broken)
+  cleanup(project)
+}
+
+pub fn a_nested_source_reads_its_targets_from_its_own_root_test() {
+  // A relative source directory nested in the current project: dependency state
+  // is the outer project's, but the spec, the config and the targets are this
+  // directory's. Reading the targets from the dependency root instead had the
+  // fast path classify `timed` under the *outer* package's `target` — where its
+  // erlang declaration covers everything and no fallback runs — so it answered
+  // from the declaration alone while the full context charged the body too.
+  let project =
+    write_fixture("build/graded_effect_nested_targets", [
+      #(
+        "graded_effect_nested_targets.graded",
+        "external effects ext.timed : [Time]
+external effects ext.disk : [Disk]
+",
+      ),
+      #(
+        "ext.gleam",
+        "@external(erlang, \"e\", \"d\")
+@external(javascript, \"e\", \"d\")
+pub fn disk() -> Nil
+
+@external(erlang, \"e\", \"t\")
+pub fn timed() -> Nil {
+  disk()
+}
+",
+      ),
+    ])
+  // No `gleam.toml` of its own, so it is checked for every target — and the
+  // erlang-only declaration leaves the Gleam body running on the other.
+  let answered = graded.run_effect(project, "ext.timed")
+  answered |> should.equal(graded.run_effect_from_project(project, "ext.timed"))
+  let assert Ok(output) = answered
+  output |> string.contains("Disk") |> should.be_true()
   cleanup(project)
 }
 
