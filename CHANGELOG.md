@@ -9,334 +9,461 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`graded why <name>` explains where a function's effects come from, call by call.** It re-walks the function's body and prints one line per effect contributor — what the call is, the effects it contributes, and either why they stayed unresolved or which source resolved them — in the same wording violation messages use: ``calls wisp/client.send with effects [Http] (from wisp's catalog entry)``, ``calls field `run` on `config.inner`, whose type could not be resolved, with unresolved effects [Unknown]``. Unlike a violation, it doesn't need the function to fail anything: a function within its budget, or with no `check` line at all, is explained the same way, so an unexpected effect is traced without first writing a budget to make it fail. The block header states the function's total effect in the words `graded effect` states one in (`is pure — no effects ([])`, `has effects that could not be determined: [Unknown]`, ``has the effects of its `f` argument, and none of its own`` for a function forwarding a callback — or forwarding an unannotated `fn`-typed field, whose synthetic `r.run` variable the block carries an identity bound for, so the total reads as that field's effects rather than as `has effects [r.run]`) — a total that is still symbolic stays symbolic: a function applying an operator parameter to a callback one is headed `has effects [action([cb])]`, exactly as `graded effect` answers, even though the contributor line for that application grounds it to the `[Unknown]` every printed effect set is. Grounding cuts the other way too: a variable the function has no parameter for — an internal binder an unresolved higher-order shape left in a knowledge-base term — reads `[Unknown]` on the contributor line just as the header collapses it, rather than surfacing as an effect named after the binder — and, when there is one, the whole `check` declaration it was analysed under, bounds included — a function with two `check` lines gets one block per line, each analysed under its own bounds, since the bounds decide what the analysis substitutes. Contributors are the calls the checker reaches, not the call sites you wrote: a resolved call to a same-module function is replaced by *that* function's calls, so a helper's calls surface in its caller's list, and a function whose helpers are all pure reports `has no reachable effect contributors`. The name is a module-qualified function of one of your own modules, private ones included (`graded effect` declines those, since it answers from the public surface); a dependency function, a type field, or an unqualified name exits non-zero. An `@external` is explained by what declares it rather than by a body: an `external effects` line answers (`calls mydep/ffi.now with effects [Time] (from your spec's external declaration)`), and an undeclared one reports the conservative `[Unknown]` its callers are charged — a pure-looking Gleam fallback body says nothing about what the foreign implementation does. A function under a module-level `external effects <module>` line is explained by that declaration *and* by its body, which is visible Gleam that runs. Nothing is written — not the spec file, not the cache.
-
-- **`graded infer --dry-run` previews what `infer` would change and writes nothing.** It prints a line diff of the spec file — the `-`/`+` lines with up to two lines of context around them, hunks separated by `@@` — or `graded: no changes` when the file already says what inference found. Neither the spec file nor the `build/.graded/` cache is touched, so it is safe to run on a project you don't want to modify, and a first-ever run (no spec file yet) previews as an all-additions diff. The diff's old side is the spec file exactly as it sits on disk, so the re-rendering `infer` applies to every line it writes shows up too, including a trailing-newline change. The flag goes before or after the directory (`graded infer --dry-run src`, `graded infer src --dry-run`) and exits 0 whether or not there is a diff — it is a preview, not a gate; `format --check` is still the CI gate.
-
-- **A record field set through a builder (`with_*`) record update now resolves to the builder-set value's precise effect, last-write-wins, instead of `[Unknown]`.** `let opts = default_options() |> with_resolver(logging_resolver); annotate(opts)` now reports `annotate`'s field call `options.resolver()` as `[Stdout]` (the resolver the builder set), not the default `default_options` wired and not the conservative `[Unknown]`. A later update to a different field preserves the earlier one, two updates to the same field take the last, and an updated field resolves even when the base record is untraceable (an inherited field over an opaque base stays `[Unknown]`). The whole caller unions this with the construction's own effect (a `default_options` that eagerly reads disk contributes its `[Disk]` alongside the field's `[Stdout]`). A record field wired from a producer and then let-bound (`let l = make(); l.emit()`) likewise now resolves to the wired value's precise effect. This works **across a package boundary**: graded derives an installed dependency's builder signature from the dependency's own source under `build/packages` (or a path dependency's `src/`), so a consumer composes the same overlay and resolves the field onto the resolver it supplied. A dependency whose source graded can't parse stays `[Unknown]` for the builder's field (sound), as does a field wired from a closure's own parameter (`fn(handler) { Options(..base, resolver: handler) }`), whose value is fixed only where the closure is applied.
-
-- **`graded pack` ships your `.graded` spec on a hex release.** Gleam can't include a package-root file like `myapp.graded` in a published package, so `graded pack` injects the configured spec into the hex tarball built by `gleam export hex-tarball`. It lands at `build/packages/<your-package>/<spec_file>` in downstream projects and is read by graded's resolver with no consumer-side setup. `pack` patches and rehashes the tarball in place; publish it with the Hex publish API (`pack` prints the command). It packs the current project by default, or one you point it at (`graded pack ../mylib`); the tarball is `<root>/build/<name>-<version>.tar`, whose name and version are verified against the project. A custom `spec_file` (e.g. `effects/api.graded`) is injected at its configured archive-relative path; an absolute or root-escaping path is rejected. Do not run `gleam publish` afterwards — it rebuilds the tarball and drops the injected spec.
-- **`graded --help` and `graded --version`.** `--help` prints the command list; `--version` prints the installed version. (Run via `gleam run -m graded -- --help` so `gleam run` passes the flag through.)
-
-- **`graded effect` names the source that answered.** Prose gains a `source:` line and `--format=graded` a `// resolved from ...` comment, naming which source decided the effect: `your spec`, `your spec's external declaration`, `in-memory inference`, `<pkg>'s shipped spec`, `path dependency <pkg>`, `inference over path dependency <pkg>'s source`, or `<pkg>'s catalog entry` — or, for a name a module-level `external effects` declaration answers, that declaration and the module it covers. A type field names the file its `type` line sits in (`declared by a `type` line in your spec`), so a field answered by a dependency's spec points at the dependency. `graded effect myapp/router.handle` now answers `myapp/router.handle has effects [Stdout]` followed by `  source: your spec`, so a wrong answer points at the line to edit instead of leaving you to guess which of the spec, a dependency, or the catalog won. The `.graded` output still parses back — the provenance stays inside a comment.
-
-- **`graded effect <name>` looks up a function or type-field effect without writing anything.** Until now the only way to see an effect was `graded infer`, which rewrites the spec file and the cache; `graded effect myapp/router.handle` prints `myapp/router.handle has effects [Stdout]` and leaves both untouched. `<name>` is either a module-qualified function or a `module.Type.field` type field (`graded effect myapp/repo.Repo.find`), in whichever form declared it (`type myapp/repo.Repo.find` or the bare `type Repo.find`). The output describes the answer in sentences and states only what the answer proves: a function whose effect term is exactly its callback's reports that argument's effects as its own (`myapp.forward has the effects of its \`f\` argument, and none of its own` — a claim about effects, not about the argument being called), while a concrete bound is reported as the assumption it is, separately from the total (`calls to argument \`f\` are treated as having effects [Stdout]`). A pure function is reported as pure, and a name graded knows but can't resolve reads as effects it could not determine rather than as a bare `[Unknown]`. Pass `--format=graded` for the same answer as a `.graded` line with provenance on a `//` comment, which parses back — the format to pipe into a spec file. Public functions resolve on a fresh checkout with no prior `graded infer`; type fields resolve from declared `type` lines. A private function, an undeclared field, or an unknown name exits non-zero — except under a module-level `external effects <module>` declaration, which answers for every name in its module that nothing else keys, so such a name resolves to the declared effect whether or not it exists. A name the spec file already decides — a `type` field declared under its own module, an `external effects` function, or a committed `effects` line for one of your own modules — is answered from the spec alone, without parsing the package or running type inference.
-
-- **`[tools.graded].targets` says which targets your package is built for.** `gleam.toml`'s top-level `target` names exactly one, so a package really built for both says so here: `targets = ["erlang", "javascript"]`. Every `@external` is then read on each target, so a declaration covering one and a Gleam fallback body running on the other are both charged to callers. Omit it and graded follows `target`; where neither field names a target, graded reads Gleam fallback bodies on `erlang` — what the compiler builds when nothing says otherwise — while still reading every `@external` *declaration* on both, since a `gleam build --target javascript` it never sees compiles the other half. A list graded cannot read whole (`targets = ["erlang", "js"]`, or a value that is not a list) reads as every target, the same as an unrecognised `target`.
+- New `graded why <name>` command: explains where a function's effects come
+  from, one line per effect contributor, naming the source that resolved each
+  one or the reason it stayed `[Unknown]`. Works for any project function,
+  private ones included, with or without a `check` line, and writes nothing.
+- New `graded effect <name>` command: looks up a function or type-field
+  effect and prints it in prose, without writing the spec file or the cache.
+  Pass `--format=graded` for a `.graded` line that parses back.
+- `graded effect` names the source that answered — your spec, a dependency's
+  shipped spec, a catalog entry, inference — as a `source:` line in prose and
+  a `// resolved from ...` comment in `--format=graded`.
+- New `graded infer --dry-run` flag: prints a line diff of what `infer` would
+  change in the spec file, and writes nothing.
+- New `graded pack` command: injects the configured `.graded` spec into the
+  hex tarball built by `gleam export hex-tarball`, so the spec ships with the
+  package and downstream projects read it with no setup.
+- New `graded --help` and `graded --version`.
+- New `[tools.graded].targets` setting for packages built for more than the
+  one target `gleam.toml`'s `target` field can name.
+- A record field set through a builder (`with_*`) record update now resolves
+  to the set value's precise effect, last-write-wins, instead of `[Unknown]`
+  — including when the builder lives in a dependency.
 
 ### Changed
 
-- **A package that names no `target` no longer charges a dependency `@external` the `[Unknown]` of a fallback body the build never runs.** Such a package now reads fallback bodies on `erlang`, the compiler's own default: two dozen-odd functions of the standard library declare Erlang and fall back to Gleam for JavaScript, so `list.append`, `list.length`, `dict.from_list`, `string.concat` and `uri.parse` all came back `[Unknown]` in a default project and `check` lines that hold today failed. What a declaration *states* is still read on every target, so the assumed default never drops a declared effect: an `@external(javascript, …)` in your own package stays foreign code, your `external effects` line for it keeps answering and survives `graded infer`, and callers keep paying it. Set `[tools.graded].targets` for a package really built for both — that is what puts a fallback body running on the other target back into every caller's charge.
-
-- **Foreign code is now opaque on every channel a value carries its effects through, not just at a call.** An `external effects` line says what *calling* an `@external` costs; nothing in it describes the value that function hands back. Until now graded read the Gleam fallback body beside the declaration for exactly that: the closure it returns, the provenance of the record it builds, and the factory and update-builder signatures derived from its tail expression. On a target the declaration covers, that body never runs. So `let h = my_ffi.make(); h()` now reports ``calls a function returned by `my_ffi.make`, whose producer could not be resolved, with unresolved effects [Unknown]`` where it used to inherit the fallback's `[]`, and a record field wired through an FFI factory or `with_*` builder reports ``whose value could not be traced`` rather than the field the fallback wired. This holds whether or not the external is declared, and whether or not its fallback body runs on some target — there is no declared operator for a fallback-derived one to be unioned with, the way the effects channel unions a declaration with a running fallback. Ordinary Gleam producers, factories and builders are unaffected. **This will surface as new violations in specs that pass today**, wherever an FFI producer's result was resolved from its fallback; there is no annotation that declares an FFI producer's return, so the fix is to wrap the producer in ordinary Gleam or to annotate the field its result lands in with a `type` line.
-
-  `graded infer` no longer writes a `returns` line for an `@external`, and removes one that a function which has since become `@external` left behind — so the spec stops publishing a claim about foreign code no declaration backs.
-
-  The same rule now applies to your **dependencies**, checked against each dependency's own source under `build/packages` (or a path dependency's `src/`) rather than against what its spec claims: a shipped `effects` or `returns` line for a function that package declares `@external` is refused, while its `external effects` line, a module-level external, and the bundled catalog entry underneath keep answering — a stale dependency line can no longer bury a valid catalog declaration, and it takes its parameter bounds with it when it goes. A dependency published before this change stops being believed as soon as *you* upgrade graded, with no republish needed; the one gap left is a dependency whose sources aren't under `build/packages` to scan, which is closed only by that dependency regenerating its spec. And where a dependency's declared external carries a fallback body that runs on some target, its declaration is now widened by `[Unknown]`: that body is what runs there, no consumer walks a dependency's bodies, and `external effects dep/ffi.run : []` over an `@external(javascript, …)` with an Erlang fallback used to read as pure on Erlang. Where such a declaration covers no target your `gleam.toml` names and has no Gleam body to run in its place, nothing your build compiles implements the name at all, and the call reads `[Unknown]` under a message that says why (`wrapper calls dep/ffi.run, an external declared only for a target this build does not compile, with unresolved effects [Unknown] but declared [Time]`) rather than being charged an implementation provably not built. `graded effect dep/ffi.run` answers that same `[Unknown]` under `source: an external declared only for a target this build does not compile`, and where a Gleam fallback body does run in the declaration's place, under `source: its Gleam fallback body, which is what runs on the targets this build compiles` — either way naming what the charge came from rather than the shipped line the answer has just ruled out. One of **your own** externals reads the same way, on every surface at once: `check myapp/ffi.jsonly : []` and `graded why myapp/ffi.jsonly` weigh the `[Unknown]` its callers pay rather than the `external effects` line no build in reach compiles, and a value wired into a record field says it in the same words (``calls field `read` on `c`, wired to an external declared only for a target this build does not compile, with unresolved effects [Unknown]``). An external that is both undeclared and out of reach is reported as out of reach, since that is what decides the charge.
-
-- **A `check` line on an `@external` function is now checked against what declares it, instead of silently passing.** Such a line was verified against the function's body — of which a bodyless external has none and an external with a Gleam fallback has one the foreign code needn't match — so `check myapp/ffi.now : []` collected no effects and passed whatever the FFI did, even while every *caller* of `now` was correctly charged its `[Time]`. The budget is now checked against the external's declaration: `check myapp/ffi.now : []` fails against a declared `external effects myapp/ffi.now : [Time]` (`now is an external with effects [Time] (from your spec's external declaration) but declared []`), and fails as `[Unknown]` when nothing declares the external (`now is an external with no declared effects, with unresolved effects [Unknown] but declared []`). A budget that covers the declaration passes. What declares an external is an `external effects` line, a module-level external, or a catalog entry — never an `effects` line, which for an `@external` is inference over a body the foreign code needn't match, so a function that became an `@external` after its spec was written is checked against `[Unknown]` rather than against the line it left behind. Declaring `external effects myapp/ffi.now : [Unknown]` is still a declaration: it reports as one and names itself as the source. Whether the foreign implementation matches its declaration is the FFI author's to establish; what graded checks is the budget against the declaration, so an external you want inside a budget is one you declare with `external effects`. Existing specs with a `check` line on an external — which until now proved nothing — will report these violations on upgrade.
-
-  The same rule now decides every *other* answer about that name, so one function reads the same everywhere: a stale `effects` line no longer answers for a **call** into the external either (`wrapper calls myapp/ffi.now, an external with no declared effects, with unresolved effects [Unknown] but declared []`, whether the call crosses a module boundary or not), nor for `graded effect myapp/ffi.now`, which now reports `has effects that could not be determined: [Unknown]` with `source: an external with no declared effects` instead of the line's `[]`. `graded effect` likewise answers from a `external effects <module>` declaration covering one of your modules: that declaration is what every caller of those functions is charged, and now what the query reports. Those bodies still *run*, though, unlike an `@external`'s dead fallback — so a `check` line on one of that module's functions is weighed against the declaration *and* the body, `check myapp/db.connect : [Disk]` reports what the visible Gleam does beyond the declared `[Disk]`, `graded why myapp/db.connect` lists both halves — the declaration's own line reads `connect is declared for its callers with effects [Disk] (from a module-level external in your spec)`, since `connect` is ordinary Gleam and the line states what calling it costs — and a reference the body passes as a value still warns that its effects won't be tracked. So the four surfaces divide cleanly: a caller's budget and `graded effect` state what *calling* the name costs, while `check` and `graded why` weigh the function itself — the declaration plus, for a module-level line, its own body. A function in the declaring module is a caller like any other: `myapp/db.disconnect` calling `connect()` is charged the declared `[Disk]`, exactly as a call from another module is, where it used to walk the body and charge its caller effects nobody else paid. For an `@external` the two sides coincide: a Gleam fallback body that runs is charged to callers, weighed against the function's own line, and stated by the query alike.
-
-  This holds where the external is reached as a **value** rather than through a call: passed as a callback to a higher-order helper (`apply(myapp/ffi.now)`), or wired into a record field (`Clock(read: now)`) whose field call is later resolved. Both are charged the declaration — `[Unknown]` where nothing declares the external — so `check wrapper : []` now fails on a wrapper that hands an undeclared external to a helper, where it used to pass: the bodyless `@external` was lifted as though its empty body were the implementation, giving the `[]` a direct call to the same name was already correctly denied. This affects same-module and cross-module references alike.
-
-- **BREAKING: a per-function `external effects` line naming one of your own Gleam-bodied functions is now ignored, with a warning.** The line declares code graded cannot see. A function of this package whose body is right there has nothing foreign to declare, and that body is what every caller runs — yet the line silenced it: `external effects myapp.logs : []` over a `logs` that calls `io.println` made `check`, `why` and `graded effect` all report nothing, while same-module callers walked the body anyway and disagreed. The state did not heal, either: `graded infer` deliberately wrote no `effects` line for a name an external covered, so the spec under-reported the function for good. Such a line is now stale — `graded check` warns about it once (`names a function of this package with a Gleam body — the line declares no foreign code and is ignored`), every path walks the body instead, and `graded infer` deletes the line and writes the `effects` line it was suppressing. A committed `effects` line for the same name is set aside with it: the pair is a spec state no `infer` writes, so where they coexist the fresh walk answers for the name — for the function's own `check` line, for cross-module callers and for `graded effect` alike — rather than the committed term quietly restoring the silence the warning says was lifted. **This reverses documented behaviour**: the line was described as authoritative within one spec, and the per-function form was advised for project modules whose functions differ. There is no replacement — `external effects` is not an override for inference over your own code. If inference is wrong for one of your functions, fix the source or widen the `check` budget; the module-level `external effects <module>` form still governs a whole module of your own and is unchanged. A *dependency* function with a visible body is unaffected: declaring one is what the line is for.
-
-- **The "passed as a value" warning no longer quotes a stale foreign effect.** `run passes ffi.now as a value — its effects [Disk] won't be tracked` was read straight from the knowledge base, so a reference to an `@external` that a leftover `effects` line named was reported as carrying that line's effects — the one thing no caller of the same name is charged. The warning now reads its effect through the same boundary a charge goes through, so it quotes a declaration or says nothing. An unresolved reference still warns about nothing, as before — including one whose effect is unresolved *and* concrete, as an undeclared `@external` whose Gleam fallback runs is: where the whole set is the `[Unknown]` that fallback's absence of a declaration produced, the warning stays silent rather than announcing ``its effects [Unknown] won't be tracked``. A set with a known half (`[Disk, Unknown]`, an undeclared external whose fallback reaches the disk) still warns, and quotes both. It quotes only the halves the enclosing body reaches, too: from a `@target(erlang)` body, a reference to an `@external(javascript, …)` warns about what its Gleam fallback does and nothing else, while one to an `@external(erlang, …)` whose fallback is the JavaScript half stays silent — that body is not what runs here.
-
-- **`graded check` flags `external effects` lines that resolve to nothing.** Mirroring the existing `check`- and `type`-line lints: a per-function line whose `module.function` matches no dependency, catalog entry, or project function, and a module-level line whose module is neither a dependency nor one of your own — nor one the selected catalog keys, by a module-level entry or by the per-function entries that are its usual shape — are both typos — the declaration covers nothing and no call can reach it. A dependency whose source is installed and parses is weighed by that source, which settles the question both ways: it proves the functions it defines, and a name it provably lacks is flagged even where a catalog module-level entry would answer for every name in the module — the catalog is a stand-in for sources graded cannot read, not a second opinion against one it can. Existence only: a name that resolves but that graded cannot introspect — a dependency with no readable source, or one whose source will not parse — is exactly what the line is for and is never flagged. A module the catalog keys only by its per-function entries answers for its uncatalogued names too, at both tiers: `external effects gleam/erlang/process.subject_owner : [Process]` is not a typo just because the catalog stops short of that one function and the package's own source isn't installed. And a line is only ever dead against a tree that holds everything: with a package the manifest lists but `build/packages` doesn't (a fresh clone before `gleam deps download`, or a partial CI cache), a module the lint cannot locate might be that package's, so its lines stay silent — while lines it *can* settle are unaffected, since your project's own modules were parsed either way and so was every dependency that is installed. `external effects m.no_such : []` over a project module `m` without that function is still flagged, as is a line naming a function an installed dependency's parsed source plainly lacks. (`graded effect` still answers from a module-level line for a module graded can't locate; it reports what the spec says about a name rather than checking the name exists.)
-
-- **A directory inside a package's `src/` now narrows what is reported, not what is analysed.** `graded check src/sub` used to build its module index from the subtree alone: every module was re-keyed (`sub/inner` became `inner`, so every `check` line naming it stopped matching and graded warned `names no function in any project module`), calls out of the subtree resolved against nothing, and an out-of-scope `@external` was charged whatever stale `effects` line the spec carried instead of the `[Unknown]` the whole-package run charges. Which spec was read even depended on the path form. The whole package is now resolved and the passed directory filters the results, so a scoped `check` reports exactly what the unscoped one reports for those files, and nothing for the rest. `why` and `effect` are read-only lookups over that same index and answer for a module outside the scope. `infer` writes one package-level spec, so a scoped `infer` writes the whole package's — a spec built from a subtree's modules alone would state the package's public surface wrongly rather than partially. A directory that is *not* under a package's `src/` — a standalone tree, an out-of-tree source directory, a fixture subtree of the surrounding project — keeps acting as its own root, as before.
-
-- **`graded effect` reads publicity and existence from your source, not from your spec.** The command answers for the public API, but the only names it could decline were ones the knowledge base had never heard of — so a hand-written `effects` line exported whatever it named. A **private** function with such a line answered, as did a line naming **no function at all** (`effects myapp.typo : []`, a typo or a function since deleted), and a private `@external` its own spec declares answered too. All three now exit non-zero with ``no public function or type field named `<name>` ``, decided by the module's source before any entry is weighed: within a module of this package that graded parsed, private and undefined names decline whatever the spec says about them. A declaration describes what foreign code does for the callers that reach it; it does not export the name. Nothing about how callers resolve any of these names changes, and `graded why`, which accepts private functions, still explains them.
-
-  The documented carve-out — a module-level `external effects <module>` answers for every name in its module, existing or not — keeps answering where graded has no source to consult, which is what it is for: a module outside your package. Over one of *your* modules the source now decides, so such a declaration answers for that module's public functions and no longer for its private or undefined ones.
-
-- **`graded effect` no longer answers from the spec for a module that will not parse.** The command tries a spec-only fast path before assembling the project, and a read or parse failure on the module the queried name lives in was read as "this module declares no foreign code" — so `graded effect broken.foo` quoted a committed `effects broken.foo : []` while `graded check` on the same tree errored `Could not parse: …/broken.gleam`. The fast path now declines a module of this package's it could not read, and the full path reports the parse failure the way every other command does. A module that is not this package's is unaffected: there is no source to consult, so the spec answers alone as before.
-
-- **`graded effect` no longer answers for a private `@external`.** The command answers from the public API surface — a private ordinary function exits non-zero — but a private external was reported as `[Unknown]` rather than as the miss it is. Private externals are still resolved for every caller that reaches them, and `graded why`, which accepts private functions, still explains them.
-
-  The exception is a Gleam fallback body an `@external` reaches on a target it declares no implementation for: `@external(javascript, "…", "…")` on a function with a body means that body runs on Erlang, so a `check` line on the function now covers the declaration *and* that body — `check myapp/ffi.log : []` fails on a fallback that writes to disk, where the declaration alone would have passed it. **Every caller of that external is charged both, too**: effect composition is union, and a body that runs is code the caller pays for, so `check myapp.wrapper : []` over a `wrapper` that calls `log` fails on the same `[Disk]`, whether the call crosses a module boundary or not. `graded effect myapp/ffi.log` and `graded why` report that same total, so the external, its callers and the query cannot disagree about one name — including an external nothing declares, whose fallback effects are charged beside the conservative `[Unknown]` rather than swallowed by it. The charge is the same on every channel that reaches the name — a direct call, the external passed as a callback, and the external wired into a record field all read one total, so a fallback known to touch the disk is never reported as a bare `[Unknown]` just because the reference travelled as a value. And within one reported call, the fallback's share substitutes with the total it is part of: calling a `[Time]` external whose fallback runs a `[Disk]` callback reports the call as `[Disk, Time]` with the body's share as `[Disk]`, not as the unbound parameter the summary is stated over — whether the call is direct or re-bound through a helper. `graded infer` writes those callers with the same effects, so a published spec and cache no longer report a caller as pure over a fallback that isn't; consumers, who have no body to walk, read that line and nothing else. Because the declaration and the body are two different sources, the query names them apart: `effects myapp/ffi.log : [Disk]` followed by `// resolved from your spec's external declaration` *and* `// unioned with its Gleam fallback body, which runs on the targets its `@external` declares no implementation for: [Disk]`, so a declaration that says `[]` is never credited with what the body did. Violation and `why` lines say the same thing where the call is reported: `wrapper calls myapp/ffi.log with effects [Disk] (from your spec's external declaration, unioned with its Gleam fallback body)`. A fallback that calls another fallback in the same module is charged what that one does too, so a chain of them reports the effect at the end of it rather than stopping at the first — and a *recursive* fallback settles to a fixed point: the effects its recursive call substitutes for its own parameters only surface once a summary of it exists to substitute into, so summarising keeps re-walking until nothing changes rather than stopping after one pass per fallback, and a summary that will not settle is widened to `[Unknown]` instead of being reported one pass short. A summary is stated over the fallback's own parameters and nothing else: a variable an unresolved higher-order shape leaves behind — a nested closure's binder, say — is grounded to `[Unknown]` before the summary is stored, so `graded effect`, `why` and every caller read one answer for the name rather than the query alone quoting an internal binder. A field-effect variable is no phantom: a fallback reading an unannotated `fn`-typed field keeps its `r.run` variable, and the summary records the identity bound beside it — so `graded effect` states the total as that field's forwarded effects, and its `.graded` rendering emits `effects …(r.run: [r.run]) : [r.run]` rather than a variable nothing binds. A fallback that calls a function-typed parameter states that parameter's effects rather than collapsing to `[Unknown]`, so `check` on a caller passing a pure callback into one passes — a parameter only girard's inference types included: the bound is recorded and installed beside the settled summary, so a same-module caller and a sibling fallback forwarding its own callback bind it exactly as a cross-module caller does. The external handed as a *value* to a higher-order helper that applies it binds the same bound: the helper's application resolves to what the callback it passes does, rather than collapsing to `[Unknown]` because the parameter carries no annotation for the signature to show. The binder is the bound's own name in every case — a labeled callback (`with action:`) states its settled term over the in-body `action`, so the lift abstracts over that name rather than the label, and the application still reduces. And the recorded bounds keep the fallback's whole callback shape: a callback the body never invokes still holds its place in the abstraction, so the callbacks after it bind their own arguments instead of shifting one position over and going stuck. And `graded effect` states that parameter's bound beside the total, `effects myapp/ffi.run(action: [action]) : [action]`, however the external was declared. This will surface as new violations wherever a target-conditional external's fallback did more than its declaration stated. An `@external` covering every target it is compiled for is answered by the declaration alone, as before — and its Gleam body is dead text on every channel: a function reference sitting in that body is never passed anywhere, so it no longer trips the untracked-effects warning. A *dependency's* running fallback is still the conservative `[Unknown]` — no consumer walks a dependency's bodies. So is one of your own that no walk reached: a cycle in your import graph leaves the inference pass no order to run in and no body gets summarised, so callers read `[Stdout, Unknown]` for a `[Stdout]`-declared external whose body reaches the disk, rather than the declaration alone.
-
-  **A fallback body reads the externals it calls on the targets it runs on**, rather than on the package's. A body reached only on Erlang that calls an `@external(javascript, …)` reaches that callee's *Gleam fallback*, never the foreign implementation its declaration describes — the two are never built together — so a `[Disk]` declared for the JavaScript side no longer enters the calling body's effects, nor its callers'. The same holds between two fallbacks of one module whose targets are disjoint: a body running only on JavaScript contributes nothing to one running only on Erlang, which reaches that name's declaration instead. Where the fallback *does* run into something the charge is unchanged — a callee declared for a target this body runs on is charged its declaration, one whose own fallback runs alongside is charged that body, and a body running on every target the package has is charged both as before. An undeclared external reached only through its own running fallback is charged what that body does without the `[Unknown]` standing in for the implementation this one never reaches, and `graded why` names the body rather than the declaration that answered for nothing: ``calls ext.b with effects [] (from its Gleam fallback body, which is what runs on the targets this one does)``.
-
-  **`@target` narrows an ordinary function's body the same way.** A `@target(erlang)` function is built for Erlang and nowhere else, so a JavaScript-only external it calls answers with the Gleam fallback that runs there — where a plain function under a `@target` used to be charged what the foreign implementation declares, an effect no build of it can perform. This covers what `infer` publishes and the untracked-reference warning, not just `check` and `why`.
-
-  **A `returns` line is computed on the producer's targets too**, so a `@target(erlang)` producer whose closure calls a JavaScript-only external publishes what that external's Erlang fallback does rather than the unreachable declaration's effect — where the `returns` line used to contradict the narrowed `effects` line beside it, and cross-module callers resolving through it failed on an effect no build performs. And two `@target` functions calling one helper no longer share its analysis: the result is cached per callee and ancestors, not per target, so whichever ran first used to answer for both — an Erlang check failing on a JavaScript caller's `[Disk]`, or a JavaScript check passing on an Erlang caller's fallback.
-
-  **A dependency's declaration your build excludes no longer answers for it.** Where your package compiles for Erlang alone and a dependency hands only JavaScript to foreign code, what runs is that dependency's Gleam body — which no consumer walks — so the call is `[Unknown]` rather than the `[Disk]` its `external effects` line states for an implementation your build never compiles. This one under-reported as readily as it over-reported: the body reached instead may do anything. Such a name is now scanned as the `@external` it is, which also means a dependency's shipped `effects` line for it is refused like any other inference over an `@external`'s body, so a call that resolved through one reads `[Unknown]` until that dependency declares it.
-
-  **A dependency's external is read the same way from inside a fallback.** The `[Unknown]` a consumer unions in for the dependency body it cannot walk stands for a body that runs where the *calling* code does, so it is no longer added where the dependency's declaration already covers every target the calling fallback runs on — a `check` of `[Disk]` over a call resolving to exactly the dependency's declared `[Disk]` used to fail on a `[Disk, Unknown]` it had no way to narrow. Where the dependency's declaration covers none of them the answer is that `[Unknown]` alone, rather than `[Unknown]` beside effects declared for foreign code the call never reaches. An ordinary caller, compiled for everything the package is, still reads the full union as before.
-
-  Where `@target` excludes every target the declaration names, there is no foreign implementation at all: `@target(erlang)` on a function whose only `@external` is `@external(javascript, …)` never compiles the JavaScript one, so the Gleam body is what runs everywhere the function exists. Such a function is now treated as ordinary Gleam — its effects inferred from that body, and the operators, records and fields its values carry traced like any other function's — where it used to be charged the `[Unknown]` of an undeclared external beside a body that is the whole story, failing budgets it plainly meets. A function `@target` leaves compiled for *no* target — `@target(javascript)` in a `target = "erlang"` package — is not that case: Gleam builds neither implementation, so the body is nobody's either and the function stays foreign, keeping whatever its `external effects` line declares for the channel it is built on.
-
-  **`gleam.toml`'s top-level `target` narrows the same way**, for every function in the package at once, where it used to be ignored — so a package built for one target no longer answers as though it were built for both. In a `target = "javascript"` package an `@external(erlang, …)` is never compiled, and its Gleam body is now the implementation graded reads, rather than foreign code charged `[Unknown]` with the values it returns held opaque. In a `target = "erlang"` package an `@external(erlang, …)` covers every target that is built, so the Gleam body beside it is dead text and is no longer charged to callers — `check app.wrapper : []` over a wrapper calling one stops failing on effects in a body that is never compiled. A package that declares no `target` reads as compiled for both, exactly as before. graded reads what `gleam.toml` *declares*: it cannot see `gleam build --target`, so a package built against a target other than the one it names will have this backwards (see [LIMITATIONS.md](https://hexdocs.pm/graded/limitations.html)).
-
-- **Violation messages say why an effect is unresolved and where a resolved one came from.** A field call that used to report only ``run calls field `find` on `repo` with unresolved effects [Unknown]`` now names the receiver's type and what's missing: ``run calls field `find` on `repo` of type `dep/repo.Repo`, which has no effect annotation for that field, with unresolved effects [Unknown] but declared []`` — the `type` line to write. The other unresolved shapes say what stopped them: a receiver whose type couldn't be resolved, one whose value couldn't be traced, one whose wired value's effects couldn't be resolved, a call `which no spec, external, or catalog declares`, `an external with no declared effects`, a returned operator `whose producer could not be resolved`, and a call whose own effect resolved but `whose effects depend on an argument that could not be resolved`. A call into a dependency's declared `@external` whose Gleam fallback body runs says so too — `calls dep/ffi.run, whose Gleam fallback body no consumer analyses, with unresolved effects [Time, Unknown] (from dep's shipped spec)` — since that `[Unknown]` is the unwalked body and not something the dependency's spec stated. A call into a dependency's *undeclared* `@external` reads `an external with no declared effects`, the same as one of your own: the dependency's source is what says the name is foreign, so the diagnostic no longer reports it as a name nothing happened to key. A record field wired to such an external says it in those words too — ``calls field `run` on `h`, wired to an external with no declared effects`` — where it used to credit the effect to `in-memory inference`, a source that never claimed it, while a direct call to the very same name named the external. That covers a **spec-less path dependency**, whose `@external`s graded infers as `[Unknown]` from source: inference over a body is not a declaration, so such a call now reads as the undeclared external it is instead of as an effect resolved from the path dependency. A *resolved* effect names its source instead: `run calls gleam/io.println with effects [Stdout] (from gleam_stdlib's catalog entry) but declared []`, so an effect you didn't expect points at the spec, dependency, path dependency, or catalog entry that claimed it — including an `[Unknown]` your own spec commits, where naming the source is the whole explanation. The declarations that resolve a field call name the file they sit in, not just their kind: `(from a type line in your spec)`, `(from a module-level external in gleam_stdlib's catalog entry)`. A field call resolved through a helper (`helper(opts)`, where `helper` reads `opts.resolver()`) names the source of the value you wired, the same as reading the field directly does. A call to a function another function returned (`let f = dep.make(); f()`) names the `returns` line that decided its latent effect. An `[Unknown]` an unresolvable argument introduced is reported as that argument, whether the call that took it is direct or reached through a helper — the entry that answered resolved, so it is not blamed.
-
-- **Violation messages describe the call site in prose instead of printing an internal sentinel.** A field call reported as `run calls <field>.config.resolver` now reads ``run calls field `resolver` on `config` ``; `<apply>.<unknown>` reads "calls a computed function value", `<returned>.pick` reads ``calls a function returned by `pick` `` — module-qualified for a producer in another module (``calls a function returned by `dep.make` ``) — and a call to a fn-typed parameter, an inline function applied to arguments (a pipe target or an immediately-invoked one), a let-bound function value (a closure or a `case` of functions), and an unqualified call that matched no parameter bound and no function of the module each get their own description. A field call whose receiver is a computed value (`make().handler("x")`) reads ``calls field `handler` on a computed value``, and one reached through an alias (`let f = config.resolver; f("x")` under a `check run(config.resolver: [..])` bound) reads like the direct `config.resolver("x")` it stands for. The effects clause now separates an effect graded couldn't resolve from a resolved one that simply exceeds the budget: it reads "with unresolved effects" only when the reported set carries `Unknown` — so a field call that resolves cleanly to `[Stdout]` against a `[]` budget reads "with effects [Stdout]", while a qualified call into an unresolvable dependency reads "with unresolved effects [Unknown]". A resolved qualified call is otherwise unchanged (`calls gleam/io.println with effects [Stdout] but declared []`), as is the hint printed for unresolved effect variables.
-
-- **Calls into girard resolve from the spec girard now ships, instead of `[Unknown]`.** girard 2.1.0 publishes a `girard.graded` in its hex tarball (injected with `graded pack` — the first package to ship a spec this way), so a consumer's girard calls resolve with no catalog entry and no setup: `girard.disk_resolver()` and `girard.default_options()` report `[]` (2.1.0 builds its resolver lazily), and the `annotate*` entry points stay polymorphic in the resolver the options carry — a caller-supplied resolver's own effects are kept, and untraceable options report `[Unknown]`. graded now requires girard 2.1.0 or later.
-
-- **An unknown command or option now errors instead of being treated as a directory to check.** Previously any unrecognized first argument — `graded pack`, a mistyped command — was silently passed to `check` as a directory path, and an unknown flag such as `graded infer --dry-run` was taken as the inference directory. graded now prints a usage error and exits non-zero for an unknown command or option. A bare directory argument (`graded src`) still runs `check`, and a bare `graded` still checks `src/`.
+- BREAKING: a per-function `external effects` line naming one of your own
+  Gleam-bodied functions is now ignored, with a warning — the body is what
+  runs, and every path now walks it. `graded infer` deletes the line and
+  writes the `effects` line it was suppressing. There is no replacement
+  override: fix the source or widen the `check` budget. The module-level
+  `external effects <module>` form is unchanged.
+- A `check` line on an `@external` function is now verified against what
+  declares it — an `external effects` line, a module-level external, or a
+  catalog entry — instead of silently passing. Without a declaration it
+  checks against `[Unknown]`, and a stale `effects` line no longer answers
+  for an external anywhere: not for its callers, not for `graded effect`.
+- Foreign code is now opaque on every channel a value carries its effects
+  through: a closure returned by an `@external`, or a record field wired
+  through one, reads `[Unknown]` instead of inheriting the Gleam fallback
+  body's inferred effect. `graded infer` no longer writes a `returns` line
+  for an `@external`, and a dependency's shipped `effects`/`returns` line for
+  a function its source declares `@external` is refused. Specs that leaned on
+  fallback-derived results will report new violations; wrap the producer in
+  ordinary Gleam or annotate the field with a `type` line.
+- graded now reads build targets. `gleam.toml`'s `target` (or
+  `[tools.graded].targets`) decides which `@external` implementations are
+  compiled: a Gleam fallback body that runs on a compiled target is charged
+  to every caller and weighed against the function's own `check` line, a body
+  no compiled target reaches is dead text and charged nothing, and a
+  declaration covering only targets the build never compiles reads
+  `[Unknown]` under a message that says why. `@target` narrows a single
+  function the same way.
+- A package that names no `target` now reads Gleam fallback bodies on Erlang
+  — the compiler's own default — so stdlib functions with JavaScript
+  externals (`list.append`, `dict.from_list`, ...) no longer resolve to
+  `[Unknown]` in a default project.
+- Violation messages now say why an effect is unresolved (``whose type could
+  not be resolved``, ``an external with no declared effects``, ...) and where
+  a resolved one came from (``(from gleam_stdlib's catalog entry)``).
+- Violation messages describe call sites in prose — ``calls field `resolver`
+  on `config` ``, ``calls a computed function value`` — instead of printing
+  internal sentinels, and say "unresolved effects" only when the reported set
+  carries `Unknown`.
+- `graded check` flags `external effects` lines that resolve to nothing — a
+  function or module no dependency, catalog entry, or project module can
+  place — mirroring the existing `check` and `type` lints.
+- The "passed as a value" warning now quotes the declaration callers are
+  actually charged rather than a stale spec line, and stays silent when the
+  whole effect set is `[Unknown]`.
+- `graded effect` reads publicity and existence from your source: a private
+  function, a private `@external`, or a spec line naming a function your
+  source doesn't define now exits non-zero, and a module that fails to parse
+  is reported as such instead of being answered from the spec.
+- A directory inside a package's `src/` now narrows what is reported, not
+  what is analysed, so a scoped `graded check` reports exactly what the
+  whole-package run reports for those files. A scoped `infer` still writes
+  the whole package's spec.
+- Calls into girard resolve from the spec girard now ships in its hex
+  tarball. graded requires girard 2.1.0 or later.
+- An unknown command or option now prints a usage error and exits non-zero
+  instead of being treated as a directory to check.
 
 ### Fixed
 
-- **A `check` line admitting `[Unknown]` no longer fails on an effect variable the caller has no way to bind.** A knowledge-base term can carry a free variable that is nobody's parameter — an inline closure's binder left behind by an application graded could not fully resolve. `check app.run : [Unknown]` over a function reaching one used to fail as `[e_17]`, with a hint advising a `check app.run(<param>: [...])` bound for a name `run` does not take. Such a variable now reads as the `[Unknown]` it is on every channel: the same grounding `graded infer` already applied before publishing the term, so the budget, the violation and the spec line agree about one function. A violation still calls the effects *unresolved* and still names what stopped them; a variable the function's own bounds *can* bind — a function-typed parameter's — is untouched, and a budget that admits nothing still fails.
-
-- **A call to a function-typed parameter no `check` line names is now the parameter's effects, not `[Unknown]`.** `graded infer` and `graded effect` already stated a callback-taking function's effects over its parameter — `effects myapp.apply(f: [f]) : [f]` — by giving every function-typed parameter the identity bound. `check` and `why` walked the body under the `check` line's bounds alone, so a parameter no line happened to name collapsed to `[Unknown]` and was reported as ``calls `f`, which is neither a bound parameter nor a function in this module`` — a parameter in plain sight described as a name the module doesn't define. All four now walk under the same bounds, so `graded why myapp.apply` reports ``has effects [f]`` and ``calls parameter `f` with effects [f]``, agreeing with what `graded effect` answers for the same function, and a `check` line binding one of two callbacks reports the other as the parameter it is. Budgets are unaffected in outcome — `check myapp.apply : []` still fails, since nothing declared `f` pure — but it now fails as `[f]` against `[]`, with the hint naming the bound to add, where it used to fail as `[Unknown]`.
-
-- **`graded check` no longer reports one violating call once per call site that reaches it.** A function calling the same helper twice (`log("a")` then `log("b")`, where `log` prints) had the helper's single `gleam/io.println` site collected once per call, so the identical violation was printed twice — and a helper reached from many call sites repeated it as many times, burying the distinct violations among the copies. Identical contributors now collapse to one, and violations are reported in source order of the call they name, matching what `graded why` prints for the same function line for line. Two calls that resolve the same site to *different* effects (a helper passed a different callback each time) are distinct contributions and are both still reported.
-
-- **A spec file that exists but can't be read is now reported, instead of being treated as absent.** Any read failure on the package-root spec — invalid UTF-8, a permissions error, a directory sitting where the spec should be — was indistinguishable from "no spec file yet", so every command carried on against a package that looked like it had no annotations at all: `graded check` skipped every module and reported success, `graded effect` answered from inference alone, and `graded infer --dry-run` previewed an all-additions diff that hid the lines already on disk — either understating a write that would clobber them, or promising one that would then fail outright. All three now exit non-zero with `Could not read: <path>`. A spec file that genuinely isn't there is unchanged: a first-ever `graded infer` still starts from scratch, and a spec whose *contents* don't parse still previews as the clobber it is.
-
-- **A dependency's shipped `external effects` declarations now resolve for consumers; previously such functions reported `[Unknown]`.** A library declaring its FFI with `external effects mydep/ffi.now : [Time]` shipped that line in its spec, but no consumer read it — the two dependency routes (installed packages under `build/packages` and path dependencies) loaded a dep's `effects`, `returns` and `type` lines and skipped its externals, so `mydep/ffi.now` collapsed to `[Unknown]` at every call site even though the dep author had said otherwise. Both kinds of line are now read: a per-function external resolves that function, and a module-level `external effects mydep/internal : [Db]` answers for every function in that module that nothing else keys. A violation names where the declaration came from (`(from mydep's shipped spec)`, `(from path dependency mydep)`). Precedence is unchanged for everything you write yourself — your own `external effects` line still wins, and a per-function entry still beats a module-level one — while a dependency's external outranks graded's bundled catalog entry for the same function, since the package author's own word on their FFI is the better one. Within a single spec the `external effects` line decides the function's effect and its (empty) parameter bounds over any stale `effects` line for the same name.
-
-- **A path dependency's committed spec now outranks the bundled catalog for the same function, as documented.** A local checkout of a catalogued package was folded in after the catalog and gap-filled around it, so the catalog's entry won and the dep's own committed line was dropped — the reverse of the documented resolution order. The spec branch now overrides catalog entries (carrying its parameter bounds with it) and still yields to your spec, your externals and your project's own inference. A path dep that ships *no* spec is unchanged: its source-inferred effects continue to sit below a catalog entry, which describes FFI bodies that inference can only report as `[Unknown]`.
-
-- **A committed higher-order `effects` line's parameter bounds now apply with that line's own effect term, instead of being replaced by freshly inferred bounds.** A spec line such as `effects app.run(callback: [callback]) : [callback]` contributed only its effect term; the bounds were re-derived from the current source, so a hand-edited variable name left the checker substituting a mismatched pair — the committed term's variable bound by nothing — and calls into `app.run` resolved wrongly. A committed line carrying *no* bounds now suppresses inferred ones as well, instead of pairing its term with bounds from another source: a bound-less `effects app.run : [Stdout]` reads back as itself, not as `effects app.run(f: [f]) : [Stdout]` with a variable nothing binds. Term and bounds now come from one annotation source in a package's own spec, in an installed dependency's, and in a catalog entry alike — so a dependency's `check` budget no longer installs as a global fact about that function. A `check` line's bounds stay scoped to that check, and a function declared with `external effects` keeps taking its effect and bounds from the declaration. A committed bound naming a parameter the source has since *renamed* still resolves to `[Unknown]` at call sites: bounds match arguments by parameter name, deliberately with no fall back to position.
-
-- **`graded infer` no longer writes an effect line that fails to parse back.** An under-applied effect operator — left behind when a function taking two callbacks is passed where a one-callback operator is expected — was rendered inside the effect set as `[fn(b) -> [b]]`, which is not effect-set syntax: the line was rejected on the next read, and `graded format` reported the spec unparseable. Such a residual now renders as the conservative `[Unknown]`, so every line graded writes can be read back.
-
-- **A record field wired to a function from the module doing the wiring now resolves to that function's effect instead of `[Unknown]`.** The same callback resolved or didn't purely by which module it sat in: `annotate(Options(resolver: my_resolver))` reported `[Stdout]` when `my_resolver` lived in another module and `[Unknown]` when it sat next to the call, because the knowledge base holds the spec file, the dependencies and the project modules already inferred — never the module currently being inferred. A field wired to a same-module function is now resolved from that module's own definitions, on `graded check` and `graded infer` alike, whether the function is public or private, wired by direct construction (`Options(resolver: my_resolver)`), inherited from a producer's construction (`annotate(default_options())`), set through a builder overlay (`default_options() |> with_resolver(my_resolver)`), or wired from a producer call (`Options(resolver: make_resolver())`). A let-bound or inline closure wired into a field resolves the same way when its effect doesn't depend on the field call's own arguments. The wired value — a named function, an inline closure, or a producer call — is analysed with the package's inferred types, so a field call inside it whose receiver only type inference can name (`config.inner.run()` against a `type Box.run` line) resolves to the same effect it does when that code is checked directly, rather than to `[Unknown]`. A function whose effect is still polymorphic, a bodyless `@external` with no declaration, a field wired to the caller's own parameter, a producer graded can't see into, and a function wired into a field it recursively reaches (directly or mutually) all stay `[Unknown]` — never a narrower guess.
-
-- **A field a builder (`with_*`) overlay does not replace now resolves through a traceable base instead of `[Unknown]`.** `default_options() |> with_reporter(r)` keeps whatever `default_options` wired into `resolver`, so reading that inherited field reports the producer's `[Disk]` rather than collapsing — on a direct read (`opts.resolver()`), forwarded through another function (`annotate(opts)`), and through chained overlays. An inherited field over an *untraceable* base still stays `[Unknown]`, as does any field the overlay can't ground; only the overlay's own updated fields resolve there.
-
-- **A module whose effect depends on a builder (`with_*`) overlay now reports the same effect to its consumers as it does when checked directly.** The builder signatures graded derives from source were attached to the knowledge base only *after* the pass that infers project modules missing from the spec, so that pass ran without them: a module resolving a field through a builder overlay was inferred as `[Unknown]` there, and any consumer of it read that widened result. Checking `helper.wrapped` directly reported `[Stdout]` while `app.run` calling it reported `[Stdout, Unknown]`. Builders are now seeded ahead of every inference pass — the project pre-pass and the path-dependency source fallback — in both `graded check` and `graded infer`, so a module and its consumers agree, and the two commands agree with each other. This also covers a path dependency shipping no committed spec that defines a builder in one module and uses it in another: its consumer reports the precise effect rather than the widened one the fallback inference used to leave behind.
-
-- **A record field wired to one of the producer's own functions now resolves against the module that defined it, closing a soundness gap where a consumer's same-named function was used instead.** A producer that wires a module function into a field (`Logger(emit: write)`) records that field in its summary; a consumer reading the field (`let l = producer.make(); l.emit("x")`) previously resolved the bare name `write` against *its own* module, so a consumer that happened to define `write` reported that function's effect. A pure same-named consumer function silently reported `[]` and let an empty budget pass; an impure one reported its own effect instead of the producer's. The reference now carries the defining module, so the field resolves to the producer's function regardless of what the consumer names its own. A field wired to a private producer function is not in the knowledge base and stays `[Unknown]`, as before.
-
-- **A function-typed field call on a parameter (or any receiver graded can't trace to a construction) no longer specializes to a package-wide construction's effect — closing a soundness gap where the effect was understated.** Previously a call like `options.resolver()` was resolved from wherever that record type was *constructed* anywhere in the package, so `annotate(options: Options) { options.resolver() }` picked up `default_options`'s `Options(resolver: disk_resolver())` and was inferred `[FileSystem]`. A caller that supplied its own resolver (`default_options() |> with_resolver(logging_resolver)`) then had its `[Stdout]` silently dropped. graded now resolves such a field call only from evidence for *that* receiver — a value proven wired at its own construction, a `check f(recv.field: […])` bound, or a declared `type Type.field` line — and otherwise keeps it polymorphic (a receiver-keyed field variable that grounds to `[Unknown]`), so a parameter or builder-set field is never resolved from a construction a caller could have written differently. A `let` alias of a parameter (`let f = options; f.resolver()`) resolves like the bare parameter; a parameter shadowed by a later binding, or a receiver bound from an opaque call, stays `[Unknown]`. A field call on a let-bound *inline construction* (`let v = Validator(to_error: io.println); v.to_error()`) still resolves to the wired value's effect.
-- **A record field wired from a producer whose return type is a type alias to a function now infers the producer's real effect instead of `[Unknown]`.** When a constructor field is wired from a call (`Options(resolver: disk_resolver())`) and the producer's return type is a module-local alias to a function (`fn disk_resolver() -> Resolver` where `type Resolver = fn() -> Nil`), graded resolves the alias to its underlying function type and callback positions, generates the producer's returned-operator summary, and consumes it at the construction site — so a call through the field (`options.resolver()`) resolves to the returned closure's real effect (`[FileSystem]`) instead of collapsing to `[Unknown]`. Both a literal `fn(...)` return and an aliased one resolve, on `graded check` with no prior infer and on a single `graded infer`, and across project modules. A return type that references an alias imported from another module, or a producer with an un-annotated fn-typed parameter, emits no summary and its field stays `[Unknown]`.
-- **A polymorphic producer wired into a field binds the construction-site argument's effect.** A field wired from an effect-polymorphic producer applied to a concrete function (`Rec(field: mk(io.println))` where `fn mk(logger: fn() -> Nil)`) now unions the argument's effect (`[Stdout]`) into the field rather than dropping it, same-module and across project modules. A residual effect variable left by an unresolvable call inside a producer's returned closure can no longer be mistaken for one of the producer's own parameters and bound to an unrelated argument — it stays `[Unknown]`, so an effect is never silently dropped. A polymorphic summary loaded from an installed dependency's serialized spec is treated conservatively as `[Unknown]`; one inferred from a path dependency's source, or from a sibling project module, resolves precisely.
-- **A residual effect variable that collides with a returned closure's own callback parameter is no longer dropped.** When a producer returns a closure whose body both calls a callback parameter and leaves an unrelated residual effect coincidentally named the same (`fn(handler) { handler(); ext.raw() }` where `ext.raw` is `[handler]`), the callback binder no longer captures and hides that residual from the checker; it grounds to `[Unknown]`, so applying the returned closure to a concrete callback (`runner(io.println)`) yields `[Stdout, Unknown]` instead of the unsound `[Stdout]`. Nested and shadowed callback binders that share a name stay distinct.
-- **README documentation links now resolve instead of 404-ing on the package page and inside the tarball.** The `docs/*.md` references used relative `./docs/` paths that only worked from a GitHub checkout; they now point at the published hexdocs pages (`reference.html`, `limitations.html`), with a GitHub blob URL for `SECOND_ORDER_EFFECTS.md`, which has no rendered hexdocs page.
-- **`graded check`/`infer` pointed at a package root now scope to `src/` instead of reporting all checks passed without checking anything.** Passing the directory that holds `gleam.toml` as the target — `graded check .` — previously derived module names with a `src/` prefix (`src/app` instead of `app`) and recursed into `build/packages/` and `test/`, so a `check app.view` line matched no module and the command exited zero printing "all checks passed" while checking nothing. A package-root argument now scopes discovery and module-name derivation to its `src/` directory, so module names match those in `import` statements, and the walk always skips `build/`. Pointing graded at an out-of-tree project's `src/`, or a non-package subtree, is unchanged.
+- A `check` line admitting `[Unknown]` no longer fails on an effect variable
+  the caller has no way to bind; such a variable now reads as the
+  `[Unknown]` it is on every channel.
+- A call to a function-typed parameter no `check` line names now resolves to
+  that parameter's effects instead of `[Unknown]`, agreeing with what
+  `graded effect` answers for the same function.
+- `graded check` no longer reports one violating call once per call site
+  that reaches it, and violations print in source order.
+- A spec file that exists but can't be read now errors with
+  `Could not read: <path>` instead of being treated as absent.
+- A dependency's shipped `external effects` declarations now resolve for
+  consumers; previously such functions reported `[Unknown]`.
+- A path dependency's committed spec now outranks the bundled catalog for
+  the same function, as documented.
+- A committed higher-order `effects` line now applies its own parameter
+  bounds with its own term, instead of pairing the term with bounds
+  re-derived from source.
+- `graded infer` no longer writes an effect line that fails to parse back;
+  an under-applied effect operator renders as `[Unknown]`.
+- A record field wired to a function from the module doing the wiring now
+  resolves to that function's effect instead of `[Unknown]`.
+- A field a builder overlay does not replace now resolves through a
+  traceable base instead of `[Unknown]`.
+- A module resolving a field through a builder overlay now reports the same
+  effect to its consumers as it does when checked directly.
+- A record field wired to one of the producer's own functions now resolves
+  in the module that defined it, never against a same-named function of the
+  consumer's.
+- A field call on a receiver graded can't trace to a construction no longer
+  borrows the effect of an unrelated construction elsewhere in the package;
+  it stays conservative instead of understating.
+- A record field wired from a producer whose return type is a module-local
+  alias to a function type now infers the producer's real effect instead of
+  `[Unknown]`.
+- A polymorphic producer wired into a field now binds the construction-site
+  argument's effect instead of dropping it.
+- A residual effect variable that collides with a returned closure's
+  callback parameter now grounds to `[Unknown]` instead of being captured
+  and silently dropped.
+- README documentation links now point at the published hexdocs pages
+  instead of 404-ing on the package page.
+- `graded check`/`infer` pointed at a package root now scope to `src/`
+  instead of reporting all checks passed while checking nothing.
 
 ## [0.11.0] - 2026-07-16
 
 ### Changed
 
-- **Modules using arithmetic in bit-array pattern segment sizes now extract and type instead of collapsing to `[Unknown]`.** Upgrading glance to 7.0.0 (via girard 2.0.0) lets graded parse forms like `<<value:size(n * 8)>>`; such modules previously failed to parse entirely, so every function in them degraded to `[Unknown]`.
+- Modules using arithmetic in bit-array pattern segment sizes
+  (`<<value:size(n * 8)>>`) now parse and infer instead of collapsing every
+  function in them to `[Unknown]`, via glance 7.0.0 (through girard 2.0.0).
 
 ### Fixed
 
-- **A computed receiver whose helper returns one of its parameters now forwards field effects instead of collapsing to `[Unknown]`.** When the receiver argument is a call to a straight-line helper that returns a parameter (`inner(id_options(o))`), a parameter-rooted receiver path (`inner(get_options(config))` returning `config.options`), or a constructor rebuilt from parameter-rooted fields (`inner(normalize(o))` returning `Options(resolver: o.resolver)`), graded resolves the helper's return-value provenance and substitutes the call's arguments into it, then re-keys the callee's field-effect variable through the resulting value exactly as an inline receiver would. Both a same-module private helper (resolved on demand from its source) and a public cross-module one (threaded through the knowledge base) resolve. A helper whose return is itself a non-self call, or an external with no visible body, stays `[Unknown]`, as does any argument that can't be grounded to a caller parameter — provenance widens to Top on every shape it can't trace.
-- **A computed receiver whose helper returns a `case`/`if` now forwards through every branch instead of collapsing to `[Unknown]`.** When the helper's return is a `case`/`if` whose branches are all parameter-rooted — a bare parameter (`True -> a`), a receiver path (`True -> a.options`), or a record rebuilt from a parameter-rooted field (`True -> Options(resolver: a.resolver)`) — graded folds the branches into a join provenance, grounds each against the call's arguments, and unions the re-keyed field effects; branches that all pass the same parameter collapse to that one passthrough. A join with any branch it can't trace — a literal, a call — still widens the whole receiver to `[Unknown]`.
-- **A computed receiver whose helper rebuilds a record from a mix of parameters and literal defaults now forwards the parameter-rooted fields.** A rebuild that wires a fn-typed field from a parameter alongside a literal default (`Options(label: "", resolver: o.resolver)`) keeps the parameter-rooted field in the build provenance and drops the untraceable one, so `o.resolver` forwards while the default contributes nothing — where before any non-parameter field collapsed the whole build to `[Unknown]`. The build stays opaque only when no field is parameter-rooted.
-- **A computed receiver whose helper builds its record with field shorthand now forwards the parameter-rooted fields.** A smart constructor written in the idiomatic Gleam form (`Options(resolver:)`, sugar for `resolver: resolver`) previously produced no return-value provenance: every shorthand field was treated as opaque, collapsing the whole build so `o.resolver` stayed `[Unknown]`. The shorthand field now resolves to the parameter it puns, exactly as a shorthand call argument already did, so a helper like `fn make(resolver) { Options(label: "", resolver:) }` forwards `resolver` through `inner(make(resolver))` and a `caller(resolver: [Stdout]) : []` bound discharges it.
-- **A labeled computed-receiver call now grounds by reordering its arguments into parameter order.** A call that labels its arguments (`inner(rebuild(with: Options(resolver: resolver)))`) previously widened because provenance positions index the parameter list; graded now reorders the labeled arguments into declared parameter order through the callee's signature before substituting, so a labeled call forwards exactly as a positional one. A labeled call whose callee has no known signature still widens.
-- **A computed receiver whose helper returns a parameter through tail recursion now resolves by fixpoint.** `inner(pick(True, o))` where `pick` returns `o` through a `case` branch that recurses (`False -> pick(True, o)`) previously widened because a return that is itself a call is opaque; graded now traces direct self-recursion with a bounded fixpoint that grounds the recursive call through the function's own provenance estimate until it converges. A cycle that doesn't converge within the bound, a record rebuilt through the recursion, or mutual recursion still widens to `[Unknown]`.
-- **A path dependency inferred from source now propagates its return-value provenance to the consumer.** When a path dependency ships no committed spec, graded infers it from source; that inference's return-value provenance is now threaded out alongside the effects, parameter bounds, and returned-operator signatures and folded into the consumer's knowledge base. A consumer's computed-receiver call into such a dependency (`dep.inner(dep.get_options(config))` where `dep.get_options` returns `config.options`) forwards the field effect instead of collapsing to `[Unknown]`, matching how same-package modules already resolve. A committed dependency spec and the versioned catalog do not carry provenance, so a computed receiver into a spec-backed or catalogued dependency stays `[Unknown]`.
-- **Forwarded function-typed field effects now stay polymorphic across direct helper calls.** When a caller passes one of its own parameters directly to a callee, a field-effect variable from the callee is re-keyed onto the caller's parameter path (`inner(options)` forwards `o.resolver` as `options.resolver`). Unbound forwarded fields still collapse to `[Unknown]` at check time, while a caller field bound such as `options.resolver: [Stdout]` discharges the forwarded effect.
-- **Field effects also forward through a receiver path rooted at a caller parameter.** When the receiver argument is a field path on one of the caller's own parameters (`inner(config.options)`), the callee's field-effect variable is re-keyed onto the whole path, so `o.resolver` forwards as `config.options.resolver` and a nested `o.inner.run` as `config.options.inner.run`. A bound such as `config.options.resolver: [Stdout]` discharges it; left unbound it collapses to `[Unknown]`. A computed (`inner(make())`) receiver stays conservative.
-- **Field effects also forward through an inline constructor or factory call argument.** When the receiver argument is an inline constructor (`inner(Options(resolver: resolver))`) or factory call (`inner(make_options(resolver))`) whose field is wired from one of the caller's own parameters, the callee's field-effect variable re-keys onto that parameter, so `o.resolver` forwards as the caller's bare `resolver` and a `caller(resolver: [Stdout]) : []` bound discharges it. Positional, labeled, and shorthand (`make_options(resolver:)`) wiring all route. A field built at several sites — one wiring the parameter, another wiring an effect-polymorphic function — forwards the parameter site while the other resolves independently, rather than the sibling site regrounding the forward to `[Unknown]`. Opaque-factory (`inner(default_options())`) and computed receivers stay conservative and fall back to `[Unknown]`.
-- **Field effects also forward through a let-bound alias of the receiver.** A receiver bound to a `let` before the call now forwards exactly as the inline form does, because aliases are resolved eagerly at the binding: `let v = config.options; inner(v)` re-keys the callee's field var onto `config.options.…`, `let f = options; inner(f)` onto the parameter's own path, and `let o = make_options(resolver); inner(o)` / `let o = Options(resolver: resolver); inner(o)` through the constructor/factory wiring onto the caller's `resolver`. Construction nested one extra level forwards too (`inner(make_holder(make_options(resolver)))` traces both hops). A reassignment (`let o = …` again) or an alias bound from a computed call (`let o = get_options(x); inner(o)`) clears the provenance and stays `[Unknown]`, so a forwarded effect is never understated. Public `.graded` syntax is unchanged.
-- **A called let-bound alias of a parameter resolves through the parameter, not the call-site name.** Calling an alias (`let f = handler; f(x)`) now emits a local call on the aliased path, so it resolves via the parameter's bound and shadows an unqualified import of the same name — matching a direct call to the parameter. Previously the alias name was resolved on its own, leaking to a same-named unqualified import or collapsing to `[Unknown]` and understating the parameter's effect.
-- **A recursive function reached through a higher-order call resolves to its real effect instead of `[Unknown]`.** A recursion cycle hitting a higher-order analysis stack contributed the conservative `[Unknown]` fallback rather than the neutral effect, in two forms: a self- or mutually-recursive function handed to a higher-order helper by reference (`list.flat_map(children, walk)`) rather than as an inline closure, and a recursive producer whose branch returns a recursive producer call (`fn pick(n) { case n { 0 -> fn() { Nil } _ -> pick(n - 1) } }`). The recursive reference is already on the analysis stack, so it now contributes nothing — its own effects are captured by the frame analysing it — matching how cyclic local calls are already handled. A pure recursive tree walk, or applying a pure recursive producer, resolves to `[]`.
-- **graded finds its bundled catalog regardless of the working directory.** The catalog was resolved relative to the process's current directory, so running graded from another project's directory (for example via an Erlang shipment) resolved to an empty catalog and collapsed every catalogued call to `[Unknown]`. The catalog is now located relative to graded's own install directory; when no catalog directory can be found at all, graded warns on standard error instead of degrading silently.
-- **`infer` and `check` against an out-of-tree source directory root the spec and cache at the project, not the passed directory.** The project root is resolved by walking up to the nearest `gleam.toml`, so `graded infer ../other/src` writes `../other`'s spec and cache under its package name rather than scattering `../other/src/src.graded` and `../other/src/build/`. A relative source directory inside the current project whose only ancestor `gleam.toml` is the working directory still acts as its own root, so pointing graded at a subtree doesn't write into the surrounding project.
+- A computed receiver whose helper returns one of its parameters — as a bare
+  parameter, a receiver path (`config.options`), or a constructor rebuilt
+  from parameter-rooted fields — now forwards field effects instead of
+  collapsing to `[Unknown]`. Same-module and cross-module helpers both
+  resolve; anything the provenance can't trace still widens.
+- A helper returning a `case`/`if` forwards through every branch when all
+  branches are parameter-rooted; a branch it can't trace still widens the
+  whole receiver.
+- A helper that rebuilds a record from a mix of parameters and literal
+  defaults now forwards the parameter-rooted fields instead of collapsing
+  the whole build, and field shorthand (`Options(resolver:)`) resolves to
+  the parameter it puns.
+- A labeled computed-receiver call now reorders its arguments into declared
+  parameter order before substituting, forwarding exactly as a positional
+  call does.
+- A helper returning a parameter through direct tail recursion now resolves
+  by a bounded fixpoint instead of widening.
+- A path dependency inferred from source now propagates its return-value
+  provenance to the consumer, so computed-receiver calls into it forward
+  field effects like same-package modules do.
+- Function-typed field effects now forward through more receiver argument
+  shapes: a parameter passed directly, a field path rooted at a caller
+  parameter, an inline constructor or factory call wired from a caller
+  parameter, and a let-bound alias of any of these. A caller bound such as
+  `config.options.resolver: [Stdout]` discharges the forwarded effect;
+  left unbound it still collapses to `[Unknown]`.
+- Calling a let-bound alias of a parameter (`let f = handler; f(x)`) now
+  resolves through the parameter's bound, shadowing a same-named
+  unqualified import.
+- A recursive function reached through a higher-order call (`list.flat_map(
+  children, walk)`) now resolves to its real effect instead of `[Unknown]`.
+- graded now finds its bundled catalog relative to its own install
+  directory instead of the working directory, and warns when none can be
+  found instead of degrading silently.
+- `infer` and `check` against an out-of-tree source directory now root the
+  spec and cache at that project's own `gleam.toml`, not the passed
+  directory.
 
 ## [0.10.1] - 2026-06-26
 
 ### Fixed
 
-- **A function-typed field on a dependency-defined type now resolves to its declared effect instead of `[Unknown]`.** When a receiver is typed by a dependency (`fn use(repo: dep/repo.Repo) { repo.find(..) }`), graded reads the dependency's source — a path dependency at its declared location, an installed dependency under `build/packages` — to type the receiver, so a module-qualified `type dep/repo.Repo.find : [Storage]` line resolves at the call site. Previously the receiver type was unresolved for path dependencies, and for installed dependencies whenever graded ran outside the package root, so the field call leaked `[Unknown]`.
-- **A dependency now ships the effects of its own types' function fields.** `type` field annotations in a dependency's spec file, and in the versioned catalog, are loaded into the knowledge base alongside its `effects`/`external` entries, so a consumer resolves `receiver.field(..)` on a dependency-defined record without re-declaring it. A consumer's own `type` line wins on a clash; otherwise the priority follows the effect order (path dependency > installed dependency > catalog).
+- A function-typed field on a dependency-defined type now resolves to its
+  declared effect instead of `[Unknown]`: the dependency's source is read
+  to type the receiver, so a `type dep/repo.Repo.find : [Storage]` line
+  resolves at the call site.
+- A dependency's `type` field annotations, and the catalog's, are now
+  loaded into the knowledge base, so a consumer resolves field calls on
+  dependency-defined records without re-declaring them.
 
 ## [0.10.0] - 2026-06-25
 
 ### Added
 
-- **Lustre 5 catalog.** A `lustre@5.0.0.graded` file covers the v5 surface — pure constructors (`application`, `simple`, `component`, `element`, …), the effectful runtime (`start`, `register`, `send`, …), and the element/attribute/event submodules. Lustre 5.x projects select it; 4.x projects keep `lustre@4.0.0.graded`.
-- **`graded check` warns on spec lines that match nothing.** A `check` line whose name matches no project function (usually a missing module qualifier) never runs and passed silently — now flagged. A `type` line is flagged when it resolves no field: unqualified, pointing at an unknown module, or naming a non-function field. Callability follows type-alias chains across project and dependency modules. Fields on dependency-owned or unresolvable types are left alone. All warnings report against the spec file.
-- **Function-typed record fields resolve polymorphically instead of `[Unknown]`.** A `fn`-typed field on a receiver with no traceable construction site (an opaque parameter) becomes a *field-effect variable* named for its `receiver.field` path. It discharges against a field bound (`check f(r.run: [Stdout]) : [..]`) or a `type myapp.Runner.run : [Stdout]` line, and surfaces as a polymorphic bound when inferred (`effects f(r.run: [r.run]) : [r.run]`); left unbound it concretizes to `[Unknown]`, never silently `[]`. Resolution follows the receiver's inferred type, so it covers nested receivers (`model.service.org.create(..)`) and nested pipe targets (`value |> o.inner.run`). Fields declared through a module-local function alias are recognized as callable.
+- Lustre 5 catalog entry (`lustre@5.0.0.graded`); 4.x projects keep
+  `lustre@4.0.0.graded`.
+- `graded check` warns on spec lines that match nothing: a `check` line
+  naming no project function, or a `type` line resolving no callable field.
+- Function-typed record fields on receivers with no traceable construction
+  site now resolve polymorphically as field-effect variables, dischargeable
+  by a field bound or a `type` line; left unbound they concretize to
+  `[Unknown]`, never silently `[]`.
 
 ### Fixed
 
-- **A module-level `external effects <module>` declaration now governs a path dependency's inferred module, with its full effect set.** Previously the declared set was flattened to pure (so `dep.*` calls resolved to `[]`), and graded's own source-inference of the path dependency shadowed the declaration — leaving the module and its in-dependency callers at `[Unknown]`. The declaration now applies during the dependency's inference, so both resolve to the declared set. A per-function `external effects mod.fn` or an authoritative dependency spec/catalog effect still takes precedence.
-- **A module-level external now governs the consumer's own project modules too.** A declaration for a project module (`external effects myapp/db : [Database]`) was shadowed by graded's in-memory inference of that module's source, so its functions resolved to the inferred effect rather than the declared set. The inferred call effect is now dropped for a declared module — at both `check` and `infer` time, so a sibling module calling into it agrees — and `graded infer` writes no per-function `effects` lines for it, matching how a per-function external suppresses its own line. Returned-operator and parameter-bound metadata are kept.
+- A module-level `external effects <module>` declaration now governs a path
+  dependency's inferred module with its full effect set, instead of being
+  flattened to pure or shadowed by source inference.
+- A module-level external now governs the consumer's own project modules
+  too, at both `check` and `infer` time, instead of being shadowed by
+  in-memory inference of the module's source.
 
 ## [0.9.4] - 2026-06-24
 
 ### Fixed
 
-- **A closure passed to a second-order parameter now keeps its captured callable bindings.** When a closure is lifted over an operator parameter (`with(fn(callback) { suffix("a", "b"); callback("hi") })`), its body is re-analysed away from where it was written; a name bound there (`let suffix = string.append`) was no longer in scope, so it resolved to `[Unknown]` and the closure's effect came out as `[Stdout, Unknown]` instead of `[Stdout]`. The closure now carries the callable bindings in scope at its creation site — a qualified alias, a let-bound closure, a `case`-of-closures, or a returned operator — so re-analysis resolves each to its precise effect. The capture respects shadowing (the binding visible where the closure was written wins) and excludes the closure's own parameters. The earlier direct-call fix already resolved captures for a closure *applied by name*; this extends the same precision to one *passed to a higher-order function*.
-- **Expression-valued callees are no longer inferred pure.** An immediately invoked closure (`fn(cb) { cb("x") }(io.println)`), an applied returned function (`printer()("x")`), or a `case`/`if` that selects the function being called now propagates the callee's effect. Previously graded walked the callee as a value without modelling the application, so effectful code could be inferred as `[]` and slip past a `check ... : []` purity invariant. An opaque computed callee (`funcs.0(x)`) now resolves to `[Unknown]` rather than `[]`.
-- **A parameter that shadows an unqualified import now resolves to the parameter, not the import.** With `import gleam/string.{uppercase}`, a function `run(uppercase: fn(String) -> String)` that calls or forwards `uppercase` binds to its parameter. Previously the import shadowed the parameter, so an effectful argument passed for a parameter named like a pure import could be inferred pure.
-- A let-bound closure that is *called directly* (`let helper = fn(x) { ... }; helper(1)`) now resolves to its body's effect instead of `[Unknown]`. The extractor tracked the binding and resolved it when the closure was *passed* to a higher-order parameter, but a direct application by name fell through to an unresolved local call, so the common idiom of defining a reusable builder as `let row = fn(...) { ... }` and mapping it over a list cascaded to `[Unknown]` and blocked a `check view : []` invariant. The closure body is analysed at its binding site, where the lexical environment resolves any captured callable (`let suffix = string.append; let h = fn(x) { suffix(x) }`), and the direct application adds the effect of each argument the closure actually invokes; a directly-applied `case`-of-functions resolves the same way.
-- **More higher-order closure patterns resolve to a precise effect instead of `[Unknown]`:** a callback closure with an ordinary value parameter (`fn(message) { io.println(message) }`); a callback that ignores a higher-order parameter (`fn(_next) { … }`); a producer whose returned closure captures or applies a first-order callback parameter; and an immediately invoked closure with more than one argument (every argument is applied, not only the first).
-- An immediate application of a returned function (`make(io.println)()`) no longer drops the producer's arguments. An internal effect variable that can never be bound at a call site now collapses to the conservative `[Unknown]` instead of leaking into the inferred effect set.
+- A closure passed to a second-order parameter now keeps the callable
+  bindings captured at its creation site, so a name bound there
+  (`let suffix = string.append`) resolves precisely on re-analysis instead
+  of `[Unknown]`.
+- Expression-valued callees — an immediately invoked closure, an applied
+  returned function, a `case`/`if` selecting the function being called —
+  now propagate the callee's effect instead of being inferred pure; an
+  opaque computed callee resolves to `[Unknown]` rather than `[]`.
+- A parameter that shadows an unqualified import now resolves to the
+  parameter, not the import.
+- A let-bound closure called directly by name (`let helper = fn(x) { ... };
+  helper(1)`) now resolves to its body's effect instead of `[Unknown]`.
+- More higher-order closure patterns resolve precisely: callbacks with
+  ordinary value parameters, callbacks that ignore a higher-order
+  parameter, producers whose returned closure captures a first-order
+  callback, and immediately invoked closures with several arguments.
+- An immediate application of a returned function (`make(io.println)()`) no
+  longer drops the producer's arguments, and an internal effect variable no
+  call site can bind collapses to `[Unknown]` instead of leaking.
 
 ## [0.9.3] - 2026-06-23
 
 ### Fixed
 
-- A same-module (unqualified) call into a bodyless `@external` now applies its `external effects` declaration, matching the cross-module (qualified) call path. The local-call path resolved opaque externals straight to `[Unknown]` without consulting the knowledge base, so a declared `external effects` entry took effect only for callers in other modules; the common FFI idiom of an `@external` binding plus a same-module wrapper cascaded to `[Unknown]`. Undeclared externals still resolve to `[Unknown]`.
+- A same-module (unqualified) call into a bodyless `@external` now applies
+  its `external effects` declaration, matching the cross-module path.
+  Undeclared externals still resolve to `[Unknown]`.
 
 ## [0.9.2] - 2026-06-23
 
 ### Fixed
 
-- Record update expressions (`Rec(..base, field: expr)`) now have their updated field values walked, so effects in those expressions are counted. Previously only the base record was extracted, under-approximating the effect set and letting a `check ... : []` pass over a record update whose field called an effectful function.
-- Dependency, catalog, and path-dependency resolution now read from the checked project's own root (`build/packages`, `manifest.toml`, and the path-dep `gleam.toml`), found by walking up from the source directory to the nearest `gleam.toml`. Previously these paths were resolved relative to the process working directory, so checking a project from a different directory loaded the wrong dependency specs, installed versions, or path dependencies.
-- A higher-order function defined in a **path dependency** now discharges its callback parameter's effect at the call site, instead of leaking the parameter's effect variable (e.g. `[on_change]`) into the caller. Path dependencies are loaded through a separate code path that recorded each callee's effects but dropped its polymorphic parameter bounds, and never registered the dep's parameter signatures — so neither labelled nor positional callback arguments could be matched. The path-dep loaders now thread parameter bounds and returned-operator signatures into the knowledge base and register path-dep signatures, reaching parity with `build/packages` dependencies. The identical function defined in-project was already handled.
-- graded now compiles and runs on the JavaScript target by providing JavaScript externals for the built-in FFI used by `format --stdin` and process halting.
+- Record update expressions (`Rec(..base, field: expr)`) now have their
+  updated field values walked, so their effects are counted.
+- Dependency, catalog, and path-dependency resolution now read from the
+  checked project's own root instead of the process working directory.
+- A higher-order function defined in a path dependency now discharges its
+  callback parameter's effect at the call site instead of leaking the
+  parameter's effect variable, reaching parity with `build/packages`
+  dependencies.
+- graded now compiles and runs on the JavaScript target.
 
 ## [0.9.1] - 2026-06-23
 
 ### Added
 
-- Added catalog entries for the pure value libraries `bigi`, `glearray`, `iv`, and `gleam_community_maths` — calls into them now resolve to `[]` instead of `[Unknown]`.
+- Catalog entries for the pure value libraries `bigi`, `glearray`, `iv`,
+  and `gleam_community_maths`.
 
 ### Fixed
 
-- A higher-order callback passed with a Gleam label (`apply(with: parser)`) now binds to its parameter, so the parameter's effect variable resolves instead of leaking into the fully-applied caller. Previously only positional callback arguments were matched; a labelled call site left the variable unresolved (e.g. `[parser]`).
+- A higher-order callback passed with a Gleam label (`apply(with: parser)`)
+  now binds to its parameter, matching positional arguments.
 
 ## [0.9.0] - 2026-06-22
 
 ### Added
 
-- **Field bounds.** A `check` line can bound a function-typed field reached through a parameter, using a `param.field` path: `check myapp.view(handler.on_click: [Dom]) : [Dom]`. The field call resolves to the declared effect, taking priority over receiver-type resolution — the boundary-scoped counterpart to a `type` line, for a receiver graded can't trace to a construction site.
-- A field bound whose `param.field` path matches no field call in the checked function's body now emits a warning, catching typos in the path that would otherwise resolve nothing silently. When the receiver is not a parameter, the warning also notes the call may have resolved through value provenance, which shadows the bound, rather than blaming the path.
-- A plain parameter bound whose name matches no declared parameter now emits a warning. It is matched on parameter existence, not call presence, so a callback that's forwarded but never called directly is not flagged.
+- Field bounds: a `check` line can bound a function-typed field reached
+  through a parameter (`check myapp.view(handler.on_click: [Dom]) :
+  [Dom]`), taking priority over receiver-type resolution.
+- A field bound whose path matches no field call in the body, and a
+  parameter bound naming no declared parameter, now emit warnings.
 
 ### Fixed
 
-- **`gleam/time/calendar.utc_offset` is now `[]` instead of `[Time]`.** It is a compile-time constant (`duration.empty`), not a clock or timezone read, so it carries no effect. `calendar.local_offset` and `timestamp.system_time` remain `[Time]`.
-- **A same-module named function passed to a first-order fn-typed parameter now resolves to its actual effect instead of `[Unknown]`.** `parse_optional("x", logging_parser)` binds the parameter to `logging_parser`'s effect — so a fully-applied caller is no longer polluted by an unresolved effect variable from a higher-order callee. Inline closures already resolved; named references now take the same lift-and-discharge path operator arguments have used since 0.7.0.
+- `gleam/time/calendar.utc_offset` is now `[]` instead of `[Time]`: it is
+  a compile-time constant, not a clock read.
+- A same-module named function passed to a first-order fn-typed parameter
+  now resolves to its actual effect instead of `[Unknown]`.
 
 ## [0.8.1] - 2026-06-22
 
 ### Changed
 
-- **Dropped the `stdin` and `gleam_yielder` dependencies.** `graded format --stdin` now reads standard input through a small built-in Erlang FFI. The `stdin` package capped `gleam_stdlib` below `1.0.0`, which made graded uninstallable alongside packages that require `gleam_stdlib >= 1.0.0`.
+- Dropped the `stdin` and `gleam_yielder` dependencies; `graded format
+  --stdin` now reads standard input through a small built-in FFI. The
+  `stdin` package capped `gleam_stdlib` below `1.0.0`, making graded
+  uninstallable alongside packages requiring `gleam_stdlib >= 1.0.0`.
 
 ## [0.8.0] - 2026-06-21
 
 ### Added
 
-- **Catalog entries for 27 more of the most-used Gleam packages.** Calls into these now resolve to a precise effect (or `[]` for pure libraries) instead of `[Unknown]`: glance, glexer, justin, snag, ranger, marceau, gleam_community_colour, gleam_community_ansi, glam, splitter, gleam_bitwise, gleam_javascript, and gleam_deque (pure); glisten, mist, wisp, pog, gleam_fetch, gleam_hackney, gleam_cowboy, gleam_elli, shellout, logging, argv, directories, birl, and youid (effectful).
-- **The catalog now covers all of the core `gleam-lang` runtime, data, and HTTP packages.** The two remaining official packages, `gleam_package_interface` and `gleam_hexpm`, are tooling libraries and stay uncatalogued for now.
-- **New effect labels `Network`, `Database`, `Exec`, and `Random`** for socket/server I/O (glisten, mist), database queries (pog), running external programs (shellout), and nondeterministic generation (youid v4/v7, `wisp.random_string`).
+- Catalog entries for 27 more of the most-used Gleam packages: glance,
+  glexer, justin, snag, ranger, marceau, gleam_community_colour,
+  gleam_community_ansi, glam, splitter, gleam_bitwise, gleam_javascript,
+  and gleam_deque (pure); glisten, mist, wisp, pog, gleam_fetch,
+  gleam_hackney, gleam_cowboy, gleam_elli, shellout, logging, argv,
+  directories, birl, and youid (effectful). The catalog now covers all of
+  the core `gleam-lang` runtime, data, and HTTP packages.
+- New effect labels `Network`, `Database`, `Exec`, and `Random`.
 
 ### Fixed
 
-- When a function appears in both an installed dependency's spec file and the bundled catalog, its effects now come from the dependency's spec file.
-- Effects performed inside `panic`/`todo`/`echo` messages and bit-string segments are now counted toward a function's effects.
-- `graded format` and `graded format --check` now report an error on a `.graded` spec file that cannot be parsed, instead of succeeding silently. A missing spec file is still treated as nothing to do.
-- A malformed `gleam.toml` is now reported as an error instead of being silently ignored. A missing `gleam.toml` still falls back to defaults.
+- A function in both an installed dependency's spec file and the bundled
+  catalog now takes its effects from the dependency's spec file.
+- Effects inside `panic`/`todo`/`echo` messages and bit-string segments are
+  now counted.
+- `graded format` and `format --check` now error on an unparseable spec
+  file instead of succeeding silently.
+- A malformed `gleam.toml` is now reported as an error instead of being
+  silently ignored.
 
 ## [0.7.0] - 2026-06-19
 
 ### Added
 
-- **Second-order (higher-kinded) effect variables.** The effect representation moved from a flat `Polymorphic(labels, variables)` set to an `EffectTerm` (a lambda-calculus-with-union), letting graded express and resolve effect variables of kind `Eff → Eff` (operators), not just flat `Eff`.
-  - An operator parameter (one whose type takes functions, `action: fn(fn() -> Nil) -> a`) infers a curried application `[action([Stdout], [FileSystem])]` over every callback, in order.
-  - At a call site, operator arguments beta-reduce to concrete effects. Named refs, inline/let-bound closures, `case`/`if` branches (joined per-branch), and operators returned from calls are all lifted.
-  - Same-module named functions passed as operator arguments resolve transitively instead of collapsing to `[Unknown]`.
-  - The `.graded` syntax gained operator applications and operator bounds (`fn(a, b) -> [a, b]`); first-order lines are byte-identical to before.
-- Resolution is pure-Gleam term reduction (capture-avoiding substitution, beta, union normalization, fuel-guarded), no external solver. Laws, soundness, and termination are property-tested with qcheck. See [docs/SECOND_ORDER_EFFECTS.md](docs/SECOND_ORDER_EFFECTS.md).
-- **More value flow resolves instead of `[Unknown]`.**
-  - **Blocks resolve to their tail** — a block value (`{ let f = io.println; f }`) is classified by the expression it evaluates to.
-  - **Returned operators cross modules and packages** via `returns mod.fn : fn(cb) -> [cb]` lines, so `check` resolves `let h = producer(); with(h)` across boundaries.
-  - **Record fields wired to an inline closure** infer the field's effect from the closure body, no `type` annotation needed.
-  - **`check` auto-infers project modules missing from the spec** (in memory, topological order); committed `effects` lines still win and nothing is written to disk.
-  - **Operator-typed record fields** — a field wired to a closure calling its own callback (`Middleware(wrap: fn(next) { next() })`) is lifted to an operator and applied at the field call.
-  - **Return-effect polymorphism** — a producer that returns or wraps an operator parameter (a decorator) resolves, binding the parameter to the call's argument. Returned closures are lazy, so they're excluded from the producer's own direct effect.
-- **`Environment` effect + envoy catalog entry.** Process env-var access is now a first-class effect via `priv/catalog/envoy@1.0.0.graded`, mapping `envoy.get`/`set`/`unset`/`all` to `[Environment]` instead of `[Unknown]`.
+- Second-order (higher-kinded) effect variables: the effect representation
+  is now an `EffectTerm` (a lambda calculus with union), so an operator
+  parameter (`action: fn(fn() -> Nil) -> a`) infers a curried application
+  over its callbacks and beta-reduces to concrete effects at each call
+  site. Named refs, closures, `case`/`if` branches, and returned operators
+  all lift; the `.graded` syntax gained operator applications and bounds
+  (`fn(a, b) -> [a, b]`), with first-order lines unchanged. See
+  [docs/SECOND_ORDER_EFFECTS.md](docs/SECOND_ORDER_EFFECTS.md).
+- More value flow resolves instead of `[Unknown]`: blocks resolve to their
+  tail expression; returned operators cross modules and packages via
+  `returns` lines; record fields wired to an inline closure infer from the
+  body; `check` auto-infers project modules missing from the spec (in
+  memory, nothing written); operator-typed record fields are lifted and
+  applied; and a producer returning or wrapping an operator parameter (a
+  decorator) resolves.
+- `Environment` effect and an envoy catalog entry for process env-var
+  access.
 
 ### Fixed
 
-- **`@external` (FFI) functions are now `[Unknown]` by default.** Foreign code is opaque, so an `@external` function infers `[Unknown]` instead of the `[]` an empty or fallback body would yield — even with a Gleam fallback, since it only runs on the other compile target. Opt into a precise effect with `external effects mod.fn : [...]` (or the catalog), which wins at resolution and drops the inferred line.
-- **Field calls on a record built at several construction sites no longer leak operator bounds.** A function-typed field gets a *union* of operators (one per construction site); the resolver previously returned it raw, leaking bounds into first-order callers. The union is now applied to the call's arguments and distributes (`(L ⊔ f ⊔ g)(args) = L ⊔ f(args) ⊔ g(args)`). Always sound, but the leaked bounds weren't round-trip parseable.
-- **`infer` no longer hangs on densely mutually-recursive modules.** Per-callee body analysis is now memoized per module, and the call graph is partitioned into SCCs (Tarjan's): first-order components collapse to one shared effect set, polymorphic callees are keyed by name plus same-component ancestors. First-orderness is decided syntactically (not via the best-effort type annotator) for stable results. Results unchanged — only speed: three corpus packages that timed out now infer in 1–5s.
+- `@external` (FFI) functions are now `[Unknown]` by default — foreign code
+  is opaque, and a Gleam fallback body only runs on the other compile
+  target. Opt into a precise effect with `external effects` or the catalog.
+- Field calls on a record built at several construction sites no longer
+  leak operator bounds; the union of operators is applied to the call's
+  arguments and distributes.
+- `infer` no longer hangs on densely mutually-recursive modules: analysis
+  is memoized per module and SCC-partitioned, with results unchanged.
 
 ### Notes
 
-- Remaining residuals (all sound, collapsing to `[Unknown]`): a parameter selected through a **branch**, a field wired to a **constructor parameter**, a function reached through **arbitrary computation** (`handlers |> list.first |> unwrap`), a **`use`-tailed** return, and **external/FFI** code. Annotate explicitly where needed.
+- Remaining residuals, all sound and collapsing to `[Unknown]`: a parameter
+  selected through a branch, a field wired to a constructor parameter, a
+  function reached through arbitrary computation, a `use`-tailed return,
+  and external/FFI code. Annotate explicitly where needed.
 
 ## [0.6.0] - 2026-04-21
 
 ### Added
 
-- **Same-function value flow.** graded now tracks three kinds of local `let` bindings inside a function body and resolves calls through them:
-  - **Function-ref aliases.** `let f = io.println; f("hi")` resolves to `gleam/io.println` instead of being treated as a local call. Transitive aliases (`let g = f`) resolve through the chain.
-  - **Record construction.** `let v = Validator(to_error: io.println); v.to_error("oops")` resolves the field call to `io.println` directly — no per-type annotation needed for the common case of local construction. Both labelled (`Validator(to_error: ...)`) and positional (`Validator(...)`) construction work for same-module constructors; positional arguments are mapped to the constructor's declared labels.
-  - **Shadowing.** Later `let`s correctly shadow earlier bindings; unrecognisable RHS expressions erase tracking so stale bindings don't leak forward.
-- Block and closure bodies inherit the outer env but their own bindings don't leak out, matching Gleam's scoping.
+- Same-function value flow: calls through local `let` bindings now
+  resolve — function-ref aliases (`let f = io.println; f("hi")`,
+  transitively), and record construction (`let v = Validator(to_error:
+  io.println); v.to_error("oops")`), labelled or positional. Shadowing and
+  Gleam's block/closure scoping are respected.
 
 ### Notes
 
-- Cross-function record construction (passing a record built in one function to another) remains opaque and still needs type-level annotations (`type myapp.Foo.field : [...]`). Pattern destructuring and `use`-bound names are deliberately treated as opaque.
+- Cross-function record construction remains opaque and still needs
+  type-level annotations. Pattern destructuring and `use`-bound names are
+  deliberately treated as opaque.
 
 ## [0.5.0] - 2026-04-13
 
 ### Added
 
-- **Effect polymorphism.** Effect variables (lowercase tokens inside brackets) let one signature express that a function propagates whatever effects its callback has:
-
-  ```
-  effects myapp/validation.validate_range(to_error: [e]) : [e]
-  effects myapp.map_with_log(f: [e]) : [Stdout, e]
-  ```
-
-  `graded infer` produces polymorphic signatures automatically when a function calls a parameter annotated with a `fn(...) -> ...` type. The variable is named after the parameter.
-- **Call-site substitution.** At each call site, effect variables bind to the concrete effects of the argument passed: a function reference resolves via the knowledge base, a type constructor is pure, the caller's own bounded parameter uses that bound's effects, and anything else falls back to `[Unknown]`. Works with both labeled (`validate_range(42, to_error: OutOfRange)`) and positional (`validate_range(42, OutOfRange)`) arguments. Covers cross-module calls, same-module local helpers, and calls into dependencies.
-- **Dependency parameter positions.** graded now parses each `build/packages/<dep>/src/` tree with glance to learn dependency function signatures. Positional arguments to polymorphic dep functions resolve correctly without requiring labels.
-- **Wildcard `[_]`.** Documented in the README's new Effect set syntax section. Wildcard is the top of the effect lattice — `[_]` as a declared budget permits any effects. Useful for entrypoints.
+- Effect polymorphism: effect variables let one signature propagate a
+  callback's effects (`effects myapp.map_with_log(f: [e]) : [Stdout, e]`);
+  `graded infer` produces them automatically for fn-typed parameters.
+- Call-site substitution: at each call, effect variables bind to the
+  concrete effects of the argument passed — labeled or positional, across
+  modules and into dependencies.
+- Dependency parameter positions are learned by parsing each dependency's
+  source, so positional arguments to polymorphic dependency functions
+  resolve without labels.
+- Wildcard `[_]` documented as the top of the effect lattice — a declared
+  budget of `[_]` permits any effects.
 
 ### Changed
 
-- Violation messages now include a hint when the actual effects contain unresolved effect variables, suggesting a `check` bound or a concrete argument to bind against.
+- Violation messages now hint at a `check` bound or a concrete argument
+  when the actual effects contain unresolved effect variables.
 
 ## [0.4.2] - 2026-04-12
 
 ### Fixed
 
-- Added `gleam/dynamic/decode` to the `gleam_stdlib` catalog. Decoder combinators (`field`, `optional_field`, `string`, `int`, `list`, `dict`, `success`, etc.) are pure but were resolving as `[Unknown]`.
-- `graded infer` now resolves cross-module type constructors as pure, matching the existing handling for unqualified constructors. Previously, calls like `types.NotFound(id)` from a sibling project module were marked `[Unknown]` because constructors aren't tracked in the knowledge base and the defining project module isn't in `pure_modules`. Constructors are pure by Gleam's syntactic rules — an uppercase-initial label after a `.` is always a type variant — so the qualified call, qualified pipe target, and qualified value-position branches in the extractor now short-circuit the same way the unqualified path does. Side-effecting expressions inside a constructor's argument list (e.g. `NotFound(io.println(x))`) still propagate.
+- Added `gleam/dynamic/decode` to the `gleam_stdlib` catalog; decoder
+  combinators are pure but resolved as `[Unknown]`.
+- Cross-module type constructors (`types.NotFound(id)`) now resolve as
+  pure, matching unqualified constructors; effects inside a constructor's
+  arguments still propagate.
 
 ## [0.4.1] - 2026-04-11
 
 ### Fixed
 
-- `graded infer` now reads the spec file's `external effects` and `type` field declarations into the knowledge base before walking the import graph. Previously these were only consumed by `graded check`, so functions calling into a third-party module declared pure via `external effects` were still inferred as `[Unknown]`. The `check` pass passed but the inferred spec stayed noisy.
+- `graded infer` now reads the spec file's `external effects` and `type`
+  declarations into the knowledge base before walking the import graph, so
+  functions calling a module declared pure stop inferring `[Unknown]`.
 
 ## [0.4.0] - 2026-04-10
 
 ### Added
 
-- `[tools.graded]` config table in `gleam.toml`, with `spec_file` and `cache_dir` fields.
-- `graded/internal/topo` module: standalone topological sort over a string-keyed dependency graph, with property and unit tests.
+- `[tools.graded]` config table in `gleam.toml`, with `spec_file` and
+  `cache_dir` fields.
 
 ### Changed
 
-- Project annotations have moved out of `priv/graded/`. Each Gleam package now has a single **spec file at the project root** (default name `<package_name>.graded`, configurable via `[tools.graded].spec_file` in `gleam.toml`) holding the public-API effects, `check` invariants, `external effects` hints, and `type` field annotations. Per-module inferred effects (public + private) live in **`build/.graded/`** as a regenerable build cache (configurable via `[tools.graded].cache_dir`). Both locations are read by `graded check` and written by `graded infer`.
-- Function names in the spec file use the **module-qualified form**: `myapp.view`, `myapp/router.handle_request`. Slashes for the module path, dot before the function name (same convention as `external effects`). Cache files continue to use bare names because each one is implicitly scoped to a module by its file location.
-- Type field annotations gained the same qualification: `type myapp.Handler.on_click : [Dom]`. The bare form (`type Handler.on_click : [Dom]`) remains valid in cache files.
-- Library authors who want their effect annotations to ship to consumers must add their spec file to `included_files` in `gleam.toml`. Without this, downstream packages will not see the library's effects (and will fall back to `[Unknown]` for its functions, unless the catalog covers them).
-- No automatic migration from the old layout. To migrate an existing project: move every `effects`/`check`/`external`/`type` line out of `priv/graded/<module>.graded` into `<package_name>.graded` at the project root, prefixing each function name with its module path. Then run `graded infer` and delete the old `priv/graded/` directory.
+- Annotations moved out of `priv/graded/`: each package now has a single
+  spec file at the project root (default `<package_name>.graded`) holding
+  the public-API effects, `check` invariants, externals, and `type` lines,
+  while per-module inferred effects live in `build/.graded/` as a
+  regenerable cache.
+- Spec-file names are now module-qualified (`myapp/router.handle_request`,
+  `type myapp.Handler.on_click : [Dom]`); cache files keep bare names.
+- Library authors must add their spec file to `included_files` in
+  `gleam.toml` for consumers to see their effects.
+- No automatic migration: move every line from `priv/graded/*.graded` into
+  the root spec file, qualify the names, run `graded infer`, and delete
+  the old directory.
 
 ## [0.3.0] - 2026-04-07
 
 ### Added
 
-- Cross-module effect propagation: inferred effects from sibling project modules are used when analyzing other modules in the same project. Two-pass inference resolves inter-module dependencies.
+- Cross-module effect propagation: inferred effects from sibling project
+  modules are used when analyzing other modules in the same project.
 
 ## [0.2.0] - 2026-04-07
 
 ### Added
 
-- Catalog entry for `gleam_time` (all modules pure; `system_time`, `local_offset`, `utc_offset` marked `[Time]`).
-- Catalog entry for `houdini` (fully pure).
-- Automatic effect inference for path dependencies declared in `gleam.toml`. Functions from local path deps are now inferred from source instead of being marked `[Unknown]`.
-- Path dependency inference loads existing `.graded` files for parameter bounds, improving accuracy for higher-order functions.
-- Two-pass inference for path dependencies so cross-dep calls resolve correctly.
+- Catalog entries for `gleam_time` (`system_time`, `local_offset`,
+  `utc_offset` are `[Time]`, the rest pure) and `houdini` (pure).
+- Automatic effect inference for path dependencies declared in
+  `gleam.toml`, two-pass so cross-dependency calls resolve, loading any
+  existing `.graded` files for parameter bounds.
 
 ### Fixed
 
-- Record constructors (`Ok`, `Error`, `Some`, custom types) no longer inferred as `[Unknown]`. Gleam constructors start with an uppercase letter and are always pure.
+- Record constructors (`Ok`, `Error`, `Some`, custom types) are no longer
+  inferred as `[Unknown]`; constructors are always pure.
 
 ## [0.1.0] - 2025-04-04
 
@@ -352,7 +479,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Wildcard effect `[_]` as the universal top element.
 - Warnings for function references passed as values with known effects.
 - Versioned catalog system resolved against `manifest.toml`.
-- Catalog entries for `gleam_stdlib`, `gleam_erlang`, `gleam_otp`, `gleam_http`, `gleam_httpc`, `gleam_json`, `gleam_regexp`, `gleam_yielder`, `gleam_crypto`, `lustre`, `lustre_http`, `simplifile`, `filepath`, `tom`.
+- Catalog entries for `gleam_stdlib`, `gleam_erlang`, `gleam_otp`,
+  `gleam_http`, `gleam_httpc`, `gleam_json`, `gleam_regexp`,
+  `gleam_yielder`, `gleam_crypto`, `lustre`, `lustre_http`, `simplifile`,
+  `filepath`, `tom`.
 
 [0.11.0]: https://github.com/alvivi/graded/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/alvivi/graded/compare/v0.10.0...v0.10.1
