@@ -1778,6 +1778,11 @@ type CatalogAcc {
     ext_effects: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
     module_effects: Dict(String, #(EffectTerm, LookupOrigin)),
     poly_effects: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+    // The bounds of each tier, held apart and merged the way the terms beside
+    // them are: a name's term and its bounds must come out of one file, or a
+    // polymorphic term wins with another file's empty bounds beside it and its
+    // variable is left with nothing to bind it.
+    ext_params: Dict(QualifiedName, List(ParamBound)),
     poly_params: Dict(QualifiedName, List(ParamBound)),
     type_fields: List(#(TypeFieldAnnotation, LookupOrigin)),
   )
@@ -1803,16 +1808,19 @@ pub fn load_catalog(
     Error(_) -> []
   }
   let selected = resolve_catalog_files(catalog_files, installed_versions)
-  let initial = CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new(), [])
+  let initial =
+    CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new(), dict.new(), [])
   let acc = list.fold(selected, initial, fold_catalog_file)
   // Across files, an `effects` annotation takes precedence over another
   // package's per-function `external effects` marker; within one file the
   // external already won, in `fold_catalog_file`. Each term carries the package
-  // that wrote it, so the winner of this merge brings its own origin.
+  // that wrote it, so the winner of this merge brings its own origin. The
+  // bounds are merged by the same rule and in the same order, so the file whose
+  // term wins a name is the file whose bounds pair with it.
   #(
     dict.merge(acc.ext_effects, acc.poly_effects),
     acc.module_effects,
-    acc.poly_params,
+    dict.merge(acc.ext_params, acc.poly_params),
     acc.type_fields,
   )
 }
@@ -1840,8 +1848,8 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
           // did.
           // A name this file keys both ways resolves to its `external
           // effects` line, the rule `decided_entries` applies to a dependency's
-          // own spec: the external's ground term is what the empty bounds
-          // `load_spec_params_from_file` records for the name pair with.
+          // own spec: dropped from the polymorphic tier here, it keeps the
+          // ground term and the empty bounds the external tier records.
           let file_poly_effects =
             load_spec_effects_from_file(graded_file)
             |> dict.filter(fn(name, _term) {
@@ -1852,11 +1860,22 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
             ext_effects: dict.merge(acc.ext_effects, function_externals),
             module_effects: dict.merge(acc.module_effects, module_externals),
             poly_effects: dict.merge(acc.poly_effects, file_poly_effects),
+            // An external's term is ground by construction, so the bounds
+            // pairing with it are empty ones.
+            ext_params: dict.merge(
+              acc.ext_params,
+              dict.map_values(function_externals, fn(_name, _entry) { [] }),
+            ),
             poly_params: dict.merge(
               acc.poly_params,
               // A catalog entry describes a package graded has no source for,
               // so none of its externals can be stale by the visible-body rule.
-              load_spec_params_from_file(graded_file),
+              // Kept only for the names whose term this file supplies, so the
+              // two travel together through both merges.
+              load_spec_params_from_file(graded_file)
+                |> dict.filter(fn(name, _bounds) {
+                  dict.has_key(file_poly_effects, name)
+                }),
             ),
             type_fields: list.append(
               acc.type_fields,
