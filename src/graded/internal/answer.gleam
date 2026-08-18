@@ -30,13 +30,6 @@ pub type EffectAnswer {
     bounds: List(ParamBound),
     term: EffectTerm,
     source: AnswerSource,
-    // What a Gleam fallback body running on an uncovered target contributed to
-    // `term`, when the name is an `@external` that has one. `source` speaks for
-    // the declaration only, so without this the union would read as what the
-    // declaration said. `None` where the fallback is not a half added to a
-    // declaration but the whole of what was charged — `RunningFallbackBody`
-    // says so.
-    fallback: Option(EffectTerm),
   )
   // A field of a custom type, declared by a `type` line. `module` is `None` for
   // a bare declaration, which is keyed under no module.
@@ -52,9 +45,16 @@ pub type EffectAnswer {
 // What answered for a function: the knowledge-base entry that keyed it, or —
 // for foreign code no entry may speak for — the standing that settled its term
 // instead.
+//
+// The two that name a declaration a Gleam fallback body can be added to carry
+// that body's contribution themselves, so no answer can state a fallback half
+// beside a source that already accounts for the whole term.
 pub type AnswerSource {
-  // The entry the lookup returned, and which map it came from.
-  Entry(entry: types.EffectSource)
+  // The entry the lookup returned, and which map it came from, beside what a
+  // Gleam fallback body running on an uncovered target contributed to the term.
+  // The source speaks for the declaration only, so without that half the union
+  // would read as what the declaration said.
+  Entry(entry: types.EffectSource, fallback: Option(EffectTerm))
   // A function whose implementation is foreign code — an `@external` — that
   // nothing declares. The entries the knowledge base holds for such a name were
   // inferred over a body the foreign implementation needn't match, so none of
@@ -64,7 +64,7 @@ pub type AnswerSource {
   // The bounds beside it bind that fallback's variables: a fallback that calls
   // a function-typed parameter states its effects over the parameter, and
   // without them the line names a variable nothing introduces.
-  UndeclaredExternal
+  UndeclaredExternal(fallback: Option(EffectTerm))
   // A function whose implementation is foreign code, whose declaration names
   // only targets this build does not compile, and which no Gleam body runs in
   // the place of: nothing this build reaches implements the name at all. What
@@ -108,10 +108,10 @@ pub fn render_graded(answer: EffectAnswer) -> String {
     // a module-level external declares no per-function bounds itself, but a
     // running fallback body under it states its own effects over the parameters
     // it calls.
-    FunctionAnswer(name:, module:, bounds:, term:, source:, fallback:) ->
+    FunctionAnswer(name:, module:, bounds:, term:, source:) ->
       effects_line(name, bounds, term)
       <> graded_source(module, source)
-      <> graded_fallback(fallback)
+      <> graded_fallback(source_fallback(source))
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
       annotation.format_type_field(TypeFieldAnnotation(
         module:,
@@ -142,11 +142,11 @@ fn effects_line(
 fn graded_source(module: String, source: AnswerSource) -> String {
   "\n// "
   <> case source {
-    Entry(types.ModuleExternalEntry(..)) ->
+    Entry(entry: types.ModuleExternalEntry(..), ..) ->
       "resolved via module-level external for " <> module
-    Entry(types.FunctionEntry(origin:)) ->
+    Entry(entry: types.FunctionEntry(origin:), ..) ->
       "resolved from " <> effects.describe_origin(origin)
-    UndeclaredExternal -> undeclared_external_source
+    UndeclaredExternal(..) -> undeclared_external_source
     UnreachedDeclaration -> unreached_declaration_source
     RunningFallbackBody -> running_fallback_source
   }
@@ -178,12 +178,12 @@ fn graded_origin(origin: types.TypeFieldOrigin) -> String {
 
 pub fn render_prose(answer: EffectAnswer) -> String {
   case answer {
-    FunctionAnswer(name:, module:, bounds:, term:, source:, fallback:) ->
+    FunctionAnswer(name:, module:, bounds:, term:, source:) ->
       [
         function_sentence(name, bounds, term),
         ..list.append(
           detail_lines(bounds, module, source),
-          prose_fallback(fallback),
+          prose_fallback(source_fallback(source)),
         )
       ]
       |> string.join("\n")
@@ -207,6 +207,16 @@ const unreached_declaration_source = "an external declared only for a target thi
 
 // What answered for foreign code nothing declares.
 const undeclared_external_source = "an external with no declared effects"
+
+// The fallback half of a source that carries one. The other two sources carry
+// none: a body running in an unreached declaration's place is the whole of the
+// term, not a half added to it, and there is nothing to name beside it.
+fn source_fallback(source: AnswerSource) -> Option(EffectTerm) {
+  case source {
+    Entry(fallback:, ..) | UndeclaredExternal(fallback:) -> fallback
+    UnreachedDeclaration | RunningFallbackBody -> None
+  }
+}
 
 // The half of the answer the declaration does not account for, named apart from
 // it so neither is credited with the other's effects.
@@ -334,14 +344,14 @@ fn detail_lines(
   // a module-level external declares none itself, but a running fallback body
   // under it does, and the assumption holds however the entry was reached.
   let source_lines = case source {
-    Entry(types.ModuleExternalEntry(..)) -> [
+    Entry(entry: types.ModuleExternalEntry(..), ..) -> [
       "  source: module-level external for `" <> module <> "`",
       "          used when no per-function entry exists",
     ]
-    Entry(types.FunctionEntry(origin:)) -> [
+    Entry(entry: types.FunctionEntry(origin:), ..) -> [
       "  source: " <> effects.describe_origin(origin),
     ]
-    UndeclaredExternal -> ["  source: " <> undeclared_external_source]
+    UndeclaredExternal(..) -> ["  source: " <> undeclared_external_source]
     UnreachedDeclaration -> ["  source: " <> unreached_declaration_source]
     RunningFallbackBody -> ["  source: " <> running_fallback_source]
   }
