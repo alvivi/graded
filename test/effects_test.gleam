@@ -696,36 +696,25 @@ pub fn a_catalog_effects_line_beats_another_packages_external_test() {
   // Two catalog files key the same function: one with an `effects` line, one
   // with an `external effects` line. The `effects` line decides the term, so it
   // must decide the origin too — the external's package never claims it.
-  let root = "build/eff_catalog_clash"
-  let catalog = root <> "/catalog"
-  let _ = simplifile.delete(root)
-  let assert Ok(Nil) = simplifile.create_directory_all(catalog)
-  let assert Ok(Nil) =
-    simplifile.write(
-      catalog <> "/a_pkg@1.0.0.graded",
-      "effects shared/mod.run : [Http]\n",
-    )
-  let assert Ok(Nil) =
-    simplifile.write(
-      catalog <> "/b_pkg@1.0.0.graded",
-      "external effects shared/mod.run : [Disk]\n",
-    )
-  let assert Ok(Nil) =
-    simplifile.write(
-      root <> "/manifest.toml",
-      "packages = [\n  { name = \"a_pkg\", version = \"1.0.0\" },\n  { name = \"b_pkg\", version = \"1.0.0\" },\n]\n",
-    )
+  let root =
+    write_fixture("build/eff_catalog_clash", [
+      #("catalog/a_pkg@1.0.0.graded", "effects shared/mod.run : [Http]\n"),
+      #(
+        "catalog/b_pkg@1.0.0.graded",
+        "external effects shared/mod.run : [Disk]\n",
+      ),
+      #("manifest.toml", two_package_manifest),
+    ])
 
   let #(all_effects, _module_effects, _params, _type_fields) =
-    effects.load_catalog(catalog, root <> "/manifest.toml")
+    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
   dict.get(all_effects, QualifiedName("shared/mod", "run"))
   |> result.map(fn(entry) { #(effect_term.to_effect_set(entry.0), entry.1) })
   |> should.equal(
     Ok(#(Specific(set.from_list(["Http"])), types.Catalog("a_pkg"))),
   )
 
-  let _ = simplifile.delete(root)
-  Nil
+  cleanup(root)
 }
 
 pub fn a_catalog_external_beats_its_own_files_effects_line_test() {
@@ -733,23 +722,20 @@ pub fn a_catalog_external_beats_its_own_files_effects_line_test() {
   // line decides the term, pairing with the empty bounds the file's own reader
   // records for a declared name — the `effects` line's polymorphic term would
   // leave `cb` free with nothing left to bind it.
-  let root = "build/eff_catalog_same_file_clash"
-  let catalog = root <> "/catalog"
-  let _ = simplifile.delete(root)
-  let assert Ok(Nil) = simplifile.create_directory_all(catalog)
-  let assert Ok(Nil) =
-    simplifile.write(
-      catalog <> "/a_pkg@1.0.0.graded",
-      "effects shared/mod.run(cb: [cb]) : [cb]\nexternal effects shared/mod.run : [Disk]\n",
-    )
-  let assert Ok(Nil) =
-    simplifile.write(
-      root <> "/manifest.toml",
-      "packages = [\n  { name = \"a_pkg\", version = \"1.0.0\" },\n]\n",
-    )
+  let root =
+    write_fixture("build/eff_catalog_same_file_clash", [
+      #(
+        "catalog/a_pkg@1.0.0.graded",
+        "effects shared/mod.run(cb: [cb]) : [cb]\nexternal effects shared/mod.run : [Disk]\n",
+      ),
+      #(
+        "manifest.toml",
+        "packages = [\n  { name = \"a_pkg\", version = \"1.0.0\" },\n]\n",
+      ),
+    ])
 
   let #(all_effects, _module_effects, params, _type_fields) =
-    effects.load_catalog(catalog, root <> "/manifest.toml")
+    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
   dict.get(all_effects, QualifiedName("shared/mod", "run"))
   |> result.map(fn(entry) { #(effect_term.to_effect_set(entry.0), entry.1) })
   |> should.equal(
@@ -758,8 +744,75 @@ pub fn a_catalog_external_beats_its_own_files_effects_line_test() {
   dict.get(params, QualifiedName("shared/mod", "run"))
   |> should.equal(Ok([]))
 
-  let _ = simplifile.delete(root)
-  Nil
+  cleanup(root)
+}
+
+// The manifest both cross-file clash fixtures install: each of the two catalog
+// files is selected only if its package is installed.
+const two_package_manifest = "packages = [
+  { name = \"a_pkg\", version = \"1.0.0\" },
+  { name = \"b_pkg\", version = \"1.0.0\" },
+]
+"
+
+// What `load_catalog` settles on for `shared/mod.run` when two catalog files key
+// it: `poly_package`'s polymorphic `effects` line and `ext_package`'s
+// `external effects` line.
+fn catalog_clash_entry(
+  root: String,
+  poly_package: String,
+  ext_package: String,
+) -> #(
+  Result(#(types.EffectTerm, types.LookupOrigin), Nil),
+  Result(List(ParamBound), Nil),
+) {
+  let root =
+    write_fixture(root, [
+      #(
+        "catalog/" <> poly_package <> "@1.0.0.graded",
+        "effects shared/mod.run(cb: [cb]) : [cb]\n",
+      ),
+      #(
+        "catalog/" <> ext_package <> "@1.0.0.graded",
+        "external effects shared/mod.run : [Disk]\n",
+      ),
+      #("manifest.toml", two_package_manifest),
+    ])
+  let #(all_effects, _module_effects, params, _type_fields) =
+    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
+  cleanup(root)
+  #(
+    dict.get(all_effects, QualifiedName("shared/mod", "run")),
+    dict.get(params, QualifiedName("shared/mod", "run")),
+  )
+}
+
+pub fn a_catalog_effects_lines_bounds_travel_with_its_term_test() {
+  // The `effects` line decides the term across files, so the file that wrote it
+  // must decide the bounds too: the external's file records empty bounds for
+  // the name, and pairing those with this term leaves `cb` with nothing to bind
+  // it.
+  catalog_clash_entry("build/eff_catalog_bounds_clash", "a_pkg", "b_pkg")
+  |> should.equal(#(
+    Ok(#(types.TVar("cb"), types.Catalog("a_pkg"))),
+    Ok([ParamBound("cb", types.TVar("cb"))]),
+  ))
+}
+
+pub fn a_catalog_clash_resolves_the_same_either_way_round_test() {
+  // The same clash with the two files swapped. Which file the fold reaches last
+  // is the catalog directory's own order, so the pair pins both: in one of the
+  // two the losing file is folded last, and its empty bounds must not outlive
+  // its term there either.
+  catalog_clash_entry(
+    "build/eff_catalog_bounds_clash_swapped",
+    "b_pkg",
+    "a_pkg",
+  )
+  |> should.equal(#(
+    Ok(#(types.TVar("cb"), types.Catalog("b_pkg"))),
+    Ok([ParamBound("cb", types.TVar("cb"))]),
+  ))
 }
 
 // Dependency-declared externals

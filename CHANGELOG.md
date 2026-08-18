@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A catalog entry that both declares a function `external effects` and carries
   an `effects` line for it now resolves to the declaration, so the function's
   effects no longer come from a term whose parameter bounds were dropped.
+- Two catalog files keying the same function now settle it whole: the file
+  whose `effects` line wins the term supplies its parameter bounds too. A
+  higher-order entry another package declares `external effects` no longer
+  loses its bounds — and with them its callers' effects — depending on which
+  catalog file was read last.
 
 ## [0.12.0] - 2026-08-18
 
