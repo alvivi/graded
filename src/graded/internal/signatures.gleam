@@ -84,6 +84,14 @@ pub fn merge(a: SignatureRegistry, b: SignatureRegistry) -> SignatureRegistry {
   SignatureRegistry(signatures: dict.merge(a.signatures, b.signatures))
 }
 
+// Whether the registry holds a signature for `name`: whether the module it
+// names was parsed and defines the function. Every function of a parsed module
+// is registered, empty parameter list included, so this answers existence and
+// not just "has parameters worth recording".
+pub fn defines(registry: SignatureRegistry, name: QualifiedName) -> Bool {
+  dict.has_key(registry.signatures, name)
+}
+
 // Look up a function's parameter signatures.
 pub fn lookup(
   registry: SignatureRegistry,

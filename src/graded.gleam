@@ -471,6 +471,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     stale_externals:,
     knowledge_base:,
     catalog:,
+    dependencies:,
   ) = ctx
   let ProjectSources(
     source_directory: directory,
@@ -526,6 +527,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
       package_root,
       stale_externals,
       catalog,
+      dependencies,
     )
   {
     [] -> results
@@ -559,6 +561,11 @@ type ProjectContext {
     // base was built from — and which, reading it a second time, reported a
     // missing catalog twice.
     catalog: effects.BundledCatalog,
+    // The dependency scan this context was assembled from. Held for the spec
+    // lint, which decides whether a dependency module defines the name an
+    // `external effects` line gives it — a question this walk already parsed
+    // every dependency module to answer for the registry.
+    dependencies: DependencySources,
   )
 }
 
@@ -704,6 +711,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     stale_externals:,
     knowledge_base:,
     catalog:,
+    dependencies: dep_sources,
   )
 }
 
@@ -864,6 +872,7 @@ fn validate_spec_annotations(
   package_root: String,
   stale_externals: Set(String),
   catalog: effects.BundledCatalog,
+  dependencies: DependencySources,
 ) -> List(Warning) {
   let known_functions = known_function_names(index)
 
@@ -892,6 +901,7 @@ fn validate_spec_annotations(
       stale_externals,
       dep_files,
       catalog,
+      dependencies,
     )
 
   // Resolving `type` lines also needs per-module type info; build it only when
@@ -943,6 +953,7 @@ fn external_warnings(
   stale: Set(String),
   dep_files: Dict(String, String),
   catalog: effects.BundledCatalog,
+  dependencies: DependencySources,
 ) -> List(Warning) {
   use <- bool.guard(when: externals == [], return: [])
   // The catalog the knowledge base was assembled from, selected against *this*
@@ -962,7 +973,6 @@ fn external_warnings(
     dict.fold(catalog_functions, set.new(), fn(acc, name, _entry) {
       set.insert(acc, name.module)
     })
-  let dep_functions = dependency_function_names(externals, dep_files)
   // Whether the tree the lint read is the whole of what this project depends
   // on. A module it cannot place is a typo only if there was nowhere left for
   // it to be: with a manifest package whose sources never turned up, the module
@@ -984,7 +994,8 @@ fn external_warnings(
     let placed = dict.has_key(index, external.module) || claimed
     case external.target {
       types.FunctionExternal(function) -> {
-        let name = types.dotted_name(QualifiedName(external.module, function))
+        let qualified = QualifiedName(external.module, function)
+        let name = types.dotted_name(qualified)
         // What answers for the name where no parsed source settles it: a module
         // something outside this package speaks for, a catalog entry for the
         // exact name, or a module the lint cannot place at all while the tree
@@ -993,10 +1004,7 @@ fn external_warnings(
         // defines.
         let unparsed_answers =
           claimed
-          || dict.has_key(
-            catalog_functions,
-            QualifiedName(external.module, function),
-          )
+          || dict.has_key(catalog_functions, qualified)
           || { unplaceable_is_unknown && !placed }
         // The catalog is a stand-in for sources graded cannot read, so it is
         // weighed only where the dependency's own source says nothing: a
@@ -1005,9 +1013,10 @@ fn external_warnings(
         // what it can prove dead, and silence is not proof.
         let resolves =
           set.contains(known_functions, name)
-          || case dict.get(dep_functions, external.module) {
-            Ok(functions) -> set.contains(functions, function)
-            Error(Nil) -> unparsed_answers
+          || case dependency_name(dependencies, qualified) {
+            DefinedByDependency -> True
+            AbsentFromDependency -> False
+            UnreadDependency -> unparsed_answers
           }
         case set.contains(stale, name), resolves {
           True, _ -> Ok(StaleFunctionExternalWarning(function: name))
@@ -1048,42 +1057,6 @@ fn dependency_sources_are_complete(package_root: String) -> Bool {
     |> set.from_list
     |> set.union(effects.packages_with_sources(packages_dir(package_root)))
   set.difference(manifest, located) |> set.is_empty
-}
-
-// The functions each dependency module named by a per-function line defines,
-// private ones included: the question is whether the name exists, and a line
-// naming a private dependency function is dead for a different reason than a
-// typo is. Parsed once per module, and only for the modules a line names, so a
-// spec with no dependency external reads no dependency source.
-fn dependency_function_names(
-  externals: List(types.ExternalAnnotation),
-  dep_files: Dict(String, String),
-) -> Dict(String, Set(String)) {
-  externals
-  |> list.filter_map(fn(external) {
-    case external.target {
-      types.FunctionExternal(_) -> Ok(external.module)
-      types.ModuleExternal -> Error(Nil)
-    }
-  })
-  |> list.fold(dict.new(), fn(acc, module) {
-    use <- bool.guard(when: dict.has_key(acc, module), return: acc)
-    case dict.get(dep_files, module) {
-      Error(Nil) -> acc
-      Ok(file) ->
-        case read_and_parse_gleam(file) {
-          Ok(parsed) ->
-            dict.insert(
-              acc,
-              module,
-              set.from_list(dict.keys(checker.function_visibility(parsed))),
-            )
-          // Unreadable or unparseable: no evidence either way, so the module
-          // goes on answering for every name it is asked about.
-          Error(_) -> acc
-        }
-    }
-  })
 }
 
 // Map of module path -> source file for every installed dependency (under
@@ -3086,6 +3059,11 @@ type DependencySources {
     // which of its own functions are foreign, since a stale line for one is
     // exactly what this set exists to refuse.
     foreign: Dict(types.QualifiedName, types.ForeignFunction),
+    // The module paths this walk parsed. What the registry cannot express: a
+    // module that parsed and defines no function keys nothing in it, exactly
+    // like one that never parsed — and the spec lint owes those two different
+    // answers, since only the first proves a name absent.
+    parsed: Set(String),
   )
 }
 
@@ -3094,7 +3072,41 @@ fn empty_dependency_sources() -> DependencySources {
     registry: signatures.empty(),
     updates: dict.new(),
     foreign: dict.new(),
+    parsed: set.new(),
   )
+}
+
+// What a dependency's own source says about one name: the three answers the
+// spec lint owes a `module.function` it did not find in this package.
+type DependencyName {
+  // The module parsed and defines the function, private ones included: the
+  // question is whether the name exists, and a line naming a private dependency
+  // function is dead for a different reason than a typo is.
+  DefinedByDependency
+  // The module parsed and defines no such function. The one answer that proves
+  // a name absent.
+  AbsentFromDependency
+  // No source graded read says anything: the module never parsed, or the walk
+  // never reached it. No evidence either way.
+  UnreadDependency
+}
+
+// Answer for `name` from the scan. The two fields are read together and only
+// here: a registry miss means nothing without the `parsed` check beside it,
+// since a module that parses and defines no function keys as little as one that
+// never parsed.
+fn dependency_name(
+  sources: DependencySources,
+  name: QualifiedName,
+) -> DependencyName {
+  use <- bool.guard(
+    when: !set.contains(sources.parsed, name.module),
+    return: UnreadDependency,
+  )
+  case signatures.defines(sources.registry, name) {
+    True -> DefinedByDependency
+    False -> AbsentFromDependency
+  }
 }
 
 // Merge two scans; `b` wins on key conflict, matching `signatures.merge`.
@@ -3106,6 +3118,7 @@ fn merge_dependency_sources(
     registry: signatures.merge(a.registry, b.registry),
     updates: dict.merge(a.updates, b.updates),
     foreign: dict.merge(a.foreign, b.foreign),
+    parsed: set.union(a.parsed, b.parsed),
   )
 }
 
@@ -3187,6 +3200,7 @@ fn source_dir_sources(
         module_path,
         package_targets,
       ),
+      parsed: set.from_list([module_path]),
     ),
   )
 }
