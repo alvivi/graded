@@ -203,8 +203,9 @@ pub fn knowledge_base_from_catalog(
     all_effects: dict.merge(cat_effects, deps.effects),
     param_bounds: dict.merge(cat_params, deps.params),
     type_fields: dict.new(),
-    // Every dependency summary is Foreign (loaded from a serialized dep spec),
-    // tagged by `load_dependencies` with the package whose spec held it.
+    // Every dependency summary is tagged by `load_dependencies` with the package
+    // whose spec held it: Declared for an `external returns` line, Foreign for
+    // an inferred `returns` one, which is a serialized dep spec either way.
     returned_operators: deps.returns,
     factories: dict.new(),
     // Update builders are derived from dependency source at run time, not loaded
@@ -1190,9 +1191,15 @@ pub fn with_foreign_returned_operators(
 }
 
 // Merge **Declared** returned-operator summaries (`external returns` lines) into
-// a knowledge base — existing entries take priority (gap-fill), as the foreign
-// merge does, so a fold that runs earlier outranks one that runs later. Used for
-// the project spec and for every dependency tier's declarations.
+// a knowledge base — the incoming entries win, since a declaration outranks a
+// summary inferred over a body and the two merges beside it both gap-fill.
+//
+// Tier order on this channel is fold order, and the folds run outermost-first:
+// a dependency's declarations land while its spec is read, a path dependency's
+// when its spec is folded, and the consumer's own last, so a consumer line for
+// a dependency's producer is the one that answers. Within one spec, folding the
+// declarations ahead of that file's inferred `returns` lines leaves the
+// declaration standing.
 pub fn with_declared_returned_operators(
   knowledge_base: KnowledgeBase,
   declared: Dict(QualifiedName, EffectTerm),
@@ -1200,8 +1207,8 @@ pub fn with_declared_returned_operators(
 ) -> KnowledgeBase {
   let merged =
     dict.merge(
-      tag_returns(declared, Declared, source),
       knowledge_base.returned_operators,
+      tag_returns(declared, Declared, source),
     )
   KnowledgeBase(..knowledge_base, returned_operators: merged)
 }
@@ -1548,16 +1555,20 @@ pub fn load_spec_params_from_file(
   })
 }
 
-// Everything one dependency's spec file declares. The three `QualifiedName`-keyed
+// Everything one dependency's spec file declares. The four `QualifiedName`-keyed
 // maps hold the terms, bounds and returned-operator summaries; `type_fields` and
 // `externals` stay lists, since where each lands in the knowledge base is the
 // merging caller's decision (`with_type_fields`'s insert order against the
 // project spec; `split_externals`'s two tiers).
+//
+// The two returns maps are held apart because only one of them is a
+// declaration, and the sanitizing below weighs them by exactly that.
 pub type DepSpec {
   DepSpec(
     effects: Dict(QualifiedName, EffectTerm),
     params: Dict(QualifiedName, List(ParamBound)),
     returns: Dict(QualifiedName, EffectTerm),
+    declared_returns: Dict(QualifiedName, EffectTerm),
     type_fields: List(TypeFieldAnnotation),
     externals: List(ExternalAnnotation),
   )
@@ -1573,7 +1584,7 @@ pub type DepSpec {
 // lines the dep author wrote for its FFI.
 pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
   case read_spec_file(config.spec_file_for(dep_root, package_name)) {
-    Error(_) -> DepSpec(dict.new(), dict.new(), dict.new(), [], [])
+    Error(_) -> DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [])
     Ok(file) ->
       // Loaded through the same two readers a package uses for its *own* spec,
       // so a dependency's `check` budgets and externally-declared functions are
@@ -1587,6 +1598,7 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
         // own body is the documented case for the line.
         params: load_spec_params_from_file(file),
         returns: load_spec_returns_from_file(file),
+        declared_returns: load_spec_external_returns_from_file(file),
         type_fields: annotation.extract_type_fields(file),
         externals: annotation.extract_externals(file),
       )
@@ -1602,8 +1614,15 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
 // from believing about its own `@external` — and a `returns` line for it
 // describes a value only that implementation produces, so it is dropped whether
 // or not a declaration also covers the name. What survives for a declared name
-// is the declaration: the dep's own `external effects` line, a module-level
-// external, or the catalog entry underneath.
+// is the declaration: the dep's own `external effects` line, an
+// `external returns` line, a module-level external, or the catalog entry
+// underneath.
+//
+// `declared_returns` is therefore never filtered here, over a foreign name or an
+// ordinary one. The line is the dep author's declaration of what their producer
+// hands back, and arbitrating it against their own source is their `infer`'s
+// job, not their consumer's — the same reading that keeps their
+// `external effects` line for a Gleam-bodied function of their own.
 //
 // A term and its bounds are dropped together. `load_knowledge_base` merges terms
 // and bounds in two independent passes, so a term dropped without its bounds
@@ -1668,6 +1687,12 @@ fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> ExternalTiers {
 // A consumer's *module-level* external stays in the `module_effects` fallback
 // tier, which `lookup` consults only after `all_effects` misses, so these
 // function-keyed entries outrank it — the per-function-beats-module-level rule.
+//
+// The spec's `external returns` declarations fold ahead of its inferred
+// `returns` lines, so a name both key resolves to the declaration. Nothing pairs
+// bounds with a summary on this channel — the ground-only rule means a declared
+// operator binds no parameter — so there is no term-and-bounds pairing to keep
+// intact here.
 pub fn with_path_dep_spec(
   knowledge_base: KnowledgeBase,
   dep: DepSpec,
@@ -1693,6 +1718,7 @@ pub fn with_path_dep_spec(
       over_catalog(knowledge_base.module_effects, module_externals),
     ),
   )
+  |> with_declared_returned_operators(dep.declared_returns, origin)
   |> with_foreign_returned_operators(dep.returns, origin)
   |> with_type_fields(dep.type_fields, origin)
 }
@@ -1847,7 +1873,12 @@ fn load_dependencies(
         params: dict.merge(acc.params, dep.params),
         returns: dict.merge(
           acc.returns,
-          tag_returns(dep.returns, Foreign, origin),
+          // Within one spec a declared summary answers for a name its own
+          // `returns` line also keys: the second argument wins.
+          dict.merge(
+            tag_returns(dep.returns, Foreign, origin),
+            tag_returns(dep.declared_returns, Declared, origin),
+          ),
         ),
         type_fields: list.append(
           acc.type_fields,

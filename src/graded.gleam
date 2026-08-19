@@ -1553,9 +1553,11 @@ fn spec_answer(
 // The spec layers of `load_project_context`'s knowledge base, folded in the same
 // order and by the same functions, over nothing else.
 //
-// The spec's `returns` lines are not among them: a returned-operator summary is
-// consumed while walking a body, and a fast-path answer is one no body was
-// walked for.
+// Neither the spec's `returns` lines nor its `external returns` declarations are
+// among them: a returned-operator summary is consumed while walking a body, and
+// a fast-path answer is one no body was walked for. That holds for the declared
+// ones as much as the inferred — the declaration answers a call of the value,
+// which this path never reaches.
 fn spec_knowledge_base(
   spec: GradedFile,
   stale_externals: Set(String),
@@ -2558,6 +2560,13 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   let base_kb =
     kb_base
     |> with_spec_type_fields(spec)
+    // Declared returns are state no inference pass re-derives. Without them the
+    // walk of a caller's body writes `[Unknown]` where `check` scores the same
+    // body from the declaration, and the two commands disagree about it.
+    |> effects.with_declared_returned_operators(
+      effects.load_spec_external_returns_from_file(spec),
+      types.UserExternal,
+    )
     |> effects.with_factories(
       qualify_by_module(index, extract.factory_map(
         _,

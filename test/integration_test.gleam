@@ -3025,6 +3025,168 @@ pub fn calls_covered() -> Nil {
   support.cleanup(root)
 }
 
+pub fn infer_and_check_agree_about_a_declared_return_test() {
+  // The declaration is state no inference pass re-derives, so both commands
+  // have to load it: `infer` publishes what `check` scores. The stale inferred
+  // `returns` line beside it is the window an author is in between the function
+  // becoming `@external` and the next `infer` — the declaration answers over it.
+  let root = "build/declared_returns_infer"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.caller : [Net]
+external effects ffi.make_client : [Net]
+external returns ffi.make_client : [Net]
+returns ffi.make_client : [Disk]
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"make_client\")
+@external(javascript, \"ffi_module\", \"make_client\")
+pub fn make_client() -> fn() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+
+pub fn caller() -> Nil {
+  let send = ffi.make_client()
+  send()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  written |> string.contains("effects app.caller : [Net]") |> should.be_true()
+  written
+  |> string.contains("external returns ffi.make_client : [Net]")
+  |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_dependency_declares_what_its_own_producer_returns_test() {
+  // The dep author's line about their own `@external` factory. The consumer
+  // reads it from the shipped spec, tagged as the declaration it is — tagged
+  // like an inferred summary instead, the whole tier would no-op, since a
+  // dependency's declared name is foreign by definition.
+  let root = "build/declared_returns_dep"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "check app.wrapper : []\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "external effects dep/ffi.make : []
+external returns dep/ffi.make : [Disk]
+",
+    ),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "@external(erlang, \"dep_ffi\", \"make\")
+@external(javascript, \"dep_ffi\", \"make\")
+pub fn make() -> fn() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+pub fn wrapper() -> Nil {
+  let handle = ffi.make()
+  handle()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_path_dependency_declares_what_its_own_producer_returns_test() {
+  // The same line one dependency kind over, where the spec is committed beside
+  // the source rather than shipped under build/packages.
+  let r =
+    run_path_dep_spec_fixture(
+      "declared_returns_path_dep",
+      [
+        #(
+          "dep.gleam",
+          "@external(erlang, \"dep_ffi\", \"make\")
+@external(javascript, \"dep_ffi\", \"make\")
+pub fn make() -> fn() -> Nil
+",
+        ),
+      ],
+      "external effects dep.make : []
+external returns dep.make : [Disk]
+",
+      "check app.wrapper : []\n",
+      "import dep
+
+pub fn wrapper() -> Nil {
+  let handle = dep.make()
+  handle()
+}
+",
+    )
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+pub fn a_dependency_declares_a_return_for_its_own_gleam_function_test() {
+  // Over one of the dependency's *ordinary* functions the line is kept, not
+  // dropped: arbitrating a spec against the source beside it is the dep author's
+  // job at their own `infer` time, and the effects channel already trusts their
+  // `external effects` line in exactly this position.
+  let root = "build/declared_returns_dep_native"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "check app.wrapper : []\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "effects dep/ffi.make : []
+external returns dep/ffi.make : [Disk]
+",
+    ),
+    #(
+      "build/packages/dep/src/dep/ffi.gleam",
+      "pub fn make() -> fn() -> Nil {
+  fn() { Nil }
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+pub fn wrapper() -> Nil {
+  let handle = ffi.make()
+  handle()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
 // The spec declaring the same-module producer's return, and the spec that
 // leaves it to inference — which writes no summary for an `@external` at all.
 const declared_same_module_spec = "check ffi.caller : [Net]
