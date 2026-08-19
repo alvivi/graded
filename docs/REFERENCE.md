@@ -577,13 +577,15 @@ it stands alone; two readings refuse it, and the call says which:
   the body covers the rest. Effects union the two halves; there is no union of
   operators, and the closure the body hands back needn't be the foreign one.
 
-Three lines are dropped rather than trusted, each flagged by the spec lint: an
+Four lines are dropped rather than trusted, each flagged by the spec lint: an
 operator with free effect variables (a foreign decorator returning a closure that
 runs its own argument — wrap the producer in Gleam instead), a name with no
-function part (`external returns mymodule : [...]` names no function), and a name
-that is one of *this package's own* ordinary Gleam functions, whose body every
-caller can already see. `graded infer` replaces the last with the inferred
-`returns` line.
+function part (`external returns mymodule : [...]` names no function), a name of
+more than two parts (`external returns myapp.Handler.run : [...]` is the `type`
+line's field shape, not this one's), and a name that is one of *this package's
+own* ordinary Gleam functions, whose body every caller can already see. `graded
+infer` deletes the last; where the function returns an operator, the inferred
+`returns` line takes its place.
 
 A dependency is held to the same rules, against the dependency's *own* source
 under `build/packages`: a shipped `effects` or `returns` line for a function that

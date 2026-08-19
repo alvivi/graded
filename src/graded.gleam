@@ -57,10 +57,10 @@ import graded/internal/types.{
   type TypeFieldAnnotation, type Violation, type Warning, AnnotationLine,
   CheckResult, DotlessExternalReturnsWarning, EffectAnnotation, GradedFile,
   PolymorphicExternalReturnsWarning, QualifiedName, StaleExternalReturnsWarning,
-  StaleFunctionExternalWarning, UnmatchedCheckWarning,
-  UnmatchedExternalReturnsWarning, UnmatchedFieldBoundWarning,
+  StaleFunctionExternalWarning, TypeShapedExternalReturnsWarning,
+  UnmatchedCheckWarning, UnmatchedExternalReturnsWarning,
   UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
-  UnmatchedParamBoundWarning, UnmatchedTypeFieldWarning, UntrackedEffectWarning,
+  UnmatchedTypeFieldWarning,
 }
 import simplifile
 
@@ -1129,8 +1129,10 @@ fn external_warnings(
 // one can be dead. Two are the existence branches above, read through the same
 // evidence; two are this form's own, and both are lines the loader drops:
 //
-//   - a name with no `.`: the declaration is per-function, and nothing keys a
-//     whole module's returned value;
+//   - a name the function grammar rejects: one with no `.`, where the
+//     declaration is read as naming a whole module and nothing keys a module's
+//     returned value, and one with more than one, which reaches for the `type`
+//     line's field shape;
 //   - a polymorphic operator, whose free variables nothing sanitized.
 //
 // One warning per line, so a line that is dead twice over is reported by the
@@ -1142,7 +1144,11 @@ fn external_returns_warnings(
 ) -> List(Warning) {
   list.filter_map(declared, fn(returns) {
     case annotation.split_function_name(returns.function) {
-      Error(Nil) -> Ok(DotlessExternalReturnsWarning(name: returns.function))
+      Error(Nil) ->
+        case string.contains(returns.function, ".") {
+          True -> Ok(TypeShapedExternalReturnsWarning(name: returns.function))
+          False -> Ok(DotlessExternalReturnsWarning(name: returns.function))
+        }
       Ok(#(module, function)) ->
         case
           set.contains(stale, returns.function),
@@ -3942,110 +3948,7 @@ fn print_warnings(check_result: CheckResult) -> Nil {
 }
 
 fn print_warning(file: String, warning: Warning) -> Nil {
-  case warning {
-    UntrackedEffectWarning(function:, reference:, effects: effs, ..) ->
-      io.println(
-        file
-        <> ": warning: "
-        <> function
-        <> " passes "
-        <> reference.module
-        <> "."
-        <> reference.function
-        <> " as a value — its effects "
-        <> effects.format_effect_set(effs)
-        <> " won't be tracked",
-      )
-    UnmatchedFieldBoundWarning(function:, field_path:, receiver_is_param:) -> {
-      let cause = case receiver_is_param {
-        True -> " matches no field call in its body — check the path"
-        // A non-parameter receiver can be traced to a construction site, so the
-        // call may exist but resolve through value provenance, shadowing the bound.
-        False ->
-          " matches no field call in its body — check the path, or the receiver is traced to a construction site and resolved through value provenance (field bounds apply only to untraceable receivers)"
-      }
-      io.println(
-        file
-        <> ": warning: field bound "
-        <> field_path
-        <> " on "
-        <> function
-        <> cause,
-      )
-    }
-    UnmatchedParamBoundWarning(function:, param:) ->
-      io.println(
-        file
-        <> ": warning: parameter bound "
-        <> param
-        <> " on "
-        <> function
-        <> " names no parameter of the function — check the name",
-      )
-    UnmatchedCheckWarning(function:) ->
-      io.println(
-        file
-        <> ": warning: check "
-        <> function
-        <> " names no function in any project module — check the module qualifier; the check never runs",
-      )
-    UnmatchedTypeFieldWarning(name:) ->
-      io.println(
-        file
-        <> ": warning: type "
-        <> name
-        <> " names no field of any project type — check the module qualifier; the field resolves to [Unknown]",
-      )
-    StaleFunctionExternalWarning(function:) ->
-      io.println(
-        file
-        <> ": warning: external effects "
-        <> function
-        <> " names a function of this package with a Gleam body — the line declares no foreign code and is ignored; the body is walked instead. There is no replacement: fix the source, or widen the check budget",
-      )
-    UnmatchedFunctionExternalWarning(function:) ->
-      io.println(
-        file
-        <> ": warning: external effects "
-        <> function
-        <> " names no dependency, catalog, or project function — check the module qualifier; the declaration covers nothing",
-      )
-    UnmatchedModuleExternalWarning(module:) ->
-      io.println(
-        file
-        <> ": warning: external effects "
-        <> module
-        <> " names no dependency or project module — check the module path; the declaration covers nothing",
-      )
-    StaleExternalReturnsWarning(function:) ->
-      io.println(
-        file
-        <> ": warning: external returns "
-        <> function
-        <> " names a function of this package with a Gleam body — every caller resolves what it returns from that body, so the line declares nothing and is ignored. `graded infer` replaces it with the inferred `returns` line",
-      )
-    UnmatchedExternalReturnsWarning(function:) ->
-      io.println(
-        file
-        <> ": warning: external returns "
-        <> function
-        <> " names no dependency, catalog, or project function — check the module qualifier; the declaration covers nothing",
-      )
-    PolymorphicExternalReturnsWarning(function:) ->
-      io.println(
-        file
-        <> ": warning: external returns "
-        <> function
-        <> " declares an operator with effect variables — only a ground operator is loaded, so the line is ignored; write the effects the returned function performs, or wrap the producer in Gleam",
-      )
-    DotlessExternalReturnsWarning(name:) ->
-      io.println(
-        file
-        <> ": warning: external returns "
-        <> name
-        <> " names a module, not a function — a returns declaration is per-function; the line resolves nothing",
-      )
-  }
+  io.println(checker.format_warning(file, warning))
 }
 
 @external(erlang, "erlang", "halt")

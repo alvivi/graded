@@ -8508,3 +8508,29 @@ pub fn wrapper() -> Nil {
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
   support.cleanup(root)
 }
+
+pub fn the_lint_names_the_type_line_for_a_field_shaped_returns_test() {
+  // `app.Handler.run` is the `type` line's shape, not this one's. The loader
+  // drops it either way; the warning has to say which mistake it is, or the
+  // author reads "names a module, not a function" about a name that names no
+  // module.
+  let root = "build/declared_returns_type_shaped"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "external returns app.Handler.run : [Net]\n"),
+    #(
+      "app.gleam",
+      "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.TypeShapedExternalReturnsWarning(name: "app.Handler.run"),
+  ])
+  support.cleanup(root)
+}

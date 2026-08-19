@@ -5035,6 +5035,35 @@ pub fn call_kind_unrecognised_sentinel_is_unclassified_test() {
   |> should.equal(checker.UnclassifiedCall)
 }
 
+// A warning's wording is the only place a reader learns what a dropped line does
+// and what happens next, so the sentence is pinned like a violation's.
+pub fn format_warning_stale_external_returns_test() {
+  types.StaleExternalReturnsWarning(function: "lib.make")
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: external returns lib.make names a function of this package with a Gleam body — every caller resolves what it returns from that body, so the line declares nothing and is ignored. `graded infer` removes it; where the function returns an operator, the inferred `returns` line takes its place",
+  )
+}
+
+pub fn format_warning_dotless_external_returns_test() {
+  types.DotlessExternalReturnsWarning(name: "lib")
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: external returns lib names a module, not a function — a returns declaration is per-function; the line resolves nothing",
+  )
+}
+
+pub fn format_warning_type_shaped_external_returns_test() {
+  // The multi-dot name reaches for the `type` line's field shape. Reported as
+  // the dotless case, the sentence would tell the author their name names a
+  // module, which it does not.
+  types.TypeShapedExternalReturnsWarning(name: "app.Handler.run")
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: external returns app.Handler.run names a type field, not a function — a returns declaration is per-function; write a `type` line to give a field's effects, and the line resolves nothing as written",
+  )
+}
+
 // A resolved qualified call keeps the format the README documents.
 pub fn format_violation_direct_call_test() {
   violation(

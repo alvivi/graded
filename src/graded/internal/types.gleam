@@ -824,6 +824,10 @@ pub type Warning {
   // is per-function by nature — nothing keys a whole module's returned value —
   // so the line resolves nothing at all.
   DotlessExternalReturnsWarning(name: String)
+  // An `external returns <module>.<Type>.<field>` line: a name of more than two
+  // parts, which is the `type` line's shape, not this one's. A returns
+  // declaration keys a function, so the line resolves nothing.
+  TypeShapedExternalReturnsWarning(name: String)
 }
 
 // Result of checking one file.
