@@ -891,9 +891,12 @@ pub fn project_visibility(
 //
 // The effects channel can afford a narrower rule, because it unions a
 // declaration with a fallback body that runs. The value channels have no such
-// counterpart — nothing declares the operator an FFI factory returns, or the
-// provenance of the record it builds — so every `@external` is opaque to them,
-// declared or not, fallback or not.
+// counterpart — nothing declares the provenance of the record an FFI factory
+// builds — so every `@external` is opaque to them, declared or not, fallback or
+// not. The one exception is the returned operator, which an `external returns`
+// line declares: that channel weighs a declaration through
+// `declared_return_standing` and asks this only about the summaries it does
+// not cover.
 pub fn is_value_opaque(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -1129,6 +1132,12 @@ pub type SummaryOrigin {
   // Loaded from a serialized `.graded` (dependency or committed project spec),
   // unsanitized; a polymorphic Foreign summary is not trusted for synthesis.
   Foreign
+  // Written by hand as an `external returns` line: what a foreign producer
+  // hands back, declared rather than inferred. It answers for a name every
+  // other summary is refused for — that is the whole point of the line — so
+  // it is held to `declared_return_standing` instead of to `is_value_opaque`.
+  // Ground by the loader's invariant, which is what makes trusting it sound.
+  Declared
 }
 
 // A function's returned-operator summary as the knowledge base holds it: the
@@ -1180,21 +1189,57 @@ pub fn with_foreign_returned_operators(
   KnowledgeBase(..knowledge_base, returned_operators: merged)
 }
 
+// Merge **Declared** returned-operator summaries (`external returns` lines) into
+// a knowledge base — existing entries take priority (gap-fill), as the foreign
+// merge does, so a fold that runs earlier outranks one that runs later. Used for
+// the project spec and for every dependency tier's declarations.
+pub fn with_declared_returned_operators(
+  knowledge_base: KnowledgeBase,
+  declared: Dict(QualifiedName, EffectTerm),
+  source: LookupOrigin,
+) -> KnowledgeBase {
+  let merged =
+    dict.merge(
+      tag_returns(declared, Declared, source),
+      knowledge_base.returned_operators,
+    )
+  KnowledgeBase(..knowledge_base, returned_operators: merged)
+}
+
 // Merge **Fresh** returned-operator summaries (produced by this run's inference)
 // into a knowledge base — new entries take priority, so a re-inferred summary
 // replaces a committed Foreign one for the same key. Used for the pre-pass /
 // main-loop fresh deltas.
+//
+// A **Declared** entry is the exception: inference describes a body, and the
+// line describes what the foreign implementation hands back, so the line stands.
+// Fresh inference keys no foreign name in the first place and a declaration over
+// an ordinary own function is dropped at load, so this guard is insurance
+// against drift in a chain of invariants that spans three files.
 pub fn with_fresh_returned_operators(
   knowledge_base: KnowledgeBase,
   inferred: Dict(QualifiedName, EffectTerm),
   source: LookupOrigin,
 ) -> KnowledgeBase {
-  let merged =
-    dict.merge(
-      knowledge_base.returned_operators,
-      tag_returns(inferred, Fresh, source),
-    )
+  let fresh =
+    dict.filter(tag_returns(inferred, Fresh, source), fn(name, _summary) {
+      !is_declared_return(knowledge_base, name)
+    })
+  let merged = dict.merge(knowledge_base.returned_operators, fresh)
   KnowledgeBase(..knowledge_base, returned_operators: merged)
+}
+
+// Whether the base already holds a declared summary for `name`.
+fn is_declared_return(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  case dict.get(knowledge_base.returned_operators, name) {
+    Ok(ReturnedOperator(summary: Declared, ..)) -> True
+    Ok(ReturnedOperator(summary: Fresh, ..))
+    | Ok(ReturnedOperator(summary: Foreign, ..))
+    | Error(Nil) -> False
+  }
 }
 
 // Attach the package-wide factory map (keyed by `#(module, function)`), so a
@@ -1241,15 +1286,77 @@ pub fn updates(
 // Look up the operator a function returns, if known, with how it was produced
 // (Fix E) and the source that wrote it. `Error(Nil)` when the callee doesn't
 // return a (tracked) operator.
+//
+// A summary inferred over a body answers only for a name no `@external`
+// declares, as it always has; a **declared** one answers exactly where it
+// stands, which is what an `external returns` line is written to do.
 pub fn lookup_returned_operator(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Result(ReturnedOperator, Nil) {
-  use <- bool.guard(
-    when: is_value_opaque(knowledge_base, name),
-    return: Error(Nil),
-  )
-  dict.get(knowledge_base.returned_operators, name)
+  use found <- result.try(dict.get(knowledge_base.returned_operators, name))
+  case found.summary {
+    Declared ->
+      case declared_return_standing(knowledge_base, name) {
+        DeclaredReturnAnswers -> Ok(found)
+        DeclaredReturnUnbuilt | DeclaredReturnFallbackRuns | NoDeclaredReturn ->
+          Error(Nil)
+      }
+    Fresh | Foreign ->
+      case is_value_opaque(knowledge_base, name) {
+        True -> Error(Nil)
+        False -> Ok(found)
+      }
+  }
+}
+
+// Where a declared return stands for one name — read both by the lookup that
+// trusts it and by the diagnostic that reports its refusal, so a call and its
+// explanation cannot disagree about which gate answered.
+pub type DeclaredReturnStanding {
+  // In reach, and no Gleam fallback body runs beside it: the declaration is the
+  // whole story about what the producer hands back.
+  DeclaredReturnAnswers
+  // Out of reach: the declaration names targets this build does not compile, so
+  // nothing it describes is what runs.
+  DeclaredReturnUnbuilt
+  // In reach, but a Gleam fallback body runs on some target too, and the
+  // closure that body hands back needn't be the foreign one.
+  DeclaredReturnFallbackRuns
+  // No `external returns` line keys the name at all.
+  NoDeclaredReturn
+}
+
+// How a declared return for `name` stands against what this build compiles.
+//
+// The effects channel copes with a declaration and a running fallback body by
+// unioning them; there is no union of operators, so this channel answers only
+// where the declaration is alone. Standing and fallback are two fields of the
+// one `ForeignCharge`, read through `declared_charge` because the returns
+// channel holds no declared *effects* term of its own to pass down.
+//
+// The permissive default underneath is load-bearing: a name no foreign scan
+// recorded, a walk carrying no targets, and an `@external` whose declared
+// targets cannot be read all reach `DeclarationAndFallback` with no fallback
+// term, which answers. Nothing there contradicts the line.
+pub fn declared_return_standing(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> DeclaredReturnStanding {
+  case dict.get(knowledge_base.returned_operators, name) {
+    Error(Nil) -> NoDeclaredReturn
+    Ok(ReturnedOperator(summary: Fresh, ..))
+    | Ok(ReturnedOperator(summary: Foreign, ..)) -> NoDeclaredReturn
+    Ok(ReturnedOperator(summary: Declared, ..)) -> {
+      let charge = declared_charge(knowledge_base, name)
+      case charge.declaration, charge.fallback {
+        DeclarationCharged, None -> DeclaredReturnAnswers
+        DeclarationCharged, Some(_) -> DeclaredReturnFallbackRuns
+        FallbackAnswersInstead, _ | NothingImplementsName, _ ->
+          DeclaredReturnUnbuilt
+      }
+    }
+  }
 }
 
 // Merge inferred return-value provenance into a knowledge base, so a downstream
@@ -1656,6 +1763,33 @@ pub fn load_spec_returns_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, EffectTerm) {
   fold_spec_returns(annotation.extract_returns(file))
+}
+
+// The same map from a parsed spec's declared `external returns` lines — the one
+// choke point that keeps every declared summary in the base ground.
+//
+// A polymorphic operator carries free variables nothing sanitized, which is the
+// substitution the checker refuses for a serialized summary; it is dropped here
+// rather than loaded and refused later, so `Declared` means ground everywhere
+// downstream. A dotless name splits to nothing and `fold_spec_returns` drops it
+// with the rest — a returns declaration is per-function, and a name that
+// resolves nowhere would otherwise sit in the file looking effective.
+//
+// Both drops are silent in every tier: nothing here holds a warning channel, a
+// consumer can act on neither a dependency's line nor the catalog's, and the
+// project's own are reported by the spec lint.
+pub fn load_spec_external_returns_from_file(
+  file: types.GradedFile,
+) -> Dict(QualifiedName, EffectTerm) {
+  annotation.extract_external_returns(file)
+  |> list.filter(fn(declared) { is_ground_operator(declared.operator) })
+  |> fold_spec_returns()
+}
+
+// Whether an operator binds no free effect variable — the ground-only rule the
+// declared tier is cut to.
+pub fn is_ground_operator(operator: EffectTerm) -> Bool {
+  set.is_empty(effect_term.free_vars(operator))
 }
 
 fn fold_spec_returns(
