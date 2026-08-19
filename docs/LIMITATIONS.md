@@ -357,19 +357,13 @@ pub fn build_client() -> Client
 resolves is one it can see built, or annotate the *field* the returned function
 lands in with a `type` line.
 
-The closure a producer hands back is the one such channel `external returns`
-declares:
-
-```
-external returns my_ffi.make_client : [Net]
-```
-
-Two limits hold even with the line written. It must be **ground**: an operator
-with free effect variables — a foreign decorator whose returned closure runs an
-argument it was handed — is ignored, so wrap that producer in Gleam. And the
-declaration is refused where a Gleam fallback body also runs, because the two
-halves can hand back different closures and there is no union of operators to
-take; the call reports which of the two refusals applies.
+The closure a producer hands back is the one such channel with a declaring form:
+`external returns my_ffi.make_client : [Net]`. It is refused where a Gleam
+fallback body runs beside the declaration — the two can hand back different
+closures and there is no union of operators to take — and the operator must be
+ground, so a foreign decorator's still needs the Gleam wrapper. The call names
+whichever refusal applied; the rules are in
+[External declarations](./REFERENCE.md#external-declarations-and-ffi).
 
 ### Which targets an `@external` is built for
 

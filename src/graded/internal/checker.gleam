@@ -1864,7 +1864,7 @@ fn callback_binder_sentinel(start: Int, name: String) -> String {
 
 // True iff a term still carries unresolved (free) effect variables.
 fn has_vars(term: EffectTerm) -> Bool {
-  !set.is_empty(effect_term.free_vars(term))
+  !effect_term.is_ground(term)
 }
 
 // Union the effect terms of a list of collected calls, normalizing once.
@@ -4392,16 +4392,8 @@ fn reorder_args_by_signature(
   context: ImportContext,
   registry: SignatureRegistry,
 ) -> Result(List(types.CallArgument), Nil) {
-  let key = case callee.module {
-    "" ->
-      types.QualifiedName(
-        module: context.module_path,
-        function: callee.function,
-      )
-    _ -> callee
-  }
   use params <- result.try(option.to_result(
-    signatures.lookup(registry, key),
+    signatures.lookup(registry, producer_key(callee, context)),
     Nil,
   ))
   let sorted =
@@ -5057,7 +5049,7 @@ fn resolve_returned_operator(
   case lookup {
     Error(Nil) -> #(Error(Nil), memo)
     Ok(#(operator, summary, source)) ->
-      case set.is_empty(effect_term.free_vars(operator)), summary {
+      case effect_term.is_ground(operator), summary {
         // Ground operator (no free vars): trusted regardless of origin. A Fresh
         // one is sanitized by this run (callback binders can't have captured a
         // residual). A Foreign one — a serialized summary, including this
@@ -5094,10 +5086,10 @@ fn resolve_returned_operator(
         // for synthesis. Resolve conservatively to [Unknown] (the `Error` here
         // reaches every consumer's [Unknown] fallback).
         False, effects.Foreign -> #(Error(Nil), memo)
-        // Polymorphic + Declared: the loader drops a polymorphic declaration, so
-        // nothing reaches here. A loader that stopped doing so must degrade to
-        // [Unknown] rather than substitute over free variables nothing
-        // sanitized.
+        // Polymorphic + Declared: a declaration is tagged only after the
+        // non-ground operators are dropped, so nothing reaches here. An edit
+        // that changed that must degrade to [Unknown] rather than substitute
+        // over free variables nothing sanitized.
         False, effects.Declared -> #(Error(Nil), memo)
       }
   }
@@ -5332,7 +5324,7 @@ fn compute_returned_operator_result(
         False -> Ok(operator)
       }
     types.TApp(_, _) ->
-      case set.is_empty(effect_term.free_vars(operator)) {
+      case effect_term.is_ground(operator) {
         True -> Error(Nil)
         False -> Ok(operator)
       }

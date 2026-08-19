@@ -106,6 +106,13 @@ pub fn free_vars(term: EffectTerm) -> Set(String) {
   }
 }
 
+// Whether a term binds every effect variable it mentions. A ground term means
+// the same thing wherever it is read, which is what lets one be trusted without
+// the substitution a free variable would otherwise need.
+pub fn is_ground(term: EffectTerm) -> Bool {
+  set.is_empty(free_vars(term))
+}
+
 // Capture-avoiding substitution
 //
 // Replace effect variables with terms without letting a binder capture an
