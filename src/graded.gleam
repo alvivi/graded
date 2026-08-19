@@ -46,6 +46,7 @@ import graded/internal/checker
 import graded/internal/cli
 import graded/internal/config
 import graded/internal/diff
+import graded/internal/effect_term
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
 import graded/internal/signatures.{type SignatureRegistry}
@@ -766,25 +767,11 @@ fn stale_project_externals(
   spec: GradedFile,
   native_of: fn(String) -> Result(Set(String), Nil),
 ) -> Set(String) {
-  annotation.extract_externals(spec)
-  |> list.filter_map(fn(external) {
-    use function <- result.try(case external.target {
-      types.FunctionExternal(function) -> Ok(function)
-      types.ModuleExternal -> Error(Nil)
-    })
-    use native <- result.try(native_of(external.module))
-    case set.contains(native, function) {
-      True -> Ok(types.dotted_name(QualifiedName(external.module, function)))
-      False -> Error(Nil)
-    }
-  })
-  |> set.from_list()
+  declaring_nothing(annotation.external_function_names(spec), native_of)
 }
 
 // The `external returns` lines that declare nothing: the same rule one channel
-// over, so the two read alike — the named function is one of this package's own
-// ordinary Gleam-bodied functions, whose returned value every caller can see for
-// itself.
+// over, over the same predicate, so the two cannot drift apart.
 //
 // Derived apart from `stale_project_externals` and threaded apart from it. That
 // set drives the effects channel's two suppressions — committed `effects` lines
@@ -795,18 +782,26 @@ fn stale_project_external_returns(
   spec: GradedFile,
   native_of: fn(String) -> Result(Set(String), Nil),
 ) -> Set(String) {
-  annotation.extract_external_returns(spec)
-  |> list.filter_map(fn(declared) {
-    use #(module, function) <- result.try(annotation.split_function_name(
-      declared.function,
-    ))
-    use native <- result.try(native_of(module))
-    case set.contains(native, function) {
-      True -> Ok(declared.function)
-      False -> Error(Nil)
+  declaring_nothing(annotation.external_returns_names(spec), native_of)
+}
+
+// Which of `names` this package defines with a Gleam body — the rule both
+// declaring forms are held to, written once. A name whose module offers no
+// source to consult is kept out: absence is not evidence, so the line stands.
+fn declaring_nothing(
+  names: Set(String),
+  native_of: fn(String) -> Result(Set(String), Nil),
+) -> Set(String) {
+  set.filter(names, fn(name) {
+    case annotation.split_function_name(name) {
+      Error(Nil) -> False
+      Ok(#(module, function)) ->
+        case native_of(module) {
+          Ok(native) -> set.contains(native, function)
+          Error(Nil) -> False
+        }
     }
   })
-  |> set.from_list()
 }
 
 // A module's Gleam-bodied function names as the project index holds them, in
@@ -940,26 +935,34 @@ fn validate_spec_annotations(
   }
   let dep_modules = set.from_list(dict.keys(dep_files))
 
-  // The two declaring forms weigh a name by one rule, over one precomputation.
-  let evidence =
-    spec_name_evidence(
-      index,
-      known_functions,
-      package_root,
-      dep_files,
-      catalog,
-      dependencies,
-    )
-
-  let external_warnings =
-    external_warnings(externals, evidence, stale_externals)
-
-  let external_returns_warnings =
-    external_returns_warnings(
-      declared_returns,
-      evidence,
-      stale_external_returns,
-    )
+  // The two declaring forms weigh a name by one rule, over one precomputation —
+  // which reads the whole dependency tree, so it is built only where a
+  // declaring line asks a question of it.
+  let #(external_warnings, external_returns_warnings) = case
+    externals,
+    declared_returns
+  {
+    [], [] -> #([], [])
+    _, _ -> {
+      let evidence =
+        spec_name_evidence(
+          index,
+          known_functions,
+          package_root,
+          dep_files,
+          catalog,
+          dependencies,
+        )
+      #(
+        external_warnings(externals, evidence, stale_externals),
+        external_returns_warnings(
+          declared_returns,
+          evidence,
+          stale_external_returns,
+        ),
+      )
+    }
+  }
 
   // Resolving `type` lines also needs per-module type info; build it only when
   // there are `type` lines to check.
@@ -1133,7 +1136,7 @@ fn external_returns_warnings(
         case
           set.contains(stale, returns.function),
           evidence.defines(QualifiedName(module, function)),
-          effects.is_ground_operator(returns.operator)
+          effect_term.is_ground(returns.operator)
         {
           True, _, _ ->
             Ok(StaleExternalReturnsWarning(function: returns.function))

@@ -1137,7 +1137,8 @@ pub type SummaryOrigin {
   // hands back, declared rather than inferred. It answers for a name every
   // other summary is refused for — that is the whole point of the line — so
   // it is held to `declared_return_standing` instead of to `is_value_opaque`.
-  // Ground by the loader's invariant, which is what makes trusting it sound.
+  // Ground by construction — `declared_returns` is the only place the tag is
+  // stamped and it drops anything else — which is what makes trusting it sound.
   Declared
 }
 
@@ -1208,9 +1209,27 @@ pub fn with_declared_returned_operators(
   let merged =
     dict.merge(
       knowledge_base.returned_operators,
-      tag_returns(declared, Declared, source),
+      declared_returns(declared, source),
     )
   KnowledgeBase(..knowledge_base, returned_operators: merged)
+}
+
+// Tag declared summaries, dropping every operator that is not ground — the one
+// place `Declared` is stamped, so the tag means ground by construction rather
+// than by the loaders that happen to feed it.
+//
+// A polymorphic operator carries free variables nothing sanitized, which is the
+// substitution a serialized summary is already refused for. Dropping it here is
+// what makes the checker's polymorphic-`Declared` case unreachable, and a new
+// source of declarations — a catalog tier, a cache — inherits the rule instead
+// of having to restate it. The drop is silent: nothing in this module holds a
+// warning channel, and the project's own lines are reported by the spec lint.
+fn declared_returns(
+  declared: Dict(QualifiedName, EffectTerm),
+  source: LookupOrigin,
+) -> Dict(QualifiedName, ReturnedOperator) {
+  dict.filter(declared, fn(_name, operator) { effect_term.is_ground(operator) })
+  |> tag_returns(Declared, source)
 }
 
 // Merge **Fresh** returned-operator summaries (produced by this run's inference)
@@ -1791,31 +1810,15 @@ pub fn load_spec_returns_from_file(
   fold_spec_returns(annotation.extract_returns(file))
 }
 
-// The same map from a parsed spec's declared `external returns` lines — the one
-// choke point that keeps every declared summary in the base ground.
-//
-// A polymorphic operator carries free variables nothing sanitized, which is the
-// substitution the checker refuses for a serialized summary; it is dropped here
-// rather than loaded and refused later, so `Declared` means ground everywhere
-// downstream. A dotless name splits to nothing and `fold_spec_returns` drops it
-// with the rest — a returns declaration is per-function, and a name that
-// resolves nowhere would otherwise sit in the file looking effective.
-//
-// Both drops are silent in every tier: nothing here holds a warning channel, a
-// consumer can act on neither a dependency's line nor the catalog's, and the
-// project's own are reported by the spec lint.
+// The same map from a parsed spec's declared `external returns` lines. A dotless
+// name splits to nothing and `fold_spec_returns` drops it silently — a returns
+// declaration is per-function, and a name that resolves nowhere would otherwise
+// sit in the file looking effective. The ground-only rule is applied where the
+// summaries are tagged, in `declared_returns`.
 pub fn load_spec_external_returns_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, EffectTerm) {
-  annotation.extract_external_returns(file)
-  |> list.filter(fn(declared) { is_ground_operator(declared.operator) })
-  |> fold_spec_returns()
-}
-
-// Whether an operator binds no free effect variable — the ground-only rule the
-// declared tier is cut to.
-pub fn is_ground_operator(operator: EffectTerm) -> Bool {
-  set.is_empty(effect_term.free_vars(operator))
+  fold_spec_returns(annotation.extract_external_returns(file))
 }
 
 fn fold_spec_returns(
@@ -1877,7 +1880,7 @@ fn load_dependencies(
           // `returns` line also keys: the second argument wins.
           dict.merge(
             tag_returns(dep.returns, Foreign, origin),
-            tag_returns(dep.declared_returns, Declared, origin),
+            declared_returns(dep.declared_returns, origin),
           ),
         ),
         type_fields: list.append(
