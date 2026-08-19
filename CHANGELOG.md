@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `external returns <module>.<function> : <operator>` declares the closure an
+  FFI producer hands back, so calling it resolves instead of costing
+  `[Unknown]`. The line is hand-written and preserved by `graded infer`, and it
+  answers where the declaration stands alone — a call refuses it where the
+  declaration is out of the build's reach or a Gleam fallback body runs beside
+  it, and says which. Dependencies and path dependencies can ship the line for
+  their own producers.
+
 ## [0.12.1] - 2026-08-19
 
 ### Fixed

@@ -108,6 +108,9 @@ check external_budget.calls_wired_external : []
 check foreign_values.calls_returned_operator : [Disk]
 check foreign_values.calls_partial_operator : [Disk]
 check foreign_values.calls_native_operator : [Disk]
+// The one value channel a declaration reaches: the operator the producer hands
+// back is declared, so the call of it costs what the line says.
+check foreign_values.calls_declared_operator : [Disk]
 check foreign_values.calls_built_field : [Disk]
 check foreign_values.calls_native_built_field : [Disk]
 check foreign_values.calls_updated_field : [Disk]
@@ -130,10 +133,14 @@ external effects foreign_values.disk_read : [Disk]
 external effects foreign_values.portable_disk_read : [Disk]
 // Declared, and still refused on every value channel: what a declaration says
 // about calling a function says nothing about the value it returns.
+external effects foreign_values.declared_returns_operator : []
 external effects foreign_values.returns_operator : []
 external effects foreign_values.partial_returns_operator : []
 external effects foreign_values.builds : []
 external effects foreign_values.with_run : []
+// What the producer above hands back, which no `external effects` line states.
+external returns foreign_values.declared_returns_operator : [Disk]
+
 // A module-level external over a module that is not a project module and not a
 // dependency: every name under `fake_clock` resolves to [Time], including ones
 // nothing defines, which is what `graded effect`'s carve-out answers from. The

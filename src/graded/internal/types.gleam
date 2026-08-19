@@ -325,7 +325,9 @@ pub type UnknownReason {
   UndeclaredExternal
   // A call to an `@external` whose declaration names only targets this build
   // does not compile, and which has no Gleam body to run in their place. Nothing
-  // in reach implements the name, so what it declares is no part of the charge.
+  // in reach implements the name, so what it declares is no part of the charge —
+  // which is why the value channel reuses it for a declared return the same
+  // reading puts out of reach.
   UnbuiltExternal
   // A field call whose receiver girard could not type and no syntactic
   // parameter annotation names.
@@ -345,6 +347,11 @@ pub type UnknownReason {
   // A direct application of a returned operator whose producer could not be
   // resolved.
   UntraceableProducer
+  // A direct application of a returned operator whose producer's declared
+  // return is in reach beside a Gleam fallback body that also runs. The two can
+  // hand back different closures and there is no union of operators, so the
+  // declaration answers nothing.
+  RefusedDeclaredReturn
   // A call whose own effect resolved, and whose effect variable call-site
   // substitution then bound to `[Unknown]` — an argument this call site passed
   // that nothing resolves.
@@ -354,7 +361,8 @@ pub type UnknownReason {
 // Where a resolved effect came from: which source wrote the winning
 // knowledge-base entry, or — for a field call — which rule decided it.
 pub type LookupOrigin {
-  // A per-function `external effects` line in this project's spec.
+  // A per-function declaring line in this project's spec: an
+  // `external effects` one, or an `external returns` one.
   UserExternal
   // A committed `effects` line in this project's spec.
   CommittedSpec
@@ -797,6 +805,25 @@ pub type Warning {
   // installed dependency, a path dependency, nor a project module. Same
   // reasoning one tier up: the declaration governs no module at all.
   UnmatchedModuleExternalWarning(module: String)
+  // An `external returns <module>.<function>` line naming one of this package's
+  // own ordinary Gleam functions. The same rule as
+  // `StaleFunctionExternalWarning` one channel over: the body is visible, so
+  // every caller resolves what it hands back for itself and the line declares
+  // nothing. It is ignored and the body walked instead.
+  StaleExternalReturnsWarning(function: String)
+  // An `external returns <module>.<function>` line whose name resolves nowhere
+  // — no dependency, no catalog entry, no project module. The declaration then
+  // covers nothing, so it is a typo rather than a signature.
+  UnmatchedExternalReturnsWarning(function: String)
+  // An `external returns` line whose operator is polymorphic (`fn(cb) -> [cb]`).
+  // Its free variables are unsanitized, so substituting through it would pass a
+  // budget nothing backs: only a ground operator is loaded, and this line is
+  // ignored.
+  PolymorphicExternalReturnsWarning(function: String)
+  // An `external returns <module>` line with no function part. The declaration
+  // is per-function by nature — nothing keys a whole module's returned value —
+  // so the line resolves nothing at all.
+  DotlessExternalReturnsWarning(name: String)
 }
 
 // Result of checking one file.

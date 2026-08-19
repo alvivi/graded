@@ -54,11 +54,12 @@ import graded/internal/typeinfo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type GradedFile, type QualifiedName,
   type TypeFieldAnnotation, type Violation, type Warning, AnnotationLine,
-  CheckResult, EffectAnnotation, GradedFile, QualifiedName,
+  CheckResult, DotlessExternalReturnsWarning, EffectAnnotation, GradedFile,
+  PolymorphicExternalReturnsWarning, QualifiedName, StaleExternalReturnsWarning,
   StaleFunctionExternalWarning, UnmatchedCheckWarning,
-  UnmatchedFieldBoundWarning, UnmatchedFunctionExternalWarning,
-  UnmatchedModuleExternalWarning, UnmatchedParamBoundWarning,
-  UnmatchedTypeFieldWarning, UntrackedEffectWarning,
+  UnmatchedExternalReturnsWarning, UnmatchedFieldBoundWarning,
+  UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
+  UnmatchedParamBoundWarning, UnmatchedTypeFieldWarning, UntrackedEffectWarning,
 }
 import simplifile
 
@@ -469,6 +470,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
     registry:,
     type_info:,
     stale_externals:,
+    stale_external_returns:,
     knowledge_base:,
     catalog:,
     dependencies:,
@@ -526,6 +528,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
       index,
       package_root,
       stale_externals,
+      stale_external_returns,
       catalog,
       dependencies,
     )
@@ -555,6 +558,10 @@ type ProjectContext {
     // here: the knowledge base is assembled without them, and the spec lint
     // reports them, so the two can't disagree about which lines are live.
     stale_externals: Set(String),
+    // The same about the `external returns` lines, on the value channel. Two
+    // sets rather than one: each suppresses only its own channel's lines, and
+    // each is reported by its own warning.
+    stale_external_returns: Set(String),
     knowledge_base: KnowledgeBase,
     // The bundled catalog this context was assembled against. Held rather than
     // re-read by the spec lint, which weighs the same entries the knowledge
@@ -719,6 +726,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     registry:,
     type_info:,
     stale_externals:,
+    stale_external_returns:,
     knowledge_base:,
     catalog:,
     dependencies: dep_sources,
@@ -909,6 +917,7 @@ fn validate_spec_annotations(
   index: Dict(String, #(String, glance.Module)),
   package_root: String,
   stale_externals: Set(String),
+  stale_external_returns: Set(String),
   catalog: effects.BundledCatalog,
   dependencies: DependencySources,
 ) -> List(Warning) {
@@ -920,26 +929,36 @@ fn validate_spec_annotations(
     |> list.map(fn(ann) { UnmatchedCheckWarning(function: ann.function) })
 
   let externals = annotation.extract_externals(spec)
+  let declared_returns = annotation.extract_external_returns(spec)
   let type_fields = annotation.extract_type_fields(spec)
-  // Both lints tell a dependency module from a typo, and the scan behind that
-  // is the expensive part: walked once here and shared, and not at all for a
-  // spec holding neither kind of line.
-  let dep_files = case externals, type_fields {
-    [], [] -> dict.new()
-    _, _ -> dependency_module_files(package_root)
+  // Every lint here tells a dependency module from a typo, and the scan behind
+  // that is the expensive part: walked once here and shared, and not at all for
+  // a spec holding none of these line kinds.
+  let dep_files = case externals, declared_returns, type_fields {
+    [], [], [] -> dict.new()
+    _, _, _ -> dependency_module_files(package_root)
   }
   let dep_modules = set.from_list(dict.keys(dep_files))
 
-  let external_warnings =
-    external_warnings(
-      externals,
+  // The two declaring forms weigh a name by one rule, over one precomputation.
+  let evidence =
+    spec_name_evidence(
       index,
       known_functions,
       package_root,
-      stale_externals,
       dep_files,
       catalog,
       dependencies,
+    )
+
+  let external_warnings =
+    external_warnings(externals, evidence, stale_externals)
+
+  let external_returns_warnings =
+    external_returns_warnings(
+      declared_returns,
+      evidence,
+      stale_external_returns,
     )
 
   // Resolving `type` lines also needs per-module type info; build it only when
@@ -960,21 +979,28 @@ fn validate_spec_annotations(
     }
   }
 
-  list.flatten([check_warnings, external_warnings, type_field_warnings])
+  list.flatten([
+    check_warnings,
+    external_warnings,
+    external_returns_warnings,
+    type_field_warnings,
+  ])
 }
 
-// One walk of the spec's `external effects` lines, yielding the three ways such
-// a line can be dead. Both tiers are covered, since a typo is as likely in the
-// module name as in the function name:
-//
-//   - a per-function line naming one of *this package's* Gleam-bodied functions:
-//     valid syntax, nothing foreign to declare, so it is ignored and the body
-//     walked (see `stale_project_externals`);
-//   - a per-function line whose `module.function` resolves nowhere at all —
-//     dependency, catalog, or project index;
-//   - a module-level line whose module is neither a dependency nor a project
-//     module.
-//
+// What both declaring forms' lints weigh a name against, precomputed once over
+// the catalog and the dependency scan and then asked per name. One rule, so an
+// `external effects` line and an `external returns` line naming the same
+// function are called dead together or not at all.
+type SpecNameEvidence {
+  SpecNameEvidence(
+    // Whether anything graded can read defines the name.
+    defines: fn(QualifiedName) -> Bool,
+    // Whether the name's module was placed at all — or the dependency tree is
+    // too incomplete for its absence to prove anything.
+    module_placed: fn(String) -> Bool,
+  )
+}
+
 // A dependency is weighed by the function, not by the module: graded holds that
 // dependency's source, so `external effects dep/io.typo` over a `dep/io` that
 // defines only `writes` is as dead as one naming no module at all, and the
@@ -982,18 +1008,15 @@ fn validate_spec_annotations(
 // function to weigh and is settled by the module alone.
 //
 // Existence only. A name that resolves but that graded cannot introspect is
-// exactly what the line is for, and is never flagged.
-fn external_warnings(
-  externals: List(types.ExternalAnnotation),
+// exactly what a declaring line is for, and is never flagged.
+fn spec_name_evidence(
   index: Dict(String, #(String, glance.Module)),
   known_functions: Set(String),
   package_root: String,
-  stale: Set(String),
   dep_files: Dict(String, String),
   catalog: effects.BundledCatalog,
   dependencies: DependencySources,
-) -> List(Warning) {
-  use <- bool.guard(when: externals == [], return: [])
+) -> SpecNameEvidence {
   // The catalog the knowledge base was assembled from, selected against *this*
   // project's manifest — so a line naming a catalogued function of a package
   // this project depends on resolves exactly as `check` resolves it.
@@ -1016,56 +1039,109 @@ fn external_warnings(
   // it to be: with a manifest package whose sources never turned up, the module
   // may be that package's, and no reading of what is on disk disproves it.
   let unplaceable_is_unknown = !dependency_sources_are_complete(package_root)
+  // Whether something *outside* this package's own parsed source speaks for the
+  // module: a dependency source the lint could read, or a catalog entry.
+  let claimed = fn(module) {
+    dict.has_key(dep_files, module)
+    || dict.has_key(catalog_modules, module)
+    || set.contains(catalog_function_modules, module)
+  }
+  // And whether anything at all does. Nothing here is what "unplaceable" means.
+  let placed = fn(module) { dict.has_key(index, module) || claimed(module) }
+  let defines = fn(qualified: QualifiedName) {
+    // What answers for the name where no parsed source settles it: a module
+    // something outside this package speaks for, a catalog entry for the exact
+    // name, or a module the lint cannot place at all while the tree is missing
+    // a package that could be holding it. A project module is *not* among them
+    // — it was parsed, and `known_functions` is what it defines.
+    let unparsed_answers =
+      claimed(qualified.module)
+      || dict.has_key(catalog_functions, qualified)
+      || { unplaceable_is_unknown && !placed(qualified.module) }
+    // The catalog is a stand-in for sources graded cannot read, so it is
+    // weighed only where the dependency's own source says nothing: a parsed
+    // module defines what it defines, and a name it provably lacks is a typo
+    // whatever the catalog keys for the module. The lint flags what it can
+    // prove dead, and silence is not proof.
+    set.contains(known_functions, types.dotted_name(qualified))
+    || case dependency_name(dependencies, qualified) {
+      DefinedByDependency -> True
+      AbsentFromDependency -> False
+      UnreadDependency -> unparsed_answers
+    }
+  }
+  SpecNameEvidence(defines:, module_placed: fn(module) {
+    placed(module) || unplaceable_is_unknown
+  })
+}
+
+// One walk of the spec's `external effects` lines, yielding the three ways such
+// a line can be dead. Both tiers are covered, since a typo is as likely in the
+// module name as in the function name:
+//
+//   - a per-function line naming one of *this package's* Gleam-bodied functions:
+//     valid syntax, nothing foreign to declare, so it is ignored and the body
+//     walked (see `stale_project_externals`);
+//   - a per-function line whose `module.function` resolves nowhere at all —
+//     dependency, catalog, or project index;
+//   - a module-level line whose module is neither a dependency nor a project
+//     module.
+fn external_warnings(
+  externals: List(types.ExternalAnnotation),
+  evidence: SpecNameEvidence,
+  stale: Set(String),
+) -> List(Warning) {
   list.filter_map(externals, fn(external) {
-    // Whether something *outside* this package's own parsed source speaks for
-    // the module: a dependency source the lint could read, or a catalog entry —
-    // keyed by a module-level line, or by the per-function lines that are the
-    // usual form. The stdlib catalog holds `gleam/io.println` and no `gleam/io`
-    // line, and reading the module tier alone calls a real module a typo
-    // wherever that dependency's own source is not installed to say otherwise.
-    let claimed =
-      dict.has_key(dep_files, external.module)
-      || dict.has_key(catalog_modules, external.module)
-      || set.contains(catalog_function_modules, external.module)
-    // And whether anything at all does. Nothing here is what "unplaceable"
-    // means.
-    let placed = dict.has_key(index, external.module) || claimed
     case external.target {
       types.FunctionExternal(function) -> {
         let qualified = QualifiedName(external.module, function)
         let name = types.dotted_name(qualified)
-        // What answers for the name where no parsed source settles it: a module
-        // something outside this package speaks for, a catalog entry for the
-        // exact name, or a module the lint cannot place at all while the tree
-        // is missing a package that could be holding it. A project module is
-        // *not* among them — it was parsed, and `known_functions` is what it
-        // defines.
-        let unparsed_answers =
-          claimed
-          || dict.has_key(catalog_functions, qualified)
-          || { unplaceable_is_unknown && !placed }
-        // The catalog is a stand-in for sources graded cannot read, so it is
-        // weighed only where the dependency's own source says nothing: a
-        // parsed module defines what it defines, and a name it provably lacks
-        // is a typo whatever the catalog keys for the module. The lint flags
-        // what it can prove dead, and silence is not proof.
-        let resolves =
-          set.contains(known_functions, name)
-          || case dependency_name(dependencies, qualified) {
-            DefinedByDependency -> True
-            AbsentFromDependency -> False
-            UnreadDependency -> unparsed_answers
-          }
-        case set.contains(stale, name), resolves {
+        case set.contains(stale, name), evidence.defines(qualified) {
           True, _ -> Ok(StaleFunctionExternalWarning(function: name))
           False, False -> Ok(UnmatchedFunctionExternalWarning(function: name))
           False, True -> Error(Nil)
         }
       }
       types.ModuleExternal ->
-        case placed || unplaceable_is_unknown {
+        case evidence.module_placed(external.module) {
           True -> Error(Nil)
           False -> Ok(UnmatchedModuleExternalWarning(module: external.module))
+        }
+    }
+  })
+}
+
+// The same walk over the spec's `external returns` lines, yielding the four ways
+// one can be dead. Two are the existence branches above, read through the same
+// evidence; two are this form's own, and both are lines the loader drops:
+//
+//   - a name with no `.`: the declaration is per-function, and nothing keys a
+//     whole module's returned value;
+//   - a polymorphic operator, whose free variables nothing sanitized.
+//
+// One warning per line, so a line that is dead twice over is reported by the
+// first rule that catches it.
+fn external_returns_warnings(
+  declared: List(types.ReturnsAnnotation),
+  evidence: SpecNameEvidence,
+  stale: Set(String),
+) -> List(Warning) {
+  list.filter_map(declared, fn(returns) {
+    case annotation.split_function_name(returns.function) {
+      Error(Nil) -> Ok(DotlessExternalReturnsWarning(name: returns.function))
+      Ok(#(module, function)) ->
+        case
+          set.contains(stale, returns.function),
+          evidence.defines(QualifiedName(module, function)),
+          effects.is_ground_operator(returns.operator)
+        {
+          True, _, _ ->
+            Ok(StaleExternalReturnsWarning(function: returns.function))
+          False, False, _ ->
+            Ok(UnmatchedExternalReturnsWarning(function: returns.function))
+          False, True, False ->
+            Ok(PolymorphicExternalReturnsWarning(function: returns.function))
+          False, True, True -> Error(Nil)
         }
     }
   })
@@ -3924,6 +4000,34 @@ fn print_warning(file: String, warning: Warning) -> Nil {
         <> ": warning: external effects "
         <> module
         <> " names no dependency or project module — check the module path; the declaration covers nothing",
+      )
+    StaleExternalReturnsWarning(function:) ->
+      io.println(
+        file
+        <> ": warning: external returns "
+        <> function
+        <> " names a function of this package with a Gleam body — every caller resolves what it returns from that body, so the line declares nothing and is ignored. `graded infer` replaces it with the inferred `returns` line",
+      )
+    UnmatchedExternalReturnsWarning(function:) ->
+      io.println(
+        file
+        <> ": warning: external returns "
+        <> function
+        <> " names no dependency, catalog, or project function — check the module qualifier; the declaration covers nothing",
+      )
+    PolymorphicExternalReturnsWarning(function:) ->
+      io.println(
+        file
+        <> ": warning: external returns "
+        <> function
+        <> " declares an operator with effect variables — only a ground operator is loaded, so the line is ignored; write the effects the returned function performs, or wrap the producer in Gleam",
+      )
+    DotlessExternalReturnsWarning(name:) ->
+      io.println(
+        file
+        <> ": warning: external returns "
+        <> name
+        <> " names a module, not a function — a returns declaration is per-function; the line resolves nothing",
       )
   }
 }
