@@ -1207,11 +1207,63 @@ pub fn with_declared_returned_operators(
   source: LookupOrigin,
 ) -> KnowledgeBase {
   let merged =
-    dict.merge(
+    merge_returns(
       knowledge_base.returned_operators,
       declared_returns(declared, source),
     )
   KnowledgeBase(..knowledge_base, returned_operators: merged)
+}
+
+// Merge declared summaries that only *fill gaps*: whatever an earlier fold
+// already wrote for a name stands, declaration or not.
+//
+// The path-dependency fold merges this way. Its tier sits below the installed
+// dependencies', so a path dep declaring `external returns dep/ffi.make` for a
+// name an installed dependency's own spec already declares must not displace it
+// — the inversion of the documented order that `over_catalog` keeps the effects
+// channel out of. Within the one spec being folded, this still leaves the
+// declaration standing over that file's inferred `returns` line: the
+// declarations fold first, and the inferred merge beside them gap-fills too.
+fn gap_filling_declared_returns(
+  knowledge_base: KnowledgeBase,
+  declared: Dict(QualifiedName, EffectTerm),
+  source: LookupOrigin,
+) -> KnowledgeBase {
+  let merged =
+    dict.merge(
+      declared_returns(declared, source),
+      knowledge_base.returned_operators,
+    )
+  KnowledgeBase(..knowledge_base, returned_operators: merged)
+}
+
+// The one precedence rule this channel merges by: an incoming entry wins its
+// key, **except** that nothing inferred replaces a declaration.
+//
+// Tier order on the channel is fold order — the folds run outermost-first, so
+// a consumer's line, folded last, is the one that answers. Declared-beats-
+// inferred cannot ride on that ordering alone, because it must hold *within* a
+// tier as well: installed dependencies are folded in directory order, and a
+// stray `returns` line in the second package naming the first package's module
+// would otherwise bury the `external returns` line its author shipped.
+fn merge_returns(
+  existing: Dict(QualifiedName, ReturnedOperator),
+  incoming: Dict(QualifiedName, ReturnedOperator),
+) -> Dict(QualifiedName, ReturnedOperator) {
+  let winning =
+    dict.filter(incoming, fn(name, entry) {
+      case entry.summary {
+        Declared -> True
+        Fresh | Foreign ->
+          case dict.get(existing, name) {
+            Ok(ReturnedOperator(summary: Declared, ..)) -> False
+            Ok(ReturnedOperator(summary: Fresh, ..))
+            | Ok(ReturnedOperator(summary: Foreign, ..))
+            | Error(Nil) -> True
+          }
+      }
+    })
+  dict.merge(existing, winning)
 }
 
 // Tag declared summaries, dropping every operator that is not ground — the one
@@ -1237,35 +1289,23 @@ fn declared_returns(
 // replaces a committed Foreign one for the same key. Used for the pre-pass /
 // main-loop fresh deltas.
 //
-// A **Declared** entry is the exception: inference describes a body, and the
-// line describes what the foreign implementation hands back, so the line stands.
-// Fresh inference keys no foreign name in the first place and a declaration over
-// an ordinary own function is dropped at load, so this guard is insurance
-// against drift in a chain of invariants that spans three files.
+// A **Declared** entry is the exception `merge_returns` states: inference
+// describes a body, and the line describes what the foreign implementation hands
+// back, so the line stands. Fresh inference keys no foreign name in the first
+// place and a declaration over an ordinary own function is dropped at load, so
+// here the rule is insurance against drift in a chain of invariants that spans
+// three files rather than the thing holding the roof up.
 pub fn with_fresh_returned_operators(
   knowledge_base: KnowledgeBase,
   inferred: Dict(QualifiedName, EffectTerm),
   source: LookupOrigin,
 ) -> KnowledgeBase {
-  let fresh =
-    dict.filter(tag_returns(inferred, Fresh, source), fn(name, _summary) {
-      !is_declared_return(knowledge_base, name)
-    })
-  let merged = dict.merge(knowledge_base.returned_operators, fresh)
+  let merged =
+    merge_returns(
+      knowledge_base.returned_operators,
+      tag_returns(inferred, Fresh, source),
+    )
   KnowledgeBase(..knowledge_base, returned_operators: merged)
-}
-
-// Whether the base already holds a declared summary for `name`.
-fn is_declared_return(
-  knowledge_base: KnowledgeBase,
-  name: QualifiedName,
-) -> Bool {
-  case dict.get(knowledge_base.returned_operators, name) {
-    Ok(ReturnedOperator(summary: Declared, ..)) -> True
-    Ok(ReturnedOperator(summary: Fresh, ..))
-    | Ok(ReturnedOperator(summary: Foreign, ..))
-    | Error(Nil) -> False
-  }
 }
 
 // Attach the package-wide factory map (keyed by `#(module, function)`), so a
@@ -1582,6 +1622,12 @@ pub fn load_spec_params_from_file(
 //
 // The two returns maps are held apart because only one of them is a
 // declaration, and the sanitizing below weighs them by exactly that.
+//
+// `modules` is the package's own module paths, read off the `src/` tree beside
+// the spec: what the sanitizing below measures a line's *subject* against, so a
+// spec cannot state a returned-operator summary about code it does not ship.
+// Empty where that tree could not be read, which the filter reads as "nothing to
+// arbitrate with" rather than as "the package owns nothing".
 pub type DepSpec {
   DepSpec(
     effects: Dict(QualifiedName, EffectTerm),
@@ -1590,6 +1636,7 @@ pub type DepSpec {
     declared_returns: Dict(QualifiedName, EffectTerm),
     type_fields: List(TypeFieldAnnotation),
     externals: List(ExternalAnnotation),
+    modules: Set(String),
   )
 }
 
@@ -1603,7 +1650,8 @@ pub type DepSpec {
 // lines the dep author wrote for its FFI.
 pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
   case read_spec_file(config.spec_file_for(dep_root, package_name)) {
-    Error(_) -> DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [])
+    Error(_) ->
+      DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [], set.new())
     Ok(file) ->
       // Loaded through the same two readers a package uses for its *own* spec,
       // so a dependency's `check` budgets and externally-declared functions are
@@ -1620,8 +1668,16 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
         declared_returns: load_spec_external_returns_from_file(file),
         type_fields: annotation.extract_type_fields(file),
         externals: annotation.extract_externals(file),
+        modules: package_modules(dep_root),
       )
   }
+}
+
+// The module paths a package ships, read off its `src/` tree.
+fn package_modules(dep_root: String) -> Set(String) {
+  source_dir_module_files(filepath.join(dep_root, "src"))
+  |> dict.keys
+  |> set.from_list
 }
 
 // A dependency spec minus the entries no dependency spec may state about its
@@ -1637,11 +1693,20 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
 // `external returns` line, a module-level external, or the catalog entry
 // underneath.
 //
-// `declared_returns` is therefore never filtered here, over a foreign name or an
-// ordinary one. The line is the dep author's declaration of what their producer
-// hands back, and arbitrating it against their own source is their `infer`'s
-// job, not their consumer's — the same reading that keeps their
-// `external effects` line for a Gleam-bodied function of their own.
+// `declared_returns` is therefore not weighed against the dep's own foreign
+// scan. The line is the dep author's declaration of what their producer hands
+// back, and arbitrating it against their own source is their `infer`'s job, not
+// their consumer's — the same reading that keeps their `external effects` line
+// for a Gleam-bodied function of their own.
+//
+// Both returns maps are weighed against a second question, which the effects
+// channel has no analogue of: whose code the line is *about*. A spec may state a
+// returned-operator summary for a module it ships or for a name the foreign scan
+// records, and for nothing else. Without that, a dependency shipping
+// `external returns app.helper` — an ordinary Gleam function of the *consumer* —
+// lands a declaration in the tier above the consumer's own body-derived summary,
+// and the consumer's source stops being what its own callers are charged for.
+// A package whose `src/` tree could not be read arbitrates nothing here.
 //
 // A term and its bounds are dropped together. `load_knowledge_base` merges terms
 // and bounds in two independent passes, so a term dropped without its bounds
@@ -1662,6 +1727,11 @@ fn sanitize_dep_spec(
   let inferred_over_foreign = fn(name) {
     dict.has_key(foreign, name) && !set.contains(declared, name)
   }
+  let about_other_code = fn(name: QualifiedName) {
+    !set.is_empty(dep.modules)
+    && !set.contains(dep.modules, name.module)
+    && !dict.has_key(foreign, name)
+  }
   DepSpec(
     ..dep,
     effects: dict.filter(dep.effects, fn(name, _term) {
@@ -1671,7 +1741,10 @@ fn sanitize_dep_spec(
       !inferred_over_foreign(name)
     }),
     returns: dict.filter(dep.returns, fn(name, _operator) {
-      !dict.has_key(foreign, name)
+      !dict.has_key(foreign, name) && !about_other_code(name)
+    }),
+    declared_returns: dict.filter(dep.declared_returns, fn(name, _operator) {
+      !about_other_code(name)
     }),
   )
 }
@@ -1708,10 +1781,12 @@ fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> ExternalTiers {
 // function-keyed entries outrank it — the per-function-beats-module-level rule.
 //
 // The spec's `external returns` declarations fold ahead of its inferred
-// `returns` lines, so a name both key resolves to the declaration. Nothing pairs
-// bounds with a summary on this channel — the ground-only rule means a declared
-// operator binds no parameter — so there is no term-and-bounds pairing to keep
-// intact here.
+// `returns` lines, so a name both key resolves to the declaration. Both merges
+// gap-fill: this tier reads below the installed dependencies', so a name an
+// installed dep's spec already answered keeps that answer, declaration or not.
+// Nothing pairs bounds with a summary on this channel — the ground-only rule
+// means a declared operator binds no parameter — so there is no term-and-bounds
+// pairing to keep intact here.
 pub fn with_path_dep_spec(
   knowledge_base: KnowledgeBase,
   dep: DepSpec,
@@ -1737,7 +1812,7 @@ pub fn with_path_dep_spec(
       over_catalog(knowledge_base.module_effects, module_externals),
     ),
   )
-  |> with_declared_returned_operators(dep.declared_returns, origin)
+  |> gap_filling_declared_returns(dep.declared_returns, origin)
   |> with_foreign_returned_operators(dep.returns, origin)
   |> with_type_fields(dep.type_fields, origin)
 }
@@ -1874,11 +1949,13 @@ fn load_dependencies(
       Dependencies(
         effects: dict.merge(acc.effects, decided),
         params: dict.merge(acc.params, dep.params),
-        returns: dict.merge(
+        returns: merge_returns(
           acc.returns,
           // Within one spec a declared summary answers for a name its own
-          // `returns` line also keys: the second argument wins.
-          dict.merge(
+          // `returns` line also keys: the incoming argument wins. Across the
+          // specs, the same rule keeps one package's stray `returns` line from
+          // burying another's declaration for the same name.
+          merge_returns(
             tag_returns(dep.returns, Foreign, origin),
             declared_returns(dep.declared_returns, origin),
           ),

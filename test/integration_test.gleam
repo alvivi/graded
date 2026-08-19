@@ -8295,3 +8295,169 @@ pub fn running() -> Nil {
   ])
   support.cleanup(root)
 }
+
+// Tier precedence on the returns channel
+//
+// Which spec's line answers for a name when several key it. Four rules, one per
+// collision the channel can hold: a spec states summaries only about code it
+// ships, the consumer's declaration is in reach while a path dependency is
+// inferred, an installed dependency outranks a path dependency, and a
+// declaration outranks an inferred summary across packages as well as within
+// one.
+
+pub fn a_dependency_cannot_declare_a_return_for_the_consumers_code_test() {
+  // The dep's spec names `lib.make` — an ordinary Gleam function of the
+  // *consumer*, whose body every caller can already see. Loaded, it would sit in
+  // a tier above the summary this run infers from that body and answer [Net] for
+  // a closure that prints. A spec speaks for the modules its package ships and
+  // for the names a foreign scan records; `lib` is neither.
+  let root = "build/declared_returns_dep_over_consumer"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.caller : []
+external effects lib.write : [Stdout]
+",
+    ),
+    #("build/packages/dep/dep.graded", "external returns lib.make : [Net]\n"),
+    #(
+      "build/packages/dep/src/dep.gleam",
+      "pub fn nothing() -> Nil {\n  Nil\n}\n",
+    ),
+    #(
+      "lib.gleam",
+      "@external(erlang, \"lib_ffi\", \"write\")
+@external(javascript, \"lib_ffi\", \"write\")
+pub fn write() -> Nil
+
+pub fn make() -> fn() -> Nil {
+  fn() { write() }
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import lib
+
+pub fn caller() -> Nil {
+  let handle = lib.make()
+  handle()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  support.cleanup(root)
+}
+
+pub fn an_installed_dependencys_declaration_outranks_a_path_deps_test() {
+  // The same package reached twice — installed under `build/packages` and
+  // declared as a path dependency — with the two copies' specs declaring
+  // different returns for the same producer. Dependency specs rank above path
+  // dependencies, so the installed copy's [Stdout] is the answer; the path-dep
+  // fold gap-fills rather than writing over the tier above it.
+  let app_root = "build/declared_returns_dep_over_path_dep_app"
+  let dep_root = "build/declared_returns_dep_over_path_dep_dep"
+  let producer =
+    "@external(erlang, \"dep_ffi\", \"make\")
+@external(javascript, \"dep_ffi\", \"make\")
+pub fn make() -> fn() -> Nil
+"
+  support.write_fixture(dep_root, [
+    #("gleam.toml", "name = \"dep\"\n"),
+    #("src/dep/ffi.gleam", producer),
+    #(
+      "dep.graded",
+      "external effects dep/ffi.make : []
+external returns dep/ffi.make : [Net]
+",
+    ),
+  ])
+  support.write_fixture(app_root, [
+    #(
+      "gleam.toml",
+      "name = \"app\"\n\n[dependencies]\ndep = { path = \"../declared_returns_dep_over_path_dep_dep\" }\n",
+    ),
+    #("app.graded", "check app.wrapper : []\n"),
+    #("build/packages/dep/src/dep/ffi.gleam", producer),
+    #(
+      "build/packages/dep/dep.graded",
+      "external effects dep/ffi.make : []
+external returns dep/ffi.make : [Stdout]
+",
+    ),
+    #(
+      "app.gleam",
+      "import dep/ffi
+
+pub fn wrapper() -> Nil {
+  let handle = ffi.make()
+  handle()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  support.cleanup(app_root)
+  support.cleanup(dep_root)
+}
+
+pub fn one_packages_returns_line_cannot_bury_anothers_declaration_test() {
+  // `alib` declares what its own Gleam-bodied producer hands back — the
+  // cross-package keep case — and `zlib`'s spec carries a stray inferred
+  // `returns` line for the very same name. Whichever order the two specs are
+  // folded in, the declaration is the one that answers: it is not zlib's code to
+  // state a summary about, and declared outranks inferred across specs as it
+  // does within one.
+  let root = "build/declared_returns_cross_package_stray"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "check app.wrapper : []\n"),
+    #(
+      "build/packages/alib/alib.graded",
+      "effects alib/mod.make : []
+external returns alib/mod.make : [Stdout]
+",
+    ),
+    #(
+      "build/packages/alib/src/alib/mod.gleam",
+      "pub fn make() -> fn() -> Nil {
+  fn() { Nil }
+}
+",
+    ),
+    #("build/packages/zlib/zlib.graded", "returns alib/mod.make : [Net]\n"),
+    #(
+      "build/packages/zlib/src/zlib.gleam",
+      "pub fn nothing() -> Nil {\n  Nil\n}\n",
+    ),
+    #(
+      "app.gleam",
+      "import alib/mod
+
+pub fn wrapper() -> Nil {
+  let handle = mod.make()
+  handle()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  support.cleanup(root)
+}
