@@ -3187,6 +3187,99 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_stale_external_returns_line_is_ignored_and_repaired_test() {
+  // The line names one of this package's own ordinary functions, whose returned
+  // closure every caller can see for itself — so it declares nothing. It is
+  // ignored at load, not merely warned about: trusted between `infer` runs it
+  // would be a per-function override of the walk. `infer` then deletes it and
+  // writes the `returns` line it was suppressing.
+  let root = "build/declared_returns_stale"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.caller : []
+external returns lib.make : [Disk]
+",
+    ),
+    #(
+      "lib.gleam",
+      "pub fn make() -> fn() -> Nil {
+  fn() { Nil }
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import lib
+
+pub fn caller() -> Nil {
+  let handle = lib.make()
+  handle()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+
+  let assert Ok(preview) = graded.run_infer_dry_run(root)
+  let changed =
+    preview
+    |> string.split("\n")
+    |> list.filter(fn(line) {
+      string.starts_with(line, "- ") || string.starts_with(line, "+ ")
+    })
+  changed
+  |> list.contains("- external returns lib.make : [Disk]")
+  |> should.be_true()
+  changed |> list.contains("+ returns lib.make : []") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_declared_return_leaves_the_effects_channel_alone_test() {
+  // The two stale channels are separate sets. Were the returns one to reach the
+  // effects channel's filters, the committed `effects lib.make` line would be
+  // dropped and the call charged by inference instead — so the call's [Stdout]
+  // is what says they stayed apart, and the applied operator's absence from the
+  // charge is what says the stale declaration was still ignored.
+  let root = "build/declared_returns_cross_channel"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.caller : []
+effects lib.make : [Stdout]
+external returns lib.make : [Disk]
+",
+    ),
+    #(
+      "lib.gleam",
+      "pub fn make() -> fn() -> Nil {
+  fn() { Nil }
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import lib
+
+pub fn caller() -> Nil {
+  let handle = lib.make()
+  handle()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  support.cleanup(root)
+}
+
 // The spec declaring the same-module producer's return, and the spec that
 // leaves it to inference — which writes no summary for an `@external` at all.
 const declared_same_module_spec = "check ffi.caller : [Net]
