@@ -53,6 +53,16 @@ pub fn format_stdin_sorts_and_normalizes_test() {
   |> should.equal(Ok("check myapp.a : []\n\neffects myapp.b : [Http]\n"))
 }
 
+pub fn format_stdin_sorts_external_returns_before_returns_test() {
+  graded.run_format_stdin("returns m.f : [Net]\nexternal returns m.g : [Net]")
+  |> should.equal(Ok("external returns m.g : [Net]\n\nreturns m.f : [Net]\n"))
+}
+
+pub fn format_stdin_is_idempotent_over_external_returns_test() {
+  let formatted = "external returns m.g : [Net]\n\nreturns m.f : [Net]\n"
+  graded.run_format_stdin(formatted) |> should.equal(Ok(formatted))
+}
+
 pub fn format_stdin_fails_on_unparseable_input_test() {
   graded.run_format_stdin(bad_spec) |> should.be_error
 }
