@@ -138,8 +138,9 @@ order and takes the first hit:
 
 Returned-operator summaries follow the same order on their own channel: an
 `external returns` declaration outranks an inferred `returns` line for the same
-name, and this package's spec outranks a dependency's. The catalog carries no
-returns lines of either kind.
+name — across two packages' specs as well as within one — and this package's spec
+outranks a dependency's, which outranks a path dependency's. The catalog carries
+no returns lines of either kind.
 
 ## Effect set syntax
 
@@ -590,7 +591,11 @@ package declares `@external` is refused, while its `external effects` line, its
 `external returns` line, a module-level external, and the catalog entry underneath
 keep answering. A dependency's `external returns` line is kept even over one of
 its own Gleam-bodied functions — weighing a spec against the source beside it is
-that package's job at its own `infer` time. Where a
+that package's job at its own `infer` time. What a spec may state a returned-
+operator summary *about* is narrower: the modules that package ships, plus the
+names a scan of dependency source records as `@external`. A `returns` or
+`external returns` line for anyone else's code — your own modules included — is
+dropped, so no dependency can overrule what your own body says it hands back. Where a
 dependency's external carries a fallback body that runs on some target, its
 declaration is widened by `[Unknown]` — the union graded performs against a
 walked fallback in the defining package has no second operand one package away.

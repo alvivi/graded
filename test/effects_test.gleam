@@ -1573,6 +1573,38 @@ pub fn a_dependency_returns_line_for_its_own_external_is_refused_test() {
   |> should.be_true()
 }
 
+pub fn one_dep_specs_returns_line_cannot_bury_anothers_declaration_test() {
+  // Two installed specs keying the same name: `alib` declares what its own
+  // producer hands back, `zlib` carries a stray inferred `returns` line for it.
+  // The packages are folded in whatever order the directory yields, so the rule
+  // has to be the merge's, not the order's — declared outranks inferred across
+  // specs as it does within one.
+  let root = "build/eff_cross_package_stray_returns"
+  write_fixture(root, [
+    #(dep_spec_path("alib"), "external returns alib/mod.make : [Stdout]\n"),
+    #(dep_spec_path("zlib"), "returns alib/mod.make : [Net]\n"),
+  ])
+  let kb =
+    effects.load_knowledge_base(
+      root <> "/packages",
+      root <> "/missing_manifest.toml",
+      dict.new(),
+    )
+  cleanup(root)
+  let assert Ok(found) =
+    effects.lookup_returned_operator(kb, QualifiedName("alib/mod", "make"))
+  found.operator
+  |> should.equal(
+    effect_term.from_effect_set(
+      Specific(
+        set.from_list([
+          "Stdout",
+        ]),
+      ),
+    ),
+  )
+}
+
 // Target-narrowed foreign lookups
 //
 // A Gleam fallback body runs only on the targets its own declaration leaves
