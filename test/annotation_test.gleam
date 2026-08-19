@@ -817,6 +817,46 @@ pub fn returns_line_multi_callback_round_trip_test() {
   annotation.format_file(file) |> should.equal(line)
 }
 
+// External returns annotations
+//
+// `external returns module.fn : [Net]` lines declaring the operator a foreign
+// producer hands back. Same operator grammar as `returns`, a distinct line
+// kind.
+
+pub fn external_returns_line_round_trip_test() {
+  let line = "external returns app/ffi.make_client : [Net]"
+  let assert Ok(file) = annotation.parse_file(line)
+  let assert [declared] = annotation.extract_external_returns(file)
+  declared.function |> should.equal("app/ffi.make_client")
+  declared.operator |> should.equal(TLabels(set.from_list(["Net"])))
+  annotation.extract_external_returns(file) |> list.length |> should.equal(1)
+  annotation.extract_returns(file) |> should.equal([])
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn external_returns_line_operator_round_trip_test() {
+  let line = "external returns m.wrap : fn(cb) -> [cb]"
+  let assert Ok(file) = annotation.parse_file(line)
+  let assert [declared] = annotation.extract_external_returns(file)
+  declared.operator |> should.equal(TAbs("cb", TVar("cb")))
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn external_returns_line_is_not_an_effects_annotation_test() {
+  let assert Ok(annotations) =
+    annotation.parse("external returns m.make : [Net]")
+  annotations |> should.equal([])
+}
+
+pub fn external_returns_malformed_line_test() {
+  let input =
+    "effects m.a : []
+external returns m.make
+"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(2, "external returns m.make")))
+}
+
 // Helpers
 //
 // Shared term-building shorthand used by tests across sections.

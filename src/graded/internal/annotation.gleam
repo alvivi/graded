@@ -11,9 +11,10 @@ import graded/internal/types.{
   type ExternalAnnotation, type GradedFile, type GradedLine, type ParamBound,
   type ReturnsAnnotation, type TypeFieldAnnotation, AnnotationLine, BlankLine,
   Check, CommentLine, EffectAnnotation, Effects, ExternalAnnotation,
-  ExternalLine, FunctionExternal, GradedFile, ModuleExternal, ParamBound,
-  Polymorphic, ReturnsAnnotation, ReturnsLine, Specific, TAbs, TApp, TLabels,
-  TTop, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
+  ExternalLine, ExternalReturnsLine, FunctionExternal, GradedFile,
+  ModuleExternal, ParamBound, Polymorphic, ReturnsAnnotation, ReturnsLine,
+  Specific, TAbs, TApp, TLabels, TTop, TUnion, TVar, TypeFieldAnnotation,
+  TypeFieldLine, Wildcard,
 }
 
 // Parsing
@@ -67,6 +68,11 @@ fn parse_structured_line(
         Ok(ext) -> Ok(ExternalLine(ext))
         Error(Nil) -> Error(InvalidLine(line_number, line))
       }
+    "external returns " <> rest ->
+      case parse_returns_line(rest) {
+        Ok(returns) -> Ok(ExternalReturnsLine(returns))
+        Error(Nil) -> Error(InvalidLine(line_number, line))
+      }
     "returns " <> rest ->
       case parse_returns_line(rest) {
         Ok(returns) -> Ok(ReturnsLine(returns))
@@ -76,8 +82,10 @@ fn parse_structured_line(
   }
 }
 
-// Parse a `returns mod.fn : fn(cb) -> [body]` line. The operator reuses the
-// same `fn(..) -> [..]` syntax as an operator parameter bound.
+// Parse the name and operator of a `returns mod.fn : fn(cb) -> [body]` line,
+// shared with `external returns`. The operator reuses the same
+// `fn(..) -> [..]` syntax as an operator parameter bound. Ground-ness and
+// dotted-ness of the name are load-time checks, not grammar.
 fn parse_returns_line(rest: String) -> Result(ReturnsAnnotation, Nil) {
   use #(name, operator) <- result.try(parse_name_colon_effects(rest))
   Ok(ReturnsAnnotation(function: name, operator:))
@@ -385,17 +393,28 @@ pub fn extract_annotations(file: GradedFile) -> List(EffectAnnotation) {
       TypeFieldLine(_) -> Error(Nil)
       ExternalLine(_) -> Error(Nil)
       ReturnsLine(_) -> Error(Nil)
+      ExternalReturnsLine(_) -> Error(Nil)
       CommentLine(_) -> Error(Nil)
       BlankLine -> Error(Nil)
     }
   })
 }
 
-// Extract all `returns` annotations from a parsed file.
+// Extract all inferred `returns` annotations from a parsed file.
 pub fn extract_returns(file: GradedFile) -> List(ReturnsAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
       ReturnsLine(returns) -> Ok(returns)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+// Extract all declared `external returns` annotations from a parsed file.
+pub fn extract_external_returns(file: GradedFile) -> List(ReturnsAnnotation) {
+  list.filter_map(file.lines, fn(line) {
+    case line {
+      ExternalReturnsLine(returns) -> Ok(returns)
       _ -> Error(Nil)
     }
   })
@@ -609,6 +628,7 @@ pub fn merge_inferred(
         TypeFieldLine(_) -> Error(Nil)
         ExternalLine(_) -> Error(Nil)
         ReturnsLine(_) -> Error(Nil)
+        ExternalReturnsLine(_) -> Error(Nil)
         CommentLine(_) -> Error(Nil)
         BlankLine -> Error(Nil)
       }
@@ -620,6 +640,7 @@ pub fn merge_inferred(
         AnnotationLine(_) -> Error(Nil)
         TypeFieldLine(_) -> Error(Nil)
         ExternalLine(_) -> Error(Nil)
+        ExternalReturnsLine(_) -> Error(Nil)
         CommentLine(_) -> Error(Nil)
         BlankLine -> Error(Nil)
       }
@@ -708,6 +729,7 @@ pub fn format_file(file: GradedFile) -> String {
       TypeFieldLine(tf) -> format_type_field(tf)
       ExternalLine(ext) -> format_external(ext)
       ReturnsLine(returns) -> format_returns(returns)
+      ExternalReturnsLine(returns) -> format_external_returns(returns)
       CommentLine(text) -> text
       BlankLine -> ""
     }
@@ -760,6 +782,13 @@ pub fn format_sorted(file: GradedFile) -> String {
     })
     |> list.map(format_external)
 
+  let external_returns_lines =
+    extract_external_returns(file)
+    |> list.sort(fn(left, right) {
+      string.compare(left.function, right.function)
+    })
+    |> list.map(format_external_returns)
+
   let returns_lines =
     extract_returns(file)
     |> list.sort(fn(left, right) {
@@ -770,6 +799,7 @@ pub fn format_sorted(file: GradedFile) -> String {
   let sections = [
     comments,
     external_lines,
+    external_returns_lines,
     type_field_lines,
     check_lines,
     effects_lines,
@@ -803,9 +833,15 @@ pub fn format_annotation(annotation: EffectAnnotation) -> String {
   <> effects_string
 }
 
-// Render a ReturnsAnnotation back to its .graded line format.
+// Render a ReturnsAnnotation back to its inferred `returns` line format.
 pub fn format_returns(returns: ReturnsAnnotation) -> String {
   "returns " <> returns.function <> " : " <> format_operator(returns.operator)
+}
+
+// Render a ReturnsAnnotation back to its declared `external returns` line
+// format.
+pub fn format_external_returns(returns: ReturnsAnnotation) -> String {
+  "external " <> format_returns(returns)
 }
 
 // Format an operator term — a `TAbs` as `fn(cb) -> [body]`, anything else as a

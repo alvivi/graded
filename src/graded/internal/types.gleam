@@ -461,6 +461,10 @@ pub type GradedLine {
   TypeFieldLine(type_field: TypeFieldAnnotation)
   ExternalLine(external: ExternalAnnotation)
   ReturnsLine(returns: ReturnsAnnotation)
+  // `external returns mod.fn : [Net]` — the operator a foreign producer hands
+  // back, written by hand. The payload matches `ReturnsLine`; the separate
+  // variant is what tells a declaration from an inferred line, at parse time.
+  ExternalReturnsLine(returns: ReturnsAnnotation)
   CommentLine(text: String)
   BlankLine
 }
