@@ -5,7 +5,9 @@
 // the operator such a function returns, the provenance of the record it builds,
 // and the fields a factory or update builder of it wires are all [Unknown] —
 // even where an `external effects` line declares what calling it costs, since
-// nothing in that line describes the value it hands back.
+// nothing in that line describes the value it hands back. One channel has a
+// declaring form of its own: `external returns` states the operator a producer
+// hands back, and the producer below carrying one resolves.
 //
 // Every case below is paired with the same shape written as ordinary Gleam,
 // whose budget passes: the rule refuses foreign values, not values.
@@ -63,6 +65,14 @@ pub fn with_run(base: Handler, run: fn() -> Nil) -> Handler {
   Handler(..base, run: run)
 }
 
+// Bodyless and declared on both targets, so the declaration stands alone: what
+// it hands back is what `external returns` says, the one value channel a
+// declaration reaches. Its caller sits in this module, so the producer is keyed
+// with no module of its own.
+@external(erlang, "some_ffi_module", "make_reader")
+@external(javascript, "some_ffi_module", "make_reader")
+pub fn declared_returns_operator() -> fn() -> Nil
+
 // The ordinary twins of the three above.
 pub fn native_returns_operator() -> fn() -> Nil {
   fn() { disk_read() }
@@ -88,6 +98,11 @@ pub fn calls_returned_operator() -> Nil {
 
 pub fn calls_partial_operator() -> Nil {
   let handle = partial_returns_operator()
+  handle()
+}
+
+pub fn calls_declared_operator() -> Nil {
+  let handle = declared_returns_operator()
   handle()
 }
 

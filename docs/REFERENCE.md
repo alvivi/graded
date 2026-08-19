@@ -25,7 +25,7 @@ graded keeps two kinds of `.graded` file:
 
 ## Annotation kinds
 
-Five kinds of line appear in a spec file.
+Six kinds of line appear in a spec file.
 
 ### `effects` — inferred effects
 
@@ -94,13 +94,26 @@ across module and package boundaries, not just within the defining module. Like
 written for an `@external`, and one naming an `@external` is ignored — see
 [External declarations](#external-declarations-and-ffi).
 
+### `external returns` — what a foreign producer hands back
+
+```
+external returns myapp/ffi.make_client : [Net]
+```
+
+Declares the operator an `@external` producer returns, so a call of the closure
+it hands back resolves instead of degrading to `[Unknown]`. Hand-written like
+`external effects` and never regenerated: `graded infer` preserves the line and
+writes none of its own. The operator uses the same grammar as `returns` and must
+be **ground** — one with free effect variables is ignored and flagged. See
+[External declarations](#external-declarations-and-ffi).
+
 ## Effect resolution order
 
 When graded needs a function's effects, it consults these sources in priority
 order and takes the first hit:
 
-1. **Your spec file** — `check`, `external effects`, `type`, and `returns`
-   declarations in `<package_name>.graded`.
+1. **Your spec file** — `check`, `external effects`, `external returns`, `type`,
+   and `returns` declarations in `<package_name>.graded`.
 2. **Cross-module project effects** — effects inferred from sibling modules in the
    same project, propagated in topological order. A fresh checkout resolves
    transitive call chains with no prior `graded infer`; committed `effects` lines
@@ -122,6 +135,11 @@ order and takes the first hit:
 5. **Bundled catalog** — the versioned catalog files shipped with graded (see
    [Effect catalog](#effect-catalog)).
 6. **Conservative default** — anything still unresolved gets `[Unknown]`.
+
+Returned-operator summaries follow the same order on their own channel: an
+`external returns` declaration outranks an inferred `returns` line for the same
+name, and this package's spec outranks a dependency's. The catalog carries no
+returns lines of either kind.
 
 ## Effect set syntax
 
@@ -522,34 +540,57 @@ a helper handed an undeclared external contributes `[Unknown]` rather than the
 `[]` its bodyless declaration reads as.
 
 What it does *not* answer for is the value the external hands back. A declaration
-states what calling the function costs; nothing in it describes the closure an
-FFI producer returns, the record it builds, or the fields either wires. So an
-`@external` is opaque on every one of those channels — its `returns` summary, its
-return provenance, and its factory and update-builder signatures are all refused,
-whether or not it is declared and whether or not a Gleam fallback body beside it
-runs:
+states what calling the function costs; nothing in it describes the closure an FFI
+producer returns, the record it builds, or the fields either wires. So an
+`@external`'s return provenance and its factory and update-builder signatures are
+refused whether or not it is declared and whether or not a Gleam fallback body
+beside it runs, and an inferred `returns` line for one is refused too: `graded
+infer` writes none for an `@external`, and removes one a function that has since
+become `@external` left behind.
+
+The closure it hands back is the one channel with a declaring form of its own:
 
 ```gleam
 @external(erlang, "my_ffi", "make_logger")
-pub fn make_logger() -> fn(String) -> Nil {
-  fn(_) { Nil }        // never runs on Erlang; describes nothing
-}
+@external(javascript, "my_ffi", "make_logger")
+pub fn make_logger() -> fn(String) -> Nil
 
 pub fn caller() -> Nil {
   let log = make_logger()
-  log("hi")            // [Unknown] — no declaring form describes this closure
+  log("hi")            // [Stdout] — from the `external returns` line
 }
 ```
 
-`graded infer` writes no `returns` line for an `@external`, and removes one a
-function that has since become `@external` left behind. There is no annotation
-that declares an FFI producer's return today; a call of the returned closure
-stays `[Unknown]`.
+```
+external effects myapp/ffi.make_logger : []
+external returns myapp/ffi.make_logger : [Stdout]
+```
 
-A dependency is held to the same rule, against the dependency's *own* source
+Without that line the call is `[Unknown]`. With it, the declaration answers where
+it stands alone; two readings refuse it, and the call says which:
+
+- **out of reach** — the declaration names only targets this build does not
+  compile, so nothing it describes is what runs. The same reading that drops the
+  external's own declared effects;
+- **a Gleam fallback body also runs** — the declaration covers some targets and
+  the body covers the rest. Effects union the two halves; there is no union of
+  operators, and the closure the body hands back needn't be the foreign one.
+
+Three lines are dropped rather than trusted, each flagged by the spec lint: an
+operator with free effect variables (a foreign decorator returning a closure that
+runs its own argument — wrap the producer in Gleam instead), a name with no
+function part (`external returns mymodule : [...]` names no function), and a name
+that is one of *this package's own* ordinary Gleam functions, whose body every
+caller can already see. `graded infer` replaces the last with the inferred
+`returns` line.
+
+A dependency is held to the same rules, against the dependency's *own* source
 under `build/packages`: a shipped `effects` or `returns` line for a function that
-package declares `@external` is refused, while its `external effects` line, a
-module-level external, and the catalog entry underneath keep answering. Where a
+package declares `@external` is refused, while its `external effects` line, its
+`external returns` line, a module-level external, and the catalog entry underneath
+keep answering. A dependency's `external returns` line is kept even over one of
+its own Gleam-bodied functions — weighing a spec against the source beside it is
+that package's job at its own `infer` time. Where a
 dependency's external carries a fallback body that runs on some target, its
 declaration is widened by `[Unknown]` — the union graded performs against a
 walked fallback in the defining package has no second operand one package away.

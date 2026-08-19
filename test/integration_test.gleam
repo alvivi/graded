@@ -2884,9 +2884,10 @@ pub fn calls_built_field() -> Nil {
 }
 
 pub fn a_polymorphic_declared_return_is_not_loaded_test() {
-  // Its free variables are unsanitized, which is the substitution a serialized
-  // summary is already refused for. The loader drops the line rather than
-  // trusting it, so the call stays [Unknown].
+  // The operator's `f` is the producer's own parameter, left free: substituting
+  // through it is exactly what a serialized summary is refused for, since
+  // nothing sanitized the name. The loader drops the line rather than trusting
+  // it, so the call stays [Unknown].
   let root = "build/declared_returns_polymorphic"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
@@ -2894,7 +2895,7 @@ pub fn a_polymorphic_declared_return_is_not_loaded_test() {
       "proj.graded",
       "check app.calls_wrapped : []
 external effects ffi.wrap : []
-external returns ffi.wrap : fn(cb) -> [cb]
+external returns ffi.wrap : [f]
 ",
     ),
     #(
@@ -2964,6 +2965,14 @@ pub fn calls_returned_operator() -> Nil {
     list.find(r.violations, fn(v) { v.explanation.call.module == "<returned>" })
   applied.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  applied.explanation.reason |> should.equal(Some(types.UnbuiltExternal))
+  // And it says what a direct call to the same `@external` says: one reading,
+  // one sentence, two channels.
+  checker.format_violation(r.file, applied)
+  |> string.contains(
+    "an external declared only for a target this build does not compile",
+  )
+  |> should.be_true()
   support.cleanup(root)
 }
 
@@ -3022,6 +3031,13 @@ pub fn calls_covered() -> Nil {
   violation.function |> should.equal("calls_partial")
   violation.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  violation.explanation.reason
+  |> should.equal(Some(types.RefusedDeclaredReturn))
+  checker.format_violation(r.file, violation)
+  |> string.contains(
+    "whose declared return is refused where its Gleam fallback body also runs",
+  )
+  |> should.be_true()
   support.cleanup(root)
 }
 
@@ -3278,6 +3294,115 @@ pub fn caller() -> Nil {
   violation.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
   support.cleanup(root)
+}
+
+pub fn the_lint_flags_every_dead_external_returns_line_test() {
+  // The four ways the line can be dead, and the one live line beside them. Two
+  // are the existence branches the `external effects` lint already had; two are
+  // this form's own, and both are lines the loader silently drops — the warning
+  // is the only place a reader learns the line does nothing.
+  let root = "build/declared_returns_lint"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "external returns ffi.wrap : [f]
+external returns lib : [Net]
+external returns lib.make : [Disk]
+external returns lib.nope : [Disk]
+external returns ffi.make : [Net]
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"wrap\")
+@external(javascript, \"ffi_module\", \"wrap\")
+pub fn wrap(callback: fn() -> Nil) -> fn() -> Nil
+
+@external(erlang, \"ffi_module\", \"make\")
+@external(javascript, \"ffi_module\", \"make\")
+pub fn make() -> fn() -> Nil
+",
+    ),
+    #(
+      "lib.gleam",
+      "pub fn make() -> fn() -> Nil {
+  fn() { Nil }
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.PolymorphicExternalReturnsWarning(function: "ffi.wrap"),
+    types.DotlessExternalReturnsWarning(name: "lib"),
+    types.StaleExternalReturnsWarning(function: "lib.make"),
+    types.UnmatchedExternalReturnsWarning(function: "lib.nope"),
+  ])
+  support.cleanup(root)
+}
+
+pub fn why_names_the_declaration_that_resolved_a_producer_test() {
+  // The call used to print ", whose producer could not be resolved,". It now
+  // names the line that answered, in the words that say *declaration* rather
+  // than a file name — which is the distinction the feature exists to surface.
+  let root = "build/declared_returns_why"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.caller : [Net]
+external effects ffi.make_client : [Net]
+external returns ffi.make_client : [Net]
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"make_client\")
+@external(javascript, \"ffi_module\", \"make_client\")
+pub fn make_client() -> fn() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+
+pub fn caller() -> Nil {
+  let send = ffi.make_client()
+  send()
+}
+",
+    ),
+  ])
+  let assert Ok(why) = graded.run_why(root, "app.caller")
+  let assert Ok(line) = contributor_line(why, "returned")
+  line
+  |> string.contains(
+    "calls a function returned by `ffi.make_client` with effects [Net]"
+    <> " (from your spec's external declaration)",
+  )
+  |> should.be_true()
+  why
+  |> string.contains("whose producer could not be resolved")
+  |> should.be_false()
+  support.cleanup(root)
+}
+
+pub fn the_fixture_declared_producer_resolves_from_its_line_test() {
+  // The shared fixture set's own declared producer, whose caller sits in the
+  // same module — the resolution path that consults no knowledge base for an
+  // inferred summary. Its `check` line passing says the call resolved; this
+  // says what it resolved to, and from where.
+  let assert Ok(why) =
+    graded.run_why("test/fixtures", "foreign_values.calls_declared_operator")
+  why
+  |> string.contains(
+    "calls a function returned by `declared_returns_operator` with effects"
+    <> " [Disk] (from your spec's external declaration)",
+  )
+  |> should.be_true()
 }
 
 // The spec declaring the same-module producer's return, and the spec that

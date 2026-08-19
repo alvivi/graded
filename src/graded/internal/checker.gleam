@@ -24,10 +24,10 @@ import graded/internal/types.{
   type LookupOrigin, type ParamBound, type QualifiedName, type ResolvedCall,
   type UnknownReason, type Violation, type Warning, CallExplanation,
   EffectAnnotation, Effects, FieldNotAnnotated, NoKnownEffects, ParamBound,
-  QualifiedName, ReceiverTypeUnresolved, TUnion, TVar, TypeLine, UnbuiltExternal,
-  UndeclaredExternal, UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning,
-  UnresolvedFieldValue, UntraceableArgument, UntraceableProducer,
-  UntraceableReceiver, UntrackedEffectWarning, Violation,
+  QualifiedName, ReceiverTypeUnresolved, RefusedDeclaredReturn, TUnion, TVar,
+  TypeLine, UnbuiltExternal, UndeclaredExternal, UnmatchedFieldBoundWarning,
+  UnmatchedParamBoundWarning, UnresolvedFieldValue, UntraceableArgument,
+  UntraceableProducer, UntraceableReceiver, UntrackedEffectWarning, Violation,
 }
 
 // Entry points
@@ -1601,7 +1601,8 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         | ReceiverTypeUnresolved
         | UntraceableReceiver
         | UnresolvedFieldValue
-        | UntraceableProducer -> ""
+        | UntraceableProducer
+        | RefusedDeclaredReturn -> ""
       }
     FieldAccessCall(..) ->
       case reason {
@@ -1621,7 +1622,7 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         // compiles, so the field call says what a direct call to that name says.
         UnbuiltExternal ->
           ", wired to an external declared only for a target this build does not compile,"
-        NoKnownEffects | UntraceableProducer -> ""
+        NoKnownEffects | UntraceableProducer | RefusedDeclaredReturn -> ""
       }
     // An undeclared external is the one reason worth stating: nothing said what
     // the foreign code does, which is why the effects stayed unresolved.
@@ -1635,14 +1636,21 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         | UntraceableReceiver
         | UnresolvedFieldValue
         | UntraceableProducer
+        | RefusedDeclaredReturn
         | UntraceableArgument -> ""
       }
     ReturnedOperatorCall(..) ->
       case reason {
         UntraceableProducer -> ", whose producer could not be resolved,"
+        // The producer is the same `@external` a direct call reports out of
+        // reach, read one channel over: what it declares about the value is no
+        // more built than what it declares about the call.
+        UnbuiltExternal ->
+          ", an external declared only for a target this build does not compile,"
+        RefusedDeclaredReturn ->
+          ", whose declared return is refused where its Gleam fallback body also runs,"
         NoKnownEffects
         | UndeclaredExternal
-        | UnbuiltExternal
         | FieldNotAnnotated(..)
         | ReceiverTypeUnresolved
         | UntraceableReceiver
@@ -3155,7 +3163,13 @@ fn collect_effects(
       // holds it.
       let #(reason, origin) = case resolved_op {
         Ok(#(_, origin)) -> #(None, origin)
-        Error(Nil) -> #(Some(UntraceableProducer), None)
+        Error(Nil) -> #(
+          Some(unresolved_producer_reason(
+            knowledge_base,
+            producer_key(op.callee, context),
+          )),
+          None,
+        )
       }
       let #(effect, memo) = case resolved_op {
         Ok(#(operator, _)) -> {
@@ -4922,6 +4936,35 @@ fn build_lift_operator_arg(
   }
 }
 
+// A producer's knowledge-base key. A same-module callee carries no module of its
+// own, so the module being walked qualifies it — the resolution path and the
+// diagnostic that explains its failure ask about one name this way.
+fn producer_key(
+  callee: QualifiedName,
+  context: ImportContext,
+) -> QualifiedName {
+  case callee.module {
+    "" -> QualifiedName(module: context.module_path, function: callee.function)
+    _ -> callee
+  }
+}
+
+// Why a producer left its applied operator unknown. A declared return that a
+// gate refused is named rather than folded into the generic reason: one gate is
+// the same reading a direct call reports for that `@external`, and the other is
+// this channel's own refusal, which no other surface has words for.
+fn unresolved_producer_reason(
+  knowledge_base: KnowledgeBase,
+  producer: QualifiedName,
+) -> UnknownReason {
+  case effects.declared_return_standing(knowledge_base, producer) {
+    effects.DeclaredReturnUnbuilt -> UnbuiltExternal
+    effects.DeclaredReturnFallbackRuns -> RefusedDeclaredReturn
+    effects.DeclaredReturnAnswers | effects.NoDeclaredReturn ->
+      UntraceableProducer
+  }
+}
+
 // The knowledge base's summary for `name`, in the shape the trust match reads:
 // the operator, how it was produced, and the source that wrote it.
 fn knowledge_base_operator(
@@ -5004,13 +5047,7 @@ fn resolve_returned_operator(
         // `Declared` summary — no same-module `Fresh` or `Foreign` one leaks
         // through it.
         _, ForeignDefinition -> #(
-          knowledge_base_operator(
-            knowledge_base,
-            QualifiedName(
-              module: context.module_path,
-              function: callee.function,
-            ),
-          ),
+          knowledge_base_operator(knowledge_base, producer_key(callee, context)),
           memo,
         )
         _, NoLocalDefinition -> #(Error(Nil), memo)

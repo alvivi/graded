@@ -343,20 +343,33 @@ For common third-party packages, the [bundled catalog](./REFERENCE.md#effect-cat
 already supplies these declarations, so you only need `external effects` for your
 own FFI and for packages the catalog doesn't cover.
 
-An `external effects` line covers the *call*, and there is no form that covers
-the **value** foreign code returns. A closure an FFI producer hands back, the
-record it builds, and the fields either wires stay `[Unknown]` at every use —
-declared or not, fallback body or not — because nothing states what the foreign
-implementation returns:
+An `external effects` line covers the *call*. The record an FFI producer builds
+and the fields either it or an update builder of it wires stay `[Unknown]` at
+every use — declared or not, fallback body or not — because nothing states what
+the foreign implementation returns:
 
 ```gleam
-@external(erlang, "my_ffi", "make_client")
-pub fn make_client() -> fn(Request) -> Response
+@external(erlang, "my_ffi", "build_client")
+pub fn build_client() -> Client
 ```
 
 **How to avoid it** — wrap the producer in ordinary Gleam, so the value graded
 resolves is one it can see built, or annotate the *field* the returned function
 lands in with a `type` line.
+
+The closure a producer hands back is the one such channel `external returns`
+declares:
+
+```
+external returns my_ffi.make_client : [Net]
+```
+
+Two limits hold even with the line written. It must be **ground**: an operator
+with free effect variables — a foreign decorator whose returned closure runs an
+argument it was handed — is ignored, so wrap that producer in Gleam. And the
+declaration is refused where a Gleam fallback body also runs, because the two
+halves can hand back different closures and there is no union of operators to
+take; the call reports which of the two refusals applies.
 
 ### Which targets an `@external` is built for
 

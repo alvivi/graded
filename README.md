@@ -88,7 +88,7 @@ Two cases need no packing:
 
 ## Reference
 
-The `.graded` spec language and graded's analysis model are documented in full in **[the Reference](https://hexdocs.pm/graded/reference.html)** — the annotation kinds (`effects`, `check`, `type`, `external effects`, `returns`), effect-set syntax, effect resolution order, higher-order and second-order effect polymorphism, type field effects, the effect-label conventions, and the bundled catalog of common packages.
+The `.graded` spec language and graded's analysis model are documented in full in **[the Reference](https://hexdocs.pm/graded/reference.html)** — the annotation kinds (`effects`, `check`, `type`, `external effects`, `external returns`, `returns`), effect-set syntax, effect resolution order, higher-order and second-order effect polymorphism, type field effects, the effect-label conventions, and the bundled catalog of common packages.
 
 ## Commands
 
