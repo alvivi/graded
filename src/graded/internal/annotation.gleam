@@ -468,6 +468,16 @@ pub fn external_function_names(file: GradedFile) -> set.Set(String) {
   |> set.from_list()
 }
 
+// The `<module>.<function>` names a file declares with an
+// `external returns <module>.<function> : [...]` line. Read by `merge_inferred`,
+// which writes no inferred `returns` line for a name a declaration already
+// answers for.
+pub fn external_returns_names(file: GradedFile) -> set.Set(String) {
+  extract_external_returns(file)
+  |> list.map(fn(declared) { declared.function })
+  |> set.from_list()
+}
+
 // The modules a file declares with a module-level `external effects
 // <module> : [...]` line (no `.`). Per-function externals (`<module>.<fn>`)
 // don't count — they target one function, not the whole module. These are the
@@ -576,14 +586,22 @@ pub fn split_type_field_name(
 // Merge inferred effects and returned-operator signatures into an existing
 // GradedFile, preserving structure.
 //
-// - `check` / `type` / `external` lines, comments, blanks: kept in place
+// - `check` / `type` / `external` / `external returns` lines, comments, blanks:
+//   kept in place
 // - Existing `effects` and `returns` lines: updated in-place; removed if stale
 // - New functions not yet in file: `effects` / `returns` lines appended at end
+//
+// The two stale sets are separate channels and stay separate: an
+// `external effects` line that declares nothing suppresses this package's
+// `effects` lines for the name, and an `external returns` one that declares
+// nothing suppresses its `returns` line. Threading either set into the other's
+// filters deletes lines about a channel nobody declared anything on.
 pub fn merge_inferred(
   file: GradedFile,
   inferred: List(EffectAnnotation),
   inferred_returns: List(ReturnsAnnotation),
   stale_externals: set.Set(String),
+  stale_external_returns: set.Set(String),
 ) -> GradedFile {
   // A function the author declared with `external effects mod.fn : [...]` is
   // authoritative — that line is their opt-in to a precise FFI effect. Drop any
@@ -606,6 +624,22 @@ pub fn merge_inferred(
     list.filter(inferred, fn(annotation) {
       !set.contains(external_functions, annotation.function)
       && !in_external_module(annotation.function, external_modules)
+    })
+
+  // A function whose return an `external returns` line declares needs no
+  // inferred `returns` line: the declaration answers for it, and a second line
+  // for the same name would sit in the file looking like a second opinion.
+  // Except where that line is stale — it names one of this package's own
+  // ordinary functions — in which case the line is dropped below and the
+  // inferred one written in its place.
+  //
+  // Defensive for the healthy case rather than load-bearing: inference produces
+  // no returns entry for an `@external` in the first place.
+  let declared_returns =
+    set.difference(external_returns_names(file), stale_external_returns)
+  let inferred_returns =
+    list.filter(inferred_returns, fn(returns) {
+      !set.contains(declared_returns, returns.function)
     })
 
   let inferred_map =
@@ -664,6 +698,11 @@ pub fn merge_inferred(
                 False -> Ok(line)
               }
             Error(Nil) -> Ok(line)
+          }
+        ExternalReturnsLine(r) ->
+          case set.contains(stale_external_returns, r.function) {
+            True -> Error(Nil)
+            False -> Ok(line)
           }
         _ -> Ok(line)
       }

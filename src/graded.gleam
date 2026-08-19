@@ -632,8 +632,9 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
   // run, this package and its dependencies alike: a dependency is compiled for
   // the consumer's target, not its own.
   let package_targets = cfg.targets
-  let stale_externals =
-    stale_project_externals(spec, native_functions_of(index, package_targets))
+  let native_of = native_functions_of(index, package_targets)
+  let stale_externals = stale_project_externals(spec, native_of)
+  let stale_external_returns = stale_project_external_returns(spec, native_of)
   let dep_sources = dependency_sources(package_root, package_targets)
   let registry =
     signatures.merge(
@@ -676,10 +677,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // name — a spec written before the function became `@external` still carries
     // one until the next `infer` — and the fresh pass below. Both merges here
     // gap-fill, so folding earlier is what makes it win.
-    |> effects.with_declared_returned_operators(
-      effects.load_spec_external_returns_from_file(spec),
-      types.UserExternal,
-    )
+    |> with_spec_declared_returns(spec, stale_external_returns)
     // Committed project returns are Foreign (Fix E): serialized, unsanitized. The
     // fresh in-memory pass below re-infers project returns and, being Fresh, wins
     // over these for the same key.
@@ -769,6 +767,34 @@ fn stale_project_externals(
     use native <- result.try(native_of(external.module))
     case set.contains(native, function) {
       True -> Ok(types.dotted_name(QualifiedName(external.module, function)))
+      False -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+}
+
+// The `external returns` lines that declare nothing: the same rule one channel
+// over, so the two read alike — the named function is one of this package's own
+// ordinary Gleam-bodied functions, whose returned value every caller can see for
+// itself.
+//
+// Derived apart from `stale_project_externals` and threaded apart from it. That
+// set drives the effects channel's two suppressions — committed `effects` lines
+// with their bounds, and the inferred lines `infer` writes — and a returns name
+// reaching either would delete a function's effect lines because its *value* was
+// declared.
+fn stale_project_external_returns(
+  spec: GradedFile,
+  native_of: fn(String) -> Result(Set(String), Nil),
+) -> Set(String) {
+  annotation.extract_external_returns(spec)
+  |> list.filter_map(fn(declared) {
+    use #(module, function) <- result.try(annotation.split_function_name(
+      declared.function,
+    ))
+    use native <- result.try(native_of(module))
+    case set.contains(native, function) {
+      True -> Ok(declared.function)
       False -> Error(Nil)
     }
   })
@@ -2524,8 +2550,9 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   // As in `project_context`: one target set for the package and every
   // dependency it is built with.
   let package_targets = cfg.targets
-  let stale_externals =
-    stale_project_externals(spec, native_functions_of(index, package_targets))
+  let native_of = native_functions_of(index, package_targets)
+  let stale_externals = stale_project_externals(spec, native_of)
+  let stale_external_returns = stale_project_external_returns(spec, native_of)
 
   // Build a signature registry covering every project module so the checker can
   // do positional argument matching for cross-module polymorphic calls. Hoisted
@@ -2563,10 +2590,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     // Declared returns are state no inference pass re-derives. Without them the
     // walk of a caller's body writes `[Unknown]` where `check` scores the same
     // body from the declaration, and the two commands disagree about it.
-    |> effects.with_declared_returned_operators(
-      effects.load_spec_external_returns_from_file(spec),
-      types.UserExternal,
-    )
+    |> with_spec_declared_returns(spec, stale_external_returns)
     |> effects.with_factories(
       qualify_by_module(index, extract.factory_map(
         _,
@@ -2626,6 +2650,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       public_annotations,
       public_returns,
       stale_externals,
+      stale_external_returns,
     ),
     cache_files: list.reverse(cache_files),
   ))
@@ -3643,6 +3668,23 @@ fn with_spec_externals(
   effects.with_externals(
     knowledge_base,
     declaring_externals(spec, stale_externals),
+    types.UserExternal,
+  )
+}
+
+// The spec's `external returns` declarations, minus the stale ones. A stale line
+// is ignored at load as well as warned about and rewritten: trusted between
+// `infer` runs it would be a per-function override of what the walk can see for
+// itself.
+fn with_spec_declared_returns(
+  knowledge_base: KnowledgeBase,
+  spec: GradedFile,
+  stale_external_returns: Set(String),
+) -> KnowledgeBase {
+  effects.with_declared_returned_operators(
+    knowledge_base,
+    effects.load_spec_external_returns_from_file(spec)
+      |> drop_stale_names(stale_external_returns),
     types.UserExternal,
   )
 }
