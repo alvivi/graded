@@ -668,6 +668,11 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
     |> with_spec_externals(spec, stale_externals)
+    // Applied before path-dep inference for the same reason the externals above
+    // are, one channel over: a spec-less path dependency's bodies are summarized
+    // during that pass, and a consumer line declaring what one of its producers
+    // hands back has to be in reach while they are, not only afterwards.
+    |> with_spec_declared_returns(spec, stale_external_returns)
     |> with_builders(index, dep_sources, package_targets)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
     |> with_committed_spec(spec, stale_externals)
@@ -680,15 +685,21 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     ))
     // What this package defines, for the query that answers from its public API.
     |> effects.with_project_functions(project_function_visibility(index))
-    // Declared returns first: an `external returns` line is a declaration, not
-    // inference, so it must outrank both a committed `returns` line for the same
-    // name — a spec written before the function became `@external` still carries
-    // one until the next `infer` — and the fresh pass below. Both merges here
-    // gap-fill, so folding earlier is what makes it win.
-    |> with_spec_declared_returns(spec, stale_external_returns)
     // Committed project returns are Foreign (Fix E): serialized, unsanitized. The
     // fresh in-memory pass below re-infers project returns and, being Fresh, wins
     // over these for the same key.
+    //
+    // The `external returns` declarations folded above outrank both, by two
+    // different mechanisms, and the difference matters to anyone editing either.
+    // Against this committed load the **ordering is load-bearing**: the merge
+    // gap-fills, so a spec written before the function became `@external`, still
+    // carrying its inferred `returns` line until the next `infer`, loses only
+    // because the declaration is already there. Against the fresh pass below the
+    // ordering decides nothing — that merge lets the incoming summary win — and
+    // the declaration survives on `merge_returns`'s explicit
+    // declared-beats-inferred rule instead. That rule reads as redundant from
+    // here, since fresh inference keys no foreign name; it is what holds if any
+    // link of that three-file invariant chain ever gives.
     |> effects.with_foreign_returned_operators(
       effects.load_spec_returns_from_file(spec),
       types.CommittedSpec,
@@ -2656,6 +2667,12 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
     |> with_spec_externals(spec, stale_externals)
+    // Declared returns are state no inference pass re-derives. Without them the
+    // walk of a caller's body writes `[Unknown]` where `check` scores the same
+    // body from the declaration, and the two commands disagree about it — so
+    // they are folded here, at the point `check` folds them, ahead of the
+    // path-dep pass whose own inference reads them too.
+    |> with_spec_declared_returns(spec, stale_external_returns)
     |> with_builders(index, dep_sources, package_targets)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
     |> effects.with_foreign_functions(project_foreign_functions(
@@ -2666,10 +2683,6 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   let base_kb =
     kb_base
     |> with_spec_type_fields(spec)
-    // Declared returns are state no inference pass re-derives. Without them the
-    // walk of a caller's body writes `[Unknown]` where `check` scores the same
-    // body from the declaration, and the two commands disagree about it.
-    |> with_spec_declared_returns(spec, stale_external_returns)
     |> effects.with_factories(
       qualify_by_module(index, extract.factory_map(
         _,
