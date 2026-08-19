@@ -1165,6 +1165,12 @@ fn with_origin(
 
 // Pair every summary in a bare `name -> operator` map with how it was produced
 // and the source that wrote it, giving the shape `returned_operators` holds.
+//
+// Guard: never reach here with `Foreign` for a map of `external returns` lines.
+// A declaration is written for a value-opaque name, and a Foreign-tagged summary
+// over one is refused at lookup — a new tier folding declarations this way (the
+// deferred catalog tier is the one waiting to) silently no-ops instead of
+// answering. `declared_returns` is the entry point for those.
 fn tag_returns(
   returns: Dict(QualifiedName, EffectTerm),
   summary: SummaryOrigin,
@@ -1178,6 +1184,13 @@ fn tag_returns(
 // Merge **Foreign** returned-operator summaries (from a serialized `.graded`)
 // into a knowledge base — existing entries take priority (gap-fill). Used for
 // dependency and committed-project returns.
+//
+// Guard: this takes a spec's inferred `returns` lines and nothing else. Folding
+// `external returns` lines through it tags them `Foreign`, and a Foreign summary
+// over the value-opaque name a declaration is written for is refused at lookup,
+// so the tier folding them would silently answer nothing — the failure a
+// deferred catalog tier is one edit away from. Declarations go through
+// `with_declared_returned_operators`.
 pub fn with_foreign_returned_operators(
   knowledge_base: KnowledgeBase,
   inferred: Dict(QualifiedName, EffectTerm),
@@ -1363,7 +1376,7 @@ pub fn lookup_returned_operator(
   use found <- result.try(dict.get(knowledge_base.returned_operators, name))
   case found.summary {
     Declared ->
-      case declared_return_standing(knowledge_base, name) {
+      case charged_standing(knowledge_base, name) {
         DeclaredReturnAnswers -> Ok(found)
         DeclaredReturnUnbuilt | DeclaredReturnFallbackRuns | NoDeclaredReturn ->
           Error(Nil)
@@ -1413,15 +1426,25 @@ pub fn declared_return_standing(
     Error(Nil) -> NoDeclaredReturn
     Ok(ReturnedOperator(summary: Fresh, ..))
     | Ok(ReturnedOperator(summary: Foreign, ..)) -> NoDeclaredReturn
-    Ok(ReturnedOperator(summary: Declared, ..)) -> {
-      let charge = declared_charge(knowledge_base, name)
-      case charge.declaration, charge.fallback {
-        DeclarationCharged, None -> DeclaredReturnAnswers
-        DeclarationCharged, Some(_) -> DeclaredReturnFallbackRuns
-        FallbackAnswersInstead, _ | NothingImplementsName, _ ->
-          DeclaredReturnUnbuilt
-      }
-    }
+    Ok(ReturnedOperator(summary: Declared, ..)) ->
+      charged_standing(knowledge_base, name)
+  }
+}
+
+// The standing of a declaration already known to key `name` — the charge match
+// alone, without the triage that established there is one to weigh. The lookup
+// reads it having just fetched the entry; the wrapper above adds the fetch for a
+// caller holding only the name.
+fn charged_standing(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> DeclaredReturnStanding {
+  let charge = declared_charge(knowledge_base, name)
+  case charge.declaration, charge.fallback {
+    DeclarationCharged, None -> DeclaredReturnAnswers
+    DeclarationCharged, Some(_) -> DeclaredReturnFallbackRuns
+    FallbackAnswersInstead, _ | NothingImplementsName, _ ->
+      DeclaredReturnUnbuilt
   }
 }
 

@@ -2362,22 +2362,6 @@ fn local_definition(
   }
 }
 
-// The same-module definition of `function`, or `Error(Nil)` when this module
-// defines no such function or defines it `@external`. The value channels resolve
-// through this rather than the raw function map: a fallback body describes
-// neither what the foreign implementation returns nor how, so a same-module
-// consumer of one is charged `[Unknown]` exactly as a cross-module consumer is.
-fn local_native_definition(
-  function_map: dict.Dict(String, Definition(Function)),
-  function: String,
-  package_targets: types.PackageTargets,
-) -> Result(Definition(Function), Nil) {
-  case local_definition(function_map, function, package_targets) {
-    NativeDefinition(definition) -> Ok(definition)
-    ForeignDefinition | NoLocalDefinition -> Error(Nil)
-  }
-}
-
 // A collected call whose kind states the whole story: the sentinel names what
 // happened, so there is nothing to add.
 fn plain_call(call: ResolvedCall, term: EffectTerm) -> CollectedCall {
@@ -4554,16 +4538,16 @@ fn callee_provenance(
 ) -> Result(types.ReturnProvenance, Nil) {
   case callee.module {
     "" ->
+      // A fallback body describes neither what the foreign implementation
+      // returns nor how, so a same-module consumer of one is charged `[Unknown]`
+      // exactly as a cross-module consumer is: this channel reads no
+      // declaration, so a foreign definition and no definition end alike here.
       case
-        local_native_definition(
-          function_map,
-          callee.function,
-          context.package_targets,
-        )
+        local_definition(function_map, callee.function, context.package_targets)
       {
-        Ok(definition) ->
+        NativeDefinition(definition) ->
           Ok(extract.return_provenance(definition.definition, context))
-        Error(Nil) -> Error(Nil)
+        ForeignDefinition | NoLocalDefinition -> Error(Nil)
       }
     _ -> effects.lookup_provenance(knowledge_base, callee)
   }
