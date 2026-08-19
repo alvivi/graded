@@ -671,6 +671,15 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     ))
     // What this package defines, for the query that answers from its public API.
     |> effects.with_project_functions(project_function_visibility(index))
+    // Declared returns first: an `external returns` line is a declaration, not
+    // inference, so it must outrank both a committed `returns` line for the same
+    // name — a spec written before the function became `@external` still carries
+    // one until the next `infer` — and the fresh pass below. Both merges here
+    // gap-fill, so folding earlier is what makes it win.
+    |> effects.with_declared_returned_operators(
+      effects.load_spec_external_returns_from_file(spec),
+      types.UserExternal,
+    )
     // Committed project returns are Foreign (Fix E): serialized, unsanitized. The
     // fresh in-memory pass below re-infers project returns and, being Fresh, wins
     // over these for the same key.

@@ -2234,6 +2234,32 @@ type CollectedCall {
   CollectedCall(call: ResolvedCall, resolution: Resolution)
 }
 
+// What the module under analysis defines for `function`, as the value channels
+// read it: a Gleam body they may walk, an `@external` only a declaration speaks
+// for, or no definition at all. The three are held apart because a declared
+// return answers for the middle case and for neither of the others — collapsing
+// them is how a plain miss would start consulting the knowledge base.
+type LocalDefinition {
+  NativeDefinition(definition: Definition(Function))
+  ForeignDefinition
+  NoLocalDefinition
+}
+
+fn local_definition(
+  function_map: dict.Dict(String, Definition(Function)),
+  function: String,
+  package_targets: types.PackageTargets,
+) -> LocalDefinition {
+  case dict.get(function_map, function) {
+    Error(Nil) -> NoLocalDefinition
+    Ok(definition) ->
+      case foreign_definition(definition, package_targets) {
+        True -> ForeignDefinition
+        False -> NativeDefinition(definition)
+      }
+  }
+}
+
 // The same-module definition of `function`, or `Error(Nil)` when this module
 // defines no such function or defines it `@external`. The value channels resolve
 // through this rather than the raw function map: a fallback body describes
@@ -2244,10 +2270,9 @@ fn local_native_definition(
   function: String,
   package_targets: types.PackageTargets,
 ) -> Result(Definition(Function), Nil) {
-  use definition <- result.try(dict.get(function_map, function))
-  case foreign_definition(definition, package_targets) {
-    True -> Error(Nil)
-    False -> Ok(definition)
+  case local_definition(function_map, function, package_targets) {
+    NativeDefinition(definition) -> Ok(definition)
+    ForeignDefinition | NoLocalDefinition -> Error(Nil)
   }
 }
 
@@ -4897,6 +4922,21 @@ fn build_lift_operator_arg(
   }
 }
 
+// The knowledge base's summary for `name`, in the shape the trust match reads:
+// the operator, how it was produced, and the source that wrote it.
+fn knowledge_base_operator(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Result(
+  #(EffectTerm, effects.SummaryOrigin, option.Option(LookupOrigin)),
+  Nil,
+) {
+  effects.lookup_returned_operator(knowledge_base, name)
+  |> result.map(fn(found) {
+    #(found.operator, found.summary, Some(found.source))
+  })
+}
+
 // Resolve the operator a producer returns. A qualified callee is looked up in
 // the KB (computed at the producer's inference time, available downstream by
 // topological order); a same-module callee (`""` module) is computed on-demand
@@ -4925,13 +4965,9 @@ fn resolve_returned_operator(
     "" ->
       case
         set.contains(visited, callee.function),
-        local_native_definition(
-          function_map,
-          callee.function,
-          context.package_targets,
-        )
+        local_definition(function_map, callee.function, context.package_targets)
       {
-        False, Ok(definition) -> {
+        False, NativeDefinition(definition) -> {
           let #(result, memo) =
             compute_returned_operator(
               definition.definition,
@@ -4952,20 +4988,34 @@ fn resolve_returned_operator(
         // recursive function-reference handling in `build_lift_operator_arg`.
         // Arity comes from the producer's return type; if it isn't a function
         // type, stay conservative.
-        True, Ok(definition) -> #(
+        True, NativeDefinition(definition) -> #(
           neutral_returned_operator(definition.definition, cache.fn_alias_types)
             |> result.map(fn(op) { #(op, effects.Fresh, None) }),
           memo,
         )
-        _, _ -> #(Error(Nil), memo)
+        // A same-module `@external`: there is no body to compute a summary
+        // from, so the only thing that can say what it hands back is a
+        // declaration. Extraction keys a bare reference with no module, so the
+        // name is qualified with the module being walked before the base is
+        // asked.
+        //
+        // The branch is reached for foreign definitions alone, and a foreign
+        // name is value-opaque, so the gated lookup can answer here only with a
+        // `Declared` summary — no same-module `Fresh` or `Foreign` one leaks
+        // through it.
+        _, ForeignDefinition -> #(
+          knowledge_base_operator(
+            knowledge_base,
+            QualifiedName(
+              module: context.module_path,
+              function: callee.function,
+            ),
+          ),
+          memo,
+        )
+        _, NoLocalDefinition -> #(Error(Nil), memo)
       }
-    _ -> #(
-      effects.lookup_returned_operator(knowledge_base, callee)
-        |> result.map(fn(found) {
-          #(found.operator, found.summary, Some(found.source))
-        }),
-      memo,
-    )
+    _ -> #(knowledge_base_operator(knowledge_base, callee), memo)
   }
   case lookup {
     Error(Nil) -> #(Error(Nil), memo)
@@ -5007,6 +5057,11 @@ fn resolve_returned_operator(
         // for synthesis. Resolve conservatively to [Unknown] (the `Error` here
         // reaches every consumer's [Unknown] fallback).
         False, effects.Foreign -> #(Error(Nil), memo)
+        // Polymorphic + Declared: the loader drops a polymorphic declaration, so
+        // nothing reaches here. A loader that stopped doing so must degrade to
+        // [Unknown] rather than substitute over free variables nothing
+        // sanitized.
+        False, effects.Declared -> #(Error(Nil), memo)
       }
   }
 }

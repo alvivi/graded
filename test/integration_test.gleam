@@ -2797,6 +2797,271 @@ fn contributor_line(output: String, name: String) -> Result(String, Nil) {
   |> list.first
 }
 
+// Declared FFI returns
+//
+// `external returns` declares the operator a foreign producer hands back — the
+// one value channel a declaration reaches. It answers on both resolution paths
+// (a same-module `@external` and a cross-module one), only where the
+// declaration stands alone against what the build compiles, and only ground.
+
+pub fn a_declared_return_resolves_a_same_module_producer_test() {
+  // The producer and its caller in one module: the callee is keyed with no
+  // module at all, so this path never consults the knowledge base for an
+  // ordinary summary. The declaration is the only thing that can answer, and
+  // the same fixture without the line is what says the budget is not vacuous.
+  let root = "build/declared_returns_same_module"
+  let declared = same_module_violations(root, declared_same_module_spec)
+  declared |> should.equal([])
+
+  let undeclared = same_module_violations(root, inferred_same_module_spec)
+  let assert [violation] = undeclared
+  violation.function |> should.equal("caller")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn a_declared_return_resolves_a_cross_module_producer_test() {
+  // One module away, where the summary is read from the knowledge base. The
+  // record-building external beside it stays opaque: the declaration describes
+  // the returned operator and nothing else, so the provenance channel is
+  // unchanged.
+  let root = "build/declared_returns_cross_module"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.calls_returned_operator : [Disk]
+check app.calls_built_field : [Disk]
+external effects ffi.disk_read : [Disk]
+external effects ffi.make : []
+external effects ffi.builds : []
+external returns ffi.make : [Disk]
+",
+    ),
+    #(
+      "ffi.gleam",
+      "pub type Handler {
+  Handler(run: fn() -> Nil, name: String)
+}
+
+@external(erlang, \"ffi_module\", \"disk_read\")
+@external(javascript, \"ffi_module\", \"disk_read\")
+pub fn disk_read() -> Nil
+
+@external(erlang, \"ffi_module\", \"make\")
+@external(javascript, \"ffi_module\", \"make\")
+pub fn make() -> fn() -> Nil
+
+@external(erlang, \"ffi_module\", \"builds\")
+pub fn builds(run: fn() -> Nil) -> Handler {
+  Handler(run: run, name: \"ffi\")
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+
+pub fn calls_returned_operator() -> Nil {
+  let handle = ffi.make()
+  handle()
+}
+
+pub fn calls_built_field() -> Nil {
+  let handler = ffi.builds(fn() { ffi.disk_read() })
+  handler.run()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  r.violations
+  |> list.map(fn(v) { v.function })
+  |> should.equal(["calls_built_field"])
+  support.cleanup(root)
+}
+
+pub fn a_polymorphic_declared_return_is_not_loaded_test() {
+  // Its free variables are unsanitized, which is the substitution a serialized
+  // summary is already refused for. The loader drops the line rather than
+  // trusting it, so the call stays [Unknown].
+  let root = "build/declared_returns_polymorphic"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.calls_wrapped : []
+external effects ffi.wrap : []
+external returns ffi.wrap : fn(cb) -> [cb]
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"wrap\")
+@external(javascript, \"ffi_module\", \"wrap\")
+pub fn wrap(callback: fn() -> Nil) -> fn() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+
+pub fn calls_wrapped() -> Nil {
+  let wrapped = ffi.wrap(fn() { Nil })
+  wrapped()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  support.cleanup(root)
+}
+
+pub fn a_declared_return_out_of_reach_answers_nothing_test() {
+  // The declaration names a target this build does not compile, so nothing it
+  // describes is what runs — the same reading that drops the external's own
+  // declared effects drops what it declares about the value.
+  let root = "build/declared_returns_unbuilt"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #(
+      "proj.graded",
+      "check app.calls_returned_operator : []
+external effects ffi.make : []
+external returns ffi.make : []
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(javascript, \"ffi_module\", \"make\")
+pub fn make() -> fn() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+
+pub fn calls_returned_operator() -> Nil {
+  let handle = ffi.make()
+  handle()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  // The producer call is charged [Unknown] too — nothing this build compiles
+  // implements it — so the applied operator is picked out by its own sentinel.
+  let assert Ok(applied) =
+    list.find(r.violations, fn(v) { v.explanation.call.module == "<returned>" })
+  applied.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  support.cleanup(root)
+}
+
+pub fn a_declared_return_beside_a_running_fallback_answers_nothing_test() {
+  // Both halves in reach: the foreign implementation on the target the line
+  // names, the Gleam body on the one it leaves uncovered. The effects channel
+  // unions the two; there is no union of operators, and the closure the body
+  // hands back needn't be the foreign one, so the declaration answers nothing.
+  // The fully covered producer beside it is what says the refusal is the
+  // fallback's doing.
+  let root = "build/declared_returns_fallback"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.calls_partial : []
+check app.calls_covered : []
+external effects ffi.partial : []
+external effects ffi.covered : []
+external returns ffi.partial : []
+external returns ffi.covered : []
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(javascript, \"ffi_module\", \"partial\")
+pub fn partial() -> fn() -> Nil {
+  fn() { Nil }
+}
+
+@external(erlang, \"ffi_module\", \"covered\")
+@external(javascript, \"ffi_module\", \"covered\")
+pub fn covered() -> fn() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+
+pub fn calls_partial() -> Nil {
+  let handle = ffi.partial()
+  handle()
+}
+
+pub fn calls_covered() -> Nil {
+  let handle = ffi.covered()
+  handle()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("calls_partial")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  support.cleanup(root)
+}
+
+// The spec declaring the same-module producer's return, and the spec that
+// leaves it to inference — which writes no summary for an `@external` at all.
+const declared_same_module_spec = "check ffi.caller : [Net]
+external effects ffi.make_client : [Net]
+external returns ffi.make_client : [Net]
+"
+
+const inferred_same_module_spec = "check ffi.caller : [Net]
+external effects ffi.make_client : [Net]
+"
+
+// The violations of a one-module project whose `@external` producer and its
+// caller sit side by side, checked against `spec`.
+fn same_module_violations(root: String, spec: String) -> List(types.Violation) {
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", spec),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"make_client\")
+@external(javascript, \"ffi_module\", \"make_client\")
+pub fn make_client() -> fn() -> Nil
+
+pub fn caller() -> Nil {
+  let send = make_client()
+  send()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ffi.gleam" })
+  support.cleanup(root)
+  r.violations
+}
+
 pub fn a_governed_sibling_charges_its_module_what_it_charges_everyone_test() {
   // `external effects m : [Disk]` answers for every caller of `m.logs`, and a
   // sibling is a caller. Walking the body for the sibling and reading the
