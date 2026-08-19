@@ -8356,6 +8356,53 @@ pub fn caller() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_declaration_governs_a_spec_less_path_deps_inference_test() {
+  // The path dependency ships no spec, so its bodies are summarized from source
+  // during this run — and the body being summarized calls the closure its own
+  // `@external` hands back. Both consumer declarations have to be in reach while
+  // that pass runs, not merely afterwards: the `external effects` line so the
+  // producer call is charged, the `external returns` line so the closure call is.
+  // Folded after it, the helper is settled at [Unknown] and the consumer reads
+  // that instead.
+  let r =
+    run_path_dep_project(
+      "declared_returns_path_dep_inference",
+      [
+        #(
+          "ffi.gleam",
+          "@external(erlang, \"dep_ffi\", \"make\")
+@external(javascript, \"dep_ffi\", \"make\")
+pub fn make() -> fn() -> Nil
+",
+        ),
+        #(
+          "helper.gleam",
+          "import ffi
+
+pub fn use_it() -> Nil {
+  let handle = ffi.make()
+  handle()
+}
+",
+        ),
+      ],
+      None,
+      "check app.wrapper : []
+external effects ffi.make : []
+external returns ffi.make : [Disk]
+",
+      "import helper
+
+pub fn wrapper() -> Nil {
+  helper.use_it()
+}
+",
+    )
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
 pub fn an_installed_dependencys_declaration_outranks_a_path_deps_test() {
   // The same package reached twice — installed under `build/packages` and
   // declared as a path dependency — with the two copies' specs declaring
