@@ -1516,7 +1516,7 @@ pub fn packages_with_sources(packages_directory: String) -> Set(String) {
 // The packages the manifest lists, by name. What an installed tree is measured
 // against.
 pub fn manifest_package_names(manifest_path: String) -> Set(String) {
-  parse_manifest_versions(manifest_path) |> dict.keys |> set.from_list
+  manifest_versions(manifest_path) |> dict.keys |> set.from_list
 }
 
 // Map of module path -> source file for every `.gleam` under `source_dir` (a
@@ -2069,12 +2069,8 @@ pub fn load_catalog(
   Dict(QualifiedName, List(ParamBound)),
   List(#(TypeFieldAnnotation, LookupOrigin)),
 ) {
-  let installed_versions = parse_manifest_versions(manifest_path)
-  let catalog_files = case simplifile.get_files(catalog_dir) {
-    Ok(files) ->
-      list.filter(files, fn(file) { string.ends_with(file, ".graded") })
-    Error(_) -> []
-  }
+  let installed_versions = manifest_versions(manifest_path)
+  let catalog_files = bundled_catalog_files(catalog_dir) |> result.unwrap([])
   let selected = resolve_catalog_files(catalog_files, installed_versions)
   let initial =
     CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new(), dict.new(), [])
@@ -2157,56 +2153,90 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
   }
 }
 
+// One bundled catalog file, as its `{package}@{version}.graded` name reads. The
+// raw `version` string is what a caller prints; `parsed` is what selection and
+// sorting compare, and drops anything `parse_semver` does not read (`1.2.0-rc1`
+// parses to `#(1, 2, 0)`).
+pub type CatalogFile {
+  CatalogFile(
+    package: String,
+    version: String,
+    parsed: #(Int, Int, Int),
+    path: String,
+  )
+}
+
+// Every `{package}@{version}.graded` file under `catalog_dir`, in directory
+// order. A file whose name carries no `@`, or more than one, names no package
+// and version and is skipped. The read error is returned rather than folded
+// into an empty list, so a caller for which the directory is the subject can
+// tell "no catalog there" from "nothing bundled".
+pub fn bundled_catalog_files(
+  catalog_dir: String,
+) -> Result(List(CatalogFile), simplifile.FileError) {
+  use paths <- result.map(simplifile.get_files(catalog_dir))
+  paths
+  |> list.filter(fn(path) { string.ends_with(path, ".graded") })
+  |> list.filter_map(fn(path) {
+    let filename =
+      path
+      |> string.split("/")
+      |> list.last()
+      |> result.unwrap("")
+      |> string.replace(".graded", "")
+    case string.split(filename, "@") {
+      [package, version] ->
+        Ok(CatalogFile(package:, version:, parsed: parse_semver(version), path:))
+      _ -> Error(Nil)
+    }
+  })
+}
+
+// The file `package` resolves to for its `installed` version: the highest
+// bundled version at or below it, else the highest bundled. Ties are broken by
+// input order; the release lint guarantees bundled files never tie.
+pub fn select_catalog_file(
+  files: List(CatalogFile),
+  package: String,
+  installed: String,
+) -> Result(CatalogFile, Nil) {
+  files
+  |> list.filter(fn(file) { file.package == package })
+  |> list.map(fn(file) { #(file.parsed, file) })
+  |> pick_best_version(parse_semver(installed))
+}
+
 // Each selected file as `#(package, path)`: the package name the catalog's
 // `{package}@{version}.graded` file name carries, which the fold records as the
 // origin of that file's entries.
 fn resolve_catalog_files(
-  catalog_files: List(String),
+  catalog_files: List(CatalogFile),
   installed_versions: Dict(String, String),
 ) -> List(#(String, String)) {
-  // Parse filenames: "path/to/gleam_stdlib@0.70.0.graded" → #("gleam_stdlib", #(0,70,0), path)
-  let parsed =
-    list.filter_map(catalog_files, fn(path) {
-      let filename =
-        path
-        |> string.split("/")
-        |> list.last()
-        |> result.unwrap("")
-        |> string.replace(".graded", "")
-      case string.split(filename, "@") {
-        [package, version] -> Ok(#(package, parse_semver(version), path))
-        _ -> Error(Nil)
-      }
-    })
-
   // Group by package name
   let grouped =
-    list.fold(parsed, dict.new(), fn(accumulator, entry) {
-      let #(package, version, path) = entry
-      let existing = dict.get(accumulator, package) |> result.unwrap([])
-      dict.insert(accumulator, package, [#(version, path), ..existing])
+    list.fold(catalog_files, dict.new(), fn(accumulator, file) {
+      let existing = dict.get(accumulator, file.package) |> result.unwrap([])
+      dict.insert(accumulator, file.package, [file, ..existing])
     })
 
   // For each installed package, pick best catalog version
-  dict.fold(grouped, [], fn(selected, package, versions) {
+  dict.fold(grouped, [], fn(selected, package, files) {
     case dict.get(installed_versions, package) {
       Error(Nil) -> selected
-      Ok(installed_str) -> {
-        let installed = parse_semver(installed_str)
-        let best = pick_best_version(versions, installed)
-        case best {
-          Ok(path) -> [#(package, path), ..selected]
+      Ok(installed) ->
+        case select_catalog_file(files, package, installed) {
+          Ok(file) -> [#(package, file.path), ..selected]
           Error(Nil) -> selected
         }
-      }
     }
   })
 }
 
 pub fn pick_best_version(
-  versions: List(#(#(Int, Int, Int), String)),
+  versions: List(#(#(Int, Int, Int), a)),
   installed: #(Int, Int, Int),
-) -> Result(String, Nil) {
+) -> Result(a, Nil) {
   // Pick highest version ≤ installed; if none, pick highest available
   let eligible =
     list.filter(versions, fn(version) { semver_lte(version.0, installed) })
@@ -2261,7 +2291,9 @@ pub fn compare_semver(
   }
 }
 
-fn parse_manifest_versions(manifest_path: String) -> Dict(String, String) {
+// The installed version of each package `manifest_path` lists. An unreadable
+// or malformed manifest yields an empty dict.
+pub fn manifest_versions(manifest_path: String) -> Dict(String, String) {
   let parsed = {
     use content <- result.try(
       simplifile.read(manifest_path) |> result.map_error(fn(_) { Nil }),
