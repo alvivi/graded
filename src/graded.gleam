@@ -2918,7 +2918,6 @@ type ModuleInference {
   ModuleInference(
     knowledge_base: KnowledgeBase,
     public: List(EffectAnnotation),
-    returns: List(types.ReturnsAnnotation),
     cache: Option(CacheFile),
   )
 }
@@ -3001,9 +3000,9 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     }),
   )
 
-  let #(_kb, public_annotations, public_returns, cache_files) =
-    list.fold(sorted, #(base_kb, [], [], []), fn(state, module_path) {
-      let #(kb, acc, returns_acc, cache_acc) = state
+  let #(_kb, public_annotations, cache_files) =
+    list.fold(sorted, #(base_kb, [], []), fn(state, module_path) {
+      let #(kb, acc, cache_acc) = state
       case dict.get(index, module_path) {
         Error(_) -> state
         Ok(#(_gleam_path, module)) -> {
@@ -3026,7 +3025,6 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
           #(
             inference.knowledge_base,
             list.append(inference.public, acc),
-            list.append(inference.returns, returns_acc),
             case inference.cache {
               None -> cache_acc
               Some(cache) -> [cache, ..cache_acc]
@@ -3042,7 +3040,6 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     merged_spec: annotation.merge_inferred(
       spec,
       public_annotations,
-      public_returns,
       stale_externals,
       stale_external_returns,
     ),
@@ -3123,31 +3120,10 @@ fn infer_one_module(
     inferred
     |> list.filter(fn(ann) { set.contains(public_names, ann.function) })
     |> list.map(fn(ann) {
-      EffectAnnotation(
-        ..ann,
-        function: module_path <> "." <> ann.function,
-        returns: None,
-      )
-    })
-  // Public functions that return an operator — serialized as `returns` lines so
-  // the signature crosses module/package boundaries.
-  let public_returns =
-    returned_operators
-    |> dict.to_list()
-    |> list.filter(fn(pair) { set.contains(public_names, pair.0) })
-    |> list.map(fn(pair) {
-      types.ReturnsAnnotation(
-        function: module_path <> "." <> pair.0,
-        operator: pair.1,
-      )
+      EffectAnnotation(..ann, function: module_path <> "." <> ann.function)
     })
 
-  ModuleInference(
-    knowledge_base: new_kb,
-    public: public_annotations,
-    returns: public_returns,
-    cache:,
-  )
+  ModuleInference(knowledge_base: new_kb, public: public_annotations, cache:)
 }
 
 // Infer project modules in topological order, in memory, folding their

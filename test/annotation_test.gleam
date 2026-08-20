@@ -8,10 +8,9 @@ import graded/internal/annotation
 import graded/internal/effect_term
 import graded/internal/types.{
   type EffectTerm, AnnotationLine, BlankLine, Check, CommentLine,
-  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine,
-  ExternalReturnsLine, FunctionExternal, ModuleExternal, ParamBound, Polymorphic,
-  ReturnsLine, Specific, TAbs, TApp, TLabels, TUnion, TVar, TypeFieldAnnotation,
-  TypeFieldLine, Wildcard,
+  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
+  ModuleExternal, ParamBound, Polymorphic, Specific, TAbs, TApp, TLabels, TUnion,
+  TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 import qcheck
 
@@ -878,8 +877,7 @@ pub fn merge_inferred_invariants_test() {
       fn(f, i) { #(f, i) },
     ),
   )
-  let merged =
-    annotation.merge_inferred(file, inferred, [], set.new(), set.new())
+  let merged = annotation.merge_inferred(file, inferred, set.new(), set.new())
   let merged_effects =
     annotation.extract_annotations(merged)
     |> list.filter(fn(a) { a.kind == Effects })
@@ -949,7 +947,7 @@ pub fn merge_inferred_drops_effect_for_external_test() {
     ),
   ]
   let effects_fns =
-    annotation.merge_inferred(file, inferred, [], set.new(), set.new())
+    annotation.merge_inferred(file, inferred, set.new(), set.new())
     |> annotation.extract_annotations
     |> list.filter(fn(a) { a.kind == Effects })
     |> list.map(fn(a) { a.function })
@@ -958,88 +956,123 @@ pub fn merge_inferred_drops_effect_for_external_test() {
   set.contains(effects_fns, "app.other") |> should.be_true()
 }
 
-pub fn merge_inferred_keeps_an_external_returns_line_test() {
+pub fn merge_inferred_keeps_a_declared_returns_clause_test() {
   // A declaration is preserved in place and never regenerated, and the inferred
-  // `returns` line for the same name is dropped: one name, one answer.
+  // clause for the same name is dropped: one name, one answer.
   let declared =
-    ExternalReturnsLine(types.ReturnsAnnotation(
-      function: "app.make",
-      operator: TLabels(set.from_list(["Net"])),
+    ExternalLine(ExternalAnnotation(
+      module: "app",
+      target: FunctionExternal("make"),
+      effects: None,
+      returns: Some(TLabels(set.from_list(["Net"]))),
     ))
   let file = types.GradedFile(lines: [declared])
-  let inferred_returns = [
-    types.ReturnsAnnotation(function: "app.make", operator: TLabels(set.new())),
-    types.ReturnsAnnotation(function: "app.other", operator: TLabels(set.new())),
+  let inferred = [
+    EffectAnnotation(
+      Effects,
+      "app.make",
+      [],
+      TLabels(set.new()),
+      returns: Some(TLabels(set.new())),
+    ),
+    EffectAnnotation(
+      Effects,
+      "app.other",
+      [],
+      TLabels(set.new()),
+      returns: Some(TLabels(set.new())),
+    ),
   ]
-  let merged =
-    annotation.merge_inferred(file, [], inferred_returns, set.new(), set.new())
-  merged.lines
-  |> should.equal([
-    declared,
-    ReturnsLine(types.ReturnsAnnotation(
-      function: "app.other",
-      operator: TLabels(set.new()),
-    )),
-  ])
+  annotation.merge_inferred(file, inferred, set.new(), set.new())
+  |> should.equal(
+    types.GradedFile(lines: [
+      declared,
+      AnnotationLine(EffectAnnotation(
+        Effects,
+        "app.make",
+        [],
+        TLabels(set.new()),
+        returns: None,
+      )),
+      AnnotationLine(EffectAnnotation(
+        Effects,
+        "app.other",
+        [],
+        TLabels(set.new()),
+        returns: Some(TLabels(set.new())),
+      )),
+    ]),
+  )
 }
 
-pub fn merge_inferred_keeps_an_unmatched_external_returns_line_test() {
+pub fn merge_inferred_keeps_an_unmatched_returns_clause_test() {
   // A declaration for a function inference no longer reports a summary for is
-  // still the author's line, so the stale-removal path that drops an unmatched
-  // `returns` line does not reach it.
-  let declared =
-    ExternalReturnsLine(types.ReturnsAnnotation(
-      function: "app.make",
-      operator: TLabels(set.from_list(["Net"])),
-    ))
-  let file = types.GradedFile(lines: [declared])
-  annotation.merge_inferred(file, [], [], set.new(), set.new())
+  // still the author's line, so the stale-removal path does not reach it.
+  let file =
+    types.GradedFile(lines: [
+      ExternalLine(ExternalAnnotation(
+        module: "app",
+        target: FunctionExternal("make"),
+        effects: None,
+        returns: Some(TLabels(set.from_list(["Net"]))),
+      )),
+    ])
+  annotation.merge_inferred(file, [], set.new(), set.new())
   |> should.equal(file)
 }
 
-pub fn merge_inferred_rewrites_a_stale_external_returns_line_test() {
+pub fn merge_inferred_rewrites_a_stale_returns_clause_test() {
   // The line names one of this package's own ordinary functions, so it declares
-  // nothing: it is deleted and the inferred `returns` line it was suppressing
-  // is written in its place.
+  // nothing: it is deleted and the inferred clause it was suppressing is
+  // written on the function's `effects` line.
   let file =
     types.GradedFile(lines: [
-      ExternalReturnsLine(types.ReturnsAnnotation(
-        function: "app.make",
-        operator: TLabels(set.from_list(["Net"])),
+      ExternalLine(ExternalAnnotation(
+        module: "app",
+        target: FunctionExternal("make"),
+        effects: None,
+        returns: Some(TLabels(set.from_list(["Net"]))),
       )),
     ])
-  let inferred_returns = [
-    types.ReturnsAnnotation(
-      function: "app.make",
-      operator: TLabels(set.from_list(["Disk"])),
+  let inferred = [
+    EffectAnnotation(
+      Effects,
+      "app.make",
+      [],
+      TLabels(set.new()),
+      returns: Some(TLabels(set.from_list(["Disk"]))),
     ),
   ]
   annotation.merge_inferred(
     file,
-    [],
-    inferred_returns,
+    inferred,
     set.new(),
     set.from_list(["app.make"]),
   )
   |> should.equal(
     types.GradedFile(lines: [
-      ReturnsLine(types.ReturnsAnnotation(
-        function: "app.make",
-        operator: TLabels(set.from_list(["Disk"])),
+      AnnotationLine(EffectAnnotation(
+        Effects,
+        "app.make",
+        [],
+        TLabels(set.new()),
+        returns: Some(TLabels(set.from_list(["Disk"]))),
       )),
     ]),
   )
 }
 
 pub fn merge_inferred_keeps_the_two_stale_channels_apart_test() {
-  // A stale `external returns` name reaching the effects channel's filters
+  // A stale returns-declaration name reaching the effects channel's filters
   // would delete the function's own `effects` line, which nothing declared
   // anything about.
   let file =
     types.GradedFile(lines: [
-      ExternalReturnsLine(types.ReturnsAnnotation(
-        function: "app.make",
-        operator: TLabels(set.from_list(["Net"])),
+      ExternalLine(ExternalAnnotation(
+        module: "app",
+        target: FunctionExternal("make"),
+        effects: None,
+        returns: Some(TLabels(set.from_list(["Net"]))),
       )),
       AnnotationLine(EffectAnnotation(
         Effects,
@@ -1061,7 +1094,6 @@ pub fn merge_inferred_keeps_the_two_stale_channels_apart_test() {
   annotation.merge_inferred(
     file,
     inferred,
-    [],
     set.new(),
     set.from_list(["app.make"]),
   )

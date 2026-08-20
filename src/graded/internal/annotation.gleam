@@ -820,23 +820,22 @@ pub fn split_type_field_name(
 // Fold freshly inferred results into an existing GradedFile so `graded infer`
 // updates derived lines without disturbing hand-written ones.
 
-// Merge inferred effects and returned-operator signatures into an existing
-// GradedFile, preserving structure.
+// Merge inferred effects into an existing GradedFile, preserving structure.
 //
-// - `check` / `type` / `external` / `external returns` lines, comments, blanks:
-//   kept in place
-// - Existing `effects` and `returns` lines: updated in-place; removed if stale
-// - New functions not yet in file: `effects` / `returns` lines appended at end
+// - `check` / `assume` lines, comments, blanks: kept in place
+// - Existing `effects` lines: updated in-place; removed if stale
+// - New functions not yet in file: `effects` lines appended at end
+// - Legacy `returns` lines: dropped; a returned operator is written as the
+//   `where returns` clause of the function's `effects` line
 //
-// The two stale sets are separate channels and stay separate: an
-// `assume` line that declares nothing suppresses this package's
-// `effects` lines for the name, and an `external returns` one that declares
-// nothing suppresses its `returns` line. Threading either set into the other's
-// filters deletes lines about a channel nobody declared anything on.
+// The two stale sets are separate channels and stay separate: an `assume` line
+// that declares no effects suppresses this package's `effects` lines for the
+// name, and one that declares no returned operator suppresses the clause on
+// that line. Threading either set into the other's filters deletes a claim
+// about a channel nobody declared anything on.
 pub fn merge_inferred(
   file: GradedFile,
   inferred: List(EffectAnnotation),
-  inferred_returns: List(ReturnsAnnotation),
   stale_externals: set.Set(String),
   stale_external_returns: set.Set(String),
 ) -> GradedFile {
@@ -863,34 +862,29 @@ pub fn merge_inferred(
       && !in_external_module(annotation.function, external_modules)
     })
 
-  // A function whose return an `external returns` line declares needs no
-  // inferred `returns` line: the declaration answers for it, and a second line
-  // for the same name would sit in the file looking like a second opinion.
-  // Except where that line is stale — it names one of this package's own
-  // ordinary functions — in which case the line is dropped below and the
-  // inferred one written in its place.
-  //
-  // Defensive for the healthy case rather than load-bearing: inference produces
-  // no returns entry for an `@external` in the first place.
+  // A function whose return an `assume … where returns` clause declares needs
+  // no inferred clause: the declaration answers for it, and a second claim for
+  // the same name would sit in the file looking like a second opinion. Except
+  // where that declaration is stale — it names one of this package's own
+  // ordinary functions — in which case it is dropped below and the inferred
+  // clause written in its place.
   let declared_returns =
-    set.difference(external_returns_names(file), stale_external_returns)
-  let inferred_returns =
-    list.filter(inferred_returns, fn(returns) {
-      !set.contains(declared_returns, returns.function)
+    set.difference(assume_returns_names(file), stale_external_returns)
+  let inferred =
+    list.map(inferred, fn(annotation) {
+      case set.contains(declared_returns, annotation.function) {
+        True -> EffectAnnotation(..annotation, returns: None)
+        False -> annotation
+      }
     })
 
   let inferred_map =
     inferred
     |> list.map(fn(annotation) { #(annotation.function, annotation) })
     |> dict.from_list()
-  let returns_map =
-    inferred_returns
-    |> list.map(fn(returns) { #(returns.function, returns) })
-    |> dict.from_list()
 
-  // The functions whose `effects`/`returns` lines already exist in the file are
-  // updated in place below; the rest are appended. Both sets are pure functions
-  // of the file's lines, so they're derived up front rather than accumulated.
+  // The functions whose `effects` lines already exist in the file are updated
+  // in place below; the rest are appended.
   let present_effects =
     names_of_lines(file.lines, fn(line) {
       case line {
@@ -904,38 +898,19 @@ pub fn merge_inferred(
         BlankLine -> Error(Nil)
       }
     })
-  let present_returns =
-    names_of_lines(file.lines, fn(line) {
-      case line {
-        ReturnsLine(r) -> Ok(r.function)
-        AnnotationLine(_) -> Error(Nil)
-        TypeFieldLine(_) -> Error(Nil)
-        ExternalLine(_) -> Error(Nil)
-        ExternalReturnsLine(_) -> Error(Nil)
-        CommentLine(_) -> Error(Nil)
-        BlankLine -> Error(Nil)
-      }
-    })
 
-  // An `effects`/`returns` line takes its freshly inferred value; one whose
-  // function is no longer inferred is stale and dropped. A
-  // `check`/`type`/`external`/comment/blank stays as written.
+  // An `effects` line takes its freshly inferred value; one whose function is
+  // no longer inferred is stale and dropped. A `check`/`assume`/comment/blank
+  // stays as written, minus whichever of an `assume` line's two claims is
+  // stale.
   let new_lines =
     list.filter_map(file.lines, fn(line) {
       case line {
         AnnotationLine(a) if a.kind == Effects ->
           dict.get(inferred_map, a.function) |> result.map(AnnotationLine)
-        ReturnsLine(r) ->
-          dict.get(returns_map, r.function) |> result.map(ReturnsLine)
+        ReturnsLine(_) -> Error(Nil)
         ExternalLine(e) ->
-          case external_line_name(e) {
-            Ok(name) ->
-              case set.contains(stale_externals, name) {
-                True -> Error(Nil)
-                False -> Ok(line)
-              }
-            Error(Nil) -> Ok(line)
-          }
+          surviving_external(e, stale_externals, stale_external_returns)
         ExternalReturnsLine(r) ->
           case set.contains(stale_external_returns, r.function) {
             True -> Error(Nil)
@@ -949,14 +924,35 @@ pub fn merge_inferred(
     inferred
     |> list.filter(fn(a) { !set.contains(present_effects, a.function) })
     |> list.map(AnnotationLine)
-  let remaining_returns =
-    inferred_returns
-    |> list.filter(fn(r) { !set.contains(present_returns, r.function) })
-    |> list.map(ReturnsLine)
 
-  GradedFile(
-    lines: list.flatten([new_lines, remaining_effects, remaining_returns]),
-  )
+  GradedFile(lines: list.flatten([new_lines, remaining_effects]))
+}
+
+// One `assume` line after the stale claims are stripped from it, or
+// `Error(Nil)` where nothing it claimed survives.
+fn surviving_external(
+  external: ExternalAnnotation,
+  stale_externals: set.Set(String),
+  stale_external_returns: set.Set(String),
+) -> Result(GradedLine, Nil) {
+  case external_line_name(external) {
+    Error(Nil) -> Ok(ExternalLine(external))
+    Ok(name) -> {
+      let effects = case set.contains(stale_externals, name) {
+        True -> None
+        False -> external.effects
+      }
+      let returns = case set.contains(stale_external_returns, name) {
+        True -> None
+        False -> external.returns
+      }
+      case effects, returns {
+        None, None -> Error(Nil)
+        _, _ ->
+          Ok(ExternalLine(ExternalAnnotation(..external, effects:, returns:)))
+      }
+    }
+  }
 }
 
 // The `<module>.<function>` a per-function external names, or `Error(Nil)` for

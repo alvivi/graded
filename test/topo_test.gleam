@@ -451,7 +451,10 @@ pub fn make() -> Resolver {
 
   let assert Ok(Nil) = graded.run_infer(directory)
   let assert Ok(spec) = simplifile.read(directory <> "/app.graded")
-  string.contains(spec, "returns app/factory.make : [Stdout]")
+  string.contains(
+    spec,
+    "effects app/factory.make : [] where returns : [Stdout]",
+  )
   |> should.be_true()
   cleanup(directory)
 }
@@ -497,7 +500,10 @@ fn with_logger(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
 
   // The producer's returned operator is serialized into the spec.
   let assert Ok(spec) = simplifile.read(directory <> "/app.graded")
-  string.contains(spec, "returns app/factory.pick : fn(cb) -> [cb]")
+  string.contains(
+    spec,
+    "effects app/factory.pick : [] where returns : fn(cb) -> [cb]",
+  )
   |> should.be_true()
 
   // `check` re-resolves the consumer by loading that line, flagging main.run's
@@ -658,7 +664,7 @@ pub fn use_runner() -> Nil {
   // The serialized summary keeps the residual: `[Unknown]` survives inside the
   // binder's body, not just the callback variable.
   let assert Ok(spec) = simplifile.read(directory <> "/app.graded")
-  string.contains(spec, "returns app/factory.make : fn(handler) ->")
+  string.contains(spec, "app/factory.make : [] where returns : fn(handler) ->")
   |> should.be_true()
   string.contains(spec, "Unknown") |> should.be_true()
 

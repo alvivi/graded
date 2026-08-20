@@ -3181,7 +3181,7 @@ pub fn a_stale_external_returns_line_is_ignored_and_repaired_test() {
   // closure every caller can see for itself — so it declares nothing. It is
   // ignored at load, not merely warned about: trusted between `infer` runs it
   // would be a per-function override of the walk. `infer` then deletes it and
-  // writes the `returns` line it was suppressing.
+  // writes the clause it was suppressing.
   let root = "build/declared_returns_stale"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
@@ -3222,7 +3222,9 @@ pub fn caller() -> Nil {
   changed
   |> list.contains("- external returns lib.make : [Disk]")
   |> should.be_true()
-  changed |> list.contains("+ returns lib.make : []") |> should.be_true()
+  changed
+  |> list.contains("+ effects lib.make : [] where returns : []")
+  |> should.be_true()
   support.cleanup(root)
 }
 
@@ -4032,8 +4034,9 @@ pub fn make() -> fn() -> Nil {
   ])
   let assert Ok(_) = graded.run_infer(root)
   let assert Ok(written) = simplifile.read(root <> "/proj.graded")
-  string.contains(written, "returns ext.make : []") |> should.be_true()
-  string.contains(written, "returns ext.make : [Disk]") |> should.be_false()
+  string.contains(written, "effects ext.make : [] where returns : []")
+  |> should.be_true()
+  string.contains(written, "where returns : [Disk]") |> should.be_false()
   support.cleanup(root)
 }
 
