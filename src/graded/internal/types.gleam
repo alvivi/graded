@@ -218,7 +218,7 @@ pub fn is_wholly_unknown(effect_set: EffectSet) -> Bool {
 //
 // This is what lets graded express *second-order* effect polymorphism: an
 // effect variable that is itself parameterized by a callback. See
-// docs/second-order-effects.md.
+// docs/SECOND_ORDER_EFFECTS.md.
 pub type EffectTerm {
   // Ground labels. `TLabels(∅)` is pure. Kind `Eff`.
   TLabels(labels: Set(String))

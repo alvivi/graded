@@ -7,7 +7,7 @@
 // The interesting capability is second-order effect polymorphism: a `TAbs`
 // is an effect *operator* (kind `Eff -> Eff`) that `TApp` applies to an
 // argument effect and `normalize` beta-reduces. See
-// docs/second-order-effects.md for the design and the property suite.
+// docs/SECOND_ORDER_EFFECTS.md for the design and the property suite.
 
 import gleam/bool
 import gleam/dict.{type Dict}

@@ -56,7 +56,7 @@ Fourteen modules, no circular dependencies. Only `src/graded.gleam` is the publi
 
 ## .graded Annotation Syntax
 
-The spec file uses **module-qualified** names (`myapp/router.handle_request`); cache files under `build/.graded/` use bare names because each is scoped to one module by location. Four annotation kinds: `effects` (inferred cache), `check` (enforced invariant), `assume` (a trusted declaration — a module, a function, or a function-typed field on a custom type), `external returns` (the closure an FFI producer hands back). Parameter bounds (`effects myapp.apply(f: [Stdout]) : [Stdout]`) carry higher-order budgets.
+The spec file uses **module-qualified** names (`myapp/router.handle_request`); cache files under `build/.graded/` use bare names because each is scoped to one module by location. Every line reads `<status> <path>[(bounds)] : <effects> [where returns : <operator>]`. Three statuses: `effects` (inferred and regenerated), `check` (asserted and verified), `assume` (trusted and never verified — a module, a function, or a function-typed field on a custom type, told apart by the path's shape). Parameter bounds (`effects myapp.apply(f: [Stdout]) : [Stdout]`) carry higher-order budgets; the `where returns` clause carries the operator a producer hands back, its variables scoped by the line's own bound list.
 
 See [docs/REFERENCE.md](docs/REFERENCE.md) for the full grammar, every annotation kind, the effect-set syntax, and worked examples.
 
