@@ -12,8 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New `graded catalog [package[@version]]` command: lists the bundled catalog
   files, or prints the one selected for an installed package (or an explicit
   version), as a valid `.graded` file with a header comment naming the
-  selection. Shows the bundled catalog only; `graded effect` answers what wins
-  for a name.
+  selection. Selection follows the `manifest.toml` of the package enclosing the
+  directory given — or the current directory, from a subdirectory too — and a
+  directory, manifest or catalog directory it cannot read is reported by name
+  instead of answered around. Shows the bundled catalog only; `graded effect`
+  answers what wins for a name.
+
+### Fixed
+
+- A dependency installed at a pre-release or build-metadata version
+  (`1.2.0-rc.1`, `1.2.0+build.5`) now resolves against the catalog entry for
+  its `1.2.0` release. Such a version compared as `0.0.0`, so the highest
+  bundled entry stood in for it.
 
 ## [0.13.0] - 2026-08-20
 
