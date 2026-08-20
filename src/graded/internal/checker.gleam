@@ -24,15 +24,15 @@ import graded/internal/types.{
   type LookupOrigin, type ParamBound, type QualifiedName, type ResolvedCall,
   type UnknownReason, type Violation, type Warning, CallExplanation,
   DotlessExternalReturnsWarning, EffectAnnotation, Effects, FieldNotAnnotated,
-  NoKnownEffects, ParamBound, PolymorphicExternalReturnsWarning, QualifiedName,
-  ReceiverTypeUnresolved, RefusedDeclaredReturn, StaleExternalReturnsWarning,
+  NoKnownEffects, ParamBound, QualifiedName, ReceiverTypeUnresolved,
+  RefusedDeclaredReturn, StaleExternalReturnsWarning,
   StaleFunctionExternalWarning, TUnion, TVar, TypeLine, UnbuiltExternal,
-  UndeclaredExternal, UnmatchedCheckWarning, UnmatchedExternalReturnsWarning,
-  UnmatchedFieldBoundWarning, UnmatchedFunctionExternalWarning,
-  UnmatchedModuleExternalWarning, UnmatchedParamBoundWarning,
-  UnmatchedTypeFieldWarning, UnresolvedFieldValue, UntraceableArgument,
-  UntraceableProducer, UntraceableReceiver, UntrackedEffectWarning,
-  UnverifiedCheckShapeWarning, Violation,
+  UnclosedReturnsClauseWarning, UndeclaredExternal, UnmatchedCheckWarning,
+  UnmatchedExternalReturnsWarning, UnmatchedFieldBoundWarning,
+  UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
+  UnmatchedParamBoundWarning, UnmatchedTypeFieldWarning, UnresolvedFieldValue,
+  UntraceableArgument, UntraceableProducer, UntraceableReceiver,
+  UntrackedEffectWarning, UnverifiedCheckShapeWarning, Violation,
 }
 
 // Entry points
@@ -1573,7 +1573,7 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       file
       <> ": warning: check "
       <> name
-      <> " names a field — checks on fields are not verified yet, so the line keys nothing; an `assume` line is the trusted form"
+      <> " is a shape nothing verifies yet — checks on fields and on returned operators key nothing; an `assume` line is the trusted form"
     UnmatchedTypeFieldWarning(name:) ->
       file
       <> ": warning: assume "
@@ -1596,24 +1596,28 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> " names no dependency or project module — check the module path; the declaration covers nothing"
     StaleExternalReturnsWarning(function:) ->
       file
-      <> ": warning: external returns "
+      <> ": warning: assume "
       <> function
-      <> " names a function of this package with a Gleam body — every caller resolves what it returns from that body, so the line declares nothing and is ignored. `graded infer` removes it; where the function returns an operator, the inferred `returns` line takes its place"
+      <> " where returns names a function of this package with a Gleam body — every caller resolves what it returns from that body, so the clause declares nothing and is ignored. `graded infer` removes it and writes the inferred clause on the `effects` line in its place"
     UnmatchedExternalReturnsWarning(function:) ->
       file
-      <> ": warning: external returns "
+      <> ": warning: assume "
       <> function
-      <> " names no dependency, catalog, or project function — check the module qualifier; the declaration covers nothing"
-    PolymorphicExternalReturnsWarning(function:) ->
+      <> " where returns names no dependency, catalog, or project function — check the module qualifier; the declaration covers nothing"
+    UnclosedReturnsClauseWarning(function:, free_vars:) ->
       file
-      <> ": warning: external returns "
+      <> ": warning: the `where returns` clause on "
       <> function
-      <> " declares an operator with effect variables — only a ground operator is loaded, so the line is ignored; write the effects the returned function performs, or wrap the producer in Gleam"
+      <> " has free variable(s) "
+      <> {
+        free_vars |> list.map(fn(v) { "`" <> v <> "`" }) |> string.join(", ")
+      }
+      <> " naming no callback parameter of it — the clause is ignored and the returned function resolves to [Unknown]"
     DotlessExternalReturnsWarning(name:) ->
       file
-      <> ": warning: external returns "
+      <> ": warning: assume "
       <> name
-      <> " names a module, not a function — a returns declaration is per-function; the line resolves nothing"
+      <> " where returns names a module, not a function — a returns declaration is per-function; the clause resolves nothing"
   }
 }
 
@@ -5839,15 +5843,29 @@ fn clause_is_closed(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
 ) -> Bool {
+  unclosed_clause_variables(operator, callee, knowledge_base, registry) == []
+}
+
+// The clause's free variables that name no callback parameter, sorted. Empty
+// for a closed clause. The gate binds against it and the spec lint reports
+// against it, so the two read one oracle by construction.
+pub fn unclosed_clause_variables(
+  operator: EffectTerm,
+  callee: QualifiedName,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+) -> List(String) {
   let callbacks =
     set.union(
       signatures.fn_typed_param_names(registry, callee),
       recorded_bound_names(knowledge_base, callee),
     )
   effect_term.free_vars(operator)
-  |> set.filter(fn(variable) { !is_field_path_var(variable) })
+  |> set.filter(fn(variable) {
+    !is_field_path_var(variable) && !set.contains(callbacks, variable)
+  })
   |> set.to_list()
-  |> list.all(set.contains(callbacks, _))
+  |> list.sort(string.compare)
 }
 
 // The parameter names `name`'s recorded bounds state effects over. For one of

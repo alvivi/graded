@@ -5134,7 +5134,7 @@ pub fn format_warning_stale_external_returns_test() {
   types.StaleExternalReturnsWarning(function: "lib.make")
   |> checker.format_warning("proj.graded", _)
   |> should.equal(
-    "proj.graded: warning: external returns lib.make names a function of this package with a Gleam body — every caller resolves what it returns from that body, so the line declares nothing and is ignored. `graded infer` removes it; where the function returns an operator, the inferred `returns` line takes its place",
+    "proj.graded: warning: assume lib.make where returns names a function of this package with a Gleam body — every caller resolves what it returns from that body, so the clause declares nothing and is ignored. `graded infer` removes it and writes the inferred clause on the `effects` line in its place",
   )
 }
 
@@ -5142,7 +5142,17 @@ pub fn format_warning_unverified_check_shape_test() {
   types.UnverifiedCheckShapeWarning(name: "app.Handler.on_click")
   |> checker.format_warning("proj.graded", _)
   |> should.equal(
-    "proj.graded: warning: check app.Handler.on_click names a field — checks on fields are not verified yet, so the line keys nothing; an `assume` line is the trusted form",
+    "proj.graded: warning: check app.Handler.on_click is a shape nothing verifies yet — checks on fields and on returned operators key nothing; an `assume` line is the trusted form",
+  )
+}
+
+pub fn format_warning_unclosed_returns_clause_test() {
+  types.UnclosedReturnsClauseWarning(function: "app.traced", free_vars: [
+    "ghost", "other",
+  ])
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: the `where returns` clause on app.traced has free variable(s) `ghost`, `other` naming no callback parameter of it — the clause is ignored and the returned function resolves to [Unknown]",
   )
 }
 
@@ -5150,7 +5160,7 @@ pub fn format_warning_dotless_external_returns_test() {
   types.DotlessExternalReturnsWarning(name: "lib")
   |> checker.format_warning("proj.graded", _)
   |> should.equal(
-    "proj.graded: warning: external returns lib names a module, not a function — a returns declaration is per-function; the line resolves nothing",
+    "proj.graded: warning: assume lib where returns names a module, not a function — a returns declaration is per-function; the clause resolves nothing",
   )
 }
 
