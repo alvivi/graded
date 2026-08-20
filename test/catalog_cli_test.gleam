@@ -207,6 +207,26 @@ pub fn a_file_ending_in_two_newlines_keeps_both_test() {
   |> should.be_true()
 }
 
+pub fn a_file_ending_in_a_carriage_return_keeps_it_test() {
+  // `\r\n` is one grapheme and two bytes: only the newline is the one
+  // `println` puts back, so only the newline comes off.
+  let root =
+    support.write_fixture("build/catalog_cli_crlf", [
+      #("catalog/crlf@1.0.0.graded", "external effects crlf.run : []\r\n"),
+    ])
+  let output =
+    catalog_report(
+      root <> "/catalog",
+      "no_such_manifest.toml",
+      show("crlf", Some("1.0.0")),
+    )
+  support.cleanup(root)
+  output
+  |> should.equal(
+    "// crlf@1.0.0.graded — bundled version, as requested\nexternal effects crlf.run : []\r",
+  )
+}
+
 pub fn an_explicit_version_needs_no_manifest_test() {
   use catalog_dir, _manifest <- with_catalog(
     "build/catalog_cli_show_explicit",

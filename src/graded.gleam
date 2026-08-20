@@ -35,6 +35,7 @@ import argv
 import filepath
 import girard
 import glance
+import gleam/bit_array
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
@@ -2331,10 +2332,18 @@ fn print_catalog_file(
     |> result.map_error(fn(cause) { FileReadError(file.path, cause) }),
   )
   let header = "// " <> catalog_label(file) <> ".graded — " <> note
-  let output = header <> "\n" <> contents
-  case string.ends_with(output, "\n") {
-    True -> string.drop_end(output, 1)
-    False -> output
+  header <> "\n" <> drop_trailing_newline(contents)
+}
+
+// `text` without the newline byte it ends in, if it ends in one. Byte-wise: a
+// `\r\n` is a single grapheme, so dropping the last grapheme would take the
+// carriage return with it and a CRLF file would not print as it reads.
+fn drop_trailing_newline(text: String) -> String {
+  let bytes = bit_array.from_string(text)
+  let without_last = bit_array.slice(bytes, 0, bit_array.byte_size(bytes) - 1)
+  case string.ends_with(text, "\n"), without_last {
+    True, Ok(trimmed) -> bit_array.to_string(trimmed) |> result.unwrap(text)
+    True, Error(Nil) | False, Ok(_) | False, Error(Nil) -> text
   }
 }
 
