@@ -92,18 +92,19 @@ pub fn format_sorted_section_order_test() {
   check_non_decreasing(indices)
 }
 
+// Externals and type fields share the `assume` section, so they share an index.
 fn section_index(line: types.GradedLine) -> Int {
   case line {
     CommentLine(_) -> 0
     ExternalLine(_) -> 1
+    TypeFieldLine(_) -> 1
     ExternalReturnsLine(_) -> 2
-    TypeFieldLine(_) -> 3
     AnnotationLine(a) ->
       case a.kind {
-        Check -> 4
-        Effects -> 5
+        Check -> 3
+        Effects -> 4
       }
-    ReturnsLine(_) -> 6
+    ReturnsLine(_) -> 5
     BlankLine -> -1
   }
 }

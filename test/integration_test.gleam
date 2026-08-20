@@ -2459,7 +2459,7 @@ pub fn wrapper() -> Nil {
   let assert Ok(_) = graded.run_infer(root)
   let assert Ok(written) = simplifile.read(root <> "/proj.graded")
   written
-  |> string.contains("external effects ffi.now : [Time]")
+  |> string.contains("assume ffi.now : [Time]")
   |> should.be_true()
   support.cleanup(root)
 }

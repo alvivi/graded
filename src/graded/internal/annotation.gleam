@@ -872,12 +872,9 @@ pub fn format_file(file: GradedFile) -> String {
 
 // Format an GradedFile: normalize spacing, sort annotations, ensure trailing newline.
 //
-// Output order:
-// 1. Leading comments (file header)
-// 2. `check` lines, sorted alphabetically by function name
-// 3. Blank line separator (if both check and effects lines exist)
-// 4. `effects` lines, sorted alphabetically by function name
-// 5. Single trailing newline
+// Output order: leading comments, then one section per status — `assume`
+// sorted by path, `check` and `effects` each sorted by function name — blank
+// line separated, with a single trailing newline.
 pub fn format_sorted(file: GradedFile) -> String {
   let comments = collect_comments(file.lines)
   let annotations = extract_annotations(file)
@@ -898,22 +895,17 @@ pub fn format_sorted(file: GradedFile) -> String {
     })
     |> list.map(format_annotation)
 
-  let type_field_lines =
-    extract_type_fields(file)
-    |> list.sort(fn(left, right) {
-      string.compare(
-        left.type_name <> "." <> left.field,
-        right.type_name <> "." <> right.field,
-      )
-    })
-    |> list.map(format_type_field)
-
-  let external_lines =
-    extract_externals(file)
-    |> list.sort(fn(left, right) {
-      string.compare(external_sort_key(left), external_sort_key(right))
-    })
-    |> list.map(format_external)
+  // Externals and type fields are one `assume` section, ordered by the path
+  // each line renders, so the section reads in the order a reader scans it.
+  let assume_lines =
+    list.append(
+      extract_externals(file)
+        |> list.map(fn(ext) { #(external_sort_key(ext), format_external(ext)) }),
+      extract_type_fields(file)
+        |> list.map(fn(tf) { #(type_field_path(tf), format_type_field(tf)) }),
+    )
+    |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+    |> list.map(fn(entry) { entry.1 })
 
   let external_returns_lines =
     extract_external_returns(file)
@@ -931,9 +923,8 @@ pub fn format_sorted(file: GradedFile) -> String {
 
   let sections = [
     comments,
-    external_lines,
+    assume_lines,
     external_returns_lines,
-    type_field_lines,
     check_lines,
     effects_lines,
     returns_lines,
@@ -986,26 +977,25 @@ fn format_operator(term: EffectTerm) -> String {
   }
 }
 
-// Render a TypeFieldAnnotation back to its .graded line format. Includes
-// the module prefix when present (qualified form, used in spec files);
-// emits the bare form otherwise (cache files).
+// Render a TypeFieldAnnotation back to its .graded line format.
 pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
+  "assume " <> type_field_path(tf) <> " : " <> format_effect_term(tf.effects)
+}
+
+// The path a type field annotation renders: the qualified form used in spec
+// files when the module is present, the bare form used in cache files
+// otherwise. Both a sort key and the rendered name in `format_type_field`.
+fn type_field_path(tf: TypeFieldAnnotation) -> String {
   let prefix = case tf.module {
     Some(module) -> module <> "."
     None -> ""
   }
-  "type "
-  <> prefix
-  <> tf.type_name
-  <> "."
-  <> tf.field
-  <> " : "
-  <> format_effect_term(tf.effects)
+  prefix <> tf.type_name <> "." <> tf.field
 }
 
 // Render an ExternalAnnotation back to its `.graded` line format.
 pub fn format_external(external_annotation: ExternalAnnotation) -> String {
-  "external effects "
+  "assume "
   <> external_sort_key(external_annotation)
   <> " : "
   <> format_effect_set(external_annotation.effects)

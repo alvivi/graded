@@ -64,6 +64,15 @@ pub fn format_stdin_is_idempotent_over_external_returns_test() {
   graded.run_format_stdin(formatted) |> should.equal(Ok(formatted))
 }
 
+pub fn format_stdin_orders_assume_before_check_and_effects_test() {
+  graded.run_format_stdin(
+    "effects m.g : []\ncheck m.f : []\nassume m/ffi.send : [Http]",
+  )
+  |> should.equal(Ok(
+    "assume m/ffi.send : [Http]\n\ncheck m.f : []\n\neffects m.g : []\n",
+  ))
+}
+
 pub fn format_stdin_fails_on_unparseable_input_test() {
   graded.run_format_stdin(bad_spec) |> should.be_error
 }

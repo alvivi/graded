@@ -348,7 +348,7 @@ pub fn format_type_field_test() {
       effects: effect_term.from_effect_set(Specific(set.from_list(["Dom"]))),
     )
   annotation.format_type_field(tf)
-  |> should.equal("type Handler.on_click : [Dom]")
+  |> should.equal("assume Handler.on_click : [Dom]")
 }
 
 pub fn format_type_field_qualified_test() {
@@ -360,7 +360,7 @@ pub fn format_type_field_qualified_test() {
       effects: effect_term.from_effect_set(Specific(set.from_list(["Dom"]))),
     )
   annotation.format_type_field(tf)
-  |> should.equal("type myapp/router.Handler.on_click : [Dom]")
+  |> should.equal("assume myapp/router.Handler.on_click : [Dom]")
 }
 
 pub fn parse_type_field_qualified_test() {
@@ -411,7 +411,7 @@ pub fn format_external_test() {
       Specific(set.from_list(["Http"])),
     )
   annotation.format_external(ext)
-  |> should.equal("external effects gleam/httpc.send : [Http]")
+  |> should.equal("assume gleam/httpc.send : [Http]")
 }
 
 // Assumptions
@@ -469,6 +469,37 @@ pub fn assume_over_an_empty_segment_is_invalid_test() {
   |> should.equal(Error(annotation.InvalidLine(1, "assume m. : []")))
   annotation.parse_file("assume .f : []")
   |> should.equal(Error(annotation.InvalidLine(1, "assume .f : []")))
+}
+
+pub fn format_sorted_orders_assume_then_check_then_effects_test() {
+  let input =
+    "effects m.g : []
+check m.f : []
+assume m/ffi.send : [Http]
+assume m.Handler.on_click : [Dom]
+"
+  let assert Ok(file) = annotation.parse_file(input)
+  annotation.format_sorted(file)
+  |> should.equal(
+    "assume m.Handler.on_click : [Dom]
+assume m/ffi.send : [Http]
+
+check m.f : []
+
+effects m.g : []
+",
+  )
+}
+
+pub fn a_canonical_assume_section_is_a_fixed_point_test() {
+  let canonical =
+    "assume Handler.on_click : [Dom]
+assume gleam/io : [Stdout]
+assume gleam/io.println : [Stdout]
+assume myapp/router.Handler.on_click : [Dom]
+"
+  let assert Ok(file) = annotation.parse_file(canonical)
+  annotation.format_sorted(file) |> should.equal(canonical)
 }
 
 pub fn assume_with_no_effects_is_invalid_test() {
