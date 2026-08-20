@@ -31,7 +31,7 @@ pub type EffectAnswer {
     term: EffectTerm,
     source: AnswerSource,
   )
-  // A field of a custom type, declared by a `type` line. `module` is `None` for
+  // A field of a custom type, declared by a field `assume` line. `module` is `None` for
   // a bare declaration, which is keyed under no module.
   TypeFieldAnswer(
     module: Option(String),

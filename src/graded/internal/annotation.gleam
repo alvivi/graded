@@ -26,15 +26,42 @@ import graded/internal/types.{
 
 pub type ParseError {
   InvalidLine(line_number: Int, content: String)
+  // A line written in a spelling this version no longer reads. Told apart from
+  // an ordinary rejection so the error can name the rewrite.
+  RetiredSpelling(line_number: Int, content: String, keyword: RetiredKeyword)
 }
 
-// Render a parse error as `<line number>: <line as written>`. The single
-// source of truth for how a rejected line is named, so the CLI's error, the
-// `format --stdin` branch and the dependency-spec warning all point at the
-// same line the same way.
+// A keyword that no longer starts a line.
+pub type RetiredKeyword {
+  RetiredType
+  RetiredExternalEffects
+}
+
+// Render a parse error as `<line number>: <line as written>`, with the rewrite
+// on a second line for a retired spelling. The single source of truth for how a
+// rejected line is named, so the CLI's error, the `format --stdin` branch and
+// the dependency-spec warning all point at the same line the same way.
 pub fn describe_parse_error(error: ParseError) -> String {
-  let InvalidLine(line_number:, content:) = error
-  int.to_string(line_number) <> ": " <> string.trim(content)
+  case error {
+    InvalidLine(line_number:, content:) ->
+      int.to_string(line_number) <> ": " <> string.trim(content)
+    RetiredSpelling(line_number:, content:, keyword:) ->
+      int.to_string(line_number)
+      <> ": "
+      <> string.trim(content)
+      <> "\n  "
+      <> retired_hint(keyword)
+  }
+}
+
+// How to rewrite one retired spelling.
+fn retired_hint(keyword: RetiredKeyword) -> String {
+  case keyword {
+    RetiredType ->
+      "`type <path> : <effects>` is retired; write `assume <path> : <effects>`"
+    RetiredExternalEffects ->
+      "`external effects <path> : <effects>` is retired; write `assume <path> : <effects>`"
+  }
 }
 
 // Parse an .graded file preserving full structure (comments, blanks, annotations).
@@ -71,16 +98,9 @@ fn parse_structured_line(
     "assume " <> rest ->
       parse_assume_line(rest)
       |> result.replace_error(InvalidLine(line_number, line))
-    "type " <> rest ->
-      case parse_type_field_line(rest) {
-        Ok(tf) -> Ok(TypeFieldLine(tf))
-        Error(Nil) -> Error(InvalidLine(line_number, line))
-      }
-    "external effects " <> rest ->
-      case parse_external_line(rest) {
-        Ok(ext) -> Ok(ExternalLine(ext))
-        Error(Nil) -> Error(InvalidLine(line_number, line))
-      }
+    "type " <> _ -> Error(RetiredSpelling(line_number, line, RetiredType))
+    "external effects " <> _ ->
+      Error(RetiredSpelling(line_number, line, RetiredExternalEffects))
     "external returns " <> rest ->
       case parse_returns_line(rest) {
         Ok(returns) -> Ok(ExternalReturnsLine(returns))
@@ -283,39 +303,6 @@ fn split_assume_path(path: String) -> Result(AssumeSubject, Nil) {
           }
         _ -> Error(Nil)
       }
-    }
-  }
-}
-
-// Parse a type field annotation, in either the bare
-// (`TypeName.field : [effects]`) or the qualified
-// (`module/path.TypeName.field : [effects]`) form. `split_type_field_name`
-// holds the grammar.
-fn parse_type_field_line(rest: String) -> Result(TypeFieldAnnotation, Nil) {
-  use #(qualified, effects) <- result.try(parse_name_colon_effects(rest))
-  use #(module, type_name, field) <- result.try(split_type_field_name(qualified))
-  Ok(TypeFieldAnnotation(module:, type_name:, field:, effects:))
-}
-
-// No "." → module-level external (e.g., `external effects gleam/list : []`)
-// Has "." → function-level external (e.g., `external effects gleam/io.println : [Stdout]`)
-fn parse_external_line(rest: String) -> Result(ExternalAnnotation, Nil) {
-  use #(qualified, term) <- result.try(parse_name_colon_effects(rest))
-  // External declarations are first-order by construction — reduce to a set.
-  let effects = effect_term.to_effect_set(term)
-  let segments = string.split(qualified, ".")
-  let len = list.length(segments)
-  case len {
-    1 ->
-      Ok(ExternalAnnotation(module: qualified, target: ModuleExternal, effects:))
-    _ -> {
-      use function <- result.try(list.last(segments))
-      let module = segments |> list.take(len - 1) |> string.join(".")
-      Ok(ExternalAnnotation(
-        module:,
-        target: FunctionExternal(function),
-        effects:,
-      ))
     }
   }
 }
@@ -551,8 +538,8 @@ pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
 }
 
 // The `<module>.<function>` names a file declares with a function-level
-// `external effects <module>.<function> : [...]` line. Module-level externals
-// (`external effects <module> : [...]`) don't count — they target a whole
+// `assume <module>.<function> : [...]` line. Module-level externals
+// (`assume <module> : [...]`) don't count — they target a whole
 // module, not one function. That line is authoritative for the function it
 // names, so both `merge_inferred` and the committed-bounds load treat an
 // `effects` line for the same name as stale.
@@ -582,7 +569,7 @@ pub fn external_returns_names(file: GradedFile) -> set.Set(String) {
   |> set.from_list()
 }
 
-// The modules a file declares with a module-level `external effects
+// The modules a file declares with a module-level `assume
 // <module> : [...]` line (no `.`). Per-function externals (`<module>.<fn>`)
 // don't count — they target one function, not the whole module. These are the
 // modules whose source inference the consumer's declaration overrides.
@@ -629,7 +616,8 @@ pub fn split_qualified_name(
 // Stricter than `split_qualified_name`: the module path uses slashes, so a
 // qualified function name has exactly one `.`. A name with more is a type field
 // (`module.Type.field`) or malformed, and is rejected here rather than being
-// keyed under a dotted module that would shadow the `type` line declaring it.
+// keyed under a dotted module that would shadow the field `assume` line
+// declaring it.
 //
 // `split_qualified_name` stays the lenient last-dot split for the payloads that
 // legitimately carry dotted left-hand sides (nested field receivers such as
@@ -645,7 +633,7 @@ pub fn split_function_name(
 }
 
 // Split a type-field name into its optional module path, type name, and field.
-// Two forms are accepted, matching the `type` line grammar:
+// Two forms are accepted:
 //
 //   `TypeName.field`             -> #(None, TypeName, field)
 //   `module/path.TypeName.field` -> #(Some(module/path), TypeName, field)
@@ -654,15 +642,10 @@ pub fn split_function_name(
 // implied by the file's location; the qualified form is used in spec files where
 // annotations from many modules share one file.
 //
-// The last two segments are always the type name and the field. A real module
-// path uses slashes, so the qualified form is three segments in practice, but
-// any leading segments are joined back with `.` rather than rejected — a `type`
-// line that fails to parse fails the *whole* file, which `read_spec` then
-// silently reads as an empty spec, losing every hand-written line.
-//
-// The single authority on this grammar: `parse_type_field_line` reads a `type`
-// line with it, and the `effect` query splits a queried name with it, so the
-// two can't drift into disagreeing about what names a `type` line covers.
+// The last two segments are always the type name and the field, and any leading
+// segments are joined back with `.`. What the `effect` query splits a queried
+// name with; `split_assume_path` reads the same shape off an `assume` line and
+// additionally requires the type name to be UpperCamel.
 pub fn split_type_field_name(
   qualified: String,
 ) -> Result(#(option.Option(String), String, String), Nil) {
@@ -696,7 +679,7 @@ pub fn split_type_field_name(
 // - New functions not yet in file: `effects` / `returns` lines appended at end
 //
 // The two stale sets are separate channels and stay separate: an
-// `external effects` line that declares nothing suppresses this package's
+// `assume` line that declares nothing suppresses this package's
 // `effects` lines for the name, and an `external returns` one that declares
 // nothing suppresses its `returns` line. Threading either set into the other's
 // filters deletes lines about a channel nobody declared anything on.
@@ -707,7 +690,7 @@ pub fn merge_inferred(
   stale_externals: set.Set(String),
   stale_external_returns: set.Set(String),
 ) -> GradedFile {
-  // A function the author declared with `external effects mod.fn : [...]` is
+  // A function the author declared with `assume mod.fn : [...]` is
   // authoritative — that line is their opt-in to a precise FFI effect. Drop any
   // inferred `effects mod.fn` line for it so the opaque-FFI `[Unknown]` default
   // neither shadows nor duplicates the author's declaration (and a stale prior
@@ -720,7 +703,7 @@ pub fn merge_inferred(
   // the function.
   let external_functions =
     set.difference(external_function_names(file), stale_externals)
-  // A module-level `external effects mod : [...]` declares the whole module's
+  // A module-level `assume mod : [...]` declares the whole module's
   // effect, so every inferred `effects mod.fn` line is likewise redundant and
   // would shadow the declaration. Drop them all for the declared module.
   let external_modules = module_external_modules(file)

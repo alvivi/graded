@@ -64,6 +64,18 @@ pub fn format_stdin_is_idempotent_over_external_returns_test() {
   graded.run_format_stdin(formatted) |> should.equal(Ok(formatted))
 }
 
+// A spec still on a retired spelling is refused by name, with the rewrite —
+// which is the migration instruction an editor shows.
+pub fn format_stdin_reports_a_retired_spelling_test() {
+  let error =
+    graded.run_format_stdin("external effects m/ffi.send : [Http]")
+    |> should.be_error
+  annotation.describe_parse_error(error)
+  |> should.equal(
+    "1: external effects m/ffi.send : [Http]\n  `external effects <path> : <effects>` is retired; write `assume <path> : <effects>`",
+  )
+}
+
 pub fn format_stdin_orders_assume_before_check_and_effects_test() {
   graded.run_format_stdin(
     "effects m.g : []\ncheck m.f : []\nassume m/ffi.send : [Http]",

@@ -438,7 +438,7 @@ pub type ExplainedBlock {
 // for it too, weighed *as well* — the budget then covers both what the
 // declaration states and what the body does. Two ways that happens: a Gleam
 // fallback an `@external` reaches on a target it declares no implementation for,
-// and ordinary Gleam under a module-level `external effects <module>` line. The
+// and ordinary Gleam under a module-level `assume <module>` line. The
 // line still answers for every caller; here it answers beside the body rather
 // than instead of it, so a body over its own budget cannot pass by being
 // declared.
@@ -566,7 +566,7 @@ type BodyStanding {
 // An `@external` attribute makes a function foreign whatever the knowledge base
 // holds — an undeclared one is `[Unknown]`, not the `[]` a stale `effects` line
 // claims. A function without one is foreign only where a declaration covers it,
-// which for a project module is the module-level `external effects <module>`
+// which for a project module is the module-level `assume <module>`
 // line: the per-function form naming a Gleam-bodied function of this package
 // declares nothing and never reaches the base.
 fn declaration_explanation(
@@ -632,7 +632,7 @@ fn declaration_explanation(
 // falls short of the whole function, and a body is walked *as well as* declared:
 //
 // - An `@external` whose Gleam fallback runs on some target it is compiled for.
-// - Ordinary Gleam a module-level `external effects <module>` line covers. The
+// - Ordinary Gleam a module-level `assume <module>` line covers. The
 //   line answers for every *caller* of the function; the body is visible Gleam
 //   that runs, and a `check` line on that function is a budget for what the
 //   function does. No line an author writes over their own package's source
@@ -1444,7 +1444,7 @@ pub type CallKind {
   // identifies the entry — the prose states it from the enclosing function.
   ExternalDeclaration(name: String)
   // The declaration that answers for an ordinary Gleam function of this
-  // package: a module-level `external effects <module>` line, which is what its
+  // package: a module-level `assume <module>` line, which is what its
   // callers pay whatever the body beside it does. Separate from
   // `ExternalDeclaration` because the function is not foreign code — its Gleam
   // body is right there and walked beside this line — and calling it an external
@@ -2626,7 +2626,7 @@ pub fn foreign_functions(
 // is ordinary Gleam whose body graded walks. A dependency's body it never walks.
 // Dropping the entry there left the name keyed by a shipped or catalogued
 // declaration with nothing to say that declaration answers for a target this
-// build does not compile, so `external effects dep/ffi.run : [Disk]` over an
+// build does not compile, so `assume dep/ffi.run : [Disk]` over an
 // `@external(javascript, …)` was charged in full to an Erlang-only consumer that
 // reaches only the Gleam body underneath it. Kept, the lookup narrows the
 // declaration out and charges the `[Unknown]` an unwalked body is worth.
@@ -2657,7 +2657,7 @@ pub fn dependency_foreign_functions(
 
 // The module's functions whose body is what every caller runs: the ones it
 // defines in Gleam rather than declares `@external`. What tells a per-function
-// `external effects` line that declares real foreign code from one that names a
+// `assume` line that declares real foreign code from one that names a
 // body sitting in plain sight.
 pub fn native_function_names(
   module: Module,
@@ -5994,7 +5994,7 @@ fn resolve_unknown_local(
 // local call is charged it rather than the body beside it.
 //
 // An `@external` has no body graded may weigh at all. Ordinary Gleam under a
-// module-level `external effects <module>` line has one, and the line still
+// module-level `assume <module>` line has one, and the line still
 // answers for its callers — the body is weighed against that function's own
 // budget and against nothing else. Read here so a sibling and a cross-module
 // caller, which resolves through the knowledge base, pay the same name the same
@@ -6601,7 +6601,7 @@ fn carries_unknown(term: EffectTerm) -> Bool {
 }
 
 // Resolve a field call with no proven value (rule 2 onward): a hand-written
-// field bound, then a hand-written `type` line (looked up by the receiver's
+// field bound, then a hand-written field `assume` line (looked up by the receiver's
 // nominal type — girard first, then the syntactic parameter annotation), then a
 // receiver-keyed field variable for a live parameter root, then `[Unknown]`. A
 // construction-inferred nominal entry is never consulted — it holds package-wide
@@ -6700,7 +6700,7 @@ fn resolve_unproven_field(
   }
 }
 
-// Rules 4 and 5, for a field call with no `check` bound, no declared `type` line,
+// Rules 4 and 5, for a field call with no `check` bound, no declared field `assume` line,
 // and no proven value.
 //
 // Rule 4: a receiver rooted at a live parameter stays polymorphic in the field —
