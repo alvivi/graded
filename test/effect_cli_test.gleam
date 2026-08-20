@@ -101,7 +101,7 @@ pub fn function_level_external_test() {
 }
 
 pub fn module_level_external_fallback_is_labelled_test() {
-  // `external effects fake_clock : [Time]` declares a whole module, so any
+  // `assume fake_clock : [Time]` declares a whole module, so any
   // function name under it resolves through the module-level fallback.
   lookup("fake_clock.now")
   |> should.equal(
@@ -169,7 +169,7 @@ pub fn a_private_external_with_a_declaration_is_not_found_test() {
   let project =
     write_fixture("/tmp/graded_effect_private_declared", [
       #("gleam.toml", "name = \"probe\"\nversion = \"1.0.0\"\n"),
-      #("probe.graded", "external effects m.hidden : [Time]\n"),
+      #("probe.graded", "assume m.hidden : [Time]\n"),
       #(
         "src/m.gleam",
         "@target(erlang)
@@ -207,7 +207,7 @@ pub fn a_module_level_external_does_not_export_a_project_name_test() {
       #("gleam.toml", "name = \"probe\"\nversion = \"1.0.0\"\n"),
       #(
         "probe.graded",
-        "external effects m : [Disk]\nexternal effects m.hidden_ffi : [Time]\neffects m.helper : []\nexternal effects offsite : [Http]\n",
+        "assume m : [Disk]\nassume m.hidden_ffi : [Time]\neffects m.helper : []\nassume offsite : [Http]\n",
       ),
       #(
         "src/m.gleam",
@@ -287,7 +287,7 @@ pub fn check_line_bounds_stay_out_of_the_knowledge_base_test() {
 }
 
 pub fn external_suppresses_stale_committed_bounds_test() {
-  // The spec holds both `external effects external_same_module.now : [Time]`
+  // The spec holds both `assume external_same_module.now : [Time]`
   // and a stale `effects external_same_module.now(cb: [cb]) : [cb]`. The
   // external is authoritative, so neither the stale term nor its bounds show.
   let output = lookup("external_same_module.now")
@@ -325,14 +325,14 @@ fn spec_only_project(name: String, spec: String) -> String {
 }
 
 pub fn dotted_module_effects_line_does_not_shadow_a_type_line_test() {
-  // A malformed 3-segment `effects` line beside the real `type` line for the
+  // A malformed 3-segment `effects` line beside the real field `assume` line for the
   // same field. Split on the last dot it would key itself under the module
   // `box.Box` and answer first; the function grammar rejects it instead, so the
-  // `type` line still answers.
+  // field `assume` line still answers.
   let project =
     spec_only_project(
       "shadow",
-      "type box.Box.run : [Stdout]\neffects box.Box.run : [Disk]\n",
+      "assume box.Box.run : [Stdout]\neffects box.Box.run : [Disk]\n",
     )
   let assert Ok(output) = graded.run_effect(project, "box.Box.run")
   should_parse(output)
@@ -346,7 +346,7 @@ pub fn bare_type_line_answers_both_query_forms_test() {
   // A bare `type Box.run` line is keyed under no module. Both the bare query
   // and a module-qualified one find it, and the answer is rendered in the bare
   // form that declared it — the form that parses back to the same line.
-  let project = spec_only_project("bare", "type Box.run : [Disk]\n")
+  let project = spec_only_project("bare", "assume Box.run : [Disk]\n")
   let bare =
     "assume Box.run : [Disk]\n// assumed by a field `assume` in your spec"
   let assert Ok(qualified_query) = graded.run_effect(project, "box.Box.run")
@@ -406,8 +406,8 @@ pub fn dependency_type_field_outranks_a_bare_project_line_test() {
   let project =
     write_fixture("/tmp/graded_effect_depfield", [
       #("gleam.toml", "name = \"probe\"\nversion = \"1.0.0\"\n"),
-      #("probe.graded", "type Repo.find : [Disk]\n"),
-      #("build/packages/dep/dep.graded", "type dep.Repo.find : [Storage]\n"),
+      #("probe.graded", "assume Repo.find : [Disk]\n"),
+      #("build/packages/dep/dep.graded", "assume dep.Repo.find : [Storage]\n"),
       #("src/app.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
     ])
   let expected =
@@ -506,10 +506,7 @@ fn out_of_reach_outputs(name: String, body: String) -> #(String, String) {
     write_fixture("build/" <> name, [
       #("gleam.toml", "name = \"" <> name <> "\"\ntarget = \"erlang\"\n"),
       #(name <> ".graded", ""),
-      #(
-        "build/packages/dep/dep.graded",
-        "external effects dep/ffi.run : [Time]\n",
-      ),
+      #("build/packages/dep/dep.graded", "assume dep/ffi.run : [Time]\n"),
       #(
         "build/packages/dep/src/dep/ffi.gleam",
         "@external(javascript, \"dep_ffi\", \"run\")\npub fn run() -> Nil"
@@ -569,7 +566,7 @@ pub fn an_undeclared_external_states_its_running_fallback_test() {
       ),
       #(
         "graded_effect_undeclared_fallback.graded",
-        "external effects ffi.disk : [Disk]\n",
+        "assume ffi.disk : [Disk]\n",
       ),
       #(
         "ffi.gleam",
@@ -824,8 +821,8 @@ pub fn a_nested_source_reads_its_targets_from_its_own_root_test() {
     write_fixture("build/graded_effect_nested_targets", [
       #(
         "graded_effect_nested_targets.graded",
-        "external effects ext.timed : [Time]
-external effects ext.disk : [Disk]
+        "assume ext.timed : [Time]
+assume ext.disk : [Disk]
 ",
       ),
       #(
@@ -857,7 +854,7 @@ pub fn a_module_outside_the_package_still_answers_from_the_spec_test() {
   let project =
     write_fixture("/tmp/graded_effect_foreign_module", [
       #("gleam.toml", "name = \"probe\"\nversion = \"1.0.0\"\n"),
-      #("probe.graded", "external effects other/mod.bar : [Disk]\n"),
+      #("probe.graded", "assume other/mod.bar : [Disk]\n"),
       #("src/app.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
     ])
   let expected =

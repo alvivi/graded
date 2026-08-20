@@ -746,7 +746,7 @@ type DeclarationOrder {
 // `config.inner` is a nested field access: the syntax-level path can't name its
 // type, so `config.inner.run(message)` reaches the `Box.run` line only through
 // girard's inferred type. `raw_invoke` is a bodyless `@external` with no
-// `external effects` line — there is no body to lift.
+// `assume` line — there is no body to lift.
 fn wired_receiver_source(order: DeclarationOrder) -> String {
   let types =
     "pub type Box {
@@ -848,7 +848,7 @@ pub fn wired_local_function_lift_is_order_independent_test() {
 }
 
 pub fn wired_bodyless_external_stays_unknown_test() {
-  // A field wired to a bodyless `@external` with no `external effects` line has
+  // A field wired to a bodyless `@external` with no `assume` line has
   // no body to analyse; reading its empty one as pure would understate it.
   wired_receiver_effects(InvokeFirst)
   |> dict.get("run_external")
@@ -963,7 +963,7 @@ pub fn field_call_untyped_is_unknown_test() {
 // Parameter-field precedence (Tier 1)
 //
 // A fn-typed field call resolves by: (1) a value proven for this receiver, (2) a
-// `check` field bound, (3) a declared `type` line, (4) a live parameter root →
+// `check` field bound, (3) a declared field `assume` line, (4) a live parameter root →
 // a receiver-keyed field variable, (5) else `[Unknown]`. The nominal construction
 // index never resolves an unproven receiver — a caller can build the record
 // differently, so specializing a parameter/opaque receiver would understate.
@@ -5062,7 +5062,7 @@ pub fn format_warning_dotless_external_returns_test() {
 }
 
 pub fn format_warning_type_shaped_external_returns_test() {
-  // The multi-dot name reaches for the `type` line's field shape. Reported as
+  // The multi-dot name reaches for the field `assume` line's field shape. Reported as
   // the dotless case, the sentence would tell the author their name names a
   // module, which it does not.
   types.TypeShapedExternalReturnsWarning(name: "app.Handler.run")
@@ -5444,7 +5444,7 @@ pub fn run() { api.fetch() }",
 }
 
 pub fn records_an_undeclared_external_test() {
-  // A same-module bodyless `@external` with no `external effects` line: the
+  // A same-module bodyless `@external` with no `assume` line: the
   // body says nothing and no declaration speaks for it.
   only_violation(
     "@external(erlang, \"ffi\", \"now\")
@@ -5481,7 +5481,7 @@ pub fn records_an_unresolved_receiver_type_test() {
 
 pub fn records_an_unannotated_field_test() {
   // The syntactic fallback types the receiver but has no module to qualify it
-  // with, and no `type` line decides the field.
+  // with, and no field `assume` line decides the field.
   only_violation(
     "pub type Config {
   Config(resolver: fn(String) -> Nil)
@@ -5888,7 +5888,7 @@ pub fn run() -> Nil {
 }
 
 pub fn a_type_line_names_the_spec_that_declared_it_test() {
-  // The `type` line resolved the field call, so the message names the file the
+  // The field `assume` line resolved the field call, so the message names the file the
   // line sits in rather than the bare kind of line.
   let source =
     "pub type Repo {

@@ -2,7 +2,7 @@
 // function that calls one. An external is checked against what declares it —
 // there is no body to walk, and the Gleam fallback one may carry is not the
 // foreign code that runs — so `declared_over_budget` violates its budget on the
-// strength of the spec's `external effects` line alone, and `undeclared` on the
+// strength of the spec's `assume` line alone, and `undeclared` on the
 // `[Unknown]` an external nothing declares carries. `declared_within_budget`
 // passes: its budget covers what the declaration states.
 //

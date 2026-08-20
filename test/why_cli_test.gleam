@@ -189,7 +189,7 @@ pub fn an_opaque_external_is_not_explained_as_pure_test() {
 }
 
 pub fn an_external_declaration_explains_the_external_test() {
-  // The declaration is the whole explanation: an `external effects` line is what
+  // The declaration is the whole explanation: an `assume` line is what
   // the analysis knows about foreign code, and it answers here as it answers a
   // caller — including when what it declares is purity.
   why("external_same_module.now")
@@ -233,7 +233,7 @@ pub fn a_committed_effects_line_does_not_explain_an_external_test() {
 }
 
 pub fn a_declared_unknown_external_names_its_declaration_test() {
-  // `external effects … : [Unknown]` is a declaration that the effect isn't
+  // `assume … : [Unknown]` is a declaration that the effect isn't
   // known — still a declaration, so the line names it rather than reporting the
   // external as undeclared. Told from the entry that won, not from its value:
   // an undeclared external carries the same `[Unknown]` and reads differently.
@@ -261,7 +261,7 @@ pub fn an_external_reads_differently_from_a_call_into_it_test() {
 }
 
 pub fn a_module_external_explains_an_ordinary_function_test() {
-  // An `external effects <module>` line over a project module declares what
+  // An `assume <module>` line over a project module declares what
   // every function under it does, and answers for every caller of them. So it
   // answers here twice: for `helper` itself, and for the sibling `helper` calls
   // — a same-module call pays the declared `[Disk]` exactly as a call from any
@@ -269,13 +269,13 @@ pub fn a_module_external_explains_an_ordinary_function_test() {
   // two sets depending on where it was called from.
   //
   // Named as what it is. `helper` is ordinary Gleam, and calling it an external
-  // contradicted the rule that rejects a per-function `external effects` line
+  // contradicted the rule that rejects a per-function `assume` line
   // over a function whose body is right there: the line governs callers, and the
   // wording says so.
   let root = "build/why_module_external"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #("proj.graded", "external effects probe : [Disk]\n"),
+    #("proj.graded", "assume probe : [Disk]\n"),
     #(
       "probe.gleam",
       "pub fn helper() -> Nil {\n  quiet()\n}\n\nfn quiet() -> Nil {\n  Nil\n}\n",
@@ -306,10 +306,7 @@ pub fn a_module_external_violation_uses_the_same_wording_test() {
   let root = "build/why_module_external_violation"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #(
-      "proj.graded",
-      "external effects probe : [Disk]\ncheck probe.helper : []\n",
-    ),
+    #("proj.graded", "assume probe : [Disk]\ncheck probe.helper : []\n"),
     #("probe.gleam", "pub fn helper() -> Nil {\n  Nil\n}\n"),
   ])
   let assert Ok(results) = graded.run(root)

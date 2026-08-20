@@ -1,8 +1,8 @@
 // glisten — TCP/TLS server
 
-external effects glisten.get_connection_info : [Network]
-external effects glisten.get_server_info : [Network]
-external effects glisten.send : [Network]
-external effects glisten.start : [Network, Process]
-external effects glisten.stop : [Process]
-external effects glisten.supervised : [Network, Process]
+assume glisten.get_connection_info : [Network]
+assume glisten.get_server_info : [Network]
+assume glisten.send : [Network]
+assume glisten.start : [Network, Process]
+assume glisten.stop : [Process]
+assume glisten.supervised : [Network, Process]
