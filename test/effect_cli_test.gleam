@@ -79,7 +79,7 @@ pub fn a_committed_effects_line_does_not_answer_for_an_external_test() {
 pub fn declared_type_field_test() {
   lookup("opaque_receiver.Validator.to_error")
   |> should.equal(
-    "type opaque_receiver.Validator.to_error : [Stdout]\n// declared by a type line in your spec",
+    "assume opaque_receiver.Validator.to_error : [Stdout]\n// declared by a type line in your spec",
   )
 }
 
@@ -337,7 +337,7 @@ pub fn dotted_module_effects_line_does_not_shadow_a_type_line_test() {
   let assert Ok(output) = graded.run_effect(project, "box.Box.run")
   should_parse(output)
   |> should.equal(
-    "type box.Box.run : [Stdout]\n// declared by a type line in your spec",
+    "assume box.Box.run : [Stdout]\n// declared by a type line in your spec",
   )
   cleanup(project)
 }
@@ -347,7 +347,7 @@ pub fn bare_type_line_answers_both_query_forms_test() {
   // and a module-qualified one find it, and the answer is rendered in the bare
   // form that declared it — the form that parses back to the same line.
   let project = spec_only_project("bare", "type Box.run : [Disk]\n")
-  let bare = "type Box.run : [Disk]\n// declared by a type line in your spec"
+  let bare = "assume Box.run : [Disk]\n// declared by a type line in your spec"
   let assert Ok(qualified_query) = graded.run_effect(project, "box.Box.run")
   let assert Ok(bare_query) = graded.run_effect(project, "Box.run")
   should_parse(qualified_query) |> should.equal(bare)
@@ -410,7 +410,7 @@ pub fn dependency_type_field_outranks_a_bare_project_line_test() {
       #("src/app.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
     ])
   let expected =
-    "type dep.Repo.find : [Storage]\n// declared by a type line in dep's shipped spec"
+    "assume dep.Repo.find : [Storage]\n// declared by a type line in dep's shipped spec"
   graded.run_effect(project, "dep.Repo.find")
   |> should.equal(Ok(expected))
   graded.run_effect_from_project(project, "dep.Repo.find")
