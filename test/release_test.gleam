@@ -1,15 +1,21 @@
-// Tests for the Lustre 5 catalog entries and the spec-annotation lint that
-// warns on `check`/`type` lines whose target exists nowhere in the project.
+// Tests for the Lustre 5 catalog entries, the lint over the bundled catalog's
+// own file names, and the spec-annotation lint that warns on `check`/`type`
+// lines whose target exists nowhere in the project.
 //
 // Like the topo tests, fixtures are materialised under `/tmp/` so the Gleam
-// compiler doesn't try to compile them as project modules.
+// compiler doesn't try to compile them as project modules. The file-name lint
+// is the exception: it reads the real `priv/catalog/`.
 
+import gleam/int
 import gleam/list
+import gleam/order
 import gleam/set
+import gleam/string
 import gleeunit/should
 import graded
 import graded/internal/annotation
 import graded/internal/effect_term
+import graded/internal/effects
 import graded/internal/types.{
   type EffectSet, type Warning, Specific, UnmatchedCheckWarning,
   UnmatchedTypeFieldWarning,
@@ -354,4 +360,53 @@ pub fn non_function_field_annotation_warns_test() {
     #("app.graded", "type rec.Rec.count : []\n"),
   ])
   |> expect_warning(UnmatchedTypeFieldWarning(name: "rec.Rec.count"))
+}
+
+// Bundled catalog file names
+//
+// Version selection compares `#(major, minor, patch)`, so two bundled files for
+// one package that parse to the same tuple cannot be ordered and the winner is
+// whatever order the directory walk returns.
+
+pub fn no_two_catalog_files_parse_to_one_version_test() {
+  let assert Ok(files) =
+    effects.bundled_catalog_files(effects.catalog_directory())
+  colliding_catalog_files(files) |> should.equal([])
+}
+
+// One message per pair of bundled files that parse to the same version, so a
+// failure names the files a contributor has to fix.
+fn colliding_catalog_files(files: List(effects.CatalogFile)) -> List(String) {
+  list.flat_map(files, fn(file) {
+    files
+    |> list.filter(fn(other) {
+      other.package == file.package
+      && other.parsed == file.parsed
+      && string.compare(other.path, file.path) == order.Gt
+    })
+    |> list.map(fn(other) { collision_message(file, other) })
+  })
+}
+
+fn collision_message(
+  file: effects.CatalogFile,
+  other: effects.CatalogFile,
+) -> String {
+  file.path
+  <> " and "
+  <> other.path
+  <> " both parse to "
+  <> format_version(file.parsed)
+  <> "; version selection cannot order them, so which one wins is filesystem "
+  <> "order. Give one a distinct major.minor.patch or drop it."
+}
+
+fn format_version(version: #(Int, Int, Int)) -> String {
+  "#("
+  <> int.to_string(version.0)
+  <> ", "
+  <> int.to_string(version.1)
+  <> ", "
+  <> int.to_string(version.2)
+  <> ")"
 }

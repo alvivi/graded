@@ -1156,8 +1156,85 @@ pub fn a_source_inferred_path_dep_yields_to_the_catalog_test() {
 
 // Catalog version selection
 //
-// pick_best_version returns an eligible entry (at or below the installed
-// version) whenever one exists.
+// Reading the bundled `{package}@{version}.graded` names off disk, and picking
+// the file a package's installed version resolves to: an eligible entry (at or
+// below the installed version) whenever one exists, else the highest bundled.
+
+// The three-file catalog the selection tests below select from, plus a name
+// that carries no version and is skipped.
+fn catalog_fixture(root: String) -> List(effects.CatalogFile) {
+  let root =
+    write_fixture(root, [
+      #("lustre@4.0.0.graded", "effects lustre/x.a : []\n"),
+      #("lustre@5.0.0.graded", "effects lustre/x.a : []\n"),
+      #("argv@1.1.0.graded", "effects argv.load : []\n"),
+      #("README", "not a catalog file\n"),
+    ])
+  let assert Ok(files) = effects.bundled_catalog_files(root)
+  cleanup(root)
+  files
+}
+
+// Catalog files by `package@version`, so an assertion does not depend on the
+// order the directory walk returns them in.
+fn file_labels(files: List(effects.CatalogFile)) -> List(String) {
+  files
+  |> list.map(fn(file) { file.package <> "@" <> file.version })
+  |> list.sort(string.compare)
+}
+
+pub fn bundled_catalog_files_reads_the_versioned_names_test() {
+  catalog_fixture("build/eff_catalog_listing")
+  |> file_labels
+  |> should.equal(["argv@1.1.0", "lustre@4.0.0", "lustre@5.0.0"])
+}
+
+pub fn bundled_catalog_files_keeps_the_raw_version_string_test() {
+  // `parse_semver` reads `1.2.0-rc1` as `#(1, 2, 0)`; the raw string is what a
+  // caller prints, so both survive side by side.
+  let root =
+    write_fixture("build/eff_catalog_prerelease", [
+      #("beta@1.2.0-rc1.graded", "effects beta.run : []\n"),
+    ])
+  let assert Ok(files) = effects.bundled_catalog_files(root)
+  cleanup(root)
+  files
+  |> list.map(fn(file) { #(file.package, file.version, file.parsed) })
+  |> should.equal([#("beta", "1.2.0-rc1", #(1, 2, 0))])
+}
+
+pub fn bundled_catalog_files_reports_an_unreadable_directory_test() {
+  effects.bundled_catalog_files("build/eff_catalog_missing")
+  |> result.is_error
+  |> should.be_true()
+}
+
+pub fn select_catalog_file_picks_the_highest_at_or_below_installed_test() {
+  let files = catalog_fixture("build/eff_catalog_select")
+  effects.select_catalog_file(files, "lustre", "5.7.0")
+  |> result.map(fn(file) { file.version })
+  |> should.equal(Ok("5.0.0"))
+  // Below the highest bundled file: the lower one is the eligible pick, which
+  // is what tells "highest ≤ installed" apart from "highest bundled".
+  effects.select_catalog_file(files, "lustre", "4.5.0")
+  |> result.map(fn(file) { file.version })
+  |> should.equal(Ok("4.0.0"))
+}
+
+pub fn select_catalog_file_falls_back_to_the_highest_bundled_test() {
+  // Nothing bundled at or below 3.0.0, so the fall-back is the highest file,
+  // not the lowest.
+  catalog_fixture("build/eff_catalog_select_fallback")
+  |> effects.select_catalog_file("lustre", "3.0.0")
+  |> result.map(fn(file) { file.version })
+  |> should.equal(Ok("5.0.0"))
+}
+
+pub fn select_catalog_file_without_a_file_for_the_package_test() {
+  catalog_fixture("build/eff_catalog_select_absent")
+  |> effects.select_catalog_file("wisp", "1.0.0")
+  |> should.equal(Error(Nil))
+}
 
 pub fn pick_best_version_eligible_test() {
   use #(versions, installed) <- qcheck.given(
