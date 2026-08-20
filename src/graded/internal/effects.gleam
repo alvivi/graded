@@ -181,7 +181,7 @@ pub type BundledCatalog {
 // versions.
 pub fn load_project_catalog(manifest_path: String) -> BundledCatalog {
   let #(functions, modules, param_bounds, type_fields) =
-    load_catalog(find_catalog_directory(), manifest_path)
+    load_catalog(catalog_directory(), manifest_path)
   BundledCatalog(functions:, modules:, param_bounds:, type_fields:)
 }
 
@@ -253,7 +253,7 @@ pub fn new_knowledge_base() -> KnowledgeBase {
 
 // Build a knowledge base from the catalog only (no dependency scanning).
 pub fn empty_knowledge_base() -> KnowledgeBase {
-  let catalog_dir = find_catalog_directory()
+  let catalog_dir = catalog_directory()
   let #(cat_effects, cat_module_effects, cat_params, cat_type_fields) =
     load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
@@ -1999,18 +1999,29 @@ fn load_dependencies(
 // directory, selecting the best version per installed package against the
 // manifest, and folding the selected files into effect maps.
 
-// The resolved bundled-catalog directory (see `find_catalog_directory`).
+// The resolved bundled-catalog directory for a caller that reads the catalog
+// alongside everything else it resolves against. When no candidate exists, warn
+// and return the cwd-relative default — an empty catalog collapses every
+// catalogued call to `[Unknown]`, so the degradation is surfaced instead of
+// silent.
 pub fn catalog_directory() -> String {
-  find_catalog_directory()
+  case find_catalog_directory() {
+    Ok(directory) -> directory
+    Error(_candidates) -> {
+      io.println_error(
+        "graded: warning: catalog directory not found; catalogued calls will resolve to [Unknown]",
+      )
+      "priv/catalog"
+    }
+  }
 }
 
-// Resolve graded's bundled `priv/catalog`. The install location (via
-// `code:priv_dir`) is tried first so the catalog is found regardless of the
-// process's working directory; the cwd-relative layouts follow as a fallback.
-// When no candidate exists, warn and return the cwd-relative default — an empty
-// catalog collapses every catalogued call to `[Unknown]`, so the degradation is
-// surfaced instead of silent.
-fn find_catalog_directory() -> String {
+// Resolve graded's bundled `priv/catalog`, or return the candidate paths tried.
+// The install location (via `code:priv_dir`) is tried first so the catalog is
+// found regardless of the process's working directory; the cwd-relative layouts
+// follow as a fallback. A caller for which the catalog directory is the subject
+// reports the candidates rather than reading a path that was never a catalog.
+pub fn find_catalog_directory() -> Result(String, List(String)) {
   let cwd_relative = ["build/packages/graded/priv/catalog", "priv/catalog"]
   // The install-location candidate (anchored on graded's own priv) is tried
   // ahead of the cwd-relative ones; absent when the priv directory can't be
@@ -2019,15 +2030,8 @@ fn find_catalog_directory() -> String {
     Ok(priv) -> [filepath.join(priv, "catalog"), ..cwd_relative]
     Error(Nil) -> cwd_relative
   }
-  case list.find(candidates, is_existing_directory) {
-    Ok(directory) -> directory
-    Error(Nil) -> {
-      io.println_error(
-        "graded: warning: catalog directory not found; catalogued calls will resolve to [Unknown]",
-      )
-      "priv/catalog"
-    }
-  }
+  list.find(candidates, is_existing_directory)
+  |> result.replace_error(candidates)
 }
 
 fn is_existing_directory(path: String) -> Bool {

@@ -126,6 +126,8 @@ pub type CatalogProblem {
   NoManifest(path: String)
   /// The catalog directory exists but holds no catalog file.
   EmptyCatalog(directory: String)
+  /// None of the paths graded looks for its bundled catalog under exists.
+  NoCatalogDirectory(candidates: List(String))
 }
 
 pub fn main() -> Nil {
@@ -2193,7 +2195,13 @@ pub fn run_catalog(request: cli.CatalogRequest) -> Result(String, GradedError) {
       catalog_manifest_path(directory)
     }
   })
-  catalog_report(effects.catalog_directory(), manifest, request)
+  use catalog_dir <- result.try(
+    effects.find_catalog_directory()
+    |> result.map_error(fn(candidates) {
+      CatalogError(NoCatalogDirectory(candidates))
+    }),
+  )
+  catalog_report(catalog_dir, manifest, request)
 }
 
 // The `manifest.toml` of the package `directory` belongs to, found by walking
@@ -4232,6 +4240,9 @@ pub fn format_catalog_problem(problem: CatalogProblem) -> String {
       <> "; run `gleam deps download` in that package, or name the version to "
       <> "print: `graded catalog <package>@<version>`"
     EmptyCatalog(directory:) -> "no catalog files under " <> directory
+    NoCatalogDirectory(candidates:) ->
+      "no bundled catalog directory; looked in "
+      <> string.join(candidates, ", ")
   }
 }
 
