@@ -99,6 +99,9 @@ gleam run -m graded infer --dry-run [directory] # preview the spec changes, writ
 gleam run -m graded effect <name> [directory] # look up one effect, writing nothing
 gleam run -m graded effect <name> --format=graded # ... as a .graded line instead of prose
 gleam run -m graded why <name> [directory]    # explain a function's effects, writing nothing
+gleam run -m graded catalog                   # list graded's bundled catalog files
+gleam run -m graded catalog <package>         # print the catalog file selected for <package>
+gleam run -m graded catalog <package>@<version> # print exactly that bundled catalog file
 gleam run -m graded format [directory]        # normalize .graded file formatting
 gleam run -m graded format --check [directory] # verify formatting (CI mode)
 gleam run -m graded format --stdin            # format from stdin (editor integration)

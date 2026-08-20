@@ -811,11 +811,49 @@ between patch versions. A new catalog file is only needed when a library adds
 modules or changes effect semantics. A dependency that ships its own `.graded` spec
 overrides the catalog (resolution order step 3 above).
 
-Browse [`priv/catalog/`](../priv/catalog/) for the exact set of covered packages
-and the effects each one declares — the files are plain `.graded` and readable at a
-glance. It covers the core `gleam-lang` packages and the most-used community
-libraries. For a package the catalog doesn't cover, add an `external effects`
-declaration in your spec file.
+The catalog covers the core `gleam-lang` packages and the most-used community
+libraries.
+
+### Reading the catalog
+
+`graded catalog` prints what the bundled catalog holds, writing nothing. Run it
+from the package root — like every command, it finds `manifest.toml` by walking
+up from there.
+
+With no argument it lists every bundled file, marking the one each of your
+installed packages resolves to:
+
+```sh
+$ gleam run -m graded catalog
+argv@1.1.0  // selected for argv 1.1.0
+gleam_stdlib@0.70.0  // selected for gleam_stdlib 1.0.3
+lustre@4.0.0
+lustre@5.0.0
+```
+
+With a package it prints that file, under a header naming it and why it was
+chosen — so the output is itself a valid `.graded` file you can redirect into a
+spec and edit down to `external effects` overrides:
+
+```sh
+$ gleam run -m graded catalog gleam_stdlib
+// gleam_stdlib@0.70.0.graded — selected for gleam_stdlib 1.0.3 in manifest.toml
+// gleam_stdlib — pure modules and effectful functions
+
+external effects gleam/list : []
+...
+```
+
+`graded catalog <package>@<version>` prints exactly that bundled file and reads
+no manifest, which is also how you read a package you don't depend on: the
+implicit form means "the file *your project* resolves against", so a bundled
+package missing from `manifest.toml` is an error that names the bundled versions
+and the command that prints one.
+
+What it shows is the bundled catalog alone — what `graded effect` names as a
+package's *catalog entry*. A dependency's shipped spec, a path dependency's spec
+and your own externals may all still override its entries, so
+`graded effect <name>` is what says which source wins for a name.
 
 ### Declaring uncatalogued dependencies
 
