@@ -2154,9 +2154,10 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
 }
 
 // One bundled catalog file, as its `{package}@{version}.graded` name reads. The
-// raw `version` string is what a caller prints; `parsed` is what selection and
-// sorting compare, and drops anything `parse_semver` does not read (`1.2.0-rc1`
-// parses to `#(1, 2, 0)`).
+// raw `version` string is what a caller prints; `parsed` is the
+// `major.minor.patch` prefix `parse_semver` reads off it, which selection and
+// sorting compare and which drops any pre-release or build suffix
+// (`1.2.0-rc.1` parses to `#(1, 2, 0)`).
 pub type CatalogFile {
   CatalogFile(
     package: String,
@@ -2266,11 +2267,12 @@ pub fn pick_best_version(
   }
 }
 
-// Parse a `major.minor.patch` string into a comparable tuple. Non-numeric
-// components (e.g. a `-rc1` suffix) parse as `0`, so `1.2.0-rc1` reads as
-// `#(1, 2, 0)`.
+// Parse a version string into the comparable `major.minor.patch` tuple it
+// starts with. A pre-release or build suffix is dropped before the components
+// are read, so `1.2.0-rc.1` and `1.2.0+build.5` both read as `#(1, 2, 0)`. A
+// version that names no numeric components reads as `#(0, 0, 0)`.
 pub fn parse_semver(version: String) -> #(Int, Int, Int) {
-  case string.split(version, ".") {
+  case string.split(version_core(version), ".") {
     [major, minor, patch] -> #(
       int.parse(major) |> result.unwrap(0),
       int.parse(minor) |> result.unwrap(0),
@@ -2282,6 +2284,20 @@ pub fn parse_semver(version: String) -> #(Int, Int, Int) {
       0,
     )
     _ -> #(0, 0, 0)
+  }
+}
+
+// The `major.minor.patch` prefix of a version: everything before the first `-`
+// or `+`, which start the pre-release and build suffixes semver orders
+// separately.
+fn version_core(version: String) -> String {
+  version |> take_before("-") |> take_before("+")
+}
+
+fn take_before(text: String, marker: String) -> String {
+  case string.split_once(text, marker) {
+    Ok(#(prefix, _rest)) -> prefix
+    Error(Nil) -> text
   }
 }
 
