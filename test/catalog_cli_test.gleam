@@ -405,6 +405,21 @@ pub fn a_catalog_directory_that_does_not_exist_test() {
   |> should.be_error
 }
 
+pub fn no_catalog_directory_at_all_test() {
+  // The paths tried are what a user can act on; the cwd-relative default the
+  // resolver falls back to was never a catalog and naming it reads as one.
+  graded.format_catalog_problem(
+    graded.NoCatalogDirectory(["opt/graded/priv/catalog", "priv/catalog"]),
+  )
+  |> should.equal(
+    "no bundled catalog directory; looked in opt/graded/priv/catalog, priv/catalog",
+  )
+}
+
+pub fn the_bundled_catalog_directory_is_found_test() {
+  effects.find_catalog_directory() |> should.be_ok
+}
+
 pub fn a_directory_holding_no_catalog_file_test() {
   // Not graded's catalog, whichever form asked: an empty listing would read as
   // "nothing is bundled".
