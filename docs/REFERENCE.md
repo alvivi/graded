@@ -25,7 +25,10 @@ graded keeps two kinds of `.graded` file:
 
 ## Annotation kinds
 
-Six kinds of line appear in a spec file.
+Every line reads `<status> <path> : <effects>`. Three statuses say how much
+graded trusts the line — `effects` is inferred and regenerated, `check` is
+asserted and verified, `assume` is trusted and never verified — and the path's
+shape says what the line covers.
 
 ### `effects` — inferred effects
 
@@ -52,30 +55,40 @@ The name is module-qualified (`myapp/router.handle_request`). A `check` whose na
 matches no function in any project module — most often a missing module qualifier —
 never runs against anything and passes silently; `graded check` warns about it.
 
-### `type` — function-typed field effects
+### `assume` — what graded is told rather than shown
 
 ```
-type myapp.Handler.on_click : [Dom]
-type myapp/router.Request.send : [Http]
+assume gleam/httpc.send : [Http]              // one function
+assume gleam/list : []                        // a whole module
+assume myapp.Handler.on_click : [Dom]         // a function-typed field
 ```
 
-Declares the effect of a function-typed field on a custom type. See
-[Type field effects](#type-field-effects).
+A trusted declaration: graded takes it as given and never verifies it. Use it
+for code graded can't analyse — dependencies and FFI — and for the effect of a
+function-typed field on a custom type. Hand-written and never regenerated:
+`graded infer` preserves the line and writes none of its own for what it covers.
 
-The type is module-qualified by the module that *defines* it. An unqualified or
-mis-qualified `type` line keys nothing, so the field silently resolves to
-`[Unknown]`; `graded check` warns when a `type` line matches no field of any
-project type.
+What an `assume` line covers is read off the path's shape:
 
-### `external effects` — third-party and FFI functions
+| Path | Covers |
+|---|---|
+| `gleam/list` (no `.`) | every function of that module |
+| `gleam/httpc.send` | that one function |
+| `myapp.Handler.on_click` | the `on_click` field of `myapp`'s `Handler` type |
+| `Handler.on_click` | the same field, its module implied by the file |
 
-```
-external effects gleam/httpc.send : [Http]
-external effects simplifile.read : [FileSystem]
-```
+Gleam casing decides between the last two forms and a function: module paths are
+lower snake with slashes, type names UpperCamel, so a segment before the final
+one that starts uppercase is a type name. A three-segment path whose
+second-to-last segment is not a type name names no shape and is a parse error.
 
-Declares effects for functions graded can't analyse — dependencies and FFI. See
-[External declarations](#external-declarations-and-ffi).
+See [Assumptions: foreign code and field effects](#assumptions-foreign-code-and-field-effects)
+and [Type field effects](#type-field-effects).
+
+The type in a field `assume` is module-qualified by the module that *defines*
+it. An unqualified or mis-qualified one keys nothing, so the field silently
+resolves to `[Unknown]`; `graded check` warns when a field `assume` matches no
+field of any project type.
 
 ### `returns` — returned operators and latent effects
 
@@ -92,7 +105,7 @@ returned function's effect resolve at the call site (`let h = make_logger(); h()
 across module and package boundaries, not just within the defining module. Like
 `effects`, these lines are regenerated and shouldn't be hand-edited. No line is
 written for an `@external`, and one naming an `@external` is ignored — see
-[External declarations](#external-declarations-and-ffi).
+[Assumptions](#assumptions-foreign-code-and-field-effects).
 
 ### `external returns` — what a foreign producer hands back
 
@@ -102,18 +115,18 @@ external returns myapp/ffi.make_client : [Net]
 
 Declares the operator an `@external` producer returns, so a call of the closure
 it hands back resolves instead of degrading to `[Unknown]`. Hand-written like
-`external effects` and never regenerated: `graded infer` preserves the line and
+`assume` and never regenerated: `graded infer` preserves the line and
 writes none of its own. The operator uses the same grammar as `returns` and must
 be **ground** — one with free effect variables is ignored and flagged. See
-[External declarations](#external-declarations-and-ffi).
+[Assumptions](#assumptions-foreign-code-and-field-effects).
 
 ## Effect resolution order
 
 When graded needs a function's effects, it consults these sources in priority
 order and takes the first hit:
 
-1. **Your spec file** — `check`, `external effects`, `external returns`, `type`,
-   and `returns` declarations in `<package_name>.graded`.
+1. **Your spec file** — `check`, `assume`, `external returns` and `returns`
+   declarations in `<package_name>.graded`.
 2. **Cross-module project effects** — effects inferred from sibling modules in the
    same project, propagated in topological order. A fresh checkout resolves
    transitive call chains with no prior `graded infer`; committed `effects` lines
@@ -121,12 +134,12 @@ order and takes the first hit:
 3. **Dependency spec files** — shipped by libraries at
    `build/packages/<dep>/<dep_spec_file>` (each dep's spec path comes from its own
    `[tools.graded]` config). A dependency's own spec outranks the bundled catalog.
-   Its `external effects` lines count: a per-function one resolves here, and a
+   Its `assume` lines count: a per-function one resolves here, and a
    module-level one joins the module-external fallback tier — consulted only for
    names nothing else keys, so it sits below every per-function entry, the
    catalog's included.
 4. **Path dependencies** — local deps declared with `path = "..."` in `gleam.toml`.
-   graded reads their spec files, `external effects` lines and all; if a path dep
+   graded reads their spec files, `assume` lines and all; if a path dep
    ships none, it falls back to inferring from that dep's source. The two branches
    rank differently against the catalog: a *committed* path-dep spec outranks a
    catalog entry for the same function, while a spec-less path dep's
@@ -208,13 +221,13 @@ The path may have more than two segments (`config.handler.on_click`), naming a
 field reached through a nested receiver path forwarded from a parameter. A field
 call `handler.on_click(event)` then resolves to `[Dom]` directly, taking
 priority over receiver-type resolution. This is the boundary-scoped counterpart to a
-[`type` line](#type-field-effects): the `type` line declares a field's effect for
+[field `assume`](#type-field-effects): the field `assume` declares a field's effect for
 every receiver of that type package-wide, the field bound for one `check`'d function.
 A field bound and an ordinary parameter bound can share one `check` line.
 
 A field bound declares a *concrete* effect set: it resolves to exactly the effects
 written, with no call-site substitution. For an effect-polymorphic field — one whose
-effect depends on its own arguments — use a [`type` line](#type-field-effects)
+effect depends on its own arguments — use a [field `assume` line](#type-field-effects)
 instead, which substitutes the field call's arguments into the declared variables.
 
 If a field bound's `param.field` path matches no field call in the checked function's
@@ -223,7 +236,7 @@ cause is a typo in the path; when it isn't, the warning also notes the field cal
 have resolved through value provenance (a receiver traced to a construction site),
 which shadows the bound.
 
-**Precedence.** A field bound only competes with receiver-type (`type`-line)
+**Precedence.** A field bound only competes with receiver-type (field-`assume`)
 resolution, and wins it. It does *not* override value provenance: when the receiver
 is traced to a construction site — a direct constructor or a factory — and the field
 resolves through that value, the call is resolved before it is ever treated as a
@@ -316,14 +329,15 @@ type's field effect.
 
 The field's effect comes from one of:
 
-- a **hand-written `type` line**:
+- a **hand-written field `assume` line**:
 
   ```
-  type myapp.Handler.on_click : [Dom]
-  type myapp/router.Request.send : [Http]
+  assume myapp.Handler.on_click : [Dom]
+  assume myapp/router.Request.send : [Http]
   ```
 
-- **inference from construction sites** — when no `type` line exists, graded reads
+- **inference from construction sites** — when no field `assume` exists, graded
+  reads
   the effect off where the record is built (`Validator(to_error: io.println)` ⟹
   `Validator.to_error : [Stdout]`), unioned across every construction site in the
   package. A field wired to an inline closure is resolved by analysing the closure
@@ -333,7 +347,7 @@ The field's effect comes from one of:
 - **factory provenance** — when a record is built by a factory
   (`let v = make(io.println)`, where `make` wires its parameter into the field),
   graded follows the value through the factory, so `v.to_error` resolves with no
-  `type` line. Positional and labeled factory calls both route. When the factory
+  field `assume` line. Positional and labeled factory calls both route. When the factory
   result is passed to a helper (`inner(make(resolver))`), the helper's
   field-effect variable forwards onto the wired argument — see
   [field-effect forwarding](./LIMITATIONS.md).
@@ -364,36 +378,37 @@ Field effects are keyed by the type's **defining module** (from girard's inferre
 type), so two different types both named `Validator` never conflate. When a field
 is wired to a value graded can't trace — a constructor parameter, or a local that
 isn't a traceable function — it falls back to `[Unknown]`. The escape hatch is a
-`type` line, or a [field bound](#field-bounds) when the assertion belongs at a single
+field `assume`, or a [field bound](#field-bounds) when the assertion belongs at
+a single
 function boundary; see [LIMITATIONS.md](./LIMITATIONS.md).
 
 **Dependency-defined types.** The receiver type a field call resolves to can belong
-to a dependency, so a `type` line may name a dependency module
+to a dependency, so a field `assume` line may name a dependency module
 (`type dep/repo.Repo.find : [Storage]`). This works for both path and published
 dependencies — girard reads the dependency's source to type the receiver. A
-dependency can also **ship** its own `type` lines in its committed spec file; a
+dependency can also **ship** its own field `assume` lines in its committed spec file; a
 consumer picks them up automatically, the same way it inherits a dependency's
 `effects` and `external` annotations, so the capability-record pattern needs no
-per-consumer re-declaration. A consumer's own `type` line still wins on a clash.
+per-consumer re-declaration. A consumer's own field `assume` line still wins on a clash.
 
-## External declarations and FFI
+## Assumptions: foreign code and field effects
 
-`external effects` annotates a function graded can't see into, without touching the
+`assume` annotates a function graded can't see into, without touching the
 library:
 
 ```
-external effects gleam/httpc.send : [Http]
-external effects simplifile.read : [FileSystem]
-external effects gleam/otp/actor.start : [Process]
+assume gleam/httpc.send : [Http]
+assume simplifile.read : [FileSystem]
+assume gleam/otp/actor.start : [Process]
 ```
 
 These are merged into the knowledge base before both `infer` and `check`, so
 callers resolve them instead of getting `[Unknown]`.
 
-A library's `external effects` lines are part of what its spec ships: a consumer
+A library's `assume` lines are part of what its spec ships: a consumer
 of a published or path dependency reads them the same way it reads that
 dependency's `effects` lines, so declaring your FFI once resolves it for everyone
-downstream. Within one spec the `external effects` line is authoritative — it
+downstream. Within one spec the `assume` line is authoritative — it
 decides the function's effect (and its bounds) over any `effects` line for the
 same name, which is why `graded infer` writes none.
 
@@ -403,7 +418,7 @@ there has nothing foreign to declare, and the body is what every caller runs. A
 per-function line naming one is stale: `check` warns about it once, the body is
 walked instead — for the function's own `check`/`why`/`effect` and for every
 caller, same-module or not — and `graded infer` deletes the line and writes the
-`effects` line it was suppressing. There is no replacement: `external effects` is
+`effects` line it was suppressing. There is no replacement: `assume` is
 not an override for inference over your own code. If inference is wrong for one
 of your functions, fix the source or widen the `check` budget. (A *dependency*
 function with a visible body is unaffected — declaring one is what the line is
@@ -414,8 +429,8 @@ effect at once, so every function in it resolves to that set without a per-funct
 line.
 
 ```
-external effects gleam/list : []           // the whole module is pure
-external effects some_db/client : [Database] // every client function does Database I/O
+assume gleam/list : []           // the whole module is pure
+assume some_db/client : [Database] // every client function does Database I/O
 ```
 
 Module-level externals work on dependency modules (hex or path) **and on your own
@@ -424,7 +439,7 @@ the declaration suppresses that inference: every function in the module resolves
 the declared set instead of an inferred `[Unknown]`, and `graded infer` writes no
 per-function `effects` lines for it (just as a per-function external suppresses its
 own line). Use the module-level form when one budget fits the module. A
-per-function `external effects mod.fn` or a catalog `effects` line for the same
+per-function `assume mod.fn` or a catalog `effects` line for the same
 function takes precedence over a module-level external.
 
 For a *dependency* module whose functions differ, use the per-function form. For
@@ -441,7 +456,7 @@ any other: `myapp/db.disconnect` calling `connect()` pays the declared set too.
 
 The function's own budget is a different question. Those bodies are visible Gleam
 that runs, so a `check` line on one of them is weighed against the declaration
-**and** the body: `external effects myapp/db : [Database]` with `check
+**and** the body: `assume myapp/db : [Database]` with `check
 myapp/db.connect : [Database]` still reports a `connect` that writes to stdout,
 and `graded why myapp/db.connect` lists both halves. No line over source graded
 can read silences that source.
@@ -450,7 +465,7 @@ A module-level line whose module is neither a dependency nor one of your own is
 flagged as a probable typo: no call can resolve into a module that isn't there.
 A per-function line is flagged the same way when its name resolves nowhere — and
 a dependency whose source is installed and parses settles that by what it
-defines, so `external effects gleam/list.typo : []` is flagged even though a
+defines, so `assume gleam/list.typo : []` is flagged even though a
 catalog module-level entry for `gleam/list` would answer for any name in it. The
 catalog stands in only where graded holds no readable source. (`graded effect`
 still answers from a module-level line — see
@@ -461,11 +476,11 @@ This is also the mechanism for **FFI**. A bodyless `@external` function is opaqu
 graded infers `[Unknown]`, never the `[]` an empty body would suggest, since the
 foreign implementation may do anything (this holds even when the `@external`
 carries a pure-looking Gleam fallback body). Declare its real effect with an
-`external effects` line to make callers propagate correctly.
+`assume` line to make callers propagate correctly.
 
 A `check` line on the external itself is checked against that declaration, never
 against a body: `check myapp/ffi.now : []` fails against a declared
-`external effects myapp/ffi.now : [Time]`, and fails as `[Unknown]` when nothing
+`assume myapp/ffi.now : [Time]`, and fails as `[Unknown]` when nothing
 declares the external. Whether the foreign code matches its declaration is the
 FFI author's to establish — graded checks the budget against what was declared,
 and `graded why myapp/ffi.now` reports the same, as `is an external with …`.
@@ -506,7 +521,7 @@ a `gleam build --target javascript` against such a package is invisible to it:
   is dead text to all four.
 - What a declaration *states* is read on every target. So an
   `@external(javascript, …)` with a Gleam fallback is still foreign code, an
-  `external effects` line for it still answers, `graded infer` keeps that line,
+  `assume` line for it still answers, `graded infer` keeps that line,
   and callers are charged the declaration beside what the fallback body does.
 
 Declaring `[tools.graded].targets` replaces both readings with what you wrote.
@@ -524,14 +539,14 @@ implementation is compiled at all. The Gleam body is the sole implementation, an
 the function is ordinary Gleam: its effects are inferred from that body, and the
 values it returns, builds and wires are traced like any other function's.
 
-Only an `external effects` line, a module-level external, or a catalog entry
+Only an `assume` line, a module-level external, or a catalog entry
 declares an external. An `effects` line does not, whatever it says: for an
 `@external` it is inference over a body the foreign implementation needn't
 match, so a function that became an `@external` after the spec was written is
 checked against `[Unknown]`, not against the `effects` line it left behind — and
 so is every *call* into it, so `check`, `why`, `graded effect` and a caller's
 budget all report one name the same way.
-Declaring `external effects myapp/ffi.now : [Unknown]` is still a declaration —
+Declaring `assume myapp/ffi.now : [Unknown]` is still a declaration —
 it names itself as the source rather than reporting the external as undeclared.
 
 The declaration answers wherever the external is reached, not only at a call:
@@ -563,7 +578,7 @@ pub fn caller() -> Nil {
 ```
 
 ```
-external effects myapp/ffi.make_logger : []
+assume myapp/ffi.make_logger : []
 external returns myapp/ffi.make_logger : [Stdout]
 ```
 
@@ -581,15 +596,15 @@ Four lines are dropped rather than trusted, each flagged by the spec lint: an
 operator with free effect variables (a foreign decorator returning a closure that
 runs its own argument — wrap the producer in Gleam instead), a name with no
 function part (`external returns mymodule : [...]` names no function), a name of
-more than two parts (`external returns myapp.Handler.run : [...]` is the `type`
-line's field shape, not this one's), and a name that is one of *this package's
+more than two parts (`external returns myapp.Handler.run : [...]` is a field
+`assume`'s shape, not this one's), and a name that is one of *this package's
 own* ordinary Gleam functions, whose body every caller can already see. `graded
 infer` deletes the last; where the function returns an operator, the inferred
 `returns` line takes its place.
 
 A dependency is held to the same rules, against the dependency's *own* source
 under `build/packages`: a shipped `effects` or `returns` line for a function that
-package declares `@external` is refused, while its `external effects` line, its
+package declares `@external` is refused, while its `assume` line, its
 `external returns` line, a module-level external, and the catalog entry underneath
 keep answering. A dependency's `external returns` line is kept even over one of
 its own Gleam-bodied functions — weighing a spec against the source beside it is
@@ -604,7 +619,7 @@ walked fallback in the defining package has no second operand one package away.
 
 `graded effect` answers for the public API, so a *private* `@external` exits
 non-zero there as a private ordinary function does — including one a valid
-`external effects` line declares, since a declaration describes what the foreign
+`assume` line declares, since a declaration describes what the foreign
 code does for its callers rather than exporting the name. Callers still resolve
 it normally, and `graded why`, which accepts private functions, still explains
 it.
@@ -633,13 +648,13 @@ these conventions:
 Define your own labels for project-specific effects — they need no registration:
 
 ```
-external effects my_app/email.send : [Email]
-external effects my_app/metrics.record : [Telemetry]
+assume my_app/email.send : [Email]
+assume my_app/metrics.record : [Telemetry]
 check my_app/api.handle_request : [Http, Email]
 ```
 
 `graded infer` regenerates the inferred `effects` and `returns` lines while
-preserving your `check`, `type`, `external`, comments, and blank lines.
+preserving your `check` and `assume` lines, comments, and blank lines.
 `graded format` normalizes spacing and sorting.
 
 ## Querying one name
@@ -654,7 +669,7 @@ myapp/router.handle has effects [Stdout]
 
 $ gleam run -m graded effect myapp/repo.Repo.find
 field `find` on type `Repo` (myapp/repo) has effects [Storage]
-  source: declared by a `type` line in your spec
+  source: declared by a field `assume` line in your spec
 ```
 
 `<name>` is a module-qualified function or a `module.Type.field` type field.
@@ -695,13 +710,13 @@ myapp.opaque has effects that could not be determined: [Unknown]
   source: your spec
 ```
 
-The `source:` line names which source answered: `your spec`, `your spec's
-external declaration`, `in-memory inference`, `<pkg>'s shipped spec`, `path
+The `source:` line names which source answered: `your spec`, ``your spec's
+`assume` line``, `in-memory inference`, `<pkg>'s shipped spec`, `path
 dependency <pkg>`, or `<pkg>'s catalog entry`. A name answered by a module-level
-`external effects` declaration reads "module-level external for" that module
-instead, with the precedence note below it. A type field names the file its
-`type` line sits in the same way (`declared by a `type` line in wisp's shipped
-spec`). Every answer names a source.
+`assume` reads ``module-level `assume` for`` that module instead, with the
+precedence note below it. A type field names the file its field `assume` sits in
+the same way (``assumed by a field `assume` in wisp's shipped spec``). Every
+answer names a source.
 
 Where no entry answered, the line names why instead: `an external declared only
 for a target this build does not compile` where what declares it is out of reach
@@ -721,8 +736,8 @@ file or hand to a tool that already reads `.graded`:
 
 ```sh
 $ gleam run -m graded effect myapp/repo.Repo.find --format=graded
-type myapp/repo.Repo.find : [Storage]
-// declared by a type line in your spec
+assume myapp/repo.Repo.find : [Storage]
+// assumed by a field `assume` in your spec
 
 $ gleam run -m graded effect myapp.apply --format=graded
 effects myapp.apply(f: [Stdout]) : [Stdout]
@@ -734,7 +749,7 @@ in what they report. Any other `--format` value is a usage error.
 
 Functions resolve through the same order as `check`, including the in-memory
 inference pass, so a public function answers on a fresh checkout with no prior
-`graded infer`. Type fields resolve from declared `type` lines only. A private
+`graded infer`. Type fields resolve from declared field `assume` lines only. A private
 function, an undeclared field, or an unknown name exits non-zero with
 ``no public function or type field named `<name>` ``. A function graded knows
 about but can't resolve is a *hit*: it reports `[Unknown]`.
@@ -745,10 +760,11 @@ module **does not define** both exit non-zero — whatever a hand-written line
 says about them, and whether or not the function is an `@external`. A spec line
 cannot export a name the package doesn't.
 
-One carve-out: a module-level `external effects <module> : [...]` answers for
+One carve-out: a module-level `assume <module> : [...]` answers for
 every name in that module that nothing else keys, so under such a module a name
-resolves — including one that doesn't exist. With `external effects fake_clock : [Time]`,
-`graded effect fake_clock.zzz_nope` reports `[Time]` and exits zero. `effect` reports what the spec says about a name; it isn't a
+resolves — including one that doesn't exist. With `assume fake_clock : [Time]`,
+`graded effect fake_clock.zzz_nope` reports `[Time]` and exits zero. `effect`
+reports what the spec says about a name; it isn't a
 check that the name exists. This holds where graded has no source to consult —
 a module outside the package, as `fake_clock` is. Over one of *your* modules the
 source decides: a module-level external answers for that module's public
@@ -800,16 +816,20 @@ Two things about the contributor list are worth knowing:
 ## Effect catalog
 
 graded ships versioned catalog files for common Gleam packages, so you get effect
-knowledge out of the box without writing `external effects` for standard libraries.
+knowledge out of the box without writing `assume` for standard libraries.
 
 Catalog files live in `priv/catalog/` and are named `{package}@{version}.graded`.
 At load time graded reads your project's `manifest.toml` to determine installed
 dependency versions, then selects the highest catalog version that doesn't exceed
 the installed one. So `gleam_stdlib@0.71.0` installed against a
 `gleam_stdlib@0.70.0.graded` catalog file uses that file — effects don't change
-between patch versions. A new catalog file is only needed when a library adds
-modules or changes effect semantics. A dependency that ships its own `.graded` spec
-overrides the catalog (resolution order step 3 above).
+between patch versions. Where *no* bundled version is at or below the installed
+one — a dependency older than every catalog file for it — the *highest* bundled
+file applies anyway rather than nothing, so a newer version's effects can stand
+in; `graded catalog` reports that selection as "highest bundled; none ≤". A new
+catalog file is only needed when a library adds modules or changes effect
+semantics. A dependency that ships its own `.graded` spec overrides the catalog
+(resolution order step 3 above).
 
 The catalog covers the core `gleam-lang` packages and the most-used community
 libraries.
@@ -840,14 +860,14 @@ lustre@5.0.0
 
 With a package it prints that file, under a header naming it and why it was
 chosen — so the output is itself a valid `.graded` file you can redirect into a
-spec and edit down to `external effects` overrides:
+spec and edit down to `assume` overrides:
 
 ```sh
 $ gleam run -m graded catalog gleam_stdlib
 // gleam_stdlib@0.70.0.graded — selected for gleam_stdlib 1.0.3 in manifest.toml
 // gleam_stdlib — pure modules and effectful functions
 
-external effects gleam/list : []
+assume gleam/list : []
 ...
 ```
 
@@ -867,11 +887,11 @@ and your own externals may all still override its entries, so
 The bundled catalog is a curated convenience for common packages, not a
 general-purpose registry that grows on request. To teach graded about a dependency
 it doesn't catalog — hex or path — declare its effects yourself with
-`external effects` in your spec file:
+`assume` in your spec file:
 
 ```
-external effects some_dep/io : [FileSystem]   // module-level: whole-module budget
-external effects some_dep/net.fetch : [Http]   // per-function: precision
+assume some_dep/io : [FileSystem]   // module-level: whole-module budget
+assume some_dep/net.fetch : [Http]   // per-function: precision
 ```
 
 Use the module-level form when one budget fits the whole module, the per-function
@@ -901,8 +921,8 @@ src/app.gleam: run calls field `find` on `repo` of type `dep/repo.Repo`, which h
 ```
 
 The `(from ...)` suffix uses the same vocabulary as `graded effect`'s `source:`
-line, plus two phrases for the declarations that only resolve a field call: `a
-type line in <source>` and `a module-level external in <source>`, where
+line, plus two phrases for the declarations that only resolve a field call: ``a
+field `assume` in <source>`` and ``a module-level `assume` in <source>``, where
 `<source>` names the file the line sits in (`your spec`, `<pkg>'s shipped spec`,
 `<pkg>'s catalog entry`, `path dependency <pkg>`). An effect an *argument* left
 unresolved names no source: the entry that answered resolved, so blaming it

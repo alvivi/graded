@@ -160,7 +160,7 @@ graded is a *static* analysis, so it can't always know what a value does at runt
 
 `[Unknown]` behaves like the **top** of the effect ordering — it is *not* a subset of any concrete budget, so a `check` that reaches an unresolved value fails rather than passing silently. This is what **sound, not complete** means: graded over-approximates, so it may ask you to annotate something it can't prove, but it never *understates* a function's effects. A green check is a real guarantee; a red one may just need a hint.
 
-That hint is the escape hatch — an `external effects` line, a `type` field annotation, or a wider budget turns the `[Unknown]` into a concrete grade graded can check. The patterns that produce `[Unknown]`, and how to resolve each, are catalogued in [LIMITATIONS.md](./LIMITATIONS.md).
+That hint is the escape hatch — an `assume` line or a wider budget turns the `[Unknown]` into a concrete grade graded can check. The patterns that produce `[Unknown]`, and how to resolve each, are catalogued in [LIMITATIONS.md](./LIMITATIONS.md).
 
 ## Step 7: The bigger picture — graded modal types
 

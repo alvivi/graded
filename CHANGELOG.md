@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking.** `external effects` and `type` lines are now written `assume`.
+  One keyword covers every trusted declaration, and what a line covers is read
+  off its path: `assume gleam/list : []` a whole module, `assume
+  gleam/io.println : [Stdout]` one function, `assume myapp.Handler.on_click :
+  [Dom]` a function-typed field. The rewrite is mechanical:
+
+  ```sh
+  sed -i 's/^external effects /assume /; s/^type /assume /' your_package.graded
+  ```
+
+  A line still on the old spelling is a parse error naming the line and the
+  rewrite, so nothing is silently reinterpreted. Bundled catalog files are
+  already rewritten; a dependency's spec must be regenerated with this version
+  before its entries are read again.
+- A `check` whose subject is a field (`check myapp.Handler.on_click : []`) now
+  warns that checks on fields are not verified yet, rather than that the name
+  matches no function.
 - A `.graded` spec file with a line the parser rejects is now an error naming
   the file and the line, from every command. Such a file used to read as empty:
   `check` passed with nothing to check, and `infer` wrote its merge over the
