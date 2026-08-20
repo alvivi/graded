@@ -694,13 +694,29 @@ pub fn external_function_names(file: GradedFile) -> set.Set(String) {
 }
 
 // The `<module>.<function>` names a file declares with an
-// `external returns <module>.<function> : [...]` line. Read by `merge_inferred`,
-// which writes no inferred `returns` line for a name a declaration already
-// answers for.
+// `external returns <module>.<function> : [...]` line.
 pub fn external_returns_names(file: GradedFile) -> set.Set(String) {
   extract_external_returns(file)
   |> list.map(fn(declared) { declared.function })
   |> set.from_list()
+}
+
+// The `<module>.<function>` names a file declares a returned operator for: a
+// `where returns` clause on an `assume` line, or a legacy `external returns`
+// line under it. Read by `merge_inferred`, which writes no clause of its own
+// for a name a declaration already answers for, and by the stale-declaration
+// lint.
+pub fn assume_returns_names(file: GradedFile) -> set.Set(String) {
+  extract_externals(file)
+  |> list.filter_map(fn(ext) {
+    case ext.target, ext.returns {
+      FunctionExternal(name), Some(_) ->
+        Ok(types.dotted_name(types.QualifiedName(ext.module, name)))
+      FunctionExternal(_), None | ModuleExternal, _ -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+  |> set.union(external_returns_names(file))
 }
 
 // The modules a file declares with a module-level `assume

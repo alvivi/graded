@@ -4142,7 +4142,7 @@ pub fn caller() -> Nil {
       types.ProjectInferred,
     )
     |> effects.with_fresh_returned_operators(
-      effects.load_spec_returns_from_file(spec),
+      effects.load_spec_legacy_returns_from_file(spec),
       types.CommittedSpec,
     )
   let registry = signatures.from_glance_module("app", module)
@@ -4256,7 +4256,7 @@ pub fn caller() -> Nil {
       types.ProjectInferred,
     )
     |> effects.with_fresh_returned_operators(
-      effects.load_spec_returns_from_file(spec),
+      effects.load_spec_legacy_returns_from_file(spec),
       types.CommittedSpec,
     )
   let registry = signatures.from_glance_module("app", module)
@@ -5914,7 +5914,7 @@ pub fn run() -> Nil {
       types.ProjectInferred,
     )
     |> effects.with_foreign_returned_operators(
-      effects.load_spec_returns_from_file(spec),
+      effects.load_spec_legacy_returns_from_file(spec),
       types.DependencySpec("dep"),
     )
   let #(violations, _) =

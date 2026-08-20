@@ -5176,6 +5176,10 @@ fn resolve_returned_operator(
         // that changed that must degrade to [Unknown] rather than substitute
         // over free variables nothing sanitized.
         False, effects.Declared -> #(Error(Nil), memo)
+        // Polymorphic + Closed: a clause read back from a spec. Its variables
+        // are checked against the producer's real callback parameters before
+        // any binding; until that check is here, resolve conservatively.
+        False, effects.Closed -> #(Error(Nil), memo)
       }
   }
 }

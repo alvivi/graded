@@ -1708,6 +1708,88 @@ pub fn a_dependency_returns_line_for_its_own_external_is_refused_test() {
   |> should.be_true()
 }
 
+// The `where returns` clause, read back
+//
+// The clause on an `effects` line loads as a `Closed` summary the gate judges;
+// the one on an `assume` line goes through the declared channel, which trusts a
+// ground operator and drops anything else. A `check` line's clause keys
+// nothing.
+
+pub fn a_clause_on_an_effects_line_loads_as_closed_test() {
+  let kb =
+    installed_dep(
+      "build/eff_clause_effects",
+      "dep",
+      "effects dep.make : [] where returns : [Stdout]\n",
+    )
+  let assert Ok(found) =
+    effects.lookup_returned_operator(kb, QualifiedName("dep", "make"))
+  found.summary |> should.equal(effects.Closed)
+  found.operator
+  |> should.equal(
+    effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+  )
+}
+
+pub fn an_open_clause_on_an_effects_line_still_loads_test() {
+  // The loader applies no closedness filter — the gate is the one place a
+  // summary is used, and the one place its variables are judged.
+  let kb =
+    installed_dep(
+      "build/eff_clause_open",
+      "dep",
+      "effects dep.traced(action: [action]) : [] where returns : fn(cb) -> [action([cb])]\n",
+    )
+  effects.lookup_returned_operator(kb, QualifiedName("dep", "traced"))
+  |> result.is_ok
+  |> should.be_true()
+}
+
+pub fn a_clause_on_a_check_line_keys_nothing_test() {
+  // A `check` asserts what a function returns; it does not declare it. Reading
+  // its clause onto the returns channel would make an unverified assertion the
+  // trusted answer.
+  let kb =
+    installed_dep(
+      "build/eff_clause_check",
+      "dep",
+      "check dep.make : [] where returns : [Stdout]\n",
+    )
+  effects.lookup_returned_operator(kb, QualifiedName("dep", "make"))
+  |> result.is_ok
+  |> should.be_false()
+}
+
+pub fn a_ground_clause_on_an_assume_line_is_declared_test() {
+  let kb =
+    installed_dep_over_source(
+      "build/eff_clause_assume",
+      "dep",
+      "assume dep/ffi.make where returns : [Net]\n",
+      "",
+      [#(QualifiedName("dep/ffi", "make"), foreign_declared_everywhere())],
+    )
+  let assert Ok(found) =
+    effects.lookup_returned_operator(kb, QualifiedName("dep/ffi", "make"))
+  found.summary |> should.equal(effects.Declared)
+  found.operator
+  |> should.equal(effect_term.from_effect_set(Specific(set.from_list(["Net"]))))
+}
+
+pub fn a_non_ground_clause_on_an_assume_line_is_dropped_test() {
+  let kb =
+    installed_dep_over_source(
+      "build/eff_clause_assume_open",
+      "dep",
+      "assume dep/ffi.make where returns : fn(cb) -> [action([cb])]\n",
+      "",
+      [#(QualifiedName("dep/ffi", "make"), foreign_declared_everywhere())],
+    )
+  effects.lookup_returned_operator(kb, QualifiedName("dep/ffi", "make"))
+  |> result.is_ok
+  |> should.be_false()
+}
+
 pub fn one_dep_specs_returns_line_cannot_bury_anothers_declaration_test() {
   // Two installed specs keying the same name: `alib` declares what its own
   // producer hands back, `zlib` carries a stray inferred `returns` line for it.
