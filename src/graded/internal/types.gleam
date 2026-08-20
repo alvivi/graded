@@ -789,8 +789,8 @@ pub type Warning {
   // `UnverifiedCheckShapeWarning` instead.
   UnmatchedCheckWarning(function: String)
   // A `check` line over a shape nothing verifies yet: a field path
-  // (`m.Handler.on_click`). The line parses and keys nothing. `name` is the
-  // subject as written.
+  // (`m.Handler.on_click`), or a `where returns` clause. The line parses and
+  // keys nothing. `name` is the subject as written.
   UnverifiedCheckShapeWarning(name: String)
   // A field `assume` line whose module/type/field matches no field of a project custom
   // type — unqualified, mis-qualified, or a typo. The annotation then resolves
@@ -823,14 +823,15 @@ pub type Warning {
   // — no dependency, no catalog entry, no project module. The declaration then
   // covers nothing, so it is a typo rather than a signature.
   UnmatchedExternalReturnsWarning(function: String)
-  // An `external returns` line whose operator is polymorphic (`fn(cb) -> [cb]`).
-  // Its free variables are unsanitized, so substituting through it would pass a
-  // budget nothing backs: only a ground operator is loaded, and this line is
-  // ignored.
-  PolymorphicExternalReturnsWarning(function: String)
-  // An `external returns <module>` line with no function part. The declaration
-  // is per-function by nature — nothing keys a whole module's returned value —
-  // so the line resolves nothing at all.
+  // A `where returns` clause with a free variable naming no callback parameter
+  // of the function it sits on. Nothing binds such a variable at a call site,
+  // so the clause is dropped and the returned function resolves to `[Unknown]`.
+  // On an `assume` line every free variable is one: an assumption takes no
+  // bound list, so its clause has to be ground.
+  UnclosedReturnsClauseWarning(function: String, free_vars: List(String))
+  // A `where returns` clause on a module path. The declaration is per-function
+  // by nature — nothing keys a whole module's returned value — so the clause
+  // resolves nothing at all.
   DotlessExternalReturnsWarning(name: String)
 }
 

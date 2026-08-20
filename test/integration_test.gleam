@@ -3310,7 +3310,7 @@ pub fn make() -> fn() -> Nil
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
-    types.PolymorphicExternalReturnsWarning(function: "ffi.wrap"),
+    types.UnclosedReturnsClauseWarning(function: "ffi.wrap", free_vars: ["f"]),
     types.DotlessExternalReturnsWarning(name: "lib"),
     types.StaleExternalReturnsWarning(function: "lib.make"),
     types.UnmatchedExternalReturnsWarning(function: "lib.nope"),
@@ -8622,4 +8622,76 @@ pub fn a_clause_applying_an_unannotated_callback_degrades_test() {
     unannotated_wrap,
   )
   |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+// The clause lint
+//
+// The lint reports an open clause against the oracle the gate binds by, so what
+// it names is exactly what degrades to `[Unknown]`.
+
+pub fn an_open_clause_on_an_effects_line_is_reported_test() {
+  // Hand-edited: `infer` writes a bound for every variable its clause mentions,
+  // so an `effects` clause is closed by construction.
+  let root = "build/clause_lint_open"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "effects proj.wrap(f: [f]) : [] where returns : [ghost]\n"),
+    #(
+      "proj.gleam",
+      "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
+  fn() { f() }
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.UnclosedReturnsClauseWarning(function: "proj.wrap", free_vars: [
+      "ghost",
+    ]),
+  ])
+  support.cleanup(root)
+}
+
+pub fn a_closed_clause_on_an_effects_line_is_not_reported_test() {
+  let root = "build/clause_lint_closed"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "effects proj.wrap(f: [f]) : [] where returns : [f]\n"),
+    #(
+      "proj.gleam",
+      "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
+  fn() { f() }
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_check_clause_keys_nothing_and_is_reported_as_a_shape_test() {
+  // A `check` asserts what a function returns; nothing verifies that yet, and
+  // reading its clause onto the returns channel would make the assertion the
+  // trusted answer. One warning for the line, not two.
+  let root = "build/clause_lint_check"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "check proj.wrap(f: []) : [] where returns : [ghost]\n"),
+    #(
+      "proj.gleam",
+      "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
+  fn() { f() }
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([types.UnverifiedCheckShapeWarning(name: "proj.wrap")])
+  support.cleanup(root)
 }

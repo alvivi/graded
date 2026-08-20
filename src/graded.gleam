@@ -62,8 +62,8 @@ import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type EffectTerm, type GradedFile,
   type QualifiedName, type TypeFieldAnnotation, type Violation, type Warning,
   AnnotationLine, CheckResult, DotlessExternalReturnsWarning, EffectAnnotation,
-  GradedFile, PolymorphicExternalReturnsWarning, QualifiedName,
-  StaleExternalReturnsWarning, StaleFunctionExternalWarning,
+  GradedFile, QualifiedName, StaleExternalReturnsWarning,
+  StaleFunctionExternalWarning, UnclosedReturnsClauseWarning,
   UnmatchedCheckWarning, UnmatchedExternalReturnsWarning,
   UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
   UnmatchedTypeFieldWarning, UnverifiedCheckShapeWarning,
@@ -565,6 +565,8 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
       stale_external_returns,
       catalog,
       dependencies,
+      registry,
+      knowledge_base,
     )
   {
     [] -> results
@@ -959,13 +961,21 @@ fn validate_spec_annotations(
   stale_external_returns: Set(String),
   catalog: effects.BundledCatalog,
   dependencies: DependencySources,
+  // The oracle a `where returns` clause's variables are weighed against — the
+  // same pair the gate that binds them reads, so lint and gate agree by
+  // construction.
+  registry: SignatureRegistry,
+  knowledge_base: KnowledgeBase,
 ) -> List(Warning) {
   let known_functions = known_function_names(index)
 
-  // A `check` over a field path is a shape nothing verifies yet, not a typo.
+  // A `check` over a field path or carrying a `where returns` clause is a shape
+  // nothing verifies yet, not a typo.
   let #(shape_checks, function_checks) =
     annotation.extract_checks(spec)
-    |> list.partition(fn(ann) { annotation.is_field_path(ann.function) })
+    |> list.partition(fn(ann) {
+      annotation.is_field_path(ann.function) || ann.returns != None
+    })
   let check_warnings =
     list.append(
       list.map(shape_checks, fn(ann) {
@@ -1035,12 +1045,49 @@ fn validate_spec_annotations(
     }
   }
 
+  // A clause on an `effects` line is written by `infer` and closed by
+  // construction, so one that is open was hand-edited or written by a future
+  // bug. Reported all the same: the gate drops it silently.
+  let clause_warnings =
+    annotation.extract_annotations(spec)
+    |> list.filter(fn(ann) { ann.kind == types.Effects })
+    |> list.filter_map(unclosed_clause_warning(_, registry, knowledge_base))
+
   list.flatten([
     check_warnings,
     external_warnings,
     external_returns_warnings,
+    clause_warnings,
     type_field_warnings,
   ])
+}
+
+// The warning for one `effects` line's `where returns` clause, or `Error(Nil)`
+// where it carries none, names nothing, or is closed.
+fn unclosed_clause_warning(
+  annotation_line: EffectAnnotation,
+  registry: SignatureRegistry,
+  knowledge_base: KnowledgeBase,
+) -> Result(Warning, Nil) {
+  use operator <- result.try(option.to_result(annotation_line.returns, Nil))
+  use #(module, function) <- result.try(annotation.split_function_name(
+    annotation_line.function,
+  ))
+  case
+    checker.unclosed_clause_variables(
+      operator,
+      QualifiedName(module, function),
+      knowledge_base,
+      registry,
+    )
+  {
+    [] -> Error(Nil)
+    free_vars ->
+      Ok(UnclosedReturnsClauseWarning(
+        function: annotation_line.function,
+        free_vars:,
+      ))
+  }
 }
 
 // What both declaring forms' lints weigh a name against, precomputed once over
@@ -1202,7 +1249,12 @@ fn external_returns_warnings(
           True, _, _ -> Ok(StaleExternalReturnsWarning(function: name))
           False, False, _ -> Ok(UnmatchedExternalReturnsWarning(function: name))
           False, True, False ->
-            Ok(PolymorphicExternalReturnsWarning(function: name))
+            Ok(UnclosedReturnsClauseWarning(
+              function: name,
+              free_vars: effect_term.free_vars(operator)
+                |> set.to_list
+                |> list.sort(string.compare),
+            ))
           False, True, True -> Error(Nil)
         }
     }
