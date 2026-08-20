@@ -2181,17 +2181,41 @@ fn why_block(
 /// `run_effect` is what answers which source wins for a name. Nothing is
 /// written to disk.
 pub fn run_catalog(request: cli.CatalogRequest) -> Result(String, GradedError) {
-  // The listing takes no directory of its own, so it reads the manifest every
-  // other command defaults to.
-  let directory = case request {
-    cli.ListCatalog -> "src"
-    cli.ShowCatalog(directory:, ..) -> directory
-  }
-  catalog_report(
-    effects.catalog_directory(),
-    manifest_path(resolve_package_root(source_scope(directory).analysed)),
-    request,
-  )
+  use manifest <- result.try(case request {
+    // The listing takes no directory of its own, so it walks up from the one
+    // the process runs in.
+    cli.ListCatalog -> Ok(catalog_manifest_path(working_directory()))
+    cli.ShowCatalog(directory:, ..) -> {
+      use _ <- result.map(read_directory(directory))
+      catalog_manifest_path(directory)
+    }
+  })
+  catalog_report(effects.catalog_directory(), manifest, request)
+}
+
+// The `manifest.toml` of the package `directory` belongs to, found by walking
+// up from it as every command's knowledge base does. Exposed so a test can walk
+// up from a fixture subdirectory.
+@internal
+pub fn catalog_manifest_path(directory: String) -> String {
+  manifest_path(resolve_package_root(source_scope(directory).analysed))
+}
+
+// The process's own directory, absolute so the walk to a package root is a real
+// one: the relative `.` a failed lookup falls back to is its own parent, which
+// halts the walk where it starts.
+fn working_directory() -> String {
+  simplifile.current_directory() |> result.unwrap(".")
+}
+
+// Read `directory` for the sake of failing on one that isn't there. A directory
+// argument names the project whose manifest is read, and a missing one would
+// otherwise walk up to whichever project the process sits in and answer for
+// that.
+fn read_directory(directory: String) -> Result(Nil, GradedError) {
+  simplifile.read_directory(directory)
+  |> result.replace(Nil)
+  |> result.map_error(DirectoryReadError(directory, _))
 }
 
 // Render `request` against the catalog directory and manifest it names. One
