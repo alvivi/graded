@@ -650,7 +650,7 @@ pub fn a_dependency_spec_entry_names_its_package_test() {
 }
 
 pub fn a_catalog_entry_names_its_package_test() {
-  // `gleam/io.println` is an `external effects` line in the bundled catalog, so
+  // `gleam/io.println` is an `assume` line in the bundled catalog, so
   // this covers the catalog's route through `with_externals` — the one that
   // made the origin a parameter rather than a constant.
   let root = "build/eff_catalog_origin"
@@ -708,15 +708,12 @@ pub fn a_dependency_spec_overriding_the_catalog_reports_both_test() {
 
 pub fn a_catalog_effects_line_beats_another_packages_external_test() {
   // Two catalog files key the same function: one with an `effects` line, one
-  // with an `external effects` line. The `effects` line decides the term, so it
+  // with an `assume` line. The `effects` line decides the term, so it
   // must decide the origin too — the external's package never claims it.
   let root =
     write_fixture("build/eff_catalog_clash", [
       #("catalog/a_pkg@1.0.0.graded", "effects shared/mod.run : [Http]\n"),
-      #(
-        "catalog/b_pkg@1.0.0.graded",
-        "external effects shared/mod.run : [Disk]\n",
-      ),
+      #("catalog/b_pkg@1.0.0.graded", "assume shared/mod.run : [Disk]\n"),
       #("manifest.toml", two_package_manifest),
     ])
 
@@ -732,7 +729,7 @@ pub fn a_catalog_effects_line_beats_another_packages_external_test() {
 }
 
 pub fn a_catalog_external_beats_its_own_files_effects_line_test() {
-  // One catalog file keys the same function both ways. The `external effects`
+  // One catalog file keys the same function both ways. The `assume`
   // line decides the term, pairing with the empty bounds the file's own reader
   // records for a declared name — the `effects` line's polymorphic term would
   // leave `cb` free with nothing left to bind it.
@@ -740,7 +737,7 @@ pub fn a_catalog_external_beats_its_own_files_effects_line_test() {
     write_fixture("build/eff_catalog_same_file_clash", [
       #(
         "catalog/a_pkg@1.0.0.graded",
-        "effects shared/mod.run(cb: [cb]) : [cb]\nexternal effects shared/mod.run : [Disk]\n",
+        "effects shared/mod.run(cb: [cb]) : [cb]\nassume shared/mod.run : [Disk]\n",
       ),
       #(
         "manifest.toml",
@@ -771,7 +768,7 @@ const two_package_manifest = "packages = [
 
 // What `load_catalog` settles on for `shared/mod.run` when two catalog files key
 // it: `poly_package`'s polymorphic `effects` line and `ext_package`'s
-// `external effects` line.
+// `assume` line.
 fn catalog_clash_entry(
   root: String,
   poly_package: String,
@@ -788,7 +785,7 @@ fn catalog_clash_entry(
       ),
       #(
         "catalog/" <> ext_package <> "@1.0.0.graded",
-        "external effects shared/mod.run : [Disk]\n",
+        "assume shared/mod.run : [Disk]\n",
       ),
       #("manifest.toml", two_package_manifest),
     ])
@@ -831,7 +828,7 @@ pub fn a_catalog_clash_resolves_the_same_either_way_round_test() {
 
 // Dependency-declared externals
 //
-// A dependency's own `external effects` lines are part of what it ships: the
+// A dependency's own `assume` lines are part of what it ships: the
 // function-level ones key `all_effects`, the module-level ones the fallback
 // tier. These pin where those lines land against every other source, and that a
 // term the external decides brings its (empty) bounds with it.
@@ -875,7 +872,7 @@ pub fn a_dependency_function_external_resolves_test() {
   installed_dep(
     "build/eff_dep_fn_external",
     "dep",
-    "external effects dep/ffi.now : [Time]\n",
+    "assume dep/ffi.now : [Time]\n",
   )
   |> entry_of(QualifiedName("dep/ffi", "now"))
   |> should.equal(
@@ -890,7 +887,7 @@ pub fn a_dependency_spec_that_does_not_parse_is_ignored_test() {
   installed_dep(
     "build/eff_dep_unparseable",
     "dep",
-    "external effects dep/ffi.now : [Time]\nnot a graded line\n",
+    "assume dep/ffi.now : [Time]\nnot a graded line\n",
   )
   |> entry_of(QualifiedName("dep/ffi", "now"))
   |> should.be_error
@@ -902,7 +899,7 @@ pub fn a_dependency_module_external_resolves_test() {
   installed_dep(
     "build/eff_dep_module_external",
     "dep",
-    "external effects dep/internal : [Db]\n",
+    "assume dep/internal : [Db]\n",
   )
   |> effects.lookup(QualifiedName("dep/internal", "anything"))
   |> should.equal(effects.Known(
@@ -924,7 +921,7 @@ pub fn a_dependency_external_beats_its_own_effects_line_test() {
     installed_dep(
       "build/eff_dep_external_clash",
       "dep",
-      "effects dep.run(cb: [cb]) : [cb]\nexternal effects dep.run : [Time]\n",
+      "effects dep.run(cb: [cb]) : [cb]\nassume dep.run : [Time]\n",
     )
   entry_of(kb, QualifiedName("dep", "run"))
   |> should.equal(
@@ -940,7 +937,7 @@ pub fn a_user_external_beats_a_dependency_external_test() {
   installed_dep(
     "build/eff_dep_vs_user_external",
     "dep",
-    "external effects dep/ffi.now : [Time]\n",
+    "assume dep/ffi.now : [Time]\n",
   )
   |> effects.with_externals(
     [external("dep/ffi", "now", ["Mocked"])],
@@ -957,10 +954,7 @@ pub fn a_dependency_external_beats_the_catalog_test() {
   // outranks graded's bundled description of the same function.
   let root = "build/eff_dep_external_vs_catalog"
   write_fixture(root, [
-    #(
-      dep_spec_path("gleam_stdlib"),
-      "external effects gleam/io.println : [Shipped]\n",
-    ),
+    #(dep_spec_path("gleam_stdlib"), "assume gleam/io.println : [Shipped]\n"),
     #(
       "manifest.toml",
       "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
@@ -1003,7 +997,7 @@ pub fn a_path_dep_spec_overrides_a_catalog_entry_test() {
       dep_spec(
         "build/eff_path_dep_over_catalog",
         "dep",
-        "external effects dep/ffi.now : [Time]\neffects dep.run(cb: [cb]) : [cb]\n",
+        "assume dep/ffi.now : [Time]\neffects dep.run(cb: [cb]) : [cb]\n",
       ),
       types.PathDependency("dep"),
     )
@@ -1027,7 +1021,7 @@ pub fn a_path_dep_spec_overrides_a_catalog_entry_test() {
 
 pub fn a_path_dep_external_drops_a_catalog_entrys_bounds_test() {
   // The bounds a name carries are the ones recorded for the term that won: a
-  // bound-less `external effects` line overriding a polymorphic catalog entry
+  // bound-less `assume` line overriding a polymorphic catalog entry
   // leaves its ground term standing alone, with the catalog's bounds gone.
   let name = QualifiedName("dep", "run")
   // The catalog's `effects dep.run(cb: [cb]) : [cb]`: a term binding `cb`, and
@@ -1047,7 +1041,7 @@ pub fn a_path_dep_external_drops_a_catalog_entrys_bounds_test() {
       dep_spec(
         "build/eff_path_dep_drops_catalog_bounds",
         "dep",
-        "external effects dep.run : [Time]\n",
+        "assume dep.run : [Time]\n",
       ),
       types.PathDependency("dep"),
     )
@@ -1101,7 +1095,7 @@ pub fn a_path_dep_module_external_overrides_only_the_catalogs_test() {
     dep_spec(
       "build/eff_path_dep_module_external",
       "dep",
-      "external effects dep/catalogued : [Time]\nexternal effects dep/declared : [Time]\n",
+      "assume dep/catalogued : [Time]\nassume dep/declared : [Time]\n",
     )
   let kb =
     effects.new_knowledge_base()
@@ -1144,7 +1138,7 @@ pub fn a_path_dep_function_entry_beats_a_module_external_test() {
       dep_spec(
         "build/eff_path_dep_over_module_external",
         "dep",
-        "external effects dep/ffi.now : [Time]\n",
+        "assume dep/ffi.now : [Time]\n",
       ),
       types.PathDependency("dep"),
     )
@@ -1354,7 +1348,7 @@ pub fn argument_value_effects_other_is_unknown_test() {
 // Type-field registry
 //
 // Type-field keys are qualified by the defining module (no cross-module
-// collision), and dependency spec `type` lines load into the registry.
+// collision), and dependency spec field `assume` lines load into the registry.
 
 pub fn type_fields_distinguish_modules_test() {
   // Two `Validator` types in different modules, same field — must NOT conflate.
@@ -1387,16 +1381,16 @@ pub fn type_fields_distinguish_modules_test() {
 
 pub fn load_knowledge_base_loads_dependency_type_fields_test() {
   // A dependency's committed spec under `build/packages` carries a module-
-  // qualified `type` line. `load_knowledge_base` must fold it into the registry
+  // qualified field `assume` line. `load_knowledge_base` must fold it into the registry
   // so a consumer's field call against that dependency type resolves, rather
-  // than dropping `type` lines as it did before.
+  // than dropping field `assume` lines as it did before.
   let packages = "build/eff_dep_typefield/packages"
   let _ = simplifile.delete("build/eff_dep_typefield")
   let assert Ok(Nil) = simplifile.create_directory_all(packages <> "/dep")
   let assert Ok(Nil) =
     simplifile.write(
       packages <> "/dep/dep.graded",
-      "type dep/repo.Repo.find : [Storage]\n",
+      "assume dep/repo.Repo.find : [Storage]\n",
     )
 
   let kb =
@@ -1446,9 +1440,7 @@ pub fn check_line_bounds_are_not_recorded_test() {
 pub fn externally_declared_function_records_an_empty_entry_test() {
   // The external term wins in `all_effects` and is ground by construction, so
   // the stale `effects` line's bounds must not pair with it.
-  spec_params(
-    "external effects app.run : [Time]\neffects app.run(cb: [cb]) : [cb]\n",
-  )
+  spec_params("assume app.run : [Time]\neffects app.run(cb: [cb]) : [cb]\n")
   |> dict.get(QualifiedName("app", "run"))
   |> should.equal(Ok([]))
 }
@@ -1578,7 +1570,7 @@ pub fn a_dependency_external_line_for_its_own_external_answers_test() {
   installed_dep_over_source(
     "build/eff_dep_declared_external",
     "dep",
-    "external effects dep/ffi.now : [Time]\n",
+    "assume dep/ffi.now : [Time]\n",
     "",
     [
       #(QualifiedName("dep/ffi", "now"), foreign_declared_everywhere()),
@@ -1660,7 +1652,7 @@ pub fn a_declared_dependency_external_with_a_running_fallback_is_widened_test() 
   installed_dep_over_source(
     "build/eff_dep_partial_fallback",
     "dep",
-    "external effects dep/ffi.run : [Time]\n",
+    "assume dep/ffi.run : [Time]\n",
     "",
     [
       #(QualifiedName("dep/ffi", "run"), foreign_with_running_fallback()),
@@ -1684,7 +1676,7 @@ pub fn a_dependency_returns_line_for_its_own_external_is_refused_test() {
     installed_dep_over_source(
       "build/eff_dep_returns",
       "dep",
-      "external effects dep/ffi.make : []\nreturns dep/ffi.make : []\nreturns dep/ffi.plain : []\n",
+      "assume dep/ffi.make : []\nreturns dep/ffi.make : []\nreturns dep/ffi.plain : []\n",
       "",
       [
         #(QualifiedName("dep/ffi", "make"), foreign_declared_everywhere()),

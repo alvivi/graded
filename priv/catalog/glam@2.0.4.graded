@@ -1,3 +1,3 @@
 // glam — pure pretty-printing documents
 
-external effects glam/doc : []
+assume glam/doc : []

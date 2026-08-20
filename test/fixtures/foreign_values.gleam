@@ -4,7 +4,7 @@
 // runs, and the foreign implementation may return something else entirely. So
 // the operator such a function returns, the provenance of the record it builds,
 // and the fields a factory or update builder of it wires are all [Unknown] —
-// even where an `external effects` line declares what calling it costs, since
+// even where an `assume` line declares what calling it costs, since
 // nothing in that line describes the value it hands back. One channel has a
 // declaring form of its own: `external returns` states the operator a producer
 // hands back, and the producer below carrying one resolves.

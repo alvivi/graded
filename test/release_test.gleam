@@ -156,7 +156,7 @@ fn options() {
 
 // Spec-annotation lint
 //
-// The lint that warns on `check`/`type` lines whose target exists nowhere in
+// The lint that warns on `check`/`assume` lines whose target exists nowhere in
 // the project: unqualified or misspelled names are flagged, while targets that
 // resolve — including through dependencies and function-type aliases — are not.
 
@@ -177,7 +177,7 @@ pub fn unqualified_check_and_type_lines_warn_test() {
   let warnings =
     lint_warnings("lint", [
       #("opts.gleam", opts_module),
-      #("app.graded", "type Opts.on_change : []\ncheck run : []\n"),
+      #("app.graded", "assume Opts.on_change : []\ncheck run : []\n"),
     ])
 
   expect_warning(warnings, UnmatchedTypeFieldWarning(name: "Opts.on_change"))
@@ -209,7 +209,7 @@ pub fn qualified_check_and_type_lines_do_not_warn_test() {
     #("opts.gleam", opts_module),
     #(
       "app.graded",
-      "type opts.Opts.on_change : []\ncheck opts.run : [Stdout]\n",
+      "assume opts.Opts.on_change : []\ncheck opts.run : [Stdout]\n",
     ),
   ])
   |> should.equal([])
@@ -224,14 +224,14 @@ pub fn mismatched_qualifier_warns_test() {
         "opts.gleam",
         "pub type Opts {\n  Opts(on_change: fn(String) -> Nil)\n}\n",
       ),
-      #("app.graded", "type opts.Opts.gone : []\ncheck opts.missing : []\n"),
+      #("app.graded", "assume opts.Opts.gone : []\ncheck opts.missing : []\n"),
     ])
 
   expect_warning(warnings, UnmatchedTypeFieldWarning(name: "opts.Opts.gone"))
   expect_warning(warnings, UnmatchedCheckWarning(function: "opts.missing"))
 }
 
-// A `type` line qualified at an *installed* dependency module names a field
+// A field `assume` line qualified at an *installed* dependency module names a field
 // graded can't introspect (the type isn't a project type), but girard still
 // resolves it from the receiver's nominal type — so it must not be flagged.
 pub fn dependency_type_field_does_not_warn_test() {
@@ -242,14 +242,14 @@ pub fn dependency_type_field_does_not_warn_test() {
       "build/packages/widgets/src/widgets/ui.gleam",
       "pub type Config {\n  Config(on_click: fn() -> Nil)\n}\n",
     ),
-    #("app.graded", "type widgets/ui.Config.on_click : [Dom]\n"),
+    #("app.graded", "assume widgets/ui.Config.on_click : [Dom]\n"),
   ])
   |> refute_warning(UnmatchedTypeFieldWarning(
     name: "widgets/ui.Config.on_click",
   ))
 }
 
-// A `type` line qualified at a module that is neither a project module nor an
+// A field `assume` line qualified at a module that is neither a project module nor an
 // installed/path dependency is a typo — it resolves nothing, so it's flagged.
 pub fn unknown_module_qualifier_warns_test() {
   // `optz` is a typo of the project module `opts`.
@@ -258,13 +258,13 @@ pub fn unknown_module_qualifier_warns_test() {
       "opts.gleam",
       "pub type Opts {\n  Opts(on_change: fn(String) -> Nil)\n}\n",
     ),
-    #("app.graded", "type optz.Opts.on_change : []\n"),
+    #("app.graded", "assume optz.Opts.on_change : []\n"),
   ])
   |> expect_warning(UnmatchedTypeFieldWarning(name: "optz.Opts.on_change"))
 }
 
 // A field declared through a module-local function alias (`callback: Handler`
-// with `type Handler = fn(...)`) is callable, so its `type` line is a valid
+// with `type Handler = fn(...)`) is callable, so its field `assume` line is a valid
 // target and must not be flagged.
 pub fn function_alias_field_does_not_warn_test() {
   lint_warnings("alias", [
@@ -278,13 +278,13 @@ pub type Widget {
 }
 ",
     ),
-    #("app.graded", "type widget.Widget.callback : [Dom]\n"),
+    #("app.graded", "assume widget.Widget.callback : [Dom]\n"),
   ])
   |> refute_warning(UnmatchedTypeFieldWarning(name: "widget.Widget.callback"))
 }
 
 // A field typed with a function alias imported from another project module
-// (`callback: handlers.Handler`) is callable, so its `type` line is valid and
+// (`callback: handlers.Handler`) is callable, so its field `assume` line is valid and
 // must not be flagged — the qualified alias is resolved across modules.
 pub fn qualified_function_alias_field_does_not_warn_test() {
   lint_warnings("qual_alias", [
@@ -298,14 +298,14 @@ pub type Widget {
 }
 ",
     ),
-    #("app.graded", "type widget.Widget.callback : [Dom]\n"),
+    #("app.graded", "assume widget.Widget.callback : [Dom]\n"),
   ])
   |> refute_warning(UnmatchedTypeFieldWarning(name: "widget.Widget.callback"))
 }
 
 // A module-local alias that delegates to an imported alias
 // (`type LocalHandler = handlers.Handler`) still resolves to a function, so a
-// field typed `LocalHandler` is callable and its `type` line must not warn.
+// field typed `LocalHandler` is callable and its field `assume` line must not warn.
 pub fn alias_chain_through_imported_alias_does_not_warn_test() {
   lint_warnings("alias_chain", [
     #("handlers.gleam", "pub type Handler =\n  fn(String) -> Nil\n"),
@@ -321,13 +321,13 @@ pub type Widget {
 }
 ",
     ),
-    #("app.graded", "type widget.Widget.callback : [Dom]\n"),
+    #("app.graded", "assume widget.Widget.callback : [Dom]\n"),
   ])
   |> refute_warning(UnmatchedTypeFieldWarning(name: "widget.Widget.callback"))
 }
 
 // A field whose type is a non-function type owned by an installed dependency
-// (`value: types.Record`) genuinely can't be called, so its `type` line is dead
+// (`value: types.Record`) genuinely can't be called, so its field `assume` line is dead
 // and must be flagged — graded parses the dependency to confirm.
 pub fn dependency_non_function_field_warns_test() {
   lint_warnings("dep_nonfn", [
@@ -344,7 +344,7 @@ pub type Widget {
 }
 ",
     ),
-    #("app.graded", "type widget.Widget.value : []\n"),
+    #("app.graded", "assume widget.Widget.value : []\n"),
   ])
   |> expect_warning(UnmatchedTypeFieldWarning(name: "widget.Widget.value"))
 }
@@ -367,18 +367,18 @@ pub type Widget {
 }
 ",
     ),
-    #("app.graded", "type widget.Widget.callback : [Dom]\n"),
+    #("app.graded", "assume widget.Widget.callback : [Dom]\n"),
   ])
   |> refute_warning(UnmatchedTypeFieldWarning(name: "widget.Widget.callback"))
 }
 
-// A `type` line on a project type whose field isn't function-typed can never
+// A field `assume` line on a project type whose field isn't function-typed can never
 // resolve a field call, so it's dead and must be flagged — the lint shouldn't
 // treat a plain data field as a valid target.
 pub fn non_function_field_annotation_warns_test() {
   lint_warnings("nonfn", [
     #("rec.gleam", "pub type Rec {\n  Rec(count: Int)\n}\n"),
-    #("app.graded", "type rec.Rec.count : []\n"),
+    #("app.graded", "assume rec.Rec.count : []\n"),
   ])
   |> expect_warning(UnmatchedTypeFieldWarning(name: "rec.Rec.count"))
 }

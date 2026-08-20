@@ -266,7 +266,7 @@ pub fn shout() -> Nil {
 }
 
 fn spec() -> String {
-  "external effects ffi/console.log : [Stdout]\n"
+  "assume ffi/console.log : [Stdout]\n"
 }
 
 // The final `count` lines of a preview, markers included.

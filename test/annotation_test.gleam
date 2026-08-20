@@ -100,7 +100,7 @@ pub fn reserved_sentinel_preserves_whole_file_test() {
   let input =
     "check app/a.run : []
 returns m.f : fn($op$x) -> [x]
-external effects dep/x : []"
+assume dep/x : []"
   let assert Ok(file) = annotation.parse_file(input)
   let annotations = annotation.extract_annotations(file)
   list.any(annotations, fn(a) {
@@ -318,10 +318,10 @@ pub fn format_annotation_with_multiple_params_test() {
 
 // Type field annotations
 //
-// `type T.field : [...]` lines, both bare and module-qualified.
+// `assume T.field : [...]` lines, both bare and module-qualified.
 
 pub fn parse_type_field_test() {
-  let input = "type Handler.on_click : [Dom]"
+  let input = "assume Handler.on_click : [Dom]"
   let assert Ok(file) = annotation.parse_file(input)
   let tfs = annotation.extract_type_fields(file)
   let assert [tf] = tfs
@@ -332,7 +332,7 @@ pub fn parse_type_field_test() {
 }
 
 pub fn parse_type_field_multiple_effects_test() {
-  let input = "type Request.send : [Http, Io]"
+  let input = "assume Request.send : [Http, Io]"
   let assert Ok(file) = annotation.parse_file(input)
   let assert [tf] = annotation.extract_type_fields(file)
   effect_term.to_effect_set(tf.effects)
@@ -364,7 +364,7 @@ pub fn format_type_field_qualified_test() {
 }
 
 pub fn parse_type_field_qualified_test() {
-  let input = "type myapp/router.Handler.on_click : [Dom]"
+  let input = "assume myapp/router.Handler.on_click : [Dom]"
   let assert Ok(file) = annotation.parse_file(input)
   let assert [tf] = annotation.extract_type_fields(file)
   tf.module |> should.equal(Some("myapp/router"))
@@ -373,7 +373,7 @@ pub fn parse_type_field_qualified_test() {
 }
 
 pub fn parse_type_field_qualified_deep_module_test() {
-  let input = "type deeply/nested/path.Config.validator : []"
+  let input = "assume deeply/nested/path.Config.validator : []"
   let assert Ok(file) = annotation.parse_file(input)
   let assert [tf] = annotation.extract_type_fields(file)
   tf.module |> should.equal(Some("deeply/nested/path"))
@@ -383,10 +383,10 @@ pub fn parse_type_field_qualified_deep_module_test() {
 
 // External annotations
 //
-// `external effects module.fn : [...]` lines for third-party functions.
+// `assume module.fn : [...]` lines for third-party functions.
 
 pub fn parse_external_test() {
-  let input = "external effects gleam/http/request.send : [Http]"
+  let input = "assume gleam/http/request.send : [Http]"
   let assert Ok(file) = annotation.parse_file(input)
   let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("gleam/http/request")
@@ -395,7 +395,7 @@ pub fn parse_external_test() {
 }
 
 pub fn parse_external_pure_test() {
-  let input = "external effects gleam/json.decode : []"
+  let input = "assume gleam/json.decode : []"
   let assert Ok(file) = annotation.parse_file(input)
   let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("gleam/json")
@@ -708,7 +708,7 @@ pub fn merge_inferred_invariants_test() {
 }
 
 pub fn merge_inferred_drops_effect_for_external_test() {
-  // An author-written `external effects app.ffi : [...]` is authoritative: the
+  // An author-written `assume app.ffi : [...]` is authoritative: the
   // inferred `effects app.ffi` line (the opaque-FFI `[Unknown]` default) is
   // dropped so it neither duplicates nor shadows the declaration. Other inferred
   // functions are kept.
