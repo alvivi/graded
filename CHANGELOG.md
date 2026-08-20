@@ -23,9 +23,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rewrite, so nothing is silently reinterpreted. Bundled catalog files are
   already rewritten; a dependency's spec must be regenerated with this version
   before its entries are read again.
-- A `check` whose subject is a field (`check myapp.Handler.on_click : []`) now
-  warns that checks on fields are not verified yet, rather than that the name
-  matches no function.
+- **Breaking.** A returned operator is now a `where returns` clause of the
+  statement it belongs to, not a line of its own. `graded infer` writes
+  `effects myapp.make_logger : [] where returns : [Stdout]`, and a declaration
+  for a foreign producer is `assume myapp/ffi.make_client where returns :
+  [Net]`. `returns` and `external returns` lines are parse errors naming the
+  line and the rewrite; delete an inferred one and re-run `graded infer`, and
+  rewrite a declared one as an `assume` clause.
+- A declaration may now carry only a clause: `assume myapp/ffi.make_client
+  where returns : [Net]` states what the producer hands back and claims nothing
+  about its own effect, so the catalog or a dependency's spec keeps answering
+  for that.
+- An inferred clause carries a bound for every callback it mentions, so a
+  decorator whose callback is used only inside the closure it returns now reads
+  back with the bound that scopes it: `effects myapp.traced(action: [action]) :
+  [] where returns : fn(cb) -> [Stdout, action([cb])]`. Such a call resolves at
+  the call site instead of degrading to `[Unknown]`.
+- A clause whose variables name no callback parameter of the function is
+  reported by the spec lint and resolves to `[Unknown]`, replacing the warning
+  about a polymorphic `external returns` operator.
+- A `check` whose subject is a field (`check myapp.Handler.on_click : []`) or
+  which carries a `where returns` clause now warns that nothing verifies that
+  shape yet, rather than that the name matches no function.
 - A `.graded` spec file with a line the parser rejects is now an error naming
   the file and the line, from every command. Such a file used to read as empty:
   `check` passed with nothing to check, and `infer` wrote its merge over the

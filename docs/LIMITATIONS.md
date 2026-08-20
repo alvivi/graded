@@ -358,7 +358,7 @@ resolves is one it can see built, or annotate the *field* the returned function
 lands in with a field `assume`.
 
 The closure a producer hands back is the one such channel with a declaring form:
-`external returns my_ffi.make_client : [Net]`. It is refused where a Gleam
+`assume my_ffi.make_client where returns : [Net]`. It is refused where a Gleam
 fallback body runs beside the declaration — the two can hand back different
 closures and there is no union of operators to take — and the operator must be
 ground, so a foreign decorator's still needs the Gleam wrapper. The call names
@@ -383,25 +383,6 @@ did not happen.
 is actually built, or leave the field out. A package that declares no `target` is
 read as compiled for both, which charges a declaration and its running fallback
 body alike rather than deciding either away.
-
-## 6. A returned-operator summary written by an older graded
-
-A `returns` line records the effect operator a producer returns, e.g.
-`returns app.make : fn(handler) -> [handler]`. When `check` consults such a line —
-its own package's spec, or a dependency's — it trusts a ground summary as written.
-A summary produced by a graded new enough to sanitize returned-closure callback
-binders is sound; one produced by an older graded may have dropped a residual
-effect that coincided with a callback's name, leaving a summary that under-reports.
-Because the spec records no producing version, `check` can't tell the two apart
-and trusts both.
-
-**How to avoid it** — re-run `graded infer` with a current graded to regenerate
-your own spec (the normal infer-then-check flow already does this). For a
-dependency shipping a spec built by an older graded, upgrade or regenerate that
-dependency's spec so its summaries are sound. Until then the summary is trusted as
-written, so any `check` that resolves through it can't be relied on — a widened
-consumer budget only permits more effects, it doesn't restore one the summary
-already omitted.
 
 ---
 

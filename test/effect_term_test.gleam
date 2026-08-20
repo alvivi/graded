@@ -1,5 +1,5 @@
 // Property + unit tests for the `EffectTerm` IR (see
-// docs/second-order-effects.md). Property tags (P-LAT-*, P-NORM-*, …) match
+// docs/SECOND_ORDER_EFFECTS.md). Property tags (P-LAT-*, P-NORM-*, …) match
 // the design doc's "Properties & invariants" section.
 
 import gleam/dict

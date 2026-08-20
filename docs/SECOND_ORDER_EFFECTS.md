@@ -172,16 +172,16 @@ curried operator `λp1. λp2. body` over the same callbacks in order. The unary
   `(f ⊔ g)(cb) = f(cb) ⊔ g(cb)`.
 - **Functions returned from a call** (`let h = pick_handler()`). The producer's
   returned operator is computed where the producer is defined — so its private
-  callees are in scope — and **serialized into the spec** as a
-  `returns mod.fn : fn(cb) -> [cb]` line. Loaded from project and dependency specs,
-  it resolves across module *and package* boundaries during `check`, not only
-  `infer`.
+  callees are in scope — and **serialized into the spec** as the statement's
+  `where returns` clause (`effects mod.fn : [] where returns : fn(cb) -> [cb]`).
+  Loaded from project and dependency specs, it resolves across module *and
+  package* boundaries during `check`, not only `infer`.
 
 A returned value resolves whether it is **passed to an operator parameter**
 (`with(h)`) or **applied directly** (`h(cb)`). A returned *first-order* function
 carries a **latent effect** instead of an operator (`fn make() -> fn() -> Nil`,
-serialized as `returns make : [Stdout]`), so `let f = make(); f()` yields that
-effect.
+serialized as `effects make : [] where returns : [Stdout]`), so
+`let f = make(); f()` yields that effect.
 
 **Further resolving cases:**
 

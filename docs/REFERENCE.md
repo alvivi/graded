@@ -90,43 +90,50 @@ it. An unqualified or mis-qualified one keys nothing, so the field silently
 resolves to `[Unknown]`; `graded check` warns when a field `assume` matches no
 field of any project type.
 
-### `returns` — returned operators and latent effects
+### `where returns` — returned operators and latent effects
+
+A clause of the statement, not a statement of its own:
 
 ```
-// a producer that returns one of its operator parameters (a decorator)
-returns myapp.traced : fn(cb) -> [cb]
-
 // a producer that returns a closure with a latent effect
-returns myapp.make_logger : [Stdout]
+effects myapp.make_logger : [] where returns : [Stdout]
+
+// a decorator that returns one of its own callbacks, its bound list scoping
+// the clause's variables
+effects myapp.traced(action: [action]) : [] where returns : fn(cb) -> [Stdout, action([cb])]
+
+// what a foreign producer hands back, declared rather than inferred
+assume myapp/ffi.make_client where returns : [Net]
 ```
 
-Serialized by `graded infer` for functions that *return* a function. It lets the
-returned function's effect resolve at the call site (`let h = make_logger(); h()`)
-across module and package boundaries, not just within the defining module. Like
-`effects`, these lines are regenerated and shouldn't be hand-edited. No line is
-written for an `@external`, and one naming an `@external` is ignored — see
-[Assumptions](#assumptions-foreign-code-and-field-effects).
+The clause states the operator a function that *returns a function* hands back,
+so the returned function's effect resolves at the call site
+(`let h = make_logger(); h()`) across module and package boundaries, not just
+within the defining module.
 
-### `external returns` — what a foreign producer hands back
+On an `effects` line it is written by `graded infer` and regenerated with the
+line — don't edit it by hand. Every variable it mentions is a callback parameter
+of the line's own bound list; one that names anything else is ignored and
+flagged, and the returned function resolves to `[Unknown]`. No clause is written
+for an `@external`.
 
-```
-external returns myapp/ffi.make_client : [Net]
-```
+On an `assume` line it is a declaration: what an `@external` producer hands
+back, hand-written and never regenerated. The effects clause before it is
+optional — `assume myapp/ffi.make_client where returns : [Net]` claims nothing
+about `make_client`'s own effect, and the tiers below keep answering for it. A
+declared operator must be **ground**: one with free effect variables is ignored
+and flagged, since an assumption carries no bound list to scope them.
 
-Declares the operator an `@external` producer returns, so a call of the closure
-it hands back resolves instead of degrading to `[Unknown]`. Hand-written like
-`assume` and never regenerated: `graded infer` preserves the line and
-writes none of its own. The operator uses the same grammar as `returns` and must
-be **ground** — one with free effect variables is ignored and flagged. See
-[Assumptions](#assumptions-foreign-code-and-field-effects).
+On a `check` line it parses and keys nothing: verifying what a function returns
+is not implemented, and `graded check` says so.
 
 ## Effect resolution order
 
 When graded needs a function's effects, it consults these sources in priority
 order and takes the first hit:
 
-1. **Your spec file** — `check`, `assume`, `external returns` and `returns`
-   declarations in `<package_name>.graded`.
+1. **Your spec file** — the `check` and `assume` lines in
+   `<package_name>.graded`, and the `where returns` clauses on them.
 2. **Cross-module project effects** — effects inferred from sibling modules in the
    same project, propagated in topological order. A fresh checkout resolves
    transitive call chains with no prior `graded infer`; committed `effects` lines
@@ -149,11 +156,11 @@ order and takes the first hit:
    [Effect catalog](#effect-catalog)).
 6. **Conservative default** — anything still unresolved gets `[Unknown]`.
 
-Returned-operator summaries follow the same order on their own channel: an
-`external returns` declaration outranks an inferred `returns` line for the same
-name — across two packages' specs as well as within one — and this package's spec
+Returned-operator summaries follow the same order on their own channel: a
+clause on an `assume` line outranks one on an `effects` line for the same name —
+across two packages' specs as well as within one — and this package's spec
 outranks a dependency's, which outranks a path dependency's. The catalog carries
-no returns lines of either kind.
+no clauses of either kind.
 
 ## Effect set syntax
 
@@ -560,9 +567,9 @@ states what calling the function costs; nothing in it describes the closure an F
 producer returns, the record it builds, or the fields either wires. So an
 `@external`'s return provenance and its factory and update-builder signatures are
 refused whether or not it is declared and whether or not a Gleam fallback body
-beside it runs, and an inferred `returns` line for one is refused too: `graded
-infer` writes none for an `@external`, and removes one a function that has since
-become `@external` left behind.
+beside it runs, and an inferred `where returns` clause for one is refused too:
+`graded infer` writes none for an `@external`, and removes one a function that
+has since become `@external` left behind.
 
 The closure it hands back is the one channel with a declaring form of its own:
 
@@ -573,17 +580,16 @@ pub fn make_logger() -> fn(String) -> Nil
 
 pub fn caller() -> Nil {
   let log = make_logger()
-  log("hi")            // [Stdout] — from the `external returns` line
+  log("hi")            // [Stdout] — from the `where returns` clause
 }
 ```
 
 ```
-assume myapp/ffi.make_logger : []
-external returns myapp/ffi.make_logger : [Stdout]
+assume myapp/ffi.make_logger : [] where returns : [Stdout]
 ```
 
-Without that line the call is `[Unknown]`. With it, the declaration answers where
-it stands alone; two readings refuse it, and the call says which:
+Without that clause the call is `[Unknown]`. With it, the declaration answers
+where it stands alone; two readings refuse it, and the call says which:
 
 - **out of reach** — the declaration names only targets this build does not
   compile, so nothing it describes is what runs. The same reading that drops the
@@ -592,27 +598,28 @@ it stands alone; two readings refuse it, and the call says which:
   the body covers the rest. Effects union the two halves; there is no union of
   operators, and the closure the body hands back needn't be the foreign one.
 
-Four lines are dropped rather than trusted, each flagged by the spec lint: an
-operator with free effect variables (a foreign decorator returning a closure that
-runs its own argument — wrap the producer in Gleam instead), a name with no
-function part (`external returns mymodule : [...]` names no function), a name of
-more than two parts (`external returns myapp.Handler.run : [...]` is a field
-`assume`'s shape, not this one's), and a name that is one of *this package's
-own* ordinary Gleam functions, whose body every caller can already see. `graded
-infer` deletes the last; where the function returns an operator, the inferred
-`returns` line takes its place.
+Three declared clauses are dropped rather than trusted, each flagged by the spec
+lint: an operator with free effect variables (a foreign decorator returning a
+closure that runs its own argument — wrap the producer in Gleam instead), a
+clause on a module path (`assume mymodule where returns : [...]` names no
+function), and one on a name that is one of *this package's own* ordinary Gleam
+functions, whose body every caller can already see. `graded infer` deletes the
+last; where the function returns an operator, the inferred clause takes its
+place. A clause on a field path (`assume myapp.Handler.run where returns : …`)
+is not dropped but refused: a field annotation has no slot for a returned
+operator, so the line is a parse error.
 
 A dependency is held to the same rules, against the dependency's *own* source
-under `build/packages`: a shipped `effects` or `returns` line for a function that
-package declares `@external` is refused, while its `assume` line, its
-`external returns` line, a module-level external, and the catalog entry underneath
-keep answering. A dependency's `external returns` line is kept even over one of
-its own Gleam-bodied functions — weighing a spec against the source beside it is
-that package's job at its own `infer` time. What a spec may state a returned-
-operator summary *about* is narrower: the modules that package ships, plus the
-names a scan of dependency source records as `@external`. A `returns` or
-`external returns` line for anyone else's code — your own modules included — is
-dropped, so no dependency can overrule what your own body says it hands back. Where a
+under `build/packages`: a shipped `effects` line, or a clause on one, for a
+function that package declares `@external` is refused, while its `assume` line,
+that line's own clause, a module-level `assume`, and the catalog entry underneath
+keep answering. A dependency's declared clause is kept even over one of its own
+Gleam-bodied functions — weighing a spec against the source beside it is that
+package's job at its own `infer` time. What a spec may state a returned-operator
+summary *about* is narrower: the modules that package ships, plus the names a
+scan of dependency source records as `@external`. A clause for anyone else's
+code — your own modules included — is dropped, so no dependency can overrule what
+your own body says it hands back. Where a
 dependency's external carries a fallback body that runs on some target, its
 declaration is widened by `[Unknown]` — the union graded performs against a
 walked fallback in the defining package has no second operand one package away.
@@ -653,7 +660,7 @@ assume my_app/metrics.record : [Telemetry]
 check my_app/api.handle_request : [Http, Email]
 ```
 
-`graded infer` regenerates the inferred `effects` and `returns` lines while
+`graded infer` regenerates the inferred `effects` lines and their clauses while
 preserving your `check` and `assume` lines, comments, and blank lines.
 `graded format` normalizes spacing and sorting.
 
