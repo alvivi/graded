@@ -1152,6 +1152,11 @@ pub type SummaryOrigin {
   // Loaded from a serialized `.graded` (dependency or committed project spec),
   // unsanitized; a polymorphic Foreign summary is not trusted for synthesis.
   Foreign
+  // Read from a `where returns` clause on an `effects` line. The gate checks
+  // its free variables against the producer's real callback parameters before
+  // binding, so an open clause degrades to `[Unknown]` rather than binding
+  // against variables the producer has no parameter for.
+  Closed
   // Written by hand as an `external returns` line: what a foreign producer
   // hands back, declared rather than inferred. It answers for a name every
   // other summary is refused for — that is the whole point of the line — so
@@ -1223,6 +1228,22 @@ pub fn with_foreign_returned_operators(
   KnowledgeBase(..knowledge_base, returned_operators: merged)
 }
 
+// Merge **Closed** returned-operator summaries (`where returns` clauses on
+// `effects` lines) into a knowledge base — existing entries take priority
+// (gap-fill), the same rule the Foreign merge beside it applies.
+pub fn with_closed_returned_operators(
+  knowledge_base: KnowledgeBase,
+  clauses: Dict(QualifiedName, EffectTerm),
+  source: LookupOrigin,
+) -> KnowledgeBase {
+  let merged =
+    dict.merge(
+      tag_returns(clauses, Closed, source),
+      knowledge_base.returned_operators,
+    )
+  KnowledgeBase(..knowledge_base, returned_operators: merged)
+}
+
 // Merge **Declared** returned-operator summaries (`external returns` lines) into
 // a knowledge base — the incoming entries win, since a declaration outranks a
 // summary inferred over a body and the two merges beside it both gap-fill.
@@ -1286,11 +1307,12 @@ fn merge_returns(
     dict.filter(incoming, fn(name, entry) {
       case entry.summary {
         Declared -> True
-        Fresh | Foreign ->
+        Fresh | Foreign | Closed ->
           case dict.get(existing, name) {
             Ok(ReturnedOperator(summary: Declared, ..)) -> False
             Ok(ReturnedOperator(summary: Fresh, ..))
             | Ok(ReturnedOperator(summary: Foreign, ..))
+            | Ok(ReturnedOperator(summary: Closed, ..))
             | Error(Nil) -> True
           }
       }
@@ -1400,7 +1422,7 @@ pub fn lookup_returned_operator(
         DeclaredReturnUnbuilt | DeclaredReturnFallbackRuns | NoDeclaredReturn ->
           Error(Nil)
       }
-    Fresh | Foreign ->
+    Fresh | Foreign | Closed ->
       case is_value_opaque(knowledge_base, name) {
         True -> Error(Nil)
         False -> Ok(found)
@@ -1444,7 +1466,8 @@ pub fn declared_return_standing(
   case dict.get(knowledge_base.returned_operators, name) {
     Error(Nil) -> NoDeclaredReturn
     Ok(ReturnedOperator(summary: Fresh, ..))
-    | Ok(ReturnedOperator(summary: Foreign, ..)) -> NoDeclaredReturn
+    | Ok(ReturnedOperator(summary: Foreign, ..))
+    | Ok(ReturnedOperator(summary: Closed, ..)) -> NoDeclaredReturn
     Ok(ReturnedOperator(summary: Declared, ..)) ->
       charged_standing(knowledge_base, name)
   }
@@ -1674,7 +1697,10 @@ pub type DepSpec {
   DepSpec(
     effects: Dict(QualifiedName, EffectTerm),
     params: Dict(QualifiedName, List(ParamBound)),
+    // `where returns` clauses on the spec's `effects` lines.
     returns: Dict(QualifiedName, EffectTerm),
+    // The legacy `returns` lines under them.
+    legacy_returns: Dict(QualifiedName, EffectTerm),
     declared_returns: Dict(QualifiedName, EffectTerm),
     type_fields: List(TypeFieldAnnotation),
     externals: List(ExternalAnnotation),
@@ -1706,7 +1732,16 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
             <> "); its entries are ignored",
           )
       }
-      DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [], set.new())
+      DepSpec(
+        dict.new(),
+        dict.new(),
+        dict.new(),
+        dict.new(),
+        dict.new(),
+        [],
+        [],
+        set.new(),
+      )
     }
     Ok(file) ->
       // Loaded through the same two readers a package uses for its *own* spec,
@@ -1721,6 +1756,7 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
         // own body is the documented case for the line.
         params: load_spec_params_from_file(file),
         returns: load_spec_returns_from_file(file),
+        legacy_returns: load_spec_legacy_returns_from_file(file),
         declared_returns: load_spec_external_returns_from_file(file),
         type_fields: annotation.extract_type_fields(file),
         externals: annotation.extract_externals(file),
@@ -1799,6 +1835,9 @@ fn sanitize_dep_spec(
     returns: dict.filter(dep.returns, fn(name, _operator) {
       !dict.has_key(foreign, name) && !about_other_code(name)
     }),
+    legacy_returns: dict.filter(dep.legacy_returns, fn(name, _operator) {
+      !dict.has_key(foreign, name) && !about_other_code(name)
+    }),
     declared_returns: dict.filter(dep.declared_returns, fn(name, _operator) {
       !about_other_code(name)
     }),
@@ -1869,7 +1908,8 @@ pub fn with_path_dep_spec(
     ),
   )
   |> gap_filling_declared_returns(dep.declared_returns, origin)
-  |> with_foreign_returned_operators(dep.returns, origin)
+  |> with_closed_returned_operators(dep.returns, origin)
+  |> with_foreign_returned_operators(dep.legacy_returns, origin)
   |> with_type_fields(dep.type_fields, origin)
 }
 
@@ -1943,32 +1983,71 @@ fn read_spec_file(
   annotation.parse_file(content) |> result.map_error(SpecMalformed)
 }
 
-// Build a returned-operator map (qualified name → operator) from a parsed
-// spec's `returns` lines. Used to load the project spec during `check`.
+// Build a returned-operator map (qualified name → operator) from the
+// `where returns` clauses on a parsed spec's `effects` lines, and those only.
+// A `check` line's clause keys nothing — it asserts what a function returns
+// rather than declaring it — and an `assume` line's goes through
+// `load_spec_external_returns_from_file` instead.
 pub fn load_spec_returns_from_file(
+  file: types.GradedFile,
+) -> Dict(QualifiedName, EffectTerm) {
+  annotation.extract_annotations(file)
+  |> list.filter(fn(ann) { ann.kind == types.Effects })
+  |> list.filter_map(fn(ann) {
+    ann.returns
+    |> option.to_result(Nil)
+    |> result.map(fn(op) { #(ann.function, op) })
+  })
+  |> fold_named_returns()
+}
+
+// The same map from a parsed spec's legacy `returns` lines.
+pub fn load_spec_legacy_returns_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, EffectTerm) {
   fold_spec_returns(annotation.extract_returns(file))
 }
 
-// The same map from a parsed spec's declared `external returns` lines. A dotless
-// name splits to nothing and `fold_spec_returns` drops it silently — a returns
-// declaration is per-function, and a name that resolves nowhere would otherwise
-// sit in the file looking effective. The ground-only rule is applied where the
-// summaries are tagged, in `declared_returns`.
+// The declared map: the `where returns` clauses on `assume` lines, plus the
+// legacy `external returns` lines under them. A clause on a module path keys
+// nothing — a returns declaration is per-function, and a name that resolves
+// nowhere would otherwise sit in the file looking effective. The ground-only
+// rule is applied where the summaries are tagged, in `declared_returns`.
 pub fn load_spec_external_returns_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, EffectTerm) {
-  fold_spec_returns(annotation.extract_external_returns(file))
+  dict.merge(
+    fold_spec_returns(annotation.extract_external_returns(file)),
+    annotation.extract_externals(file)
+      |> list.filter_map(fn(ext) {
+        case ext.target, ext.returns {
+          FunctionExternal(function), Some(operator) ->
+            Ok(#(QualifiedName(ext.module, function), operator))
+          FunctionExternal(_), None | ModuleExternal, _ -> Error(Nil)
+        }
+      })
+      |> dict.from_list(),
+  )
 }
 
 fn fold_spec_returns(
   returns: List(types.ReturnsAnnotation),
 ) -> Dict(QualifiedName, EffectTerm) {
-  list.fold(returns, dict.new(), fn(acc, returns) {
-    case annotation.split_function_name(returns.function) {
+  returns
+  |> list.map(fn(returns) { #(returns.function, returns.operator) })
+  |> fold_named_returns()
+}
+
+// Key a list of `#(spec name, operator)` pairs by qualified name, dropping the
+// names that don't split into a module and a function.
+fn fold_named_returns(
+  entries: List(#(String, EffectTerm)),
+) -> Dict(QualifiedName, EffectTerm) {
+  list.fold(entries, dict.new(), fn(acc, entry) {
+    let #(name, operator) = entry
+    case annotation.split_function_name(name) {
       Ok(#(module, function)) ->
-        dict.insert(acc, QualifiedName(module:, function:), returns.operator)
+        dict.insert(acc, QualifiedName(module:, function:), operator)
       Error(_) -> acc
     }
   })
@@ -2022,7 +2101,10 @@ fn load_dependencies(
           // specs, the same rule keeps one package's stray `returns` line from
           // burying another's declaration for the same name.
           merge_returns(
-            tag_returns(dep.returns, Foreign, origin),
+            merge_returns(
+              tag_returns(dep.legacy_returns, Foreign, origin),
+              tag_returns(dep.returns, Closed, origin),
+            ),
             declared_returns(dep.declared_returns, origin),
           ),
         ),

@@ -733,8 +733,12 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // declared-beats-inferred rule instead. That rule reads as redundant from
     // here, since fresh inference keys no foreign name; it is what holds if any
     // link of that three-file invariant chain ever gives.
-    |> effects.with_foreign_returned_operators(
+    |> effects.with_closed_returned_operators(
       effects.load_spec_returns_from_file(spec),
+      types.CommittedSpec,
+    )
+    |> effects.with_foreign_returned_operators(
+      effects.load_spec_legacy_returns_from_file(spec),
       types.CommittedSpec,
     )
     // Before the inference pass, not after it, and in the order `infer` folds
@@ -814,8 +818,8 @@ fn stale_project_externals(
   declaring_nothing(annotation.external_function_names(spec), native_of)
 }
 
-// The `external returns` lines that declare nothing: the same rule one channel
-// over, over the same predicate, so the two cannot drift apart.
+// The returned-operator declarations that declare nothing: the same rule one
+// channel over, over the same predicate, so the two cannot drift apart.
 //
 // Derived apart from `stale_project_externals` and threaded apart from it. That
 // set drives the effects channel's two suppressions — committed `effects` lines
@@ -826,7 +830,7 @@ fn stale_project_external_returns(
   spec: GradedFile,
   native_of: fn(String) -> Result(Set(String), Nil),
 ) -> Set(String) {
-  declaring_nothing(annotation.external_returns_names(spec), native_of)
+  declaring_nothing(annotation.assume_returns_names(spec), native_of)
 }
 
 // Which of `names` this package defines with a Gleam body — the rule both
