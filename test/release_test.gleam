@@ -6,7 +6,9 @@
 // compiler doesn't try to compile them as project modules. The file-name lint
 // is the exception: it reads the real `priv/catalog/`.
 
+import filepath
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/set
 import gleam/string
@@ -363,9 +365,49 @@ pub fn non_function_field_annotation_warns_test() {
 
 // Bundled catalog file names
 //
-// Version selection compares `#(major, minor, patch)`, so two bundled files for
-// one package that parse to the same tuple cannot be ordered and the winner is
-// whatever order the directory walk returns.
+// Every bundled file is named `{package}@{major.minor.patch}.graded`. A name
+// that does not split that way is dropped before it can be selected, and a
+// version selection cannot order is one whose file wins on directory order
+// rather than on the version it declares.
+
+pub fn every_catalog_file_names_a_package_and_a_version_test() {
+  let assert Ok(paths) = simplifile.get_files(effects.catalog_directory())
+  paths
+  |> list.filter(string.ends_with(_, ".graded"))
+  |> list.filter_map(malformed_catalog_name)
+  |> should.equal([])
+}
+
+// The complaint about one file name, or `Error(Nil)` for a name that reads as a
+// package and a `major.minor.patch` version — the shape `bundled_catalog_files`
+// keeps and `parse_semver` compares. A pre-release or build suffix is not one:
+// selection compares the version prefix alone, so the suffix would name a file
+// nothing distinguishes from its release.
+fn malformed_catalog_name(path: String) -> Result(String, Nil) {
+  let name = path |> filepath.base_name |> filepath.strip_extension
+  case string.split(name, "@") {
+    [_package, version] ->
+      case list.try_map(string.split(version, "."), int.parse) {
+        Ok([major, minor, patch]) if #(major, minor, patch) != #(0, 0, 0) ->
+          Error(Nil)
+        Ok(_) | Error(Nil) ->
+          Ok(
+            path
+            <> " names the version `"
+            <> version
+            <> "`, which is not a `major.minor.patch` above 0.0.0. Version "
+            <> "selection compares those three numbers, so it cannot place "
+            <> "this file. Rename it.",
+          )
+      }
+    _ ->
+      Ok(
+        path
+        <> " is not named `{package}@{version}.graded`, so no package claims "
+        <> "it and it is never selected. Rename it or drop it.",
+      )
+  }
+}
 
 pub fn no_two_catalog_files_parse_to_one_version_test() {
   let assert Ok(files) =
