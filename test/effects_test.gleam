@@ -401,6 +401,20 @@ pub fn parse_semver_roundtrip_test() {
   reparsed |> should.equal(s)
 }
 
+pub fn parse_semver_reads_the_version_before_its_suffix_test() {
+  // A pre-release or build suffix orders separately in semver and carries no
+  // `major.minor.patch` of its own, so the components are read off the prefix
+  // that does — a version whose suffix is dotted included.
+  effects.parse_semver("1.2.0") |> should.equal(#(1, 2, 0))
+  effects.parse_semver("4.2.0-rc.1") |> should.equal(#(4, 2, 0))
+  effects.parse_semver("1.2.0+build.5") |> should.equal(#(1, 2, 0))
+  effects.parse_semver("1.2.0-rc.1+build.5") |> should.equal(#(1, 2, 0))
+}
+
+pub fn parse_semver_without_numeric_components_test() {
+  effects.parse_semver("latest") |> should.equal(#(0, 0, 0))
+}
+
 // Path dependencies
 //
 // Extracting `{ path = ... }` dependencies from gleam.toml, tolerating files
