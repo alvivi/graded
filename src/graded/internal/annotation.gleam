@@ -240,6 +240,16 @@ fn parse_assume_line(rest: String) -> Result(GradedLine, Nil) {
   }
 }
 
+// Whether a path names a type field rather than a function or a module, by the
+// same shape rule an `assume` line's subject is read by. Told apart from a
+// function path by an UpperCamel second-to-last segment.
+pub fn is_field_path(path: String) -> Bool {
+  case split_assume_path(path) {
+    Ok(AssumeField(..)) -> True
+    Ok(AssumeModule(..)) | Ok(AssumeFunction(..)) | Error(Nil) -> False
+  }
+}
+
 // Split an `assume` line's path by segment count and casing:
 //
 //   `gleam/io`                 -> the whole module

@@ -19,7 +19,7 @@ import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/types.{
   type EffectSet, type Warning, Specific, UnmatchedCheckWarning,
-  UnmatchedTypeFieldWarning,
+  UnmatchedTypeFieldWarning, UnverifiedCheckShapeWarning,
 }
 import simplifile
 import support.{cleanup, write_fixture}
@@ -182,6 +182,26 @@ pub fn unqualified_check_and_type_lines_warn_test() {
 
   expect_warning(warnings, UnmatchedTypeFieldWarning(name: "Opts.on_change"))
   expect_warning(warnings, UnmatchedCheckWarning(function: "run"))
+}
+
+// A `check` whose subject is a field parses and keys nothing. Read as a
+// function name it would be a typo; read by shape it is a shape no verification
+// covers yet.
+pub fn a_field_shaped_check_warns_about_its_shape_test() {
+  let warnings =
+    lint_warnings("check_shape", [
+      #("opts.gleam", opts_module),
+      #("app.graded", "check opts.Opts.on_change : []\n"),
+    ])
+
+  expect_warning(
+    warnings,
+    UnverifiedCheckShapeWarning(name: "opts.Opts.on_change"),
+  )
+  refute_warning(
+    warnings,
+    UnmatchedCheckWarning(function: "opts.Opts.on_change"),
+  )
 }
 
 pub fn qualified_check_and_type_lines_do_not_warn_test() {

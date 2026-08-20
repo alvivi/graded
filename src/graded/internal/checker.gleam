@@ -32,7 +32,8 @@ import graded/internal/types.{
   UnmatchedFieldBoundWarning, UnmatchedFunctionExternalWarning,
   UnmatchedModuleExternalWarning, UnmatchedParamBoundWarning,
   UnmatchedTypeFieldWarning, UnresolvedFieldValue, UntraceableArgument,
-  UntraceableProducer, UntraceableReceiver, UntrackedEffectWarning, Violation,
+  UntraceableProducer, UntraceableReceiver, UntrackedEffectWarning,
+  UnverifiedCheckShapeWarning, Violation,
 }
 
 // Entry points
@@ -1554,6 +1555,11 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> ": warning: check "
       <> function
       <> " names no function in any project module — check the module qualifier; the check never runs"
+    UnverifiedCheckShapeWarning(name:) ->
+      file
+      <> ": warning: check "
+      <> name
+      <> " names a field — checks on fields are not verified yet, so the line keys nothing; an `assume` line is the trusted form"
     UnmatchedTypeFieldWarning(name:) ->
       file
       <> ": warning: assume "

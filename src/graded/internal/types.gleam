@@ -783,7 +783,13 @@ pub type Warning {
   // A `check` line whose qualified function name matches no function defined in
   // any project module — a missing module qualifier or a typo. The check then
   // never runs against any function and passes vacuously, so it's flagged.
+  // A `check` whose subject is a field rather than a function is
+  // `UnverifiedCheckShapeWarning` instead.
   UnmatchedCheckWarning(function: String)
+  // A `check` line over a shape nothing verifies yet: a field path
+  // (`m.Handler.on_click`). The line parses and keys nothing. `name` is the
+  // subject as written.
+  UnverifiedCheckShapeWarning(name: String)
   // A `type` line whose module/type/field matches no field of a project custom
   // type — unqualified, mis-qualified, or a typo. The annotation then resolves
   // nothing and the field call silently degrades to `[Unknown]`, so it's

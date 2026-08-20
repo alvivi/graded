@@ -5045,6 +5045,14 @@ pub fn format_warning_stale_external_returns_test() {
   )
 }
 
+pub fn format_warning_unverified_check_shape_test() {
+  types.UnverifiedCheckShapeWarning(name: "app.Handler.on_click")
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: check app.Handler.on_click names a field — checks on fields are not verified yet, so the line keys nothing; an `assume` line is the trusted form",
+  )
+}
+
 pub fn format_warning_dotless_external_returns_test() {
   types.DotlessExternalReturnsWarning(name: "lib")
   |> checker.format_warning("proj.graded", _)
