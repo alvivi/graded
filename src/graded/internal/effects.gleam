@@ -2178,13 +2178,8 @@ pub fn bundled_catalog_files(
   paths
   |> list.filter(fn(path) { string.ends_with(path, ".graded") })
   |> list.filter_map(fn(path) {
-    let filename =
-      path
-      |> string.split("/")
-      |> list.last()
-      |> result.unwrap("")
-      |> string.replace(".graded", "")
-    case string.split(filename, "@") {
+    let name = path |> filepath.base_name |> filepath.strip_extension
+    case string.split(name, "@") {
       [package, version] ->
         Ok(CatalogFile(package:, version:, parsed: parse_semver(version), path:))
       _ -> Error(Nil)
@@ -2192,18 +2187,35 @@ pub fn bundled_catalog_files(
   })
 }
 
-// The file `package` resolves to for its `installed` version: the highest
-// bundled version at or below it, else the highest bundled. Ties are broken by
-// input order; the release lint guarantees bundled files never tie.
+// Which rule chose a package's catalog file. Both variants carry it as `file`,
+// so a caller that only wants the file reads that field and ignores the rule.
+pub type CatalogSelection {
+  // A bundled version at or below the installed one, the highest such.
+  Selected(file: CatalogFile)
+  // Nothing bundled sits at or below the installed version, so the highest
+  // bundled one stands in.
+  HighestBundled(file: CatalogFile)
+}
+
+// The file `package` resolves to for its `installed` version, and which of the
+// two rules chose it. Ties are broken by input order; the release lint
+// guarantees bundled files never tie.
 pub fn select_catalog_file(
   files: List(CatalogFile),
   package: String,
   installed: String,
-) -> Result(CatalogFile, Nil) {
-  files
-  |> list.filter(fn(file) { file.package == package })
-  |> list.map(fn(file) { #(file.parsed, file) })
-  |> pick_best_version(parse_semver(installed))
+) -> Result(CatalogSelection, Nil) {
+  let installed = parse_semver(installed)
+  use file <- result.map(
+    files
+    |> list.filter(fn(file) { file.package == package })
+    |> list.map(fn(file) { #(file.parsed, file) })
+    |> pick_best_version(installed),
+  )
+  case semver_lte(file.parsed, installed) {
+    True -> Selected(file)
+    False -> HighestBundled(file)
+  }
 }
 
 // Each selected file as `#(package, path)`: the package name the catalog's
@@ -2226,7 +2238,7 @@ fn resolve_catalog_files(
       Error(Nil) -> selected
       Ok(installed) ->
         case select_catalog_file(files, package, installed) {
-          Ok(file) -> [#(package, file.path), ..selected]
+          Ok(selection) -> [#(package, selection.file.path), ..selected]
           Error(Nil) -> selected
         }
     }

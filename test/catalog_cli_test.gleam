@@ -139,20 +139,62 @@ pub fn the_listing_without_a_manifest_test() {
 // `io.println` and the output has exactly one trailing newline dropped for it.
 
 pub fn the_printed_file_is_the_header_and_the_bytes_test() {
-  use catalog_dir, manifest <- with_catalog(
+  expect_show(
     "build/catalog_cli_show",
     Some(manifest_for("lustre", "5.7.0")),
+    show("lustre", None),
+    "lustre@5.0.0.graded — selected for lustre 5.7.0 in manifest.toml",
+    lustre_five,
   )
-  let output = catalog_report(catalog_dir, manifest, show("lustre", None))
-  should.equal(
-    output <> "\n",
-    "// lustre@5.0.0.graded — selected for lustre 5.7.0 in manifest.toml\n"
-      <> newline_terminated(lustre_five),
+}
+
+pub fn the_selected_file_follows_the_installed_version_test() {
+  expect_show(
+    "build/catalog_cli_show_lower",
+    Some(manifest_for("lustre", "4.5.0")),
+    show("lustre", None),
+    "lustre@4.0.0.graded — selected for lustre 4.5.0 in manifest.toml",
+    lustre_four,
+  )
+}
+
+pub fn the_fall_back_prints_the_highest_bundled_file_test() {
+  expect_show(
+    "build/catalog_cli_show_fallback",
+    Some(manifest_for("lustre", "3.0.0")),
+    show("lustre", None),
+    "lustre@5.0.0.graded — highest bundled version; no bundled lustre ≤ 3.0.0",
+    lustre_five,
+  )
+}
+
+pub fn an_explicit_version_ignores_the_manifest_test() {
+  // The manifest installs 5.7.0, which the implicit form would resolve to the
+  // 5.0.0 file: the explicit form neither consults it nor re-selects.
+  expect_show(
+    "build/catalog_cli_show_explicit_installed",
+    Some(manifest_for("lustre", "5.7.0")),
+    show("lustre", Some("4.0.0")),
+    "lustre@4.0.0.graded — bundled version, as requested",
+    lustre_four,
+  )
+}
+
+pub fn a_file_ending_in_no_newline_gains_one_test() {
+  // `argv@1.1.0` ends in none, so `println` supplies it — the one place the
+  // printed bytes differ from the file's.
+  expect_show(
+    "build/catalog_cli_show_none",
+    Some(manifest_for("lustre", "5.7.0")),
+    show("argv", Some("1.1.0")),
+    "argv@1.1.0.graded — bundled version, as requested",
+    argv_entry,
   )
 }
 
 pub fn a_file_ending_in_two_newlines_keeps_both_test() {
-  // `lustre@5.0.0` ends in two: an over-eager trim would eat the second.
+  // `lustre@5.0.0` ends in two: an over-eager trim would eat the second, which
+  // the equation above cannot see because it appends the one `println` adds.
   use catalog_dir, manifest <- with_catalog(
     "build/catalog_cli_show_two",
     Some(manifest_for("lustre", "5.7.0")),
@@ -160,56 +202,6 @@ pub fn a_file_ending_in_two_newlines_keeps_both_test() {
   catalog_report(catalog_dir, manifest, show("lustre", Some("5.0.0")))
   |> string.ends_with("[Dom]\n")
   |> should.be_true()
-}
-
-pub fn a_file_ending_in_no_newline_gains_one_test() {
-  // `argv@1.1.0` ends in none, so `println` supplies it — the one place the
-  // printed bytes differ from the file's.
-  use catalog_dir, manifest <- with_catalog(
-    "build/catalog_cli_show_none",
-    Some(manifest_for("lustre", "5.7.0")),
-  )
-  let output =
-    catalog_report(catalog_dir, manifest, show("argv", Some("1.1.0")))
-  should.equal(
-    output <> "\n",
-    "// argv@1.1.0.graded — bundled version, as requested\n"
-      <> newline_terminated(argv_entry),
-  )
-}
-
-pub fn the_printed_file_parses_as_a_spec_test() {
-  use catalog_dir, manifest <- with_catalog(
-    "build/catalog_cli_show_parses",
-    Some(manifest_for("lustre", "5.7.0")),
-  )
-  catalog_report(catalog_dir, manifest, show("lustre", None))
-  |> annotation.parse_file
-  |> should.be_ok
-}
-
-pub fn the_selected_file_follows_the_installed_version_test() {
-  use catalog_dir, manifest <- with_catalog(
-    "build/catalog_cli_show_lower",
-    Some(manifest_for("lustre", "4.5.0")),
-  )
-  should.equal(
-    catalog_report(catalog_dir, manifest, show("lustre", None)) <> "\n",
-    "// lustre@4.0.0.graded — selected for lustre 4.5.0 in manifest.toml\n"
-      <> newline_terminated(lustre_four),
-  )
-}
-
-pub fn the_fall_back_prints_the_highest_bundled_file_test() {
-  use catalog_dir, manifest <- with_catalog(
-    "build/catalog_cli_show_fallback",
-    Some(manifest_for("lustre", "3.0.0")),
-  )
-  should.equal(
-    catalog_report(catalog_dir, manifest, show("lustre", None)) <> "\n",
-    "// lustre@5.0.0.graded — highest bundled version; no bundled lustre ≤ 3.0.0\n"
-      <> newline_terminated(lustre_five),
-  )
 }
 
 pub fn an_explicit_version_needs_no_manifest_test() {
@@ -229,17 +221,29 @@ pub fn an_explicit_version_needs_no_manifest_test() {
   )
 }
 
-pub fn an_explicit_version_ignores_the_manifest_test() {
-  // The manifest installs 5.7.0, which the implicit form would resolve to the
-  // 5.0.0 file: the explicit form neither consults it nor re-selects.
+pub fn the_printed_file_parses_as_a_spec_test() {
   use catalog_dir, manifest <- with_catalog(
-    "build/catalog_cli_show_explicit_installed",
+    "build/catalog_cli_show_parses",
     Some(manifest_for("lustre", "5.7.0")),
   )
+  catalog_report(catalog_dir, manifest, show("lustre", None))
+  |> annotation.parse_file
+  |> should.be_ok
+}
+
+// What `report` puts on stdout for `request`: the header line, then the file,
+// with the single trailing newline `io.println` appends.
+fn expect_show(
+  root: String,
+  manifest: Option(String),
+  request: cli.CatalogRequest,
+  header: String,
+  body: String,
+) -> Nil {
+  use catalog_dir, manifest <- with_catalog(root, manifest)
   should.equal(
-    catalog_report(catalog_dir, manifest, show("lustre", Some("4.0.0"))) <> "\n",
-    "// lustre@4.0.0.graded — bundled version, as requested\n"
-      <> newline_terminated(lustre_four),
+    catalog_report(catalog_dir, manifest, request) <> "\n",
+    "// " <> header <> "\n" <> newline_terminated(body),
   )
 }
 
@@ -364,15 +368,15 @@ pub fn the_seam_prints_the_selected_bundled_file_test() {
     effects.bundled_catalog_files(effects.catalog_directory())
   let assert Ok(installed) =
     dict.get(effects.manifest_versions("manifest.toml"), "gleam_stdlib")
-  let assert Ok(selected) =
+  let assert Ok(selection) =
     effects.select_catalog_file(files, "gleam_stdlib", installed)
-  let assert Ok(contents) = simplifile.read(selected.path)
+  let assert Ok(contents) = simplifile.read(selection.file.path)
   let assert Ok(output) =
     graded.run_catalog(cli.ShowCatalog("gleam_stdlib", None, "src"))
 
   output
   |> string.starts_with(
-    "// gleam_stdlib@" <> selected.version <> ".graded — selected for ",
+    "// gleam_stdlib@" <> selection.file.version <> ".graded — selected for ",
   )
   |> should.be_true()
   { output <> "\n" }

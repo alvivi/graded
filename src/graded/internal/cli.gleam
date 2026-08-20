@@ -137,14 +137,11 @@ pub fn parse_catalog_args(
 fn split_package_version(
   subject: String,
 ) -> Result(#(String, Option(String)), ArgumentError) {
+  use <- bool.guard(when: subject == "", return: Error(InvalidPackage(subject)))
   case string.split_once(subject, "@") {
+    Error(Nil) -> Ok(#(subject, None))
     Ok(#("", _)) | Ok(#(_, "")) -> Error(InvalidPackage(subject))
     Ok(#(package, version)) -> Ok(#(package, Some(version)))
-    Error(Nil) ->
-      case subject {
-        "" -> Error(InvalidPackage(subject))
-        package -> Ok(#(package, None))
-      }
   }
 }
 
