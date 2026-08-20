@@ -1,5 +1,6 @@
 import gleam/bool
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import graded/internal/answer
@@ -23,6 +24,9 @@ pub type ArgumentError {
   UnexpectedArgument(argument: String)
   // `--format=` given a value that names no output format.
   UnknownFormat(value: String)
+  // A token in the package position that names no package: an empty package or
+  // an empty version around the `@`.
+  InvalidPackage(argument: String)
 }
 
 // Decode the optional directory argument shared by check/infer/format/pack
@@ -100,6 +104,50 @@ pub fn parse_why_args(
   parse_name_and_directory("why", rest)
 }
 
+// What `graded catalog` was asked for: the whole bundled catalog, or one
+// package's file — at the version the project installs, or at the version the
+// argument named.
+pub type CatalogRequest {
+  ListCatalog
+  ShowCatalog(package: String, version: Option(String), directory: String)
+}
+
+// Decode the arguments of `graded catalog [package[@version]] [directory]`. The
+// package comes first, so a lone argument is always read as one and the listing
+// cannot be pointed at another project; the directory that may follow it
+// follows `parse_directory_args`' rules. `@` splits the package from the
+// version at its first occurrence, so a version may carry one of its own; a
+// half left empty on either side names no package.
+pub fn parse_catalog_args(
+  rest: List(String),
+) -> Result(CatalogRequest, ArgumentError) {
+  case rest {
+    [] -> Ok(ListCatalog)
+    [subject, ..directory_args] -> {
+      use <- reject_option(subject)
+      use #(package, version) <- result.try(split_package_version(subject))
+      use directory <- result.map(parse_directory_args(directory_args))
+      ShowCatalog(package:, version:, directory:)
+    }
+  }
+}
+
+// Split a `package` or `package@version` token. Neither half may be empty: a
+// bare `@`, a trailing one, or a leading one names no package.
+fn split_package_version(
+  subject: String,
+) -> Result(#(String, Option(String)), ArgumentError) {
+  case string.split_once(subject, "@") {
+    Ok(#("", _)) | Ok(#(_, "")) -> Error(InvalidPackage(subject))
+    Ok(#(package, version)) -> Ok(#(package, Some(version)))
+    Error(Nil) ->
+      case subject {
+        "" -> Error(InvalidPackage(subject))
+        package -> Ok(#(package, None))
+      }
+  }
+}
+
 // The positions a name-taking command shares: a required name, then the
 // optional directory `parse_directory_args` decodes. `command` names the one
 // asking, so a missing name reports the command the user typed.
@@ -148,6 +196,8 @@ pub fn format_argument_error(error: ArgumentError) -> String {
     UnexpectedArgument(argument:) -> "unexpected argument `" <> argument <> "`"
     UnknownFormat(value:) ->
       "unknown format `" <> value <> "` (expected `prose` or `graded`)"
+    InvalidPackage(argument:) ->
+      "expected a package or package@version, got `" <> argument <> "`"
   }
 }
 
