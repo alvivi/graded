@@ -2091,7 +2091,7 @@ check app.calls_via_provenance : [Disk]
 assume ffi.disk_read : [Disk]
 assume ffi.make : []
 assume ffi.builds : []
-returns ffi.make : []
+effects ffi.make : [] where returns : []
 ",
     ),
     #(
@@ -2170,7 +2170,7 @@ pub fn a_dependency_returns_line_for_its_own_external_is_refused_test() {
     #("proj.graded", "check app.wrapper : []\n"),
     #(
       "build/packages/dep/dep.graded",
-      "assume dep/ffi.make : []\nreturns dep/ffi.make : []\n",
+      "assume dep/ffi.make : []\neffects dep/ffi.make : [] where returns : []\n",
     ),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
@@ -2808,7 +2808,7 @@ check app.calls_built_field : [Disk]
 assume ffi.disk_read : [Disk]
 assume ffi.make : []
 assume ffi.builds : []
-external returns ffi.make : [Disk]
+assume ffi.make where returns : [Disk]
 ",
     ),
     #(
@@ -2868,7 +2868,7 @@ pub fn a_polymorphic_declared_return_is_not_loaded_test() {
       "proj.graded",
       "check app.calls_wrapped : []
 assume ffi.wrap : []
-external returns ffi.wrap : [f]
+assume ffi.wrap where returns : [f]
 ",
     ),
     #(
@@ -2909,7 +2909,7 @@ pub fn a_declared_return_out_of_reach_answers_nothing_test() {
       "proj.graded",
       "check app.calls_returned_operator : []
 assume ffi.make : []
-external returns ffi.make : []
+assume ffi.make where returns : []
 ",
     ),
     #(
@@ -2965,8 +2965,8 @@ pub fn a_declared_return_beside_a_running_fallback_answers_nothing_test() {
 check app.calls_covered : []
 assume ffi.partial : []
 assume ffi.covered : []
-external returns ffi.partial : []
-external returns ffi.covered : []
+assume ffi.partial where returns : []
+assume ffi.covered where returns : []
 ",
     ),
     #(
@@ -3025,9 +3025,8 @@ pub fn infer_and_check_agree_about_a_declared_return_test() {
     #(
       "proj.graded",
       "check app.caller : [Net]
-assume ffi.make_client : [Net]
-external returns ffi.make_client : [Net]
-returns ffi.make_client : [Disk]
+assume ffi.make_client : [Net] where returns : [Net]
+effects ffi.make_client : [] where returns : [Disk]
 ",
     ),
     #(
@@ -3055,7 +3054,7 @@ pub fn caller() -> Nil {
   let assert Ok(written) = simplifile.read(root <> "/proj.graded")
   written |> string.contains("effects app.caller : [Net]") |> should.be_true()
   written
-  |> string.contains("external returns ffi.make_client : [Net]")
+  |> string.contains("assume ffi.make_client : [Net] where returns : [Net]")
   |> should.be_true()
   support.cleanup(root)
 }
@@ -3072,7 +3071,7 @@ pub fn a_dependency_declares_what_its_own_producer_returns_test() {
     #(
       "build/packages/dep/dep.graded",
       "assume dep/ffi.make : []
-external returns dep/ffi.make : [Disk]
+assume dep/ffi.make where returns : [Disk]
 ",
     ),
     #(
@@ -3118,7 +3117,7 @@ pub fn make() -> fn() -> Nil
         ),
       ],
       "assume dep.make : []
-external returns dep.make : [Disk]
+assume dep.make where returns : [Disk]
 ",
       "check app.wrapper : []\n",
       "import dep
@@ -3146,7 +3145,7 @@ pub fn a_dependency_declares_a_return_for_its_own_gleam_function_test() {
     #(
       "build/packages/dep/dep.graded",
       "effects dep/ffi.make : []
-external returns dep/ffi.make : [Disk]
+assume dep/ffi.make where returns : [Disk]
 ",
     ),
     #(
@@ -3188,7 +3187,7 @@ pub fn a_stale_external_returns_line_is_ignored_and_repaired_test() {
     #(
       "proj.graded",
       "check app.caller : []
-external returns lib.make : [Disk]
+assume lib.make where returns : [Disk]
 ",
     ),
     #(
@@ -3220,7 +3219,7 @@ pub fn caller() -> Nil {
       string.starts_with(line, "- ") || string.starts_with(line, "+ ")
     })
   changed
-  |> list.contains("- external returns lib.make : [Disk]")
+  |> list.contains("- assume lib.make where returns : [Disk]")
   |> should.be_true()
   changed
   |> list.contains("+ effects lib.make : [] where returns : []")
@@ -3241,7 +3240,7 @@ pub fn a_declared_return_leaves_the_effects_channel_alone_test() {
       "proj.graded",
       "check app.caller : []
 effects lib.make : [Stdout]
-external returns lib.make : [Disk]
+assume lib.make where returns : [Disk]
 ",
     ),
     #(
@@ -3330,7 +3329,7 @@ pub fn why_names_the_declaration_that_resolved_a_producer_test() {
       "proj.graded",
       "check app.caller : [Net]
 assume ffi.make_client : [Net]
-external returns ffi.make_client : [Net]
+assume ffi.make_client where returns : [Net]
 ",
     ),
     #(
@@ -3384,7 +3383,7 @@ pub fn the_fixture_declared_producer_resolves_from_its_line_test() {
 // leaves it to inference — which writes no summary for an `@external` at all.
 const declared_same_module_spec = "check ffi.caller : [Net]
 assume ffi.make_client : [Net]
-external returns ffi.make_client : [Net]
+assume ffi.make_client where returns : [Net]
 "
 
 const inferred_same_module_spec = "check ffi.caller : [Net]
@@ -4338,10 +4337,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
     #("pdep/gleam.toml", "name = \"pdep\"\n"),
-    #(
-      "pdep/pdep.graded",
-      "effects pdep/ffi.make : []\nreturns pdep/ffi.make : []\n",
-    ),
+    #("pdep/pdep.graded", "effects pdep/ffi.make : [] where returns : []\n"),
     #(
       "pdep/src/pdep/ffi.gleam",
       "@target(erlang)
@@ -4378,7 +4374,7 @@ pub fn a_spec_less_path_dependency_cannot_inherit_a_stale_operator_test() {
     #("proj/proj.graded", "check app.wrapper : []\n"),
     #(
       "proj/build/packages/dep/dep.graded",
-      "assume dep/ffi.make : []\nreturns dep/ffi.make : []\n",
+      "assume dep/ffi.make : []\neffects dep/ffi.make : [] where returns : []\n",
     ),
     #(
       "proj/build/packages/dep/src/dep/ffi.gleam",
@@ -8278,7 +8274,10 @@ pub fn a_dependency_cannot_declare_a_return_for_the_consumers_code_test() {
 assume lib.write : [Stdout]
 ",
     ),
-    #("build/packages/dep/dep.graded", "external returns lib.make : [Net]\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "assume lib.make where returns : [Net]\n",
+    ),
     #(
       "build/packages/dep/src/dep.gleam",
       "pub fn nothing() -> Nil {\n  Nil\n}\n",
@@ -8347,7 +8346,7 @@ pub fn use_it() -> Nil {
       None,
       "check app.wrapper : []
 assume ffi.make : []
-external returns ffi.make : [Disk]
+assume ffi.make where returns : [Disk]
 ",
       "import helper
 
@@ -8380,7 +8379,7 @@ pub fn make() -> fn() -> Nil
     #(
       "dep.graded",
       "assume dep/ffi.make : []
-external returns dep/ffi.make : [Net]
+assume dep/ffi.make where returns : [Net]
 ",
     ),
   ])
@@ -8394,7 +8393,7 @@ external returns dep/ffi.make : [Net]
     #(
       "build/packages/dep/dep.graded",
       "assume dep/ffi.make : []
-external returns dep/ffi.make : [Stdout]
+assume dep/ffi.make where returns : [Stdout]
 ",
     ),
     #(
@@ -8432,7 +8431,7 @@ pub fn one_packages_returns_line_cannot_bury_anothers_declaration_test() {
     #(
       "build/packages/alib/alib.graded",
       "effects alib/mod.make : []
-external returns alib/mod.make : [Stdout]
+assume alib/mod.make where returns : [Stdout]
 ",
     ),
     #(
@@ -8442,7 +8441,10 @@ external returns alib/mod.make : [Stdout]
 }
 ",
     ),
-    #("build/packages/zlib/zlib.graded", "returns alib/mod.make : [Net]\n"),
+    #(
+      "build/packages/zlib/zlib.graded",
+      "effects alib/mod.make : [] where returns : [Net]\n",
+    ),
     #(
       "build/packages/zlib/src/zlib.gleam",
       "pub fn nothing() -> Nil {\n  Nil\n}\n",

@@ -1693,7 +1693,7 @@ pub fn a_dependency_returns_line_for_its_own_external_is_refused_test() {
     installed_dep_over_source(
       "build/eff_dep_returns",
       "dep",
-      "assume dep/ffi.make : []\nreturns dep/ffi.make : []\nreturns dep/ffi.plain : []\n",
+      "assume dep/ffi.make : []\neffects dep/ffi.make : [] where returns : []\neffects dep/ffi.plain : [] where returns : []\n",
       "",
       [
         #(QualifiedName("dep/ffi", "make"), foreign_declared_everywhere()),
@@ -1798,8 +1798,11 @@ pub fn one_dep_specs_returns_line_cannot_bury_anothers_declaration_test() {
   // specs as it does within one.
   let root = "build/eff_cross_package_stray_returns"
   write_fixture(root, [
-    #(dep_spec_path("alib"), "external returns alib/mod.make : [Stdout]\n"),
-    #(dep_spec_path("zlib"), "returns alib/mod.make : [Net]\n"),
+    #(dep_spec_path("alib"), "assume alib/mod.make where returns : [Stdout]\n"),
+    #(
+      dep_spec_path("zlib"),
+      "effects alib/mod.make : [] where returns : [Net]\n",
+    ),
   ])
   let kb =
     effects.load_knowledge_base(
