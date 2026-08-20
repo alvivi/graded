@@ -2199,69 +2199,70 @@ pub type CatalogSelection {
 }
 
 // The file `package` resolves to for its `installed` version, and which of the
-// two rules chose it. Ties are broken by input order; the release lint
-// guarantees bundled files never tie.
+// two rules chose it. Two files whose versions parse alike are ordered by path,
+// so every caller reaches the same file whatever order it holds the catalog in.
 pub fn select_catalog_file(
   files: List(CatalogFile),
   package: String,
   installed: String,
 ) -> Result(CatalogSelection, Nil) {
-  let installed = parse_semver(installed)
-  use file <- result.map(
+  use pick <- result.map(
     files
     |> list.filter(fn(file) { file.package == package })
+    |> list.sort(fn(left, right) {
+      compare_semver(left.parsed, right.parsed)
+      |> order.break_tie(string.compare(left.path, right.path))
+    })
     |> list.map(fn(file) { #(file.parsed, file) })
-    |> pick_best_version(installed),
+    |> pick_best_version(parse_semver(installed)),
   )
-  case semver_lte(file.parsed, installed) {
-    True -> Selected(file)
-    False -> HighestBundled(file)
+  case pick {
+    AtOrBelowInstalled(file) -> Selected(file)
+    HighestAvailable(file) -> HighestBundled(file)
   }
 }
 
-// Each selected file as `#(package, path)`: the package name the catalog's
-// `{package}@{version}.graded` file name carries, which the fold records as the
-// origin of that file's entries.
+// The file each installed package resolves to, as `#(package, path)`: the
+// package name the catalog's `{package}@{version}.graded` file name carries,
+// which the fold records as the origin of that file's entries. An installed
+// package the catalog does not bundle selects nothing.
 fn resolve_catalog_files(
   catalog_files: List(CatalogFile),
   installed_versions: Dict(String, String),
 ) -> List(#(String, String)) {
-  // Group by package name
-  let grouped =
-    list.fold(catalog_files, dict.new(), fn(accumulator, file) {
-      let existing = dict.get(accumulator, file.package) |> result.unwrap([])
-      dict.insert(accumulator, file.package, [file, ..existing])
-    })
-
-  // For each installed package, pick best catalog version
-  dict.fold(grouped, [], fn(selected, package, files) {
-    case dict.get(installed_versions, package) {
+  dict.fold(installed_versions, [], fn(selected, package, installed) {
+    case select_catalog_file(catalog_files, package, installed) {
+      Ok(selection) -> [#(package, selection.file.path), ..selected]
       Error(Nil) -> selected
-      Ok(installed) ->
-        case select_catalog_file(files, package, installed) {
-          Ok(selection) -> [#(package, selection.file.path), ..selected]
-          Error(Nil) -> selected
-        }
     }
   })
+}
+
+// Which of the two rules picked a version, carrying what it picked. A caller
+// that renders the pick reads the rule off this rather than re-deriving it, so
+// the two cannot disagree.
+pub type VersionPick(a) {
+  // The highest version at or below the installed one.
+  AtOrBelowInstalled(value: a)
+  // Nothing sits at or below the installed version, so the highest available
+  // one stands in.
+  HighestAvailable(value: a)
 }
 
 pub fn pick_best_version(
   versions: List(#(#(Int, Int, Int), a)),
   installed: #(Int, Int, Int),
-) -> Result(a, Nil) {
-  // Pick highest version ≤ installed; if none, pick highest available
+) -> Result(VersionPick(a), Nil) {
   let eligible =
     list.filter(versions, fn(version) { semver_lte(version.0, installed) })
     |> list.sort(fn(left, right) { compare_semver(right.0, left.0) })
   case eligible {
-    [best, ..] -> Ok(best.1)
+    [best, ..] -> Ok(AtOrBelowInstalled(best.1))
     [] ->
-      // No entry ≤ installed: fall back to the highest available version.
       case
         list.sort(versions, fn(left, right) { compare_semver(right.0, left.0) })
       {
-        [best, ..] -> Ok(best.1)
+        [best, ..] -> Ok(HighestAvailable(best.1))
         [] -> Error(Nil)
       }
   }

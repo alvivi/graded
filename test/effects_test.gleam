@@ -1279,13 +1279,19 @@ pub fn pick_best_version_eligible_test() {
     ),
   )
   case effects.pick_best_version(versions, installed) {
-    Ok(label) -> {
-      let assert Ok(picked) = list.find(versions, fn(v) { v.1 == label })
+    Ok(pick) -> {
+      let assert Ok(picked) = list.find(versions, fn(v) { v.1 == pick.value })
       let has_eligible =
         list.any(versions, fn(v) { effects.semver_lte(v.0, installed) })
-      case has_eligible {
-        True -> effects.semver_lte(picked.0, installed) |> should.be_true()
-        False -> Nil
+      // The rule the pick reports is the rule that fired, so a caller
+      // rendering it says what the pick actually did.
+      case has_eligible, pick {
+        True, effects.AtOrBelowInstalled(_) ->
+          effects.semver_lte(picked.0, installed) |> should.be_true()
+        False, effects.HighestAvailable(_) -> Nil
+        True, effects.HighestAvailable(_)
+        | False, effects.AtOrBelowInstalled(_)
+        -> should.fail()
       }
     }
     Error(Nil) -> Nil

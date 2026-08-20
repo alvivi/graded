@@ -7,13 +7,16 @@
 // catalog.
 
 import gleam/dict
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleeunit/should
 import graded
 import graded/internal/annotation
 import graded/internal/cli
+import graded/internal/effect_term
 import graded/internal/effects
+import graded/internal/types
 import simplifile
 import support
 
@@ -381,6 +384,46 @@ pub fn the_seam_prints_the_selected_bundled_file_test() {
   |> should.be_true()
   { output <> "\n" }
   |> string.ends_with("\n" <> newline_terminated(contents))
+  |> should.be_true()
+}
+
+// Two files one version apart
+//
+// Bundled versions that parse alike cannot be ordered by version, so the file
+// the command names and the file the resolver folds have to be settled by
+// something both share.
+
+pub fn a_tie_selects_one_file_for_both_paths_test() {
+  let root =
+    support.write_fixture("build/catalog_cli_tie", [
+      #("catalog/foo@1.0.0.graded", "external effects foo/x.run : [Release]\n"),
+      #(
+        "catalog/foo@1.0.0-rc1.graded",
+        "external effects foo/x.run : [Prerelease]\n",
+      ),
+      #("manifest.toml", manifest_for("foo", "1.0.0")),
+    ])
+  let printed =
+    catalog_report(
+      root <> "/catalog",
+      root <> "/manifest.toml",
+      show("foo", None),
+    )
+  let #(function_effects, _module_effects, _params, _type_fields) =
+    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
+  support.cleanup(root)
+
+  // Each file declares the same function with an effect only it names, so the
+  // effect the knowledge base answers with says which file the resolver folded.
+  let assert Ok(#(term, _origin)) =
+    dict.get(function_effects, types.QualifiedName("foo/x", "run"))
+  let assert Ok(resolved) =
+    ["Release", "Prerelease"]
+    |> list.find(fn(label) {
+      effect_term.to_effect_set(term) == types.from_labels([label])
+    })
+  printed
+  |> string.contains("[" <> resolved <> "]")
   |> should.be_true()
 }
 
