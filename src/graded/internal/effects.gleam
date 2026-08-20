@@ -353,7 +353,7 @@ pub fn with_externals(
   )
 }
 
-// The two tiers a set of `external effects` lines feeds: function-level entries
+// The two tiers a set of `assume` lines feeds: function-level entries
 // keyed by `QualifiedName`, module-level ones keyed by module name.
 type ExternalTiers =
   #(
@@ -415,7 +415,7 @@ pub fn lookup(
 // running fallback body's own effects, because that body is ordinary Gleam that
 // runs on the targets the declaration doesn't cover. A consumer never walks a
 // dependency's bodies, so the union has no second operand there and the
-// declaration alone would read as the whole story: `external effects dep.run :
+// declaration alone would read as the whole story: `assume dep.run :
 // []` over an `@external(javascript, …)` whose Erlang fallback prints would be
 // believed pure on Erlang. `[Unknown]` is that missing operand — the body ran,
 // and what it did is not knowable from here.
@@ -906,7 +906,7 @@ pub fn is_value_opaque(
   || is_dependency_foreign_function(knowledge_base, name)
 }
 
-// Whether an origin speaks for code graded cannot see. An `external effects`
+// Whether an origin speaks for code graded cannot see. An `assume`
 // line, a module-level external and a catalog entry all declare what foreign
 // code does; an `effects` line does not — for an `@external` it is inference
 // over a body the foreign implementation needn't match, so trusting one would
@@ -1604,7 +1604,7 @@ pub fn load_spec_effects_from_file(
 //
 // - `check` lines are skipped: their bounds are a budget scoped to that check,
 //   not a global fact about the function, and they don't decide the term.
-// - functions declared `external effects <module>.<function>` record an empty
+// - functions declared `assume <module>.<function>` record an empty
 //   entry: the external term wins in `all_effects` and is ground by
 //   construction, so any bounds pairing with it come from another source.
 //
@@ -1671,7 +1671,7 @@ pub type DepSpec {
 // scan and path-dependency enrichment so both dep kinds load identical metadata —
 // effects alone would drop the bounds a higher-order callee needs to discharge
 // its callback's effect, the `type` fields a capability record on the dep's own
-// types needs to resolve at a consumer's call site, or the `external effects`
+// types needs to resolve at a consumer's call site, or the `assume`
 // lines the dep author wrote for its FFI.
 pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
   case read_spec_file(config.spec_file_for(dep_root, package_name)) {
@@ -1726,14 +1726,14 @@ fn package_modules(dep_root: String) -> Set(String) {
 // from believing about its own `@external` — and a `returns` line for it
 // describes a value only that implementation produces, so it is dropped whether
 // or not a declaration also covers the name. What survives for a declared name
-// is the declaration: the dep's own `external effects` line, an
+// is the declaration: the dep's own `assume` line, an
 // `external returns` line, a module-level external, or the catalog entry
 // underneath.
 //
 // `declared_returns` is therefore not weighed against the dep's own foreign
 // scan. The line is the dep author's declaration of what their producer hands
 // back, and arbitrating it against their own source is their `infer`'s job, not
-// their consumer's — the same reading that keeps their `external effects` line
+// their consumer's — the same reading that keeps their `assume` line
 // for a Gleam-bodied function of their own.
 //
 // Both returns maps are weighed against a second question, which the effects
@@ -1790,7 +1790,7 @@ fn sanitize_dep_spec(
 // shipped it: the function-keyed terms for `all_effects` and the module-keyed
 // ones for the `module_effects` fallback tier.
 //
-// A function's `external effects` line wins over an `effects` line for the same
+// A function's `assume` line wins over an `effects` line for the same
 // name. `graded infer` writes no `effects` line for an externally-declared
 // function, so a spec carrying both has a stale one, and only the external's
 // ground term pairs with the empty bounds `load_spec_params_from_file` records
@@ -1805,7 +1805,7 @@ fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> ExternalTiers {
 }
 
 // Fold everything a path dependency's spec declares — terms, bounds, externals,
-// returned-operator summaries and `type` lines — into the knowledge base under
+// returned-operator summaries and field `assume` lines — into the knowledge base under
 // the documented resolution order: below per-function user externals and the
 // project's own entries, above the catalog. An existing entry is overridden only
 // when its origin is the catalog, so a consumer's own declarations survive a
@@ -1972,7 +1972,7 @@ type Dependencies {
 // and parse it *once*, folding its qualified `effects`/`check` annotations
 // into the global effect/param maps, its `returns` lines into the
 // returned-operator map, its `type` field lines into a flat list, and its
-// `external effects` lines into the function and module tiers. Packages
+// `assume` lines into the function and module tiers. Packages
 // with no spec file are silently skipped — same fail-soft semantics as the
 // catalog and the old per-module reader. Across packages the later one in the
 // directory fold wins, as effects lines do.
@@ -2104,7 +2104,7 @@ pub fn load_catalog(
     CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new(), dict.new(), [])
   let acc = list.fold(selected, initial, fold_catalog_file)
   // Across files, an `effects` annotation takes precedence over another
-  // package's per-function `external effects` marker; within one file the
+  // package's per-function `assume` marker; within one file the
   // external already won, in `fold_catalog_file`. Each term carries the package
   // that wrote it, so the winner of this merge brings its own origin. The
   // bounds are merged by the same rule and in the same order, so the file whose
@@ -2118,7 +2118,7 @@ pub fn load_catalog(
 }
 
 // Fold one selected catalog file — its package name and path — into the
-// accumulator. `external effects` lines feed module-level pure markers and
+// accumulator. `assume` lines feed module-level pure markers and
 // specific function effects; `effects` lines with param bounds feed polymorphic
 // higher-order entries. Both kinds of function entry are tagged
 // `Catalog(package)`. Files that fail to read or parse are silently skipped.

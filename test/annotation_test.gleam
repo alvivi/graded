@@ -471,6 +471,63 @@ pub fn assume_over_an_empty_segment_is_invalid_test() {
   |> should.equal(Error(annotation.InvalidLine(1, "assume .f : []")))
 }
 
+// Retired spellings
+//
+// A line in a spelling this version no longer reads is refused by name, with
+// the rewrite. No such line parses as anything else, so nothing is silently
+// reinterpreted.
+
+pub fn a_type_line_is_a_retired_spelling_test() {
+  let input = "type m.Handler.on_click : [Dom]"
+  annotation.parse_file(input)
+  |> should.equal(
+    Error(annotation.RetiredSpelling(1, input, annotation.RetiredType)),
+  )
+  annotation.describe_parse_error(annotation.RetiredSpelling(
+    1,
+    input,
+    annotation.RetiredType,
+  ))
+  |> should.equal(
+    "1: type m.Handler.on_click : [Dom]\n  `type <path> : <effects>` is retired; write `assume <path> : <effects>`",
+  )
+}
+
+pub fn an_external_effects_line_is_a_retired_spelling_test() {
+  let input = "external effects m/ffi.send : [Http]"
+  annotation.parse_file(input)
+  |> should.equal(
+    Error(annotation.RetiredSpelling(
+      1,
+      input,
+      annotation.RetiredExternalEffects,
+    )),
+  )
+  annotation.describe_parse_error(annotation.RetiredSpelling(
+    1,
+    input,
+    annotation.RetiredExternalEffects,
+  ))
+  |> should.equal(
+    "1: external effects m/ffi.send : [Http]\n  `external effects <path> : <effects>` is retired; write `assume <path> : <effects>`",
+  )
+}
+
+pub fn no_retired_line_parses_as_anything_test() {
+  // Every retired opener is refused outright — none falls through to another
+  // arm and keys something the author did not write.
+  [
+    "type m.Handler.on_click : [Dom]",
+    "type Handler.on_click : [Dom]",
+    "external effects m/ffi.send : [Http]",
+    "external effects m/ffi : [Http]",
+  ]
+  |> list.each(fn(line) {
+    annotation.parse_file(line)
+    |> should.be_error
+  })
+}
+
 pub fn format_sorted_orders_assume_then_check_then_effects_test() {
   let input =
     "effects m.g : []

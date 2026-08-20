@@ -258,7 +258,7 @@ pub type AnnotationKind {
 // `name` is the bare parameter name (`f`) for a parameter bound, or a
 // `param.field` path (`handler.on_click`) for a *field bound* — a hand-written
 // declaration of a record field's effect at the function boundary, the
-// boundary-scoped counterpart to a `type` line. A field bound's path carries a
+// boundary-scoped counterpart to a field `assume` line. A field bound's path carries a
 // dot; a parameter name never can, so the two forms don't collide.
 pub type ParamBound {
   ParamBound(name: String, effects: EffectTerm)
@@ -307,7 +307,7 @@ pub type TypeFieldAnnotation {
 // inferred, nominal-type-keyed entry never resolves such a receiver, since it
 // holds package-wide evidence keyed by type rather than proof for this receiver.
 // Whether a type field's effect was written by hand or read off a construction
-// site. `Declared` carries the source that holds the `type` line.
+// site. `Declared` carries the source that holds the field `assume` line.
 pub type TypeFieldOrigin {
   Declared(source: LookupOrigin)
   Inferred
@@ -321,7 +321,7 @@ pub type UnknownReason {
   // `call`, so this carries no payload.
   NoKnownEffects
   // A same-module call to a bodyless `@external` function with no
-  // `external effects` declaration.
+  // `assume` declaration.
   UndeclaredExternal
   // A call to an `@external` whose declaration names only targets this build
   // does not compile, and which has no Gleam body to run in their place. Nothing
@@ -332,7 +332,7 @@ pub type UnknownReason {
   // A field call whose receiver girard could not type and no syntactic
   // parameter annotation names.
   ReceiverTypeUnresolved
-  // A field call on a receiver of a known type that no `type` line, check
+  // A field call on a receiver of a known type that no field `assume` line, check
   // bound, or wired value decides. The payload names the receiver type; the
   // module is "" for the syntactic fallback, which has none.
   FieldNotAnnotated(module: String, type_name: String)
@@ -362,7 +362,7 @@ pub type UnknownReason {
 // knowledge-base entry, or — for a field call — which rule decided it.
 pub type LookupOrigin {
   // A per-function declaring line in this project's spec: an
-  // `external effects` one, or an `external returns` one.
+  // `assume` one, or an `external returns` one.
   UserExternal
   // A committed `effects` line in this project's spec.
   CommittedSpec
@@ -379,11 +379,11 @@ pub type LookupOrigin {
   PathDependencyInferred(package: String)
   // The bundled versioned catalog entry for a package.
   Catalog(package: String)
-  // An `external effects <module>` line answered for a name nothing else keys.
+  // An `assume <module>` line answered for a name nothing else keys.
   // `source` is the file that declares it. Named apart from
   // `ExternalTarget.ModuleExternal`, which shares this module's namespace.
   ModuleExternalOrigin(source: LookupOrigin)
-  // A hand-written `type` line resolved a field call. `source` is the file that
+  // A hand-written field `assume` line resolved a field call. `source` is the file that
   // declares it. Set only by the field path, never stored beside a function
   // entry.
   TypeLine(source: LookupOrigin)
@@ -396,7 +396,7 @@ pub type EffectSource {
   // An entry keyed by the function itself, from any of the merged sources.
   // `origin` names the source that wrote it.
   FunctionEntry(origin: LookupOrigin)
-  // The function's module carries `external effects <module> : [...]`. Reached
+  // The function's module carries `assume <module> : [...]`. Reached
   // only when nothing keys the function itself, so a per-function external or a
   // catalog line for it takes precedence; it carries no per-function bounds.
   ModuleExternalEntry(origin: LookupOrigin)
@@ -408,7 +408,7 @@ pub type EffectSource {
 // function's parameter bounds and qualified name, so a field call can bind the
 // effect variables to its arguments (the same substitution resolved calls do).
 // Both are empty/`None` for hand-written annotations and concrete field values.
-// `origin` marks a hand-written `type` line apart from a construction-inferred
+// `origin` marks a hand-written field `assume` line apart from a construction-inferred
 // entry.
 pub type TypeFieldEffect {
   TypeFieldEffect(
@@ -452,13 +452,13 @@ pub type ForeignFunction {
 
 // Whether an external targets a whole module or a specific function.
 pub type ExternalTarget {
-  // `external effects gleam/list : []` — the entire module is pure.
+  // `assume gleam/list : []` — the entire module is pure.
   ModuleExternal
-  // `external effects gleam/httpc.send : [Http]` — a specific function.
+  // `assume gleam/httpc.send : [Http]` — a specific function.
   FunctionExternal(name: String)
 }
 
-// Effect declaration for an external function (e.g., `external effects gleam/httpc.send : [Http]`).
+// Effect declaration for an external function (e.g., `assume gleam/httpc.send : [Http]`).
 pub type ExternalAnnotation {
   ExternalAnnotation(module: String, target: ExternalTarget, effects: EffectSet)
 }
@@ -790,24 +790,24 @@ pub type Warning {
   // (`m.Handler.on_click`). The line parses and keys nothing. `name` is the
   // subject as written.
   UnverifiedCheckShapeWarning(name: String)
-  // A `type` line whose module/type/field matches no field of a project custom
+  // A field `assume` line whose module/type/field matches no field of a project custom
   // type — unqualified, mis-qualified, or a typo. The annotation then resolves
   // nothing and the field call silently degrades to `[Unknown]`, so it's
   // flagged. `name` is the annotation as written (`Opts.on_change` when
   // unqualified, `myapp/opts.Opts.on_change` when qualified).
   UnmatchedTypeFieldWarning(name: String)
-  // A per-function `external effects <module>.<function>` line naming one of
+  // A per-function `assume <module>.<function>` line naming one of
   // this package's own ordinary Gleam functions — a body graded can see and
   // every caller runs. The syntax declares foreign code, so the line describes
   // nothing the body does not; it is ignored and the body is walked instead.
   // Scoped to modules the project index holds: declaring a *dependency*
   // function with a visible body is the line's documented use.
   StaleFunctionExternalWarning(function: String)
-  // A per-function `external effects <module>.<function>` line whose name
+  // A per-function `assume <module>.<function>` line whose name
   // resolves nowhere — no dependency, no catalog entry, no project module. The
   // declaration then covers nothing, so it is a typo rather than a budget.
   UnmatchedFunctionExternalWarning(function: String)
-  // A module-level `external effects <module>` line whose module is neither an
+  // A module-level `assume <module>` line whose module is neither an
   // installed dependency, a path dependency, nor a project module. Same
   // reasoning one tier up: the declaration governs no module at all.
   UnmatchedModuleExternalWarning(module: String)
@@ -831,7 +831,7 @@ pub type Warning {
   // so the line resolves nothing at all.
   DotlessExternalReturnsWarning(name: String)
   // An `external returns <module>.<Type>.<field>` line: a name of more than two
-  // parts, which is the `type` line's shape, not this one's. A returns
+  // parts, which is the field `assume` line's shape, not this one's. A returns
   // declaration keys a function, so the line resolves nothing.
   TypeShapedExternalReturnsWarning(name: String)
 }

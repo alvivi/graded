@@ -552,7 +552,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
       )
     })
 
-  // Spec-level lint: `check`/`type` lines whose target doesn't exist in any
+  // Spec-level lint: `check`/field `assume` lines whose target doesn't exist in any
   // project module. These silently do nothing (a vacuous check, or a field
   // annotation that resolves to [Unknown]), so they're reported against the
   // spec file itself rather than any source file.
@@ -587,7 +587,7 @@ type ProjectContext {
     sources: ProjectSources,
     registry: SignatureRegistry,
     type_info: typeinfo.TypeInfo,
-    // The per-function `external effects` lines that declare nothing, because
+    // The per-function `assume` lines that declare nothing, because
     // they name one of this package's own Gleam-bodied functions. Decided once
     // here: the knowledge base is assembled without them, and the spec lint
     // reports them, so the two can't disagree about which lines are live.
@@ -604,7 +604,7 @@ type ProjectContext {
     catalog: effects.BundledCatalog,
     // The dependency scan this context was assembled from. Held for the spec
     // lint, which decides whether a dependency module defines the name an
-    // `external effects` line gives it — a question this walk already parsed
+    // `assume` line gives it — a question this walk already parsed
     // every dependency module to answer for the registry.
     dependencies: DependencySources,
   )
@@ -739,7 +739,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     )
     // Before the inference pass, not after it, and in the order `infer` folds
     // them: a body walked during inference resolves its field calls through the
-    // same `type` lines and factory signatures a body walked at check time
+    // same field `assume` lines and factory signatures a body walked at check time
     // does. Installed afterwards, the pass ran without them and a function
     // whose effects it settled — an `@external`'s running fallback, whose
     // callers read the summary and never the body — kept an answer the two
@@ -791,7 +791,7 @@ fn project_foreign_functions(
   )
 }
 
-// The per-function `external effects <module>.<function>` lines that declare
+// The per-function `assume <module>.<function>` lines that declare
 // nothing: those naming one of this package's own functions whose Gleam body is
 // right there, visible and run by every caller.
 //
@@ -946,7 +946,7 @@ fn check_one_file(
 // Flag `check`/`type`/`external` spec lines whose target resolves nothing. A
 // `check` line names a function that must exist in some project module; a `type`
 // line names a `module.Type.field` that must be a callable (function-typed)
-// field; an `external effects` line names foreign code, so it must name
+// field; an `assume` line names foreign code, so it must name
 // something graded cannot see the body of, and something that exists at all.
 // When the qualifier is missing or wrong, the field plainly can't be called, or
 // the declaration covers a body sitting in plain sight, the line is silently
@@ -1017,8 +1017,8 @@ fn validate_spec_annotations(
     }
   }
 
-  // Resolving `type` lines also needs per-module type info; build it only when
-  // there are `type` lines to check.
+  // Resolving field `assume` lines also needs per-module type info; build it only when
+  // there are field `assume` lines to check.
   let type_field_warnings = case type_fields {
     [] -> []
     type_fields -> {
@@ -1045,7 +1045,7 @@ fn validate_spec_annotations(
 
 // What both declaring forms' lints weigh a name against, precomputed once over
 // the catalog and the dependency scan and then asked per name. One rule, so an
-// `external effects` line and an `external returns` line naming the same
+// `assume` line and an `external returns` line naming the same
 // function are called dead together or not at all.
 type SpecNameEvidence {
   SpecNameEvidence(
@@ -1058,7 +1058,7 @@ type SpecNameEvidence {
 }
 
 // A dependency is weighed by the function, not by the module: graded holds that
-// dependency's source, so `external effects dep/io.typo` over a `dep/io` that
+// dependency's source, so `assume dep/io.typo` over a `dep/io` that
 // defines only `writes` is as dead as one naming no module at all, and the
 // module tier would wave every misspelling through. A module-level line has no
 // function to weigh and is settled by the module alone.
@@ -1131,7 +1131,7 @@ fn spec_name_evidence(
   })
 }
 
-// One walk of the spec's `external effects` lines, yielding the three ways such
+// One walk of the spec's `assume` lines, yielding the three ways such
 // a line can be dead. Both tiers are covered, since a typo is as likely in the
 // module name as in the function name:
 //
@@ -1249,7 +1249,7 @@ fn dependency_module_files(package_root: String) -> Dict(String, String) {
   })
 }
 
-// A warning for a `type` line that resolves nothing, or `Error(Nil)` when the
+// A warning for a field `assume` line that resolves nothing, or `Error(Nil)` when the
 // line is a valid target. Cases:
 //   - unqualified (`type Type.field`): no module to key a receiver's resolved
 //     type, so it's always dead;
@@ -1280,7 +1280,7 @@ fn unmatched_type_field_warning(
   }
 }
 
-// Whether a qualified `type` line is an accepted target. A project type's field
+// Whether a qualified field `assume` line is an accepted target. A project type's field
 // must exist and not plainly be non-callable (`Callable`/`Unknown` pass, so an
 // unintrospectable field type is never false-flagged). A dependency-owned type
 // passes untouched; any other module is a typo.
@@ -1525,7 +1525,7 @@ fn classify_in_module(
 /// type field (`myapp/repo.Repo.find`). Functions resolve from the spec file,
 /// dependencies, the catalog, and an in-memory inference pass, so a public
 /// function resolves without a prior `graded infer`; type fields resolve from
-/// declared `type` lines. Any provenance is appended as a `//` comment line, so
+/// declared field `assume` lines. Any provenance is appended as a `//` comment line, so
 /// the whole output parses as `.graded` syntax. Nothing is written to disk.
 ///
 /// The CLI defaults to `--format=prose` for the person reading a terminal; this
@@ -1620,11 +1620,11 @@ fn answer_from(
 //
 // It only answers where the spec's word is final:
 //
-// - A `type` line declaring a field under its own module: spec `type` fields
+// - A field `assume` line declaring a field under its own module: spec `type` fields
 //   are merged last of all, so an exact key wins outright. A bare line's
 //   module-less key is a fallback, not a decision, and stays with the full
 //   context.
-// - A per-function `external effects <module>.<function>`: `with_externals`
+// - A per-function `assume <module>.<function>`: `with_externals`
 //   inserts over whatever came before, and every later layer keeps existing
 //   entries, so nothing can displace it.
 // - Any name in one of this package's own modules: dependency, catalog and
@@ -1692,14 +1692,14 @@ fn spec_answer(
         name,
       )
     }
-    // Not a function name — only a type field can answer. A spec `type` line is
+    // Not a function name — only a type field can answer. A spec field `assume` line is
     // merged last of all, so an entry under the queried name's *own* module is
     // final. The module-less key a bare line lands under is not: it is only the
     // fallback `type_field_effect` reaches for when nothing declares the exact
     // module, and a dependency's spec — which the fast path never reads — can
     // declare it. So the spec decides this name only if it declares it
     // qualified; a bare line is left to the full context, which weighs it
-    // against every dependency's `type` lines.
+    // against every dependency's field `assume` lines.
     // An answer carrying the queried module is one the exact key produced; one
     // carrying none fell back to the bare key, so it isn't the spec's decision.
     Error(Nil) ->
@@ -1756,7 +1756,7 @@ fn runs_a_fallback_body(
 //
 // Empty for one of this package's own modules: Gleam forbids a dependency from
 // keying one, so nothing over there can change the answer. For a dependency
-// module — which a per-function `external effects` line may name — the
+// module — which a per-function `assume` line may name — the
 // declaration alone understates an `@external` whose Gleam fallback body runs,
 // because no consumer walks that body and the full context therefore charges
 // the declaration unioned with `[Unknown]`. One module is located and parsed to
@@ -1970,7 +1970,7 @@ fn function_effect(
 // the entries themselves cannot express, since a hand-written line for a private
 // function and one for a real public function are the same line.
 //
-// This outranks the module-level-external carve-out. `external effects <module>`
+// This outranks the module-level-external carve-out. `assume <module>`
 // answers for every name in its module, which is what a module graded has no
 // source for needs — but where the source *is* here, a declaration describes
 // behaviour for callers; it does not export a name. Nothing about how callers
@@ -1987,8 +1987,8 @@ fn declined_by_publicity(
   }
 }
 
-// Render `name` as a `type` line, or `Error(Nil)` when it isn't a declared type
-// field. `name` is split by the same grammar that parses a `type` line, so both
+// Render `name` as a field `assume` line, or `Error(Nil)` when it isn't a declared type
+// field. `name` is split by the same grammar that parses a field `assume` line, so both
 // declared forms can be queried back: `module.Type.field` and the bare
 // `Type.field` of a cache file.
 //
@@ -2194,7 +2194,7 @@ fn why_block(
 /// file.
 ///
 /// This is graded's bundled catalog alone: a dependency's shipped spec, a path
-/// dependency's spec and your own `external effects` all override it, so
+/// dependency's spec and your own `assume` all override it, so
 /// `run_effect` is what answers which source wins for a name. Nothing is
 /// written to disk.
 pub fn run_catalog(request: cli.CatalogRequest) -> Result(String, GradedError) {
@@ -2434,7 +2434,7 @@ fn compare_catalog_files(
 // file, sort it, and write or compare the normalized form.
 
 /// Format the project's spec file in place. The spec file is the single
-/// source of truth for hand-written `check`/`external`/`type` lines and
+/// source of truth for hand-written `check`/`external`/field `assume` lines and
 /// the inferred public-API effects.
 pub fn run_format(directory: String) -> Result(Nil, GradedError) {
   use cfg <- result.try(read_config(directory))
@@ -2839,7 +2839,7 @@ fn build_dependency_graph(
 ///
 /// 2. **One spec file** at `<spec_file>` containing the inferred effects of
 ///    every *public* function across all modules, plus any hand-written
-///    `check`, `external effects`, or `type` annotations the user already
+///    `check`, `assume`, or `type` annotations the user already
 ///    had in the spec file (those lines are preserved verbatim).
 ///
 /// Walks the project's import graph in topological order so each module is
@@ -4050,7 +4050,7 @@ fn infer_path_dep_module(
 // fold applies is the fold's own: the fast path is held to the full context's
 // answer by a test comparing the two, not by this grouping.
 
-// The spec's `external effects` declarations, minus the stale ones.
+// The spec's `assume` declarations, minus the stale ones.
 fn with_spec_externals(
   knowledge_base: KnowledgeBase,
   spec: GradedFile,
@@ -4080,7 +4080,7 @@ fn with_spec_declared_returns(
   )
 }
 
-// The spec's `type` lines, which resolve a field call on any receiver of the
+// The spec's field `assume` lines, which resolve a field call on any receiver of the
 // named type.
 fn with_spec_type_fields(
   knowledge_base: KnowledgeBase,
