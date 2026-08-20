@@ -882,6 +882,21 @@ pub fn a_dependency_function_external_resolves_test() {
   )
 }
 
+pub fn a_clause_only_assume_does_not_decide_the_effects_channel_test() {
+  // The line declares only what `make` hands back. It claims nothing about
+  // `make`'s own effect, so the `effects` line beside it still decides — read
+  // as the empty set it would silently overwrite it with `[]`.
+  installed_dep(
+    "build/eff_dep_clause_only",
+    "dep",
+    "effects dep.make : [Db]\nassume dep.make where returns : [Net]\n",
+  )
+  |> entry_of(QualifiedName("dep", "make"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Db"])), types.DependencySpec("dep"))),
+  )
+}
+
 pub fn a_dependency_spec_that_does_not_parse_is_ignored_test() {
   // A consumer cannot fix a dependency's spec, so a line the parser rejects
   // costs that package's entries — with a printed warning — rather than the

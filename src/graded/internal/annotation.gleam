@@ -2,7 +2,7 @@ import gleam/bool
 import gleam/dict
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
 import gleam/string
@@ -147,26 +147,75 @@ fn parse_annotation_rest(
   line_number: Int,
   original: String,
 ) -> Result(EffectAnnotation, ParseError) {
-  let err = Error(InvalidLine(line_number, original))
+  // The clause comes off first: `parse_name_colon_effects` splits on the first
+  // colon, so a name-first read would take `m.f where returns` for the function
+  // name.
+  parse_clause_then(rest, fn(head, returns) {
+    parse_annotation_head(kind, head, returns)
+  })
+  |> result.replace_error(InvalidLine(line_number, original))
+}
+
+// Split a statement's `where returns` clause off its head, parse the clause's
+// operator, and hand both to `parse_head`.
+fn parse_clause_then(
+  rest: String,
+  parse_head: fn(String, Option(EffectTerm)) -> Result(a, Nil),
+) -> Result(a, Nil) {
+  use #(head, clause) <- result.try(split_returns_clause(rest))
+  use returns <- result.try(case clause {
+    None -> Ok(None)
+    Some(text) -> parse_bound_effect(text) |> result.map(Some)
+  })
+  parse_head(head, returns)
+}
+
+fn parse_annotation_head(
+  kind: AnnotationKind,
+  head: String,
+  returns: Option(EffectTerm),
+) -> Result(EffectAnnotation, Nil) {
   // A params list opens with the `(` immediately after the function name. An
   // application's `(` inside the effect set is preceded by `[`, so a `[` before
   // the first `(` means there are no params (the `(` belongs to the result).
-  case split_call(rest) {
+  case split_call(head) {
     Error(Nil) ->
-      case parse_name_colon_effects(rest) {
-        Error(Nil) -> err
+      case parse_name_colon_effects(head) {
+        Error(Nil) -> Error(Nil)
         Ok(#(name, effects)) ->
           Ok(EffectAnnotation(
             kind:,
             function: name,
             params: [],
             effects:,
-            returns: None,
+            returns:,
           ))
       }
     Ok(#(name, params_str, suffix)) ->
-      parse_params_suffix(kind, string.trim(name), params_str, suffix)
-      |> result.replace_error(InvalidLine(line_number, original))
+      parse_params_suffix(kind, string.trim(name), params_str, suffix, returns)
+  }
+}
+
+// The clause keyword. Split at bracket and paren depth 0 only: the effect-term
+// grammar reads any word inside brackets as a variable, so `[A, where returns :
+// B]` must not be cut.
+const returns_clause_keyword = " where returns "
+
+// Split a statement into its head and the text of its `where returns` clause.
+// `None` where the statement carries no clause; `Error(Nil)` where the keyword
+// is there but no `:` follows it.
+fn split_returns_clause(
+  rest: String,
+) -> Result(#(String, Option(String)), Nil) {
+  case split_top_level(rest, returns_clause_keyword) {
+    Error(Nil) -> Ok(#(rest, None))
+    Ok(#(head, tail)) -> {
+      let trimmed = string.trim(tail)
+      case string.starts_with(trimmed, ":") {
+        False -> Error(Nil)
+        True -> Ok(#(head, Some(string.trim(string.drop_start(trimmed, 1)))))
+      }
+    }
   }
 }
 
@@ -207,7 +256,9 @@ fn parse_params_suffix(
   name: String,
   params_str: String,
   suffix: String,
+  returns: Option(EffectTerm),
 ) -> Result(EffectAnnotation, Nil) {
+  use <- bool.guard(when: name == "", return: Error(Nil))
   let suffix_trimmed = string.trim(suffix)
   case string.starts_with(suffix_trimmed, ":") {
     False -> Error(Nil)
@@ -220,7 +271,7 @@ fn parse_params_suffix(
             function: name,
             params:,
             effects:,
-            returns: None,
+            returns:,
           ))
         _, _ -> Error(Nil)
       }
@@ -241,16 +292,24 @@ type AssumeSubject {
 // names. A function's or a module's effects reduce to a set, as an assumption
 // is first-order by construction; a field's stay a term.
 fn parse_assume_line(rest: String) -> Result(GradedLine, Nil) {
-  use #(path, term) <- result.try(parse_name_colon_effects(rest))
+  parse_clause_then(rest, parse_assume_head)
+}
+
+fn parse_assume_head(
+  head: String,
+  returns: Option(EffectTerm),
+) -> Result(GradedLine, Nil) {
+  use #(path, term) <- result.try(split_assume_head(head, returns))
   use subject <- result.try(split_assume_path(path))
+  let effects = option.map(term, effect_term.to_effect_set)
   case subject {
     AssumeModule(module:) ->
       Ok(
         ExternalLine(ExternalAnnotation(
           module:,
           target: ModuleExternal,
-          effects: Some(effect_term.to_effect_set(term)),
-          returns: None,
+          effects:,
+          returns:,
         )),
       )
     AssumeFunction(module:, function:) ->
@@ -258,19 +317,37 @@ fn parse_assume_line(rest: String) -> Result(GradedLine, Nil) {
         ExternalLine(ExternalAnnotation(
           module:,
           target: FunctionExternal(function),
-          effects: Some(effect_term.to_effect_set(term)),
-          returns: None,
+          effects:,
+          returns:,
         )),
       )
-    AssumeField(module:, type_name:, field:) ->
+    AssumeField(module:, type_name:, field:) -> {
+      // A field annotation has no slot for a returned operator.
+      use <- bool.guard(when: returns != None, return: Error(Nil))
+      use effects <- result.try(option.to_result(term, Nil))
       Ok(
-        TypeFieldLine(TypeFieldAnnotation(
-          module:,
-          type_name:,
-          field:,
-          effects: term,
-        )),
+        TypeFieldLine(TypeFieldAnnotation(module:, type_name:, field:, effects:)),
       )
+    }
+  }
+}
+
+// Split an `assume` head into its path and its effects clause. The effects
+// clause is optional only where a `where returns` clause carries the line: a
+// path on its own claims nothing at all.
+fn split_assume_head(
+  head: String,
+  returns: Option(EffectTerm),
+) -> Result(#(String, Option(EffectTerm)), Nil) {
+  case string.contains(head, ":") {
+    True ->
+      parse_name_colon_effects(head)
+      |> result.map(fn(pair) { #(pair.0, Some(pair.1)) })
+    False -> {
+      let path = string.trim(head)
+      use <- bool.guard(when: path == "" || returns == None, return: Error(Nil))
+      Ok(#(path, None))
+    }
   }
 }
 
@@ -439,16 +516,56 @@ fn parse_application_args(inner: String) -> Result(List(EffectTerm), Nil) {
 // bracketed effect terms that may themselves contain nested applications.
 fn split_top_level_commas(input: String) -> List(String) {
   let #(segments, current, _depth) =
-    list.fold(string.to_graphemes(input), #([], "", 0), fn(state, char) {
+    list.fold(string.to_graphemes(input), #([], [], 0), fn(state, char) {
       let #(segments, current, depth) = state
       case char {
-        "," if depth == 0 -> #([current, ..segments], "", depth)
-        "[" | "(" -> #(segments, current <> char, depth + 1)
-        "]" | ")" -> #(segments, current <> char, depth - 1)
-        _ -> #(segments, current <> char, depth)
+        "," if depth == 0 -> #([joined(current), ..segments], [], depth)
+        "[" | "(" -> #(segments, [char, ..current], depth + 1)
+        "]" | ")" -> #(segments, [char, ..current], depth - 1)
+        _ -> #(segments, [char, ..current], depth)
       }
     })
-  list.reverse([current, ..segments])
+  list.reverse([joined(current), ..segments])
+}
+
+// A reversed grapheme accumulator, back into a string.
+fn joined(reversed: List(String)) -> String {
+  reversed |> list.reverse() |> string.concat()
+}
+
+// Split `input` at the first occurrence of `token` sitting at bracket and paren
+// depth 0. `Error(Nil)` where every occurrence is nested, or there is none.
+fn split_top_level(
+  input: String,
+  token: String,
+) -> Result(#(String, String), Nil) {
+  split_top_level_from(input, token, "", 0)
+}
+
+fn split_top_level_from(
+  rest: String,
+  token: String,
+  seen: String,
+  depth: Int,
+) -> Result(#(String, String), Nil) {
+  use #(before, after) <- result.try(string.split_once(rest, token))
+  let depth = depth + depth_delta(before)
+  case depth == 0 {
+    True -> Ok(#(seen <> before, after))
+    False -> split_top_level_from(after, token, seen <> before <> token, depth)
+  }
+}
+
+// How much a run of text opens or closes brackets and parens overall.
+fn depth_delta(text: String) -> Int {
+  string.to_graphemes(text)
+  |> list.fold(0, fn(depth, char) {
+    case char {
+      "[" | "(" -> depth + 1
+      "]" | ")" -> depth - 1
+      _ -> depth
+    }
+  })
 }
 
 // Parse a parameter bound's effect: an operator `fn(a, b) -> [body]` (a curried
@@ -458,19 +575,21 @@ fn parse_bound_effect(input: String) -> Result(EffectTerm, Nil) {
   case string.starts_with(trimmed, "fn(") {
     False -> parse_effect_term(trimmed)
     True -> {
-      use #(params_part, after) <- result.try(string.split_once(trimmed, ")"))
+      // The binder list runs to the paren matching the `fn(`, so a binder list
+      // holding a nested paren is cut in the right place.
+      use #(params_part, after) <- result.try(
+        match_paren(string.to_graphemes(string.drop_start(trimmed, 3)), 0, []),
+      )
       let params =
         params_part
-        |> string.drop_start(3)
         |> split_top_level_commas()
         |> list.map(string.trim)
         |> list.filter(fn(param) { param != "" })
       use <- bool.guard(when: params == [], return: Error(Nil))
       // A `$op$`-prefixed *binder* (`fn($op$x) -> …`) is a forged sentinel (Fix D).
-      // It can't be ground in place like a variable, so parse the whole abstraction
-      // conservatively as `[Unknown]` — never a parse `Error`, which would fail the
-      // entire file (`parse_file` is `list.try_map`) and let `read_spec` silently
-      // substitute an empty spec, losing the user's hand-written lines.
+      // It can't be ground in place like a variable, so the whole abstraction
+      // parses conservatively as `[Unknown]` rather than as a parse `Error`, which
+      // would refuse the whole file over one forged binder.
       use <- bool.guard(
         when: list.any(params, string.starts_with(
           _,
@@ -963,6 +1082,28 @@ pub fn format_annotation(annotation: EffectAnnotation) -> String {
   <> params_string
   <> " : "
   <> effects_string
+  <> format_returns_clause(annotation.returns)
+}
+
+// Render a statement's `where returns` clause, or nothing where it carries
+// none.
+fn format_returns_clause(returns: Option(EffectTerm)) -> String {
+  case returns {
+    Some(operator) ->
+      returns_clause_keyword <> ": " <> format_operator(operator)
+    None -> ""
+  }
+}
+
+// The free variables of a statement's `where returns` clause, the operator's
+// own binders excluded. Empty where the statement carries no clause. Read by
+// the gate that binds a clause's variables and by the lint that reports an open
+// one; the parser and the loaders judge a clause not at all.
+pub fn clause_free_vars(returns: Option(EffectTerm)) -> set.Set(String) {
+  case returns {
+    Some(operator) -> effect_term.free_vars(operator)
+    None -> set.new()
+  }
 }
 
 // Render a ReturnsAnnotation back to its inferred `returns` line format.
@@ -1007,7 +1148,10 @@ pub fn format_external(external_annotation: ExternalAnnotation) -> String {
     Some(effects) -> " : " <> format_effect_set(effects)
     None -> ""
   }
-  "assume " <> external_sort_key(external_annotation) <> effects_clause
+  "assume "
+  <> external_sort_key(external_annotation)
+  <> effects_clause
+  <> format_returns_clause(external_annotation.returns)
 }
 
 // The qualified name (`module` or `module.function`) an external annotation
