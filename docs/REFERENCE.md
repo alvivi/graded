@@ -816,9 +816,12 @@ libraries.
 
 ### Reading the catalog
 
-`graded catalog` prints what the bundled catalog holds, writing nothing. Run it
-from the package root — like every command, it finds `manifest.toml` by walking
-up from there.
+`graded catalog` prints what the bundled catalog holds, writing nothing. Which
+file each of your packages resolves to comes from `manifest.toml`, found by
+walking up from the directory you name — or from the current directory when you
+name none, so a run from anywhere inside a package reads that package's
+manifest. A directory that isn't there is an error, not a walk up to whatever
+project the shell is sitting in.
 
 With no argument it lists every bundled file, marking the one each of your
 installed packages resolves to:

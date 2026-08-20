@@ -407,6 +407,41 @@ pub fn the_seam_prints_the_selected_bundled_file_test() {
   |> should.be_true()
 }
 
+pub fn a_directory_that_does_not_exist_is_read_and_fails_test() {
+  // Without the read the walk up to a package root falls back to the process's
+  // own project, and the command answers for a manifest the user never named.
+  graded.run_catalog(cli.ShowCatalog(
+    "gleam_stdlib",
+    None,
+    "definitely_not_a_dir",
+  ))
+  |> should.equal(
+    Error(graded.DirectoryReadError("definitely_not_a_dir", simplifile.Enoent)),
+  )
+}
+
+pub fn a_directory_inside_the_project_reads_its_manifest_test() {
+  let assert Ok(output) =
+    graded.run_catalog(cli.ShowCatalog("gleam_stdlib", None, "src/graded"))
+  output
+  |> string.contains("— selected for gleam_stdlib ")
+  |> should.be_true()
+}
+
+pub fn the_manifest_is_the_enclosing_packages_test() {
+  // The walk up from a subdirectory reaches the package root, so a listing run
+  // from one is decorated by the same manifest a run from the root reads.
+  let root =
+    support.write_fixture("build/catalog_cli_subdirectory", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #("manifest.toml", manifest_for("lustre", "5.7.0")),
+      #("src/app/nested/keep.gleam", "pub fn main() -> Nil {\n  Nil\n}\n"),
+    ])
+  let manifest = graded.catalog_manifest_path(root <> "/src/app/nested")
+  support.cleanup(root)
+  manifest |> should.equal(root <> "/manifest.toml")
+}
+
 // Two files one version apart
 //
 // Bundled versions that parse alike cannot be ordered by version, so the file
