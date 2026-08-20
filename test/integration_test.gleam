@@ -8512,3 +8512,112 @@ pub fn check_over_an_unparseable_spec_errors_test() {
   )
   support.cleanup(root)
 }
+
+// A `where returns` clause across a package boundary
+//
+// The clause a dependency ships is read back as a `Closed` summary, its
+// variables checked against that dependency's real callback parameters before
+// they are bound to the consumer's own argument.
+
+// What the consumer's `h()` — the call of the closure `wrap` handed back — is
+// charged, for a dependency whose spec states `clause` for `wrap`.
+fn cross_package_clause_effects(
+  name: String,
+  clause: String,
+) -> types.EffectSet {
+  cross_package_clause_effects_over(
+    name,
+    clause,
+    "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
+  fn() { f() }
+}
+",
+  )
+}
+
+// The same, over a dependency `wrap` written as `dep_source` states it.
+fn cross_package_clause_effects_over(
+  name: String,
+  clause: String,
+  dep_source: String,
+) -> types.EffectSet {
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/" <> name,
+      package: "proj",
+      spec: "check proj.caller : []\nassume proj.shout : [Stdout]\n",
+      sources: [
+        #(
+          "proj.gleam",
+          "import dep/wrap
+
+@external(erlang, \"proj_ffi\", \"shout\")
+pub fn shout() -> Nil
+
+pub fn caller() -> Nil {
+  let h = wrap.wrap(shout)
+  h()
+}
+",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: clause,
+      dependency_sources: [#("dep/wrap.gleam", dep_source)],
+    )
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(violation) =
+    results
+    |> list.flat_map(fn(result) { result.violations })
+    |> list.find(fn(violation) {
+      violation.explanation.call.module == "<returned>"
+    })
+  support.cleanup(root)
+  violation.explanation.actual
+}
+
+pub fn a_dependencys_clause_binds_the_consumers_argument_test() {
+  cross_package_clause_effects(
+    "clause_cross_package",
+    "effects dep/wrap.wrap(f: [f]) : [] where returns : [f]\n",
+  )
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn a_dependencys_open_clause_degrades_to_unknown_test() {
+  // `ghost` is no parameter of the dependency's `wrap`, so nothing binds it.
+  cross_package_clause_effects(
+    "clause_cross_package_open",
+    "effects dep/wrap.wrap(f: [f]) : [] where returns : [ghost]\n",
+  )
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+// An *unannotated* callback the dependency's spec records a bound for. No
+// syntactic signature shows it, so the registry alone would call the clause
+// open; the recorded bound is what admits it.
+const unannotated_wrap = "pub fn wrap(f) {
+  fn() { f() }
+}
+"
+
+pub fn a_clause_over_a_recorded_bound_binds_test() {
+  cross_package_clause_effects_over(
+    "clause_recorded_bound",
+    "effects dep/wrap.wrap(f: [f]) : [] where returns : [f]\n",
+    unannotated_wrap,
+  )
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn a_clause_applying_an_unannotated_callback_degrades_test() {
+  // Admission is not precision: the operator-parameter shapes are read off
+  // annotations, so an unannotated callback binds to a flat first-order term
+  // and an application of it stays stuck.
+  cross_package_clause_effects_over(
+    "clause_recorded_bound_applied",
+    "effects dep/wrap.wrap(f: [f]) : [] where returns : fn(cb) -> [f([cb])]\n",
+    unannotated_wrap,
+  )
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
