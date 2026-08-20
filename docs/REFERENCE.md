@@ -821,7 +821,11 @@ file each of your packages resolves to comes from `manifest.toml`, found by
 walking up from the directory you name — or from the current directory when you
 name none, so a run from anywhere inside a package reads that package's
 manifest. A directory that isn't there is an error, not a walk up to whatever
-project the shell is sitting in.
+project the shell is sitting in. Where there is no readable `manifest.toml` —
+a fresh clone before `gleam deps download`, or a manifest with a TOML error —
+no package has an installed version to select on: the listing says so on its
+first line and marks nothing, and `graded catalog <package>` is an error naming
+the file it looked for rather than a report that the package is not installed.
 
 With no argument it lists every bundled file, marking the one each of your
 installed packages resolves to:

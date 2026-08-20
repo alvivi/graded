@@ -121,6 +121,9 @@ pub type CatalogProblem {
   NoBundledVersion(package: String, requested: String, bundled: List(String))
   /// The package is bundled but not in this project's manifest.
   NotInstalled(package: String, bundled: List(String))
+  /// There is no manifest to read at the path the command consulted, or its
+  /// TOML is malformed, so no package has an installed version to select on.
+  NoManifest(path: String)
   /// The catalog directory exists but holds no catalog file.
   EmptyCatalog(directory: String)
 }
@@ -2238,29 +2241,41 @@ pub fn catalog_report(
     return: Error(CatalogError(EmptyCatalog(catalog_dir))),
   )
   case request {
-    cli.ListCatalog ->
-      Ok(catalog_listing(files, effects.manifest_versions(manifest_path)))
+    cli.ListCatalog -> Ok(catalog_listing(files, manifest_path))
     cli.ShowCatalog(package:, version:, directory: _) ->
       catalog_file_output(files, manifest_path, package, version)
   }
 }
 
 // One `package@version` line per bundled file, sorted by package then version,
-// with the note of the file the manifest resolves that package to.
+// with the note of the file the manifest resolves that package to. Where there
+// is no manifest to read, nothing selects and the listing leads with a line
+// saying so — undecorated lines otherwise read as a project the catalog covers
+// none of.
 fn catalog_listing(
   files: List(effects.CatalogFile),
-  installed: Dict(String, String),
+  manifest_path: String,
 ) -> String {
-  files
-  |> list.sort(compare_catalog_files)
-  |> list.map(fn(file) {
-    let label = catalog_label(file)
-    case listing_suffix(files, installed, file) {
-      Ok(note) -> label <> "  // " <> note
-      Error(Nil) -> label
-    }
-  })
-  |> string.join("\n")
+  let manifest = effects.read_manifest_versions(manifest_path)
+  let installed = result.unwrap(manifest, dict.new())
+  let lines =
+    files
+    |> list.sort(compare_catalog_files)
+    |> list.map(fn(file) {
+      let label = catalog_label(file)
+      case listing_suffix(files, installed, file) {
+        Ok(note) -> label <> "  // " <> note
+        Error(Nil) -> label
+      }
+    })
+  case manifest {
+    Ok(_versions) -> string.join(lines, "\n")
+    Error(Nil) ->
+      string.join(
+        ["// no readable manifest.toml at " <> manifest_path, ..lines],
+        "\n",
+      )
+  }
 }
 
 // The note this file's line carries. A package the manifest doesn't list
@@ -2311,8 +2326,12 @@ fn catalog_file_output(
         )),
       )
     None -> {
+      use installed <- result.try(
+        effects.read_manifest_versions(manifest_path)
+        |> result.replace_error(CatalogError(NoManifest(manifest_path))),
+      )
       use version <- result.map(
-        dict.get(effects.manifest_versions(manifest_path), package)
+        dict.get(installed, package)
         |> result.replace_error(
           CatalogError(NotInstalled(package:, bundled: catalog_labels(bundled))),
         ),
@@ -4207,6 +4226,11 @@ pub fn format_catalog_problem(problem: CatalogProblem) -> String {
       <> " — run `graded catalog "
       <> result.unwrap(list.last(bundled), package)
       <> "` to print one"
+    NoManifest(path:) ->
+      "no readable manifest.toml at "
+      <> path
+      <> "; run `gleam deps download` in that package, or name the version to "
+      <> "print: `graded catalog <package>@<version>`"
     EmptyCatalog(directory:) -> "no catalog files under " <> directory
   }
 }
