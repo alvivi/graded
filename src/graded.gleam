@@ -59,11 +59,11 @@ import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/topo
 import graded/internal/typeinfo
 import graded/internal/types.{
-  type CheckResult, type EffectAnnotation, type GradedFile, type QualifiedName,
-  type TypeFieldAnnotation, type Violation, type Warning, AnnotationLine,
-  CheckResult, DotlessExternalReturnsWarning, EffectAnnotation, GradedFile,
-  PolymorphicExternalReturnsWarning, QualifiedName, StaleExternalReturnsWarning,
-  StaleFunctionExternalWarning, TypeShapedExternalReturnsWarning,
+  type CheckResult, type EffectAnnotation, type EffectTerm, type GradedFile,
+  type QualifiedName, type TypeFieldAnnotation, type Violation, type Warning,
+  AnnotationLine, CheckResult, DotlessExternalReturnsWarning, EffectAnnotation,
+  GradedFile, PolymorphicExternalReturnsWarning, QualifiedName,
+  StaleExternalReturnsWarning, StaleFunctionExternalWarning,
   UnmatchedCheckWarning, UnmatchedExternalReturnsWarning,
   UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
   UnmatchedTypeFieldWarning, UnverifiedCheckShapeWarning,
@@ -718,15 +718,15 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     ))
     // What this package defines, for the query that answers from its public API.
     |> effects.with_project_functions(project_function_visibility(index))
-    // Committed project returns are Foreign (Fix E): serialized, unsanitized. The
-    // fresh in-memory pass below re-infers project returns and, being Fresh, wins
-    // over these for the same key.
+    // Committed project clauses are Closed: read back, not inferred this run.
+    // The fresh in-memory pass below re-infers project returns and, being Fresh,
+    // wins over these for the same key.
     //
-    // The `external returns` declarations folded above outrank both, by two
-    // different mechanisms, and the difference matters to anyone editing either.
-    // Against this committed load the **ordering is load-bearing**: the merge
-    // gap-fills, so a spec written before the function became `@external`, still
-    // carrying its inferred `returns` line until the next `infer`, loses only
+    // The `assume … where returns` declarations folded above outrank both, by
+    // two different mechanisms, and the difference matters to anyone editing
+    // either. Against this committed load the **ordering is load-bearing**: the
+    // merge gap-fills, so a spec written before the function became `@external`,
+    // still carrying its inferred clause until the next `infer`, loses only
     // because the declaration is already there. Against the fresh pass below the
     // ordering decides nothing — that merge lets the incoming summary win — and
     // the declaration survives on `merge_returns`'s explicit
@@ -735,10 +735,6 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // link of that three-file invariant chain ever gives.
     |> effects.with_closed_returned_operators(
       effects.load_spec_returns_from_file(spec),
-      types.CommittedSpec,
-    )
-    |> effects.with_foreign_returned_operators(
-      effects.load_spec_legacy_returns_from_file(spec),
       types.CommittedSpec,
     )
     // Before the inference pass, not after it, and in the order `infer` folds
@@ -758,8 +754,8 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
   // Fill gaps for project modules not (yet) in the spec by inferring them in
   // memory, so `check` resolves cross-module calls without a prior `graded infer`.
   // Committed effects are never overridden; fresh returns win over committed
-  // Foreign ones (Fix E). The deltas aren't needed here — the pre-pass already
-  // folded them into `kb_base`. Nothing is written to disk.
+  // clauses. The deltas aren't needed here — the pre-pass already folded them
+  // into `kb_base`. Nothing is written to disk.
   let knowledge_base =
     infer_project_in_memory(
       kb_base,
@@ -981,7 +977,7 @@ fn validate_spec_annotations(
     )
 
   let externals = annotation.extract_externals(spec)
-  let declared_returns = annotation.extract_external_returns(spec)
+  let declared_returns = annotation.assume_returns(spec)
   let type_fields = annotation.extract_type_fields(spec)
   // Every lint here tells a dependency module from a typo, and the scan behind
   // that is the expensive part: walked once here and shared, and not at all for
@@ -1151,7 +1147,11 @@ fn external_warnings(
   evidence: SpecNameEvidence,
   stale: Set(String),
 ) -> List(Warning) {
-  list.filter_map(externals, fn(external) {
+  externals
+  // A line carrying only a `where returns` clause claims nothing on this
+  // channel, so this channel has nothing to call dead about it.
+  |> list.filter(fn(external) { external.effects != option.None })
+  |> list.filter_map(fn(external) {
     case external.target {
       types.FunctionExternal(function) -> {
         let qualified = QualifiedName(external.module, function)
@@ -1171,42 +1171,38 @@ fn external_warnings(
   })
 }
 
-// The same walk over the spec's `external returns` lines, yielding the four ways
-// one can be dead. Two are the existence branches above, read through the same
-// evidence; two are this form's own, and both are lines the loader drops:
+// The same walk over the `where returns` clauses on the spec's `assume` lines,
+// yielding the ways one can be dead. Two are the existence branches above, read
+// through the same evidence; two are this channel's own, and both are clauses
+// the loader drops:
 //
-//   - a name the function grammar rejects: one with no `.`, where the
-//     declaration is read as naming a whole module and nothing keys a module's
-//     returned value, and one with more than one, which reaches for the `type`
-//     line's field shape;
+//   - a clause on a module path, where nothing keys a whole module's returned
+//     value;
 //   - a polymorphic operator, whose free variables nothing sanitized.
 //
-// One warning per line, so a line that is dead twice over is reported by the
-// first rule that catches it.
+// One warning per clause, so a clause that is dead twice over is reported by
+// the first rule that catches it.
 fn external_returns_warnings(
-  declared: List(types.ReturnsAnnotation),
+  declared: List(#(String, EffectTerm)),
   evidence: SpecNameEvidence,
   stale: Set(String),
 ) -> List(Warning) {
-  list.filter_map(declared, fn(returns) {
-    case annotation.split_function_name(returns.function) {
-      Error(Nil) ->
-        case string.contains(returns.function, ".") {
-          True -> Ok(TypeShapedExternalReturnsWarning(name: returns.function))
-          False -> Ok(DotlessExternalReturnsWarning(name: returns.function))
-        }
+  list.filter_map(declared, fn(entry) {
+    let #(name, operator) = entry
+    case annotation.split_function_name(name) {
+      // A clause on a field path is a parse error, so the only path that fails
+      // to split here is a module one.
+      Error(Nil) -> Ok(DotlessExternalReturnsWarning(name:))
       Ok(#(module, function)) ->
         case
-          set.contains(stale, returns.function),
+          set.contains(stale, name),
           evidence.defines(QualifiedName(module, function)),
-          effect_term.is_ground(returns.operator)
+          effect_term.is_ground(operator)
         {
-          True, _, _ ->
-            Ok(StaleExternalReturnsWarning(function: returns.function))
-          False, False, _ ->
-            Ok(UnmatchedExternalReturnsWarning(function: returns.function))
+          True, _, _ -> Ok(StaleExternalReturnsWarning(function: name))
+          False, False, _ -> Ok(UnmatchedExternalReturnsWarning(function: name))
           False, True, False ->
-            Ok(PolymorphicExternalReturnsWarning(function: returns.function))
+            Ok(PolymorphicExternalReturnsWarning(function: name))
           False, True, True -> Error(Nil)
         }
     }
@@ -3839,8 +3835,8 @@ fn path_dep_sources(
 // effects alone would leave a higher-order callee's bound unloaded, so its
 // callback's effect variable would leak unsubstituted into every caller.
 // Existing effects and param bounds win; the returned-operator summaries are
-// `Fresh` (Fix E) — inferred this run, so they win over a committed Foreign
-// entry for the same key. `lookup_origin` names the source of the effect terms,
+// `Fresh` — inferred this run, so they win over a committed clause's entry for
+// the same key. `lookup_origin` names the source of the effect terms,
 // recorded for the keys this merge wins.
 fn fold_inferred_into_kb(
   knowledge_base: KnowledgeBase,

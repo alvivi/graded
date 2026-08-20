@@ -4224,12 +4224,18 @@ pub fn make_printer() -> fn() -> Nil {
   |> should.equal(
     effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
   )
-  // Round-trips through `format_returns` / parse (a plain effect term).
+  // Round-trips through the clause renderer and back (a plain effect term).
   let line =
-    annotation.format_returns(types.ReturnsAnnotation("make_printer", operator))
-  let assert Ok(spec) = annotation.parse_file(line)
-  let assert [reparsed] = annotation.extract_returns(spec)
-  effect_term.normalize(reparsed.operator)
+    annotation.format_annotation(EffectAnnotation(
+      Effects,
+      "make_printer",
+      [],
+      effect_term.from_effect_set(types.empty()),
+      returns: Some(operator),
+    ))
+  let assert Ok([reparsed]) = annotation.parse(line)
+  let assert Some(reparsed_operator) = reparsed.returns
+  effect_term.normalize(reparsed_operator)
   |> should.equal(effect_term.normalize(operator))
 }
 
@@ -4337,12 +4343,18 @@ pub fn pick(
   let assert Ok(operator) = dict.get(returns, "pick")
   operator
   |> should.equal(types.TUnion([types.TVar("a"), types.TVar("b")]))
-  // Round-trips through `format_returns` / parse.
+  // Round-trips through the clause renderer and back.
   let line =
-    annotation.format_returns(types.ReturnsAnnotation("pick", operator))
-  let assert Ok(spec) = annotation.parse_file(line)
-  let assert [reparsed] = annotation.extract_returns(spec)
-  effect_term.normalize(reparsed.operator)
+    annotation.format_annotation(EffectAnnotation(
+      Effects,
+      "pick",
+      [],
+      effect_term.from_effect_set(types.empty()),
+      returns: Some(operator),
+    ))
+  let assert Ok([reparsed]) = annotation.parse(line)
+  let assert Some(reparsed_operator) = reparsed.returns
+  effect_term.normalize(reparsed_operator)
   |> should.equal(effect_term.normalize(operator))
 }
 
@@ -5142,17 +5154,6 @@ pub fn format_warning_dotless_external_returns_test() {
   )
 }
 
-pub fn format_warning_type_shaped_external_returns_test() {
-  // The multi-dot name reaches for the field `assume` line's field shape. Reported as
-  // the dotless case, the sentence would tell the author their name names a
-  // module, which it does not.
-  types.TypeShapedExternalReturnsWarning(name: "app.Handler.run")
-  |> checker.format_warning("proj.graded", _)
-  |> should.equal(
-    "proj.graded: warning: external returns app.Handler.run names a type field, not a function — a returns declaration is per-function; write an `assume` line to give a field's effects, and the line resolves nothing as written",
-  )
-}
-
 // A resolved qualified call keeps the format the README documents.
 pub fn format_violation_direct_call_test() {
   violation(
@@ -5917,7 +5918,7 @@ pub fn run() -> Nil {
       ]),
       types.ProjectInferred,
     )
-    |> effects.with_foreign_returned_operators(
+    |> effects.with_closed_returned_operators(
       effects.load_spec_returns_from_file(spec),
       types.DependencySpec("dep"),
     )

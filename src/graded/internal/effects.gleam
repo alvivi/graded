@@ -54,11 +54,10 @@ pub type KnowledgeBase {
     // `let h = f(); with(h)` resolves `h` instead of going `[Unknown]`. Computed
     // at the producer's inference time (where its module's private callees are
     // in scope) and threaded forward by the topological pass. Each summary is
-    // tagged with its origin (Fix E): a **Foreign** summary loaded from a
-    // serialized `.graded` isn't sanitized by this run's
-    // `compute_returned_operator`, so a polymorphic one is not trusted for
-    // synthesis — it resolves to `[Unknown]`; a **Fresh** one produced this run,
-    // and any ground summary, is safe.
+    // tagged with its origin: a **Closed** one read from a `where returns`
+    // clause has its free variables checked against the producer's real
+    // callback parameters before they are bound; a **Fresh** one produced this
+    // run, and any ground summary, is safe.
     returned_operators: Dict(QualifiedName, ReturnedOperator),
     // Package-wide factory signatures, keyed by `#(defining module, function)`:
     // each constructor field a function wires to one of its parameters, mapped
@@ -204,8 +203,8 @@ pub fn knowledge_base_from_catalog(
     param_bounds: dict.merge(cat_params, deps.params),
     type_fields: dict.new(),
     // Every dependency summary is tagged by `load_dependencies` with the package
-    // whose spec held it: Declared for an `external returns` line, Foreign for
-    // an inferred `returns` one, which is a serialized dep spec either way.
+    // whose spec held it: Declared for a clause on an `assume` line, Closed for
+    // one on an `effects` line.
     returned_operators: deps.returns,
     factories: dict.new(),
     // Update builders are derived from dependency source at run time, not loaded
@@ -1149,9 +1148,6 @@ pub type SummaryOrigin {
   // Produced by this run's `compute_returned_operator` — Fix-D-sanitized, so its
   // free vars ⊆ the producer's fn-typed params; safe to synthesize/bind.
   Fresh
-  // Loaded from a serialized `.graded` (dependency or committed project spec),
-  // unsanitized; a polymorphic Foreign summary is not trusted for synthesis.
-  Foreign
   // Read from a `where returns` clause on an `effects` line. The gate checks
   // its free variables against the producer's real callback parameters before
   // binding, so an open clause degrades to `[Unknown]` rather than binding
@@ -1190,8 +1186,8 @@ fn with_origin(
 // Pair every summary in a bare `name -> operator` map with how it was produced
 // and the source that wrote it, giving the shape `returned_operators` holds.
 //
-// Guard: never reach here with `Foreign` for a map of `external returns` lines.
-// A declaration is written for a value-opaque name, and a Foreign-tagged summary
+// Guard: never reach here with `Closed` for a map of clauses on `assume` lines.
+// A declaration is written for a value-opaque name, and a Closed-tagged summary
 // over one is refused at lookup — a new tier folding declarations this way (the
 // deferred catalog tier is the one waiting to) silently no-ops instead of
 // answering. `declared_returns` is the entry point for those.
@@ -1205,32 +1201,15 @@ fn tag_returns(
   })
 }
 
-// Merge **Foreign** returned-operator summaries (from a serialized `.graded`)
-// into a knowledge base — existing entries take priority (gap-fill). Used for
-// dependency and committed-project returns.
-//
-// Guard: this takes a spec's inferred `returns` lines and nothing else. Folding
-// `external returns` lines through it tags them `Foreign`, and a Foreign summary
-// over the value-opaque name a declaration is written for is refused at lookup,
-// so the tier folding them would silently answer nothing — the failure a
-// deferred catalog tier is one edit away from. Declarations go through
-// `with_declared_returned_operators`.
-pub fn with_foreign_returned_operators(
-  knowledge_base: KnowledgeBase,
-  inferred: Dict(QualifiedName, EffectTerm),
-  source: LookupOrigin,
-) -> KnowledgeBase {
-  let merged =
-    dict.merge(
-      tag_returns(inferred, Foreign, source),
-      knowledge_base.returned_operators,
-    )
-  KnowledgeBase(..knowledge_base, returned_operators: merged)
-}
-
 // Merge **Closed** returned-operator summaries (`where returns` clauses on
 // `effects` lines) into a knowledge base — existing entries take priority
-// (gap-fill), the same rule the Foreign merge beside it applies.
+// (gap-fill). Used for dependency and committed-project returns.
+//
+// Guard: this takes clauses on `effects` lines and nothing else. Folding an
+// `assume` line's clause through it tags it `Closed`, and a Closed summary over
+// the value-opaque name a declaration is written for is refused at lookup, so
+// the tier folding them would silently answer nothing. Declarations go through
+// `with_declared_returned_operators`.
 pub fn with_closed_returned_operators(
   knowledge_base: KnowledgeBase,
   clauses: Dict(QualifiedName, EffectTerm),
@@ -1307,11 +1286,10 @@ fn merge_returns(
     dict.filter(incoming, fn(name, entry) {
       case entry.summary {
         Declared -> True
-        Fresh | Foreign | Closed ->
+        Fresh | Closed ->
           case dict.get(existing, name) {
             Ok(ReturnedOperator(summary: Declared, ..)) -> False
             Ok(ReturnedOperator(summary: Fresh, ..))
-            | Ok(ReturnedOperator(summary: Foreign, ..))
             | Ok(ReturnedOperator(summary: Closed, ..))
             | Error(Nil) -> True
           }
@@ -1340,7 +1318,7 @@ fn declared_returns(
 
 // Merge **Fresh** returned-operator summaries (produced by this run's inference)
 // into a knowledge base — new entries take priority, so a re-inferred summary
-// replaces a committed Foreign one for the same key. Used for the pre-pass /
+// replaces a committed Closed one for the same key. Used for the pre-pass /
 // main-loop fresh deltas.
 //
 // A **Declared** entry is the exception `merge_returns` states: inference
@@ -1422,7 +1400,7 @@ pub fn lookup_returned_operator(
         DeclaredReturnUnbuilt | DeclaredReturnFallbackRuns | NoDeclaredReturn ->
           Error(Nil)
       }
-    Fresh | Foreign | Closed ->
+    Fresh | Closed ->
       case is_value_opaque(knowledge_base, name) {
         True -> Error(Nil)
         False -> Ok(found)
@@ -1466,7 +1444,6 @@ pub fn declared_return_standing(
   case dict.get(knowledge_base.returned_operators, name) {
     Error(Nil) -> NoDeclaredReturn
     Ok(ReturnedOperator(summary: Fresh, ..))
-    | Ok(ReturnedOperator(summary: Foreign, ..))
     | Ok(ReturnedOperator(summary: Closed, ..)) -> NoDeclaredReturn
     Ok(ReturnedOperator(summary: Declared, ..)) ->
       charged_standing(knowledge_base, name)
@@ -1699,8 +1676,6 @@ pub type DepSpec {
     params: Dict(QualifiedName, List(ParamBound)),
     // `where returns` clauses on the spec's `effects` lines.
     returns: Dict(QualifiedName, EffectTerm),
-    // The legacy `returns` lines under them.
-    legacy_returns: Dict(QualifiedName, EffectTerm),
     declared_returns: Dict(QualifiedName, EffectTerm),
     type_fields: List(TypeFieldAnnotation),
     externals: List(ExternalAnnotation),
@@ -1732,16 +1707,7 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
             <> "); its entries are ignored",
           )
       }
-      DepSpec(
-        dict.new(),
-        dict.new(),
-        dict.new(),
-        dict.new(),
-        dict.new(),
-        [],
-        [],
-        set.new(),
-      )
+      DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [], set.new())
     }
     Ok(file) ->
       // Loaded through the same two readers a package uses for its *own* spec,
@@ -1756,7 +1722,6 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
         // own body is the documented case for the line.
         params: load_spec_params_from_file(file),
         returns: load_spec_returns_from_file(file),
-        legacy_returns: load_spec_legacy_returns_from_file(file),
         declared_returns: load_spec_external_returns_from_file(file),
         type_fields: annotation.extract_type_fields(file),
         externals: annotation.extract_externals(file),
@@ -1835,9 +1800,6 @@ fn sanitize_dep_spec(
     returns: dict.filter(dep.returns, fn(name, _operator) {
       !dict.has_key(foreign, name) && !about_other_code(name)
     }),
-    legacy_returns: dict.filter(dep.legacy_returns, fn(name, _operator) {
-      !dict.has_key(foreign, name) && !about_other_code(name)
-    }),
     declared_returns: dict.filter(dep.declared_returns, fn(name, _operator) {
       !about_other_code(name)
     }),
@@ -1868,8 +1830,8 @@ fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> ExternalTiers {
 // project's own entries, above the catalog. An existing entry is overridden only
 // when its origin is the catalog, so a consumer's own declarations survive a
 // merge that runs after the catalog is already loaded, and a term this merge
-// decides brings its own bounds entry with it. The summaries merge as `Foreign`:
-// a committed spec is serialized, not inferred this run.
+// decides brings its own bounds entry with it. The summaries merge as `Closed`:
+// a committed clause is read back, not inferred this run.
 //
 // A consumer's *module-level* external stays in the `module_effects` fallback
 // tier, which `lookup` consults only after `all_effects` misses, so these
@@ -1909,7 +1871,6 @@ pub fn with_path_dep_spec(
   )
   |> gap_filling_declared_returns(dep.declared_returns, origin)
   |> with_closed_returned_operators(dep.returns, origin)
-  |> with_foreign_returned_operators(dep.legacy_returns, origin)
   |> with_type_fields(dep.type_fields, origin)
 }
 
@@ -2001,41 +1962,23 @@ pub fn load_spec_returns_from_file(
   |> fold_named_returns()
 }
 
-// The same map from a parsed spec's legacy `returns` lines.
-pub fn load_spec_legacy_returns_from_file(
-  file: types.GradedFile,
-) -> Dict(QualifiedName, EffectTerm) {
-  fold_spec_returns(annotation.extract_returns(file))
-}
-
-// The declared map: the `where returns` clauses on `assume` lines, plus the
-// legacy `external returns` lines under them. A clause on a module path keys
-// nothing — a returns declaration is per-function, and a name that resolves
-// nowhere would otherwise sit in the file looking effective. The ground-only
-// rule is applied where the summaries are tagged, in `declared_returns`.
+// The declared map: the `where returns` clauses on `assume` lines. A clause on
+// a module path keys nothing — a returns declaration is per-function, and a
+// name that resolves nowhere would otherwise sit in the file looking effective.
+// The ground-only rule is applied where the summaries are tagged, in
+// `declared_returns`.
 pub fn load_spec_external_returns_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, EffectTerm) {
-  dict.merge(
-    fold_spec_returns(annotation.extract_external_returns(file)),
-    annotation.extract_externals(file)
-      |> list.filter_map(fn(ext) {
-        case ext.target, ext.returns {
-          FunctionExternal(function), Some(operator) ->
-            Ok(#(QualifiedName(ext.module, function), operator))
-          FunctionExternal(_), None | ModuleExternal, _ -> Error(Nil)
-        }
-      })
-      |> dict.from_list(),
-  )
-}
-
-fn fold_spec_returns(
-  returns: List(types.ReturnsAnnotation),
-) -> Dict(QualifiedName, EffectTerm) {
-  returns
-  |> list.map(fn(returns) { #(returns.function, returns.operator) })
-  |> fold_named_returns()
+  annotation.extract_externals(file)
+  |> list.filter_map(fn(ext) {
+    case ext.target, ext.returns {
+      FunctionExternal(function), Some(operator) ->
+        Ok(#(QualifiedName(ext.module, function), operator))
+      FunctionExternal(_), None | ModuleExternal, _ -> Error(Nil)
+    }
+  })
+  |> dict.from_list()
 }
 
 // Key a list of `#(spec name, operator)` pairs by qualified name, dropping the
@@ -2101,10 +2044,7 @@ fn load_dependencies(
           // specs, the same rule keeps one package's stray `returns` line from
           // burying another's declaration for the same name.
           merge_returns(
-            merge_returns(
-              tag_returns(dep.legacy_returns, Foreign, origin),
-              tag_returns(dep.returns, Closed, origin),
-            ),
+            tag_returns(dep.returns, Closed, origin),
             declared_returns(dep.declared_returns, origin),
           ),
         ),
