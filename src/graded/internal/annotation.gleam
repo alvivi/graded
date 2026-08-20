@@ -1,5 +1,6 @@
 import gleam/bool
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -25,6 +26,15 @@ import graded/internal/types.{
 
 pub type ParseError {
   InvalidLine(line_number: Int, content: String)
+}
+
+// Render a parse error as `<line number>: <line as written>`. The single
+// source of truth for how a rejected line is named, so the CLI's error, the
+// `format --stdin` branch and the dependency-spec warning all point at the
+// same line the same way.
+pub fn describe_parse_error(error: ParseError) -> String {
+  let InvalidLine(line_number:, content:) = error
+  int.to_string(line_number) <> ": " <> string.trim(content)
 }
 
 // Parse an .graded file preserving full structure (comments, blanks, annotations).

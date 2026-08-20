@@ -8,6 +8,7 @@ import gleam/option.{Some}
 import gleam/string
 import gleeunit/should
 import graded
+import graded/internal/annotation
 import graded/internal/cli
 import graded/internal/diff
 import simplifile
@@ -141,21 +142,20 @@ pub fn dry_run_repairs_the_formerly_last_line_test() {
   support.cleanup(root)
 }
 
-// A spec file the parser rejects merges as if it held no lines, so the write
-// would clobber it. The preview shows that: every line already on disk is a
-// removal.
-pub fn dry_run_over_an_unparseable_spec_previews_the_clobber_test() {
+// A spec file the parser rejects stops the run, naming the line, rather than
+// merging as if it held no lines and previewing a write that would clobber it.
+pub fn dry_run_over_an_unparseable_spec_errors_test() {
   let root = "build/infer_dry_run_unparseable"
   let existing = spec() <> "this line is not a graded annotation\n"
   write_project(root, source(), Spec(existing))
 
-  let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
-  changed_lines(preview)
-  |> list.filter(string.starts_with(_, "- "))
-  |> should.equal([
-    "- external effects ffi/console.log : [Stdout]",
-    "- this line is not a graded annotation",
-  ])
+  graded.run_infer_command(cli.DryRun, root)
+  |> should.equal(
+    Error(graded.GradedParseError(
+      root <> "/proj.graded",
+      annotation.InvalidLine(2, "this line is not a graded annotation"),
+    )),
+  )
   simplifile.read(root <> "/proj.graded") |> should.equal(Ok(existing))
   support.cleanup(root)
 }
@@ -338,5 +338,23 @@ pub fn make() -> fn() -> Nil {
   changed_lines(preview)
   |> list.contains("- returns proj.make : []")
   |> should.be_true()
+  support.cleanup(root)
+}
+
+// A write mode refuses the same spec the preview refuses, and leaves the file
+// exactly as it was rather than merging into an empty file.
+pub fn infer_over_an_unparseable_spec_writes_nothing_test() {
+  let root = "build/infer_unparseable"
+  let _ = support.write_unparseable_spec_project(root)
+  let assert Ok(before) = simplifile.read(root <> "/proj.graded")
+
+  graded.run_infer(root)
+  |> should.equal(
+    Error(graded.GradedParseError(
+      root <> "/proj.graded",
+      annotation.InvalidLine(2, "not a graded line"),
+    )),
+  )
+  simplifile.read(root <> "/proj.graded") |> should.equal(Ok(before))
   support.cleanup(root)
 }

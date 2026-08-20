@@ -2,6 +2,7 @@ import gleam/list
 import gleam/string
 import gleeunit/should
 import graded
+import graded/internal/annotation
 import graded/internal/answer
 import graded/internal/checker
 import graded/internal/cli
@@ -414,4 +415,23 @@ pub fn parse_why_args_rejects_a_flag_as_a_name_test() {
 pub fn parse_why_args_rejects_an_extra_argument_test() {
   cli.parse_why_args(["a.b", "dir", "extra"])
   |> should.equal(Error(cli.UnexpectedArgument("extra")))
+}
+
+// Unparseable spec
+//
+// The explanation reads the spec's `check` lines, so a line the parser rejects
+// stops it rather than explaining against a spec that was silently emptied.
+
+pub fn why_over_an_unparseable_spec_errors_test() {
+  let root = "/tmp/graded_why_unparseable"
+  let _ = support.write_unparseable_spec_project(root)
+
+  graded.run_why(root, "proj.go")
+  |> should.equal(
+    Error(graded.GradedParseError(
+      root <> "/proj.graded",
+      annotation.InvalidLine(2, "not a graded line"),
+    )),
+  )
+  support.cleanup(root)
 }

@@ -141,8 +141,11 @@ pub fn main() -> Nil {
     ["format", "--stdin"] ->
       case run_format_stdin(read_stdin()) {
         Ok(output) -> io.print(output)
-        Error(_) -> {
-          io.println_error("graded: error: could not parse stdin")
+        Error(error) -> {
+          io.println_error(
+            "graded: error: parse error in stdin:"
+            <> annotation.describe_parse_error(error),
+          )
           halt(1)
         }
       }
@@ -3727,8 +3730,10 @@ fn read_spec(spec_path: String) -> Result(GradedFile, GradedError) {
 // The spec file's bytes and the parse of them. A spec file that isn't there
 // yet reads as no bytes and no lines — not as an empty file, which parses to
 // one blank line — so a project with no spec is inferred from scratch. A spec
-// file that is there but cannot be read is an error, so no command carries on
-// as though the package had no annotations at all.
+// file that is there but cannot be read, or that does not parse, is an error
+// naming the offending line: no command carries on as though the package had
+// no annotations, and `infer` stops before merging rather than writing an
+// empty file over the hand-written lines.
 fn read_spec_on_disk(
   spec_path: String,
 ) -> Result(#(String, GradedFile), GradedError) {
@@ -3736,10 +3741,9 @@ fn read_spec_on_disk(
     Error(simplifile.Enoent) -> Ok(#("", GradedFile(lines: [])))
     Error(cause) -> Error(FileReadError(spec_path, cause))
     Ok(content) ->
-      Ok(#(
-        content,
-        annotation.parse_file(content) |> result.unwrap(GradedFile(lines: [])),
-      ))
+      annotation.parse_file(content)
+      |> result.map(fn(file) { #(content, file) })
+      |> result.map_error(GradedParseError(spec_path, _))
   }
 }
 
@@ -4193,7 +4197,8 @@ fn format_error(error: GradedError) -> String {
     FileWriteError(path, _) -> "Could not write: " <> path
     DirectoryCreateError(path, _) -> "Could not create directory: " <> path
     GleamParseError(path, _) -> "Could not parse: " <> path
-    GradedParseError(path, _) -> "Parse error in .graded file for: " <> path
+    GradedParseError(path, cause) ->
+      "Parse error in " <> path <> ":" <> annotation.describe_parse_error(cause)
     InvalidConfig(path, _) -> "Invalid gleam.toml: " <> path
     FormatCheckFailed(paths:) ->
       "Unformatted .graded files:\n"
