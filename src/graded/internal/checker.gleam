@@ -265,12 +265,26 @@ pub fn infer_with_returns(
       }
       let #(effects_term, field_vars) =
         groom_published_term(effects_term, fn_typed_params)
-      // If the function's inferred effects reference effect variables (because it
-      // calls fn-typed params, or a fn-typed field on an opaque receiver), emit
-      // ParamBound entries so the polymorphic annotation round-trips correctly.
+      // The operator this function returns, written as the line's `where
+      // returns` clause. The line's own bound list scopes the clause's
+      // variables, so they are counted alongside the term's below.
+      let returns =
+        dict.get(returned_operators, definition.definition.name)
+        |> option.from_result()
+      // If the function's inferred effects or its returned operator reference
+      // effect variables (because it calls fn-typed params, or a fn-typed field
+      // on an opaque receiver), emit ParamBound entries so the polymorphic
+      // signature round-trips correctly. A callback used only inside the
+      // returned closure is mentioned by the clause alone, and gets its bound
+      // from there.
+      let published_vars =
+        set.union(effect_term.free_vars(effects_term), case returns {
+          Some(operator) -> effect_term.free_vars(operator)
+          None -> set.new()
+        })
       let inferred_params =
         list.append(
-          polymorphic_param_bounds(effects_term, fn_typed_params),
+          bounds_for_vars(published_vars, fn_typed_params),
           polymorphic_param_bounds(effects_term, field_vars),
         )
       #(
@@ -280,7 +294,7 @@ pub fn infer_with_returns(
           function: definition.definition.name,
           params: inferred_params,
           effects: effects_term,
-          returns: None,
+          returns:,
         ),
       )
     })
@@ -2054,8 +2068,15 @@ fn polymorphic_param_bounds(
   term: EffectTerm,
   fn_typed_params: Set(String),
 ) -> List(ParamBound) {
-  term
-  |> effect_term.free_vars()
+  bounds_for_vars(effect_term.free_vars(term), fn_typed_params)
+}
+
+// The same, over a variable set gathered from more than one term.
+fn bounds_for_vars(
+  vars: Set(String),
+  fn_typed_params: Set(String),
+) -> List(ParamBound) {
+  vars
   |> set.to_list()
   |> list.filter(fn(v) { set.contains(fn_typed_params, v) })
   |> list.sort(string.compare)

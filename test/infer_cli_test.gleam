@@ -312,10 +312,13 @@ pub fn native_make() -> fn() -> Nil {
   let assert Ok(_) = graded.run_infer(root)
   let assert Ok(written) = simplifile.read(root <> "/proj.graded")
 
-  string.contains(written, "returns proj.make") |> should.be_false()
+  string.contains(written, "effects proj.make : [Unknown]") |> should.be_true()
+  string.contains(written, "proj.make : [Unknown] where returns")
+  |> should.be_false()
   // The ordinary producer beside it still gets one, so what is refused is the
   // foreign half rather than the channel.
-  string.contains(written, "returns proj.native_make") |> should.be_true()
+  string.contains(written, "effects proj.native_make : [] where returns : []")
+  |> should.be_true()
   support.cleanup(root)
 }
 
@@ -356,5 +359,37 @@ pub fn infer_over_an_unparseable_spec_writes_nothing_test() {
     )),
   )
   simplifile.read(root <> "/proj.graded") |> should.equal(Ok(before))
+  support.cleanup(root)
+}
+
+// A producer whose callback is used only inside the closure it returns. The
+// callback is mentioned by the clause alone, so the bound that scopes it has to
+// come from there — without it the line would be open the moment it is read
+// back.
+pub fn infer_writes_a_clause_with_a_bound_for_every_variable_it_mentions_test() {
+  let root = "build/infer_returns_clause"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.gleam",
+      "pub fn traced(action: fn(fn(String) -> Nil) -> Nil) -> fn(fn(String) -> Nil) -> Nil {
+  fn(cb) { action(cb) }
+}
+",
+    ),
+  ])
+
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  written
+  |> string.trim
+  |> should.equal(
+    "effects proj.traced(action: [action]) : [] where returns : fn(cb) -> [action([cb])]",
+  )
+
+  // Re-inferring over what was just written changes nothing: the clause and its
+  // bound read back as what produced them.
+  let assert Ok(_) = graded.run_infer(root)
+  simplifile.read(root <> "/proj.graded") |> should.equal(Ok(written))
   support.cleanup(root)
 }
