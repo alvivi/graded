@@ -31,7 +31,7 @@ base — it isn't serialized to `.graded` specs or the catalog, so a computed
 receiver into a spec-backed or catalogued dependency stays conservative. Closing
 these would mean helper-call composition, tracing through arbitrary expressions,
 and a provenance serialization format — larger steps, each risking understated
-effects if done unsoundly. The `type` line and field bound remain the escape
+effects if done unsoundly. The field `assume` line and field bound remain the escape
 hatches meanwhile.
 
 ## Direct field calls on computed receivers
@@ -44,7 +44,7 @@ the record with no visible body — the decoder/iterator/context idiom
 `[Unknown]`, so typing the receiver changes nothing and the call stays
 `[Unknown]`. Discharging it would need tracing the callback back to its
 construction site, the same construction-site data-flow the deeper-provenance
-items above defer, and understates the effect if done unsoundly. The `type` line
+items above defer, and understates the effect if done unsoundly. The field `assume` line
 remains the escape hatch meanwhile.
 
 ## Retiring the positional/label heuristics
