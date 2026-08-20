@@ -33,7 +33,7 @@ pub fn explains_a_checked_function_test() {
     "impure_view.view has effects [Stdout]",
     "declared check impure_view.view : []",
     "  calls gleam/io.println with effects [Stdout] (from gleam_stdlib's catalog entry)",
-    "  calls gleam/list.map with effects [] (from a module-level external in gleam_stdlib's catalog entry)",
+    "  calls gleam/list.map with effects [] (from a module-level `assume` in gleam_stdlib's catalog entry)",
   ])
 }
 
@@ -196,7 +196,7 @@ pub fn an_external_declaration_explains_the_external_test() {
   |> lines
   |> should.equal([
     "external_same_module.now has effects [Time]",
-    "  is an external with effects [Time] (from your spec's external declaration)",
+    "  is an external with effects [Time] (from your spec's `assume` line)",
   ])
   why("local_wired.opaque_read")
   |> string.contains("is pure — no effects ([])")
@@ -241,7 +241,7 @@ pub fn a_declared_unknown_external_names_its_declaration_test() {
   |> lines
   |> should.equal([
     "external_budget.declared_unknown has effects that could not be determined: [Unknown]",
-    "  is an external with unresolved effects [Unknown] (from your spec's external declaration)",
+    "  is an external with unresolved effects [Unknown] (from your spec's `assume` line)",
   ])
   why("ffi_external.ffi_op")
   |> string.contains("with no declared effects")
@@ -286,8 +286,8 @@ pub fn a_module_external_explains_an_ordinary_function_test() {
   |> lines
   |> should.equal([
     "probe.helper has effects [Disk]",
-    "  is declared for its callers with effects [Disk] (from a module-level external in your spec)",
-    "  calls probe.quiet with effects [Disk] (from a module-level external in your spec)",
+    "  is declared for its callers with effects [Disk] (from a module-level `assume` in your spec)",
+    "  calls probe.quiet with effects [Disk] (from a module-level `assume` in your spec)",
   ])
   output |> string.contains("is an external") |> should.be_false()
   // The one answer, in each command's own words.
@@ -321,7 +321,7 @@ pub fn a_module_external_violation_uses_the_same_wording_test() {
   |> should.equal(
     root
     <> "/probe.gleam: helper is declared for its callers with effects [Disk]"
-    <> " (from a module-level external in your spec) but declared []",
+    <> " (from a module-level `assume` in your spec) but declared []",
   )
   let assert Ok(output) = graded.run_why(root, "probe.helper")
   let assert [_header, _declaration, line] = lines(output)

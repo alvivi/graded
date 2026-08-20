@@ -1065,10 +1065,10 @@ pub fn format_effect_set(effect_set: EffectSet) -> String {
 // reads from this one vocabulary.
 pub fn describe_origin(origin: LookupOrigin) -> String {
   case origin {
-    UserExternal -> "your spec's external declaration"
+    UserExternal -> "your spec's `assume` line"
     ModuleExternalOrigin(source:) ->
-      "a module-level external in " <> describe_source_file(source)
-    TypeLine(source:) -> "a type line in " <> describe_source_file(source)
+      "a module-level `assume` in " <> describe_source_file(source)
+    TypeLine(source:) -> "a field `assume` in " <> describe_source_file(source)
     CommittedSpec
     | ProjectInferred
     | DependencySpec(..)

@@ -5060,7 +5060,7 @@ pub fn format_warning_type_shaped_external_returns_test() {
   types.TypeShapedExternalReturnsWarning(name: "app.Handler.run")
   |> checker.format_warning("proj.graded", _)
   |> should.equal(
-    "proj.graded: warning: external returns app.Handler.run names a type field, not a function — a returns declaration is per-function; write a `type` line to give a field's effects, and the line resolves nothing as written",
+    "proj.graded: warning: external returns app.Handler.run names a type field, not a function — a returns declaration is per-function; write an `assume` line to give a field's effects, and the line resolves nothing as written",
   )
 }
 
@@ -5383,7 +5383,7 @@ pub fn format_violation_states_a_reason_and_an_origin_together_test() {
     Some(types.ModuleExternalOrigin(source: types.UserExternal)),
   )
   |> should.equal(
-    "src/app.gleam: run calls field `find` on `repo` of type `dep/repo.Repo`, which has no effect annotation for that field, with unresolved effects [Unknown] (from a module-level external in your spec) but declared []",
+    "src/app.gleam: run calls field `find` on `repo` of type `dep/repo.Repo`, which has no effect annotation for that field, with unresolved effects [Unknown] (from a module-level `assume` in your spec) but declared []",
   )
 }
 
@@ -5904,7 +5904,7 @@ pub fn run(repo: Repo) -> Nil {
   |> should.equal(Some(types.TypeLine(source: types.CommittedSpec)))
   checker.format_violation("src/app.gleam", violation)
   |> should.equal(
-    "src/app.gleam: run calls field `find` on `repo` with effects [Storage] (from a type line in your spec) but declared []",
+    "src/app.gleam: run calls field `find` on `repo` with effects [Storage] (from a field `assume` in your spec) but declared []",
   )
 }
 
