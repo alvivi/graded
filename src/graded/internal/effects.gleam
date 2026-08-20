@@ -2321,33 +2321,38 @@ pub fn compare_semver(
 }
 
 // The installed version of each package `manifest_path` lists. An unreadable
-// or malformed manifest yields an empty dict.
+// or malformed manifest yields an empty dict, which reads as a project with no
+// dependencies installed; a caller for which the manifest is the subject calls
+// `read_manifest_versions` and tells the two apart.
 pub fn manifest_versions(manifest_path: String) -> Dict(String, String) {
-  let parsed = {
-    use content <- result.try(
-      simplifile.read(manifest_path) |> result.map_error(fn(_) { Nil }),
-    )
-    use toml <- result.try(
-      tom.parse(content) |> result.map_error(fn(_) { Nil }),
-    )
-    use packages <- result.try(
-      tom.get_array(toml, ["packages"]) |> result.map_error(fn(_) { Nil }),
-    )
-    Ok(
-      list.fold(packages, dict.new(), fn(accumulator, package) {
-        case package {
-          tom.InlineTable(table) ->
-            case
-              tom.get_string(table, ["name"]),
-              tom.get_string(table, ["version"])
-            {
-              Ok(name), Ok(version) -> dict.insert(accumulator, name, version)
-              _, _ -> accumulator
-            }
-          _ -> accumulator
-        }
-      }),
-    )
-  }
-  result.unwrap(parsed, dict.new())
+  read_manifest_versions(manifest_path) |> result.unwrap(dict.new())
+}
+
+// The installed version of each package `manifest_path` lists, or `Error(Nil)`
+// where there is no manifest to read or its TOML does not parse.
+pub fn read_manifest_versions(
+  manifest_path: String,
+) -> Result(Dict(String, String), Nil) {
+  use content <- result.try(
+    simplifile.read(manifest_path) |> result.map_error(fn(_) { Nil }),
+  )
+  use toml <- result.try(tom.parse(content) |> result.map_error(fn(_) { Nil }))
+  use packages <- result.try(
+    tom.get_array(toml, ["packages"]) |> result.map_error(fn(_) { Nil }),
+  )
+  Ok(
+    list.fold(packages, dict.new(), fn(accumulator, package) {
+      case package {
+        tom.InlineTable(table) ->
+          case
+            tom.get_string(table, ["name"]),
+            tom.get_string(table, ["version"])
+          {
+            Ok(name), Ok(version) -> dict.insert(accumulator, name, version)
+            _, _ -> accumulator
+          }
+        _ -> accumulator
+      }
+    }),
+  )
 }

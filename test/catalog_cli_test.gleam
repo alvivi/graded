@@ -125,14 +125,34 @@ pub fn the_listing_marks_the_fall_back_as_such_test() {
 }
 
 pub fn the_listing_without_a_manifest_test() {
-  // The listing is about the catalog; the manifest only decorates it.
+  // The listing is about the catalog; the manifest only decorates it. Nothing
+  // is marked, and the first line says why — plain lines alone would read as a
+  // project none of the bundled files covers.
   use catalog_dir, manifest <- with_catalog(
     "build/catalog_cli_listing_no_manifest",
     None,
   )
   catalog_report(catalog_dir, manifest, cli.ListCatalog)
   |> lines
-  |> should.equal(["argv@1.1.0", "lustre@4.0.0", "lustre@5.0.0"])
+  |> should.equal([
+    "// no readable manifest.toml at build/catalog_cli_listing_no_manifest/manifest.toml",
+    "argv@1.1.0", "lustre@4.0.0", "lustre@5.0.0",
+  ])
+}
+
+pub fn the_listing_with_a_malformed_manifest_test() {
+  // A manifest whose TOML does not parse lists no versions, which is the same
+  // answer as no manifest at all and gets the same line.
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_listing_bad_manifest",
+    Some("packages = [\n"),
+  )
+  catalog_report(catalog_dir, manifest, cli.ListCatalog)
+  |> lines
+  |> should.equal([
+    "// no readable manifest.toml at build/catalog_cli_listing_bad_manifest/manifest.toml",
+    "argv@1.1.0", "lustre@4.0.0", "lustre@5.0.0",
+  ])
 }
 
 // Printing one file
@@ -300,6 +320,32 @@ pub fn the_suggested_version_is_the_highest_bundled_test() {
   |> should.equal(
     "`lustre` is not in manifest.toml; bundled: lustre@4.0.0, lustre@5.0.0 — run `graded catalog lustre@5.0.0` to print one",
   )
+}
+
+pub fn a_bundled_package_with_no_manifest_to_read_test() {
+  // No manifest is not "the package is not installed": nothing was consulted,
+  // so the message names the file that was looked for.
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_show_no_manifest",
+    None,
+  )
+  let problem = catalog_problem(catalog_dir, manifest, show("lustre", None))
+  problem |> should.equal(graded.NoManifest(manifest))
+  graded.format_catalog_problem(problem)
+  |> should.equal(
+    "no readable manifest.toml at "
+    <> manifest
+    <> "; run `gleam deps download` in that package, or name the version to print: `graded catalog <package>@<version>`",
+  )
+}
+
+pub fn a_bundled_package_with_a_malformed_manifest_test() {
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_show_bad_manifest",
+    Some("packages = [\n"),
+  )
+  catalog_problem(catalog_dir, manifest, show("lustre", None))
+  |> should.equal(graded.NoManifest(manifest))
 }
 
 pub fn a_package_the_catalog_does_not_bundle_test() {
