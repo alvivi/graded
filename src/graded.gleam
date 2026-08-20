@@ -66,7 +66,7 @@ import graded/internal/types.{
   StaleFunctionExternalWarning, TypeShapedExternalReturnsWarning,
   UnmatchedCheckWarning, UnmatchedExternalReturnsWarning,
   UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
-  UnmatchedTypeFieldWarning,
+  UnmatchedTypeFieldWarning, UnverifiedCheckShapeWarning,
 }
 import simplifile
 
@@ -962,10 +962,19 @@ fn validate_spec_annotations(
 ) -> List(Warning) {
   let known_functions = known_function_names(index)
 
-  let check_warnings =
+  // A `check` over a field path is a shape nothing verifies yet, not a typo.
+  let #(shape_checks, function_checks) =
     annotation.extract_checks(spec)
-    |> list.filter(fn(ann) { !set.contains(known_functions, ann.function) })
-    |> list.map(fn(ann) { UnmatchedCheckWarning(function: ann.function) })
+    |> list.partition(fn(ann) { annotation.is_field_path(ann.function) })
+  let check_warnings =
+    list.append(
+      list.map(shape_checks, fn(ann) {
+        UnverifiedCheckShapeWarning(name: ann.function)
+      }),
+      function_checks
+        |> list.filter(fn(ann) { !set.contains(known_functions, ann.function) })
+        |> list.map(fn(ann) { UnmatchedCheckWarning(function: ann.function) }),
+    )
 
   let externals = annotation.extract_externals(spec)
   let declared_returns = annotation.extract_external_returns(spec)
