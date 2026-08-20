@@ -903,7 +903,7 @@ fn checks_grouped_by_module(
     case annotation.split_function_name(ann.function) {
       Error(_) -> acc
       Ok(#(module, function)) -> {
-        let bare = EffectAnnotation(..ann, function:)
+        let bare = EffectAnnotation(..ann, function:, returns: None)
         let existing = case dict.get(acc, module) {
           Ok(list) -> list
           Error(_) -> []
@@ -3119,7 +3119,11 @@ fn infer_one_module(
     inferred
     |> list.filter(fn(ann) { set.contains(public_names, ann.function) })
     |> list.map(fn(ann) {
-      EffectAnnotation(..ann, function: module_path <> "." <> ann.function)
+      EffectAnnotation(
+        ..ann,
+        function: module_path <> "." <> ann.function,
+        returns: None,
+      )
     })
   // Public functions that return an operator — serialized as `returns` lines so
   // the signature crosses module/package boundaries.

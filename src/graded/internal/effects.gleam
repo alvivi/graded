@@ -364,13 +364,19 @@ type ExternalTiers =
 // Sort external annotations into the two maps they feed, each term paired with
 // the source that declared it. Splitting is separate from merging so each
 // caller decides its own precedence.
+//
+// A line with no effects clause is skipped: it claims nothing on this channel,
+// so it keys nothing here and the tiers below keep answering. Every path into
+// the two maps comes through this fold, so a `None` cannot be read as `[]`
+// anywhere.
 fn split_externals(
   externals: List(ExternalAnnotation),
   origin: LookupOrigin,
 ) -> ExternalTiers {
   list.fold(externals, #(dict.new(), dict.new()), fn(accumulator, external) {
     let #(function_externals, module_externals) = accumulator
-    let term = effect_term.from_effect_set(external.effects)
+    use effects <- with_declared_effects(external, accumulator)
+    let term = effect_term.from_effect_set(effects)
     case external.target {
       ModuleExternal -> #(
         function_externals,
@@ -389,6 +395,19 @@ fn split_externals(
       )
     }
   })
+}
+
+// Run `keying` with the effect set a declaration carries, or keep the
+// accumulator unchanged when it carries none.
+fn with_declared_effects(
+  external: ExternalAnnotation,
+  accumulator: ExternalTiers,
+  keying: fn(EffectSet) -> ExternalTiers,
+) -> ExternalTiers {
+  case external.effects {
+    Some(effects) -> keying(effects)
+    None -> accumulator
+  }
 }
 
 // Look up the effect set for a qualified function name, with the source that

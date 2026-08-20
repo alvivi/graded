@@ -280,6 +280,7 @@ pub fn infer_with_returns(
           function: definition.definition.name,
           params: inferred_params,
           effects: effects_term,
+          returns: None,
         ),
       )
     })
