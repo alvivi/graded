@@ -1,0 +1,467 @@
+// The `catalog` command
+//
+// Decoding its argument forms, the listing and its per-package suffixes, the
+// bytes and header one printed file carries, and every way the command can fail
+// to answer. The report tests run against a fixture catalog written under
+// `build/`; the last section goes through the seam against graded's own bundled
+// catalog.
+
+import gleam/dict
+import gleam/option.{type Option, None, Some}
+import gleam/string
+import gleeunit/should
+import graded
+import graded/internal/annotation
+import graded/internal/cli
+import graded/internal/effects
+import simplifile
+import support
+
+// Argument decoding
+//
+// `[package[@version]] [directory]`, package first: a lone argument is always a
+// package, and `@` splits it from a version at its first occurrence.
+
+pub fn no_arguments_list_the_catalog_test() {
+  cli.parse_catalog_args([])
+  |> should.equal(Ok(cli.ListCatalog))
+}
+
+pub fn a_package_alone_takes_the_default_directory_test() {
+  cli.parse_catalog_args(["lustre"])
+  |> should.equal(Ok(cli.ShowCatalog("lustre", None, "src")))
+}
+
+pub fn a_package_at_a_version_with_a_directory_test() {
+  cli.parse_catalog_args(["lustre@5.0.0", "app"])
+  |> should.equal(Ok(cli.ShowCatalog("lustre", Some("5.0.0"), "app")))
+}
+
+pub fn a_version_carrying_its_own_at_sign_test() {
+  // The split is on the first `@`, so the rest is the version — which the
+  // catalog then has no file for, rather than the argument being a usage error.
+  cli.parse_catalog_args(["lustre@5@x"])
+  |> should.equal(Ok(cli.ShowCatalog("lustre", Some("5@x"), "src")))
+}
+
+pub fn an_empty_version_is_a_usage_error_test() {
+  cli.parse_catalog_args(["lustre@"])
+  |> should.equal(Error(cli.InvalidPackage("lustre@")))
+}
+
+pub fn an_empty_package_is_a_usage_error_test() {
+  cli.parse_catalog_args(["@5.0.0"])
+  |> should.equal(Error(cli.InvalidPackage("@5.0.0")))
+}
+
+pub fn a_flag_in_the_package_position_is_an_unknown_option_test() {
+  cli.parse_catalog_args(["--x"])
+  |> should.equal(Error(cli.UnknownOption("--x")))
+}
+
+pub fn a_third_positional_is_rejected_test() {
+  cli.parse_catalog_args(["lustre", "a", "b"])
+  |> should.equal(Error(cli.UnexpectedArgument("b")))
+}
+
+pub fn the_rejection_messages_test() {
+  cli.format_argument_error(cli.InvalidPackage("lustre@"))
+  |> should.equal("expected a package or package@version, got `lustre@`")
+  cli.format_argument_error(cli.UnknownOption("--x"))
+  |> should.equal("unknown option `--x`")
+  cli.format_argument_error(cli.UnexpectedArgument("b"))
+  |> should.equal("unexpected argument `b`")
+}
+
+// The listing
+//
+// One `package@version` line per bundled file, sorted, with a comment on the
+// line each installed package resolves to. All three suffix shapes come out of
+// the same three files under three manifests.
+
+pub fn the_listing_marks_the_selected_file_test() {
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_listing",
+    Some(manifest_for("lustre", "5.7.0")),
+  )
+  catalog_report(catalog_dir, manifest, cli.ListCatalog)
+  |> lines
+  |> should.equal([
+    "argv@1.1.0", "lustre@4.0.0", "lustre@5.0.0  // selected for lustre 5.7.0",
+  ])
+}
+
+pub fn the_listing_marks_a_file_below_the_highest_test() {
+  // Installed between the two bundled versions: the lower file is the one
+  // selected, so the suffix lands there and nowhere else.
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_listing_lower",
+    Some(manifest_for("lustre", "4.5.0")),
+  )
+  catalog_report(catalog_dir, manifest, cli.ListCatalog)
+  |> lines
+  |> should.equal([
+    "argv@1.1.0", "lustre@4.0.0  // selected for lustre 4.5.0", "lustre@5.0.0",
+  ])
+}
+
+pub fn the_listing_marks_the_fall_back_as_such_test() {
+  // Nothing bundled at or below the installed version, so the highest file is
+  // taken — and says so, rather than claiming to be selected for a version it
+  // sits above.
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_listing_fallback",
+    Some(manifest_for("lustre", "3.0.0")),
+  )
+  catalog_report(catalog_dir, manifest, cli.ListCatalog)
+  |> lines
+  |> should.equal([
+    "argv@1.1.0", "lustre@4.0.0",
+    "lustre@5.0.0  // highest bundled; none ≤ lustre 3.0.0",
+  ])
+}
+
+pub fn the_listing_without_a_manifest_test() {
+  // The listing is about the catalog; the manifest only decorates it.
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_listing_no_manifest",
+    None,
+  )
+  catalog_report(catalog_dir, manifest, cli.ListCatalog)
+  |> lines
+  |> should.equal(["argv@1.1.0", "lustre@4.0.0", "lustre@5.0.0"])
+}
+
+// Printing one file
+//
+// The header names the file and why it was chosen; the rest is the file. What
+// reaches stdout is `header <> "\n" <> file bytes`, since `report` prints with
+// `io.println` and the output has exactly one trailing newline dropped for it.
+
+pub fn the_printed_file_is_the_header_and_the_bytes_test() {
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_show",
+    Some(manifest_for("lustre", "5.7.0")),
+  )
+  let output = catalog_report(catalog_dir, manifest, show("lustre", None))
+  should.equal(
+    output <> "\n",
+    "// lustre@5.0.0.graded — selected for lustre 5.7.0 in manifest.toml\n"
+      <> newline_terminated(lustre_five),
+  )
+}
+
+pub fn a_file_ending_in_two_newlines_keeps_both_test() {
+  // `lustre@5.0.0` ends in two: an over-eager trim would eat the second.
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_show_two",
+    Some(manifest_for("lustre", "5.7.0")),
+  )
+  catalog_report(catalog_dir, manifest, show("lustre", Some("5.0.0")))
+  |> string.ends_with("[Dom]\n")
+  |> should.be_true()
+}
+
+pub fn a_file_ending_in_no_newline_gains_one_test() {
+  // `argv@1.1.0` ends in none, so `println` supplies it — the one place the
+  // printed bytes differ from the file's.
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_show_none",
+    Some(manifest_for("lustre", "5.7.0")),
+  )
+  let output =
+    catalog_report(catalog_dir, manifest, show("argv", Some("1.1.0")))
+  should.equal(
+    output <> "\n",
+    "// argv@1.1.0.graded — bundled version, as requested\n"
+      <> newline_terminated(argv_entry),
+  )
+}
+
+pub fn the_printed_file_parses_as_a_spec_test() {
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_show_parses",
+    Some(manifest_for("lustre", "5.7.0")),
+  )
+  catalog_report(catalog_dir, manifest, show("lustre", None))
+  |> annotation.parse_file
+  |> should.be_ok
+}
+
+pub fn the_selected_file_follows_the_installed_version_test() {
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_show_lower",
+    Some(manifest_for("lustre", "4.5.0")),
+  )
+  should.equal(
+    catalog_report(catalog_dir, manifest, show("lustre", None)) <> "\n",
+    "// lustre@4.0.0.graded — selected for lustre 4.5.0 in manifest.toml\n"
+      <> newline_terminated(lustre_four),
+  )
+}
+
+pub fn the_fall_back_prints_the_highest_bundled_file_test() {
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_show_fallback",
+    Some(manifest_for("lustre", "3.0.0")),
+  )
+  should.equal(
+    catalog_report(catalog_dir, manifest, show("lustre", None)) <> "\n",
+    "// lustre@5.0.0.graded — highest bundled version; no bundled lustre ≤ 3.0.0\n"
+      <> newline_terminated(lustre_five),
+  )
+}
+
+pub fn an_explicit_version_needs_no_manifest_test() {
+  use catalog_dir, _manifest <- with_catalog(
+    "build/catalog_cli_show_explicit",
+    None,
+  )
+  should.equal(
+    catalog_report(
+      catalog_dir,
+      "no_such_manifest.toml",
+      show("lustre", Some("4.0.0")),
+    )
+      <> "\n",
+    "// lustre@4.0.0.graded — bundled version, as requested\n"
+      <> newline_terminated(lustre_four),
+  )
+}
+
+pub fn an_explicit_version_ignores_the_manifest_test() {
+  // The manifest installs 5.7.0, which the implicit form would resolve to the
+  // 5.0.0 file: the explicit form neither consults it nor re-selects.
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_show_explicit_installed",
+    Some(manifest_for("lustre", "5.7.0")),
+  )
+  should.equal(
+    catalog_report(catalog_dir, manifest, show("lustre", Some("4.0.0"))) <> "\n",
+    "// lustre@4.0.0.graded — bundled version, as requested\n"
+      <> newline_terminated(lustre_four),
+  )
+}
+
+// Why the command could not answer
+//
+// The catalog is consulted before the manifest, so a package with no bundled
+// file is `NoCatalogEntry` whether or not it is installed — and every other
+// problem has a non-empty list of bundled versions to name.
+
+pub fn a_bundled_package_that_is_not_installed_test() {
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_not_installed",
+    Some(manifest_for("lustre", "5.7.0")),
+  )
+  let problem = catalog_problem(catalog_dir, manifest, show("argv", None))
+  problem
+  |> should.equal(graded.NotInstalled("argv", ["argv@1.1.0"]))
+  graded.format_catalog_problem(problem)
+  |> should.equal(
+    "`argv` is not in manifest.toml; bundled: argv@1.1.0 — run `graded catalog argv@1.1.0` to print one",
+  )
+}
+
+pub fn the_suggested_version_is_the_highest_bundled_test() {
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_not_installed_highest",
+    Some(manifest_for("argv", "1.1.0")),
+  )
+  catalog_problem(catalog_dir, manifest, show("lustre", None))
+  |> graded.format_catalog_problem
+  |> should.equal(
+    "`lustre` is not in manifest.toml; bundled: lustre@4.0.0, lustre@5.0.0 — run `graded catalog lustre@5.0.0` to print one",
+  )
+}
+
+pub fn a_package_the_catalog_does_not_bundle_test() {
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_no_entry",
+    Some(manifest_for("lustre", "5.7.0")),
+  )
+  let problem = catalog_problem(catalog_dir, manifest, show("wisp", None))
+  problem |> should.equal(graded.NoCatalogEntry("wisp"))
+  graded.format_catalog_problem(problem)
+  |> should.equal("no catalog entry for `wisp`")
+}
+
+pub fn an_installed_package_the_catalog_does_not_bundle_test() {
+  // The check order: the catalog is asked first, so being installed does not
+  // turn a missing entry into `NotInstalled`.
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_no_entry_installed",
+    Some(manifest_for("wisp", "1.0.0")),
+  )
+  catalog_problem(catalog_dir, manifest, show("wisp", None))
+  |> should.equal(graded.NoCatalogEntry("wisp"))
+}
+
+pub fn an_explicit_version_of_an_unbundled_package_test() {
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_no_entry_explicit",
+    Some(manifest_for("lustre", "5.7.0")),
+  )
+  catalog_problem(catalog_dir, manifest, show("wisp", Some("1.0.0")))
+  |> should.equal(graded.NoCatalogEntry("wisp"))
+}
+
+pub fn a_version_the_catalog_does_not_bundle_test() {
+  use catalog_dir, manifest <- with_catalog(
+    "build/catalog_cli_no_version",
+    Some(manifest_for("lustre", "5.7.0")),
+  )
+  let problem =
+    catalog_problem(catalog_dir, manifest, show("lustre", Some("3.0.0")))
+  problem
+  |> should.equal(
+    graded.NoBundledVersion("lustre", "3.0.0", ["lustre@4.0.0", "lustre@5.0.0"]),
+  )
+  graded.format_catalog_problem(problem)
+  |> should.equal(
+    "no bundled `lustre@3.0.0`; bundled: lustre@4.0.0, lustre@5.0.0",
+  )
+}
+
+pub fn a_catalog_directory_that_does_not_exist_test() {
+  graded.catalog_report(
+    "build/catalog_cli_missing",
+    "no_such_manifest.toml",
+    cli.ListCatalog,
+  )
+  |> should.be_error
+}
+
+pub fn a_directory_holding_no_catalog_file_test() {
+  // Not graded's catalog, whichever form asked: an empty listing would read as
+  // "nothing is bundled".
+  let root =
+    support.write_fixture("build/catalog_cli_empty", [
+      #("catalog/README", "not a catalog file\n"),
+    ])
+  let catalog_dir = root <> "/catalog"
+  let empty = graded.CatalogError(graded.EmptyCatalog(catalog_dir))
+  graded.catalog_report(catalog_dir, "no_such_manifest.toml", cli.ListCatalog)
+  |> should.equal(Error(empty))
+  graded.catalog_report(
+    catalog_dir,
+    "no_such_manifest.toml",
+    show("lustre", None),
+  )
+  |> should.equal(Error(empty))
+  graded.format_catalog_problem(graded.EmptyCatalog(catalog_dir))
+  |> should.equal("no catalog files under " <> catalog_dir)
+  support.cleanup(root)
+}
+
+// Through the seam
+//
+// `run_catalog` against graded's own bundled catalog and this project's
+// manifest: what the command prints is the file the catalog tier folded.
+
+pub fn the_seam_prints_the_selected_bundled_file_test() {
+  let assert Ok(files) =
+    effects.bundled_catalog_files(effects.catalog_directory())
+  let assert Ok(installed) =
+    dict.get(effects.manifest_versions("manifest.toml"), "gleam_stdlib")
+  let assert Ok(selected) =
+    effects.select_catalog_file(files, "gleam_stdlib", installed)
+  let assert Ok(contents) = simplifile.read(selected.path)
+  let assert Ok(output) =
+    graded.run_catalog(cli.ShowCatalog("gleam_stdlib", None, "src"))
+
+  output
+  |> string.starts_with(
+    "// gleam_stdlib@" <> selected.version <> ".graded — selected for ",
+  )
+  |> should.be_true()
+  { output <> "\n" }
+  |> string.ends_with("\n" <> newline_terminated(contents))
+  |> should.be_true()
+}
+
+// Fixtures
+//
+// One catalog of three files under two packages, whose contents differ and
+// whose trailing newlines are none, one and two — the counts the printed-bytes
+// equation has to hold for.
+
+const argv_entry = "external effects argv.load : [Args]
+external effects argv.raw : [Args]"
+
+const lustre_four = "external effects lustre/four.build : []
+external effects lustre/four.render : [Dom]
+"
+
+const lustre_five = "external effects lustre/five.build : []
+external effects lustre/five.render : [Dom]
+
+"
+
+// Write the fixture catalog (and, where one is given, a manifest) under `root`,
+// hand `run` the two paths `catalog_report` takes, and delete the fixture.
+fn with_catalog(
+  root: String,
+  manifest: Option(String),
+  run: fn(String, String) -> a,
+) -> a {
+  let catalog = [
+    #("catalog/argv@1.1.0.graded", argv_entry),
+    #("catalog/lustre@4.0.0.graded", lustre_four),
+    #("catalog/lustre@5.0.0.graded", lustre_five),
+  ]
+  let files = case manifest {
+    Some(contents) -> [#("manifest.toml", contents), ..catalog]
+    None -> catalog
+  }
+  let root = support.write_fixture(root, files)
+  let output = run(root <> "/catalog", root <> "/manifest.toml")
+  support.cleanup(root)
+  output
+}
+
+fn manifest_for(package: String, version: String) -> String {
+  "packages = [\n  { name = \""
+  <> package
+  <> "\", version = \""
+  <> version
+  <> "\" },\n]\n"
+}
+
+fn show(package: String, version: Option(String)) -> cli.CatalogRequest {
+  cli.ShowCatalog(package:, version:, directory: "src")
+}
+
+// The report a request is expected to answer with.
+fn catalog_report(
+  catalog_dir: String,
+  manifest: String,
+  request: cli.CatalogRequest,
+) -> String {
+  let assert Ok(output) = graded.catalog_report(catalog_dir, manifest, request)
+  output
+}
+
+// The problem a request is expected to fail with.
+fn catalog_problem(
+  catalog_dir: String,
+  manifest: String,
+  request: cli.CatalogRequest,
+) -> graded.CatalogProblem {
+  let assert Error(graded.CatalogError(problem)) =
+    graded.catalog_report(catalog_dir, manifest, request)
+  problem
+}
+
+fn lines(output: String) -> List(String) {
+  string.split(output, "\n")
+}
+
+// `text` with the single trailing newline `io.println` supplies, whether or not
+// it already ends in one.
+fn newline_terminated(text: String) -> String {
+  case string.ends_with(text, "\n") {
+    True -> text
+    False -> text <> "\n"
+  }
+}

@@ -37,6 +37,7 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
@@ -103,6 +104,20 @@ pub type GradedError {
   /// was missing, its identity didn't match the project, the configured
   /// `spec_file` path was unsafe, or the tarball transform failed.
   PackError(message: String)
+  /// `graded catalog` could not answer: see `CatalogProblem`.
+  CatalogError(problem: CatalogProblem)
+}
+
+/// Why `graded catalog` could not answer.
+pub type CatalogProblem {
+  /// No bundled file names this package.
+  NoCatalogEntry(package: String)
+  /// The package is bundled, but not at the version asked for.
+  NoBundledVersion(package: String, requested: String, bundled: List(String))
+  /// The package is bundled but not in this project's manifest.
+  NotInstalled(package: String, bundled: List(String))
+  /// The catalog directory exists but holds no catalog file.
+  EmptyCatalog(directory: String)
 }
 
 pub fn main() -> Nil {
@@ -159,6 +174,8 @@ pub fn main() -> Nil {
         let #(name, directory) = arguments
         run_why(directory, name)
       })
+
+    ["catalog", ..rest] -> report(cli.parse_catalog_args(rest), run_catalog)
 
     [first] -> dispatch_unknown(first)
 
@@ -243,6 +260,9 @@ Usage:
     --format=prose              Describe the answer in sentences (default)
     --format=graded             Print it as a `.graded` line, provenance in a comment
   graded why <name> [dir]       Explain where a function's effects come from (read-only)
+  graded catalog                List the bundled catalog files (read-only)
+  graded catalog <pkg> [dir]    Print the catalog file selected for the installed <pkg>
+  graded catalog <pkg>@<ver>    Print that bundled version ([dir] accepted); bundled catalog only
   graded pack [directory]       Inject the spec into the hex tarball for release
   graded format [directory]     Format the spec file
   graded format --check [dir]   Verify formatting without writing (CI mode)
@@ -2136,6 +2156,216 @@ fn why_block(
   |> string.join("\n")
 }
 
+// Catalog
+//
+// The `catalog` command: what graded's own bundled `priv/catalog/` holds. The
+// listing marks the file each installed package resolves to; the show forms
+// print one file verbatim under a header naming it and why it was chosen.
+
+/// List the bundled catalog, or print one bundled catalog file.
+///
+/// `ListCatalog` prints one `package@version` line per bundled file, sorted,
+/// with a comment on the line each of this project's installed packages
+/// resolves to. `ShowCatalog` prints one file: at the version this project
+/// installs, or at the version the request names, under a `//` header line that
+/// says which file it is and why — so the output is itself a valid `.graded`
+/// file.
+///
+/// This is graded's bundled catalog alone: a dependency's shipped spec, a path
+/// dependency's spec and your own `external effects` all override it, so
+/// `run_effect` is what answers which source wins for a name. Nothing is
+/// written to disk.
+pub fn run_catalog(request: cli.CatalogRequest) -> Result(String, GradedError) {
+  // The listing takes no directory of its own, so it reads the manifest every
+  // other command defaults to.
+  let directory = case request {
+    cli.ListCatalog -> "src"
+    cli.ShowCatalog(directory:, ..) -> directory
+  }
+  catalog_report(
+    effects.catalog_directory(),
+    manifest_path(resolve_package_root(source_scope(directory).analysed)),
+    request,
+  )
+}
+
+// Render `request` against the catalog directory and manifest it names. The
+// seam `main`'s `catalog` branch dispatches through, so both forms are
+// reachable from tests.
+@internal
+pub fn catalog_report(
+  catalog_dir: String,
+  manifest_path: String,
+  request: cli.CatalogRequest,
+) -> Result(String, GradedError) {
+  use files <- result.try(
+    effects.bundled_catalog_files(catalog_dir)
+    |> result.map_error(fn(cause) { DirectoryReadError(catalog_dir, cause) }),
+  )
+  // A directory holding no `{package}@{version}.graded` file is not graded's
+  // catalog, whichever way the lookup landed on it.
+  use <- bool.guard(
+    when: files == [],
+    return: Error(CatalogError(EmptyCatalog(catalog_dir))),
+  )
+  let installed = effects.manifest_versions(manifest_path)
+  case request {
+    cli.ListCatalog -> Ok(catalog_listing(files, installed))
+    cli.ShowCatalog(package:, version:, directory: _) ->
+      catalog_file_output(files, installed, package, version)
+  }
+}
+
+// One `package@version` line per bundled file, sorted by package then version,
+// with the note of the file the manifest resolves that package to.
+fn catalog_listing(
+  files: List(effects.CatalogFile),
+  installed: Dict(String, String),
+) -> String {
+  let notes = listing_notes(files, installed)
+  files
+  |> list.sort(compare_catalog_files)
+  |> list.map(fn(file) {
+    let label = catalog_label(file)
+    case dict.get(notes, file.path) {
+      Ok(note) -> label <> "  // " <> note
+      Error(Nil) -> label
+    }
+  })
+  |> string.join("\n")
+}
+
+// The note each selected file's line carries, keyed by path. A package the
+// manifest doesn't list selects nothing, so none of its files are marked.
+fn listing_notes(
+  files: List(effects.CatalogFile),
+  installed: Dict(String, String),
+) -> Dict(String, String) {
+  files
+  |> list.map(fn(file) { file.package })
+  |> list.unique
+  |> list.fold(dict.new(), fn(notes, package) {
+    case dict.get(installed, package) {
+      Error(Nil) -> notes
+      Ok(version) ->
+        case effects.select_catalog_file(files, package, version) {
+          Error(Nil) -> notes
+          Ok(file) ->
+            dict.insert(notes, file.path, case eligible_for(file, version) {
+              True -> "selected for " <> package <> " " <> version
+              False -> "highest bundled; none ≤ " <> package <> " " <> version
+            })
+        }
+    }
+  })
+}
+
+// One bundled file, printed under the header that names it. The explicit form
+// consults no manifest: the version asked for is the one printed, whatever the
+// project installs.
+fn catalog_file_output(
+  files: List(effects.CatalogFile),
+  installed: Dict(String, String),
+  package: String,
+  version: Option(String),
+) -> Result(String, GradedError) {
+  let bundled = list.filter(files, fn(file) { file.package == package })
+  use <- bool.guard(
+    when: bundled == [],
+    return: Error(CatalogError(NoCatalogEntry(package))),
+  )
+  case version {
+    Some(version) ->
+      case list.find(bundled, fn(file) { file.version == version }) {
+        Ok(file) -> print_catalog_file(file, "bundled version, as requested")
+        Error(Nil) ->
+          Error(
+            CatalogError(NoBundledVersion(
+              package:,
+              requested: version,
+              bundled: catalog_labels(bundled),
+            )),
+          )
+      }
+    None ->
+      case dict.get(installed, package) {
+        Error(Nil) ->
+          Error(
+            CatalogError(NotInstalled(
+              package:,
+              bundled: catalog_labels(bundled),
+            )),
+          )
+        Ok(version) ->
+          case effects.select_catalog_file(bundled, package, version) {
+            // Unreachable: a non-empty list for the package always selects.
+            Error(Nil) -> Error(CatalogError(NoCatalogEntry(package)))
+            Ok(file) ->
+              print_catalog_file(file, selection_note(file, package, version))
+          }
+      }
+  }
+}
+
+// Why the implicit form chose this file: the installed version it covers, or
+// the fall-back that fires when nothing bundled is old enough.
+fn selection_note(
+  file: effects.CatalogFile,
+  package: String,
+  version: String,
+) -> String {
+  case eligible_for(file, version) {
+    True -> "selected for " <> package <> " " <> version <> " in manifest.toml"
+    False ->
+      "highest bundled version; no bundled " <> package <> " ≤ " <> version
+  }
+}
+
+// Whether the file's version is at or below the installed one — the rule
+// `select_catalog_file` picks by, so a `False` here is its fall-back.
+fn eligible_for(file: effects.CatalogFile, version: String) -> Bool {
+  effects.semver_lte(file.parsed, effects.parse_semver(version))
+}
+
+// The header line, then the file verbatim. `report` prints with `io.println`,
+// which appends a newline, so exactly one trailing newline is dropped here for
+// it to put back: a file that ends in one prints byte-identically.
+fn print_catalog_file(
+  file: effects.CatalogFile,
+  note: String,
+) -> Result(String, GradedError) {
+  use contents <- result.map(
+    simplifile.read(file.path)
+    |> result.map_error(fn(cause) { FileReadError(file.path, cause) }),
+  )
+  let header = "// " <> filepath.base_name(file.path) <> " — " <> note
+  let output = header <> "\n" <> contents
+  case string.ends_with(output, "\n") {
+    True -> string.drop_end(output, 1)
+    False -> output
+  }
+}
+
+// Bundled files as `package@version` tokens, ascending by version: what an
+// error message lists, and where its suggestion reads the highest off the end.
+fn catalog_labels(files: List(effects.CatalogFile)) -> List(String) {
+  files |> list.sort(compare_catalog_files) |> list.map(catalog_label)
+}
+
+fn catalog_label(file: effects.CatalogFile) -> String {
+  file.package <> "@" <> file.version
+}
+
+fn compare_catalog_files(
+  left: effects.CatalogFile,
+  right: effects.CatalogFile,
+) -> order.Order {
+  case string.compare(left.package, right.package) {
+    order.Eq -> effects.compare_semver(left.parsed, right.parsed)
+    other -> other
+  }
+}
+
 // Formatting
 //
 // The `format` command and its `--check`/`--stdin` variants: parse the spec
@@ -3928,6 +4158,33 @@ fn format_error(error: GradedError) -> String {
       <> name
       <> "` (`why` explains functions defined in this project's modules, named as `module/path.function`)"
     PackError(message:) -> message
+    CatalogError(problem:) -> format_catalog_problem(problem)
+  }
+}
+
+// The message a `CatalogError` prints. Exposed so the wording of each problem —
+// the recovery command `NotInstalled` names in particular — is covered without
+// going through the branch that prints and halts.
+@internal
+pub fn format_catalog_problem(problem: CatalogProblem) -> String {
+  case problem {
+    NoCatalogEntry(package:) -> "no catalog entry for `" <> package <> "`"
+    NoBundledVersion(package:, requested:, bundled:) ->
+      "no bundled `"
+      <> package
+      <> "@"
+      <> requested
+      <> "`; bundled: "
+      <> string.join(bundled, ", ")
+    NotInstalled(package:, bundled:) ->
+      "`"
+      <> package
+      <> "` is not in manifest.toml; bundled: "
+      <> string.join(bundled, ", ")
+      <> " — run `graded catalog "
+      <> result.unwrap(list.last(bundled), package)
+      <> "` to print one"
+    EmptyCatalog(directory:) -> "no catalog files under " <> directory
   }
 }
 
