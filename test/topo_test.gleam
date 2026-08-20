@@ -876,7 +876,7 @@ pub fn use_field() -> Nil {
       // A stale committed returns line (degraded to [Unknown]).
       #(
         "app.graded",
-        "check app/c.use_field : []\nreturns app/a.mk : [Unknown]\n",
+        "check app/c.use_field : []\neffects app/a.mk : [] where returns : [Unknown]\n",
       ),
     ])
   let assert Ok(Nil) = graded.run_infer(directory)

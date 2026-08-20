@@ -322,11 +322,11 @@ pub fn native_make() -> fn() -> Nil {
   support.cleanup(root)
 }
 
-pub fn infer_removes_a_returns_line_a_new_external_left_behind_test() {
+pub fn infer_removes_a_returns_clause_a_new_external_left_behind_test() {
   let root = "build/infer_external_returns_stale"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #("proj.graded", "returns proj.make : []\n"),
+    #("proj.graded", "effects proj.make : [] where returns : []\n"),
     #(
       "proj.gleam",
       "@target(erlang)
@@ -339,7 +339,7 @@ pub fn make() -> fn() -> Nil {
   ])
   let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
   changed_lines(preview)
-  |> list.contains("- returns proj.make : []")
+  |> list.contains("- effects proj.make : [] where returns : []")
   |> should.be_true()
   support.cleanup(root)
 }

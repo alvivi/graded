@@ -139,7 +139,7 @@ assume foreign_values.partial_returns_operator : []
 assume foreign_values.builds : []
 assume foreign_values.with_run : []
 // What the producer above hands back, which no `assume` line states.
-external returns foreign_values.declared_returns_operator : [Disk]
+assume foreign_values.declared_returns_operator where returns : [Disk]
 
 // A module-level external over a module that is not a project module and not a
 // dependency: every name under `fake_clock` resolves to [Time], including ones

@@ -116,9 +116,10 @@ pub fn reserved_sentinel_nested_occurrence_test() {
 }
 
 pub fn reserved_sentinel_binder_test() {
-  let assert Ok(file) = annotation.parse_file("returns m.f : fn($op$x) -> [x]")
-  let assert [returns] = annotation.extract_returns(file)
-  effect_term.to_effect_set(returns.operator)
+  let assert Ok([parsed]) =
+    annotation.parse("effects m.f : [] where returns : fn($op$x) -> [x]")
+  let assert Some(operator) = parsed.returns
+  effect_term.to_effect_set(operator)
   |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
@@ -128,7 +129,7 @@ pub fn reserved_sentinel_preserves_whole_file_test() {
   // lines. Sibling `check`/`external` lines survive.
   let input =
     "check app/a.run : []
-returns m.f : fn($op$x) -> [x]
+effects m.f : [] where returns : fn($op$x) -> [x]
 assume dep/x : []"
   let assert Ok(file) = annotation.parse_file(input)
   let annotations = annotation.extract_annotations(file)
@@ -1274,57 +1275,55 @@ pub fn roundtrip_mixed_param_and_field_bound_test() {
   annotation.format_annotation(ann) |> should.equal(line)
 }
 
-// Returns annotations
+// Inferred returned operators
 //
-// `returns module.fn : fn(cb) -> [...]` lines carrying an operator term for a
+// `where returns : fn(cb) -> [...]` clauses carrying an operator term for a
 // function's return value.
 
-pub fn returns_line_round_trip_test() {
-  let line = "returns app/dep.pick : fn(cb) -> [cb]"
+pub fn returns_clause_round_trip_test() {
+  let line = "effects app/dep.pick : [] where returns : fn(cb) -> [cb]"
   let assert Ok(file) = annotation.parse_file(line)
-  let assert [returns] = annotation.extract_returns(file)
-  returns.function |> should.equal("app/dep.pick")
-  returns.operator |> should.equal(TAbs("cb", TVar("cb")))
+  let assert [parsed] = annotation.extract_annotations(file)
+  parsed.function |> should.equal("app/dep.pick")
+  parsed.returns |> should.equal(Some(TAbs("cb", TVar("cb"))))
   annotation.format_file(file) |> should.equal(line)
 }
 
-pub fn returns_line_multi_callback_round_trip_test() {
-  let line = "returns m.pick : fn(a, b) -> [a, b]"
+pub fn returns_clause_multi_callback_round_trip_test() {
+  let line = "effects m.pick : [] where returns : fn(a, b) -> [a, b]"
   let assert Ok(file) = annotation.parse_file(line)
-  let assert [returns] = annotation.extract_returns(file)
-  returns.operator
-  |> should.equal(TAbs("a", TAbs("b", union_vars(TVar("a"), "b"))))
+  let assert [parsed] = annotation.extract_annotations(file)
+  parsed.returns
+  |> should.equal(Some(TAbs("a", TAbs("b", union_vars(TVar("a"), "b")))))
   annotation.format_file(file) |> should.equal(line)
 }
 
-// External returns annotations
+// Declared returned operators
 //
-// `external returns module.fn : [Net]` lines declaring the operator a foreign
-// producer hands back. Same operator grammar as `returns`, a distinct line
-// kind.
+// `assume module.fn where returns : [Net]` lines declaring the operator a
+// foreign producer hands back. Same operator grammar as an inferred clause.
 
-pub fn external_returns_line_round_trip_test() {
-  let line = "external returns app/ffi.make_client : [Net]"
+pub fn declared_returns_clause_round_trip_test() {
+  let line = "assume app/ffi.make_client where returns : [Net]"
   let assert Ok(file) = annotation.parse_file(line)
-  let assert [declared] = annotation.extract_external_returns(file)
-  declared.function |> should.equal("app/ffi.make_client")
-  declared.operator |> should.equal(TLabels(set.from_list(["Net"])))
-  annotation.extract_external_returns(file) |> list.length |> should.equal(1)
-  annotation.extract_returns(file) |> should.equal([])
+  let assert [declared] = annotation.extract_externals(file)
+  declared.module |> should.equal("app/ffi")
+  declared.target |> should.equal(FunctionExternal("make_client"))
+  declared.returns |> should.equal(Some(TLabels(set.from_list(["Net"]))))
   annotation.format_file(file) |> should.equal(line)
 }
 
-pub fn external_returns_line_operator_round_trip_test() {
-  let line = "external returns m.wrap : fn(cb) -> [cb]"
+pub fn declared_returns_operator_clause_round_trip_test() {
+  let line = "assume m.wrap where returns : fn(cb) -> [cb]"
   let assert Ok(file) = annotation.parse_file(line)
-  let assert [declared] = annotation.extract_external_returns(file)
-  declared.operator |> should.equal(TAbs("cb", TVar("cb")))
+  let assert [declared] = annotation.extract_externals(file)
+  declared.returns |> should.equal(Some(TAbs("cb", TVar("cb"))))
   annotation.format_file(file) |> should.equal(line)
 }
 
-pub fn external_returns_line_is_not_an_effects_annotation_test() {
+pub fn declared_returns_clause_is_not_an_effects_annotation_test() {
   let assert Ok(annotations) =
-    annotation.parse("external returns m.make : [Net]")
+    annotation.parse("assume m.make where returns : [Net]")
   annotations |> should.equal([])
 }
 

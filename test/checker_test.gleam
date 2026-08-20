@@ -4116,7 +4116,9 @@ pub fn second_order_returned_function_from_spec_test() {
   // cross-module producer — exercising the parse + load path, not a hand-built
   // KB.
   let assert Ok(spec) =
-    annotation.parse_file("returns dep.pick : fn(cb) -> [cb]")
+    annotation.parse_file(
+      "effects dep.pick : [] where returns : fn(cb) -> [cb]",
+    )
   let source =
     "
 import gleam/io
@@ -4142,7 +4144,7 @@ pub fn caller() -> Nil {
       types.ProjectInferred,
     )
     |> effects.with_fresh_returned_operators(
-      effects.load_spec_legacy_returns_from_file(spec),
+      effects.load_spec_returns_from_file(spec),
       types.CommittedSpec,
     )
   let registry = signatures.from_glance_module("app", module)
@@ -4234,7 +4236,8 @@ pub fn make_printer() -> fn() -> Nil {
 pub fn first_order_returned_function_from_spec_test() {
   // C2 cross-module: a `returns dep.make : [Stdout]` spec line (as `infer`
   // writes it) lets `let f = dep.make(); f()` resolve in a downstream module.
-  let assert Ok(spec) = annotation.parse_file("returns dep.make : [Stdout]")
+  let assert Ok(spec) =
+    annotation.parse_file("effects dep.make : [] where returns : [Stdout]")
   let source =
     "
 import dep
@@ -4256,7 +4259,7 @@ pub fn caller() -> Nil {
       types.ProjectInferred,
     )
     |> effects.with_fresh_returned_operators(
-      effects.load_spec_legacy_returns_from_file(spec),
+      effects.load_spec_returns_from_file(spec),
       types.CommittedSpec,
     )
   let registry = signatures.from_glance_module("app", module)
@@ -5892,7 +5895,8 @@ pub fn run(flag: Bool) -> Nil {
 // A producer in a dependency keeps its module, so it doesn't read like a
 // same-module producer of the same name.
 pub fn format_violation_dependency_producer_keeps_module_test() {
-  let assert Ok(spec) = annotation.parse_file("returns dep.make : [Stdout]")
+  let assert Ok(spec) =
+    annotation.parse_file("effects dep.make : [] where returns : [Stdout]")
   let source =
     "
 import dep
@@ -5914,7 +5918,7 @@ pub fn run() -> Nil {
       types.ProjectInferred,
     )
     |> effects.with_foreign_returned_operators(
-      effects.load_spec_legacy_returns_from_file(spec),
+      effects.load_spec_returns_from_file(spec),
       types.DependencySpec("dep"),
     )
   let #(violations, _) =
