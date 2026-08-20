@@ -1910,7 +1910,7 @@ pub fn wrapper() -> Nil {
   |> should.equal(Some(types.Specific(set.from_list(["Disk"]))))
   checker.format_violation(r.file, v)
   |> string.contains(
-    "(from your spec's external declaration, unioned with its Gleam fallback body)",
+    "(from your spec's `assume` line, unioned with its Gleam fallback body)",
   )
   |> should.be_true()
   support.cleanup(root)
@@ -2019,7 +2019,7 @@ fn sink() -> Nil
   let assert Ok(answered) = graded.run_effect(root, "ext.log")
   answered |> string.contains("effects ext.log : [Disk]") |> should.be_true()
   answered
-  |> string.contains("resolved from your spec's external declaration")
+  |> string.contains("resolved from your spec's `assume` line")
   |> should.be_true()
   // The clause that keeps the declaration from being credited with [Disk].
   answered |> string.contains("Gleam fallback body") |> should.be_true()
@@ -3381,7 +3381,7 @@ pub fn caller() -> Nil {
   line
   |> string.contains(
     "calls a function returned by `ffi.make_client` with effects [Net]"
-    <> " (from your spec's external declaration)",
+    <> " (from your spec's `assume` line)",
   )
   |> should.be_true()
   why
@@ -3400,7 +3400,7 @@ pub fn the_fixture_declared_producer_resolves_from_its_line_test() {
   why
   |> string.contains(
     "calls a function returned by `declared_returns_operator` with effects"
-    <> " [Disk] (from your spec's external declaration)",
+    <> " [Disk] (from your spec's `assume` line)",
   )
   |> should.be_true()
 }
@@ -3513,7 +3513,7 @@ pub fn shout() -> Nil
   |> should.equal(contributor_line(cross, "m.logs"))
   contributor_line(cross, "m.logs")
   |> should.equal(Ok(
-    "  calls m.logs with effects [Disk] (from a module-level external in your"
+    "  calls m.logs with effects [Disk] (from a module-level `assume` in your"
     <> " spec)",
   ))
   support.cleanup(root)

@@ -1556,22 +1556,22 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> " names no function in any project module — check the module qualifier; the check never runs"
     UnmatchedTypeFieldWarning(name:) ->
       file
-      <> ": warning: type "
+      <> ": warning: assume "
       <> name
       <> " names no field of any project type — check the module qualifier; the field resolves to [Unknown]"
     StaleFunctionExternalWarning(function:) ->
       file
-      <> ": warning: external effects "
+      <> ": warning: assume "
       <> function
       <> " names a function of this package with a Gleam body — the line declares no foreign code and is ignored; the body is walked instead. There is no replacement: fix the source, or widen the check budget"
     UnmatchedFunctionExternalWarning(function:) ->
       file
-      <> ": warning: external effects "
+      <> ": warning: assume "
       <> function
       <> " names no dependency, catalog, or project function — check the module qualifier; the declaration covers nothing"
     UnmatchedModuleExternalWarning(module:) ->
       file
-      <> ": warning: external effects "
+      <> ": warning: assume "
       <> module
       <> " names no dependency or project module — check the module path; the declaration covers nothing"
     StaleExternalReturnsWarning(function:) ->
@@ -1598,7 +1598,7 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       file
       <> ": warning: external returns "
       <> name
-      <> " names a type field, not a function — a returns declaration is per-function; write a `type` line to give a field's effects, and the line resolves nothing as written"
+      <> " names a type field, not a function — a returns declaration is per-function; write an `assume` line to give a field's effects, and the line resolves nothing as written"
   }
 }
 

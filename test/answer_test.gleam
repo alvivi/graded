@@ -148,7 +148,7 @@ pub fn a_module_level_external_states_its_precedence_test() {
   |> prose
   |> should.equal(
     "fake_clock.now has effects [Time]
-  source: module-level external for `fake_clock`
+  source: module-level `assume` for `fake_clock`
           used when no per-function entry exists",
   )
 }
@@ -226,7 +226,7 @@ pub fn a_type_field_names_its_kind_test() {
   |> prose
   |> should.equal(
     "field `find` on type `Repo` (myapp/repo) has effects [Storage]
-  source: declared by a `type` line in your spec",
+  source: assumed by a field `assume` in your spec",
   )
 }
 
@@ -241,7 +241,7 @@ pub fn a_bare_type_field_carries_no_module_test() {
   |> prose
   |> should.equal(
     "field `run` on type `Box` has effects [Disk]
-  source: declared by a `type` line in your spec",
+  source: assumed by a field `assume` in your spec",
   )
 }
 
@@ -259,7 +259,7 @@ pub fn the_graded_renderer_comments_the_source_test() {
   from(UserExternal)
   |> answer.render(answer.Graded)
   |> should.equal(
-    "effects app.run : [Stdout]\n// resolved from your spec's external declaration",
+    "effects app.run : [Stdout]\n// resolved from your spec's `assume` line",
   )
 }
 

@@ -72,14 +72,14 @@ pub fn a_committed_effects_line_does_not_answer_for_an_external_test() {
   // the name.
   lookup("external_budget.declared_within_budget")
   |> should.equal(
-    "effects external_budget.declared_within_budget : [Time]\n// resolved from your spec's external declaration",
+    "effects external_budget.declared_within_budget : [Time]\n// resolved from your spec's `assume` line",
   )
 }
 
 pub fn declared_type_field_test() {
   lookup("opaque_receiver.Validator.to_error")
   |> should.equal(
-    "assume opaque_receiver.Validator.to_error : [Stdout]\n// declared by a type line in your spec",
+    "assume opaque_receiver.Validator.to_error : [Stdout]\n// assumed by a field `assume` in your spec",
   )
 }
 
@@ -96,7 +96,7 @@ pub fn unspecced_function_resolves_from_memory_test() {
 pub fn function_level_external_test() {
   lookup("external_same_module.now")
   |> should.equal(
-    "effects external_same_module.now : [Time]\n// resolved from your spec's external declaration",
+    "effects external_same_module.now : [Time]\n// resolved from your spec's `assume` line",
   )
 }
 
@@ -105,7 +105,7 @@ pub fn module_level_external_fallback_is_labelled_test() {
   // function name under it resolves through the module-level fallback.
   lookup("fake_clock.now")
   |> should.equal(
-    "effects fake_clock.now : [Time]\n// resolved via module-level external for fake_clock",
+    "effects fake_clock.now : [Time]\n// resolved via module-level `assume` for fake_clock",
   )
 }
 
@@ -233,13 +233,13 @@ pub fn run() -> Nil {
     #("m.absent", Error(graded.EffectNotFound("m.absent"))),
     #(
       "m.run",
-      Ok("effects m.run : [Disk]\n// resolved via module-level external for m"),
+      Ok("effects m.run : [Disk]\n// resolved via module-level `assume` for m"),
     ),
     // A module with no source to consult keeps the carve-out whole.
     #(
       "offsite.anything",
       Ok(
-        "effects offsite.anything : [Http]\n// resolved via module-level external for offsite",
+        "effects offsite.anything : [Http]\n// resolved via module-level `assume` for offsite",
       ),
     ),
   ]
@@ -337,7 +337,7 @@ pub fn dotted_module_effects_line_does_not_shadow_a_type_line_test() {
   let assert Ok(output) = graded.run_effect(project, "box.Box.run")
   should_parse(output)
   |> should.equal(
-    "assume box.Box.run : [Stdout]\n// declared by a type line in your spec",
+    "assume box.Box.run : [Stdout]\n// assumed by a field `assume` in your spec",
   )
   cleanup(project)
 }
@@ -347,7 +347,8 @@ pub fn bare_type_line_answers_both_query_forms_test() {
   // and a module-qualified one find it, and the answer is rendered in the bare
   // form that declared it — the form that parses back to the same line.
   let project = spec_only_project("bare", "type Box.run : [Disk]\n")
-  let bare = "assume Box.run : [Disk]\n// declared by a type line in your spec"
+  let bare =
+    "assume Box.run : [Disk]\n// assumed by a field `assume` in your spec"
   let assert Ok(qualified_query) = graded.run_effect(project, "box.Box.run")
   let assert Ok(bare_query) = graded.run_effect(project, "Box.run")
   should_parse(qualified_query) |> should.equal(bare)
@@ -410,7 +411,7 @@ pub fn dependency_type_field_outranks_a_bare_project_line_test() {
       #("src/app.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
     ])
   let expected =
-    "assume dep.Repo.find : [Storage]\n// declared by a type line in dep's shipped spec"
+    "assume dep.Repo.find : [Storage]\n// assumed by a field `assume` in dep's shipped spec"
   graded.run_effect(project, "dep.Repo.find")
   |> should.equal(Ok(expected))
   graded.run_effect_from_project(project, "dep.Repo.find")
@@ -492,7 +493,7 @@ pub fn prose_states_module_external_precedence_test() {
   prose("fake_clock.now")
   |> should.equal(
     "fake_clock.now has effects [Time]
-  source: module-level external for `fake_clock`
+  source: module-level `assume` for `fake_clock`
           used when no per-function entry exists",
   )
 }
@@ -612,7 +613,7 @@ pub fn prose_names_a_type_field_as_a_field_test() {
   prose("opaque_receiver.Validator.to_error")
   |> should.equal(
     "field `to_error` on type `Validator` (opaque_receiver) has effects [Stdout]
-  source: declared by a `type` line in your spec",
+  source: assumed by a field `assume` in your spec",
   )
 }
 
@@ -623,7 +624,7 @@ pub fn graded_format_still_round_trips_test() {
     graded.run_effect_formatted(fixtures, "fake_clock.now", answer.Graded)
   should_parse(output)
   |> should.equal(
-    "effects fake_clock.now : [Time]\n// resolved via module-level external for fake_clock",
+    "effects fake_clock.now : [Time]\n// resolved via module-level `assume` for fake_clock",
   )
 }
 
@@ -861,7 +862,7 @@ pub fn a_module_outside_the_package_still_answers_from_the_spec_test() {
     ])
   let expected =
     Ok(
-      "effects other/mod.bar : [Disk]\n// resolved from your spec's external declaration",
+      "effects other/mod.bar : [Disk]\n// resolved from your spec's `assume` line",
     )
 
   graded.run_effect(project, "other/mod.bar") |> should.equal(expected)
