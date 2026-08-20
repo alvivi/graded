@@ -134,6 +134,7 @@ fn effects_line(
     function: name,
     params: bounds,
     effects: term,
+    returns: None,
   ))
 }
 

@@ -59,6 +59,7 @@ pub fn view(items) { list.map(items, fn(x) { x }) }"
       "view",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -75,6 +76,7 @@ pub fn view() { io.println(\"oops\") }"
         "view",
         [],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   violations |> list.length() |> should.equal(1)
@@ -94,6 +96,7 @@ pub fn log(msg) { io.println(msg) }"
       "log",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -111,6 +114,7 @@ fn helper() { io.println(\"sneaky\") }"
         "view",
         [],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   violations |> list.length() |> should.equal(1)
@@ -134,6 +138,7 @@ pub fn do_stuff() {
         "do_stuff",
         [],
         effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        returns: None,
       ),
     ])
   violations
@@ -149,6 +154,7 @@ pub fn missing_function_ignored_test() {
       "nonexistent",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -168,6 +174,7 @@ pub fn view(items) {
         "view",
         [],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   { violations != [] } |> should.be_true()
@@ -183,6 +190,7 @@ pub fn unknown_local_function_test() {
         "view",
         [],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   // Should flag as Unknown effect
@@ -280,6 +288,7 @@ pub fn infer_uses_param_bounds_test() {
         ),
       ],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     ),
   ]
   let inferred =
@@ -391,6 +400,7 @@ pub fn param_call_uses_bound_test() {
         ),
       ],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   check_source(source, [annotation]) |> should.equal([])
 }
@@ -404,6 +414,7 @@ pub fn param_call_without_bound_is_unknown_test() {
       "apply",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> { fn(vs) { vs != [] } }
@@ -423,6 +434,7 @@ pub fn unbound_param_call_meets_an_unknown_budget_test() {
       "run",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Unknown"]))),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -443,6 +455,7 @@ pub fn unbound_param_call_still_violates_a_pure_budget_test() {
         "run",
         [],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   violation.explanation.actual
@@ -471,6 +484,7 @@ pub fn a_declared_bound_variable_still_violates_an_unknown_budget_test() {
         ),
       ],
       effect_term.from_effect_set(Specific(set.from_list(["Unknown"]))),
+      returns: None,
     ),
   ])
   |> { fn(vs) { vs != [] } }
@@ -488,6 +502,7 @@ pub fn safe_map(items, f) { list.map(items, f) }"
       "safe_map",
       [ParamBound("f", effect_term.from_effect_set(Specific(set.new())))],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   check_source(source, [annotation]) |> should.equal([])
 }
@@ -506,6 +521,7 @@ pub fn run(items) {
       "run",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   check_source(source, [annotation]) |> should.equal([])
 }
@@ -524,6 +540,7 @@ pub fn run(items) {
       "run",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> { fn(vs) { vs != [] } }
@@ -574,6 +591,7 @@ pub fn field_call_typed_with_registry_test() {
       "view",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Dom"]))),
+      returns: None,
     )
   check_source_with_type_fields(source, [annotation], type_fields)
   |> should.equal([])
@@ -646,6 +664,7 @@ pub fn field_call_opaque_receiver_resolves_via_girard_test() {
       "run",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   check_source_with_girard(
     opaque_receiver_source,
@@ -664,6 +683,7 @@ pub fn field_call_opaque_receiver_violates_pure_test() {
       "run",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   let violations =
     check_source_with_girard(
@@ -703,6 +723,7 @@ pub fn run(msg: String) -> Nil {
       "run",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   check_source_with_girard(source, [annotation], validator_to_error_stdout())
   |> should.equal([])
@@ -720,6 +741,7 @@ pub fn field_call_construction_without_annotation_resolves_test() {
       "run",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   let violations =
     check_source_with_girard(opaque_receiver_source, [annotation], [])
@@ -924,6 +946,7 @@ pub fn field_call_violates_check_test() {
       "view",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   check_source_with_type_fields(source, [annotation], type_fields)
   |> { fn(vs) { vs != [] } }
@@ -939,6 +962,7 @@ pub fn field_call_typed_no_registry_is_unknown_test() {
       "view",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   check_source_with_type_fields(source, [annotation], [])
   |> { fn(vs) { vs != [] } }
@@ -954,6 +978,7 @@ pub fn field_call_untyped_is_unknown_test() {
       "view",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   check_source(source, [annotation])
   |> { fn(vs) { vs != [] } }
@@ -1142,6 +1167,7 @@ pub fn annotate(options: Options) -> Nil {
       "annotate",
       [ParamBound("options.resolver", stdout)],
       stdout,
+      returns: None,
     )
   let #(violations, warnings) =
     checker.check(
@@ -1272,6 +1298,7 @@ pub fn caller() -> Nil {
         ),
       ],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   let #(violations, _warnings) =
     checker.check(
@@ -1324,7 +1351,8 @@ pub fn fetch() { httpc.send(request) }"
     types.ExternalAnnotation(
       "gleam/httpc",
       types.FunctionExternal("send"),
-      Specific(set.from_list(["Http"])),
+      Some(Specific(set.from_list(["Http"]))),
+      returns: None,
     ),
   ]
   let annotation =
@@ -1333,6 +1361,7 @@ pub fn fetch() { httpc.send(request) }"
       "fetch",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
+      returns: None,
     )
   check_source_with_externals(source, [annotation], externals)
   |> should.equal([])
@@ -1347,7 +1376,8 @@ pub fn fetch() { httpc.send(request) }"
     types.ExternalAnnotation(
       "gleam/httpc",
       types.FunctionExternal("send"),
-      Specific(set.from_list(["Http"])),
+      Some(Specific(set.from_list(["Http"]))),
+      returns: None,
     ),
   ]
   let annotation =
@@ -1356,6 +1386,7 @@ pub fn fetch() { httpc.send(request) }"
       "fetch",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   check_source_with_externals(source, [annotation], externals)
   |> { fn(vs) { vs != [] } }
@@ -1396,7 +1427,8 @@ pub fn external_same_module_resolves_declared_effects_test() {
     types.ExternalAnnotation(
       "ffi_mod",
       types.FunctionExternal("now"),
-      Specific(set.from_list(["Time"])),
+      Some(Specific(set.from_list(["Time"]))),
+      returns: None,
     ),
   ]
   infer_external_wrapper(effects.with_externals(
@@ -1430,6 +1462,7 @@ pub fn handler() { io.println(\"hi\") }"
       "handler",
       [],
       effect_term.from_effect_set(Wildcard),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -1443,6 +1476,7 @@ pub fn wildcard_param_bound_passes_test() {
       "apply",
       [ParamBound("f", effect_term.from_effect_set(Wildcard))],
       effect_term.from_effect_set(Wildcard),
+      returns: None,
     )
   check_source(source, [annotation]) |> should.equal([])
 }
@@ -1456,6 +1490,7 @@ pub fn wildcard_param_bound_in_pure_function_violates_test() {
       "apply",
       [ParamBound("f", effect_term.from_effect_set(Wildcard))],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   check_source(source, [annotation])
   |> { fn(vs) { vs != [] } }
@@ -1499,6 +1534,7 @@ pub fn greet_all(names) { list.map(names, io.println) }"
         "greet_all",
         [],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   warnings |> list.length() |> should.equal(1)
@@ -1523,6 +1559,7 @@ pub fn greet_all(names) { list.map(names, println) }"
         "greet_all",
         [],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   warnings |> list.length() |> should.equal(1)
@@ -1552,6 +1589,7 @@ pub fn caller(v: Validator) -> Nil { v.to_error(\"bad\") }"
           ),
         ],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   warnings |> list.length() |> should.equal(1)
@@ -1585,6 +1623,7 @@ pub fn caller(v: Validator) -> Nil { v.to_error(\"bad\") }"
         ),
       ],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -1602,6 +1641,7 @@ pub fn param_bound_unmatched_warns_test() {
         // Typo: the parameter is `f`, not `g`.
         [ParamBound("g", effect_term.from_effect_set(Specific(set.new())))],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   warnings |> list.length() |> should.equal(1)
@@ -1623,6 +1663,7 @@ pub fn helper(g, y) { g(y) }"
       "apply",
       [ParamBound("f", effect_term.from_effect_set(Specific(set.new())))],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -1654,6 +1695,7 @@ pub fn caller() -> Nil {
           ),
         ],
         effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        returns: None,
       ),
     ])
   // Construction also wires io.println as a value, emitting an untracked-effect
@@ -1682,6 +1724,7 @@ pub fn upper_all(items) { list.map(items, string.uppercase) }"
       "upper_all",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -1699,6 +1742,7 @@ pub fn run(items) { list.map(items, unknown.do_thing) }"
       "run",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -1716,6 +1760,7 @@ pub fn greet_all(names) { list.map(names, fn(n) { io.println(n) }) }"
       "greet_all",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -1804,6 +1849,7 @@ pub fn check_no_false_positives_test() {
           "test_fn",
           [],
           effect_term.from_effect_set(declared),
+          returns: None,
         )
       let #(violations, _) =
         checker.check(
@@ -1836,6 +1882,7 @@ fn provenance_caller_effect(src: String, label: String) -> EffectSet {
         ),
       ],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -1900,6 +1947,7 @@ pub fn check_wildcard_never_violates_test() {
           "test_fn",
           [],
           effect_term.from_effect_set(Wildcard),
+          returns: None,
         )
       let #(violations, _) =
         checker.check(
@@ -1933,6 +1981,7 @@ pub fn check_empty_budget_detects_effects_test() {
               "test_fn",
               [],
               effect_term.from_effect_set(types.empty()),
+              returns: None,
             )
           let #(violations, _) =
             checker.check(
@@ -1968,6 +2017,7 @@ pub fn check_violations_iff_not_subset_test() {
           "test_fn",
           [],
           effect_term.from_effect_set(declared),
+          returns: None,
         )
       let #(violations, _) =
         checker.check(
@@ -2095,6 +2145,7 @@ pub fn check_terminates_with_cycles_test() {
           "a",
           [],
           effect_term.from_effect_set(types.empty()),
+          returns: None,
         )
       let #(violations, _) =
         checker.check(
@@ -2224,6 +2275,7 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
         ),
       ],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   let assert [ann] =
     checker.infer(
@@ -2309,6 +2361,7 @@ pub fn new() {
           "new",
           [],
           effect_term.from_effect_set(Specific(set.new())),
+          returns: None,
         ),
       ],
       polymorphic_kb(),
@@ -2342,6 +2395,7 @@ pub fn new() {
           "new",
           [],
           effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+          returns: None,
         ),
       ],
       polymorphic_kb(),
@@ -2374,6 +2428,7 @@ pub fn new() {
           "new",
           [],
           effect_term.from_effect_set(Specific(set.new())),
+          returns: None,
         ),
       ],
       polymorphic_kb(),
@@ -2635,7 +2690,15 @@ pub fn run(x: Int) {
     checker.check(
       module,
       "",
-      [EffectAnnotation(Check, "run", [], effect_term.from_effect_set(budget))],
+      [
+        EffectAnnotation(
+          Check,
+          "run",
+          [],
+          effect_term.from_effect_set(budget),
+          returns: None,
+        ),
+      ],
       kb,
       reg,
       dict.new(),
@@ -2812,6 +2875,7 @@ pub fn main(msg: String) {
           "main",
           [],
           effect_term.from_effect_set(Specific(set.new())),
+          returns: None,
         ),
       ],
       knowledge_base(),
@@ -2923,6 +2987,7 @@ pub fn caller() -> Nil {
       "caller",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -2942,6 +3007,7 @@ pub fn caller() -> Nil {
       "caller",
       [],
       effect_term.from_effect_set(types.empty()),
+      returns: None,
     )
   let #(failed, _) =
     checker.check(
@@ -3055,6 +3121,7 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       "caller",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -3084,6 +3151,7 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       "caller",
       [],
       effect_term.from_effect_set(types.empty()),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -3114,6 +3182,7 @@ pub fn caller() -> Nil { app.with_logger(fn(logger) { logger(\"hi\") }) }"
       "caller",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -3374,7 +3443,8 @@ pub fn let_bound_closure_direct_call_satisfies_pure_check_test() {
   helper(1)
 }"
   let assert Ok(module) = glance.module(source)
-  let ann = EffectAnnotation(Check, "direct_let", [], effect_term.pure())
+  let ann =
+    EffectAnnotation(Check, "direct_let", [], effect_term.pure(), returns: None)
   let #(violations, _) =
     checker.check(
       module,
@@ -4005,6 +4075,7 @@ pub fn caller() -> Nil {
       "caller",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -4024,6 +4095,7 @@ pub fn caller() -> Nil {
       "caller",
       [],
       effect_term.from_effect_set(types.empty()),
+      returns: None,
     )
   let #(fail_violations, _) =
     checker.check(
@@ -4080,6 +4152,7 @@ pub fn caller() -> Nil {
       "caller",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -4193,6 +4266,7 @@ pub fn caller() -> Nil {
       "caller",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -4212,6 +4286,7 @@ pub fn caller() -> Nil {
       "caller",
       [],
       effect_term.from_effect_set(types.empty()),
+      returns: None,
     )
   let #(failed, _) =
     checker.check(
@@ -4341,7 +4416,8 @@ fn fs_read_external() -> types.ExternalAnnotation {
   types.ExternalAnnotation(
     "fs",
     types.FunctionExternal("read"),
-    Specific(set.from_list(["FileSystem"])),
+    Some(Specific(set.from_list(["FileSystem"]))),
+    returns: None,
   )
 }
 
@@ -4367,6 +4443,7 @@ fn second_order_violations(
       function,
       [],
       effect_term.from_effect_set(Specific(set.from_list(budget))),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -4931,6 +5008,7 @@ fn pure_check(function: String) -> EffectAnnotation {
     function,
     [],
     effect_term.from_effect_set(Specific(set.new())),
+    returns: None,
   )
 }
 
@@ -5603,6 +5681,7 @@ pub fn run(config: Config) -> Nil {
         ),
       ],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   let assert [violation] = check_source(source, [annotation])
   violation.explanation.actual
@@ -5751,6 +5830,7 @@ pub fn format_violation_aliased_field_bound_reads_as_field_test() {
         ),
       ],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   let expected =
     "src/app.gleam: run calls field `svc` on `options` with effects [Stdout] but declared []"

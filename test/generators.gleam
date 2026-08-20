@@ -1,6 +1,6 @@
 import gleam/dict
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/set
 import graded/internal/effect_term
 import graded/internal/types.{
@@ -221,7 +221,7 @@ pub fn annotation_gen() -> qcheck.Generator(types.EffectAnnotation) {
       first_order_term_gen(),
       fn(kf, effects) {
         let #(kind, function) = kf
-        EffectAnnotation(kind:, function:, params: [], effects:)
+        EffectAnnotation(kind:, function:, params: [], effects:, returns: None)
       },
     )
   let with_param =
@@ -231,7 +231,13 @@ pub fn annotation_gen() -> qcheck.Generator(types.EffectAnnotation) {
       fn(kf, pe) {
         let #(kind, function) = kf
         let #(param, effects) = pe
-        EffectAnnotation(kind:, function:, params: [param], effects:)
+        EffectAnnotation(
+          kind:,
+          function:,
+          params: [param],
+          effects:,
+          returns: None,
+        )
       },
     )
   qcheck.from_generators(no_params, [with_param])
@@ -267,7 +273,12 @@ pub fn external_gen() -> qcheck.Generator(types.ExternalAnnotation) {
     ])
   let module_ext =
     qcheck.map2(module_name_gen, effect_set_gen(), fn(module, effects) {
-      ExternalAnnotation(module:, target: ModuleExternal, effects:)
+      ExternalAnnotation(
+        module:,
+        target: ModuleExternal,
+        effects: Some(effects),
+        returns: None,
+      )
     })
   let function_ext =
     qcheck.map2(
@@ -275,7 +286,12 @@ pub fn external_gen() -> qcheck.Generator(types.ExternalAnnotation) {
       effect_set_gen(),
       fn(mf, effects) {
         let #(module, name) = mf
-        ExternalAnnotation(module:, target: FunctionExternal(name), effects:)
+        ExternalAnnotation(
+          module:,
+          target: FunctionExternal(name),
+          effects: Some(effects),
+          returns: None,
+        )
       },
     )
   qcheck.from_generators(module_ext, [function_ext])
@@ -308,7 +324,13 @@ pub fn inferred_list_gen() -> qcheck.Generator(List(types.EffectAnnotation)) {
       function_name_gen(),
       first_order_term_gen(),
       fn(function, effects) {
-        EffectAnnotation(kind: Effects, function:, params: [], effects:)
+        EffectAnnotation(
+          kind: Effects,
+          function:,
+          params: [],
+          effects:,
+          returns: None,
+        )
       },
     )
   qcheck.map(

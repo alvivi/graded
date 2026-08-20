@@ -23,7 +23,13 @@ import qcheck
 pub fn empty_effects_test() {
   let input = "effects view : []"
   let assert Ok([
-    EffectAnnotation(kind: Effects, function: "view", params: _, effects: eff),
+    EffectAnnotation(
+      kind: Effects,
+      function: "view",
+      params: _,
+      effects: eff,
+      returns: None,
+    ),
   ]) = annotation.parse(input)
   effect_term.to_effect_set(eff) |> should.equal(Specific(set.new()))
 }
@@ -31,7 +37,13 @@ pub fn empty_effects_test() {
 pub fn single_effect_test() {
   let input = "effects update : [Http]"
   let assert Ok([
-    EffectAnnotation(kind: Effects, function: "update", params: _, effects: eff),
+    EffectAnnotation(
+      kind: Effects,
+      function: "update",
+      params: _,
+      effects: eff,
+      returns: None,
+    ),
   ]) = annotation.parse(input)
   effect_term.to_effect_set(eff)
   |> should.equal(Specific(set.from_list(["Http"])))
@@ -40,7 +52,13 @@ pub fn single_effect_test() {
 pub fn multiple_effects_test() {
   let input = "effects update : [Http, Dom]"
   let assert Ok([
-    EffectAnnotation(kind: Effects, function: "update", params: _, effects: eff),
+    EffectAnnotation(
+      kind: Effects,
+      function: "update",
+      params: _,
+      effects: eff,
+      returns: None,
+    ),
   ]) = annotation.parse(input)
   effect_term.to_effect_set(eff)
   |> should.equal(Specific(set.from_list(["Http", "Dom"])))
@@ -49,7 +67,13 @@ pub fn multiple_effects_test() {
 pub fn check_line_test() {
   let input = "check view : []"
   let assert Ok([
-    EffectAnnotation(kind: Check, function: "view", params: _, effects: eff),
+    EffectAnnotation(
+      kind: Check,
+      function: "view",
+      params: _,
+      effects: eff,
+      returns: None,
+    ),
   ]) = annotation.parse(input)
   effect_term.to_effect_set(eff) |> should.equal(Specific(set.new()))
 }
@@ -57,7 +81,13 @@ pub fn check_line_test() {
 pub fn check_with_effects_test() {
   let input = "check update : [Http, Dom]"
   let assert Ok([
-    EffectAnnotation(kind: Check, function: "update", params: _, effects: eff),
+    EffectAnnotation(
+      kind: Check,
+      function: "update",
+      params: _,
+      effects: eff,
+      returns: None,
+    ),
   ]) = annotation.parse(input)
   effect_term.to_effect_set(eff)
   |> should.equal(Specific(set.from_list(["Http", "Dom"])))
@@ -213,6 +243,7 @@ pub fn format_annotation_effects_test() {
       function: "view",
       params: [],
       effects: effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   annotation.format_annotation(ann) |> should.equal("effects view : []")
 }
@@ -226,6 +257,7 @@ pub fn format_annotation_check_test() {
       effects: effect_term.from_effect_set(
         Specific(set.from_list(["Http", "Dom"])),
       ),
+      returns: None,
     )
   annotation.format_annotation(ann)
   |> should.equal("check update : [Dom, Http]")
@@ -293,6 +325,7 @@ pub fn format_annotation_with_params_test() {
         ),
       ],
       effects: effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   annotation.format_annotation(ann)
   |> should.equal("effects apply(f: [Stdout]) : []")
@@ -311,6 +344,7 @@ pub fn format_annotation_with_multiple_params_test() {
         ),
       ],
       effects: effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
+      returns: None,
     )
   annotation.format_annotation(ann)
   |> should.equal("check transform(f: [], g: [Http]) : [Http]")
@@ -391,7 +425,7 @@ pub fn parse_external_test() {
   let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("gleam/http/request")
   ext.target |> should.equal(FunctionExternal("send"))
-  ext.effects |> should.equal(Specific(set.from_list(["Http"])))
+  ext.effects |> should.equal(Some(Specific(set.from_list(["Http"]))))
 }
 
 pub fn parse_external_pure_test() {
@@ -400,7 +434,7 @@ pub fn parse_external_pure_test() {
   let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("gleam/json")
   ext.target |> should.equal(FunctionExternal("decode"))
-  ext.effects |> should.equal(Specific(set.new()))
+  ext.effects |> should.equal(Some(Specific(set.new())))
 }
 
 pub fn format_external_test() {
@@ -408,7 +442,8 @@ pub fn format_external_test() {
     ExternalAnnotation(
       "gleam/httpc",
       FunctionExternal("send"),
-      Specific(set.from_list(["Http"])),
+      Some(Specific(set.from_list(["Http"]))),
+      returns: None,
     )
   annotation.format_external(ext)
   |> should.equal("assume gleam/httpc.send : [Http]")
@@ -424,7 +459,7 @@ pub fn parse_assume_module_test() {
   let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("gleam/io")
   ext.target |> should.equal(ModuleExternal)
-  ext.effects |> should.equal(Specific(set.from_list(["Stdout"])))
+  ext.effects |> should.equal(Some(Specific(set.from_list(["Stdout"]))))
 }
 
 pub fn parse_assume_function_test() {
@@ -433,7 +468,7 @@ pub fn parse_assume_function_test() {
   let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("gleam/http/request")
   ext.target |> should.equal(FunctionExternal("send"))
-  ext.effects |> should.equal(Specific(set.from_list(["Http"])))
+  ext.effects |> should.equal(Some(Specific(set.from_list(["Http"]))))
 }
 
 pub fn parse_assume_qualified_field_test() {
@@ -596,6 +631,7 @@ pub fn format_wildcard_annotation_test() {
       function: "handler",
       params: [],
       effects: effect_term.from_effect_set(Wildcard),
+      returns: None,
     )
   annotation.format_annotation(ann) |> should.equal("effects handler : [_]")
 }
@@ -662,6 +698,7 @@ pub fn format_polymorphic_annotation_test() {
         set.from_list(["Stdout"]),
         set.from_list(["e"]),
       )),
+      returns: None,
     )
   annotation.format_annotation(ann)
   |> should.equal("effects apply(f: [e]) : [Stdout, e]")
@@ -774,12 +811,25 @@ pub fn merge_inferred_drops_effect_for_external_test() {
       ExternalLine(ExternalAnnotation(
         module: "app",
         target: FunctionExternal("ffi"),
-        effects: types.Specific(set.new()),
+        effects: Some(types.Specific(set.new())),
+        returns: None,
       )),
     ])
   let inferred = [
-    EffectAnnotation(Effects, "app.ffi", [], effect_term.unknown()),
-    EffectAnnotation(Effects, "app.other", [], effect_term.pure()),
+    EffectAnnotation(
+      Effects,
+      "app.ffi",
+      [],
+      effect_term.unknown(),
+      returns: None,
+    ),
+    EffectAnnotation(
+      Effects,
+      "app.other",
+      [],
+      effect_term.pure(),
+      returns: None,
+    ),
   ]
   let effects_fns =
     annotation.merge_inferred(file, inferred, [], set.new(), set.new())
@@ -879,10 +929,17 @@ pub fn merge_inferred_keeps_the_two_stale_channels_apart_test() {
         "app.make",
         [],
         TLabels(set.new()),
+        returns: None,
       )),
     ])
   let inferred = [
-    EffectAnnotation(Effects, "app.make", [], TLabels(set.from_list(["Disk"]))),
+    EffectAnnotation(
+      Effects,
+      "app.make",
+      [],
+      TLabels(set.from_list(["Disk"])),
+      returns: None,
+    ),
   ]
   annotation.merge_inferred(
     file,
@@ -898,6 +955,7 @@ pub fn merge_inferred_keeps_the_two_stale_channels_apart_test() {
         "app.make",
         [],
         TLabels(set.from_list(["Disk"])),
+        returns: None,
       )),
     ]),
   )
@@ -916,6 +974,7 @@ pub fn format_second_order_application_test() {
       "with_logger",
       [ParamBound("action", TVar("action"))],
       TApp(TVar("action"), TLabels(set.from_list(["Stdout"]))),
+      returns: None,
     )
   annotation.format_annotation(ann)
   |> should.equal("effects with_logger(action: [action]) : [action([Stdout])]")
@@ -926,7 +985,14 @@ pub fn residual_abstraction_in_an_effect_set_renders_parseably_test() {
   // has no `fn(..) -> ..` atom, so rendering the abstraction would emit a line
   // the parser rejects — `graded infer` would write a spec that fails to read
   // back. It grounds to the conservative collapse instead.
-  let ann = EffectAnnotation(Effects, "probe.caller", [], TAbs("b", TVar("b")))
+  let ann =
+    EffectAnnotation(
+      Effects,
+      "probe.caller",
+      [],
+      TAbs("b", TVar("b")),
+      returns: None,
+    )
   let line = annotation.format_annotation(ann)
   line |> should.equal("effects probe.caller : [Unknown]")
   let assert Ok([reparsed]) = annotation.parse(line)
@@ -942,6 +1008,7 @@ pub fn residual_abstraction_beside_a_label_renders_parseably_test() {
       "probe.caller",
       [],
       TUnion([TLabels(set.from_list(["Stdout"])), TAbs("b", TVar("b"))]),
+      returns: None,
     )
   let line = annotation.format_annotation(ann)
   line |> should.equal("effects probe.caller : [Stdout, Unknown]")
@@ -1024,7 +1091,7 @@ pub fn second_order_roundtrip_property_test() {
   // P-SER-2: parse ∘ format is identity on normalized serializable terms.
   use term <- qcheck.given(generators.serializable_effect_term_gen())
   let normalized = effect_term.normalize(term)
-  let ann = EffectAnnotation(Effects, "f", [], normalized)
+  let ann = EffectAnnotation(Effects, "f", [], normalized, returns: None)
   let assert Ok([parsed]) = annotation.parse(annotation.format_annotation(ann))
   parsed.effects |> should.equal(normalized)
 }

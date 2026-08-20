@@ -156,7 +156,13 @@ fn parse_annotation_rest(
       case parse_name_colon_effects(rest) {
         Error(Nil) -> err
         Ok(#(name, effects)) ->
-          Ok(EffectAnnotation(kind:, function: name, params: [], effects:))
+          Ok(EffectAnnotation(
+            kind:,
+            function: name,
+            params: [],
+            effects:,
+            returns: None,
+          ))
       }
     Ok(#(name, params_str, suffix)) ->
       parse_params_suffix(kind, string.trim(name), params_str, suffix)
@@ -209,7 +215,13 @@ fn parse_params_suffix(
       let effects_str = string.trim(string.drop_start(suffix_trimmed, 1))
       case parse_effect_term(effects_str), parse_params_section(params_str) {
         Ok(effects), Ok(params) ->
-          Ok(EffectAnnotation(kind:, function: name, params:, effects:))
+          Ok(EffectAnnotation(
+            kind:,
+            function: name,
+            params:,
+            effects:,
+            returns: None,
+          ))
         _, _ -> Error(Nil)
       }
     }
@@ -237,7 +249,8 @@ fn parse_assume_line(rest: String) -> Result(GradedLine, Nil) {
         ExternalLine(ExternalAnnotation(
           module:,
           target: ModuleExternal,
-          effects: effect_term.to_effect_set(term),
+          effects: Some(effect_term.to_effect_set(term)),
+          returns: None,
         )),
       )
     AssumeFunction(module:, function:) ->
@@ -245,7 +258,8 @@ fn parse_assume_line(rest: String) -> Result(GradedLine, Nil) {
         ExternalLine(ExternalAnnotation(
           module:,
           target: FunctionExternal(function),
-          effects: effect_term.to_effect_set(term),
+          effects: Some(effect_term.to_effect_set(term)),
+          returns: None,
         )),
       )
     AssumeField(module:, type_name:, field:) ->
@@ -537,10 +551,11 @@ pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
   })
 }
 
-// The `<module>.<function>` names a file declares with a function-level
-// `assume <module>.<function> : [...]` line. Module-level externals
-// (`assume <module> : [...]`) don't count — they target a whole
-// module, not one function. That line is authoritative for the function it
+// The `<module>.<function>` names a file declares an *effect* for with a
+// function-level `assume <module>.<function> : [...]` line. Module-level
+// declarations (`assume <module> : [...]`) don't count — they target a whole
+// module, not one function — and neither does a line carrying only a
+// `where returns` clause, which claims nothing about the function's own effect. That line is authoritative for the function it
 // names, so both `merge_inferred` and the committed-bounds load treat an
 // `effects` line for the same name as stale.
 //
@@ -550,10 +565,10 @@ pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
 // `effects` line to authority over it.
 pub fn external_function_names(file: GradedFile) -> set.Set(String) {
   list.filter_map(extract_externals(file), fn(ext) {
-    case ext.target {
-      FunctionExternal(name) ->
+    case ext.target, ext.effects {
+      FunctionExternal(name), Some(_) ->
         Ok(types.dotted_name(types.QualifiedName(ext.module, name)))
-      ModuleExternal -> Error(Nil)
+      FunctionExternal(_), None | ModuleExternal, _ -> Error(Nil)
     }
   })
   |> set.from_list()
@@ -575,9 +590,9 @@ pub fn external_returns_names(file: GradedFile) -> set.Set(String) {
 // modules whose source inference the consumer's declaration overrides.
 pub fn module_external_modules(file: GradedFile) -> set.Set(String) {
   list.filter_map(extract_externals(file), fn(ext) {
-    case ext.target {
-      ModuleExternal -> Ok(ext.module)
-      FunctionExternal(_) -> Error(Nil)
+    case ext.target, ext.effects {
+      ModuleExternal, Some(_) -> Ok(ext.module)
+      ModuleExternal, None | FunctionExternal(_), _ -> Error(Nil)
     }
   })
   |> set.from_list()
@@ -988,10 +1003,11 @@ fn type_field_path(tf: TypeFieldAnnotation) -> String {
 
 // Render an ExternalAnnotation back to its `.graded` line format.
 pub fn format_external(external_annotation: ExternalAnnotation) -> String {
-  "assume "
-  <> external_sort_key(external_annotation)
-  <> " : "
-  <> format_effect_set(external_annotation.effects)
+  let effects_clause = case external_annotation.effects {
+    Some(effects) -> " : " <> format_effect_set(effects)
+    None -> ""
+  }
+  "assume " <> external_sort_key(external_annotation) <> effects_clause
 }
 
 // The qualified name (`module` or `module.function`) an external annotation

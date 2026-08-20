@@ -268,12 +268,15 @@ pub type ParamBound {
 // `EffectTerm` — for the common first-order case a variable-free or flat-
 // variable term equivalent to an `EffectSet`, but it may carry operator
 // applications (`[action(Stdout)]`) for second-order signatures.
+// `returns` carries the `where returns` clause: the operator the function hands
+// back, scoped by this line's own bound list.
 pub type EffectAnnotation {
   EffectAnnotation(
     kind: AnnotationKind,
     function: String,
     params: List(ParamBound),
     effects: EffectTerm,
+    returns: Option(EffectTerm),
   )
 }
 
@@ -458,9 +461,22 @@ pub type ExternalTarget {
   FunctionExternal(name: String)
 }
 
-// Effect declaration for an external function (e.g., `assume gleam/httpc.send : [Http]`).
+// A trusted declaration (`assume gleam/httpc.send : [Http]`).
+//
+// `effects` is `None` for a line that carries only a `where returns` clause: it
+// claims nothing about the function's own effect, and the tiers below keep
+// answering for it. No reader may default a `None` to the empty set — that
+// turns "claims nothing" into "is pure".
+//
+// `returns` carries the `where returns` clause, meaningful for a function
+// target; a clause on a module path is a lint.
 pub type ExternalAnnotation {
-  ExternalAnnotation(module: String, target: ExternalTarget, effects: EffectSet)
+  ExternalAnnotation(
+    module: String,
+    target: ExternalTarget,
+    effects: Option(EffectSet),
+    returns: Option(EffectTerm),
+  )
 }
 
 // A single line in an .graded file, preserving structure for round-trip rewrites.
