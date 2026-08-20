@@ -409,6 +409,35 @@ fn malformed_catalog_name(path: String) -> Result(String, Nil) {
   }
 }
 
+// A bundled file that stops parsing is skipped at runtime, voiding that
+// package's effects with a green suite: only two packages have content tests.
+pub fn every_catalog_file_parses_test() {
+  let assert Ok(paths) = simplifile.get_files(effects.catalog_directory())
+  paths
+  |> list.filter(string.ends_with(_, ".graded"))
+  |> list.filter_map(unparseable_catalog_file)
+  |> should.equal([])
+}
+
+// The complaint about one bundled file, or `Error(Nil)` for one that reads and
+// parses.
+fn unparseable_catalog_file(path: String) -> Result(String, Nil) {
+  case simplifile.read(path) {
+    Error(_) -> Ok(path <> " could not be read.")
+    Ok(content) ->
+      case annotation.parse_file(content) {
+        Ok(_) -> Error(Nil)
+        Error(error) ->
+          Ok(
+            path
+            <> " does not parse at line "
+            <> annotation.describe_parse_error(error)
+            <> ". Its package resolves to [Unknown] for every consumer.",
+          )
+      }
+  }
+}
+
 pub fn no_two_catalog_files_parse_to_one_version_test() {
   let assert Ok(files) =
     effects.bundled_catalog_files(effects.catalog_directory())

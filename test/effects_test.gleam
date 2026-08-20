@@ -883,6 +883,19 @@ pub fn a_dependency_function_external_resolves_test() {
   )
 }
 
+pub fn a_dependency_spec_that_does_not_parse_is_ignored_test() {
+  // A consumer cannot fix a dependency's spec, so a line the parser rejects
+  // costs that package's entries — with a printed warning — rather than the
+  // whole run.
+  installed_dep(
+    "build/eff_dep_unparseable",
+    "dep",
+    "external effects dep/ffi.now : [Time]\nnot a graded line\n",
+  )
+  |> entry_of(QualifiedName("dep/ffi", "now"))
+  |> should.be_error
+}
+
 pub fn a_dependency_module_external_resolves_test() {
   // A dep's module-level external governs every function in that module, and is
   // reported as the module entry naming the shipped spec it sits in.

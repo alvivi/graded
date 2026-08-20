@@ -869,3 +869,22 @@ pub fn a_module_outside_the_package_still_answers_from_the_spec_test() {
   |> should.equal(expected)
   cleanup(project)
 }
+
+// Unparseable spec
+//
+// A read-only query answers from the spec, so a spec line the parser rejects
+// stops it rather than being answered around.
+
+pub fn effect_over_an_unparseable_spec_errors_test() {
+  let root = "/tmp/graded_effect_unparseable"
+  let _ = support.write_unparseable_spec_project(root)
+
+  graded.run_effect(root, "proj.go")
+  |> should.equal(
+    Error(graded.GradedParseError(
+      root <> "/proj.graded",
+      annotation.InvalidLine(2, "not a graded line"),
+    )),
+  )
+  cleanup(root)
+}

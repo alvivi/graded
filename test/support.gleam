@@ -50,3 +50,13 @@ pub fn cleanup(directory: String) -> Nil {
   let _ = simplifile.delete(directory)
   Nil
 }
+
+// Materialise a minimal package whose spec file's second line the parser
+// rejects, for the commands that must refuse it. Returns the directory.
+pub fn write_unparseable_spec_project(directory: String) -> String {
+  write_fixture(directory, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("src/proj.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+    #("proj.graded", "effects proj.go : []\nnot a graded line\n"),
+  ])
+}

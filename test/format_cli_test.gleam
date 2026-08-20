@@ -1,5 +1,6 @@
 import gleeunit/should
 import graded
+import graded/internal/annotation
 import simplifile
 
 // Format and format --check on the spec file
@@ -65,4 +66,13 @@ pub fn format_stdin_is_idempotent_over_external_returns_test() {
 
 pub fn format_stdin_fails_on_unparseable_input_test() {
   graded.run_format_stdin(bad_spec) |> should.be_error
+}
+
+// An editor integration needs the line the input was rejected at, not just the
+// fact that it was.
+pub fn format_stdin_names_the_rejected_line_test() {
+  graded.run_format_stdin("effects m.f : []\n" <> bad_spec)
+  |> should.equal(
+    Error(annotation.InvalidLine(2, "@@@ not a valid graded line @@@")),
+  )
 }

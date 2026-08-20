@@ -8534,3 +8534,23 @@ pub fn the_lint_names_the_type_line_for_a_field_shaped_returns_test() {
   ])
   support.cleanup(root)
 }
+
+// Unparseable spec
+//
+// The check reads the spec's `check` lines and its declarations. A line the
+// parser rejects stops it, naming the line — checking against a spec that was
+// silently emptied passes everything.
+
+pub fn check_over_an_unparseable_spec_errors_test() {
+  let root = "/tmp/graded_check_unparseable"
+  let _ = support.write_unparseable_spec_project(root)
+
+  graded.run(root)
+  |> should.equal(
+    Error(graded.GradedParseError(
+      root <> "/proj.graded",
+      annotation.InvalidLine(2, "not a graded line"),
+    )),
+  )
+  support.cleanup(root)
+}

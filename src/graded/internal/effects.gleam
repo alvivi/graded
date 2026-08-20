@@ -1665,7 +1665,9 @@ pub type DepSpec {
 
 // Load one package's spec. Reads the spec via the package's own `[tools.graded]`
 // config (defaulting to `<package_name>.graded`) at `dep_root`, once. Empty when
-// the spec is missing or unparseable. Shared by the `build/packages` dependency
+// the spec is missing, and empty with a printed warning when it does not
+// parse — a consumer cannot fix a dependency's spec, so the package falls back
+// to the tiers below it instead of stopping the run. Shared by the `build/packages` dependency
 // scan and path-dependency enrichment so both dep kinds load identical metadata —
 // effects alone would drop the bounds a higher-order callee needs to discharge
 // its callback's effect, the `type` fields a capability record on the dep's own
@@ -1673,8 +1675,20 @@ pub type DepSpec {
 // lines the dep author wrote for its FFI.
 pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
   case read_spec_file(config.spec_file_for(dep_root, package_name)) {
-    Error(_) ->
+    Error(reason) -> {
+      case reason {
+        SpecMissing -> Nil
+        SpecMalformed(cause) ->
+          io.println_error(
+            "graded: warning: "
+            <> package_name
+            <> "'s spec did not parse (line "
+            <> annotation.describe_parse_error(cause)
+            <> "); its entries are ignored",
+          )
+      }
       DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [], set.new())
+    }
     Ok(file) ->
       // Loaded through the same two readers a package uses for its *own* spec,
       // so a dependency's `check` budgets and externally-declared functions are
@@ -1889,15 +1903,25 @@ fn fold_spec_effects(
 fn read_spec_annotations(
   spec_path: String,
 ) -> Result(List(EffectAnnotation), Nil) {
-  use file <- result.try(read_spec_file(spec_path))
+  use file <- result.try(read_spec_file(spec_path) |> result.replace_error(Nil))
   Ok(annotation.extract_annotations(file))
 }
 
-fn read_spec_file(spec_path: String) -> Result(types.GradedFile, Nil) {
+// Why a spec file yielded no lines: it wasn't there, or it did not parse. The
+// caller tells a consumer which one happened for a *dependency's* spec, whose
+// lines the consumer cannot fix.
+pub type SpecReadError {
+  SpecMissing
+  SpecMalformed(cause: annotation.ParseError)
+}
+
+fn read_spec_file(
+  spec_path: String,
+) -> Result(types.GradedFile, SpecReadError) {
   use content <- result.try(
-    simplifile.read(spec_path) |> result.replace_error(Nil),
+    simplifile.read(spec_path) |> result.replace_error(SpecMissing),
   )
-  annotation.parse_file(content) |> result.replace_error(Nil)
+  annotation.parse_file(content) |> result.map_error(SpecMalformed)
 }
 
 // Build a returned-operator map (qualified name → operator) from a parsed
