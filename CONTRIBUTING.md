@@ -49,9 +49,11 @@ for third-party Gleam packages, so consumers resolve calls into those packages
 without writing their own annotations. Adding one is the most self-contained way
 to contribute.
 
-1. Create `priv/catalog/{package}@{version}.graded`. The version is the lowest
-   release whose surface the file describes; at resolution time graded picks the
-   highest catalog version `<= ` the consumer's installed version.
+1. Create `priv/catalog/{package}@{version}.graded`. The version is a plain
+   `major.minor.patch` (no pre-release or build suffix — selection compares
+   those three numbers and nothing else) and names the lowest release whose
+   surface the file describes; at resolution time graded picks the highest
+   catalog version `<= ` the consumer's installed version.
 2. Write `effects` / `external effects` / `type` lines with **module-qualified**
    names. The grammar, every annotation kind, and the effect-set syntax are in
    [docs/REFERENCE.md](docs/REFERENCE.md); existing entries (e.g.
