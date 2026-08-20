@@ -506,6 +506,123 @@ pub fn assume_over_an_empty_segment_is_invalid_test() {
   |> should.equal(Error(annotation.InvalidLine(1, "assume .f : []")))
 }
 
+// The `where returns` clause
+//
+// A returned operator is a clause of the statement whose bound list scopes its
+// variables, on any status. Its keyword is only a keyword at bracket depth 0.
+
+pub fn parse_returns_clause_on_an_effects_line_test() {
+  let assert Ok([annotation]) =
+    annotation.parse(
+      "effects m.traced(action: [action]) : [] where returns : fn(cb) -> [Stdout, action([cb])]",
+    )
+  annotation.params
+  |> should.equal([ParamBound("action", TVar("action"))])
+  annotation.returns
+  |> should.equal(
+    Some(TAbs(
+      "cb",
+      TUnion([
+        TLabels(set.from_list(["Stdout"])),
+        TApp(TVar("action"), TVar("cb")),
+      ])
+        |> effect_term.normalize,
+    )),
+  )
+}
+
+pub fn parse_returns_clause_on_a_check_line_test() {
+  let assert Ok([annotation]) =
+    annotation.parse("check m.make : [] where returns : [Stdout]")
+  annotation.kind |> should.equal(Check)
+  annotation.returns |> should.equal(Some(TLabels(set.from_list(["Stdout"]))))
+}
+
+pub fn parse_returns_clause_on_an_assume_line_test() {
+  let assert Ok(file) =
+    annotation.parse_file("assume m/ffi.make : [Net] where returns : [Net]")
+  let assert [ext] = annotation.extract_externals(file)
+  ext.effects |> should.equal(Some(Specific(set.from_list(["Net"]))))
+  ext.returns |> should.equal(Some(TLabels(set.from_list(["Net"]))))
+}
+
+pub fn a_clause_only_assume_claims_no_effects_test() {
+  // The rewrite of a standalone declaration of what a producer hands back. It
+  // claims nothing about the producer's own effect, so the tiers below keep
+  // answering for it — `None`, never the empty set.
+  let assert Ok(file) =
+    annotation.parse_file("assume m/ffi.make_client where returns : [Net]")
+  let assert [ext] = annotation.extract_externals(file)
+  ext.effects |> should.equal(None)
+  ext.returns |> should.equal(Some(TLabels(set.from_list(["Net"]))))
+  annotation.format_external(ext)
+  |> should.equal("assume m/ffi.make_client where returns : [Net]")
+}
+
+pub fn a_clause_only_assume_names_no_effects_function_test() {
+  // `external_function_names` keys the effects channel. A clause-only line
+  // declares only what the producer returns, so it must not drop the inferred
+  // `effects` line for the name or blank its bounds.
+  let assert Ok(file) =
+    annotation.parse_file("assume m.make where returns : [Net]")
+  annotation.external_function_names(file)
+  |> set.to_list
+  |> should.equal([])
+}
+
+pub fn a_clause_on_a_field_path_is_invalid_test() {
+  let input = "assume m.Handler.on_click where returns : [X]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn a_clause_keyword_inside_brackets_is_not_a_clause_test() {
+  // The effect-term grammar reads any word inside brackets as a variable, so
+  // the keyword only opens a clause at depth 0.
+  let assert Ok([annotation]) =
+    annotation.parse("effects m.f : [A, where returns : B]")
+  annotation.returns |> should.equal(None)
+}
+
+pub fn a_clause_with_no_colon_is_invalid_test() {
+  let input = "effects m.f : [] where returns [Stdout]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn a_forged_sentinel_in_a_clause_grounds_test() {
+  // The `$op$` reservation holds inside a clause: a forged sentinel grounds to
+  // `[Unknown]` rather than minting a variable that could pass for a
+  // producer's own.
+  let assert Ok([annotation]) =
+    annotation.parse("effects m.f : [] where returns : [$op$forged]")
+  annotation.returns |> should.equal(Some(effect_term.unknown()))
+}
+
+pub fn clause_free_vars_names_the_open_variables_test() {
+  let assert Ok([closed]) =
+    annotation.parse("effects m.f : [] where returns : [Stdout]")
+  annotation.clause_free_vars(closed.returns) |> set.to_list |> should.equal([])
+
+  let assert Ok([open]) =
+    annotation.parse("effects m.f : [] where returns : [Stdout, action]")
+  annotation.clause_free_vars(open.returns)
+  |> set.to_list
+  |> should.equal(["action"])
+
+  let assert Ok([bound]) =
+    annotation.parse("effects m.f : [] where returns : fn(cb) -> [cb]")
+  annotation.clause_free_vars(bound.returns) |> set.to_list |> should.equal([])
+
+  annotation.clause_free_vars(None) |> set.to_list |> should.equal([])
+}
+
+pub fn a_params_list_with_no_name_is_invalid_test() {
+  let input = "check (f: [Stdout]) : [Stdout]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
 // Retired spellings
 //
 // A line in a spelling this version no longer reads is refused by name, with
