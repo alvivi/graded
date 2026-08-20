@@ -68,6 +68,9 @@ fn parse_structured_line(
         Ok(annotation) -> Ok(AnnotationLine(annotation))
         Error(parse_error) -> Error(parse_error)
       }
+    "assume " <> rest ->
+      parse_assume_line(rest)
+      |> result.replace_error(InvalidLine(line_number, line))
     "type " <> rest ->
       case parse_type_field_line(rest) {
         Ok(tf) -> Ok(TypeFieldLine(tf))
@@ -188,6 +191,87 @@ fn parse_params_suffix(
         Ok(effects), Ok(params) ->
           Ok(EffectAnnotation(kind:, function: name, params:, effects:))
         _, _ -> Error(Nil)
+      }
+    }
+  }
+}
+
+// What an `assume` line's path names. Told apart by shape alone, which Gleam
+// casing makes unambiguous: module paths are lower snake with slashes, type
+// names UpperCamel.
+type AssumeSubject {
+  AssumeModule(module: String)
+  AssumeFunction(module: String, function: String)
+  AssumeField(module: option.Option(String), type_name: String, field: String)
+}
+
+// Parse an `assume <path> : <effects>` line into the annotation its path shape
+// names. A function's or a module's effects reduce to a set, as an assumption
+// is first-order by construction; a field's stay a term.
+fn parse_assume_line(rest: String) -> Result(GradedLine, Nil) {
+  use #(path, term) <- result.try(parse_name_colon_effects(rest))
+  use subject <- result.try(split_assume_path(path))
+  case subject {
+    AssumeModule(module:) ->
+      Ok(
+        ExternalLine(ExternalAnnotation(
+          module:,
+          target: ModuleExternal,
+          effects: effect_term.to_effect_set(term),
+        )),
+      )
+    AssumeFunction(module:, function:) ->
+      Ok(
+        ExternalLine(ExternalAnnotation(
+          module:,
+          target: FunctionExternal(function),
+          effects: effect_term.to_effect_set(term),
+        )),
+      )
+    AssumeField(module:, type_name:, field:) ->
+      Ok(
+        TypeFieldLine(TypeFieldAnnotation(
+          module:,
+          type_name:,
+          field:,
+          effects: term,
+        )),
+      )
+  }
+}
+
+// Split an `assume` line's path by segment count and casing:
+//
+//   `gleam/io`                 -> the whole module
+//   `gleam/io.println`         -> one function
+//   `Handler.on_click`         -> one field, its type's module implied
+//   `m/dom.Handler.on_click`   -> one field of a named module's type
+//
+// An empty segment, and a three-or-more-segment path whose second-to-last
+// segment is not a type name, are `Error(Nil)`.
+fn split_assume_path(path: String) -> Result(AssumeSubject, Nil) {
+  let segments = string.split(path, ".")
+  use <- bool.guard(
+    when: list.any(segments, fn(segment) { segment == "" }),
+    return: Error(Nil),
+  )
+  case segments {
+    [module] -> Ok(AssumeModule(module:))
+    [first, second] ->
+      case types.is_upper_initial(first) {
+        True -> Ok(AssumeField(module: None, type_name: first, field: second))
+        False -> Ok(AssumeFunction(module: first, function: second))
+      }
+    _ -> {
+      let count = list.length(segments)
+      let module = segments |> list.take(count - 2) |> string.join(".")
+      case list.drop(segments, count - 2) {
+        [type_name, field] if module != "" ->
+          case types.is_upper_initial(type_name) {
+            True -> Ok(AssumeField(module: Some(module), type_name:, field:))
+            False -> Error(Nil)
+          }
+        _ -> Error(Nil)
       }
     }
   }

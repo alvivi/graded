@@ -9,8 +9,8 @@ import graded/internal/effect_term
 import graded/internal/types.{
   type EffectTerm, AnnotationLine, BlankLine, Check, CommentLine,
   EffectAnnotation, Effects, ExternalAnnotation, ExternalLine,
-  ExternalReturnsLine, FunctionExternal, ParamBound, Polymorphic, ReturnsLine,
-  Specific, TAbs, TApp, TLabels, TUnion, TVar, TypeFieldAnnotation,
+  ExternalReturnsLine, FunctionExternal, ModuleExternal, ParamBound, Polymorphic,
+  ReturnsLine, Specific, TAbs, TApp, TLabels, TUnion, TVar, TypeFieldAnnotation,
   TypeFieldLine, Wildcard,
 }
 import qcheck
@@ -412,6 +412,68 @@ pub fn format_external_test() {
     )
   annotation.format_external(ext)
   |> should.equal("external effects gleam/httpc.send : [Http]")
+}
+
+// Assumptions
+//
+// `assume <path> : [...]` lines. One keyword for every trusted declaration;
+// what the line covers is read off the path's shape.
+
+pub fn parse_assume_module_test() {
+  let assert Ok(file) = annotation.parse_file("assume gleam/io : [Stdout]")
+  let assert [ext] = annotation.extract_externals(file)
+  ext.module |> should.equal("gleam/io")
+  ext.target |> should.equal(ModuleExternal)
+  ext.effects |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn parse_assume_function_test() {
+  let assert Ok(file) =
+    annotation.parse_file("assume gleam/http/request.send : [Http]")
+  let assert [ext] = annotation.extract_externals(file)
+  ext.module |> should.equal("gleam/http/request")
+  ext.target |> should.equal(FunctionExternal("send"))
+  ext.effects |> should.equal(Specific(set.from_list(["Http"])))
+}
+
+pub fn parse_assume_qualified_field_test() {
+  let assert Ok(file) =
+    annotation.parse_file("assume myapp/router.Handler.on_click : [Dom]")
+  let assert [tf] = annotation.extract_type_fields(file)
+  tf.module |> should.equal(Some("myapp/router"))
+  tf.type_name |> should.equal("Handler")
+  tf.field |> should.equal("on_click")
+  effect_term.to_effect_set(tf.effects)
+  |> should.equal(Specific(set.from_list(["Dom"])))
+}
+
+pub fn parse_assume_bare_field_test() {
+  // An UpperCamel first segment is a type name, so a two-segment path is a
+  // field of it rather than a function of a module by that name.
+  let assert Ok(file) = annotation.parse_file("assume Handler.on_click : [Dom]")
+  let assert [tf] = annotation.extract_type_fields(file)
+  tf.module |> should.equal(None)
+  tf.type_name |> should.equal("Handler")
+  tf.field |> should.equal("on_click")
+}
+
+pub fn assume_over_a_lowercase_deep_path_is_invalid_test() {
+  // Three lowercase segments name no shape: a module path uses slashes, so the
+  // second-to-last segment would have to be a type name.
+  annotation.parse_file("assume a.b.c : []")
+  |> should.equal(Error(annotation.InvalidLine(1, "assume a.b.c : []")))
+}
+
+pub fn assume_over_an_empty_segment_is_invalid_test() {
+  annotation.parse_file("assume m. : []")
+  |> should.equal(Error(annotation.InvalidLine(1, "assume m. : []")))
+  annotation.parse_file("assume .f : []")
+  |> should.equal(Error(annotation.InvalidLine(1, "assume .f : []")))
+}
+
+pub fn assume_with_no_effects_is_invalid_test() {
+  annotation.parse_file("assume gleam/io.println")
+  |> should.equal(Error(annotation.InvalidLine(1, "assume gleam/io.println")))
 }
 
 // Wildcard [_]
