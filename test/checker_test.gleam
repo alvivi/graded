@@ -6491,3 +6491,93 @@ pub fn new() {
 fn stdout_term() -> types.EffectTerm {
   effect_term.from_effect_set(Specific(set.from_list(["Stdout"])))
 }
+
+// A `where returns` clause, read back
+//
+// A clause loaded from a spec reaches the producer call as a `Closed` summary.
+// The gate re-checks its variables against the producer's real callback
+// parameters before binding them, so a clause naming a parameter binds
+// precisely and one naming anything else degrades to `[Unknown]`.
+
+// The knowledge base and registry for a cross-module producer `dep.wrap`,
+// carrying whatever clause `spec_line` states for it.
+fn closed_clause_setup(
+  spec_line: String,
+) -> #(effects.KnowledgeBase, signatures.SignatureRegistry) {
+  let assert Ok(spec) = annotation.parse_file(spec_line)
+  let dep_source =
+    "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
+  fn() { f() }
+}
+"
+  let assert Ok(dep_module) = glance.module(dep_source)
+  let kb =
+    knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(
+          QualifiedName("dep", "wrap"),
+          effect_term.from_effect_set(types.empty()),
+        ),
+      ]),
+      types.ProjectInferred,
+    )
+    |> effects.with_closed_returned_operators(
+      effects.load_spec_returns_from_file(spec),
+      types.CommittedSpec,
+    )
+  #(kb, signatures.from_glance_module("dep", dep_module))
+}
+
+fn closed_clause_violations(spec_line: String) -> List(types.Violation) {
+  let #(kb, dep_registry) = closed_clause_setup(spec_line)
+  let source =
+    "
+import gleam/io
+import dep
+pub fn caller() -> Nil {
+  let h = dep.wrap(noisy)
+  h()
+}
+fn noisy() -> Nil {
+  io.println(\"x\")
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let registry =
+    signatures.merge(signatures.from_glance_module("app", module), dep_registry)
+  let #(violations, _) =
+    checker.check(
+      module,
+      "",
+      [pure_check("caller")],
+      kb,
+      registry,
+      dict.new(),
+      dict.new(),
+      types.all_targets(),
+    )
+  violations
+}
+
+// What the call of the *returned* closure was charged. The producer call beside
+// it is charged its own bound and is not what these tests are about.
+fn returned_call_effects(spec_line: String) -> EffectSet {
+  let assert Ok(violation) =
+    closed_clause_violations(spec_line)
+    |> list.find(fn(violation) {
+      violation.explanation.call.module == "<returned>"
+    })
+  violation.explanation.actual
+}
+
+pub fn a_closed_clause_binds_the_producers_argument_test() {
+  returned_call_effects("effects dep.wrap(f: [f]) : [] where returns : [f]")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn an_open_clause_degrades_to_unknown_test() {
+  // `ghost` is no parameter of `dep.wrap`, so there is nothing to bind it to.
+  returned_call_effects("effects dep.wrap(f: [f]) : [] where returns : [ghost]")
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}

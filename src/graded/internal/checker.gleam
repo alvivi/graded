@@ -5198,9 +5198,31 @@ fn resolve_returned_operator(
         // over free variables nothing sanitized.
         False, effects.Declared -> #(Error(Nil), memo)
         // Polymorphic + Closed: a clause read back from a spec. Its variables
-        // are checked against the producer's real callback parameters before
-        // any binding; until that check is here, resolve conservatively.
-        False, effects.Closed -> #(Error(Nil), memo)
+        // are checked against the producer's real callback parameters here,
+        // where the substitution happens; one naming anything else degrades to
+        // [Unknown] rather than binding against a parameter that isn't there.
+        False, effects.Closed ->
+          case clause_is_closed(operator, callee, knowledge_base, registry) {
+            False -> #(Error(Nil), memo)
+            True -> {
+              let #(bound, memo) =
+                bind_producer_params(
+                  operator,
+                  callee,
+                  args,
+                  context,
+                  function_map,
+                  knowledge_base,
+                  visited,
+                  registry,
+                  module_types,
+                  caller_param_bounds,
+                  cache,
+                  memo,
+                )
+              #(Ok(#(bound, source)), memo)
+            }
+          }
       }
   }
 }
@@ -5259,11 +5281,12 @@ fn bind_producer_params(
       // that are polymorphic only through the returned closure (inference derives
       // bounds from the *direct* effect, which trims the closure). Synthesize a
       // self-referential bound for each of the summary's own free vars not already
-      // bound, so the producer call's arguments bind them. Sound because Fix E only
-      // lets a **Fresh** (Fix-D-sanitized) summary reach here — its free vars ⊆ the
-      // producer's fn-typed params — and the real `registry` supplies each param's
-      // position. Field-path (dotted) vars are excluded (they round-trip as field
-      // bounds, not producer params).
+      // bound, so the producer call's arguments bind them. Sound because only two
+      // kinds of summary reach here: a **Fresh** (Fix-D-sanitized) one, whose free
+      // vars ⊆ the producer's fn-typed params, and a **Closed** one the gate has
+      // just re-checked against the producer's real callback parameters. The real
+      // `registry` supplies each param's position. Field-path (dotted) vars are
+      // excluded (they round-trip as field bounds, not producer params).
       let kb_bounds = effects.lookup_param_bounds(knowledge_base, callee)
       let have = bound_name_set(kb_bounds)
       let synth =
@@ -5813,6 +5836,34 @@ fn ordered_callback_param_names(
       _, _ -> Error(Nil)
     }
   })
+}
+
+// Whether every free variable of a `where returns` clause is a real callback
+// parameter of the producer the clause sits on.
+//
+// The oracle is the signature registry's fn-typed parameters together with the
+// knowledge base's recorded bound names for the function — the same pair
+// `ordered_callback_param_names` reads, so a girard-typed callback no syntactic
+// signature shows is admitted through its recorded bound rather than
+// spuriously rejected. Committed bounds win over this run's inference, so the
+// recorded set can be stale-empty but never stale-wrong: staleness makes this
+// stricter, never looser. Field-path (dotted) variables round-trip as field
+// bounds rather than as producer parameters, so they are not weighed here.
+fn clause_is_closed(
+  operator: EffectTerm,
+  callee: QualifiedName,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+) -> Bool {
+  let callbacks =
+    set.union(
+      signatures.fn_typed_param_names(registry, callee),
+      recorded_bound_names(knowledge_base, callee),
+    )
+  effect_term.free_vars(operator)
+  |> set.filter(fn(variable) { !is_field_path_var(variable) })
+  |> set.to_list()
+  |> list.all(set.contains(callbacks, _))
 }
 
 // The parameter names `name`'s recorded bounds state effects over. For one of
