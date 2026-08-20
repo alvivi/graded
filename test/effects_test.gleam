@@ -1212,22 +1212,38 @@ pub fn bundled_catalog_files_reports_an_unreadable_directory_test() {
 pub fn select_catalog_file_picks_the_highest_at_or_below_installed_test() {
   let files = catalog_fixture("build/eff_catalog_select")
   effects.select_catalog_file(files, "lustre", "5.7.0")
-  |> result.map(fn(file) { file.version })
-  |> should.equal(Ok("5.0.0"))
+  |> selected_version
+  |> should.equal(Ok(#("5.0.0", Eligible)))
   // Below the highest bundled file: the lower one is the eligible pick, which
   // is what tells "highest ≤ installed" apart from "highest bundled".
   effects.select_catalog_file(files, "lustre", "4.5.0")
-  |> result.map(fn(file) { file.version })
-  |> should.equal(Ok("4.0.0"))
+  |> selected_version
+  |> should.equal(Ok(#("4.0.0", Eligible)))
 }
 
 pub fn select_catalog_file_falls_back_to_the_highest_bundled_test() {
   // Nothing bundled at or below 3.0.0, so the fall-back is the highest file,
-  // not the lowest.
+  // not the lowest — and the selection says which rule it was.
   catalog_fixture("build/eff_catalog_select_fallback")
   |> effects.select_catalog_file("lustre", "3.0.0")
-  |> result.map(fn(file) { file.version })
-  |> should.equal(Ok("5.0.0"))
+  |> selected_version
+  |> should.equal(Ok(#("5.0.0", FellBack)))
+}
+
+// Which rule a selection reports, as a value an assertion can name.
+type SelectionRule {
+  Eligible
+  FellBack
+}
+
+fn selected_version(
+  selection: Result(effects.CatalogSelection, Nil),
+) -> Result(#(String, SelectionRule), Nil) {
+  use selection <- result.map(selection)
+  case selection {
+    effects.Selected(file) -> #(file.version, Eligible)
+    effects.HighestBundled(file) -> #(file.version, FellBack)
+  }
 }
 
 pub fn select_catalog_file_without_a_file_for_the_package_test() {

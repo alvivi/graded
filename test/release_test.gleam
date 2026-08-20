@@ -6,9 +6,8 @@
 // compiler doesn't try to compile them as project modules. The file-name lint
 // is the exception: it reads the real `priv/catalog/`.
 
-import gleam/int
+import gleam/dict
 import gleam/list
-import gleam/order
 import gleam/set
 import gleam/string
 import gleeunit/should
@@ -374,39 +373,26 @@ pub fn no_two_catalog_files_parse_to_one_version_test() {
   colliding_catalog_files(files) |> should.equal([])
 }
 
-// One message per pair of bundled files that parse to the same version, so a
+// One message per group of bundled files that parse to the same version, so a
 // failure names the files a contributor has to fix.
 fn colliding_catalog_files(files: List(effects.CatalogFile)) -> List(String) {
-  list.flat_map(files, fn(file) {
-    files
-    |> list.filter(fn(other) {
-      other.package == file.package
-      && other.parsed == file.parsed
-      && string.compare(other.path, file.path) == order.Gt
-    })
-    |> list.map(fn(other) { collision_message(file, other) })
+  files
+  |> list.group(fn(file) { #(file.package, file.parsed) })
+  |> dict.values
+  |> list.filter_map(fn(group) {
+    case group {
+      [_] | [] -> Error(Nil)
+      [_, _, ..] -> Ok(collision_message(group))
+    }
   })
 }
 
-fn collision_message(
-  file: effects.CatalogFile,
-  other: effects.CatalogFile,
-) -> String {
-  file.path
-  <> " and "
-  <> other.path
-  <> " both parse to "
-  <> format_version(file.parsed)
-  <> "; version selection cannot order them, so which one wins is filesystem "
-  <> "order. Give one a distinct major.minor.patch or drop it."
-}
-
-fn format_version(version: #(Int, Int, Int)) -> String {
-  "#("
-  <> int.to_string(version.0)
-  <> ", "
-  <> int.to_string(version.1)
-  <> ", "
-  <> int.to_string(version.2)
-  <> ")"
+fn collision_message(group: List(effects.CatalogFile)) -> String {
+  group
+  |> list.map(fn(file) { file.path })
+  |> list.sort(string.compare)
+  |> string.join(" and ")
+  <> " parse to the same major.minor.patch; version selection cannot order "
+  <> "them, so which one wins is filesystem order. Give one a distinct "
+  <> "version or drop it."
 }

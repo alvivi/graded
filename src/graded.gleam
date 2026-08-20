@@ -2193,9 +2193,9 @@ pub fn run_catalog(request: cli.CatalogRequest) -> Result(String, GradedError) {
   )
 }
 
-// Render `request` against the catalog directory and manifest it names. The
-// seam `main`'s `catalog` branch dispatches through, so both forms are
-// reachable from tests.
+// Render `request` against the catalog directory and manifest it names. One
+// layer below `run_catalog`, taking both paths as arguments so a test can point
+// it at a fixture catalog and manifest.
 @internal
 pub fn catalog_report(
   catalog_dir: String,
@@ -2212,11 +2212,11 @@ pub fn catalog_report(
     when: files == [],
     return: Error(CatalogError(EmptyCatalog(catalog_dir))),
   )
-  let installed = effects.manifest_versions(manifest_path)
   case request {
-    cli.ListCatalog -> Ok(catalog_listing(files, installed))
+    cli.ListCatalog ->
+      Ok(catalog_listing(files, effects.manifest_versions(manifest_path)))
     cli.ShowCatalog(package:, version:, directory: _) ->
-      catalog_file_output(files, installed, package, version)
+      catalog_file_output(files, manifest_path, package, version)
   }
 }
 
@@ -2226,12 +2226,11 @@ fn catalog_listing(
   files: List(effects.CatalogFile),
   installed: Dict(String, String),
 ) -> String {
-  let notes = listing_notes(files, installed)
   files
   |> list.sort(compare_catalog_files)
   |> list.map(fn(file) {
     let label = catalog_label(file)
-    case dict.get(notes, file.path) {
+    case listing_suffix(files, installed, file) {
       Ok(note) -> label <> "  // " <> note
       Error(Nil) -> label
     }
@@ -2239,37 +2238,34 @@ fn catalog_listing(
   |> string.join("\n")
 }
 
-// The note each selected file's line carries, keyed by path. A package the
-// manifest doesn't list selects nothing, so none of its files are marked.
-fn listing_notes(
+// The note this file's line carries. A package the manifest doesn't list
+// selects nothing, and a file its package's installed version resolves past
+// carries no note.
+fn listing_suffix(
   files: List(effects.CatalogFile),
   installed: Dict(String, String),
-) -> Dict(String, String) {
-  files
-  |> list.map(fn(file) { file.package })
-  |> list.unique
-  |> list.fold(dict.new(), fn(notes, package) {
-    case dict.get(installed, package) {
-      Error(Nil) -> notes
-      Ok(version) ->
-        case effects.select_catalog_file(files, package, version) {
-          Error(Nil) -> notes
-          Ok(file) ->
-            dict.insert(notes, file.path, case eligible_for(file, version) {
-              True -> "selected for " <> package <> " " <> version
-              False -> "highest bundled; none ≤ " <> package <> " " <> version
-            })
-        }
-    }
+  file: effects.CatalogFile,
+) -> Result(String, Nil) {
+  use version <- result.try(dict.get(installed, file.package))
+  use selection <- result.try(effects.select_catalog_file(
+    files,
+    file.package,
+    version,
+  ))
+  use <- bool.guard(when: selection.file.path != file.path, return: Error(Nil))
+  Ok(case selection {
+    effects.Selected(_) -> "selected for " <> file.package <> " " <> version
+    effects.HighestBundled(_) ->
+      "highest bundled; none ≤ " <> file.package <> " " <> version
   })
 }
 
 // One bundled file, printed under the header that names it. The explicit form
-// consults no manifest: the version asked for is the one printed, whatever the
+// reads no manifest: the version asked for is the one printed, whatever the
 // project installs.
 fn catalog_file_output(
   files: List(effects.CatalogFile),
-  installed: Dict(String, String),
+  manifest_path: String,
   package: String,
   version: Option(String),
 ) -> Result(String, GradedError) {
@@ -2278,57 +2274,49 @@ fn catalog_file_output(
     when: bundled == [],
     return: Error(CatalogError(NoCatalogEntry(package))),
   )
-  case version {
+  use #(file, note) <- result.try(case version {
     Some(version) ->
-      case list.find(bundled, fn(file) { file.version == version }) {
-        Ok(file) -> print_catalog_file(file, "bundled version, as requested")
-        Error(Nil) ->
-          Error(
-            CatalogError(NoBundledVersion(
-              package:,
-              requested: version,
-              bundled: catalog_labels(bundled),
-            )),
-          )
-      }
-    None ->
-      case dict.get(installed, package) {
-        Error(Nil) ->
-          Error(
-            CatalogError(NotInstalled(
-              package:,
-              bundled: catalog_labels(bundled),
-            )),
-          )
-        Ok(version) ->
-          case effects.select_catalog_file(bundled, package, version) {
-            // Unreachable: a non-empty list for the package always selects.
-            Error(Nil) -> Error(CatalogError(NoCatalogEntry(package)))
-            Ok(file) ->
-              print_catalog_file(file, selection_note(file, package, version))
-          }
-      }
-  }
+      list.find(bundled, fn(file) { file.version == version })
+      |> result.map(fn(file) { #(file, "bundled version, as requested") })
+      |> result.replace_error(
+        CatalogError(NoBundledVersion(
+          package:,
+          requested: version,
+          bundled: catalog_labels(bundled),
+        )),
+      )
+    None -> {
+      use version <- result.map(
+        dict.get(effects.manifest_versions(manifest_path), package)
+        |> result.replace_error(
+          CatalogError(NotInstalled(package:, bundled: catalog_labels(bundled))),
+        ),
+      )
+      // A non-empty list for the package always selects one of its files, so a
+      // failure here is a broken invariant rather than a case to render.
+      // nolint: assert_ok_pattern -- a broken invariant, not an error to handle
+      let assert Ok(selection) =
+        effects.select_catalog_file(bundled, package, version)
+        as "a package with bundled files always selects one"
+      #(selection.file, selection_note(selection, package, version))
+    }
+  })
+  print_catalog_file(file, note)
 }
 
 // Why the implicit form chose this file: the installed version it covers, or
 // the fall-back that fires when nothing bundled is old enough.
 fn selection_note(
-  file: effects.CatalogFile,
+  selection: effects.CatalogSelection,
   package: String,
   version: String,
 ) -> String {
-  case eligible_for(file, version) {
-    True -> "selected for " <> package <> " " <> version <> " in manifest.toml"
-    False ->
+  case selection {
+    effects.Selected(_) ->
+      "selected for " <> package <> " " <> version <> " in manifest.toml"
+    effects.HighestBundled(_) ->
       "highest bundled version; no bundled " <> package <> " ≤ " <> version
   }
-}
-
-// Whether the file's version is at or below the installed one — the rule
-// `select_catalog_file` picks by, so a `False` here is its fall-back.
-fn eligible_for(file: effects.CatalogFile, version: String) -> Bool {
-  effects.semver_lte(file.parsed, effects.parse_semver(version))
 }
 
 // The header line, then the file verbatim. `report` prints with `io.println`,
@@ -2342,7 +2330,7 @@ fn print_catalog_file(
     simplifile.read(file.path)
     |> result.map_error(fn(cause) { FileReadError(file.path, cause) }),
   )
-  let header = "// " <> filepath.base_name(file.path) <> " — " <> note
+  let header = "// " <> catalog_label(file) <> ".graded — " <> note
   let output = header <> "\n" <> contents
   case string.ends_with(output, "\n") {
     True -> string.drop_end(output, 1)
@@ -2364,10 +2352,8 @@ fn compare_catalog_files(
   left: effects.CatalogFile,
   right: effects.CatalogFile,
 ) -> order.Order {
-  case string.compare(left.package, right.package) {
-    order.Eq -> effects.compare_semver(left.parsed, right.parsed)
-    other -> other
-  }
+  string.compare(left.package, right.package)
+  |> order.break_tie(effects.compare_semver(left.parsed, right.parsed))
 }
 
 // Formatting
