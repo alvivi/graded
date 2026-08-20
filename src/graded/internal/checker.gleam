@@ -26,9 +26,8 @@ import graded/internal/types.{
   DotlessExternalReturnsWarning, EffectAnnotation, Effects, FieldNotAnnotated,
   NoKnownEffects, ParamBound, PolymorphicExternalReturnsWarning, QualifiedName,
   ReceiverTypeUnresolved, RefusedDeclaredReturn, StaleExternalReturnsWarning,
-  StaleFunctionExternalWarning, TUnion, TVar, TypeLine,
-  TypeShapedExternalReturnsWarning, UnbuiltExternal, UndeclaredExternal,
-  UnmatchedCheckWarning, UnmatchedExternalReturnsWarning,
+  StaleFunctionExternalWarning, TUnion, TVar, TypeLine, UnbuiltExternal,
+  UndeclaredExternal, UnmatchedCheckWarning, UnmatchedExternalReturnsWarning,
   UnmatchedFieldBoundWarning, UnmatchedFunctionExternalWarning,
   UnmatchedModuleExternalWarning, UnmatchedParamBoundWarning,
   UnmatchedTypeFieldWarning, UnresolvedFieldValue, UntraceableArgument,
@@ -1615,11 +1614,6 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> ": warning: external returns "
       <> name
       <> " names a module, not a function — a returns declaration is per-function; the line resolves nothing"
-    TypeShapedExternalReturnsWarning(name:) ->
-      file
-      <> ": warning: external returns "
-      <> name
-      <> " names a type field, not a function — a returns declaration is per-function; write an `assume` line to give a field's effects, and the line resolves nothing as written"
   }
 }
 
@@ -5158,14 +5152,9 @@ fn resolve_returned_operator(
       case effect_term.is_ground(operator), summary {
         // Ground operator (no free vars): trusted regardless of origin. A Fresh
         // one is sanitized by this run (callback binders can't have captured a
-        // residual). A Foreign one — a serialized summary, including this
-        // package's own spec reloaded at check time and any dependency's — is
-        // taken on faith: a summary written by a *pre-sanitizer* graded could be
-        // a ground `TAbs` that dropped a captured residual, and nothing here
-        // distinguishes it from a sound one (the spec records no producing
-        // version). Re-running `infer` with a current graded regenerates a sound
-        // summary; a stale dependency spec is the residual soundness gap (see
-        // docs/LIMITATIONS.md).
+        // residual); a Closed one carries no variable to substitute, so the
+        // gate's check has nothing left to decide; a Declared one is ground by
+        // construction.
         True, _ -> #(Ok(#(operator, source)), memo)
         // Polymorphic + Fresh: Fix D guarantees the free vars are the producer's
         // own params — bind them to the producer call's arguments.
@@ -5187,11 +5176,6 @@ fn resolve_returned_operator(
             )
           #(Ok(#(bound, source)), memo)
         }
-        // Polymorphic + Foreign (Fix E): an unsanitized serialized summary whose
-        // free vars may be residuals coinciding with a param name — not trusted
-        // for synthesis. Resolve conservatively to [Unknown] (the `Error` here
-        // reaches every consumer's [Unknown] fallback).
-        False, effects.Foreign -> #(Error(Nil), memo)
         // Polymorphic + Declared: a declaration is tagged only after the
         // non-ground operators are dropped, so nothing reaches here. An edit
         // that changed that must degrade to [Unknown] rather than substitute

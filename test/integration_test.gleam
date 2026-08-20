@@ -3280,11 +3280,11 @@ pub fn the_lint_flags_every_dead_external_returns_line_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external returns ffi.wrap : [f]
-external returns lib : [Net]
-external returns lib.make : [Disk]
-external returns lib.nope : [Disk]
-external returns ffi.make : [Net]
+      "assume ffi.wrap where returns : [f]
+assume lib where returns : [Net]
+assume lib.make where returns : [Disk]
+assume lib.nope where returns : [Disk]
+assume ffi.make where returns : [Net]
 ",
     ),
     #(
@@ -8469,15 +8469,14 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
-pub fn the_lint_names_the_type_line_for_a_field_shaped_returns_test() {
-  // `app.Handler.run` is the field `assume` line's shape, not this one's. The loader
-  // drops it either way; the warning has to say which mistake it is, or the
-  // author reads "names a module, not a function" about a name that names no
-  // module.
+pub fn a_returns_clause_on_a_field_path_is_refused_test() {
+  // `app.Handler.on_click` names a field, and a field annotation has no slot
+  // for a returned operator. There is no line to warn about: the grammar
+  // refuses it, naming the line.
   let root = "build/declared_returns_type_shaped"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #("proj.graded", "external returns app.Handler.run : [Net]\n"),
+    #("proj.graded", "assume app.Handler.run where returns : [Net]\n"),
     #(
       "app.gleam",
       "pub type Handler {
@@ -8486,12 +8485,13 @@ pub fn the_lint_names_the_type_line_for_a_field_shaped_returns_test() {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
-  results
-  |> list.flat_map(fn(r) { r.warnings })
-  |> should.equal([
-    types.TypeShapedExternalReturnsWarning(name: "app.Handler.run"),
-  ])
+  graded.run(root)
+  |> should.equal(
+    Error(graded.GradedParseError(
+      root <> "/proj.graded",
+      annotation.InvalidLine(1, "assume app.Handler.run where returns : [Net]"),
+    )),
+  )
   support.cleanup(root)
 }
 

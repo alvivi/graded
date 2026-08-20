@@ -10,12 +10,10 @@ import graded/internal/effect_term
 import graded/internal/types.{
   type AnnotationKind, type EffectAnnotation, type EffectSet, type EffectTerm,
   type ExternalAnnotation, type GradedFile, type GradedLine, type ParamBound,
-  type ReturnsAnnotation, type TypeFieldAnnotation, AnnotationLine, BlankLine,
-  Check, CommentLine, EffectAnnotation, Effects, ExternalAnnotation,
-  ExternalLine, ExternalReturnsLine, FunctionExternal, GradedFile,
-  ModuleExternal, ParamBound, Polymorphic, ReturnsAnnotation, ReturnsLine,
-  Specific, TAbs, TApp, TLabels, TTop, TUnion, TVar, TypeFieldAnnotation,
-  TypeFieldLine, Wildcard,
+  type TypeFieldAnnotation, AnnotationLine, BlankLine, Check, CommentLine,
+  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
+  GradedFile, ModuleExternal, ParamBound, Polymorphic, Specific, TAbs, TApp,
+  TLabels, TTop, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 
 // Parsing
@@ -35,6 +33,8 @@ pub type ParseError {
 pub type RetiredKeyword {
   RetiredType
   RetiredExternalEffects
+  RetiredReturns
+  RetiredExternalReturns
 }
 
 // Render a parse error as `<line number>: <line as written>`, with the rewrite
@@ -61,6 +61,10 @@ fn retired_hint(keyword: RetiredKeyword) -> String {
       "`type <path> : <effects>` is retired; write `assume <path> : <effects>`"
     RetiredExternalEffects ->
       "`external effects <path> : <effects>` is retired; write `assume <path> : <effects>`"
+    RetiredReturns ->
+      "`returns <path> : <operator>` is retired; delete it — `graded infer` writes the operator as a `where returns` clause on the `effects <path>` line"
+    RetiredExternalReturns ->
+      "`external returns <path> : <operator>` is retired; write `assume <path> where returns : <operator>`"
   }
 }
 
@@ -101,27 +105,11 @@ fn parse_structured_line(
     "type " <> _ -> Error(RetiredSpelling(line_number, line, RetiredType))
     "external effects " <> _ ->
       Error(RetiredSpelling(line_number, line, RetiredExternalEffects))
-    "external returns " <> rest ->
-      case parse_returns_line(rest) {
-        Ok(returns) -> Ok(ExternalReturnsLine(returns))
-        Error(Nil) -> Error(InvalidLine(line_number, line))
-      }
-    "returns " <> rest ->
-      case parse_returns_line(rest) {
-        Ok(returns) -> Ok(ReturnsLine(returns))
-        Error(Nil) -> Error(InvalidLine(line_number, line))
-      }
+    "external returns " <> _ ->
+      Error(RetiredSpelling(line_number, line, RetiredExternalReturns))
+    "returns " <> _ -> Error(RetiredSpelling(line_number, line, RetiredReturns))
     _ -> Error(InvalidLine(line_number, line))
   }
-}
-
-// Parse the name and operator of a `returns mod.fn : fn(cb) -> [body]` line,
-// shared with `external returns`. The operator reuses the same
-// `fn(..) -> [..]` syntax as an operator parameter bound. Ground-ness and
-// dotted-ness of the name are load-time checks, not grammar.
-fn parse_returns_line(rest: String) -> Result(ReturnsAnnotation, Nil) {
-  use #(name, operator) <- result.try(parse_name_colon_effects(rest))
-  Ok(ReturnsAnnotation(function: name, operator:))
 }
 
 fn parse_annotation_line(
@@ -616,30 +604,8 @@ pub fn extract_annotations(file: GradedFile) -> List(EffectAnnotation) {
       AnnotationLine(annotation) -> Ok(annotation)
       TypeFieldLine(_) -> Error(Nil)
       ExternalLine(_) -> Error(Nil)
-      ReturnsLine(_) -> Error(Nil)
-      ExternalReturnsLine(_) -> Error(Nil)
       CommentLine(_) -> Error(Nil)
       BlankLine -> Error(Nil)
-    }
-  })
-}
-
-// Extract all inferred `returns` annotations from a parsed file.
-pub fn extract_returns(file: GradedFile) -> List(ReturnsAnnotation) {
-  list.filter_map(file.lines, fn(line) {
-    case line {
-      ReturnsLine(returns) -> Ok(returns)
-      _ -> Error(Nil)
-    }
-  })
-}
-
-// Extract all declared `external returns` annotations from a parsed file.
-pub fn extract_external_returns(file: GradedFile) -> List(ReturnsAnnotation) {
-  list.filter_map(file.lines, fn(line) {
-    case line {
-      ExternalReturnsLine(returns) -> Ok(returns)
-      _ -> Error(Nil)
     }
   })
 }
@@ -693,19 +659,22 @@ pub fn external_function_names(file: GradedFile) -> set.Set(String) {
   |> set.from_list()
 }
 
-// The `<module>.<function>` names a file declares with an
-// `external returns <module>.<function> : [...]` line.
-pub fn external_returns_names(file: GradedFile) -> set.Set(String) {
-  extract_external_returns(file)
-  |> list.map(fn(declared) { declared.function })
-  |> set.from_list()
+// The path and operator of every `where returns` clause on an `assume` line.
+// The path is as the line names it, so the lint that judges the paths sees the
+// ones that name no function too.
+pub fn assume_returns(file: GradedFile) -> List(#(String, EffectTerm)) {
+  list.filter_map(extract_externals(file), fn(ext) {
+    case ext.returns {
+      Some(operator) -> Ok(#(external_sort_key(ext), operator))
+      None -> Error(Nil)
+    }
+  })
 }
 
-// The `<module>.<function>` names a file declares a returned operator for: a
-// `where returns` clause on an `assume` line, or a legacy `external returns`
-// line under it. Read by `merge_inferred`, which writes no clause of its own
-// for a name a declaration already answers for, and by the stale-declaration
-// lint.
+// The `<module>.<function>` names a file declares a returned operator for with
+// a `where returns` clause on an `assume` line. Read by `merge_inferred`, which
+// writes no clause of its own for a name a declaration already answers for, and
+// by the stale-declaration lint.
 pub fn assume_returns_names(file: GradedFile) -> set.Set(String) {
   extract_externals(file)
   |> list.filter_map(fn(ext) {
@@ -716,7 +685,6 @@ pub fn assume_returns_names(file: GradedFile) -> set.Set(String) {
     }
   })
   |> set.from_list()
-  |> set.union(external_returns_names(file))
 }
 
 // The modules a file declares with a module-level `assume
@@ -825,8 +793,6 @@ pub fn split_type_field_name(
 // - `check` / `assume` lines, comments, blanks: kept in place
 // - Existing `effects` lines: updated in-place; removed if stale
 // - New functions not yet in file: `effects` lines appended at end
-// - Legacy `returns` lines: dropped; a returned operator is written as the
-//   `where returns` clause of the function's `effects` line
 //
 // The two stale sets are separate channels and stay separate: an `assume` line
 // that declares no effects suppresses this package's `effects` lines for the
@@ -892,8 +858,6 @@ pub fn merge_inferred(
         AnnotationLine(_) -> Error(Nil)
         TypeFieldLine(_) -> Error(Nil)
         ExternalLine(_) -> Error(Nil)
-        ReturnsLine(_) -> Error(Nil)
-        ExternalReturnsLine(_) -> Error(Nil)
         CommentLine(_) -> Error(Nil)
         BlankLine -> Error(Nil)
       }
@@ -908,14 +872,8 @@ pub fn merge_inferred(
       case line {
         AnnotationLine(a) if a.kind == Effects ->
           dict.get(inferred_map, a.function) |> result.map(AnnotationLine)
-        ReturnsLine(_) -> Error(Nil)
         ExternalLine(e) ->
           surviving_external(e, stale_externals, stale_external_returns)
-        ExternalReturnsLine(r) ->
-          case set.contains(stale_external_returns, r.function) {
-            True -> Error(Nil)
-            False -> Ok(line)
-          }
         _ -> Ok(line)
       }
     })
@@ -1000,8 +958,6 @@ pub fn format_file(file: GradedFile) -> String {
       AnnotationLine(annotation) -> format_annotation(annotation)
       TypeFieldLine(tf) -> format_type_field(tf)
       ExternalLine(ext) -> format_external(ext)
-      ReturnsLine(returns) -> format_returns(returns)
-      ExternalReturnsLine(returns) -> format_external_returns(returns)
       CommentLine(text) -> text
       BlankLine -> ""
     }
@@ -1046,28 +1002,7 @@ pub fn format_sorted(file: GradedFile) -> String {
     |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
     |> list.map(fn(entry) { entry.1 })
 
-  let external_returns_lines =
-    extract_external_returns(file)
-    |> list.sort(fn(left, right) {
-      string.compare(left.function, right.function)
-    })
-    |> list.map(format_external_returns)
-
-  let returns_lines =
-    extract_returns(file)
-    |> list.sort(fn(left, right) {
-      string.compare(left.function, right.function)
-    })
-    |> list.map(format_returns)
-
-  let sections = [
-    comments,
-    assume_lines,
-    external_returns_lines,
-    check_lines,
-    effects_lines,
-    returns_lines,
-  ]
+  let sections = [comments, assume_lines, check_lines, effects_lines]
 
   sections
   |> list.filter(fn(section) { section != [] })
@@ -1116,17 +1051,6 @@ pub fn clause_free_vars(returns: Option(EffectTerm)) -> set.Set(String) {
     Some(operator) -> effect_term.free_vars(operator)
     None -> set.new()
   }
-}
-
-// Render a ReturnsAnnotation back to its inferred `returns` line format.
-pub fn format_returns(returns: ReturnsAnnotation) -> String {
-  "returns " <> returns.function <> " : " <> format_operator(returns.operator)
-}
-
-// Render a ReturnsAnnotation back to its declared `external returns` line
-// format.
-pub fn format_external_returns(returns: ReturnsAnnotation) -> String {
-  "external " <> format_returns(returns)
 }
 
 // Format an operator term — a `TAbs` as `fn(cb) -> [body]`, anything else as a

@@ -665,6 +665,42 @@ pub fn an_external_effects_line_is_a_retired_spelling_test() {
   )
 }
 
+pub fn a_returns_line_is_a_retired_spelling_test() {
+  let input = "returns m.make : [Stdout]"
+  annotation.parse_file(input)
+  |> should.equal(
+    Error(annotation.RetiredSpelling(1, input, annotation.RetiredReturns)),
+  )
+  annotation.describe_parse_error(annotation.RetiredSpelling(
+    1,
+    input,
+    annotation.RetiredReturns,
+  ))
+  |> should.equal(
+    "1: returns m.make : [Stdout]\n  `returns <path> : <operator>` is retired; delete it — `graded infer` writes the operator as a `where returns` clause on the `effects <path>` line",
+  )
+}
+
+pub fn an_external_returns_line_is_a_retired_spelling_test() {
+  let input = "external returns m/ffi.make : [Net]"
+  annotation.parse_file(input)
+  |> should.equal(
+    Error(annotation.RetiredSpelling(
+      1,
+      input,
+      annotation.RetiredExternalReturns,
+    )),
+  )
+  annotation.describe_parse_error(annotation.RetiredSpelling(
+    1,
+    input,
+    annotation.RetiredExternalReturns,
+  ))
+  |> should.equal(
+    "1: external returns m/ffi.make : [Net]\n  `external returns <path> : <operator>` is retired; write `assume <path> where returns : <operator>`",
+  )
+}
+
 pub fn no_retired_line_parses_as_anything_test() {
   // Every retired opener is refused outright — none falls through to another
   // arm and keys something the author did not write.
@@ -673,6 +709,10 @@ pub fn no_retired_line_parses_as_anything_test() {
     "type Handler.on_click : [Dom]",
     "external effects m/ffi.send : [Http]",
     "external effects m/ffi : [Http]",
+    "returns m.make : [Stdout]",
+    "returns m.make : fn(cb) -> [cb]",
+    "external returns m/ffi.make : [Net]",
+    "external returns m/ffi : [Net]",
   ]
   |> list.each(fn(line) {
     annotation.parse_file(line)
@@ -1325,15 +1365,6 @@ pub fn declared_returns_clause_is_not_an_effects_annotation_test() {
   let assert Ok(annotations) =
     annotation.parse("assume m.make where returns : [Net]")
   annotations |> should.equal([])
-}
-
-pub fn external_returns_malformed_line_test() {
-  let input =
-    "effects m.a : []
-external returns m.make
-"
-  annotation.parse_file(input)
-  |> should.equal(Error(annotation.InvalidLine(2, "external returns m.make")))
 }
 
 // Helpers

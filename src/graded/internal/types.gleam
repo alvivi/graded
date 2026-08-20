@@ -280,15 +280,6 @@ pub type EffectAnnotation {
   )
 }
 
-// The operator a function *returns*, for a function whose result is itself a
-// function (`fn pick() -> fn(fn() -> _) -> _`). Serialized into the spec file so
-// the signature crosses module and package boundaries — a downstream
-// `let h = pick(); with(h)` resolves `h` to this operator. `function` is
-// module-qualified in the spec.
-pub type ReturnsAnnotation {
-  ReturnsAnnotation(function: String, operator: EffectTerm)
-}
-
 // Effect annotation for a type's field (e.g., `type Handler.on_click : [Dom]`).
 //
 // `module` is `Some(...)` when the annotation comes from a spec file (one
@@ -484,11 +475,6 @@ pub type GradedLine {
   AnnotationLine(annotation: EffectAnnotation)
   TypeFieldLine(type_field: TypeFieldAnnotation)
   ExternalLine(external: ExternalAnnotation)
-  ReturnsLine(returns: ReturnsAnnotation)
-  // `external returns mod.fn : [Net]` — the operator a foreign producer hands
-  // back, written by hand. The payload matches `ReturnsLine`; the separate
-  // variant is what tells a declaration from an inferred line, at parse time.
-  ExternalReturnsLine(returns: ReturnsAnnotation)
   CommentLine(text: String)
   BlankLine
 }
@@ -846,10 +832,6 @@ pub type Warning {
   // is per-function by nature — nothing keys a whole module's returned value —
   // so the line resolves nothing at all.
   DotlessExternalReturnsWarning(name: String)
-  // An `external returns <module>.<Type>.<field>` line: a name of more than two
-  // parts, which is the field `assume` line's shape, not this one's. A returns
-  // declaration keys a function, so the line resolves nothing.
-  TypeShapedExternalReturnsWarning(name: String)
 }
 
 // Result of checking one file.
