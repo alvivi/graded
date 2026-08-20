@@ -13,6 +13,9 @@
 //// gleam run -m graded effect <name> [directory] # look up one effect, writing nothing
 //// gleam run -m graded effect <name> --format=graded  # ... as a .graded line
 //// gleam run -m graded why <name> [directory]    # explain a function's effects
+//// gleam run -m graded catalog                   # list the bundled catalog files
+//// gleam run -m graded catalog <package>         # print the catalog file selected for it
+//// gleam run -m graded catalog <package>@<ver>   # print exactly that bundled file
 //// gleam run -m graded format [directory]        # normalize .graded file formatting
 //// ```
 ////
@@ -23,8 +26,9 @@
 //// effects and write `.graded` files, or `run_infer_dry_run` to get back a
 //// diff of what that write would change without performing it. Use
 //// `run_effect` to resolve one function or type-field name and get its
-//// `.graded` line back, or `run_why` to get the effects of one function
-//// explained call by call — both touching nothing on disk.
+//// `.graded` line back, `run_why` to get the effects of one function explained
+//// call by call, or `run_catalog` to read graded's own bundled catalog — none
+//// of them touching anything on disk.
 ////
 
 import argv
