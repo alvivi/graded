@@ -1627,6 +1627,15 @@ pub fn load_spec_effects_from_file(
 //   entry: the external term wins in `all_effects` and is ground by
 //   construction, so any bounds pairing with it come from another source.
 //
+//   Unless the declared function's `effects` line carries a `where returns`
+//   clause. Such a line survives the declaration for the clause's sake, and the
+//   clause's variables are scoped by that line's own bound list — the clause has
+//   none of its own. So the line's bounds are recorded, and they are the one
+//   entry on this channel that does not pair with the term beside them: the
+//   declaration answers the effects channel, these bounds scope the returned
+//   operator. Dropping them leaves a clause nothing can bind and the returned
+//   function resolves to `[Unknown]`.
+//
 // Entries for a name a *stale* per-function external also names are the
 // project-spec caller's to drop, with the same filter it applies to the
 // effects map beside this one.
@@ -1645,7 +1654,8 @@ pub fn load_spec_params_from_file(
   list.fold(annotation.extract_annotations(file), from_externals, fn(acc, ann) {
     use <- bool.guard(when: ann.kind == Check, return: acc)
     use <- bool.guard(
-      when: set.contains(external_functions, ann.function),
+      when: set.contains(external_functions, ann.function)
+        && option.is_none(ann.returns),
       return: acc,
     )
     case annotation.split_function_name(ann.function) {
@@ -1713,7 +1723,12 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
       }
       DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [], set.new())
     }
-    Ok(file) ->
+    Ok(file) -> {
+      let returns = load_spec_returns_from_file(file)
+      // The names whose `effects` line is kept only for its `where returns`
+      // clause. That line's bound list is what scopes the clause's variables, so
+      // it survives the module drop below alongside it.
+      let clause_scopes = returns |> dict.keys |> set.from_list
       // Loaded through the same two readers a package uses for its *own* spec,
       // so a dependency's `check` budgets and externally-declared functions are
       // scoped identically one package boundary away: a `check` line's bounds
@@ -1728,34 +1743,47 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
         // `where returns` clause, which is the clause's only home, and the
         // clause is read from `returns` below.
         effects: load_spec_effects_from_file(file)
-          |> drop_module_assumed(file),
+          |> drop_module_assumed(file, set.new()),
         // A dependency's per-function external is never stale by this rule: its
         // own body is the documented case for the line.
         //
-        // Bounds travel with their term: dropping one without the other pairs a
-        // surviving term with bounds from another annotation.
+        // Bounds travel with their term, so dropping one without the other pairs
+        // a surviving term with bounds from another annotation — except for the
+        // names `clause_scopes` holds, where the bounds are deliberately kept
+        // without the term they were written beside. There they scope the
+        // clause on the returns channel; the effects channel answers from the
+        // declaration, whose ground term binds nothing.
         params: load_spec_params_from_file(file)
-          |> drop_module_assumed(file),
-        returns: load_spec_returns_from_file(file),
+          |> drop_module_assumed(file, clause_scopes),
+        returns:,
         declared_returns: load_spec_external_returns_from_file(file),
         type_fields: annotation.extract_type_fields(file),
         externals: annotation.extract_externals(file),
         modules: package_modules(dep_root),
       )
+    }
   }
 }
 
 // Drop every entry whose module the same spec declares with a module-level
-// `assume <module> : [...]`. The consumer-side counterpart of the drop a
-// package's own context applies to its own spec, so a declaration means the
-// same thing read from either side of the package boundary.
+// `assume <module> : [...]`, minus the names `keep` names. The consumer-side
+// counterpart of the drop a package's own context applies to its own spec, so a
+// declaration means the same thing read from either side of the package
+// boundary.
+//
+// `keep` is empty on the effects channel — the declaration is the whole answer
+// there. On the bounds channel it holds the names whose line was kept for its
+// clause, whose variables those bounds scope.
 fn drop_module_assumed(
   entries: Dict(QualifiedName, a),
   file: types.GradedFile,
+  keep: Set(QualifiedName),
 ) -> Dict(QualifiedName, a) {
   let modules = annotation.module_external_modules(file)
   use <- bool.guard(when: set.is_empty(modules), return: entries)
-  dict.filter(entries, fn(name, _value) { !set.contains(modules, name.module) })
+  dict.filter(entries, fn(name, _value) {
+    !set.contains(modules, name.module) || set.contains(keep, name)
+  })
 }
 
 // The module paths a package ships, read off its `src/` tree.
@@ -1796,7 +1824,9 @@ fn package_modules(dep_root: String) -> Set(String) {
 // A term and its bounds are dropped together. `load_knowledge_base` merges terms
 // and bounds in two independent passes, so a term dropped without its bounds
 // would revive the catalog's term paired with the dependency's bounds — the
-// pairing `load_spec_params_from_file` documents, broken.
+// pairing `load_spec_params_from_file` documents, broken. (Its one stated
+// exception is elsewhere: bounds kept without their term to scope a
+// `where returns` clause, which this filter neither makes nor unmakes.)
 fn sanitize_dep_spec(
   dep: DepSpec,
   foreign: Dict(QualifiedName, types.ForeignFunction),
@@ -1843,9 +1873,12 @@ fn sanitize_dep_spec(
 //
 // A function's `assume` line wins over an `effects` line for the same
 // name. `graded infer` writes no `effects` line for an externally-declared
-// function, so a spec carrying both has a stale one, and only the external's
-// ground term pairs with the empty bounds `load_spec_params_from_file` records
-// for it.
+// function unless the line carries a `where returns` clause, so a spec carrying
+// both without one has a stale line, and only the external's ground term pairs
+// with the empty bounds `load_spec_params_from_file` records for it. With a
+// clause the pair is deliberately mixed: the declaration's ground term answers
+// here, and the bounds recorded beside it scope the clause on the returns
+// channel instead.
 fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> ExternalTiers {
   let #(function_externals, module_externals) =
     split_externals(dep.externals, origin)
