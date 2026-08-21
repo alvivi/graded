@@ -8612,6 +8612,28 @@ pub fn a_clause_over_a_recorded_bound_binds_test() {
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn an_assume_kept_clause_still_binds_over_its_bounds_test() {
+  // The line survives an assumption for the sake of its clause; the bounds that
+  // scope the clause survive with it. Over `unannotated_wrap` nothing else can
+  // prove `f` is a callback, so the recorded bound is the whole of what admits
+  // the clause — a dropped one resolves the returned closure to [Unknown].
+  cross_package_clause_effects_over(
+    "clause_fn_assume_bounds",
+    "assume dep/wrap.wrap : []\n"
+      <> "effects dep/wrap.wrap(f: [f]) : [] where returns : [f]\n",
+    unannotated_wrap,
+  )
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+
+  cross_package_clause_effects_over(
+    "clause_module_assume_bounds",
+    "assume dep/wrap : []\n"
+      <> "effects dep/wrap.wrap(f: [f]) : [] where returns : [f]\n",
+    unannotated_wrap,
+  )
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn a_clause_applying_an_unannotated_callback_degrades_test() {
   // Admission is not precision: the operator-parameter shapes are read off
   // annotations, so an unannotated callback binds to a flat first-order term
