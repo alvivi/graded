@@ -296,7 +296,9 @@ Usage:
 
 /// Inject the configured `.graded` spec into `project_root`'s hex tarball.
 /// `tarball` overrides the default `build/<name>-<version>.tar`. Returns a
-/// success message (with the publish command) or a `PackError`.
+/// success message (with the publish command), a `GradedParseError` when the
+/// spec does not parse — nothing a consumer would read is ever packed — or a
+/// `PackError`.
 pub fn pack_project(
   project_root: String,
   tarball: option.Option(String),
@@ -323,14 +325,24 @@ pub fn pack_project(
   // archive-relative entry.
   use _ <- result.try(validate_archive_entry(entry_name))
 
-  use spec <- result.try(
-    simplifile.read(resolved_spec)
-    |> result.map_error(fn(_) {
-      PackError(
+  // Read through the parser, before the tarball is opened. A spec this version
+  // rejects is one every consumer's loader rejects too, so injecting it ships a
+  // package whose whole spec reads as no annotations at all. What goes into the
+  // archive is the file's own bytes — the entry is the spec verbatim, never a
+  // re-render of the parse.
+  use spec <- result.try(case read_spec_on_disk(resolved_spec) {
+    // No spec and an empty one carry the same instruction: there is nothing to
+    // ship yet. `read_spec_on_disk` reads a missing file as no bytes, which
+    // every other command treats as a project to infer from scratch and `pack`
+    // alone treats as an error. A spec that is there but unreadable, and one
+    // that does not parse, travel as themselves — `infer` fixes neither.
+    Ok(#("", _)) ->
+      Error(PackError(
         "no spec file at " <> resolved_spec <> "; run `graded infer` first",
-      )
-    }),
-  )
+      ))
+    Ok(#(content, _parsed)) -> Ok(content)
+    Error(error) -> Error(error)
+  })
 
   use tarball_path <- result.try(resolve_pack_tarball(
     tarball,

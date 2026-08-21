@@ -62,6 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hand-written lines. `format --stdin` names the rejected line too, and a
   *dependency's* spec that does not parse is a warning naming the package and
   the line, with that package's entries ignored.
+- `graded pack` now refuses to inject a spec the parser rejects, naming the file
+  and the line and leaving the tarball untouched. It used to publish such a spec
+  happily, and every consumer's loader then dropped the whole file — the package
+  shipped with no effect metadata at all.
 
 ## [0.14.0] - 2026-08-20
 
