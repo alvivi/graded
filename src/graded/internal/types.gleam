@@ -356,7 +356,7 @@ pub type UnknownReason {
 // knowledge-base entry, or — for a field call — which rule decided it.
 pub type LookupOrigin {
   // A per-function declaring line in this project's spec: an
-  // `assume` one, or an `external returns` one.
+  // `assume` line, with or without a `where returns` clause.
   UserExternal
   // A committed `effects` line in this project's spec.
   CommittedSpec
@@ -789,9 +789,13 @@ pub type Warning {
   // `UnverifiedCheckShapeWarning` instead.
   UnmatchedCheckWarning(function: String)
   // A `check` line over a shape nothing verifies yet: a field path
-  // (`m.Handler.on_click`), or a `where returns` clause. The line parses and
-  // keys nothing. `name` is the subject as written.
+  // (`m.Handler.on_click`). The line parses and keys nothing. `name` is the
+  // subject as written.
   UnverifiedCheckShapeWarning(name: String)
+  // A `where returns` clause on a `check` line. Scoped to the clause: nothing
+  // weighs a check's returned operator, while the effects budget on the same
+  // line is checked as any other. So the line is live and the clause is not.
+  UnverifiedReturnsClauseWarning(function: String)
   // A field `assume` line whose module/type/field matches no field of a project custom
   // type — unqualified, mis-qualified, or a typo. The annotation then resolves
   // nothing and the field call silently degrades to `[Unknown]`, so it's
@@ -813,26 +817,30 @@ pub type Warning {
   // installed dependency, a path dependency, nor a project module. Same
   // reasoning one tier up: the declaration governs no module at all.
   UnmatchedModuleExternalWarning(module: String)
-  // An `external returns <module>.<function>` line naming one of this package's
+  // A `where returns` clause on an `assume <module>.<function>` line naming
+  // one of this package's
   // own ordinary Gleam functions. The same rule as
   // `StaleFunctionExternalWarning` one channel over: the body is visible, so
   // every caller resolves what it hands back for itself and the line declares
   // nothing. It is ignored and the body walked instead.
-  StaleExternalReturnsWarning(function: String)
-  // An `external returns <module>.<function>` line whose name resolves nowhere
+  StaleReturnsClauseWarning(function: String)
+  // A `where returns` clause on an `assume <module>.<function>` line whose
+  // name resolves nowhere
   // — no dependency, no catalog entry, no project module. The declaration then
   // covers nothing, so it is a typo rather than a signature.
-  UnmatchedExternalReturnsWarning(function: String)
+  UnmatchedReturnsClauseWarning(function: String)
   // A `where returns` clause with a free variable naming no callback parameter
   // of the function it sits on. Nothing binds such a variable at a call site,
   // so the clause is dropped and the returned function resolves to `[Unknown]`.
-  // On an `assume` line every free variable is one: an assumption takes no
-  // bound list, so its clause has to be ground.
   UnclosedReturnsClauseWarning(function: String, free_vars: List(String))
+  // A `where returns` clause on an `assume` line that is not ground. An
+  // assumption carries no bound list, so nothing scopes a variable in it
+  // whatever the function's parameters are called, and the loader drops it.
+  UngroundReturnsClauseWarning(function: String, free_vars: List(String))
   // A `where returns` clause on a module path. The declaration is per-function
   // by nature — nothing keys a whole module's returned value — so the clause
   // resolves nothing at all.
-  DotlessExternalReturnsWarning(name: String)
+  DotlessReturnsClauseWarning(name: String)
 }
 
 // Result of checking one file.

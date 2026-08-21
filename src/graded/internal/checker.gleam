@@ -23,16 +23,17 @@ import graded/internal/types.{
   type CallExplanation, type EffectAnnotation, type EffectTerm, type LocalCall,
   type LookupOrigin, type ParamBound, type QualifiedName, type ResolvedCall,
   type UnknownReason, type Violation, type Warning, CallExplanation,
-  DotlessExternalReturnsWarning, EffectAnnotation, Effects, FieldNotAnnotated,
+  DotlessReturnsClauseWarning, EffectAnnotation, Effects, FieldNotAnnotated,
   NoKnownEffects, ParamBound, QualifiedName, ReceiverTypeUnresolved,
-  RefusedDeclaredReturn, StaleExternalReturnsWarning,
-  StaleFunctionExternalWarning, TUnion, TVar, TypeLine, UnbuiltExternal,
-  UnclosedReturnsClauseWarning, UndeclaredExternal, UnmatchedCheckWarning,
-  UnmatchedExternalReturnsWarning, UnmatchedFieldBoundWarning,
-  UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
-  UnmatchedParamBoundWarning, UnmatchedTypeFieldWarning, UnresolvedFieldValue,
+  RefusedDeclaredReturn, StaleFunctionExternalWarning, StaleReturnsClauseWarning,
+  TUnion, TVar, TypeLine, UnbuiltExternal, UnclosedReturnsClauseWarning,
+  UndeclaredExternal, UngroundReturnsClauseWarning, UnmatchedCheckWarning,
+  UnmatchedFieldBoundWarning, UnmatchedFunctionExternalWarning,
+  UnmatchedModuleExternalWarning, UnmatchedParamBoundWarning,
+  UnmatchedReturnsClauseWarning, UnmatchedTypeFieldWarning, UnresolvedFieldValue,
   UntraceableArgument, UntraceableProducer, UntraceableReceiver,
-  UntrackedEffectWarning, UnverifiedCheckShapeWarning, Violation,
+  UntrackedEffectWarning, UnverifiedCheckShapeWarning,
+  UnverifiedReturnsClauseWarning, Violation,
 }
 
 // Entry points
@@ -277,10 +278,10 @@ pub fn infer_with_returns(
       // returned closure is mentioned by the clause alone, and gets its bound
       // from there.
       let published_vars =
-        set.union(effect_term.free_vars(effects_term), case returns {
-          Some(operator) -> effect_term.free_vars(operator)
-          None -> set.new()
-        })
+        set.union(
+          effect_term.free_vars(effects_term),
+          annotation.clause_free_vars(returns),
+        )
       let inferred_params =
         list.append(
           bounds_for_vars(published_vars, fn_typed_params),
@@ -1573,7 +1574,12 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       file
       <> ": warning: check "
       <> name
-      <> " is a shape nothing verifies yet — checks on fields and on returned operators key nothing; an `assume` line is the trusted form"
+      <> " is a shape nothing verifies yet — a check on a field keys nothing; an `assume` line is the trusted form"
+    UnverifiedReturnsClauseWarning(function:) ->
+      file
+      <> ": warning: the `where returns` clause on check "
+      <> function
+      <> " is not verified — nothing weighs a check's returned operator. The effects budget on the same line still is, so the check is live; an `assume` line is the trusted form for the clause"
     UnmatchedTypeFieldWarning(name:) ->
       file
       <> ": warning: assume "
@@ -1594,12 +1600,12 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> ": warning: assume "
       <> module
       <> " names no dependency or project module — check the module path; the declaration covers nothing"
-    StaleExternalReturnsWarning(function:) ->
+    StaleReturnsClauseWarning(function:) ->
       file
       <> ": warning: assume "
       <> function
       <> " where returns names a function of this package with a Gleam body — every caller resolves what it returns from that body, so the clause declares nothing and is ignored. `graded infer` removes it and writes the inferred clause on the `effects` line in its place"
-    UnmatchedExternalReturnsWarning(function:) ->
+    UnmatchedReturnsClauseWarning(function:) ->
       file
       <> ": warning: assume "
       <> function
@@ -1613,7 +1619,16 @@ pub fn format_warning(file: String, warning: Warning) -> String {
         free_vars |> list.map(fn(v) { "`" <> v <> "`" }) |> string.join(", ")
       }
       <> " naming no callback parameter of it — the clause is ignored and the returned function resolves to [Unknown]"
-    DotlessExternalReturnsWarning(name:) ->
+    UngroundReturnsClauseWarning(function:, free_vars:) ->
+      file
+      <> ": warning: the `where returns` clause on assume "
+      <> function
+      <> " must be ground, and "
+      <> {
+        free_vars |> list.map(fn(v) { "`" <> v <> "`" }) |> string.join(", ")
+      }
+      <> " is a variable — an assumption carries no bound list, so nothing scopes one whatever the function's parameters are called; the clause is ignored. Spell out the concrete effects instead"
+    DotlessReturnsClauseWarning(name:) ->
       file
       <> ": warning: assume "
       <> name
@@ -5160,9 +5175,29 @@ fn resolve_returned_operator(
         // gate's check has nothing left to decide; a Declared one is ground by
         // construction.
         True, _ -> #(Ok(#(operator, source)), memo)
-        // Polymorphic + Fresh: Fix D guarantees the free vars are the producer's
-        // own params — bind them to the producer call's arguments.
-        False, effects.Fresh -> {
+        // Polymorphic: whether the free variables are ones this run may
+        // substitute over. One answer per summary kind, so the binding below
+        // runs once for every kind that admits it.
+        //
+        //   - **Fresh**: Fix D guarantees the free vars are the producer's own
+        //     params.
+        //   - **Closed**: a clause read back from a spec, whose variables are
+        //     checked against the producer's real callback parameters here,
+        //     where the substitution happens; one naming anything else degrades
+        //     to [Unknown] rather than binding against a parameter that isn't
+        //     there.
+        //   - **Declared**: a declaration is tagged only after the non-ground
+        //     operators are dropped, so nothing reaches here. An edit that
+        //     changed that must degrade to [Unknown] rather than substitute over
+        //     free variables nothing sanitized.
+        False, summary -> {
+          let admitted = case summary {
+            effects.Fresh -> True
+            effects.Closed ->
+              clause_is_closed(operator, callee, knowledge_base, registry)
+            effects.Declared -> False
+          }
+          use <- bool.guard(when: !admitted, return: #(Error(Nil), memo))
           let #(bound, memo) =
             bind_producer_params(
               operator,
@@ -5180,37 +5215,6 @@ fn resolve_returned_operator(
             )
           #(Ok(#(bound, source)), memo)
         }
-        // Polymorphic + Declared: a declaration is tagged only after the
-        // non-ground operators are dropped, so nothing reaches here. An edit
-        // that changed that must degrade to [Unknown] rather than substitute
-        // over free variables nothing sanitized.
-        False, effects.Declared -> #(Error(Nil), memo)
-        // Polymorphic + Closed: a clause read back from a spec. Its variables
-        // are checked against the producer's real callback parameters here,
-        // where the substitution happens; one naming anything else degrades to
-        // [Unknown] rather than binding against a parameter that isn't there.
-        False, effects.Closed ->
-          case clause_is_closed(operator, callee, knowledge_base, registry) {
-            False -> #(Error(Nil), memo)
-            True -> {
-              let #(bound, memo) =
-                bind_producer_params(
-                  operator,
-                  callee,
-                  args,
-                  context,
-                  function_map,
-                  knowledge_base,
-                  visited,
-                  registry,
-                  module_types,
-                  caller_param_bounds,
-                  cache,
-                  memo,
-                )
-              #(Ok(#(bound, source)), memo)
-            }
-          }
       }
   }
 }

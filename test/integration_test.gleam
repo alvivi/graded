@@ -3175,7 +3175,7 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
-pub fn a_stale_external_returns_line_is_ignored_and_repaired_test() {
+pub fn a_stale_returns_clauses_line_is_ignored_and_repaired_test() {
   // The line names one of this package's own ordinary functions, whose returned
   // closure every caller can see for itself — so it declares nothing. It is
   // ignored at load, not merely warned about: trusted between `infer` runs it
@@ -3310,10 +3310,10 @@ pub fn make() -> fn() -> Nil
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
-    types.UnclosedReturnsClauseWarning(function: "ffi.wrap", free_vars: ["f"]),
-    types.DotlessExternalReturnsWarning(name: "lib"),
-    types.StaleExternalReturnsWarning(function: "lib.make"),
-    types.UnmatchedExternalReturnsWarning(function: "lib.nope"),
+    types.UngroundReturnsClauseWarning(function: "ffi.wrap", free_vars: ["f"]),
+    types.DotlessReturnsClauseWarning(name: "lib"),
+    types.StaleReturnsClauseWarning(function: "lib.make"),
+    types.UnmatchedReturnsClauseWarning(function: "lib.nope"),
   ])
   support.cleanup(root)
 }
@@ -8673,17 +8673,35 @@ pub fn a_closed_clause_on_an_effects_line_is_not_reported_test() {
   support.cleanup(root)
 }
 
-pub fn a_check_clause_keys_nothing_and_is_reported_as_a_shape_test() {
+pub fn a_check_clause_is_unverified_while_its_budget_still_is_test() {
   // A `check` asserts what a function returns; nothing verifies that yet, and
   // reading its clause onto the returns channel would make the assertion the
-  // trusted answer. One warning for the line, not two.
+  // trusted answer. The warning is scoped to the clause, because the effects
+  // budget on the same line is enforced as on any other `check` — the body here
+  // prints over a `[]` budget, and the run reports the violation. An agent that
+  // read the warning as covering the whole line would delete a live check.
   let root = "build/clause_lint_check"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #("proj.graded", "check proj.wrap(f: []) : [] where returns : [ghost]\n"),
+    #(
+      "proj.graded",
+      "assume ffi.print : [Stdout]
+check proj.wrap(f: []) : [] where returns : [ghost]
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"print\")
+@external(javascript, \"ffi_module\", \"print\")
+pub fn print() -> Nil
+",
+    ),
     #(
       "proj.gleam",
-      "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
+      "import ffi
+
+pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
+  ffi.print()
   fn() { f() }
 }
 ",
@@ -8692,6 +8710,10 @@ pub fn a_check_clause_keys_nothing_and_is_reported_as_a_shape_test() {
   let assert Ok(results) = graded.run(root)
   results
   |> list.flat_map(fn(r) { r.warnings })
-  |> should.equal([types.UnverifiedCheckShapeWarning(name: "proj.wrap")])
+  |> should.equal([types.UnverifiedReturnsClauseWarning(function: "proj.wrap")])
+  let assert [violation] = list.flat_map(results, fn(r) { r.violations })
+  violation.function |> should.equal("wrap")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
   support.cleanup(root)
 }

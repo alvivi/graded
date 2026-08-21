@@ -10,10 +10,11 @@ import graded/internal/effect_term
 import graded/internal/types.{
   type AnnotationKind, type EffectAnnotation, type EffectSet, type EffectTerm,
   type ExternalAnnotation, type GradedFile, type GradedLine, type ParamBound,
-  type TypeFieldAnnotation, AnnotationLine, BlankLine, Check, CommentLine,
-  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
-  GradedFile, ModuleExternal, ParamBound, Polymorphic, Specific, TAbs, TApp,
-  TLabels, TTop, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
+  type QualifiedName, type TypeFieldAnnotation, AnnotationLine, BlankLine, Check,
+  CommentLine, EffectAnnotation, Effects, ExternalAnnotation, ExternalLine,
+  FunctionExternal, GradedFile, ModuleExternal, ParamBound, Polymorphic,
+  Specific, TAbs, TApp, TLabels, TTop, TUnion, TVar, TypeFieldAnnotation,
+  TypeFieldLine, Wildcard,
 }
 
 // Parsing
@@ -42,15 +43,26 @@ pub type RetiredKeyword {
 // rejected line is named, so the CLI's error, the `format --stdin` branch and
 // the dependency-spec warning all point at the same line the same way.
 pub fn describe_parse_error(error: ParseError) -> String {
+  case parse_error_hint(error) {
+    None -> describe_parse_error_line(error)
+    Some(hint) -> describe_parse_error_line(error) <> "\n  " <> hint
+  }
+}
+
+// The `<line number>: <line as written>` half of the description, on one line.
+// For a caller that wraps the description in a sentence: the hint is a line of
+// its own, so a tail appended to `describe_parse_error` would dangle after the
+// hint instead of closing the sentence about the line.
+pub fn describe_parse_error_line(error: ParseError) -> String {
+  int.to_string(error.line_number) <> ": " <> string.trim(error.content)
+}
+
+// The rewrite a retired spelling is named with, `None` for any other parse
+// error.
+fn parse_error_hint(error: ParseError) -> Option(String) {
   case error {
-    InvalidLine(line_number:, content:) ->
-      int.to_string(line_number) <> ": " <> string.trim(content)
-    RetiredSpelling(line_number:, content:, keyword:) ->
-      int.to_string(line_number)
-      <> ": "
-      <> string.trim(content)
-      <> "\n  "
-      <> retired_hint(keyword)
+    InvalidLine(..) -> None
+    RetiredSpelling(keyword:, ..) -> Some(retired_hint(keyword))
   }
 }
 
@@ -371,16 +383,14 @@ fn split_assume_path(path: String) -> Result(AssumeSubject, Nil) {
         True -> Ok(AssumeField(module: None, type_name: first, field: second))
         False -> Ok(AssumeFunction(module: first, function: second))
       }
+    // Three or more segments is the field grammar's qualified form. Read by
+    // the same splitter the `effect` query uses, so the two agree on where the
+    // module ends; an `assume` line additionally requires an UpperCamel type.
     _ -> {
-      let count = list.length(segments)
-      let module = segments |> list.take(count - 2) |> string.join(".")
-      case list.drop(segments, count - 2) {
-        [type_name, field] if module != "" ->
-          case types.is_upper_initial(type_name) {
-            True -> Ok(AssumeField(module: Some(module), type_name:, field:))
-            False -> Error(Nil)
-          }
-        _ -> Error(Nil)
+      use #(module, type_name, field) <- result.try(split_type_field_name(path))
+      case types.is_upper_initial(type_name) {
+        True -> Ok(AssumeField(module:, type_name:, field:))
+        False -> Error(Nil)
       }
     }
   }
@@ -473,16 +483,29 @@ fn parse_atom(token: String) -> Result(EffectTerm, Nil) {
     Ok(#(name, rest)) -> {
       use <- bool.guard(when: !string.ends_with(rest, ")"), return: Error(Nil))
       let callee = string.trim(name)
-      use <- bool.guard(when: callee == "", return: Error(Nil))
+      use <- bool.guard(when: !is_identifier_token(callee), return: Error(Nil))
       use args <- result.try(parse_application_args(string.drop_end(rest, 1)))
       Ok(list.fold(args, TVar(callee), fn(acc, arg) { TApp(acc, arg) }))
     }
-    Error(Nil) ->
+    Error(Nil) -> {
+      use <- bool.guard(when: !is_identifier_token(token), return: Error(Nil))
       case is_label_token(token) {
         True -> Ok(TLabels(set.from_list([token])))
         False -> Ok(TVar(token))
       }
+    }
   }
+}
+
+// Whether a token is one bare identifier, which is all a label or a variable is
+// ever spelled as. Whitespace, brackets, parens and colons inside one mean the
+// text around the effect set leaked into it: a near-miss of the
+// ` where returns ` keyword (`[] where returns: [X]`, `[]where returns : [X]`)
+// leaves the whole clause inside the set, where it would otherwise mint a
+// variable named after the typo and round-trip byte-identically.
+fn is_identifier_token(token: String) -> Bool {
+  token != ""
+  && !list.any([" ", "\t", "[", "]", "(", ")", ":"], string.contains(token, _))
 }
 
 // Parse an operator application's argument list — comma-separated, each a full
@@ -616,6 +639,12 @@ pub fn extract_checks(file: GradedFile) -> List(EffectAnnotation) {
   |> list.filter(fn(annotation) { annotation.kind == Check })
 }
 
+// Extract only `effects` annotations (inferred, regenerated by `infer`).
+pub fn extract_effects(file: GradedFile) -> List(EffectAnnotation) {
+  extract_annotations(file)
+  |> list.filter(fn(annotation) { annotation.kind == Effects })
+}
+
 // Extract type field annotations from a parsed file.
 pub fn extract_type_fields(file: GradedFile) -> List(TypeFieldAnnotation) {
   list.filter_map(file.lines, fn(line) {
@@ -640,32 +669,28 @@ pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
 // function-level `assume <module>.<function> : [...]` line. Module-level
 // declarations (`assume <module> : [...]`) don't count — they target a whole
 // module, not one function — and neither does a line carrying only a
-// `where returns` clause, which claims nothing about the function's own effect. That line is authoritative for the function it
-// names, so both `merge_inferred` and the committed-bounds load treat an
-// `effects` line for the same name as stale.
+// `where returns` clause, which claims nothing about the function's own
+// effect. That line is authoritative for the function it names, so both
+// `merge_inferred` and the committed-bounds load treat an `effects` line for
+// the same name as stale.
 //
 // Not every such line is valid. One naming a function of this package's own
 // source that has a visible Gleam body declares nothing — the callers see that
 // body — and its name reaches both readers as `stale`, which restores the
 // `effects` line to authority over it.
 pub fn external_function_names(file: GradedFile) -> set.Set(String) {
-  list.filter_map(extract_externals(file), fn(ext) {
-    case ext.target, ext.effects {
-      FunctionExternal(name), Some(_) ->
-        Ok(types.dotted_name(types.QualifiedName(ext.module, name)))
-      FunctionExternal(_), None | ModuleExternal, _ -> Error(Nil)
-    }
-  })
-  |> set.from_list()
+  declaring_function_names(file, fn(ext) { option.is_some(ext.effects) })
 }
 
-// The path and operator of every `where returns` clause on an `assume` line.
-// The path is as the line names it, so the lint that judges the paths sees the
-// ones that name no function too.
-pub fn assume_returns(file: GradedFile) -> List(#(String, EffectTerm)) {
+// The line and operator of every `where returns` clause on an `assume` line.
+// The whole annotation rather than its rendered path, so a reader judges a
+// clause by the target it parsed as — the ones naming no function included.
+pub fn assume_returns(
+  file: GradedFile,
+) -> List(#(ExternalAnnotation, EffectTerm)) {
   list.filter_map(extract_externals(file), fn(ext) {
     case ext.returns {
-      Some(operator) -> Ok(#(external_sort_key(ext), operator))
+      Some(operator) -> Ok(#(ext, operator))
       None -> Error(Nil)
     }
   })
@@ -676,12 +701,22 @@ pub fn assume_returns(file: GradedFile) -> List(#(String, EffectTerm)) {
 // writes no clause of its own for a name a declaration already answers for, and
 // by the stale-declaration lint.
 pub fn assume_returns_names(file: GradedFile) -> set.Set(String) {
+  declaring_function_names(file, fn(ext) { option.is_some(ext.returns) })
+}
+
+// The `<module>.<function>` names whose per-function `assume` line carries the
+// claim `claims` selects. One walk for both channels — the effect one and the
+// returned-operator one — so the rule that a module-level line names no
+// function is stated once and the two cannot drift apart.
+fn declaring_function_names(
+  file: GradedFile,
+  claims: fn(ExternalAnnotation) -> Bool,
+) -> set.Set(String) {
   extract_externals(file)
   |> list.filter_map(fn(ext) {
-    case ext.target, ext.returns {
-      FunctionExternal(name), Some(_) ->
-        Ok(types.dotted_name(types.QualifiedName(ext.module, name)))
-      FunctionExternal(_), None | ModuleExternal, _ -> Error(Nil)
+    case claims(ext) {
+      True -> external_line_name(ext)
+      False -> Error(Nil)
     }
   })
   |> set.from_list()
@@ -761,9 +796,10 @@ pub fn split_function_name(
 // annotations from many modules share one file.
 //
 // The last two segments are always the type name and the field, and any leading
-// segments are joined back with `.`. What the `effect` query splits a queried
-// name with; `split_assume_path` reads the same shape off an `assume` line and
-// additionally requires the type name to be UpperCamel.
+// segments are joined back with `.`. The single authority on where the module
+// ends: what the `effect` query splits a queried name with, and what
+// `split_assume_path` reads a qualified `assume` subject with, that one
+// additionally requiring the type name to be UpperCamel.
 pub fn split_type_field_name(
   qualified: String,
 ) -> Result(#(option.Option(String), String, String), Nil) {
@@ -803,7 +839,7 @@ pub fn merge_inferred(
   file: GradedFile,
   inferred: List(EffectAnnotation),
   stale_externals: set.Set(String),
-  stale_external_returns: set.Set(String),
+  stale_returns_clauses: set.Set(String),
 ) -> GradedFile {
   // A function the author declared with `assume mod.fn : [...]` is
   // authoritative — that line is their opt-in to a precise FFI effect. Drop any
@@ -835,7 +871,7 @@ pub fn merge_inferred(
   // ordinary functions — in which case it is dropped below and the inferred
   // clause written in its place.
   let declared_returns =
-    set.difference(assume_returns_names(file), stale_external_returns)
+    set.difference(assume_returns_names(file), stale_returns_clauses)
   let inferred =
     list.map(inferred, fn(annotation) {
       case set.contains(declared_returns, annotation.function) {
@@ -873,7 +909,7 @@ pub fn merge_inferred(
         AnnotationLine(a) if a.kind == Effects ->
           dict.get(inferred_map, a.function) |> result.map(AnnotationLine)
         ExternalLine(e) ->
-          surviving_external(e, stale_externals, stale_external_returns)
+          surviving_external(e, stale_externals, stale_returns_clauses)
         _ -> Ok(line)
       }
     })
@@ -891,7 +927,7 @@ pub fn merge_inferred(
 fn surviving_external(
   external: ExternalAnnotation,
   stale_externals: set.Set(String),
-  stale_external_returns: set.Set(String),
+  stale_returns_clauses: set.Set(String),
 ) -> Result(GradedLine, Nil) {
   case external_line_name(external) {
     Error(Nil) -> Ok(ExternalLine(external))
@@ -900,7 +936,7 @@ fn surviving_external(
         True -> None
         False -> external.effects
       }
-      let returns = case set.contains(stale_external_returns, name) {
+      let returns = case set.contains(stale_returns_clauses, name) {
         True -> None
         False -> external.returns
       }
@@ -917,8 +953,7 @@ fn surviving_external(
 // a module-level one.
 fn external_line_name(external: ExternalAnnotation) -> Result(String, Nil) {
   case external.target {
-    FunctionExternal(function) ->
-      Ok(types.dotted_name(types.QualifiedName(external.module, function)))
+    FunctionExternal(_) -> Ok(external_sort_key(external))
     ModuleExternal -> Error(Nil)
   }
 }
@@ -1069,8 +1104,9 @@ pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
 
 // The path a type field annotation renders: the qualified form used in spec
 // files when the module is present, the bare form used in cache files
-// otherwise. Both a sort key and the rendered name in `format_type_field`.
-fn type_field_path(tf: TypeFieldAnnotation) -> String {
+// otherwise. A sort key, the rendered name in `format_type_field`, and the name
+// the spec lint reports a dead line by, so all three spell one path one way.
+pub fn type_field_path(tf: TypeFieldAnnotation) -> String {
   let prefix = case tf.module {
     Some(module) -> module <> "."
     None -> ""
@@ -1094,13 +1130,23 @@ pub fn format_external(external_annotation: ExternalAnnotation) -> String {
 // targets. Used both as a sort key and as the rendered name in
 // `format_external`.
 fn external_sort_key(external_annotation: ExternalAnnotation) -> String {
+  case external_qualified_name(external_annotation) {
+    Error(Nil) -> external_annotation.module
+    Ok(qualified) -> types.dotted_name(qualified)
+  }
+}
+
+// The `QualifiedName` a per-function `assume` line targets, `Error(Nil)` for a
+// module-level one. The one place an external's module and function are put
+// back together, so every reader that keys by that name — and `external_sort_key`,
+// which renders it — agrees on the shape.
+pub fn external_qualified_name(
+  external_annotation: ExternalAnnotation,
+) -> Result(QualifiedName, Nil) {
   case external_annotation.target {
-    ModuleExternal -> external_annotation.module
+    ModuleExternal -> Error(Nil)
     FunctionExternal(function) ->
-      types.dotted_name(types.QualifiedName(
-        external_annotation.module,
-        function,
-      ))
+      Ok(types.QualifiedName(external_annotation.module, function))
   }
 }
 

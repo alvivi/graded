@@ -1599,6 +1599,28 @@ pub fn a_dependency_external_line_for_its_own_external_answers_test() {
   )
 }
 
+pub fn a_clause_only_assume_does_not_rescue_a_foreign_effects_line_test() {
+  // The two channels of one name, side by side. `assume dep/ffi.make where
+  // returns : [Net]` states what the producer hands back and nothing about the
+  // call's own effect, so the `effects` line beside it is still inference over
+  // an `@external` fallback body and still drops. The clause keeps answering on
+  // its own channel.
+  let kb =
+    installed_dep_over_source(
+      "build/eff_dep_clause_only_beside_effects",
+      "dep",
+      "assume dep/ffi.make where returns : [Net]\neffects dep/ffi.make : [Stdout]\n",
+      "",
+      [#(QualifiedName("dep/ffi", "make"), foreign_declared_everywhere())],
+    )
+  kb
+  |> entry_of(QualifiedName("dep/ffi", "make"))
+  |> should.equal(Error(Nil))
+  let assert Ok(found) =
+    effects.lookup_returned_operator(kb, QualifiedName("dep/ffi", "make"))
+  found.summary |> should.equal(effects.Declared)
+}
+
 pub fn a_dependency_effects_line_on_an_ordinary_function_answers_test() {
   // The rule is scoped to the dep's foreign names. An `effects` line for an
   // ordinary dep function is inference over a body every caller runs, and
