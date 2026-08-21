@@ -39,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back with the bound that scopes it: `effects myapp.traced(action: [action]) :
   [] where returns : fn(cb) -> [Stdout, action([cb])]`. Such a call resolves at
   the call site instead of degrading to `[Unknown]`.
+- An assumption no longer deletes the inferred `where returns` clause of the
+  functions it covers. `assume db : []` (or `assume db.make : []`) declares what
+  those functions *do*; what one of them *returns* is a separate claim, so the
+  clause stays in the spec and consumers still resolve the returned function
+  instead of falling back to `[Unknown]`. The line it rides on keeps its effects
+  half, which the assumption still answers over.
 - A clause whose variables name no callback parameter of the function is
   reported by the spec lint and resolves to `[Unknown]`, replacing the warning
   about a polymorphic `external returns` operator. On an `assume` line the

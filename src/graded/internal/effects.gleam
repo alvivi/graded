@@ -1721,10 +1721,21 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
       // dependency's function, and every term still travels with the bounds
       // from its own annotation.
       DepSpec(
-        effects: load_spec_effects_from_file(file),
+        // The module-level declarations govern their own module's effects
+        // channel, so the spec's `effects` lines for it are dropped rather than
+        // left to outrank the declaration per-function-beats-module-level. Only
+        // that channel: `infer` keeps such a line when it carries a
+        // `where returns` clause, which is the clause's only home, and the
+        // clause is read from `returns` below.
+        effects: load_spec_effects_from_file(file)
+          |> drop_module_assumed(file),
         // A dependency's per-function external is never stale by this rule: its
         // own body is the documented case for the line.
-        params: load_spec_params_from_file(file),
+        //
+        // Bounds travel with their term: dropping one without the other pairs a
+        // surviving term with bounds from another annotation.
+        params: load_spec_params_from_file(file)
+          |> drop_module_assumed(file),
         returns: load_spec_returns_from_file(file),
         declared_returns: load_spec_external_returns_from_file(file),
         type_fields: annotation.extract_type_fields(file),
@@ -1732,6 +1743,19 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
         modules: package_modules(dep_root),
       )
   }
+}
+
+// Drop every entry whose module the same spec declares with a module-level
+// `assume <module> : [...]`. The consumer-side counterpart of the drop a
+// package's own context applies to its own spec, so a declaration means the
+// same thing read from either side of the package boundary.
+fn drop_module_assumed(
+  entries: Dict(QualifiedName, a),
+  file: types.GradedFile,
+) -> Dict(QualifiedName, a) {
+  let modules = annotation.module_external_modules(file)
+  use <- bool.guard(when: set.is_empty(modules), return: entries)
+  dict.filter(entries, fn(name, _value) { !set.contains(modules, name.module) })
 }
 
 // The module paths a package ships, read off its `src/` tree.

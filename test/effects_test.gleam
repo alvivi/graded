@@ -1767,6 +1767,34 @@ pub fn an_open_clause_on_an_effects_line_still_loads_test() {
   |> should.be_true()
 }
 
+pub fn a_module_assume_does_not_bury_a_clause_on_the_same_module_test() {
+  // The two channels of one module, side by side. `assume db : []` declares the
+  // module's effect; the clause on `db.make`'s `effects` line declares nothing
+  // about that, so it still answers for what `make` hands back. A consumer that
+  // lost the clause would resolve the returned closure to [Unknown].
+  let kb =
+    installed_dep(
+      "build/eff_module_assume_beside_clause",
+      "db",
+      "assume db : []\neffects db.make : [] where returns : [Stdout]\n",
+    )
+  let assert Ok(found) =
+    effects.lookup_returned_operator(kb, QualifiedName("db", "make"))
+  found.operator
+  |> should.equal(
+    effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+  )
+  // The effects channel still answers from the module declaration.
+  kb
+  |> entry_of(QualifiedName("db", "make"))
+  |> should.equal(
+    Ok(#(
+      Specific(set.new()),
+      types.ModuleExternalOrigin(types.DependencySpec("db")),
+    )),
+  )
+}
+
 pub fn a_clause_on_a_check_line_keys_nothing_test() {
   // A `check` asserts what a function returns; it does not declare it. Reading
   // its clause onto the returns channel would make an unverified assertion the
