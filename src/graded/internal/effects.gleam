@@ -1905,9 +1905,17 @@ fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> ExternalTiers {
 // `returns` lines, so a name both key resolves to the declaration. Both merges
 // gap-fill: this tier reads below the installed dependencies', so a name an
 // installed dep's spec already answered keeps that answer, declaration or not.
-// Nothing pairs bounds with a summary on this channel — the ground-only rule
-// means a declared operator binds no parameter — so there is no term-and-bounds
-// pairing to keep intact here.
+//
+// The two returns channels differ in whether a summary needs bounds beside it.
+// A **declared** operator is ground by rule, so it binds no parameter and pairs
+// with nothing. A **closed** one — a clause on an `effects` line — is scoped by
+// that line's own bound list, and travels with it or is not readable at all:
+// without those bounds the closed gate calls the clause open and the caller
+// resolves the returned function to `[Unknown]`. So the bounds are copied for
+// the clauses this fold lands, on top of the ones copied for the terms it
+// decides. The two sets are not the same: a module declaration takes the name's
+// effects entry out of `winning` while leaving its clause to answer, which is
+// precisely when the term-keyed copy alone drops the list.
 pub fn with_path_dep_spec(
   knowledge_base: KnowledgeBase,
   dep: DepSpec,
@@ -1919,23 +1927,44 @@ pub fn with_path_dep_spec(
   let dep = sanitize_dep_spec(dep, knowledge_base.dependency_foreign)
   let #(decided, module_externals) = decided_entries(dep, origin)
   let winning = over_catalog(knowledge_base.all_effects, decided)
+  let folded =
+    KnowledgeBase(
+      ..knowledge_base,
+      all_effects: dict.merge(knowledge_base.all_effects, winning),
+      param_bounds: dict.merge(
+        knowledge_base.param_bounds,
+        dict.map_values(winning, fn(name, _entry) {
+          dict.get(dep.params, name) |> result.unwrap([])
+        }),
+      ),
+      module_effects: dict.merge(
+        knowledge_base.module_effects,
+        over_catalog(knowledge_base.module_effects, module_externals),
+      ),
+    )
+    |> gap_filling_declared_returns(dep.declared_returns, origin)
+    |> with_closed_returned_operators(dep.returns, origin)
+    |> with_type_fields(dep.type_fields, origin)
+
+  // The bound lists scoping the clauses this fold landed, read off the outcome
+  // rather than recomputed from the merge rules: an entry is this fold's clause
+  // exactly when the channel answers the name with a `Closed` summary from this
+  // origin. A name an earlier tier answered, or this spec's own declaration
+  // did, is not one — that answer's own tier supplies whatever scopes it.
+  let scoping =
+    dict.filter(dep.params, fn(name, _bounds) {
+      case dict.get(folded.returned_operators, name) {
+        Ok(entry) -> entry.summary == Closed && entry.source == origin
+        Error(Nil) -> False
+      }
+    })
   KnowledgeBase(
-    ..knowledge_base,
-    all_effects: dict.merge(knowledge_base.all_effects, winning),
-    param_bounds: dict.merge(
-      knowledge_base.param_bounds,
-      dict.map_values(winning, fn(name, _entry) {
-        dict.get(dep.params, name) |> result.unwrap([])
-      }),
-    ),
-    module_effects: dict.merge(
-      knowledge_base.module_effects,
-      over_catalog(knowledge_base.module_effects, module_externals),
-    ),
+    ..folded,
+    // Gap-filling, like the operator they scope: a bounds entry already there
+    // belongs to whichever tier answered first, including the term-keyed copy
+    // above.
+    param_bounds: dict.merge(scoping, folded.param_bounds),
   )
-  |> gap_filling_declared_returns(dep.declared_returns, origin)
-  |> with_closed_returned_operators(dep.returns, origin)
-  |> with_type_fields(dep.type_fields, origin)
 }
 
 // The incoming entries a path dependency's spec may write over a knowledge-base

@@ -8634,6 +8634,75 @@ pub fn an_assume_kept_clause_still_binds_over_its_bounds_test() {
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+// The same shape one tier over: `dep` is a *path* dependency the consumer
+// declares in `gleam.toml`, so its committed spec folds through
+// `with_path_dep_spec` rather than the installed-package scan — a merge that
+// pairs bounds with entries by its own rule.
+fn path_dep_clause_effects_over(
+  name: String,
+  dependency_spec: String,
+  dep_source: String,
+) -> types.EffectSet {
+  let root = "build/" <> name
+  support.write_fixture(root, [
+    #(
+      "proj/gleam.toml",
+      "name = \"proj\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    ),
+    #(
+      "proj/proj.graded",
+      "check proj.caller : []\nassume proj.shout : [Stdout]\n",
+    ),
+    #(
+      "proj/proj.gleam",
+      "import dep/wrap
+
+@external(erlang, \"proj_ffi\", \"shout\")
+pub fn shout() -> Nil
+
+pub fn caller() -> Nil {
+  let h = wrap.wrap(shout)
+  h()
+}
+",
+    ),
+    #("dep/gleam.toml", "name = \"dep\"\n"),
+    #("dep/dep.graded", dependency_spec),
+    #("dep/src/dep/wrap.gleam", dep_source),
+  ])
+  let assert Ok(results) = graded.run(root <> "/proj")
+  let assert Ok(violation) =
+    results
+    |> list.flat_map(fn(result) { result.violations })
+    |> list.find(fn(violation) {
+      violation.explanation.call.module == "<returned>"
+    })
+  support.cleanup(root)
+  violation.explanation.actual
+}
+
+pub fn a_path_deps_assume_kept_clause_binds_over_its_bounds_test() {
+  // The path-dependency tier of the same rule. Over `unannotated_wrap` the
+  // bounds the dep's kept line records are the only thing that proves `f` is a
+  // callback, and this merge copies them by a rule of its own — one keyed to
+  // the effects entry, which a module declaration is exactly what takes away.
+  path_dep_clause_effects_over(
+    "clause_path_dep_module_assume",
+    "assume dep/wrap : []\n"
+      <> "effects dep/wrap.wrap(f: [f]) : [] where returns : [f]\n",
+    unannotated_wrap,
+  )
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+
+  path_dep_clause_effects_over(
+    "clause_path_dep_fn_assume",
+    "assume dep/wrap.wrap : []\n"
+      <> "effects dep/wrap.wrap(f: [f]) : [] where returns : [f]\n",
+    unannotated_wrap,
+  )
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
 pub fn a_clause_applying_an_unannotated_callback_degrades_test() {
   // Admission is not precision: the operator-parameter shapes are read off
   // annotations, so an unannotated callback binds to a flat first-order term
