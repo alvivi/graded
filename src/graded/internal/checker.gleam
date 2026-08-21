@@ -23,16 +23,17 @@ import graded/internal/types.{
   type CallExplanation, type EffectAnnotation, type EffectTerm, type LocalCall,
   type LookupOrigin, type ParamBound, type QualifiedName, type ResolvedCall,
   type UnknownReason, type Violation, type Warning, CallExplanation,
-  DotlessExternalReturnsWarning, EffectAnnotation, Effects, FieldNotAnnotated,
-  NoKnownEffects, ParamBound, PolymorphicExternalReturnsWarning, QualifiedName,
-  ReceiverTypeUnresolved, RefusedDeclaredReturn, StaleExternalReturnsWarning,
-  StaleFunctionExternalWarning, TUnion, TVar, TypeLine,
-  TypeShapedExternalReturnsWarning, UnbuiltExternal, UndeclaredExternal,
-  UnmatchedCheckWarning, UnmatchedExternalReturnsWarning,
+  DotlessReturnsClauseWarning, EffectAnnotation, Effects, FieldNotAnnotated,
+  NoKnownEffects, ParamBound, QualifiedName, ReceiverTypeUnresolved,
+  RefusedDeclaredReturn, StaleFunctionExternalWarning, StaleReturnsClauseWarning,
+  TUnion, TVar, TypeLine, UnbuiltExternal, UnclosedReturnsClauseWarning,
+  UndeclaredExternal, UngroundReturnsClauseWarning, UnmatchedCheckWarning,
   UnmatchedFieldBoundWarning, UnmatchedFunctionExternalWarning,
   UnmatchedModuleExternalWarning, UnmatchedParamBoundWarning,
-  UnmatchedTypeFieldWarning, UnresolvedFieldValue, UntraceableArgument,
-  UntraceableProducer, UntraceableReceiver, UntrackedEffectWarning, Violation,
+  UnmatchedReturnsClauseWarning, UnmatchedTypeFieldWarning, UnresolvedFieldValue,
+  UntraceableArgument, UntraceableProducer, UntraceableReceiver,
+  UntrackedEffectWarning, UnverifiedCheckShapeWarning,
+  UnverifiedReturnsClauseWarning, Violation,
 }
 
 // Entry points
@@ -264,12 +265,26 @@ pub fn infer_with_returns(
       }
       let #(effects_term, field_vars) =
         groom_published_term(effects_term, fn_typed_params)
-      // If the function's inferred effects reference effect variables (because it
-      // calls fn-typed params, or a fn-typed field on an opaque receiver), emit
-      // ParamBound entries so the polymorphic annotation round-trips correctly.
+      // The operator this function returns, written as the line's `where
+      // returns` clause. The line's own bound list scopes the clause's
+      // variables, so they are counted alongside the term's below.
+      let returns =
+        dict.get(returned_operators, definition.definition.name)
+        |> option.from_result()
+      // If the function's inferred effects or its returned operator reference
+      // effect variables (because it calls fn-typed params, or a fn-typed field
+      // on an opaque receiver), emit ParamBound entries so the polymorphic
+      // signature round-trips correctly. A callback used only inside the
+      // returned closure is mentioned by the clause alone, and gets its bound
+      // from there.
+      let published_vars =
+        set.union(
+          effect_term.free_vars(effects_term),
+          annotation.clause_free_vars(returns),
+        )
       let inferred_params =
         list.append(
-          polymorphic_param_bounds(effects_term, fn_typed_params),
+          bounds_for_vars(published_vars, fn_typed_params),
           polymorphic_param_bounds(effects_term, field_vars),
         )
       #(
@@ -279,6 +294,7 @@ pub fn infer_with_returns(
           function: definition.definition.name,
           params: inferred_params,
           effects: effects_term,
+          returns:,
         ),
       )
     })
@@ -437,7 +453,7 @@ pub type ExplainedBlock {
 // for it too, weighed *as well* — the budget then covers both what the
 // declaration states and what the body does. Two ways that happens: a Gleam
 // fallback an `@external` reaches on a target it declares no implementation for,
-// and ordinary Gleam under a module-level `external effects <module>` line. The
+// and ordinary Gleam under a module-level `assume <module>` line. The
 // line still answers for every caller; here it answers beside the body rather
 // than instead of it, so a body over its own budget cannot pass by being
 // declared.
@@ -565,7 +581,7 @@ type BodyStanding {
 // An `@external` attribute makes a function foreign whatever the knowledge base
 // holds — an undeclared one is `[Unknown]`, not the `[]` a stale `effects` line
 // claims. A function without one is foreign only where a declaration covers it,
-// which for a project module is the module-level `external effects <module>`
+// which for a project module is the module-level `assume <module>`
 // line: the per-function form naming a Gleam-bodied function of this package
 // declares nothing and never reaches the base.
 fn declaration_explanation(
@@ -631,7 +647,7 @@ fn declaration_explanation(
 // falls short of the whole function, and a body is walked *as well as* declared:
 //
 // - An `@external` whose Gleam fallback runs on some target it is compiled for.
-// - Ordinary Gleam a module-level `external effects <module>` line covers. The
+// - Ordinary Gleam a module-level `assume <module>` line covers. The
 //   line answers for every *caller* of the function; the body is visible Gleam
 //   that runs, and a `check` line on that function is a budget for what the
 //   function does. No line an author writes over their own package's source
@@ -1443,7 +1459,7 @@ pub type CallKind {
   // identifies the entry — the prose states it from the enclosing function.
   ExternalDeclaration(name: String)
   // The declaration that answers for an ordinary Gleam function of this
-  // package: a module-level `external effects <module>` line, which is what its
+  // package: a module-level `assume <module>` line, which is what its
   // callers pay whatever the body beside it does. Separate from
   // `ExternalDeclaration` because the function is not foreign code — its Gleam
   // body is right there and walked beside this line — and calling it an external
@@ -1554,51 +1570,69 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> ": warning: check "
       <> function
       <> " names no function in any project module — check the module qualifier; the check never runs"
+    UnverifiedCheckShapeWarning(name:) ->
+      file
+      <> ": warning: check "
+      <> name
+      <> " is a shape nothing verifies yet — a check on a field keys nothing; an `assume` line is the trusted form"
+    UnverifiedReturnsClauseWarning(function:) ->
+      file
+      <> ": warning: the `where returns` clause on check "
+      <> function
+      <> " is not verified — nothing weighs a check's returned operator. The effects budget on the same line still is, so the check is live; an `assume` line is the trusted form for the clause"
     UnmatchedTypeFieldWarning(name:) ->
       file
-      <> ": warning: type "
+      <> ": warning: assume "
       <> name
       <> " names no field of any project type — check the module qualifier; the field resolves to [Unknown]"
     StaleFunctionExternalWarning(function:) ->
       file
-      <> ": warning: external effects "
+      <> ": warning: assume "
       <> function
       <> " names a function of this package with a Gleam body — the line declares no foreign code and is ignored; the body is walked instead. There is no replacement: fix the source, or widen the check budget"
     UnmatchedFunctionExternalWarning(function:) ->
       file
-      <> ": warning: external effects "
+      <> ": warning: assume "
       <> function
       <> " names no dependency, catalog, or project function — check the module qualifier; the declaration covers nothing"
     UnmatchedModuleExternalWarning(module:) ->
       file
-      <> ": warning: external effects "
+      <> ": warning: assume "
       <> module
       <> " names no dependency or project module — check the module path; the declaration covers nothing"
-    StaleExternalReturnsWarning(function:) ->
+    StaleReturnsClauseWarning(function:) ->
       file
-      <> ": warning: external returns "
+      <> ": warning: assume "
       <> function
-      <> " names a function of this package with a Gleam body — every caller resolves what it returns from that body, so the line declares nothing and is ignored. `graded infer` removes it; where the function returns an operator, the inferred `returns` line takes its place"
-    UnmatchedExternalReturnsWarning(function:) ->
+      <> " where returns names a function of this package with a Gleam body — every caller resolves what it returns from that body, so the clause declares nothing and is ignored. `graded infer` removes it and writes the inferred clause on the `effects` line in its place"
+    UnmatchedReturnsClauseWarning(function:) ->
       file
-      <> ": warning: external returns "
+      <> ": warning: assume "
       <> function
-      <> " names no dependency, catalog, or project function — check the module qualifier; the declaration covers nothing"
-    PolymorphicExternalReturnsWarning(function:) ->
+      <> " where returns names no dependency, catalog, or project function — check the module qualifier; the declaration covers nothing"
+    UnclosedReturnsClauseWarning(function:, free_vars:) ->
       file
-      <> ": warning: external returns "
+      <> ": warning: the `where returns` clause on "
       <> function
-      <> " declares an operator with effect variables — only a ground operator is loaded, so the line is ignored; write the effects the returned function performs, or wrap the producer in Gleam"
-    DotlessExternalReturnsWarning(name:) ->
+      <> " has free variable(s) "
+      <> {
+        free_vars |> list.map(fn(v) { "`" <> v <> "`" }) |> string.join(", ")
+      }
+      <> " naming no callback parameter of it — the clause is ignored and the returned function resolves to [Unknown]"
+    UngroundReturnsClauseWarning(function:, free_vars:) ->
       file
-      <> ": warning: external returns "
+      <> ": warning: the `where returns` clause on assume "
+      <> function
+      <> " must be ground, and "
+      <> {
+        free_vars |> list.map(fn(v) { "`" <> v <> "`" }) |> string.join(", ")
+      }
+      <> " is a variable — an assumption carries no bound list, so nothing scopes one whatever the function's parameters are called; the clause is ignored. Spell out the concrete effects instead"
+    DotlessReturnsClauseWarning(name:) ->
+      file
+      <> ": warning: assume "
       <> name
-      <> " names a module, not a function — a returns declaration is per-function; the line resolves nothing"
-    TypeShapedExternalReturnsWarning(name:) ->
-      file
-      <> ": warning: external returns "
-      <> name
-      <> " names a type field, not a function — a returns declaration is per-function; write a `type` line to give a field's effects, and the line resolves nothing as written"
+      <> " where returns names a module, not a function — a returns declaration is per-function; the clause resolves nothing"
   }
 }
 
@@ -2047,8 +2081,15 @@ fn polymorphic_param_bounds(
   term: EffectTerm,
   fn_typed_params: Set(String),
 ) -> List(ParamBound) {
-  term
-  |> effect_term.free_vars()
+  bounds_for_vars(effect_term.free_vars(term), fn_typed_params)
+}
+
+// The same, over a variable set gathered from more than one term.
+fn bounds_for_vars(
+  vars: Set(String),
+  fn_typed_params: Set(String),
+) -> List(ParamBound) {
+  vars
   |> set.to_list()
   |> list.filter(fn(v) { set.contains(fn_typed_params, v) })
   |> list.sort(string.compare)
@@ -2620,7 +2661,7 @@ pub fn foreign_functions(
 // is ordinary Gleam whose body graded walks. A dependency's body it never walks.
 // Dropping the entry there left the name keyed by a shipped or catalogued
 // declaration with nothing to say that declaration answers for a target this
-// build does not compile, so `external effects dep/ffi.run : [Disk]` over an
+// build does not compile, so `assume dep/ffi.run : [Disk]` over an
 // `@external(javascript, …)` was charged in full to an Erlang-only consumer that
 // reaches only the Gleam body underneath it. Kept, the lookup narrows the
 // declaration out and charges the `[Unknown]` an unwalked body is worth.
@@ -2651,7 +2692,7 @@ pub fn dependency_foreign_functions(
 
 // The module's functions whose body is what every caller runs: the ones it
 // defines in Gleam rather than declares `@external`. What tells a per-function
-// `external effects` line that declares real foreign code from one that names a
+// `assume` line that declares real foreign code from one that names a
 // body sitting in plain sight.
 pub fn native_function_names(
   module: Module,
@@ -5130,18 +5171,33 @@ fn resolve_returned_operator(
       case effect_term.is_ground(operator), summary {
         // Ground operator (no free vars): trusted regardless of origin. A Fresh
         // one is sanitized by this run (callback binders can't have captured a
-        // residual). A Foreign one — a serialized summary, including this
-        // package's own spec reloaded at check time and any dependency's — is
-        // taken on faith: a summary written by a *pre-sanitizer* graded could be
-        // a ground `TAbs` that dropped a captured residual, and nothing here
-        // distinguishes it from a sound one (the spec records no producing
-        // version). Re-running `infer` with a current graded regenerates a sound
-        // summary; a stale dependency spec is the residual soundness gap (see
-        // docs/LIMITATIONS.md).
+        // residual); a Closed one carries no variable to substitute, so the
+        // gate's check has nothing left to decide; a Declared one is ground by
+        // construction.
         True, _ -> #(Ok(#(operator, source)), memo)
-        // Polymorphic + Fresh: Fix D guarantees the free vars are the producer's
-        // own params — bind them to the producer call's arguments.
-        False, effects.Fresh -> {
+        // Polymorphic: whether the free variables are ones this run may
+        // substitute over. One answer per summary kind, so the binding below
+        // runs once for every kind that admits it.
+        //
+        //   - **Fresh**: Fix D guarantees the free vars are the producer's own
+        //     params.
+        //   - **Closed**: a clause read back from a spec, whose variables are
+        //     checked against the producer's real callback parameters here,
+        //     where the substitution happens; one naming anything else degrades
+        //     to [Unknown] rather than binding against a parameter that isn't
+        //     there.
+        //   - **Declared**: a declaration is tagged only after the non-ground
+        //     operators are dropped, so nothing reaches here. An edit that
+        //     changed that must degrade to [Unknown] rather than substitute over
+        //     free variables nothing sanitized.
+        False, summary -> {
+          let admitted = case summary {
+            effects.Fresh -> True
+            effects.Closed ->
+              clause_is_closed(operator, callee, knowledge_base, registry)
+            effects.Declared -> False
+          }
+          use <- bool.guard(when: !admitted, return: #(Error(Nil), memo))
           let #(bound, memo) =
             bind_producer_params(
               operator,
@@ -5159,16 +5215,6 @@ fn resolve_returned_operator(
             )
           #(Ok(#(bound, source)), memo)
         }
-        // Polymorphic + Foreign (Fix E): an unsanitized serialized summary whose
-        // free vars may be residuals coinciding with a param name — not trusted
-        // for synthesis. Resolve conservatively to [Unknown] (the `Error` here
-        // reaches every consumer's [Unknown] fallback).
-        False, effects.Foreign -> #(Error(Nil), memo)
-        // Polymorphic + Declared: a declaration is tagged only after the
-        // non-ground operators are dropped, so nothing reaches here. An edit
-        // that changed that must degrade to [Unknown] rather than substitute
-        // over free variables nothing sanitized.
-        False, effects.Declared -> #(Error(Nil), memo)
       }
   }
 }
@@ -5227,11 +5273,12 @@ fn bind_producer_params(
       // that are polymorphic only through the returned closure (inference derives
       // bounds from the *direct* effect, which trims the closure). Synthesize a
       // self-referential bound for each of the summary's own free vars not already
-      // bound, so the producer call's arguments bind them. Sound because Fix E only
-      // lets a **Fresh** (Fix-D-sanitized) summary reach here — its free vars ⊆ the
-      // producer's fn-typed params — and the real `registry` supplies each param's
-      // position. Field-path (dotted) vars are excluded (they round-trip as field
-      // bounds, not producer params).
+      // bound, so the producer call's arguments bind them. Sound because only two
+      // kinds of summary reach here: a **Fresh** (Fix-D-sanitized) one, whose free
+      // vars ⊆ the producer's fn-typed params, and a **Closed** one the gate has
+      // just re-checked against the producer's real callback parameters. The real
+      // `registry` supplies each param's position. Field-path (dotted) vars are
+      // excluded (they round-trip as field bounds, not producer params).
       let kb_bounds = effects.lookup_param_bounds(knowledge_base, callee)
       let have = bound_name_set(kb_bounds)
       let synth =
@@ -5783,6 +5830,48 @@ fn ordered_callback_param_names(
   })
 }
 
+// Whether every free variable of a `where returns` clause is a real callback
+// parameter of the producer the clause sits on.
+//
+// The oracle is the signature registry's fn-typed parameters together with the
+// knowledge base's recorded bound names for the function — the same pair
+// `ordered_callback_param_names` reads, so a girard-typed callback no syntactic
+// signature shows is admitted through its recorded bound rather than
+// spuriously rejected. Committed bounds win over this run's inference, so the
+// recorded set can be stale-empty but never stale-wrong: staleness makes this
+// stricter, never looser. Field-path (dotted) variables round-trip as field
+// bounds rather than as producer parameters, so they are not weighed here.
+fn clause_is_closed(
+  operator: EffectTerm,
+  callee: QualifiedName,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+) -> Bool {
+  unclosed_clause_variables(operator, callee, knowledge_base, registry) == []
+}
+
+// The clause's free variables that name no callback parameter, sorted. Empty
+// for a closed clause. The gate binds against it and the spec lint reports
+// against it, so the two read one oracle by construction.
+pub fn unclosed_clause_variables(
+  operator: EffectTerm,
+  callee: QualifiedName,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+) -> List(String) {
+  let callbacks =
+    set.union(
+      signatures.fn_typed_param_names(registry, callee),
+      recorded_bound_names(knowledge_base, callee),
+    )
+  effect_term.free_vars(operator)
+  |> set.filter(fn(variable) {
+    !is_field_path_var(variable) && !set.contains(callbacks, variable)
+  })
+  |> set.to_list()
+  |> list.sort(string.compare)
+}
+
 // The parameter names `name`'s recorded bounds state effects over. For one of
 // this package's running fallbacks these carry the girard-typed callbacks no
 // syntactic signature shows.
@@ -5988,7 +6077,7 @@ fn resolve_unknown_local(
 // local call is charged it rather than the body beside it.
 //
 // An `@external` has no body graded may weigh at all. Ordinary Gleam under a
-// module-level `external effects <module>` line has one, and the line still
+// module-level `assume <module>` line has one, and the line still
 // answers for its callers — the body is weighed against that function's own
 // budget and against nothing else. Read here so a sibling and a cross-module
 // caller, which resolves through the knowledge base, pay the same name the same
@@ -6595,7 +6684,7 @@ fn carries_unknown(term: EffectTerm) -> Bool {
 }
 
 // Resolve a field call with no proven value (rule 2 onward): a hand-written
-// field bound, then a hand-written `type` line (looked up by the receiver's
+// field bound, then a hand-written field `assume` line (looked up by the receiver's
 // nominal type — girard first, then the syntactic parameter annotation), then a
 // receiver-keyed field variable for a live parameter root, then `[Unknown]`. A
 // construction-inferred nominal entry is never consulted — it holds package-wide
@@ -6694,7 +6783,7 @@ fn resolve_unproven_field(
   }
 }
 
-// Rules 4 and 5, for a field call with no `check` bound, no declared `type` line,
+// Rules 4 and 5, for a field call with no `check` bound, no declared field `assume` line,
 // and no proven value.
 //
 // Rule 4: a receiver rooted at a live parameter stays polymorphic in the field —

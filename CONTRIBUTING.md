@@ -54,7 +54,7 @@ to contribute.
    those three numbers and nothing else) and names the lowest release whose
    surface the file describes; at resolution time graded picks the highest
    catalog version `<= ` the consumer's installed version.
-2. Write `effects` / `external effects` / `type` lines with **module-qualified**
+2. Write `effects` / `assume` / field `assume` lines with **module-qualified**
    names. The grammar, every annotation kind, and the effect-set syntax are in
    [docs/REFERENCE.md](docs/REFERENCE.md); existing entries (e.g.
    `gleam_stdlib@0.70.0.graded`, `lustre@5.0.0.graded`) are working examples.

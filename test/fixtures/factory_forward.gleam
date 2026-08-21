@@ -1,7 +1,7 @@
 // A factory/constructor value passed as a receiver argument forwards the
 // callee's field-effect variable onto the caller parameter the field is wired
 // to — whether passed inline or through a let-bound alias. None of these need a
-// `type` line: the callers infer a polymorphic bound on `resolver`, so a
+// field `assume` line: the callers infer a polymorphic bound on `resolver`, so a
 // `check caller(resolver: [Stdout]) : []` fails with [Stdout]. A receiver built
 // by an untraceable producer, threaded through a call, or shadowed by a later
 // opaque binding stays conservative ([Unknown]).

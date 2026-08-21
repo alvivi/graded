@@ -8,10 +8,9 @@ import graded/internal/annotation
 import graded/internal/effect_term
 import graded/internal/types.{
   type EffectTerm, AnnotationLine, BlankLine, Check, CommentLine,
-  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine,
-  ExternalReturnsLine, FunctionExternal, ParamBound, Polymorphic, ReturnsLine,
-  Specific, TAbs, TApp, TLabels, TUnion, TVar, TypeFieldAnnotation,
-  TypeFieldLine, Wildcard,
+  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
+  ModuleExternal, ParamBound, Polymorphic, Specific, TAbs, TApp, TLabels, TUnion,
+  TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 import qcheck
 
@@ -23,7 +22,13 @@ import qcheck
 pub fn empty_effects_test() {
   let input = "effects view : []"
   let assert Ok([
-    EffectAnnotation(kind: Effects, function: "view", params: _, effects: eff),
+    EffectAnnotation(
+      kind: Effects,
+      function: "view",
+      params: _,
+      effects: eff,
+      returns: None,
+    ),
   ]) = annotation.parse(input)
   effect_term.to_effect_set(eff) |> should.equal(Specific(set.new()))
 }
@@ -31,7 +36,13 @@ pub fn empty_effects_test() {
 pub fn single_effect_test() {
   let input = "effects update : [Http]"
   let assert Ok([
-    EffectAnnotation(kind: Effects, function: "update", params: _, effects: eff),
+    EffectAnnotation(
+      kind: Effects,
+      function: "update",
+      params: _,
+      effects: eff,
+      returns: None,
+    ),
   ]) = annotation.parse(input)
   effect_term.to_effect_set(eff)
   |> should.equal(Specific(set.from_list(["Http"])))
@@ -40,7 +51,13 @@ pub fn single_effect_test() {
 pub fn multiple_effects_test() {
   let input = "effects update : [Http, Dom]"
   let assert Ok([
-    EffectAnnotation(kind: Effects, function: "update", params: _, effects: eff),
+    EffectAnnotation(
+      kind: Effects,
+      function: "update",
+      params: _,
+      effects: eff,
+      returns: None,
+    ),
   ]) = annotation.parse(input)
   effect_term.to_effect_set(eff)
   |> should.equal(Specific(set.from_list(["Http", "Dom"])))
@@ -49,7 +66,13 @@ pub fn multiple_effects_test() {
 pub fn check_line_test() {
   let input = "check view : []"
   let assert Ok([
-    EffectAnnotation(kind: Check, function: "view", params: _, effects: eff),
+    EffectAnnotation(
+      kind: Check,
+      function: "view",
+      params: _,
+      effects: eff,
+      returns: None,
+    ),
   ]) = annotation.parse(input)
   effect_term.to_effect_set(eff) |> should.equal(Specific(set.new()))
 }
@@ -57,7 +80,13 @@ pub fn check_line_test() {
 pub fn check_with_effects_test() {
   let input = "check update : [Http, Dom]"
   let assert Ok([
-    EffectAnnotation(kind: Check, function: "update", params: _, effects: eff),
+    EffectAnnotation(
+      kind: Check,
+      function: "update",
+      params: _,
+      effects: eff,
+      returns: None,
+    ),
   ]) = annotation.parse(input)
   effect_term.to_effect_set(eff)
   |> should.equal(Specific(set.from_list(["Http", "Dom"])))
@@ -87,9 +116,10 @@ pub fn reserved_sentinel_nested_occurrence_test() {
 }
 
 pub fn reserved_sentinel_binder_test() {
-  let assert Ok(file) = annotation.parse_file("returns m.f : fn($op$x) -> [x]")
-  let assert [returns] = annotation.extract_returns(file)
-  effect_term.to_effect_set(returns.operator)
+  let assert Ok([parsed]) =
+    annotation.parse("effects m.f : [] where returns : fn($op$x) -> [x]")
+  let assert Some(operator) = parsed.returns
+  effect_term.to_effect_set(operator)
   |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
@@ -99,8 +129,8 @@ pub fn reserved_sentinel_preserves_whole_file_test() {
   // lines. Sibling `check`/`external` lines survive.
   let input =
     "check app/a.run : []
-returns m.f : fn($op$x) -> [x]
-external effects dep/x : []"
+effects m.f : [] where returns : fn($op$x) -> [x]
+assume dep/x : []"
   let assert Ok(file) = annotation.parse_file(input)
   let annotations = annotation.extract_annotations(file)
   list.any(annotations, fn(a) {
@@ -213,6 +243,7 @@ pub fn format_annotation_effects_test() {
       function: "view",
       params: [],
       effects: effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   annotation.format_annotation(ann) |> should.equal("effects view : []")
 }
@@ -226,6 +257,7 @@ pub fn format_annotation_check_test() {
       effects: effect_term.from_effect_set(
         Specific(set.from_list(["Http", "Dom"])),
       ),
+      returns: None,
     )
   annotation.format_annotation(ann)
   |> should.equal("check update : [Dom, Http]")
@@ -293,6 +325,7 @@ pub fn format_annotation_with_params_test() {
         ),
       ],
       effects: effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   annotation.format_annotation(ann)
   |> should.equal("effects apply(f: [Stdout]) : []")
@@ -311,6 +344,7 @@ pub fn format_annotation_with_multiple_params_test() {
         ),
       ],
       effects: effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
+      returns: None,
     )
   annotation.format_annotation(ann)
   |> should.equal("check transform(f: [], g: [Http]) : [Http]")
@@ -318,10 +352,10 @@ pub fn format_annotation_with_multiple_params_test() {
 
 // Type field annotations
 //
-// `type T.field : [...]` lines, both bare and module-qualified.
+// `assume T.field : [...]` lines, both bare and module-qualified.
 
 pub fn parse_type_field_test() {
-  let input = "type Handler.on_click : [Dom]"
+  let input = "assume Handler.on_click : [Dom]"
   let assert Ok(file) = annotation.parse_file(input)
   let tfs = annotation.extract_type_fields(file)
   let assert [tf] = tfs
@@ -332,7 +366,7 @@ pub fn parse_type_field_test() {
 }
 
 pub fn parse_type_field_multiple_effects_test() {
-  let input = "type Request.send : [Http, Io]"
+  let input = "assume Request.send : [Http, Io]"
   let assert Ok(file) = annotation.parse_file(input)
   let assert [tf] = annotation.extract_type_fields(file)
   effect_term.to_effect_set(tf.effects)
@@ -348,7 +382,7 @@ pub fn format_type_field_test() {
       effects: effect_term.from_effect_set(Specific(set.from_list(["Dom"]))),
     )
   annotation.format_type_field(tf)
-  |> should.equal("type Handler.on_click : [Dom]")
+  |> should.equal("assume Handler.on_click : [Dom]")
 }
 
 pub fn format_type_field_qualified_test() {
@@ -360,11 +394,11 @@ pub fn format_type_field_qualified_test() {
       effects: effect_term.from_effect_set(Specific(set.from_list(["Dom"]))),
     )
   annotation.format_type_field(tf)
-  |> should.equal("type myapp/router.Handler.on_click : [Dom]")
+  |> should.equal("assume myapp/router.Handler.on_click : [Dom]")
 }
 
 pub fn parse_type_field_qualified_test() {
-  let input = "type myapp/router.Handler.on_click : [Dom]"
+  let input = "assume myapp/router.Handler.on_click : [Dom]"
   let assert Ok(file) = annotation.parse_file(input)
   let assert [tf] = annotation.extract_type_fields(file)
   tf.module |> should.equal(Some("myapp/router"))
@@ -373,7 +407,7 @@ pub fn parse_type_field_qualified_test() {
 }
 
 pub fn parse_type_field_qualified_deep_module_test() {
-  let input = "type deeply/nested/path.Config.validator : []"
+  let input = "assume deeply/nested/path.Config.validator : []"
   let assert Ok(file) = annotation.parse_file(input)
   let assert [tf] = annotation.extract_type_fields(file)
   tf.module |> should.equal(Some("deeply/nested/path"))
@@ -383,24 +417,24 @@ pub fn parse_type_field_qualified_deep_module_test() {
 
 // External annotations
 //
-// `external effects module.fn : [...]` lines for third-party functions.
+// `assume module.fn : [...]` lines for third-party functions.
 
 pub fn parse_external_test() {
-  let input = "external effects gleam/http/request.send : [Http]"
+  let input = "assume gleam/http/request.send : [Http]"
   let assert Ok(file) = annotation.parse_file(input)
   let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("gleam/http/request")
   ext.target |> should.equal(FunctionExternal("send"))
-  ext.effects |> should.equal(Specific(set.from_list(["Http"])))
+  ext.effects |> should.equal(Some(Specific(set.from_list(["Http"]))))
 }
 
 pub fn parse_external_pure_test() {
-  let input = "external effects gleam/json.decode : []"
+  let input = "assume gleam/json.decode : []"
   let assert Ok(file) = annotation.parse_file(input)
   let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("gleam/json")
   ext.target |> should.equal(FunctionExternal("decode"))
-  ext.effects |> should.equal(Specific(set.new()))
+  ext.effects |> should.equal(Some(Specific(set.new())))
 }
 
 pub fn format_external_test() {
@@ -408,10 +442,380 @@ pub fn format_external_test() {
     ExternalAnnotation(
       "gleam/httpc",
       FunctionExternal("send"),
-      Specific(set.from_list(["Http"])),
+      Some(Specific(set.from_list(["Http"]))),
+      returns: None,
     )
   annotation.format_external(ext)
-  |> should.equal("external effects gleam/httpc.send : [Http]")
+  |> should.equal("assume gleam/httpc.send : [Http]")
+}
+
+// Assumptions
+//
+// `assume <path> : [...]` lines. One keyword for every trusted declaration;
+// what the line covers is read off the path's shape.
+
+pub fn parse_assume_module_test() {
+  let assert Ok(file) = annotation.parse_file("assume gleam/io : [Stdout]")
+  let assert [ext] = annotation.extract_externals(file)
+  ext.module |> should.equal("gleam/io")
+  ext.target |> should.equal(ModuleExternal)
+  ext.effects |> should.equal(Some(Specific(set.from_list(["Stdout"]))))
+}
+
+pub fn parse_assume_function_test() {
+  let assert Ok(file) =
+    annotation.parse_file("assume gleam/http/request.send : [Http]")
+  let assert [ext] = annotation.extract_externals(file)
+  ext.module |> should.equal("gleam/http/request")
+  ext.target |> should.equal(FunctionExternal("send"))
+  ext.effects |> should.equal(Some(Specific(set.from_list(["Http"]))))
+}
+
+pub fn parse_assume_qualified_field_test() {
+  let assert Ok(file) =
+    annotation.parse_file("assume myapp/router.Handler.on_click : [Dom]")
+  let assert [tf] = annotation.extract_type_fields(file)
+  tf.module |> should.equal(Some("myapp/router"))
+  tf.type_name |> should.equal("Handler")
+  tf.field |> should.equal("on_click")
+  effect_term.to_effect_set(tf.effects)
+  |> should.equal(Specific(set.from_list(["Dom"])))
+}
+
+pub fn parse_assume_bare_field_test() {
+  // An UpperCamel first segment is a type name, so a two-segment path is a
+  // field of it rather than a function of a module by that name.
+  let assert Ok(file) = annotation.parse_file("assume Handler.on_click : [Dom]")
+  let assert [tf] = annotation.extract_type_fields(file)
+  tf.module |> should.equal(None)
+  tf.type_name |> should.equal("Handler")
+  tf.field |> should.equal("on_click")
+}
+
+pub fn assume_over_a_lowercase_deep_path_is_invalid_test() {
+  // Three lowercase segments name no shape: a module path uses slashes, so the
+  // second-to-last segment would have to be a type name.
+  annotation.parse_file("assume a.b.c : []")
+  |> should.equal(Error(annotation.InvalidLine(1, "assume a.b.c : []")))
+}
+
+pub fn assume_over_an_empty_segment_is_invalid_test() {
+  annotation.parse_file("assume m. : []")
+  |> should.equal(Error(annotation.InvalidLine(1, "assume m. : []")))
+  annotation.parse_file("assume .f : []")
+  |> should.equal(Error(annotation.InvalidLine(1, "assume .f : []")))
+}
+
+// The `where returns` clause
+//
+// A returned operator is a clause of the statement whose bound list scopes its
+// variables, on any status. Its keyword is only a keyword at bracket depth 0.
+
+pub fn parse_returns_clause_on_an_effects_line_test() {
+  let assert Ok([annotation]) =
+    annotation.parse(
+      "effects m.traced(action: [action]) : [] where returns : fn(cb) -> [Stdout, action([cb])]",
+    )
+  annotation.params
+  |> should.equal([ParamBound("action", TVar("action"))])
+  annotation.returns
+  |> should.equal(
+    Some(TAbs(
+      "cb",
+      TUnion([
+        TLabels(set.from_list(["Stdout"])),
+        TApp(TVar("action"), TVar("cb")),
+      ])
+        |> effect_term.normalize,
+    )),
+  )
+}
+
+pub fn parse_returns_clause_on_a_check_line_test() {
+  let assert Ok([annotation]) =
+    annotation.parse("check m.make : [] where returns : [Stdout]")
+  annotation.kind |> should.equal(Check)
+  annotation.returns |> should.equal(Some(TLabels(set.from_list(["Stdout"]))))
+}
+
+pub fn parse_returns_clause_on_an_assume_line_test() {
+  let assert Ok(file) =
+    annotation.parse_file("assume m/ffi.make : [Net] where returns : [Net]")
+  let assert [ext] = annotation.extract_externals(file)
+  ext.effects |> should.equal(Some(Specific(set.from_list(["Net"]))))
+  ext.returns |> should.equal(Some(TLabels(set.from_list(["Net"]))))
+}
+
+pub fn a_clause_only_assume_claims_no_effects_test() {
+  // The rewrite of a standalone declaration of what a producer hands back. It
+  // claims nothing about the producer's own effect, so the tiers below keep
+  // answering for it — `None`, never the empty set.
+  let assert Ok(file) =
+    annotation.parse_file("assume m/ffi.make_client where returns : [Net]")
+  let assert [ext] = annotation.extract_externals(file)
+  ext.effects |> should.equal(None)
+  ext.returns |> should.equal(Some(TLabels(set.from_list(["Net"]))))
+  annotation.format_external(ext)
+  |> should.equal("assume m/ffi.make_client where returns : [Net]")
+}
+
+pub fn a_clause_only_assume_names_no_effects_function_test() {
+  // `external_function_names` keys the effects channel. A clause-only line
+  // declares only what the producer returns, so it must not drop the inferred
+  // `effects` line for the name or blank its bounds.
+  let assert Ok(file) =
+    annotation.parse_file("assume m.make where returns : [Net]")
+  annotation.external_function_names(file)
+  |> set.to_list
+  |> should.equal([])
+}
+
+pub fn a_clause_on_a_field_path_is_invalid_test() {
+  let input = "assume m.Handler.on_click where returns : [X]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn a_clause_keyword_inside_brackets_is_not_a_clause_test() {
+  // The keyword only opens a clause at depth 0, so this text stays inside the
+  // effect set — where it is not one identifier, and so is a parse error rather
+  // than a variable named after the keyword.
+  let input = "effects m.f : [A, where returns : B]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn a_clause_with_no_colon_is_invalid_test() {
+  let input = "effects m.f : [] where returns [Stdout]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+// Near-misses of the clause keyword
+//
+// The keyword is the literal ` where returns `. Spelled with a space missing on
+// either side, the split misses it and the whole clause stays inside the effect
+// set, where it once parsed as a variable named after the typo — and formatted
+// back byte-identically, so the typo never surfaced. Each shape is a parse error
+// naming the line instead.
+
+pub fn a_clause_with_no_space_before_its_colon_is_invalid_test() {
+  let input = "check m.f : [] where returns: [Stdout]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+
+  let input = "effects m.f : [] where returns: [Stdout]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn a_clause_with_no_space_after_the_effects_is_invalid_test() {
+  let input = "check m.f : []where returns : [Stdout]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+
+  let input = "effects m.f : []where returns : [Stdout]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn a_clause_behind_extra_spaces_still_parses_test() {
+  // The one near-miss that is not one: an extra space before the keyword leaves
+  // the keyword itself intact, so the clause splits off and formats canonically.
+  let assert Ok([check]) =
+    annotation.parse("check m.f : []  where returns : [Stdout]")
+  check.returns
+  |> should.equal(
+    Some(effect_term.from_effect_set(Specific(set.from_list(["Stdout"])))),
+  )
+
+  let assert Ok([effects]) =
+    annotation.parse("effects m.f : []  where returns : [Stdout]")
+  effects.returns
+  |> should.equal(
+    Some(effect_term.from_effect_set(Specific(set.from_list(["Stdout"])))),
+  )
+}
+
+pub fn a_forged_sentinel_in_a_clause_grounds_test() {
+  // The `$op$` reservation holds inside a clause: a forged sentinel grounds to
+  // `[Unknown]` rather than minting a variable that could pass for a
+  // producer's own.
+  let assert Ok([annotation]) =
+    annotation.parse("effects m.f : [] where returns : [$op$forged]")
+  annotation.returns |> should.equal(Some(effect_term.unknown()))
+}
+
+pub fn clause_free_vars_names_the_open_variables_test() {
+  let assert Ok([closed]) =
+    annotation.parse("effects m.f : [] where returns : [Stdout]")
+  annotation.clause_free_vars(closed.returns) |> set.to_list |> should.equal([])
+
+  let assert Ok([open]) =
+    annotation.parse("effects m.f : [] where returns : [Stdout, action]")
+  annotation.clause_free_vars(open.returns)
+  |> set.to_list
+  |> should.equal(["action"])
+
+  let assert Ok([bound]) =
+    annotation.parse("effects m.f : [] where returns : fn(cb) -> [cb]")
+  annotation.clause_free_vars(bound.returns) |> set.to_list |> should.equal([])
+
+  annotation.clause_free_vars(None) |> set.to_list |> should.equal([])
+}
+
+pub fn a_params_list_with_no_name_is_invalid_test() {
+  let input = "check (f: [Stdout]) : [Stdout]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+// Retired spellings
+//
+// A line in a spelling this version no longer reads is refused by name, with
+// the rewrite. No such line parses as anything else, so nothing is silently
+// reinterpreted.
+
+pub fn a_type_line_is_a_retired_spelling_test() {
+  let input = "type m.Handler.on_click : [Dom]"
+  annotation.parse_file(input)
+  |> should.equal(
+    Error(annotation.RetiredSpelling(1, input, annotation.RetiredType)),
+  )
+  annotation.describe_parse_error(annotation.RetiredSpelling(
+    1,
+    input,
+    annotation.RetiredType,
+  ))
+  |> should.equal(
+    "1: type m.Handler.on_click : [Dom]\n  `type <path> : <effects>` is retired; write `assume <path> : <effects>`",
+  )
+}
+
+pub fn an_external_effects_line_is_a_retired_spelling_test() {
+  let input = "external effects m/ffi.send : [Http]"
+  annotation.parse_file(input)
+  |> should.equal(
+    Error(annotation.RetiredSpelling(
+      1,
+      input,
+      annotation.RetiredExternalEffects,
+    )),
+  )
+  annotation.describe_parse_error(annotation.RetiredSpelling(
+    1,
+    input,
+    annotation.RetiredExternalEffects,
+  ))
+  |> should.equal(
+    "1: external effects m/ffi.send : [Http]\n  `external effects <path> : <effects>` is retired; write `assume <path> : <effects>`",
+  )
+}
+
+pub fn a_returns_line_is_a_retired_spelling_test() {
+  let input = "returns m.make : [Stdout]"
+  annotation.parse_file(input)
+  |> should.equal(
+    Error(annotation.RetiredSpelling(1, input, annotation.RetiredReturns)),
+  )
+  annotation.describe_parse_error(annotation.RetiredSpelling(
+    1,
+    input,
+    annotation.RetiredReturns,
+  ))
+  |> should.equal(
+    "1: returns m.make : [Stdout]\n  `returns <path> : <operator>` is retired; delete it — `graded infer` writes the operator as a `where returns` clause on the `effects <path>` line",
+  )
+}
+
+pub fn an_external_returns_line_is_a_retired_spelling_test() {
+  let input = "external returns m/ffi.make : [Net]"
+  annotation.parse_file(input)
+  |> should.equal(
+    Error(annotation.RetiredSpelling(
+      1,
+      input,
+      annotation.RetiredExternalReturns,
+    )),
+  )
+  annotation.describe_parse_error(annotation.RetiredSpelling(
+    1,
+    input,
+    annotation.RetiredExternalReturns,
+  ))
+  |> should.equal(
+    "1: external returns m/ffi.make : [Net]\n  `external returns <path> : <operator>` is retired; write `assume <path> where returns : <operator>`",
+  )
+}
+
+pub fn the_line_half_of_a_description_stays_on_one_line_test() {
+  // What a caller wrapping the description in a sentence reads. A retired
+  // spelling's rewrite is a second line, so the full description would leave
+  // the sentence's tail dangling under it — this half never does.
+  annotation.describe_parse_error_line(annotation.RetiredSpelling(
+    24,
+    "returns girard.disk_resolver : [FileSystem]",
+    annotation.RetiredReturns,
+  ))
+  |> should.equal("24: returns girard.disk_resolver : [FileSystem]")
+
+  annotation.describe_parse_error_line(annotation.InvalidLine(3, "  nonsense "))
+  |> should.equal("3: nonsense")
+}
+
+pub fn no_retired_line_parses_as_anything_test() {
+  // Every retired opener is refused outright — none falls through to another
+  // arm and keys something the author did not write.
+  [
+    "type m.Handler.on_click : [Dom]",
+    "type Handler.on_click : [Dom]",
+    "external effects m/ffi.send : [Http]",
+    "external effects m/ffi : [Http]",
+    "returns m.make : [Stdout]",
+    "returns m.make : fn(cb) -> [cb]",
+    "external returns m/ffi.make : [Net]",
+    "external returns m/ffi : [Net]",
+  ]
+  |> list.each(fn(line) {
+    annotation.parse_file(line)
+    |> should.be_error
+  })
+}
+
+pub fn format_sorted_orders_assume_then_check_then_effects_test() {
+  let input =
+    "effects m.g : []
+check m.f : []
+assume m/ffi.send : [Http]
+assume m.Handler.on_click : [Dom]
+"
+  let assert Ok(file) = annotation.parse_file(input)
+  annotation.format_sorted(file)
+  |> should.equal(
+    "assume m.Handler.on_click : [Dom]
+assume m/ffi.send : [Http]
+
+check m.f : []
+
+effects m.g : []
+",
+  )
+}
+
+pub fn a_canonical_assume_section_is_a_fixed_point_test() {
+  let canonical =
+    "assume Handler.on_click : [Dom]
+assume gleam/io : [Stdout]
+assume gleam/io.println : [Stdout]
+assume myapp/router.Handler.on_click : [Dom]
+"
+  let assert Ok(file) = annotation.parse_file(canonical)
+  annotation.format_sorted(file) |> should.equal(canonical)
+}
+
+pub fn assume_with_no_effects_is_invalid_test() {
+  annotation.parse_file("assume gleam/io.println")
+  |> should.equal(Error(annotation.InvalidLine(1, "assume gleam/io.println")))
 }
 
 // Wildcard [_]
@@ -446,6 +850,7 @@ pub fn format_wildcard_annotation_test() {
       function: "handler",
       params: [],
       effects: effect_term.from_effect_set(Wildcard),
+      returns: None,
     )
   annotation.format_annotation(ann) |> should.equal("effects handler : [_]")
 }
@@ -512,6 +917,7 @@ pub fn format_polymorphic_annotation_test() {
         set.from_list(["Stdout"]),
         set.from_list(["e"]),
       )),
+      returns: None,
     )
   annotation.format_annotation(ann)
   |> should.equal("effects apply(f: [e]) : [Stdout, e]")
@@ -574,8 +980,7 @@ pub fn merge_inferred_invariants_test() {
       fn(f, i) { #(f, i) },
     ),
   )
-  let merged =
-    annotation.merge_inferred(file, inferred, [], set.new(), set.new())
+  let merged = annotation.merge_inferred(file, inferred, set.new(), set.new())
   let merged_effects =
     annotation.extract_annotations(merged)
     |> list.filter(fn(a) { a.kind == Effects })
@@ -615,7 +1020,7 @@ pub fn merge_inferred_invariants_test() {
 }
 
 pub fn merge_inferred_drops_effect_for_external_test() {
-  // An author-written `external effects app.ffi : [...]` is authoritative: the
+  // An author-written `assume app.ffi : [...]` is authoritative: the
   // inferred `effects app.ffi` line (the opaque-FFI `[Unknown]` default) is
   // dropped so it neither duplicates nor shadows the declaration. Other inferred
   // functions are kept.
@@ -624,15 +1029,28 @@ pub fn merge_inferred_drops_effect_for_external_test() {
       ExternalLine(ExternalAnnotation(
         module: "app",
         target: FunctionExternal("ffi"),
-        effects: types.Specific(set.new()),
+        effects: Some(types.Specific(set.new())),
+        returns: None,
       )),
     ])
   let inferred = [
-    EffectAnnotation(Effects, "app.ffi", [], effect_term.unknown()),
-    EffectAnnotation(Effects, "app.other", [], effect_term.pure()),
+    EffectAnnotation(
+      Effects,
+      "app.ffi",
+      [],
+      effect_term.unknown(),
+      returns: None,
+    ),
+    EffectAnnotation(
+      Effects,
+      "app.other",
+      [],
+      effect_term.pure(),
+      returns: None,
+    ),
   ]
   let effects_fns =
-    annotation.merge_inferred(file, inferred, [], set.new(), set.new())
+    annotation.merge_inferred(file, inferred, set.new(), set.new())
     |> annotation.extract_annotations
     |> list.filter(fn(a) { a.kind == Effects })
     |> list.map(fn(a) { a.function })
@@ -641,103 +1059,253 @@ pub fn merge_inferred_drops_effect_for_external_test() {
   set.contains(effects_fns, "app.other") |> should.be_true()
 }
 
-pub fn merge_inferred_keeps_an_external_returns_line_test() {
-  // A declaration is preserved in place and never regenerated, and the inferred
-  // `returns` line for the same name is dropped: one name, one answer.
-  let declared =
-    ExternalReturnsLine(types.ReturnsAnnotation(
-      function: "app.make",
-      operator: TLabels(set.from_list(["Net"])),
-    ))
-  let file = types.GradedFile(lines: [declared])
-  let inferred_returns = [
-    types.ReturnsAnnotation(function: "app.make", operator: TLabels(set.new())),
-    types.ReturnsAnnotation(function: "app.other", operator: TLabels(set.new())),
-  ]
-  let merged =
-    annotation.merge_inferred(file, [], inferred_returns, set.new(), set.new())
-  merged.lines
-  |> should.equal([
-    declared,
-    ReturnsLine(types.ReturnsAnnotation(
-      function: "app.other",
-      operator: TLabels(set.new()),
-    )),
-  ])
+// An assumption suppresses one channel
+//
+// A declaration of what a function *does* says nothing about what it *returns*.
+// The clause has no line of its own to live on, so an inferred one keeps its
+// `effects` line alive under an assumption that would otherwise delete it —
+// and only the clause does: a clause-less line claims nothing the declaration
+// does not.
+
+fn inferred_line(
+  name: String,
+  returns: option.Option(EffectTerm),
+) -> types.EffectAnnotation {
+  EffectAnnotation(
+    Effects,
+    name,
+    [],
+    TLabels(set.from_list(["Stdout"])),
+    returns:,
+  )
 }
 
-pub fn merge_inferred_keeps_an_unmatched_external_returns_line_test() {
-  // A declaration for a function inference no longer reports a summary for is
-  // still the author's line, so the stale-removal path that drops an unmatched
-  // `returns` line does not reach it.
-  let declared =
-    ExternalReturnsLine(types.ReturnsAnnotation(
-      function: "app.make",
-      operator: TLabels(set.from_list(["Net"])),
-    ))
-  let file = types.GradedFile(lines: [declared])
-  annotation.merge_inferred(file, [], [], set.new(), set.new())
+fn module_assume(module: String) -> types.GradedLine {
+  ExternalLine(ExternalAnnotation(
+    module:,
+    target: ModuleExternal,
+    effects: Some(types.Specific(set.new())),
+    returns: None,
+  ))
+}
+
+fn function_assume(module: String, function: String) -> types.GradedLine {
+  ExternalLine(ExternalAnnotation(
+    module:,
+    target: FunctionExternal(function),
+    effects: Some(types.Specific(set.new())),
+    returns: None,
+  ))
+}
+
+// The `effects` lines a merge writes, paired with the clause each carries.
+fn merged_effects(
+  file: types.GradedFile,
+  inferred: List(types.EffectAnnotation),
+) -> List(#(String, option.Option(EffectTerm))) {
+  annotation.merge_inferred(file, inferred, set.new(), set.new())
+  |> annotation.extract_annotations
+  |> list.filter(fn(a) { a.kind == Effects })
+  |> list.map(fn(a) { #(a.function, a.returns) })
+}
+
+pub fn merge_inferred_keeps_a_clause_under_a_module_assume_test() {
+  let clause = Some(TLabels(set.from_list(["Net"])))
+  merged_effects(types.GradedFile(lines: [module_assume("db")]), [
+    inferred_line("db.make", clause),
+    inferred_line("db.plain", None),
+  ])
+  |> should.equal([#("db.make", clause)])
+}
+
+pub fn merge_inferred_keeps_a_clause_under_a_function_assume_test() {
+  let clause = Some(TLabels(set.from_list(["Net"])))
+  merged_effects(
+    types.GradedFile(lines: [
+      function_assume("db", "make"),
+      function_assume("db", "plain"),
+    ]),
+    [inferred_line("db.make", clause), inferred_line("db.plain", None)],
+  )
+  |> should.equal([#("db.make", clause)])
+}
+
+pub fn merge_inferred_composes_the_two_assume_channels_test() {
+  // Both declarations cover `db.make`: the returns one strips the clause, and
+  // the effects one then has a clause-less line to drop. Nothing of the
+  // inferred line survives — the alternative is a line kept alive by a clause
+  // the declaration above it already answers for.
+  merged_effects(
+    types.GradedFile(lines: [
+      module_assume("db"),
+      ExternalLine(ExternalAnnotation(
+        module: "db",
+        target: FunctionExternal("make"),
+        effects: None,
+        returns: Some(TLabels(set.from_list(["Net"]))),
+      )),
+    ]),
+    [inferred_line("db.make", Some(TLabels(set.from_list(["Stdout"]))))],
+  )
+  |> should.equal([])
+}
+
+pub fn merge_inferred_over_a_kept_clause_line_is_idempotent_test() {
+  // The second `infer` over an unchanged package: the kept line is updated in
+  // place with the same inference it already holds, so the file does not move.
+  let clause = Some(TLabels(set.from_list(["Net"])))
+  let file =
+    types.GradedFile(lines: [
+      module_assume("db"),
+      AnnotationLine(inferred_line("db.make", clause)),
+    ])
+  annotation.merge_inferred(
+    file,
+    [inferred_line("db.make", clause)],
+    set.new(),
+    set.new(),
+  )
   |> should.equal(file)
 }
 
-pub fn merge_inferred_rewrites_a_stale_external_returns_line_test() {
-  // The line names one of this package's own ordinary functions, so it declares
-  // nothing: it is deleted and the inferred `returns` line it was suppressing
-  // is written in its place.
+pub fn merge_inferred_keeps_a_declared_returns_clause_test() {
+  // A declaration is preserved in place and never regenerated, and the inferred
+  // clause for the same name is dropped: one name, one answer.
+  let declared =
+    ExternalLine(ExternalAnnotation(
+      module: "app",
+      target: FunctionExternal("make"),
+      effects: None,
+      returns: Some(TLabels(set.from_list(["Net"]))),
+    ))
+  let file = types.GradedFile(lines: [declared])
+  let inferred = [
+    EffectAnnotation(
+      Effects,
+      "app.make",
+      [],
+      TLabels(set.new()),
+      returns: Some(TLabels(set.new())),
+    ),
+    EffectAnnotation(
+      Effects,
+      "app.other",
+      [],
+      TLabels(set.new()),
+      returns: Some(TLabels(set.new())),
+    ),
+  ]
+  annotation.merge_inferred(file, inferred, set.new(), set.new())
+  |> should.equal(
+    types.GradedFile(lines: [
+      declared,
+      AnnotationLine(EffectAnnotation(
+        Effects,
+        "app.make",
+        [],
+        TLabels(set.new()),
+        returns: None,
+      )),
+      AnnotationLine(EffectAnnotation(
+        Effects,
+        "app.other",
+        [],
+        TLabels(set.new()),
+        returns: Some(TLabels(set.new())),
+      )),
+    ]),
+  )
+}
+
+pub fn merge_inferred_keeps_an_unmatched_returns_clause_test() {
+  // A declaration for a function inference no longer reports a summary for is
+  // still the author's line, so the stale-removal path does not reach it.
   let file =
     types.GradedFile(lines: [
-      ExternalReturnsLine(types.ReturnsAnnotation(
-        function: "app.make",
-        operator: TLabels(set.from_list(["Net"])),
+      ExternalLine(ExternalAnnotation(
+        module: "app",
+        target: FunctionExternal("make"),
+        effects: None,
+        returns: Some(TLabels(set.from_list(["Net"]))),
       )),
     ])
-  let inferred_returns = [
-    types.ReturnsAnnotation(
-      function: "app.make",
-      operator: TLabels(set.from_list(["Disk"])),
+  annotation.merge_inferred(file, [], set.new(), set.new())
+  |> should.equal(file)
+}
+
+pub fn merge_inferred_rewrites_a_stale_returns_clause_test() {
+  // The line names one of this package's own ordinary functions, so it declares
+  // nothing: it is deleted and the inferred clause it was suppressing is
+  // written on the function's `effects` line.
+  let file =
+    types.GradedFile(lines: [
+      ExternalLine(ExternalAnnotation(
+        module: "app",
+        target: FunctionExternal("make"),
+        effects: None,
+        returns: Some(TLabels(set.from_list(["Net"]))),
+      )),
+    ])
+  let inferred = [
+    EffectAnnotation(
+      Effects,
+      "app.make",
+      [],
+      TLabels(set.new()),
+      returns: Some(TLabels(set.from_list(["Disk"]))),
     ),
   ]
   annotation.merge_inferred(
     file,
-    [],
-    inferred_returns,
+    inferred,
     set.new(),
     set.from_list(["app.make"]),
   )
   |> should.equal(
     types.GradedFile(lines: [
-      ReturnsLine(types.ReturnsAnnotation(
-        function: "app.make",
-        operator: TLabels(set.from_list(["Disk"])),
+      AnnotationLine(EffectAnnotation(
+        Effects,
+        "app.make",
+        [],
+        TLabels(set.new()),
+        returns: Some(TLabels(set.from_list(["Disk"]))),
       )),
     ]),
   )
 }
 
 pub fn merge_inferred_keeps_the_two_stale_channels_apart_test() {
-  // A stale `external returns` name reaching the effects channel's filters
+  // A stale returns-declaration name reaching the effects channel's filters
   // would delete the function's own `effects` line, which nothing declared
   // anything about.
   let file =
     types.GradedFile(lines: [
-      ExternalReturnsLine(types.ReturnsAnnotation(
-        function: "app.make",
-        operator: TLabels(set.from_list(["Net"])),
+      ExternalLine(ExternalAnnotation(
+        module: "app",
+        target: FunctionExternal("make"),
+        effects: None,
+        returns: Some(TLabels(set.from_list(["Net"]))),
       )),
       AnnotationLine(EffectAnnotation(
         Effects,
         "app.make",
         [],
         TLabels(set.new()),
+        returns: None,
       )),
     ])
   let inferred = [
-    EffectAnnotation(Effects, "app.make", [], TLabels(set.from_list(["Disk"]))),
+    EffectAnnotation(
+      Effects,
+      "app.make",
+      [],
+      TLabels(set.from_list(["Disk"])),
+      returns: None,
+    ),
   ]
   annotation.merge_inferred(
     file,
     inferred,
-    [],
     set.new(),
     set.from_list(["app.make"]),
   )
@@ -748,6 +1316,7 @@ pub fn merge_inferred_keeps_the_two_stale_channels_apart_test() {
         "app.make",
         [],
         TLabels(set.from_list(["Disk"])),
+        returns: None,
       )),
     ]),
   )
@@ -766,6 +1335,7 @@ pub fn format_second_order_application_test() {
       "with_logger",
       [ParamBound("action", TVar("action"))],
       TApp(TVar("action"), TLabels(set.from_list(["Stdout"]))),
+      returns: None,
     )
   annotation.format_annotation(ann)
   |> should.equal("effects with_logger(action: [action]) : [action([Stdout])]")
@@ -776,7 +1346,14 @@ pub fn residual_abstraction_in_an_effect_set_renders_parseably_test() {
   // has no `fn(..) -> ..` atom, so rendering the abstraction would emit a line
   // the parser rejects — `graded infer` would write a spec that fails to read
   // back. It grounds to the conservative collapse instead.
-  let ann = EffectAnnotation(Effects, "probe.caller", [], TAbs("b", TVar("b")))
+  let ann =
+    EffectAnnotation(
+      Effects,
+      "probe.caller",
+      [],
+      TAbs("b", TVar("b")),
+      returns: None,
+    )
   let line = annotation.format_annotation(ann)
   line |> should.equal("effects probe.caller : [Unknown]")
   let assert Ok([reparsed]) = annotation.parse(line)
@@ -792,6 +1369,7 @@ pub fn residual_abstraction_beside_a_label_renders_parseably_test() {
       "probe.caller",
       [],
       TUnion([TLabels(set.from_list(["Stdout"])), TAbs("b", TVar("b"))]),
+      returns: None,
     )
   let line = annotation.format_annotation(ann)
   line |> should.equal("effects probe.caller : [Stdout, Unknown]")
@@ -874,7 +1452,7 @@ pub fn second_order_roundtrip_property_test() {
   // P-SER-2: parse ∘ format is identity on normalized serializable terms.
   use term <- qcheck.given(generators.serializable_effect_term_gen())
   let normalized = effect_term.normalize(term)
-  let ann = EffectAnnotation(Effects, "f", [], normalized)
+  let ann = EffectAnnotation(Effects, "f", [], normalized, returns: None)
   let assert Ok([parsed]) = annotation.parse(annotation.format_annotation(ann))
   parsed.effects |> should.equal(normalized)
 }
@@ -908,67 +1486,56 @@ pub fn roundtrip_mixed_param_and_field_bound_test() {
   annotation.format_annotation(ann) |> should.equal(line)
 }
 
-// Returns annotations
+// Inferred returned operators
 //
-// `returns module.fn : fn(cb) -> [...]` lines carrying an operator term for a
+// `where returns : fn(cb) -> [...]` clauses carrying an operator term for a
 // function's return value.
 
-pub fn returns_line_round_trip_test() {
-  let line = "returns app/dep.pick : fn(cb) -> [cb]"
+pub fn returns_clause_round_trip_test() {
+  let line = "effects app/dep.pick : [] where returns : fn(cb) -> [cb]"
   let assert Ok(file) = annotation.parse_file(line)
-  let assert [returns] = annotation.extract_returns(file)
-  returns.function |> should.equal("app/dep.pick")
-  returns.operator |> should.equal(TAbs("cb", TVar("cb")))
+  let assert [parsed] = annotation.extract_annotations(file)
+  parsed.function |> should.equal("app/dep.pick")
+  parsed.returns |> should.equal(Some(TAbs("cb", TVar("cb"))))
   annotation.format_file(file) |> should.equal(line)
 }
 
-pub fn returns_line_multi_callback_round_trip_test() {
-  let line = "returns m.pick : fn(a, b) -> [a, b]"
+pub fn returns_clause_multi_callback_round_trip_test() {
+  let line = "effects m.pick : [] where returns : fn(a, b) -> [a, b]"
   let assert Ok(file) = annotation.parse_file(line)
-  let assert [returns] = annotation.extract_returns(file)
-  returns.operator
-  |> should.equal(TAbs("a", TAbs("b", union_vars(TVar("a"), "b"))))
+  let assert [parsed] = annotation.extract_annotations(file)
+  parsed.returns
+  |> should.equal(Some(TAbs("a", TAbs("b", union_vars(TVar("a"), "b")))))
   annotation.format_file(file) |> should.equal(line)
 }
 
-// External returns annotations
+// Declared returned operators
 //
-// `external returns module.fn : [Net]` lines declaring the operator a foreign
-// producer hands back. Same operator grammar as `returns`, a distinct line
-// kind.
+// `assume module.fn where returns : [Net]` lines declaring the operator a
+// foreign producer hands back. Same operator grammar as an inferred clause.
 
-pub fn external_returns_line_round_trip_test() {
-  let line = "external returns app/ffi.make_client : [Net]"
+pub fn declared_returns_clause_round_trip_test() {
+  let line = "assume app/ffi.make_client where returns : [Net]"
   let assert Ok(file) = annotation.parse_file(line)
-  let assert [declared] = annotation.extract_external_returns(file)
-  declared.function |> should.equal("app/ffi.make_client")
-  declared.operator |> should.equal(TLabels(set.from_list(["Net"])))
-  annotation.extract_external_returns(file) |> list.length |> should.equal(1)
-  annotation.extract_returns(file) |> should.equal([])
+  let assert [declared] = annotation.extract_externals(file)
+  declared.module |> should.equal("app/ffi")
+  declared.target |> should.equal(FunctionExternal("make_client"))
+  declared.returns |> should.equal(Some(TLabels(set.from_list(["Net"]))))
   annotation.format_file(file) |> should.equal(line)
 }
 
-pub fn external_returns_line_operator_round_trip_test() {
-  let line = "external returns m.wrap : fn(cb) -> [cb]"
+pub fn declared_returns_operator_clause_round_trip_test() {
+  let line = "assume m.wrap where returns : fn(cb) -> [cb]"
   let assert Ok(file) = annotation.parse_file(line)
-  let assert [declared] = annotation.extract_external_returns(file)
-  declared.operator |> should.equal(TAbs("cb", TVar("cb")))
+  let assert [declared] = annotation.extract_externals(file)
+  declared.returns |> should.equal(Some(TAbs("cb", TVar("cb"))))
   annotation.format_file(file) |> should.equal(line)
 }
 
-pub fn external_returns_line_is_not_an_effects_annotation_test() {
+pub fn declared_returns_clause_is_not_an_effects_annotation_test() {
   let assert Ok(annotations) =
-    annotation.parse("external returns m.make : [Net]")
+    annotation.parse("assume m.make where returns : [Net]")
   annotations |> should.equal([])
-}
-
-pub fn external_returns_malformed_line_test() {
-  let input =
-    "effects m.a : []
-external returns m.make
-"
-  annotation.parse_file(input)
-  |> should.equal(Error(annotation.InvalidLine(2, "external returns m.make")))
 }
 
 // Helpers

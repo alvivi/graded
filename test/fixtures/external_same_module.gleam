@@ -1,5 +1,5 @@
 // A same-module call into a bodyless `@external` that carries an
-// `external effects` declaration inherits the DECLARED effects, not the
+// `assume` declaration inherits the DECLARED effects, not the
 // conservative `[Unknown]` an undeclared external yields. This is the common
 // FFI idiom: an `@external` binding paired with a same-module wrapper.
 //

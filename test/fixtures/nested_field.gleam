@@ -21,7 +21,7 @@ pub fn via_type(o: Outer) -> Nil {
 pub fn via_bound(o: Outer) -> Nil {
   // Resolved by the dotted field bound on `via_bound`'s `check` line
   // (`check nested_field.via_bound(o.inner.run: [Stdout]) : []`), which wins
-  // ahead of the `type` line.
+  // ahead of the field `assume` line.
   o.inner.run()
 }
 
@@ -34,7 +34,7 @@ pub type Holder {
 }
 
 pub fn unbound(h: Holder) -> Nil {
-  // `Loose.act` has NO `type` line and `unbound` has NO field bound, so the
+  // `Loose.act` has NO field `assume` line and `unbound` has NO field bound, so the
   // nested fn-typed field call gets a field-effect variable that concretizes to
   // [Unknown] — the soundness floor — making the [] budget fail with [Unknown].
   h.loose.act()

@@ -1,3 +1,3 @@
 // filepath — pure path manipulation
 
-external effects filepath : []
+assume filepath : []

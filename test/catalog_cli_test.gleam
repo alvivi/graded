@@ -232,7 +232,7 @@ pub fn a_file_ending_in_a_carriage_return_keeps_it_test() {
   // `println` puts back, so only the newline comes off.
   let root =
     support.write_fixture("build/catalog_cli_crlf", [
-      #("catalog/crlf@1.0.0.graded", "external effects crlf.run : []\r\n"),
+      #("catalog/crlf@1.0.0.graded", "assume crlf.run : []\r\n"),
     ])
   let output =
     catalog_report(
@@ -243,7 +243,7 @@ pub fn a_file_ending_in_a_carriage_return_keeps_it_test() {
   support.cleanup(root)
   output
   |> should.equal(
-    "// crlf@1.0.0.graded — bundled version, as requested\nexternal effects crlf.run : []\r",
+    "// crlf@1.0.0.graded — bundled version, as requested\nassume crlf.run : []\r",
   )
 }
 
@@ -512,11 +512,8 @@ pub fn the_manifest_is_the_enclosing_packages_test() {
 pub fn a_tie_selects_one_file_for_both_paths_test() {
   let root =
     support.write_fixture("build/catalog_cli_tie", [
-      #("catalog/foo@1.0.0.graded", "external effects foo/x.run : [Release]\n"),
-      #(
-        "catalog/foo@1.0.0-rc1.graded",
-        "external effects foo/x.run : [Prerelease]\n",
-      ),
+      #("catalog/foo@1.0.0.graded", "assume foo/x.run : [Release]\n"),
+      #("catalog/foo@1.0.0-rc1.graded", "assume foo/x.run : [Prerelease]\n"),
       #("manifest.toml", manifest_for("foo", "1.0.0")),
     ])
   let printed =
@@ -549,15 +546,15 @@ pub fn a_tie_selects_one_file_for_both_paths_test() {
 // whose trailing newlines are none, one and two — the counts the printed-bytes
 // equation has to hold for.
 
-const argv_entry = "external effects argv.load : [Args]
-external effects argv.raw : [Args]"
+const argv_entry = "assume argv.load : [Args]
+assume argv.raw : [Args]"
 
-const lustre_four = "external effects lustre/four.build : []
-external effects lustre/four.render : [Dom]
+const lustre_four = "assume lustre/four.build : []
+assume lustre/four.render : [Dom]
 "
 
-const lustre_five = "external effects lustre/five.build : []
-external effects lustre/five.render : [Dom]
+const lustre_five = "assume lustre/five.build : []
+assume lustre/five.render : [Dom]
 
 "
 

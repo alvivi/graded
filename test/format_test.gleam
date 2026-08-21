@@ -5,7 +5,7 @@ import gleeunit/should
 import graded/internal/annotation
 import graded/internal/types.{
   AnnotationLine, BlankLine, Check, CommentLine, Effects, ExternalLine,
-  ExternalReturnsLine, ReturnsLine, TypeFieldLine,
+  TypeFieldLine,
 }
 import qcheck
 
@@ -92,18 +92,17 @@ pub fn format_sorted_section_order_test() {
   check_non_decreasing(indices)
 }
 
+// Externals and type fields share the `assume` section, so they share an index.
 fn section_index(line: types.GradedLine) -> Int {
   case line {
     CommentLine(_) -> 0
     ExternalLine(_) -> 1
-    ExternalReturnsLine(_) -> 2
-    TypeFieldLine(_) -> 3
+    TypeFieldLine(_) -> 1
     AnnotationLine(a) ->
       case a.kind {
-        Check -> 4
-        Effects -> 5
+        Check -> 2
+        Effects -> 3
       }
-    ReturnsLine(_) -> 6
     BlankLine -> -1
   }
 }

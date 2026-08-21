@@ -8,6 +8,7 @@ import gleam/option.{Some}
 import gleam/string
 import gleeunit/should
 import graded
+import graded/internal/annotation
 import graded/internal/cli
 import graded/internal/diff
 import simplifile
@@ -141,21 +142,20 @@ pub fn dry_run_repairs_the_formerly_last_line_test() {
   support.cleanup(root)
 }
 
-// A spec file the parser rejects merges as if it held no lines, so the write
-// would clobber it. The preview shows that: every line already on disk is a
-// removal.
-pub fn dry_run_over_an_unparseable_spec_previews_the_clobber_test() {
+// A spec file the parser rejects stops the run, naming the line, rather than
+// merging as if it held no lines and previewing a write that would clobber it.
+pub fn dry_run_over_an_unparseable_spec_errors_test() {
   let root = "build/infer_dry_run_unparseable"
   let existing = spec() <> "this line is not a graded annotation\n"
   write_project(root, source(), Spec(existing))
 
-  let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
-  changed_lines(preview)
-  |> list.filter(string.starts_with(_, "- "))
-  |> should.equal([
-    "- external effects ffi/console.log : [Stdout]",
-    "- this line is not a graded annotation",
-  ])
+  graded.run_infer_command(cli.DryRun, root)
+  |> should.equal(
+    Error(graded.GradedParseError(
+      root <> "/proj.graded",
+      annotation.InvalidLine(2, "this line is not a graded annotation"),
+    )),
+  )
   simplifile.read(root <> "/proj.graded") |> should.equal(Ok(existing))
   support.cleanup(root)
 }
@@ -266,7 +266,7 @@ pub fn shout() -> Nil {
 }
 
 fn spec() -> String {
-  "external effects ffi/console.log : [Stdout]\n"
+  "assume ffi/console.log : [Stdout]\n"
 }
 
 // The final `count` lines of a preview, markers included.
@@ -312,18 +312,21 @@ pub fn native_make() -> fn() -> Nil {
   let assert Ok(_) = graded.run_infer(root)
   let assert Ok(written) = simplifile.read(root <> "/proj.graded")
 
-  string.contains(written, "returns proj.make") |> should.be_false()
+  string.contains(written, "effects proj.make : [Unknown]") |> should.be_true()
+  string.contains(written, "proj.make : [Unknown] where returns")
+  |> should.be_false()
   // The ordinary producer beside it still gets one, so what is refused is the
   // foreign half rather than the channel.
-  string.contains(written, "returns proj.native_make") |> should.be_true()
+  string.contains(written, "effects proj.native_make : [] where returns : []")
+  |> should.be_true()
   support.cleanup(root)
 }
 
-pub fn infer_removes_a_returns_line_a_new_external_left_behind_test() {
+pub fn infer_removes_a_returns_clause_a_new_external_left_behind_test() {
   let root = "build/infer_external_returns_stale"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #("proj.graded", "returns proj.make : []\n"),
+    #("proj.graded", "effects proj.make : [] where returns : []\n"),
     #(
       "proj.gleam",
       "@target(erlang)
@@ -336,7 +339,57 @@ pub fn make() -> fn() -> Nil {
   ])
   let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
   changed_lines(preview)
-  |> list.contains("- returns proj.make : []")
+  |> list.contains("- effects proj.make : [] where returns : []")
   |> should.be_true()
+  support.cleanup(root)
+}
+
+// A write mode refuses the same spec the preview refuses, and leaves the file
+// exactly as it was rather than merging into an empty file.
+pub fn infer_over_an_unparseable_spec_writes_nothing_test() {
+  let root = "build/infer_unparseable"
+  let _ = support.write_unparseable_spec_project(root)
+  let assert Ok(before) = simplifile.read(root <> "/proj.graded")
+
+  graded.run_infer(root)
+  |> should.equal(
+    Error(graded.GradedParseError(
+      root <> "/proj.graded",
+      annotation.InvalidLine(2, "not a graded line"),
+    )),
+  )
+  simplifile.read(root <> "/proj.graded") |> should.equal(Ok(before))
+  support.cleanup(root)
+}
+
+// A producer whose callback is used only inside the closure it returns. The
+// callback is mentioned by the clause alone, so the bound that scopes it has to
+// come from there — without it the line would be open the moment it is read
+// back.
+pub fn infer_writes_a_clause_with_a_bound_for_every_variable_it_mentions_test() {
+  let root = "build/infer_returns_clause"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.gleam",
+      "pub fn traced(action: fn(fn(String) -> Nil) -> Nil) -> fn(fn(String) -> Nil) -> Nil {
+  fn(cb) { action(cb) }
+}
+",
+    ),
+  ])
+
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  written
+  |> string.trim
+  |> should.equal(
+    "effects proj.traced(action: [action]) : [] where returns : fn(cb) -> [action([cb])]",
+  )
+
+  // Re-inferring over what was just written changes nothing: the clause and its
+  // bound read back as what produced them.
+  let assert Ok(_) = graded.run_infer(root)
+  simplifile.read(root <> "/proj.graded") |> should.equal(Ok(written))
   support.cleanup(root)
 }

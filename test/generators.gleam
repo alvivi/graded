@@ -1,6 +1,6 @@
 import gleam/dict
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/set
 import graded/internal/effect_term
 import graded/internal/types.{
@@ -201,6 +201,20 @@ pub fn function_name_gen() -> qcheck.Generator(String) {
   ])
 }
 
+// The operator a `where returns` clause carries: a bare term, or an
+// abstraction over one binder.
+pub fn operator_gen() -> qcheck.Generator(EffectTerm) {
+  qcheck.from_generators(first_order_term_gen(), [
+    qcheck.map(first_order_term_gen(), fn(body) { TAbs("cb", body) }),
+  ])
+}
+
+fn optional_operator_gen() -> qcheck.Generator(option.Option(EffectTerm)) {
+  qcheck.from_generators(qcheck.return(None), [
+    qcheck.map(operator_gen(), Some),
+  ])
+}
+
 pub fn annotation_gen() -> qcheck.Generator(types.EffectAnnotation) {
   let kind_gen =
     qcheck.from_generators(qcheck.return(Effects), [qcheck.return(Check)])
@@ -215,26 +229,19 @@ pub fn annotation_gen() -> qcheck.Generator(types.EffectAnnotation) {
     qcheck.map2(param_name_gen, first_order_term_gen(), fn(name, effects) {
       ParamBound(name:, effects:)
     })
-  let no_params =
-    qcheck.map2(
-      qcheck.map2(kind_gen, function_name_gen(), fn(k, f) { #(k, f) }),
-      first_order_term_gen(),
-      fn(kf, effects) {
-        let #(kind, function) = kf
-        EffectAnnotation(kind:, function:, params: [], effects:)
-      },
-    )
-  let with_param =
-    qcheck.map2(
-      qcheck.map2(kind_gen, function_name_gen(), fn(k, f) { #(k, f) }),
-      qcheck.map2(param_bound_gen, first_order_term_gen(), fn(p, e) { #(p, e) }),
-      fn(kf, pe) {
-        let #(kind, function) = kf
-        let #(param, effects) = pe
-        EffectAnnotation(kind:, function:, params: [param], effects:)
-      },
-    )
-  qcheck.from_generators(no_params, [with_param])
+  let params_gen =
+    qcheck.from_generators(qcheck.return([]), [
+      qcheck.map(param_bound_gen, fn(bound) { [bound] }),
+      qcheck.map2(param_bound_gen, param_bound_gen, fn(first, second) {
+        [first, second]
+      }),
+    ])
+  use kind <- qcheck.bind(kind_gen)
+  use function <- qcheck.bind(function_name_gen())
+  use params <- qcheck.bind(params_gen)
+  use effects <- qcheck.bind(first_order_term_gen())
+  use returns <- qcheck.map(optional_operator_gen())
+  EffectAnnotation(kind:, function:, params:, effects:, returns:)
 }
 
 pub fn type_field_gen() -> qcheck.Generator(types.TypeFieldAnnotation) {
@@ -265,20 +272,27 @@ pub fn external_gen() -> qcheck.Generator(types.ExternalAnnotation) {
       qcheck.return("gleam/httpc"),
       qcheck.return("simplifile"),
     ])
-  let module_ext =
-    qcheck.map2(module_name_gen, effect_set_gen(), fn(module, effects) {
-      ExternalAnnotation(module:, target: ModuleExternal, effects:)
-    })
-  let function_ext =
-    qcheck.map2(
-      qcheck.map2(module_name_gen, function_name_gen(), fn(m, f) { #(m, f) }),
-      effect_set_gen(),
-      fn(mf, effects) {
-        let #(module, name) = mf
-        ExternalAnnotation(module:, target: FunctionExternal(name), effects:)
-      },
+  let target_gen =
+    qcheck.from_generators(qcheck.return(ModuleExternal), [
+      qcheck.map(function_name_gen(), FunctionExternal),
+    ])
+  // Never both absent: a line carrying neither clause claims nothing and is not
+  // a line the parser reads back.
+  let clauses_gen =
+    qcheck.from_generators(
+      qcheck.map(effect_set_gen(), fn(effects) { #(Some(effects), None) }),
+      [
+        qcheck.map2(effect_set_gen(), operator_gen(), fn(effects, operator) {
+          #(Some(effects), Some(operator))
+        }),
+        qcheck.map(operator_gen(), fn(operator) { #(None, Some(operator)) }),
+      ],
     )
-  qcheck.from_generators(module_ext, [function_ext])
+  use module <- qcheck.bind(module_name_gen)
+  use target <- qcheck.bind(target_gen)
+  use clauses <- qcheck.map(clauses_gen)
+  let #(effects, returns) = clauses
+  ExternalAnnotation(module:, target:, effects:, returns:)
 }
 
 pub fn graded_file_gen() -> qcheck.Generator(types.GradedFile) {
@@ -308,7 +322,13 @@ pub fn inferred_list_gen() -> qcheck.Generator(List(types.EffectAnnotation)) {
       function_name_gen(),
       first_order_term_gen(),
       fn(function, effects) {
-        EffectAnnotation(kind: Effects, function:, params: [], effects:)
+        EffectAnnotation(
+          kind: Effects,
+          function:,
+          params: [],
+          effects:,
+          returns: None,
+        )
       },
     )
   qcheck.map(

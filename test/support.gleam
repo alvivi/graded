@@ -50,3 +50,46 @@ pub fn cleanup(directory: String) -> Nil {
   let _ = simplifile.delete(directory)
   Nil
 }
+
+// Materialise a minimal package whose spec file's second line the parser
+// rejects, for the commands that must refuse it. Returns the directory.
+pub fn write_unparseable_spec_project(directory: String) -> String {
+  write_fixture(directory, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("src/proj.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+    #("proj.graded", "effects proj.go : []\nnot a graded line\n"),
+  ])
+}
+
+// A project with one installed dependency, materialised at `directory`: the
+// project's own `gleam.toml`, spec and sources, and the dependency's spec and
+// sources under `build/packages/<dependency>/src/`. Source paths are relative
+// to the package they belong to. Returns the project directory.
+pub fn write_project_with_dependency(
+  directory directory: String,
+  package package: String,
+  spec spec: String,
+  sources sources: List(#(String, String)),
+  dependency dependency: String,
+  dependency_spec dependency_spec: String,
+  dependency_sources dependency_sources: List(#(String, String)),
+) -> String {
+  let dep_root = "build/packages/" <> dependency
+  let dep_files =
+    list.map(dependency_sources, fn(entry) {
+      let #(path, contents) = entry
+      #(dep_root <> "/src/" <> path, contents)
+    })
+  write_fixture(
+    directory,
+    list.flatten([
+      [
+        #("gleam.toml", "name = \"" <> package <> "\"\n"),
+        #(package <> ".graded", spec),
+        #(dep_root <> "/" <> dependency <> ".graded", dependency_spec),
+      ],
+      sources,
+      dep_files,
+    ]),
+  )
+}

@@ -9,6 +9,7 @@ import gleam/set
 import gleam/string
 import gleeunit/should
 import graded
+import graded/internal/annotation
 import graded/internal/types.{Specific}
 import simplifile
 import support.{cleanup, ensure_parent, write_file}
@@ -213,6 +214,86 @@ pub fn pack_rejects_escaping_spec_path_test() {
     "name = \"dep\"\n\n[tools.graded]\nspec_file = \"../escape.graded\"\n",
   )
   let assert Error(_) = graded.pack_project(root, Some("unused.tar"))
+  cleanup(root)
+}
+
+// A spec the parser rejects never reaches the archive
+//
+// Every consumer's loader parses a dependency's spec whole: one line it rejects
+// drops the file's entire metadata. So the spec has to parse before `pack`
+// opens the tarball, or the package publishes annotations nobody reads.
+
+pub fn pack_refuses_a_spec_that_does_not_parse_test() {
+  let root = "build/pack_unparseable"
+  let tarball =
+    setup_dep(
+      root,
+      "dep",
+      "1.0.0",
+      "dep.graded",
+      "effects dep.work : []\nreturns dep.make : [Stdout]\n",
+    )
+  let assert Ok(before) = simplifile.read_bits(tarball)
+
+  // The standard parse error, naming the file and the retired line.
+  let assert Error(graded.GradedParseError(path, cause)) =
+    graded.pack_project(root, None)
+  string.ends_with(path, "dep.graded") |> should.be_true()
+  cause
+  |> should.equal(annotation.RetiredSpelling(
+    2,
+    "returns dep.make : [Stdout]",
+    annotation.RetiredReturns,
+  ))
+
+  // The tarball is untouched and the run left no scratch path behind: the spec
+  // is refused before either is opened.
+  simplifile.read_bits(tarball) |> should.equal(Ok(before))
+  simplifile.is_file(tarball <> ".packing") |> should.equal(Ok(False))
+  metadata_files(tarball)
+  |> list.contains("dep.graded")
+  |> should.be_false()
+
+  cleanup(root)
+}
+
+pub fn pack_without_a_spec_names_infer_test() {
+  let root = "build/pack_no_spec"
+  let _ = simplifile.delete(root)
+  write_file(root <> "/gleam.toml", "name = \"dep\"\nversion = \"1.0.0\"\n")
+  let tarball = root <> "/build/dep-1.0.0.tar"
+  ensure_parent(tarball)
+  build_tarball(tarball, "dep", "1.0.0", [
+    #("src/dep.gleam", "pub fn work() {\n  Nil\n}\n"),
+  ])
+
+  let assert Error(graded.PackError(message)) = graded.pack_project(root, None)
+  string.contains(message, "no spec file at") |> should.be_true()
+  string.contains(message, "run `graded infer` first") |> should.be_true()
+  cleanup(root)
+}
+
+pub fn pack_reports_an_unreadable_spec_as_a_read_error_test() {
+  // Not "no spec file … run `graded infer` first": the file is right there, and
+  // inference does not fix a permissions failure.
+  let root = "build/pack_unreadable"
+  let _ =
+    setup_dep(root, "dep", "1.0.0", "dep.graded", "effects dep.work : []\n")
+  let spec = root <> "/dep.graded"
+  let assert Ok(Nil) = simplifile.set_permissions_octal(spec, 0o000)
+
+  // A process that reads the file anyway — root, most often — proves nothing
+  // here, so the assertion runs only where the mode is honoured.
+  case simplifile.read(spec) {
+    Error(_) -> {
+      let assert Error(graded.FileReadError(path, _cause)) =
+        graded.pack_project(root, None)
+      path |> should.equal(spec)
+    }
+    Ok(_) -> Nil
+  }
+
+  let assert Ok(Nil) = simplifile.set_permissions_octal(spec, 0o644)
   cleanup(root)
 }
 

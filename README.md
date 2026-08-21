@@ -22,7 +22,7 @@ gleam run -m graded infer
 
 This scans `src/`, analyses every function, and writes two outputs:
 
-- **`<package_name>.graded`** at the project root — the spec file. Contains the inferred effects of every *public* function plus any hand-written `check` invariants, `external effects` hints, and `type` field annotations. Tracked in git.
+- **`<package_name>.graded`** at the project root — the spec file. Contains the inferred effects of every *public* function plus any hand-written `check` invariants and `assume` declarations. Tracked in git.
 - **`build/.graded/<module>.graded`** — per-module cache files. Contain the inferred effects of *every* function (public and private). Regenerated freely on each `graded infer` run, never shipped (`build/` is gitignored).
 
 ### Example
@@ -88,7 +88,7 @@ Two cases need no packing:
 
 ## Reference
 
-The `.graded` spec language and graded's analysis model are documented in full in **[the Reference](https://hexdocs.pm/graded/reference.html)** — the annotation kinds (`effects`, `check`, `type`, `external effects`, `external returns`, `returns`), effect-set syntax, effect resolution order, higher-order and second-order effect polymorphism, type field effects, the effect-label conventions, and the bundled catalog of common packages.
+The `.graded` spec language and graded's analysis model are documented in full in **[the Reference](https://hexdocs.pm/graded/reference.html)** — the annotation kinds (`effects`, `check`, `assume`) and the `where returns` clause, effect-set syntax, effect resolution order, higher-order and second-order effect polymorphism, type field effects, the effect-label conventions, and the bundled catalog of common packages.
 
 ## Commands
 
@@ -111,7 +111,7 @@ gleam run -m graded -- --version              # show the installed version
 
 An unknown command or option is a usage error, not a silently-checked directory.
 
-`effect` answers a single lookup and writes nothing — the spec file and the cache are left untouched. Its `<name>` is either a module-qualified function (`myapp/router.handle`) or a type field (`myapp/repo.Repo.find`). It prints prose by default (`myapp/router.handle has effects [Stdout]`), describing where a higher-order function's effects come from and what its bounds assume, and stating a `[Unknown]` result as a name that was found whose effects weren't determined. `--format=graded` prints the same answer as a `.graded` line with provenance on a `//` comment, so it parses back — the format to pipe into a spec file. Public functions resolve without a prior `graded infer`; private functions and undeclared type fields report that the name wasn't found. A module covered by a module-level `external effects <module>` declaration is the exception: that declaration answers for every name in the module that nothing else keys, so such a name resolves to the declared effect whether or not it exists.
+`effect` answers a single lookup and writes nothing — the spec file and the cache are left untouched. Its `<name>` is either a module-qualified function (`myapp/router.handle`) or a type field (`myapp/repo.Repo.find`). It prints prose by default (`myapp/router.handle has effects [Stdout]`), describing where a higher-order function's effects come from and what its bounds assume, and stating a `[Unknown]` result as a name that was found whose effects weren't determined. `--format=graded` prints the same answer as a `.graded` line with provenance on a `//` comment, so it parses back — the format to pipe into a spec file. Public functions resolve without a prior `graded infer`; private functions and undeclared type fields report that the name wasn't found. A module covered by a module-level `assume <module>` declaration is the exception: that declaration answers for every name in the module that nothing else keys, so such a name resolves to the declared effect whether or not it exists.
 
 `why` explains one function instead of answering for one name: it re-walks the function's body and prints a line per effect contributor — what the call is, the effects it contributes, and either why they stayed unresolved or which source resolved them, in the same wording violations use. It explains a function whether or not it has a `check` line and whether or not it fits one, so an effect you didn't expect is traced without first writing a budget to make it fail. Its `<name>` is a module-qualified function of one of your own modules (private ones included, unlike `effect`); a dependency function has no body here to walk. A function with two `check` lines gets one block per line, each analysed under that line's own bounds. Nothing is written.
 

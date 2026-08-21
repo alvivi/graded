@@ -3,7 +3,7 @@ pub type Runner {
 }
 
 pub fn exec(r: Runner) -> Nil {
-  // `r` arrives as a parameter — no construction site, no `type` line. `run` is
+  // `r` arrives as a parameter — no construction site, no field `assume` line. `run` is
   // a `fn`-typed field, so the call becomes a *field-effect variable* (`r.run`)
   // instead of [Unknown]. The hand-written field bound on `exec`'s `check` line
   // in fixtures.graded discharges it to [Stdout], so the [] budget must fail.

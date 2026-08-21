@@ -218,7 +218,7 @@ pub fn is_wholly_unknown(effect_set: EffectSet) -> Bool {
 //
 // This is what lets graded express *second-order* effect polymorphism: an
 // effect variable that is itself parameterized by a callback. See
-// docs/second-order-effects.md.
+// docs/SECOND_ORDER_EFFECTS.md.
 pub type EffectTerm {
   // Ground labels. `TLabels(∅)` is pure. Kind `Eff`.
   TLabels(labels: Set(String))
@@ -258,7 +258,7 @@ pub type AnnotationKind {
 // `name` is the bare parameter name (`f`) for a parameter bound, or a
 // `param.field` path (`handler.on_click`) for a *field bound* — a hand-written
 // declaration of a record field's effect at the function boundary, the
-// boundary-scoped counterpart to a `type` line. A field bound's path carries a
+// boundary-scoped counterpart to a field `assume` line. A field bound's path carries a
 // dot; a parameter name never can, so the two forms don't collide.
 pub type ParamBound {
   ParamBound(name: String, effects: EffectTerm)
@@ -268,22 +268,16 @@ pub type ParamBound {
 // `EffectTerm` — for the common first-order case a variable-free or flat-
 // variable term equivalent to an `EffectSet`, but it may carry operator
 // applications (`[action(Stdout)]`) for second-order signatures.
+// `returns` carries the `where returns` clause: the operator the function hands
+// back, scoped by this line's own bound list.
 pub type EffectAnnotation {
   EffectAnnotation(
     kind: AnnotationKind,
     function: String,
     params: List(ParamBound),
     effects: EffectTerm,
+    returns: Option(EffectTerm),
   )
-}
-
-// The operator a function *returns*, for a function whose result is itself a
-// function (`fn pick() -> fn(fn() -> _) -> _`). Serialized into the spec file so
-// the signature crosses module and package boundaries — a downstream
-// `let h = pick(); with(h)` resolves `h` to this operator. `function` is
-// module-qualified in the spec.
-pub type ReturnsAnnotation {
-  ReturnsAnnotation(function: String, operator: EffectTerm)
 }
 
 // Effect annotation for a type's field (e.g., `type Handler.on_click : [Dom]`).
@@ -307,7 +301,7 @@ pub type TypeFieldAnnotation {
 // inferred, nominal-type-keyed entry never resolves such a receiver, since it
 // holds package-wide evidence keyed by type rather than proof for this receiver.
 // Whether a type field's effect was written by hand or read off a construction
-// site. `Declared` carries the source that holds the `type` line.
+// site. `Declared` carries the source that holds the field `assume` line.
 pub type TypeFieldOrigin {
   Declared(source: LookupOrigin)
   Inferred
@@ -321,7 +315,7 @@ pub type UnknownReason {
   // `call`, so this carries no payload.
   NoKnownEffects
   // A same-module call to a bodyless `@external` function with no
-  // `external effects` declaration.
+  // `assume` declaration.
   UndeclaredExternal
   // A call to an `@external` whose declaration names only targets this build
   // does not compile, and which has no Gleam body to run in their place. Nothing
@@ -332,7 +326,7 @@ pub type UnknownReason {
   // A field call whose receiver girard could not type and no syntactic
   // parameter annotation names.
   ReceiverTypeUnresolved
-  // A field call on a receiver of a known type that no `type` line, check
+  // A field call on a receiver of a known type that no field `assume` line, check
   // bound, or wired value decides. The payload names the receiver type; the
   // module is "" for the syntactic fallback, which has none.
   FieldNotAnnotated(module: String, type_name: String)
@@ -362,7 +356,7 @@ pub type UnknownReason {
 // knowledge-base entry, or — for a field call — which rule decided it.
 pub type LookupOrigin {
   // A per-function declaring line in this project's spec: an
-  // `external effects` one, or an `external returns` one.
+  // `assume` line, with or without a `where returns` clause.
   UserExternal
   // A committed `effects` line in this project's spec.
   CommittedSpec
@@ -379,11 +373,11 @@ pub type LookupOrigin {
   PathDependencyInferred(package: String)
   // The bundled versioned catalog entry for a package.
   Catalog(package: String)
-  // An `external effects <module>` line answered for a name nothing else keys.
+  // An `assume <module>` line answered for a name nothing else keys.
   // `source` is the file that declares it. Named apart from
   // `ExternalTarget.ModuleExternal`, which shares this module's namespace.
   ModuleExternalOrigin(source: LookupOrigin)
-  // A hand-written `type` line resolved a field call. `source` is the file that
+  // A hand-written field `assume` line resolved a field call. `source` is the file that
   // declares it. Set only by the field path, never stored beside a function
   // entry.
   TypeLine(source: LookupOrigin)
@@ -396,7 +390,7 @@ pub type EffectSource {
   // An entry keyed by the function itself, from any of the merged sources.
   // `origin` names the source that wrote it.
   FunctionEntry(origin: LookupOrigin)
-  // The function's module carries `external effects <module> : [...]`. Reached
+  // The function's module carries `assume <module> : [...]`. Reached
   // only when nothing keys the function itself, so a per-function external or a
   // catalog line for it takes precedence; it carries no per-function bounds.
   ModuleExternalEntry(origin: LookupOrigin)
@@ -408,7 +402,7 @@ pub type EffectSource {
 // function's parameter bounds and qualified name, so a field call can bind the
 // effect variables to its arguments (the same substitution resolved calls do).
 // Both are empty/`None` for hand-written annotations and concrete field values.
-// `origin` marks a hand-written `type` line apart from a construction-inferred
+// `origin` marks a hand-written field `assume` line apart from a construction-inferred
 // entry.
 pub type TypeFieldEffect {
   TypeFieldEffect(
@@ -452,15 +446,28 @@ pub type ForeignFunction {
 
 // Whether an external targets a whole module or a specific function.
 pub type ExternalTarget {
-  // `external effects gleam/list : []` — the entire module is pure.
+  // `assume gleam/list : []` — the entire module is pure.
   ModuleExternal
-  // `external effects gleam/httpc.send : [Http]` — a specific function.
+  // `assume gleam/httpc.send : [Http]` — a specific function.
   FunctionExternal(name: String)
 }
 
-// Effect declaration for an external function (e.g., `external effects gleam/httpc.send : [Http]`).
+// A trusted declaration (`assume gleam/httpc.send : [Http]`).
+//
+// `effects` is `None` for a line that carries only a `where returns` clause: it
+// claims nothing about the function's own effect, and the tiers below keep
+// answering for it. No reader may default a `None` to the empty set — that
+// turns "claims nothing" into "is pure".
+//
+// `returns` carries the `where returns` clause, meaningful for a function
+// target; a clause on a module path is a lint.
 pub type ExternalAnnotation {
-  ExternalAnnotation(module: String, target: ExternalTarget, effects: EffectSet)
+  ExternalAnnotation(
+    module: String,
+    target: ExternalTarget,
+    effects: Option(EffectSet),
+    returns: Option(EffectTerm),
+  )
 }
 
 // A single line in an .graded file, preserving structure for round-trip rewrites.
@@ -468,11 +475,6 @@ pub type GradedLine {
   AnnotationLine(annotation: EffectAnnotation)
   TypeFieldLine(type_field: TypeFieldAnnotation)
   ExternalLine(external: ExternalAnnotation)
-  ReturnsLine(returns: ReturnsAnnotation)
-  // `external returns mod.fn : [Net]` — the operator a foreign producer hands
-  // back, written by hand. The payload matches `ReturnsLine`; the separate
-  // variant is what tells a declaration from an inferred line, at parse time.
-  ExternalReturnsLine(returns: ReturnsAnnotation)
   CommentLine(text: String)
   BlankLine
 }
@@ -783,51 +785,62 @@ pub type Warning {
   // A `check` line whose qualified function name matches no function defined in
   // any project module — a missing module qualifier or a typo. The check then
   // never runs against any function and passes vacuously, so it's flagged.
+  // A `check` whose subject is a field rather than a function is
+  // `UnverifiedCheckShapeWarning` instead.
   UnmatchedCheckWarning(function: String)
-  // A `type` line whose module/type/field matches no field of a project custom
+  // A `check` line over a shape nothing verifies yet: a field path
+  // (`m.Handler.on_click`). The line parses and keys nothing. `name` is the
+  // subject as written.
+  UnverifiedCheckShapeWarning(name: String)
+  // A `where returns` clause on a `check` line. Scoped to the clause: nothing
+  // weighs a check's returned operator, while the effects budget on the same
+  // line is checked as any other. So the line is live and the clause is not.
+  UnverifiedReturnsClauseWarning(function: String)
+  // A field `assume` line whose module/type/field matches no field of a project custom
   // type — unqualified, mis-qualified, or a typo. The annotation then resolves
   // nothing and the field call silently degrades to `[Unknown]`, so it's
   // flagged. `name` is the annotation as written (`Opts.on_change` when
   // unqualified, `myapp/opts.Opts.on_change` when qualified).
   UnmatchedTypeFieldWarning(name: String)
-  // A per-function `external effects <module>.<function>` line naming one of
+  // A per-function `assume <module>.<function>` line naming one of
   // this package's own ordinary Gleam functions — a body graded can see and
   // every caller runs. The syntax declares foreign code, so the line describes
   // nothing the body does not; it is ignored and the body is walked instead.
   // Scoped to modules the project index holds: declaring a *dependency*
   // function with a visible body is the line's documented use.
   StaleFunctionExternalWarning(function: String)
-  // A per-function `external effects <module>.<function>` line whose name
+  // A per-function `assume <module>.<function>` line whose name
   // resolves nowhere — no dependency, no catalog entry, no project module. The
   // declaration then covers nothing, so it is a typo rather than a budget.
   UnmatchedFunctionExternalWarning(function: String)
-  // A module-level `external effects <module>` line whose module is neither an
+  // A module-level `assume <module>` line whose module is neither an
   // installed dependency, a path dependency, nor a project module. Same
   // reasoning one tier up: the declaration governs no module at all.
   UnmatchedModuleExternalWarning(module: String)
-  // An `external returns <module>.<function>` line naming one of this package's
+  // A `where returns` clause on an `assume <module>.<function>` line naming
+  // one of this package's
   // own ordinary Gleam functions. The same rule as
   // `StaleFunctionExternalWarning` one channel over: the body is visible, so
   // every caller resolves what it hands back for itself and the line declares
   // nothing. It is ignored and the body walked instead.
-  StaleExternalReturnsWarning(function: String)
-  // An `external returns <module>.<function>` line whose name resolves nowhere
+  StaleReturnsClauseWarning(function: String)
+  // A `where returns` clause on an `assume <module>.<function>` line whose
+  // name resolves nowhere
   // — no dependency, no catalog entry, no project module. The declaration then
   // covers nothing, so it is a typo rather than a signature.
-  UnmatchedExternalReturnsWarning(function: String)
-  // An `external returns` line whose operator is polymorphic (`fn(cb) -> [cb]`).
-  // Its free variables are unsanitized, so substituting through it would pass a
-  // budget nothing backs: only a ground operator is loaded, and this line is
-  // ignored.
-  PolymorphicExternalReturnsWarning(function: String)
-  // An `external returns <module>` line with no function part. The declaration
-  // is per-function by nature — nothing keys a whole module's returned value —
-  // so the line resolves nothing at all.
-  DotlessExternalReturnsWarning(name: String)
-  // An `external returns <module>.<Type>.<field>` line: a name of more than two
-  // parts, which is the `type` line's shape, not this one's. A returns
-  // declaration keys a function, so the line resolves nothing.
-  TypeShapedExternalReturnsWarning(name: String)
+  UnmatchedReturnsClauseWarning(function: String)
+  // A `where returns` clause with a free variable naming no callback parameter
+  // of the function it sits on. Nothing binds such a variable at a call site,
+  // so the clause is dropped and the returned function resolves to `[Unknown]`.
+  UnclosedReturnsClauseWarning(function: String, free_vars: List(String))
+  // A `where returns` clause on an `assume` line that is not ground. An
+  // assumption carries no bound list, so nothing scopes a variable in it
+  // whatever the function's parameters are called, and the loader drops it.
+  UngroundReturnsClauseWarning(function: String, free_vars: List(String))
+  // A `where returns` clause on a module path. The declaration is per-function
+  // by nature — nothing keys a whole module's returned value — so the clause
+  // resolves nothing at all.
+  DotlessReturnsClauseWarning(name: String)
 }
 
 // Result of checking one file.

@@ -1,3 +1,3 @@
 // gleam_yielder — pure lazy iterators
 
-external effects gleam/yielder : []
+assume gleam/yielder : []

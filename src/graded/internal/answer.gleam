@@ -31,7 +31,7 @@ pub type EffectAnswer {
     term: EffectTerm,
     source: AnswerSource,
   )
-  // A field of a custom type, declared by a `type` line. `module` is `None` for
+  // A field of a custom type, declared by a field `assume` line. `module` is `None` for
   // a bare declaration, which is keyed under no module.
   TypeFieldAnswer(
     module: Option(String),
@@ -134,6 +134,7 @@ fn effects_line(
     function: name,
     params: bounds,
     effects: term,
+    returns: None,
   ))
 }
 
@@ -143,7 +144,7 @@ fn graded_source(module: String, source: AnswerSource) -> String {
   "\n// "
   <> case source {
     Entry(entry: types.ModuleExternalEntry(..), ..) ->
-      "resolved via module-level external for " <> module
+      "resolved via module-level `assume` for " <> module
     Entry(entry: types.FunctionEntry(origin:), ..) ->
       "resolved from " <> effects.describe_origin(origin)
     UndeclaredExternal(..) -> undeclared_external_source
@@ -158,7 +159,7 @@ fn graded_source(module: String, source: AnswerSource) -> String {
 fn graded_origin(origin: types.TypeFieldOrigin) -> String {
   case origin {
     types.Declared(source:) ->
-      "declared by a type line in " <> effects.describe_source_file(source)
+      "assumed by a field `assume` in " <> effects.describe_source_file(source)
     types.Inferred -> "inferred from construction"
   }
 }
@@ -345,7 +346,7 @@ fn detail_lines(
   // under it does, and the assumption holds however the entry was reached.
   let source_lines = case source {
     Entry(entry: types.ModuleExternalEntry(..), ..) -> [
-      "  source: module-level external for `" <> module <> "`",
+      "  source: module-level `assume` for `" <> module <> "`",
       "          used when no per-function entry exists",
     ]
     Entry(entry: types.FunctionEntry(origin:), ..) -> [
@@ -402,7 +403,7 @@ fn bound_line(bound: ParamBound) -> String {
 fn prose_origin(origin: types.TypeFieldOrigin) -> String {
   case origin {
     types.Declared(source:) ->
-      "  source: declared by a `type` line in "
+      "  source: assumed by a field `assume` in "
       <> effects.describe_source_file(source)
     types.Inferred -> "  source: inferred from construction"
   }

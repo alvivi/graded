@@ -43,7 +43,7 @@ and no bound told it what `v.to_error` costs.
 **How to avoid it** — declare the field's effect once, at the type level:
 
 ```
-type app.Validator.to_error : [Stdout]
+assume app.Validator.to_error : [Stdout]
 ```
 
 Field calls then resolve on *any* receiver of that type, however it was obtained.
@@ -200,7 +200,7 @@ recursion** or one that **doesn't converge**, **mutual recursion**, or an
 **external** with no visible body stay conservative, as does a computed receiver
 **aliased** to a `let` bound from a computed call (`let w = get_validator(x);
 inner(w)`) or a receiver **reassigned** to an opaque binding before the call. All
-fall back to `[Unknown]` unless covered by a `type` line or a field bound.
+fall back to `[Unknown]` unless covered by a field `assume` or a field bound.
 Construction nested two or more levels beyond the single extra hop is likewise
 conservative.
 
@@ -273,7 +273,7 @@ pub fn get_logger() -> fn(String) -> Nil {
 }
 ```
 
-or declare the producer's effect with an `external effects` / `type` line if it
+or declare the producer's effect with an `assume` line if it
 lives behind a record field.
 
 ## 4. A higher-order argument to an immediately-applied returned function
@@ -336,14 +336,14 @@ pub fn caller() -> Nil {
 **How to avoid it** — declare the effect explicitly:
 
 ```
-external effects app.write_log : [Stdout]
+assume app.write_log : [Stdout]
 ```
 
 For common third-party packages, the [bundled catalog](./REFERENCE.md#effect-catalog)
-already supplies these declarations, so you only need `external effects` for your
+already supplies these declarations, so you only need `assume` lines for your
 own FFI and for packages the catalog doesn't cover.
 
-An `external effects` line covers the *call*. The record an FFI producer builds
+An `assume` line covers the *call*. The record an FFI producer builds
 and the fields either it or an update builder of it wires stay `[Unknown]` at
 every use — declared or not, fallback body or not — because nothing states what
 the foreign implementation returns:
@@ -355,15 +355,15 @@ pub fn build_client() -> Client
 
 **How to avoid it** — wrap the producer in ordinary Gleam, so the value graded
 resolves is one it can see built, or annotate the *field* the returned function
-lands in with a `type` line.
+lands in with a field `assume`.
 
 The closure a producer hands back is the one such channel with a declaring form:
-`external returns my_ffi.make_client : [Net]`. It is refused where a Gleam
+`assume my_ffi.make_client where returns : [Net]`. It is refused where a Gleam
 fallback body runs beside the declaration — the two can hand back different
 closures and there is no union of operators to take — and the operator must be
 ground, so a foreign decorator's still needs the Gleam wrapper. The call names
 whichever refusal applied; the rules are in
-[External declarations](./REFERENCE.md#external-declarations-and-ffi).
+[Assumptions](./REFERENCE.md#assumptions-foreign-code-and-field-effects).
 
 ### Which targets an `@external` is built for
 
@@ -384,29 +384,9 @@ is actually built, or leave the field out. A package that declares no `target` i
 read as compiled for both, which charges a declaration and its running fallback
 body alike rather than deciding either away.
 
-## 6. A returned-operator summary written by an older graded
-
-A `returns` line records the effect operator a producer returns, e.g.
-`returns app.make : fn(handler) -> [handler]`. When `check` consults such a line —
-its own package's spec, or a dependency's — it trusts a ground summary as written.
-A summary produced by a graded new enough to sanitize returned-closure callback
-binders is sound; one produced by an older graded may have dropped a residual
-effect that coincided with a callback's name, leaving a summary that under-reports.
-Because the spec records no producing version, `check` can't tell the two apart
-and trusts both.
-
-**How to avoid it** — re-run `graded infer` with a current graded to regenerate
-your own spec (the normal infer-then-check flow already does this). For a
-dependency shipping a spec built by an older graded, upgrade or regenerate that
-dependency's spec so its summaries are sound. Until then the summary is trusted as
-written, so any `check` that resolves through it can't be relied on — a widened
-consumer budget only permits more effects, it doesn't restore one the summary
-already omitted.
-
 ---
 
 Every fallback above is the conservative `[Unknown]`, never a silent `[]`: graded
 would rather flag a call it can't prove than let an effect slip through unchecked.
-When you hit one, the fix is always one of three escape hatches — a `type` line
-for record fields, an `external effects` line for opaque functions, or a wider
-declared budget.
+When you hit one, the fix is always one of two escape hatches — an `assume` line
+(over a field, a function, or a whole module) or a wider declared budget.

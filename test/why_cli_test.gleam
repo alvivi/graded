@@ -2,6 +2,7 @@ import gleam/list
 import gleam/string
 import gleeunit/should
 import graded
+import graded/internal/annotation
 import graded/internal/answer
 import graded/internal/checker
 import graded/internal/cli
@@ -32,7 +33,7 @@ pub fn explains_a_checked_function_test() {
     "impure_view.view has effects [Stdout]",
     "declared check impure_view.view : []",
     "  calls gleam/io.println with effects [Stdout] (from gleam_stdlib's catalog entry)",
-    "  calls gleam/list.map with effects [] (from a module-level external in gleam_stdlib's catalog entry)",
+    "  calls gleam/list.map with effects [] (from a module-level `assume` in gleam_stdlib's catalog entry)",
   ])
 }
 
@@ -188,14 +189,14 @@ pub fn an_opaque_external_is_not_explained_as_pure_test() {
 }
 
 pub fn an_external_declaration_explains_the_external_test() {
-  // The declaration is the whole explanation: an `external effects` line is what
+  // The declaration is the whole explanation: an `assume` line is what
   // the analysis knows about foreign code, and it answers here as it answers a
   // caller — including when what it declares is purity.
   why("external_same_module.now")
   |> lines
   |> should.equal([
     "external_same_module.now has effects [Time]",
-    "  is an external with effects [Time] (from your spec's external declaration)",
+    "  is an external with effects [Time] (from your spec's `assume` line)",
   ])
   why("local_wired.opaque_read")
   |> string.contains("is pure — no effects ([])")
@@ -232,7 +233,7 @@ pub fn a_committed_effects_line_does_not_explain_an_external_test() {
 }
 
 pub fn a_declared_unknown_external_names_its_declaration_test() {
-  // `external effects … : [Unknown]` is a declaration that the effect isn't
+  // `assume … : [Unknown]` is a declaration that the effect isn't
   // known — still a declaration, so the line names it rather than reporting the
   // external as undeclared. Told from the entry that won, not from its value:
   // an undeclared external carries the same `[Unknown]` and reads differently.
@@ -240,7 +241,7 @@ pub fn a_declared_unknown_external_names_its_declaration_test() {
   |> lines
   |> should.equal([
     "external_budget.declared_unknown has effects that could not be determined: [Unknown]",
-    "  is an external with unresolved effects [Unknown] (from your spec's external declaration)",
+    "  is an external with unresolved effects [Unknown] (from your spec's `assume` line)",
   ])
   why("ffi_external.ffi_op")
   |> string.contains("with no declared effects")
@@ -260,7 +261,7 @@ pub fn an_external_reads_differently_from_a_call_into_it_test() {
 }
 
 pub fn a_module_external_explains_an_ordinary_function_test() {
-  // An `external effects <module>` line over a project module declares what
+  // An `assume <module>` line over a project module declares what
   // every function under it does, and answers for every caller of them. So it
   // answers here twice: for `helper` itself, and for the sibling `helper` calls
   // — a same-module call pays the declared `[Disk]` exactly as a call from any
@@ -268,13 +269,13 @@ pub fn a_module_external_explains_an_ordinary_function_test() {
   // two sets depending on where it was called from.
   //
   // Named as what it is. `helper` is ordinary Gleam, and calling it an external
-  // contradicted the rule that rejects a per-function `external effects` line
+  // contradicted the rule that rejects a per-function `assume` line
   // over a function whose body is right there: the line governs callers, and the
   // wording says so.
   let root = "build/why_module_external"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #("proj.graded", "external effects probe : [Disk]\n"),
+    #("proj.graded", "assume probe : [Disk]\n"),
     #(
       "probe.gleam",
       "pub fn helper() -> Nil {\n  quiet()\n}\n\nfn quiet() -> Nil {\n  Nil\n}\n",
@@ -285,8 +286,8 @@ pub fn a_module_external_explains_an_ordinary_function_test() {
   |> lines
   |> should.equal([
     "probe.helper has effects [Disk]",
-    "  is declared for its callers with effects [Disk] (from a module-level external in your spec)",
-    "  calls probe.quiet with effects [Disk] (from a module-level external in your spec)",
+    "  is declared for its callers with effects [Disk] (from a module-level `assume` in your spec)",
+    "  calls probe.quiet with effects [Disk] (from a module-level `assume` in your spec)",
   ])
   output |> string.contains("is an external") |> should.be_false()
   // The one answer, in each command's own words.
@@ -305,10 +306,7 @@ pub fn a_module_external_violation_uses_the_same_wording_test() {
   let root = "build/why_module_external_violation"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #(
-      "proj.graded",
-      "external effects probe : [Disk]\ncheck probe.helper : []\n",
-    ),
+    #("proj.graded", "assume probe : [Disk]\ncheck probe.helper : []\n"),
     #("probe.gleam", "pub fn helper() -> Nil {\n  Nil\n}\n"),
   ])
   let assert Ok(results) = graded.run(root)
@@ -320,7 +318,7 @@ pub fn a_module_external_violation_uses_the_same_wording_test() {
   |> should.equal(
     root
     <> "/probe.gleam: helper is declared for its callers with effects [Disk]"
-    <> " (from a module-level external in your spec) but declared []",
+    <> " (from a module-level `assume` in your spec) but declared []",
   )
   let assert Ok(output) = graded.run_why(root, "probe.helper")
   let assert [_header, _declaration, line] = lines(output)
@@ -414,4 +412,23 @@ pub fn parse_why_args_rejects_a_flag_as_a_name_test() {
 pub fn parse_why_args_rejects_an_extra_argument_test() {
   cli.parse_why_args(["a.b", "dir", "extra"])
   |> should.equal(Error(cli.UnexpectedArgument("extra")))
+}
+
+// Unparseable spec
+//
+// The explanation reads the spec's `check` lines, so a line the parser rejects
+// stops it rather than explaining against a spec that was silently emptied.
+
+pub fn why_over_an_unparseable_spec_errors_test() {
+  let root = "/tmp/graded_why_unparseable"
+  let _ = support.write_unparseable_spec_project(root)
+
+  graded.run_why(root, "proj.go")
+  |> should.equal(
+    Error(graded.GradedParseError(
+      root <> "/proj.graded",
+      annotation.InvalidLine(2, "not a graded line"),
+    )),
+  )
+  support.cleanup(root)
 }

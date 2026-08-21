@@ -2,7 +2,7 @@ import generators
 import gleam/dict
 import gleam/int
 import gleam/list
-import gleam/option
+import gleam/option.{None, Some}
 import gleam/order
 import gleam/result
 import gleam/set
@@ -521,7 +521,8 @@ fn external(
   types.ExternalAnnotation(
     module:,
     target: types.FunctionExternal(function),
-    effects: Specific(set.from_list(labels)),
+    effects: Some(Specific(set.from_list(labels))),
+    returns: None,
   )
 }
 
@@ -532,7 +533,8 @@ fn module_external(
   types.ExternalAnnotation(
     module:,
     target: types.ModuleExternal,
-    effects: Specific(set.from_list(labels)),
+    effects: Some(Specific(set.from_list(labels))),
+    returns: None,
   )
 }
 
@@ -650,7 +652,7 @@ pub fn a_dependency_spec_entry_names_its_package_test() {
 }
 
 pub fn a_catalog_entry_names_its_package_test() {
-  // `gleam/io.println` is an `external effects` line in the bundled catalog, so
+  // `gleam/io.println` is an `assume` line in the bundled catalog, so
   // this covers the catalog's route through `with_externals` — the one that
   // made the origin a parameter rather than a constant.
   let root = "build/eff_catalog_origin"
@@ -708,15 +710,12 @@ pub fn a_dependency_spec_overriding_the_catalog_reports_both_test() {
 
 pub fn a_catalog_effects_line_beats_another_packages_external_test() {
   // Two catalog files key the same function: one with an `effects` line, one
-  // with an `external effects` line. The `effects` line decides the term, so it
+  // with an `assume` line. The `effects` line decides the term, so it
   // must decide the origin too — the external's package never claims it.
   let root =
     write_fixture("build/eff_catalog_clash", [
       #("catalog/a_pkg@1.0.0.graded", "effects shared/mod.run : [Http]\n"),
-      #(
-        "catalog/b_pkg@1.0.0.graded",
-        "external effects shared/mod.run : [Disk]\n",
-      ),
+      #("catalog/b_pkg@1.0.0.graded", "assume shared/mod.run : [Disk]\n"),
       #("manifest.toml", two_package_manifest),
     ])
 
@@ -732,7 +731,7 @@ pub fn a_catalog_effects_line_beats_another_packages_external_test() {
 }
 
 pub fn a_catalog_external_beats_its_own_files_effects_line_test() {
-  // One catalog file keys the same function both ways. The `external effects`
+  // One catalog file keys the same function both ways. The `assume`
   // line decides the term, pairing with the empty bounds the file's own reader
   // records for a declared name — the `effects` line's polymorphic term would
   // leave `cb` free with nothing left to bind it.
@@ -740,7 +739,7 @@ pub fn a_catalog_external_beats_its_own_files_effects_line_test() {
     write_fixture("build/eff_catalog_same_file_clash", [
       #(
         "catalog/a_pkg@1.0.0.graded",
-        "effects shared/mod.run(cb: [cb]) : [cb]\nexternal effects shared/mod.run : [Disk]\n",
+        "effects shared/mod.run(cb: [cb]) : [cb]\nassume shared/mod.run : [Disk]\n",
       ),
       #(
         "manifest.toml",
@@ -771,7 +770,7 @@ const two_package_manifest = "packages = [
 
 // What `load_catalog` settles on for `shared/mod.run` when two catalog files key
 // it: `poly_package`'s polymorphic `effects` line and `ext_package`'s
-// `external effects` line.
+// `assume` line.
 fn catalog_clash_entry(
   root: String,
   poly_package: String,
@@ -788,7 +787,7 @@ fn catalog_clash_entry(
       ),
       #(
         "catalog/" <> ext_package <> "@1.0.0.graded",
-        "external effects shared/mod.run : [Disk]\n",
+        "assume shared/mod.run : [Disk]\n",
       ),
       #("manifest.toml", two_package_manifest),
     ])
@@ -831,7 +830,7 @@ pub fn a_catalog_clash_resolves_the_same_either_way_round_test() {
 
 // Dependency-declared externals
 //
-// A dependency's own `external effects` lines are part of what it ships: the
+// A dependency's own `assume` lines are part of what it ships: the
 // function-level ones key `all_effects`, the module-level ones the fallback
 // tier. These pin where those lines land against every other source, and that a
 // term the external decides brings its (empty) bounds with it.
@@ -875,12 +874,40 @@ pub fn a_dependency_function_external_resolves_test() {
   installed_dep(
     "build/eff_dep_fn_external",
     "dep",
-    "external effects dep/ffi.now : [Time]\n",
+    "assume dep/ffi.now : [Time]\n",
   )
   |> entry_of(QualifiedName("dep/ffi", "now"))
   |> should.equal(
     Ok(#(Specific(set.from_list(["Time"])), types.DependencySpec("dep"))),
   )
+}
+
+pub fn a_clause_only_assume_does_not_decide_the_effects_channel_test() {
+  // The line declares only what `make` hands back. It claims nothing about
+  // `make`'s own effect, so the `effects` line beside it still decides — read
+  // as the empty set it would silently overwrite it with `[]`.
+  installed_dep(
+    "build/eff_dep_clause_only",
+    "dep",
+    "effects dep.make : [Db]\nassume dep.make where returns : [Net]\n",
+  )
+  |> entry_of(QualifiedName("dep", "make"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Db"])), types.DependencySpec("dep"))),
+  )
+}
+
+pub fn a_dependency_spec_that_does_not_parse_is_ignored_test() {
+  // A consumer cannot fix a dependency's spec, so a line the parser rejects
+  // costs that package's entries — with a printed warning — rather than the
+  // whole run.
+  installed_dep(
+    "build/eff_dep_unparseable",
+    "dep",
+    "assume dep/ffi.now : [Time]\nnot a graded line\n",
+  )
+  |> entry_of(QualifiedName("dep/ffi", "now"))
+  |> should.be_error
 }
 
 pub fn a_dependency_module_external_resolves_test() {
@@ -889,7 +916,7 @@ pub fn a_dependency_module_external_resolves_test() {
   installed_dep(
     "build/eff_dep_module_external",
     "dep",
-    "external effects dep/internal : [Db]\n",
+    "assume dep/internal : [Db]\n",
   )
   |> effects.lookup(QualifiedName("dep/internal", "anything"))
   |> should.equal(effects.Known(
@@ -911,7 +938,7 @@ pub fn a_dependency_external_beats_its_own_effects_line_test() {
     installed_dep(
       "build/eff_dep_external_clash",
       "dep",
-      "effects dep.run(cb: [cb]) : [cb]\nexternal effects dep.run : [Time]\n",
+      "effects dep.run(cb: [cb]) : [cb]\nassume dep.run : [Time]\n",
     )
   entry_of(kb, QualifiedName("dep", "run"))
   |> should.equal(
@@ -927,7 +954,7 @@ pub fn a_user_external_beats_a_dependency_external_test() {
   installed_dep(
     "build/eff_dep_vs_user_external",
     "dep",
-    "external effects dep/ffi.now : [Time]\n",
+    "assume dep/ffi.now : [Time]\n",
   )
   |> effects.with_externals(
     [external("dep/ffi", "now", ["Mocked"])],
@@ -944,10 +971,7 @@ pub fn a_dependency_external_beats_the_catalog_test() {
   // outranks graded's bundled description of the same function.
   let root = "build/eff_dep_external_vs_catalog"
   write_fixture(root, [
-    #(
-      dep_spec_path("gleam_stdlib"),
-      "external effects gleam/io.println : [Shipped]\n",
-    ),
+    #(dep_spec_path("gleam_stdlib"), "assume gleam/io.println : [Shipped]\n"),
     #(
       "manifest.toml",
       "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
@@ -990,7 +1014,7 @@ pub fn a_path_dep_spec_overrides_a_catalog_entry_test() {
       dep_spec(
         "build/eff_path_dep_over_catalog",
         "dep",
-        "external effects dep/ffi.now : [Time]\neffects dep.run(cb: [cb]) : [cb]\n",
+        "assume dep/ffi.now : [Time]\neffects dep.run(cb: [cb]) : [cb]\n",
       ),
       types.PathDependency("dep"),
     )
@@ -1014,7 +1038,7 @@ pub fn a_path_dep_spec_overrides_a_catalog_entry_test() {
 
 pub fn a_path_dep_external_drops_a_catalog_entrys_bounds_test() {
   // The bounds a name carries are the ones recorded for the term that won: a
-  // bound-less `external effects` line overriding a polymorphic catalog entry
+  // bound-less `assume` line overriding a polymorphic catalog entry
   // leaves its ground term standing alone, with the catalog's bounds gone.
   let name = QualifiedName("dep", "run")
   // The catalog's `effects dep.run(cb: [cb]) : [cb]`: a term binding `cb`, and
@@ -1034,7 +1058,7 @@ pub fn a_path_dep_external_drops_a_catalog_entrys_bounds_test() {
       dep_spec(
         "build/eff_path_dep_drops_catalog_bounds",
         "dep",
-        "external effects dep.run : [Time]\n",
+        "assume dep.run : [Time]\n",
       ),
       types.PathDependency("dep"),
     )
@@ -1088,7 +1112,7 @@ pub fn a_path_dep_module_external_overrides_only_the_catalogs_test() {
     dep_spec(
       "build/eff_path_dep_module_external",
       "dep",
-      "external effects dep/catalogued : [Time]\nexternal effects dep/declared : [Time]\n",
+      "assume dep/catalogued : [Time]\nassume dep/declared : [Time]\n",
     )
   let kb =
     effects.new_knowledge_base()
@@ -1131,7 +1155,7 @@ pub fn a_path_dep_function_entry_beats_a_module_external_test() {
       dep_spec(
         "build/eff_path_dep_over_module_external",
         "dep",
-        "external effects dep/ffi.now : [Time]\n",
+        "assume dep/ffi.now : [Time]\n",
       ),
       types.PathDependency("dep"),
     )
@@ -1341,7 +1365,7 @@ pub fn argument_value_effects_other_is_unknown_test() {
 // Type-field registry
 //
 // Type-field keys are qualified by the defining module (no cross-module
-// collision), and dependency spec `type` lines load into the registry.
+// collision), and dependency spec field `assume` lines load into the registry.
 
 pub fn type_fields_distinguish_modules_test() {
   // Two `Validator` types in different modules, same field — must NOT conflate.
@@ -1374,16 +1398,16 @@ pub fn type_fields_distinguish_modules_test() {
 
 pub fn load_knowledge_base_loads_dependency_type_fields_test() {
   // A dependency's committed spec under `build/packages` carries a module-
-  // qualified `type` line. `load_knowledge_base` must fold it into the registry
+  // qualified field `assume` line. `load_knowledge_base` must fold it into the registry
   // so a consumer's field call against that dependency type resolves, rather
-  // than dropping `type` lines as it did before.
+  // than dropping field `assume` lines as it did before.
   let packages = "build/eff_dep_typefield/packages"
   let _ = simplifile.delete("build/eff_dep_typefield")
   let assert Ok(Nil) = simplifile.create_directory_all(packages <> "/dep")
   let assert Ok(Nil) =
     simplifile.write(
       packages <> "/dep/dep.graded",
-      "type dep/repo.Repo.find : [Storage]\n",
+      "assume dep/repo.Repo.find : [Storage]\n",
     )
 
   let kb =
@@ -1433,9 +1457,7 @@ pub fn check_line_bounds_are_not_recorded_test() {
 pub fn externally_declared_function_records_an_empty_entry_test() {
   // The external term wins in `all_effects` and is ground by construction, so
   // the stale `effects` line's bounds must not pair with it.
-  spec_params(
-    "external effects app.run : [Time]\neffects app.run(cb: [cb]) : [cb]\n",
-  )
+  spec_params("assume app.run : [Time]\neffects app.run(cb: [cb]) : [cb]\n")
   |> dict.get(QualifiedName("app", "run"))
   |> should.equal(Ok([]))
 }
@@ -1565,7 +1587,7 @@ pub fn a_dependency_external_line_for_its_own_external_answers_test() {
   installed_dep_over_source(
     "build/eff_dep_declared_external",
     "dep",
-    "external effects dep/ffi.now : [Time]\n",
+    "assume dep/ffi.now : [Time]\n",
     "",
     [
       #(QualifiedName("dep/ffi", "now"), foreign_declared_everywhere()),
@@ -1575,6 +1597,28 @@ pub fn a_dependency_external_line_for_its_own_external_answers_test() {
   |> should.equal(
     Ok(#(Specific(set.from_list(["Time"])), types.DependencySpec("dep"))),
   )
+}
+
+pub fn a_clause_only_assume_does_not_rescue_a_foreign_effects_line_test() {
+  // The two channels of one name, side by side. `assume dep/ffi.make where
+  // returns : [Net]` states what the producer hands back and nothing about the
+  // call's own effect, so the `effects` line beside it is still inference over
+  // an `@external` fallback body and still drops. The clause keeps answering on
+  // its own channel.
+  let kb =
+    installed_dep_over_source(
+      "build/eff_dep_clause_only_beside_effects",
+      "dep",
+      "assume dep/ffi.make where returns : [Net]\neffects dep/ffi.make : [Stdout]\n",
+      "",
+      [#(QualifiedName("dep/ffi", "make"), foreign_declared_everywhere())],
+    )
+  kb
+  |> entry_of(QualifiedName("dep/ffi", "make"))
+  |> should.equal(Error(Nil))
+  let assert Ok(found) =
+    effects.lookup_returned_operator(kb, QualifiedName("dep/ffi", "make"))
+  found.summary |> should.equal(effects.Declared)
 }
 
 pub fn a_dependency_effects_line_on_an_ordinary_function_answers_test() {
@@ -1647,7 +1691,7 @@ pub fn a_declared_dependency_external_with_a_running_fallback_is_widened_test() 
   installed_dep_over_source(
     "build/eff_dep_partial_fallback",
     "dep",
-    "external effects dep/ffi.run : [Time]\n",
+    "assume dep/ffi.run : [Time]\n",
     "",
     [
       #(QualifiedName("dep/ffi", "run"), foreign_with_running_fallback()),
@@ -1671,7 +1715,7 @@ pub fn a_dependency_returns_line_for_its_own_external_is_refused_test() {
     installed_dep_over_source(
       "build/eff_dep_returns",
       "dep",
-      "external effects dep/ffi.make : []\nreturns dep/ffi.make : []\nreturns dep/ffi.plain : []\n",
+      "assume dep/ffi.make : []\neffects dep/ffi.make : [] where returns : []\neffects dep/ffi.plain : [] where returns : []\n",
       "",
       [
         #(QualifiedName("dep/ffi", "make"), foreign_declared_everywhere()),
@@ -1686,6 +1730,176 @@ pub fn a_dependency_returns_line_for_its_own_external_is_refused_test() {
   |> should.be_true()
 }
 
+// The `where returns` clause, read back
+//
+// The clause on an `effects` line loads as a `Closed` summary the gate judges;
+// the one on an `assume` line goes through the declared channel, which trusts a
+// ground operator and drops anything else. A `check` line's clause keys
+// nothing.
+
+pub fn a_clause_on_an_effects_line_loads_as_closed_test() {
+  let kb =
+    installed_dep(
+      "build/eff_clause_effects",
+      "dep",
+      "effects dep.make : [] where returns : [Stdout]\n",
+    )
+  let assert Ok(found) =
+    effects.lookup_returned_operator(kb, QualifiedName("dep", "make"))
+  found.summary |> should.equal(effects.Closed)
+  found.operator
+  |> should.equal(
+    effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+  )
+}
+
+pub fn an_open_clause_on_an_effects_line_still_loads_test() {
+  // The loader applies no closedness filter — the gate is the one place a
+  // summary is used, and the one place its variables are judged.
+  let kb =
+    installed_dep(
+      "build/eff_clause_open",
+      "dep",
+      "effects dep.traced(action: [action]) : [] where returns : fn(cb) -> [action([cb])]\n",
+    )
+  effects.lookup_returned_operator(kb, QualifiedName("dep", "traced"))
+  |> result.is_ok
+  |> should.be_true()
+}
+
+pub fn a_module_assume_does_not_bury_a_clause_on_the_same_module_test() {
+  // The two channels of one module, side by side. `assume db : []` declares the
+  // module's effect; the clause on `db.make`'s `effects` line declares nothing
+  // about that, so it still answers for what `make` hands back. A consumer that
+  // lost the clause would resolve the returned closure to [Unknown].
+  let kb =
+    installed_dep(
+      "build/eff_module_assume_beside_clause",
+      "db",
+      "assume db : []\neffects db.make : [] where returns : [Stdout]\n",
+    )
+  let assert Ok(found) =
+    effects.lookup_returned_operator(kb, QualifiedName("db", "make"))
+  found.operator
+  |> should.equal(
+    effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+  )
+  // The effects channel still answers from the module declaration.
+  kb
+  |> entry_of(QualifiedName("db", "make"))
+  |> should.equal(
+    Ok(#(
+      Specific(set.new()),
+      types.ModuleExternalOrigin(types.DependencySpec("db")),
+    )),
+  )
+}
+
+// A line kept for its clause keeps the bounds that scope it
+//
+// The clause's variables are scoped by its own line's bound list, so the two
+// travel together or the clause is not readable at all. An assumption
+// suppresses the effects half of such a line — never its bounds.
+
+const wrap_clause = "effects dep/wrap.wrap(f: [f]) : [] where returns : [f]\n"
+
+fn wrap_bounds(root: String, spec: String) -> List(ParamBound) {
+  effects.lookup_param_bounds(
+    installed_dep(root, "dep", spec),
+    QualifiedName("dep/wrap", "wrap"),
+  )
+}
+
+pub fn a_function_assume_keeps_a_kept_clauses_bounds_test() {
+  let kb =
+    installed_dep(
+      "build/eff_fn_assume_clause_bounds",
+      "dep",
+      "assume dep/wrap.wrap : []\n" <> wrap_clause,
+    )
+  effects.lookup_param_bounds(kb, QualifiedName("dep/wrap", "wrap"))
+  |> should.equal([ParamBound("f", types.TVar("f"))])
+  let assert Ok(found) =
+    effects.lookup_returned_operator(kb, QualifiedName("dep/wrap", "wrap"))
+  found.operator |> should.equal(types.TVar("f"))
+}
+
+pub fn a_module_assume_keeps_a_kept_clauses_bounds_test() {
+  let kb =
+    installed_dep(
+      "build/eff_module_assume_clause_bounds",
+      "dep",
+      "assume dep/wrap : []\n" <> wrap_clause,
+    )
+  effects.lookup_param_bounds(kb, QualifiedName("dep/wrap", "wrap"))
+  |> should.equal([ParamBound("f", types.TVar("f"))])
+  let assert Ok(found) =
+    effects.lookup_returned_operator(kb, QualifiedName("dep/wrap", "wrap"))
+  found.operator |> should.equal(types.TVar("f"))
+}
+
+pub fn a_clause_less_line_under_an_assume_keeps_no_bounds_test() {
+  // The non-goal. Nothing scopes anything on such a line: the declaration is
+  // the whole answer for the name, and its bounds stay out of the way of the
+  // ground term that wins.
+  wrap_bounds(
+    "build/eff_fn_assume_no_clause_bounds",
+    "assume dep/wrap.wrap : []\neffects dep/wrap.wrap(f: [f]) : []\n",
+  )
+  |> should.equal([])
+
+  wrap_bounds(
+    "build/eff_module_assume_no_clause_bounds",
+    "assume dep/wrap : []\neffects dep/wrap.wrap(f: [f]) : []\n",
+  )
+  |> should.equal([])
+}
+
+pub fn a_clause_on_a_check_line_keys_nothing_test() {
+  // A `check` asserts what a function returns; it does not declare it. Reading
+  // its clause onto the returns channel would make an unverified assertion the
+  // trusted answer.
+  let kb =
+    installed_dep(
+      "build/eff_clause_check",
+      "dep",
+      "check dep.make : [] where returns : [Stdout]\n",
+    )
+  effects.lookup_returned_operator(kb, QualifiedName("dep", "make"))
+  |> result.is_ok
+  |> should.be_false()
+}
+
+pub fn a_ground_clause_on_an_assume_line_is_declared_test() {
+  let kb =
+    installed_dep_over_source(
+      "build/eff_clause_assume",
+      "dep",
+      "assume dep/ffi.make where returns : [Net]\n",
+      "",
+      [#(QualifiedName("dep/ffi", "make"), foreign_declared_everywhere())],
+    )
+  let assert Ok(found) =
+    effects.lookup_returned_operator(kb, QualifiedName("dep/ffi", "make"))
+  found.summary |> should.equal(effects.Declared)
+  found.operator
+  |> should.equal(effect_term.from_effect_set(Specific(set.from_list(["Net"]))))
+}
+
+pub fn a_non_ground_clause_on_an_assume_line_is_dropped_test() {
+  let kb =
+    installed_dep_over_source(
+      "build/eff_clause_assume_open",
+      "dep",
+      "assume dep/ffi.make where returns : fn(cb) -> [action([cb])]\n",
+      "",
+      [#(QualifiedName("dep/ffi", "make"), foreign_declared_everywhere())],
+    )
+  effects.lookup_returned_operator(kb, QualifiedName("dep/ffi", "make"))
+  |> result.is_ok
+  |> should.be_false()
+}
+
 pub fn one_dep_specs_returns_line_cannot_bury_anothers_declaration_test() {
   // Two installed specs keying the same name: `alib` declares what its own
   // producer hands back, `zlib` carries a stray inferred `returns` line for it.
@@ -1694,8 +1908,11 @@ pub fn one_dep_specs_returns_line_cannot_bury_anothers_declaration_test() {
   // specs as it does within one.
   let root = "build/eff_cross_package_stray_returns"
   write_fixture(root, [
-    #(dep_spec_path("alib"), "external returns alib/mod.make : [Stdout]\n"),
-    #(dep_spec_path("zlib"), "returns alib/mod.make : [Net]\n"),
+    #(dep_spec_path("alib"), "assume alib/mod.make where returns : [Stdout]\n"),
+    #(
+      dep_spec_path("zlib"),
+      "effects alib/mod.make : [] where returns : [Net]\n",
+    ),
   ])
   let kb =
     effects.load_knowledge_base(

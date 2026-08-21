@@ -176,7 +176,7 @@ pub fn field_union_polymorphic_on_param_receiver_test() {
 
 // External functions
 //
-// Bodyless @external functions infer [Unknown] unless an `external effects`
+// Bodyless @external functions infer [Unknown] unless an `assume`
 // declaration supplies the real effect.
 
 pub fn external_is_unknown_test() {
@@ -197,7 +197,7 @@ pub fn external_is_unknown_test() {
 
 pub fn external_same_module_declared_effects_test() {
   // A same-module (unqualified) call into a bodyless `@external` that carries an
-  // `external effects` declaration inherits the DECLARED effects, not the
+  // `assume` declaration inherits the DECLARED effects, not the
   // `[Unknown]` an undeclared external yields. `read_clock` calls `now()` bare,
   // so against a `[]` budget the actual must be the declared `[Time]`. Without
   // the fix the local path bypassed the knowledge base and reported `[Unknown]`.
@@ -216,7 +216,7 @@ pub fn external_same_module_declared_effects_test() {
 pub fn check_line_on_an_external_checks_its_declaration_test() {
   // A `check` line on the external *itself*. There is no body to check it
   // against, so the budget is checked against what declares the external: the
-  // spec's `external effects [Time]` exceeds a `[]` budget, and an external
+  // spec's `assume [Time]` exceeds a `[]` budget, and an external
   // nothing declares carries `[Unknown]`, which exceeds it too — including the
   // one whose pure-looking Gleam fallback body would otherwise pass it. A budget
   // that covers the declaration passes.
@@ -364,7 +364,7 @@ pub fn a_target_conditional_fallback_body_is_checked_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "check ext.log : []\nexternal effects ext.log : []\nexternal effects ext.sink : [Disk]\n",
+      "check ext.log : []\nassume ext.log : []\nassume ext.sink : [Disk]\n",
     ),
     #(
       "ext.gleam",
@@ -403,7 +403,7 @@ pub fn a_target_excluded_external_is_ordinary_gleam_test() {
       "proj.graded",
       "check ext.log : []
 check ext.calls_built_field : [Disk]
-external effects ext.disk : [Disk]
+assume ext.disk : [Disk]
 ",
     ),
     #(
@@ -462,7 +462,7 @@ pub fn a_package_target_excludes_a_declaration_too_test() {
       "proj.graded",
       "check ext.log : []
 check ext.calls_built_field : [Disk]
-external effects ext.disk : [Disk]
+assume ext.disk : [Disk]
 ",
     ),
     #(
@@ -513,8 +513,8 @@ pub fn a_package_target_leaves_no_fallback_to_run_test() {
     #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
     #(
       "proj.graded",
-      "external effects ffi.disk : [Disk]
-external effects ext.log : []
+      "assume ffi.disk : [Disk]
+assume ext.log : []
 check ext.wrapper : []
 ",
     ),
@@ -547,7 +547,7 @@ pub fn a_function_built_for_no_target_stays_foreign_test() {
   // `@target(javascript)` builds the function on no channel at all, so Gleam
   // compiles neither implementation. Reading that empty set as the carve-out
   // above — "the declaration covers no compiled target, so the body is the only
-  // implementation" — walked a body nobody runs: the `external effects` line
+  // implementation" — walked a body nobody runs: the `assume` line
   // was dropped as stale with a warning telling the author to fix source that
   // is correct, and `effect` answered with what the fallback does instead of
   // the `[Unknown]` of foreign code.
@@ -556,7 +556,7 @@ pub fn a_function_built_for_no_target_stays_foreign_test() {
     #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
     #(
       "proj.graded",
-      "external effects ext.shout : [Stdout]
+      "assume ext.shout : [Stdout]
 check ext.wrapper : [Stdout]
 ",
     ),
@@ -600,8 +600,8 @@ pub fn a_running_fallback_body_is_charged_to_every_caller_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external effects ext.log : []
-external effects ext.sink : [Disk]
+      "assume ext.log : []
+assume ext.sink : [Disk]
 check ext.wrapper : []
 check other.calls_it : []
 ",
@@ -667,8 +667,8 @@ pub fn a_fallback_reads_a_nested_external_on_its_own_targets_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ext.a : []
-external effects ext.b : [Disk]
+      "assume ext.a : []
+assume ext.b : [Disk]
 check ext.a : []
 check ext.wrapper : []
 ",
@@ -712,9 +712,9 @@ pub fn two_fallbacks_on_opposite_targets_do_not_mix_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ext.a : []
-external effects ext.c : []
-external effects ext.disk : [Disk]
+      "assume ext.a : []
+assume ext.c : []
+assume ext.disk : [Disk]
 check ext.wrapper : []
 ",
     ),
@@ -759,10 +759,10 @@ pub fn a_nested_external_still_charges_what_the_fallback_reaches_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ext.a : []
-external effects ext.b : []
-external effects ext.d : [Time]
-external effects ext.disk : [Disk]
+      "assume ext.a : []
+assume ext.b : []
+assume ext.d : [Time]
+assume ext.disk : [Disk]
 check ext.wrapper : []
 ",
     ),
@@ -815,8 +815,8 @@ pub fn a_girard_typed_fallback_callback_binds_in_the_same_module_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ext.run : []
-external effects ext.disk : [Disk]
+      "assume ext.run : []
+assume ext.disk : [Disk]
 check ext.uses : []
 check ext.uses_impure : []
 ",
@@ -867,8 +867,8 @@ pub fn a_girard_typed_sibling_fallback_rekeys_its_callback_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ext.a : []
-external effects ext.b : []
+      "assume ext.a : []
+assume ext.b : []
 check app.go : []
 ",
     ),
@@ -917,8 +917,8 @@ pub fn a_girard_typed_fallback_lifts_as_an_operator_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external effects ext.run : []
-external effects app.disk : [Disk]
+      "assume ext.run : []
+assume app.disk : [Disk]
 check app.go : []
 check app.go_impure : []
 ",
@@ -981,8 +981,8 @@ pub fn a_fallback_lift_keeps_its_callback_arity_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ext.run : []
-external effects app.disk : [Disk]
+      "assume ext.run : []
+assume app.disk : [Disk]
 check app.go : [Disk]
 check app.go_swapped : []
 ",
@@ -1048,8 +1048,8 @@ pub fn a_labeled_fallback_callback_lifts_under_its_bound_name_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external effects ext.run : []
-external effects app.disk : [Disk]
+      "assume ext.run : []
+assume app.disk : [Disk]
 check app.go : []
 check app.go_impure : []
 ",
@@ -1108,8 +1108,8 @@ pub fn a_girard_typed_fallback_lifts_locally_as_an_operator_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ext.run : []
-external effects ext.disk : [Disk]
+      "assume ext.run : []
+assume ext.disk : [Disk]
 check ext.go : []
 check ext.go_impure : []
 ",
@@ -1166,8 +1166,8 @@ pub fn a_substituted_call_reports_a_substituted_fallback_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ext.run : [Time]
-external effects app.disk : [Disk]
+      "assume ext.run : [Time]
+assume app.disk : [Disk]
 check app.uses_impure : []
 check app.via_helper : []
 ",
@@ -1279,7 +1279,7 @@ pub fn an_undeclared_fallback_is_charged_on_every_value_channel_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects disk.write : [Disk]
+      "assume disk.write : [Disk]
 check app.direct : []
 check app.wired : []
 check app.as_callback : []
@@ -1379,9 +1379,9 @@ pub fn a_fallback_reaching_a_sibling_fallback_is_charged_it_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external effects disk.write : [Disk]
-external effects ext.a : []
-external effects ext.b : []
+      "assume disk.write : [Disk]
+assume ext.a : []
+assume ext.b : []
 check ext.wrapper : []
 ",
     ),
@@ -1428,9 +1428,9 @@ pub fn mutually_recursive_fallbacks_settle_to_one_summary_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external effects disk.write : [Disk]
-external effects ext.a : []
-external effects ext.b : []
+      "assume disk.write : [Disk]
+assume ext.a : []
+assume ext.b : []
 check ext.calls_a : []
 check ext.calls_b : []
 ",
@@ -1492,8 +1492,8 @@ pub fn a_recursive_fallback_summary_reaches_a_fixed_point_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ext.retry : []
-external effects ext.disk : [Disk]
+      "assume ext.retry : []
+assume ext.disk : [Disk]
 check ext.wrapper : []
 ",
     ),
@@ -1542,8 +1542,8 @@ pub fn a_cyclic_import_graph_still_charges_a_running_fallback_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ext.log : [Stdout]
-external effects ext.sink : [Disk]
+      "assume ext.log : [Stdout]
+assume ext.sink : [Disk]
 check other.calls_it : []
 ",
     ),
@@ -1594,7 +1594,7 @@ pub fn calls_it() -> Nil {
 }
 
 pub fn a_fallback_resolves_field_calls_through_type_lines_test() {
-  // The fallback body reaches a field a `type` line decides. The pass that
+  // The fallback body reaches a field a field `assume` line decides. The pass that
   // summarises it used to run before those lines were installed, so the
   // summary its callers read disagreed with what the external's own `check`
   // line reported — and with what `infer` wrote, whose pass installed them
@@ -1604,8 +1604,8 @@ pub fn a_fallback_resolves_field_calls_through_type_lines_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "type runner.Runner.run : [Disk]
-external effects ext.log : []
+      "assume runner.Runner.run : [Disk]
+assume ext.log : []
 check ext.log : []
 check ext.wrapper : []
 ",
@@ -1665,8 +1665,8 @@ pub fn a_higher_order_fallback_binds_its_callback_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external effects ext.run : []
-external effects app.disk : [Disk]
+      "assume ext.run : []
+assume app.disk : [Disk]
 check app.uses : []
 check app.uses_impure : []
 ",
@@ -1745,12 +1745,12 @@ pub fn run(action: fn() -> Nil) -> Nil {
 
   // A module-level line, whose own declaration has no per-function bounds to
   // state — the ones here are the fallback body's.
-  answer_for("external effects ext : [Time]\n")
+  answer_for("assume ext : [Time]\n")
   |> string.contains("effects ext.run(action: [action]) : [Time, action]")
   |> should.be_true()
 
   // The per-function form, unchanged.
-  answer_for("external effects ext.run : []\n")
+  answer_for("assume ext.run : []\n")
   |> string.contains("effects ext.run(action: [action]) : [action]")
   |> should.be_true()
   support.cleanup(root)
@@ -1790,10 +1790,7 @@ pub fn a_module_external_resolves_from_catalog_functions_test() {
       "manifest.toml",
       "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
     ),
-    #(
-      "proj.graded",
-      "external effects gleam/io : []\nexternal effects nowhere/mod : []\n",
-    ),
+    #("proj.graded", "assume gleam/io : []\nassume nowhere/mod : []\n"),
     // The manifest's one package yields sources, so a module the lint cannot
     // place really is nowhere. `gleam/io` is not among them: the catalog's
     // per-function entries are what answer for it.
@@ -1814,15 +1811,15 @@ pub fn a_module_external_resolves_from_catalog_functions_test() {
 pub fn a_wired_field_separates_the_fallback_test() {
   // A field wired to a target-conditional external carries the same two sources
   // a direct call to it does. Reporting the union under the declaration alone
-  // credits an `external effects ext.log : []` line with the `[Disk]` its
+  // credits an `assume ext.log : []` line with the `[Disk]` its
   // fallback body did.
   let root = "build/external_fallback_wired_field"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ext.log : []
-external effects ext.sink : [Disk]
+      "assume ext.log : []
+assume ext.sink : [Disk]
 check app.uses : []
 ",
     ),
@@ -1880,8 +1877,8 @@ pub fn a_callers_explanation_separates_the_fallback_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ext.log : []
-external effects ext.sink : [Disk]
+      "assume ext.log : []
+assume ext.sink : [Disk]
 check ext.wrapper : []
 ",
     ),
@@ -1910,7 +1907,7 @@ pub fn wrapper() -> Nil {
   |> should.equal(Some(types.Specific(set.from_list(["Disk"]))))
   checker.format_violation(r.file, v)
   |> string.contains(
-    "(from your spec's external declaration, unioned with its Gleam fallback body)",
+    "(from your spec's `assume` line, unioned with its Gleam fallback body)",
   )
   |> should.be_true()
   support.cleanup(root)
@@ -1924,10 +1921,7 @@ pub fn infer_publishes_a_running_fallbacks_effects_test() {
   let root = "build/external_fallback_infer"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #(
-      "proj.graded",
-      "external effects ext.log : []\nexternal effects ext.sink : [Disk]\n",
-    ),
+    #("proj.graded", "assume ext.log : []\nassume ext.sink : [Disk]\n"),
     #(
       "ext.gleam",
       "@external(javascript, \"ext_ffi\", \"log\")
@@ -1958,10 +1952,7 @@ pub fn an_undeclared_externals_fallback_is_reported_by_the_query_test() {
   let root = "build/external_fallback_undeclared"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
-    #(
-      "proj.graded",
-      "external effects disk.write : [Disk]\ncheck ext.wrapper : []\n",
-    ),
+    #("proj.graded", "assume disk.write : [Disk]\ncheck ext.wrapper : []\n"),
     #("disk.gleam", "@external(erlang, \"d\", \"w\")\npub fn write() -> Nil\n"),
     #(
       "ext.gleam",
@@ -1999,10 +1990,7 @@ pub fn a_declared_externals_fallback_is_not_credited_to_the_spec_test() {
   let root = "build/external_fallback_provenance"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
-    #(
-      "proj.graded",
-      "external effects ext.log : []\nexternal effects ext.sink : [Disk]\n",
-    ),
+    #("proj.graded", "assume ext.log : []\nassume ext.sink : [Disk]\n"),
     #(
       "ext.gleam",
       "@external(javascript, \"ext_ffi\", \"log\")
@@ -2019,7 +2007,7 @@ fn sink() -> Nil
   let assert Ok(answered) = graded.run_effect(root, "ext.log")
   answered |> string.contains("effects ext.log : [Disk]") |> should.be_true()
   answered
-  |> string.contains("resolved from your spec's external declaration")
+  |> string.contains("resolved from your spec's `assume` line")
   |> should.be_true()
   // The clause that keeps the declaration from being credited with [Disk].
   answered |> string.contains("Gleam fallback body") |> should.be_true()
@@ -2035,7 +2023,7 @@ pub fn an_external_covering_every_target_is_not_walked_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "check ext.log : []\nexternal effects ext.log : []\nexternal effects ext.sink : [Disk]\n",
+      "check ext.log : []\nassume ext.log : []\nassume ext.sink : [Disk]\n",
     ),
     #(
       "ext.gleam",
@@ -2100,10 +2088,10 @@ pub fn a_cross_module_foreign_producer_is_opaque_test() {
 check app.calls_built_field : [Disk]
 check app.calls_native_built_field : [Disk]
 check app.calls_via_provenance : [Disk]
-external effects ffi.disk_read : [Disk]
-external effects ffi.make : []
-external effects ffi.builds : []
-returns ffi.make : []
+assume ffi.disk_read : [Disk]
+assume ffi.make : []
+assume ffi.builds : []
+effects ffi.make : [] where returns : []
 ",
     ),
     #(
@@ -2182,7 +2170,7 @@ pub fn a_dependency_returns_line_for_its_own_external_is_refused_test() {
     #("proj.graded", "check app.wrapper : []\n"),
     #(
       "build/packages/dep/dep.graded",
-      "external effects dep/ffi.make : []\nreturns dep/ffi.make : []\n",
+      "assume dep/ffi.make : []\neffects dep/ffi.make : [] where returns : []\n",
     ),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
@@ -2270,10 +2258,7 @@ pub fn a_declared_dependency_external_with_a_running_fallback_widens_test() {
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
     #("proj.graded", "check app.wrapper : [Time]\n"),
-    #(
-      "build/packages/dep/dep.graded",
-      "external effects dep/ffi.run : [Time]\n",
-    ),
+    #("build/packages/dep/dep.graded", "assume dep/ffi.run : [Time]\n"),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
       "@external(javascript, \"dep_ffi\", \"run\")
@@ -2320,10 +2305,7 @@ pub fn a_dependency_external_this_build_never_reaches_is_unknown_test() {
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
     #("proj.graded", "check app.wrapper : [Time]\n"),
-    #(
-      "build/packages/dep/dep.graded",
-      "external effects dep/ffi.run : [Time]\n",
-    ),
+    #("build/packages/dep/dep.graded", "assume dep/ffi.run : [Time]\n"),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
       "@external(javascript, \"dep_ffi\", \"run\")
@@ -2384,10 +2366,7 @@ pub fn a_default_target_package_keeps_a_dependency_fallback_out_of_reach_test() 
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
     #("proj.graded", "check app.wrapper : [Time]\n"),
-    #(
-      "build/packages/dep/dep.graded",
-      "external effects dep/ffi.run : [Time]\n",
-    ),
+    #("build/packages/dep/dep.graded", "assume dep/ffi.run : [Time]\n"),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
       "@external(erlang, \"dep_ffi\", \"run\")
@@ -2422,7 +2401,7 @@ pub fn a_defaulted_target_package_keeps_a_declared_external_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external effects ffi.now : [Time]
+      "assume ffi.now : [Time]
 check app.wrapper : []
 ",
     ),
@@ -2459,7 +2438,7 @@ pub fn wrapper() -> Nil {
   let assert Ok(_) = graded.run_infer(root)
   let assert Ok(written) = simplifile.read(root <> "/proj.graded")
   written
-  |> string.contains("external effects ffi.now : [Time]")
+  |> string.contains("assume ffi.now : [Time]")
   |> should.be_true()
   support.cleanup(root)
 }
@@ -2474,10 +2453,7 @@ pub fn every_command_reads_a_dependency_external_on_the_same_targets_test() {
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
     #("proj.graded", "check app.wrapper : []\n"),
-    #(
-      "build/packages/dep/dep.graded",
-      "external effects dep/ffi.run : [Time]\n",
-    ),
+    #("build/packages/dep/dep.graded", "assume dep/ffi.run : [Time]\n"),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
       "@external(javascript, \"dep_ffi\", \"run\")
@@ -2547,8 +2523,8 @@ pub fn a_defaulted_target_package_reads_its_own_fallback_the_same_way_test() {
   let sources = [
     #(
       "proj.graded",
-      "external effects ffi.now : [Time]
-external effects sink.disk : [Disk]
+      "assume ffi.now : [Time]
+assume sink.disk : [Disk]
 check ffi.now : [Time]
 ",
     ),
@@ -2635,7 +2611,7 @@ pub fn an_unbuilt_own_external_reads_the_same_on_every_surface_test() {
     #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
     #(
       "proj.graded",
-      "external effects ffi.jsonly : [Time]
+      "assume ffi.jsonly : [Time]
 check ffi.jsonly : []
 check app.wrapper : []
 ",
@@ -2706,10 +2682,7 @@ pub fn a_wired_field_reads_a_foreign_value_as_a_call_does_test() {
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
     #("proj.graded", "check app.tick : []\ncheck app.tock : []\n"),
-    #(
-      "build/packages/dep/dep.graded",
-      "external effects dep/ffi.unbuilt : [Time]\n",
-    ),
+    #("build/packages/dep/dep.graded", "assume dep/ffi.unbuilt : [Time]\n"),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
       "@external(javascript, \"dep_ffi\", \"unbuilt\")
@@ -2832,10 +2805,10 @@ pub fn a_declared_return_resolves_a_cross_module_producer_test() {
       "proj.graded",
       "check app.calls_returned_operator : [Disk]
 check app.calls_built_field : [Disk]
-external effects ffi.disk_read : [Disk]
-external effects ffi.make : []
-external effects ffi.builds : []
-external returns ffi.make : [Disk]
+assume ffi.disk_read : [Disk]
+assume ffi.make : []
+assume ffi.builds : []
+assume ffi.make where returns : [Disk]
 ",
     ),
     #(
@@ -2894,8 +2867,8 @@ pub fn a_polymorphic_declared_return_is_not_loaded_test() {
     #(
       "proj.graded",
       "check app.calls_wrapped : []
-external effects ffi.wrap : []
-external returns ffi.wrap : [f]
+assume ffi.wrap : []
+assume ffi.wrap where returns : [f]
 ",
     ),
     #(
@@ -2935,8 +2908,8 @@ pub fn a_declared_return_out_of_reach_answers_nothing_test() {
     #(
       "proj.graded",
       "check app.calls_returned_operator : []
-external effects ffi.make : []
-external returns ffi.make : []
+assume ffi.make : []
+assume ffi.make where returns : []
 ",
     ),
     #(
@@ -2990,10 +2963,10 @@ pub fn a_declared_return_beside_a_running_fallback_answers_nothing_test() {
       "proj.graded",
       "check app.calls_partial : []
 check app.calls_covered : []
-external effects ffi.partial : []
-external effects ffi.covered : []
-external returns ffi.partial : []
-external returns ffi.covered : []
+assume ffi.partial : []
+assume ffi.covered : []
+assume ffi.partial where returns : []
+assume ffi.covered where returns : []
 ",
     ),
     #(
@@ -3052,9 +3025,8 @@ pub fn infer_and_check_agree_about_a_declared_return_test() {
     #(
       "proj.graded",
       "check app.caller : [Net]
-external effects ffi.make_client : [Net]
-external returns ffi.make_client : [Net]
-returns ffi.make_client : [Disk]
+assume ffi.make_client : [Net] where returns : [Net]
+effects ffi.make_client : [] where returns : [Disk]
 ",
     ),
     #(
@@ -3082,7 +3054,7 @@ pub fn caller() -> Nil {
   let assert Ok(written) = simplifile.read(root <> "/proj.graded")
   written |> string.contains("effects app.caller : [Net]") |> should.be_true()
   written
-  |> string.contains("external returns ffi.make_client : [Net]")
+  |> string.contains("assume ffi.make_client : [Net] where returns : [Net]")
   |> should.be_true()
   support.cleanup(root)
 }
@@ -3098,8 +3070,8 @@ pub fn a_dependency_declares_what_its_own_producer_returns_test() {
     #("proj.graded", "check app.wrapper : []\n"),
     #(
       "build/packages/dep/dep.graded",
-      "external effects dep/ffi.make : []
-external returns dep/ffi.make : [Disk]
+      "assume dep/ffi.make : []
+assume dep/ffi.make where returns : [Disk]
 ",
     ),
     #(
@@ -3144,8 +3116,8 @@ pub fn make() -> fn() -> Nil
 ",
         ),
       ],
-      "external effects dep.make : []
-external returns dep.make : [Disk]
+      "assume dep.make : []
+assume dep.make where returns : [Disk]
 ",
       "check app.wrapper : []\n",
       "import dep
@@ -3165,7 +3137,7 @@ pub fn a_dependency_declares_a_return_for_its_own_gleam_function_test() {
   // Over one of the dependency's *ordinary* functions the line is kept, not
   // dropped: arbitrating a spec against the source beside it is the dep author's
   // job at their own `infer` time, and the effects channel already trusts their
-  // `external effects` line in exactly this position.
+  // `assume` line in exactly this position.
   let root = "build/declared_returns_dep_native"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
@@ -3173,7 +3145,7 @@ pub fn a_dependency_declares_a_return_for_its_own_gleam_function_test() {
     #(
       "build/packages/dep/dep.graded",
       "effects dep/ffi.make : []
-external returns dep/ffi.make : [Disk]
+assume dep/ffi.make where returns : [Disk]
 ",
     ),
     #(
@@ -3203,19 +3175,19 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
-pub fn a_stale_external_returns_line_is_ignored_and_repaired_test() {
+pub fn a_stale_returns_clauses_line_is_ignored_and_repaired_test() {
   // The line names one of this package's own ordinary functions, whose returned
   // closure every caller can see for itself — so it declares nothing. It is
   // ignored at load, not merely warned about: trusted between `infer` runs it
   // would be a per-function override of the walk. `infer` then deletes it and
-  // writes the `returns` line it was suppressing.
+  // writes the clause it was suppressing.
   let root = "build/declared_returns_stale"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
       "check app.caller : []
-external returns lib.make : [Disk]
+assume lib.make where returns : [Disk]
 ",
     ),
     #(
@@ -3247,9 +3219,11 @@ pub fn caller() -> Nil {
       string.starts_with(line, "- ") || string.starts_with(line, "+ ")
     })
   changed
-  |> list.contains("- external returns lib.make : [Disk]")
+  |> list.contains("- assume lib.make where returns : [Disk]")
   |> should.be_true()
-  changed |> list.contains("+ returns lib.make : []") |> should.be_true()
+  changed
+  |> list.contains("+ effects lib.make : [] where returns : []")
+  |> should.be_true()
   support.cleanup(root)
 }
 
@@ -3266,7 +3240,7 @@ pub fn a_declared_return_leaves_the_effects_channel_alone_test() {
       "proj.graded",
       "check app.caller : []
 effects lib.make : [Stdout]
-external returns lib.make : [Disk]
+assume lib.make where returns : [Disk]
 ",
     ),
     #(
@@ -3298,7 +3272,7 @@ pub fn caller() -> Nil {
 
 pub fn the_lint_flags_every_dead_external_returns_line_test() {
   // The four ways the line can be dead, and the one live line beside them. Two
-  // are the existence branches the `external effects` lint already had; two are
+  // are the existence branches the `assume` lint already had; two are
   // this form's own, and both are lines the loader silently drops — the warning
   // is the only place a reader learns the line does nothing.
   let root = "build/declared_returns_lint"
@@ -3306,11 +3280,11 @@ pub fn the_lint_flags_every_dead_external_returns_line_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external returns ffi.wrap : [f]
-external returns lib : [Net]
-external returns lib.make : [Disk]
-external returns lib.nope : [Disk]
-external returns ffi.make : [Net]
+      "assume ffi.wrap where returns : [f]
+assume lib where returns : [Net]
+assume lib.make where returns : [Disk]
+assume lib.nope where returns : [Disk]
+assume ffi.make where returns : [Net]
 ",
     ),
     #(
@@ -3336,10 +3310,10 @@ pub fn make() -> fn() -> Nil
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
-    types.PolymorphicExternalReturnsWarning(function: "ffi.wrap"),
-    types.DotlessExternalReturnsWarning(name: "lib"),
-    types.StaleExternalReturnsWarning(function: "lib.make"),
-    types.UnmatchedExternalReturnsWarning(function: "lib.nope"),
+    types.UngroundReturnsClauseWarning(function: "ffi.wrap", free_vars: ["f"]),
+    types.DotlessReturnsClauseWarning(name: "lib"),
+    types.StaleReturnsClauseWarning(function: "lib.make"),
+    types.UnmatchedReturnsClauseWarning(function: "lib.nope"),
   ])
   support.cleanup(root)
 }
@@ -3354,8 +3328,8 @@ pub fn why_names_the_declaration_that_resolved_a_producer_test() {
     #(
       "proj.graded",
       "check app.caller : [Net]
-external effects ffi.make_client : [Net]
-external returns ffi.make_client : [Net]
+assume ffi.make_client : [Net]
+assume ffi.make_client where returns : [Net]
 ",
     ),
     #(
@@ -3381,7 +3355,7 @@ pub fn caller() -> Nil {
   line
   |> string.contains(
     "calls a function returned by `ffi.make_client` with effects [Net]"
-    <> " (from your spec's external declaration)",
+    <> " (from your spec's `assume` line)",
   )
   |> should.be_true()
   why
@@ -3400,7 +3374,7 @@ pub fn the_fixture_declared_producer_resolves_from_its_line_test() {
   why
   |> string.contains(
     "calls a function returned by `declared_returns_operator` with effects"
-    <> " [Disk] (from your spec's external declaration)",
+    <> " [Disk] (from your spec's `assume` line)",
   )
   |> should.be_true()
 }
@@ -3408,12 +3382,12 @@ pub fn the_fixture_declared_producer_resolves_from_its_line_test() {
 // The spec declaring the same-module producer's return, and the spec that
 // leaves it to inference — which writes no summary for an `@external` at all.
 const declared_same_module_spec = "check ffi.caller : [Net]
-external effects ffi.make_client : [Net]
-external returns ffi.make_client : [Net]
+assume ffi.make_client : [Net]
+assume ffi.make_client where returns : [Net]
 "
 
 const inferred_same_module_spec = "check ffi.caller : [Net]
-external effects ffi.make_client : [Net]
+assume ffi.make_client : [Net]
 "
 
 // The violations of a one-module project whose `@external` producer and its
@@ -3443,7 +3417,7 @@ pub fn caller() -> Nil {
 }
 
 pub fn a_governed_sibling_charges_its_module_what_it_charges_everyone_test() {
-  // `external effects m : [Disk]` answers for every caller of `m.logs`, and a
+  // `assume m : [Disk]` answers for every caller of `m.logs`, and a
   // sibling is a caller. Walking the body for the sibling and reading the
   // declaration for everyone else charged one name two sets depending on where
   // it was called from — `m.wrapper` failed its `[Disk]` on the body's
@@ -3453,8 +3427,8 @@ pub fn a_governed_sibling_charges_its_module_what_it_charges_everyone_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external effects m : [Disk]
-external effects loud.shout : [Stdout]
+      "assume m : [Disk]
+assume loud.shout : [Stdout]
 check m.wrapper : [Disk]
 check app.xwrapper : [Disk]
 check m.logs : [Disk]
@@ -3513,14 +3487,14 @@ pub fn shout() -> Nil
   |> should.equal(contributor_line(cross, "m.logs"))
   contributor_line(cross, "m.logs")
   |> should.equal(Ok(
-    "  calls m.logs with effects [Disk] (from a module-level external in your"
+    "  calls m.logs with effects [Disk] (from a module-level `assume` in your"
     <> " spec)",
   ))
   support.cleanup(root)
 }
 
 pub fn an_undeclared_unbuilt_external_names_one_cause_test() {
-  // Both true of `nothing` at once: no `external effects` line declares it, and
+  // Both true of `nothing` at once: no `assume` line declares it, and
   // its `@external` names a target this build does not compile. Out of reach is
   // the cause every surface reports, because it is the one that decides the
   // charge — answering that nothing declares it named a cause `check` and `why`
@@ -3772,10 +3746,10 @@ fn matrix_sources() -> List(#(String, String)) {
   [
     #(
       "proj.graded",
-      "external effects sink.disk : [Disk]
-external effects ffi.declared_bodyless : [Time]
-external effects ffi.declared_fallback : [Time]
-external effects gov : [Net]
+      "assume sink.disk : [Disk]
+assume ffi.declared_bodyless : [Time]
+assume ffi.declared_fallback : [Time]
+assume gov : [Net]
 check ffi.declared_bodyless : []
 check ffi.declared_fallback : []
 check ffi.undeclared_bodyless : []
@@ -3995,7 +3969,7 @@ pub fn two_target_restricted_checks_do_not_share_a_helper_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ext.b : [Disk]\ncheck ext.e : []\ncheck ext.j : []\n",
+      "assume ext.b : [Disk]\ncheck ext.e : []\ncheck ext.j : []\n",
     ),
     #(
       "ext.gleam",
@@ -4042,7 +4016,7 @@ pub fn a_returns_line_is_computed_on_the_producer_targets_test() {
   let root = "build/returns_target_restricted"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
-    #("proj.graded", "external effects ext.b : [Disk]\n"),
+    #("proj.graded", "assume ext.b : [Disk]\n"),
     #(
       "ext.gleam",
       "@external(javascript, \"ext_ffi\", \"b\")
@@ -4059,8 +4033,9 @@ pub fn make() -> fn() -> Nil {
   ])
   let assert Ok(_) = graded.run_infer(root)
   let assert Ok(written) = simplifile.read(root <> "/proj.graded")
-  string.contains(written, "returns ext.make : []") |> should.be_true()
-  string.contains(written, "returns ext.make : [Disk]") |> should.be_false()
+  string.contains(written, "effects ext.make : [] where returns : []")
+  |> should.be_true()
+  string.contains(written, "where returns : [Disk]") |> should.be_false()
   support.cleanup(root)
 }
 
@@ -4074,7 +4049,7 @@ pub fn an_ordinary_target_restricted_body_narrows_too_test() {
   let root = "build/ordinary_target_restricted_body"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
-    #("proj.graded", "external effects ext.b : [Disk]\ncheck ext.w : []\n"),
+    #("proj.graded", "assume ext.b : [Disk]\ncheck ext.w : []\n"),
     #(
       "ext.gleam",
       "@external(javascript, \"ext_ffi\", \"b\")
@@ -4102,17 +4077,14 @@ pub fn a_dependency_declaration_the_build_excludes_is_unknown_test() {
   // JavaScript to foreign code -- so what runs here is the dependency's Gleam
   // body, which no consumer walks. Its declaration was trusted in full: the
   // scan classified it excluded and dropped it, leaving the shipped
-  // `external effects` line keyed by nothing that knew it answers for a target
+  // `assume` line keyed by nothing that knew it answers for a target
   // this build never compiles. That under-reports as readily as it
   // over-reports, since the body reached instead may do anything at all.
   let root = "build/dep_declaration_build_excludes"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
     #("proj.graded", "check app.w : [Disk]\n"),
-    #(
-      "build/packages/dep/dep.graded",
-      "external effects dep/ffi.run : [Disk]\n",
-    ),
+    #("build/packages/dep/dep.graded", "assume dep/ffi.run : [Disk]\n"),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
       "@external(javascript, \"dep_ffi\", \"run\")
@@ -4148,10 +4120,7 @@ pub fn a_dependency_declaration_the_build_compiles_still_answers_test() {
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
     #("proj.graded", "check app.w : [Disk]\n"),
-    #(
-      "build/packages/dep/dep.graded",
-      "external effects dep/ffi.run : [Disk]\n",
-    ),
+    #("build/packages/dep/dep.graded", "assume dep/ffi.run : [Disk]\n"),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
       "@external(erlang, \"dep_ffi\", \"run\")
@@ -4188,15 +4157,12 @@ pub fn a_dependency_fallback_out_of_reach_does_not_widen_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external effects app.a : []
+      "assume app.a : []
 check app.a : [Disk]
 check app.wrapper : [Disk]
 ",
     ),
-    #(
-      "build/packages/dep/dep.graded",
-      "external effects dep/ffi.run : [Disk]\n",
-    ),
+    #("build/packages/dep/dep.graded", "assume dep/ffi.run : [Disk]\n"),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
       "@external(erlang, \"dep_ffi\", \"run\")
@@ -4236,11 +4202,8 @@ pub fn a_dependency_declaration_out_of_reach_answers_unknown_test() {
   let root = "build/dep_declaration_out_of_reach"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
-    #("proj.graded", "external effects app.a : []\ncheck app.a : [Disk]\n"),
-    #(
-      "build/packages/dep/dep.graded",
-      "external effects dep/ffi.run : [Disk]\n",
-    ),
+    #("proj.graded", "assume app.a : []\ncheck app.a : [Disk]\n"),
+    #("build/packages/dep/dep.graded", "assume dep/ffi.run : [Disk]\n"),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
       "@external(javascript, \"dep_ffi\", \"run\")
@@ -4280,7 +4243,7 @@ pub fn the_effect_fast_path_widens_a_dependency_fallback_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects dep/ffi.run : [Time]\ncheck app.wrapper : [Time]\n",
+      "assume dep/ffi.run : [Time]\ncheck app.wrapper : [Time]\n",
     ),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
@@ -4374,10 +4337,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
     #("pdep/gleam.toml", "name = \"pdep\"\n"),
-    #(
-      "pdep/pdep.graded",
-      "effects pdep/ffi.make : []\nreturns pdep/ffi.make : []\n",
-    ),
+    #("pdep/pdep.graded", "effects pdep/ffi.make : [] where returns : []\n"),
     #(
       "pdep/src/pdep/ffi.gleam",
       "@target(erlang)
@@ -4414,7 +4374,7 @@ pub fn a_spec_less_path_dependency_cannot_inherit_a_stale_operator_test() {
     #("proj/proj.graded", "check app.wrapper : []\n"),
     #(
       "proj/build/packages/dep/dep.graded",
-      "external effects dep/ffi.make : []\nreturns dep/ffi.make : []\n",
+      "assume dep/ffi.make : []\neffects dep/ffi.make : [] where returns : []\n",
     ),
     #(
       "proj/build/packages/dep/src/dep/ffi.gleam",
@@ -4471,14 +4431,14 @@ pub fn one_helper_called_twice_is_reported_once_test() {
 
 // Opaque receivers and field bounds
 //
-// Field calls whose receiver has no visible construction site: `type` lines
+// Field calls whose receiver has no visible construction site: field `assume` lines
 // and hand-written field bounds discharge them, unbound calls stay [Unknown],
 // and inference surfaces the polymorphic field bound.
 
 pub fn opaque_receiver_violation_detected_test() {
   // opaque_receiver.run binds its Validator from make() — a *cross-function*
   // construction the syntax-level path can't see. girard types the receiver,
-  // and the `type opaque_receiver.Validator.to_error : [Stdout]` annotation
+  // and the `assume opaque_receiver.Validator.to_error : [Stdout]` annotation
   // resolves the field call, so the [] check budget must fail. This is the
   // milestone-3b case that 0.6.0's same-function value flow could not handle.
   let assert Ok(results) = graded.run("test/fixtures")
@@ -4496,7 +4456,7 @@ pub fn opaque_receiver_violation_detected_test() {
 
 pub fn field_bound_resolves_untraceable_receiver_test() {
   // field_bound.caller calls `v.to_error` where `v` arrives as a parameter —
-  // no construction site, no `type` line. The hand-written field bound on the
+  // no construction site, no field `assume` line. The hand-written field bound on the
   // `check field_bound.caller(v.to_error: [Stdout]) : []` line resolves the
   // field call to [Stdout], so the [] budget must fail with that precise
   // effect (not the [Unknown] graded would otherwise fall back to).
@@ -4513,7 +4473,7 @@ pub fn field_bound_resolves_untraceable_receiver_test() {
 
 pub fn opaque_fn_typed_field_discharges_via_bound_test() {
   // opaque_field.exec calls `r.run` where `r` is an opaque parameter — no
-  // construction site, no `type` line. `run` is a `fn`-typed field, so the call
+  // construction site, no field `assume` line. `run` is a `fn`-typed field, so the call
   // becomes a synthetic field-effect variable rather than [Unknown]. The
   // `check opaque_field.exec(r.run: [Stdout]) : []` field bound discharges that
   // variable to [Stdout], so the [] budget must fail with the precise [Stdout].
@@ -4855,7 +4815,7 @@ fn checker_infer_factory_forward() -> Result(List(types.EffectAnnotation), Nil) 
 // Nested field calls
 //
 // Field calls whose receiver is itself a field access (`o.inner.run()`),
-// resolved via `type` lines or dotted field bounds, falling back to
+// resolved via field `assume` lines or dotted field bounds, falling back to
 // [Unknown] when neither applies.
 
 pub fn nested_field_resolves_via_type_line_test() {
@@ -4876,7 +4836,7 @@ pub fn nested_field_discharges_via_dotted_bound_test() {
   // nested_field.via_bound has a dotted field bound on its `check` line
   // (`check nested_field.via_bound(o.inner.run: [Stdout]) : []`). The nested
   // `o.inner.run` field call carries the dotted path `o.inner` as its object, so
-  // the bound matches and discharges to [Stdout], winning over the `type` line.
+  // the bound matches and discharges to [Stdout], winning over the field `assume` line.
   let assert Ok(results) = graded.run("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/nested_field.gleam" })
@@ -4888,7 +4848,7 @@ pub fn nested_field_discharges_via_dotted_bound_test() {
 
 pub fn nested_field_unbound_is_unknown_test() {
   // nested_field.unbound calls `h.loose.act()` — a nested fn-typed field with no
-  // `type` line and no field bound. The synthetic field-effect variable can't be
+  // field `assume` line and no field bound. The synthetic field-effect variable can't be
   // discharged, so it concretizes to [Unknown] — the soundness floor — and the
   // [] budget fails with [Unknown], never silently [].
   let assert Ok(results) = graded.run("test/fixtures")
@@ -5463,7 +5423,7 @@ pub fn receiver_path_forwarding_param_alias_bound_check_discharges_test() {
 // Field-call shape variants
 //
 // Remaining field-call shapes: dotted round trips, pipe targets, alias-typed
-// fields, same-named imported types, and cross-module `type` lines on nested
+// fields, same-named imported types, and cross-module field `assume` lines on nested
 // receivers.
 
 pub fn nested_field_round_trips_as_dotted_field_bound_test() {
@@ -5493,7 +5453,7 @@ pub fn nested_field_round_trips_as_dotted_field_bound_test() {
 pub fn nested_field_pipe_target_resolves_test() {
   // `"x" |> o.inner.run` — a NESTED field call used as a pipe target. The pipe
   // path emits a FieldCall for the nested receiver, so the field's effect is
-  // captured (resolved by `type pipe_field.Inner.run : [Disk]`) and the []
+  // captured (resolved by `assume pipe_field.Inner.run : [Disk]`) and the []
   // budget fails with [Disk]. Before the fix the pipe target fell through to the
   // generic walker, dropped the effect, and the budget passed unsoundly.
   let assert Ok(results) = graded.run("test/fixtures")
@@ -5554,9 +5514,9 @@ pub fn nested_field_resolves_cross_module_type_line_test() {
   // A nested call whose INTERMEDIATE receiver type lives in ANOTHER module.
   // `handler.handle` calls `model.service.org.create("acme")`;
   // girard types `model.service.org` as `svc.OrganizationService`, and the
-  // module-qualified `type svc.OrganizationService.create : [Storage, Time]`
+  // module-qualified `assume svc.OrganizationService.create : [Storage, Time]`
   // line resolves it cross-module — so the [] budget fails with that precise
-  // effect. Synthesized as a multi-module project so the consumer's `type` line
+  // effect. Synthesized as a multi-module project so the consumer's field `assume` line
   // points at a type defined in a different module.
   let root = "build/nested_xmod_app"
   let _ = simplifile.delete(root)
@@ -5582,7 +5542,7 @@ pub fn nested_field_resolves_cross_module_type_line_test() {
     simplifile.write(
       root <> "/proj.graded",
       "check handler.handle : []\n\n"
-        <> "type svc.OrganizationService.create : [Storage, Time]\n",
+        <> "assume svc.OrganizationService.create : [Storage, Time]\n",
     )
 
   let assert Ok(results) = graded.run(root)
@@ -5600,7 +5560,7 @@ pub fn nested_field_resolves_cross_module_type_line_test() {
 //
 // Field effects inferred from what the construction wires in — inline
 // closures, operator-typed closures, and same-module named functions — with
-// no hand-written `type` line.
+// no hand-written field `assume` line.
 
 pub fn closure_field_effect_from_construction_test() {
   // A record field wired to an *inline closure* at construction resolves to the
@@ -5734,7 +5694,7 @@ pub fn local_wired_opaque_producer_is_unknown_test() {
 
 pub fn local_wired_undeclared_external_is_unknown_test() {
   // The field is wired to a same-module bodyless `@external` with no
-  // `external effects` line. There is no body to lift — reading its empty one
+  // `assume` line. There is no body to lift — reading its empty one
   // as pure would understate it — so it stays [Unknown].
   local_wired_actual("run_undeclared_external")
   |> should.equal(types.Specific(set.from_list(["Unknown"])))
@@ -5804,7 +5764,7 @@ pub fn run() -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
       root <> "/app.graded",
-      "external effects app.log : [Stdout]\ncheck app.run : []\n",
+      "assume app.log : [Stdout]\ncheck app.run : []\n",
     )
   // The dependency's source — graded reads it only for parameter positions.
   let assert Ok(Nil) =
@@ -6369,7 +6329,7 @@ fn run_path_dep_project(
 
 pub fn path_dep_module_level_external_marks_pure_test() {
   // Source-only path dep `dep` with an opaque FFI body graded would infer as
-  // [Unknown]. `external effects dep : []` declares the whole module pure, so
+  // [Unknown]. `assume dep : []` declares the whole module pure, so
   // `dep.touch` resolves to [] and `check caller : []` holds.
   let r =
     run_path_dep_fixture(
@@ -6380,7 +6340,7 @@ pub fn path_dep_module_level_external_marks_pure_test() {
           "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
         ),
       ],
-      "external effects dep : []\n\ncheck app.caller : []\n",
+      "assume dep : []\n\ncheck app.caller : []\n",
       "import dep\n\npub fn caller() -> Nil {\n  dep.touch()\n}\n",
     )
   list.any(r.violations, fn(v) { v.function == "caller" })
@@ -6446,7 +6406,7 @@ pub fn a_committed_path_dep_external_still_declares_test() {
           "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
         ),
       ],
-      "external effects dep.touch : [Disk]\n",
+      "assume dep.touch : [Disk]\n",
       "check app.caller : []\n",
       "import dep\n\npub fn caller() -> Nil {\n  dep.touch()\n}\n",
     )
@@ -6458,7 +6418,7 @@ pub fn a_committed_path_dep_external_still_declares_test() {
 
 pub fn path_dep_module_level_external_preserves_effect_test() {
   // A non-empty module-level external propagates that exact set, it does not
-  // collapse to pure. `external effects dep : [Database]` makes `dep.touch`
+  // collapse to pure. `assume dep : [Database]` makes `dep.touch`
   // resolve to [Database], so `check caller : []` fails with an actual of
   // [Database] — not flattened to [] and not left as an inferred [Unknown].
   let r =
@@ -6470,7 +6430,7 @@ pub fn path_dep_module_level_external_preserves_effect_test() {
           "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
         ),
       ],
-      "external effects dep : [Database]\n\ncheck app.caller : []\n",
+      "assume dep : [Database]\n\ncheck app.caller : []\n",
       "import dep\n\npub fn caller() -> Nil {\n  dep.touch()\n}\n",
     )
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
@@ -6488,14 +6448,14 @@ fn ffi_dep_files() -> List(#(String, String)) {
 const ffi_caller_src = "import ffi\n\npub fn caller() -> Nil {\n  ffi.now()\n}\n"
 
 pub fn path_dep_shipped_function_external_resolves_test() {
-  // The dep's own `external effects` line for its FFI, read from the spec it
+  // The dep's own `assume` line for its FFI, read from the spec it
   // ships. Before those lines were consumed, `ffi.now` resolved to [Unknown] for
   // every consumer even though the dep author had declared it.
   let r =
     run_path_dep_spec_fixture(
       "pd_shipped_fn_ext",
       ffi_dep_files(),
-      "external effects ffi.now : [Time]\n",
+      "assume ffi.now : [Time]\n",
       "check app.caller : []\n",
       ffi_caller_src,
     )
@@ -6511,7 +6471,7 @@ pub fn path_dep_shipped_module_external_resolves_test() {
     run_path_dep_spec_fixture(
       "pd_shipped_mod_ext",
       ffi_dep_files(),
-      "external effects ffi : [Time]\n",
+      "assume ffi : [Time]\n",
       "check app.caller : []\n",
       ffi_caller_src,
     )
@@ -6531,8 +6491,8 @@ pub fn consumer_module_external_beats_a_shipped_one_test() {
     run_path_dep_spec_fixture(
       "pd_shipped_mod_ext_shadowed",
       ffi_dep_files(),
-      "external effects ffi : [Time]\n",
-      "external effects ffi : [Mocked]\n\ncheck app.caller : []\n",
+      "assume ffi : [Time]\n",
+      "assume ffi : [Mocked]\n\ncheck app.caller : []\n",
       ffi_caller_src,
     )
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
@@ -6561,7 +6521,7 @@ pub fn path_dep_module_external_propagates_through_wrapper_test() {
           "import ffi\n\npub fn go() -> Nil {\n  ffi.touch()\n}\n",
         ),
       ],
-      "external effects ffi : []\n\ncheck app.caller : []\n",
+      "assume ffi : []\n\ncheck app.caller : []\n",
       "import wrapper\n\npub fn caller() -> Nil {\n  wrapper.go()\n}\n",
     )
   list.any(r.violations, fn(v) { v.function == "caller" })
@@ -6571,7 +6531,7 @@ pub fn path_dep_module_external_propagates_through_wrapper_test() {
 pub fn path_dep_module_external_keeps_returned_operator_test() {
   // A module-level external suppresses only the call effect, not the
   // returned-operator metadata. `make` returns a pure closure; `wrapper` does
-  // `let action = ffi.make()  action()`. With `external effects ffi : []`, the
+  // `let action = ffi.make()  action()`. With `assume ffi : []`, the
   // call to `make` resolves to [] and `action()` resolves through `make`'s kept
   // returned operator, so `check caller : []` holds. Dropping the returned
   // operator would leave `action()` as [Unknown] and fail the check.
@@ -6585,7 +6545,7 @@ pub fn path_dep_module_external_keeps_returned_operator_test() {
           "import ffi\n\npub fn go() -> Nil {\n  let action = ffi.make()\n  action()\n}\n",
         ),
       ],
-      "external effects ffi : []\n\ncheck app.caller : []\n",
+      "assume ffi : []\n\ncheck app.caller : []\n",
       "import wrapper\n\npub fn caller() -> Nil {\n  wrapper.go()\n}\n",
     )
   list.any(r.violations, fn(v) { v.function == "caller" })
@@ -6647,7 +6607,7 @@ pub fn path_dep_cross_module_positional_discharges_test() {
 
 // Project-module externals
 //
-// Module-level `external effects` declarations governing sibling project
+// Module-level `assume` declarations governing sibling project
 // modules, during both check and infer.
 
 // An opaque FFI body graded infers as [Unknown]: the canonical declared-external
@@ -6675,7 +6635,7 @@ fn run_project_module_fixture(
 
 pub fn project_module_level_external_marks_pure_test() {
   // A project module `db` with an opaque FFI body graded would infer as
-  // [Unknown]. `external effects db : []` declares the whole module pure, so
+  // [Unknown]. `assume db : []` declares the whole module pure, so
   // `db.touch` resolves to [] and `check caller : []` holds — the
   // project-module counterpart of `path_dep_module_level_external_marks_pure`.
   // Before the fix the in-memory inference of `db` left an [Unknown] in
@@ -6684,7 +6644,7 @@ pub fn project_module_level_external_marks_pure_test() {
     run_project_module_fixture(
       "modext_pure",
       [#("db.gleam", ffi_touch)],
-      "external effects db : []\n\ncheck app.caller : []\n",
+      "assume db : []\n\ncheck app.caller : []\n",
       "import db\n\npub fn caller() -> Nil {\n  db.touch()\n}\n",
     )
   list.any(r.violations, fn(v) { v.function == "caller" })
@@ -6693,14 +6653,14 @@ pub fn project_module_level_external_marks_pure_test() {
 
 pub fn project_module_level_external_preserves_effect_test() {
   // A non-empty module-level external propagates that exact set, it does not
-  // collapse to pure or stay an inferred [Unknown]. `external effects db :
+  // collapse to pure or stay an inferred [Unknown]. `assume db :
   // [Database]` makes `db.touch` resolve to [Database], so `check caller : []`
   // fails with [Database].
   let r =
     run_project_module_fixture(
       "modext_eff",
       [#("db.gleam", ffi_touch)],
-      "external effects db : [Database]\n\ncheck app.caller : []\n",
+      "assume db : [Database]\n\ncheck app.caller : []\n",
       "import db\n\npub fn caller() -> Nil {\n  db.touch()\n}\n",
     )
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
@@ -6724,7 +6684,7 @@ pub fn project_module_external_propagates_through_wrapper_test() {
           "import db\n\npub fn go() -> Nil {\n  db.touch()\n}\n",
         ),
       ],
-      "external effects db : []\n\ncheck app.caller : []\n",
+      "assume db : []\n\ncheck app.caller : []\n",
       "import wrapper\n\npub fn caller() -> Nil {\n  wrapper.go()\n}\n",
     )
   list.any(r.violations, fn(v) { v.function == "caller" })
@@ -6734,7 +6694,7 @@ pub fn project_module_external_propagates_through_wrapper_test() {
 pub fn project_module_external_keeps_returned_operator_test() {
   // A module-level external suppresses only the call effect, not the
   // returned-operator metadata. `db.make` returns a pure closure; `wrapper` does
-  // `let action = db.make()  action()`. With `external effects db : []`, the call
+  // `let action = db.make()  action()`. With `assume db : []`, the call
   // to `make` resolves to [] and `action()` resolves through `make`'s kept
   // returned operator, so `check caller : []` holds. Dropping the returned
   // operator would leave `action()` as [Unknown] and fail the check.
@@ -6748,7 +6708,7 @@ pub fn project_module_external_keeps_returned_operator_test() {
           "import db\n\npub fn go() -> Nil {\n  let action = db.make()\n  action()\n}\n",
         ),
       ],
-      "external effects db : []\n\ncheck app.caller : []\n",
+      "assume db : []\n\ncheck app.caller : []\n",
       "import wrapper\n\npub fn caller() -> Nil {\n  wrapper.go()\n}\n",
     )
   list.any(r.violations, fn(v) { v.function == "caller" })
@@ -6756,7 +6716,7 @@ pub fn project_module_external_keeps_returned_operator_test() {
 }
 
 pub fn project_module_external_infer_omits_lines_and_governs_test() {
-  // `graded infer` over a project with `external effects db : [Database]` writes
+  // `graded infer` over a project with `assume db : [Database]` writes
   // no inferred `effects db.*` lines (the declaration governs the module, like a
   // function-level external suppresses its own line), and a sibling `wrapper.go`
   // calling into `db` inherits the declared [Database] — so `infer` and `check`
@@ -6768,7 +6728,7 @@ pub fn project_module_external_infer_omits_lines_and_governs_test() {
       #("db.gleam", ffi_touch),
       #("wrapper.gleam", "import db\n\npub fn go() -> Nil {\n  db.touch()\n}\n"),
     ],
-    "external effects db : [Database]\n",
+    "assume db : [Database]\n",
   )
   let assert Ok(Nil) = graded.run_infer(root)
 
@@ -6801,7 +6761,7 @@ pub fn project_module_external_infer_filters_stale_effects_test() {
           <> "pub fn go() -> Nil {\n  let r = Runner(act: db.touch)\n  r.act()\n}\n",
       ),
     ],
-    "external effects db : [Database]\neffects db.touch : [Stdout]\n",
+    "assume db : [Database]\neffects db.touch : [Stdout]\n",
   )
   let assert Ok(Nil) = graded.run_infer(root)
 
@@ -6830,7 +6790,7 @@ pub fn path_dep_type_field_resolves_from_consumer_spec_test() {
     run_path_dep_fixture(
       "pd_typefield_consumer",
       [#("repo.gleam", "pub type Repo {\n  Repo(find: fn(String) -> Int)\n}\n")],
-      "type repo.Repo.find : [Storage]\n\ncheck app.use_field : []\n",
+      "assume repo.Repo.find : [Storage]\n\ncheck app.use_field : []\n",
       "import repo.{type Repo}\n\n"
         <> "pub fn use_field(r: Repo) -> Int {\n  r.find(\"x\")\n}\n",
     )
@@ -6843,7 +6803,7 @@ pub fn path_dep_type_field_resolves_from_consumer_spec_test() {
 pub fn path_dep_ships_type_field_test() {
   // The dependency itself ships the `type` annotation in its committed
   // `dep.graded`; the consumer declares no field annotation at all. graded must
-  // load the dependency spec's `type` lines (not just its `effects`) so the
+  // load the dependency spec's field `assume` lines (not just its `effects`) so the
   // consumer's `r.find(...)` resolves to the dependency-declared [Storage].
   let app_root = "build/pd_ships_typefield_app"
   let dep_root = "build/pd_ships_typefield_dep"
@@ -6861,7 +6821,7 @@ pub fn path_dep_ships_type_field_test() {
   let assert Ok(Nil) =
     simplifile.write(
       dep_root <> "/dep.graded",
-      "type dep/repo.Repo.find : [Storage]\n",
+      "assume dep/repo.Repo.find : [Storage]\n",
     )
 
   let assert Ok(Nil) = simplifile.create_directory_all(app_root)
@@ -6915,7 +6875,7 @@ pub fn installed_dep_ships_type_field_test() {
   let assert Ok(Nil) =
     simplifile.write(
       root <> "/build/packages/dep/dep.graded",
-      "type dep/repo.Repo.find : [Storage]\n",
+      "assume dep/repo.Repo.find : [Storage]\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -7350,10 +7310,7 @@ pub fn a_non_package_subtree_keeps_acting_as_its_own_root_test() {
   // around it.
   let root = "build/scoped_standalone/fixtures"
   support.write_fixture(root, [
-    #(
-      "fixtures.graded",
-      "check app.go : []\nexternal effects ffi.now : [Time]\n",
-    ),
+    #("fixtures.graded", "check app.go : []\nassume ffi.now : [Time]\n"),
     #(
       "ffi.gleam",
       "@target(erlang)
@@ -7375,7 +7332,7 @@ pub fn now() -> Nil
 
 // Per-function externals over ordinary project functions
 //
-// `external effects` declares code graded cannot see. A line naming a function
+// `assume` declares code graded cannot see. A line naming a function
 // of this package whose Gleam body is right there declares nothing: it is stale,
 // the body is walked instead, and `infer` deletes the line rather than preserve
 // a spec that under-reports the function forever.
@@ -7385,8 +7342,8 @@ fn stale_external_project(root: String) -> Nil {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external effects m.logs : []
-external effects ffi.write : [Disk]
+      "assume m.logs : []
+assume ffi.write : [Disk]
 check m.logs : []
 check caller.go : []
 ",
@@ -7449,8 +7406,8 @@ pub fn a_committed_line_beside_a_stale_external_is_dropped_too_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external effects m.logs : []
-external effects ffi.write : [Disk]
+      "assume m.logs : []
+assume ffi.write : [Disk]
 effects m.logs : []
 check caller.go : []
 ",
@@ -7504,7 +7461,7 @@ pub fn infer_repairs_a_stale_project_external_test() {
     |> list.filter(fn(line) {
       string.starts_with(line, "- ") || string.starts_with(line, "+ ")
     })
-  changed |> list.contains("- external effects m.logs : []") |> should.be_true()
+  changed |> list.contains("- assume m.logs : []") |> should.be_true()
   changed |> list.contains("+ effects m.logs : [Disk]") |> should.be_true()
   support.cleanup(root)
 }
@@ -7517,7 +7474,7 @@ pub fn a_dependency_external_over_a_visible_body_is_untouched_test() {
   let root = "build/stale_external_dependency"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #("proj.graded", "external effects dep/io.writes : []\ncheck app.go : []\n"),
+    #("proj.graded", "assume dep/io.writes : []\ncheck app.go : []\n"),
     #(
       "build/packages/dep/src/dep/io.gleam",
       "pub fn writes() -> Nil {\n  Nil\n}\n",
@@ -7540,7 +7497,7 @@ pub fn a_module_level_external_over_a_project_module_is_untouched_test() {
   let root = "build/module_external_project"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #("proj.graded", "external effects m : [Disk]\ncheck m.logs : []\n"),
+    #("proj.graded", "assume m : [Disk]\ncheck m.logs : []\n"),
     #("m.gleam", "pub fn logs() -> Nil {\n  Nil\n}\n"),
   ])
 
@@ -7565,8 +7522,8 @@ pub fn a_module_level_external_does_not_excuse_a_visible_body_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external effects m : [Disk]
-external effects loud.shout : [Stdout]
+      "assume m : [Disk]
+assume loud.shout : [Stdout]
 check m.logs : [Disk]
 ",
     ),
@@ -7611,10 +7568,7 @@ pub fn a_catalogued_modules_uncatalogued_function_is_not_flagged_test() {
       "manifest.toml",
       "packages = [\n  { name = \"gleam_erlang\", version = \"0.34.0\" },\n]\n",
     ),
-    #(
-      "proj.graded",
-      "external effects gleam/erlang/process.subject_owner : [Process]\n",
-    ),
+    #("proj.graded", "assume gleam/erlang/process.subject_owner : [Process]\n"),
     // The package is installed — the tree is complete — but this module is not
     // among what it ships here, so only the catalog speaks for the name.
     #(
@@ -7643,10 +7597,10 @@ pub fn a_missing_packages_tree_silences_only_what_it_hides_test() {
     ),
     #(
       "proj.graded",
-      "external effects dep/io.writes : [Disk]
-external effects dep/io : [Disk]
-external effects m.no_such : []
-external effects m.go : []
+      "assume dep/io.writes : [Disk]
+assume dep/io : [Disk]
+assume m.no_such : []
+assume m.go : []
 ",
     ),
     #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
@@ -7678,10 +7632,10 @@ pub fn a_partial_packages_tree_still_flags_what_it_can_prove_test() {
     ),
     #(
       "proj.graded",
-      "external effects absent/thing.whatever : [Disk]
-external effects absent/thing : [Disk]
-external effects here/io.writes : [Disk]
-external effects here/io.typo : [Disk]
+      "assume absent/thing.whatever : [Disk]
+assume absent/thing : [Disk]
+assume here/io.writes : [Disk]
+assume here/io.typo : [Disk]
 ",
     ),
     #(
@@ -7713,12 +7667,12 @@ pub fn an_external_naming_nothing_is_flagged_test() {
     ),
     #(
       "proj.graded",
-      "external effects m.no_such : []
-external effects nowhere/mod : []
-external effects gleam/io.println : [Stdout]
-external effects dep/io.writes : [Disk]
-external effects dep/io.typo : [Disk]
-external effects dep/io : [Disk]
+      "assume m.no_such : []
+assume nowhere/mod : []
+assume gleam/io.println : [Stdout]
+assume dep/io.writes : [Disk]
+assume dep/io.typo : [Disk]
+assume dep/io : [Disk]
 ",
     ),
     #(
@@ -7763,7 +7717,7 @@ pub fn a_parsed_dependency_source_outranks_the_catalog_in_the_lint_test() {
     ),
     #(
       "proj.graded",
-      "external effects gleam/list.typo : []\nexternal effects gleam/list.real_fn : []\n",
+      "assume gleam/list.typo : []\nassume gleam/list.real_fn : []\n",
     ),
     #(
       "build/packages/gleam_stdlib/src/gleam/list.gleam",
@@ -7788,7 +7742,7 @@ pub fn an_external_on_an_unreadable_dependency_is_not_flagged_test() {
   let root = "build/external_lint_unreadable_dep"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #("proj.graded", "external effects broken/mod.whatever : [Disk]\n"),
+    #("proj.graded", "assume broken/mod.whatever : [Disk]\n"),
     #("build/packages/broken/src/broken/mod.gleam", "pub fn ( not gleam\n"),
     #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
   ])
@@ -7810,7 +7764,7 @@ pub fn a_stale_duplicate_dependency_copy_does_not_answer_for_a_name_test() {
       "proj/gleam.toml",
       "name = \"proj\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
     ),
-    #("proj/proj.graded", "external effects dep/mod.writes : [Disk]\n"),
+    #("proj/proj.graded", "assume dep/mod.writes : [Disk]\n"),
     #(
       "proj/build/packages/dep/src/dep/mod.gleam",
       "pub fn writes() -> Nil {\n  Nil\n}\n",
@@ -7841,7 +7795,7 @@ pub fn a_stale_copy_does_not_stand_in_for_an_unreadable_one_test() {
       "proj/gleam.toml",
       "name = \"proj\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
     ),
-    #("proj/proj.graded", "external effects dep/mod.writes : [Disk]\n"),
+    #("proj/proj.graded", "assume dep/mod.writes : [Disk]\n"),
     #(
       "proj/build/packages/dep/src/dep/mod.gleam",
       "pub fn reads() -> Nil {\n  Nil\n}\n",
@@ -7902,7 +7856,7 @@ pub fn an_external_on_a_function_less_dependency_module_is_flagged_test() {
   let root = "build/external_lint_type_only_dep"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #("proj.graded", "external effects types_only/mod.whatever : [Disk]\n"),
+    #("proj.graded", "assume types_only/mod.whatever : [Disk]\n"),
     #(
       "build/packages/types_only/src/types_only/mod.gleam",
       "pub type Handle {\n  Handle(id: Int)\n}\n",
@@ -7935,7 +7889,7 @@ pub fn a_reference_warning_never_quotes_a_stale_foreign_effect_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "effects ffi.stale : [Disk]\nexternal effects ffi.declared : [Disk]\ncheck app.go : [_]\ncheck app.declared_go : [_]\n",
+      "effects ffi.stale : [Disk]\nassume ffi.declared : [Disk]\ncheck app.go : [_]\ncheck app.declared_go : [_]\n",
     ),
     #(
       "ffi.gleam",
@@ -8001,7 +7955,7 @@ pub fn an_undeclared_fallbacks_reference_warns_only_about_what_it_knows_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ffi.disk : [Disk]
+      "assume ffi.disk : [Disk]
 check ext.pass_quiet : [_]
 check ext.pass_loud : [_]
 ",
@@ -8080,7 +8034,7 @@ pub fn a_reference_warning_quotes_only_the_half_in_reach_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "external effects ffi.disk : [Disk]
+      "assume ffi.disk : [Disk]
 check ext.pass_js_only : [_]
 check ext.pass_erlang_only : [_]
 ",
@@ -8148,7 +8102,7 @@ pub fn pass_erlang_only() -> Nil {
 
 pub fn a_governed_native_body_still_warns_about_its_references_test() {
   // The opposite case to the covered `@external` below, and the distinction the
-  // warning turns on. `external effects governed : [Net]` answers for every
+  // warning turns on. `assume governed : [Net]` answers for every
   // *caller* of the module's functions, but these bodies are ordinary Gleam
   // that runs: a `check` line on one is judged against the declaration and the
   // body alike, and the effectful reference one passes is as untracked as it
@@ -8159,8 +8113,8 @@ pub fn a_governed_native_body_still_warns_about_its_references_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external effects ffi.disk : [Disk]
-external effects governed : [Net]
+      "assume ffi.disk : [Disk]
+assume governed : [Net]
 check governed.wrapped : [Net]
 check governed.strict : []
 ",
@@ -8242,9 +8196,9 @@ pub fn a_covered_fallback_body_reference_warns_about_nothing_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "external effects ffi.disk : [Disk]
-external effects ext.covered : []
-external effects ext.running : []
+      "assume ffi.disk : [Disk]
+assume ext.covered : []
+assume ext.running : []
 check ext.covered : []
 check ext.running : [_]
 ",
@@ -8317,10 +8271,13 @@ pub fn a_dependency_cannot_declare_a_return_for_the_consumers_code_test() {
     #(
       "proj.graded",
       "check app.caller : []
-external effects lib.write : [Stdout]
+assume lib.write : [Stdout]
 ",
     ),
-    #("build/packages/dep/dep.graded", "external returns lib.make : [Net]\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "assume lib.make where returns : [Net]\n",
+    ),
     #(
       "build/packages/dep/src/dep.gleam",
       "pub fn nothing() -> Nil {\n  Nil\n}\n",
@@ -8360,7 +8317,7 @@ pub fn a_declaration_governs_a_spec_less_path_deps_inference_test() {
   // The path dependency ships no spec, so its bodies are summarized from source
   // during this run — and the body being summarized calls the closure its own
   // `@external` hands back. Both consumer declarations have to be in reach while
-  // that pass runs, not merely afterwards: the `external effects` line so the
+  // that pass runs, not merely afterwards: the `assume` line so the
   // producer call is charged, the `external returns` line so the closure call is.
   // Folded after it, the helper is settled at [Unknown] and the consumer reads
   // that instead.
@@ -8388,8 +8345,8 @@ pub fn use_it() -> Nil {
       ],
       None,
       "check app.wrapper : []
-external effects ffi.make : []
-external returns ffi.make : [Disk]
+assume ffi.make : []
+assume ffi.make where returns : [Disk]
 ",
       "import helper
 
@@ -8421,8 +8378,8 @@ pub fn make() -> fn() -> Nil
     #("src/dep/ffi.gleam", producer),
     #(
       "dep.graded",
-      "external effects dep/ffi.make : []
-external returns dep/ffi.make : [Net]
+      "assume dep/ffi.make : []
+assume dep/ffi.make where returns : [Net]
 ",
     ),
   ])
@@ -8435,8 +8392,8 @@ external returns dep/ffi.make : [Net]
     #("build/packages/dep/src/dep/ffi.gleam", producer),
     #(
       "build/packages/dep/dep.graded",
-      "external effects dep/ffi.make : []
-external returns dep/ffi.make : [Stdout]
+      "assume dep/ffi.make : []
+assume dep/ffi.make where returns : [Stdout]
 ",
     ),
     #(
@@ -8474,7 +8431,7 @@ pub fn one_packages_returns_line_cannot_bury_anothers_declaration_test() {
     #(
       "build/packages/alib/alib.graded",
       "effects alib/mod.make : []
-external returns alib/mod.make : [Stdout]
+assume alib/mod.make where returns : [Stdout]
 ",
     ),
     #(
@@ -8484,7 +8441,10 @@ external returns alib/mod.make : [Stdout]
 }
 ",
     ),
-    #("build/packages/zlib/zlib.graded", "returns alib/mod.make : [Net]\n"),
+    #(
+      "build/packages/zlib/zlib.graded",
+      "effects alib/mod.make : [] where returns : [Net]\n",
+    ),
     #(
       "build/packages/zlib/src/zlib.gleam",
       "pub fn nothing() -> Nil {\n  Nil\n}\n",
@@ -8509,15 +8469,14 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
-pub fn the_lint_names_the_type_line_for_a_field_shaped_returns_test() {
-  // `app.Handler.run` is the `type` line's shape, not this one's. The loader
-  // drops it either way; the warning has to say which mistake it is, or the
-  // author reads "names a module, not a function" about a name that names no
-  // module.
+pub fn a_returns_clause_on_a_field_path_is_refused_test() {
+  // `app.Handler.on_click` names a field, and a field annotation has no slot
+  // for a returned operator. There is no line to warn about: the grammar
+  // refuses it, naming the line.
   let root = "build/declared_returns_type_shaped"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #("proj.graded", "external returns app.Handler.run : [Net]\n"),
+    #("proj.graded", "assume app.Handler.run where returns : [Net]\n"),
     #(
       "app.gleam",
       "pub type Handler {
@@ -8526,11 +8485,403 @@ pub fn the_lint_names_the_type_line_for_a_field_shaped_returns_test() {
 ",
     ),
   ])
+  graded.run(root)
+  |> should.equal(
+    Error(graded.GradedParseError(
+      root <> "/proj.graded",
+      annotation.InvalidLine(1, "assume app.Handler.run where returns : [Net]"),
+    )),
+  )
+  support.cleanup(root)
+}
+
+// Unparseable spec
+//
+// The check reads the spec's `check` lines and its declarations. A line the
+// parser rejects stops it, naming the line — checking against a spec that was
+// silently emptied passes everything.
+
+pub fn check_over_an_unparseable_spec_errors_test() {
+  let root = "/tmp/graded_check_unparseable"
+  let _ = support.write_unparseable_spec_project(root)
+
+  graded.run(root)
+  |> should.equal(
+    Error(graded.GradedParseError(
+      root <> "/proj.graded",
+      annotation.InvalidLine(2, "not a graded line"),
+    )),
+  )
+  support.cleanup(root)
+}
+
+// A `where returns` clause across a package boundary
+//
+// The clause a dependency ships is read back as a `Closed` summary, its
+// variables checked against that dependency's real callback parameters before
+// they are bound to the consumer's own argument.
+
+// What the consumer's `h()` — the call of the closure `wrap` handed back — is
+// charged, for a dependency whose spec states `clause` for `wrap`.
+fn cross_package_clause_effects(
+  name: String,
+  clause: String,
+) -> types.EffectSet {
+  cross_package_clause_effects_over(
+    name,
+    clause,
+    "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
+  fn() { f() }
+}
+",
+  )
+}
+
+// The same, over a dependency `wrap` written as `dep_source` states it.
+fn cross_package_clause_effects_over(
+  name: String,
+  clause: String,
+  dep_source: String,
+) -> types.EffectSet {
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/" <> name,
+      package: "proj",
+      spec: "check proj.caller : []\nassume proj.shout : [Stdout]\n",
+      sources: [
+        #(
+          "proj.gleam",
+          "import dep/wrap
+
+@external(erlang, \"proj_ffi\", \"shout\")
+pub fn shout() -> Nil
+
+pub fn caller() -> Nil {
+  let h = wrap.wrap(shout)
+  h()
+}
+",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: clause,
+      dependency_sources: [#("dep/wrap.gleam", dep_source)],
+    )
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(violation) =
+    results
+    |> list.flat_map(fn(result) { result.violations })
+    |> list.find(fn(violation) {
+      violation.explanation.call.module == "<returned>"
+    })
+  support.cleanup(root)
+  violation.explanation.actual
+}
+
+pub fn a_dependencys_clause_binds_the_consumers_argument_test() {
+  cross_package_clause_effects(
+    "clause_cross_package",
+    "effects dep/wrap.wrap(f: [f]) : [] where returns : [f]\n",
+  )
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn a_dependencys_open_clause_degrades_to_unknown_test() {
+  // `ghost` is no parameter of the dependency's `wrap`, so nothing binds it.
+  cross_package_clause_effects(
+    "clause_cross_package_open",
+    "effects dep/wrap.wrap(f: [f]) : [] where returns : [ghost]\n",
+  )
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+// An *unannotated* callback the dependency's spec records a bound for. No
+// syntactic signature shows it, so the registry alone would call the clause
+// open; the recorded bound is what admits it.
+const unannotated_wrap = "pub fn wrap(f) {
+  fn() { f() }
+}
+"
+
+pub fn a_clause_over_a_recorded_bound_binds_test() {
+  cross_package_clause_effects_over(
+    "clause_recorded_bound",
+    "effects dep/wrap.wrap(f: [f]) : [] where returns : [f]\n",
+    unannotated_wrap,
+  )
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn an_assume_kept_clause_still_binds_over_its_bounds_test() {
+  // The line survives an assumption for the sake of its clause; the bounds that
+  // scope the clause survive with it. Over `unannotated_wrap` nothing else can
+  // prove `f` is a callback, so the recorded bound is the whole of what admits
+  // the clause — a dropped one resolves the returned closure to [Unknown].
+  cross_package_clause_effects_over(
+    "clause_fn_assume_bounds",
+    "assume dep/wrap.wrap : []\n"
+      <> "effects dep/wrap.wrap(f: [f]) : [] where returns : [f]\n",
+    unannotated_wrap,
+  )
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+
+  cross_package_clause_effects_over(
+    "clause_module_assume_bounds",
+    "assume dep/wrap : []\n"
+      <> "effects dep/wrap.wrap(f: [f]) : [] where returns : [f]\n",
+    unannotated_wrap,
+  )
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+// The same shape one tier over: `dep` is a *path* dependency the consumer
+// declares in `gleam.toml`, so its committed spec folds through
+// `with_path_dep_spec` rather than the installed-package scan — a merge that
+// pairs bounds with entries by its own rule.
+fn path_dep_clause_effects_over(
+  name: String,
+  dependency_spec: String,
+  dep_source: String,
+) -> types.EffectSet {
+  let root = "build/" <> name
+  support.write_fixture(root, [
+    #(
+      "proj/gleam.toml",
+      "name = \"proj\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    ),
+    #(
+      "proj/proj.graded",
+      "check proj.caller : []\nassume proj.shout : [Stdout]\n",
+    ),
+    #(
+      "proj/proj.gleam",
+      "import dep/wrap
+
+@external(erlang, \"proj_ffi\", \"shout\")
+pub fn shout() -> Nil
+
+pub fn caller() -> Nil {
+  let h = wrap.wrap(shout)
+  h()
+}
+",
+    ),
+    #("dep/gleam.toml", "name = \"dep\"\n"),
+    #("dep/dep.graded", dependency_spec),
+    #("dep/src/dep/wrap.gleam", dep_source),
+  ])
+  let assert Ok(results) = graded.run(root <> "/proj")
+  let assert Ok(violation) =
+    results
+    |> list.flat_map(fn(result) { result.violations })
+    |> list.find(fn(violation) {
+      violation.explanation.call.module == "<returned>"
+    })
+  support.cleanup(root)
+  violation.explanation.actual
+}
+
+pub fn a_path_deps_assume_kept_clause_binds_over_its_bounds_test() {
+  // The path-dependency tier of the same rule. Over `unannotated_wrap` the
+  // bounds the dep's kept line records are the only thing that proves `f` is a
+  // callback, and this merge copies them by a rule of its own — one keyed to
+  // the effects entry, which a module declaration is exactly what takes away.
+  path_dep_clause_effects_over(
+    "clause_path_dep_module_assume",
+    "assume dep/wrap : []\n"
+      <> "effects dep/wrap.wrap(f: [f]) : [] where returns : [f]\n",
+    unannotated_wrap,
+  )
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+
+  path_dep_clause_effects_over(
+    "clause_path_dep_fn_assume",
+    "assume dep/wrap.wrap : []\n"
+      <> "effects dep/wrap.wrap(f: [f]) : [] where returns : [f]\n",
+    unannotated_wrap,
+  )
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn a_clause_applying_an_unannotated_callback_degrades_test() {
+  // Admission is not precision: the operator-parameter shapes are read off
+  // annotations, so an unannotated callback binds to a flat first-order term
+  // and an application of it stays stuck.
+  cross_package_clause_effects_over(
+    "clause_recorded_bound_applied",
+    "effects dep/wrap.wrap(f: [f]) : [] where returns : fn(cb) -> [f([cb])]\n",
+    unannotated_wrap,
+  )
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+// An assumption suppresses one channel, end to end
+//
+// A module-level assumption governs what its functions *do*. What one of them
+// *returns* is a different claim, and the clause carrying it has no line of its
+// own — so `infer` keeps the `effects` line alive to hold it, and the loaders
+// read the declaration over that line's effects half only.
+
+pub fn a_module_assume_keeps_the_clause_it_does_not_speak_for_test() {
+  let root = "build/module_assume_keeps_clause"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume db : []
+assume ffi.log : [Disk]
+assume ffi.print : [Stdout]
+check app.run : []
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"log\")
+@external(javascript, \"ffi_module\", \"log\")
+pub fn log() -> Nil
+
+@external(erlang, \"ffi_module\", \"print\")
+@external(javascript, \"ffi_module\", \"print\")
+pub fn print() -> Nil
+",
+    ),
+    #(
+      "db.gleam",
+      "import ffi
+
+pub fn make() -> fn() -> Nil {
+  ffi.log()
+  fn() { ffi.print() }
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import db
+
+pub fn run() -> Nil {
+  db.make()()
+}
+",
+    ),
+  ])
+
+  // `infer` keeps the line: its effects half is redundant under the module
+  // declaration, but the clause on it is the only record of what `make` returns.
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(spec) = simplifile.read(root <> "/proj.graded")
+  spec
+  |> string.contains("effects db.make : [Disk] where returns : [Stdout]")
+  |> should.be_true()
+  spec |> string.contains("assume db : []") |> should.be_true()
+
+  // And re-inferring an unchanged package does not move it.
+  graded.run_infer_dry_run(root) |> should.equal(Ok("graded: no changes"))
+
+  // At check time the two channels answer from their own sources: `db.make`'s
+  // own [Disk] is suppressed by the module declaration, while the closure it
+  // returns still resolves to [Stdout] through the clause on the kept line.
+  let assert Ok(results) = graded.run(root)
+  let assert [violation] = list.flat_map(results, fn(r) { r.violations })
+  violation.function |> should.equal("run")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  // The deliberately-kept line is not reported as shadowing the declaration.
+  results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
+
+  support.cleanup(root)
+}
+
+// The clause lint
+//
+// The lint reports an open clause against the oracle the gate binds by, so what
+// it names is exactly what degrades to `[Unknown]`.
+
+pub fn an_open_clause_on_an_effects_line_is_reported_test() {
+  // Hand-edited: `infer` writes a bound for every variable its clause mentions,
+  // so an `effects` clause is closed by construction.
+  let root = "build/clause_lint_open"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "effects proj.wrap(f: [f]) : [] where returns : [ghost]\n"),
+    #(
+      "proj.gleam",
+      "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
+  fn() { f() }
+}
+",
+    ),
+  ])
   let assert Ok(results) = graded.run(root)
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
-    types.TypeShapedExternalReturnsWarning(name: "app.Handler.run"),
+    types.UnclosedReturnsClauseWarning(function: "proj.wrap", free_vars: [
+      "ghost",
+    ]),
   ])
+  support.cleanup(root)
+}
+
+pub fn a_closed_clause_on_an_effects_line_is_not_reported_test() {
+  let root = "build/clause_lint_closed"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "effects proj.wrap(f: [f]) : [] where returns : [f]\n"),
+    #(
+      "proj.gleam",
+      "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
+  fn() { f() }
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_check_clause_is_unverified_while_its_budget_still_is_test() {
+  // A `check` asserts what a function returns; nothing verifies that yet, and
+  // reading its clause onto the returns channel would make the assertion the
+  // trusted answer. The warning is scoped to the clause, because the effects
+  // budget on the same line is enforced as on any other `check` — the body here
+  // prints over a `[]` budget, and the run reports the violation. An agent that
+  // read the warning as covering the whole line would delete a live check.
+  let root = "build/clause_lint_check"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ffi.print : [Stdout]
+check proj.wrap(f: []) : [] where returns : [ghost]
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"print\")
+@external(javascript, \"ffi_module\", \"print\")
+pub fn print() -> Nil
+",
+    ),
+    #(
+      "proj.gleam",
+      "import ffi
+
+pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
+  ffi.print()
+  fn() { f() }
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([types.UnverifiedReturnsClauseWarning(function: "proj.wrap")])
+  let assert [violation] = list.flat_map(results, fn(r) { r.violations })
+  violation.function |> should.equal("wrap")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
   support.cleanup(root)
 }

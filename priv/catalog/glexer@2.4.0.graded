@@ -1,4 +1,4 @@
 // glexer — pure Gleam lexer
 
-external effects glexer : []
-external effects glexer/token : []
+assume glexer : []
+assume glexer/token : []

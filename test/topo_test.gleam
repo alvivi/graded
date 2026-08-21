@@ -451,7 +451,10 @@ pub fn make() -> Resolver {
 
   let assert Ok(Nil) = graded.run_infer(directory)
   let assert Ok(spec) = simplifile.read(directory <> "/app.graded")
-  string.contains(spec, "returns app/factory.make : [Stdout]")
+  string.contains(
+    spec,
+    "effects app/factory.make : [] where returns : [Stdout]",
+  )
   |> should.be_true()
   cleanup(directory)
 }
@@ -497,7 +500,10 @@ fn with_logger(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
 
   // The producer's returned operator is serialized into the spec.
   let assert Ok(spec) = simplifile.read(directory <> "/app.graded")
-  string.contains(spec, "returns app/factory.pick : fn(cb) -> [cb]")
+  string.contains(
+    spec,
+    "effects app/factory.pick : [] where returns : fn(cb) -> [cb]",
+  )
   |> should.be_true()
 
   // `check` re-resolves the consumer by loading that line, flagging main.run's
@@ -597,7 +603,7 @@ pub fn use_resolver() -> Nil {
       ),
       #(
         "app.graded",
-        "check app/factory.use_resolver : []\nexternal effects dep/ext : [handler]\n",
+        "check app/factory.use_resolver : []\nassume dep/ext : [handler]\n",
       ),
     ])
 
@@ -649,7 +655,7 @@ pub fn use_runner() -> Nil {
       ),
       #(
         "app.graded",
-        "check app/factory.use_runner : []\nexternal effects dep/ext : [handler]\n",
+        "check app/factory.use_runner : []\nassume dep/ext : [handler]\n",
       ),
     ])
 
@@ -658,7 +664,7 @@ pub fn use_runner() -> Nil {
   // The serialized summary keeps the residual: `[Unknown]` survives inside the
   // binder's body, not just the callback variable.
   let assert Ok(spec) = simplifile.read(directory <> "/app.graded")
-  string.contains(spec, "returns app/factory.make : fn(handler) ->")
+  string.contains(spec, "app/factory.make : [] where returns : fn(handler) ->")
   |> should.be_true()
   string.contains(spec, "Unknown") |> should.be_true()
 
@@ -760,7 +766,7 @@ pub fn use_run() -> Nil {
       ),
       #(
         "app.graded",
-        "check app/factory.use_run : []\nexternal effects dep/ext : [action]\n",
+        "check app/factory.use_run : []\nassume dep/ext : [action]\n",
       ),
     ])
   let assert Ok(Nil) = graded.run_infer(directory)
@@ -870,7 +876,7 @@ pub fn use_field() -> Nil {
       // A stale committed returns line (degraded to [Unknown]).
       #(
         "app.graded",
-        "check app/c.use_field : []\nreturns app/a.mk : [Unknown]\n",
+        "check app/c.use_field : []\neffects app/a.mk : [] where returns : [Unknown]\n",
       ),
     ])
   let assert Ok(Nil) = graded.run_infer(directory)
@@ -969,7 +975,7 @@ pub fn run() -> Nil {
 // Spec-file externals are honoured during inference
 //
 // A project module that calls into a third-party package not in the catalog
-// picks up the spec file's `external effects` line during `run_infer`, not
+// picks up the spec file's `assume` line during `run_infer`, not
 // fall back to `[Unknown]`. Pre-fix, externals were only consumed by `run`
 // (check), so `infer` produced a noisy spec even when the user had already
 // declared the dependency pure.
@@ -989,10 +995,9 @@ pub fn total(a: String, b: String) -> String {
     ])
 
   // Mirror the user's setup: spec file at <root>/<basename>.graded
-  // declares the third-party module as pure via `external effects`.
+  // declares the third-party module as pure via `assume`.
   let spec_path = directory <> "/graded_topo_externals_in_infer.graded"
-  let assert Ok(Nil) =
-    simplifile.write(spec_path, "external effects dee/decimal : []\n")
+  let assert Ok(Nil) = simplifile.write(spec_path, "assume dee/decimal : []\n")
 
   let assert Ok(Nil) = graded.run_infer(directory)
 
@@ -1594,7 +1599,7 @@ fn field_module_fixture(name: String, consumer_write: String) -> String {
     #("gleam.toml", "name = \"app\"\n"),
     #(
       "app.graded",
-      "external effects app/consumer.disk_read : [Disk]\n"
+      "assume app/consumer.disk_read : [Disk]\n"
         <> "check app/consumer.run : []\n",
     ),
     #(

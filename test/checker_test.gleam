@@ -59,6 +59,7 @@ pub fn view(items) { list.map(items, fn(x) { x }) }"
       "view",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -75,6 +76,7 @@ pub fn view() { io.println(\"oops\") }"
         "view",
         [],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   violations |> list.length() |> should.equal(1)
@@ -94,6 +96,7 @@ pub fn log(msg) { io.println(msg) }"
       "log",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -111,6 +114,7 @@ fn helper() { io.println(\"sneaky\") }"
         "view",
         [],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   violations |> list.length() |> should.equal(1)
@@ -134,6 +138,7 @@ pub fn do_stuff() {
         "do_stuff",
         [],
         effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        returns: None,
       ),
     ])
   violations
@@ -149,6 +154,7 @@ pub fn missing_function_ignored_test() {
       "nonexistent",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -168,6 +174,7 @@ pub fn view(items) {
         "view",
         [],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   { violations != [] } |> should.be_true()
@@ -183,6 +190,7 @@ pub fn unknown_local_function_test() {
         "view",
         [],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   // Should flag as Unknown effect
@@ -280,6 +288,7 @@ pub fn infer_uses_param_bounds_test() {
         ),
       ],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     ),
   ]
   let inferred =
@@ -391,6 +400,7 @@ pub fn param_call_uses_bound_test() {
         ),
       ],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   check_source(source, [annotation]) |> should.equal([])
 }
@@ -404,6 +414,7 @@ pub fn param_call_without_bound_is_unknown_test() {
       "apply",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> { fn(vs) { vs != [] } }
@@ -423,6 +434,7 @@ pub fn unbound_param_call_meets_an_unknown_budget_test() {
       "run",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Unknown"]))),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -443,6 +455,7 @@ pub fn unbound_param_call_still_violates_a_pure_budget_test() {
         "run",
         [],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   violation.explanation.actual
@@ -471,6 +484,7 @@ pub fn a_declared_bound_variable_still_violates_an_unknown_budget_test() {
         ),
       ],
       effect_term.from_effect_set(Specific(set.from_list(["Unknown"]))),
+      returns: None,
     ),
   ])
   |> { fn(vs) { vs != [] } }
@@ -488,6 +502,7 @@ pub fn safe_map(items, f) { list.map(items, f) }"
       "safe_map",
       [ParamBound("f", effect_term.from_effect_set(Specific(set.new())))],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   check_source(source, [annotation]) |> should.equal([])
 }
@@ -506,6 +521,7 @@ pub fn run(items) {
       "run",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   check_source(source, [annotation]) |> should.equal([])
 }
@@ -524,6 +540,7 @@ pub fn run(items) {
       "run",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> { fn(vs) { vs != [] } }
@@ -574,6 +591,7 @@ pub fn field_call_typed_with_registry_test() {
       "view",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Dom"]))),
+      returns: None,
     )
   check_source_with_type_fields(source, [annotation], type_fields)
   |> should.equal([])
@@ -646,6 +664,7 @@ pub fn field_call_opaque_receiver_resolves_via_girard_test() {
       "run",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   check_source_with_girard(
     opaque_receiver_source,
@@ -664,6 +683,7 @@ pub fn field_call_opaque_receiver_violates_pure_test() {
       "run",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   let violations =
     check_source_with_girard(
@@ -703,6 +723,7 @@ pub fn run(msg: String) -> Nil {
       "run",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   check_source_with_girard(source, [annotation], validator_to_error_stdout())
   |> should.equal([])
@@ -720,6 +741,7 @@ pub fn field_call_construction_without_annotation_resolves_test() {
       "run",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   let violations =
     check_source_with_girard(opaque_receiver_source, [annotation], [])
@@ -746,7 +768,7 @@ type DeclarationOrder {
 // `config.inner` is a nested field access: the syntax-level path can't name its
 // type, so `config.inner.run(message)` reaches the `Box.run` line only through
 // girard's inferred type. `raw_invoke` is a bodyless `@external` with no
-// `external effects` line — there is no body to lift.
+// `assume` line — there is no body to lift.
 fn wired_receiver_source(order: DeclarationOrder) -> String {
   let types =
     "pub type Box {
@@ -848,7 +870,7 @@ pub fn wired_local_function_lift_is_order_independent_test() {
 }
 
 pub fn wired_bodyless_external_stays_unknown_test() {
-  // A field wired to a bodyless `@external` with no `external effects` line has
+  // A field wired to a bodyless `@external` with no `assume` line has
   // no body to analyse; reading its empty one as pure would understate it.
   wired_receiver_effects(InvokeFirst)
   |> dict.get("run_external")
@@ -924,6 +946,7 @@ pub fn field_call_violates_check_test() {
       "view",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   check_source_with_type_fields(source, [annotation], type_fields)
   |> { fn(vs) { vs != [] } }
@@ -939,6 +962,7 @@ pub fn field_call_typed_no_registry_is_unknown_test() {
       "view",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   check_source_with_type_fields(source, [annotation], [])
   |> { fn(vs) { vs != [] } }
@@ -954,6 +978,7 @@ pub fn field_call_untyped_is_unknown_test() {
       "view",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   check_source(source, [annotation])
   |> { fn(vs) { vs != [] } }
@@ -963,7 +988,7 @@ pub fn field_call_untyped_is_unknown_test() {
 // Parameter-field precedence (Tier 1)
 //
 // A fn-typed field call resolves by: (1) a value proven for this receiver, (2) a
-// `check` field bound, (3) a declared `type` line, (4) a live parameter root →
+// `check` field bound, (3) a declared field `assume` line, (4) a live parameter root →
 // a receiver-keyed field variable, (5) else `[Unknown]`. The nominal construction
 // index never resolves an unproven receiver — a caller can build the record
 // differently, so specializing a parameter/opaque receiver would understate.
@@ -1142,6 +1167,7 @@ pub fn annotate(options: Options) -> Nil {
       "annotate",
       [ParamBound("options.resolver", stdout)],
       stdout,
+      returns: None,
     )
   let #(violations, warnings) =
     checker.check(
@@ -1272,6 +1298,7 @@ pub fn caller() -> Nil {
         ),
       ],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   let #(violations, _warnings) =
     checker.check(
@@ -1324,7 +1351,8 @@ pub fn fetch() { httpc.send(request) }"
     types.ExternalAnnotation(
       "gleam/httpc",
       types.FunctionExternal("send"),
-      Specific(set.from_list(["Http"])),
+      Some(Specific(set.from_list(["Http"]))),
+      returns: None,
     ),
   ]
   let annotation =
@@ -1333,6 +1361,7 @@ pub fn fetch() { httpc.send(request) }"
       "fetch",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
+      returns: None,
     )
   check_source_with_externals(source, [annotation], externals)
   |> should.equal([])
@@ -1347,7 +1376,8 @@ pub fn fetch() { httpc.send(request) }"
     types.ExternalAnnotation(
       "gleam/httpc",
       types.FunctionExternal("send"),
-      Specific(set.from_list(["Http"])),
+      Some(Specific(set.from_list(["Http"]))),
+      returns: None,
     ),
   ]
   let annotation =
@@ -1356,6 +1386,7 @@ pub fn fetch() { httpc.send(request) }"
       "fetch",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   check_source_with_externals(source, [annotation], externals)
   |> { fn(vs) { vs != [] } }
@@ -1396,7 +1427,8 @@ pub fn external_same_module_resolves_declared_effects_test() {
     types.ExternalAnnotation(
       "ffi_mod",
       types.FunctionExternal("now"),
-      Specific(set.from_list(["Time"])),
+      Some(Specific(set.from_list(["Time"]))),
+      returns: None,
     ),
   ]
   infer_external_wrapper(effects.with_externals(
@@ -1430,6 +1462,7 @@ pub fn handler() { io.println(\"hi\") }"
       "handler",
       [],
       effect_term.from_effect_set(Wildcard),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -1443,6 +1476,7 @@ pub fn wildcard_param_bound_passes_test() {
       "apply",
       [ParamBound("f", effect_term.from_effect_set(Wildcard))],
       effect_term.from_effect_set(Wildcard),
+      returns: None,
     )
   check_source(source, [annotation]) |> should.equal([])
 }
@@ -1456,6 +1490,7 @@ pub fn wildcard_param_bound_in_pure_function_violates_test() {
       "apply",
       [ParamBound("f", effect_term.from_effect_set(Wildcard))],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   check_source(source, [annotation])
   |> { fn(vs) { vs != [] } }
@@ -1499,6 +1534,7 @@ pub fn greet_all(names) { list.map(names, io.println) }"
         "greet_all",
         [],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   warnings |> list.length() |> should.equal(1)
@@ -1523,6 +1559,7 @@ pub fn greet_all(names) { list.map(names, println) }"
         "greet_all",
         [],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   warnings |> list.length() |> should.equal(1)
@@ -1552,6 +1589,7 @@ pub fn caller(v: Validator) -> Nil { v.to_error(\"bad\") }"
           ),
         ],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   warnings |> list.length() |> should.equal(1)
@@ -1585,6 +1623,7 @@ pub fn caller(v: Validator) -> Nil { v.to_error(\"bad\") }"
         ),
       ],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -1602,6 +1641,7 @@ pub fn param_bound_unmatched_warns_test() {
         // Typo: the parameter is `f`, not `g`.
         [ParamBound("g", effect_term.from_effect_set(Specific(set.new())))],
         effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
       ),
     ])
   warnings |> list.length() |> should.equal(1)
@@ -1623,6 +1663,7 @@ pub fn helper(g, y) { g(y) }"
       "apply",
       [ParamBound("f", effect_term.from_effect_set(Specific(set.new())))],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -1654,6 +1695,7 @@ pub fn caller() -> Nil {
           ),
         ],
         effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+        returns: None,
       ),
     ])
   // Construction also wires io.println as a value, emitting an untracked-effect
@@ -1682,6 +1724,7 @@ pub fn upper_all(items) { list.map(items, string.uppercase) }"
       "upper_all",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -1699,6 +1742,7 @@ pub fn run(items) { list.map(items, unknown.do_thing) }"
       "run",
       [],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -1716,6 +1760,7 @@ pub fn greet_all(names) { list.map(names, fn(n) { io.println(n) }) }"
       "greet_all",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     ),
   ])
   |> should.equal([])
@@ -1804,6 +1849,7 @@ pub fn check_no_false_positives_test() {
           "test_fn",
           [],
           effect_term.from_effect_set(declared),
+          returns: None,
         )
       let #(violations, _) =
         checker.check(
@@ -1836,6 +1882,7 @@ fn provenance_caller_effect(src: String, label: String) -> EffectSet {
         ),
       ],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -1900,6 +1947,7 @@ pub fn check_wildcard_never_violates_test() {
           "test_fn",
           [],
           effect_term.from_effect_set(Wildcard),
+          returns: None,
         )
       let #(violations, _) =
         checker.check(
@@ -1933,6 +1981,7 @@ pub fn check_empty_budget_detects_effects_test() {
               "test_fn",
               [],
               effect_term.from_effect_set(types.empty()),
+              returns: None,
             )
           let #(violations, _) =
             checker.check(
@@ -1968,6 +2017,7 @@ pub fn check_violations_iff_not_subset_test() {
           "test_fn",
           [],
           effect_term.from_effect_set(declared),
+          returns: None,
         )
       let #(violations, _) =
         checker.check(
@@ -2095,6 +2145,7 @@ pub fn check_terminates_with_cycles_test() {
           "a",
           [],
           effect_term.from_effect_set(types.empty()),
+          returns: None,
         )
       let #(violations, _) =
         checker.check(
@@ -2224,6 +2275,7 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
         ),
       ],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   let assert [ann] =
     checker.infer(
@@ -2309,6 +2361,7 @@ pub fn new() {
           "new",
           [],
           effect_term.from_effect_set(Specific(set.new())),
+          returns: None,
         ),
       ],
       polymorphic_kb(),
@@ -2342,6 +2395,7 @@ pub fn new() {
           "new",
           [],
           effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+          returns: None,
         ),
       ],
       polymorphic_kb(),
@@ -2374,6 +2428,7 @@ pub fn new() {
           "new",
           [],
           effect_term.from_effect_set(Specific(set.new())),
+          returns: None,
         ),
       ],
       polymorphic_kb(),
@@ -2635,7 +2690,15 @@ pub fn run(x: Int) {
     checker.check(
       module,
       "",
-      [EffectAnnotation(Check, "run", [], effect_term.from_effect_set(budget))],
+      [
+        EffectAnnotation(
+          Check,
+          "run",
+          [],
+          effect_term.from_effect_set(budget),
+          returns: None,
+        ),
+      ],
       kb,
       reg,
       dict.new(),
@@ -2812,6 +2875,7 @@ pub fn main(msg: String) {
           "main",
           [],
           effect_term.from_effect_set(Specific(set.new())),
+          returns: None,
         ),
       ],
       knowledge_base(),
@@ -2923,6 +2987,7 @@ pub fn caller() -> Nil {
       "caller",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -2942,6 +3007,7 @@ pub fn caller() -> Nil {
       "caller",
       [],
       effect_term.from_effect_set(types.empty()),
+      returns: None,
     )
   let #(failed, _) =
     checker.check(
@@ -3055,6 +3121,7 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       "caller",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -3084,6 +3151,7 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       "caller",
       [],
       effect_term.from_effect_set(types.empty()),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -3114,6 +3182,7 @@ pub fn caller() -> Nil { app.with_logger(fn(logger) { logger(\"hi\") }) }"
       "caller",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -3374,7 +3443,8 @@ pub fn let_bound_closure_direct_call_satisfies_pure_check_test() {
   helper(1)
 }"
   let assert Ok(module) = glance.module(source)
-  let ann = EffectAnnotation(Check, "direct_let", [], effect_term.pure())
+  let ann =
+    EffectAnnotation(Check, "direct_let", [], effect_term.pure(), returns: None)
   let #(violations, _) =
     checker.check(
       module,
@@ -4005,6 +4075,7 @@ pub fn caller() -> Nil {
       "caller",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -4024,6 +4095,7 @@ pub fn caller() -> Nil {
       "caller",
       [],
       effect_term.from_effect_set(types.empty()),
+      returns: None,
     )
   let #(fail_violations, _) =
     checker.check(
@@ -4044,7 +4116,9 @@ pub fn second_order_returned_function_from_spec_test() {
   // cross-module producer — exercising the parse + load path, not a hand-built
   // KB.
   let assert Ok(spec) =
-    annotation.parse_file("returns dep.pick : fn(cb) -> [cb]")
+    annotation.parse_file(
+      "effects dep.pick : [] where returns : fn(cb) -> [cb]",
+    )
   let source =
     "
 import gleam/io
@@ -4080,6 +4154,7 @@ pub fn caller() -> Nil {
       "caller",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -4149,19 +4224,26 @@ pub fn make_printer() -> fn() -> Nil {
   |> should.equal(
     effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
   )
-  // Round-trips through `format_returns` / parse (a plain effect term).
+  // Round-trips through the clause renderer and back (a plain effect term).
   let line =
-    annotation.format_returns(types.ReturnsAnnotation("make_printer", operator))
-  let assert Ok(spec) = annotation.parse_file(line)
-  let assert [reparsed] = annotation.extract_returns(spec)
-  effect_term.normalize(reparsed.operator)
+    annotation.format_annotation(EffectAnnotation(
+      Effects,
+      "make_printer",
+      [],
+      effect_term.from_effect_set(types.empty()),
+      returns: Some(operator),
+    ))
+  let assert Ok([reparsed]) = annotation.parse(line)
+  let assert Some(reparsed_operator) = reparsed.returns
+  effect_term.normalize(reparsed_operator)
   |> should.equal(effect_term.normalize(operator))
 }
 
 pub fn first_order_returned_function_from_spec_test() {
   // C2 cross-module: a `returns dep.make : [Stdout]` spec line (as `infer`
   // writes it) lets `let f = dep.make(); f()` resolve in a downstream module.
-  let assert Ok(spec) = annotation.parse_file("returns dep.make : [Stdout]")
+  let assert Ok(spec) =
+    annotation.parse_file("effects dep.make : [] where returns : [Stdout]")
   let source =
     "
 import dep
@@ -4193,6 +4275,7 @@ pub fn caller() -> Nil {
       "caller",
       [],
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -4212,6 +4295,7 @@ pub fn caller() -> Nil {
       "caller",
       [],
       effect_term.from_effect_set(types.empty()),
+      returns: None,
     )
   let #(failed, _) =
     checker.check(
@@ -4259,12 +4343,18 @@ pub fn pick(
   let assert Ok(operator) = dict.get(returns, "pick")
   operator
   |> should.equal(types.TUnion([types.TVar("a"), types.TVar("b")]))
-  // Round-trips through `format_returns` / parse.
+  // Round-trips through the clause renderer and back.
   let line =
-    annotation.format_returns(types.ReturnsAnnotation("pick", operator))
-  let assert Ok(spec) = annotation.parse_file(line)
-  let assert [reparsed] = annotation.extract_returns(spec)
-  effect_term.normalize(reparsed.operator)
+    annotation.format_annotation(EffectAnnotation(
+      Effects,
+      "pick",
+      [],
+      effect_term.from_effect_set(types.empty()),
+      returns: Some(operator),
+    ))
+  let assert Ok([reparsed]) = annotation.parse(line)
+  let assert Some(reparsed_operator) = reparsed.returns
+  effect_term.normalize(reparsed_operator)
   |> should.equal(effect_term.normalize(operator))
 }
 
@@ -4341,7 +4431,8 @@ fn fs_read_external() -> types.ExternalAnnotation {
   types.ExternalAnnotation(
     "fs",
     types.FunctionExternal("read"),
-    Specific(set.from_list(["FileSystem"])),
+    Some(Specific(set.from_list(["FileSystem"]))),
+    returns: None,
   )
 }
 
@@ -4367,6 +4458,7 @@ fn second_order_violations(
       function,
       [],
       effect_term.from_effect_set(Specific(set.from_list(budget))),
+      returns: None,
     )
   let #(violations, _) =
     checker.check(
@@ -4931,6 +5023,7 @@ fn pure_check(function: String) -> EffectAnnotation {
     function,
     [],
     effect_term.from_effect_set(Specific(set.new())),
+    returns: None,
   )
 }
 
@@ -5037,30 +5130,60 @@ pub fn call_kind_unrecognised_sentinel_is_unclassified_test() {
 
 // A warning's wording is the only place a reader learns what a dropped line does
 // and what happens next, so the sentence is pinned like a violation's.
-pub fn format_warning_stale_external_returns_test() {
-  types.StaleExternalReturnsWarning(function: "lib.make")
+pub fn format_warning_stale_returns_clauses_test() {
+  types.StaleReturnsClauseWarning(function: "lib.make")
   |> checker.format_warning("proj.graded", _)
   |> should.equal(
-    "proj.graded: warning: external returns lib.make names a function of this package with a Gleam body — every caller resolves what it returns from that body, so the line declares nothing and is ignored. `graded infer` removes it; where the function returns an operator, the inferred `returns` line takes its place",
+    "proj.graded: warning: assume lib.make where returns names a function of this package with a Gleam body — every caller resolves what it returns from that body, so the clause declares nothing and is ignored. `graded infer` removes it and writes the inferred clause on the `effects` line in its place",
+  )
+}
+
+pub fn format_warning_unverified_check_shape_test() {
+  types.UnverifiedCheckShapeWarning(name: "app.Handler.on_click")
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: check app.Handler.on_click is a shape nothing verifies yet — a check on a field keys nothing; an `assume` line is the trusted form",
+  )
+}
+
+pub fn format_warning_unverified_returns_clause_test() {
+  // Scoped to the clause: the sentence has to keep the budget on the same line
+  // out of what it calls unverified, or a reader deletes a check that runs.
+  types.UnverifiedReturnsClauseWarning(function: "app.traced")
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: the `where returns` clause on check app.traced is not verified — nothing weighs a check's returned operator. The effects budget on the same line still is, so the check is live; an `assume` line is the trusted form for the clause",
+  )
+}
+
+pub fn format_warning_unclosed_returns_clause_test() {
+  types.UnclosedReturnsClauseWarning(function: "app.traced", free_vars: [
+    "ghost", "other",
+  ])
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: the `where returns` clause on app.traced has free variable(s) `ghost`, `other` naming no callback parameter of it — the clause is ignored and the returned function resolves to [Unknown]",
+  )
+}
+
+pub fn format_warning_unground_returns_clause_test() {
+  // The `assume` channel's rule is groundness, not scope: the sentence names it
+  // that way, because a variable there is dropped even when the function does
+  // have a callback parameter by that name.
+  types.UngroundReturnsClauseWarning(function: "ffi.traced", free_vars: [
+    "action",
+  ])
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: the `where returns` clause on assume ffi.traced must be ground, and `action` is a variable — an assumption carries no bound list, so nothing scopes one whatever the function's parameters are called; the clause is ignored. Spell out the concrete effects instead",
   )
 }
 
 pub fn format_warning_dotless_external_returns_test() {
-  types.DotlessExternalReturnsWarning(name: "lib")
+  types.DotlessReturnsClauseWarning(name: "lib")
   |> checker.format_warning("proj.graded", _)
   |> should.equal(
-    "proj.graded: warning: external returns lib names a module, not a function — a returns declaration is per-function; the line resolves nothing",
-  )
-}
-
-pub fn format_warning_type_shaped_external_returns_test() {
-  // The multi-dot name reaches for the `type` line's field shape. Reported as
-  // the dotless case, the sentence would tell the author their name names a
-  // module, which it does not.
-  types.TypeShapedExternalReturnsWarning(name: "app.Handler.run")
-  |> checker.format_warning("proj.graded", _)
-  |> should.equal(
-    "proj.graded: warning: external returns app.Handler.run names a type field, not a function — a returns declaration is per-function; write a `type` line to give a field's effects, and the line resolves nothing as written",
+    "proj.graded: warning: assume lib where returns names a module, not a function — a returns declaration is per-function; the clause resolves nothing",
   )
 }
 
@@ -5383,7 +5506,7 @@ pub fn format_violation_states_a_reason_and_an_origin_together_test() {
     Some(types.ModuleExternalOrigin(source: types.UserExternal)),
   )
   |> should.equal(
-    "src/app.gleam: run calls field `find` on `repo` of type `dep/repo.Repo`, which has no effect annotation for that field, with unresolved effects [Unknown] (from a module-level external in your spec) but declared []",
+    "src/app.gleam: run calls field `find` on `repo` of type `dep/repo.Repo`, which has no effect annotation for that field, with unresolved effects [Unknown] (from a module-level `assume` in your spec) but declared []",
   )
 }
 
@@ -5436,7 +5559,7 @@ pub fn run() { api.fetch() }",
 }
 
 pub fn records_an_undeclared_external_test() {
-  // A same-module bodyless `@external` with no `external effects` line: the
+  // A same-module bodyless `@external` with no `assume` line: the
   // body says nothing and no declaration speaks for it.
   only_violation(
     "@external(erlang, \"ffi\", \"now\")
@@ -5473,7 +5596,7 @@ pub fn records_an_unresolved_receiver_type_test() {
 
 pub fn records_an_unannotated_field_test() {
   // The syntactic fallback types the receiver but has no module to qualify it
-  // with, and no `type` line decides the field.
+  // with, and no field `assume` line decides the field.
   only_violation(
     "pub type Config {
   Config(resolver: fn(String) -> Nil)
@@ -5595,6 +5718,7 @@ pub fn run(config: Config) -> Nil {
         ),
       ],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   let assert [violation] = check_source(source, [annotation])
   violation.explanation.actual
@@ -5743,6 +5867,7 @@ pub fn format_violation_aliased_field_bound_reads_as_field_test() {
         ),
       ],
       effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
     )
   let expected =
     "src/app.gleam: run calls field `svc` on `options` with effects [Stdout] but declared []"
@@ -5804,7 +5929,8 @@ pub fn run(flag: Bool) -> Nil {
 // A producer in a dependency keeps its module, so it doesn't read like a
 // same-module producer of the same name.
 pub fn format_violation_dependency_producer_keeps_module_test() {
-  let assert Ok(spec) = annotation.parse_file("returns dep.make : [Stdout]")
+  let assert Ok(spec) =
+    annotation.parse_file("effects dep.make : [] where returns : [Stdout]")
   let source =
     "
 import dep
@@ -5825,7 +5951,7 @@ pub fn run() -> Nil {
       ]),
       types.ProjectInferred,
     )
-    |> effects.with_foreign_returned_operators(
+    |> effects.with_closed_returned_operators(
       effects.load_spec_returns_from_file(spec),
       types.DependencySpec("dep"),
     )
@@ -5880,7 +6006,7 @@ pub fn run() -> Nil {
 }
 
 pub fn a_type_line_names_the_spec_that_declared_it_test() {
-  // The `type` line resolved the field call, so the message names the file the
+  // The field `assume` line resolved the field call, so the message names the file the
   // line sits in rather than the bare kind of line.
   let source =
     "pub type Repo {
@@ -5904,7 +6030,7 @@ pub fn run(repo: Repo) -> Nil {
   |> should.equal(Some(types.TypeLine(source: types.CommittedSpec)))
   checker.format_violation("src/app.gleam", violation)
   |> should.equal(
-    "src/app.gleam: run calls field `find` on `repo` with effects [Storage] (from a type line in your spec) but declared []",
+    "src/app.gleam: run calls field `find` on `repo` with effects [Storage] (from a field `assume` in your spec) but declared []",
   )
 }
 
@@ -6402,4 +6528,94 @@ pub fn new() {
 
 fn stdout_term() -> types.EffectTerm {
   effect_term.from_effect_set(Specific(set.from_list(["Stdout"])))
+}
+
+// A `where returns` clause, read back
+//
+// A clause loaded from a spec reaches the producer call as a `Closed` summary.
+// The gate re-checks its variables against the producer's real callback
+// parameters before binding them, so a clause naming a parameter binds
+// precisely and one naming anything else degrades to `[Unknown]`.
+
+// The knowledge base and registry for a cross-module producer `dep.wrap`,
+// carrying whatever clause `spec_line` states for it.
+fn closed_clause_setup(
+  spec_line: String,
+) -> #(effects.KnowledgeBase, signatures.SignatureRegistry) {
+  let assert Ok(spec) = annotation.parse_file(spec_line)
+  let dep_source =
+    "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
+  fn() { f() }
+}
+"
+  let assert Ok(dep_module) = glance.module(dep_source)
+  let kb =
+    knowledge_base()
+    |> effects.with_inferred(
+      dict.from_list([
+        #(
+          QualifiedName("dep", "wrap"),
+          effect_term.from_effect_set(types.empty()),
+        ),
+      ]),
+      types.ProjectInferred,
+    )
+    |> effects.with_closed_returned_operators(
+      effects.load_spec_returns_from_file(spec),
+      types.CommittedSpec,
+    )
+  #(kb, signatures.from_glance_module("dep", dep_module))
+}
+
+fn closed_clause_violations(spec_line: String) -> List(types.Violation) {
+  let #(kb, dep_registry) = closed_clause_setup(spec_line)
+  let source =
+    "
+import gleam/io
+import dep
+pub fn caller() -> Nil {
+  let h = dep.wrap(noisy)
+  h()
+}
+fn noisy() -> Nil {
+  io.println(\"x\")
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let registry =
+    signatures.merge(signatures.from_glance_module("app", module), dep_registry)
+  let #(violations, _) =
+    checker.check(
+      module,
+      "",
+      [pure_check("caller")],
+      kb,
+      registry,
+      dict.new(),
+      dict.new(),
+      types.all_targets(),
+    )
+  violations
+}
+
+// What the call of the *returned* closure was charged. The producer call beside
+// it is charged its own bound and is not what these tests are about.
+fn returned_call_effects(spec_line: String) -> EffectSet {
+  let assert Ok(violation) =
+    closed_clause_violations(spec_line)
+    |> list.find(fn(violation) {
+      violation.explanation.call.module == "<returned>"
+    })
+  violation.explanation.actual
+}
+
+pub fn a_closed_clause_binds_the_producers_argument_test() {
+  returned_call_effects("effects dep.wrap(f: [f]) : [] where returns : [f]")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn an_open_clause_degrades_to_unknown_test() {
+  // `ghost` is no parameter of `dep.wrap`, so there is nothing to bind it to.
+  returned_call_effects("effects dep.wrap(f: [f]) : [] where returns : [ghost]")
+  |> should.equal(Specific(set.from_list(["Unknown"])))
 }

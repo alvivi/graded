@@ -59,14 +59,15 @@ import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/topo
 import graded/internal/typeinfo
 import graded/internal/types.{
-  type CheckResult, type EffectAnnotation, type GradedFile, type QualifiedName,
-  type TypeFieldAnnotation, type Violation, type Warning, AnnotationLine,
-  CheckResult, DotlessExternalReturnsWarning, EffectAnnotation, GradedFile,
-  PolymorphicExternalReturnsWarning, QualifiedName, StaleExternalReturnsWarning,
-  StaleFunctionExternalWarning, TypeShapedExternalReturnsWarning,
-  UnmatchedCheckWarning, UnmatchedExternalReturnsWarning,
+  type CheckResult, type EffectAnnotation, type EffectTerm, type GradedFile,
+  type QualifiedName, type TypeFieldAnnotation, type Violation, type Warning,
+  AnnotationLine, CheckResult, DotlessReturnsClauseWarning, EffectAnnotation,
+  GradedFile, QualifiedName, StaleFunctionExternalWarning,
+  StaleReturnsClauseWarning, UnclosedReturnsClauseWarning,
+  UngroundReturnsClauseWarning, UnmatchedCheckWarning,
   UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
-  UnmatchedTypeFieldWarning,
+  UnmatchedReturnsClauseWarning, UnmatchedTypeFieldWarning,
+  UnverifiedCheckShapeWarning, UnverifiedReturnsClauseWarning,
 }
 import simplifile
 
@@ -141,8 +142,11 @@ pub fn main() -> Nil {
     ["format", "--stdin"] ->
       case run_format_stdin(read_stdin()) {
         Ok(output) -> io.print(output)
-        Error(_) -> {
-          io.println_error("graded: error: could not parse stdin")
+        Error(error) -> {
+          io.println_error(
+            "graded: error: parse error in stdin:"
+            <> annotation.describe_parse_error(error),
+          )
           halt(1)
         }
       }
@@ -292,7 +296,9 @@ Usage:
 
 /// Inject the configured `.graded` spec into `project_root`'s hex tarball.
 /// `tarball` overrides the default `build/<name>-<version>.tar`. Returns a
-/// success message (with the publish command) or a `PackError`.
+/// success message (with the publish command), a `GradedParseError` when the
+/// spec does not parse — nothing a consumer would read is ever packed — or a
+/// `PackError`.
 pub fn pack_project(
   project_root: String,
   tarball: option.Option(String),
@@ -319,14 +325,24 @@ pub fn pack_project(
   // archive-relative entry.
   use _ <- result.try(validate_archive_entry(entry_name))
 
-  use spec <- result.try(
-    simplifile.read(resolved_spec)
-    |> result.map_error(fn(_) {
-      PackError(
+  // Read through the parser, before the tarball is opened. A spec this version
+  // rejects is one every consumer's loader rejects too, so injecting it ships a
+  // package whose whole spec reads as no annotations at all. What goes into the
+  // archive is the file's own bytes — the entry is the spec verbatim, never a
+  // re-render of the parse.
+  use spec <- result.try(case read_spec_on_disk(resolved_spec) {
+    // No spec and an empty one carry the same instruction: there is nothing to
+    // ship yet. `read_spec_on_disk` reads a missing file as no bytes, which
+    // every other command treats as a project to infer from scratch and `pack`
+    // alone treats as an error. A spec that is there but unreadable, and one
+    // that does not parse, travel as themselves — `infer` fixes neither.
+    Ok(#("", _)) ->
+      Error(PackError(
         "no spec file at " <> resolved_spec <> "; run `graded infer` first",
-      )
-    }),
-  )
+      ))
+    Ok(#(content, _parsed)) -> Ok(content)
+    Error(error) -> Error(error)
+  })
 
   use tarball_path <- result.try(resolve_pack_tarball(
     tarball,
@@ -496,24 +512,14 @@ fn shell_quote(path: String) -> String {
 /// file.
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   use ctx <- result.try(load_project_context(directory))
-  let ProjectContext(
-    sources:,
-    registry:,
-    type_info:,
-    stale_externals:,
-    stale_external_returns:,
-    knowledge_base:,
-    catalog:,
-    dependencies:,
-  ) = ctx
+  let ProjectContext(sources:, registry:, type_info:, knowledge_base:, ..) = ctx
   let ProjectSources(
     source_directory: directory,
     reported_directory:,
     cfg:,
     spec:,
     parsed:,
-    index:,
-    package_root:,
+    ..,
   ) = sources
   let checks_by_module = checks_grouped_by_module(spec)
 
@@ -549,21 +555,11 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
       )
     })
 
-  // Spec-level lint: `check`/`type` lines whose target doesn't exist in any
+  // Spec-level lint: `check`/field `assume` lines whose target doesn't exist in any
   // project module. These silently do nothing (a vacuous check, or a field
   // annotation that resolves to [Unknown]), so they're reported against the
   // spec file itself rather than any source file.
-  let results = case
-    validate_spec_annotations(
-      spec,
-      index,
-      package_root,
-      stale_externals,
-      stale_external_returns,
-      catalog,
-      dependencies,
-    )
-  {
+  let results = case validate_spec_annotations(ctx) {
     [] -> results
     spec_warnings -> [
       CheckResult(file: cfg.spec_file, violations: [], warnings: spec_warnings),
@@ -584,15 +580,15 @@ type ProjectContext {
     sources: ProjectSources,
     registry: SignatureRegistry,
     type_info: typeinfo.TypeInfo,
-    // The per-function `external effects` lines that declare nothing, because
+    // The per-function `assume` lines that declare nothing, because
     // they name one of this package's own Gleam-bodied functions. Decided once
     // here: the knowledge base is assembled without them, and the spec lint
     // reports them, so the two can't disagree about which lines are live.
     stale_externals: Set(String),
-    // The same about the `external returns` lines, on the value channel. Two
+    // The same about the `where returns` clauses, on the value channel. Two
     // sets rather than one: each suppresses only its own channel's lines, and
     // each is reported by its own warning.
-    stale_external_returns: Set(String),
+    stale_returns_clauses: Set(String),
     knowledge_base: KnowledgeBase,
     // The bundled catalog this context was assembled against. Held rather than
     // re-read by the spec lint, which weighs the same entries the knowledge
@@ -601,7 +597,7 @@ type ProjectContext {
     catalog: effects.BundledCatalog,
     // The dependency scan this context was assembled from. Held for the spec
     // lint, which decides whether a dependency module defines the name an
-    // `external effects` line gives it — a question this walk already parsed
+    // `assume` line gives it — a question this walk already parsed
     // every dependency module to answer for the registry.
     dependencies: DependencySources,
   )
@@ -672,7 +668,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
   let package_targets = cfg.targets
   let native_of = native_functions_of(index, package_targets)
   let stale_externals = stale_project_externals(spec, native_of)
-  let stale_external_returns = stale_project_external_returns(spec, native_of)
+  let stale_returns_clauses = stale_project_external_returns(spec, native_of)
   let dep_sources = dependency_sources(package_root, package_targets)
   let registry =
     signatures.merge(
@@ -702,7 +698,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // are, one channel over: a spec-less path dependency's bodies are summarized
     // during that pass, and a consumer line declaring what one of its producers
     // hands back has to be in reach while they are, not only afterwards.
-    |> with_spec_declared_returns(spec, stale_external_returns)
+    |> with_spec_declared_returns(spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
     |> with_committed_spec(spec, stale_externals)
@@ -715,28 +711,28 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     ))
     // What this package defines, for the query that answers from its public API.
     |> effects.with_project_functions(project_function_visibility(index))
-    // Committed project returns are Foreign (Fix E): serialized, unsanitized. The
-    // fresh in-memory pass below re-infers project returns and, being Fresh, wins
-    // over these for the same key.
+    // Committed project clauses are Closed: read back, not inferred this run.
+    // The fresh in-memory pass below re-infers project returns and, being Fresh,
+    // wins over these for the same key.
     //
-    // The `external returns` declarations folded above outrank both, by two
-    // different mechanisms, and the difference matters to anyone editing either.
-    // Against this committed load the **ordering is load-bearing**: the merge
-    // gap-fills, so a spec written before the function became `@external`, still
-    // carrying its inferred `returns` line until the next `infer`, loses only
+    // The `assume … where returns` declarations folded above outrank both, by
+    // two different mechanisms, and the difference matters to anyone editing
+    // either. Against this committed load the **ordering is load-bearing**: the
+    // merge gap-fills, so a spec written before the function became `@external`,
+    // still carrying its inferred clause until the next `infer`, loses only
     // because the declaration is already there. Against the fresh pass below the
     // ordering decides nothing — that merge lets the incoming summary win — and
     // the declaration survives on `merge_returns`'s explicit
     // declared-beats-inferred rule instead. That rule reads as redundant from
     // here, since fresh inference keys no foreign name; it is what holds if any
     // link of that three-file invariant chain ever gives.
-    |> effects.with_foreign_returned_operators(
+    |> effects.with_closed_returned_operators(
       effects.load_spec_returns_from_file(spec),
       types.CommittedSpec,
     )
     // Before the inference pass, not after it, and in the order `infer` folds
     // them: a body walked during inference resolves its field calls through the
-    // same `type` lines and factory signatures a body walked at check time
+    // same field `assume` lines and factory signatures a body walked at check time
     // does. Installed afterwards, the pass ran without them and a function
     // whose effects it settled — an `@external`'s running fallback, whose
     // callers read the summary and never the body — kept an answer the two
@@ -751,8 +747,8 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
   // Fill gaps for project modules not (yet) in the spec by inferring them in
   // memory, so `check` resolves cross-module calls without a prior `graded infer`.
   // Committed effects are never overridden; fresh returns win over committed
-  // Foreign ones (Fix E). The deltas aren't needed here — the pre-pass already
-  // folded them into `kb_base`. Nothing is written to disk.
+  // clauses. The deltas aren't needed here — the pre-pass already folded them
+  // into `kb_base`. Nothing is written to disk.
   let knowledge_base =
     infer_project_in_memory(
       kb_base,
@@ -768,7 +764,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     registry:,
     type_info:,
     stale_externals:,
-    stale_external_returns:,
+    stale_returns_clauses:,
     knowledge_base:,
     catalog:,
     dependencies: dep_sources,
@@ -788,7 +784,7 @@ fn project_foreign_functions(
   )
 }
 
-// The per-function `external effects <module>.<function>` lines that declare
+// The per-function `assume <module>.<function>` lines that declare
 // nothing: those naming one of this package's own functions whose Gleam body is
 // right there, visible and run by every caller.
 //
@@ -811,8 +807,8 @@ fn stale_project_externals(
   declaring_nothing(annotation.external_function_names(spec), native_of)
 }
 
-// The `external returns` lines that declare nothing: the same rule one channel
-// over, over the same predicate, so the two cannot drift apart.
+// The returned-operator declarations that declare nothing: the same rule one
+// channel over, over the same predicate, so the two cannot drift apart.
 //
 // Derived apart from `stale_project_externals` and threaded apart from it. That
 // set drives the effects channel's two suppressions — committed `effects` lines
@@ -823,7 +819,7 @@ fn stale_project_external_returns(
   spec: GradedFile,
   native_of: fn(String) -> Result(Set(String), Nil),
 ) -> Set(String) {
-  declaring_nothing(annotation.external_returns_names(spec), native_of)
+  declaring_nothing(annotation.assume_returns_names(spec), native_of)
 }
 
 // Which of `names` this package defines with a Gleam body — the rule both
@@ -866,13 +862,9 @@ fn declaring_externals(
 ) -> List(types.ExternalAnnotation) {
   annotation.extract_externals(spec)
   |> list.filter(fn(external) {
-    case external.target {
-      types.FunctionExternal(function) ->
-        !set.contains(
-          stale,
-          types.dotted_name(QualifiedName(external.module, function)),
-        )
-      types.ModuleExternal -> True
+    case annotation.external_qualified_name(external) {
+      Ok(qualified) -> !set.contains(stale, types.dotted_name(qualified))
+      Error(Nil) -> True
     }
   })
 }
@@ -900,7 +892,7 @@ fn checks_grouped_by_module(
     case annotation.split_function_name(ann.function) {
       Error(_) -> acc
       Ok(#(module, function)) -> {
-        let bare = EffectAnnotation(..ann, function:)
+        let bare = EffectAnnotation(..ann, function:, returns: None)
         let existing = case dict.get(acc, module) {
           Ok(list) -> list
           Error(_) -> []
@@ -943,29 +935,58 @@ fn check_one_file(
 // Flag `check`/`type`/`external` spec lines whose target resolves nothing. A
 // `check` line names a function that must exist in some project module; a `type`
 // line names a `module.Type.field` that must be a callable (function-typed)
-// field; an `external effects` line names foreign code, so it must name
+// field; an `assume` line names foreign code, so it must name
 // something graded cannot see the body of, and something that exists at all.
 // When the qualifier is missing or wrong, the field plainly can't be called, or
 // the declaration covers a body sitting in plain sight, the line is silently
 // dead or silently ignored, so surface it as a warning.
-fn validate_spec_annotations(
-  spec: GradedFile,
-  index: Dict(String, #(String, glance.Module)),
-  package_root: String,
-  stale_externals: Set(String),
-  stale_external_returns: Set(String),
-  catalog: effects.BundledCatalog,
-  dependencies: DependencySources,
-) -> List(Warning) {
+// Every input is a field of the context the run already assembled, so it
+// travels whole: a lint needing one more piece of it adds no parameter. The
+// `registry`/`knowledge_base` pair is the oracle a `where returns` clause's
+// variables are weighed against — the same one the gate that binds them reads,
+// so lint and gate agree by construction.
+fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
+  let ProjectContext(
+    sources: ProjectSources(spec:, index:, package_root:, ..),
+    stale_externals:,
+    stale_returns_clauses:,
+    catalog:,
+    dependencies:,
+    registry:,
+    knowledge_base:,
+    ..,
+  ) = context
   let known_functions = known_function_names(index)
 
+  // One pass over the `check` lines, so the warnings come out in the order the
+  // spec writes them. A field path is not a function name, so membership says
+  // nothing about it and the whole line keys nothing. Anything else is a
+  // function whose effects budget the run enforces, whether or not it carries a
+  // clause: the name is weighed for a typo as usual, and the clause is flagged
+  // on its own, since it is the only unverified part of such a line.
   let check_warnings =
     annotation.extract_checks(spec)
-    |> list.filter(fn(ann) { !set.contains(known_functions, ann.function) })
-    |> list.map(fn(ann) { UnmatchedCheckWarning(function: ann.function) })
+    |> list.flat_map(fn(ann) {
+      case annotation.is_field_path(ann.function) {
+        True -> [UnverifiedCheckShapeWarning(name: ann.function)]
+        False -> {
+          let unmatched = case set.contains(known_functions, ann.function) {
+            True -> []
+            False -> [UnmatchedCheckWarning(function: ann.function)]
+          }
+          case ann.returns {
+            None -> unmatched
+            Some(_) ->
+              list.append(unmatched, [
+                UnverifiedReturnsClauseWarning(function: ann.function),
+              ])
+          }
+        }
+      }
+    })
 
   let externals = annotation.extract_externals(spec)
-  let declared_returns = annotation.extract_external_returns(spec)
+  let declared_returns = annotation.assume_returns(spec)
   let type_fields = annotation.extract_type_fields(spec)
   // Every lint here tells a dependency module from a typo, and the scan behind
   // that is the expensive part: walked once here and shared, and not at all for
@@ -979,7 +1000,7 @@ fn validate_spec_annotations(
   // The two declaring forms weigh a name by one rule, over one precomputation —
   // which reads the whole dependency tree, so it is built only where a
   // declaring line asks a question of it.
-  let #(external_warnings, external_returns_warnings) = case
+  let #(external_warnings, returns_clause_warnings) = case
     externals,
     declared_returns
   {
@@ -996,17 +1017,17 @@ fn validate_spec_annotations(
         )
       #(
         external_warnings(externals, evidence, stale_externals),
-        external_returns_warnings(
+        returns_clause_warnings(
           declared_returns,
           evidence,
-          stale_external_returns,
+          stale_returns_clauses,
         ),
       )
     }
   }
 
-  // Resolving `type` lines also needs per-module type info; build it only when
-  // there are `type` lines to check.
+  // Resolving field `assume` lines also needs per-module type info; build it only when
+  // there are field `assume` lines to check.
   let type_field_warnings = case type_fields {
     [] -> []
     type_fields -> {
@@ -1023,17 +1044,53 @@ fn validate_spec_annotations(
     }
   }
 
+  // A clause on an `effects` line is written by `infer` and closed by
+  // construction, so one that is open was hand-edited or written by a future
+  // bug. Reported all the same: the gate drops it silently.
+  let clause_warnings =
+    annotation.extract_effects(spec)
+    |> list.filter_map(unclosed_clause_warning(_, registry, knowledge_base))
+
   list.flatten([
     check_warnings,
     external_warnings,
-    external_returns_warnings,
+    returns_clause_warnings,
+    clause_warnings,
     type_field_warnings,
   ])
 }
 
+// The warning for one `effects` line's `where returns` clause, or `Error(Nil)`
+// where it carries none, names nothing, or is closed.
+fn unclosed_clause_warning(
+  annotation_line: EffectAnnotation,
+  registry: SignatureRegistry,
+  knowledge_base: KnowledgeBase,
+) -> Result(Warning, Nil) {
+  use operator <- result.try(option.to_result(annotation_line.returns, Nil))
+  use #(module, function) <- result.try(annotation.split_function_name(
+    annotation_line.function,
+  ))
+  case
+    checker.unclosed_clause_variables(
+      operator,
+      QualifiedName(module, function),
+      knowledge_base,
+      registry,
+    )
+  {
+    [] -> Error(Nil)
+    free_vars ->
+      Ok(UnclosedReturnsClauseWarning(
+        function: annotation_line.function,
+        free_vars:,
+      ))
+  }
+}
+
 // What both declaring forms' lints weigh a name against, precomputed once over
 // the catalog and the dependency scan and then asked per name. One rule, so an
-// `external effects` line and an `external returns` line naming the same
+// `assume` line and a `where returns` clause naming the same
 // function are called dead together or not at all.
 type SpecNameEvidence {
   SpecNameEvidence(
@@ -1046,7 +1103,7 @@ type SpecNameEvidence {
 }
 
 // A dependency is weighed by the function, not by the module: graded holds that
-// dependency's source, so `external effects dep/io.typo` over a `dep/io` that
+// dependency's source, so `assume dep/io.typo` over a `dep/io` that
 // defines only `writes` is as dead as one naming no module at all, and the
 // module tier would wave every misspelling through. A module-level line has no
 // function to weigh and is settled by the module alone.
@@ -1119,7 +1176,7 @@ fn spec_name_evidence(
   })
 }
 
-// One walk of the spec's `external effects` lines, yielding the three ways such
+// One walk of the spec's `assume` lines, yielding the three ways such
 // a line can be dead. Both tiers are covered, since a typo is as likely in the
 // module name as in the function name:
 //
@@ -1135,10 +1192,13 @@ fn external_warnings(
   evidence: SpecNameEvidence,
   stale: Set(String),
 ) -> List(Warning) {
-  list.filter_map(externals, fn(external) {
-    case external.target {
-      types.FunctionExternal(function) -> {
-        let qualified = QualifiedName(external.module, function)
+  externals
+  // A line carrying only a `where returns` clause claims nothing on this
+  // channel, so this channel has nothing to call dead about it.
+  |> list.filter(fn(external) { external.effects != option.None })
+  |> list.filter_map(fn(external) {
+    case annotation.external_qualified_name(external) {
+      Ok(qualified) -> {
         let name = types.dotted_name(qualified)
         case set.contains(stale, name), evidence.defines(qualified) {
           True, _ -> Ok(StaleFunctionExternalWarning(function: name))
@@ -1146,7 +1206,7 @@ fn external_warnings(
           False, True -> Error(Nil)
         }
       }
-      types.ModuleExternal ->
+      Error(Nil) ->
         case evidence.module_placed(external.module) {
           True -> Error(Nil)
           False -> Ok(UnmatchedModuleExternalWarning(module: external.module))
@@ -1155,44 +1215,42 @@ fn external_warnings(
   })
 }
 
-// The same walk over the spec's `external returns` lines, yielding the four ways
-// one can be dead. Two are the existence branches above, read through the same
-// evidence; two are this form's own, and both are lines the loader drops:
+// The same walk over the `where returns` clauses on the spec's `assume` lines,
+// yielding the ways one can be dead. Two are the existence branches above, read
+// through the same evidence; two are this channel's own, and both are clauses
+// the loader drops:
 //
-//   - a name the function grammar rejects: one with no `.`, where the
-//     declaration is read as naming a whole module and nothing keys a module's
-//     returned value, and one with more than one, which reaches for the `type`
-//     line's field shape;
+//   - a clause on a module path, where nothing keys a whole module's returned
+//     value;
 //   - a polymorphic operator, whose free variables nothing sanitized.
 //
-// One warning per line, so a line that is dead twice over is reported by the
-// first rule that catches it.
-fn external_returns_warnings(
-  declared: List(types.ReturnsAnnotation),
+// One warning per clause, so a clause that is dead twice over is reported by
+// the first rule that catches it.
+fn returns_clause_warnings(
+  declared: List(#(types.ExternalAnnotation, EffectTerm)),
   evidence: SpecNameEvidence,
   stale: Set(String),
 ) -> List(Warning) {
-  list.filter_map(declared, fn(returns) {
-    case annotation.split_function_name(returns.function) {
-      Error(Nil) ->
-        case string.contains(returns.function, ".") {
-          True -> Ok(TypeShapedExternalReturnsWarning(name: returns.function))
-          False -> Ok(DotlessExternalReturnsWarning(name: returns.function))
+  list.filter_map(declared, fn(entry) {
+    let #(external, operator) = entry
+    case annotation.external_qualified_name(external) {
+      Error(Nil) -> Ok(DotlessReturnsClauseWarning(name: external.module))
+      Ok(qualified) -> {
+        let name = types.dotted_name(qualified)
+        // The open variables, listed once: emptiness is what makes the operator
+        // ground, so the same list decides the branch and names it.
+        let open =
+          effect_term.free_vars(operator)
+          |> set.to_list
+          |> list.sort(string.compare)
+        case set.contains(stale, name), evidence.defines(qualified), open {
+          True, _, _ -> Ok(StaleReturnsClauseWarning(function: name))
+          False, False, _ -> Ok(UnmatchedReturnsClauseWarning(function: name))
+          False, True, [] -> Error(Nil)
+          False, True, free_vars ->
+            Ok(UngroundReturnsClauseWarning(function: name, free_vars:))
         }
-      Ok(#(module, function)) ->
-        case
-          set.contains(stale, returns.function),
-          evidence.defines(QualifiedName(module, function)),
-          effect_term.is_ground(returns.operator)
-        {
-          True, _, _ ->
-            Ok(StaleExternalReturnsWarning(function: returns.function))
-          False, False, _ ->
-            Ok(UnmatchedExternalReturnsWarning(function: returns.function))
-          False, True, False ->
-            Ok(PolymorphicExternalReturnsWarning(function: returns.function))
-          False, True, True -> Error(Nil)
-        }
+      }
     }
   })
 }
@@ -1237,7 +1295,7 @@ fn dependency_module_files(package_root: String) -> Dict(String, String) {
   })
 }
 
-// A warning for a `type` line that resolves nothing, or `Error(Nil)` when the
+// A warning for a field `assume` line that resolves nothing, or `Error(Nil)` when the
 // line is a valid target. Cases:
 //   - unqualified (`type Type.field`): no module to key a receiver's resolved
 //     type, so it's always dead;
@@ -1255,20 +1313,18 @@ fn unmatched_type_field_warning(
   dep_modules: Set(String),
   module_info: fn(String) -> Result(ModuleInfo, Nil),
 ) -> Result(Warning, Nil) {
-  case tf.module {
-    None -> Ok(UnmatchedTypeFieldWarning(name: tf.type_name <> "." <> tf.field))
+  let dead = case tf.module {
+    None -> True
     Some(module) ->
-      case valid_type_field(module, tf, index, dep_modules, module_info) {
-        True -> Error(Nil)
-        False ->
-          Ok(UnmatchedTypeFieldWarning(
-            name: module <> "." <> tf.type_name <> "." <> tf.field,
-          ))
-      }
+      !valid_type_field(module, tf, index, dep_modules, module_info)
+  }
+  case dead {
+    False -> Error(Nil)
+    True -> Ok(UnmatchedTypeFieldWarning(name: annotation.type_field_path(tf)))
   }
 }
 
-// Whether a qualified `type` line is an accepted target. A project type's field
+// Whether a qualified field `assume` line is an accepted target. A project type's field
 // must exist and not plainly be non-callable (`Callable`/`Unknown` pass, so an
 // unintrospectable field type is never false-flagged). A dependency-owned type
 // passes untouched; any other module is a typo.
@@ -1513,7 +1569,7 @@ fn classify_in_module(
 /// type field (`myapp/repo.Repo.find`). Functions resolve from the spec file,
 /// dependencies, the catalog, and an in-memory inference pass, so a public
 /// function resolves without a prior `graded infer`; type fields resolve from
-/// declared `type` lines. Any provenance is appended as a `//` comment line, so
+/// declared field `assume` lines. Any provenance is appended as a `//` comment line, so
 /// the whole output parses as `.graded` syntax. Nothing is written to disk.
 ///
 /// The CLI defaults to `--format=prose` for the person reading a terminal; this
@@ -1608,11 +1664,11 @@ fn answer_from(
 //
 // It only answers where the spec's word is final:
 //
-// - A `type` line declaring a field under its own module: spec `type` fields
+// - A field `assume` line declaring a field under its own module: spec `type` fields
 //   are merged last of all, so an exact key wins outright. A bare line's
 //   module-less key is a fallback, not a decision, and stays with the full
 //   context.
-// - A per-function `external effects <module>.<function>`: `with_externals`
+// - A per-function `assume <module>.<function>`: `with_externals`
 //   inserts over whatever came before, and every later layer keeps existing
 //   entries, so nothing can displace it.
 // - Any name in one of this package's own modules: dependency, catalog and
@@ -1680,14 +1736,14 @@ fn spec_answer(
         name,
       )
     }
-    // Not a function name — only a type field can answer. A spec `type` line is
+    // Not a function name — only a type field can answer. A spec field `assume` line is
     // merged last of all, so an entry under the queried name's *own* module is
     // final. The module-less key a bare line lands under is not: it is only the
     // fallback `type_field_effect` reaches for when nothing declares the exact
     // module, and a dependency's spec — which the fast path never reads — can
     // declare it. So the spec decides this name only if it declares it
     // qualified; a bare line is left to the full context, which weighs it
-    // against every dependency's `type` lines.
+    // against every dependency's field `assume` lines.
     // An answer carrying the queried module is one the exact key produced; one
     // carrying none fell back to the bare key, so it isn't the spec's decision.
     Error(Nil) ->
@@ -1705,7 +1761,7 @@ fn spec_answer(
 // The spec layers of `load_project_context`'s knowledge base, folded in the same
 // order and by the same functions, over nothing else.
 //
-// Neither the spec's `returns` lines nor its `external returns` declarations are
+// Neither the spec's inferred clauses nor its declared ones are
 // among them: a returned-operator summary is consumed while walking a body, and
 // a fast-path answer is one no body was walked for. That holds for the declared
 // ones as much as the inferred — the declaration answers a call of the value,
@@ -1744,7 +1800,7 @@ fn runs_a_fallback_body(
 //
 // Empty for one of this package's own modules: Gleam forbids a dependency from
 // keying one, so nothing over there can change the answer. For a dependency
-// module — which a per-function `external effects` line may name — the
+// module — which a per-function `assume` line may name — the
 // declaration alone understates an `@external` whose Gleam fallback body runs,
 // because no consumer walks that body and the full context therefore charges
 // the declaration unioned with `[Unknown]`. One module is located and parsed to
@@ -1958,7 +2014,7 @@ fn function_effect(
 // the entries themselves cannot express, since a hand-written line for a private
 // function and one for a real public function are the same line.
 //
-// This outranks the module-level-external carve-out. `external effects <module>`
+// This outranks the module-level-external carve-out. `assume <module>`
 // answers for every name in its module, which is what a module graded has no
 // source for needs — but where the source *is* here, a declaration describes
 // behaviour for callers; it does not export a name. Nothing about how callers
@@ -1975,8 +2031,8 @@ fn declined_by_publicity(
   }
 }
 
-// Render `name` as a `type` line, or `Error(Nil)` when it isn't a declared type
-// field. `name` is split by the same grammar that parses a `type` line, so both
+// Render `name` as a field `assume` line, or `Error(Nil)` when it isn't a declared type
+// field. `name` is split by the same grammar that parses a field `assume` line, so both
 // declared forms can be queried back: `module.Type.field` and the bare
 // `Type.field` of a cache file.
 //
@@ -2182,7 +2238,7 @@ fn why_block(
 /// file.
 ///
 /// This is graded's bundled catalog alone: a dependency's shipped spec, a path
-/// dependency's spec and your own `external effects` all override it, so
+/// dependency's spec and your own `assume` all override it, so
 /// `run_effect` is what answers which source wins for a name. Nothing is
 /// written to disk.
 pub fn run_catalog(request: cli.CatalogRequest) -> Result(String, GradedError) {
@@ -2422,7 +2478,7 @@ fn compare_catalog_files(
 // file, sort it, and write or compare the normalized form.
 
 /// Format the project's spec file in place. The spec file is the single
-/// source of truth for hand-written `check`/`external`/`type` lines and
+/// source of truth for hand-written `check`/`external`/field `assume` lines and
 /// the inferred public-API effects.
 pub fn run_format(directory: String) -> Result(Nil, GradedError) {
   use cfg <- result.try(read_config(directory))
@@ -2827,7 +2883,7 @@ fn build_dependency_graph(
 ///
 /// 2. **One spec file** at `<spec_file>` containing the inferred effects of
 ///    every *public* function across all modules, plus any hand-written
-///    `check`, `external effects`, or `type` annotations the user already
+///    `check`, `assume`, or `type` annotations the user already
 ///    had in the spec file (those lines are preserved verbatim).
 ///
 /// Walks the project's import graph in topological order so each module is
@@ -2902,7 +2958,6 @@ type ModuleInference {
   ModuleInference(
     knowledge_base: KnowledgeBase,
     public: List(EffectAnnotation),
-    returns: List(types.ReturnsAnnotation),
     cache: Option(CacheFile),
   )
 }
@@ -2928,7 +2983,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   let package_targets = cfg.targets
   let native_of = native_functions_of(index, package_targets)
   let stale_externals = stale_project_externals(spec, native_of)
-  let stale_external_returns = stale_project_external_returns(spec, native_of)
+  let stale_returns_clauses = stale_project_external_returns(spec, native_of)
 
   // Build a signature registry covering every project module so the checker can
   // do positional argument matching for cross-module polymorphic calls. Hoisted
@@ -2958,7 +3013,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     // body from the declaration, and the two commands disagree about it — so
     // they are folded here, at the point `check` folds them, ahead of the
     // path-dep pass whose own inference reads them too.
-    |> with_spec_declared_returns(spec, stale_external_returns)
+    |> with_spec_declared_returns(spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
     |> effects.with_foreign_functions(project_foreign_functions(
@@ -2985,9 +3040,9 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     }),
   )
 
-  let #(_kb, public_annotations, public_returns, cache_files) =
-    list.fold(sorted, #(base_kb, [], [], []), fn(state, module_path) {
-      let #(kb, acc, returns_acc, cache_acc) = state
+  let #(_kb, public_annotations, cache_files) =
+    list.fold(sorted, #(base_kb, [], []), fn(state, module_path) {
+      let #(kb, acc, cache_acc) = state
       case dict.get(index, module_path) {
         Error(_) -> state
         Ok(#(_gleam_path, module)) -> {
@@ -3010,7 +3065,6 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
           #(
             inference.knowledge_base,
             list.append(inference.public, acc),
-            list.append(inference.returns, returns_acc),
             case inference.cache {
               None -> cache_acc
               Some(cache) -> [cache, ..cache_acc]
@@ -3026,9 +3080,8 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     merged_spec: annotation.merge_inferred(
       spec,
       public_annotations,
-      public_returns,
       stale_externals,
-      stale_external_returns,
+      stale_returns_clauses,
     ),
     cache_files: list.reverse(cache_files),
   ))
@@ -3109,25 +3162,8 @@ fn infer_one_module(
     |> list.map(fn(ann) {
       EffectAnnotation(..ann, function: module_path <> "." <> ann.function)
     })
-  // Public functions that return an operator — serialized as `returns` lines so
-  // the signature crosses module/package boundaries.
-  let public_returns =
-    returned_operators
-    |> dict.to_list()
-    |> list.filter(fn(pair) { set.contains(public_names, pair.0) })
-    |> list.map(fn(pair) {
-      types.ReturnsAnnotation(
-        function: module_path <> "." <> pair.0,
-        operator: pair.1,
-      )
-    })
 
-  ModuleInference(
-    knowledge_base: new_kb,
-    public: public_annotations,
-    returns: public_returns,
-    cache:,
-  )
+  ModuleInference(knowledge_base: new_kb, public: public_annotations, cache:)
 }
 
 // Infer project modules in topological order, in memory, folding their
@@ -3727,8 +3763,10 @@ fn read_spec(spec_path: String) -> Result(GradedFile, GradedError) {
 // The spec file's bytes and the parse of them. A spec file that isn't there
 // yet reads as no bytes and no lines — not as an empty file, which parses to
 // one blank line — so a project with no spec is inferred from scratch. A spec
-// file that is there but cannot be read is an error, so no command carries on
-// as though the package had no annotations at all.
+// file that is there but cannot be read, or that does not parse, is an error
+// naming the offending line: no command carries on as though the package had
+// no annotations, and `infer` stops before merging rather than writing an
+// empty file over the hand-written lines.
 fn read_spec_on_disk(
   spec_path: String,
 ) -> Result(#(String, GradedFile), GradedError) {
@@ -3736,10 +3774,9 @@ fn read_spec_on_disk(
     Error(simplifile.Enoent) -> Ok(#("", GradedFile(lines: [])))
     Error(cause) -> Error(FileReadError(spec_path, cause))
     Ok(content) ->
-      Ok(#(
-        content,
-        annotation.parse_file(content) |> result.unwrap(GradedFile(lines: [])),
-      ))
+      annotation.parse_file(content)
+      |> result.map(fn(file) { #(content, file) })
+      |> result.map_error(GradedParseError(spec_path, _))
   }
 }
 
@@ -3842,8 +3879,8 @@ fn path_dep_sources(
 // effects alone would leave a higher-order callee's bound unloaded, so its
 // callback's effect variable would leak unsubstituted into every caller.
 // Existing effects and param bounds win; the returned-operator summaries are
-// `Fresh` (Fix E) — inferred this run, so they win over a committed Foreign
-// entry for the same key. `lookup_origin` names the source of the effect terms,
+// `Fresh` — inferred this run, so they win over a committed clause's entry for
+// the same key. `lookup_origin` names the source of the effect terms,
 // recorded for the keys this merge wins.
 fn fold_inferred_into_kb(
   knowledge_base: KnowledgeBase,
@@ -4037,7 +4074,7 @@ fn infer_path_dep_module(
 // fold applies is the fold's own: the fast path is held to the full context's
 // answer by a test comparing the two, not by this grouping.
 
-// The spec's `external effects` declarations, minus the stale ones.
+// The spec's `assume` declarations, minus the stale ones.
 fn with_spec_externals(
   knowledge_base: KnowledgeBase,
   spec: GradedFile,
@@ -4050,24 +4087,24 @@ fn with_spec_externals(
   )
 }
 
-// The spec's `external returns` declarations, minus the stale ones. A stale line
+// The spec's `where returns` declarations, minus the stale ones. A stale line
 // is ignored at load as well as warned about and rewritten: trusted between
 // `infer` runs it would be a per-function override of what the walk can see for
 // itself.
 fn with_spec_declared_returns(
   knowledge_base: KnowledgeBase,
   spec: GradedFile,
-  stale_external_returns: Set(String),
+  stale_returns_clauses: Set(String),
 ) -> KnowledgeBase {
   effects.with_declared_returned_operators(
     knowledge_base,
     effects.load_spec_external_returns_from_file(spec)
-      |> drop_stale_names(stale_external_returns),
+      |> drop_stale_names(stale_returns_clauses),
     types.UserExternal,
   )
 }
 
-// The spec's `type` lines, which resolve a field call on any receiver of the
+// The spec's field `assume` lines, which resolve a field call on any receiver of the
 // named type.
 fn with_spec_type_fields(
   knowledge_base: KnowledgeBase,
@@ -4086,6 +4123,11 @@ fn with_spec_type_fields(
 // with always comes from one annotation source — otherwise the committed term
 // would pair with freshly inferred bounds, whose variable names need not match
 // it.
+//
+// One exception, below: a line kept under a module declaration for the sake of
+// its `where returns` clause keeps its bounds without its term. They are not
+// that term's pairing — they are the clause's scoping list, and the clause has
+// none of its own.
 //
 // Lines for a module-level-external module are dropped from both, so they can't
 // reshadow the declaration (which lives in `module_effects`, consulted only when
@@ -4112,6 +4154,11 @@ fn with_committed_spec(
   // drop are a property of that spec, and a caller passing any other set folds
   // in the very lines this function exists to drop.
   let declared_modules = annotation.module_external_modules(spec)
+  // The names whose committed `effects` line is kept only for its
+  // `where returns` clause: their bounds are that clause's scoping list, so the
+  // module drop leaves them where it takes the term beside them.
+  let clause_scopes =
+    effects.load_spec_returns_from_file(spec) |> dict.keys |> set.from_list
   knowledge_base
   |> effects.with_inferred(
     effects.load_spec_effects_from_file(spec)
@@ -4121,7 +4168,7 @@ fn with_committed_spec(
   )
   |> effects.with_inferred_params(
     effects.load_spec_params_from_file(spec)
-    |> drop_declared_modules(declared_modules)
+    |> drop_declared_modules_keeping(declared_modules, clause_scopes)
     |> drop_stale_names(stale_externals),
   )
 }
@@ -4145,8 +4192,24 @@ fn drop_declared_modules(
   entries: Dict(QualifiedName, a),
   modules: Set(String),
 ) -> Dict(QualifiedName, a) {
+  drop_declared_modules_keeping(entries, modules, set.new())
+}
+
+// The same, minus the names `keep` names. The bounds channel keeps the entries
+// scoping a clause on a line the declaration otherwise covers: the clause has no
+// bound list of its own, so that line's is the only thing its variables are
+// scoped by, and dropping it resolves the returned function to `[Unknown]`. Such
+// an entry pairs with the declaration's term rather than the one it was written
+// beside — the one exception to the pairing rule this file states above.
+fn drop_declared_modules_keeping(
+  entries: Dict(QualifiedName, a),
+  modules: Set(String),
+  keep: Set(QualifiedName),
+) -> Dict(QualifiedName, a) {
   use <- bool.guard(set.is_empty(modules), entries)
-  dict.filter(entries, fn(name, _value) { !set.contains(modules, name.module) })
+  dict.filter(entries, fn(name, _value) {
+    !set.contains(modules, name.module) || set.contains(keep, name)
+  })
 }
 
 // CLI plumbing
@@ -4193,7 +4256,8 @@ fn format_error(error: GradedError) -> String {
     FileWriteError(path, _) -> "Could not write: " <> path
     DirectoryCreateError(path, _) -> "Could not create directory: " <> path
     GleamParseError(path, _) -> "Could not parse: " <> path
-    GradedParseError(path, _) -> "Parse error in .graded file for: " <> path
+    GradedParseError(path, cause) ->
+      "Parse error in " <> path <> ":" <> annotation.describe_parse_error(cause)
     InvalidConfig(path, _) -> "Invalid gleam.toml: " <> path
     FormatCheckFailed(paths:) ->
       "Unformatted .graded files:\n"
