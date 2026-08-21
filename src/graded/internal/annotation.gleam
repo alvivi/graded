@@ -835,12 +835,41 @@ pub fn split_type_field_name(
 // name, and one that declares no returned operator suppresses the clause on
 // that line. Threading either set into the other's filters deletes a claim
 // about a channel nobody declared anything on.
+//
+// The declarations themselves are scoped the same way, and for the same reason.
+// An assumption about what a function *does* suppresses the inferred `effects`
+// lines it covers, but a `where returns` clause on one of those lines is a claim
+// about what the function *returns*, which nothing has declared. Such a line
+// survives whole — the grammar has no clause-only `effects` line, so the effects
+// half rides along and the loaders read the declaration over it. Only both
+// declarations together take the line out.
 pub fn merge_inferred(
   file: GradedFile,
   inferred: List(EffectAnnotation),
   stale_externals: set.Set(String),
   stale_returns_clauses: set.Set(String),
 ) -> GradedFile {
+  // The value channel first, so the two suppressions compose: a name both an
+  // effects declaration and a returns declaration cover loses its clause here
+  // and its whole line below, rather than surviving on a clause the declaration
+  // already answers for.
+  //
+  // A function whose return an `assume … where returns` clause declares needs
+  // no inferred clause: the declaration answers for it, and a second claim for
+  // the same name would sit in the file looking like a second opinion. Except
+  // where that declaration is stale — it names one of this package's own
+  // ordinary functions — in which case it is dropped below and the inferred
+  // clause written in its place.
+  let declared_returns =
+    set.difference(assume_returns_names(file), stale_returns_clauses)
+  let inferred =
+    list.map(inferred, fn(annotation) {
+      case set.contains(declared_returns, annotation.function) {
+        True -> EffectAnnotation(..annotation, returns: None)
+        False -> annotation
+      }
+    })
+
   // A function the author declared with `assume mod.fn : [...]` is
   // authoritative — that line is their opt-in to a precise FFI effect. Drop any
   // inferred `effects mod.fn` line for it so the opaque-FFI `[Unknown]` default
@@ -860,23 +889,16 @@ pub fn merge_inferred(
   let external_modules = module_external_modules(file)
   let inferred =
     list.filter(inferred, fn(annotation) {
-      !set.contains(external_functions, annotation.function)
-      && !in_external_module(annotation.function, external_modules)
-    })
-
-  // A function whose return an `assume … where returns` clause declares needs
-  // no inferred clause: the declaration answers for it, and a second claim for
-  // the same name would sit in the file looking like a second opinion. Except
-  // where that declaration is stale — it names one of this package's own
-  // ordinary functions — in which case it is dropped below and the inferred
-  // clause written in its place.
-  let declared_returns =
-    set.difference(assume_returns_names(file), stale_returns_clauses)
-  let inferred =
-    list.map(inferred, fn(annotation) {
-      case set.contains(declared_returns, annotation.function) {
-        True -> EffectAnnotation(..annotation, returns: None)
-        False -> annotation
+      // Both declarations speak for the effects channel alone. A line still
+      // carrying an inferred clause after the strip above is the only home that
+      // clause has — the grammar writes no clause-only `effects` line — so it
+      // survives whole, and the loaders read the declaration over its effects
+      // half. A clause-less line claims nothing the declaration does not, and
+      // goes.
+      option.is_some(annotation.returns)
+      || {
+        !set.contains(external_functions, annotation.function)
+        && !in_external_module(annotation.function, external_modules)
       }
     })
 

@@ -1059,6 +1059,115 @@ pub fn merge_inferred_drops_effect_for_external_test() {
   set.contains(effects_fns, "app.other") |> should.be_true()
 }
 
+// An assumption suppresses one channel
+//
+// A declaration of what a function *does* says nothing about what it *returns*.
+// The clause has no line of its own to live on, so an inferred one keeps its
+// `effects` line alive under an assumption that would otherwise delete it —
+// and only the clause does: a clause-less line claims nothing the declaration
+// does not.
+
+fn inferred_line(
+  name: String,
+  returns: option.Option(EffectTerm),
+) -> types.EffectAnnotation {
+  EffectAnnotation(
+    Effects,
+    name,
+    [],
+    TLabels(set.from_list(["Stdout"])),
+    returns:,
+  )
+}
+
+fn module_assume(module: String) -> types.GradedLine {
+  ExternalLine(ExternalAnnotation(
+    module:,
+    target: ModuleExternal,
+    effects: Some(types.Specific(set.new())),
+    returns: None,
+  ))
+}
+
+fn function_assume(module: String, function: String) -> types.GradedLine {
+  ExternalLine(ExternalAnnotation(
+    module:,
+    target: FunctionExternal(function),
+    effects: Some(types.Specific(set.new())),
+    returns: None,
+  ))
+}
+
+// The `effects` lines a merge writes, paired with the clause each carries.
+fn merged_effects(
+  file: types.GradedFile,
+  inferred: List(types.EffectAnnotation),
+) -> List(#(String, option.Option(EffectTerm))) {
+  annotation.merge_inferred(file, inferred, set.new(), set.new())
+  |> annotation.extract_annotations
+  |> list.filter(fn(a) { a.kind == Effects })
+  |> list.map(fn(a) { #(a.function, a.returns) })
+}
+
+pub fn merge_inferred_keeps_a_clause_under_a_module_assume_test() {
+  let clause = Some(TLabels(set.from_list(["Net"])))
+  merged_effects(types.GradedFile(lines: [module_assume("db")]), [
+    inferred_line("db.make", clause),
+    inferred_line("db.plain", None),
+  ])
+  |> should.equal([#("db.make", clause)])
+}
+
+pub fn merge_inferred_keeps_a_clause_under_a_function_assume_test() {
+  let clause = Some(TLabels(set.from_list(["Net"])))
+  merged_effects(
+    types.GradedFile(lines: [
+      function_assume("db", "make"),
+      function_assume("db", "plain"),
+    ]),
+    [inferred_line("db.make", clause), inferred_line("db.plain", None)],
+  )
+  |> should.equal([#("db.make", clause)])
+}
+
+pub fn merge_inferred_composes_the_two_assume_channels_test() {
+  // Both declarations cover `db.make`: the returns one strips the clause, and
+  // the effects one then has a clause-less line to drop. Nothing of the
+  // inferred line survives — the alternative is a line kept alive by a clause
+  // the declaration above it already answers for.
+  merged_effects(
+    types.GradedFile(lines: [
+      module_assume("db"),
+      ExternalLine(ExternalAnnotation(
+        module: "db",
+        target: FunctionExternal("make"),
+        effects: None,
+        returns: Some(TLabels(set.from_list(["Net"]))),
+      )),
+    ]),
+    [inferred_line("db.make", Some(TLabels(set.from_list(["Stdout"]))))],
+  )
+  |> should.equal([])
+}
+
+pub fn merge_inferred_over_a_kept_clause_line_is_idempotent_test() {
+  // The second `infer` over an unchanged package: the kept line is updated in
+  // place with the same inference it already holds, so the file does not move.
+  let clause = Some(TLabels(set.from_list(["Net"])))
+  let file =
+    types.GradedFile(lines: [
+      module_assume("db"),
+      AnnotationLine(inferred_line("db.make", clause)),
+    ])
+  annotation.merge_inferred(
+    file,
+    [inferred_line("db.make", clause)],
+    set.new(),
+    set.new(),
+  )
+  |> should.equal(file)
+}
+
 pub fn merge_inferred_keeps_a_declared_returns_clause_test() {
   // A declaration is preserved in place and never regenerated, and the inferred
   // clause for the same name is dropped: one name, one answer.

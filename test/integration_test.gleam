@@ -8624,6 +8624,83 @@ pub fn a_clause_applying_an_unannotated_callback_degrades_test() {
   |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
+// An assumption suppresses one channel, end to end
+//
+// A module-level assumption governs what its functions *do*. What one of them
+// *returns* is a different claim, and the clause carrying it has no line of its
+// own — so `infer` keeps the `effects` line alive to hold it, and the loaders
+// read the declaration over that line's effects half only.
+
+pub fn a_module_assume_keeps_the_clause_it_does_not_speak_for_test() {
+  let root = "build/module_assume_keeps_clause"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume db : []
+assume ffi.log : [Disk]
+assume ffi.print : [Stdout]
+check app.run : []
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"log\")
+@external(javascript, \"ffi_module\", \"log\")
+pub fn log() -> Nil
+
+@external(erlang, \"ffi_module\", \"print\")
+@external(javascript, \"ffi_module\", \"print\")
+pub fn print() -> Nil
+",
+    ),
+    #(
+      "db.gleam",
+      "import ffi
+
+pub fn make() -> fn() -> Nil {
+  ffi.log()
+  fn() { ffi.print() }
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import db
+
+pub fn run() -> Nil {
+  db.make()()
+}
+",
+    ),
+  ])
+
+  // `infer` keeps the line: its effects half is redundant under the module
+  // declaration, but the clause on it is the only record of what `make` returns.
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(spec) = simplifile.read(root <> "/proj.graded")
+  spec
+  |> string.contains("effects db.make : [Disk] where returns : [Stdout]")
+  |> should.be_true()
+  spec |> string.contains("assume db : []") |> should.be_true()
+
+  // And re-inferring an unchanged package does not move it.
+  graded.run_infer_dry_run(root) |> should.equal(Ok("graded: no changes"))
+
+  // At check time the two channels answer from their own sources: `db.make`'s
+  // own [Disk] is suppressed by the module declaration, while the closure it
+  // returns still resolves to [Stdout] through the clause on the kept line.
+  let assert Ok(results) = graded.run(root)
+  let assert [violation] = list.flat_map(results, fn(r) { r.violations })
+  violation.function |> should.equal("run")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  // The deliberately-kept line is not reported as shadowing the declaration.
+  results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
+
+  support.cleanup(root)
+}
+
 // The clause lint
 //
 // The lint reports an open clause against the oracle the gate binds by, so what
