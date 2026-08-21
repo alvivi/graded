@@ -5130,8 +5130,8 @@ pub fn call_kind_unrecognised_sentinel_is_unclassified_test() {
 
 // A warning's wording is the only place a reader learns what a dropped line does
 // and what happens next, so the sentence is pinned like a violation's.
-pub fn format_warning_stale_external_returns_test() {
-  types.StaleExternalReturnsWarning(function: "lib.make")
+pub fn format_warning_stale_returns_clauses_test() {
+  types.StaleReturnsClauseWarning(function: "lib.make")
   |> checker.format_warning("proj.graded", _)
   |> should.equal(
     "proj.graded: warning: assume lib.make where returns names a function of this package with a Gleam body — every caller resolves what it returns from that body, so the clause declares nothing and is ignored. `graded infer` removes it and writes the inferred clause on the `effects` line in its place",
@@ -5142,7 +5142,17 @@ pub fn format_warning_unverified_check_shape_test() {
   types.UnverifiedCheckShapeWarning(name: "app.Handler.on_click")
   |> checker.format_warning("proj.graded", _)
   |> should.equal(
-    "proj.graded: warning: check app.Handler.on_click is a shape nothing verifies yet — checks on fields and on returned operators key nothing; an `assume` line is the trusted form",
+    "proj.graded: warning: check app.Handler.on_click is a shape nothing verifies yet — a check on a field keys nothing; an `assume` line is the trusted form",
+  )
+}
+
+pub fn format_warning_unverified_returns_clause_test() {
+  // Scoped to the clause: the sentence has to keep the budget on the same line
+  // out of what it calls unverified, or a reader deletes a check that runs.
+  types.UnverifiedReturnsClauseWarning(function: "app.traced")
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: the `where returns` clause on check app.traced is not verified — nothing weighs a check's returned operator. The effects budget on the same line still is, so the check is live; an `assume` line is the trusted form for the clause",
   )
 }
 
@@ -5156,8 +5166,21 @@ pub fn format_warning_unclosed_returns_clause_test() {
   )
 }
 
+pub fn format_warning_unground_returns_clause_test() {
+  // The `assume` channel's rule is groundness, not scope: the sentence names it
+  // that way, because a variable there is dropped even when the function does
+  // have a callback parameter by that name.
+  types.UngroundReturnsClauseWarning(function: "ffi.traced", free_vars: [
+    "action",
+  ])
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: the `where returns` clause on assume ffi.traced must be ground, and `action` is a variable — an assumption carries no bound list, so nothing scopes one whatever the function's parameters are called; the clause is ignored. Spell out the concrete effects instead",
+  )
+}
+
 pub fn format_warning_dotless_external_returns_test() {
-  types.DotlessExternalReturnsWarning(name: "lib")
+  types.DotlessReturnsClauseWarning(name: "lib")
   |> checker.format_warning("proj.graded", _)
   |> should.equal(
     "proj.graded: warning: assume lib where returns names a module, not a function — a returns declaration is per-function; the clause resolves nothing",

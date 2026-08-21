@@ -61,12 +61,13 @@ import graded/internal/typeinfo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type EffectTerm, type GradedFile,
   type QualifiedName, type TypeFieldAnnotation, type Violation, type Warning,
-  AnnotationLine, CheckResult, DotlessExternalReturnsWarning, EffectAnnotation,
-  GradedFile, QualifiedName, StaleExternalReturnsWarning,
-  StaleFunctionExternalWarning, UnclosedReturnsClauseWarning,
-  UnmatchedCheckWarning, UnmatchedExternalReturnsWarning,
+  AnnotationLine, CheckResult, DotlessReturnsClauseWarning, EffectAnnotation,
+  GradedFile, QualifiedName, StaleFunctionExternalWarning,
+  StaleReturnsClauseWarning, UnclosedReturnsClauseWarning,
+  UngroundReturnsClauseWarning, UnmatchedCheckWarning,
   UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
-  UnmatchedTypeFieldWarning, UnverifiedCheckShapeWarning,
+  UnmatchedReturnsClauseWarning, UnmatchedTypeFieldWarning,
+  UnverifiedCheckShapeWarning, UnverifiedReturnsClauseWarning,
 }
 import simplifile
 
@@ -499,24 +500,14 @@ fn shell_quote(path: String) -> String {
 /// file.
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   use ctx <- result.try(load_project_context(directory))
-  let ProjectContext(
-    sources:,
-    registry:,
-    type_info:,
-    stale_externals:,
-    stale_external_returns:,
-    knowledge_base:,
-    catalog:,
-    dependencies:,
-  ) = ctx
+  let ProjectContext(sources:, registry:, type_info:, knowledge_base:, ..) = ctx
   let ProjectSources(
     source_directory: directory,
     reported_directory:,
     cfg:,
     spec:,
     parsed:,
-    index:,
-    package_root:,
+    ..,
   ) = sources
   let checks_by_module = checks_grouped_by_module(spec)
 
@@ -556,19 +547,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   // project module. These silently do nothing (a vacuous check, or a field
   // annotation that resolves to [Unknown]), so they're reported against the
   // spec file itself rather than any source file.
-  let results = case
-    validate_spec_annotations(
-      spec,
-      index,
-      package_root,
-      stale_externals,
-      stale_external_returns,
-      catalog,
-      dependencies,
-      registry,
-      knowledge_base,
-    )
-  {
+  let results = case validate_spec_annotations(ctx) {
     [] -> results
     spec_warnings -> [
       CheckResult(file: cfg.spec_file, violations: [], warnings: spec_warnings),
@@ -594,10 +573,10 @@ type ProjectContext {
     // here: the knowledge base is assembled without them, and the spec lint
     // reports them, so the two can't disagree about which lines are live.
     stale_externals: Set(String),
-    // The same about the `external returns` lines, on the value channel. Two
+    // The same about the `where returns` clauses, on the value channel. Two
     // sets rather than one: each suppresses only its own channel's lines, and
     // each is reported by its own warning.
-    stale_external_returns: Set(String),
+    stale_returns_clauses: Set(String),
     knowledge_base: KnowledgeBase,
     // The bundled catalog this context was assembled against. Held rather than
     // re-read by the spec lint, which weighs the same entries the knowledge
@@ -677,7 +656,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
   let package_targets = cfg.targets
   let native_of = native_functions_of(index, package_targets)
   let stale_externals = stale_project_externals(spec, native_of)
-  let stale_external_returns = stale_project_external_returns(spec, native_of)
+  let stale_returns_clauses = stale_project_external_returns(spec, native_of)
   let dep_sources = dependency_sources(package_root, package_targets)
   let registry =
     signatures.merge(
@@ -707,7 +686,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // are, one channel over: a spec-less path dependency's bodies are summarized
     // during that pass, and a consumer line declaring what one of its producers
     // hands back has to be in reach while they are, not only afterwards.
-    |> with_spec_declared_returns(spec, stale_external_returns)
+    |> with_spec_declared_returns(spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
     |> with_committed_spec(spec, stale_externals)
@@ -773,7 +752,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     registry:,
     type_info:,
     stale_externals:,
-    stale_external_returns:,
+    stale_returns_clauses:,
     knowledge_base:,
     catalog:,
     dependencies: dep_sources,
@@ -871,13 +850,9 @@ fn declaring_externals(
 ) -> List(types.ExternalAnnotation) {
   annotation.extract_externals(spec)
   |> list.filter(fn(external) {
-    case external.target {
-      types.FunctionExternal(function) ->
-        !set.contains(
-          stale,
-          types.dotted_name(QualifiedName(external.module, function)),
-        )
-      types.ModuleExternal -> True
+    case annotation.external_qualified_name(external) {
+      Ok(qualified) -> !set.contains(stale, types.dotted_name(qualified))
+      Error(Nil) -> True
     }
   })
 }
@@ -953,38 +928,50 @@ fn check_one_file(
 // When the qualifier is missing or wrong, the field plainly can't be called, or
 // the declaration covers a body sitting in plain sight, the line is silently
 // dead or silently ignored, so surface it as a warning.
-fn validate_spec_annotations(
-  spec: GradedFile,
-  index: Dict(String, #(String, glance.Module)),
-  package_root: String,
-  stale_externals: Set(String),
-  stale_external_returns: Set(String),
-  catalog: effects.BundledCatalog,
-  dependencies: DependencySources,
-  // The oracle a `where returns` clause's variables are weighed against — the
-  // same pair the gate that binds them reads, so lint and gate agree by
-  // construction.
-  registry: SignatureRegistry,
-  knowledge_base: KnowledgeBase,
-) -> List(Warning) {
+// Every input is a field of the context the run already assembled, so it
+// travels whole: a lint needing one more piece of it adds no parameter. The
+// `registry`/`knowledge_base` pair is the oracle a `where returns` clause's
+// variables are weighed against — the same one the gate that binds them reads,
+// so lint and gate agree by construction.
+fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
+  let ProjectContext(
+    sources: ProjectSources(spec:, index:, package_root:, ..),
+    stale_externals:,
+    stale_returns_clauses:,
+    catalog:,
+    dependencies:,
+    registry:,
+    knowledge_base:,
+    ..,
+  ) = context
   let known_functions = known_function_names(index)
 
-  // A `check` over a field path or carrying a `where returns` clause is a shape
-  // nothing verifies yet, not a typo.
-  let #(shape_checks, function_checks) =
-    annotation.extract_checks(spec)
-    |> list.partition(fn(ann) {
-      annotation.is_field_path(ann.function) || ann.returns != None
-    })
+  // One pass over the `check` lines, so the warnings come out in the order the
+  // spec writes them. A field path is not a function name, so membership says
+  // nothing about it and the whole line keys nothing. Anything else is a
+  // function whose effects budget the run enforces, whether or not it carries a
+  // clause: the name is weighed for a typo as usual, and the clause is flagged
+  // on its own, since it is the only unverified part of such a line.
   let check_warnings =
-    list.append(
-      list.map(shape_checks, fn(ann) {
-        UnverifiedCheckShapeWarning(name: ann.function)
-      }),
-      function_checks
-        |> list.filter(fn(ann) { !set.contains(known_functions, ann.function) })
-        |> list.map(fn(ann) { UnmatchedCheckWarning(function: ann.function) }),
-    )
+    annotation.extract_checks(spec)
+    |> list.flat_map(fn(ann) {
+      case annotation.is_field_path(ann.function) {
+        True -> [UnverifiedCheckShapeWarning(name: ann.function)]
+        False -> {
+          let unmatched = case set.contains(known_functions, ann.function) {
+            True -> []
+            False -> [UnmatchedCheckWarning(function: ann.function)]
+          }
+          case ann.returns {
+            None -> unmatched
+            Some(_) ->
+              list.append(unmatched, [
+                UnverifiedReturnsClauseWarning(function: ann.function),
+              ])
+          }
+        }
+      }
+    })
 
   let externals = annotation.extract_externals(spec)
   let declared_returns = annotation.assume_returns(spec)
@@ -1001,7 +988,7 @@ fn validate_spec_annotations(
   // The two declaring forms weigh a name by one rule, over one precomputation —
   // which reads the whole dependency tree, so it is built only where a
   // declaring line asks a question of it.
-  let #(external_warnings, external_returns_warnings) = case
+  let #(external_warnings, returns_clause_warnings) = case
     externals,
     declared_returns
   {
@@ -1018,10 +1005,10 @@ fn validate_spec_annotations(
         )
       #(
         external_warnings(externals, evidence, stale_externals),
-        external_returns_warnings(
+        returns_clause_warnings(
           declared_returns,
           evidence,
-          stale_external_returns,
+          stale_returns_clauses,
         ),
       )
     }
@@ -1049,14 +1036,13 @@ fn validate_spec_annotations(
   // construction, so one that is open was hand-edited or written by a future
   // bug. Reported all the same: the gate drops it silently.
   let clause_warnings =
-    annotation.extract_annotations(spec)
-    |> list.filter(fn(ann) { ann.kind == types.Effects })
+    annotation.extract_effects(spec)
     |> list.filter_map(unclosed_clause_warning(_, registry, knowledge_base))
 
   list.flatten([
     check_warnings,
     external_warnings,
-    external_returns_warnings,
+    returns_clause_warnings,
     clause_warnings,
     type_field_warnings,
   ])
@@ -1092,7 +1078,7 @@ fn unclosed_clause_warning(
 
 // What both declaring forms' lints weigh a name against, precomputed once over
 // the catalog and the dependency scan and then asked per name. One rule, so an
-// `assume` line and an `external returns` line naming the same
+// `assume` line and a `where returns` clause naming the same
 // function are called dead together or not at all.
 type SpecNameEvidence {
   SpecNameEvidence(
@@ -1199,9 +1185,8 @@ fn external_warnings(
   // channel, so this channel has nothing to call dead about it.
   |> list.filter(fn(external) { external.effects != option.None })
   |> list.filter_map(fn(external) {
-    case external.target {
-      types.FunctionExternal(function) -> {
-        let qualified = QualifiedName(external.module, function)
+    case annotation.external_qualified_name(external) {
+      Ok(qualified) -> {
         let name = types.dotted_name(qualified)
         case set.contains(stale, name), evidence.defines(qualified) {
           True, _ -> Ok(StaleFunctionExternalWarning(function: name))
@@ -1209,7 +1194,7 @@ fn external_warnings(
           False, True -> Error(Nil)
         }
       }
-      types.ModuleExternal ->
+      Error(Nil) ->
         case evidence.module_placed(external.module) {
           True -> Error(Nil)
           False -> Ok(UnmatchedModuleExternalWarning(module: external.module))
@@ -1229,34 +1214,31 @@ fn external_warnings(
 //
 // One warning per clause, so a clause that is dead twice over is reported by
 // the first rule that catches it.
-fn external_returns_warnings(
-  declared: List(#(String, EffectTerm)),
+fn returns_clause_warnings(
+  declared: List(#(types.ExternalAnnotation, EffectTerm)),
   evidence: SpecNameEvidence,
   stale: Set(String),
 ) -> List(Warning) {
   list.filter_map(declared, fn(entry) {
-    let #(name, operator) = entry
-    case annotation.split_function_name(name) {
-      // A clause on a field path is a parse error, so the only path that fails
-      // to split here is a module one.
-      Error(Nil) -> Ok(DotlessExternalReturnsWarning(name:))
-      Ok(#(module, function)) ->
-        case
-          set.contains(stale, name),
-          evidence.defines(QualifiedName(module, function)),
-          effect_term.is_ground(operator)
-        {
-          True, _, _ -> Ok(StaleExternalReturnsWarning(function: name))
-          False, False, _ -> Ok(UnmatchedExternalReturnsWarning(function: name))
-          False, True, False ->
-            Ok(UnclosedReturnsClauseWarning(
-              function: name,
-              free_vars: effect_term.free_vars(operator)
-                |> set.to_list
-                |> list.sort(string.compare),
-            ))
-          False, True, True -> Error(Nil)
+    let #(external, operator) = entry
+    case annotation.external_qualified_name(external) {
+      Error(Nil) -> Ok(DotlessReturnsClauseWarning(name: external.module))
+      Ok(qualified) -> {
+        let name = types.dotted_name(qualified)
+        // The open variables, listed once: emptiness is what makes the operator
+        // ground, so the same list decides the branch and names it.
+        let open =
+          effect_term.free_vars(operator)
+          |> set.to_list
+          |> list.sort(string.compare)
+        case set.contains(stale, name), evidence.defines(qualified), open {
+          True, _, _ -> Ok(StaleReturnsClauseWarning(function: name))
+          False, False, _ -> Ok(UnmatchedReturnsClauseWarning(function: name))
+          False, True, [] -> Error(Nil)
+          False, True, free_vars ->
+            Ok(UngroundReturnsClauseWarning(function: name, free_vars:))
         }
+      }
     }
   })
 }
@@ -1319,16 +1301,14 @@ fn unmatched_type_field_warning(
   dep_modules: Set(String),
   module_info: fn(String) -> Result(ModuleInfo, Nil),
 ) -> Result(Warning, Nil) {
-  case tf.module {
-    None -> Ok(UnmatchedTypeFieldWarning(name: tf.type_name <> "." <> tf.field))
+  let dead = case tf.module {
+    None -> True
     Some(module) ->
-      case valid_type_field(module, tf, index, dep_modules, module_info) {
-        True -> Error(Nil)
-        False ->
-          Ok(UnmatchedTypeFieldWarning(
-            name: module <> "." <> tf.type_name <> "." <> tf.field,
-          ))
-      }
+      !valid_type_field(module, tf, index, dep_modules, module_info)
+  }
+  case dead {
+    False -> Error(Nil)
+    True -> Ok(UnmatchedTypeFieldWarning(name: annotation.type_field_path(tf)))
   }
 }
 
@@ -1769,7 +1749,7 @@ fn spec_answer(
 // The spec layers of `load_project_context`'s knowledge base, folded in the same
 // order and by the same functions, over nothing else.
 //
-// Neither the spec's `returns` lines nor its `external returns` declarations are
+// Neither the spec's inferred clauses nor its declared ones are
 // among them: a returned-operator summary is consumed while walking a body, and
 // a fast-path answer is one no body was walked for. That holds for the declared
 // ones as much as the inferred — the declaration answers a call of the value,
@@ -2991,7 +2971,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   let package_targets = cfg.targets
   let native_of = native_functions_of(index, package_targets)
   let stale_externals = stale_project_externals(spec, native_of)
-  let stale_external_returns = stale_project_external_returns(spec, native_of)
+  let stale_returns_clauses = stale_project_external_returns(spec, native_of)
 
   // Build a signature registry covering every project module so the checker can
   // do positional argument matching for cross-module polymorphic calls. Hoisted
@@ -3021,7 +3001,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     // body from the declaration, and the two commands disagree about it — so
     // they are folded here, at the point `check` folds them, ahead of the
     // path-dep pass whose own inference reads them too.
-    |> with_spec_declared_returns(spec, stale_external_returns)
+    |> with_spec_declared_returns(spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
     |> effects.with_foreign_functions(project_foreign_functions(
@@ -3089,7 +3069,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       spec,
       public_annotations,
       stale_externals,
-      stale_external_returns,
+      stale_returns_clauses,
     ),
     cache_files: list.reverse(cache_files),
   ))
@@ -4095,19 +4075,19 @@ fn with_spec_externals(
   )
 }
 
-// The spec's `external returns` declarations, minus the stale ones. A stale line
+// The spec's `where returns` declarations, minus the stale ones. A stale line
 // is ignored at load as well as warned about and rewritten: trusted between
 // `infer` runs it would be a per-function override of what the walk can see for
 // itself.
 fn with_spec_declared_returns(
   knowledge_base: KnowledgeBase,
   spec: GradedFile,
-  stale_external_returns: Set(String),
+  stale_returns_clauses: Set(String),
 ) -> KnowledgeBase {
   effects.with_declared_returned_operators(
     knowledge_base,
     effects.load_spec_external_returns_from_file(spec)
-      |> drop_stale_names(stale_external_returns),
+      |> drop_stale_names(stale_returns_clauses),
     types.UserExternal,
   )
 }

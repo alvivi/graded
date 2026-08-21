@@ -577,17 +577,64 @@ pub fn a_clause_on_a_field_path_is_invalid_test() {
 }
 
 pub fn a_clause_keyword_inside_brackets_is_not_a_clause_test() {
-  // The effect-term grammar reads any word inside brackets as a variable, so
-  // the keyword only opens a clause at depth 0.
-  let assert Ok([annotation]) =
-    annotation.parse("effects m.f : [A, where returns : B]")
-  annotation.returns |> should.equal(None)
+  // The keyword only opens a clause at depth 0, so this text stays inside the
+  // effect set — where it is not one identifier, and so is a parse error rather
+  // than a variable named after the keyword.
+  let input = "effects m.f : [A, where returns : B]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
 }
 
 pub fn a_clause_with_no_colon_is_invalid_test() {
   let input = "effects m.f : [] where returns [Stdout]"
   annotation.parse_file(input)
   |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+// Near-misses of the clause keyword
+//
+// The keyword is the literal ` where returns `. Spelled with a space missing on
+// either side, the split misses it and the whole clause stays inside the effect
+// set, where it once parsed as a variable named after the typo — and formatted
+// back byte-identically, so the typo never surfaced. Each shape is a parse error
+// naming the line instead.
+
+pub fn a_clause_with_no_space_before_its_colon_is_invalid_test() {
+  let input = "check m.f : [] where returns: [Stdout]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+
+  let input = "effects m.f : [] where returns: [Stdout]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn a_clause_with_no_space_after_the_effects_is_invalid_test() {
+  let input = "check m.f : []where returns : [Stdout]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+
+  let input = "effects m.f : []where returns : [Stdout]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn a_clause_behind_extra_spaces_still_parses_test() {
+  // The one near-miss that is not one: an extra space before the keyword leaves
+  // the keyword itself intact, so the clause splits off and formats canonically.
+  let assert Ok([check]) =
+    annotation.parse("check m.f : []  where returns : [Stdout]")
+  check.returns
+  |> should.equal(
+    Some(effect_term.from_effect_set(Specific(set.from_list(["Stdout"])))),
+  )
+
+  let assert Ok([effects]) =
+    annotation.parse("effects m.f : []  where returns : [Stdout]")
+  effects.returns
+  |> should.equal(
+    Some(effect_term.from_effect_set(Specific(set.from_list(["Stdout"])))),
+  )
 }
 
 pub fn a_forged_sentinel_in_a_clause_grounds_test() {
@@ -699,6 +746,21 @@ pub fn an_external_returns_line_is_a_retired_spelling_test() {
   |> should.equal(
     "1: external returns m/ffi.make : [Net]\n  `external returns <path> : <operator>` is retired; write `assume <path> where returns : <operator>`",
   )
+}
+
+pub fn the_line_half_of_a_description_stays_on_one_line_test() {
+  // What a caller wrapping the description in a sentence reads. A retired
+  // spelling's rewrite is a second line, so the full description would leave
+  // the sentence's tail dangling under it — this half never does.
+  annotation.describe_parse_error_line(annotation.RetiredSpelling(
+    24,
+    "returns girard.disk_resolver : [FileSystem]",
+    annotation.RetiredReturns,
+  ))
+  |> should.equal("24: returns girard.disk_resolver : [FileSystem]")
+
+  annotation.describe_parse_error_line(annotation.InvalidLine(3, "  nonsense "))
+  |> should.equal("3: nonsense")
 }
 
 pub fn no_retired_line_parses_as_anything_test() {

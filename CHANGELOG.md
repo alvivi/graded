@@ -41,10 +41,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the call site instead of degrading to `[Unknown]`.
 - A clause whose variables name no callback parameter of the function is
   reported by the spec lint and resolves to `[Unknown]`, replacing the warning
-  about a polymorphic `external returns` operator.
-- A `check` whose subject is a field (`check myapp.Handler.on_click : []`) or
-  which carries a `where returns` clause now warns that nothing verifies that
-  shape yet, rather than that the name matches no function.
+  about a polymorphic `external returns` operator. On an `assume` line the
+  warning names that channel's own rule instead: a declared operator must be
+  ground, because an assumption carries no bound list to scope a variable with,
+  whatever the function's parameters are called.
+- A `check` whose subject is a field (`check myapp.Handler.on_click : []`) now
+  warns that nothing verifies that shape yet, rather than that the name matches
+  no function. A `check` carrying a `where returns` clause warns about the
+  clause alone — nothing weighs a check's returned operator, while the effects
+  budget on the same line is enforced as on any other `check`, so the line still
+  fails a run when the body goes over it.
+- An effect set holding anything but bare labels and variables is now a parse
+  error. A near-miss of the clause keyword — `check myapp.f : [] where returns:
+  [Stdout]` or `check myapp.f : []where returns : [Stdout]` — used to parse as a
+  variable named after the typo and format back byte-identically, so a clause
+  that did nothing looked like one that worked.
 - A `.graded` spec file with a line the parser rejects is now an error naming
   the file and the line, from every command. Such a file used to read as empty:
   `check` passed with nothing to check, and `infer` wrote its merge over the

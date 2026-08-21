@@ -912,7 +912,7 @@ pub fn project_visibility(
 // declaration with a fallback body that runs. The value channels have no such
 // counterpart — nothing declares the provenance of the record an FFI factory
 // builds — so every `@external` is opaque to them, declared or not, fallback or
-// not. The one exception is the returned operator, which an `external returns`
+// not. The one exception is the returned operator, which a `where returns`
 // line declares: that channel weighs a declaration through
 // `declared_return_standing` and asks this only about the summaries it does
 // not cover.
@@ -1153,7 +1153,7 @@ pub type SummaryOrigin {
   // binding, so an open clause degrades to `[Unknown]` rather than binding
   // against variables the producer has no parameter for.
   Closed
-  // Written by hand as an `external returns` line: what a foreign producer
+  // Written by hand as a `where returns` clause: what a foreign producer
   // hands back, declared rather than inferred. It answers for a name every
   // other summary is refused for — that is the whole point of the line — so
   // it is held to `declared_return_standing` instead of to `is_value_opaque`.
@@ -1223,7 +1223,7 @@ pub fn with_closed_returned_operators(
   KnowledgeBase(..knowledge_base, returned_operators: merged)
 }
 
-// Merge **Declared** returned-operator summaries (`external returns` lines) into
+// Merge **Declared** returned-operator summaries (`where returns` clauses) into
 // a knowledge base — the incoming entries win, since a declaration outranks a
 // summary inferred over a body and the two merges beside it both gap-fill.
 //
@@ -1250,7 +1250,7 @@ pub fn with_declared_returned_operators(
 // already wrote for a name stands, declaration or not.
 //
 // The path-dependency fold merges this way. Its tier sits below the installed
-// dependencies', so a path dep declaring `external returns dep/ffi.make` for a
+// dependencies', so a path dep declaring a clause on `dep/ffi.make` for a
 // name an installed dependency's own spec already declares must not displace it
 // — the inversion of the documented order that `over_catalog` keeps the effects
 // channel out of. Within the one spec being folded, this still leaves the
@@ -1277,7 +1277,7 @@ fn gap_filling_declared_returns(
 // inferred cannot ride on that ordering alone, because it must hold *within* a
 // tier as well: installed dependencies are folded in directory order, and a
 // stray `returns` line in the second package naming the first package's module
-// would otherwise bury the `external returns` line its author shipped.
+// would otherwise bury the `where returns` clause its author shipped.
 fn merge_returns(
   existing: Dict(QualifiedName, ReturnedOperator),
   incoming: Dict(QualifiedName, ReturnedOperator),
@@ -1387,7 +1387,7 @@ pub fn updates(
 //
 // A summary inferred over a body answers only for a name no `@external`
 // declares, as it always has; a **declared** one answers exactly where it
-// stands, which is what an `external returns` line is written to do.
+// stands, which is what a `where returns` clause is written to do.
 pub fn lookup_returned_operator(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -1421,7 +1421,7 @@ pub type DeclaredReturnStanding {
   // In reach, but a Gleam fallback body runs on some target too, and the
   // closure that body hands back needn't be the foreign one.
   DeclaredReturnFallbackRuns
-  // No `external returns` line keys the name at all.
+  // No `where returns` clause keys the name at all.
   NoDeclaredReturn
 }
 
@@ -1703,7 +1703,11 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
             "graded: warning: "
             <> package_name
             <> "'s spec did not parse (line "
-            <> annotation.describe_parse_error(cause)
+            // Named by the line alone. A dependency's spec is not the
+            // consumer's to rewrite, and the rewrite hint a retired spelling
+            // carries is a second line, which would leave this sentence's tail
+            // dangling after it.
+            <> annotation.describe_parse_error_line(cause)
             <> "); its entries are ignored",
           )
       }
@@ -1747,7 +1751,7 @@ fn package_modules(dep_root: String) -> Set(String) {
 // describes a value only that implementation produces, so it is dropped whether
 // or not a declaration also covers the name. What survives for a declared name
 // is the declaration: the dep's own `assume` line, an
-// `external returns` line, a module-level external, or the catalog entry
+// `where returns` clause, a module-level external, or the catalog entry
 // underneath.
 //
 // `declared_returns` is therefore not weighed against the dep's own foreign
@@ -1760,7 +1764,7 @@ fn package_modules(dep_root: String) -> Set(String) {
 // channel has no analogue of: whose code the line is *about*. A spec may state a
 // returned-operator summary for a module it ships or for a name the foreign scan
 // records, and for nothing else. Without that, a dependency shipping
-// `external returns app.helper` — an ordinary Gleam function of the *consumer* —
+// a clause on `app.helper` — an ordinary Gleam function of the *consumer* —
 // lands a declaration in the tier above the consumer's own body-derived summary,
 // and the consumer's source stops being what its own callers are charged for.
 // A package whose `src/` tree could not be read arbitrates nothing here.
@@ -1773,12 +1777,15 @@ fn sanitize_dep_spec(
   dep: DepSpec,
   foreign: Dict(QualifiedName, types.ForeignFunction),
 ) -> DepSpec {
+  // Only a line that states effects declares them. A clause-only
+  // `assume dep/ffi.make where returns : [X]` claims nothing about the
+  // function's own effect, so the dep's `effects` line for that name is still
+  // inference over an `@external` fallback body and still drops.
   let declared =
     list.fold(dep.externals, set.new(), fn(acc, external) {
-      case external.target {
-        FunctionExternal(function) ->
-          set.insert(acc, QualifiedName(external.module, function))
-        ModuleExternal -> acc
+      case annotation.external_qualified_name(external), external.effects {
+        Ok(qualified), Some(_) -> set.insert(acc, qualified)
+        _, _ -> acc
       }
     })
   let inferred_over_foreign = fn(name) {
@@ -1837,7 +1844,7 @@ fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> ExternalTiers {
 // tier, which `lookup` consults only after `all_effects` misses, so these
 // function-keyed entries outrank it — the per-function-beats-module-level rule.
 //
-// The spec's `external returns` declarations fold ahead of its inferred
+// The spec's `where returns` declarations fold ahead of its inferred
 // `returns` lines, so a name both key resolves to the declaration. Both merges
 // gap-fill: this tier reads below the installed dependencies', so a name an
 // installed dep's spec already answered keeps that answer, declaration or not.
@@ -1952,8 +1959,7 @@ fn read_spec_file(
 pub fn load_spec_returns_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, EffectTerm) {
-  annotation.extract_annotations(file)
-  |> list.filter(fn(ann) { ann.kind == types.Effects })
+  annotation.extract_effects(file)
   |> list.filter_map(fn(ann) {
     ann.returns
     |> option.to_result(Nil)
@@ -1970,13 +1976,11 @@ pub fn load_spec_returns_from_file(
 pub fn load_spec_external_returns_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, EffectTerm) {
-  annotation.extract_externals(file)
-  |> list.filter_map(fn(ext) {
-    case ext.target, ext.returns {
-      FunctionExternal(function), Some(operator) ->
-        Ok(#(QualifiedName(ext.module, function), operator))
-      FunctionExternal(_), None | ModuleExternal, _ -> Error(Nil)
-    }
+  annotation.assume_returns(file)
+  |> list.filter_map(fn(entry) {
+    let #(external, operator) = entry
+    annotation.external_qualified_name(external)
+    |> result.map(fn(qualified) { #(qualified, operator) })
   })
   |> dict.from_list()
 }
