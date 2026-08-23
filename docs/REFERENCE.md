@@ -25,10 +25,15 @@ graded keeps two kinds of `.graded` file:
 
 ## Annotation kinds
 
-Every line reads `<status> <path> : <effects>`. Three statuses say how much
-graded trusts the line — `effects` is inferred and regenerated, `check` is
-asserted and verified, `assume` is trusted and never verified — and the path's
-shape says what the line covers.
+Every line reads `<status> <path>[(bounds)] : <effects> [where returns :
+<operator>]`. Three statuses say how much graded trusts the line — `effects` is
+inferred and regenerated, `check` is asserted and verified, `assume` is trusted
+and never verified — and the path's shape says what the line covers. The two
+optional halves are the higher-order budgets ([Parameter effect
+bounds](#parameter-effect-bounds)) and the operator a producer hands back
+([`where returns`](#where-returns--returned-operators-and-latent-effects)); on
+an `assume` line the `: <effects>` half is optional as well, so a clause can
+stand alone.
 
 ### `effects` — inferred effects
 
@@ -126,6 +131,36 @@ and flagged, since an assumption carries no bound list to scope them.
 
 On a `check` line it parses and keys nothing: verifying what a function returns
 is not implemented, and `graded check` says so.
+
+## Lines the parser rejects
+
+A spec file is read whole or not at all. One line the parser rejects is an error
+naming the file and the line, from every command that reads a spec — `check`,
+`infer`, `format`, `effect`, `why` and `pack` — and nothing is written: `infer`
+leaves the spec file untouched, `pack` leaves the tarball untouched.
+`format --stdin` names the rejected line and prints no formatting. A
+*dependency's* spec that does not parse is a warning naming the package and the
+line, and that package's entries are ignored for the run.
+
+Four spellings read before 0.15 are rejected by name, each error carrying its
+rewrite:
+
+| Retired | Write instead |
+|---|---|
+| `type <path> : <effects>` | `assume <path> : <effects>` |
+| `external effects <path> : <effects>` | `assume <path> : <effects>` |
+| `returns <path> : <operator>` | delete it; `graded infer` writes the operator as a `where returns` clause on the `effects` line |
+| `external returns <path> : <operator>` | `assume <path> where returns : <operator>` |
+
+The first two are a mechanical rewrite:
+
+```sh
+sed -i 's/^external effects /assume /; s/^type /assume /' your_package.graded
+```
+
+Upgrade every consumer of a spec to 0.15 before rewriting that spec: a graded
+older than 0.15 reads a line it does not know as no line at all, so it checks
+the package as if unannotated and says nothing.
 
 ## Effect resolution order
 
