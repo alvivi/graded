@@ -5,73 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.15.0] - 2026-08-23
 
 ### Changed
 
 - **Breaking.** `external effects` and `type` lines are now written `assume`.
-  One keyword covers every trusted declaration, and what a line covers is read
-  off its path: `assume gleam/list : []` a whole module, `assume
-  gleam/io.println : [Stdout]` one function, `assume myapp.Handler.on_click :
-  [Dom]` a function-typed field. The rewrite is mechanical:
+  What a line covers is read off its path: `assume gleam/list : []` a module,
+  `assume gleam/io.println : [Stdout]` a function, `assume
+  myapp.Handler.on_click : [Dom]` a function-typed field. The rewrite is
+  mechanical:
 
   ```sh
   sed -i 's/^external effects /assume /; s/^type /assume /' your_package.graded
   ```
 
-  A line still on the old spelling is a parse error naming the line and the
-  rewrite, so nothing is silently reinterpreted. Bundled catalog files are
-  already rewritten; a dependency's spec must be regenerated with this version
-  before its entries are read again.
+  An old spelling is a parse error naming the line and its rewrite, so nothing
+  is silently reinterpreted. Bundled catalog files are already rewritten; a
+  dependency's spec must be regenerated before its entries are read again.
 - **Breaking.** A returned operator is now a `where returns` clause of the
-  statement it belongs to, not a line of its own. `graded infer` writes
-  `effects myapp.make_logger : [] where returns : [Stdout]`, and a declaration
-  for a foreign producer is `assume myapp/ffi.make_client where returns :
-  [Net]`. `returns` and `external returns` lines are parse errors naming the
-  line and the rewrite; delete an inferred one and re-run `graded infer`, and
-  rewrite a declared one as an `assume` clause.
-- A declaration may now carry only a clause: `assume myapp/ffi.make_client
-  where returns : [Net]` states what the producer hands back and claims nothing
-  about its own effect, so the catalog or a dependency's spec keeps answering
-  for that.
-- An inferred clause carries a bound for every callback it mentions, so a
-  decorator whose callback is used only inside the closure it returns now reads
-  back with the bound that scopes it: `effects myapp.traced(action: [action]) :
-  [] where returns : fn(cb) -> [Stdout, action([cb])]`. Such a call resolves at
-  the call site instead of degrading to `[Unknown]`.
-- An assumption no longer deletes the inferred `where returns` clause of the
-  functions it covers. `assume db : []` (or `assume db.make : []`) declares what
-  those functions *do*; what one of them *returns* is a separate claim, so the
-  clause stays in the spec and consumers still resolve the returned function
-  instead of falling back to `[Unknown]`. The line it rides on keeps its effects
-  half, which the assumption still answers over.
+  statement it belongs to, not a line of its own: `effects myapp.make_logger :
+  [] where returns : [Stdout]`, and for a foreign producer `assume
+  myapp/ffi.make_client where returns : [Net]`. `returns` and `external
+  returns` lines are parse errors naming their rewrite — delete an inferred one
+  and re-run `graded infer`, rewrite a declared one as an `assume` clause.
+- **Breaking.** Upgrade every consumer of a spec to this version *before*
+  rewriting that spec to the new grammar. An older graded reads a line it does
+  not know as no line at all, so it checks the package as if unannotated and
+  says nothing — the one direction the parse errors above cannot cover.
+- An `assume` may now carry a clause alone: `assume myapp/ffi.make_client where
+  returns : [Net]` states what the producer hands back and claims nothing about
+  its own effect, so the catalog or a dependency's spec keeps answering for it.
+- An inferred clause now carries a bound for every callback it mentions —
+  `effects myapp.traced(action: [action]) : [] where returns : fn(cb) ->
+  [Stdout, action([cb])]` — so a decorator whose callback runs only inside the
+  closure it returns resolves at the call site instead of costing `[Unknown]`.
+- An assumption no longer deletes the inferred clause of the functions it
+  covers. `assume db : []` declares what those functions *do*; what one of them
+  *returns* is a separate claim, so the clause stays in the spec and consumers
+  still resolve the returned function.
 - A clause whose variables name no callback parameter of the function is
-  reported by the spec lint and resolves to `[Unknown]`, replacing the warning
+  flagged by the spec lint and resolves to `[Unknown]`, replacing the warning
   about a polymorphic `external returns` operator. On an `assume` line the
-  warning names that channel's own rule instead: a declared operator must be
-  ground, because an assumption carries no bound list to scope a variable with,
-  whatever the function's parameters are called.
-- A `check` whose subject is a field (`check myapp.Handler.on_click : []`) now
-  warns that nothing verifies that shape yet, rather than that the name matches
-  no function. A `check` carrying a `where returns` clause warns about the
-  clause alone — nothing weighs a check's returned operator, while the effects
-  budget on the same line is enforced as on any other `check`, so the line still
-  fails a run when the body goes over it.
-- An effect set holding anything but bare labels and variables is now a parse
-  error. A near-miss of the clause keyword — `check myapp.f : [] where returns:
-  [Stdout]` or `check myapp.f : []where returns : [Stdout]` — used to parse as a
-  variable named after the typo and format back byte-identically, so a clause
-  that did nothing looked like one that worked.
+  warning names that channel's own rule: a declared operator must be ground,
+  since an assumption carries no bound list to scope a variable with.
+- A `check` on a field (`check myapp.Handler.on_click : []`) now warns that
+  nothing verifies that shape yet, rather than that the name matches no
+  function, and a `check` carrying a clause warns about the clause alone — the
+  effects budget on that line is enforced as on any other `check`.
+
+### Fixed
+
 - A `.graded` spec file with a line the parser rejects is now an error naming
-  the file and the line, from every command. Such a file used to read as empty:
-  `check` passed with nothing to check, and `infer` wrote its merge over the
-  hand-written lines. `format --stdin` names the rejected line too, and a
-  *dependency's* spec that does not parse is a warning naming the package and
-  the line, with that package's entries ignored.
-- `graded pack` now refuses to inject a spec the parser rejects, naming the file
-  and the line and leaving the tarball untouched. It used to publish such a spec
-  happily, and every consumer's loader then dropped the whole file — the package
-  shipped with no effect metadata at all.
+  the file and the line, from every command; `format --stdin` names it too, and
+  a *dependency's* unparseable spec is a warning naming the package, with its
+  entries ignored. Such a file used to read as empty — `check` passed with
+  nothing to check, and `infer` wrote its merge over the hand-written lines.
+- `graded pack` now refuses to inject a spec the parser rejects, naming the
+  file and the line and leaving the tarball untouched. It used to publish one
+  happily, and every consumer's loader then dropped the whole file — the
+  package shipped with no effect metadata at all.
+- A near-miss of the clause keyword — `check myapp.f : [] where returns:
+  [Stdout]` or `check myapp.f : []where returns : [Stdout]` — is now a parse
+  error instead of an effect variable named after the typo that formatted back
+  byte-identically, so a clause that did nothing looked like one that worked.
+  An effect set may hold only bare labels and variables.
 
 ## [0.14.0] - 2026-08-20
 
@@ -605,6 +602,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gleam_yielder`, `gleam_crypto`, `lustre`, `lustre_http`, `simplifile`,
   `filepath`, `tom`.
 
+[0.15.0]: https://github.com/alvivi/graded/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/alvivi/graded/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/alvivi/graded/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/alvivi/graded/compare/v0.12.0...v0.12.1
