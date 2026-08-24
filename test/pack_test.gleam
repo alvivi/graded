@@ -454,6 +454,28 @@ pub fn verify_tarball_rejects_an_unsafe_entry_test() {
   cleanup(root)
 }
 
+// The output tarball is created exclusively by the call that writes it
+//
+// Reserving the path and closing the descriptor only proved it was free at that
+// instant, and `erl_tar:open/2` then re-opened by name — a window for a symlink
+// planted in between. `inject_spec` now creates the path itself and writes the
+// archive through the descriptor it keeps. The race is not deterministically
+// testable here; that the create is exclusive and lives inside the call is.
+pub fn inject_spec_will_not_write_over_an_existing_path_test() {
+  let root = "build/pack_exclusive_out"
+  let tarball =
+    setup_dep(root, "dep", "1.0.0", "dep.graded", "effects dep.work : []\n")
+  let out = root <> "/build/occupied.tar"
+  write_file(out, "not mine\n")
+
+  let assert Error(message) =
+    inject_spec(tarball, "effects dep.work : []\n", "dep.graded", out)
+  string.contains(message, "output path already exists") |> should.be_true()
+  // Refused, not truncated: the exclusive create never opened it for writing.
+  simplifile.read(out) |> should.equal(Ok("not mine\n"))
+  cleanup(root)
+}
+
 // A malformed archive says what is wrong with it
 //
 // Every one of these used to badmatch or reach a term as `undefined`, and
@@ -598,6 +620,16 @@ fn unpack_inner(tarball: String, dest_dir: String) -> Nil
 // the guard under test is about archives it did not.
 @external(erlang, "graded_pack_ffi", "verify_tarball")
 fn verify_tarball(tarball: String, entry_name: String) -> Result(Nil, String)
+
+// Called directly: `pack` only ever hands it a path it derived, and what is
+// under test is the call's own refusal to write over a path it did not create.
+@external(erlang, "graded_pack_ffi", "inject_spec")
+fn inject_spec(
+  in_tar: String,
+  spec: String,
+  entry_name: String,
+  out_tar: String,
+) -> Result(String, String)
 
 @external(erlang, "graded_pack_test_ffi", "metadata_files")
 fn metadata_files(tarball: String) -> List(String)

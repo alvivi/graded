@@ -1,19 +1,6 @@
 -module(graded_pack_ffi).
 -export([inject_spec/4, verify_tarball/2, read_package_identity/1, files_of/1,
-         reserve_path/1]).
-
-% Atomically reserve Path for this invocation: an O_EXCL create, which fails
-% with eexist on any existing path and refuses to follow symlinks — a dangling
-% symlink is rejected rather than followed and written through. Returns
-% {ok, nil} or {error, Reason}.
-reserve_path(Path) ->
-    case file:open(unicode:characters_to_list(Path), [write, exclusive]) of
-        {ok, Fd} ->
-            ok = file:close(Fd),
-            {ok, nil};
-        {error, Reason} ->
-            {error, format_reason(Reason)}
-    end.
+         tar_io/2]).
 
 % Inject a `.graded` spec into a hex tarball, following hex_tarball.erl's
 % mechanics:
@@ -24,21 +11,18 @@ reserve_path(Path) ->
 %   - rebuild the outer tar (VERSION, metadata.config, contents.tar.gz, CHECKSUM)
 % Re-running on an already-packed tarball replaces the spec entry rather than
 % appending a duplicate, so the result stays canonical.
+% Both scratch paths — the work directory and OutTar itself — are created here
+% and owned here: each is an exclusive create that fails on a pre-existing path,
+% and only what this invocation created is ever removed.
 % Returns {ok, Checksum} (uppercase hex) or {error, Reason} (a binary message).
 inject_spec(InTar, SpecBin, EntryName, OutTar) ->
     OutTarPath = unicode:characters_to_list(OutTar),
-    % All scratch state lives inside one exclusively-created work directory, so
-    % cleanup only ever deletes what this invocation created — a pre-existing
-    % path with the same name is an error, never a recursive delete.
     WorkDir = OutTarPath ++ ".work",
     case file:make_dir(WorkDir) of
         ok ->
             try
-                do_inject(unicode:characters_to_list(InTar), SpecBin,
+                inject_into(unicode:characters_to_list(InTar), SpecBin,
                     unicode:characters_to_list(EntryName), OutTarPath, WorkDir)
-            catch
-                throw:{graded_error, Msg} -> {error, Msg};
-                _:Reason -> {error, format_reason(Reason)}
             after
                 file:del_dir_r(WorkDir)
             end;
@@ -49,7 +33,52 @@ inject_spec(InTar, SpecBin, EntryName, OutTar) ->
             {error, format_reason(Reason)}
     end.
 
-do_inject(InTarPath, SpecBin, Entry, OutTarPath, WorkDir) ->
+% Create the output tarball with an O_EXCL open and write it through the
+% descriptor that open returns.
+%
+% Creating exclusively and then closing would only prove the path was free at
+% that instant: erl_tar:open/2 takes a filename, so it re-opens by name and
+% follows a symlink planted in between. That is not hygiene — verify_tarball
+% re-opens the result by name and the flow renames it over the original, and on
+% Windows renaming a file with an open handle fails. erl_tar:init/3 takes user
+% data and an I/O fun instead, so the archive goes through the retained
+% descriptor and the path is never resolved a second time.
+inject_into(InTarPath, SpecBin, Entry, OutTarPath, WorkDir) ->
+    case file:open(OutTarPath, [write, exclusive, binary]) of
+        {ok, Fd} ->
+            try
+                do_inject(InTarPath, SpecBin, Entry, Fd, WorkDir)
+            catch
+                throw:{graded_error, Msg} -> failed_inject(OutTarPath, Fd, Msg);
+                _:Reason ->
+                    failed_inject(OutTarPath, Fd, format_reason(Reason))
+            after
+                file:close(Fd)
+            end;
+        {error, eexist} ->
+            {error, iolist_to_binary(["output path already exists: ",
+                OutTarPath, "; remove it and retry"])};
+        {error, Reason} ->
+            {error, format_reason(Reason)}
+    end.
+
+% A half-written output tarball is this invocation's own, so it goes; a path
+% that was already there never reaches here, because the exclusive create
+% refused it. Closing before deleting keeps the order Windows needs.
+failed_inject(OutTarPath, Fd, Msg) ->
+    _ = file:close(Fd),
+    _ = file:delete(OutTarPath),
+    {error, Msg}.
+
+% erl_tar's I/O interface over a descriptor the caller owns. `close` is a no-op
+% so erl_tar:close/1 flushes the archive and leaves the descriptor open for
+% inject_into's `after` to close — erl_tar:close/1 is not reached on a throw, so
+% closing here would leak the descriptor on exactly the paths that matter.
+tar_io(write, {Fd, Bytes}) -> file:write(Fd, Bytes);
+tar_io(position, {Fd, Pos}) -> file:position(Fd, Pos);
+tar_io(close, _) -> ok.
+
+do_inject(InTarPath, SpecBin, Entry, OutFd, WorkDir) ->
     InnerTmp = filename:join(WorkDir, "inner.tar"),
     InnerDir = filename:join(WorkDir, "contents"),
     assert_safe_name(Entry),
@@ -96,8 +125,8 @@ do_inject(InTarPath, SpecBin, Entry, OutTarPath, WorkDir) ->
     % inner checksum over the final bytes.
     Checksum = checksum(Version, NewMeta, NewContents),
 
-    % rebuild outer tar.
-    {ok, O} = erl_tar:open(OutTarPath, [write]),
+    % rebuild outer tar, through the descriptor inject_into holds open.
+    {ok, O} = erl_tar:init(OutFd, write, fun ?MODULE:tar_io/2),
     ok = erl_tar:add(O, Version, "VERSION", []),
     ok = erl_tar:add(O, NewMeta, "metadata.config", []),
     ok = erl_tar:add(O, NewContents, "contents.tar.gz", []),
