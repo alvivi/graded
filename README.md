@@ -93,20 +93,20 @@ The `.graded` spec language and graded's analysis model are documented in full i
 ## Commands
 
 ```sh
-gleam run -m graded check [directory]         # enforce check annotations (default)
-gleam run -m graded infer [directory]         # infer and write effects annotations
-gleam run -m graded infer --dry-run [directory] # preview the spec changes, writing nothing
-gleam run -m graded effect <name> [directory] # look up one effect, writing nothing
+gleam run -m graded check [directory]             # Enforce check annotations (default)
+gleam run -m graded infer [directory]             # Infer and write effects annotations
+gleam run -m graded infer --dry-run [directory]   # Preview the spec changes, writing nothing
+gleam run -m graded effect <name> [directory]     # Look up one effect, writing nothing
 gleam run -m graded effect <name> --format=graded # ... as a .graded line instead of prose
-gleam run -m graded why <name> [directory]    # explain a function's effects, writing nothing
-gleam run -m graded catalog                   # list graded's bundled catalog files
-gleam run -m graded catalog <package>         # print the catalog file selected for <package>
-gleam run -m graded catalog <package>@<version> # print exactly that bundled catalog file
-gleam run -m graded format [directory]        # normalize .graded file formatting
-gleam run -m graded format --check [directory] # verify formatting (CI mode)
-gleam run -m graded format --stdin            # format from stdin (editor integration)
-gleam run -m graded -- --help                 # show usage (-- passes the flag through gleam run)
-gleam run -m graded -- --version              # show the installed version
+gleam run -m graded why <name> [directory]        # Explain a function's effects, writing nothing
+gleam run -m graded catalog                       # List graded's bundled catalog files
+gleam run -m graded catalog <package>             # Print the catalog file selected for <package>
+gleam run -m graded catalog <package>@<version>   # Print exactly that bundled catalog file
+gleam run -m graded format [directory]            # Normalize .graded file formatting
+gleam run -m graded format --check [directory]    # Verify formatting (CI mode)
+gleam run -m graded format --stdin                # Format from stdin (editor integration)
+gleam run -m graded -- --help                     # Show usage (-- passes the flag through gleam run)
+gleam run -m graded -- --version                  # Show the installed version
 ```
 
 An unknown command or option is a usage error, not a silently-checked directory.
