@@ -12,7 +12,7 @@ import graded
 import graded/internal/annotation
 import graded/internal/types.{Specific}
 import simplifile
-import support.{cleanup, ensure_parent, write_file}
+import support.{cleanup, ensure_parent, write_file, write_fixture}
 
 // A tarball with one inner source file, plus a gleam.toml and the spec to be
 // injected, materialised at `root`. Returns the tarball path.
@@ -349,16 +349,30 @@ type Member {
   Symlink(name: String, target: String)
 }
 
-// A project whose default tarball is built from `members`, with a spec ready to
-// inject. Returns the tarball path.
-fn setup_crafted(root: String, members: List(Member)) -> String {
-  let _ = simplifile.delete(root)
-  write_file(root <> "/gleam.toml", "name = \"dep\"\nversion = \"1.0.0\"\n")
-  write_file(root <> "/dep.graded", "effects dep.work : []\n")
+// A `dep` 1.0.0 project with a spec ready to inject, and the default tarball
+// path prepared but not written — each caller builds the archive it needs
+// there, well-formed or not. Returns that path.
+fn setup_project(root: String) -> String {
+  write_fixture(root, [
+    #("gleam.toml", "name = \"dep\"\nversion = \"1.0.0\"\n"),
+    #("dep.graded", "effects dep.work : []\n"),
+  ])
   let tarball = root <> "/build/dep-1.0.0.tar"
   ensure_parent(tarball)
+  tarball
+}
+
+// A project whose default tarball is built from `members`. Returns the tarball.
+fn setup_crafted(root: String, members: List(Member)) -> String {
+  let tarball = setup_project(root)
   build_tarball_with_raw_names(tarball, "dep", "1.0.0", members)
   tarball
+}
+
+// The `PackError` message `pack` fails a project with.
+fn pack_error(root: String) -> String {
+  let assert Error(graded.PackError(message)) = graded.pack_project(root, None)
+  message
 }
 
 pub fn pack_rejects_an_absolute_inner_entry_test() {
@@ -380,7 +394,7 @@ pub fn pack_rejects_an_absolute_inner_entry_test() {
   write_file(decoy, "HOST-SECRET-DECOY\n")
   let assert Ok(before) = simplifile.read_bits(tarball)
 
-  let assert Error(graded.PackError(message)) = graded.pack_project(root, None)
+  let message = pack_error(root)
   string.contains(message, decoy) |> should.be_true()
   string.contains(message, "unsafe tar entry name") |> should.be_true()
 
@@ -408,7 +422,7 @@ pub fn pack_rejects_an_escaping_inner_entry_test() {
     ])
   let assert Ok(before) = simplifile.read_bits(tarball)
 
-  let assert Error(graded.PackError(message)) = graded.pack_project(root, None)
+  let message = pack_error(root)
   string.contains(message, "../escaped.txt") |> should.be_true()
   string.contains(message, "unsafe tar entry name") |> should.be_true()
 
@@ -430,7 +444,7 @@ pub fn pack_rejects_a_non_regular_inner_entry_test() {
       Symlink("link.txt", "dangling_target"),
     ])
 
-  let assert Error(graded.PackError(message)) = graded.pack_project(root, None)
+  let message = pack_error(root)
   string.contains(message, "link.txt") |> should.be_true()
   string.contains(message, "symlink") |> should.be_true()
 
@@ -481,18 +495,6 @@ pub fn inject_spec_will_not_write_over_an_existing_path_test() {
 // Every one of these used to badmatch or reach a term as `undefined`, and
 // surface as an Erlang tuple through `format_reason`'s `~p`.
 
-// A project ready to pack, whose tarball is written from `members` verbatim —
-// no VERSION/CHECKSUM quartet unless the members say so. Returns the tarball.
-fn setup_malformed(root: String, members: List(#(String, String))) -> String {
-  let _ = simplifile.delete(root)
-  write_file(root <> "/gleam.toml", "name = \"dep\"\nversion = \"1.0.0\"\n")
-  write_file(root <> "/dep.graded", "effects dep.work : []\n")
-  let tarball = root <> "/build/dep-1.0.0.tar"
-  ensure_parent(tarball)
-  build_outer_tarball(tarball, members)
-  tarball
-}
-
 // A metadata.config good enough to name the package, for the archives whose
 // defect is somewhere other than the metadata.
 const good_metadata = "{<<\"name\">>, <<\"dep\"/utf8>>}.
@@ -501,20 +503,25 @@ const good_metadata = "{<<\"name\">>, <<\"dep\"/utf8>>}.
   <<\"src/dep.gleam\"/utf8>>]}.
 "
 
-fn pack_error(root: String) -> String {
-  let assert Error(graded.PackError(message)) = graded.pack_project(root, None)
+// Pack a project whose tarball holds `members` verbatim — no VERSION/CHECKSUM
+// quartet unless the members say so — and assert the refusal says `needle`.
+fn assert_malformed(
+  root: String,
+  members: List(#(String, String)),
+  needle: String,
+) -> String {
+  build_outer_tarball(setup_project(root), members)
+  let message = pack_error(root)
+  string.contains(message, needle) |> should.be_true()
+  cleanup(root)
   message
 }
 
 pub fn pack_names_a_corrupt_outer_tar_test() {
   let root = "build/pack_corrupt_outer"
-  let _ = simplifile.delete(root)
-  write_file(root <> "/gleam.toml", "name = \"dep\"\nversion = \"1.0.0\"\n")
-  write_file(root <> "/dep.graded", "effects dep.work : []\n")
-  write_file(root <> "/build/dep-1.0.0.tar", "this is not a tar file\n")
-
-  let message = pack_error(root)
-  string.contains(message, "as a hex tarball") |> should.be_true()
+  // Not a tar at all, so it is written rather than built.
+  write_file(setup_project(root), "this is not a tar file\n")
+  string.contains(pack_error(root), "as a hex tarball") |> should.be_true()
   cleanup(root)
 }
 
@@ -522,65 +529,53 @@ pub fn pack_names_a_corrupt_outer_tar_test() {
 // itself: its catch was `_:Reason` only, so a clean message rendered as
 // `{graded_error,<<"...">>}` through `format_reason`'s `~p`.
 pub fn pack_names_a_missing_metadata_member_test() {
-  let root = "build/pack_no_metadata"
-  let _ = setup_malformed(root, [#("VERSION", "3")])
-
-  let message = pack_error(root)
-  string.contains(message, "hex tarball has no metadata.config member")
-  |> should.be_true()
+  let message =
+    assert_malformed(
+      "build/pack_no_metadata",
+      [#("VERSION", "3")],
+      "hex tarball has no metadata.config member",
+    )
   string.contains(message, "graded_error") |> should.be_false()
-  cleanup(root)
 }
 
 pub fn pack_names_metadata_that_does_not_scan_test() {
-  let root = "build/pack_metadata_scan"
-  let _ =
-    setup_malformed(root, [
-      #("VERSION", "3"),
-      #("metadata.config", "{<<\"name\">>, \"unterminated"),
-    ])
-
-  let message = pack_error(root)
-  string.contains(message, "does not scan as Erlang terms") |> should.be_true()
-  cleanup(root)
+  assert_malformed(
+    "build/pack_metadata_scan",
+    [#("VERSION", "3"), #("metadata.config", "{<<\"name\">>, \"unterminated")],
+    "does not scan as Erlang terms",
+  )
 }
 
 pub fn pack_names_metadata_with_no_terminating_dot_test() {
-  let root = "build/pack_metadata_dot"
-  let _ =
-    setup_malformed(root, [
+  assert_malformed(
+    "build/pack_metadata_dot",
+    [
       #("VERSION", "3"),
       #("metadata.config", "{<<\"name\">>, <<\"dep\"/utf8>>}"),
-    ])
-
-  let message = pack_error(root)
-  string.contains(message, "no terminating `.`") |> should.be_true()
-  cleanup(root)
+    ],
+    "no terminating `.`",
+  )
 }
 
 pub fn pack_names_metadata_that_does_not_parse_test() {
-  let root = "build/pack_metadata_parse"
-  let _ =
-    setup_malformed(root, [#("VERSION", "3"), #("metadata.config", "{a, }.")])
-
-  let message = pack_error(root)
-  string.contains(message, "does not parse") |> should.be_true()
-  cleanup(root)
+  assert_malformed(
+    "build/pack_metadata_parse",
+    [#("VERSION", "3"), #("metadata.config", "{a, }.")],
+    "does not parse",
+  )
 }
 
 pub fn pack_names_a_truncated_contents_member_test() {
-  let root = "build/pack_truncated_contents"
-  let _ =
-    setup_malformed(root, [
+  assert_malformed(
+    "build/pack_truncated_contents",
+    [
       #("VERSION", "3"),
       #("metadata.config", good_metadata),
       #("contents.tar.gz", "not a gzip stream at all"),
       #("CHECKSUM", "00"),
-    ])
-
-  let message = pack_error(root)
-  string.contains(message, "not a readable gzip stream") |> should.be_true()
-  cleanup(root)
+    ],
+    "not a readable gzip stream",
+  )
 }
 
 @external(erlang, "graded_pack_test_ffi", "build_tarball")

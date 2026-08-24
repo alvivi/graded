@@ -25,17 +25,13 @@ build_tarball_with_modes(OutPath, Name, Version, InnerFiles) ->
         ok = file:write_file(Abs, C),
         ok = file:change_mode(Abs, Mode)
     end, InnerFiles),
-    InnerTmp = Out ++ ".inner",
-    {ok, T} = erl_tar:open(InnerTmp, [write]),
-    lists:foreach(fun(P) ->
-        Path = binary_to_list(P),
-        ok = erl_tar:add(T, filename:join(Staging, Path), Path, [])
-    end, Paths),
-    ok = erl_tar:close(T),
-    {ok, InnerBytes} = file:read_file(InnerTmp),
-    ok = file:delete(InnerTmp),
-    ok = file:del_dir_r(Staging),
-    write_outer(Out, Name, Version, Paths, zlib:gzip(InnerBytes)).
+    Contents = inner_gzip(Out, Staging, fun(T) ->
+        lists:foreach(fun(P) ->
+            Path = binary_to_list(P),
+            ok = erl_tar:add(T, filename:join(Staging, Path), Path, [])
+        end, Paths)
+    end),
+    write_outer(Out, Name, Version, Paths, Contents).
 
 % Build a tarball whose inner entry names are stored *verbatim*, including names
 % no legitimate hex tarball carries: an absolute path, a `..` component, a
@@ -51,26 +47,38 @@ build_tarball_with_modes(OutPath, Name, Version, InnerFiles) ->
 build_tarball_with_raw_names(OutPath, Name, Version, Members) ->
     Out = binary_to_list(OutPath),
     Staging = Out ++ ".staging",
-    InnerTmp = Out ++ ".inner",
-    {ok, T} = erl_tar:open(InnerTmp, [write]),
-    lists:foreach(fun(M) -> add_member(T, Staging, M) end, Members),
-    ok = erl_tar:close(T),
-    {ok, InnerBytes} = file:read_file(InnerTmp),
-    ok = file:delete(InnerTmp),
-    _ = file:del_dir_r(Staging),
-    write_outer(Out, Name, Version, [member_name(M) || M <- Members],
-        zlib:gzip(InnerBytes)).
+    Contents = inner_gzip(Out, Staging, fun(T) ->
+        lists:foreach(fun(M) -> add_member(T, Staging, M) end, Members)
+    end),
+    write_outer(Out, Name, Version, [member_name(M) || M <- Members], Contents).
 
 % Build an outer tar holding exactly Members ({Name, Content} binaries) and
 % nothing else, for the malformed-archive diagnostics: a missing member, a
 % metadata.config that does not parse, a contents.tar.gz that is not gzip.
 build_outer_tarball(OutPath, Members) ->
-    {ok, O} = erl_tar:open(binary_to_list(OutPath), [write]),
+    write_tar(binary_to_list(OutPath), Members).
+
+% Write a tar of {Name, Content} binaries. erl_tar has no build-to-memory mode,
+% so the inner tar goes through a scratch file its caller names.
+write_tar(Path, Members) ->
+    {ok, T} = erl_tar:open(Path, [write]),
     lists:foreach(fun({N, C}) ->
-        ok = erl_tar:add(O, C, binary_to_list(N), [])
+        ok = erl_tar:add(T, C, binary_to_list(N), [])
     end, Members),
-    ok = erl_tar:close(O),
+    ok = erl_tar:close(T),
     nil.
+
+% The gzipped inner tar AddFun writes, with the scratch file and staging
+% directory it needed cleaned up behind it.
+inner_gzip(Out, Staging, AddFun) ->
+    InnerTmp = Out ++ ".inner",
+    {ok, T} = erl_tar:open(InnerTmp, [write]),
+    AddFun(T),
+    ok = erl_tar:close(T),
+    {ok, InnerBytes} = file:read_file(InnerTmp),
+    ok = file:delete(InnerTmp),
+    _ = file:del_dir_r(Staging),
+    zlib:gzip(InnerBytes).
 
 member_name({regular, Name, _}) -> Name;
 member_name({symlink, Name, _}) -> Name.
@@ -94,13 +102,10 @@ write_outer(Out, Name, Version, Paths, Contents) ->
     Hash = crypto:hash(sha256, [Version0, Meta, Contents]),
     Checksum = binary:encode_hex(Hash, uppercase),
 
-    {ok, O} = erl_tar:open(Out, [write]),
-    ok = erl_tar:add(O, Version0, "VERSION", []),
-    ok = erl_tar:add(O, Meta, "metadata.config", []),
-    ok = erl_tar:add(O, Contents, "contents.tar.gz", []),
-    ok = erl_tar:add(O, Checksum, "CHECKSUM", []),
-    ok = erl_tar:close(O),
-    nil.
+    write_tar(Out, [{<<"VERSION">>, Version0},
+                    {<<"metadata.config">>, Meta},
+                    {<<"contents.tar.gz">>, Contents},
+                    {<<"CHECKSUM">>, Checksum}]).
 
 % The metadata.config files list of a tarball, for asserting a re-packed
 % archive lists each entry exactly once.
