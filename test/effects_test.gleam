@@ -482,14 +482,7 @@ pub fn returned_operators_round_trip_test() {
     )
   effects.lookup_returned_operator(enriched, QualifiedName("mylib/foo", "pick"))
   |> should.equal(
-    Ok(
-      effects.ReturnedOperator(
-        operator,
-        effects.Fresh,
-        types.ProjectInferred,
-        [],
-      ),
-    ),
+    Ok(effects.ReturnedOperator(operator, effects.Fresh, types.ProjectInferred)),
   )
   effects.lookup_returned_operator(
     enriched,
@@ -1753,7 +1746,7 @@ pub fn a_clause_on_an_effects_line_loads_as_closed_test() {
     )
   let assert Ok(found) =
     effects.lookup_returned_operator(kb, QualifiedName("dep", "make"))
-  found.summary |> should.equal(effects.Closed)
+  found.summary |> should.equal(effects.Closed(bounds: []))
   found.operator
   |> should.equal(
     effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
@@ -1818,36 +1811,42 @@ fn wrap_bounds(root: String, spec: String) -> List(ParamBound) {
   )
 }
 
-pub fn a_function_assume_keeps_a_kept_clauses_bounds_test() {
-  let kb =
-    installed_dep(
-      "build/eff_fn_assume_clause_bounds",
-      "dep",
-      "assume dep/wrap.wrap : []\n" <> wrap_clause,
-    )
+// The clause `spec` states for `dep/wrap.wrap`, and the bounds the params
+// channel records for that name beside it.
+fn wrap_clause_and_bounds(
+  root: String,
+  spec: String,
+) -> #(effects.ReturnedOperator, List(ParamBound)) {
+  let kb = installed_dep(root, "dep", spec)
   let assert Ok(found) =
     effects.lookup_returned_operator(kb, QualifiedName("dep/wrap", "wrap"))
+  #(found, effects.lookup_param_bounds(kb, QualifiedName("dep/wrap", "wrap")))
+}
+
+pub fn a_function_assume_keeps_a_kept_clauses_bounds_test() {
+  let #(found, params_channel) =
+    wrap_clause_and_bounds(
+      "build/eff_fn_assume_clause_bounds",
+      "assume dep/wrap.wrap : []\n" <> wrap_clause,
+    )
   found.operator |> should.equal(types.TVar("f"))
-  found.bounds |> should.equal([ParamBound("f", types.TVar("f"))])
+  found.summary
+  |> should.equal(effects.Closed(bounds: [ParamBound("f", types.TVar("f"))]))
   // And on the clause alone: the declaration answers the effects channel, so
   // the bounds beside it pair with a ground term that binds nothing.
-  effects.lookup_param_bounds(kb, QualifiedName("dep/wrap", "wrap"))
-  |> should.equal([])
+  params_channel |> should.equal([])
 }
 
 pub fn a_module_assume_keeps_a_kept_clauses_bounds_test() {
-  let kb =
-    installed_dep(
+  let #(found, params_channel) =
+    wrap_clause_and_bounds(
       "build/eff_module_assume_clause_bounds",
-      "dep",
       "assume dep/wrap : []\n" <> wrap_clause,
     )
-  let assert Ok(found) =
-    effects.lookup_returned_operator(kb, QualifiedName("dep/wrap", "wrap"))
   found.operator |> should.equal(types.TVar("f"))
-  found.bounds |> should.equal([ParamBound("f", types.TVar("f"))])
-  effects.lookup_param_bounds(kb, QualifiedName("dep/wrap", "wrap"))
-  |> should.equal([])
+  found.summary
+  |> should.equal(effects.Closed(bounds: [ParamBound("f", types.TVar("f"))]))
+  params_channel |> should.equal([])
 }
 
 pub fn a_clause_less_line_under_an_assume_keeps_no_bounds_test() {

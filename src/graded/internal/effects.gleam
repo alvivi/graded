@@ -1164,11 +1164,14 @@ pub type SummaryOrigin {
   // Produced by this run's `compute_returned_operator` — Fix-D-sanitized, so its
   // free vars ⊆ the producer's fn-typed params; safe to synthesize/bind.
   Fresh
-  // Read from a `where returns` clause on an `effects` line. The gate checks
-  // its free variables against the producer's real callback parameters before
-  // binding, so an open clause degrades to `[Unknown]` rather than binding
-  // against variables the producer has no parameter for.
-  Closed
+  // Read from a `where returns` clause on an `effects` line, carrying that
+  // line's own bound list — what scopes the clause's variables, since the clause
+  // has no bound list of its own. The gate checks its free variables against
+  // those bounds and the producer's real callback parameters before binding, so
+  // an open clause degrades to `[Unknown]` rather than binding against variables
+  // the producer has no parameter for. This is the only summary a bound list
+  // means anything for, so it is the only one that carries one.
+  Closed(bounds: List(ParamBound))
   // Written by hand as a `where returns` clause: what a foreign producer
   // hands back, declared rather than inferred. It answers for a name every
   // other summary is refused for — that is the whole point of the line — so
@@ -1179,20 +1182,15 @@ pub type SummaryOrigin {
 }
 
 // A function's returned-operator summary as the knowledge base holds it: the
-// operator, whether this run produced it, the source that wrote it, and the
-// bound list scoping the operator's variables. The four are one value, so a
-// lookup can report the summary it used, where it came from, and what its
-// variables answer to together.
-//
-// `bounds` is empty wherever the operator binds no parameter of its own: a
-// `Declared` summary is ground by rule, and a `Fresh` one is scoped by the
-// bounds the params channel records for the same name.
+// operator, how it was produced — with, for a clause, the bounds scoping its
+// variables — and the source that wrote it. The three are one value, so a lookup
+// can report the summary it used, what its variables answer to, and where it
+// came from together.
 pub type ReturnedOperator {
   ReturnedOperator(
     operator: EffectTerm,
     summary: SummaryOrigin,
     source: LookupOrigin,
-    bounds: List(ParamBound),
   )
 }
 
@@ -1213,37 +1211,37 @@ fn with_origin(
   dict.map_values(entries, fn(_name, term) { #(term, origin) })
 }
 
-// Pair every clause in a `name -> clause` map with how it was produced and the
-// source that wrote it, giving the shape `returned_operators` holds.
+// Pair every clause in a `name -> clause` map with the source that wrote it,
+// tagging each `Closed` over the bounds it was read beside, and giving the shape
+// `returned_operators` holds.
 //
-// Guard: never reach here with `Closed` for a map of clauses on `assume` lines.
-// A declaration is written for a value-opaque name, and a Closed-tagged summary
+// Guard: never fold a map of clauses on `assume` lines through here. A
+// declaration is written for a value-opaque name, and a Closed-tagged summary
 // over one is refused at lookup — a new tier folding declarations this way (the
 // deferred catalog tier is the one waiting to) silently no-ops instead of
 // answering. `declared_returns` is the entry point for those.
-fn tag_returns(
-  returns: Dict(QualifiedName, ScopedClause),
-  summary: SummaryOrigin,
+fn tag_closed_returns(
+  clauses: Dict(QualifiedName, ScopedClause),
   source: LookupOrigin,
 ) -> Dict(QualifiedName, ReturnedOperator) {
-  dict.map_values(returns, fn(_, clause) {
+  dict.map_values(clauses, fn(_name, clause) {
     ReturnedOperator(
       operator: clause.operator,
-      summary:,
+      summary: Closed(bounds: clause.bounds),
       source:,
-      bounds: clause.bounds,
     )
   })
 }
 
-// Read a bare `name -> operator` map as clauses that scope nothing: the shape
-// the two summary kinds written without a bound list of their own are tagged
-// from — `Declared` (ground by rule) and `Fresh` (scoped by the params channel).
-fn unscoped(
-  operators: Dict(QualifiedName, EffectTerm),
-) -> Dict(QualifiedName, ScopedClause) {
-  dict.map_values(operators, fn(_name, operator) {
-    ScopedClause(operator:, bounds: [])
+// The same for the two summaries no bound list scopes: `Declared` (ground by
+// rule) and `Fresh` (scoped by the params channel's entry for the name).
+fn tag_returns(
+  returns: Dict(QualifiedName, EffectTerm),
+  summary: SummaryOrigin,
+  source: LookupOrigin,
+) -> Dict(QualifiedName, ReturnedOperator) {
+  dict.map_values(returns, fn(_name, operator) {
+    ReturnedOperator(operator:, summary:, source:)
   })
 }
 
@@ -1263,7 +1261,7 @@ pub fn with_closed_returned_operators(
 ) -> KnowledgeBase {
   let merged =
     dict.merge(
-      tag_returns(clauses, Closed, source),
+      tag_closed_returns(clauses, source),
       knowledge_base.returned_operators,
     )
   KnowledgeBase(..knowledge_base, returned_operators: merged)
@@ -1332,11 +1330,11 @@ fn merge_returns(
     dict.filter(incoming, fn(name, entry) {
       case entry.summary {
         Declared -> True
-        Fresh | Closed ->
+        Fresh | Closed(..) ->
           case dict.get(existing, name) {
             Ok(ReturnedOperator(summary: Declared, ..)) -> False
             Ok(ReturnedOperator(summary: Fresh, ..))
-            | Ok(ReturnedOperator(summary: Closed, ..))
+            | Ok(ReturnedOperator(summary: Closed(..), ..))
             | Error(Nil) -> True
           }
       }
@@ -1359,7 +1357,6 @@ fn declared_returns(
   source: LookupOrigin,
 ) -> Dict(QualifiedName, ReturnedOperator) {
   dict.filter(declared, fn(_name, operator) { effect_term.is_ground(operator) })
-  |> unscoped
   |> tag_returns(Declared, source)
 }
 
@@ -1382,7 +1379,7 @@ pub fn with_fresh_returned_operators(
   let merged =
     merge_returns(
       knowledge_base.returned_operators,
-      tag_returns(unscoped(inferred), Fresh, source),
+      tag_returns(inferred, Fresh, source),
     )
   KnowledgeBase(..knowledge_base, returned_operators: merged)
 }
@@ -1447,7 +1444,7 @@ pub fn lookup_returned_operator(
         DeclaredReturnUnbuilt | DeclaredReturnFallbackRuns | NoDeclaredReturn ->
           Error(Nil)
       }
-    Fresh | Closed ->
+    Fresh | Closed(..) ->
       case is_value_opaque(knowledge_base, name) {
         True -> Error(Nil)
         False -> Ok(found)
@@ -1491,7 +1488,7 @@ pub fn declared_return_standing(
   case dict.get(knowledge_base.returned_operators, name) {
     Error(Nil) -> NoDeclaredReturn
     Ok(ReturnedOperator(summary: Fresh, ..))
-    | Ok(ReturnedOperator(summary: Closed, ..)) -> NoDeclaredReturn
+    | Ok(ReturnedOperator(summary: Closed(..), ..)) -> NoDeclaredReturn
     Ok(ReturnedOperator(summary: Declared, ..)) ->
       charged_standing(knowledge_base, name)
   }
@@ -1762,6 +1759,7 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
       DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [], set.new())
     }
     Ok(file) -> {
+      let declared_modules = annotation.module_external_modules(file)
       // Loaded through the same two readers a package uses for its *own* spec,
       // so a dependency's `check` budgets and externally-declared functions are
       // scoped identically one package boundary away: a `check` line's bounds
@@ -1776,7 +1774,7 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
         // `where returns` clause, which is the clause's only home, and the
         // clause is read from `returns` below, carrying its own scoping bounds.
         effects: load_spec_effects_from_file(file)
-          |> drop_module_assumed(file),
+          |> drop_module_declared(declared_modules),
         // A dependency's per-function external is never stale by this rule: its
         // own body is the documented case for the line.
         //
@@ -1784,7 +1782,7 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
         // a surviving term paired with bounds from another annotation is a
         // pairing no annotation wrote.
         params: load_spec_params_from_file(file)
-          |> drop_module_assumed(file),
+          |> drop_module_declared(declared_modules),
         returns: load_spec_returns_from_file(file),
         declared_returns: load_spec_external_returns_from_file(file),
         type_fields: annotation.extract_type_fields(file),
@@ -1795,15 +1793,16 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
   }
 }
 
-// Drop every entry whose module the same spec declares with a module-level
-// `assume <module> : [...]`. The consumer-side counterpart of the drop a
-// package's own context applies to its own spec, so a declaration means the
-// same thing read from either side of the package boundary.
-fn drop_module_assumed(
+// Drop every `QualifiedName`-keyed entry whose module a module-level
+// `assume <module> : [...]` declares. Read by both sides of the package
+// boundary — a dependency's spec as it loads here, and a consumer's own spec and
+// inference in `graded.gleam` — so a declaration means the same thing wherever
+// it is read. The caller supplies the declared modules, since only it knows
+// whose declarations the entries are being weighed against.
+pub fn drop_module_declared(
   entries: Dict(QualifiedName, a),
-  file: types.GradedFile,
+  modules: Set(String),
 ) -> Dict(QualifiedName, a) {
-  let modules = annotation.module_external_modules(file)
   use <- bool.guard(when: set.is_empty(modules), return: entries)
   dict.filter(entries, fn(name, _value) { !set.contains(modules, name.module) })
 }
@@ -1878,7 +1877,7 @@ fn sanitize_dep_spec(
     params: dict.filter(dep.params, fn(name, _bounds) {
       !inferred_over_foreign(name)
     }),
-    returns: dict.filter(dep.returns, fn(name, _operator) {
+    returns: dict.filter(dep.returns, fn(name, _clause) {
       !dict.has_key(foreign, name) && !about_other_code(name)
     }),
     declared_returns: dict.filter(dep.declared_returns, fn(name, _operator) {
@@ -2127,7 +2126,7 @@ fn load_dependencies(
           // specs, the same rule keeps one package's stray `returns` line from
           // burying another's declaration for the same name.
           merge_returns(
-            tag_returns(dep.returns, Closed, origin),
+            tag_closed_returns(dep.returns, origin),
             declared_returns(dep.declared_returns, origin),
           ),
         ),
