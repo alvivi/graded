@@ -1,5 +1,6 @@
 -module(graded_pack_test_ffi).
--export([build_tarball/4, build_tarball_with_modes/4, unpack_inner/2,
+-export([build_tarball/4, build_tarball_with_modes/4,
+         build_tarball_with_raw_names/4, build_outer_tarball/2, unpack_inner/2,
          metadata_files/1]).
 
 % Build a minimal hex tarball at OutPath (VERSION, metadata.config,
@@ -34,8 +35,60 @@ build_tarball_with_modes(OutPath, Name, Version, InnerFiles) ->
     {ok, InnerBytes} = file:read_file(InnerTmp),
     ok = file:delete(InnerTmp),
     ok = file:del_dir_r(Staging),
-    Contents = zlib:gzip(InnerBytes),
+    write_outer(Out, Name, Version, Paths, zlib:gzip(InnerBytes)).
 
+% Build a tarball whose inner entry names are stored *verbatim*, including names
+% no legitimate hex tarball carries: an absolute path, a `..` component, a
+% non-regular member. This is a weapon — it exists to construct the malicious
+% archives `graded pack` has to refuse, and belongs in test/ only.
+%
+% Members is a list of {regular, Name, Content} or {symlink, Name, Target}. A
+% regular member is added from a binary, so an arbitrary name is stored without
+% ever being staged on disk — staging an absolute name would write to the host
+% path the fixture is meant to describe, not create. erl_tar has no binary add
+% for a link, so a symlink member is staged for real and added by path; its own
+% name must therefore be relative.
+build_tarball_with_raw_names(OutPath, Name, Version, Members) ->
+    Out = binary_to_list(OutPath),
+    Staging = Out ++ ".staging",
+    InnerTmp = Out ++ ".inner",
+    {ok, T} = erl_tar:open(InnerTmp, [write]),
+    lists:foreach(fun(M) -> add_member(T, Staging, M) end, Members),
+    ok = erl_tar:close(T),
+    {ok, InnerBytes} = file:read_file(InnerTmp),
+    ok = file:delete(InnerTmp),
+    _ = file:del_dir_r(Staging),
+    write_outer(Out, Name, Version, [member_name(M) || M <- Members],
+        zlib:gzip(InnerBytes)).
+
+% Build an outer tar holding exactly Members ({Name, Content} binaries) and
+% nothing else, for the malformed-archive diagnostics: a missing member, a
+% metadata.config that does not parse, a contents.tar.gz that is not gzip.
+build_outer_tarball(OutPath, Members) ->
+    {ok, O} = erl_tar:open(binary_to_list(OutPath), [write]),
+    lists:foreach(fun({N, C}) ->
+        ok = erl_tar:add(O, C, binary_to_list(N), [])
+    end, Members),
+    ok = erl_tar:close(O),
+    nil.
+
+member_name({regular, Name, _}) -> Name;
+member_name({symlink, Name, _}) -> Name.
+
+add_member(T, _Staging, {regular, Name, Content}) ->
+    ok = erl_tar:add(T, Content, binary_to_list(Name), []);
+add_member(T, Staging, {symlink, Name, Target}) ->
+    Rel = binary_to_list(Name),
+    relative = filename:pathtype(Rel),
+    Abs = filename:join(Staging, Rel),
+    ok = filelib:ensure_dir(Abs),
+    ok = file:make_symlink(binary_to_list(Target), Abs),
+    ok = erl_tar:add(T, Abs, Rel, []).
+
+% The VERSION / metadata.config / contents.tar.gz / CHECKSUM quartet, with the
+% metadata files list mirroring Paths so pack's files-list assertion passes and
+% the entry-name guard is what rejects a crafted archive.
+write_outer(Out, Name, Version, Paths, Contents) ->
     Version0 = <<"3">>,
     Meta = metadata(Name, Version, Paths),
     Hash = crypto:hash(sha256, [Version0, Meta, Contents]),
