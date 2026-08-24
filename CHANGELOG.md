@@ -7,20 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- A `where` region takes a comma-separated clause list. `returns` is still the
-  only key graded reads, and any other key now parses: the clause resolves
-  nothing, `graded check` warns once per line naming its unknown keys, and
-  `graded format` and `graded infer` keep the clause verbatim rather than
-  deleting it. A spec written by a newer graded is no longer silently stripped
-  by an older one running over it.
-
 ### Changed
 
-- A statement whose one-line rendering runs past 80 columns is written with its
-  `where` region on an indented continuation, one clause per line. The reader
-  accepts either form whatever the width, so a spec may also be hand-wrapped.
+- A `where` region takes a comma-separated clause list. `returns` is still the
+  only key graded reads; any other key now parses, warns once per line, and is
+  kept verbatim by `graded format` and `graded infer` instead of failing the
+  file.
+- A statement past 80 columns is written with its `where` region on an indented
+  continuation, one clause per line. The reader accepts either form, so a spec
+  may also be hand-wrapped.
 
 ### Fixed
 
