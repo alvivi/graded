@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `graded pack` refuses a tarball whose contents name an absolute path, instead
+  of copying the host file at that path into the tarball it then tells you to
+  publish. The rebuild re-added each inner entry by joining its stored name onto
+  the unpacked directory, and an absolute name won that join outright; the
+  result verified as internally consistent, because it was — it just carried a
+  file that was never in the input. Names that escape with `..` are refused the
+  same way, with graded's own message rather than an `erl_tar` failure.
+- `graded pack` refuses an archive carrying a symlink, directory, or device
+  member, naming the entry and its kind. Only regular members were ever carried
+  forward, so any other kind was dropped from the output and the run failed on a
+  files-list mismatch that named nothing.
+- A malformed hex tarball says what is wrong with it: a file that is not a tar,
+  a missing `VERSION` / `metadata.config` / `contents.tar.gz` / `CHECKSUM`
+  member, a `metadata.config` that does not scan or parse, and a
+  `contents.tar.gz` that is not a readable gzip stream each get their own
+  message, in place of an Erlang term printed raw.
+- `graded pack` writes the patched tarball through the descriptor it created the
+  temp path with, closing the window in which a symlink planted at that path
+  between the reservation and the write would have been followed.
+
 ## [0.16.0] - 2026-08-24
 
 ### Changed
