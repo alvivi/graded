@@ -10,11 +10,12 @@ import graded/internal/effect_term
 import graded/internal/types.{
   type AnnotationKind, type EffectAnnotation, type EffectSet, type EffectTerm,
   type ExternalAnnotation, type GradedFile, type GradedLine, type ParamBound,
-  type QualifiedName, type TypeFieldAnnotation, AnnotationLine, BlankLine, Check,
-  CommentLine, EffectAnnotation, Effects, ExternalAnnotation, ExternalLine,
-  FunctionExternal, GradedFile, ModuleExternal, ParamBound, Polymorphic,
-  Specific, TAbs, TApp, TLabels, TTop, TUnion, TVar, TypeFieldAnnotation,
-  TypeFieldLine, Wildcard,
+  type QualifiedName, type TypeFieldAnnotation, type UnknownClause,
+  AnnotationLine, BlankLine, Check, CommentLine, EffectAnnotation, Effects,
+  ExternalAnnotation, ExternalLine, FunctionExternal, GradedFile, ModuleExternal,
+  ParamBound, Polymorphic, RetainedAssumeLine, Specific, TAbs, TApp, TLabels,
+  TTop, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, UnknownClause,
+  Wildcard,
 }
 
 // Parsing
@@ -82,9 +83,13 @@ fn retired_hint(keyword: RetiredKeyword) -> String {
 
 // Parse an .graded file preserving full structure (comments, blanks, annotations).
 pub fn parse_file(input: String) -> Result(GradedFile, ParseError) {
-  input
-  |> string.split("\n")
-  |> list.index_map(fn(line, index) { #(index + 1, line) })
+  use logical <- result.try(
+    input
+    |> string.split("\n")
+    |> list.index_map(fn(line, index) { #(index + 1, line) })
+    |> join_continuations(),
+  )
+  logical
   |> list.try_map(fn(pair) {
     let #(line_number, line) = pair
     parse_structured_line(line, line_number)
@@ -98,6 +103,128 @@ pub fn parse(input: String) -> Result(List(EffectAnnotation), ParseError) {
   Ok(extract_annotations(file))
 }
 
+// Line joining
+//
+// A statement may be written on one physical line or wrapped across several,
+// and the reader accepts both regardless of what the formatter emits. This
+// pre-pass turns physical lines into logical ones, so everything downstream —
+// classification, parsing, error reporting — sees one statement per element.
+//
+// Indentation alone is not the rule. Today an indented `// comment` is a
+// comment and an indented `effects m.f : []` is that annotation, and both stay
+// so. A continuation is an indented line that is *also* at a clause boundary.
+
+// Fold physical lines into logical ones, joining each wrapped statement's
+// fragments with a single space. The first physical line's number is the
+// statement's, so an error points at where it starts.
+fn join_continuations(
+  lines: List(#(Int, String)),
+) -> Result(List(#(Int, String)), ParseError) {
+  join_loop(lines, None, [])
+}
+
+fn join_loop(
+  rest: List(#(Int, String)),
+  pending: Option(#(Int, String)),
+  acc: List(#(Int, String)),
+) -> Result(List(#(Int, String)), ParseError) {
+  case rest, pending {
+    [], None -> Ok(list.reverse(acc))
+    [], Some(statement) ->
+      flush_pending(statement, acc) |> result.map(list.reverse)
+    [line, ..tail], None -> join_fresh(line, tail, acc)
+    [line, ..tail], Some(statement) ->
+      case continues_statement(statement.1, line.1) {
+        True -> join_loop(tail, Some(joined_statement(statement, line)), acc)
+        False -> {
+          use acc <- result.try(flush_pending(statement, acc))
+          join_fresh(line, tail, acc)
+        }
+      }
+  }
+}
+
+// Read one physical line with no statement accumulated above it. A blank or a
+// comment is emitted as it stands — `GradedFile` is one logical statement per
+// element, with no representation for a line inside one — and anything else
+// opens a statement.
+fn join_fresh(
+  line: #(Int, String),
+  tail: List(#(Int, String)),
+  acc: List(#(Int, String)),
+) -> Result(List(#(Int, String)), ParseError) {
+  case string.trim(line.1) {
+    "" | "//" <> _ -> join_loop(tail, None, [line, ..acc])
+    _ -> join_loop(tail, Some(line), acc)
+  }
+}
+
+// One physical line appended to the statement above it, joined by a single
+// space and keeping the statement's own line number. Clause boundaries are the
+// only place a wrap may occur, so a payload never spans a join and its interior
+// bytes survive untouched.
+fn joined_statement(
+  statement: #(Int, String),
+  line: #(Int, String),
+) -> #(Int, String) {
+  #(statement.0, string.trim(statement.1) <> " " <> string.trim(line.1))
+}
+
+// Emit an accumulated statement, or reject it where it is still waiting for a
+// clause that never came. The error names the joined statement and the physical
+// line it starts on.
+fn flush_pending(
+  statement: #(Int, String),
+  acc: List(#(Int, String)),
+) -> Result(List(#(Int, String)), ParseError) {
+  use <- bool.guard(
+    when: awaits_clause(string.trim(statement.1)),
+    return: Error(InvalidLine(statement.0, statement.1)),
+  )
+  Ok([statement, ..acc])
+}
+
+// Whether an indented physical line continues the statement accumulated above
+// it. Two boundaries qualify, and nothing else does:
+//
+//   - the statement is waiting for another clause (it ended in a comma, or
+//     opened its `where` region with nothing after it) and this line spells one;
+//   - the statement is complete and this line opens the `where` region.
+//
+// In an open region the clause reading is decided *before* any statement
+// keyword is matched: the key charset admits `effects`, `check` and `assume`,
+// so a wrapped statement whose clause is named after one of them must still
+// read as one statement.
+fn continues_statement(accumulated: String, raw: String) -> Bool {
+  use <- bool.guard(when: !is_indented(raw), return: False)
+  let trimmed = string.trim(raw)
+  use <- bool.guard(when: trimmed == "", return: False)
+  case awaits_clause(string.trim(accumulated)) {
+    True -> is_clause_fragment(trimmed)
+    False ->
+      trimmed == clause_region_word
+      || string.starts_with(trimmed, clause_region_word <> " ")
+  }
+}
+
+fn is_indented(raw: String) -> Bool {
+  string.starts_with(raw, " ") || string.starts_with(raw, "\t")
+}
+
+// Whether an accumulated statement is waiting for another clause.
+fn awaits_clause(accumulated: String) -> Bool {
+  string.ends_with(accumulated, ",")
+  || accumulated == clause_region_word
+  || string.ends_with(accumulated, " " <> clause_region_word)
+}
+
+// Whether a physical line spells one clause entry. The clause parser is the
+// authority — a rule added to the entry grammar must not have to be added here
+// too, or a wrapped statement the parser accepts stops being read as one.
+fn is_clause_fragment(trimmed: String) -> Bool {
+  parse_clause_entry(trimmed) |> result.is_ok()
+}
+
 fn parse_structured_line(
   line: String,
   line_number: Int,
@@ -107,10 +234,7 @@ fn parse_structured_line(
     "" -> Ok(BlankLine)
     "//" <> _ -> Ok(CommentLine(line))
     "effects " <> _ | "check " <> _ ->
-      case parse_annotation_line(trimmed, line_number, line) {
-        Ok(annotation) -> Ok(AnnotationLine(annotation))
-        Error(parse_error) -> Error(parse_error)
-      }
+      parse_annotation_line(trimmed, line_number, line)
     "assume " <> rest ->
       parse_assume_line(rest)
       |> result.replace_error(InvalidLine(line_number, line))
@@ -128,7 +252,7 @@ fn parse_annotation_line(
   trimmed: String,
   line_number: Int,
   original: String,
-) -> Result(EffectAnnotation, ParseError) {
+) -> Result(GradedLine, ParseError) {
   let #(kind, rest) = case trimmed {
     "effects " <> remaining -> #(Ok(Effects), remaining)
     "check " <> remaining -> #(Ok(Check), remaining)
@@ -146,28 +270,114 @@ fn parse_annotation_rest(
   rest: String,
   line_number: Int,
   original: String,
-) -> Result(EffectAnnotation, ParseError) {
-  // The clause comes off first: `parse_name_colon_effects` splits on the first
-  // colon, so a name-first read would take `m.f where returns` for the function
-  // name.
-  parse_clause_then(rest, fn(head, returns) {
+) -> Result(GradedLine, ParseError) {
+  // The clause region comes off first: `parse_name_colon_effects` splits on the
+  // first colon, so a name-first read would take `m.f where returns` for the
+  // function name.
+  parse_clause_then(rest, fn(head, returns, unknown_clauses) {
     parse_annotation_head(kind, head, returns)
+    |> result.map(AnnotationLine(_, unknown_clauses))
   })
   |> result.replace_error(InvalidLine(line_number, original))
 }
 
-// Split a statement's `where returns` clause off its head, parse the clause's
-// operator, and hand both to `parse_head`.
+// Split a statement's `where` region off its head, read the region's clause
+// list, and hand the head, the known `returns` operator and the retained
+// unknown clauses to `parse_head`.
 fn parse_clause_then(
   rest: String,
-  parse_head: fn(String, Option(EffectTerm)) -> Result(a, Nil),
+  parse_head: fn(String, Option(EffectTerm), List(UnknownClause)) ->
+    Result(a, Nil),
 ) -> Result(a, Nil) {
-  use #(head, clause) <- result.try(split_returns_clause(rest))
-  use returns <- result.try(case clause {
-    None -> Ok(None)
-    Some(text) -> parse_bound_effect(text) |> result.map(Some)
+  use #(head, region) <- result.try(split_clause_region(rest))
+  use #(returns, unknown_clauses) <- result.try(case region {
+    None -> Ok(#(None, []))
+    Some(text) -> parse_clause_list(text)
   })
-  parse_head(head, returns)
+  parse_head(head, returns, unknown_clauses)
+}
+
+// Read a clause region into the one key this version knows and the entries it
+// retains without reading. Ordering of the retained list is the order read,
+// duplicate unknown keys included: a newer reader is the authority on whether
+// its own key may repeat.
+fn parse_clause_list(
+  region: String,
+) -> Result(#(Option(EffectTerm), List(UnknownClause)), Nil) {
+  use entries <- result.try(
+    region |> split_top_level_commas() |> list.try_map(parse_clause_entry),
+  )
+  let #(known, unknown) =
+    list.partition(entries, fn(entry) { entry.0 == returns_clause_key })
+  use returns <- result.try(case known {
+    [] -> Ok(None)
+    [#(_, payload)] -> parse_bound_effect(payload) |> result.map(Some)
+    // One slot, so a second `returns` is a parse error rather than a silent
+    // last-wins.
+    _ -> Error(Nil)
+  })
+  Ok(#(
+    returns,
+    list.map(unknown, fn(entry) {
+      UnknownClause(key: entry.0, payload: entry.1)
+    }),
+  ))
+}
+
+// Split one clause entry into its key and its payload at the entry's first
+// depth-0 colon. The key is validated; the payload is checked for balanced
+// delimiters and otherwise left verbatim, since reading it is exactly what this
+// version cannot do.
+fn parse_clause_entry(entry: String) -> Result(#(String, String), Nil) {
+  use #(key_part, payload_part) <- result.try(split_top_level(entry, ":"))
+  let key = string.trim(key_part)
+  let payload = string.trim(payload_part)
+  use <- bool.guard(when: !is_clause_key(key), return: Error(Nil))
+  use <- bool.guard(when: payload == "", return: Error(Nil))
+  use <- bool.guard(when: !balanced_delimiters(payload), return: Error(Nil))
+  Ok(#(key, payload))
+}
+
+// Whether a token spells a clause key. Deliberately wide enough to admit the
+// dotted and numeric shapes a later version may mint (`returns.0`,
+// `returns.Ok.0`) without endorsing any of them: a reader that rejected them
+// would be the thing blocking the grammar it exists to leave room for.
+fn is_clause_key(key: String) -> Bool {
+  key != ""
+  && list.all(string.to_graphemes(key), fn(char) {
+    case char {
+      "." | "_" -> True
+      _ -> is_alphanumeric(char)
+    }
+  })
+}
+
+fn is_alphanumeric(char: String) -> Bool {
+  string.contains(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+    char,
+  )
+}
+
+// Whether a payload's brackets and parens nest and match. A stack, not a depth
+// count: `depth_delta` counts `[` and `(` alike and lets depth go negative, so a
+// net-zero check waves `([)]` and `)(` through, and a retained clause is
+// re-emitted verbatim — corrupt text would round-trip as well-formed.
+fn balanced_delimiters(payload: String) -> Bool {
+  delimiter_loop(string.to_graphemes(payload), [])
+}
+
+fn delimiter_loop(graphemes: List(String), stack: List(String)) -> Bool {
+  case graphemes, stack {
+    [], [] -> True
+    [], _ -> False
+    ["[" as opener, ..rest], _ | ["(" as opener, ..rest], _ ->
+      delimiter_loop(rest, [opener, ..stack])
+    ["]", ..rest], ["[", ..stack] -> delimiter_loop(rest, stack)
+    [")", ..rest], ["(", ..stack] -> delimiter_loop(rest, stack)
+    ["]", ..], _ | [")", ..], _ -> False
+    [_, ..rest], _ -> delimiter_loop(rest, stack)
+  }
 }
 
 fn parse_annotation_head(
@@ -196,26 +406,27 @@ fn parse_annotation_head(
   }
 }
 
-// The clause keyword. Split at bracket and paren depth 0 only: the effect-term
-// grammar reads any word inside brackets as a variable, so `[A, where returns :
-// B]` must not be cut.
-const returns_clause_keyword = " where returns "
+// The word opening the clause region. The single spelling of it: the reader
+// finds a statement's end by it, the writer opens a wrapped statement's
+// continuation with it, and the continuation's alignment column is measured off
+// what the writer emits.
+const clause_region_word = "where"
 
-// Split a statement into its head and the text of its `where returns` clause.
-// `None` where the statement carries no clause; `Error(Nil)` where the keyword
-// is there but no `:` follows it.
-fn split_returns_clause(
-  rest: String,
-) -> Result(#(String, Option(String)), Nil) {
-  case split_top_level(rest, returns_clause_keyword) {
+// The keyword opening the clause region. Split at bracket and paren depth 0
+// only: the effect-term grammar reads any word inside brackets as a variable,
+// so `[A, where returns : B]` must not be cut.
+const clause_region_keyword = " " <> clause_region_word <> " "
+
+// The one clause key this version reads. Every other key is retained and
+// ignored.
+const returns_clause_key = "returns"
+
+// Split a statement into its head and the text of its `where` region. `None`
+// where the statement carries no region.
+fn split_clause_region(rest: String) -> Result(#(String, Option(String)), Nil) {
+  case split_top_level(rest, clause_region_keyword) {
     Error(Nil) -> Ok(#(rest, None))
-    Ok(#(head, tail)) -> {
-      let trimmed = string.trim(tail)
-      case string.starts_with(trimmed, ":") {
-        False -> Error(Nil)
-        True -> Ok(#(head, Some(string.trim(string.drop_start(trimmed, 1)))))
-      }
-    }
+    Ok(#(head, tail)) -> Ok(#(head, Some(tail)))
   }
 }
 
@@ -298,46 +509,66 @@ fn parse_assume_line(rest: String) -> Result(GradedLine, Nil) {
 fn parse_assume_head(
   head: String,
   returns: Option(EffectTerm),
+  unknown_clauses: List(UnknownClause),
 ) -> Result(GradedLine, Nil) {
-  use #(path, term) <- result.try(split_assume_head(head, returns))
+  use #(path, term) <- result.try(split_assume_head(
+    head,
+    returns,
+    unknown_clauses,
+  ))
   use subject <- result.try(split_assume_path(path))
   let effects = option.map(term, effect_term.to_effect_set)
-  case subject {
-    AssumeModule(module:) ->
-      Ok(
-        ExternalLine(ExternalAnnotation(
-          module:,
-          target: ModuleExternal,
-          effects:,
-          returns:,
-        )),
-      )
-    AssumeFunction(module:, function:) ->
-      Ok(
-        ExternalLine(ExternalAnnotation(
-          module:,
-          target: FunctionExternal(function),
-          effects:,
-          returns:,
-        )),
-      )
-    AssumeField(module:, type_name:, field:) -> {
-      // A field annotation has no slot for a returned operator.
-      use <- bool.guard(when: returns != None, return: Error(Nil))
-      use effects <- result.try(option.to_result(term, Nil))
-      Ok(
-        TypeFieldLine(TypeFieldAnnotation(module:, type_name:, field:, effects:)),
-      )
-    }
+  case term, returns {
+    // Nothing on the line means anything to this version, so there is no
+    // semantic record to hang the retained clauses on — and fabricating an
+    // empty effect set for one would turn *keys nothing* into *is pure*. The
+    // path is still read for its shape, so a malformed one is refused rather
+    // than retained.
+    None, None -> Ok(RetainedAssumeLine(path:, unknown_clauses:))
+    _, _ ->
+      case subject {
+        AssumeModule(module:) ->
+          Ok(ExternalLine(
+            ExternalAnnotation(
+              module:,
+              target: ModuleExternal,
+              effects:,
+              returns:,
+            ),
+            unknown_clauses,
+          ))
+        AssumeFunction(module:, function:) ->
+          Ok(ExternalLine(
+            ExternalAnnotation(
+              module:,
+              target: FunctionExternal(function),
+              effects:,
+              returns:,
+            ),
+            unknown_clauses,
+          ))
+        AssumeField(module:, type_name:, field:) -> {
+          // A field annotation has no slot for a returned operator.
+          use <- bool.guard(when: returns != None, return: Error(Nil))
+          use effects <- result.try(option.to_result(term, Nil))
+          Ok(TypeFieldLine(
+            TypeFieldAnnotation(module:, type_name:, field:, effects:),
+            unknown_clauses,
+          ))
+        }
+      }
   }
 }
 
 // Split an `assume` head into its path and its effects clause. The effects
-// clause is optional only where a `where returns` clause carries the line: a
-// path on its own claims nothing at all.
+// clause is optional only where a `where` region carries the line — a known
+// clause or a retained one alike: a path on its own claims nothing at all, and
+// a path beside a clause no version but a later one reads is still a line worth
+// keeping.
 fn split_assume_head(
   head: String,
   returns: Option(EffectTerm),
+  unknown_clauses: List(UnknownClause),
 ) -> Result(#(String, Option(EffectTerm)), Nil) {
   case string.contains(head, ":") {
     True ->
@@ -345,7 +576,10 @@ fn split_assume_head(
       |> result.map(fn(pair) { #(pair.0, Some(pair.1)) })
     False -> {
       let path = string.trim(head)
-      use <- bool.guard(when: path == "" || returns == None, return: Error(Nil))
+      use <- bool.guard(
+        when: path == "" || { returns == None && unknown_clauses == [] },
+        return: Error(Nil),
+      )
       Ok(#(path, None))
     }
   }
@@ -624,11 +858,49 @@ fn parse_bound_effect(input: String) -> Result(EffectTerm, Nil) {
 pub fn extract_annotations(file: GradedFile) -> List(EffectAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
-      AnnotationLine(annotation) -> Ok(annotation)
-      TypeFieldLine(_) -> Error(Nil)
-      ExternalLine(_) -> Error(Nil)
+      AnnotationLine(annotation, _) -> Ok(annotation)
+      TypeFieldLine(_, _) -> Error(Nil)
+      ExternalLine(_, _) -> Error(Nil)
+      RetainedAssumeLine(..) -> Error(Nil)
       CommentLine(_) -> Error(Nil)
       BlankLine -> Error(Nil)
+    }
+  })
+}
+
+// The path a line names, `Error(Nil)` for a comment or a blank. The one
+// derivation of it: what `format_sorted` orders the `assume` section by and what
+// a warning names its subject with, so a line is reported by the path the file
+// renders for it.
+pub fn line_path(line: GradedLine) -> Result(String, Nil) {
+  case line {
+    AnnotationLine(annotation, _) -> Ok(annotation.function)
+    TypeFieldLine(tf, _) -> Ok(type_field_path(tf))
+    ExternalLine(ext, _) -> Ok(external_sort_key(ext))
+    RetainedAssumeLine(path:, ..) -> Ok(path)
+    CommentLine(_) | BlankLine -> Error(Nil)
+  }
+}
+
+// The clauses a line retained without reading, empty for a line carrying none.
+pub fn line_unknown_clauses(line: GradedLine) -> List(UnknownClause) {
+  case line {
+    AnnotationLine(_, clauses)
+    | TypeFieldLine(_, clauses)
+    | ExternalLine(_, clauses)
+    | RetainedAssumeLine(unknown_clauses: clauses, ..) -> clauses
+    CommentLine(_) | BlankLine -> []
+  }
+}
+
+// The path of every line carrying a clause this version does not read, with
+// that line's keys in the order they were written. The lint's whole input.
+pub fn unknown_clause_lines(file: GradedFile) -> List(#(String, List(String))) {
+  list.filter_map(file.lines, fn(line) {
+    use path <- result.try(line_path(line))
+    case line_unknown_clauses(line) {
+      [] -> Error(Nil)
+      clauses -> Ok(#(path, list.map(clauses, fn(clause) { clause.key })))
     }
   })
 }
@@ -649,7 +921,7 @@ pub fn extract_effects(file: GradedFile) -> List(EffectAnnotation) {
 pub fn extract_type_fields(file: GradedFile) -> List(TypeFieldAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
-      TypeFieldLine(tf) -> Ok(tf)
+      TypeFieldLine(tf, _) -> Ok(tf)
       _ -> Error(Nil)
     }
   })
@@ -659,7 +931,7 @@ pub fn extract_type_fields(file: GradedFile) -> List(TypeFieldAnnotation) {
 pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
-      ExternalLine(external_annotation) -> Ok(external_annotation)
+      ExternalLine(external_annotation, _) -> Ok(external_annotation)
       _ -> Error(Nil)
     }
   })
@@ -912,10 +1184,11 @@ pub fn merge_inferred(
   let present_effects =
     names_of_lines(file.lines, fn(line) {
       case line {
-        AnnotationLine(a) if a.kind == Effects -> Ok(a.function)
-        AnnotationLine(_) -> Error(Nil)
-        TypeFieldLine(_) -> Error(Nil)
-        ExternalLine(_) -> Error(Nil)
+        AnnotationLine(a, _) if a.kind == Effects -> Ok(a.function)
+        AnnotationLine(_, _) -> Error(Nil)
+        TypeFieldLine(_, _) -> Error(Nil)
+        ExternalLine(_, _) -> Error(Nil)
+        RetainedAssumeLine(..) -> Error(Nil)
         CommentLine(_) -> Error(Nil)
         BlankLine -> Error(Nil)
       }
@@ -925,13 +1198,33 @@ pub fn merge_inferred(
   // no longer inferred is stale and dropped. A `check`/`assume`/comment/blank
   // stays as written, minus whichever of an `assume` line's two claims is
   // stale.
+  //
+  // A clause this version does not read survives every one of those paths
+  // except the drop, where the subject itself is gone. Only a version that
+  // understands a key can re-derive it, so a rewrite that dropped one would
+  // delete from a committed file something nothing here can put back.
   let new_lines =
     list.filter_map(file.lines, fn(line) {
       case line {
-        AnnotationLine(a) if a.kind == Effects ->
-          dict.get(inferred_map, a.function) |> result.map(AnnotationLine)
-        ExternalLine(e) ->
-          surviving_external(e, stale_externals, stale_returns_clauses)
+        AnnotationLine(a, unknown_clauses) if a.kind == Effects ->
+          dict.get(inferred_map, a.function)
+          |> result.map(AnnotationLine(_, unknown_clauses))
+        ExternalLine(e, unknown_clauses) ->
+          case
+            surviving_external(e, stale_externals, stale_returns_clauses),
+            unknown_clauses
+          {
+            Ok(external), _ -> Ok(ExternalLine(external, unknown_clauses))
+            Error(Nil), [] -> Error(Nil)
+            // Both declarations went stale, but the line still carries a clause
+            // only a later version can judge. What it keys is gone; what it
+            // retains is not.
+            Error(Nil), _ ->
+              Ok(RetainedAssumeLine(
+                path: external_sort_key(e),
+                unknown_clauses:,
+              ))
+          }
         _ -> Ok(line)
       }
     })
@@ -939,20 +1232,21 @@ pub fn merge_inferred(
   let remaining_effects =
     inferred
     |> list.filter(fn(a) { !set.contains(present_effects, a.function) })
-    |> list.map(AnnotationLine)
+    |> list.map(AnnotationLine(_, []))
 
   GradedFile(lines: list.flatten([new_lines, remaining_effects]))
 }
 
-// One `assume` line after the stale claims are stripped from it, or
-// `Error(Nil)` where nothing it claimed survives.
+// One `assume` line's annotation after the stale claims are stripped from it,
+// or `Error(Nil)` where nothing it claimed survives. The record rather than the
+// line, so the call site keeps what the line retained.
 fn surviving_external(
   external: ExternalAnnotation,
   stale_externals: set.Set(String),
   stale_returns_clauses: set.Set(String),
-) -> Result(GradedLine, Nil) {
+) -> Result(ExternalAnnotation, Nil) {
   case external_line_name(external) {
-    Error(Nil) -> Ok(ExternalLine(external))
+    Error(Nil) -> Ok(external)
     Ok(name) -> {
       let effects = case set.contains(stale_externals, name) {
         True -> None
@@ -964,8 +1258,7 @@ fn surviving_external(
       }
       case effects, returns {
         None, None -> Error(Nil)
-        _, _ ->
-          Ok(ExternalLine(ExternalAnnotation(..external, effects:, returns:)))
+        _, _ -> Ok(ExternalAnnotation(..external, effects:, returns:))
       }
     }
   }
@@ -1009,17 +1302,103 @@ fn in_external_module(
 
 // Render a full GradedFile back to a string, preserving structure.
 pub fn format_file(file: GradedFile) -> String {
-  file.lines
-  |> list.map(fn(line) {
-    case line {
-      AnnotationLine(annotation) -> format_annotation(annotation)
-      TypeFieldLine(tf) -> format_type_field(tf)
-      ExternalLine(ext) -> format_external(ext)
-      CommentLine(text) -> text
-      BlankLine -> ""
-    }
-  })
-  |> string.join("\n")
+  file.lines |> list.map(format_line) |> string.join("\n")
+}
+
+// The width past which a statement moves its clause region onto continuation
+// lines. `gleam format`'s own target, measured in graphemes on the canonical
+// one-line rendering — not bytes and not terminal display width, so
+// `format --check` puts the boundary in the same place everywhere.
+//
+// The trigger does not promise 80 columns: only the clause region wraps. A long
+// effect set stays on its line, since wrapping that means a pretty-printer over
+// the whole effect grammar.
+const max_line_width = 80
+
+// What a wrapped statement's `where` opens with. The clause after it sets the
+// column its siblings align in, so the alignment is measured off this exact
+// string rather than re-added from its parts.
+const clause_opener = "  " <> clause_region_word <> " "
+
+// Render one line of a file. The wrap rule lives here rather than in the
+// semantic renderers below: those have callers that splice their output into
+// prose, and a renderer that can return a newline breaks them silently.
+fn format_line(line: GradedLine) -> String {
+  let #(head, clauses) = statement_parts(line)
+  let inline = inline_statement(#(head, clauses))
+  // All-or-nothing, never filled to width: `format --check` is a CI gate, so
+  // the rule has to be trivially deterministic.
+  case clauses == [] || string.length(inline) <= max_line_width {
+    True -> inline
+    False ->
+      head
+      <> "\n"
+      <> clause_opener
+      <> string.join(
+        clauses,
+        ",\n" <> string.repeat(" ", string.length(clause_opener)),
+      )
+  }
+}
+
+// A line split into the head it renders and its clause list, each clause
+// rendered. The seam the wrap rule works at: everything built from these stays
+// on one line, and only `format_line` may put a newline between them.
+fn statement_parts(line: GradedLine) -> #(String, List(String)) {
+  case line {
+    AnnotationLine(annotation, unknown_clauses) -> #(
+      annotation_head(annotation),
+      clause_list(annotation.returns, unknown_clauses),
+    )
+    TypeFieldLine(tf, unknown_clauses) -> #(
+      type_field_head(tf),
+      clause_list(None, unknown_clauses),
+    )
+    ExternalLine(ext, unknown_clauses) -> #(
+      external_head(ext),
+      clause_list(ext.returns, unknown_clauses),
+    )
+    RetainedAssumeLine(path:, unknown_clauses:) -> #(
+      "assume " <> path,
+      clause_list(None, unknown_clauses),
+    )
+    CommentLine(text) -> #(text, [])
+    BlankLine -> #("", [])
+  }
+}
+
+// A statement's head and clauses on one physical line.
+fn inline_statement(parts: #(String, List(String))) -> String {
+  parts.0 <> clause_region(parts.1)
+}
+
+// The clauses of one statement, rendered: the known `returns` first, the
+// retained unknowns after in read order. A canonical order, so a file that
+// wrote them the other way round still formats idempotently.
+fn clause_list(
+  returns: Option(EffectTerm),
+  unknown_clauses: List(UnknownClause),
+) -> List(String) {
+  let known = case returns {
+    Some(operator) -> [returns_clause_key <> " : " <> format_operator(operator)]
+    None -> []
+  }
+  list.append(
+    known,
+    // Verbatim between its delimiters: this version cannot canonically render a
+    // grammar it does not know, so it must not reformat the interior.
+    list.map(unknown_clauses, fn(clause) {
+      clause.key <> " : " <> clause.payload
+    }),
+  )
+}
+
+// A statement's clause region on one line, or nothing where it carries none.
+fn clause_region(clauses: List(String)) -> String {
+  case clauses {
+    [] -> ""
+    _ -> clause_region_keyword <> string.join(clauses, ", ")
+  }
 }
 
 // Format an GradedFile: normalize spacing, sort annotations, ensure trailing newline.
@@ -1029,35 +1408,34 @@ pub fn format_file(file: GradedFile) -> String {
 // line separated, with a single trailing newline.
 pub fn format_sorted(file: GradedFile) -> String {
   let comments = collect_comments(file.lines)
-  let annotations = extract_annotations(file)
 
   let check_lines =
-    annotations
-    |> list.filter(fn(annotation) { annotation.kind == Check })
-    |> list.sort(fn(left, right) {
-      string.compare(left.function, right.function)
+    sorted_section(file.lines, fn(line) {
+      case line {
+        AnnotationLine(a, _) if a.kind == Check -> Ok(a.function)
+        _ -> Error(Nil)
+      }
     })
-    |> list.map(format_annotation)
 
   let effects_lines =
-    annotations
-    |> list.filter(fn(annotation) { annotation.kind == Effects })
-    |> list.sort(fn(left, right) {
-      string.compare(left.function, right.function)
+    sorted_section(file.lines, fn(line) {
+      case line {
+        AnnotationLine(a, _) if a.kind == Effects -> Ok(a.function)
+        _ -> Error(Nil)
+      }
     })
-    |> list.map(format_annotation)
 
-  // Externals and type fields are one `assume` section, ordered by the path
-  // each line renders, so the section reads in the order a reader scans it.
+  // Externals, type fields and lines retained for their unknown clauses alone
+  // are one `assume` section, ordered by the path each line renders, so the
+  // section reads in the order a reader scans it.
   let assume_lines =
-    list.append(
-      extract_externals(file)
-        |> list.map(fn(ext) { #(external_sort_key(ext), format_external(ext)) }),
-      extract_type_fields(file)
-        |> list.map(fn(tf) { #(type_field_path(tf), format_type_field(tf)) }),
-    )
-    |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
-    |> list.map(fn(entry) { entry.1 })
+    sorted_section(file.lines, fn(line) {
+      case line {
+        ExternalLine(..) | TypeFieldLine(..) | RetainedAssumeLine(..) ->
+          line_path(line)
+        _ -> Error(Nil)
+      }
+    })
 
   let sections = [comments, assume_lines, check_lines, effects_lines]
 
@@ -1068,8 +1446,31 @@ pub fn format_sorted(file: GradedFile) -> String {
   |> fn(content) { content <> "\n" }
 }
 
-// Render an EffectAnnotation back to its .graded line format.
+// One section of a sorted file: the lines `key` selects, ordered by the key it
+// gives them, each rendered whole.
+fn sorted_section(
+  lines: List(GradedLine),
+  key: fn(GradedLine) -> Result(String, Nil),
+) -> List(String) {
+  lines
+  |> list.filter_map(fn(line) {
+    key(line) |> result.map(fn(sort_key) { #(sort_key, line) })
+  })
+  |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+  |> list.map(fn(entry) { format_line(entry.1) })
+}
+
+// Render an EffectAnnotation back to its .graded line format, always on one
+// line. Callers outside the file path splice the result into prose, so this and
+// its two siblings below go through `inline_statement`, which cannot emit a
+// newline; only `format_line` applies the width rule.
 pub fn format_annotation(annotation: EffectAnnotation) -> String {
+  inline_statement(statement_parts(AnnotationLine(annotation, [])))
+}
+
+// The head an `effects`/`check` line renders — everything before its `where`
+// region.
+fn annotation_head(annotation: EffectAnnotation) -> String {
   let prefix = case annotation.kind {
     Effects -> "effects"
     Check -> "check"
@@ -1079,24 +1480,12 @@ pub fn format_annotation(annotation: EffectAnnotation) -> String {
     params ->
       "(" <> string.join(list.map(params, format_param_bound), ", ") <> ")"
   }
-  let effects_string = format_effect_term(annotation.effects)
   prefix
   <> " "
   <> annotation.function
   <> params_string
   <> " : "
-  <> effects_string
-  <> format_returns_clause(annotation.returns)
-}
-
-// Render a statement's `where returns` clause, or nothing where it carries
-// none.
-fn format_returns_clause(returns: Option(EffectTerm)) -> String {
-  case returns {
-    Some(operator) ->
-      returns_clause_keyword <> ": " <> format_operator(operator)
-    None -> ""
-  }
+  <> format_effect_term(annotation.effects)
 }
 
 // The free variables of a statement's `where returns` clause, the operator's
@@ -1121,6 +1510,10 @@ fn format_operator(term: EffectTerm) -> String {
 
 // Render a TypeFieldAnnotation back to its .graded line format.
 pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
+  inline_statement(statement_parts(TypeFieldLine(tf, [])))
+}
+
+fn type_field_head(tf: TypeFieldAnnotation) -> String {
   "assume " <> type_field_path(tf) <> " : " <> format_effect_term(tf.effects)
 }
 
@@ -1136,16 +1529,18 @@ pub fn type_field_path(tf: TypeFieldAnnotation) -> String {
   prefix <> tf.type_name <> "." <> tf.field
 }
 
-// Render an ExternalAnnotation back to its `.graded` line format.
+// Render an ExternalAnnotation back to its `.graded` line format, always on one
+// line — see `format_annotation`.
 pub fn format_external(external_annotation: ExternalAnnotation) -> String {
+  inline_statement(statement_parts(ExternalLine(external_annotation, [])))
+}
+
+fn external_head(external_annotation: ExternalAnnotation) -> String {
   let effects_clause = case external_annotation.effects {
     Some(effects) -> " : " <> format_effect_set(effects)
     None -> ""
   }
-  "assume "
-  <> external_sort_key(external_annotation)
-  <> effects_clause
-  <> format_returns_clause(external_annotation.returns)
+  "assume " <> external_sort_key(external_annotation) <> effects_clause
 }
 
 // The qualified name (`module` or `module.function`) an external annotation

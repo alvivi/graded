@@ -18,8 +18,8 @@ import graded/internal/annotation
 import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/types.{
-  type EffectSet, type Warning, Specific, UnmatchedCheckWarning,
-  UnmatchedTypeFieldWarning, UnverifiedCheckShapeWarning,
+  type EffectSet, type Warning, Specific, UnknownClauseWarning,
+  UnmatchedCheckWarning, UnmatchedTypeFieldWarning, UnverifiedCheckShapeWarning,
 }
 import simplifile
 import support.{cleanup, write_fixture}
@@ -213,6 +213,69 @@ pub fn qualified_check_and_type_lines_do_not_warn_test() {
     ),
   ])
   |> should.equal([])
+}
+
+// Unknown clause keys
+//
+// A clause key this version does not read parses, is retained, and warns —
+// once per line, all its keys together, so one future line is not noisy. The
+// warning belongs to the project-spec lint, so a dependency's spec stays
+// silent: its consumer cannot fix it.
+
+pub fn an_unknown_clause_key_warns_once_per_line_test() {
+  let warnings =
+    lint_warnings("unknown_clause", [
+      #("opts.gleam", "pub fn run() -> Nil {\n  Nil\n}\n"),
+      #(
+        "app.graded",
+        "check opts.run : [] where future : [X], raises : [Y]
+assume dep/x where returns.0 : [Net]
+",
+      ),
+    ])
+
+  expect_warning(
+    warnings,
+    UnknownClauseWarning(path: "opts.run", keys: ["future", "raises"]),
+  )
+  expect_warning(
+    warnings,
+    UnknownClauseWarning(path: "dep/x", keys: ["returns.0"]),
+  )
+}
+
+pub fn a_dependency_spec_unknown_clause_is_silent_test() {
+  let root =
+    support.write_project_with_dependency(
+      directory: "/tmp/graded_release_dep_unknown_clause",
+      package: "proj",
+      spec: "check proj.caller : []\n",
+      sources: [
+        #(
+          "proj.gleam",
+          "import dep/store\n\npub fn caller() -> Nil {\n  store.insert()\n}\n",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: "assume dep/store.insert : [] where future : [X]\n",
+      dependency_sources: [
+        #(
+          "dep/store.gleam",
+          "@external(erlang, \"dep_ffi\", \"insert\")\npub fn insert() -> Nil\n",
+        ),
+      ],
+    )
+  let assert Ok(results) = graded.run(root)
+  let warnings = list.flat_map(results, fn(r) { r.warnings })
+  cleanup(root)
+
+  list.any(warnings, fn(warning) {
+    case warning {
+      UnknownClauseWarning(..) -> True
+      _ -> False
+    }
+  })
+  |> should.be_false()
 }
 
 pub fn mismatched_qualifier_warns_test() {

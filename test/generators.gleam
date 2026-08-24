@@ -6,8 +6,9 @@ import graded/internal/effect_term
 import graded/internal/types.{
   type EffectSet, type EffectTerm, AnnotationLine, BlankLine, Check, CommentLine,
   EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
-  GradedFile, ModuleExternal, ParamBound, Polymorphic, Specific, TAbs, TApp,
-  TLabels, TTop, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
+  GradedFile, ModuleExternal, ParamBound, Polymorphic, RetainedAssumeLine,
+  Specific, TAbs, TApp, TLabels, TTop, TUnion, TVar, TypeFieldAnnotation,
+  TypeFieldLine, UnknownClause, Wildcard,
 }
 import qcheck
 
@@ -295,6 +296,54 @@ pub fn external_gen() -> qcheck.Generator(types.ExternalAnnotation) {
   ExternalAnnotation(module:, target:, effects:, returns:)
 }
 
+// One clause this version does not read. The keys cover the dotted and numeric
+// shapes a later grammar may mint; the payloads cover interior whitespace,
+// which is preserved byte-for-byte, and a top-level `,` is kept out of them
+// since the grammar reads one as a clause separator.
+fn unknown_clause_gen() -> qcheck.Generator(types.UnknownClause) {
+  let key_gen =
+    qcheck.from_generators(qcheck.return("future"), [
+      qcheck.return("returns.0"),
+      qcheck.return("returns.Ok.0"),
+      qcheck.return("raises"),
+    ])
+  let payload_gen =
+    qcheck.from_generators(qcheck.return("[Stdout]"), [
+      qcheck.return("fn(cb) -> [cb]"),
+      qcheck.return("[A, B]"),
+      qcheck.return("fn(a,   b) ->  [X]"),
+    ])
+  qcheck.map2(key_gen, payload_gen, fn(key, payload) {
+    UnknownClause(key:, payload:)
+  })
+}
+
+fn unknown_clauses_gen() -> qcheck.Generator(List(types.UnknownClause)) {
+  qcheck.from_weighted_generators(#(3, qcheck.return([])), [
+    #(1, qcheck.map(unknown_clause_gen(), fn(clause) { [clause] })),
+    #(
+      1,
+      qcheck.map2(unknown_clause_gen(), unknown_clause_gen(), fn(first, second) {
+        [first, second]
+      }),
+    ),
+  ])
+}
+
+// An `assume` line retained for its unknown clauses alone, over all three path
+// shapes it accepts.
+fn retained_assume_gen() -> qcheck.Generator(types.GradedLine) {
+  let path_gen =
+    qcheck.from_generators(qcheck.return("gleam/io"), [
+      qcheck.return("gleam/io.println"),
+      qcheck.return("Handler.on_click"),
+      qcheck.return("myapp/dom.Handler.on_click"),
+    ])
+  qcheck.map2(path_gen, unknown_clause_gen(), fn(path, clause) {
+    RetainedAssumeLine(path:, unknown_clauses: [clause])
+  })
+}
+
 pub fn graded_file_gen() -> qcheck.Generator(types.GradedFile) {
   let comment_gen =
     qcheck.from_generators(qcheck.return("// TODO"), [
@@ -303,10 +352,14 @@ pub fn graded_file_gen() -> qcheck.Generator(types.GradedFile) {
     ])
   let line_gen =
     qcheck.from_weighted_generators(
-      #(3, qcheck.map(annotation_gen(), AnnotationLine)),
+      #(3, qcheck.map2(annotation_gen(), unknown_clauses_gen(), AnnotationLine)),
       [
-        #(1, qcheck.map(type_field_gen(), TypeFieldLine)),
-        #(1, qcheck.map(external_gen(), ExternalLine)),
+        #(
+          1,
+          qcheck.map2(type_field_gen(), unknown_clauses_gen(), TypeFieldLine),
+        ),
+        #(1, qcheck.map2(external_gen(), unknown_clauses_gen(), ExternalLine)),
+        #(1, retained_assume_gen()),
         #(1, qcheck.map(comment_gen, CommentLine)),
         #(1, qcheck.return(BlankLine)),
       ],

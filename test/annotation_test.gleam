@@ -3,14 +3,16 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/set
+import gleam/string
 import gleeunit/should
 import graded/internal/annotation
 import graded/internal/effect_term
 import graded/internal/types.{
   type EffectTerm, AnnotationLine, BlankLine, Check, CommentLine,
   EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
-  ModuleExternal, ParamBound, Polymorphic, Specific, TAbs, TApp, TLabels, TUnion,
-  TVar, TypeFieldAnnotation, TypeFieldLine, Wildcard,
+  ModuleExternal, ParamBound, Polymorphic, RetainedAssumeLine, Specific, TAbs,
+  TApp, TLabels, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, UnknownClause,
+  Wildcard,
 }
 import qcheck
 
@@ -205,8 +207,8 @@ check view : []
     [
       CommentLine(_),
       BlankLine,
-      AnnotationLine(_),
-      AnnotationLine(_),
+      AnnotationLine(..),
+      AnnotationLine(..),
       BlankLine,
       CommentLine(_),
     ] -> should.be_true(True)
@@ -593,20 +595,28 @@ pub fn a_clause_with_no_colon_is_invalid_test() {
 
 // Near-misses of the clause keyword
 //
-// The keyword is the literal ` where returns `. Spelled with a space missing on
-// either side, the split misses it and the whole clause stays inside the effect
-// set, where it once parsed as a variable named after the typo — and formatted
-// back byte-identically, so the typo never surfaced. Each shape is a parse error
+// The region opens on the literal ` where `. Spelled without the space before
+// it, the split misses it and the whole clause stays inside the effect set,
+// where it once parsed as a variable named after the typo — and formatted back
+// byte-identically, so the typo never surfaced. That shape is a parse error
 // naming the line instead.
 
-pub fn a_clause_with_no_space_before_its_colon_is_invalid_test() {
-  let input = "check m.f : [] where returns: [Stdout]"
-  annotation.parse_file(input)
-  |> should.equal(Error(annotation.InvalidLine(1, input)))
+pub fn a_clause_with_no_space_before_its_colon_parses_test() {
+  // The colon separating a clause's key from its payload needs no space around
+  // it: the entry splits at its first depth-0 colon and the key is trimmed.
+  let assert Ok([check]) =
+    annotation.parse("check m.f : [] where returns: [Stdout]")
+  check.returns
+  |> should.equal(
+    Some(effect_term.from_effect_set(Specific(set.from_list(["Stdout"])))),
+  )
 
-  let input = "effects m.f : [] where returns: [Stdout]"
-  annotation.parse_file(input)
-  |> should.equal(Error(annotation.InvalidLine(1, input)))
+  let assert Ok([effects]) =
+    annotation.parse("effects m.f : [] where returns: [Stdout]")
+  effects.returns
+  |> should.equal(
+    Some(effect_term.from_effect_set(Specific(set.from_list(["Stdout"])))),
+  )
 }
 
 pub fn a_clause_with_no_space_after_the_effects_is_invalid_test() {
@@ -939,7 +949,7 @@ pub fn type_field_roundtrip_test() {
   use tf <- qcheck.given(generators.type_field_gen())
   let formatted = annotation.format_type_field(tf)
   let assert Ok(file) = annotation.parse_file(formatted)
-  let assert [TypeFieldLine(parsed)] = file.lines
+  let assert [TypeFieldLine(parsed, _)] = file.lines
   parsed |> should.equal(tf)
 }
 
@@ -947,7 +957,7 @@ pub fn external_roundtrip_test() {
   use ext <- qcheck.given(generators.external_gen())
   let formatted = annotation.format_external(ext)
   let assert Ok(file) = annotation.parse_file(formatted)
-  let assert [ExternalLine(parsed)] = file.lines
+  let assert [ExternalLine(parsed, _)] = file.lines
   parsed |> should.equal(ext)
 }
 
@@ -989,7 +999,7 @@ pub fn merge_inferred_invariants_test() {
   let non_effects = fn(f: types.GradedFile) {
     list.filter(f.lines, fn(line) {
       case line {
-        AnnotationLine(a) -> a.kind != Effects
+        AnnotationLine(a, _) -> a.kind != Effects
         _ -> True
       }
     })
@@ -1026,12 +1036,15 @@ pub fn merge_inferred_drops_effect_for_external_test() {
   // functions are kept.
   let file =
     types.GradedFile(lines: [
-      ExternalLine(ExternalAnnotation(
-        module: "app",
-        target: FunctionExternal("ffi"),
-        effects: Some(types.Specific(set.new())),
-        returns: None,
-      )),
+      ExternalLine(
+        ExternalAnnotation(
+          module: "app",
+          target: FunctionExternal("ffi"),
+          effects: Some(types.Specific(set.new())),
+          returns: None,
+        ),
+        [],
+      ),
     ])
   let inferred = [
     EffectAnnotation(
@@ -1081,21 +1094,27 @@ fn inferred_line(
 }
 
 fn module_assume(module: String) -> types.GradedLine {
-  ExternalLine(ExternalAnnotation(
-    module:,
-    target: ModuleExternal,
-    effects: Some(types.Specific(set.new())),
-    returns: None,
-  ))
+  ExternalLine(
+    ExternalAnnotation(
+      module:,
+      target: ModuleExternal,
+      effects: Some(types.Specific(set.new())),
+      returns: None,
+    ),
+    [],
+  )
 }
 
 fn function_assume(module: String, function: String) -> types.GradedLine {
-  ExternalLine(ExternalAnnotation(
-    module:,
-    target: FunctionExternal(function),
-    effects: Some(types.Specific(set.new())),
-    returns: None,
-  ))
+  ExternalLine(
+    ExternalAnnotation(
+      module:,
+      target: FunctionExternal(function),
+      effects: Some(types.Specific(set.new())),
+      returns: None,
+    ),
+    [],
+  )
 }
 
 // The `effects` lines a merge writes, paired with the clause each carries.
@@ -1138,12 +1157,15 @@ pub fn merge_inferred_composes_the_two_assume_channels_test() {
   merged_effects(
     types.GradedFile(lines: [
       module_assume("db"),
-      ExternalLine(ExternalAnnotation(
-        module: "db",
-        target: FunctionExternal("make"),
-        effects: None,
-        returns: Some(TLabels(set.from_list(["Net"]))),
-      )),
+      ExternalLine(
+        ExternalAnnotation(
+          module: "db",
+          target: FunctionExternal("make"),
+          effects: None,
+          returns: Some(TLabels(set.from_list(["Net"]))),
+        ),
+        [],
+      ),
     ]),
     [inferred_line("db.make", Some(TLabels(set.from_list(["Stdout"]))))],
   )
@@ -1157,7 +1179,7 @@ pub fn merge_inferred_over_a_kept_clause_line_is_idempotent_test() {
   let file =
     types.GradedFile(lines: [
       module_assume("db"),
-      AnnotationLine(inferred_line("db.make", clause)),
+      AnnotationLine(inferred_line("db.make", clause), []),
     ])
   annotation.merge_inferred(
     file,
@@ -1172,12 +1194,15 @@ pub fn merge_inferred_keeps_a_declared_returns_clause_test() {
   // A declaration is preserved in place and never regenerated, and the inferred
   // clause for the same name is dropped: one name, one answer.
   let declared =
-    ExternalLine(ExternalAnnotation(
-      module: "app",
-      target: FunctionExternal("make"),
-      effects: None,
-      returns: Some(TLabels(set.from_list(["Net"]))),
-    ))
+    ExternalLine(
+      ExternalAnnotation(
+        module: "app",
+        target: FunctionExternal("make"),
+        effects: None,
+        returns: Some(TLabels(set.from_list(["Net"]))),
+      ),
+      [],
+    )
   let file = types.GradedFile(lines: [declared])
   let inferred = [
     EffectAnnotation(
@@ -1199,20 +1224,26 @@ pub fn merge_inferred_keeps_a_declared_returns_clause_test() {
   |> should.equal(
     types.GradedFile(lines: [
       declared,
-      AnnotationLine(EffectAnnotation(
-        Effects,
-        "app.make",
+      AnnotationLine(
+        EffectAnnotation(
+          Effects,
+          "app.make",
+          [],
+          TLabels(set.new()),
+          returns: None,
+        ),
         [],
-        TLabels(set.new()),
-        returns: None,
-      )),
-      AnnotationLine(EffectAnnotation(
-        Effects,
-        "app.other",
+      ),
+      AnnotationLine(
+        EffectAnnotation(
+          Effects,
+          "app.other",
+          [],
+          TLabels(set.new()),
+          returns: Some(TLabels(set.new())),
+        ),
         [],
-        TLabels(set.new()),
-        returns: Some(TLabels(set.new())),
-      )),
+      ),
     ]),
   )
 }
@@ -1222,12 +1253,15 @@ pub fn merge_inferred_keeps_an_unmatched_returns_clause_test() {
   // still the author's line, so the stale-removal path does not reach it.
   let file =
     types.GradedFile(lines: [
-      ExternalLine(ExternalAnnotation(
-        module: "app",
-        target: FunctionExternal("make"),
-        effects: None,
-        returns: Some(TLabels(set.from_list(["Net"]))),
-      )),
+      ExternalLine(
+        ExternalAnnotation(
+          module: "app",
+          target: FunctionExternal("make"),
+          effects: None,
+          returns: Some(TLabels(set.from_list(["Net"]))),
+        ),
+        [],
+      ),
     ])
   annotation.merge_inferred(file, [], set.new(), set.new())
   |> should.equal(file)
@@ -1239,12 +1273,15 @@ pub fn merge_inferred_rewrites_a_stale_returns_clause_test() {
   // written on the function's `effects` line.
   let file =
     types.GradedFile(lines: [
-      ExternalLine(ExternalAnnotation(
-        module: "app",
-        target: FunctionExternal("make"),
-        effects: None,
-        returns: Some(TLabels(set.from_list(["Net"]))),
-      )),
+      ExternalLine(
+        ExternalAnnotation(
+          module: "app",
+          target: FunctionExternal("make"),
+          effects: None,
+          returns: Some(TLabels(set.from_list(["Net"]))),
+        ),
+        [],
+      ),
     ])
   let inferred = [
     EffectAnnotation(
@@ -1263,13 +1300,16 @@ pub fn merge_inferred_rewrites_a_stale_returns_clause_test() {
   )
   |> should.equal(
     types.GradedFile(lines: [
-      AnnotationLine(EffectAnnotation(
-        Effects,
-        "app.make",
+      AnnotationLine(
+        EffectAnnotation(
+          Effects,
+          "app.make",
+          [],
+          TLabels(set.new()),
+          returns: Some(TLabels(set.from_list(["Disk"]))),
+        ),
         [],
-        TLabels(set.new()),
-        returns: Some(TLabels(set.from_list(["Disk"]))),
-      )),
+      ),
     ]),
   )
 }
@@ -1280,19 +1320,25 @@ pub fn merge_inferred_keeps_the_two_stale_channels_apart_test() {
   // anything about.
   let file =
     types.GradedFile(lines: [
-      ExternalLine(ExternalAnnotation(
-        module: "app",
-        target: FunctionExternal("make"),
-        effects: None,
-        returns: Some(TLabels(set.from_list(["Net"]))),
-      )),
-      AnnotationLine(EffectAnnotation(
-        Effects,
-        "app.make",
+      ExternalLine(
+        ExternalAnnotation(
+          module: "app",
+          target: FunctionExternal("make"),
+          effects: None,
+          returns: Some(TLabels(set.from_list(["Net"]))),
+        ),
         [],
-        TLabels(set.new()),
-        returns: None,
-      )),
+      ),
+      AnnotationLine(
+        EffectAnnotation(
+          Effects,
+          "app.make",
+          [],
+          TLabels(set.new()),
+          returns: None,
+        ),
+        [],
+      ),
     ])
   let inferred = [
     EffectAnnotation(
@@ -1311,13 +1357,16 @@ pub fn merge_inferred_keeps_the_two_stale_channels_apart_test() {
   )
   |> should.equal(
     types.GradedFile(lines: [
-      AnnotationLine(EffectAnnotation(
-        Effects,
-        "app.make",
+      AnnotationLine(
+        EffectAnnotation(
+          Effects,
+          "app.make",
+          [],
+          TLabels(set.from_list(["Disk"])),
+          returns: None,
+        ),
         [],
-        TLabels(set.from_list(["Disk"])),
-        returns: None,
-      )),
+      ),
     ]),
   )
 }
@@ -1536,6 +1585,430 @@ pub fn declared_returns_clause_is_not_an_effects_annotation_test() {
   let assert Ok(annotations) =
     annotation.parse("assume m.make where returns : [Net]")
   annotations |> should.equal([])
+}
+
+// The clause list
+//
+// A `where` region is a comma-separated list. `returns` is the one key this
+// version reads; every other key is retained verbatim, ignored for resolution,
+// and re-emitted on every rewrite.
+
+pub fn an_unknown_clause_is_retained_and_keys_nothing_test() {
+  let line = "effects m.f : [] where future : [X]"
+  let assert Ok(file) = annotation.parse_file(line)
+  let assert [AnnotationLine(parsed, clauses)] = file.lines
+  parsed.returns |> should.equal(None)
+  clauses |> should.equal([UnknownClause(key: "future", payload: "[X]")])
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn a_known_clause_reads_from_any_list_position_test() {
+  let stdout = Some(TLabels(set.from_list(["A"])))
+
+  let assert Ok([first]) =
+    annotation.parse("effects m.f : [] where returns : [A], future : [X]")
+  first.returns |> should.equal(stdout)
+
+  let assert Ok([last]) =
+    annotation.parse("effects m.f : [] where future : [X], returns : [A]")
+  last.returns |> should.equal(stdout)
+}
+
+pub fn a_repeated_returns_clause_is_invalid_test() {
+  // One slot, so a silent last-wins would be exactly the quiet bug the list
+  // grammar exists to keep out.
+  let input = "effects m.f : [] where returns : [A], returns : [B]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn repeated_unknown_clauses_are_all_retained_in_order_test() {
+  // This version cannot know whether a future key may repeat, so it keeps what
+  // was written and leaves the judgement to the reader that understands it.
+  let line = "effects m.f : [] where future : [X], future : [Y]"
+  let assert Ok(file) = annotation.parse_file(line)
+  let assert [AnnotationLine(_, clauses)] = file.lines
+  clauses
+  |> should.equal([
+    UnknownClause(key: "future", payload: "[X]"),
+    UnknownClause(key: "future", payload: "[Y]"),
+  ])
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn a_dotted_or_numeric_clause_key_is_retained_test() {
+  // The charset admits the spellings a later grammar is most likely to mint,
+  // without endorsing any of them: a reader that rejected these would be the
+  // thing blocking the grammar it exists to leave room for.
+  ["returns.0", "returns.Ok.0", "returns.returns", "raises_2"]
+  |> list.each(fn(key) {
+    let line = "effects m.f : [] where " <> key <> " : [X]"
+    let assert Ok(file) = annotation.parse_file(line)
+    let assert [AnnotationLine(parsed, clauses)] = file.lines
+    parsed.returns |> should.equal(None)
+    clauses |> should.equal([UnknownClause(key:, payload: "[X]")])
+    annotation.format_file(file) |> should.equal(line)
+  })
+}
+
+pub fn a_malformed_clause_entry_is_invalid_test() {
+  // Never bless malformed syntax as "unknown": whatever this version accepts is
+  // accepted permanently.
+  [
+    "effects m.f : [] where : [X]", "effects m.f : [] where k :",
+    "effects m.f : [] where a : [X],, b : [Y]",
+    "effects m.f : [] where a b : [X]",
+  ]
+  |> list.each(fn(input) {
+    annotation.parse_file(input)
+    |> should.equal(Error(annotation.InvalidLine(1, input)))
+  })
+}
+
+pub fn a_payload_with_unbalanced_delimiters_is_invalid_test() {
+  // A net-depth check waves each of these through; a retained clause is
+  // re-emitted verbatim, so corrupt text would round-trip as well-formed.
+  [
+    "effects m.f : [] where foo : ([)]", "effects m.f : [] where foo : )(",
+    "effects m.f : [] where foo : [A", "effects m.f : [] where foo : A]",
+  ]
+  |> list.each(fn(input) {
+    annotation.parse_file(input)
+    |> should.equal(Error(annotation.InvalidLine(1, input)))
+  })
+}
+
+pub fn a_nested_comma_does_not_split_the_clause_list_test() {
+  // Effect sets are `[...]` and operators `fn(...)`, both depth ≥ 1, so a
+  // depth-0 comma is unambiguously a separator.
+  let line = "effects m.f : [] where future : fn(a, b) -> [X, Y]"
+  let assert Ok(file) = annotation.parse_file(line)
+  let assert [AnnotationLine(_, clauses)] = file.lines
+  clauses
+  |> should.equal([
+    UnknownClause(key: "future", payload: "fn(a, b) -> [X, Y]"),
+  ])
+}
+
+pub fn a_payload_keeps_its_interior_whitespace_test() {
+  // This version cannot canonically render a grammar it does not know, so it
+  // must not reformat the interior — a future grammar may well be
+  // whitespace-significant somewhere 1.0 cannot see. Only the edges normalize.
+  let assert Ok(file) =
+    annotation.parse_file(
+      "effects m.f : []  where  future  :  fn(a,   b) ->  [X]",
+    )
+  let assert [AnnotationLine(_, clauses)] = file.lines
+  clauses
+  |> should.equal([
+    UnknownClause(key: "future", payload: "fn(a,   b) ->  [X]"),
+  ])
+  annotation.format_file(file)
+  |> should.equal("effects m.f : [] where future : fn(a,   b) ->  [X]")
+}
+
+// Lines retained for their unknown clauses alone
+//
+// An `assume` line whose every clause is one this version does not know carries
+// no semantics at all. It parses, keys nothing, and round-trips — over all
+// three path shapes, so what a line keys never depends on its path's casing.
+
+pub fn a_function_assume_with_only_an_unknown_clause_is_retained_test() {
+  let line = "assume dep.make where returns.0 : [Net]"
+  let assert Ok(file) = annotation.parse_file(line)
+  file.lines
+  |> should.equal([
+    RetainedAssumeLine(path: "dep.make", unknown_clauses: [
+      UnknownClause(key: "returns.0", payload: "[Net]"),
+    ]),
+  ])
+  annotation.extract_externals(file) |> should.equal([])
+  annotation.extract_annotations(file) |> should.equal([])
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn a_module_assume_with_only_an_unknown_clause_is_retained_test() {
+  let line = "assume dep/x where future : [X]"
+  let assert Ok(file) = annotation.parse_file(line)
+  file.lines
+  |> should.equal([
+    RetainedAssumeLine(path: "dep/x", unknown_clauses: [
+      UnknownClause(key: "future", payload: "[X]"),
+    ]),
+  ])
+  annotation.module_external_modules(file) |> set.to_list() |> should.equal([])
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn a_field_assume_with_only_an_unknown_clause_is_retained_test() {
+  // `TypeFieldAnnotation.effects` is a bare term, so a field line cannot claim
+  // nothing — and fabricating `[]` would flip *keys nothing* into *is pure*.
+  let line = "assume m.Handler.on_click where future : [X]"
+  let assert Ok(file) = annotation.parse_file(line)
+  file.lines
+  |> should.equal([
+    RetainedAssumeLine(path: "m.Handler.on_click", unknown_clauses: [
+      UnknownClause(key: "future", payload: "[X]"),
+    ]),
+  ])
+  annotation.extract_type_fields(file) |> should.equal([])
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn a_retained_assume_sorts_into_the_assume_section_test() {
+  let assert Ok(file) =
+    annotation.parse_file(
+      "effects z.f : []
+assume m.b where future : [X]
+assume m.a : [Net]
+check y.g : []",
+    )
+  annotation.format_sorted(file)
+  |> should.equal(
+    "assume m.a : [Net]
+assume m.b where future : [X]
+
+check y.g : []
+
+effects z.f : []
+",
+  )
+}
+
+pub fn a_path_a_retained_assume_cannot_name_is_invalid_test() {
+  // The path is still read for its shape: a malformed one is refused rather
+  // than retained.
+  let input = "assume m..f where future : [X]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+// Wrapped statements
+//
+// A statement may be written on one physical line or across several, and the
+// reader accepts both. A continuation is an indented line that is also at a
+// clause boundary — indentation alone is not the rule.
+
+pub fn a_wrapped_statement_parses_as_its_one_line_form_test() {
+  let one_line =
+    "effects m.f : [] where returns : [A], future : [X], other : [Y]"
+  let wrapped =
+    "effects m.f : []
+  where returns : [A],
+        future : [X],
+        other : [Y]"
+  let assert Ok(from_one_line) = annotation.parse_file(one_line)
+  let assert Ok(from_wrapped) = annotation.parse_file(wrapped)
+  from_wrapped |> should.equal(from_one_line)
+}
+
+pub fn a_wrapped_payload_keeps_its_interior_bytes_test() {
+  // Fragments only ever join at clause boundaries, so a payload lies wholly
+  // within one physical line and its interior survives untouched.
+  let assert Ok(file) =
+    annotation.parse_file(
+      "effects m.f : []
+  where future : fn(a,   b) ->  [X],
+        other : [A,  B]",
+    )
+  let assert [AnnotationLine(_, clauses)] = file.lines
+  clauses
+  |> should.equal([
+    UnknownClause(key: "future", payload: "fn(a,   b) ->  [X]"),
+    UnknownClause(key: "other", payload: "[A,  B]"),
+  ])
+}
+
+pub fn a_clause_key_spelled_like_a_statement_keyword_test() {
+  // The key charset admits `effects`, `check` and `assume`, so in an open clause
+  // region the clause reading is decided before any keyword is matched.
+  ["effects", "check", "assume"]
+  |> list.each(fn(keyword) {
+    let assert Ok(file) = annotation.parse_file("effects m.f : []
+  where future : [X],
+        " <> keyword <> " : [Y]")
+    let assert [AnnotationLine(parsed, clauses)] = file.lines
+    parsed.function |> should.equal("m.f")
+    clauses
+    |> should.equal([
+      UnknownClause(key: "future", payload: "[X]"),
+      UnknownClause(key: keyword, payload: "[Y]"),
+    ])
+  })
+}
+
+pub fn an_indented_comment_is_still_a_comment_test() {
+  // The backward-compatibility trap: a careless continuation rule silently
+  // converts both of these.
+  let assert Ok(file) =
+    annotation.parse_file(
+      "effects m.f : []
+  // indented comment
+  effects m.g : []",
+    )
+  file.lines
+  |> should.equal([
+    AnnotationLine(pure_line("m.f"), []),
+    CommentLine("  // indented comment"),
+    AnnotationLine(pure_line("m.g"), []),
+  ])
+}
+
+pub fn an_indented_statement_after_a_statement_is_its_own_line_test() {
+  let assert Ok(file) =
+    annotation.parse_file(
+      "effects m.f : []
+  effects m.g : []",
+    )
+  file.lines
+  |> should.equal([
+    AnnotationLine(pure_line("m.f"), []),
+    AnnotationLine(pure_line("m.g"), []),
+  ])
+}
+
+pub fn a_completed_wrapped_statement_is_flushed_by_a_comment_test() {
+  let assert Ok(file) =
+    annotation.parse_file(
+      "effects m.f : []
+  where returns : [A]
+  // trailing comment
+
+effects m.g : []",
+    )
+  file.lines
+  |> should.equal([
+    AnnotationLine(
+      EffectAnnotation(
+        ..pure_line("m.f"),
+        returns: Some(TLabels(set.from_list(["A"]))),
+      ),
+      [],
+    ),
+    CommentLine("  // trailing comment"),
+    BlankLine,
+    AnnotationLine(pure_line("m.g"), []),
+  ])
+}
+
+pub fn an_incomplete_wrapped_statement_names_its_first_line_test() {
+  // The error points at the statement to fix and the line it starts on.
+  annotation.parse_file(
+    "// header
+effects m.f : []
+  where returns : [A],",
+  )
+  |> should.equal(
+    Error(annotation.InvalidLine(2, "effects m.f : [] where returns : [A],")),
+  )
+}
+
+pub fn a_where_region_opened_with_nothing_after_it_is_invalid_test() {
+  let input = "effects m.f : [] where"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn an_orphan_clause_line_is_invalid_test() {
+  // No comma after `[X]`, so the region closed and `b : [Y]` continues nothing.
+  annotation.parse_file(
+    "effects m.f : []
+  where a : [X]
+  b : [Y]",
+  )
+  |> should.equal(Error(annotation.InvalidLine(3, "  b : [Y]")))
+}
+
+pub fn an_indented_typo_is_a_failed_statement_not_a_continuation_test() {
+  annotation.parse_file(
+    "effects m.f : []
+  effect m.g : []",
+  )
+  |> should.equal(Error(annotation.InvalidLine(2, "  effect m.g : []")))
+}
+
+// The wrap rule
+//
+// A statement renders on one line where it fits in 80 graphemes; past that its
+// whole clause region moves to continuation lines, one clause each.
+
+pub fn a_statement_at_the_width_stays_on_one_line_test() {
+  // The function name is padded so the one-line rendering lands exactly on the
+  // boundary, and then one grapheme past it.
+  let inline = wrapping_probe(40)
+  string.length(inline) |> should.equal(80)
+  string.contains(inline, "\n") |> should.be_false()
+
+  wrapping_probe(41)
+  |> should.equal(
+    "effects m."
+    <> string.repeat("a", 41)
+    <> " : []\n  where returns : [Stdout]",
+  )
+}
+
+pub fn the_width_is_measured_in_graphemes_test() {
+  // Not bytes: a multi-byte label would otherwise put the boundary somewhere
+  // implementation-dependent, and `format --check` is a CI gate.
+  let line =
+    "effects m." <> string.repeat("é", 40) <> " : [] where returns : [Stdout]"
+  string.length(line) |> should.equal(80)
+  let assert Ok(file) = annotation.parse_file(line)
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn a_long_effect_set_without_a_clause_does_not_wrap_test() {
+  // The trigger does not promise 80 columns: only the clause region wraps.
+  let line =
+    "effects m.f : [Aaa, Bbb, Ccc, Ddd, Eee, Fff, Ggg, Hhh, Iii, Jjj, Kkk, Lll, Mmm, Nnn]"
+  let assert Ok(file) = annotation.parse_file(line)
+  { string.length(line) > 80 } |> should.be_true()
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn the_semantic_renderers_never_wrap_test() {
+  // `why` and `graded effect --format=graded` splice these into prose, so a
+  // newline from one would break them silently.
+  let assert Ok([long]) = annotation.parse(wrapping_probe(41))
+  annotation.format_annotation(long)
+  |> should.equal(
+    "effects m." <> string.repeat("a", 41) <> " : [] where returns : [Stdout]",
+  )
+
+  let assert Ok(file) =
+    annotation.parse_file(
+      "assume dep/some/rather/long/module/path.make_the_client_for_the_session where returns : [Net]",
+    )
+  let assert [external] = annotation.extract_externals(file)
+  { string.length(annotation.format_external(external)) > 80 }
+  |> should.be_true()
+  string.contains(annotation.format_external(external), "\n")
+  |> should.be_false()
+}
+
+pub fn a_wrapped_statement_formats_idempotently_test() {
+  let assert Ok(file) = annotation.parse_file(wrapping_probe(41))
+  let once = annotation.format_sorted(file)
+  let assert Ok(reparsed) = annotation.parse_file(once)
+  annotation.format_sorted(reparsed) |> should.equal(once)
+}
+
+// An `effects <name> : []` annotation, the shape most of the line-structure
+// tests are written over.
+fn pure_line(name: String) -> types.EffectAnnotation {
+  EffectAnnotation(Effects, name, [], TLabels(set.new()), None)
+}
+
+// One `effects` line whose function name is padded to `width`, carrying a
+// `where returns` clause. The knob the width boundary is asserted on.
+fn wrapping_probe(width: Int) -> String {
+  let assert Ok(file) =
+    annotation.parse_file(
+      "effects m."
+      <> string.repeat("a", width)
+      <> " : [] where returns : [Stdout]",
+    )
+  annotation.format_file(file)
 }
 
 // Helpers

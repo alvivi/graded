@@ -471,11 +471,37 @@ pub type ExternalAnnotation {
   )
 }
 
+// One `where` clause this version retained but does not read. `payload` is the
+// text between the entry's delimiters, verbatim: parsing it is precisely what
+// this version cannot do, so it stays a `String` and no reader may give it
+// meaning.
+pub type UnknownClause {
+  UnknownClause(key: String, payload: String)
+}
+
 // A single line in an .graded file, preserving structure for round-trip rewrites.
+//
+// `unknown_clauses` holds the line's retained clauses in the order they were
+// read, duplicate keys included. It rides on the line rather than on the
+// semantic record so no resolver can reach it.
 pub type GradedLine {
-  AnnotationLine(annotation: EffectAnnotation)
-  TypeFieldLine(type_field: TypeFieldAnnotation)
-  ExternalLine(external: ExternalAnnotation)
+  AnnotationLine(
+    annotation: EffectAnnotation,
+    unknown_clauses: List(UnknownClause),
+  )
+  TypeFieldLine(
+    type_field: TypeFieldAnnotation,
+    unknown_clauses: List(UnknownClause),
+  )
+  ExternalLine(
+    external: ExternalAnnotation,
+    unknown_clauses: List(UnknownClause),
+  )
+  // An `assume` line whose every clause is one this version does not know, so
+  // it carries no semantics at all: it keys nothing and is retained for its
+  // clauses alone. One variant for all three path shapes — function, module and
+  // field — so what a line keys never depends on its path's casing.
+  RetainedAssumeLine(path: String, unknown_clauses: List(UnknownClause))
   CommentLine(text: String)
   BlankLine
 }
@@ -842,6 +868,10 @@ pub type Warning {
   // by nature — nothing keys a whole module's returned value — so the clause
   // resolves nothing at all.
   DotlessReturnsClauseWarning(name: String)
+  // A `where` clause whose key this version does not know. The line parses and
+  // the clause is retained verbatim through every rewrite, but nothing resolves
+  // it. One warning per line carrying all of its unknown keys.
+  UnknownClauseWarning(path: String, keys: List(String))
 }
 
 // Result of checking one file.
