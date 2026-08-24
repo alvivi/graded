@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not gzip — instead of failing with a raw Erlang term.
 - `graded pack` no longer follows a symlink planted at its temporary output
   path while it writes.
+- A `where returns` clause on a path dependency that vendors a catalogued
+  package now resolves the returned function at the call site, instead of
+  charging it `[Unknown]`.
+- A clause variable its own line does not scope no longer binds to a call
+  argument. Such a clause resolves to `[Unknown]`, and `graded check` reports it
+  as open.
 
 ## [0.16.0] - 2026-08-24
 
