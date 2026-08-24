@@ -10,29 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `graded pack` refuses a tarball whose contents name an absolute path, instead
-  of copying the host file at that path into the tarball it then tells you to
-  publish. The rebuild re-added each inner entry by joining its stored name onto
-  the unpacked directory, and an absolute name won that join outright; the
-  result verified as internally consistent, because it was — it just carried a
-  file that was never in the input. Names that escape with `..` are refused the
-  same way, with graded's own message rather than an `erl_tar` failure.
+  of copying the host file at that path into the archive it tells you to
+  publish. A name escaping the package with `..` is refused too.
 - `graded pack` refuses an archive carrying a symlink, directory, or device
-  member, naming the entry and its kind. Only regular members were ever carried
-  forward, so any other kind was dropped from the output and the run failed on a
-  files-list mismatch that named nothing.
+  member, naming the entry and its kind. Such a member was dropped from the
+  output, and the run then failed on a files-list mismatch that named nothing.
 - `graded pack` refuses a tarball whose stored `CHECKSUM` does not match its
-  contents, instead of minting a fresh checksum over the damage and handing you
-  an archive that verifies. Nothing carries the input's checksum forward — the
-  rebuild computes a new one over the new bytes — so this is the only point at
-  which a corrupt or tampered input is still distinguishable from a sound one.
-- A malformed hex tarball says what is wrong with it: a file that is not a tar,
-  a missing `VERSION` / `metadata.config` / `contents.tar.gz` / `CHECKSUM`
-  member, a `metadata.config` that does not scan or parse, and a
-  `contents.tar.gz` that is not a readable gzip stream each get their own
-  message, in place of an Erlang term printed raw.
-- `graded pack` writes the patched tarball through the descriptor it created the
-  temp path with, closing the window in which a symlink planted at that path
-  between the reservation and the write would have been followed.
+  contents, rather than replacing it with a fresh one and handing you an
+  archive that verifies.
+- A malformed tarball now says what is wrong with it — not a tar, a missing
+  member, a `metadata.config` that does not parse, a `contents.tar.gz` that is
+  not gzip — instead of failing with a raw Erlang term.
+- `graded pack` no longer follows a symlink planted at its temporary output
+  path while it writes.
 
 ## [0.16.0] - 2026-08-24
 
