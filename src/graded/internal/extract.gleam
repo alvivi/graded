@@ -97,6 +97,11 @@ pub type ImportContext {
     module_path: String,
     aliases: Dict(String, String),
     unqualified: Dict(String, QualifiedName),
+    // Types imported unqualified (`import dep/model.{type Runner}`), by the name
+    // they are written under here -> the module that defines them. A parameter
+    // annotated with one names no module at its use site, and the module is what
+    // a field `assume` for that type is keyed by.
+    unqualified_types: Dict(String, QualifiedName),
     constructors: Dict(String, List(Option(String))),
     // Same-module factory functions (bare name -> signature) and other modules'
     // factories (keyed by `#(defining module, function)`), so a let-bound
@@ -189,41 +194,46 @@ pub fn with_fn_typed_fields(
 
 // Build import context from a parsed module's imports.
 pub fn build_import_context(module: Module) -> ImportContext {
-  let #(aliases, unqualified) =
-    list.fold(module.imports, #(dict.new(), dict.new()), fn(state, definition) {
-      let import_ = definition.definition
-      let module_path = import_.module
-
-      let alias = case import_.alias {
-        Some(glance.Named(name)) -> name
-        Some(glance.Discarded(_)) -> last_segment(module_path)
-        None -> last_segment(module_path)
+  // Both unqualified lists are folded the same way, over the name each import
+  // is written under here — its alias where it has one.
+  let fold_unqualified = fn(
+    into: Dict(String, QualifiedName),
+    imports: List(glance.UnqualifiedImport),
+    module_path: String,
+  ) {
+    list.fold(imports, into, fn(unqualified_map, unqualified_import) {
+      let name = case unqualified_import.alias {
+        Some(alias_name) -> alias_name
+        None -> unqualified_import.name
       }
-
-      let new_aliases = dict.insert(state.0, alias, module_path)
-
-      let new_unqualified =
-        list.fold(
-          import_.unqualified_values,
-          state.1,
-          fn(unqualified_map, unqualified_import) {
-            let name = case unqualified_import.alias {
-              Some(alias_name) -> alias_name
-              None -> unqualified_import.name
-            }
-            dict.insert(
-              unqualified_map,
-              name,
-              QualifiedName(
-                module: module_path,
-                function: unqualified_import.name,
-              ),
-            )
-          },
-        )
-
-      #(new_aliases, new_unqualified)
+      dict.insert(
+        unqualified_map,
+        name,
+        QualifiedName(module: module_path, function: unqualified_import.name),
+      )
     })
+  }
+  let #(aliases, unqualified, unqualified_types) =
+    list.fold(
+      module.imports,
+      #(dict.new(), dict.new(), dict.new()),
+      fn(state, definition) {
+        let import_ = definition.definition
+        let module_path = import_.module
+
+        let alias = case import_.alias {
+          Some(glance.Named(name)) -> name
+          Some(glance.Discarded(_)) -> last_segment(module_path)
+          None -> last_segment(module_path)
+        }
+
+        #(
+          dict.insert(state.0, alias, module_path),
+          fold_unqualified(state.1, import_.unqualified_values, module_path),
+          fold_unqualified(state.2, import_.unqualified_types, module_path),
+        )
+      },
+    )
 
   let constructors = build_constructor_registry(module)
   let functions =
@@ -233,6 +243,7 @@ pub fn build_import_context(module: Module) -> ImportContext {
     module_path: "",
     aliases:,
     unqualified:,
+    unqualified_types:,
     constructors:,
     factories: dict.new(),
     cross_factories: dict.new(),

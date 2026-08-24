@@ -6829,8 +6829,7 @@ fn resolve_unproven_field(
           field_call.receiver_span.end,
         )
         |> option.lazy_or(fn() {
-          syntactic_param_type(function, receiver_object)
-          |> option.map(fn(type_name) { #("", type_name) })
+          syntactic_param_type(function, receiver_object, context)
         })
       // Rule 3: a hand-written `type Type.field` line, resolved by the
       // receiver's nominal type.
@@ -7151,7 +7150,8 @@ fn concretize(term: EffectTerm) -> EffectTerm {
 fn syntactic_param_type(
   function: Function,
   object: String,
-) -> option.Option(String) {
+  context: ImportContext,
+) -> option.Option(#(String, String)) {
   case
     list.find(function.parameters, fn(param) {
       case param.name {
@@ -7160,13 +7160,37 @@ fn syntactic_param_type(
       }
     })
   {
-    // Only an unqualified annotation (`r: Runner`) is treated as the current
-    // module's type. A qualified one (`r: ext.Runner`) names an imported type,
-    // whose fields the local registry must not claim, so it yields no type.
     Ok(glance.FunctionParameter(
-      type_: Some(glance.NamedType(name: type_name, module: None, ..)),
+      type_: Some(glance.NamedType(name: type_name, module:, ..)),
       ..,
-    )) -> Some(type_name)
+    )) -> annotated_type_module(type_name, module, context)
     _ -> None
+  }
+}
+
+// The module a parameter's type annotation names, read through the imports of
+// the module the annotation is written in.
+//
+// A qualified annotation (`r: model.Runner`) names the module its alias stands
+// for, and an unresolvable alias names nothing — the local registry must not
+// claim an imported type's fields. An unqualified one is the module's own type,
+// left for the caller to key, unless the module imports a type of that name
+// unqualified (`import dep/model.{type Runner}`), which is the same imported
+// type written shorter.
+fn annotated_type_module(
+  type_name: String,
+  module: option.Option(String),
+  context: ImportContext,
+) -> option.Option(#(String, String)) {
+  case module {
+    Some(alias) ->
+      dict.get(context.aliases, alias)
+      |> option.from_result
+      |> option.map(fn(module_path) { #(module_path, type_name) })
+    None ->
+      case dict.get(context.unqualified_types, type_name) {
+        Ok(imported) -> Some(#(imported.module, imported.function))
+        Error(Nil) -> Some(#("", type_name))
+      }
   }
 }
