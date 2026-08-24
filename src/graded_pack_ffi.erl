@@ -86,12 +86,25 @@ do_inject(InTarPath, SpecBin, Entry, OutFd, WorkDir) ->
     Version = required_member("VERSION", Outer),
     MetaBin = required_member("metadata.config", Outer),
     Contents = required_member("contents.tar.gz", Outer),
+    Stored = required_member("CHECKSUM", Outer),
 
     % inner tar: unpack to disk (restoring each entry's mode), re-add every
     % entry by path — erl_tar only takes modes from the filesystem, a binary
     % add silently writes 0644 — and replace any existing spec entry.
     InnerRaw = gunzip_contents(Contents),
     Table = safe_inner_table(InnerRaw),
+
+    % The input's own integrity, checked once the more specific failures above
+    % have had their say. Nothing carries this checksum forward — the rebuild
+    % mints a fresh one over the new bytes — so this is the only point where a
+    % corrupt or tampered input is still distinguishable from a sound one.
+    % Minting a valid checksum over damaged contents would launder the damage
+    % into an archive that verifies, and the run ends by telling the user to
+    % publish it.
+    Stored =:= checksum(Version, MetaBin, Contents) orelse
+        fail(["the tarball's stored CHECKSUM does not match its contents; ",
+            "rebuild it with `gleam export hex-tarball`"]),
+
     ok = file:make_dir(InnerDir),
     extract_inner(InnerRaw, InnerDir),
     Names = [N || N <- names(Table), N =/= Entry],

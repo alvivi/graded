@@ -565,6 +565,42 @@ pub fn pack_names_metadata_that_does_not_parse_test() {
   )
 }
 
+pub fn pack_names_a_missing_checksum_member_test() {
+  assert_malformed(
+    "build/pack_no_checksum",
+    // contents.tar.gz is present but never reached: the four members are
+    // required together, before anything gunzips one of them.
+    [
+      #("VERSION", "3"),
+      #("metadata.config", good_metadata),
+      #("contents.tar.gz", "unread"),
+    ],
+    "hex tarball has no CHECKSUM member",
+  )
+}
+
+// A sound archive tampered with after it was built. Nothing carries the input's
+// checksum forward — the rebuild mints a fresh one — so accepting this would
+// launder the tampering into an archive that verifies, and `pack` would end by
+// telling the user to publish it.
+pub fn pack_refuses_an_input_whose_checksum_does_not_match_test() {
+  let root = "build/pack_bad_checksum"
+  let tarball =
+    setup_dep(root, "dep", "1.0.0", "dep.graded", "effects dep.work : []\n")
+  corrupt_checksum(tarball)
+  let assert Ok(before) = simplifile.read_bits(tarball)
+
+  let message = pack_error(root)
+  string.contains(message, "stored CHECKSUM does not match its contents")
+  |> should.be_true()
+  string.contains(message, "gleam export hex-tarball") |> should.be_true()
+
+  // Refused, not repaired: the archive is left exactly as it was found.
+  simplifile.read_bits(tarball) |> should.equal(Ok(before))
+  simplifile.is_file(tarball <> ".packing") |> should.equal(Ok(False))
+  cleanup(root)
+}
+
 pub fn pack_names_a_truncated_contents_member_test() {
   assert_malformed(
     "build/pack_truncated_contents",
@@ -607,6 +643,9 @@ fn build_outer_tarball(
   out_path: String,
   members: List(#(String, String)),
 ) -> Nil
+
+@external(erlang, "graded_pack_test_ffi", "corrupt_checksum")
+fn corrupt_checksum(tarball: String) -> Nil
 
 @external(erlang, "graded_pack_test_ffi", "unpack_inner")
 fn unpack_inner(tarball: String, dest_dir: String) -> Nil

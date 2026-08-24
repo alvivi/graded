@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   member, naming the entry and its kind. Only regular members were ever carried
   forward, so any other kind was dropped from the output and the run failed on a
   files-list mismatch that named nothing.
+- `graded pack` refuses a tarball whose stored `CHECKSUM` does not match its
+  contents, instead of minting a fresh checksum over the damage and handing you
+  an archive that verifies. Nothing carries the input's checksum forward — the
+  rebuild computes a new one over the new bytes — so this is the only point at
+  which a corrupt or tampered input is still distinguishable from a sound one.
 - A malformed hex tarball says what is wrong with it: a file that is not a tar,
   a missing `VERSION` / `metadata.config` / `contents.tar.gz` / `CHECKSUM`
   member, a `metadata.config` that does not scan or parse, and a

@@ -1,7 +1,7 @@
 -module(graded_pack_test_ffi).
 -export([build_tarball/4, build_tarball_with_modes/4,
-         build_tarball_with_raw_names/4, build_outer_tarball/2, unpack_inner/2,
-         metadata_files/1]).
+         build_tarball_with_raw_names/4, build_outer_tarball/2,
+         corrupt_checksum/1, unpack_inner/2, metadata_files/1]).
 
 % Build a minimal hex tarball at OutPath (VERSION, metadata.config,
 % contents.tar.gz, CHECKSUM), following hex_tarball's format closely enough for
@@ -106,6 +106,17 @@ write_outer(Out, Name, Version, Paths, Contents) ->
                     {<<"metadata.config">>, Meta},
                     {<<"contents.tar.gz">>, Contents},
                     {<<"CHECKSUM">>, Checksum}]).
+
+% Rewrite a tarball's outer CHECKSUM to a value that cannot match its contents,
+% carrying every other member over byte for byte — a sound archive that has been
+% tampered with since it was built, which is the shape the input-integrity check
+% exists to catch.
+corrupt_checksum(TarPath) ->
+    Path = binary_to_list(TarPath),
+    {ok, Outer} = erl_tar:extract(Path, [memory]),
+    Kept = [{unicode:characters_to_binary(N), C}
+            || {N, C} <- Outer, N =/= "CHECKSUM"],
+    write_tar(Path, Kept ++ [{<<"CHECKSUM">>, <<"00">>}]).
 
 % The metadata.config files list of a tarball, for asserting a re-packed
 % archive lists each entry exactly once.
