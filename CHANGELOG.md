@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that dependency's module before answering, so the query and `graded check`
   quote the same charge.
 
+### Fixed
+
+- A field call on a parameter typed from its annotation alone (`insert(r:
+  Runner)`) now reads a module-qualified `assume myapp/store.Runner.run :
+  [Disk]` line, not only a bare `assume Runner.run`. Such a line keyed nothing,
+  so the call stayed polymorphic in the field and a caller constructing the
+  record specialized the declared effect away.
+
 ## [0.15.0] - 2026-08-23
 
 ### Changed
