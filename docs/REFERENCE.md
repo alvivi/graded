@@ -25,15 +25,40 @@ graded keeps two kinds of `.graded` file:
 
 ## Annotation kinds
 
-Every line reads `<status> <path>[(bounds)] : <effects> [where returns :
-<operator>]`. Three statuses say how much graded trusts the line — `effects` is
-inferred and regenerated, `check` is asserted and verified, `assume` is trusted
-and never verified — and the path's shape says what the line covers. The two
-optional halves are the higher-order budgets ([Parameter effect
-bounds](#parameter-effect-bounds)) and the operator a producer hands back
+Every line reads `<status> <path>[(bounds)] : <effects> [where <clauses>]`.
+Three statuses say how much graded trusts the line — `effects` is inferred and
+regenerated, `check` is asserted and verified, `assume` is trusted and never
+verified — and the path's shape says what the line covers. The two optional
+halves are the higher-order budgets ([Parameter effect
+bounds](#parameter-effect-bounds)) and the `where` region
 ([`where returns`](#where-returns--returned-operators-and-latent-effects)); on
 an `assume` line the `: <effects>` half is optional as well, so a clause can
 stand alone.
+
+### Statement layout
+
+A statement fits on one physical line, or wraps: `graded format` and
+`graded infer` write it on one line where the whole thing fits in 80 columns,
+and otherwise put `where` on an indented continuation with one clause per line,
+subsequent clauses aligned under the first.
+
+```
+effects myapp/router.handle_request : [Net] where returns : [Stdout]
+
+effects myapp/router.handle_request(action: [action]) : [Net]
+  where returns : fn(cb) -> [Stdout, action([cb])]
+```
+
+The reader accepts both forms whatever the width, so a spec may be hand-wrapped.
+A continuation is an indented line that is *also* at a clause boundary: it
+either opens the `where` region, or starts a new clause after the previous
+fragment's trailing comma. Indentation alone continues nothing — an indented
+comment is still a comment and an indented statement is still its own statement.
+A statement left waiting for a clause that never comes (a trailing comma, or a
+`where` with nothing after it) is a parse error naming the line it starts on.
+
+Only the `where` region wraps. A long effect set stays on its line whatever its
+width, and a payload never spans a wrap.
 
 ### `effects` — inferred effects
 
@@ -77,7 +102,7 @@ What an `assume` line covers is read off the path's shape:
 
 | Path | Covers |
 |---|---|
-| `gleam/list` (no `.`) | every function of that module |
+| `gleam/list` (no `.`) | every function of that module, its name written without a file extension (`./ffi/thing.mjs` splits on the dot into a two-segment function path instead) |
 | `gleam/httpc.send` | that one function |
 | `myapp.Handler.on_click` | the `on_click` field of `myapp`'s `Handler` type |
 | `Handler.on_click` | the same field, its module implied by the file |
@@ -131,6 +156,37 @@ and flagged, since an assumption carries no bound list to scope them.
 
 On a `check` line it parses and keys nothing: verifying what a function returns
 is not implemented, and `graded check` says so.
+
+#### The clause list
+
+The `where` region is a comma-separated list of `<key> : <payload>` entries,
+split at bracket and paren depth 0 — so a comma inside `[...]` or `fn(...)` is
+not a separator. `returns` is the one key this version reads, and it may appear
+at most once; a second one is a parse error rather than a silent last-wins.
+
+Every other key is **retained, not read**. The line parses, the clause resolves
+nothing, and `graded check` warns once per line naming all of its unknown keys.
+The clause is then kept verbatim — key, payload interior and order — through
+`graded format` and `graded infer`, so a spec written by a newer graded is not
+quietly stripped by an older one running over it. Only a version that
+understands a key can re-derive what it means, so nothing here deletes one.
+
+```
+// read: the returned operator resolves at call sites
+effects myapp.make_logger : [] where returns : [Stdout]
+
+// retained: warned about, resolved by nothing, preserved on every rewrite
+effects myapp.make_logger : [] where returns : [Stdout], raises : [DivideByZero]
+```
+
+A key is one or more of `A-Z`, `a-z`, `0-9`, `_` and `.`. A payload's brackets
+and parens must nest and match; anything else — an empty key, an empty payload,
+an empty entry, unbalanced delimiters — is a parse error, since a malformed
+clause blessed as "unknown" would be accepted permanently.
+
+An `assume` line whose every clause is one this version does not read keys
+nothing at all. It parses and round-trips, and it declares neither an effect nor
+a returned operator — a missing clause never means *pure*.
 
 ## Lines the parser rejects
 
