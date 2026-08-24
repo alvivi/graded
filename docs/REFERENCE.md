@@ -169,15 +169,27 @@ nothing, and `graded check` warns once per line naming all of its unknown keys.
 The clause is then kept verbatim — key, payload interior and order — through
 `graded format` and `graded infer`, so a spec written by a newer graded is not
 quietly stripped by an older one running over it. Only a version that
-understands a key can re-derive what it means, so nothing here deletes one.
+understands a key can re-derive what it means, so no rewrite drops one in order
+to regenerate it.
 
 ```
 // read: the returned operator resolves at call sites
 effects myapp.make_logger : [] where returns : [Stdout]
 
-// retained: warned about, resolved by nothing, preserved on every rewrite
+// retained: warned about, resolved by nothing, re-emitted as written
 effects myapp.make_logger : [] where returns : [Stdout], raises : [DivideByZero]
 ```
+
+A retained clause rides the line it sits on, which leaves one case — and only
+one — where `graded infer` removes it: an `effects` line whose function no
+longer exists, because it was renamed, made private, or its module is gone. The
+whole line goes, its clauses with it. Nothing on such a line describes anything
+any more, and `effects` lines are regenerated from source on every run.
+
+That exception is confined to `effects` lines. A `check` line, an `assume` line,
+and a line retained for its clauses alone are hand-written, so they survive
+their subject vanishing — clauses included — and `graded check` reports the
+dangling name instead.
 
 A key is one or more of `A-Z`, `a-z`, `0-9`, `_` and `.`. A payload's brackets
 and parens must nest and match; anything else — an empty key, an empty payload,
