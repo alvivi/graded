@@ -352,26 +352,14 @@ pub fn pack_project(
   ))
 
   // Inject into a temp, verify, then replace the tarball in place, so a failed
-  // transform never leaves a corrupt archive behind. The temp is reserved with
-  // an atomic exclusive create — any existing path (a symlink included) is an
-  // error — so the cleanup below can only ever delete what this run created.
+  // transform never leaves a corrupt archive behind. `inject_spec` creates the
+  // temp itself, with an atomic exclusive create it then writes the archive
+  // through — any existing path (a symlink included) is an error — and removes
+  // it again on failure, so only what that call created is ever deleted.
   let temp = tarball_path <> ".packing"
-  use _ <- result.try(
-    reserve_path(temp)
-    |> result.map_error(fn(reason) {
-      PackError(
-        "could not reserve scratch path "
-        <> temp
-        <> " ("
-        <> reason
-        <> "); remove any leftover file and retry",
-      )
-    }),
-  )
   use checksum <- result.try(
     inject_spec(tarball_path, spec, entry_name, temp)
     |> result.map_error(fn(message) {
-      let _deleted = simplifile.delete(temp)
       PackError("could not patch " <> tarball_path <> ": " <> message)
     }),
   )
@@ -4580,11 +4568,3 @@ fn verify_tarball(tar: String, entry_name: String) -> Result(Nil, String)
 @external(erlang, "graded_pack_ffi", "read_package_identity")
 @external(javascript, "./graded_pack_ffi.mjs", "read_package_identity")
 fn read_package_identity(tar: String) -> Result(#(String, String), String)
-
-// Atomically reserve `path` for this invocation: an O_EXCL create that fails
-// on any existing path and refuses to follow symlinks (a dangling symlink is
-// rejected, not written through).
-// nolint: stringly_typed_error -- opaque posix diagnostic, wrapped in PackError
-@external(erlang, "graded_pack_ffi", "reserve_path")
-@external(javascript, "./graded_pack_ffi.mjs", "reserve_path")
-fn reserve_path(path: String) -> Result(Nil, String)
