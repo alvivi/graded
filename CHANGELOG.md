@@ -5,17 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.16.0] - 2026-08-24
 
 ### Changed
 
 - A call into a dependency `@external` whose Gleam fallback body runs on a
   target you compile is now charged what that body does — read from the
   dependency's source under `build/packages` and walked like one of your own —
-  instead of `[Unknown]`. Callers of `gleam/dict.insert` and its stdlib kin
-  lose their inherited `[Unknown]`, so a `check f : [Unknown]` written over
-  the old answer now fails, and a committed `effects` line for such a caller
-  changes on the next `graded infer`.
+  instead of `[Unknown]`. A field call in such a body resolves through the
+  field `assume` lines in reach, the dependency's own and yours for its types.
+  Callers of `gleam/dict.insert` and its stdlib kin lose their inherited
+  `[Unknown]`, so a `check f : [Unknown]` written over the old answer now
+  fails, and a committed `effects` line for such a caller changes on the next
+  `graded infer`.
 - `graded effect` for a dependency `@external` with a running fallback now reads
   that dependency's module before answering, so the query and `graded check`
   quote the same charge.
@@ -31,9 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model.Runner)`, however that import is written) now reads the field `assume`
   keyed by the module defining it. A qualified annotation named no type at all,
   so the call cost `[Unknown]`.
-- A field `assume` in your own spec for a dependency's type is now read when
-  that dependency's fallback bodies are walked. The walk ran before those lines
-  were folded in, so it resolved field calls without them.
 
 ## [0.15.0] - 2026-08-23
 
@@ -632,6 +631,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gleam_yielder`, `gleam_crypto`, `lustre`, `lustre_http`, `simplifile`,
   `filepath`, `tom`.
 
+[0.16.0]: https://github.com/alvivi/graded/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/alvivi/graded/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/alvivi/graded/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/alvivi/graded/compare/v0.12.1...v0.13.0
