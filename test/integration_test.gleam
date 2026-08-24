@@ -9022,6 +9022,66 @@ fn hidden() -> Nil
   |> should.be_true
 }
 
+// A fallback body calling a function-typed field on an annotated parameter,
+// against the `assume` line the dependency ships for that field.
+//
+// The line is resolved by the receiver's nominal type, and the only reading of
+// that type here is the parameter's own annotation — girard annotates no
+// dependency's source, so the walk holds no inferred type for `r`. That
+// annotation names no module, and the shipped line qualifies its type by one, so
+// the type is keyed by the module the walk is in as well as bare. Keyed bare
+// alone the line went unmatched, the call stayed polymorphic in `r.run`, and
+// this consumer — constructing the record with a pure function — specialized the
+// declared `[Disk]` away into a passing `check ... : []`.
+pub fn a_dependency_fallbacks_field_call_reads_its_declared_line_test() {
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/dep_fallback_field_line",
+      package: "proj",
+      spec: "check proj.caller : []\n",
+      sources: [
+        #(
+          "proj.gleam",
+          "import dep/store
+
+pub fn quiet() -> Nil {
+  Nil
+}
+
+pub fn caller() -> Nil {
+  store.insert(store.Runner(run: quiet))
+}
+",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: "assume dep/store : []
+assume dep/store.Runner.run : [Disk]
+",
+      dependency_sources: [
+        #(
+          "dep/store.gleam",
+          "pub type Runner {
+  Runner(run: fn() -> Nil)
+}
+
+@external(javascript, \"./store.mjs\", \"insert\")
+pub fn insert(r: Runner) -> Nil {
+  r.run()
+}
+",
+        ),
+      ],
+    )
+  let assert Ok(results) = graded.run(root)
+  support.cleanup(root)
+  let assert [violation] =
+    list.flat_map(results, fn(result) { result.violations })
+  violation.function |> should.equal("caller")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
 // A fallback body in one dependency package calling one in another. `caller` is
 // the `@external` the consumer calls; the body it falls back to calls `callee`,
 // whose own fallback body reaches the disk. Both module paths are parameters

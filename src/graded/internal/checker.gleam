@@ -6752,26 +6752,48 @@ fn carries_unknown(term: EffectTerm) -> Bool {
 // construction-inferred nominal entry is never consulted — it holds package-wide
 // evidence keyed by type, not proof for this receiver.
 // The hand-written `type Type.field` line for a receiver's nominal type, with
-// the source that declares it. A construction-inferred entry keyed by the same
-// type does *not* qualify — it is package-wide nominal evidence, which must
-// never resolve an unproven receiver.
+// the source that declares it — the first of `keys` a line is written under. A
+// construction-inferred entry keyed by the same type does *not* qualify — it is
+// package-wide nominal evidence, which must never resolve an unproven receiver.
 fn declared_type_field(
   knowledge_base: KnowledgeBase,
-  receiver_type: option.Option(#(String, String)),
+  keys: List(#(String, String)),
   field: String,
 ) -> option.Option(#(types.TypeFieldEffect, LookupOrigin)) {
-  use #(module, type_name) <- option.then(receiver_type)
-  use field_effect <- option.then(
-    option.from_result(effects.lookup_type_field(
-      knowledge_base,
-      module,
-      type_name,
-      field,
-    )),
+  option.from_result(
+    list.find_map(keys, fn(key) {
+      let #(module, type_name) = key
+      use field_effect <- result.try(effects.lookup_type_field(
+        knowledge_base,
+        module,
+        type_name,
+        field,
+      ))
+      case field_effect.origin {
+        types.Declared(source:) -> Ok(#(field_effect, source))
+        types.Inferred -> Error(Nil)
+      }
+    }),
   )
-  case field_effect.origin {
-    types.Declared(source:) -> Some(#(field_effect, source))
-    types.Inferred -> None
+}
+
+// The keys a receiver's nominal type is looked up under.
+//
+// girard names the type's defining module, which keys a line exactly. The
+// syntactic parameter annotation (`r: Runner`) carries no module — it names a
+// type of the module the walk is in — so it keys both by that module, the form
+// every spec file writes a shipped line in, and bare, the form of a line written
+// without one. Trying only the bare key left a module-qualified line unmatched
+// wherever girard holds no type for the receiver: a dependency's own module,
+// which girard never annotates, or a function girard could not type.
+fn declared_type_field_keys(
+  receiver_type: option.Option(#(String, String)),
+  module_path: String,
+) -> List(#(String, String)) {
+  case receiver_type {
+    None -> []
+    Some(#("", type_name)) -> [#(module_path, type_name), #("", type_name)]
+    Some(qualified) -> [qualified]
   }
 }
 
@@ -6813,7 +6835,11 @@ fn resolve_unproven_field(
       // Rule 3: a hand-written `type Type.field` line, resolved by the
       // receiver's nominal type.
       let declared =
-        declared_type_field(knowledge_base, receiver_type, field_call.label)
+        declared_type_field(
+          knowledge_base,
+          declared_type_field_keys(receiver_type, context.module_path),
+          field_call.label,
+        )
       case declared {
         Some(#(field_effect, source)) -> {
           let #(term, memo) =
