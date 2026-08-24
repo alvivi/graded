@@ -543,12 +543,13 @@ pub fn prose_names_the_body_running_in_a_declarations_place_test() {
   // its place. That body is the whole of what the build reaches, so it is named
   // as the source rather than beside one — no `plus its Gleam fallback body`
   // line, which would read as a half added to a declaration that pays for none
-  // of it.
+  // of it. Walked, and it does nothing, so the answer is the empty set rather
+  // than a guess about a dependency's body.
   out_of_reach_outputs("graded_effect_fallback_in_reach", " {\n  Nil\n}")
   |> should.equal(#(
-    "dep/ffi.run has effects that could not be determined: [Unknown]
+    "dep/ffi.run is pure — no effects ([])
   source: its Gleam fallback body, which is what runs on the targets this build compiles",
-    "effects dep/ffi.run : [Unknown]
+    "effects dep/ffi.run : []
 // its Gleam fallback body, which is what runs on the targets this build compiles",
   ))
 }

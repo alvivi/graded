@@ -655,9 +655,12 @@ summary *about* is narrower: the modules that package ships, plus the names a
 scan of dependency source records as `@external`. A clause for anyone else's
 code — your own modules included — is dropped, so no dependency can overrule what
 your own body says it hands back. Where a
-dependency's external carries a fallback body that runs on some target, its
-declaration is widened by `[Unknown]` — the union graded performs against a
-walked fallback in the defining package has no second operand one package away.
+dependency's external carries a fallback body that runs on some target, that body
+is walked — read from the dependency's own source, on the targets your build
+compiles — and its effects are unioned into the declaration, exactly as they are
+for one of your own. `[Unknown]` joins the union only where the walk reaches a
+name nothing declares, or where graded could not read the module the body lives
+in.
 
 `graded effect` answers for the public API, so a *private* `@external` exits
 non-zero there as a private ordinary function does — including one a valid

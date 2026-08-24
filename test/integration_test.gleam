@@ -2250,10 +2250,10 @@ pub fn plain_wrapper() -> Nil {
 }
 
 pub fn a_declared_dependency_external_with_a_running_fallback_widens_test() {
-  // The union a consumer cannot compute. On erlang the dependency's fallback
-  // body is what runs, and no consumer walks a dependency's bodies — so the
-  // declaration is widened by the [Unknown] that body stands for, rather than
-  // read as the whole story.
+  // The union, with the fallback half unknowable. On erlang the dependency's
+  // fallback body is what runs; walked, it reaches an external nothing declares,
+  // so the declaration is widened by the `[Unknown]` that body is worth rather
+  // than read as the whole story.
   let root = "build/foreign_values_dep_fallback"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
@@ -2263,8 +2263,11 @@ pub fn a_declared_dependency_external_with_a_running_fallback_widens_test() {
       "build/packages/dep/src/dep/ffi.gleam",
       "@external(javascript, \"dep_ffi\", \"run\")
 pub fn run() -> Nil {
-  Nil
+  hidden()
 }
+
+@external(erlang, \"dep_ffi\", \"hidden\")
+fn hidden() -> Nil
 ",
     ),
     #(
@@ -2446,20 +2449,27 @@ pub fn wrapper() -> Nil {
 pub fn every_command_reads_a_dependency_external_on_the_same_targets_test() {
   // One name, three surfaces. The dependency's declaration is for JavaScript,
   // this package names Erlang, and what runs there is the dependency's Gleam
-  // body that no consumer walks — so all three answer `[Unknown]`. The walk
-  // narrowed and the query did not, so `check` charged the caller `[Unknown]`
-  // while `effect` answered with the declaration's `[Time]`.
+  // body — walked, and it writes to disk — so all three answer `[Disk]` and none
+  // of them the declaration's `[Time]`. The walk narrowed and the query did not,
+  // so `check` charged the caller the body's effects while `effect` answered
+  // with the declaration.
   let root = "build/dep_external_command_agreement"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
     #("proj.graded", "check app.wrapper : []\n"),
-    #("build/packages/dep/dep.graded", "assume dep/ffi.run : [Time]\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "assume dep/ffi.run : [Time]\nassume dep/ffi.scribble : [Disk]\n",
+    ),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
       "@external(javascript, \"dep_ffi\", \"run\")
 pub fn run() -> Nil {
-  Nil
+  scribble()
 }
+
+@external(erlang, \"dep_ffi\", \"scribble\")
+pub fn scribble() -> Nil
 ",
     ),
     #(
@@ -2478,10 +2488,10 @@ pub fn wrapper() -> Nil {
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
   violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
 
   let assert Ok(answered) = graded.run_effect(root, "dep/ffi.run")
-  answered |> string.contains("[Unknown]") |> should.be_true()
+  answered |> string.contains("[Disk]") |> should.be_true()
   answered |> string.contains("Time") |> should.be_false()
   // The source line names what the charge came from, in `why`'s words: the body
   // running in the declaration's place. Naming the shipped spec instead pointed
@@ -2501,7 +2511,7 @@ pub fn wrapper() -> Nil {
   )
 
   let assert Ok(why) = graded.run_why(root, "app.wrapper")
-  why |> string.contains("[Unknown]") |> should.be_true()
+  why |> string.contains("[Disk]") |> should.be_true()
   why |> string.contains("Time") |> should.be_false()
   support.cleanup(root)
 }
@@ -4072,18 +4082,19 @@ pub fn w() -> Nil {
   support.cleanup(root)
 }
 
-pub fn a_dependency_declaration_the_build_excludes_is_unknown_test() {
+pub fn a_dependency_declaration_the_build_excludes_is_not_charged_test() {
   // The consumer builds for Erlang alone, and the dependency hands only
   // JavaScript to foreign code -- so what runs here is the dependency's Gleam
-  // body, which no consumer walks. Its declaration was trusted in full: the
-  // scan classified it excluded and dropped it, leaving the shipped
-  // `assume` line keyed by nothing that knew it answers for a target
-  // this build never compiles. That under-reports as readily as it
-  // over-reports, since the body reached instead may do anything at all.
+  // body, and its `[Disk]` declaration describes an implementation this build
+  // never compiles. That declaration was trusted in full: the scan classified it
+  // excluded and dropped it, leaving the shipped `assume` line keyed by nothing
+  // that knew it answers for a target this build never compiles. `check app.w :
+  // []` is the assertion — the body does nothing, and charging the declaration
+  // beside it would fail the line.
   let root = "build/dep_declaration_build_excludes"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
-    #("proj.graded", "check app.w : [Disk]\n"),
+    #("proj.graded", "check app.w : []\n"),
     #("build/packages/dep/dep.graded", "assume dep/ffi.run : [Disk]\n"),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
@@ -4104,11 +4115,9 @@ pub fn w() -> Nil {
     ),
   ])
   let assert Ok(results) = graded.run(root)
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
-  let assert [violation] = r.violations
-  violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  let assert Ok(answered) = graded.run_effect(root, "dep/ffi.run")
+  answered |> string.contains("Disk") |> should.be_false()
   support.cleanup(root)
 }
 
@@ -4191,25 +4200,31 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
-pub fn a_dependency_declaration_out_of_reach_answers_unknown_test() {
-  // The other direction, where the widening is *all* there is to say: the
+pub fn a_dependency_declaration_out_of_reach_answers_its_body_test() {
+  // The other direction, where the fallback is *all* there is to say: the
   // dependency's declaration covers JavaScript, this body runs on Erlang, and
-  // what runs there is the dependency's Gleam fallback — which no consumer
-  // walks. The declaration's `[Disk]` describes foreign code this call never
-  // reaches, so keeping it beside the `[Unknown]` charged the caller an effect
-  // of the wrong implementation, under a message already naming the body as
-  // the source.
+  // what runs there is the dependency's Gleam fallback, which reaches the net.
+  // The declaration's `[Disk]` describes foreign code this call never reaches,
+  // so keeping it beside the body's own effects charged the caller an effect of
+  // the wrong implementation, under a message already naming the body as the
+  // source.
   let root = "build/dep_declaration_out_of_reach"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
     #("proj.graded", "assume app.a : []\ncheck app.a : [Disk]\n"),
-    #("build/packages/dep/dep.graded", "assume dep/ffi.run : [Disk]\n"),
+    #(
+      "build/packages/dep/dep.graded",
+      "assume dep/ffi.run : [Disk]\nassume dep/ffi.reach : [Net]\n",
+    ),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
       "@external(javascript, \"dep_ffi\", \"run\")
 pub fn run() -> Nil {
-  Nil
+  reach()
 }
+
+@external(erlang, \"dep_ffi\", \"reach\")
+pub fn reach() -> Nil
 ",
     ),
     #(
@@ -4228,29 +4243,34 @@ pub fn a() -> Nil {
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
   violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  |> should.equal(types.Specific(set.from_list(["Net"])))
   support.cleanup(root)
 }
 
-pub fn the_effect_fast_path_widens_a_dependency_fallback_test() {
+pub fn the_effect_fast_path_defers_a_dependency_fallback_test() {
   // The spec declares the dependency function, so the fast path could answer
   // from the spec alone — but the dependency's own source says the name is
-  // `@external` with a running fallback, which widens the answer by the
-  // `[Unknown]` no consumer can walk. The query has to say what the callers are
-  // charged, so it reads that one dependency module before answering.
+  // `@external` with a running fallback, and what that body does is added to the
+  // declaration by a walk the fast path performs no part of. The query has to
+  // say what the callers are charged, so it reads that one dependency module,
+  // sees a body runs, and hands the name to the full context.
   let root = "build/effect_fast_path_dep_fallback"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "assume dep/ffi.run : [Time]\ncheck app.wrapper : [Time]\n",
+      "assume dep/ffi.run : [Time]\nassume dep/ffi.reach : [Net]\n"
+        <> "check app.wrapper : [Time]\n",
     ),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
       "@external(javascript, \"dep_ffi\", \"run\")
 pub fn run() -> Nil {
-  Nil
+  reach()
 }
+
+@external(erlang, \"dep_ffi\", \"reach\")
+pub fn reach() -> Nil
 ",
     ),
     #(
@@ -4269,10 +4289,15 @@ pub fn wrapper() -> Nil {
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
   violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Time", "Unknown"])))
-  // And what the query answers for the same name.
+  |> should.equal(types.Specific(set.from_list(["Time", "Net"])))
+  // And what the query answers for the same name: the declaration the spec
+  // states, plus the body it says nothing about.
   let assert Ok(answered) = graded.run_effect(root, "dep/ffi.run")
-  answered |> string.contains("Unknown") |> should.be_true()
+  answered |> string.contains("Net") |> should.be_true()
+  answered
+  |> should.equal(
+    graded.run_effect_from_project(root, "dep/ffi.run") |> should.be_ok(),
+  )
   support.cleanup(root)
 }
 
@@ -8883,5 +8908,363 @@ pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
   violation.function |> should.equal("wrap")
   violation.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  support.cleanup(root)
+}
+
+// A dependency's running Gleam fallback body
+//
+// An `@external` a dependency declares for one target only falls back to its
+// Gleam body on the others. A consumer that compiles those targets runs that
+// body, so it is charged what the body does — walked, the way one of this
+// package's own fallback bodies is, rather than assumed to be anything.
+
+// What a consumer's call into a dependency's `@external` is charged, with that
+// external's fallback body running on a target the consumer compiles.
+fn dependency_fallback_violations(
+  name: String,
+  dependency_spec: String,
+  dependency_source: String,
+) -> List(types.Violation) {
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/" <> name,
+      package: "proj",
+      spec: "check proj.caller : []\n",
+      sources: [
+        #(
+          "proj.gleam",
+          "import dep/store
+
+pub fn caller() -> Nil {
+  store.insert()
+}
+",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: dependency_spec,
+      dependency_sources: [#("dep/store.gleam", dependency_source)],
+    )
+  let assert Ok(results) = graded.run(root)
+  let violations = list.flat_map(results, fn(result) { result.violations })
+  // The query agrees with what `check` charged, whichever path answered it.
+  let assert Ok(answered) = graded.run_effect(root, "dep/store.insert")
+  answered
+  |> should.equal(
+    graded.run_effect_from_project(root, "dep/store.insert") |> should.be_ok(),
+  )
+  support.cleanup(root)
+  violations
+}
+
+// The shape the standard library's dicts and sets have: a JavaScript external
+// whose Gleam body calls a private Erlang one beside it. On Erlang the body is
+// what runs, and every name it reaches is declared, so the call costs nothing.
+pub fn a_dependency_fallback_body_is_walked_test() {
+  dependency_fallback_violations(
+    "dep_fallback_walked",
+    "assume dep/store : []\n",
+    "@external(javascript, \"./store.mjs\", \"insert\")
+pub fn insert() -> Nil {
+  do_insert()
+}
+
+@external(erlang, \"dep_ffi\", \"insert\")
+fn do_insert() -> Nil
+",
+  )
+  |> should.equal([])
+}
+
+// Walked, not waved through: what the body reaches is charged, so a fallback
+// that calls a declared effectful name costs that effect and no more. The
+// declaration covers JavaScript, the body covers Erlang, and the consumer
+// compiling both pays the union.
+pub fn a_dependency_fallback_body_charges_what_it_calls_test() {
+  let assert [violation] =
+    dependency_fallback_violations(
+      "dep_fallback_charges",
+      "assume dep/store : []\nassume dep/store.shout : [Stdout]\n",
+      "@external(javascript, \"./store.mjs\", \"insert\")
+pub fn insert() -> Nil {
+  shout()
+}
+
+@external(erlang, \"dep_ffi\", \"shout\")
+pub fn shout() -> Nil
+",
+    )
+  violation.function |> should.equal("caller")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+// The conservative half of the same rule: a body reaching a name nothing
+// declares is still `[Unknown]`. The declaration on the line above states what
+// the foreign implementation does and says nothing about the body beside it.
+pub fn a_dependency_fallback_body_reaching_nothing_stays_unknown_test() {
+  let assert [violation] =
+    dependency_fallback_violations(
+      "dep_fallback_unknown",
+      "assume dep/store.insert : []\n",
+      "@external(javascript, \"./store.mjs\", \"insert\")
+pub fn insert() -> Nil {
+  hidden()
+}
+
+@external(erlang, \"dep_ffi\", \"hidden\")
+fn hidden() -> Nil
+",
+    )
+  violation.function |> should.equal("caller")
+  violation.explanation.actual
+  |> types.contains_unknown
+  |> should.be_true
+}
+
+// A fallback body in one dependency package calling one in another. `caller` is
+// the `@external` the consumer calls; the body it falls back to calls `callee`,
+// whose own fallback body reaches the disk. Both module paths are parameters
+// because the walk's order has to hold whichever way they sort: the packages'
+// directories are enumerated in no promised order, and a pass that took the
+// modules as they came would summarize `caller` against an unwalked `callee`
+// half the time.
+fn dependency_fallback_chain_violations(
+  name: String,
+  caller_path: String,
+  callee_path: String,
+) -> List(types.Violation) {
+  let root =
+    support.write_fixture("build/" <> name, [
+      #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+      #("proj.graded", "check proj.wrap : []\n"),
+      #("proj.gleam", "import " <> caller_path <> "
+
+pub fn wrap() -> Nil {
+  caller.run()
+}
+"),
+      #(
+        "build/packages/upstream/src/" <> caller_path <> ".gleam",
+        "import " <> callee_path <> "
+
+@external(javascript, \"upstream_ffi\", \"run\")
+pub fn run() -> Nil {
+  callee.run()
+}
+",
+      ),
+      #(
+        "build/packages/downstream/downstream.graded",
+        "assume " <> callee_path <> ".scribble : [Disk]\n",
+      ),
+      #(
+        "build/packages/downstream/src/" <> callee_path <> ".gleam",
+        "@external(javascript, \"downstream_ffi\", \"run\")
+pub fn run() -> Nil {
+  scribble()
+}
+
+@external(erlang, \"downstream_ffi\", \"scribble\")
+pub fn scribble() -> Nil
+",
+      ),
+    ])
+  let assert Ok(results) = graded.run(root)
+  let violations = list.flat_map(results, fn(result) { result.violations })
+  support.cleanup(root)
+  violations
+}
+
+// The callee sorts after the caller, so a pass following path order walks the
+// caller first and summarizes it against an unwalked callee.
+pub fn a_dependency_fallback_chain_is_walked_callee_first_test() {
+  let assert [violation] =
+    dependency_fallback_chain_violations(
+      "dep_fallback_chain_forward",
+      "a/caller",
+      "z/callee",
+    )
+  violation.function |> should.equal("wrap")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+// The same chain the other way round, where path order happens to be the walk
+// order. Both arrangements answer the same, which is the point of sorting.
+pub fn a_dependency_fallback_chain_is_walked_in_either_order_test() {
+  let assert [violation] =
+    dependency_fallback_chain_violations(
+      "dep_fallback_chain_reverse",
+      "z/caller",
+      "a/callee",
+    )
+  violation.function |> should.equal("wrap")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+// The within-module half of the same question, which the module ordering above
+// cannot settle: `a`'s fallback calls `b`'s and `b`'s calls `a`'s, so neither is
+// summarized against a settled summary of the other. The walk iterates the
+// component to a fixed point, as it does for one of this package's own.
+pub fn a_dependency_fallback_cycle_settles_to_one_summary_test() {
+  let assert [violation] =
+    dependency_fallback_violations(
+      "dep_fallback_mutual",
+      "assume dep/store : []\nassume dep/store.scribble : [Disk]\n",
+      "@external(javascript, \"store_ffi\", \"insert\")
+pub fn insert() -> Nil {
+  other(1)
+}
+
+@external(javascript, \"store_ffi\", \"a\")
+fn a(n: Int) -> Nil {
+  case n {
+    0 -> scribble()
+    _ -> other(n - 1)
+  }
+}
+
+@external(javascript, \"store_ffi\", \"b\")
+fn other(n: Int) -> Nil {
+  a(n - 1)
+}
+
+@external(erlang, \"store_ffi\", \"scribble\")
+pub fn scribble() -> Nil
+",
+    )
+  violation.function |> should.equal("caller")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+// What `infer` writes for a caller of a dependency external whose fallback body
+// runs, and that a second run writes nothing more. The walk happens where both
+// commands fold their layers, so the line `infer` publishes for consumers is the
+// charge `check` levies here.
+pub fn infer_publishes_a_walked_dependency_fallback_test() {
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/dep_fallback_infer",
+      package: "proj",
+      spec: "",
+      sources: [
+        #(
+          "proj.gleam",
+          "import dep/store
+
+pub fn caller() -> Nil {
+  store.insert()
+}
+",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: "assume dep/store : []\nassume dep/store.shout : [Stdout]\n",
+      dependency_sources: [
+        #(
+          "dep/store.gleam",
+          "@external(javascript, \"./store.mjs\", \"insert\")
+pub fn insert() -> Nil {
+  shout()
+}
+
+@external(erlang, \"dep_ffi\", \"shout\")
+pub fn shout() -> Nil
+",
+        ),
+      ],
+    )
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  written
+  |> string.contains("effects proj.caller : [Stdout]")
+  |> should.be_true()
+  // And the second run has nothing to add: the walk is part of the fold both
+  // runs perform, not state the first one left behind.
+  let assert Ok(preview) = graded.run_infer_dry_run(root)
+  preview |> should.equal("graded: no changes")
+  support.cleanup(root)
+}
+
+// The narrowing the walk does not disturb: a dependency external declaring every
+// target the consumer compiles has no body that runs, so its declaration is the
+// whole charge and nothing is unioned into it.
+pub fn a_dependency_external_covering_every_target_charges_its_declaration_test() {
+  let assert [violation] =
+    dependency_fallback_violations(
+      "dep_fallback_no_body",
+      "assume dep/store.insert : [Disk]\n",
+      "@external(erlang, \"dep_ffi\", \"insert\")
+@external(javascript, \"./store.mjs\", \"insert\")
+pub fn insert() -> Nil {
+  shout()
+}
+
+@external(erlang, \"dep_ffi\", \"shout\")
+pub fn shout() -> Nil
+",
+    )
+  violation.function |> should.equal("caller")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+// Two dependency modules importing each other, which the ordering pass cannot
+// sort. Gleam's compiler forbids the shape, so no build produces it — but graded
+// parses dependency source without compiling it, and a walk that trusted the
+// graph to be acyclic would have nothing to fall back on. Both modules are
+// dropped from the walk and keep the `[Unknown]` an unwalked body carries, and
+// the rest of the run carries on.
+pub fn a_cycle_between_dependency_fallbacks_stays_unknown_test() {
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/dep_fallback_cycle",
+      package: "proj",
+      spec: "check proj.caller : []\n",
+      sources: [
+        #(
+          "proj.gleam",
+          "import dep/x
+
+pub fn caller() -> Nil {
+  x.run()
+}
+",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: "assume dep/x : []\nassume dep/y : []\n",
+      dependency_sources: [
+        #(
+          "dep/x.gleam",
+          "import dep/y
+
+@external(javascript, \"x_ffi\", \"run\")
+pub fn run() -> Nil {
+  y.helper()
+}
+",
+        ),
+        #(
+          "dep/y.gleam",
+          "import dep/x
+
+@external(javascript, \"y_ffi\", \"helper\")
+pub fn helper() -> Nil {
+  x.run()
+}
+",
+        ),
+      ],
+    )
+  let assert Ok(results) = graded.run(root)
+  let assert [violation] = list.flat_map(results, fn(r) { r.violations })
+  violation.function |> should.equal("caller")
+  violation.explanation.actual
+  |> types.contains_unknown
+  |> should.be_true
   support.cleanup(root)
 }

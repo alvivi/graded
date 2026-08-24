@@ -226,7 +226,7 @@ pub fn make() -> foo.Resolver { todo }
 fn registry_from_source_dir(
   source_dir: String,
 ) -> signatures.SignatureRegistry {
-  use acc, module_path, parsed <- signatures.fold_source_dir(
+  use acc, module_path, _source_path, parsed <- signatures.fold_source_dir(
     source_dir,
     signatures.empty(),
   )

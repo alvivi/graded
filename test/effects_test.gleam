@@ -2036,3 +2036,74 @@ pub fn no_active_targets_charges_both_halves_test() {
     |> effects.with_active_targets(option.None)
   charged(base, name) |> should.equal(Specific(set.from_list(["Disk", "Time"])))
 }
+
+// A dependency external's charge, with and without a walked fallback body
+//
+// `[Unknown]` enters such a charge twice: `lookup` widens the *declaration*
+// term itself, and `running_fallback_term` contributes the fallback half. Only
+// the second reads the summaries, so a walked body that stood down one entry
+// and not the other would leave the `[Unknown]` in place under the
+// declaration's own source, where nothing downstream can subtract it. This pair
+// is the one place both entries are visible without a fixture on disk.
+
+fn dependency_external_base() -> effects.KnowledgeBase {
+  effects.new_knowledge_base()
+  |> effects.with_package_targets(
+    types.NamedTargets(set.from_list(["erlang", "javascript"])),
+  )
+  |> effects.with_externals(
+    [external("dep/ffi", "run", ["Time"])],
+    types.DependencySpec("dep"),
+  )
+  |> effects.with_dependency_foreign(
+    dict.from_list([
+      #(
+        QualifiedName("dep/ffi", "run"),
+        types.ForeignFunction(
+          runs_fallback_body: True,
+          compiled_targets: set.from_list(["erlang", "javascript"]),
+          declared_targets: set.from_list(["javascript"]),
+        ),
+      ),
+    ]),
+  )
+}
+
+pub fn a_walked_dependency_fallback_charges_its_summary_test() {
+  let charge =
+    dependency_external_base()
+    |> effects.with_fallback_summaries(
+      dict.from_list([
+        #(
+          QualifiedName("dep/ffi", "run"),
+          #(
+            effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+            [],
+          ),
+        ),
+      ]),
+    )
+    |> effects.declared_charge(QualifiedName("dep/ffi", "run"))
+  // The declaration's targets and the body's, each charged once and neither
+  // widened: no `[Unknown]` survives anywhere in the total.
+  charge.term
+  |> effect_term.to_effect_set
+  |> should.equal(Specific(set.from_list(["Time", "Stdout"])))
+  charge.fallback
+  |> option.map(effect_term.to_effect_set)
+  |> should.equal(Some(Specific(set.from_list(["Stdout"]))))
+}
+
+pub fn an_unwalked_dependency_fallback_stays_unknown_test() {
+  // The same base with nothing walked: both entries fire, and the total names
+  // the body graded could not read.
+  let charge =
+    dependency_external_base()
+    |> effects.declared_charge(QualifiedName("dep/ffi", "run"))
+  charge.term
+  |> effect_term.to_effect_set
+  |> should.equal(Specific(set.from_list(["Time", "Unknown"])))
+  charge.fallback
+  |> option.map(effect_term.to_effect_set)
+  |> should.equal(Some(Specific(set.from_list(["Unknown"]))))
+}

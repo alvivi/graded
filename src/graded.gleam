@@ -701,6 +701,12 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     |> with_spec_declared_returns(spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
+    // Every layer that can key a dependency name is folded by here — the
+    // catalog, the dependency specs, the module-level assumes, and a spec-less
+    // path dependency's own inference — so a fallback body is walked against
+    // everything a caller of it would resolve against. Before this package's
+    // own inference, whose walks read the summaries this leaves behind.
+    |> with_dependency_fallback_effects(dep_sources, registry, package_targets)
     |> with_committed_spec(spec, stale_externals)
     // Recorded before the inference pass below, so an `@external` resolves to
     // what declares it while this project's own modules are being inferred, not
@@ -1722,17 +1728,22 @@ fn spec_answer(
       // the answer cannot be the declaration alone where the full context says
       // more.
       use <- bool.guard(
-        when: runs_a_fallback_body(parsed, module, name),
+        when: runs_a_fallback_body(parsed.foreign, name),
+        return: Error(Nil),
+      )
+      let dependency_foreign =
+        dependency_foreign_for(directory, project_modules, module, targets)
+      // And a *dependency's* external whose fallback body runs, for the same
+      // reason: the full context walks that body during its dependency pass and
+      // charges the name what it does, so answering from the declaration alone
+      // would quote a charge `check` does not levy.
+      use <- bool.guard(
+        when: runs_a_fallback_body(dependency_foreign, name),
         return: Error(Nil),
       )
       answer_from(
         with_module_facts(spec_knowledge_base(spec, stale, targets), parsed)
-          |> effects.with_dependency_foreign(dependency_foreign_for(
-            directory,
-            project_modules,
-            module,
-            targets,
-          )),
+          |> effects.with_dependency_foreign(dependency_foreign),
         name,
       )
     }
@@ -1778,18 +1789,18 @@ fn spec_knowledge_base(
   |> with_spec_type_fields(spec)
 }
 
-// Whether the queried name is one of this package's `@external`s that falls
-// back to Gleam on some target it is compiled for. The parsed module already
-// says so, so the test costs nothing beyond the file the fast path read anyway.
+// Whether the queried name is an `@external` that falls back to Gleam on some
+// target it is compiled for, according to `foreign` — either scan's map, since
+// the question and its consequence are the same for this package's source and a
+// dependency's. A body runs, and the fast path walks none.
 fn runs_a_fallback_body(
-  parsed: ModuleFacts,
-  module: String,
+  foreign: Dict(QualifiedName, types.ForeignFunction),
   name: String,
 ) -> Bool {
   case annotation.split_function_name(name) {
     Error(Nil) -> False
-    Ok(#(_module, function)) ->
-      case dict.get(parsed.foreign, QualifiedName(module:, function:)) {
+    Ok(#(module, function)) ->
+      case dict.get(foreign, QualifiedName(module:, function:)) {
         Ok(types.ForeignFunction(runs_fallback_body:, ..)) -> runs_fallback_body
         Error(Nil) -> False
       }
@@ -1802,10 +1813,10 @@ fn runs_a_fallback_body(
 // keying one, so nothing over there can change the answer. For a dependency
 // module — which a per-function `assume` line may name — the
 // declaration alone understates an `@external` whose Gleam fallback body runs,
-// because no consumer walks that body and the full context therefore charges
-// the declaration unioned with `[Unknown]`. One module is located and parsed to
-// settle it, so the fast path cannot answer where the full context would say
-// more.
+// because the full context walks that body and unions what it does into the
+// charge. One module is located and parsed to settle it, so the fast path can
+// tell that case and hand it back rather than answer where the full context
+// would say more.
 fn dependency_foreign_for(
   directory: String,
   project_modules: Dict(String, String),
@@ -3016,6 +3027,9 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     |> with_spec_declared_returns(spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
+    // As in `project_context`: after every layer that can key a dependency name,
+    // and before this package's own inference reads the summaries.
+    |> with_dependency_fallback_effects(dep_sources, registry, package_targets)
     |> effects.with_foreign_functions(project_foreign_functions(
       index,
       package_targets,
@@ -3256,7 +3270,9 @@ fn fold_inferred_module(
 // `@external` is charged the same effects whichever pass ran: the one that
 // reports violations, and the one that writes the spec and cache. A write pass
 // that skipped it would publish a caller as pure over an external whose
-// fallback is not — and publish it for consumers, who have no body to walk.
+// fallback is not — and publish it for consumers, whose own walk of this
+// package's bodies is a separate pass over dependency source
+// (`with_dependency_fallback_effects`) and cannot correct a shipped line.
 //
 // The walk needs only the callees already folded, which topological order
 // guarantees, so it belongs immediately before the module's own inference.
@@ -3269,20 +3285,32 @@ fn with_module_fallback_effects(
   girard_fn_typed: Dict(String, Set(String)),
   package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
+  fold_fallback_summaries(
+    knowledge_base,
+    module_path,
+    checker.fallback_effects(
+      module,
+      module_path,
+      knowledge_base,
+      registry,
+      module_types,
+      girard_fn_typed,
+      package_targets,
+    ),
+  )
+}
+
+// Fold one module's fallback summaries in, qualified by its module path. Both
+// walks — this package's modules and its dependencies' — key their results the
+// same way, so which one produced them leaves no mark on the base.
+fn fold_fallback_summaries(
+  knowledge_base: KnowledgeBase,
+  module_path: String,
+  summaries: Dict(String, #(EffectTerm, List(types.ParamBound))),
+) -> KnowledgeBase {
   effects.with_fallback_summaries(
     knowledge_base,
-    qualify_bare_names(
-      checker.fallback_effects(
-        module,
-        module_path,
-        knowledge_base,
-        registry,
-        module_types,
-        girard_fn_typed,
-        package_targets,
-      ),
-      module_path,
-    ),
+    qualify_bare_names(summaries, module_path),
   )
 }
 
@@ -3534,6 +3562,21 @@ type ScannedModule {
     // own functions are foreign, since a stale line for one is exactly what
     // this map exists to refuse.
     foreign: Dict(types.QualifiedName, types.ForeignFunction),
+    // The file this copy was read from, and the module paths it imports. Kept
+    // for the fallback-body pass, which re-reads and re-parses the modules whose
+    // bodies it walks: the path names *this* copy, the one the build compiles
+    // against, so a duplicate left elsewhere on disk is never the one walked.
+    // The imports order that pass, so a fallback calling another dependency's
+    // fallback is walked after it.
+    //
+    // Two cheap facts of the parse rather than the parsed module itself: an AST
+    // kept on this record would live as long as the context that holds the whole
+    // scan, and the worst case is every module of every dependency at once.
+    // Whether the pass has anything to walk here is not among them — `foreign`
+    // above already answers it, and a second copy of that answer is one more
+    // thing to keep in step with how those entries are selected.
+    source_path: String,
+    imports: List(String),
   )
   // The file would not read or parse. Recorded rather than dropped so it
   // shadows any copy of the path scanned before it, and contributes nothing in
@@ -3578,6 +3621,148 @@ fn dependency_foreign(
     ParsedModule(foreign:, ..) -> dict.merge(acc, foreign)
     UnreadableModule -> acc
   }
+}
+
+// Dependency fallback bodies
+//
+// An `@external` a dependency declares for one target only falls back to its
+// Gleam body on the others, and a consumer compiling those targets runs that
+// body. Walked here, once per command, so the consumer is charged what it does
+// rather than the `[Unknown]` an unwalked body is worth.
+
+// Fold what every dependency `@external`'s running Gleam fallback body does into
+// `knowledge_base`.
+//
+// Run once the spec layers are folded — the catalog, the dependency specs, the
+// module-level assumes and any spec-less path dependency's own inference — and
+// before this package's modules are inferred, so a body reaching a dependency
+// name resolves it against everything that can key it, and every later lookup
+// of a walked external reads the summary rather than the widening.
+//
+// The scan kept a path rather than an AST, so each module is read and parsed
+// again here and dropped before the next: one AST live at a time, as during the
+// scan itself.
+fn with_dependency_fallback_effects(
+  knowledge_base: KnowledgeBase,
+  dep_sources: DependencySources,
+  registry: SignatureRegistry,
+  package_targets: types.PackageTargets,
+) -> KnowledgeBase {
+  let retained = retained_fallback_modules(dep_sources)
+  use <- bool.guard(when: dict.is_empty(retained), return: knowledge_base)
+  use kb, #(module_path, retained) <- list.fold(
+    dependency_walk_order(retained),
+    knowledge_base,
+  )
+  // A re-parse that fails is the `UnreadableModule` case one stage later: the
+  // module is skipped, and its externals keep the `[Unknown]` an unwalked body
+  // carries.
+  case read_and_parse_gleam_or_nil(retained.source_path) {
+    Error(Nil) -> kb
+    Ok(module) ->
+      fold_fallback_summaries(
+        kb,
+        module_path,
+        checker.dependency_fallback_effects(
+          module,
+          module_path,
+          kb,
+          registry,
+          package_targets,
+        ),
+      )
+  }
+}
+
+// One dependency module the fallback-body pass has something to walk in: where
+// its winning copy was read from, and the module paths it imports.
+type RetainedModule {
+  RetainedModule(source_path: String, imports: List(String))
+}
+
+// Those modules, keyed by module path. Which they are is read off `foreign`
+// rather than recorded beside it, so the pass and the scan cannot come to
+// different answers about which `@external`s fall back to a running body.
+fn retained_fallback_modules(
+  sources: DependencySources,
+) -> Dict(String, RetainedModule) {
+  use acc, module_path, scanned <- dict.fold(sources.modules, dict.new())
+  case scanned {
+    UnreadableModule -> acc
+    ParsedModule(foreign:, source_path:, imports:, ..) ->
+      case
+        list.any(dict.values(foreign), fn(entry) { entry.runs_fallback_body })
+      {
+        False -> acc
+        True ->
+          dict.insert(acc, module_path, RetainedModule(source_path:, imports:))
+      }
+  }
+}
+
+// The order the retained modules are walked in: callees before callers, so a
+// fallback body calling another dependency's fallback reads its summary rather
+// than the `[Unknown]` an unwalked one carries.
+//
+// One graph over every retained module, not one per package: a fallback in one
+// package can call a fallback in another, and the scan keys by module path with
+// package ownership merged away, so there is no per-package boundary to sort
+// within. Edges are imports restricted to the retained modules — a retained
+// module reaching another only through an unretained one does not reach its
+// *summary*, since the intermediate's own call is a resolved lookup rather than
+// a walk.
+//
+// Expected acyclic, because the winning copies are the ones the build compiles
+// against and the compiler accepted that set — but not relied on, which is why
+// the components rather than a plain sort: `scc_order` groups a cycle instead of
+// rejecting the whole graph, so the modules that *can* be ordered still are, and
+// only the members of a cycle are dropped. Those keep today's `[Unknown]`, and a
+// module merely downstream of one reads it as an ordinary unwalked name.
+fn dependency_walk_order(
+  retained: Dict(String, RetainedModule),
+) -> List(#(String, RetainedModule)) {
+  let components = topo.scc_order(fallback_import_graph(retained))
+  warn_on_cyclic_modules(components)
+  use component <- list.filter_map(components)
+  // A component of more than one module is a cycle: its members import each
+  // other, so no order settles either against the other's summary.
+  use module_path <- result.try(case component {
+    [only] -> Ok(only)
+    _ -> Error(Nil)
+  })
+  dict.get(retained, module_path)
+  |> result.map(fn(retained) { #(module_path, retained) })
+}
+
+// Name the modules dropped for importing each other, once for the whole graph.
+fn warn_on_cyclic_modules(components: List(List(String))) -> Nil {
+  let cyclic =
+    list.flat_map(components, fn(component) {
+      case component {
+        [_] -> []
+        cycle -> cycle
+      }
+    })
+  use <- bool.guard(when: cyclic == [], return: Nil)
+  io.println_error(
+    "graded: warning: dependency modules import each other in a cycle ("
+    <> string.join(list.sort(cyclic, string.compare), ", ")
+    <> "); their Gleam fallback bodies are not walked, and callers of the "
+    <> "`@external`s they declare are charged [Unknown]",
+  )
+}
+
+// The import graph over the retained modules, with both ends of every edge among
+// them: an import of anything else names no node, and a graph edge to a node it
+// does not hold orders nothing.
+fn fallback_import_graph(
+  retained: Dict(String, RetainedModule),
+) -> Dict(String, Set(String)) {
+  let every = set.from_list(dict.keys(retained))
+  use _module_path, module <- dict.map_values(retained)
+  module.imports
+  |> list.filter(set.contains(every, _))
+  |> set.from_list
 }
 
 // What a dependency's own source says about one name: the three answers the
@@ -3679,7 +3864,7 @@ fn source_dir_sources(
   source_dir: String,
   package_targets: types.PackageTargets,
 ) -> DependencySources {
-  use acc, module_path, parsed <- signatures.fold_source_dir(
+  use acc, module_path, source_path, parsed <- signatures.fold_source_dir(
     source_dir,
     empty_dependency_sources(),
   )
@@ -3698,10 +3883,17 @@ fn source_dir_sources(
           module_path,
           package_targets,
         ),
+        source_path:,
+        imports: module_import_paths(module),
       )
     Error(Nil) -> UnreadableModule
   }
   DependencySources(modules: dict.insert(acc.modules, module_path, scanned))
+}
+
+// The module paths a module imports.
+fn module_import_paths(module: glance.Module) -> List(String) {
+  list.map(module.imports, fn(definition) { definition.definition.module })
 }
 
 // Every function a module defines, public and private alike.

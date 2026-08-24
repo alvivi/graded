@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- A call into a dependency `@external` whose Gleam fallback body runs on a
+  target you compile is now charged what that body does — read from the
+  dependency's source under `build/packages` and walked like one of your own —
+  instead of `[Unknown]`. Callers of `gleam/dict.insert` and its stdlib kin
+  lose their inherited `[Unknown]`, so a `check f : [Unknown]` written over
+  the old answer now fails, and a committed `effects` line for such a caller
+  changes on the next `graded infer`.
+- `graded effect` for a dependency `@external` with a running fallback now reads
+  that dependency's module before answering, so the query and `graded check`
+  quote the same charge.
+
 ## [0.15.0] - 2026-08-23
 
 ### Changed
