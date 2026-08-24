@@ -5,7 +5,7 @@ import gleeunit/should
 import graded/internal/annotation
 import graded/internal/types.{
   AnnotationLine, BlankLine, Check, CommentLine, Effects, ExternalLine,
-  TypeFieldLine,
+  RetainedAssumeLine, TypeFieldLine,
 }
 import qcheck
 
@@ -76,6 +76,56 @@ pub fn sorts_effect_labels_test() {
   |> should.equal("effects handler : [Db, Http, Stdout]\n")
 }
 
+// Unknown clauses
+//
+// Not string identity: the formatter canonically moves the known `returns`
+// first, so a file that wrote it last cannot come back byte-identical. The
+// three properties that do hold are asserted instead.
+
+pub fn moves_the_known_clause_first_test() {
+  let input =
+    "effects m.f : [] where future : fn(a,   b) ->  [X], returns : [A], other : [Y]"
+  let assert Ok(file) = annotation.parse_file(input)
+  annotation.format_sorted(file)
+  |> should.equal(
+    "effects m.f : [] where returns : [A], future : fn(a,   b) ->  [X], other : [Y]\n",
+  )
+}
+
+pub fn wraps_a_clause_region_past_the_width_test() {
+  let input =
+    "effects m.longer_function_name : [] where future : [X], returns : [A], other : [Y]"
+  let assert Ok(file) = annotation.parse_file(input)
+  annotation.format_sorted(file)
+  |> should.equal(
+    "effects m.longer_function_name : []
+  where returns : [A],
+        future : [X],
+        other : [Y]
+",
+  )
+}
+
+pub fn unknown_clause_formatting_is_idempotent_test() {
+  let input =
+    "effects m.f : [] where future : fn(a,   b) ->  [X], returns : [A], other : [Y]"
+  let assert Ok(file) = annotation.parse_file(input)
+  let once = annotation.format_sorted(file)
+  let assert Ok(reparsed) = annotation.parse_file(once)
+  annotation.format_sorted(reparsed) |> should.equal(once)
+}
+
+pub fn a_payload_interior_never_moves_test() {
+  // Neither pass may touch the bytes between an unknown payload's boundaries:
+  // this version cannot canonically render a grammar it does not know.
+  let input = "effects m.f : [] where future : fn(a,   b) ->  [X,  Y]"
+  let assert Ok(file) = annotation.parse_file(input)
+  let once = annotation.format_sorted(file)
+  let assert Ok(reparsed) = annotation.parse_file(once)
+  let assert [AnnotationLine(_, [clause]), BlankLine] = reparsed.lines
+  clause.payload |> should.equal("fn(a,   b) ->  [X,  Y]")
+}
+
 // Ordering invariants (property)
 //
 // qcheck properties over generated spec files: format_sorted keeps sections
@@ -92,13 +142,15 @@ pub fn format_sorted_section_order_test() {
   check_non_decreasing(indices)
 }
 
-// Externals and type fields share the `assume` section, so they share an index.
+// Externals, type fields and lines retained for their unknown clauses alone
+// share the `assume` section, so they share an index.
 fn section_index(line: types.GradedLine) -> Int {
   case line {
     CommentLine(_) -> 0
-    ExternalLine(_) -> 1
-    TypeFieldLine(_) -> 1
-    AnnotationLine(a) ->
+    ExternalLine(_, _) -> 1
+    TypeFieldLine(_, _) -> 1
+    RetainedAssumeLine(..) -> 1
+    AnnotationLine(a, _) ->
       case a.kind {
         Check -> 2
         Effects -> 3

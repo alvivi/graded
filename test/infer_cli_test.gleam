@@ -224,6 +224,87 @@ pub fn write_mode_starts_a_spec_without_a_leading_blank_line_test() {
 // A one-module project whose effects come from a declared external, so the
 // inferred lines don't depend on dependency sources being installed.
 
+// Unknown clauses through `infer`
+//
+// A clause key this version does not read survives every rewrite. Only a
+// version that understands the key can re-derive it, so a rewrite that dropped
+// one would delete from a committed file something nothing here can put back.
+
+pub fn infer_preserves_unknown_clauses_test() {
+  let root = "build/infer_unknown_clauses"
+  write_project(
+    root,
+    source(),
+    Spec(
+      "assume dep/x where returns.0 : [Net]
+assume ffi/console.log : [Stdout] where future : [X]
+check proj.greet : [Stdout] where raises : [Y]
+effects proj.quiet : [] where hints : [Z]
+",
+    ),
+  )
+
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(file) = annotation.parse_file(written)
+
+  // The `effects` line is the one an earlier draft called self-correcting: its
+  // annotation is replaced by the freshly inferred one, and its clause is not.
+  annotation.unknown_clause_lines(file)
+  |> should.equal([
+    #("dep/x", ["returns.0"]),
+    #("ffi/console.log", ["future"]),
+    #("proj.greet", ["raises"]),
+    #("proj.quiet", ["hints"]),
+  ])
+  support.cleanup(root)
+}
+
+pub fn infer_drops_a_stale_line_whole_test() {
+  // Dropping stays right where the subject itself is gone: `proj.vanished` is
+  // no function of the module, so nothing about the line survives.
+  let root = "build/infer_unknown_clauses_stale"
+  write_project(
+    root,
+    source(),
+    Spec("effects proj.vanished : [] where hints : [Z]\n"),
+  )
+
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  string.contains(written, "vanished") |> should.be_false()
+  string.contains(written, "hints") |> should.be_false()
+  support.cleanup(root)
+}
+
+pub fn dry_run_previews_a_statement_that_starts_wrapping_test() {
+  // A wrapping statement is one hunk of several physical lines, not several
+  // hunks: the preview's multi-line shape is pinned rather than discovered.
+  let root = "build/infer_dry_run_wrap"
+  let long_clause =
+    " where some_rather_long_future_key : [SomeLongPayloadLabel]"
+  write_project(
+    root,
+    source(),
+    Spec(
+      "assume ffi/console.log : [Stdout]\neffects proj.quiet : []"
+      <> long_clause
+      <> "\n",
+    ),
+  )
+
+  let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
+  changed_lines(preview)
+  |> should.equal([
+    "- effects proj.quiet : []" <> long_clause,
+    "+ effects proj.quiet : []",
+    "+  " <> long_clause,
+    "+ ",
+    "+ effects proj.greet : [Stdout]",
+  ])
+  support.cleanup(root)
+}
+
 type SpecFile {
   NoSpec
   Spec(contents: String)
@@ -381,10 +462,13 @@ pub fn infer_writes_a_clause_with_a_bound_for_every_variable_it_mentions_test() 
 
   let assert Ok(_) = graded.run_infer(root)
   let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  // Past 80 columns the clause region moves to a continuation line, and the
+  // reader joins it back into the one statement it spells.
   written
   |> string.trim
   |> should.equal(
-    "effects proj.traced(action: [action]) : [] where returns : fn(cb) -> [action([cb])]",
+    "effects proj.traced(action: [action]) : []
+  where returns : fn(cb) -> [action([cb])]",
   )
 
   // Re-inferring over what was just written changes nothing: the clause and its

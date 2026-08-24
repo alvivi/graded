@@ -27,13 +27,13 @@ import graded/internal/types.{
   NoKnownEffects, ParamBound, QualifiedName, ReceiverTypeUnresolved,
   RefusedDeclaredReturn, StaleFunctionExternalWarning, StaleReturnsClauseWarning,
   TUnion, TVar, TypeLine, UnbuiltExternal, UnclosedReturnsClauseWarning,
-  UndeclaredExternal, UngroundReturnsClauseWarning, UnmatchedCheckWarning,
-  UnmatchedFieldBoundWarning, UnmatchedFunctionExternalWarning,
-  UnmatchedModuleExternalWarning, UnmatchedParamBoundWarning,
-  UnmatchedReturnsClauseWarning, UnmatchedTypeFieldWarning, UnresolvedFieldValue,
-  UntraceableArgument, UntraceableProducer, UntraceableReceiver,
-  UntrackedEffectWarning, UnverifiedCheckShapeWarning,
-  UnverifiedReturnsClauseWarning, Violation,
+  UndeclaredExternal, UngroundReturnsClauseWarning, UnknownClauseWarning,
+  UnmatchedCheckWarning, UnmatchedFieldBoundWarning,
+  UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
+  UnmatchedParamBoundWarning, UnmatchedReturnsClauseWarning,
+  UnmatchedTypeFieldWarning, UnresolvedFieldValue, UntraceableArgument,
+  UntraceableProducer, UntraceableReceiver, UntrackedEffectWarning,
+  UnverifiedCheckShapeWarning, UnverifiedReturnsClauseWarning, Violation,
 }
 
 // Entry points
@@ -1674,25 +1674,34 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> ": warning: the `where returns` clause on "
       <> function
       <> " has free variable(s) "
-      <> {
-        free_vars |> list.map(fn(v) { "`" <> v <> "`" }) |> string.join(", ")
-      }
+      <> quoted_names(free_vars)
       <> " naming no callback parameter of it — the clause is ignored and the returned function resolves to [Unknown]"
     UngroundReturnsClauseWarning(function:, free_vars:) ->
       file
       <> ": warning: the `where returns` clause on assume "
       <> function
       <> " must be ground, and "
-      <> {
-        free_vars |> list.map(fn(v) { "`" <> v <> "`" }) |> string.join(", ")
-      }
+      <> quoted_names(free_vars)
       <> " is a variable — an assumption carries no bound list, so nothing scopes one whatever the function's parameters are called; the clause is ignored. Spell out the concrete effects instead"
     DotlessReturnsClauseWarning(name:) ->
       file
       <> ": warning: assume "
       <> name
       <> " where returns names a module, not a function — a returns declaration is per-function; the clause resolves nothing"
+    UnknownClauseWarning(path:, keys:) ->
+      file
+      <> ": warning: the `where` clause(s) on "
+      <> path
+      <> " use key(s) "
+      <> quoted_names(keys)
+      <> " this version of graded does not read, so nothing resolves them. They are kept verbatim through `graded format` and `graded infer`; upgrade graded, or delete them"
   }
+}
+
+// A list of names as a comma-separated run of backticked ones, the spelling
+// every warning that names more than one uses.
+fn quoted_names(names: List(String)) -> String {
+  names |> list.map(fn(name) { "`" <> name <> "`" }) |> string.join(", ")
 }
 
 // Render a violation as the line `graded check` reports.

@@ -64,7 +64,7 @@ import graded/internal/types.{
   AnnotationLine, CheckResult, DotlessReturnsClauseWarning, EffectAnnotation,
   GradedFile, QualifiedName, StaleFunctionExternalWarning,
   StaleReturnsClauseWarning, UnclosedReturnsClauseWarning,
-  UngroundReturnsClauseWarning, UnmatchedCheckWarning,
+  UngroundReturnsClauseWarning, UnknownClauseWarning, UnmatchedCheckWarning,
   UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
   UnmatchedReturnsClauseWarning, UnmatchedTypeFieldWarning,
   UnverifiedCheckShapeWarning, UnverifiedReturnsClauseWarning,
@@ -1066,11 +1066,23 @@ fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
     annotation.extract_effects(spec)
     |> list.filter_map(unclosed_clause_warning(_, registry))
 
+  // A clause whose key this version does not read. Reported here rather than by
+  // the parser, so a dependency's spec stays silent — its consumer cannot fix it
+  // — and so the cache reader inherits that silence instead of a default nobody
+  // chose. One warning per line, all its keys together.
+  let unknown_clause_warnings =
+    annotation.unknown_clause_lines(spec)
+    |> list.map(fn(line) {
+      let #(path, keys) = line
+      UnknownClauseWarning(path:, keys:)
+    })
+
   list.flatten([
     check_warnings,
     external_warnings,
     returns_clause_warnings,
     clause_warnings,
+    unknown_clause_warnings,
     type_field_warnings,
   ])
 }
@@ -3160,7 +3172,7 @@ fn infer_one_module(
     _ ->
       Some(CacheFile(
         path: filepath.join(cache_dir, module_path <> ".graded"),
-        file: GradedFile(lines: list.map(inferred, AnnotationLine)),
+        file: GradedFile(lines: list.map(inferred, AnnotationLine(_, []))),
       ))
   }
 
