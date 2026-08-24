@@ -958,9 +958,9 @@ fn check_one_file(
 // dead or silently ignored, so surface it as a warning.
 // Every input is a field of the context the run already assembled, so it
 // travels whole: a lint needing one more piece of it adds no parameter. The
-// `registry`/`knowledge_base` pair is the oracle a `where returns` clause's
-// variables are weighed against — the same one the gate that binds them reads,
-// so lint and gate agree by construction.
+// `registry` and the linted line's own bound list are the oracle a
+// `where returns` clause's variables are weighed against — the same one the gate
+// that binds them reads, so lint and gate agree by construction.
 fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
   let ProjectContext(
     sources: ProjectSources(spec:, index:, package_root:, ..),
@@ -969,7 +969,6 @@ fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
     catalog:,
     dependencies:,
     registry:,
-    knowledge_base:,
     ..,
   ) = context
   let known_functions = known_function_names(index)
@@ -1065,7 +1064,7 @@ fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
   // bug. Reported all the same: the gate drops it silently.
   let clause_warnings =
     annotation.extract_effects(spec)
-    |> list.filter_map(unclosed_clause_warning(_, registry, knowledge_base))
+    |> list.filter_map(unclosed_clause_warning(_, registry))
 
   list.flatten([
     check_warnings,
@@ -1078,10 +1077,13 @@ fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
 
 // The warning for one `effects` line's `where returns` clause, or `Error(Nil)`
 // where it carries none, names nothing, or is closed.
+//
+// The line's own bound list is what scopes the clause, and the line is right
+// here, so the lint weighs the clause against exactly what the gate weighs it
+// against without consulting the knowledge base at all.
 fn unclosed_clause_warning(
   annotation_line: EffectAnnotation,
   registry: SignatureRegistry,
-  knowledge_base: KnowledgeBase,
 ) -> Result(Warning, Nil) {
   use operator <- result.try(option.to_result(annotation_line.returns, Nil))
   use #(module, function) <- result.try(annotation.split_function_name(
@@ -1091,7 +1093,7 @@ fn unclosed_clause_warning(
     checker.unclosed_clause_variables(
       operator,
       QualifiedName(module, function),
-      knowledge_base,
+      annotation_line.params,
       registry,
     )
   {
@@ -4328,11 +4330,6 @@ fn with_spec_type_fields(
 // would pair with freshly inferred bounds, whose variable names need not match
 // it.
 //
-// One exception, below: a line kept under a module declaration for the sake of
-// its `where returns` clause keeps its bounds without its term. They are not
-// that term's pairing — they are the clause's scoping list, and the clause has
-// none of its own.
-//
 // Lines for a module-level-external module are dropped from both, so they can't
 // reshadow the declaration (which lives in `module_effects`, consulted only when
 // `all_effects` misses). `graded infer` no longer writes such lines; this guards
@@ -4358,11 +4355,6 @@ fn with_committed_spec(
   // drop are a property of that spec, and a caller passing any other set folds
   // in the very lines this function exists to drop.
   let declared_modules = annotation.module_external_modules(spec)
-  // The names whose committed `effects` line is kept only for its
-  // `where returns` clause: their bounds are that clause's scoping list, so the
-  // module drop leaves them where it takes the term beside them.
-  let clause_scopes =
-    effects.load_spec_returns_from_file(spec) |> dict.keys |> set.from_list
   knowledge_base
   |> effects.with_inferred(
     effects.load_spec_effects_from_file(spec)
@@ -4372,7 +4364,7 @@ fn with_committed_spec(
   )
   |> effects.with_inferred_params(
     effects.load_spec_params_from_file(spec)
-    |> drop_declared_modules_keeping(declared_modules, clause_scopes)
+    |> drop_declared_modules(declared_modules)
     |> drop_stale_names(stale_externals),
   )
 }
@@ -4396,24 +4388,8 @@ fn drop_declared_modules(
   entries: Dict(QualifiedName, a),
   modules: Set(String),
 ) -> Dict(QualifiedName, a) {
-  drop_declared_modules_keeping(entries, modules, set.new())
-}
-
-// The same, minus the names `keep` names. The bounds channel keeps the entries
-// scoping a clause on a line the declaration otherwise covers: the clause has no
-// bound list of its own, so that line's is the only thing its variables are
-// scoped by, and dropping it resolves the returned function to `[Unknown]`. Such
-// an entry pairs with the declaration's term rather than the one it was written
-// beside — the one exception to the pairing rule this file states above.
-fn drop_declared_modules_keeping(
-  entries: Dict(QualifiedName, a),
-  modules: Set(String),
-  keep: Set(QualifiedName),
-) -> Dict(QualifiedName, a) {
   use <- bool.guard(set.is_empty(modules), entries)
-  dict.filter(entries, fn(name, _value) {
-    !set.contains(modules, name.module) || set.contains(keep, name)
-  })
+  dict.filter(entries, fn(name, _value) { !set.contains(modules, name.module) })
 }
 
 // CLI plumbing

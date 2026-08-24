@@ -5139,17 +5139,23 @@ fn unresolved_producer_reason(
 }
 
 // The knowledge base's summary for `name`, in the shape the trust match reads:
-// the operator, how it was produced, and the source that wrote it.
+// the operator, how it was produced, the source that wrote it, and the bounds
+// scoping the operator's variables.
 fn knowledge_base_operator(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Result(
-  #(EffectTerm, effects.SummaryOrigin, option.Option(LookupOrigin)),
+  #(
+    EffectTerm,
+    effects.SummaryOrigin,
+    option.Option(LookupOrigin),
+    List(ParamBound),
+  ),
   Nil,
 ) {
   effects.lookup_returned_operator(knowledge_base, name)
   |> result.map(fn(found) {
-    #(found.operator, found.summary, Some(found.source))
+    #(found.operator, found.summary, Some(found.source), found.bounds)
   })
 }
 
@@ -5174,9 +5180,10 @@ fn resolve_returned_operator(
   cache: LocalCache,
   memo: Memo,
 ) -> #(Result(#(EffectTerm, option.Option(LookupOrigin)), Nil), Memo) {
-  // A same-module (`""`) summary is computed on demand now, hence Fresh and
-  // sourced by nothing but this run's analysis; a cross-module one is read from
-  // the KB with its recorded origin (Fix E) and the source that wrote it.
+  // A same-module (`""`) summary is computed on demand now, hence Fresh, sourced
+  // by nothing but this run's analysis and scoped by no line of its own; a
+  // cross-module one is read from the KB with its recorded origin (Fix E), the
+  // source that wrote it and the bounds its line scopes it with.
   let #(lookup, memo) = case callee.module {
     "" ->
       case
@@ -5196,7 +5203,7 @@ fn resolve_returned_operator(
               cache,
               memo,
             )
-          #(result.map(result, fn(op) { #(op, effects.Fresh, None) }), memo)
+          #(result.map(result, fn(op) { #(op, effects.Fresh, None, []) }), memo)
         }
         // A recursive producer call — the producer is already on the analysis
         // stack, so this branch contributes the neutral operator (pure over the
@@ -5206,7 +5213,7 @@ fn resolve_returned_operator(
         // type, stay conservative.
         True, NativeDefinition(definition) -> #(
           neutral_returned_operator(definition.definition, cache.fn_alias_types)
-            |> result.map(fn(op) { #(op, effects.Fresh, None) }),
+            |> result.map(fn(op) { #(op, effects.Fresh, None, []) }),
           memo,
         )
         // A same-module `@external`: there is no body to compute a summary
@@ -5229,7 +5236,7 @@ fn resolve_returned_operator(
   }
   case lookup {
     Error(Nil) -> #(Error(Nil), memo)
-    Ok(#(operator, summary, source)) ->
+    Ok(#(operator, summary, source, clause_bounds)) ->
       case effect_term.is_ground(operator), summary {
         // Ground operator (no free vars): trusted regardless of origin. A Fresh
         // one is sanitized by this run (callback binders can't have captured a
@@ -5246,8 +5253,8 @@ fn resolve_returned_operator(
         //   - **Closed**: a clause read back from a spec, whose variables are
         //     checked against the producer's real callback parameters here,
         //     where the substitution happens; one naming anything else degrades
-        //     to [Unknown] rather than binding against a parameter that isn't
-        //     there.
+        //     to [Unknown] rather than binding against a parameter the clause
+        //     never scoped.
         //   - **Declared**: a declaration is tagged only after the non-ground
         //     operators are dropped, so nothing reaches here. An edit that
         //     changed that must degrade to [Unknown] rather than substitute over
@@ -5256,10 +5263,20 @@ fn resolve_returned_operator(
           let admitted = case summary {
             effects.Fresh -> True
             effects.Closed ->
-              clause_is_closed(operator, callee, knowledge_base, registry)
+              clause_is_closed(operator, callee, clause_bounds, registry)
             effects.Declared -> False
           }
           use <- bool.guard(when: !admitted, return: #(Error(Nil), memo))
+          // What scopes the operator's variables, per summary kind. A **Closed**
+          // clause is scoped by the bound list on its own line, carried here
+          // with it. A **Fresh** one has no line: its bounds are the ones this
+          // run recorded on the params channel, which carry the girard-typed
+          // callbacks no syntactic signature shows.
+          let scoping = case summary {
+            effects.Closed -> clause_bounds
+            effects.Fresh | effects.Declared ->
+              effects.lookup_param_bounds(knowledge_base, callee)
+          }
           let #(bound, memo) =
             bind_producer_params(
               operator,
@@ -5272,6 +5289,7 @@ fn resolve_returned_operator(
               registry,
               module_types,
               caller_param_bounds,
+              scoping,
               cache,
               memo,
             )
@@ -5302,6 +5320,11 @@ fn bind_producer_params(
   // the nested bind resolves it to the sentinel — keeping it distinct from any
   // residual of the same name. `[]` for a top-level producer resolution.
   caller_param_bounds: List(ParamBound),
+  // What scopes the operator's variables, chosen by the caller per summary kind:
+  // a `Closed` clause's own bound list, or the params channel's entry for a
+  // `Fresh` summary. Read on the cross-module path only — a same-module callee's
+  // bounds come from its glance signature below.
+  scoping: List(ParamBound),
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
@@ -5331,7 +5354,7 @@ fn bind_producer_params(
         Error(Nil) -> #([], registry)
       }
     _ -> {
-      // Cross-module completion (Fix B/C-B/E): the KB's param bounds omit params
+      // Cross-module completion (Fix B/C-B/E): the scoping bounds omit params
       // that are polymorphic only through the returned closure (inference derives
       // bounds from the *direct* effect, which trims the closure). Synthesize a
       // self-referential bound for each of the summary's own free vars not already
@@ -5341,14 +5364,13 @@ fn bind_producer_params(
       // just re-checked against the producer's real callback parameters. The real
       // `registry` supplies each param's position. Field-path (dotted) vars are
       // excluded (they round-trip as field bounds, not producer params).
-      let kb_bounds = effects.lookup_param_bounds(knowledge_base, callee)
-      let have = bound_name_set(kb_bounds)
+      let have = bound_name_set(scoping)
       let synth =
         effect_term.free_vars(operator)
         |> set.filter(fn(v) { !is_field_path_var(v) && !set.contains(have, v) })
         |> set.to_list()
         |> list.map(self_referential_bound)
-      #(list.append(kb_bounds, synth), registry)
+      #(list.append(scoping, synth), registry)
     }
   }
   let lift =
@@ -5895,21 +5917,21 @@ fn ordered_callback_param_names(
 // Whether every free variable of a `where returns` clause is a real callback
 // parameter of the producer the clause sits on.
 //
-// The oracle is the signature registry's fn-typed parameters together with the
-// knowledge base's recorded bound names for the function — the same pair
-// `ordered_callback_param_names` reads, so a girard-typed callback no syntactic
-// signature shows is admitted through its recorded bound rather than
-// spuriously rejected. Committed bounds win over this run's inference, so the
-// recorded set can be stale-empty but never stale-wrong: staleness makes this
-// stricter, never looser. Field-path (dotted) variables round-trip as field
-// bounds rather than as producer parameters, so they are not weighed here.
+// The oracle is the signature registry's fn-typed parameters together with
+// `bounds` — the clause's own scoping list, read off the line the clause sits
+// on. A callback that girard typed and no syntactic signature shows is admitted
+// through that list rather than spuriously rejected, and a variable the line
+// never scoped is rejected however the knowledge base happens to key the name:
+// the list is the only thing consulted, so a bound another line records for the
+// same function cannot widen it. Field-path (dotted) variables round-trip as
+// field bounds rather than as producer parameters, so they are not weighed here.
 fn clause_is_closed(
   operator: EffectTerm,
   callee: QualifiedName,
-  knowledge_base: KnowledgeBase,
+  bounds: List(ParamBound),
   registry: SignatureRegistry,
 ) -> Bool {
-  unclosed_clause_variables(operator, callee, knowledge_base, registry) == []
+  unclosed_clause_variables(operator, callee, bounds, registry) == []
 }
 
 // The clause's free variables that name no callback parameter, sorted. Empty
@@ -5918,13 +5940,13 @@ fn clause_is_closed(
 pub fn unclosed_clause_variables(
   operator: EffectTerm,
   callee: QualifiedName,
-  knowledge_base: KnowledgeBase,
+  bounds: List(ParamBound),
   registry: SignatureRegistry,
 ) -> List(String) {
   let callbacks =
     set.union(
       signatures.fn_typed_param_names(registry, callee),
-      recorded_bound_names(knowledge_base, callee),
+      bound_name_set(bounds),
     )
   effect_term.free_vars(operator)
   |> set.filter(fn(variable) {
@@ -5934,9 +5956,9 @@ pub fn unclosed_clause_variables(
   |> list.sort(string.compare)
 }
 
-// The parameter names `name`'s recorded bounds state effects over. For one of
-// this package's running fallbacks these carry the girard-typed callbacks no
-// syntactic signature shows.
+// The parameter names `name`'s recorded bounds state effects over, for the
+// binders a lifted operator abstracts over. For one of this package's running
+// fallbacks these carry the girard-typed callbacks no syntactic signature shows.
 fn recorded_bound_names(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,

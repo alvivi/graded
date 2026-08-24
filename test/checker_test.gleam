@@ -4143,7 +4143,7 @@ pub fn caller() -> Nil {
       ]),
       types.ProjectInferred,
     )
-    |> effects.with_fresh_returned_operators(
+    |> effects.with_closed_returned_operators(
       effects.load_spec_returns_from_file(spec),
       types.CommittedSpec,
     )
@@ -4264,7 +4264,7 @@ pub fn caller() -> Nil {
       ]),
       types.ProjectInferred,
     )
-    |> effects.with_fresh_returned_operators(
+    |> effects.with_closed_returned_operators(
       effects.load_spec_returns_from_file(spec),
       types.CommittedSpec,
     )
