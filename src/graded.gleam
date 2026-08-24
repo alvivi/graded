@@ -458,6 +458,15 @@ fn resolve_pack_tarball(
 
 // Reject an absolute path or one that escapes the package root: the spec must
 // land at a safe archive-relative location inside the package.
+//
+// Advisory, not the boundary. `graded_pack_ffi` applies the authoritative rule
+// to this entry as well as to the archive's own names, on the platform whose
+// `filename:join` semantics are what the rule defends. The two are deliberately
+// not identical: this one tests a leading `/`, which is Unix-only, and Gleam
+// has no platform-aware path predicate to test instead — `filepath.is_absolute`
+// is the same `starts_with("/")` under a `windows support` TODO. What this buys
+// is an earlier, better-worded rejection of a value the package author wrote in
+// their own gleam.toml. Do not weaken the Erlang guard to match it.
 fn validate_archive_entry(entry: String) -> Result(Nil, GradedError) {
   let escapes = list.contains(filepath.split(entry), "..")
   case string.starts_with(entry, "/") || escapes {

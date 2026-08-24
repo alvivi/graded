@@ -335,6 +335,125 @@ pub fn pack_consumer_resolves_injected_spec_test() {
   cleanup(consumer)
 }
 
+// An archive graded did not build is untrusted input
+//
+// The rebuild re-adds every inner member by `filename:join(InnerDir, Name)`,
+// and an absolute Name wins that join outright — so a crafted archive makes
+// pack read a host file and embed it in the tarball whose success message tells
+// the user to publish. The names are guarded before anything is extracted.
+
+// A member for `build_tarball_with_raw_names`: `Regular` stores its name
+// verbatim, `Symlink` stages a real link so the member is genuinely typed.
+type Member {
+  Regular(name: String, content: String)
+  Symlink(name: String, target: String)
+}
+
+// A project whose default tarball is built from `members`, with a spec ready to
+// inject. Returns the tarball path.
+fn setup_crafted(root: String, members: List(Member)) -> String {
+  let _ = simplifile.delete(root)
+  write_file(root <> "/gleam.toml", "name = \"dep\"\nversion = \"1.0.0\"\n")
+  write_file(root <> "/dep.graded", "effects dep.work : []\n")
+  let tarball = root <> "/build/dep-1.0.0.tar"
+  ensure_parent(tarball)
+  build_tarball_with_raw_names(tarball, "dep", "1.0.0", members)
+  tarball
+}
+
+pub fn pack_rejects_an_absolute_inner_entry_test() {
+  let root = "build/pack_absolute_entry"
+  // The decoy is a file this test creates under its own tree — the exploit
+  // needs an absolute path, never a real system one.
+  let assert Ok(cwd) = simplifile.current_directory()
+  let decoy = cwd <> "/" <> root <> "/decoy.txt"
+
+  let tarball =
+    setup_crafted(root, [
+      Regular("src/dep.gleam", "pub fn work() {\n  Nil\n}\n"),
+      // The crafted member: its stored bytes are a placeholder, but the name
+      // names the decoy, so an unguarded rebuild reads the decoy instead.
+      Regular(decoy, "placeholder"),
+    ])
+  // Written after the setup clears `root`, so the name in the archive resolves
+  // to a real host file at pack time — which is the whole of the exploit.
+  write_file(decoy, "HOST-SECRET-DECOY\n")
+  let assert Ok(before) = simplifile.read_bits(tarball)
+
+  let assert Error(graded.PackError(message)) = graded.pack_project(root, None)
+  string.contains(message, decoy) |> should.be_true()
+  string.contains(message, "unsafe tar entry name") |> should.be_true()
+
+  // There is no output tarball to inspect on a rejection, so assert on what
+  // remains: the input is untouched, both scratch paths are gone, and the
+  // decoy's bytes never moved.
+  simplifile.read_bits(tarball) |> should.equal(Ok(before))
+  simplifile.is_file(tarball <> ".packing") |> should.equal(Ok(False))
+  simplifile.is_directory(tarball <> ".packing.work") |> should.equal(Ok(False))
+  simplifile.read(decoy) |> should.equal(Ok("HOST-SECRET-DECOY\n"))
+
+  cleanup(root)
+}
+
+// The `..` half of the rule is graded's, not `erl_tar`'s. Extraction rejects an
+// escaping member on its own (`unsafe_path`), but only once the archive is
+// already being unpacked; this pins the guard ahead of extraction, where the
+// diagnostic is graded's own.
+pub fn pack_rejects_an_escaping_inner_entry_test() {
+  let root = "build/pack_escaping_entry"
+  let tarball =
+    setup_crafted(root, [
+      Regular("src/dep.gleam", "pub fn work() {\n  Nil\n}\n"),
+      Regular("../escaped.txt", "x"),
+    ])
+  let assert Ok(before) = simplifile.read_bits(tarball)
+
+  let assert Error(graded.PackError(message)) = graded.pack_project(root, None)
+  string.contains(message, "../escaped.txt") |> should.be_true()
+  string.contains(message, "unsafe tar entry name") |> should.be_true()
+
+  simplifile.read_bits(tarball) |> should.equal(Ok(before))
+  simplifile.is_directory(tarball <> ".packing.work") |> should.equal(Ok(False))
+  cleanup(root)
+}
+
+// A non-regular member is refused by its type, and the message says which type.
+// The rebuild carries regular members only, so a symlink was previously dropped
+// from the output and the run failed on the files-list mismatch, naming
+// nothing. graded cannot see a link's target at all — `erl_tar:table/2` leaves
+// it out of the tuple — which is why the member kind is what gets refused.
+pub fn pack_rejects_a_non_regular_inner_entry_test() {
+  let root = "build/pack_symlink_entry"
+  let tarball =
+    setup_crafted(root, [
+      Regular("src/dep.gleam", "pub fn work() {\n  Nil\n}\n"),
+      Symlink("link.txt", "dangling_target"),
+    ])
+
+  let assert Error(graded.PackError(message)) = graded.pack_project(root, None)
+  string.contains(message, "link.txt") |> should.be_true()
+  string.contains(message, "symlink") |> should.be_true()
+
+  simplifile.is_directory(tarball <> ".packing.work") |> should.equal(Ok(False))
+  cleanup(root)
+}
+
+// The function that certifies an archive as internally consistent refuses to
+// certify one carrying a name graded would never write.
+pub fn verify_tarball_rejects_an_unsafe_entry_test() {
+  let root = "build/pack_verify_unsafe"
+  let tarball =
+    setup_crafted(root, [
+      Regular("dep.graded", "effects dep.work : []\n"),
+      Regular("/etc/dep.graded", "placeholder"),
+    ])
+
+  let assert Error(message) = verify_tarball(tarball, "dep.graded")
+  string.contains(message, "/etc/dep.graded") |> should.be_true()
+  string.contains(message, "unsafe tar entry name") |> should.be_true()
+  cleanup(root)
+}
+
 @external(erlang, "graded_pack_test_ffi", "build_tarball")
 fn build_tarball(
   out_path: String,
@@ -351,8 +470,21 @@ fn build_tarball_with_modes(
   inner_files: List(#(String, String, Int)),
 ) -> Nil
 
+@external(erlang, "graded_pack_test_ffi", "build_tarball_with_raw_names")
+fn build_tarball_with_raw_names(
+  out_path: String,
+  name: String,
+  version: String,
+  members: List(Member),
+) -> Nil
+
 @external(erlang, "graded_pack_test_ffi", "unpack_inner")
 fn unpack_inner(tarball: String, dest_dir: String) -> Nil
+
+// Called directly: `pack` reaches it only through a tarball it just wrote, and
+// the guard under test is about archives it did not.
+@external(erlang, "graded_pack_ffi", "verify_tarball")
+fn verify_tarball(tarball: String, entry_name: String) -> Result(Nil, String)
 
 @external(erlang, "graded_pack_test_ffi", "metadata_files")
 fn metadata_files(tarball: String) -> List(String)
