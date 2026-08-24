@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [Disk]` line, not only a bare `assume Runner.run`. Such a line keyed nothing,
   so the call stayed polymorphic in the field and a caller constructing the
   record specialized the declared effect away.
+- A field `assume` in your own spec for a dependency's type is now read when
+  that dependency's fallback bodies are walked. The walk ran before those lines
+  were folded in, so it resolved field calls without them.
 
 ## [0.15.0] - 2026-08-23
 
