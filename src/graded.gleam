@@ -3347,7 +3347,7 @@ fn qualify_bare_names(
 // A module the consumer declared with a module-level external (in
 // `declared_modules`) has its inferred *call effect* dropped so lookup falls
 // through to the declared set — the project-module counterpart of the path-dep
-// `drop_declared_modules` in `infer_path_dep_module`. Returned-operator and
+// `drop_module_declared` in `infer_path_dep_module`. Returned-operator and
 // parameter-bound metadata describe what a function returns and how it consumes
 // operator arguments, not its call effect, so they are kept.
 fn thread_inferred_into_kb(
@@ -3359,7 +3359,8 @@ fn thread_inferred_into_kb(
 ) -> KnowledgeBase {
   let #(effects_dict, params_dict, returns_dict) =
     qualified_inferred(inferred, returned_operators, module_path)
-  let effects_dict = drop_declared_modules(effects_dict, declared_modules)
+  let effects_dict =
+    effects.drop_module_declared(effects_dict, declared_modules)
   // Main project topo loop + the in-memory pre-pass: results inferred this run,
   // originating in this project's own inference.
   fold_inferred_into_kb(
@@ -4249,7 +4250,8 @@ fn infer_path_dep_module(
       // returns and how it consumes operator arguments, not its call effect, so
       // they are kept; a sibling wrapper doing `let f = mod.make(); f()` still
       // resolves `f` instead of falling to `[Unknown]`.
-      let inferred_effs = drop_declared_modules(inferred_effs, consumer_modules)
+      let inferred_effs =
+        effects.drop_module_declared(inferred_effs, consumer_modules)
       let inferred_provenance = qualify_bare_names(provenance, module_path)
       let new_kb =
         fold_inferred_into_kb(
@@ -4358,13 +4360,13 @@ fn with_committed_spec(
   knowledge_base
   |> effects.with_inferred(
     effects.load_spec_effects_from_file(spec)
-      |> drop_declared_modules(declared_modules)
+      |> effects.drop_module_declared(declared_modules)
       |> drop_stale_names(stale_externals),
     types.CommittedSpec,
   )
   |> effects.with_inferred_params(
     effects.load_spec_params_from_file(spec)
-    |> drop_declared_modules(declared_modules)
+    |> effects.drop_module_declared(declared_modules)
     |> drop_stale_names(stale_externals),
   )
 }
@@ -4378,18 +4380,6 @@ fn drop_stale_names(
   dict.filter(entries, fn(name, _value) {
     !set.contains(stale_externals, types.dotted_name(name))
   })
-}
-
-// Drop every `QualifiedName`-keyed entry whose module the consumer declared
-// with a module-level external. Keyed off the consumer's declared modules, not
-// the whole knowledge base, so a catalog pure-module entry never suppresses a
-// same-named path-dependency module.
-fn drop_declared_modules(
-  entries: Dict(QualifiedName, a),
-  modules: Set(String),
-) -> Dict(QualifiedName, a) {
-  use <- bool.guard(set.is_empty(modules), entries)
-  dict.filter(entries, fn(name, _value) { !set.contains(modules, name.module) })
 }
 
 // CLI plumbing

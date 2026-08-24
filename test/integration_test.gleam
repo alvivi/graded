@@ -8667,42 +8667,41 @@ fn path_dep_clause_effects_over(
   dependency_spec: String,
   dep_source: String,
 ) -> types.EffectSet {
-  path_dep_clause_effects_in(name, "dep/wrap", "wrap", dependency_spec, [
-    #("dep/src/dep/wrap.gleam", dep_source),
-  ])
+  path_dep_clause_effects_in(
+    name,
+    "dep/wrap",
+    "wrap",
+    no_installed_packages,
+    dependency_spec,
+    dep_source,
+  )
 }
 
 // The same, over a path dependency shipping `module` — whose last segment
-// qualifies the producer call — plus whatever files the dependency needs. The
-// consumer writes a `manifest.toml`: the catalog is selected per *installed*
-// package, so a fixture without one loads no catalog at all and a collision
-// with a catalogued module cannot arise.
+// qualifies the producer call. `manifest` is the consumer's `manifest.toml`:
+// the catalog is selected per *installed* package, so it is what decides
+// whether a catalogued module is in play at all.
 fn path_dep_clause_effects_in(
   name: String,
   module: String,
   producer: String,
+  manifest: String,
   dependency_spec: String,
-  dep_files: List(#(String, String)),
+  dep_source: String,
 ) -> types.EffectSet {
   let assert Ok(qualifier) = list.last(string.split(module, "/"))
   let root = "build/" <> name
-  support.write_fixture(
-    root,
-    list.append(
-      [
-        #(
-          "proj/gleam.toml",
-          "name = \"proj\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
-        ),
-        #(
-          "proj/manifest.toml",
-          "packages = [\n  { name = \"envoy\", version = \"1.0.0\" },\n]\n",
-        ),
-        #(
-          "proj/proj.graded",
-          "check proj.caller : []\nassume proj.shout : [Stdout]\n",
-        ),
-        #("proj/proj.gleam", "import " <> module <> "
+  support.write_fixture(root, [
+    #(
+      "proj/gleam.toml",
+      "name = \"proj\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    ),
+    #("proj/manifest.toml", manifest),
+    #(
+      "proj/proj.graded",
+      "check proj.caller : []\nassume proj.shout : [Stdout]\n",
+    ),
+    #("proj/proj.gleam", "import " <> module <> "
 
 @external(erlang, \"proj_ffi\", \"shout\")
 pub fn shout() -> Nil
@@ -8712,12 +8711,10 @@ pub fn caller() -> Nil {
   h()
 }
 "),
-        #("dep/gleam.toml", "name = \"dep\"\n"),
-        #("dep/dep.graded", dependency_spec),
-      ],
-      dep_files,
-    ),
-  )
+    #("dep/gleam.toml", "name = \"dep\"\n"),
+    #("dep/dep.graded", dependency_spec),
+    #("dep/src/" <> module <> ".gleam", dep_source),
+  ])
   let assert Ok(results) = graded.run(root <> "/proj")
   let assert Ok(violation) =
     results
@@ -8760,12 +8757,21 @@ pub fn a_vendored_forks_clause_binds_over_the_catalogued_name_test() {
     "clause_path_dep_catalog_collision",
     "envoy",
     "get",
+    envoy_installed,
     "assume envoy : []\n"
       <> "effects envoy.get(f: [f]) : [] where returns : [f]\n",
-    [#("dep/src/envoy.gleam", unannotated_get)],
+    unannotated_get,
   )
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
+
+// A manifest naming a package the bundled catalog covers, and one naming none.
+const envoy_installed = "packages = [
+  { name = \"envoy\", version = \"1.0.0\" },
+]
+"
+
+const no_installed_packages = "packages = []\n"
 
 // `unannotated_wrap` under the name the catalog's `envoy` entry keys.
 const unannotated_get = "pub fn get(f) {
@@ -8799,36 +8805,6 @@ pub fn a_clause_over_a_bound_from_another_line_degrades_test() {
     generic_wrap,
   )
   |> should.equal(types.Specific(set.from_list(["Unknown"])))
-}
-
-pub fn an_open_clause_beside_a_bound_from_another_line_is_reported_test() {
-  // The lint's half of the same reading. It weighs the clause against the line
-  // it sits on, so the bound the second line records leaves it unmoved.
-  let root = "build/clause_lint_foreign_bound"
-  support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
-    #(
-      "proj.graded",
-      "effects proj.wrap : [] where returns : [ghost]\n"
-        <> "effects proj.wrap(ghost: [ghost]) : []\n",
-    ),
-    #(
-      "proj.gleam",
-      "pub fn wrap(ghost: a) -> fn() -> Nil {
-  fn() { Nil }
-}
-",
-    ),
-  ])
-  let assert Ok(results) = graded.run(root)
-  results
-  |> list.flat_map(fn(r) { r.warnings })
-  |> should.equal([
-    types.UnclosedReturnsClauseWarning(function: "proj.wrap", free_vars: [
-      "ghost",
-    ]),
-  ])
-  support.cleanup(root)
 }
 
 pub fn a_clause_applying_an_unannotated_callback_degrades_test() {
@@ -8925,48 +8901,70 @@ pub fn run() -> Nil {
 // The lint reports an open clause against the oracle the gate binds by, so what
 // it names is exactly what degrades to `[Unknown]`.
 
+// The warnings a one-module project whose spec is `spec` and whose source is
+// `source` collects.
+fn clause_lint_warnings(
+  name: String,
+  spec: String,
+  source: String,
+) -> List(types.Warning) {
+  let root = "build/" <> name
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", spec),
+    #("proj.gleam", source),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let warnings = list.flat_map(results, fn(r) { r.warnings })
+  support.cleanup(root)
+  warnings
+}
+
+// A producer whose callback parameter every syntactic reader can see.
+const annotated_wrap = "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
+  fn() { f() }
+}
+"
+
 pub fn an_open_clause_on_an_effects_line_is_reported_test() {
   // Hand-edited: `infer` writes a bound for every variable its clause mentions,
   // so an `effects` clause is closed by construction.
-  let root = "build/clause_lint_open"
-  support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
-    #("proj.graded", "effects proj.wrap(f: [f]) : [] where returns : [ghost]\n"),
-    #(
-      "proj.gleam",
-      "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
-  fn() { f() }
-}
-",
-    ),
-  ])
-  let assert Ok(results) = graded.run(root)
-  results
-  |> list.flat_map(fn(r) { r.warnings })
+  clause_lint_warnings(
+    "clause_lint_open",
+    "effects proj.wrap(f: [f]) : [] where returns : [ghost]\n",
+    annotated_wrap,
+  )
   |> should.equal([
     types.UnclosedReturnsClauseWarning(function: "proj.wrap", free_vars: [
       "ghost",
     ]),
   ])
-  support.cleanup(root)
 }
 
 pub fn a_closed_clause_on_an_effects_line_is_not_reported_test() {
-  let root = "build/clause_lint_closed"
-  support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
-    #("proj.graded", "effects proj.wrap(f: [f]) : [] where returns : [f]\n"),
-    #(
-      "proj.gleam",
-      "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
-  fn() { f() }
+  clause_lint_warnings(
+    "clause_lint_closed",
+    "effects proj.wrap(f: [f]) : [] where returns : [f]\n",
+    annotated_wrap,
+  )
+  |> should.equal([])
 }
-",
-    ),
+
+pub fn an_open_clause_beside_a_bound_from_another_line_is_reported_test() {
+  // The lint's half of what `a_clause_over_a_bound_from_another_line_degrades_test`
+  // asserts through resolution. It weighs the clause against the line it sits
+  // on, so the bound the second line records leaves it unmoved.
+  clause_lint_warnings(
+    "clause_lint_foreign_bound",
+    "effects proj.wrap : [] where returns : [ghost]\n"
+      <> "effects proj.wrap(ghost: [ghost]) : []\n",
+    generic_wrap,
+  )
+  |> should.equal([
+    types.UnclosedReturnsClauseWarning(function: "proj.wrap", free_vars: [
+      "ghost",
+    ]),
   ])
-  let assert Ok(results) = graded.run(root)
-  results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
-  support.cleanup(root)
 }
 
 pub fn a_check_clause_is_unverified_while_its_budget_still_is_test() {
