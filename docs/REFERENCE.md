@@ -188,8 +188,15 @@ any more, and `effects` lines are regenerated from source on every run.
 
 That exception is confined to `effects` lines. A `check` line, an `assume` line,
 and a line retained for its clauses alone are hand-written, so they survive
-their subject vanishing — clauses included — and `graded check` reports the
-dangling name instead.
+their subject vanishing — clauses included.
+
+For a `check` line, and for an `assume` line that declares an effect,
+`graded check` then reports the dangling name. A line retained for its clauses
+alone gets no such report. Its path's *shape* is still checked when the file is
+read — a malformed one is a parse error — but whether that path resolves is a
+question about the key this version does not read, and answering it would mean
+asserting what a grammar it cannot read meant the path to name. The unknown-key
+warning is the only one such a line draws.
 
 A key is one or more of `A-Z`, `a-z`, `0-9`, `_` and `.`. A payload's brackets
 and parens must nest and match; anything else — an empty key, an empty payload,
