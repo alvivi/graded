@@ -482,7 +482,14 @@ pub fn returned_operators_round_trip_test() {
     )
   effects.lookup_returned_operator(enriched, QualifiedName("mylib/foo", "pick"))
   |> should.equal(
-    Ok(effects.ReturnedOperator(operator, effects.Fresh, types.ProjectInferred)),
+    Ok(
+      effects.ReturnedOperator(
+        operator,
+        effects.Fresh,
+        types.ProjectInferred,
+        [],
+      ),
+    ),
   )
   effects.lookup_returned_operator(
     enriched,
@@ -1795,11 +1802,12 @@ pub fn a_module_assume_does_not_bury_a_clause_on_the_same_module_test() {
   )
 }
 
-// A line kept for its clause keeps the bounds that scope it
+// A line kept for its clause carries the bounds that scope it
 //
 // The clause's variables are scoped by its own line's bound list, so the two
-// travel together or the clause is not readable at all. An assumption
-// suppresses the effects half of such a line — never its bounds.
+// travel together or the clause is not readable at all. They travel on the
+// clause itself: an assumption suppresses the line's effects half and the
+// params channel with it, and neither is what the clause is read against.
 
 const wrap_clause = "effects dep/wrap.wrap(f: [f]) : [] where returns : [f]\n"
 
@@ -1817,11 +1825,14 @@ pub fn a_function_assume_keeps_a_kept_clauses_bounds_test() {
       "dep",
       "assume dep/wrap.wrap : []\n" <> wrap_clause,
     )
-  effects.lookup_param_bounds(kb, QualifiedName("dep/wrap", "wrap"))
-  |> should.equal([ParamBound("f", types.TVar("f"))])
   let assert Ok(found) =
     effects.lookup_returned_operator(kb, QualifiedName("dep/wrap", "wrap"))
   found.operator |> should.equal(types.TVar("f"))
+  found.bounds |> should.equal([ParamBound("f", types.TVar("f"))])
+  // And on the clause alone: the declaration answers the effects channel, so
+  // the bounds beside it pair with a ground term that binds nothing.
+  effects.lookup_param_bounds(kb, QualifiedName("dep/wrap", "wrap"))
+  |> should.equal([])
 }
 
 pub fn a_module_assume_keeps_a_kept_clauses_bounds_test() {
@@ -1831,17 +1842,18 @@ pub fn a_module_assume_keeps_a_kept_clauses_bounds_test() {
       "dep",
       "assume dep/wrap : []\n" <> wrap_clause,
     )
-  effects.lookup_param_bounds(kb, QualifiedName("dep/wrap", "wrap"))
-  |> should.equal([ParamBound("f", types.TVar("f"))])
   let assert Ok(found) =
     effects.lookup_returned_operator(kb, QualifiedName("dep/wrap", "wrap"))
   found.operator |> should.equal(types.TVar("f"))
+  found.bounds |> should.equal([ParamBound("f", types.TVar("f"))])
+  effects.lookup_param_bounds(kb, QualifiedName("dep/wrap", "wrap"))
+  |> should.equal([])
 }
 
 pub fn a_clause_less_line_under_an_assume_keeps_no_bounds_test() {
-  // The non-goal. Nothing scopes anything on such a line: the declaration is
-  // the whole answer for the name, and its bounds stay out of the way of the
-  // ground term that wins.
+  // The same reading with no clause to scope: the declaration is the whole
+  // answer for the name, and its bounds stay out of the way of the ground term
+  // that wins.
   wrap_bounds(
     "build/eff_fn_assume_no_clause_bounds",
     "assume dep/wrap.wrap : []\neffects dep/wrap.wrap(f: [f]) : []\n",

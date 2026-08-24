@@ -8639,9 +8639,9 @@ pub fn a_clause_over_a_recorded_bound_binds_test() {
 
 pub fn an_assume_kept_clause_still_binds_over_its_bounds_test() {
   // The line survives an assumption for the sake of its clause; the bounds that
-  // scope the clause survive with it. Over `unannotated_wrap` nothing else can
-  // prove `f` is a callback, so the recorded bound is the whole of what admits
-  // the clause — a dropped one resolves the returned closure to [Unknown].
+  // scope the clause travel on the clause itself. Over `unannotated_wrap`
+  // nothing else can prove `f` is a callback, so those bounds are the whole of
+  // what admits the clause — dropped, the returned closure is [Unknown].
   cross_package_clause_effects_over(
     "clause_fn_assume_bounds",
     "assume dep/wrap.wrap : []\n"
@@ -8661,40 +8661,63 @@ pub fn an_assume_kept_clause_still_binds_over_its_bounds_test() {
 
 // The same shape one tier over: `dep` is a *path* dependency the consumer
 // declares in `gleam.toml`, so its committed spec folds through
-// `with_path_dep_spec` rather than the installed-package scan — a merge that
-// pairs bounds with entries by its own rule.
+// `with_path_dep_spec` rather than the installed-package scan.
 fn path_dep_clause_effects_over(
   name: String,
   dependency_spec: String,
   dep_source: String,
 ) -> types.EffectSet {
+  path_dep_clause_effects_in(name, "dep/wrap", "wrap", dependency_spec, [
+    #("dep/src/dep/wrap.gleam", dep_source),
+  ])
+}
+
+// The same, over a path dependency shipping `module` — whose last segment
+// qualifies the producer call — plus whatever files the dependency needs. The
+// consumer writes a `manifest.toml`: the catalog is selected per *installed*
+// package, so a fixture without one loads no catalog at all and a collision
+// with a catalogued module cannot arise.
+fn path_dep_clause_effects_in(
+  name: String,
+  module: String,
+  producer: String,
+  dependency_spec: String,
+  dep_files: List(#(String, String)),
+) -> types.EffectSet {
+  let assert Ok(qualifier) = list.last(string.split(module, "/"))
   let root = "build/" <> name
-  support.write_fixture(root, [
-    #(
-      "proj/gleam.toml",
-      "name = \"proj\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
-    ),
-    #(
-      "proj/proj.graded",
-      "check proj.caller : []\nassume proj.shout : [Stdout]\n",
-    ),
-    #(
-      "proj/proj.gleam",
-      "import dep/wrap
+  support.write_fixture(
+    root,
+    list.append(
+      [
+        #(
+          "proj/gleam.toml",
+          "name = \"proj\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+        ),
+        #(
+          "proj/manifest.toml",
+          "packages = [\n  { name = \"envoy\", version = \"1.0.0\" },\n]\n",
+        ),
+        #(
+          "proj/proj.graded",
+          "check proj.caller : []\nassume proj.shout : [Stdout]\n",
+        ),
+        #("proj/proj.gleam", "import " <> module <> "
 
 @external(erlang, \"proj_ffi\", \"shout\")
 pub fn shout() -> Nil
 
 pub fn caller() -> Nil {
-  let h = wrap.wrap(shout)
+  let h = " <> qualifier <> "." <> producer <> "(shout)
   h()
 }
-",
+"),
+        #("dep/gleam.toml", "name = \"dep\"\n"),
+        #("dep/dep.graded", dependency_spec),
+      ],
+      dep_files,
     ),
-    #("dep/gleam.toml", "name = \"dep\"\n"),
-    #("dep/dep.graded", dependency_spec),
-    #("dep/src/dep/wrap.gleam", dep_source),
-  ])
+  )
   let assert Ok(results) = graded.run(root <> "/proj")
   let assert Ok(violation) =
     results
@@ -8708,9 +8731,9 @@ pub fn caller() -> Nil {
 
 pub fn a_path_deps_assume_kept_clause_binds_over_its_bounds_test() {
   // The path-dependency tier of the same rule. Over `unannotated_wrap` the
-  // bounds the dep's kept line records are the only thing that proves `f` is a
-  // callback, and this merge copies them by a rule of its own — one keyed to
-  // the effects entry, which a module declaration is exactly what takes away.
+  // bounds on the dep's kept line are the only thing that proves `f` is a
+  // callback, and they reach this tier on the clause, so no merge here has to
+  // pair them with anything.
   path_dep_clause_effects_over(
     "clause_path_dep_module_assume",
     "assume dep/wrap : []\n"
@@ -8726,6 +8749,86 @@ pub fn a_path_deps_assume_kept_clause_binds_over_its_bounds_test() {
     unannotated_wrap,
   )
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+pub fn a_vendored_forks_clause_binds_over_the_catalogued_name_test() {
+  // A path dependency shipping a module the bundled catalog also covers — a
+  // vendored fork of a catalogued package. The catalog's per-function `assume`
+  // lines key the same names the fork's clause does, and the clause is read
+  // against its own line either way.
+  path_dep_clause_effects_in(
+    "clause_path_dep_catalog_collision",
+    "envoy",
+    "get",
+    "assume envoy : []\n"
+      <> "effects envoy.get(f: [f]) : [] where returns : [f]\n",
+    [#("dep/src/envoy.gleam", unannotated_get)],
+  )
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+}
+
+// `unannotated_wrap` under the name the catalog's `envoy` entry keys.
+const unannotated_get = "pub fn get(f) {
+  fn() { f() }
+}
+"
+
+// A clause is weighed against its own line, not against the params channel
+//
+// The params channel is hand-editable and keyed by function name, so a bound
+// recorded for `wrap` by one line says nothing about what a clause on another
+// line of the same name scopes. Two `effects` lines for one name are what a
+// hand edit leaves behind: the later one decides the bounds, the earlier one
+// carries the clause.
+
+const ghost_lines = "effects dep/wrap.wrap : [] where returns : [ghost]\n"
+  <> "effects dep/wrap.wrap(ghost: [ghost]) : []\n"
+
+// `ghost` is a real parameter of `wrap`, and a first-order one: passing it a
+// function is what an argument matcher would bind, and being no callback is
+// what the clause may not scope over.
+const generic_wrap = "pub fn wrap(ghost: a) -> fn() -> Nil {
+  fn() { Nil }
+}
+"
+
+pub fn a_clause_over_a_bound_from_another_line_degrades_test() {
+  cross_package_clause_effects_over(
+    "clause_foreign_bound",
+    ghost_lines,
+    generic_wrap,
+  )
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn an_open_clause_beside_a_bound_from_another_line_is_reported_test() {
+  // The lint's half of the same reading. It weighs the clause against the line
+  // it sits on, so the bound the second line records leaves it unmoved.
+  let root = "build/clause_lint_foreign_bound"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "effects proj.wrap : [] where returns : [ghost]\n"
+        <> "effects proj.wrap(ghost: [ghost]) : []\n",
+    ),
+    #(
+      "proj.gleam",
+      "pub fn wrap(ghost: a) -> fn() -> Nil {
+  fn() { Nil }
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.UnclosedReturnsClauseWarning(function: "proj.wrap", free_vars: [
+      "ghost",
+    ]),
+  ])
+  support.cleanup(root)
 }
 
 pub fn a_clause_applying_an_unannotated_callback_degrades_test() {

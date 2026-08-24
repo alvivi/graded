@@ -1179,15 +1179,29 @@ pub type SummaryOrigin {
 }
 
 // A function's returned-operator summary as the knowledge base holds it: the
-// operator, whether this run produced it, and the source that wrote it. The
-// three are one value, so a lookup can report the summary it used and where it
-// came from together.
+// operator, whether this run produced it, the source that wrote it, and the
+// bound list scoping the operator's variables. The four are one value, so a
+// lookup can report the summary it used, where it came from, and what its
+// variables answer to together.
+//
+// `bounds` is empty wherever the operator binds no parameter of its own: a
+// `Declared` summary is ground by rule, and a `Fresh` one is scoped by the
+// bounds the params channel records for the same name.
 pub type ReturnedOperator {
   ReturnedOperator(
     operator: EffectTerm,
     summary: SummaryOrigin,
     source: LookupOrigin,
+    bounds: List(ParamBound),
   )
+}
+
+// A `where returns` clause as the annotation carries it: the operator and the
+// bound list on the same line, which is what scopes the operator's variables.
+// The two are read off one line and travel as one value, so no tier has to copy
+// the bounds by a rule of its own.
+pub type ScopedClause {
+  ScopedClause(operator: EffectTerm, bounds: List(ParamBound))
 }
 
 // Pair every term of a bare effect map with the source that wrote it, giving
@@ -1199,8 +1213,8 @@ fn with_origin(
   dict.map_values(entries, fn(_name, term) { #(term, origin) })
 }
 
-// Pair every summary in a bare `name -> operator` map with how it was produced
-// and the source that wrote it, giving the shape `returned_operators` holds.
+// Pair every clause in a `name -> clause` map with how it was produced and the
+// source that wrote it, giving the shape `returned_operators` holds.
 //
 // Guard: never reach here with `Closed` for a map of clauses on `assume` lines.
 // A declaration is written for a value-opaque name, and a Closed-tagged summary
@@ -1208,12 +1222,28 @@ fn with_origin(
 // deferred catalog tier is the one waiting to) silently no-ops instead of
 // answering. `declared_returns` is the entry point for those.
 fn tag_returns(
-  returns: Dict(QualifiedName, EffectTerm),
+  returns: Dict(QualifiedName, ScopedClause),
   summary: SummaryOrigin,
   source: LookupOrigin,
 ) -> Dict(QualifiedName, ReturnedOperator) {
-  dict.map_values(returns, fn(_, operator) {
-    ReturnedOperator(operator:, summary:, source:)
+  dict.map_values(returns, fn(_, clause) {
+    ReturnedOperator(
+      operator: clause.operator,
+      summary:,
+      source:,
+      bounds: clause.bounds,
+    )
+  })
+}
+
+// Read a bare `name -> operator` map as clauses that scope nothing: the shape
+// the two summary kinds written without a bound list of their own are tagged
+// from — `Declared` (ground by rule) and `Fresh` (scoped by the params channel).
+fn unscoped(
+  operators: Dict(QualifiedName, EffectTerm),
+) -> Dict(QualifiedName, ScopedClause) {
+  dict.map_values(operators, fn(_name, operator) {
+    ScopedClause(operator:, bounds: [])
   })
 }
 
@@ -1228,7 +1258,7 @@ fn tag_returns(
 // `with_declared_returned_operators`.
 pub fn with_closed_returned_operators(
   knowledge_base: KnowledgeBase,
-  clauses: Dict(QualifiedName, EffectTerm),
+  clauses: Dict(QualifiedName, ScopedClause),
   source: LookupOrigin,
 ) -> KnowledgeBase {
   let merged =
@@ -1329,6 +1359,7 @@ fn declared_returns(
   source: LookupOrigin,
 ) -> Dict(QualifiedName, ReturnedOperator) {
   dict.filter(declared, fn(_name, operator) { effect_term.is_ground(operator) })
+  |> unscoped
   |> tag_returns(Declared, source)
 }
 
@@ -1351,7 +1382,7 @@ pub fn with_fresh_returned_operators(
   let merged =
     merge_returns(
       knowledge_base.returned_operators,
-      tag_returns(inferred, Fresh, source),
+      tag_returns(unscoped(inferred), Fresh, source),
     )
   KnowledgeBase(..knowledge_base, returned_operators: merged)
 }
@@ -1643,15 +1674,6 @@ pub fn load_spec_effects_from_file(
 //   entry: the external term wins in `all_effects` and is ground by
 //   construction, so any bounds pairing with it come from another source.
 //
-//   Unless the declared function's `effects` line carries a `where returns`
-//   clause. Such a line survives the declaration for the clause's sake, and the
-//   clause's variables are scoped by that line's own bound list — the clause has
-//   none of its own. So the line's bounds are recorded, and they are the one
-//   entry on this channel that does not pair with the term beside them: the
-//   declaration answers the effects channel, these bounds scope the returned
-//   operator. Dropping them leaves a clause nothing can bind and the returned
-//   function resolves to `[Unknown]`.
-//
 // Entries for a name a *stale* per-function external also names are the
 // project-spec caller's to drop, with the same filter it applies to the
 // effects map beside this one.
@@ -1670,8 +1692,7 @@ pub fn load_spec_params_from_file(
   list.fold(annotation.extract_annotations(file), from_externals, fn(acc, ann) {
     use <- bool.guard(when: ann.kind == Check, return: acc)
     use <- bool.guard(
-      when: set.contains(external_functions, ann.function)
-        && option.is_none(ann.returns),
+      when: set.contains(external_functions, ann.function),
       return: acc,
     )
     case annotation.split_function_name(ann.function) {
@@ -1700,8 +1721,9 @@ pub type DepSpec {
   DepSpec(
     effects: Dict(QualifiedName, EffectTerm),
     params: Dict(QualifiedName, List(ParamBound)),
-    // `where returns` clauses on the spec's `effects` lines.
-    returns: Dict(QualifiedName, EffectTerm),
+    // `where returns` clauses on the spec's `effects` lines, each with the
+    // bound list scoping it.
+    returns: Dict(QualifiedName, ScopedClause),
     declared_returns: Dict(QualifiedName, EffectTerm),
     type_fields: List(TypeFieldAnnotation),
     externals: List(ExternalAnnotation),
@@ -1740,11 +1762,6 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
       DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [], set.new())
     }
     Ok(file) -> {
-      let returns = load_spec_returns_from_file(file)
-      // The names whose `effects` line is kept only for its `where returns`
-      // clause. That line's bound list is what scopes the clause's variables, so
-      // it survives the module drop below alongside it.
-      let clause_scopes = returns |> dict.keys |> set.from_list
       // Loaded through the same two readers a package uses for its *own* spec,
       // so a dependency's `check` budgets and externally-declared functions are
       // scoped identically one package boundary away: a `check` line's bounds
@@ -1757,21 +1774,18 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
         // left to outrank the declaration per-function-beats-module-level. Only
         // that channel: `infer` keeps such a line when it carries a
         // `where returns` clause, which is the clause's only home, and the
-        // clause is read from `returns` below.
+        // clause is read from `returns` below, carrying its own scoping bounds.
         effects: load_spec_effects_from_file(file)
-          |> drop_module_assumed(file, set.new()),
+          |> drop_module_assumed(file),
         // A dependency's per-function external is never stale by this rule: its
         // own body is the documented case for the line.
         //
-        // Bounds travel with their term, so dropping one without the other pairs
-        // a surviving term with bounds from another annotation — except for the
-        // names `clause_scopes` holds, where the bounds are deliberately kept
-        // without the term they were written beside. There they scope the
-        // clause on the returns channel; the effects channel answers from the
-        // declaration, whose ground term binds nothing.
+        // Bounds travel with their term, so both channels drop the same names:
+        // a surviving term paired with bounds from another annotation is a
+        // pairing no annotation wrote.
         params: load_spec_params_from_file(file)
-          |> drop_module_assumed(file, clause_scopes),
-        returns:,
+          |> drop_module_assumed(file),
+        returns: load_spec_returns_from_file(file),
         declared_returns: load_spec_external_returns_from_file(file),
         type_fields: annotation.extract_type_fields(file),
         externals: annotation.extract_externals(file),
@@ -1782,24 +1796,16 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
 }
 
 // Drop every entry whose module the same spec declares with a module-level
-// `assume <module> : [...]`, minus the names `keep` names. The consumer-side
-// counterpart of the drop a package's own context applies to its own spec, so a
-// declaration means the same thing read from either side of the package
-// boundary.
-//
-// `keep` is empty on the effects channel — the declaration is the whole answer
-// there. On the bounds channel it holds the names whose line was kept for its
-// clause, whose variables those bounds scope.
+// `assume <module> : [...]`. The consumer-side counterpart of the drop a
+// package's own context applies to its own spec, so a declaration means the
+// same thing read from either side of the package boundary.
 fn drop_module_assumed(
   entries: Dict(QualifiedName, a),
   file: types.GradedFile,
-  keep: Set(QualifiedName),
 ) -> Dict(QualifiedName, a) {
   let modules = annotation.module_external_modules(file)
   use <- bool.guard(when: set.is_empty(modules), return: entries)
-  dict.filter(entries, fn(name, _value) {
-    !set.contains(modules, name.module) || set.contains(keep, name)
-  })
+  dict.filter(entries, fn(name, _value) { !set.contains(modules, name.module) })
 }
 
 // The module paths a package ships, read off its `src/` tree.
@@ -1840,9 +1846,7 @@ fn package_modules(dep_root: String) -> Set(String) {
 // A term and its bounds are dropped together. `load_knowledge_base` merges terms
 // and bounds in two independent passes, so a term dropped without its bounds
 // would revive the catalog's term paired with the dependency's bounds — the
-// pairing `load_spec_params_from_file` documents, broken. (Its one stated
-// exception is elsewhere: bounds kept without their term to scope a
-// `where returns` clause, which this filter neither makes nor unmakes.)
+// pairing `load_spec_params_from_file` documents, broken.
 fn sanitize_dep_spec(
   dep: DepSpec,
   foreign: Dict(QualifiedName, types.ForeignFunction),
@@ -1890,11 +1894,10 @@ fn sanitize_dep_spec(
 // A function's `assume` line wins over an `effects` line for the same
 // name. `graded infer` writes no `effects` line for an externally-declared
 // function unless the line carries a `where returns` clause, so a spec carrying
-// both without one has a stale line, and only the external's ground term pairs
-// with the empty bounds `load_spec_params_from_file` records for it. With a
-// clause the pair is deliberately mixed: the declaration's ground term answers
-// here, and the bounds recorded beside it scope the clause on the returns
-// channel instead.
+// both without one has a stale line, and either way only the external's ground
+// term pairs with the empty bounds `load_spec_params_from_file` records for it:
+// where the line is kept for a clause, that clause carries its own scoping
+// bounds on the returns channel.
 fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> ExternalTiers {
   let #(function_externals, module_externals) =
     split_externals(dep.externals, origin)
@@ -1921,17 +1924,6 @@ fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> ExternalTiers {
 // `returns` lines, so a name both key resolves to the declaration. Both merges
 // gap-fill: this tier reads below the installed dependencies', so a name an
 // installed dep's spec already answered keeps that answer, declaration or not.
-//
-// The two returns channels differ in whether a summary needs bounds beside it.
-// A **declared** operator is ground by rule, so it binds no parameter and pairs
-// with nothing. A **closed** one — a clause on an `effects` line — is scoped by
-// that line's own bound list, and travels with it or is not readable at all:
-// without those bounds the closed gate calls the clause open and the caller
-// resolves the returned function to `[Unknown]`. So the bounds are copied for
-// the clauses this fold lands, on top of the ones copied for the terms it
-// decides. The two sets are not the same: a module declaration takes the name's
-// effects entry out of `winning` while leaving its clause to answer, which is
-// precisely when the term-keyed copy alone drops the list.
 pub fn with_path_dep_spec(
   knowledge_base: KnowledgeBase,
   dep: DepSpec,
@@ -1943,44 +1935,23 @@ pub fn with_path_dep_spec(
   let dep = sanitize_dep_spec(dep, knowledge_base.dependency_foreign)
   let #(decided, module_externals) = decided_entries(dep, origin)
   let winning = over_catalog(knowledge_base.all_effects, decided)
-  let folded =
-    KnowledgeBase(
-      ..knowledge_base,
-      all_effects: dict.merge(knowledge_base.all_effects, winning),
-      param_bounds: dict.merge(
-        knowledge_base.param_bounds,
-        dict.map_values(winning, fn(name, _entry) {
-          dict.get(dep.params, name) |> result.unwrap([])
-        }),
-      ),
-      module_effects: dict.merge(
-        knowledge_base.module_effects,
-        over_catalog(knowledge_base.module_effects, module_externals),
-      ),
-    )
-    |> gap_filling_declared_returns(dep.declared_returns, origin)
-    |> with_closed_returned_operators(dep.returns, origin)
-    |> with_type_fields(dep.type_fields, origin)
-
-  // The bound lists scoping the clauses this fold landed, read off the outcome
-  // rather than recomputed from the merge rules: an entry is this fold's clause
-  // exactly when the channel answers the name with a `Closed` summary from this
-  // origin. A name an earlier tier answered, or this spec's own declaration
-  // did, is not one — that answer's own tier supplies whatever scopes it.
-  let scoping =
-    dict.filter(dep.params, fn(name, _bounds) {
-      case dict.get(folded.returned_operators, name) {
-        Ok(entry) -> entry.summary == Closed && entry.source == origin
-        Error(Nil) -> False
-      }
-    })
   KnowledgeBase(
-    ..folded,
-    // Gap-filling, like the operator they scope: a bounds entry already there
-    // belongs to whichever tier answered first, including the term-keyed copy
-    // above.
-    param_bounds: dict.merge(scoping, folded.param_bounds),
+    ..knowledge_base,
+    all_effects: dict.merge(knowledge_base.all_effects, winning),
+    param_bounds: dict.merge(
+      knowledge_base.param_bounds,
+      dict.map_values(winning, fn(name, _entry) {
+        dict.get(dep.params, name) |> result.unwrap([])
+      }),
+    ),
+    module_effects: dict.merge(
+      knowledge_base.module_effects,
+      over_catalog(knowledge_base.module_effects, module_externals),
+    ),
   )
+  |> gap_filling_declared_returns(dep.declared_returns, origin)
+  |> with_closed_returned_operators(dep.returns, origin)
+  |> with_type_fields(dep.type_fields, origin)
 }
 
 // The incoming entries a path dependency's spec may write over a knowledge-base
@@ -2053,19 +2024,25 @@ fn read_spec_file(
   annotation.parse_file(content) |> result.map_error(SpecMalformed)
 }
 
-// Build a returned-operator map (qualified name → operator) from the
-// `where returns` clauses on a parsed spec's `effects` lines, and those only.
-// A `check` line's clause keys nothing — it asserts what a function returns
-// rather than declaring it — and an `assume` line's goes through
+// Build a clause map (qualified name → operator and the bounds scoping it) from
+// the `where returns` clauses on a parsed spec's `effects` lines, and those
+// only. A `check` line's clause keys nothing — it asserts what a function
+// returns rather than declaring it — and an `assume` line's goes through
 // `load_spec_external_returns_from_file` instead.
+//
+// The line's own bound list travels with the clause it scopes: the clause has
+// no bound list of its own, and read apart from that list its variables answer
+// to nothing.
 pub fn load_spec_returns_from_file(
   file: types.GradedFile,
-) -> Dict(QualifiedName, EffectTerm) {
+) -> Dict(QualifiedName, ScopedClause) {
   annotation.extract_effects(file)
   |> list.filter_map(fn(ann) {
     ann.returns
     |> option.to_result(Nil)
-    |> result.map(fn(op) { #(ann.function, op) })
+    |> result.map(fn(op) {
+      #(ann.function, ScopedClause(operator: op, bounds: ann.params))
+    })
   })
   |> fold_named_returns()
 }
@@ -2087,16 +2064,16 @@ pub fn load_spec_external_returns_from_file(
   |> dict.from_list()
 }
 
-// Key a list of `#(spec name, operator)` pairs by qualified name, dropping the
+// Key a list of `#(spec name, clause)` pairs by qualified name, dropping the
 // names that don't split into a module and a function.
 fn fold_named_returns(
-  entries: List(#(String, EffectTerm)),
-) -> Dict(QualifiedName, EffectTerm) {
+  entries: List(#(String, ScopedClause)),
+) -> Dict(QualifiedName, ScopedClause) {
   list.fold(entries, dict.new(), fn(acc, entry) {
-    let #(name, operator) = entry
+    let #(name, clause) = entry
     case annotation.split_function_name(name) {
       Ok(#(module, function)) ->
-        dict.insert(acc, QualifiedName(module:, function:), operator)
+        dict.insert(acc, QualifiedName(module:, function:), clause)
       Error(_) -> acc
     }
   })
