@@ -52,6 +52,7 @@ inject_spec(InTar, SpecBin, EntryName, OutTar) ->
 do_inject(InTarPath, SpecBin, Entry, OutTarPath, WorkDir) ->
     InnerTmp = filename:join(WorkDir, "inner.tar"),
     InnerDir = filename:join(WorkDir, "contents"),
+    assert_safe_name(Entry),
     {ok, Outer} = erl_tar:extract(InTarPath, [memory]),
     Version = proplists:get_value("VERSION", Outer),
     MetaBin = proplists:get_value("metadata.config", Outer),
@@ -61,9 +62,10 @@ do_inject(InTarPath, SpecBin, Entry, OutTarPath, WorkDir) ->
     % entry by path — erl_tar only takes modes from the filesystem, a binary
     % add silently writes 0644 — and replace any existing spec entry.
     InnerRaw = zlib:gunzip(Contents),
+    {ok, Table} = erl_tar:table({binary, InnerRaw}, [verbose]),
+    assert_safe_table(Table),
     ok = file:make_dir(InnerDir),
     ok = erl_tar:extract({binary, InnerRaw}, [{cwd, InnerDir}]),
-    {ok, Table} = erl_tar:table({binary, InnerRaw}, [verbose]),
     Names = [N || {N, regular, _, _, _, _, _} <- Table, N =/= Entry],
     {ok, T} = erl_tar:open(InnerTmp, [write]),
     lists:foreach(fun(N) ->
@@ -118,8 +120,11 @@ verify_tarball(TarPath, EntryName) ->
         Stored =:= checksum(Version, MetaBin, Contents) orelse throw({graded_error,
             <<"stored CHECKSUM does not match recomputed inner checksum">>}),
 
-        {ok, Inner} = erl_tar:extract({binary, zlib:gunzip(Contents)}, [memory]),
-        InnerNames = [N || {N, _} <- Inner],
+        % The table, not a memory extract: an extract yields regular members
+        % only, so it would certify a strict subset of what the archive carries.
+        {ok, Table} = erl_tar:table({binary, zlib:gunzip(Contents)}, [verbose]),
+        assert_safe_table(Table),
+        InnerNames = [N || {N, _, _, _, _, _, _} <- Table],
         assert_files_match(MetaBin, InnerNames),
         lists:member(Entry, InnerNames) orelse throw({graded_error,
             <<"injected spec not present in the tarball">>}),
@@ -177,6 +182,52 @@ to_binary(V) when is_list(V) -> unicode:characters_to_binary(V).
 % contents.tar.gz, hashed as iodata so the tarball bytes are never copied.
 checksum(Version, Meta, Contents) ->
     binary:encode_hex(crypto:hash(sha256, [Version, Meta, Contents]), uppercase).
+
+% Throw unless every member of an inner tar table is one graded can safely carry
+% forward. The rebuild in do_inject re-adds each member by
+% filename:join(InnerDir, Name), and filename:join/2 lets an absolute second
+% argument win outright — so an absolute name in a crafted archive would read
+% the *host* file at that path and embed it in the tarball graded then tells the
+% user to publish. Read the table and run this before anything is extracted: a
+% name is judged before the archive it came from is written to disk.
+assert_safe_table(Table) ->
+    lists:foreach(fun assert_safe_member/1, Table).
+
+assert_safe_member({Name, Type, _Size, _MTime, _Mode, _Uid, _Gid}) ->
+    assert_safe_name(Name),
+    % Only regular members are re-added, so any other kind is dropped from the
+    % output rather than carried, and the run then fails on the files-list
+    % mismatch naming nothing. Refuse it here, naming the entry and its actual
+    % kind. A link's target is invisible to any check here — erl_tar:table/2
+    % leaves it out of the tuple — which is why the kind is what is refused.
+    Type =:= regular orelse throw({graded_error, iolist_to_binary([
+        "graded pack does not support archives with non-regular members (`",
+        Name, "` is a ", atom_to_list(Type), ")"])});
+assert_safe_member(Member) ->
+    throw({graded_error, unicode:characters_to_binary(io_lib:format(
+        "unreadable inner tar entry: ~p", [Member]))}).
+
+% Throw unless Name is a relative path with no `..` component.
+%
+% Path *type* is the test, not a leading slash: filename:pathtype/1 is
+% platform-dependent in exactly the way the filename:join/2 it defends is, so
+% the guard tracks the operation rather than one platform's spelling of it
+% ("C:/x" is relative on Unix and absolute on Windows, and "C:x" is a third
+% case — volumerelative — that a slash test misses entirely).
+%
+% The raw name is what gets checked, never a normalised one: normalising
+% collapses an internal `a/../x` to `x` and would admit a name this rule
+% rejects. `..` is its own clause because pathtype("..") is `relative`.
+assert_safe_name(Name0) ->
+    Name = unicode:characters_to_list(Name0),
+    filename:pathtype(Name) =:= relative orelse unsafe_name(Name),
+    lists:member("..", filename:split(Name)) andalso unsafe_name(Name),
+    ok.
+
+unsafe_name(Name) ->
+    throw({graded_error, iolist_to_binary([
+        "unsafe tar entry name `", Name,
+        "`: entries must be relative paths inside the package"])}).
 
 % Throw unless the metadata files list equals the inner tar names as sets.
 assert_files_match(MetaBin, InnerNames) ->
