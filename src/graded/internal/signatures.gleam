@@ -468,10 +468,14 @@ fn is_function_type(t: glance.Type) -> Bool {
 
 // Parse every `.gleam` file under `source_dir` with glance and fold it into
 // `initial`, in walk order. `step` receives the module path the file's location
-// denotes (`<source_dir>/gleam/list.gleam` → `gleam/list`) and the parse of it,
-// or `Error(Nil)` where the file would not read or parse. Folding rather than
-// returning a list keeps one AST live at a time, so a package's whole source
-// never sits in memory at once.
+// denotes (`<source_dir>/gleam/list.gleam` → `gleam/list`), the path of the file
+// itself, and the parse of it, or `Error(Nil)` where the file would not read or
+// parse. Folding rather than returning a list keeps one AST live at a time, so a
+// package's whole source never sits in memory at once.
+//
+// The file path travels alongside because a caller that records the copy of a
+// module path it read may want to read that copy again later, and only the path
+// names *that* copy — a second search for the module could find a different one.
 //
 // A file that will not read or parse (a version mismatch, an FFI-only Erlang
 // package) is handed to `step` rather than skipped: it derives nothing, but it
@@ -483,7 +487,7 @@ fn is_function_type(t: glance.Type) -> Bool {
 pub fn fold_source_dir(
   source_dir: String,
   initial: acc,
-  step: fn(acc, String, Result(Module, Nil)) -> acc,
+  step: fn(acc, String, String, Result(Module, Nil)) -> acc,
 ) -> acc {
   case simplifile.get_files(source_dir) {
     Error(_) -> initial
@@ -498,7 +502,12 @@ pub fn fold_source_dir(
           ))
           result.replace_error(glance.module(source), Nil)
         }
-        step(acc, config.module_path_for_source(gleam_path, source_dir), parsed)
+        step(
+          acc,
+          config.module_path_for_source(gleam_path, source_dir),
+          gleam_path,
+          parsed,
+        )
       })
   }
 }

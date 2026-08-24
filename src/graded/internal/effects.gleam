@@ -107,19 +107,22 @@ pub type KnowledgeBase {
     // function missing from a module that *is* here is a name the package does
     // not define, while a module missing entirely is no evidence at all.
     project_functions: Dict(String, Dict(String, types.Visibility)),
-    // What the Gleam fallback body of one of *this package's* `@external`s
-    // does, where that body runs — the targets its declaration leaves
-    // uncovered — paired with the parameter bounds the term is stated over.
-    // Ordinary Gleam that runs, so every caller is charged it on top of
-    // whatever declares the external, exactly as the external's own `check`
-    // line covers both. Held apart from `all_effects` because the declaration
-    // has to stay reportable on its own: the two are unioned when a name is
-    // charged, and told apart when its provenance is explained. The bounds
-    // stay beside the term they bind: which bounds are a fallback's is a
-    // provenance question every reader answers structurally from this one map.
+    // What the Gleam fallback body of an `@external` does, where that body runs
+    // — the targets its declaration leaves uncovered — paired with the
+    // parameter bounds the term is stated over. Ordinary Gleam that runs, so
+    // every caller is charged it on top of whatever declares the external,
+    // exactly as the external's own `check` line covers both. Held apart from
+    // `all_effects` because the declaration has to stay reportable on its own:
+    // the two are unioned when a name is charged, and told apart when its
+    // provenance is explained. The bounds stay beside the term they bind: which
+    // bounds are a fallback's is a provenance question every reader answers
+    // structurally from this one map.
     //
-    // The dependency counterpart is `[Unknown]` (see `with_dependency_fallback`)
-    // — no consumer walks a dependency's bodies. Here the body is in hand.
+    // This package's externals and its dependencies' alike: a dependency module
+    // declaring one is re-parsed and walked before anything of this package is
+    // inferred, so the body a consumer runs is summarized here too. A name here
+    // is one a walk reached, which is what `widens_with_dependency_fallback`
+    // reads to tell a walked dependency body from an unwalked one.
     fallback_summaries: Dict(QualifiedName, #(EffectTerm, List(ParamBound))),
     // The targets the package under analysis is built for, and whether it named
     // them. Every foreign lookup is read on the build's own targets, and a
@@ -427,16 +430,19 @@ pub fn lookup(
   with_dependency_fallback(knowledge_base, name, found)
 }
 
-// Widen a dependency external's answer by the fallback body nobody walks.
+// Widen a dependency external's answer by a fallback body nothing walked.
 //
-// Where the source is walked — this package — a declaration is unioned with a
-// running fallback body's own effects, because that body is ordinary Gleam that
-// runs on the targets the declaration doesn't cover. A consumer never walks a
-// dependency's bodies, so the union has no second operand there and the
-// declaration alone would read as the whole story: `assume dep.run :
-// []` over an `@external(javascript, …)` whose Erlang fallback prints would be
-// believed pure on Erlang. `[Unknown]` is that missing operand — the body ran,
-// and what it did is not knowable from here.
+// A declaration is unioned with its running fallback body's own effects,
+// because that body is ordinary Gleam that runs on the targets the declaration
+// doesn't cover. The dependency pass walks those bodies and records them in
+// `fallback_summaries`, and where it did, the union takes its second operand
+// from there like any of this package's own — nothing is widened here.
+//
+// Where it did not — a module that would not re-parse, one dropped from a
+// cyclic import graph — the declaration alone would read as the whole story:
+// `assume dep.run : []` over an `@external(javascript, …)` whose Erlang
+// fallback prints would be believed pure on Erlang. `[Unknown]` is the missing
+// operand there — the body ran, and what it did is not knowable from here.
 //
 // Which halves the *calling* body reaches decides this the way it decides one of
 // this package's own (see `reachable_halves`), and it is decided here because
@@ -472,19 +478,29 @@ fn with_dependency_fallback(
   }
 }
 
-// Whether a hit for `name` is widened by the fallback body above.
+// Whether a hit for `name` is widened by the fallback body above: a
+// dependency's runs, and nothing walked it.
 //
 // The widening leaves no mark on the answer — the term gains `[Unknown]` and
 // keeps the declaration's source — so a caller that reports provenance asks
 // here to tell the two apart. Without it the widened `[Time, Unknown]` reads as
 // what the dependency's spec said, when the spec said `[Time]` and the
 // `Unknown` is a body nobody walked.
+//
+// The summary is what makes it a body somebody walked, and it has to be weighed
+// here rather than beside the union downstream: `lookup` widens the
+// *declaration* term itself, so an `[Unknown]` let through travels under the
+// declaration's source and nothing after it can subtract it. Both entry points
+// — the widening at `with_dependency_fallback` and the backstop at
+// `running_fallback_term` — ask this one question, so both stand down together.
 pub fn widens_with_dependency_fallback(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Bool {
   case dict.get(knowledge_base.dependency_foreign, name) {
-    Ok(types.ForeignFunction(runs_fallback_body:, ..)) -> runs_fallback_body
+    Ok(types.ForeignFunction(runs_fallback_body:, ..)) ->
+      runs_fallback_body
+      && !dict.has_key(knowledge_base.fallback_summaries, name)
     Error(Nil) -> False
   }
 }
@@ -637,13 +653,13 @@ fn declaration_term(
 // What a running fallback body contributes to `name`'s charge, before the
 // narrowing above weighs whether the walk reaches it.
 //
-// `None` where no fallback runs. One of *this package's* externals contributes
-// what its body does, walked. A dependency's contributes `[Unknown]`: the body
-// runs and no consumer walks it — and so does one of this package's that no walk
-// reached, because the source scan records that a fallback runs before anything
-// walks it. A pass that never reached the walk (an import cycle bails the whole
-// in-memory inference) would otherwise leave the declaration standing alone over
-// a body that prints.
+// `None` where no fallback runs. An external whose body a walk reached — this
+// package's, or a dependency's — contributes what that body does. One no walk
+// reached contributes `[Unknown]`, because both scans record that a fallback
+// runs before anything walks it: this package's where the pass never reached the
+// walk (an import cycle bails the whole in-memory inference), a dependency's
+// where its module would not re-parse. Either would otherwise leave the
+// declaration standing alone over a body that prints.
 fn running_fallback_term(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -781,8 +797,8 @@ pub fn with_active_targets(
 // never happened rather than a fallback that does nothing.
 //
 // This package's map only: a dependency's running fallback is
-// `widens_with_dependency_fallback`'s, and answers `[Unknown]` by construction
-// rather than by backstop.
+// `widens_with_dependency_fallback`'s, which asks the same question of the other
+// scan's map and of the summary a walk of that dependency's body left behind.
 fn runs_own_fallback_body(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,

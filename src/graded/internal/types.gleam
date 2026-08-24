@@ -426,8 +426,9 @@ pub type Visibility {
 // What a knowledge base records about one `@external` it has seen the source
 // of: whether its Gleam fallback body is code that runs on some target the
 // function is compiled for. It travels with the name because it decides an
-// answer no other entry can supply — a running fallback widens a declaration
-// downstream, where the body itself is never walked.
+// answer no other entry can supply — a running fallback adds a half to the
+// declaration downstream, and where nothing walked that body the half is
+// `[Unknown]`.
 //
 // The target sets that decided it ride along, because a caller that runs on
 // only some of them needs the same question answered for *its* targets: a body

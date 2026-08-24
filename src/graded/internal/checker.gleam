@@ -907,11 +907,70 @@ pub fn fallback_effects(
   // code and which are ordinary Gleam whose body is the only implementation.
   package_targets: types.PackageTargets,
 ) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
-  let targets =
+  walk_fallbacks(
     list.filter(module.functions, fn(definition) {
       foreign_definition(definition, package_targets)
       && runs_fallback_body(definition, package_targets)
-    })
+    }),
+    module,
+    module_path,
+    knowledge_base,
+    registry,
+    module_types,
+    girard_fn_typed,
+    package_targets,
+  )
+}
+
+// The same, for a module of a *dependency*, walked on the consumer's targets.
+//
+// One selector apart, and the difference is the whole point of a second entry
+// point: `foreign_definition` asks whether the build compiles the declaration,
+// and an `@external(javascript, …)` read by an Erlang-only consumer fails it.
+// In this package's source that answer is right — nothing foreign is compiled,
+// so the function is ordinary Gleam and the ordinary walk covers its body. A
+// dependency's is not walked as ordinary Gleam by anything, so the question here
+// is only whether a body runs at all: `has_running_fallback`, the same reading
+// `dependency_foreign_functions` records the name under.
+//
+// girard types no consumer holds for a dependency, so the walk takes the
+// syntax-level result — what a module girard cannot type already falls back to.
+pub fn dependency_fallback_effects(
+  module: Module,
+  module_path: String,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  package_targets: types.PackageTargets,
+) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
+  walk_fallbacks(
+    list.filter(module.functions, fn(definition) {
+      extract.declares_external(definition)
+      && has_running_fallback(definition, package_targets)
+    }),
+    module,
+    module_path,
+    knowledge_base,
+    registry,
+    dict.new(),
+    dict.new(),
+    package_targets,
+  )
+}
+
+// Summarize each of `targets`, which either selector above chose from
+// `module.functions`. The whole module comes along because a fallback body's
+// unqualified calls are resolved against every function beside it — a sibling
+// missing from the map is an unresolved local call, charged `[Unknown]`.
+fn walk_fallbacks(
+  targets: List(Definition(Function)),
+  module: Module,
+  module_path: String,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  girard_fn_typed: dict.Dict(String, Set(String)),
+  package_targets: types.PackageTargets,
+) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
   use <- bool.guard(when: targets == [], return: dict.new())
   let function_map = build_function_map(module)
   let ModuleContext(context:, cache:) =
@@ -2626,8 +2685,9 @@ fn recursion_edges(
 // `module_path` and each paired with what a knowledge base records about it.
 // What a knowledge base holds so that every consumer — a caller's resolution,
 // `check`, `why`, `effect` — reads one of these names as only its declaration
-// describes it. Whether the fallback body runs rides along for the consumers
-// that never walk this source, a dependency's away.
+// describes it. Whether the fallback body runs rides along, so a charge assembled
+// before the walk reaches that body says so rather than reading the declaration
+// as the whole story.
 pub fn foreign_functions(
   module: Module,
   module_path: String,
@@ -2658,13 +2718,15 @@ pub fn foreign_functions(
 //
 // The consumer's own modules drop such a declaration, and rightly — no foreign
 // implementation is compiled, so the Gleam body is the sole one and the function
-// is ordinary Gleam whose body graded walks. A dependency's body it never walks.
-// Dropping the entry there left the name keyed by a shipped or catalogued
-// declaration with nothing to say that declaration answers for a target this
-// build does not compile, so `assume dep/ffi.run : [Disk]` over an
-// `@external(javascript, …)` was charged in full to an Erlang-only consumer that
-// reaches only the Gleam body underneath it. Kept, the lookup narrows the
-// declaration out and charges the `[Unknown]` an unwalked body is worth.
+// is ordinary Gleam whose body graded walks. A dependency's body is walked by a
+// pass of its own, and this is what tells that pass which names have one.
+// Dropping the entry left the name keyed by a shipped or catalogued declaration
+// with nothing to say that declaration answers for a target this build does not
+// compile, so `assume dep/ffi.run : [Disk]` over an `@external(javascript, …)`
+// was charged in full to an Erlang-only consumer that reaches only the Gleam body
+// underneath it. Kept, the lookup narrows the declaration out and charges what
+// the body does instead — or the `[Unknown]` an unwalked body is worth, where
+// nothing walked it.
 pub fn dependency_foreign_functions(
   module: Module,
   module_path: String,
