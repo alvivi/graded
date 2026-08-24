@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `graded effect` for a dependency `@external` with a running fallback now reads
   that dependency's module before answering, so the query and `graded check`
   quote the same charge.
+- graded requires girard 2.1.1 or later, whose shipped spec is written in the
+  current grammar. 2.1.0's carried a retired line, which graded rejected the
+  file over, resolving calls into girard as unannotated.
 
 ### Fixed
 
