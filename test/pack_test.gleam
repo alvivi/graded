@@ -454,6 +454,113 @@ pub fn verify_tarball_rejects_an_unsafe_entry_test() {
   cleanup(root)
 }
 
+// A malformed archive says what is wrong with it
+//
+// Every one of these used to badmatch or reach a term as `undefined`, and
+// surface as an Erlang tuple through `format_reason`'s `~p`.
+
+// A project ready to pack, whose tarball is written from `members` verbatim —
+// no VERSION/CHECKSUM quartet unless the members say so. Returns the tarball.
+fn setup_malformed(root: String, members: List(#(String, String))) -> String {
+  let _ = simplifile.delete(root)
+  write_file(root <> "/gleam.toml", "name = \"dep\"\nversion = \"1.0.0\"\n")
+  write_file(root <> "/dep.graded", "effects dep.work : []\n")
+  let tarball = root <> "/build/dep-1.0.0.tar"
+  ensure_parent(tarball)
+  build_outer_tarball(tarball, members)
+  tarball
+}
+
+// A metadata.config good enough to name the package, for the archives whose
+// defect is somewhere other than the metadata.
+const good_metadata = "{<<\"name\">>, <<\"dep\"/utf8>>}.
+{<<\"version\">>, <<\"1.0.0\"/utf8>>}.
+{<<\"files\">>, [
+  <<\"src/dep.gleam\"/utf8>>]}.
+"
+
+fn pack_error(root: String) -> String {
+  let assert Error(graded.PackError(message)) = graded.pack_project(root, None)
+  message
+}
+
+pub fn pack_names_a_corrupt_outer_tar_test() {
+  let root = "build/pack_corrupt_outer"
+  let _ = simplifile.delete(root)
+  write_file(root <> "/gleam.toml", "name = \"dep\"\nversion = \"1.0.0\"\n")
+  write_file(root <> "/dep.graded", "effects dep.work : []\n")
+  write_file(root <> "/build/dep-1.0.0.tar", "this is not a tar file\n")
+
+  let message = pack_error(root)
+  string.contains(message, "as a hex tarball") |> should.be_true()
+  cleanup(root)
+}
+
+// Also the proof that `read_package_identity` surfaces a thrown message as
+// itself: its catch was `_:Reason` only, so a clean message rendered as
+// `{graded_error,<<"...">>}` through `format_reason`'s `~p`.
+pub fn pack_names_a_missing_metadata_member_test() {
+  let root = "build/pack_no_metadata"
+  let _ = setup_malformed(root, [#("VERSION", "3")])
+
+  let message = pack_error(root)
+  string.contains(message, "hex tarball has no metadata.config member")
+  |> should.be_true()
+  string.contains(message, "graded_error") |> should.be_false()
+  cleanup(root)
+}
+
+pub fn pack_names_metadata_that_does_not_scan_test() {
+  let root = "build/pack_metadata_scan"
+  let _ =
+    setup_malformed(root, [
+      #("VERSION", "3"),
+      #("metadata.config", "{<<\"name\">>, \"unterminated"),
+    ])
+
+  let message = pack_error(root)
+  string.contains(message, "does not scan as Erlang terms") |> should.be_true()
+  cleanup(root)
+}
+
+pub fn pack_names_metadata_with_no_terminating_dot_test() {
+  let root = "build/pack_metadata_dot"
+  let _ =
+    setup_malformed(root, [
+      #("VERSION", "3"),
+      #("metadata.config", "{<<\"name\">>, <<\"dep\"/utf8>>}"),
+    ])
+
+  let message = pack_error(root)
+  string.contains(message, "no terminating `.`") |> should.be_true()
+  cleanup(root)
+}
+
+pub fn pack_names_metadata_that_does_not_parse_test() {
+  let root = "build/pack_metadata_parse"
+  let _ =
+    setup_malformed(root, [#("VERSION", "3"), #("metadata.config", "{a, }.")])
+
+  let message = pack_error(root)
+  string.contains(message, "does not parse") |> should.be_true()
+  cleanup(root)
+}
+
+pub fn pack_names_a_truncated_contents_member_test() {
+  let root = "build/pack_truncated_contents"
+  let _ =
+    setup_malformed(root, [
+      #("VERSION", "3"),
+      #("metadata.config", good_metadata),
+      #("contents.tar.gz", "not a gzip stream at all"),
+      #("CHECKSUM", "00"),
+    ])
+
+  let message = pack_error(root)
+  string.contains(message, "not a readable gzip stream") |> should.be_true()
+  cleanup(root)
+}
+
 @external(erlang, "graded_pack_test_ffi", "build_tarball")
 fn build_tarball(
   out_path: String,
@@ -476,6 +583,12 @@ fn build_tarball_with_raw_names(
   name: String,
   version: String,
   members: List(Member),
+) -> Nil
+
+@external(erlang, "graded_pack_test_ffi", "build_outer_tarball")
+fn build_outer_tarball(
+  out_path: String,
+  members: List(#(String, String)),
 ) -> Nil
 
 @external(erlang, "graded_pack_test_ffi", "unpack_inner")

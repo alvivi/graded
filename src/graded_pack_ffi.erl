@@ -53,19 +53,19 @@ do_inject(InTarPath, SpecBin, Entry, OutTarPath, WorkDir) ->
     InnerTmp = filename:join(WorkDir, "inner.tar"),
     InnerDir = filename:join(WorkDir, "contents"),
     assert_safe_name(Entry),
-    {ok, Outer} = erl_tar:extract(InTarPath, [memory]),
-    Version = proplists:get_value("VERSION", Outer),
-    MetaBin = proplists:get_value("metadata.config", Outer),
-    Contents = proplists:get_value("contents.tar.gz", Outer),
+    Outer = extract_outer(InTarPath, []),
+    Version = required_member("VERSION", Outer),
+    MetaBin = required_member("metadata.config", Outer),
+    Contents = required_member("contents.tar.gz", Outer),
 
     % inner tar: unpack to disk (restoring each entry's mode), re-add every
     % entry by path — erl_tar only takes modes from the filesystem, a binary
     % add silently writes 0644 — and replace any existing spec entry.
-    InnerRaw = zlib:gunzip(Contents),
-    {ok, Table} = erl_tar:table({binary, InnerRaw}, [verbose]),
+    InnerRaw = gunzip_contents(Contents),
+    Table = inner_table(InnerRaw),
     assert_safe_table(Table),
     ok = file:make_dir(InnerDir),
-    ok = erl_tar:extract({binary, InnerRaw}, [{cwd, InnerDir}]),
+    extract_inner(InnerRaw, InnerDir),
     Names = [N || {N, regular, _, _, _, _, _} <- Table, N =/= Entry],
     {ok, T} = erl_tar:open(InnerTmp, [write]),
     lists:foreach(fun(N) ->
@@ -110,11 +110,11 @@ do_inject(InTarPath, SpecBin, Entry, OutTarPath, WorkDir) ->
 % contents, and EntryName appears in both. Returns ok or {error, Reason}.
 verify_tarball(TarPath, EntryName) ->
     try
-        {ok, Outer} = erl_tar:extract(unicode:characters_to_list(TarPath), [memory]),
-        Version = proplists:get_value("VERSION", Outer),
-        MetaBin = proplists:get_value("metadata.config", Outer),
-        Contents = proplists:get_value("contents.tar.gz", Outer),
-        Stored = proplists:get_value("CHECKSUM", Outer),
+        Outer = extract_outer(unicode:characters_to_list(TarPath), []),
+        Version = required_member("VERSION", Outer),
+        MetaBin = required_member("metadata.config", Outer),
+        Contents = required_member("contents.tar.gz", Outer),
+        Stored = required_member("CHECKSUM", Outer),
         Entry = unicode:characters_to_list(EntryName),
 
         Stored =:= checksum(Version, MetaBin, Contents) orelse throw({graded_error,
@@ -122,7 +122,7 @@ verify_tarball(TarPath, EntryName) ->
 
         % The table, not a memory extract: an extract yields regular members
         % only, so it would certify a strict subset of what the archive carries.
-        {ok, Table} = erl_tar:table({binary, zlib:gunzip(Contents)}, [verbose]),
+        Table = inner_table(gunzip_contents(Contents)),
         assert_safe_table(Table),
         InnerNames = [N || {N, _, _, _, _, _, _} <- Table],
         assert_files_match(MetaBin, InnerNames),
@@ -140,9 +140,9 @@ read_package_identity(TarPath) ->
     try
         % Only metadata.config is needed; skip materialising the (dominant)
         % contents.tar.gz member.
-        {ok, Outer} = erl_tar:extract(unicode:characters_to_list(TarPath),
-            [memory, {files, ["metadata.config"]}]),
-        MetaBin = proplists:get_value("metadata.config", Outer),
+        Outer = extract_outer(unicode:characters_to_list(TarPath),
+            [{files, ["metadata.config"]}]),
+        MetaBin = required_member("metadata.config", Outer),
         Terms = config_terms(MetaBin),
         Name = to_binary(proplists:get_value(<<"name">>, Terms)),
         Version = to_binary(proplists:get_value(<<"version">>, Terms)),
@@ -152,6 +152,7 @@ read_package_identity(TarPath) ->
             _ -> {ok, {Name, Version}}
         end
     catch
+        throw:{graded_error, Msg} -> {error, Msg};
         _:Reason -> {error, format_reason(Reason)}
     end.
 
@@ -164,15 +165,26 @@ files_of(MetaBin) ->
 % Parse a metadata.config binary into a proplist of Erlang terms. hex writes it
 % as a sequence of dot-terminated terms.
 config_terms(Bin) ->
-    {ok, Tokens, _} = erl_scan:string(unicode:characters_to_list(Bin)),
-    parse_terms(Tokens, []).
+    case erl_scan:string(unicode:characters_to_list(Bin)) of
+        {ok, Tokens, _} -> parse_terms(Tokens, []);
+        {error, Info, _} -> throw({graded_error, iolist_to_binary([
+            "metadata.config does not scan as Erlang terms: ",
+            format_reason(Info)])})
+    end.
 
 parse_terms([], Acc) -> lists:reverse(Acc);
 parse_terms(Tokens, Acc) ->
-    {Before, [Dot | Rest]} = lists:splitwith(
-        fun({dot, _}) -> false; (_) -> true end, Tokens),
-    {ok, Term} = erl_parse:parse_term(Before ++ [Dot]),
-    parse_terms(Rest, [Term | Acc]).
+    case lists:splitwith(fun({dot, _}) -> false; (_) -> true end, Tokens) of
+        {_, []} -> throw({graded_error,
+            <<"metadata.config has a term with no terminating `.`">>});
+        {Before, [Dot | Rest]} ->
+            case erl_parse:parse_term(Before ++ [Dot]) of
+                {ok, Term} -> parse_terms(Rest, [Term | Acc]);
+                {error, Info} -> throw({graded_error, iolist_to_binary([
+                    "metadata.config has a term that does not parse: ",
+                    format_reason(Info)])})
+            end
+    end.
 
 to_binary(undefined) -> undefined;
 to_binary(V) when is_binary(V) -> V;
@@ -182,6 +194,54 @@ to_binary(V) when is_list(V) -> unicode:characters_to_binary(V).
 % contents.tar.gz, hashed as iodata so the tarball bytes are never copied.
 checksum(Version, Meta, Contents) ->
     binary:encode_hex(crypto:hash(sha256, [Version, Meta, Contents]), uppercase).
+
+% Read an outer tar's members into memory, naming the file rather than
+% badmatching on a corrupt or non-tar input — the first thing a malformed file
+% hits, and until now the one that produced the least about it.
+extract_outer(TarPath, Opts) ->
+    case erl_tar:extract(TarPath, [memory | Opts]) of
+        {ok, Members} -> Members;
+        {error, Reason} -> throw({graded_error, iolist_to_binary([
+            "could not read ", TarPath, " as a hex tarball: ",
+            format_reason(Reason)])})
+    end.
+
+% A member a hex tarball must carry. proplists:get_value/2 answers `undefined`
+% for a missing one, which travels as far as the term that consumes it before
+% failing as something else entirely.
+required_member(Name, Outer) ->
+    case proplists:get_value(Name, Outer) of
+        undefined -> throw({graded_error, iolist_to_binary([
+            "hex tarball has no ", Name, " member"])});
+        Value -> Value
+    end.
+
+% zlib:gunzip/1 raises data_error on a truncated or corrupt stream.
+gunzip_contents(Contents) ->
+    try zlib:gunzip(Contents)
+    catch _:_ -> throw({graded_error,
+        <<"contents.tar.gz is not a readable gzip stream">>})
+    end.
+
+% The inner tar's table. Gunzipping cleanly says nothing about what the bytes
+% then are.
+inner_table(InnerRaw) ->
+    case erl_tar:table({binary, InnerRaw}, [verbose]) of
+        {ok, Table} -> Table;
+        {error, Reason} -> throw({graded_error, iolist_to_binary([
+            "could not read contents.tar.gz as a tar archive: ",
+            format_reason(Reason)])})
+    end.
+
+% Whatever erl_tar rejects that graded's own rules did not anticipate. The
+% unsafe-name and unsafe-symlink refusals it would otherwise raise here are
+% unreachable — assert_safe_table has already refused both, before extraction.
+extract_inner(InnerRaw, InnerDir) ->
+    case erl_tar:extract({binary, InnerRaw}, [{cwd, InnerDir}]) of
+        ok -> ok;
+        {error, Reason} -> throw({graded_error, iolist_to_binary([
+            "could not unpack contents.tar.gz: ", format_reason(Reason)])})
+    end.
 
 % Throw unless every member of an inner tar table is one graded can safely carry
 % forward. The rebuild in do_inject re-adds each member by
