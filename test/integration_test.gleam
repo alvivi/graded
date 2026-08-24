@@ -9112,6 +9112,107 @@ pub fn a_dependency_fallbacks_field_call_reads_a_consumers_line_test() {
   |> should.equal(types.Specific(set.from_list(["Disk"])))
 }
 
+// The same, for a fallback body whose parameter is annotated with a type from
+// another module of its own package. `import_line` is how that module is
+// imported and `annotation` how the type is written under that import: three
+// spellings of one type, all of which have to key the one field `assume`.
+//
+// The type's own module qualifies that line, and the annotation is the only
+// reading of the receiver's type in a dependency's body, so the spelling is all
+// the walk has to go on.
+fn dependency_fallback_imported_field_violations(
+  name: String,
+  import_line: String,
+  annotation: String,
+) -> List(types.Violation) {
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/" <> name,
+      package: "proj",
+      spec: "check proj.caller : []\n",
+      sources: [
+        #(
+          "proj.gleam",
+          "import dep/model
+import dep/store
+
+pub fn quiet() -> Nil {
+  Nil
+}
+
+pub fn caller() -> Nil {
+  store.insert(model.Runner(run: quiet))
+}
+",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: "assume dep/store : []
+assume dep/model.Runner.run : [Disk]
+",
+      dependency_sources: [
+        #(
+          "dep/model.gleam",
+          "pub type Runner {
+  Runner(run: fn() -> Nil)
+}
+",
+        ),
+        #("dep/store.gleam", import_line <> "
+
+@external(javascript, \"./store.mjs\", \"insert\")
+pub fn insert(r: " <> annotation <> ") -> Nil {
+  r.run()
+}
+"),
+      ],
+    )
+  let assert Ok(results) = graded.run(root)
+  support.cleanup(root)
+  list.flat_map(results, fn(result) { result.violations })
+}
+
+// The declared `[Disk]` is charged for every spelling. A qualified annotation
+// used to name no type at all — the local registry must not claim an imported
+// type's fields — so the call fell to `[Unknown]` and a consumer's accurate
+// `check ... : [Disk]` failed. The alias the annotation is written under names
+// the module instead, which is what the line is keyed by.
+pub fn a_dependency_fallback_reads_an_imported_types_line_test() {
+  let assert [violation] =
+    dependency_fallback_imported_field_violations(
+      "dep_fallback_imported_field",
+      "import dep/model",
+      "model.Runner",
+    )
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+pub fn a_dependency_fallback_reads_an_aliased_imported_types_line_test() {
+  let assert [violation] =
+    dependency_fallback_imported_field_violations(
+      "dep_fallback_aliased_field",
+      "import dep/model as m",
+      "m.Runner",
+    )
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+// An unqualified import writes the same type with no module beside it, which is
+// the spelling of a type of the module's own. It is the import that tells them
+// apart, so the line keyed by the defining module is still the one read.
+pub fn a_dependency_fallback_reads_an_unqualified_imported_types_line_test() {
+  let assert [violation] =
+    dependency_fallback_imported_field_violations(
+      "dep_fallback_unqualified_field",
+      "import dep/model.{type Runner}",
+      "Runner",
+    )
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
 // A fallback body in one dependency package calling one in another. `caller` is
 // the `@external` the consumer calls; the body it falls back to calls `callee`,
 // whose own fallback body reaches the disk. Both module paths are parameters
