@@ -260,6 +260,54 @@ effects proj.quiet : [] where hints : [Z]
   support.cleanup(root)
 }
 
+pub fn infer_preserves_clauses_a_declaration_suppresses_test() {
+  // A declaration speaks for the effects channel alone, and the line it makes
+  // redundant is the only home its retained clauses have. Both shapes that
+  // suppress a line: a per-function `assume` over a real `@external`, and a
+  // module-level one.
+  let root = "build/infer_declared_unknown_clauses"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.gleam",
+      "@external(erlang, \"proj_ffi\", \"shout\")\npub fn shout() -> Nil\n",
+    ),
+    #("proj/quiet.gleam", "pub fn hush() -> Nil {\n  Nil\n}\n"),
+    #(
+      "proj.graded",
+      "assume proj.shout : [Stdout]
+assume proj/quiet : [Db]
+effects proj.shout : [Unknown] where hints : [Z]
+effects proj/quiet.hush : [] where notes : [W]
+",
+    ),
+  ])
+
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(file) = annotation.parse_file(written)
+
+  annotation.unknown_clause_lines(file)
+  |> should.equal([#("proj.shout", ["hints"]), #("proj/quiet.hush", ["notes"])])
+  support.cleanup(root)
+}
+
+pub fn infer_drops_a_redundant_clause_less_line_test() {
+  // The other half of the rule: a line the declaration makes redundant and that
+  // retains nothing claims nothing the declaration does not, and still goes.
+  let root = "build/infer_declared_no_clauses"
+  write_project(
+    root,
+    source(),
+    Spec("assume proj : [Stdout]\neffects proj.quiet : []\n"),
+  )
+
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  string.contains(written, "effects proj.quiet") |> should.be_false()
+  support.cleanup(root)
+}
+
 pub fn infer_drops_a_stale_line_whole_test() {
   // Dropping stays right where the subject itself is gone: `proj.vanished` is
   // no function of the module, so nothing about the line survives.

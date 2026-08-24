@@ -1159,15 +1159,33 @@ pub fn merge_inferred(
   // effect, so every inferred `effects mod.fn` line is likewise redundant and
   // would shadow the declaration. Drop them all for the declared module.
   let external_modules = module_external_modules(file)
+  // The `effects` lines carrying a clause this version does not read. Scoped to
+  // `effects` lines because those are the only ones rebuilt from `inferred_map`
+  // below; every other line kind survives on its own path.
+  let retaining_effects =
+    names_of_lines(file.lines, fn(line) {
+      case line {
+        AnnotationLine(a, [_, ..]) if a.kind == Effects -> Ok(a.function)
+        AnnotationLine(..)
+        | TypeFieldLine(..)
+        | ExternalLine(..)
+        | RetainedAssumeLine(..)
+        | CommentLine(_)
+        | BlankLine -> Error(Nil)
+      }
+    })
   let inferred =
     list.filter(inferred, fn(annotation) {
       // Both declarations speak for the effects channel alone. A line still
-      // carrying an inferred clause after the strip above is the only home that
-      // clause has — the grammar writes no clause-only `effects` line — so it
-      // survives whole, and the loaders read the declaration over its effects
-      // half. A clause-less line claims nothing the declaration does not, and
-      // goes.
+      // carrying a clause after the strip above is the only home that clause
+      // has — the grammar writes no clause-only `effects` line — so it survives
+      // whole, and the loaders read the declaration over its effects half. That
+      // holds for a retained clause as much as for an inferred one, and more
+      // so: this version can re-derive the operator it wrote, and cannot
+      // re-derive a key it does not read. A clause-less line claims nothing the
+      // declaration does not, and goes.
       option.is_some(annotation.returns)
+      || set.contains(retaining_effects, annotation.function)
       || {
         !set.contains(external_functions, annotation.function)
         && !in_external_module(annotation.function, external_modules)
