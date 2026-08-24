@@ -1,6 +1,6 @@
 -module(graded_pack_ffi).
--export([inject_spec/4, verify_tarball/2, read_package_identity/1, files_of/1,
-         tar_io/2]).
+-export([inject_spec/4, verify_tarball/2, read_package_identity/1,
+         files_of/1]).
 
 % Inject a `.graded` spec into a hex tarball, following hex_tarball.erl's
 % mechanics:
@@ -91,11 +91,10 @@ do_inject(InTarPath, SpecBin, Entry, OutFd, WorkDir) ->
     % entry by path — erl_tar only takes modes from the filesystem, a binary
     % add silently writes 0644 — and replace any existing spec entry.
     InnerRaw = gunzip_contents(Contents),
-    Table = inner_table(InnerRaw),
-    assert_safe_table(Table),
+    Table = safe_inner_table(InnerRaw),
     ok = file:make_dir(InnerDir),
     extract_inner(InnerRaw, InnerDir),
-    Names = [N || {N, regular, _, _, _, _, _} <- Table, N =/= Entry],
+    Names = [N || N <- names(Table), N =/= Entry],
     {ok, T} = erl_tar:open(InnerTmp, [write]),
     lists:foreach(fun(N) ->
         ok = erl_tar:add(T, filename:join(InnerDir, N), N, [])
@@ -115,8 +114,8 @@ do_inject(InTarPath, SpecBin, Entry, OutFd, WorkDir) ->
             NewLine = iolist_to_binary(["  <<\"", Entry, "\"/utf8>>,\n"]),
             Spliced = binary:replace(MetaBin, Marker,
                 <<Marker/binary, NewLine/binary>>),
-            Spliced =:= MetaBin andalso throw({graded_error,
-                <<"metadata.config files-list marker not found">>}),
+            Spliced =:= MetaBin andalso
+                fail(["metadata.config files-list marker not found"]),
             Spliced
     end,
 
@@ -126,7 +125,7 @@ do_inject(InTarPath, SpecBin, Entry, OutFd, WorkDir) ->
     Checksum = checksum(Version, NewMeta, NewContents),
 
     % rebuild outer tar, through the descriptor inject_into holds open.
-    {ok, O} = erl_tar:init(OutFd, write, fun ?MODULE:tar_io/2),
+    {ok, O} = erl_tar:init(OutFd, write, fun tar_io/2),
     ok = erl_tar:add(O, Version, "VERSION", []),
     ok = erl_tar:add(O, NewMeta, "metadata.config", []),
     ok = erl_tar:add(O, NewContents, "contents.tar.gz", []),
@@ -146,17 +145,15 @@ verify_tarball(TarPath, EntryName) ->
         Stored = required_member("CHECKSUM", Outer),
         Entry = unicode:characters_to_list(EntryName),
 
-        Stored =:= checksum(Version, MetaBin, Contents) orelse throw({graded_error,
-            <<"stored CHECKSUM does not match recomputed inner checksum">>}),
+        Stored =:= checksum(Version, MetaBin, Contents) orelse
+            fail(["stored CHECKSUM does not match recomputed inner checksum"]),
 
         % The table, not a memory extract: an extract yields regular members
         % only, so it would certify a strict subset of what the archive carries.
-        Table = inner_table(gunzip_contents(Contents)),
-        assert_safe_table(Table),
-        InnerNames = [N || {N, _, _, _, _, _, _} <- Table],
+        InnerNames = names(safe_inner_table(gunzip_contents(Contents))),
         assert_files_match(MetaBin, InnerNames),
-        lists:member(Entry, InnerNames) orelse throw({graded_error,
-            <<"injected spec not present in the tarball">>}),
+        lists:member(Entry, InnerNames) orelse
+            fail(["injected spec not present in the tarball"]),
         {ok, nil}
     catch
         throw:{graded_error, Msg} -> {error, Msg};
@@ -196,22 +193,19 @@ files_of(MetaBin) ->
 config_terms(Bin) ->
     case erl_scan:string(unicode:characters_to_list(Bin)) of
         {ok, Tokens, _} -> parse_terms(Tokens, []);
-        {error, Info, _} -> throw({graded_error, iolist_to_binary([
-            "metadata.config does not scan as Erlang terms: ",
-            format_reason(Info)])})
+        {error, Info, _} -> fail(["metadata.config does not scan as Erlang ",
+            "terms: ", format_reason(Info)])
     end.
 
 parse_terms([], Acc) -> lists:reverse(Acc);
 parse_terms(Tokens, Acc) ->
     case lists:splitwith(fun({dot, _}) -> false; (_) -> true end, Tokens) of
-        {_, []} -> throw({graded_error,
-            <<"metadata.config has a term with no terminating `.`">>});
+        {_, []} -> fail(["metadata.config has a term with no terminating `.`"]);
         {Before, [Dot | Rest]} ->
             case erl_parse:parse_term(Before ++ [Dot]) of
                 {ok, Term} -> parse_terms(Rest, [Term | Acc]);
-                {error, Info} -> throw({graded_error, iolist_to_binary([
-                    "metadata.config has a term that does not parse: ",
-                    format_reason(Info)])})
+                {error, Info} -> fail(["metadata.config has a term that ",
+                    "does not parse: ", format_reason(Info)])
             end
     end.
 
@@ -230,9 +224,8 @@ checksum(Version, Meta, Contents) ->
 extract_outer(TarPath, Opts) ->
     case erl_tar:extract(TarPath, [memory | Opts]) of
         {ok, Members} -> Members;
-        {error, Reason} -> throw({graded_error, iolist_to_binary([
-            "could not read ", TarPath, " as a hex tarball: ",
-            format_reason(Reason)])})
+        {error, Reason} -> fail(["could not read ", TarPath,
+            " as a hex tarball: ", format_reason(Reason)])
     end.
 
 % A member a hex tarball must carry. proplists:get_value/2 answers `undefined`
@@ -240,61 +233,56 @@ extract_outer(TarPath, Opts) ->
 % failing as something else entirely.
 required_member(Name, Outer) ->
     case proplists:get_value(Name, Outer) of
-        undefined -> throw({graded_error, iolist_to_binary([
-            "hex tarball has no ", Name, " member"])});
+        undefined -> fail(["hex tarball has no ", Name, " member"]);
         Value -> Value
     end.
 
 % zlib:gunzip/1 raises data_error on a truncated or corrupt stream.
 gunzip_contents(Contents) ->
     try zlib:gunzip(Contents)
-    catch _:_ -> throw({graded_error,
-        <<"contents.tar.gz is not a readable gzip stream">>})
+    catch _:_ -> fail(["contents.tar.gz is not a readable gzip stream"])
     end.
 
-% The inner tar's table. Gunzipping cleanly says nothing about what the bytes
-% then are.
-inner_table(InnerRaw) ->
+% The inner tar's table, with every member already judged safe to carry
+% forward — the two are one call so that no reader of the table can hold an
+% unvalidated one. Gunzipping cleanly says nothing about what the bytes then
+% are, so the read has its own diagnostic.
+safe_inner_table(InnerRaw) ->
     case erl_tar:table({binary, InnerRaw}, [verbose]) of
-        {ok, Table} -> Table;
-        {error, Reason} -> throw({graded_error, iolist_to_binary([
-            "could not read contents.tar.gz as a tar archive: ",
-            format_reason(Reason)])})
+        {ok, Table} -> lists:foreach(fun assert_safe_member/1, Table), Table;
+        {error, Reason} -> fail(["could not read contents.tar.gz as a tar ",
+            "archive: ", format_reason(Reason)])
     end.
+
+names(Table) -> [Name || {Name, _, _, _, _, _, _} <- Table].
+
+% Throw unless a member is one graded can safely carry forward. The rebuild in
+% do_inject re-adds each by filename:join(InnerDir, Name), and filename:join/2
+% lets an absolute second argument win outright — so an absolute name in a
+% crafted archive would read the *host* file at that path and embed it in the
+% tarball graded then tells the user to publish. This runs before anything is
+% extracted: a name is judged before the archive it came from reaches disk.
+assert_safe_member({Name, Type, _Size, _MTime, _Mode, _Uid, _Gid}) ->
+    assert_safe_name(Name),
+    % Only regular members can be re-added, so any other kind would be dropped
+    % from the output rather than carried, and the run would fail on the
+    % files-list mismatch naming nothing. Refuse it here, naming the entry and
+    % its actual kind. A link's target is invisible to any check here —
+    % erl_tar:table/2 leaves it out of the tuple — which is why the kind is
+    % what gets refused.
+    Type =:= regular orelse fail([
+        "graded pack does not support archives with non-regular members (`",
+        Name, "` is a ", atom_to_list(Type), ")"]).
 
 % Whatever erl_tar rejects that graded's own rules did not anticipate. The
 % unsafe-name and unsafe-symlink refusals it would otherwise raise here are
-% unreachable — assert_safe_table has already refused both, before extraction.
+% unreachable — safe_inner_table has already refused both, before extraction.
 extract_inner(InnerRaw, InnerDir) ->
     case erl_tar:extract({binary, InnerRaw}, [{cwd, InnerDir}]) of
         ok -> ok;
-        {error, Reason} -> throw({graded_error, iolist_to_binary([
-            "could not unpack contents.tar.gz: ", format_reason(Reason)])})
+        {error, Reason} -> fail(["could not unpack contents.tar.gz: ",
+            format_reason(Reason)])
     end.
-
-% Throw unless every member of an inner tar table is one graded can safely carry
-% forward. The rebuild in do_inject re-adds each member by
-% filename:join(InnerDir, Name), and filename:join/2 lets an absolute second
-% argument win outright — so an absolute name in a crafted archive would read
-% the *host* file at that path and embed it in the tarball graded then tells the
-% user to publish. Read the table and run this before anything is extracted: a
-% name is judged before the archive it came from is written to disk.
-assert_safe_table(Table) ->
-    lists:foreach(fun assert_safe_member/1, Table).
-
-assert_safe_member({Name, Type, _Size, _MTime, _Mode, _Uid, _Gid}) ->
-    assert_safe_name(Name),
-    % Only regular members are re-added, so any other kind is dropped from the
-    % output rather than carried, and the run then fails on the files-list
-    % mismatch naming nothing. Refuse it here, naming the entry and its actual
-    % kind. A link's target is invisible to any check here — erl_tar:table/2
-    % leaves it out of the tuple — which is why the kind is what is refused.
-    Type =:= regular orelse throw({graded_error, iolist_to_binary([
-        "graded pack does not support archives with non-regular members (`",
-        Name, "` is a ", atom_to_list(Type), ")"])});
-assert_safe_member(Member) ->
-    throw({graded_error, unicode:characters_to_binary(io_lib:format(
-        "unreadable inner tar entry: ~p", [Member]))}).
 
 % Throw unless Name is a relative path with no `..` component.
 %
@@ -314,15 +302,17 @@ assert_safe_name(Name0) ->
     ok.
 
 unsafe_name(Name) ->
-    throw({graded_error, iolist_to_binary([
-        "unsafe tar entry name `", Name,
-        "`: entries must be relative paths inside the package"])}).
+    fail(["unsafe tar entry name `", Name,
+        "`: entries must be relative paths inside the package"]).
 
 % Throw unless the metadata files list equals the inner tar names as sets.
 assert_files_match(MetaBin, InnerNames) ->
     lists:sort(files_of(MetaBin)) =:= lists:sort(InnerNames) orelse
-        throw({graded_error,
-            <<"metadata files list does not match inner tar contents">>}).
+        fail(["metadata files list does not match inner tar contents"]).
+
+% Every diagnostic this module raises, as one message the callers' catch
+% clauses turn back into {error, Binary}.
+fail(Parts) -> throw({graded_error, iolist_to_binary(Parts)}).
 
 format_reason(Reason) ->
     unicode:characters_to_binary(io_lib:format("~p", [Reason])).

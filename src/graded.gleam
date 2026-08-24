@@ -370,6 +370,11 @@ pub fn pack_project(
       PackError("patched tarball failed verification: " <> message)
     }),
   )
+  // A rename failure is the one path that keeps the temp: by here the archive
+  // is written and verified, so it is the run's finished product and deleting
+  // it would throw away the only good copy. It has to be moved or removed by
+  // hand — the next run says so, refusing to write over a path it did not
+  // create.
   use _ <- result.try(
     simplifile.rename(temp, tarball_path)
     |> result.map_error(FileWriteError(tarball_path, _)),
