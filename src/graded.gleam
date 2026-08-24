@@ -701,11 +701,19 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     |> with_spec_declared_returns(spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
+    // Ahead of the fallback walk below, not merely ahead of the inference pass:
+    // the field a dependency's fallback body calls may be declared here rather
+    // than in that dependency's own spec, a consumer's line for a dependency's
+    // type. Folded after the walk it was not there to answer, the call stayed
+    // polymorphic in the field, and a caller constructing the record settled
+    // the summary at whatever it wired in.
+    |> with_spec_type_fields(spec)
     // Every layer that can key a dependency name is folded by here — the
-    // catalog, the dependency specs, the module-level assumes, and a spec-less
-    // path dependency's own inference — so a fallback body is walked against
-    // everything a caller of it would resolve against. Before this package's
-    // own inference, whose walks read the summaries this leaves behind.
+    // catalog, the dependency specs, the module-level assumes, a spec-less
+    // path dependency's own inference, and the field lines above — so a
+    // fallback body is walked against everything a caller of it would resolve
+    // against. Before this package's own inference, whose walks read the
+    // summaries this leaves behind.
     |> with_dependency_fallback_effects(dep_sources, registry, package_targets)
     |> with_committed_spec(spec, stale_externals)
     // Recorded before the inference pass below, so an `@external` resolves to
@@ -738,12 +746,12 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     )
     // Before the inference pass, not after it, and in the order `infer` folds
     // them: a body walked during inference resolves its field calls through the
-    // same field `assume` lines and factory signatures a body walked at check time
-    // does. Installed afterwards, the pass ran without them and a function
-    // whose effects it settled — an `@external`'s running fallback, whose
-    // callers read the summary and never the body — kept an answer the two
-    // commands would then disagree about.
-    |> with_spec_type_fields(spec)
+    // same factory signatures a body walked at check time does — the field
+    // `assume` lines they read beside these fold earlier still, above.
+    // Installed afterwards, the pass ran without them and a function whose
+    // effects it settled — an `@external`'s running fallback, whose callers
+    // read the summary and never the body — kept an answer the two commands
+    // would then disagree about.
     |> effects.with_factories(
       qualify_by_module(index, extract.factory_map(
         _,
@@ -3027,6 +3035,9 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     |> with_spec_declared_returns(spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
+    // As in `project_context`: in reach of the fallback walk below, which
+    // resolves a dependency body's field calls through these lines.
+    |> with_spec_type_fields(spec)
     // As in `project_context`: after every layer that can key a dependency name,
     // and before this package's own inference reads the summaries.
     |> with_dependency_fallback_effects(dep_sources, registry, package_targets)
@@ -3037,7 +3048,6 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
 
   let base_kb =
     kb_base
-    |> with_spec_type_fields(spec)
     |> effects.with_factories(
       qualify_by_module(index, extract.factory_map(
         _,

@@ -9023,22 +9023,23 @@ fn hidden() -> Nil
 }
 
 // A fallback body calling a function-typed field on an annotated parameter,
-// against the `assume` line the dependency ships for that field.
+// against an `assume` line for that field. `field_line` is the line, written
+// into whichever spec the caller of this passes it in — the consumer's or the
+// dependency's, which resolve it by different routes and both have to.
 //
-// The line is resolved by the receiver's nominal type, and the only reading of
-// that type here is the parameter's own annotation — girard annotates no
-// dependency's source, so the walk holds no inferred type for `r`. That
-// annotation names no module, and the shipped line qualifies its type by one, so
-// the type is keyed by the module the walk is in as well as bare. Keyed bare
-// alone the line went unmatched, the call stayed polymorphic in `r.run`, and
-// this consumer — constructing the record with a pure function — specialized the
-// declared `[Disk]` away into a passing `check ... : []`.
-pub fn a_dependency_fallbacks_field_call_reads_its_declared_line_test() {
+// The consumer constructs the record with a pure function, so a summary left
+// polymorphic in `r.run` settles at `[]` here and the `check` passes: the
+// declared effect has to reach the walk to be charged at all.
+fn dependency_fallback_field_violations(
+  name: String,
+  spec: String,
+  dependency_spec: String,
+) -> List(types.Violation) {
   let root =
     support.write_project_with_dependency(
-      directory: "build/dep_fallback_field_line",
+      directory: "build/" <> name,
       package: "proj",
-      spec: "check proj.caller : []\n",
+      spec: spec,
       sources: [
         #(
           "proj.gleam",
@@ -9055,9 +9056,7 @@ pub fn caller() -> Nil {
         ),
       ],
       dependency: "dep",
-      dependency_spec: "assume dep/store : []
-assume dep/store.Runner.run : [Disk]
-",
+      dependency_spec: dependency_spec,
       dependency_sources: [
         #(
           "dep/store.gleam",
@@ -9075,8 +9074,39 @@ pub fn insert(r: Runner) -> Nil {
     )
   let assert Ok(results) = graded.run(root)
   support.cleanup(root)
+  list.flat_map(results, fn(result) { result.violations })
+}
+
+// The line is resolved by the receiver's nominal type, and the only reading of
+// that type here is the parameter's own annotation — girard annotates no
+// dependency's source, so the walk holds no inferred type for `r`. That
+// annotation names no module, and the shipped line qualifies its type by one, so
+// the type is keyed by the module the walk is in as well as bare. Keyed bare
+// alone the line went unmatched and the declared `[Disk]` was specialized away.
+pub fn a_dependency_fallbacks_field_call_reads_its_declared_line_test() {
   let assert [violation] =
-    list.flat_map(results, fn(result) { result.violations })
+    dependency_fallback_field_violations(
+      "dep_fallback_field_line",
+      "check proj.caller : []\n",
+      "assume dep/store : []\nassume dep/store.Runner.run : [Disk]\n",
+    )
+  violation.function |> should.equal("caller")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+// The same line, written by the consumer about a dependency's type — which is
+// where a dependency shipping no spec of its own leaves it. It is charged the
+// same, so the spec's field lines have to be folded into the knowledge base
+// ahead of the walk that reads them, not merely ahead of this package's own
+// inference.
+pub fn a_dependency_fallbacks_field_call_reads_a_consumers_line_test() {
+  let assert [violation] =
+    dependency_fallback_field_violations(
+      "dep_fallback_field_line_consumer",
+      "assume dep/store.Runner.run : [Disk]\ncheck proj.caller : []\n",
+      "assume dep/store : []\n",
+    )
   violation.function |> should.equal("caller")
   violation.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Disk"])))
