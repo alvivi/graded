@@ -10,48 +10,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - An `assume` line over a function takes a bound list.
-  `assume myapp/ffi.each(f: [f]) : [f]` charges a caller its callback
-  argument's actual effects — the same substitution a bounded `effects` line
-  performs — and a foreign decorator declares the closure it hands back with
-  `assume myapp/ffi.wrap(cb: [cb]) : [] where returns : [cb]`, the clause's
-  variables scoped by the line's own bound list. Nothing verifies the
-  declaration itself; that stays what `assume` means. The declared effects
-  term is flat — labels and variables; a second-order application reads
-  `[Unknown]` — and a bound list on a module or field path is a parse error.
-- A bounded `assume` line whose effects term names a variable no bound's
-  payload binds is flagged: no call site can ever resolve such a variable.
-- A bound whose payload reuses another bound's parameter name
-  (`cb: [e], other: [cb]`) is flagged on a line whose effects term or
-  `where returns` clause uses that variable: the term binds it through the
-  payload while the clause binds it by parameter name, so one spelled
-  variable can charge two different arguments. On bounded `assume` lines and
-  `effects` lines alike.
+  `assume myapp/ffi.each(f: [f]) : [f]` charges a caller the callback
+  argument's actual effects, and `assume myapp/ffi.wrap(cb: [cb]) : []
+  where returns : [cb]` declares the closure a producer hands back. As ever,
+  nothing verifies an assumption. The effects term is flat — anything deeper
+  reads `[Unknown]` — and bounds on a module or field path are a parse error.
+- Two new warnings on bounded lines: an effects-term variable no bound's
+  payload binds (no call site can ever resolve it), and a payload reusing
+  another bound's parameter name (`cb: [e], other: [cb]`), which can charge
+  the term and the `where returns` clause different arguments.
 
 ### Changed
 
-- The warning about a variable in an `assume` line's `where returns` clause
-  now names the line's own bound list as what must scope it, and lists only
-  the unscoped variables — a clause closed by its bounds is accepted instead
-  of dropped for not being ground.
-
+- An `assume` line's `where returns` clause is accepted when the line's own
+  bounds scope its variables, instead of being dropped for not being ground;
+  the warning for an unscoped clause lists only the open variables.
 - A `where` region takes a comma-separated clause list. `returns` is still the
   only key graded reads; any other key now parses, warns once per line, and is
   kept verbatim by `graded format` and `graded infer` instead of failing the
   file.
-- A statement past 80 columns is written with its `where` region on an indented
-  continuation, one clause per line. The reader accepts either form, so a spec
-  may also be hand-wrapped.
+- A statement past 80 columns wraps its `where` region onto an indented
+  continuation, one clause per line; the reader accepts either form.
 
 ### Fixed
 
-- A hand-written decoupled bound (`cb: [e]`) scoping a `where returns` clause
-  now binds the clause's variable by parameter name, on `effects` lines and
-  `assume` lines alike. The plain decoupled shape previously resolved to
-  `[Unknown]`; with an aliased payload (`cb: [e], other: [cb]`) the clause
-  previously bound through the payload — `other`'s argument — and that
-  defined answer changes to the parameter's own. The same completion now runs
-  for a producer called unqualified in its own module, where an alias-typed
-  callback used to leave the clause unresolved.
+- A decoupled bound (`cb: [e]`) scoping a `where returns` clause now binds
+  the clause's variable by parameter name, on `effects` and `assume` lines
+  alike — previously `[Unknown]`, or, with an aliased payload
+  (`cb: [e], other: [cb]`), silently another parameter's argument. The same
+  fix covers a producer called unqualified in its own module.
 - `graded pack` refuses a tarball whose contents name an absolute path, instead
   of copying the host file at that path into the archive it tells you to
   publish. A name escaping the package with `..` is refused too.
@@ -73,11 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   argument. Such a clause resolves to `[Unknown]`, and `graded check` reports it
   as open.
 - An operator-spelled effects term (`m.f : fn(x) -> [x]`) no longer fails the
-  spec file on an `effects` or `check` line, or on a bounded `assume` line:
-  the head is cut at the effects separator rather than at the operator's own
-  paren, so every spelling of a statement reads the same term language and an
-  operator term reads `[Unknown]`, as the boundless `assume` spelling always
-  has.
+  spec file. Every spelling of a statement — bounded or not, any status —
+  now reads the same term language, and an operator term reads `[Unknown]`.
 
 ## [0.16.0] - 2026-08-24
 
