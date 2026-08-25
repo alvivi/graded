@@ -26,9 +26,9 @@ import graded/internal/types.{
   DotlessReturnsClauseWarning, EffectAnnotation, Effects, FieldNotAnnotated,
   NoKnownEffects, ParamBound, QualifiedName, ReceiverTypeUnresolved,
   RefusedDeclaredReturn, StaleFunctionExternalWarning, StaleReturnsClauseWarning,
-  TUnion, TVar, TypeLine, UnbuiltExternal, UnclosedReturnsClauseWarning,
-  UndeclaredExternal, UngroundReturnsClauseWarning, UnknownClauseWarning,
-  UnmatchedCheckWarning, UnmatchedFieldBoundWarning,
+  TUnion, TVar, TypeLine, UnboundExternalTermVariableWarning, UnbuiltExternal,
+  UnclosedReturnsClauseWarning, UndeclaredExternal, UngroundReturnsClauseWarning,
+  UnknownClauseWarning, UnmatchedCheckWarning, UnmatchedFieldBoundWarning,
   UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
   UnmatchedParamBoundWarning, UnmatchedReturnsClauseWarning,
   UnmatchedTypeFieldWarning, UnresolvedFieldValue, UntraceableArgument,
@@ -1680,9 +1680,16 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       file
       <> ": warning: the `where returns` clause on assume "
       <> function
-      <> " must be ground, and "
+      <> " has variable(s) "
       <> quoted_names(free_vars)
-      <> " is a variable — an assumption carries no bound list, so nothing scopes one whatever the function's parameters are called; the clause is ignored. Spell out the concrete effects instead"
+      <> " the line's bounds do not scope — nothing binds an unscoped variable at a call site, so the clause is ignored. Name the variable in the line's bound list, or spell out the concrete effects"
+    UnboundExternalTermVariableWarning(function:, free_vars:) ->
+      file
+      <> ": warning: assume "
+      <> function
+      <> " declares effects with variable(s) "
+      <> quoted_names(free_vars)
+      <> " that no bound's payload binds — substitution keys are the payloads' variables, so no call site can resolve them and they stay conservative. Add a bound whose payload names the variable, or remove it"
     DotlessReturnsClauseWarning(name:) ->
       file
       <> ": warning: assume "

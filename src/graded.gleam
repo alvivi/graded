@@ -63,11 +63,12 @@ import graded/internal/types.{
   type QualifiedName, type TypeFieldAnnotation, type Violation, type Warning,
   AnnotationLine, CheckResult, DotlessReturnsClauseWarning, EffectAnnotation,
   GradedFile, QualifiedName, StaleFunctionExternalWarning,
-  StaleReturnsClauseWarning, UnclosedReturnsClauseWarning,
-  UngroundReturnsClauseWarning, UnknownClauseWarning, UnmatchedCheckWarning,
-  UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
-  UnmatchedReturnsClauseWarning, UnmatchedTypeFieldWarning,
-  UnverifiedCheckShapeWarning, UnverifiedReturnsClauseWarning,
+  StaleReturnsClauseWarning, UnboundExternalTermVariableWarning,
+  UnclosedReturnsClauseWarning, UngroundReturnsClauseWarning,
+  UnknownClauseWarning, UnmatchedCheckWarning, UnmatchedFunctionExternalWarning,
+  UnmatchedModuleExternalWarning, UnmatchedReturnsClauseWarning,
+  UnmatchedTypeFieldWarning, UnverifiedCheckShapeWarning,
+  UnverifiedReturnsClauseWarning,
 }
 import simplifile
 
@@ -1080,11 +1081,49 @@ fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
   list.flatten([
     check_warnings,
     external_warnings,
+    unbound_term_variable_warnings(externals),
     returns_clause_warnings,
     clause_warnings,
     unknown_clause_warnings,
     type_field_warnings,
   ])
+}
+
+// The term oracle over explicitly bounded `assume` lines: the declared effects
+// term's variables are substitution keys, and call-site binding substitutes
+// each bound's *payload* variables — so a term variable no payload covers can
+// never bind, whatever the bound is named. Lint-only: resolution is already
+// conservative about a leftover variable. Scoped to lines with a non-empty
+// bound list — a boundless polymorphic assume resolves through
+// registry-synthesized bounds and is left alone.
+fn unbound_term_variable_warnings(
+  externals: List(types.ExternalAnnotation),
+) -> List(Warning) {
+  list.filter_map(externals, fn(external) {
+    use <- bool.guard(when: external.params == [], return: Error(Nil))
+    case annotation.external_qualified_name(external), external.effects {
+      Ok(qualified), Some(effects) -> {
+        let covered =
+          list.fold(external.params, set.new(), fn(acc, bound) {
+            set.union(acc, effect_term.free_vars(bound.effects))
+          })
+        let unbound =
+          effect_term.free_vars(effect_term.from_effect_set(effects))
+          |> set.filter(fn(variable) { !set.contains(covered, variable) })
+          |> set.to_list
+          |> list.sort(string.compare)
+        case unbound {
+          [] -> Error(Nil)
+          free_vars ->
+            Ok(UnboundExternalTermVariableWarning(
+              function: types.dotted_name(qualified),
+              free_vars:,
+            ))
+        }
+      }
+      _, _ -> Error(Nil)
+    }
+  })
 }
 
 // The warning for one `effects` line's `where returns` clause, or `Error(Nil)`
@@ -1267,12 +1306,10 @@ fn returns_clause_warnings(
       Error(Nil) -> Ok(DotlessReturnsClauseWarning(name: external.module))
       Ok(qualified) -> {
         let name = types.dotted_name(qualified)
-        // The open variables, listed once: emptiness is what makes the operator
-        // ground, so the same list decides the branch and names it.
-        let open =
-          effect_term.free_vars(operator)
-          |> set.to_list
-          |> list.sort(string.compare)
+        // The unscoped variables, listed once and by the same base predicate
+        // the loader and the gate read: emptiness is what admits the clause,
+        // so the same list decides the branch and names it.
+        let open = effects.unscoped_clause_variables(operator, external.params)
         case set.contains(stale, name), evidence.defines(qualified), open {
           True, _, _ -> Ok(StaleReturnsClauseWarning(function: name))
           False, False, _ -> Ok(UnmatchedReturnsClauseWarning(function: name))

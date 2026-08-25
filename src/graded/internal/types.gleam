@@ -871,10 +871,18 @@ pub type Warning {
   // of the function it sits on. Nothing binds such a variable at a call site,
   // so the clause is dropped and the returned function resolves to `[Unknown]`.
   UnclosedReturnsClauseWarning(function: String, free_vars: List(String))
-  // A `where returns` clause on an `assume` line that is not ground. An
-  // assumption carries no bound list, so nothing scopes a variable in it
-  // whatever the function's parameters are called, and the loader drops it.
+  // A `where returns` clause on an `assume` line with a variable the line's
+  // own bound list does not scope. An assumption's clause answers to its own
+  // line alone — no registry, no dotted-variable leniency — so nothing binds
+  // such a variable and the loader drops the clause. A ground clause on a
+  // boundless line is the empty-bounds instance of the closed case.
   UngroundReturnsClauseWarning(function: String, free_vars: List(String))
+  // A bounded `assume` line whose declared effects term names a variable no
+  // bound's payload binds. Substitution keys are the payloads' free variables,
+  // so no call site can ever bind it and resolution stays conservative.
+  // Scoped to lines with an explicit bound list: a boundless polymorphic
+  // assume resolves through registry-synthesized bounds and is not a defect.
+  UnboundExternalTermVariableWarning(function: String, free_vars: List(String))
   // A `where returns` clause on a module path. The declaration is per-function
   // by nature — nothing keys a whole module's returned value — so the clause
   // resolves nothing at all.
