@@ -644,6 +644,43 @@ pub fn a_decoupled_bound_scoping_a_clause_binds_by_parameter_name_test() {
   support.cleanup(root)
 }
 
+pub fn an_aliased_payload_does_not_capture_a_clause_variable_test() {
+  // `assume ffi.wrap(cb: [e], other: [cb]) : [] where returns : [cb]`: the
+  // clause's `cb` names the parameter `cb` even though `other`'s payload
+  // reuses the name, so the returned closure is charged the `[Disk]` handed
+  // as `cb` — not the pure `other` whose payload happens to bind `cb` too.
+  let root = "build/bounded_assume_aliased_payload"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.run : []\nassume ffi.wrap(cb: [e], other: [cb]) : [] where returns : [cb]\nassume ffi.disk_read : [Disk]\nassume ffi.noop : []\n",
+    ),
+    #(
+      "ffi.gleam",
+      support.foreign_fn(
+        "wrap",
+        "(cb: fn() -> Nil, other: fn() -> Nil) -> fn() -> Nil",
+      )
+        <> "\n"
+        <> support.foreign_fn("disk_read", "() -> Nil")
+        <> "\n"
+        <> support.foreign_fn("noop", "() -> Nil"),
+    ),
+    #(
+      "app.gleam",
+      "import ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(ffi.disk_read, ffi.noop)\n  f()\n}\n",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
 pub fn an_unscoped_declared_clause_is_dropped_test() {
   // `returns : [zz]` on a line whose bounds name only `cb`: the loader drops
   // the clause, the returned closure resolves `[Unknown]`, and `check` reports
