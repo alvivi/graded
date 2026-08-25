@@ -883,6 +883,16 @@ pub type Warning {
   // Scoped to lines with an explicit bound list: a boundless polymorphic
   // assume resolves through registry-synthesized bounds and is not a defect.
   UnboundExternalTermVariableWarning(function: String, free_vars: List(String))
+  // A bound whose payload names a *different* bound's parameter, on a line
+  // whose effects term or `where returns` clause uses that variable. The two
+  // binding channels then disagree: the term binds the variable through the
+  // payload, the clause binds it by parameter name, so one spelled variable
+  // can charge two different arguments. Each pair is the variable beside the
+  // bound whose payload binds it.
+  AliasedBoundVariableWarning(
+    function: String,
+    variables: List(#(String, String)),
+  )
   // A `where returns` clause on a module path. The declaration is per-function
   // by nature — nothing keys a whole module's returned value — so the clause
   // resolves nothing at all.

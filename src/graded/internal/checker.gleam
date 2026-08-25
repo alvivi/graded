@@ -22,11 +22,12 @@ import graded/internal/typeinfo
 import graded/internal/types.{
   type CallExplanation, type EffectAnnotation, type EffectTerm, type LocalCall,
   type LookupOrigin, type ParamBound, type QualifiedName, type ResolvedCall,
-  type UnknownReason, type Violation, type Warning, CallExplanation,
-  DotlessReturnsClauseWarning, EffectAnnotation, Effects, FieldNotAnnotated,
-  NoKnownEffects, ParamBound, QualifiedName, ReceiverTypeUnresolved,
-  RefusedDeclaredReturn, StaleFunctionExternalWarning, StaleReturnsClauseWarning,
-  TUnion, TVar, TypeLine, UnboundExternalTermVariableWarning, UnbuiltExternal,
+  type UnknownReason, type Violation, type Warning, AliasedBoundVariableWarning,
+  CallExplanation, DotlessReturnsClauseWarning, EffectAnnotation, Effects,
+  FieldNotAnnotated, NoKnownEffects, ParamBound, QualifiedName,
+  ReceiverTypeUnresolved, RefusedDeclaredReturn, StaleFunctionExternalWarning,
+  StaleReturnsClauseWarning, TUnion, TVar, TypeLine,
+  UnboundExternalTermVariableWarning, UnbuiltExternal,
   UnclosedReturnsClauseWarning, UndeclaredExternal, UngroundReturnsClauseWarning,
   UnknownClauseWarning, UnmatchedCheckWarning, UnmatchedFieldBoundWarning,
   UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
@@ -1690,6 +1691,13 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> " declares effects with variable(s) "
       <> quoted_names(free_vars)
       <> " that no bound's payload binds — substitution keys are the payloads' variables, so no call site can resolve them and they stay conservative. Add a bound whose payload names the variable, or remove it"
+    AliasedBoundVariableWarning(function:, variables:) ->
+      file
+      <> ": warning: on "
+      <> function
+      <> " variable(s) "
+      <> quoted_aliases(variables)
+      <> " also name a parameter of the line — the effects term binds such a variable through the payload while the `where returns` clause binds it by parameter name, so the two can charge different arguments. Rename the payload's variable"
     DotlessReturnsClauseWarning(name:) ->
       file
       <> ": warning: assume "
@@ -1709,6 +1717,13 @@ pub fn format_warning(file: String, warning: Warning) -> String {
 // every warning that names more than one uses.
 fn quoted_names(names: List(String)) -> String {
   names |> list.map(fn(name) { "`" <> name <> "`" }) |> string.join(", ")
+}
+
+// A list of aliased variables, each beside the bound whose payload binds it.
+fn quoted_aliases(variables: List(#(String, String))) -> String {
+  variables
+  |> list.map(fn(pair) { "`" <> pair.0 <> "` (payload of `" <> pair.1 <> "`)" })
+  |> string.join(", ")
 }
 
 // Render a violation as the line `graded check` reports.

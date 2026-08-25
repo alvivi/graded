@@ -52,6 +52,7 @@ import graded/internal/checker
 import graded/internal/cli
 import graded/internal/config
 import graded/internal/diff
+import graded/internal/effect_term
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
 import graded/internal/signatures.{type SignatureRegistry}
@@ -60,14 +61,14 @@ import graded/internal/typeinfo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type EffectTerm, type GradedFile,
   type QualifiedName, type TypeFieldAnnotation, type Violation, type Warning,
-  AnnotationLine, CheckResult, DotlessReturnsClauseWarning, EffectAnnotation,
-  GradedFile, QualifiedName, StaleFunctionExternalWarning,
-  StaleReturnsClauseWarning, UnboundExternalTermVariableWarning,
-  UnclosedReturnsClauseWarning, UngroundReturnsClauseWarning,
-  UnknownClauseWarning, UnmatchedCheckWarning, UnmatchedFunctionExternalWarning,
-  UnmatchedModuleExternalWarning, UnmatchedReturnsClauseWarning,
-  UnmatchedTypeFieldWarning, UnverifiedCheckShapeWarning,
-  UnverifiedReturnsClauseWarning,
+  AliasedBoundVariableWarning, AnnotationLine, CheckResult,
+  DotlessReturnsClauseWarning, EffectAnnotation, GradedFile, QualifiedName,
+  StaleFunctionExternalWarning, StaleReturnsClauseWarning,
+  UnboundExternalTermVariableWarning, UnclosedReturnsClauseWarning,
+  UngroundReturnsClauseWarning, UnknownClauseWarning, UnmatchedCheckWarning,
+  UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
+  UnmatchedReturnsClauseWarning, UnmatchedTypeFieldWarning,
+  UnverifiedCheckShapeWarning, UnverifiedReturnsClauseWarning,
 }
 import simplifile
 
@@ -1068,8 +1069,9 @@ fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
   // A clause on an `effects` line is written by `infer` and closed by
   // construction, so one that is open was hand-edited or written by a future
   // bug. Reported all the same: the gate drops it silently.
+  let effects_lines = annotation.extract_effects(spec)
   let clause_warnings =
-    annotation.extract_effects(spec)
+    effects_lines
     |> list.filter_map(unclosed_clause_warning(_, registry))
 
   // A clause whose key this version does not read. Reported here rather than by
@@ -1087,6 +1089,7 @@ fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
     check_warnings,
     external_warnings,
     unbound_term_variable_warnings(externals, dead_externals),
+    aliased_bound_variable_warnings(externals, effects_lines, dead_externals),
     returns_clause_warnings,
     clause_warnings,
     unknown_clause_warnings,
@@ -1138,6 +1141,73 @@ fn unbound_term_variable_warnings(
       _, _ -> Error(Nil)
     }
   })
+}
+
+// The aliasing lint (see `effects.aliased_bound_variables`): a bound payload
+// naming a *different* bound's parameter, on a line whose effects term or
+// `where returns` clause uses that variable — the shape where the term
+// channel (payload-keyed) and the clause channel (name-keyed) charge
+// different arguments. Bounded `assume` lines and `effects` lines alike,
+// since both carry two live channels; a `check` line's clause is never
+// weighed, so its one live channel cannot disagree with itself. Lint-only:
+// each channel's binding stays what it is. A machine-written
+// self-referential list never aliases, so the shape is hand-written.
+fn aliased_bound_variable_warnings(
+  externals: List(types.ExternalAnnotation),
+  effects_lines: List(EffectAnnotation),
+  dead: Set(String),
+) -> List(Warning) {
+  let from_externals =
+    list.filter_map(externals, fn(external) {
+      use qualified <- result.try(annotation.external_qualified_name(external))
+      let function = types.dotted_name(qualified)
+      use <- bool.guard(when: set.contains(dead, function), return: Error(Nil))
+      let term_variables = case external.effects {
+        Some(types.Polymorphic(_labels, variables)) -> variables
+        Some(types.Specific(_)) | Some(types.Wildcard) | None -> set.new()
+      }
+      aliased_bound_warning(
+        function,
+        external.params,
+        set.union(term_variables, returns_variables(external.returns)),
+      )
+    })
+  let from_effects =
+    list.filter_map(effects_lines, fn(ann) {
+      aliased_bound_warning(
+        ann.function,
+        ann.params,
+        set.union(
+          effect_term.free_vars(ann.effects),
+          returns_variables(ann.returns),
+        ),
+      )
+    })
+  list.append(from_externals, from_effects)
+}
+
+// One line's aliasing warning: the collision pairs whose variable the line
+// actually uses, `Error(Nil)` where none is used.
+fn aliased_bound_warning(
+  function: String,
+  params: List(types.ParamBound),
+  used: Set(String),
+) -> Result(Warning, Nil) {
+  let variables =
+    effects.aliased_bound_variables(params)
+    |> list.filter(fn(pair) { set.contains(used, pair.0) })
+  case variables {
+    [] -> Error(Nil)
+    variables -> Ok(AliasedBoundVariableWarning(function:, variables:))
+  }
+}
+
+// A clause's free variables, none where the line carries no clause.
+fn returns_variables(returns: Option(EffectTerm)) -> Set(String) {
+  case returns {
+    Some(operator) -> effect_term.free_vars(operator)
+    None -> set.new()
+  }
 }
 
 // The warning for one `effects` line's `where returns` clause, or `Error(Nil)`

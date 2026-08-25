@@ -1504,6 +1504,36 @@ pub fn bound_payload_variables(bounds: List(ParamBound)) -> Set(String) {
   })
 }
 
+// The payload variables of a bound list that also name a *different* bound's
+// parameter — the shape whose two binding channels disagree: the effects term
+// binds such a variable through the payload that names it, while a
+// `where returns` clause binds it by parameter name, so one spelled variable
+// can charge two different arguments. Each pair is the variable beside the
+// bound whose payload binds it, the last binder winning on a duplicate as it
+// does in the checker's binding fold. A dotted variable is a field path,
+// which the clause channel never binds by name, so the channels agree on it.
+pub fn aliased_bound_variables(
+  bounds: List(ParamBound),
+) -> List(#(String, String)) {
+  let names = bound_name_set(bounds)
+  list.fold(bounds, dict.new(), fn(acc, bound) {
+    bound.effects
+    |> effect_term.free_vars()
+    |> set.fold(acc, fn(acc, variable) {
+      case
+        variable != bound.name
+        && !string.contains(variable, ".")
+        && set.contains(names, variable)
+      {
+        True -> dict.insert(acc, variable, bound.name)
+        False -> acc
+      }
+    })
+  })
+  |> dict.to_list()
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+}
+
 // Merge **Fresh** returned-operator summaries (produced by this run's inference)
 // into a knowledge base — new entries take priority, so a re-inferred summary
 // replaces a committed Closed one for the same key. Used for the pre-pass /
