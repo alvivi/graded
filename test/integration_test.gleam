@@ -354,6 +354,159 @@ pub fn wrapper() -> Nil {
   support.cleanup(root)
 }
 
+// Bounded assume lines
+//
+// A bound list on an `assume` line carries substitution scaffolding for a
+// foreign higher-order function: a bound's name matches a call-site argument,
+// and its payload's free variables are the keys the argument's effects bind.
+// Nothing verifies the declaration itself — that stays what `assume` means.
+
+pub fn a_bounded_assume_charges_the_arguments_effects_test() {
+  // `assume ffi.each(f: [f]) : [f]`: the caller accrues the argument's actual
+  // effects, not `[]` — parity of substitution with a bounded `effects` line.
+  let root = "build/bounded_assume_substitution"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.run : []\nassume ffi.each(f: [f]) : [f]\nassume ffi.disk_read : [Disk]\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"m\", \"each\")
+@external(javascript, \"m\", \"each\")
+pub fn each(f: fn() -> Nil) -> Nil
+
+@external(erlang, \"m\", \"disk_read\")
+@external(javascript, \"m\", \"disk_read\")
+pub fn disk_read() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi\n\npub fn run() -> Nil {\n  ffi.each(ffi.disk_read)\n}\n",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_decoupled_bound_name_still_binds_test() {
+  // `assume ffi.map(g: [e]) : [e]`: a bound contributes through its payload's
+  // free variables, so `e` needn't name the bound to be a substitution key.
+  let root = "build/bounded_assume_decoupled_name"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.run : []\nassume ffi.map(g: [e]) : [e]\nassume ffi.disk_read : [Disk]\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"m\", \"map\")
+@external(javascript, \"m\", \"map\")
+pub fn map(g: fn() -> Nil) -> Nil
+
+@external(erlang, \"m\", \"disk_read\")
+@external(javascript, \"m\", \"disk_read\")
+pub fn disk_read() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi\n\npub fn run() -> Nil {\n  ffi.map(ffi.disk_read)\n}\n",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_ground_budget_on_an_assume_is_inert_test() {
+  // `assume ffi.each(f: [Disk]) : []` beside a tracked argument that prints:
+  // nothing checks the argument against the budget, and nothing propagates its
+  // effects — the caller is charged the declared `[]`. The argument is a named
+  // function reference, since an inline closure's body is walked by the
+  // extractor and would charge the caller regardless of the declaration.
+  let root = "build/bounded_assume_inert_budget"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.run : []\nassume ffi.each(f: [Disk]) : []\nassume ffi.log : [Stdout]\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"m\", \"each\")
+@external(javascript, \"m\", \"each\")
+pub fn each(f: fn() -> Nil) -> Nil
+
+@external(erlang, \"m\", \"log\")
+@external(javascript, \"m\", \"log\")
+pub fn log() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi\n\npub fn run() -> Nil {\n  ffi.each(ffi.log)\n}\n",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  r.violations |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_dependency_specs_bounded_assume_substitutes_test() {
+  // The same substitution one package boundary away: the dependency ships the
+  // bounded declaration in its spec, and the consumer's call site binds the
+  // bound to its own argument.
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/bounded_assume_dep_spec",
+      package: "proj",
+      spec: "check app.run : []\n",
+      sources: [
+        #(
+          "app.gleam",
+          "import dep/ffi\n\npub fn run() -> Nil {\n  ffi.each(ffi.disk_read)\n}\n",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: "assume dep/ffi.each(f: [f]) : [f]\nassume dep/ffi.disk_read : [Disk]\n",
+      dependency_sources: [
+        #(
+          "dep/ffi.gleam",
+          "@external(erlang, \"m\", \"each\")
+@external(javascript, \"m\", \"each\")
+pub fn each(f: fn() -> Nil) -> Nil
+
+@external(erlang, \"m\", \"disk_read\")
+@external(javascript, \"m\", \"disk_read\")
+pub fn disk_read() -> Nil
+",
+        ),
+      ],
+    )
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
 pub fn a_target_conditional_fallback_body_is_checked_test() {
   // An `@external` covering one target only: on the other, its Gleam body is
   // what runs. The declaration answers for callers, but the body is ordinary

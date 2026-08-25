@@ -1067,11 +1067,11 @@ pub fn argument_value_effects(
 // so arguments at those positions can bind effect variables.
 //
 // A running fallback's recorded bounds outrank every other writer's: its
-// summary's term is stated over exactly those parameters — including a
-// girard-typed callback no other source names — while a declaring line's
-// entry is empty because its term is ground by construction. An `external
-// effects` line cannot express the bound itself, so nothing an author wrote
-// is being displaced.
+// summary's term is stated over exactly those parameters, including a
+// girard-typed callback no other source names. A bounded `assume` line over a
+// fallback-running external keeps the union semantics a boundless one has —
+// the fallback's recorded bounds answer for the name, and the line's own
+// bound list stands down with the rest.
 pub fn lookup_param_bounds(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -1667,9 +1667,12 @@ pub fn load_spec_effects_from_file(
 //
 // - `check` lines are skipped: their bounds are a budget scoped to that check,
 //   not a global fact about the function, and they don't decide the term.
-// - functions declared `assume <module>.<function>` record an empty
-//   entry: the external term wins in `all_effects` and is ground by
-//   construction, so any bounds pairing with it come from another source.
+// - functions declared `assume <module>.<function>` record the bound list off
+//   the declaring line itself: the external term wins in `all_effects`, and a
+//   polymorphic one (`assume m/ffi.each(f: [f]) : [f]`) answers to the bounds
+//   written beside it. A clause-only bounded line writes no entry here — it
+//   decides no term, so a global entry would pair its bounds with a term from
+//   a lower tier; its bounds ride the declared summary instead.
 //
 // Entries for a name a *stale* per-function external also names are the
 // project-spec caller's to drop, with the same filter it applies to the
@@ -1678,14 +1681,7 @@ pub fn load_spec_params_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, List(ParamBound)) {
   let external_functions = annotation.external_function_names(file)
-  let from_externals =
-    set.fold(external_functions, dict.new(), fn(acc, name) {
-      case annotation.split_function_name(name) {
-        Ok(#(module, function)) ->
-          dict.insert(acc, QualifiedName(module:, function:), [])
-        Error(_) -> acc
-      }
-    })
+  let from_externals = external_bounds(annotation.extract_externals(file))
   list.fold(annotation.extract_annotations(file), from_externals, fn(acc, ann) {
     use <- bool.guard(when: ann.kind == Check, return: acc)
     use <- bool.guard(
@@ -1696,6 +1692,21 @@ pub fn load_spec_params_from_file(
       Ok(#(module, function)) ->
         dict.insert(acc, QualifiedName(module:, function:), ann.params)
       Error(_) -> acc
+    }
+  })
+}
+
+// The bound list beside each function external that declares effects, keyed by
+// qualified name. Folded with the same last-entry-wins rule `split_externals`
+// applies to the term, so on a duplicate declaration the winning term and the
+// winning bounds come off the same line, never mixed across lines.
+fn external_bounds(
+  externals: List(ExternalAnnotation),
+) -> Dict(QualifiedName, List(ParamBound)) {
+  list.fold(externals, dict.new(), fn(acc, external) {
+    case annotation.external_qualified_name(external), external.effects {
+      Ok(qualified), Some(_) -> dict.insert(acc, qualified, external.params)
+      _, _ -> acc
     }
   })
 }
@@ -1893,10 +1904,10 @@ fn sanitize_dep_spec(
 // A function's `assume` line wins over an `effects` line for the same
 // name. `graded infer` writes no `effects` line for an externally-declared
 // function unless the line carries a `where returns` clause, so a spec carrying
-// both without one has a stale line, and either way only the external's ground
-// term pairs with the empty bounds `load_spec_params_from_file` records for it:
-// where the line is kept for a clause, that clause carries its own scoping
-// bounds on the returns channel.
+// both without one has a stale line, and either way only the external's term
+// pairs with the bounds `load_spec_params_from_file` records off that same
+// line: where the `effects` line is kept for a clause, that clause carries its
+// own scoping bounds on the returns channel.
 fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> ExternalTiers {
   let #(function_externals, module_externals) =
     split_externals(dep.externals, origin)
@@ -2254,8 +2265,9 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
         Error(_) -> acc
         Ok(graded_file) -> {
           let origin = Catalog(package:)
+          let externals = annotation.extract_externals(graded_file)
           let #(function_externals, module_externals) =
-            split_externals(annotation.extract_externals(graded_file), origin)
+            split_externals(externals, origin)
           // Same two readers as a package's own spec and as `load_dep_spec`, so
           // a catalog entry's `check` budgets and externally-declared functions
           // are scoped like everyone else's. Merging with the new file second
@@ -2264,7 +2276,8 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
           // A name this file keys both ways resolves to its `external
           // effects` line, the rule `decided_entries` applies to a dependency's
           // own spec: dropped from the polymorphic tier here, it keeps the
-          // ground term and the empty bounds the external tier records.
+          // external's term and the bounds the external tier records off the
+          // same line.
           let file_poly_effects =
             load_spec_effects_from_file(graded_file)
             |> dict.filter(fn(name, _term) {
@@ -2275,12 +2288,12 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
             ext_effects: dict.merge(acc.ext_effects, function_externals),
             module_effects: dict.merge(acc.module_effects, module_externals),
             poly_effects: dict.merge(acc.poly_effects, file_poly_effects),
-            // An external's term is ground by construction, so the bounds
-            // pairing with it are empty ones.
-            ext_params: dict.merge(
-              acc.ext_params,
-              dict.map_values(function_externals, fn(_name, _entry) { [] }),
-            ),
+            // An external's bounds come off its own line — empty for the
+            // common ground declaration, and the written list for a
+            // polymorphic one — keyed by the same last-wins fold as the term,
+            // so the line whose term wins a name is the line whose bounds
+            // pair with it.
+            ext_params: dict.merge(acc.ext_params, external_bounds(externals)),
             poly_params: dict.merge(
               acc.poly_params,
               // A catalog entry describes a package graded has no source for,
