@@ -341,6 +341,12 @@ fn with_sourced_type_fields(
 // function-level insert records it beside the effect; a module-level one
 // records it wrapped in `ModuleExternalOrigin`, which names both the kind of
 // line and the file it sits in.
+//
+// A declaring line's bound list rides the same fold, at the same precedence:
+// a name whose term these externals win takes their bounds with it — empty
+// where the line carries none, which pins the pair against a later
+// existing-keeps gap-fill — so the term never pairs with a lower tier's
+// bounds, whose variable names need not match it.
 pub fn with_externals(
   knowledge_base: KnowledgeBase,
   externals: List(ExternalAnnotation),
@@ -352,6 +358,10 @@ pub fn with_externals(
     ..knowledge_base,
     all_effects: dict.merge(knowledge_base.all_effects, function_externals),
     module_effects: dict.merge(knowledge_base.module_effects, module_externals),
+    param_bounds: dict.merge(
+      knowledge_base.param_bounds,
+      external_bounds(externals),
+    ),
   )
 }
 
