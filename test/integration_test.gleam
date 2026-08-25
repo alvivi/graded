@@ -487,6 +487,64 @@ pub fn a_dependency_specs_bounded_assume_substitutes_test() {
   support.cleanup(root)
 }
 
+pub fn infer_binds_a_decoupled_assume_bound_test() {
+  // The declaring line's bounds ride the same fold as its term, so `infer`
+  // resolves them exactly as `check` does: the decoupled `e` binds the
+  // argument's `[Disk]`, and the published line carries no `[Unknown]` from a
+  // variable nothing bound.
+  let root = "build/bounded_assume_infer"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ffi.map(g: [e]) : [e]\nassume ffi.disk_read : [Disk]\n",
+    ),
+    #(
+      "ffi.gleam",
+      support.foreign_fn("map", "(g: fn() -> Nil) -> Nil")
+        <> "\n"
+        <> support.foreign_fn("disk_read", "() -> Nil"),
+    ),
+    #(
+      "app.gleam",
+      "import ffi\n\npub fn run() -> Nil {\n  ffi.map(ffi.disk_read)\n}\n",
+    ),
+  ])
+  let assert Ok(preview) = graded.run_infer_dry_run(root)
+  preview |> string.contains("effects app.run : [Disk]") |> should.be_true()
+  preview |> string.contains("Unknown") |> should.be_false()
+  support.cleanup(root)
+}
+
+pub fn a_consumer_assume_overrides_a_dependency_bound_list_test() {
+  // The consumer's line wins the term, and its bounds win with it: paired
+  // with the dependency's `f: [f]` instead, the consumer's decoupled `x`
+  // would bind nothing and charge a pure callback `[Unknown]`.
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/bounded_assume_consumer_override",
+      package: "proj",
+      spec: "assume dep/ffi.each(f: [x]) : [x]\ncheck app.run : []\n",
+      sources: [
+        #(
+          "app.gleam",
+          "import dep/ffi\n\nfn pure_cb() -> Nil {\n  Nil\n}\n\npub fn run() -> Nil {\n  ffi.each(pure_cb)\n}\n",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: "assume dep/ffi.each(f: [f]) : [f]\n",
+      dependency_sources: [
+        #(
+          "dep/ffi.gleam",
+          support.foreign_fn("each", "(f: fn() -> Nil) -> Nil"),
+        ),
+      ],
+    )
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  support.cleanup(root)
+}
+
 pub fn a_bounded_assume_over_a_running_fallback_keeps_both_bound_lists_test() {
   // A target-conditional external whose Gleam fallback also runs: the charge
   // unions the declared term with the fallback summary's, so the call site

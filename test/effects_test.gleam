@@ -1102,23 +1102,22 @@ pub fn a_path_dep_external_drops_a_catalog_entrys_bounds_test() {
 
 pub fn a_path_dep_spec_yields_to_a_user_external_test() {
   // The consumer's own declaration is not overridable by a dependency, and the
-  // bounds standing beside it stay put too: the kept term is the one they were
-  // recorded for.
+  // bounds riding its line stay put too: the kept term is the one they were
+  // recorded beside.
   let bounds = [
     ParamBound(
       name: "cb",
       effects: effect_term.from_effect_set(Specific(set.from_list(["Ui"]))),
     ),
   ]
+  let declaration =
+    types.ExternalAnnotation(
+      ..external("dep", "run", ["Mocked"]),
+      params: bounds,
+    )
   let kb =
     effects.new_knowledge_base()
-    |> effects.with_externals(
-      [external("dep", "run", ["Mocked"])],
-      types.UserExternal,
-    )
-    |> effects.with_inferred_params(
-      dict.from_list([#(QualifiedName("dep", "run"), bounds)]),
-    )
+    |> effects.with_externals([declaration], types.UserExternal)
     |> effects.with_path_dep_spec(
       dep_spec(
         "build/eff_path_dep_under_user",
