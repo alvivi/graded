@@ -3833,6 +3833,64 @@ pub fn make() -> fn() -> Nil
   support.cleanup(root)
 }
 
+pub fn the_lint_scopes_a_declared_clause_by_its_bounds_test() {
+  // The bounded-line lint cases together: a clause closed by the line's own
+  // bounds is silent; a clause with an unscoped variable names only that
+  // variable; a ground clause on a boundless line is still silent; and a
+  // bounded term variable no payload binds gets the term oracle's own warning
+  // — while a boundless polymorphic assume is deliberately not linted.
+  let root = "build/bounded_assume_lint"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ffi.wrap(cb: [cb]) where returns : [cb]
+assume ffi.make where returns : [Net]
+assume ffi.trace(cb: [cb]) : [] where returns : [cb, zz]
+assume ffi.each(f: [Stdout]) : [x]
+assume ffi.fold(g: [g]) : [g]
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"m\", \"wrap\")
+@external(javascript, \"m\", \"wrap\")
+pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
+
+@external(erlang, \"m\", \"make\")
+@external(javascript, \"m\", \"make\")
+pub fn make() -> fn() -> Nil
+
+@external(erlang, \"m\", \"trace\")
+@external(javascript, \"m\", \"trace\")
+pub fn trace(cb: fn() -> Nil) -> fn() -> Nil
+
+@external(erlang, \"m\", \"each\")
+@external(javascript, \"m\", \"each\")
+pub fn each(f: fn() -> Nil) -> Nil
+
+@external(erlang, \"m\", \"fold\")
+@external(javascript, \"m\", \"fold\")
+pub fn fold(g: fn() -> Nil) -> Nil
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  // `ffi.fold`'s term variable is covered by its bound's payload, so the term
+  // oracle stays silent for it.
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.UnboundExternalTermVariableWarning(function: "ffi.each", free_vars: [
+      "x",
+    ]),
+    types.UngroundReturnsClauseWarning(function: "ffi.trace", free_vars: [
+      "zz",
+    ]),
+  ])
+  support.cleanup(root)
+}
+
 pub fn why_names_the_declaration_that_resolved_a_producer_test() {
   // The call used to print ", whose producer could not be resolved,". It now
   // names the line that answered, in the words that say *declaration* rather

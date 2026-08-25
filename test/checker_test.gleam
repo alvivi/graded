@@ -5225,15 +5225,25 @@ pub fn format_warning_unclosed_returns_clause_test() {
 }
 
 pub fn format_warning_unground_returns_clause_test() {
-  // The `assume` channel's rule is groundness, not scope: the sentence names it
-  // that way, because a variable there is dropped even when the function does
-  // have a callback parameter by that name.
+  // The `assume` channel's rule is the line's own bound list, and nothing
+  // else: the sentence names it that way, because a variable there is dropped
+  // even when the function does have a callback parameter by that name.
   types.UngroundReturnsClauseWarning(function: "ffi.traced", free_vars: [
     "action",
   ])
   |> checker.format_warning("proj.graded", _)
   |> should.equal(
-    "proj.graded: warning: the `where returns` clause on assume ffi.traced must be ground, and `action` is a variable — an assumption carries no bound list, so nothing scopes one whatever the function's parameters are called; the clause is ignored. Spell out the concrete effects instead",
+    "proj.graded: warning: the `where returns` clause on assume ffi.traced has variable(s) `action` the line's bounds do not scope — nothing binds an unscoped variable at a call site, so the clause is ignored. Name the variable in the line's bound list, or spell out the concrete effects",
+  )
+}
+
+pub fn format_warning_unbound_external_term_variable_test() {
+  types.UnboundExternalTermVariableWarning(function: "ffi.each", free_vars: [
+    "x",
+  ])
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: assume ffi.each declares effects with variable(s) `x` that no bound's payload binds — substitution keys are the payloads' variables, so no call site can resolve them and they stay conservative. Add a bound whose payload names the variable, or remove it",
   )
 }
 
