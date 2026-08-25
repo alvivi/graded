@@ -2199,3 +2199,19 @@ pub fn a_duplicate_declaration_wins_term_and_bounds_together_test() {
   effects.lookup_param_bounds(base, name)
   |> should.equal([ParamBound(name: "b", effects: types.TVar("b"))])
 }
+
+pub fn a_later_self_binding_clears_an_earlier_alias_test() {
+  // `other: [cb], cb: [cb]`: the binding fold's last binder for `cb` is the
+  // parameter `cb` itself, so the term and clause channels agree and nothing
+  // is reported. Reversed, the alias binds last and the pair stands.
+  effects.aliased_bound_variables([
+    ParamBound(name: "other", effects: types.TVar("cb")),
+    ParamBound(name: "cb", effects: types.TVar("cb")),
+  ])
+  |> should.equal([])
+  effects.aliased_bound_variables([
+    ParamBound(name: "cb", effects: types.TVar("cb")),
+    ParamBound(name: "other", effects: types.TVar("cb")),
+  ])
+  |> should.equal([#("cb", "other")])
+}

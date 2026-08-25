@@ -1519,14 +1519,17 @@ pub fn bound_payload_variables(bounds: List(ParamBound)) -> Set(String) {
   })
 }
 
-// The payload variables of a bound list that also name a *different* bound's
-// parameter — the shape whose two binding channels disagree: the effects term
-// binds such a variable through the payload that names it, while a
-// `where returns` clause binds it by parameter name, so one spelled variable
-// can charge two different arguments. Each pair is the variable beside the
-// bound whose payload binds it, the last binder winning on a duplicate as it
-// does in the checker's binding fold. A dotted variable is a field path,
-// which the clause channel never binds by name, so the channels agree on it.
+// The payload variables of a bound list whose *final* binder is a different
+// bound's parameter — the shape whose two binding channels disagree: the
+// effects term binds such a variable through the payload that names it, while
+// a `where returns` clause binds it by parameter name, so one spelled
+// variable can charge two different arguments. Each pair is the variable
+// beside the bound whose payload binds it, the last binder winning on a
+// duplicate as it does in the checker's binding fold — so a later
+// self-referential binding (`other: [cb], cb: [cb]`) clears an earlier
+// alias: the channels agree there, and only a variable another parameter's
+// payload binds *last* is reported. A dotted variable is a field path, which
+// the clause channel never binds by name, so the channels agree on it.
 pub fn aliased_bound_variables(
   bounds: List(ParamBound),
 ) -> List(#(String, String)) {
@@ -1535,13 +1538,15 @@ pub fn aliased_bound_variables(
     bound.effects
     |> effect_term.free_vars()
     |> set.fold(acc, fn(acc, variable) {
-      case
-        variable != bound.name
-        && !string.contains(variable, ".")
-        && set.contains(names, variable)
-      {
-        True -> dict.insert(acc, variable, bound.name)
-        False -> acc
+      case variable == bound.name {
+        True -> dict.delete(acc, variable)
+        False ->
+          case
+            !string.contains(variable, ".") && set.contains(names, variable)
+          {
+            True -> dict.insert(acc, variable, bound.name)
+            False -> acc
+          }
       }
     })
   })

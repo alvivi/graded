@@ -4094,6 +4094,50 @@ effects app.twin(cb: [e], other: [cb]) : [cb] where returns : [cb]
   support.cleanup(root)
 }
 
+pub fn a_later_self_binding_emits_no_alias_warning_test() {
+  // Regression: on `other: [cb], cb: [cb]` the binding fold's last binder
+  // for `cb` is the parameter `cb` itself, so the term and clause channels
+  // agree and the line warns nothing — on the `assume` line and its
+  // `effects` twin alike. The reversed list, where the alias binds last,
+  // still warns.
+  let root = "build/aliased_bound_lint_order"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ffi.wrap(other: [cb], cb: [cb]) : [cb] where returns : [cb]
+assume ffi.flip(cb: [cb], other: [cb]) : [cb] where returns : [cb]
+effects app.twin(other: [cb], cb: [cb]) : [cb] where returns : [cb]
+",
+    ),
+    #(
+      "ffi.gleam",
+      support.foreign_fn(
+        "wrap",
+        "(other: fn() -> Nil, cb: fn() -> Nil) -> fn() -> Nil",
+      )
+        <> "\n"
+        <> support.foreign_fn(
+        "flip",
+        "(cb: fn() -> Nil, other: fn() -> Nil) -> fn() -> Nil",
+      ),
+    ),
+    #(
+      "app.gleam",
+      "pub fn twin(other: fn() -> Nil, cb: fn() -> Nil) -> fn() -> Nil {\n  other()\n  cb\n}\n",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.AliasedBoundVariableWarning(function: "ffi.flip", variables: [
+      #("cb", "other"),
+    ]),
+  ])
+  support.cleanup(root)
+}
+
 pub fn the_term_oracle_skips_a_dead_external_test() {
   // A stale line (over a visible Gleam body) and an unmatched one (naming
   // nothing anywhere) each get the existence channel's warning alone: the
