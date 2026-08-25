@@ -444,7 +444,8 @@ pub fn format_external_test() {
     ExternalAnnotation(
       "gleam/httpc",
       FunctionExternal("send"),
-      Some(Specific(set.from_list(["Http"]))),
+      params: [],
+      effects: Some(Specific(set.from_list(["Http"]))),
       returns: None,
     )
   annotation.format_external(ext)
@@ -506,6 +507,87 @@ pub fn assume_over_an_empty_segment_is_invalid_test() {
   |> should.equal(Error(annotation.InvalidLine(1, "assume m. : []")))
   annotation.parse_file("assume .f : []")
   |> should.equal(Error(annotation.InvalidLine(1, "assume .f : []")))
+}
+
+// Bounded assume lines
+//
+// A bound list on a function-path assume head. The bounds are substitution
+// scaffolding — a bound's name matches a call-site argument, its payload's
+// free variables are the substitution keys — and they scope the line's own
+// `where returns` clause.
+
+pub fn parse_assume_function_with_bounds_test() {
+  let assert Ok(file) = annotation.parse_file("assume m/ffi.each(f: [f]) : [f]")
+  let assert [ext] = annotation.extract_externals(file)
+  ext.module |> should.equal("m/ffi")
+  ext.target |> should.equal(FunctionExternal("each"))
+  ext.params |> should.equal([ParamBound("f", TVar("f"))])
+  ext.effects
+  |> should.equal(Some(Polymorphic(set.new(), set.from_list(["f"]))))
+}
+
+pub fn parse_assume_clause_only_bounded_test() {
+  // No effects claim at all — the bounds exist to scope the clause. The bound
+  // list's own colons must not be read as the effects separator.
+  let line = "assume m/ffi.wrap(cb: [cb]) where returns : [cb]"
+  let assert Ok(file) = annotation.parse_file(line)
+  let assert [ext] = annotation.extract_externals(file)
+  ext.params |> should.equal([ParamBound("cb", TVar("cb"))])
+  ext.effects |> should.equal(None)
+  ext.returns |> should.equal(Some(TVar("cb")))
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn bounded_assume_round_trips_test() {
+  let line = "assume m/ffi.wrap(cb: [cb]) : [] where returns : [cb]"
+  let assert Ok(file) = annotation.parse_file(line)
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn assume_second_order_effects_term_collapses_test() {
+  // An `assume` effects term is flat — labels and variables. A second-order
+  // application is a `TApp`, which the effect-set payload collapses to the
+  // conservative `[Unknown]`.
+  let assert Ok(file) =
+    annotation.parse_file("assume m.f(cb: [cb]) : [action([cb])]")
+  let assert [ext] = annotation.extract_externals(file)
+  ext.effects |> should.equal(Some(Specific(set.from_list(["Unknown"]))))
+}
+
+pub fn bounds_on_a_module_path_are_invalid_test() {
+  // A module has no parameters, so a bound list on its path is a parse error
+  // rather than a lint — nothing can have written the form.
+  let input = "assume gleam/io(x: [X]) : []"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn bounds_on_a_field_path_are_invalid_test() {
+  // A field's callable shape is not per-parameter, so the same refusal.
+  let input = "assume m.Handler.on_click(cb: [cb]) : [Dom]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn bounds_with_neither_effects_nor_clause_are_invalid_test() {
+  // Same rule as the boundless spelling: a path on its own claims nothing.
+  let input = "assume m.f(cb: [cb])"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn a_bounded_assume_wraps_its_clause_region_test() {
+  // Past 80 columns the clause region moves to a continuation line; the bound
+  // list stays on the head. Both forms parse to the same statement.
+  let one_line =
+    "assume myapp/very/long/module.wrap(callback: [FileSystem, Stdout]) : [Http] where returns : fn(cb) -> [Stdout]"
+  let wrapped =
+    "assume myapp/very/long/module.wrap(callback: [FileSystem, Stdout]) : [Http]
+  where returns : fn(cb) -> [Stdout]"
+  let assert Ok(file) = annotation.parse_file(one_line)
+  annotation.format_file(file) |> should.equal(wrapped)
+  let assert Ok(reparsed) = annotation.parse_file(wrapped)
+  reparsed |> should.equal(file)
 }
 
 // The `where returns` clause
@@ -1040,6 +1122,7 @@ pub fn merge_inferred_drops_effect_for_external_test() {
         ExternalAnnotation(
           module: "app",
           target: FunctionExternal("ffi"),
+          params: [],
           effects: Some(types.Specific(set.new())),
           returns: None,
         ),
@@ -1098,6 +1181,7 @@ fn module_assume(module: String) -> types.GradedLine {
     ExternalAnnotation(
       module:,
       target: ModuleExternal,
+      params: [],
       effects: Some(types.Specific(set.new())),
       returns: None,
     ),
@@ -1110,6 +1194,7 @@ fn function_assume(module: String, function: String) -> types.GradedLine {
     ExternalAnnotation(
       module:,
       target: FunctionExternal(function),
+      params: [],
       effects: Some(types.Specific(set.new())),
       returns: None,
     ),
@@ -1161,6 +1246,7 @@ pub fn merge_inferred_composes_the_two_assume_channels_test() {
         ExternalAnnotation(
           module: "db",
           target: FunctionExternal("make"),
+          params: [],
           effects: None,
           returns: Some(TLabels(set.from_list(["Net"]))),
         ),
@@ -1198,6 +1284,7 @@ pub fn merge_inferred_keeps_a_declared_returns_clause_test() {
       ExternalAnnotation(
         module: "app",
         target: FunctionExternal("make"),
+        params: [],
         effects: None,
         returns: Some(TLabels(set.from_list(["Net"]))),
       ),
@@ -1257,6 +1344,7 @@ pub fn merge_inferred_keeps_an_unmatched_returns_clause_test() {
         ExternalAnnotation(
           module: "app",
           target: FunctionExternal("make"),
+          params: [],
           effects: None,
           returns: Some(TLabels(set.from_list(["Net"]))),
         ),
@@ -1277,6 +1365,7 @@ pub fn merge_inferred_rewrites_a_stale_returns_clause_test() {
         ExternalAnnotation(
           module: "app",
           target: FunctionExternal("make"),
+          params: [],
           effects: None,
           returns: Some(TLabels(set.from_list(["Net"]))),
         ),
@@ -1324,6 +1413,7 @@ pub fn merge_inferred_keeps_the_two_stale_channels_apart_test() {
         ExternalAnnotation(
           module: "app",
           target: FunctionExternal("make"),
+          params: [],
           effects: None,
           returns: Some(TLabels(set.from_list(["Net"]))),
         ),
@@ -1368,6 +1458,94 @@ pub fn merge_inferred_keeps_the_two_stale_channels_apart_test() {
         [],
       ),
     ]),
+  )
+}
+
+pub fn merge_inferred_keeps_bounds_on_a_stale_conversion_test() {
+  // Every claim on the line went stale while an unknown clause survives: the
+  // line converts to a retained one, and the bound list rides the retained
+  // path rather than being dropped by the conversion.
+  let file =
+    types.GradedFile(lines: [
+      ExternalLine(
+        ExternalAnnotation(
+          module: "app",
+          target: FunctionExternal("make"),
+          params: [ParamBound("cb", TVar("cb"))],
+          effects: Some(Polymorphic(set.new(), set.from_list(["cb"]))),
+          returns: None,
+        ),
+        [UnknownClause(key: "future", payload: "[X]")],
+      ),
+    ])
+  annotation.merge_inferred(file, [], set.from_list(["app.make"]), set.new())
+  |> should.equal(
+    types.GradedFile(lines: [
+      RetainedAssumeLine(path: "app.make(cb: [cb])", unknown_clauses: [
+        UnknownClause(key: "future", payload: "[X]"),
+      ]),
+    ]),
+  )
+}
+
+pub fn a_bounded_external_still_suppresses_the_inferred_line_test() {
+  // Suppression keys off the effects claim's presence, not the bound list.
+  let file =
+    types.GradedFile(lines: [
+      ExternalLine(
+        ExternalAnnotation(
+          module: "m/ffi",
+          target: FunctionExternal("each"),
+          params: [ParamBound("f", TVar("f"))],
+          effects: Some(Polymorphic(set.new(), set.from_list(["f"]))),
+          returns: None,
+        ),
+        [],
+      ),
+    ])
+  let inferred = [
+    EffectAnnotation(
+      Effects,
+      "m/ffi.each",
+      [],
+      TLabels(set.new()),
+      returns: None,
+    ),
+  ]
+  annotation.merge_inferred(file, inferred, set.new(), set.new())
+  |> should.equal(file)
+}
+
+pub fn a_clause_only_bounded_line_does_not_suppress_the_inferred_line_test() {
+  // A clause-only line claims nothing on the effects channel, bounds or not,
+  // so the inferred `effects` line survives beside it.
+  let declared =
+    ExternalLine(
+      ExternalAnnotation(
+        module: "m/ffi",
+        target: FunctionExternal("wrap"),
+        params: [ParamBound("cb", TVar("cb"))],
+        effects: None,
+        returns: Some(TVar("cb")),
+      ),
+      [],
+    )
+  let inferred_line =
+    EffectAnnotation(
+      Effects,
+      "m/ffi.wrap",
+      [],
+      TLabels(set.new()),
+      returns: None,
+    )
+  annotation.merge_inferred(
+    types.GradedFile(lines: [declared]),
+    [inferred_line],
+    set.new(),
+    set.new(),
+  )
+  |> should.equal(
+    types.GradedFile(lines: [declared, AnnotationLine(inferred_line, [])]),
   )
 }
 
@@ -1781,6 +1959,22 @@ pub fn a_path_a_retained_assume_cannot_name_is_invalid_test() {
   let input = "assume m..f where future : [X]"
   annotation.parse_file(input)
   |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn a_bounded_assume_with_only_an_unknown_clause_keeps_its_bounds_test() {
+  // The bound list is part of the retained path text — a line that keys
+  // nothing gives it no semantics — and its colons must not read as the
+  // effects separator.
+  let line = "assume dep.make(cb: [cb]) where future : [X]"
+  let assert Ok(file) = annotation.parse_file(line)
+  file.lines
+  |> should.equal([
+    RetainedAssumeLine(path: "dep.make(cb: [cb])", unknown_clauses: [
+      UnknownClause(key: "future", payload: "[X]"),
+    ]),
+  ])
+  annotation.extract_externals(file) |> should.equal([])
+  annotation.format_file(file) |> should.equal(line)
 }
 
 // Wrapped statements

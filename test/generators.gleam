@@ -216,9 +216,9 @@ fn optional_operator_gen() -> qcheck.Generator(option.Option(EffectTerm)) {
   ])
 }
 
-pub fn annotation_gen() -> qcheck.Generator(types.EffectAnnotation) {
-  let kind_gen =
-    qcheck.from_generators(qcheck.return(Effects), [qcheck.return(Check)])
+// A bound list of zero to two bounds over the shared parameter-name pool —
+// what `effects`/`check` lines and bounded `assume` lines alike carry.
+fn params_gen() -> qcheck.Generator(List(types.ParamBound)) {
   let param_name_gen =
     qcheck.from_generators(qcheck.return("f"), [
       qcheck.return("g"),
@@ -230,16 +230,20 @@ pub fn annotation_gen() -> qcheck.Generator(types.EffectAnnotation) {
     qcheck.map2(param_name_gen, first_order_term_gen(), fn(name, effects) {
       ParamBound(name:, effects:)
     })
-  let params_gen =
-    qcheck.from_generators(qcheck.return([]), [
-      qcheck.map(param_bound_gen, fn(bound) { [bound] }),
-      qcheck.map2(param_bound_gen, param_bound_gen, fn(first, second) {
-        [first, second]
-      }),
-    ])
+  qcheck.from_generators(qcheck.return([]), [
+    qcheck.map(param_bound_gen, fn(bound) { [bound] }),
+    qcheck.map2(param_bound_gen, param_bound_gen, fn(first, second) {
+      [first, second]
+    }),
+  ])
+}
+
+pub fn annotation_gen() -> qcheck.Generator(types.EffectAnnotation) {
+  let kind_gen =
+    qcheck.from_generators(qcheck.return(Effects), [qcheck.return(Check)])
   use kind <- qcheck.bind(kind_gen)
   use function <- qcheck.bind(function_name_gen())
-  use params <- qcheck.bind(params_gen)
+  use params <- qcheck.bind(params_gen())
   use effects <- qcheck.bind(first_order_term_gen())
   use returns <- qcheck.map(optional_operator_gen())
   EffectAnnotation(kind:, function:, params:, effects:, returns:)
@@ -291,9 +295,15 @@ pub fn external_gen() -> qcheck.Generator(types.ExternalAnnotation) {
     )
   use module <- qcheck.bind(module_name_gen)
   use target <- qcheck.bind(target_gen)
+  // A bound list rides a function path alone — on a module path it is a parse
+  // error, so the generator never pairs the two.
+  use params <- qcheck.bind(case target {
+    ModuleExternal -> qcheck.return([])
+    FunctionExternal(_) -> params_gen()
+  })
   use clauses <- qcheck.map(clauses_gen)
   let #(effects, returns) = clauses
-  ExternalAnnotation(module:, target:, effects:, returns:)
+  ExternalAnnotation(module:, target:, params:, effects:, returns:)
 }
 
 // One clause this version does not read. The keys cover the dotted and numeric

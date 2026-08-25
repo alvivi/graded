@@ -511,20 +511,32 @@ fn parse_assume_head(
   returns: Option(EffectTerm),
   unknown_clauses: List(UnknownClause),
 ) -> Result(GradedLine, Nil) {
-  use #(path, term) <- result.try(split_assume_head(
-    head,
-    returns,
-    unknown_clauses,
-  ))
+  use split <- result.try(split_assume_head(head, returns, unknown_clauses))
+  let AssumeHead(path:, written:, params:, term:) = split
   use subject <- result.try(split_assume_path(path))
+  // A bound list attaches to a function path alone: a module has no
+  // parameters, and a field's callable shape is not per-parameter. Refused
+  // loudly rather than linted — a paren group on either path (empty included)
+  // spells a grammar the path has no slot for.
+  use <- bool.guard(
+    when: params != None
+      && {
+      case subject {
+        AssumeFunction(..) -> False
+        AssumeModule(..) | AssumeField(..) -> True
+      }
+    },
+    return: Error(Nil),
+  )
   let effects = option.map(term, effect_term.to_effect_set)
   case term, returns {
     // Nothing on the line means anything to this version, so there is no
     // semantic record to hang the retained clauses on — and fabricating an
     // empty effect set for one would turn *keys nothing* into *is pure*. The
     // path is still read for its shape, so a malformed one is refused rather
-    // than retained.
-    None, None -> Ok(RetainedAssumeLine(path:, unknown_clauses:))
+    // than retained. A bound list is part of the retained path text — a line
+    // that keys nothing gives it no semantics — so `written` keeps it.
+    None, None -> Ok(RetainedAssumeLine(path: written, unknown_clauses:))
     _, _ ->
       case subject {
         AssumeModule(module:) ->
@@ -532,6 +544,7 @@ fn parse_assume_head(
             ExternalAnnotation(
               module:,
               target: ModuleExternal,
+              params: [],
               effects:,
               returns:,
             ),
@@ -542,6 +555,7 @@ fn parse_assume_head(
             ExternalAnnotation(
               module:,
               target: FunctionExternal(function),
+              params: option.unwrap(params, []),
               effects:,
               returns:,
             ),
@@ -560,28 +574,78 @@ fn parse_assume_head(
   }
 }
 
-// Split an `assume` head into its path and its effects clause. The effects
-// clause is optional only where a `where` region carries the line — a known
-// clause or a retained one alike: a path on its own claims nothing at all, and
-// a path beside a clause no version but a later one reads is still a line worth
-// keeping.
+// An `assume` head, split: the bare path, the path as written (bound list
+// included, for the retained line that keeps it verbatim), the bound list
+// (`None` where the head carries no paren group, told apart from an empty one
+// so a paren group on a path with no parameter slot is refused), and the
+// effects term.
+type AssumeHead {
+  AssumeHead(
+    path: String,
+    written: String,
+    params: Option(List(ParamBound)),
+    term: Option(EffectTerm),
+  )
+}
+
+// Split an `assume` head into its path, its bound list and its effects clause.
+// The effects clause is optional only where a `where` region carries the line —
+// a known clause or a retained one alike: a path on its own claims nothing at
+// all, and a path beside a clause no version but a later one reads is still a
+// line worth keeping.
+//
+// The bounded form is read through `split_call` first, because a bound list
+// carries colons of its own (`(cb: [cb])`): deciding the effects clause by the
+// head's first colon would cut a bounded head inside its bounds.
 fn split_assume_head(
   head: String,
   returns: Option(EffectTerm),
   unknown_clauses: List(UnknownClause),
-) -> Result(#(String, Option(EffectTerm)), Nil) {
-  case string.contains(head, ":") {
-    True ->
-      parse_name_colon_effects(head)
-      |> result.map(fn(pair) { #(pair.0, Some(pair.1)) })
-    False -> {
-      let path = string.trim(head)
-      use <- bool.guard(
-        when: path == "" || { returns == None && unknown_clauses == [] },
-        return: Error(Nil),
-      )
-      Ok(#(path, None))
+) -> Result(AssumeHead, Nil) {
+  case split_call(head) {
+    Ok(#(name, params_str, suffix)) -> {
+      let path = string.trim(name)
+      use <- bool.guard(when: path == "", return: Error(Nil))
+      use params <- result.try(parse_params_section(params_str))
+      let written = path <> "(" <> params_str <> ")"
+      use term <- result.try(case string.trim(suffix) {
+        // A bounded path with no effects clause claims nothing unless a
+        // `where` region rides the line — the same rule as the boundless
+        // spelling below.
+        "" -> {
+          use <- bool.guard(
+            when: returns == None && unknown_clauses == [],
+            return: Error(Nil),
+          )
+          Ok(None)
+        }
+        ":" <> effects_str ->
+          parse_effect_term(string.trim(effects_str)) |> result.map(Some)
+        _ -> Error(Nil)
+      })
+      Ok(AssumeHead(path:, written:, params: Some(params), term:))
     }
+    Error(Nil) ->
+      case string.contains(head, ":") {
+        True ->
+          parse_name_colon_effects(head)
+          |> result.map(fn(pair) {
+            AssumeHead(
+              path: pair.0,
+              written: pair.0,
+              params: None,
+              term: Some(pair.1),
+            )
+          })
+        False -> {
+          let path = string.trim(head)
+          use <- bool.guard(
+            when: path == "" || { returns == None && unknown_clauses == [] },
+            return: Error(Nil),
+          )
+          Ok(AssumeHead(path:, written: path, params: None, term: None))
+        }
+      }
   }
 }
 
@@ -1236,12 +1300,10 @@ pub fn merge_inferred(
             Error(Nil), [] -> Error(Nil)
             // Both declarations went stale, but the line still carries a clause
             // only a later version can judge. What it keys is gone; what it
-            // retains is not.
+            // retains is not — the bound list included, which rides the
+            // retained path.
             Error(Nil), _ ->
-              Ok(RetainedAssumeLine(
-                path: external_sort_key(e),
-                unknown_clauses:,
-              ))
+              Ok(RetainedAssumeLine(path: external_path(e), unknown_clauses:))
           }
         _ -> Ok(line)
       }
@@ -1493,17 +1555,20 @@ fn annotation_head(annotation: EffectAnnotation) -> String {
     Effects -> "effects"
     Check -> "check"
   }
-  let params_string = case annotation.params {
-    [] -> ""
-    params ->
-      "(" <> string.join(list.map(params, format_param_bound), ", ") <> ")"
-  }
   prefix
   <> " "
   <> annotation.function
-  <> params_string
+  <> bound_list(annotation.params)
   <> " : "
   <> format_effect_term(annotation.effects)
+}
+
+// A statement's bound list, parenthesised — nothing at all where it has none.
+fn bound_list(params: List(ParamBound)) -> String {
+  case params {
+    [] -> ""
+    _ -> "(" <> string.join(list.map(params, format_param_bound), ", ") <> ")"
+  }
 }
 
 // The free variables of a statement's `where returns` clause, the operator's
@@ -1558,7 +1623,16 @@ fn external_head(external_annotation: ExternalAnnotation) -> String {
     Some(effects) -> " : " <> format_effect_set(effects)
     None -> ""
   }
-  "assume " <> external_sort_key(external_annotation) <> effects_clause
+  "assume " <> external_path(external_annotation) <> effects_clause
+}
+
+// The path an `assume` line renders, bound list included — no keyword and no
+// effects clause. Shared with `merge_inferred`'s stale-conversion site, which
+// rebuilds a `RetainedAssumeLine` from a semantic line and must keep the bounds
+// in the retained path.
+fn external_path(external_annotation: ExternalAnnotation) -> String {
+  external_sort_key(external_annotation)
+  <> bound_list(external_annotation.params)
 }
 
 // The qualified name (`module` or `module.function`) an external annotation
