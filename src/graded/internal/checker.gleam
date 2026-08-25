@@ -403,7 +403,7 @@ pub fn explain(
           let #(total, field_vars) =
             groom_published_term(
               contribution.total,
-              bound_name_set(contribution.effective_bounds),
+              effects.bound_name_set(contribution.effective_bounds),
             )
           // A field-effect variable surviving in the total gets the identity
           // bound inference writes beside it, exactly as the fn-typed params
@@ -518,7 +518,7 @@ fn contributors(
       // binder an unresolved application left behind in a knowledge-base term —
       // is a phantom, and a contributor keeping it would print the internal
       // name beside a header that grounds the same variable to `[Unknown]`.
-      let permitted = bound_name_set(effective)
+      let permitted = effects.bound_name_set(effective)
       #(
         list.map(body_effects, call_explanation(_, permitted)),
         union_of(body_effects),
@@ -2097,7 +2097,7 @@ fn unbound_fn_typed_params(
   declared: List(ParamBound),
   girard_fn_typed: dict.Dict(String, Set(String)),
 ) -> Set(String) {
-  let declared_names = bound_name_set(declared)
+  let declared_names = effects.bound_name_set(declared)
   signatures.fn_typed_params_from_function(definition.definition)
   |> set.union(typeinfo.fn_typed_params(
     girard_fn_typed,
@@ -2143,20 +2143,6 @@ fn groom_published_term(
     collapse_phantom_vars(term, set.union(fn_typed_params, field_vars)),
     field_vars,
   )
-}
-
-fn bound_name_set(bounds: List(ParamBound)) -> Set(String) {
-  bounds |> list.map(fn(bound) { bound.name }) |> set.from_list()
-}
-
-// The variables a bound list's payloads bind at a call site — what
-// `bind_variables` actually keys substitution off. For a self-referential
-// bound this is the bound's own name; for a hand-written decoupled one
-// (`cb: [e]`) it is the payload's variable, not the name.
-fn bound_payload_variables(bounds: List(ParamBound)) -> Set(String) {
-  list.fold(bounds, set.new(), fn(acc, bound) {
-    set.union(acc, effect_term.free_vars(bound.effects))
-  })
 }
 
 // Build a `ParamBound` for each free effect variable in `term` whose name is
@@ -5367,8 +5353,13 @@ fn bind_producer_params(
           // `@external`, whose producer is called from its own module — binds
           // against the bounds its line carries: syntactic fn-typed detection
           // fails exactly where the line is needed (an alias-typed callback, a
-          // bound name differing from the label). The other summaries keep the
-          // bounds derived from the definition's fn-typed parameters.
+          // bound name differing from the label). `Fresh` and `Closed` keep
+          // the bounds derived from the definition's fn-typed parameters —
+          // deliberately for `Closed` too: a same-module `Closed` clause sits
+          // on a function whose definition is right here, this run's fresh
+          // inference replaces such a committed summary anyway, and where the
+          // derived list misses a callback the hoisted synthesis below still
+          // binds the clause's variables by name.
           let scoping = case summary {
             effects.Declared(bounds:) -> bounds
             effects.Fresh | effects.Closed(..) ->
@@ -5410,7 +5401,7 @@ fn bind_producer_params(
   // **Closed** or **Declared** one the gate has just re-checked. Field-path
   // (dotted) vars are excluded (they round-trip as field bounds, not producer
   // params).
-  let have = bound_payload_variables(scoping)
+  let have = effects.bound_payload_variables(scoping)
   let synth =
     effect_term.free_vars(operator)
     |> set.filter(fn(v) { !is_field_path_var(v) && !set.contains(have, v) })
@@ -6009,7 +6000,7 @@ fn recorded_bound_names(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Set(String) {
-  bound_name_set(effects.lookup_param_bounds(knowledge_base, name))
+  effects.bound_name_set(effects.lookup_param_bounds(knowledge_base, name))
 }
 
 // Argument matching

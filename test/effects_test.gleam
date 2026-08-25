@@ -743,10 +743,7 @@ pub fn a_catalog_external_beats_its_own_files_effects_line_test() {
         "catalog/a_pkg@1.0.0.graded",
         "effects shared/mod.run(cb: [cb]) : [cb]\nassume shared/mod.run : [Disk]\n",
       ),
-      #(
-        "manifest.toml",
-        "packages = [\n  { name = \"a_pkg\", version = \"1.0.0\" },\n]\n",
-      ),
+      #("manifest.toml", a_pkg_manifest),
     ])
 
   let #(all_effects, _module_effects, params, _type_fields) =
@@ -768,10 +765,7 @@ pub fn a_catalog_bounded_external_records_its_bounds_test() {
   let root =
     write_fixture("build/eff_catalog_bounded_external", [
       #("catalog/a_pkg@1.0.0.graded", "assume shared/mod.each(f: [f]) : [f]\n"),
-      #(
-        "manifest.toml",
-        "packages = [\n  { name = \"a_pkg\", version = \"1.0.0\" },\n]\n",
-      ),
+      #("manifest.toml", a_pkg_manifest),
     ])
 
   let #(all_effects, _module_effects, params, _type_fields) =
@@ -789,6 +783,12 @@ pub fn a_catalog_bounded_external_records_its_bounds_test() {
 
   cleanup(root)
 }
+
+// The manifest the single-package catalog fixtures install.
+const a_pkg_manifest = "packages = [
+  { name = \"a_pkg\", version = \"1.0.0\" },
+]
+"
 
 // The manifest both cross-file clash fixtures install: each of the two catalog
 // files is selected only if its package is installed.

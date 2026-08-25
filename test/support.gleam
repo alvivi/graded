@@ -51,6 +51,20 @@ pub fn cleanup(directory: String) -> Nil {
   Nil
 }
 
+// One bodyless `@external` declared for both targets: foreign code on every
+// build, so a declaration alone answers for it. `signature` is everything
+// after the function name (`"(cb: fn() -> Nil) -> fn() -> Nil"`).
+pub fn foreign_fn(name: String, signature: String) -> String {
+  "@external(erlang, \"m\", \""
+  <> name
+  <> "\")\n@external(javascript, \"m\", \""
+  <> name
+  <> "\")\npub fn "
+  <> name
+  <> signature
+  <> "\n"
+}
+
 // Materialise a minimal package whose spec file's second line the parser
 // rejects, for the commands that must refuse it. Returns the directory.
 pub fn write_unparseable_spec_project(directory: String) -> String {
