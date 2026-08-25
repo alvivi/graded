@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[Unknown]` — and a bound list on a module or field path is a parse error.
 - A bounded `assume` line whose effects term names a variable no bound's
   payload binds is flagged: no call site can ever resolve such a variable.
+- A bound whose payload reuses another bound's parameter name
+  (`cb: [e], other: [cb]`) is flagged on a line whose effects term or
+  `where returns` clause uses that variable: the term binds it through the
+  payload while the clause binds it by parameter name, so one spelled
+  variable can charge two different arguments. On bounded `assume` lines and
+  `effects` lines alike.
 
 ### Changed
 
