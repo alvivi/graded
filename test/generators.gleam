@@ -218,7 +218,7 @@ fn optional_operator_gen() -> qcheck.Generator(option.Option(EffectTerm)) {
 
 // A bound list of zero to two bounds over the shared parameter-name pool —
 // what `effects`/`check` lines and bounded `assume` lines alike carry.
-fn params_gen() -> qcheck.Generator(List(types.ParamBound)) {
+pub fn params_gen() -> qcheck.Generator(List(types.ParamBound)) {
   let param_name_gen =
     qcheck.from_generators(qcheck.return("f"), [
       qcheck.return("g"),

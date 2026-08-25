@@ -2147,3 +2147,33 @@ pub fn an_unwalked_dependency_fallback_stays_unknown_test() {
   |> option.map(effect_term.to_effect_set)
   |> should.equal(Some(Specific(set.from_list(["Unknown"]))))
 }
+
+pub fn self_referential_declaration_pairs_term_and_bounds_test() {
+  // The pair off one rename map: every variable of the renamed term names a
+  // bound whose rewritten payload is exactly its own parameter name, and no
+  // other payload variable survives — the invariant that lets one bound list
+  // bind both halves of a declaration-beside-fallback charge.
+  use #(bounds, term) <- qcheck.given(
+    qcheck.map2(
+      generators.params_gen(),
+      generators.first_order_term_gen(),
+      fn(bounds, term) { #(bounds, term) },
+    ),
+  )
+  let #(rewritten, rename) = effects.self_referential_declaration(bounds)
+  let self_names =
+    rewritten
+    |> list.filter(fn(bound) { bound.effects == types.TVar(bound.name) })
+    |> list.map(fn(bound) { bound.name })
+    |> set.from_list()
+  rename(term)
+  |> effect_term.free_vars()
+  |> set.filter(fn(variable) { !set.contains(self_names, variable) })
+  |> should.equal(set.new())
+  list.each(rewritten, fn(bound) {
+    case set.to_list(effect_term.free_vars(bound.effects)) {
+      [] -> Nil
+      variables -> variables |> should.equal([bound.name])
+    }
+  })
+}
