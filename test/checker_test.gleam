@@ -5247,6 +5247,16 @@ pub fn format_warning_unbound_external_term_variable_test() {
   )
 }
 
+pub fn format_warning_aliased_bound_variable_test() {
+  types.AliasedBoundVariableWarning(function: "ffi.wrap", variables: [
+    #("cb", "other"),
+  ])
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: on ffi.wrap variable(s) `cb` (payload of `other`) also name a parameter of the line — the effects term binds such a variable through the payload while the `where returns` clause binds it by parameter name, so the two can charge different arguments. Rename the payload's variable",
+  )
+}
+
 pub fn format_warning_dotless_external_returns_test() {
   types.DotlessReturnsClauseWarning(name: "lib")
   |> checker.format_warning("proj.graded", _)

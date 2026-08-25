@@ -4040,6 +4040,60 @@ assume ffi.fold(g: [g]) : [g]
   support.cleanup(root)
 }
 
+pub fn the_lint_flags_an_aliased_bound_payload_test() {
+  // `cb: [e], other: [cb]`: the line's term and clause both spell `cb`, which
+  // the payload channel binds to `other`'s argument and the name channel to
+  // `cb`'s own — so the lint names the variable beside the payload that
+  // captures it, on the `assume` line and its `effects` twin alike. The plain
+  // decoupled line and the self-referential one stay silent, and so does an
+  // aliased list whose variable the line never uses.
+  let root = "build/aliased_bound_lint"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ffi.wrap(cb: [e], other: [cb]) : [cb] where returns : [cb]
+assume ffi.plain(cb: [e]) : [e]
+assume ffi.own(cb: [cb]) : [cb]
+assume ffi.unused(cb: [e], other: [cb]) : [Net]
+effects app.twin(cb: [e], other: [cb]) : [cb] where returns : [cb]
+",
+    ),
+    #(
+      "ffi.gleam",
+      support.foreign_fn(
+        "wrap",
+        "(cb: fn() -> Nil, other: fn() -> Nil) -> fn() -> Nil",
+      )
+        <> "\n"
+        <> support.foreign_fn("plain", "(cb: fn() -> Nil) -> Nil")
+        <> "\n"
+        <> support.foreign_fn("own", "(cb: fn() -> Nil) -> Nil")
+        <> "\n"
+        <> support.foreign_fn(
+        "unused",
+        "(cb: fn() -> Nil, other: fn() -> Nil) -> Nil",
+      ),
+    ),
+    #(
+      "app.gleam",
+      "pub fn twin(cb: fn() -> Nil, other: fn() -> Nil) -> fn() -> Nil {\n  other()\n  cb\n}\n",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.AliasedBoundVariableWarning(function: "ffi.wrap", variables: [
+      #("cb", "other"),
+    ]),
+    types.AliasedBoundVariableWarning(function: "app.twin", variables: [
+      #("cb", "other"),
+    ]),
+  ])
+  support.cleanup(root)
+}
+
 pub fn the_term_oracle_skips_a_dead_external_test() {
   // A stale line (over a visible Gleam body) and an unmatched one (naming
   // nothing anywhere) each get the existence channel's warning alone: the
