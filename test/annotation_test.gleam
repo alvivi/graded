@@ -1987,6 +1987,39 @@ pub fn a_bounded_assume_with_only_an_unknown_clause_keeps_its_bounds_test() {
   annotation.format_file(file) |> should.equal(line)
 }
 
+pub fn a_retained_assume_keeps_a_payload_this_version_cannot_read_test() {
+  // A retained bound list is left unparsed as well as unrewritten: a payload
+  // in a newer version's grammar rides through this one verbatim instead of
+  // failing the file.
+  let line = "assume dep.make(cb: future([X])) where future : [X]"
+  let assert Ok(file) = annotation.parse_file(line)
+  file.lines
+  |> should.equal([
+    RetainedAssumeLine(path: "dep.make(cb: future([X]))", unknown_clauses: [
+      UnknownClause(key: "future", payload: "[X]"),
+    ]),
+  ])
+  annotation.extract_externals(file) |> should.equal([])
+  annotation.format_file(file) |> should.equal(line)
+}
+
+pub fn a_retained_bound_list_still_needs_a_function_path_test() {
+  // Only the path shape is read on a retained bounded head, and a module
+  // still has no parameter slot for the paren group.
+  let input = "assume gleam/io(cb: future([X])) where future : [X]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
+pub fn bounds_beside_an_effects_claim_still_parse_test() {
+  // An effects clause is a claim this version reads, and bounds beside one
+  // are its semantics — a payload today's grammar cannot read is refused
+  // loudly, unknown clauses or not.
+  let input = "assume dep.make(cb: future([X])) : [] where future : [X]"
+  annotation.parse_file(input)
+  |> should.equal(Error(annotation.InvalidLine(1, input)))
+}
+
 // Wrapped statements
 //
 // A statement may be written on one physical line or across several, and the
