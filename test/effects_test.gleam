@@ -1648,7 +1648,7 @@ pub fn a_clause_only_assume_does_not_rescue_a_foreign_effects_line_test() {
   |> should.equal(Error(Nil))
   let assert Ok(found) =
     effects.lookup_returned_operator(kb, QualifiedName("dep/ffi", "make"))
-  found.summary |> should.equal(effects.Declared)
+  found.summary |> should.equal(effects.Declared(bounds: []))
 }
 
 pub fn a_dependency_effects_line_on_an_ordinary_function_answers_test() {
@@ -1922,7 +1922,7 @@ pub fn a_ground_clause_on_an_assume_line_is_declared_test() {
     )
   let assert Ok(found) =
     effects.lookup_returned_operator(kb, QualifiedName("dep/ffi", "make"))
-  found.summary |> should.equal(effects.Declared)
+  found.summary |> should.equal(effects.Declared(bounds: []))
   found.operator
   |> should.equal(effect_term.from_effect_set(Specific(set.from_list(["Net"]))))
 }
