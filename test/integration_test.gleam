@@ -545,6 +545,76 @@ pub fn go_impure() -> Nil {
   support.cleanup(root)
 }
 
+pub fn charge_halves_bind_through_their_own_bounds_test() {
+  // `assume ext.run(cb: [other]) : [other]` beside a running fallback whose
+  // *parameter* is also named `other`: the declaration's variable means the
+  // `cb` argument its own payload binds, and the fallback's means the `other`
+  // parameter — the two halves' namespaces stay apart, so neither binding
+  // captures the other's. Each caller hands `run` one `[Disk]` function
+  // through a different half, and each fails a `[]` budget with exactly
+  // `[Disk]`; the all-pure caller passes.
+  let root = "build/bounded_assume_half_namespaces"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext.run(cb: [other]) : [other]
+assume ext.disk : [Disk]
+assume ext.noop : []
+check app.fallback_disk : []
+check app.decl_disk : []
+check app.both_pure : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(cb: fn() -> Nil, other: fn() -> Nil) -> Nil {
+  other()
+}
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+pub fn disk() -> Nil
+
+@external(erlang, \"n\", \"n\")
+@external(javascript, \"n\", \"n\")
+pub fn noop() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+pub fn fallback_disk() -> Nil {
+  ext.run(ext.noop, ext.disk)
+}
+
+pub fn decl_disk() -> Nil {
+  ext.run(ext.disk, ext.noop)
+}
+
+pub fn both_pure() -> Nil {
+  ext.run(ext.noop, ext.noop)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  r.violations
+  |> list.map(fn(v) { v.function })
+  |> list.sort(string.compare)
+  |> should.equal(["decl_disk", "fallback_disk"])
+  r.violations
+  |> list.each(fn(v) {
+    v.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Disk"])))
+  })
+  support.cleanup(root)
+}
+
 pub fn a_declared_clause_closed_by_its_bounds_binds_test() {
   // The decorator shape: an `@external` producer whose returned closure runs
   // the callback it was handed. The clause's variable is scoped by the line's

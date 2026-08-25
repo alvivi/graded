@@ -566,6 +566,7 @@ pub fn foreign_charge(
   name: QualifiedName,
   declared: EffectTerm,
 ) -> ForeignCharge {
+  let declared = declared_beside_fallback(knowledge_base, name, declared)
   let fallback = running_fallback_term(knowledge_base, name)
   case reachable_halves(knowledge_base, name), fallback {
     // Every target this walk runs on has a foreign implementation for `name`, so
@@ -605,6 +606,76 @@ pub fn foreign_charge(
         declaration: DeclarationCharged,
       )
   }
+}
+
+// A bounded declaration standing beside a recorded fallback summary, its term
+// rewritten into self-referential form. The charge unions the two halves and
+// one bound list binds them at the call site, while each half's variables are
+// scoped by its own line alone — a declared payload variable that happens to
+// name another fallback parameter (`cb: [other]`) is a distinct variable from
+// the parameter the fallback's `other: [other]` binds, and one substitution
+// map over the raw union binds one half's variable through the other half's
+// argument. Renamed to the parameter whose payload binds it, every variable
+// of either half names its own parameter and binds exactly that argument; a
+// variable no payload binds is the `[Unknown]` no call site can ever resolve
+// (the spec lint flags it). `lookup_param_bounds` rewrites the declaring
+// line's bound list by the same rule, so the term and the bounds that bind it
+// stay one pair. A boundless declaration is left alone: its variables resolve
+// through registry-synthesized bounds that already carry parameter names.
+fn declared_beside_fallback(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+  declared: EffectTerm,
+) -> EffectTerm {
+  use <- bool.guard(
+    when: !dict.has_key(knowledge_base.fallback_summaries, name),
+    return: declared,
+  )
+  case dict.get(knowledge_base.param_bounds, name) {
+    Ok([_, ..] as bounds) -> {
+      let renames = declaration_rename_map(bounds)
+      let bindings =
+        declared
+        |> effect_term.free_vars()
+        |> set.fold(dict.new(), fn(acc, variable) {
+          case dict.get(renames, variable) {
+            Ok(parameter) -> dict.insert(acc, variable, types.TVar(parameter))
+            Error(Nil) -> dict.insert(acc, variable, effect_term.unknown())
+          }
+        })
+      effect_term.subst(declared, bindings)
+    }
+    Ok([]) | Error(Nil) -> declared
+  }
+}
+
+// Each payload variable of a bound list, mapped to the parameter name of the
+// bound that binds it — the last binder winning on a duplicate, as it does in
+// the checker's binding fold.
+fn declaration_rename_map(bounds: List(ParamBound)) -> Dict(String, String) {
+  list.fold(bounds, dict.new(), fn(acc, bound) {
+    bound.effects
+    |> effect_term.free_vars()
+    |> set.fold(acc, fn(acc, variable) {
+      dict.insert(acc, variable, bound.name)
+    })
+  })
+}
+
+// A declaring line's bound list in self-referential form, pairing with the
+// term `declared_beside_fallback` rewrites: a bound whose payload binds a
+// variable binds its own parameter name instead, and a ground budget — which
+// binds nothing — is kept as written.
+fn self_referential_declared_bounds(
+  bounds: List(ParamBound),
+) -> List(ParamBound) {
+  list.map(bounds, fn(bound) {
+    case set.is_empty(effect_term.free_vars(bound.effects)) {
+      True -> bound
+      False ->
+        types.ParamBound(name: bound.name, effects: types.TVar(bound.name))
+    }
+  })
 }
 
 // The charge alone, for a reader that quotes a term without reporting where its
@@ -1071,10 +1142,11 @@ pub fn argument_value_effects(
 // source names. A per-function bound list — a bounded `assume` line over the
 // fallback-running external — rides *with* them rather than standing down:
 // the foreign charge unions the declared term with the fallback summary's,
-// and each half's variables bind only through its own bounds — a decoupled
-// declaration (`action: [e]`) names a variable no synthesized
-// `action: [action]` payload covers. Exact duplicates are dropped, so the
-// self-referential common case stays one list.
+// and each half's variables bind only through its own bounds. The declaring
+// line's list rides in the self-referential form that pairs with the term
+// `declared_beside_fallback` rewrites, so a shared name between the halves
+// is always the same parameter binding the same argument. Exact duplicates
+// are dropped, so the common case stays one list.
 pub fn lookup_param_bounds(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -1084,13 +1156,15 @@ pub fn lookup_param_bounds(
     Error(Nil) -> []
   }
   case dict.get(knowledge_base.fallback_summaries, name) {
-    Ok(#(_term, fallback_bounds)) ->
+    Ok(#(_term, fallback_bounds)) -> {
+      let declared = self_referential_declared_bounds(declared)
       list.append(
         fallback_bounds,
         list.filter(declared, fn(bound) {
           !list.contains(fallback_bounds, bound)
         }),
       )
+    }
     Error(Nil) -> declared
   }
 }
