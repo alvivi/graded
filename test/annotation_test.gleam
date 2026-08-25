@@ -931,6 +931,25 @@ effects m.g : []
   )
 }
 
+pub fn a_retained_line_sorts_and_reports_by_its_bare_path_test() {
+  // A bounded retained line is ordered and named by the bare path a bounded
+  // external's sort key spells — the unparsed bound text stays only in the
+  // rendering, which keeps the line verbatim.
+  let input =
+    "assume dep.make(cb: [cb]) where future : [X]
+assume dep.also(cb: [cb]) : [cb] where future : [X]
+"
+  let assert Ok(file) = annotation.parse_file(input)
+  annotation.unknown_clause_lines(file)
+  |> should.equal([#("dep.make", ["future"]), #("dep.also", ["future"])])
+  annotation.format_sorted(file)
+  |> should.equal(
+    "assume dep.also(cb: [cb]) : [cb] where future : [X]
+assume dep.make(cb: [cb]) where future : [X]
+",
+  )
+}
+
 pub fn a_canonical_assume_section_is_a_fixed_point_test() {
   let canonical =
     "assume Handler.on_click : [Dom]
