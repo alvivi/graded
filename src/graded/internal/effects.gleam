@@ -905,11 +905,12 @@ fn runs_own_fallback_body(
 }
 
 // The parameter bounds a running fallback body's own effects are stated over
-// — empty where no fallback of this package's runs for `name`. The summary's
-// term is not ground the way a declaration's is: a fallback that calls a
-// function-typed parameter states that parameter's effects, and without the
-// bound the variable binds to nothing at the call site and collapses to
-// `[Unknown]`, charging a caller for a callback it can see is pure.
+// — empty where no fallback of this package's runs for `name`. A fallback
+// that calls a function-typed parameter states that parameter's effects, so
+// its summary's term is polymorphic over exactly these bounds — as a bounded
+// declaration's term is over its own line's — and without the bound the
+// variable binds to nothing at the call site and collapses to `[Unknown]`,
+// charging a caller for a callback it can see is pure.
 pub fn fallback_param_bounds(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
