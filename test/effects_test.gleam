@@ -2177,3 +2177,25 @@ pub fn self_referential_declaration_pairs_term_and_bounds_test() {
     }
   })
 }
+
+pub fn a_duplicate_declaration_wins_term_and_bounds_together_test() {
+  // Two assume lines declaring one name: the last line's term wins, and the
+  // bounds that ride it are that same line's — never the earlier line's list
+  // under the later line's term.
+  let assert Ok(file) =
+    annotation.parse_file(
+      "assume m.f(a: [a]) : [a, X]\nassume m.f(b: [b]) : [b, Y]",
+    )
+  let base =
+    effects.empty_knowledge_base()
+    |> effects.with_externals(
+      annotation.extract_externals(file),
+      types.UserExternal,
+    )
+  let name = QualifiedName("m", "f")
+  let assert effects.Known(term, _source) = effects.lookup(base, name)
+  effect_term.to_effect_set(term)
+  |> should.equal(Polymorphic(set.from_list(["Y"]), set.from_list(["b"])))
+  effects.lookup_param_bounds(base, name)
+  |> should.equal([ParamBound(name: "b", effects: types.TVar("b"))])
+}
