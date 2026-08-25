@@ -971,8 +971,20 @@ pub fn line_path(line: GradedLine) -> Result(String, Nil) {
     AnnotationLine(annotation, _) -> Ok(annotation.function)
     TypeFieldLine(tf, _) -> Ok(type_field_path(tf))
     ExternalLine(ext, _) -> Ok(external_sort_key(ext))
-    RetainedAssumeLine(path:, ..) -> Ok(path)
+    RetainedAssumeLine(path:, ..) -> Ok(retained_bare_path(path))
     CommentLine(_) | BlankLine -> Error(Nil)
+  }
+}
+
+// A retained line's path with its unparsed bound-list text stripped — the
+// bare name before the paren group, which is what a bounded `ExternalLine`'s
+// sort key spells too, so the two shapes of a bounded `assume` line sort and
+// are reported alike. Rendering is untouched: the retained line itself keeps
+// its verbatim text.
+fn retained_bare_path(path: String) -> String {
+  case string.split_once(path, "(") {
+    Ok(#(before, _)) -> string.trim(before)
+    Error(Nil) -> path
   }
 }
 
