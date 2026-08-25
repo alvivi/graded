@@ -487,6 +487,64 @@ pub fn a_dependency_specs_bounded_assume_substitutes_test() {
   support.cleanup(root)
 }
 
+pub fn a_bounded_assume_over_a_running_fallback_keeps_both_bound_lists_test() {
+  // A target-conditional external whose Gleam fallback also runs: the charge
+  // unions the declared term with the fallback summary's, so the call site
+  // binds through both bound lists — the decoupled `e` through the line's
+  // own, `action` through the fallback's recorded one. With the line's list
+  // standing down, `e` stayed free and a pure callback was charged the
+  // `[Unknown]` it grounds to.
+  let root = "build/bounded_assume_running_fallback"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext.run(action: [e]) : [e]
+assume ext.disk : [Disk]
+check app.go : []
+check app.go_impure : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(action: fn() -> Nil) -> Nil {
+  action()
+}
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+pub fn disk() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+fn pure_cb() -> Nil {
+  Nil
+}
+
+pub fn go() -> Nil {
+  ext.run(pure_cb)
+}
+
+pub fn go_impure() -> Nil {
+  ext.run(ext.disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("go_impure")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
 pub fn a_declared_clause_closed_by_its_bounds_binds_test() {
   // The decorator shape: an `@external` producer whose returned closure runs
   // the callback it was handed. The clause's variable is scoped by the line's

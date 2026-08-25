@@ -1066,23 +1066,32 @@ pub fn argument_value_effects(
 // substitution to know which parameters of the callee are effect-typed
 // so arguments at those positions can bind effect variables.
 //
-// A running fallback's recorded bounds outrank every other writer's: its
-// summary's term is stated over exactly those parameters, including a
-// girard-typed callback no other source names. A bounded `assume` line over a
-// fallback-running external keeps the union semantics a boundless one has —
-// the fallback's recorded bounds answer for the name, and the line's own
-// bound list stands down with the rest.
+// A running fallback's recorded bounds lead: its summary's term is stated
+// over exactly those parameters, including a girard-typed callback no other
+// source names. A per-function bound list — a bounded `assume` line over the
+// fallback-running external — rides *with* them rather than standing down:
+// the foreign charge unions the declared term with the fallback summary's,
+// and each half's variables bind only through its own bounds — a decoupled
+// declaration (`action: [e]`) names a variable no synthesized
+// `action: [action]` payload covers. Exact duplicates are dropped, so the
+// self-referential common case stays one list.
 pub fn lookup_param_bounds(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> List(types.ParamBound) {
+  let declared = case dict.get(knowledge_base.param_bounds, name) {
+    Ok(bounds) -> bounds
+    Error(Nil) -> []
+  }
   case dict.get(knowledge_base.fallback_summaries, name) {
-    Ok(#(_term, bounds)) -> bounds
-    Error(Nil) ->
-      case dict.get(knowledge_base.param_bounds, name) {
-        Ok(bounds) -> bounds
-        Error(Nil) -> []
-      }
+    Ok(#(_term, fallback_bounds)) ->
+      list.append(
+        fallback_bounds,
+        list.filter(declared, fn(bound) {
+          !list.contains(fallback_bounds, bound)
+        }),
+      )
+    Error(Nil) -> declared
   }
 }
 
