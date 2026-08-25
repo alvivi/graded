@@ -521,6 +521,7 @@ fn external(
   types.ExternalAnnotation(
     module:,
     target: types.FunctionExternal(function),
+    params: [],
     effects: Some(Specific(set.from_list(labels))),
     returns: None,
   )
@@ -533,6 +534,7 @@ fn module_external(
   types.ExternalAnnotation(
     module:,
     target: types.ModuleExternal,
+    params: [],
     effects: Some(Specific(set.from_list(labels))),
     returns: None,
   )

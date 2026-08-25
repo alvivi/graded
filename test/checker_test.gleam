@@ -1351,7 +1351,8 @@ pub fn fetch() { httpc.send(request) }"
     types.ExternalAnnotation(
       "gleam/httpc",
       types.FunctionExternal("send"),
-      Some(Specific(set.from_list(["Http"]))),
+      params: [],
+      effects: Some(Specific(set.from_list(["Http"]))),
       returns: None,
     ),
   ]
@@ -1376,7 +1377,8 @@ pub fn fetch() { httpc.send(request) }"
     types.ExternalAnnotation(
       "gleam/httpc",
       types.FunctionExternal("send"),
-      Some(Specific(set.from_list(["Http"]))),
+      params: [],
+      effects: Some(Specific(set.from_list(["Http"]))),
       returns: None,
     ),
   ]
@@ -1427,7 +1429,8 @@ pub fn external_same_module_resolves_declared_effects_test() {
     types.ExternalAnnotation(
       "ffi_mod",
       types.FunctionExternal("now"),
-      Some(Specific(set.from_list(["Time"]))),
+      params: [],
+      effects: Some(Specific(set.from_list(["Time"]))),
       returns: None,
     ),
   ]
@@ -4431,7 +4434,8 @@ fn fs_read_external() -> types.ExternalAnnotation {
   types.ExternalAnnotation(
     "fs",
     types.FunctionExternal("read"),
-    Some(Specific(set.from_list(["FileSystem"]))),
+    params: [],
+    effects: Some(Specific(set.from_list(["FileSystem"]))),
     returns: None,
   )
 }

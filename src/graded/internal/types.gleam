@@ -460,12 +460,23 @@ pub type ExternalTarget {
 // answering for it. No reader may default a `None` to the empty set — that
 // turns "claims nothing" into "is pure".
 //
+// `params` is the line's bound list (`assume m/ffi.each(f: [f]) : [f]`),
+// meaningful for a function target only — a module has no parameters and a
+// field's callable shape is not per-parameter, so a bound list on either path
+// is a parse error. The bounds are substitution scaffolding: a bound's name
+// matches a call-site argument and scopes the line's `where returns` clause,
+// and its payload's free variables are the substitution keys the argument's
+// effects bind. Nothing checks a caller's argument against a ground budget —
+// nothing ever verifies an assumption — so `(f: [Disk]) : []` is
+// documentation, not a constraint.
+//
 // `returns` carries the `where returns` clause, meaningful for a function
 // target; a clause on a module path is a lint.
 pub type ExternalAnnotation {
   ExternalAnnotation(
     module: String,
     target: ExternalTarget,
+    params: List(ParamBound),
     effects: Option(EffectSet),
     returns: Option(EffectTerm),
   )
