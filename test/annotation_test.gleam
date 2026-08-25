@@ -564,6 +564,33 @@ pub fn an_operator_spelled_assume_term_collapses_test() {
   ext.effects |> should.equal(Some(Specific(set.from_list(["Unknown"]))))
 }
 
+pub fn a_bounded_operator_spelled_assume_term_collapses_test() {
+  // The suffix past a bound list reads the same bound grammar the boundless
+  // head does, so the operator spelling parses on a bounded head too, and the
+  // flat reduction collapses it to `[Unknown]` — never a parse error that
+  // refuses the whole file over the one line.
+  let assert Ok(file) =
+    annotation.parse_file("assume m.f(cb: [cb]) : fn(x) -> [x]")
+  let assert [ext] = annotation.extract_externals(file)
+  ext.effects |> should.equal(Some(Specific(set.from_list(["Unknown"]))))
+  ext.params |> should.equal([ParamBound(name: "cb", effects: TVar("cb"))])
+}
+
+pub fn a_bounded_effects_operator_term_reads_as_the_boundless_one_test() {
+  // The same parity one status over: a bounded `effects` head accepts the
+  // operator spelling its boundless twin always has. The effect-set grammar
+  // has no `fn(..) -> ..` atom, so the formatter grounds either spelling to
+  // the conservative collapse rather than emitting a line the parser rejects.
+  let assert Ok(bounded) =
+    annotation.parse_file("effects m.apply(g: [g]) : fn(x) -> [x]")
+  annotation.format_file(bounded)
+  |> should.equal("effects m.apply(g: [g]) : [Unknown]")
+  let assert Ok(boundless) =
+    annotation.parse_file("effects m.apply : fn(x) -> [x]")
+  annotation.format_file(boundless)
+  |> should.equal("effects m.apply : [Unknown]")
+}
+
 pub fn bounds_on_a_module_path_are_invalid_test() {
   // A module has no parameters, so a bound list on its path is a parse error
   // rather than a lint — nothing can have written the form.

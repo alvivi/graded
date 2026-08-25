@@ -63,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A clause variable its own line does not scope no longer binds to a call
   argument. Such a clause resolves to `[Unknown]`, and `graded check` reports it
   as open.
+- An operator-spelled effects term (`m.f : fn(x) -> [x]`) no longer fails the
+  spec file on an `effects` or `check` line, or on a bounded `assume` line:
+  the head is cut at the effects separator rather than at the operator's own
+  paren, so every spelling of a statement reads the same term language and an
+  operator term reads `[Unknown]`, as the boundless `assume` spelling always
+  has.
 
 ## [0.16.0] - 2026-08-24
 
