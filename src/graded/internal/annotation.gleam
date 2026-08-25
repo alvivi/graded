@@ -610,6 +610,23 @@ fn split_assume_head(
     Ok(#(name, params_str, suffix)) if bounded -> {
       let path = string.trim(name)
       use <- bool.guard(when: path == "", return: Error(Nil))
+      // A line whose only clauses are unknown keys nothing this version
+      // reads, so its bound list is retained path text: kept verbatim and
+      // left unparsed, which is how a payload in a newer version's grammar
+      // rides through this one. An effects clause or a `returns` clause is a
+      // claim of this version's, and bounds beside one are its semantics,
+      // parsed as ever. `Some([])` keeps the function-path-only rule on the
+      // retained head's shape.
+      let retained_only =
+        returns == None && unknown_clauses != [] && string.trim(suffix) == ""
+      use <- bool.lazy_guard(when: retained_only, return: fn() {
+        Ok(AssumeHead(
+          path:,
+          written: string.trim(head),
+          params: Some([]),
+          term: None,
+        ))
+      })
       use params <- result.try(parse_params_section(params_str))
       let written = path <> "(" <> params_str <> ")"
       use term <- result.try(parse_effects_suffix(suffix))
