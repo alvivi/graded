@@ -1041,6 +1041,12 @@ fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
     }
   }
 
+  // The function externals the existence channel just called dead — stale or
+  // unmatched. The lints below skip them, so a line whose one warning says to
+  // remove it gets no second piece of advice about its bound list. Derived
+  // from that channel's own output, so the two gates cannot drift.
+  let dead_externals = dead_external_names(external_warnings)
+
   // Resolving field `assume` lines also needs per-module type info; build it only when
   // there are field `assume` lines to check.
   let type_field_warnings = case type_fields {
@@ -1080,7 +1086,7 @@ fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
   list.flatten([
     check_warnings,
     external_warnings,
-    unbound_term_variable_warnings(externals),
+    unbound_term_variable_warnings(externals, dead_externals),
     returns_clause_warnings,
     clause_warnings,
     unknown_clause_warnings,
@@ -1094,14 +1100,20 @@ fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
 // never bind, whatever the bound is named. Lint-only: resolution is already
 // conservative about a leftover variable. Scoped to lines with a non-empty
 // bound list — a boundless polymorphic assume resolves through
-// registry-synthesized bounds and is left alone.
+// registry-synthesized bounds and is left alone, and to lines the existence
+// channel has not flagged — a stale or unmatched line's one fix is removal.
 fn unbound_term_variable_warnings(
   externals: List(types.ExternalAnnotation),
+  dead: Set(String),
 ) -> List(Warning) {
   list.filter_map(externals, fn(external) {
     use <- bool.guard(when: external.params == [], return: Error(Nil))
     case annotation.external_qualified_name(external), external.effects {
       Ok(qualified), Some(effect_set) -> {
+        use <- bool.guard(
+          when: set.contains(dead, types.dotted_name(qualified)),
+          return: Error(Nil),
+        )
         let covered = effects.bound_payload_variables(external.params)
         // The declared term is a flat set, so its variables are right on the
         // `Polymorphic` variant — no term round-trip needed.
@@ -1284,6 +1296,19 @@ fn external_warnings(
         }
     }
   })
+}
+
+// The function names the existence channel's warnings call dead — a stale
+// declaration over a visible body, or one matching nothing anywhere.
+fn dead_external_names(warnings: List(Warning)) -> Set(String) {
+  list.filter_map(warnings, fn(warning) {
+    case warning {
+      StaleFunctionExternalWarning(function:)
+      | UnmatchedFunctionExternalWarning(function:) -> Ok(function)
+      _ -> Error(Nil)
+    }
+  })
+  |> set.from_list()
 }
 
 // The same walk over the `where returns` clauses on the spec's `assume` lines,

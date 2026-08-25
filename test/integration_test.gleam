@@ -4040,6 +4040,32 @@ assume ffi.fold(g: [g]) : [g]
   support.cleanup(root)
 }
 
+pub fn the_term_oracle_skips_a_dead_external_test() {
+  // A stale line (over a visible Gleam body) and an unmatched one (naming
+  // nothing anywhere) each get the existence channel's warning alone: the
+  // term oracle stays silent on a line whose one fix is removal, even though
+  // both terms name a variable no payload binds.
+  let root = "build/dead_external_term_oracle"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume app.local(cb: [cb]) : [zz]
+assume nowhere.gone(cb: [cb]) : [zz]
+",
+    ),
+    #("app.gleam", "pub fn local(cb: fn() -> Nil) -> Nil {\n  cb()\n}\n"),
+  ])
+  let assert Ok(results) = graded.run(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.StaleFunctionExternalWarning(function: "app.local"),
+    types.UnmatchedFunctionExternalWarning(function: "nowhere.gone"),
+  ])
+  support.cleanup(root)
+}
+
 pub fn why_names_the_declaration_that_resolved_a_producer_test() {
   // The call used to print ", whose producer could not be resolved,". It now
   // names the line that answered, in the words that say *declaration* rather
