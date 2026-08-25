@@ -5388,23 +5388,24 @@ fn bind_producer_params(
   }
   // Completion (Fix B/C-B/E): the scoping bounds omit params that are
   // polymorphic only through the returned closure (inference derives bounds
-  // from the *direct* effect, which trims the closure). Synthesize a
-  // self-referential bound for each of the summary's own free vars the bounds
-  // do not *bind* — keyed off the variables the payloads actually bind, not
-  // the bound names, because `bind_variables` binds a bound's payload
-  // variables: a hand-written decoupled bound (`cb: [e]`) covers `e` while a
-  // clause variable `cb` still needs the synthesized self-referential bound to
-  // bind by parameter name. For a machine-written self-referential bound the
-  // two sets coincide, so nothing moves on machine-written specs. Sound
-  // because every summary reaching here is scoped: a **Fresh** one is
-  // Fix-D-sanitized (free vars ⊆ the producer's fn-typed params), and a
-  // **Closed** or **Declared** one the gate has just re-checked. Field-path
-  // (dotted) vars are excluded (they round-trip as field bounds, not producer
-  // params).
-  let have = effects.bound_payload_variables(scoping)
+  // from the *direct* effect, which trims the closure). Every non-dotted free
+  // var of the operator names a producer parameter — the gates scope a clause
+  // by the line's bound *names* (plus the registry's fn-typed params on the
+  // `Closed` path), and a **Fresh** summary is Fix-D-sanitized (free vars ⊆
+  // the producer's fn-typed params) — so each one takes a synthesized
+  // self-referential bound, appended after the scoping list so its name-keyed
+  // binding is the one that stands. `bind_variables` binds a bound's *payload*
+  // variables, and a hand-written decoupled list may reuse one parameter's
+  // name in another bound's payload (`cb: [e], other: [cb]`) — the clause's
+  // `cb` still means the parameter named `cb`, never `other`'s argument. For
+  // a machine-written self-referential bound the appended binding repeats the
+  // payload's, so nothing moves on machine-written specs, and a synthesized
+  // bound matching no argument binds nothing, leaving the payload bindings
+  // standing. Field-path (dotted) vars are excluded (they round-trip as field
+  // bounds, not producer params).
   let synth =
     effect_term.free_vars(operator)
-    |> set.filter(fn(v) { !is_field_path_var(v) && !set.contains(have, v) })
+    |> set.filter(fn(v) { !is_field_path_var(v) })
     |> set.to_list()
     |> list.map(self_referential_bound)
   let bounds = list.append(scoping, synth)
