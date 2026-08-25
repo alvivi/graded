@@ -101,11 +101,14 @@ function-typed field on a custom type. Hand-written and never regenerated:
 
 A **function-path** head takes a bound list, with the same
 `(name: [set], …)` grammar as [Parameter effect
-bounds](#parameter-effect-bounds). A bound list on a module path or a field
-path is a parse error — a module has no parameters, and a field's callable
-shape is not per-parameter. The declared effects term is **flat**: labels and
+bounds](#parameter-effect-bounds). A paren group opening before the head's
+first colon *is* a bound list — there is no other reading — so one that does
+not parse as bounds is a parse error, as is a bound list on a module path or
+a field path: a module has no parameters, and a field's callable shape is not
+per-parameter. The declared effects term is **flat**: labels and
 variables (`assume myapp/ffi.each(f: [f]) : [f]`); a second-order application
-such as `[action([cb])]` reads as `[Unknown]`.
+such as `[action([cb])]` and an operator spelling such as `fn(x) -> [x]`
+both read as `[Unknown]`.
 
 The bounds are **substitution scaffolding, not caller-side constraints** —
 nothing ever verifies an assumption, its arguments included:
