@@ -358,11 +358,13 @@ resolves is one it can see built, or annotate the *field* the returned function
 lands in with a field `assume`.
 
 The closure a producer hands back is the one such channel with a declaring form:
-`assume my_ffi.make_client where returns : [Net]`. It is refused where a Gleam
+`assume my_ffi.make_client where returns : [Net]`, and for a foreign decorator
+`assume my_ffi.wrap(cb: [cb]) : [] where returns : [cb]` — the clause's
+variables scoped by the line's own bound list. It is refused where a Gleam
 fallback body runs beside the declaration — the two can hand back different
-closures and there is no union of operators to take — and the operator must be
-ground, so a foreign decorator's still needs the Gleam wrapper. The call names
-whichever refusal applied; the rules are in
+closures and there is no union of operators to take — and a clause variable
+the bound list does not name is dropped. The call names whichever refusal
+applied; the rules are in
 [Assumptions](./REFERENCE.md#assumptions-foreign-code-and-field-effects).
 
 ### Which targets an `@external` is built for
