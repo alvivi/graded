@@ -40,9 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A hand-written decoupled bound (`cb: [e]`) scoping a `where returns` clause
   now binds the clause's variable by parameter name, on `effects` lines and
-  `assume` lines alike; the clause previously resolved to `[Unknown]`. The
-  same completion now runs for a producer called unqualified in its own
-  module, where an alias-typed callback used to leave the clause unresolved.
+  `assume` lines alike. The plain decoupled shape previously resolved to
+  `[Unknown]`; with an aliased payload (`cb: [e], other: [cb]`) the clause
+  previously bound through the payload — `other`'s argument — and that
+  defined answer changes to the parameter's own. The same completion now runs
+  for a producer called unqualified in its own module, where an alias-typed
+  callback used to leave the clause unresolved.
 - `graded pack` refuses a tarball whose contents name an absolute path, instead
   of copying the host file at that path into the archive it tells you to
   publish. A name escaping the package with `..` is refused too.
