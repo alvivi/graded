@@ -2107,12 +2107,13 @@ fn function_effect(
   // is what keeps the answer reading as `check` and `why` read the same name.
   let charge = effects.declared_charge(knowledge_base, qualified)
   let fallback = charge.fallback
-  // The bounds a running fallback body states its effects over, for the answers
-  // whose own term is ground: a fallback that calls a function-typed parameter
-  // names that parameter, and without its bound the line names a variable
-  // nothing introduces. Only a fallback's own recorded bounds travel with
-  // those answers — a per-function bound from anywhere else was written over a
-  // body the foreign implementation needn't match, exactly like the entry
+  // The bounds a running fallback body states its effects over: a fallback
+  // that calls a function-typed parameter names that parameter, and without
+  // its bound the line names a variable nothing introduces. They ride the
+  // answers the fallback's body accounts for; the function-entry answer
+  // instead takes `lookup_param_bounds`' full pairing, a declaring line's own
+  // bounds included. A per-function bound from anywhere else was written over
+  // a body the foreign implementation needn't match, exactly like the entry
   // beside it, so it is no more an answer here than that entry is.
   let fallback_bounds = effects.fallback_param_bounds(knowledge_base, qualified)
   // A declaration this build reaches no part of accounts for none of the charge,
