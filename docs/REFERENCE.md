@@ -91,12 +91,36 @@ never runs against anything and passes silently; `graded check` warns about it.
 assume gleam/httpc.send : [Http]              // one function
 assume gleam/list : []                        // a whole module
 assume myapp.Handler.on_click : [Dom]         // a function-typed field
+assume myapp/ffi.each(f: [f]) : [f]           // a higher-order function
 ```
 
 A trusted declaration: graded takes it as given and never verifies it. Use it
 for code graded can't analyse — dependencies and FFI — and for the effect of a
 function-typed field on a custom type. Hand-written and never regenerated:
 `graded infer` preserves the line and writes none of its own for what it covers.
+
+A **function-path** head takes a bound list, with the same
+`(name: [set], …)` grammar as [Parameter effect
+bounds](#parameter-effect-bounds). A bound list on a module path or a field
+path is a parse error — a module has no parameters, and a field's callable
+shape is not per-parameter. The declared effects term is **flat**: labels and
+variables (`assume myapp/ffi.each(f: [f]) : [f]`); a second-order application
+such as `[action([cb])]` reads as `[Unknown]`.
+
+The bounds are **substitution scaffolding, not caller-side constraints** —
+nothing ever verifies an assumption, its arguments included:
+
+- A polymorphic term substitutes at call sites exactly as a bounded `effects`
+  line's does: `assume myapp/ffi.each(f: [f]) : [f]` charges a caller the
+  argument's actual effects.
+- A bound contributes through its *name* (matching the call-site argument,
+  scoping the line's clause) and through its payload's *free variables* (the
+  substitution keys). `assume m.f(cb: [e]) : [e]` is valid and binds even
+  though `e` names no bound.
+- A ground budget (`assume m/ffi.each(f: [Disk]) : []`) is inert for callers:
+  nothing checks the argument against it, so it is documentation. A term
+  variable no bound's payload binds is flagged — no call site can ever
+  resolve it.
 
 What an `assume` line covers is read off the path's shape:
 
@@ -134,6 +158,10 @@ effects myapp.traced(action: [action]) : [] where returns : fn(cb) -> [Stdout, a
 
 // what a foreign producer hands back, declared rather than inferred
 assume myapp/ffi.make_client where returns : [Net]
+
+// a foreign decorator: the returned closure runs the callback it was handed,
+// the line's own bound list scoping the clause's variable
+assume myapp/ffi.wrap(cb: [cb]) : [] where returns : [cb]
 ```
 
 The clause states the operator a function that *returns a function* hands back,
@@ -151,8 +179,15 @@ On an `assume` line it is a declaration: what an `@external` producer hands
 back, hand-written and never regenerated. The effects clause before it is
 optional — `assume myapp/ffi.make_client where returns : [Net]` claims nothing
 about `make_client`'s own effect, and the tiers below keep answering for it. A
-declared operator must be **ground**: one with free effect variables is ignored
-and flagged, since an assumption carries no bound list to scope them.
+declared operator's variables are scoped by **the line's own bound list, and
+nothing else**: one the bounds do not name is ignored and flagged, and the
+registry-and-dotted-variable leniencies an `effects` line's clause enjoys do
+not apply — a foreign producer has neither a walkable signature nor a
+field-bound story. A ground operator is the empty-bounds case of the same
+rule, so `assume myapp/ffi.make_client where returns : [Net]` needs no bound
+list, while a foreign decorator writes
+`assume myapp/ffi.wrap(cb: [cb]) : [] where returns : [cb]` and a caller
+invoking the returned closure is charged its argument's actual effects.
 
 On a `check` line it parses and keys nothing: verifying what a function returns
 is not implemented, and `graded check` says so.
@@ -594,6 +629,15 @@ graded infers `[Unknown]`, never the `[]` an empty body would suggest, since the
 foreign implementation may do anything (this holds even when the `@external`
 carries a pure-looking Gleam fallback body). Declare its real effect with an
 `assume` line to make callers propagate correctly.
+
+A *higher-order* external takes a bound list:
+`assume myapp/ffi.each(f: [f]) : [f]` charges a caller its callback argument's
+actual effects, the same substitution a bounded `effects` line performs. And a
+foreign *decorator* — a producer whose returned closure runs the callback it
+was handed — declares that with the clause, its variable scoped by the same
+bound list: `assume myapp/ffi.wrap(cb: [cb]) : [] where returns : [cb]`. What
+stays `assume`'s meaning throughout is that nothing verifies the declaration
+itself.
 
 A `check` line on the external itself is checked against that declaration, never
 against a body: `check myapp/ffi.now : []` fails against a declared

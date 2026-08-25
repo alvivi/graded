@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An `assume` line over a function takes a bound list.
+  `assume myapp/ffi.each(f: [f]) : [f]` charges a caller its callback
+  argument's actual effects — the same substitution a bounded `effects` line
+  performs — and a foreign decorator declares the closure it hands back with
+  `assume myapp/ffi.wrap(cb: [cb]) : [] where returns : [cb]`, the clause's
+  variables scoped by the line's own bound list. Nothing verifies the
+  declaration itself; that stays what `assume` means. The declared effects
+  term is flat — labels and variables; a second-order application reads
+  `[Unknown]` — and a bound list on a module or field path is a parse error.
+- A bounded `assume` line whose effects term names a variable no bound's
+  payload binds is flagged: no call site can ever resolve such a variable.
+
 ### Changed
+
+- The warning about a variable in an `assume` line's `where returns` clause
+  now names the line's own bound list as what must scope it, and lists only
+  the unscoped variables — a clause closed by its bounds is accepted instead
+  of dropped for not being ground.
 
 - A `where` region takes a comma-separated clause list. `returns` is still the
   only key graded reads; any other key now parses, warns once per line, and is
@@ -19,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A hand-written decoupled bound (`cb: [e]`) scoping a `where returns` clause
+  now binds the clause's variable by parameter name, on `effects` lines and
+  `assume` lines alike; the clause previously resolved to `[Unknown]`. The
+  same completion now runs for a producer called unqualified in its own
+  module, where an alias-typed callback used to leave the clause unresolved.
 - `graded pack` refuses a tarball whose contents name an absolute path, instead
   of copying the host file at that path into the archive it tells you to
   publish. A name escaping the package with `..` is refused too.
