@@ -1238,13 +1238,12 @@ fn tag_closed_returns(
 
 // The same for the one summary no bound list rides: `Fresh`, scoped by the
 // params channel's entry for the name.
-fn tag_returns(
+fn tag_fresh_returns(
   returns: Dict(QualifiedName, EffectTerm),
-  summary: SummaryOrigin,
   source: LookupOrigin,
 ) -> Dict(QualifiedName, ReturnedOperator) {
   dict.map_values(returns, fn(_name, operator) {
-    ReturnedOperator(operator:, summary:, source:)
+    ReturnedOperator(operator:, summary: Fresh, source:)
   })
 }
 
@@ -1387,11 +1386,29 @@ pub fn unscoped_clause_variables(
   operator: EffectTerm,
   bounds: List(ParamBound),
 ) -> List(String) {
-  let names = set.from_list(list.map(bounds, fn(bound) { bound.name }))
+  let names = bound_name_set(bounds)
   effect_term.free_vars(operator)
   |> set.filter(fn(variable) { !set.contains(names, variable) })
   |> set.to_list()
   |> list.sort(string.compare)
+}
+
+// The names of a bound list's bounds — what a clause's variables are scoped
+// against, and what argument matching pairs a call site's values with.
+pub fn bound_name_set(bounds: List(ParamBound)) -> Set(String) {
+  bounds |> list.map(fn(bound) { bound.name }) |> set.from_list()
+}
+
+// The variables a bound list's payloads bind at a call site — what the
+// checker's `bind_variables` actually keys substitution off, and the term
+// oracle the spec lint weighs a bounded declaration's effects term against.
+// For a self-referential bound this is the bound's own name; for a
+// hand-written decoupled one (`cb: [e]`) it is the payload's variable, not
+// the name. One definition, so the binder and the lint cannot drift.
+pub fn bound_payload_variables(bounds: List(ParamBound)) -> Set(String) {
+  list.fold(bounds, set.new(), fn(acc, bound) {
+    set.union(acc, effect_term.free_vars(bound.effects))
+  })
 }
 
 // Merge **Fresh** returned-operator summaries (produced by this run's inference)
@@ -1413,7 +1430,7 @@ pub fn with_fresh_returned_operators(
   let merged =
     merge_returns(
       knowledge_base.returned_operators,
-      tag_returns(inferred, Fresh, source),
+      tag_fresh_returns(inferred, source),
     )
   KnowledgeBase(..knowledge_base, returned_operators: merged)
 }
@@ -1714,8 +1731,14 @@ pub fn load_spec_effects_from_file(
 pub fn load_spec_params_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, List(ParamBound)) {
-  let external_functions = annotation.external_function_names(file)
   let from_externals = external_bounds(annotation.extract_externals(file))
+  // The same population `annotation.external_function_names` selects, derived
+  // from the one extraction above rather than a second walk of the file.
+  let external_functions =
+    from_externals
+    |> dict.keys()
+    |> list.map(types.dotted_name)
+    |> set.from_list()
   list.fold(annotation.extract_annotations(file), from_externals, fn(acc, ann) {
     use <- bool.guard(when: ann.kind == Check, return: acc)
     use <- bool.guard(

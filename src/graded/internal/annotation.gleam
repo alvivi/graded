@@ -470,23 +470,22 @@ fn parse_params_suffix(
   returns: Option(EffectTerm),
 ) -> Result(EffectAnnotation, Nil) {
   use <- bool.guard(when: name == "", return: Error(Nil))
-  let suffix_trimmed = string.trim(suffix)
-  case string.starts_with(suffix_trimmed, ":") {
-    False -> Error(Nil)
-    True -> {
-      let effects_str = string.trim(string.drop_start(suffix_trimmed, 1))
-      case parse_effect_term(effects_str), parse_params_section(params_str) {
-        Ok(effects), Ok(params) ->
-          Ok(EffectAnnotation(
-            kind:,
-            function: name,
-            params:,
-            effects:,
-            returns:,
-          ))
-        _, _ -> Error(Nil)
-      }
-    }
+  use term <- result.try(parse_effects_suffix(suffix))
+  use effects <- result.try(option.to_result(term, Nil))
+  use params <- result.try(parse_params_section(params_str))
+  Ok(EffectAnnotation(kind:, function: name, params:, effects:, returns:))
+}
+
+// The `: <effects>` half after a bounded head's closing paren, `None` where
+// the suffix is empty. The one spelling of the suffix grammar: the
+// `effects`/`check` head requires the term, and the `assume` head lets a
+// `where` region carry the line instead.
+fn parse_effects_suffix(suffix: String) -> Result(Option(EffectTerm), Nil) {
+  case string.trim(suffix) {
+    "" -> Ok(None)
+    ":" <> effects_str ->
+      parse_effect_term(string.trim(effects_str)) |> result.map(Some)
+    _ -> Error(Nil)
   }
 }
 
@@ -603,27 +602,20 @@ fn split_assume_head(
   returns: Option(EffectTerm),
   unknown_clauses: List(UnknownClause),
 ) -> Result(AssumeHead, Nil) {
+  // A path with no effects clause claims nothing unless a `where` region rides
+  // the line, bounded and boundless spellings alike.
+  let claims_nothing = returns == None && unknown_clauses == []
   case split_call(head) {
     Ok(#(name, params_str, suffix)) -> {
       let path = string.trim(name)
       use <- bool.guard(when: path == "", return: Error(Nil))
       use params <- result.try(parse_params_section(params_str))
       let written = path <> "(" <> params_str <> ")"
-      use term <- result.try(case string.trim(suffix) {
-        // A bounded path with no effects clause claims nothing unless a
-        // `where` region rides the line — the same rule as the boundless
-        // spelling below.
-        "" -> {
-          use <- bool.guard(
-            when: returns == None && unknown_clauses == [],
-            return: Error(Nil),
-          )
-          Ok(None)
-        }
-        ":" <> effects_str ->
-          parse_effect_term(string.trim(effects_str)) |> result.map(Some)
-        _ -> Error(Nil)
-      })
+      use term <- result.try(parse_effects_suffix(suffix))
+      use <- bool.guard(
+        when: term == None && claims_nothing,
+        return: Error(Nil),
+      )
       Ok(AssumeHead(path:, written:, params: Some(params), term:))
     }
     Error(Nil) ->
@@ -641,7 +633,7 @@ fn split_assume_head(
         False -> {
           let path = string.trim(head)
           use <- bool.guard(
-            when: path == "" || { returns == None && unknown_clauses == [] },
+            when: path == "" || claims_nothing,
             return: Error(Nil),
           )
           Ok(AssumeHead(path:, written: path, params: None, term: None))

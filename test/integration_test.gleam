@@ -373,14 +373,9 @@ pub fn a_bounded_assume_charges_the_arguments_effects_test() {
     ),
     #(
       "ffi.gleam",
-      "@external(erlang, \"m\", \"each\")
-@external(javascript, \"m\", \"each\")
-pub fn each(f: fn() -> Nil) -> Nil
-
-@external(erlang, \"m\", \"disk_read\")
-@external(javascript, \"m\", \"disk_read\")
-pub fn disk_read() -> Nil
-",
+      support.foreign_fn("each", "(f: fn() -> Nil) -> Nil")
+        <> "\n"
+        <> support.foreign_fn("disk_read", "() -> Nil"),
     ),
     #(
       "app.gleam",
@@ -408,14 +403,9 @@ pub fn a_decoupled_bound_name_still_binds_test() {
     ),
     #(
       "ffi.gleam",
-      "@external(erlang, \"m\", \"map\")
-@external(javascript, \"m\", \"map\")
-pub fn map(g: fn() -> Nil) -> Nil
-
-@external(erlang, \"m\", \"disk_read\")
-@external(javascript, \"m\", \"disk_read\")
-pub fn disk_read() -> Nil
-",
+      support.foreign_fn("map", "(g: fn() -> Nil) -> Nil")
+        <> "\n"
+        <> support.foreign_fn("disk_read", "() -> Nil"),
     ),
     #(
       "app.gleam",
@@ -446,14 +436,9 @@ pub fn a_ground_budget_on_an_assume_is_inert_test() {
     ),
     #(
       "ffi.gleam",
-      "@external(erlang, \"m\", \"each\")
-@external(javascript, \"m\", \"each\")
-pub fn each(f: fn() -> Nil) -> Nil
-
-@external(erlang, \"m\", \"log\")
-@external(javascript, \"m\", \"log\")
-pub fn log() -> Nil
-",
+      support.foreign_fn("each", "(f: fn() -> Nil) -> Nil")
+        <> "\n"
+        <> support.foreign_fn("log", "() -> Nil"),
     ),
     #(
       "app.gleam",
@@ -487,14 +472,9 @@ pub fn a_dependency_specs_bounded_assume_substitutes_test() {
       dependency_sources: [
         #(
           "dep/ffi.gleam",
-          "@external(erlang, \"m\", \"each\")
-@external(javascript, \"m\", \"each\")
-pub fn each(f: fn() -> Nil) -> Nil
-
-@external(erlang, \"m\", \"disk_read\")
-@external(javascript, \"m\", \"disk_read\")
-pub fn disk_read() -> Nil
-",
+          support.foreign_fn("each", "(f: fn() -> Nil) -> Nil")
+            <> "\n"
+            <> support.foreign_fn("disk_read", "() -> Nil"),
         ),
       ],
     )
@@ -521,14 +501,9 @@ pub fn a_declared_clause_closed_by_its_bounds_binds_test() {
     ),
     #(
       "ffi.gleam",
-      "@external(erlang, \"m\", \"wrap\")
-@external(javascript, \"m\", \"wrap\")
-pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
-
-@external(erlang, \"m\", \"disk_read\")
-@external(javascript, \"m\", \"disk_read\")
-pub fn disk_read() -> Nil
-",
+      support.foreign_fn("wrap", "(cb: fn() -> Nil) -> fn() -> Nil")
+        <> "\n"
+        <> support.foreign_fn("disk_read", "() -> Nil"),
     ),
     #(
       "app.gleam",
@@ -558,14 +533,9 @@ pub fn a_clause_only_bounded_declaration_binds_test() {
     ),
     #(
       "ffi.gleam",
-      "@external(erlang, \"m\", \"wrap\")
-@external(javascript, \"m\", \"wrap\")
-pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
-
-@external(erlang, \"m\", \"disk_read\")
-@external(javascript, \"m\", \"disk_read\")
-pub fn disk_read() -> Nil
-",
+      support.foreign_fn("wrap", "(cb: fn() -> Nil) -> fn() -> Nil")
+        <> "\n"
+        <> support.foreign_fn("disk_read", "() -> Nil"),
     ),
     #(
       "app.gleam",
@@ -598,14 +568,9 @@ pub fn a_decoupled_bound_scoping_a_clause_binds_by_parameter_name_test() {
     ),
     #(
       "ffi.gleam",
-      "@external(erlang, \"m\", \"wrap\")
-@external(javascript, \"m\", \"wrap\")
-pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
-
-@external(erlang, \"m\", \"disk_read\")
-@external(javascript, \"m\", \"disk_read\")
-pub fn disk_read() -> Nil
-",
+      support.foreign_fn("wrap", "(cb: fn() -> Nil) -> fn() -> Nil")
+        <> "\n"
+        <> support.foreign_fn("disk_read", "() -> Nil"),
     ),
     #(
       "app.gleam",
@@ -634,10 +599,7 @@ pub fn an_unscoped_declared_clause_is_dropped_test() {
     ),
     #(
       "ffi.gleam",
-      "@external(erlang, \"m\", \"wrap\")
-@external(javascript, \"m\", \"wrap\")
-pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
-",
+      support.foreign_fn("wrap", "(cb: fn() -> Nil) -> fn() -> Nil"),
     ),
     #(
       "app.gleam",
@@ -666,10 +628,7 @@ pub fn a_dotted_variable_in_a_declared_clause_is_dropped_test() {
     ),
     #(
       "ffi.gleam",
-      "@external(erlang, \"m\", \"wrap\")
-@external(javascript, \"m\", \"wrap\")
-pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
-",
+      support.foreign_fn("wrap", "(cb: fn() -> Nil) -> fn() -> Nil"),
     ),
     #(
       "app.gleam",
@@ -699,14 +658,9 @@ pub fn differing_bounds_on_the_two_channels_each_bind_their_own_test() {
     ),
     #(
       "ffi.gleam",
-      "@external(erlang, \"m\", \"wrap\")
-@external(javascript, \"m\", \"wrap\")
-pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
-
-@external(erlang, \"m\", \"disk_read\")
-@external(javascript, \"m\", \"disk_read\")
-pub fn disk_read() -> Nil
-",
+      support.foreign_fn("wrap", "(cb: fn() -> Nil) -> fn() -> Nil")
+        <> "\n"
+        <> support.foreign_fn("disk_read", "() -> Nil"),
     ),
     #(
       "app.gleam",
@@ -739,13 +693,7 @@ pub fn a_same_module_declared_decorator_uses_its_carried_bounds_test() {
       "proj.graded",
       "check ffi.run : []\nassume ffi.wrap(cb: [e]) : [] where returns : [cb]\nassume ffi2.disk_read : [Disk]\n",
     ),
-    #(
-      "ffi2.gleam",
-      "@external(erlang, \"m\", \"disk_read\")
-@external(javascript, \"m\", \"disk_read\")
-pub fn disk_read() -> Nil
-",
-    ),
+    #("ffi2.gleam", support.foreign_fn("disk_read", "() -> Nil")),
     #(
       "helper.gleam",
       "import ffi2\n\npub fn noisy() -> Nil {\n  ffi2.disk_read()\n}\n",
@@ -797,14 +745,9 @@ pub fn a_dependency_specs_declared_decorator_binds_test() {
       dependency_sources: [
         #(
           "dep/ffi.gleam",
-          "@external(erlang, \"m\", \"wrap\")
-@external(javascript, \"m\", \"wrap\")
-pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
-
-@external(erlang, \"m\", \"disk_read\")
-@external(javascript, \"m\", \"disk_read\")
-pub fn disk_read() -> Nil
-",
+          support.foreign_fn("wrap", "(cb: fn() -> Nil) -> fn() -> Nil")
+            <> "\n"
+            <> support.foreign_fn("disk_read", "() -> Nil"),
         ),
       ],
     )
@@ -841,13 +784,7 @@ pub fn a_closed_clause_with_a_decoupled_bound_binds_by_parameter_name_test() {
           "dep/prod.gleam",
           "pub fn make(cb: fn() -> Nil) -> fn() -> Nil {\n  fn() { cb() }\n}\n",
         ),
-        #(
-          "dep/ffi.gleam",
-          "@external(erlang, \"m\", \"disk_read\")
-@external(javascript, \"m\", \"disk_read\")
-pub fn disk_read() -> Nil
-",
-        ),
+        #("dep/ffi.gleam", support.foreign_fn("disk_read", "() -> Nil")),
       ],
     )
   let assert Ok(results) = graded.run(root)
@@ -3853,26 +3790,15 @@ assume ffi.fold(g: [g]) : [g]
     ),
     #(
       "ffi.gleam",
-      "@external(erlang, \"m\", \"wrap\")
-@external(javascript, \"m\", \"wrap\")
-pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
-
-@external(erlang, \"m\", \"make\")
-@external(javascript, \"m\", \"make\")
-pub fn make() -> fn() -> Nil
-
-@external(erlang, \"m\", \"trace\")
-@external(javascript, \"m\", \"trace\")
-pub fn trace(cb: fn() -> Nil) -> fn() -> Nil
-
-@external(erlang, \"m\", \"each\")
-@external(javascript, \"m\", \"each\")
-pub fn each(f: fn() -> Nil) -> Nil
-
-@external(erlang, \"m\", \"fold\")
-@external(javascript, \"m\", \"fold\")
-pub fn fold(g: fn() -> Nil) -> Nil
-",
+      support.foreign_fn("wrap", "(cb: fn() -> Nil) -> fn() -> Nil")
+        <> "\n"
+        <> support.foreign_fn("make", "() -> fn() -> Nil")
+        <> "\n"
+        <> support.foreign_fn("trace", "(cb: fn() -> Nil) -> fn() -> Nil")
+        <> "\n"
+        <> support.foreign_fn("each", "(f: fn() -> Nil) -> Nil")
+        <> "\n"
+        <> support.foreign_fn("fold", "(g: fn() -> Nil) -> Nil"),
     ),
   ])
   let assert Ok(results) = graded.run(root)

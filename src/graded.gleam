@@ -52,7 +52,6 @@ import graded/internal/checker
 import graded/internal/cli
 import graded/internal/config
 import graded/internal/diff
-import graded/internal/effect_term
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
 import graded/internal/signatures.{type SignatureRegistry}
@@ -1102,13 +1101,16 @@ fn unbound_term_variable_warnings(
   list.filter_map(externals, fn(external) {
     use <- bool.guard(when: external.params == [], return: Error(Nil))
     case annotation.external_qualified_name(external), external.effects {
-      Ok(qualified), Some(effects) -> {
-        let covered =
-          list.fold(external.params, set.new(), fn(acc, bound) {
-            set.union(acc, effect_term.free_vars(bound.effects))
-          })
+      Ok(qualified), Some(effect_set) -> {
+        let covered = effects.bound_payload_variables(external.params)
+        // The declared term is a flat set, so its variables are right on the
+        // `Polymorphic` variant — no term round-trip needed.
+        let term_variables = case effect_set {
+          types.Polymorphic(_labels, variables) -> variables
+          types.Specific(_) | types.Wildcard -> set.new()
+        }
         let unbound =
-          effect_term.free_vars(effect_term.from_effect_set(effects))
+          term_variables
           |> set.filter(fn(variable) { !set.contains(covered, variable) })
           |> set.to_list
           |> list.sort(string.compare)
