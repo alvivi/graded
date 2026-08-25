@@ -385,11 +385,16 @@ fn parse_annotation_head(
   head: String,
   returns: Option(EffectTerm),
 ) -> Result(EffectAnnotation, Nil) {
-  // A params list opens with the `(` immediately after the function name. An
-  // application's `(` inside the effect set is preceded by `[`, so a `[` before
-  // the first `(` means there are no params (the `(` belongs to the result).
+  // A params list opens with the `(` immediately after the function name — the
+  // bounded spelling, recognized exactly as the `assume` head recognizes it: a
+  // colon before the first paren puts every paren inside the effects term
+  // (`m.f : fn(x) -> [x]` as much as `m.f : [action([cb])]`), which reads
+  // through the term grammar rather than being cut at an operator's `fn(`.
+  let bounded = bounded_spelling(head)
   case split_call(head) {
-    Error(Nil) ->
+    Ok(#(name, params_str, suffix)) if bounded ->
+      parse_params_suffix(kind, string.trim(name), params_str, suffix, returns)
+    _ ->
       case parse_name_colon_effects(head) {
         Error(Nil) -> Error(Nil)
         Ok(#(name, effects)) ->
@@ -401,8 +406,6 @@ fn parse_annotation_head(
             returns:,
           ))
       }
-    Ok(#(name, params_str, suffix)) ->
-      parse_params_suffix(kind, string.trim(name), params_str, suffix, returns)
   }
 }
 
@@ -479,12 +482,16 @@ fn parse_params_suffix(
 // The `: <effects>` half after a bounded head's closing paren, `None` where
 // the suffix is empty. The one spelling of the suffix grammar: the
 // `effects`/`check` head requires the term, and the `assume` head lets a
-// `where` region carry the line instead.
+// `where` region carry the line instead. Read through the bound grammar —
+// an operator spelling (`fn(x) -> [x]`) included — exactly as the boundless
+// head reads its term, so the two spellings of one line accept the same
+// language: on an `assume` line the flat reduction reads an operator as
+// `[Unknown]` either way, never as a parse error that refuses the file.
 fn parse_effects_suffix(suffix: String) -> Result(Option(EffectTerm), Nil) {
   case string.trim(suffix) {
     "" -> Ok(None)
     ":" <> effects_str ->
-      parse_effect_term(string.trim(effects_str)) |> result.map(Some)
+      parse_bound_effect(string.trim(effects_str)) |> result.map(Some)
     _ -> Error(Nil)
   }
 }
