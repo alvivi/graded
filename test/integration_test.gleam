@@ -507,6 +507,358 @@ pub fn disk_read() -> Nil
   support.cleanup(root)
 }
 
+pub fn a_declared_clause_closed_by_its_bounds_binds_test() {
+  // The decorator shape: an `@external` producer whose returned closure runs
+  // the callback it was handed. The clause's variable is scoped by the line's
+  // own bound list, and a caller invoking the returned closure is charged the
+  // argument's actual effects.
+  let root = "build/bounded_assume_decorator"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.run : []\nassume ffi.wrap(cb: [cb]) : [] where returns : [cb]\nassume ffi.disk_read : [Disk]\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"m\", \"wrap\")
+@external(javascript, \"m\", \"wrap\")
+pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
+
+@external(erlang, \"m\", \"disk_read\")
+@external(javascript, \"m\", \"disk_read\")
+pub fn disk_read() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(ffi.disk_read)\n  f()\n}\n",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_clause_only_bounded_declaration_binds_test() {
+  // No effects claim at all, so the name has no params-channel entry — the
+  // bounds ride the declared summary alone, and the clause still binds. The
+  // producer call itself stays `[Unknown]` (nothing declares its effects),
+  // which is what shows the `[Disk]` half came through the clause.
+  let root = "build/bounded_assume_clause_only"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.run : []\nassume ffi.wrap(cb: [cb]) where returns : [cb]\nassume ffi.disk_read : [Disk]\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"m\", \"wrap\")
+@external(javascript, \"m\", \"wrap\")
+pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
+
+@external(erlang, \"m\", \"disk_read\")
+@external(javascript, \"m\", \"disk_read\")
+pub fn disk_read() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(ffi.disk_read)\n  f()\n}\n",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  // The producer call itself reports its own undeclared-external row; the
+  // returned closure's invocation is the one the clause resolves.
+  let assert Ok(returned) =
+    list.find(r.violations, fn(v) { v.explanation.call.module == "<returned>" })
+  returned.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_decoupled_bound_scoping_a_clause_binds_by_parameter_name_test() {
+  // `assume ffi.wrap(cb: [e]) : [] where returns : [cb]`: the bound's payload
+  // names `e`, and the clause variable `cb` — a bound *name* no payload binds —
+  // gets the synthesized self-referential binding, so it binds by parameter
+  // name instead of collapsing to `[Unknown]` after passing the gate.
+  let root = "build/bounded_assume_decoupled_clause"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.run : []\nassume ffi.wrap(cb: [e]) : [] where returns : [cb]\nassume ffi.disk_read : [Disk]\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"m\", \"wrap\")
+@external(javascript, \"m\", \"wrap\")
+pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
+
+@external(erlang, \"m\", \"disk_read\")
+@external(javascript, \"m\", \"disk_read\")
+pub fn disk_read() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(ffi.disk_read)\n  f()\n}\n",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn an_unscoped_declared_clause_is_dropped_test() {
+  // `returns : [zz]` on a line whose bounds name only `cb`: the loader drops
+  // the clause, the returned closure resolves `[Unknown]`, and `check` reports
+  // it open.
+  let root = "build/bounded_assume_unscoped_clause"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.run : []\nassume ffi.wrap(cb: [cb]) : [] where returns : [zz]\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"m\", \"wrap\")
+@external(javascript, \"m\", \"wrap\")
+pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(fn() { Nil })\n  f()\n}\n",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  support.cleanup(root)
+}
+
+pub fn a_dotted_variable_in_a_declared_clause_is_dropped_test() {
+  // A dotted variable rides the field-bound story a foreign producer doesn't
+  // have: the strict base rejects it — no `Closed`-path leniency leaks in —
+  // and the clause is dropped.
+  let root = "build/bounded_assume_dotted_clause"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.run : []\nassume ffi.wrap(cb: [cb]) : [] where returns : [config.run]\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"m\", \"wrap\")
+@external(javascript, \"m\", \"wrap\")
+pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(fn() { Nil })\n  f()\n}\n",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  support.cleanup(root)
+}
+
+pub fn differing_bounds_on_the_two_channels_each_bind_their_own_test() {
+  // One line declares the effects with its bounds (feeding the params
+  // channel), a second clause-only line carries different bounds for its
+  // clause: the term binds against the channel entry, the clause against the
+  // summary's own carried bounds — never mixed.
+  let root = "build/bounded_assume_differing_bounds"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check app.run : []\nassume ffi.wrap(cb: [e]) : [e]\nassume ffi.wrap(cb: [Stdout]) where returns : [cb]\nassume ffi.disk_read : [Disk]\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"m\", \"wrap\")
+@external(javascript, \"m\", \"wrap\")
+pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
+
+@external(erlang, \"m\", \"disk_read\")
+@external(javascript, \"m\", \"disk_read\")
+pub fn disk_read() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(ffi.disk_read)\n  f()\n}\n",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert Ok(direct) =
+    list.find(r.violations, fn(v) { v.explanation.call.module == "ffi" })
+  direct.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  let assert Ok(returned) =
+    list.find(r.violations, fn(v) { v.explanation.call.module == "<returned>" })
+  returned.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_same_module_declared_decorator_uses_its_carried_bounds_test() {
+  // The producer is an own `@external` whose callback parameter is typed
+  // through an alias, declared with a decoupled bound, and called from its own
+  // module: the alias-blind registry can't derive the bound, so only the
+  // carried bounds supply `cb`, and only the hoisted synthesis binds it.
+  let root = "build/bounded_assume_same_module"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "check ffi.run : []\nassume ffi.wrap(cb: [e]) : [] where returns : [cb]\nassume ffi2.disk_read : [Disk]\n",
+    ),
+    #(
+      "ffi2.gleam",
+      "@external(erlang, \"m\", \"disk_read\")
+@external(javascript, \"m\", \"disk_read\")
+pub fn disk_read() -> Nil
+",
+    ),
+    #(
+      "helper.gleam",
+      "import ffi2\n\npub fn noisy() -> Nil {\n  ffi2.disk_read()\n}\n",
+    ),
+    #(
+      "ffi.gleam",
+      "import helper
+
+pub type Cb =
+  fn() -> Nil
+
+@external(erlang, \"m\", \"wrap\")
+@external(javascript, \"m\", \"wrap\")
+pub fn wrap(cb: Cb) -> fn() -> Nil
+
+pub fn run() -> Nil {
+  let f = wrap(helper.noisy)
+  f()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ffi.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("run")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_dependency_specs_declared_decorator_binds_test() {
+  // The decorator declaration shipped in a dependency's spec: the consumer's
+  // call site binds the clause against the dependency line's own bounds.
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/bounded_assume_dep_decorator",
+      package: "proj",
+      spec: "check app.run : []\n",
+      sources: [
+        #(
+          "app.gleam",
+          "import dep/ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(ffi.disk_read)\n  f()\n}\n",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: "assume dep/ffi.wrap(cb: [cb]) : [] where returns : [cb]\nassume dep/ffi.disk_read : [Disk]\n",
+      dependency_sources: [
+        #(
+          "dep/ffi.gleam",
+          "@external(erlang, \"m\", \"wrap\")
+@external(javascript, \"m\", \"wrap\")
+pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil
+
+@external(erlang, \"m\", \"disk_read\")
+@external(javascript, \"m\", \"disk_read\")
+pub fn disk_read() -> Nil
+",
+        ),
+      ],
+    )
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_closed_clause_with_a_decoupled_bound_binds_by_parameter_name_test() {
+  // The hand-written `Closed` counterpart of the decoupled-clause case:
+  // `effects dep/prod.make(cb: [e]) : [] where returns : [cb]` in a shipped
+  // spec. The synthesis fix lives on the shared summary-bounds path, so the
+  // clause variable binds by parameter name here exactly as it does for a
+  // declared summary.
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/bounded_closed_decoupled",
+      package: "proj",
+      spec: "check app.run : []\n",
+      sources: [
+        #(
+          "app.gleam",
+          "import dep/ffi\nimport dep/prod\n\npub fn run() -> Nil {\n  let f = prod.make(ffi.disk_read)\n  f()\n}\n",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: "assume dep/ffi.disk_read : [Disk]\neffects dep/prod.make(cb: [e]) : [] where returns : [cb]\n",
+      dependency_sources: [
+        #(
+          "dep/prod.gleam",
+          "pub fn make(cb: fn() -> Nil) -> fn() -> Nil {\n  fn() { cb() }\n}\n",
+        ),
+        #(
+          "dep/ffi.gleam",
+          "@external(erlang, \"m\", \"disk_read\")
+@external(javascript, \"m\", \"disk_read\")
+pub fn disk_read() -> Nil
+",
+        ),
+      ],
+    )
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
 pub fn a_target_conditional_fallback_body_is_checked_test() {
   // An `@external` covering one target only: on the other, its Gleam body is
   // what runs. The declaration answers for callers, but the body is ordinary

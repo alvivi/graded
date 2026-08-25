@@ -2142,6 +2142,16 @@ fn bound_name_set(bounds: List(ParamBound)) -> Set(String) {
   bounds |> list.map(fn(bound) { bound.name }) |> set.from_list()
 }
 
+// The variables a bound list's payloads bind at a call site — what
+// `bind_variables` actually keys substitution off. For a self-referential
+// bound this is the bound's own name; for a hand-written decoupled one
+// (`cb: [e]`) it is the payload's variable, not the name.
+fn bound_payload_variables(bounds: List(ParamBound)) -> Set(String) {
+  list.fold(bounds, set.new(), fn(acc, bound) {
+    set.union(acc, effect_term.free_vars(bound.effects))
+  })
+}
+
 // Build a `ParamBound` for each free effect variable in `term` whose name is
 // a fn-typed parameter. Each is self-referential (`TVar(name)`), resolved by
 // substitution at call sites — so the polymorphic signature round-trips.
@@ -5243,9 +5253,8 @@ fn resolve_returned_operator(
       case effect_term.is_ground(operator), summary {
         // Ground operator (no free vars): trusted regardless of origin. A Fresh
         // one is sanitized by this run (callback binders can't have captured a
-        // residual); a Closed one carries no variable to substitute, so the
-        // gate's check has nothing left to decide; a Declared one is ground by
-        // construction.
+        // residual); a Closed or Declared one carries no variable to
+        // substitute, so the gate's check has nothing left to decide.
         True, _ -> #(Ok(#(operator, source)), memo)
         // Polymorphic: whether the free variables are ones this run may
         // substitute over. One answer per summary kind, so the binding below
@@ -5258,16 +5267,20 @@ fn resolve_returned_operator(
         //     where the substitution happens; one naming anything else degrades
         //     to [Unknown] rather than binding against a parameter the clause
         //     never scoped.
-        //   - **Declared**: a declaration is tagged only after the non-ground
-        //     operators are dropped, so nothing reaches here. An edit that
-        //     changed that must degrade to [Unknown] rather than substitute over
-        //     free variables nothing sanitized.
+        //   - **Declared**: re-checked against the summary's own bounds — the
+        //     strict base with no registry and no dotted-variable leniency,
+        //     since an assumption's clause answers to its own line alone.
+        //     `declared_returns` stamps the tag only for a clause that passes
+        //     the same predicate, so the re-check is expected to hold; it
+        //     stands so an edit that changed the loader degrades to [Unknown]
+        //     rather than substituting over variables nothing scoped.
         False, summary -> {
           let admitted = case summary {
             effects.Fresh -> True
             effects.Closed(bounds:) ->
               clause_is_closed(operator, callee, bounds, registry)
-            effects.Declared -> False
+            effects.Declared(bounds:) ->
+              effects.unscoped_clause_variables(operator, bounds) == []
           }
           use <- bool.guard(when: !admitted, return: #(Error(Nil), memo))
           let #(bound, memo) =
@@ -5320,12 +5333,18 @@ fn bind_producer_params(
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
-  let #(bounds, effective_registry) = case callee.module {
+  // The module/summary branches only *select* the scoping bounds and the
+  // registry; the completion synthesis below runs once, after selection, for
+  // every summary that reaches binding — a decoupled bound scoping a clause
+  // needs it on the same-module path exactly as it does cross-module.
+  let #(scoping, effective_registry) = case callee.module {
     "" ->
       case dict.get(function_map, callee.function) {
         Ok(definition) -> {
           // Build a single-entry registry keyed by `""` so operator detection in
-          // `bind_variables` lifts operator args (not first-order).
+          // `bind_variables` lifts operator args (not first-order). It serves
+          // detection whatever the summary: a `Declared` summary's carried
+          // bounds replace only the scoping list, never the registry.
           let local_registry =
             signatures.from_glance_module(
               "",
@@ -5337,43 +5356,60 @@ fn bind_producer_params(
                 functions: [definition],
               ),
             )
-          let bounds =
-            definition.definition
-            |> ordered_fn_typed_param_names()
-            |> list.map(self_referential_bound)
-          #(bounds, signatures.merge(registry, local_registry))
+          // A **Declared** summary — an assumption over this package's own
+          // `@external`, whose producer is called from its own module — binds
+          // against the bounds its line carries: syntactic fn-typed detection
+          // fails exactly where the line is needed (an alias-typed callback, a
+          // bound name differing from the label). The other summaries keep the
+          // bounds derived from the definition's fn-typed parameters.
+          let scoping = case summary {
+            effects.Declared(bounds:) -> bounds
+            effects.Fresh | effects.Closed(..) ->
+              definition.definition
+              |> ordered_fn_typed_param_names()
+              |> list.map(self_referential_bound)
+          }
+          #(scoping, signatures.merge(registry, local_registry))
         }
         Error(Nil) -> #([], registry)
       }
     _ -> {
-      // A **Closed** clause is scoped by the bound list on its own line, which
-      // it carries; every other summary by the params channel's entry for the
-      // name, which for a **Fresh** one holds the girard-typed callbacks no
-      // syntactic signature shows.
+      // A **Closed** clause is scoped by the bound list on its own line, and a
+      // **Declared** one likewise: the summary's own bounds are authoritative,
+      // never the params channel — a clause-only declaration has no entry
+      // there, and where an effects declaration for the same name carries
+      // different bounds, each must bind against its own. A **Fresh** summary
+      // reads the params channel's entry for the name, which holds the
+      // girard-typed callbacks no syntactic signature shows.
       let scoping = case summary {
-        effects.Closed(bounds:) -> bounds
-        effects.Fresh | effects.Declared ->
-          effects.lookup_param_bounds(knowledge_base, callee)
+        effects.Closed(bounds:) | effects.Declared(bounds:) -> bounds
+        effects.Fresh -> effects.lookup_param_bounds(knowledge_base, callee)
       }
-      // Cross-module completion (Fix B/C-B/E): the scoping bounds omit params
-      // that are polymorphic only through the returned closure (inference derives
-      // bounds from the *direct* effect, which trims the closure). Synthesize a
-      // self-referential bound for each of the summary's own free vars not already
-      // bound, so the producer call's arguments bind them. Sound because only two
-      // kinds of summary reach here: a **Fresh** (Fix-D-sanitized) one, whose free
-      // vars ⊆ the producer's fn-typed params, and a **Closed** one the gate has
-      // just re-checked against the producer's real callback parameters. The real
-      // `registry` supplies each param's position. Field-path (dotted) vars are
-      // excluded (they round-trip as field bounds, not producer params).
-      let have = bound_name_set(scoping)
-      let synth =
-        effect_term.free_vars(operator)
-        |> set.filter(fn(v) { !is_field_path_var(v) && !set.contains(have, v) })
-        |> set.to_list()
-        |> list.map(self_referential_bound)
-      #(list.append(scoping, synth), registry)
+      #(scoping, registry)
     }
   }
+  // Completion (Fix B/C-B/E): the scoping bounds omit params that are
+  // polymorphic only through the returned closure (inference derives bounds
+  // from the *direct* effect, which trims the closure). Synthesize a
+  // self-referential bound for each of the summary's own free vars the bounds
+  // do not *bind* — keyed off the variables the payloads actually bind, not
+  // the bound names, because `bind_variables` binds a bound's payload
+  // variables: a hand-written decoupled bound (`cb: [e]`) covers `e` while a
+  // clause variable `cb` still needs the synthesized self-referential bound to
+  // bind by parameter name. For a machine-written self-referential bound the
+  // two sets coincide, so nothing moves on machine-written specs. Sound
+  // because every summary reaching here is scoped: a **Fresh** one is
+  // Fix-D-sanitized (free vars ⊆ the producer's fn-typed params), and a
+  // **Closed** or **Declared** one the gate has just re-checked. Field-path
+  // (dotted) vars are excluded (they round-trip as field bounds, not producer
+  // params).
+  let have = bound_payload_variables(scoping)
+  let synth =
+    effect_term.free_vars(operator)
+    |> set.filter(fn(v) { !is_field_path_var(v) && !set.contains(have, v) })
+    |> set.to_list()
+    |> list.map(self_referential_bound)
+  let bounds = list.append(scoping, synth)
   let lift =
     build_lift_operator_arg(
       context,
@@ -5938,23 +5974,25 @@ fn clause_is_closed(
 // The clause's free variables that name no callback parameter, sorted. Empty
 // for a closed clause. The gate binds against it and the spec lint reports
 // against it, so the two read one oracle by construction.
+//
+// A composition over `effects.unscoped_clause_variables`, the strict base the
+// declared channel reads whole: on top of the line's own bound names, the
+// `Closed` path further admits the registry's fn-typed parameters (a producer
+// parameter the line's bounds happen not to record) and excuses dotted
+// variables (they round-trip as field bounds, not producer parameters). Both
+// are `Closed`-only affordances — a foreign producer has neither a walkable
+// signature nor a field-bound story.
 pub fn unclosed_clause_variables(
   operator: EffectTerm,
   callee: QualifiedName,
   bounds: List(ParamBound),
   registry: SignatureRegistry,
 ) -> List(String) {
-  let callbacks =
-    set.union(
-      signatures.fn_typed_param_names(registry, callee),
-      bound_name_set(bounds),
-    )
-  effect_term.free_vars(operator)
-  |> set.filter(fn(variable) {
+  let callbacks = signatures.fn_typed_param_names(registry, callee)
+  effects.unscoped_clause_variables(operator, bounds)
+  |> list.filter(fn(variable) {
     !is_field_path_var(variable) && !set.contains(callbacks, variable)
   })
-  |> set.to_list()
-  |> list.sort(string.compare)
 }
 
 // The parameter names `name`'s recorded bounds state effects over, for the

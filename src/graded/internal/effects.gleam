@@ -1176,9 +1176,12 @@ pub type SummaryOrigin {
   // hands back, declared rather than inferred. It answers for a name every
   // other summary is refused for — that is the whole point of the line — so
   // it is held to `declared_return_standing` instead of to `is_value_opaque`.
-  // Ground by construction — `declared_returns` is the only place the tag is
-  // stamped and it drops anything else — which is what makes trusting it sound.
-  Declared
+  // Closed by its own line's bound list, carried here to scope the clause at
+  // the gate and at binding — `declared_returns` is the only place the tag is
+  // stamped and it drops any operator with a free variable outside those
+  // bound names, which is what makes trusting it sound. The ground case is
+  // the empty-bounds instance of the same rule.
+  Declared(bounds: List(ParamBound))
 }
 
 // A function's returned-operator summary as the knowledge base holds it: the
@@ -1233,8 +1236,8 @@ fn tag_closed_returns(
   })
 }
 
-// The same for the two summaries no bound list scopes: `Declared` (ground by
-// rule) and `Fresh` (scoped by the params channel's entry for the name).
+// The same for the one summary no bound list rides: `Fresh`, scoped by the
+// params channel's entry for the name.
 fn tag_returns(
   returns: Dict(QualifiedName, EffectTerm),
   summary: SummaryOrigin,
@@ -1279,7 +1282,7 @@ pub fn with_closed_returned_operators(
 // declaration standing.
 pub fn with_declared_returned_operators(
   knowledge_base: KnowledgeBase,
-  declared: Dict(QualifiedName, EffectTerm),
+  declared: Dict(QualifiedName, ScopedClause),
   source: LookupOrigin,
 ) -> KnowledgeBase {
   let merged =
@@ -1302,7 +1305,7 @@ pub fn with_declared_returned_operators(
 // declarations fold first, and the inferred merge beside them gap-fills too.
 fn gap_filling_declared_returns(
   knowledge_base: KnowledgeBase,
-  declared: Dict(QualifiedName, EffectTerm),
+  declared: Dict(QualifiedName, ScopedClause),
   source: LookupOrigin,
 ) -> KnowledgeBase {
   let merged =
@@ -1329,10 +1332,10 @@ fn merge_returns(
   let winning =
     dict.filter(incoming, fn(name, entry) {
       case entry.summary {
-        Declared -> True
+        Declared(..) -> True
         Fresh | Closed(..) ->
           case dict.get(existing, name) {
-            Ok(ReturnedOperator(summary: Declared, ..)) -> False
+            Ok(ReturnedOperator(summary: Declared(..), ..)) -> False
             Ok(ReturnedOperator(summary: Fresh, ..))
             | Ok(ReturnedOperator(summary: Closed(..), ..))
             | Error(Nil) -> True
@@ -1342,22 +1345,53 @@ fn merge_returns(
   dict.merge(existing, winning)
 }
 
-// Tag declared summaries, dropping every operator that is not ground — the one
-// place `Declared` is stamped, so the tag means ground by construction rather
-// than by the loaders that happen to feed it.
+// Tag declared summaries, dropping every operator its own line's bound list
+// does not close — the one place `Declared` is stamped, so the tag means
+// closed by construction rather than by the loaders that happen to feed it.
+// The ground case is the empty-bounds instance of the same rule.
 //
-// A polymorphic operator carries free variables nothing sanitized, which is the
-// substitution a serialized summary is already refused for. Dropping it here is
-// what makes the checker's polymorphic-`Declared` case unreachable, and a new
-// source of declarations — a catalog tier, a cache — inherits the rule instead
-// of having to restate it. The drop is silent: nothing in this module holds a
-// warning channel, and the project's own lines are reported by the spec lint.
+// An operator with a variable outside the line's bound names answers to
+// nothing — no parameter binds it and nothing sanitized it — which is the
+// substitution a serialized summary is already refused for. Dropping it here
+// keeps the checker's unscoped-`Declared` case unreachable, and a new source
+// of declarations — a catalog tier, a cache — inherits the rule instead of
+// having to restate it. The drop is silent: nothing in this module holds a
+// warning channel, and the project's own lines are reported by the spec lint,
+// which reads the same `unscoped_clause_variables` base.
 fn declared_returns(
-  declared: Dict(QualifiedName, EffectTerm),
+  declared: Dict(QualifiedName, ScopedClause),
   source: LookupOrigin,
 ) -> Dict(QualifiedName, ReturnedOperator) {
-  dict.filter(declared, fn(_name, operator) { effect_term.is_ground(operator) })
-  |> tag_returns(Declared, source)
+  declared
+  |> dict.filter(fn(_name, clause) {
+    unscoped_clause_variables(clause.operator, clause.bounds) == []
+  })
+  |> dict.map_values(fn(_name, clause) {
+    ReturnedOperator(
+      operator: clause.operator,
+      summary: Declared(bounds: clause.bounds),
+      source:,
+    )
+  })
+}
+
+// The free variables of a declared `where returns` clause that its own line's
+// bound list does not scope, sorted — empty exactly when the clause is closed.
+// The base closedness oracle for the declared channel: an assumption's clause
+// answers to its own line alone, so no registry is consulted and a dotted
+// variable is not excused — those are `Closed`-path affordances the checker
+// composes on top for clauses on `effects` lines. The loader that stamps
+// `Declared`, the checker's admission gate and the spec lint all read this one
+// predicate.
+pub fn unscoped_clause_variables(
+  operator: EffectTerm,
+  bounds: List(ParamBound),
+) -> List(String) {
+  let names = set.from_list(list.map(bounds, fn(bound) { bound.name }))
+  effect_term.free_vars(operator)
+  |> set.filter(fn(variable) { !set.contains(names, variable) })
+  |> set.to_list()
+  |> list.sort(string.compare)
 }
 
 // Merge **Fresh** returned-operator summaries (produced by this run's inference)
@@ -1438,7 +1472,7 @@ pub fn lookup_returned_operator(
 ) -> Result(ReturnedOperator, Nil) {
   use found <- result.try(dict.get(knowledge_base.returned_operators, name))
   case found.summary {
-    Declared ->
+    Declared(..) ->
       case charged_standing(knowledge_base, name) {
         DeclaredReturnAnswers -> Ok(found)
         DeclaredReturnUnbuilt | DeclaredReturnFallbackRuns | NoDeclaredReturn ->
@@ -1489,7 +1523,7 @@ pub fn declared_return_standing(
     Error(Nil) -> NoDeclaredReturn
     Ok(ReturnedOperator(summary: Fresh, ..))
     | Ok(ReturnedOperator(summary: Closed(..), ..)) -> NoDeclaredReturn
-    Ok(ReturnedOperator(summary: Declared, ..)) ->
+    Ok(ReturnedOperator(summary: Declared(..), ..)) ->
       charged_standing(knowledge_base, name)
   }
 }
@@ -1732,7 +1766,9 @@ pub type DepSpec {
     // `where returns` clauses on the spec's `effects` lines, each with the
     // bound list scoping it.
     returns: Dict(QualifiedName, ScopedClause),
-    declared_returns: Dict(QualifiedName, EffectTerm),
+    // `where returns` clauses on the spec's `assume` lines, each scoped by
+    // that line's own bound list.
+    declared_returns: Dict(QualifiedName, ScopedClause),
     type_fields: List(TypeFieldAnnotation),
     externals: List(ExternalAnnotation),
     modules: Set(String),
@@ -2057,19 +2093,22 @@ pub fn load_spec_returns_from_file(
   |> fold_named_returns()
 }
 
-// The declared map: the `where returns` clauses on `assume` lines. A clause on
-// a module path keys nothing — a returns declaration is per-function, and a
-// name that resolves nowhere would otherwise sit in the file looking effective.
-// The ground-only rule is applied where the summaries are tagged, in
-// `declared_returns`.
+// The declared map: the `where returns` clauses on `assume` lines, each
+// paired with its own line's bound list — what scopes the clause's variables.
+// A clause on a module path keys nothing — a returns declaration is
+// per-function, and a name that resolves nowhere would otherwise sit in the
+// file looking effective. The closed-by-own-bounds rule is applied where the
+// summaries are tagged, in `declared_returns`.
 pub fn load_spec_external_returns_from_file(
   file: types.GradedFile,
-) -> Dict(QualifiedName, EffectTerm) {
+) -> Dict(QualifiedName, ScopedClause) {
   annotation.assume_returns(file)
   |> list.filter_map(fn(entry) {
     let #(external, operator) = entry
     annotation.external_qualified_name(external)
-    |> result.map(fn(qualified) { #(qualified, operator) })
+    |> result.map(fn(qualified) {
+      #(qualified, ScopedClause(operator:, bounds: external.params))
+    })
   })
   |> dict.from_list()
 }
