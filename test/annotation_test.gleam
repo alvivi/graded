@@ -554,6 +554,16 @@ pub fn assume_second_order_effects_term_collapses_test() {
   ext.effects |> should.equal(Some(Specific(set.from_list(["Unknown"]))))
 }
 
+pub fn an_operator_spelled_assume_term_collapses_test() {
+  // The parens open after the effects separator, so they sit inside the term
+  // — no bound list. `fn(cb) -> [cb]` reads through the term grammar and the
+  // flat reduction collapses it to `[Unknown]`, exactly as the bracketed
+  // application spelling does.
+  let assert Ok(file) = annotation.parse_file("assume m.f : fn(cb) -> [cb]")
+  let assert [ext] = annotation.extract_externals(file)
+  ext.effects |> should.equal(Some(Specific(set.from_list(["Unknown"]))))
+}
+
 pub fn bounds_on_a_module_path_are_invalid_test() {
   // A module has no parameters, so a bound list on its path is a parse error
   // rather than a lint — nothing can have written the form.

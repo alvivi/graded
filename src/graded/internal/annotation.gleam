@@ -605,8 +605,9 @@ fn split_assume_head(
   // A path with no effects clause claims nothing unless a `where` region rides
   // the line, bounded and boundless spellings alike.
   let claims_nothing = returns == None && unknown_clauses == []
+  let bounded = bounded_spelling(head)
   case split_call(head) {
-    Ok(#(name, params_str, suffix)) -> {
+    Ok(#(name, params_str, suffix)) if bounded -> {
       let path = string.trim(name)
       use <- bool.guard(when: path == "", return: Error(Nil))
       use params <- result.try(parse_params_section(params_str))
@@ -618,7 +619,7 @@ fn split_assume_head(
       )
       Ok(AssumeHead(path:, written:, params: Some(params), term:))
     }
-    Error(Nil) ->
+    _ ->
       case string.contains(head, ":") {
         True ->
           parse_name_colon_effects(head)
@@ -639,6 +640,18 @@ fn split_assume_head(
           Ok(AssumeHead(path:, written: path, params: None, term: None))
         }
       }
+  }
+}
+
+// Whether an `assume` head spells a bound list: its first paren group opens
+// before any colon. A colon first puts every paren inside the effects term
+// (`m.f : fn(cb) -> [cb]`), read through the term grammar and reduced flat,
+// never through the bound grammar. The path itself carries neither colons nor
+// parens, so first-occurrence order is the depth-0 order.
+fn bounded_spelling(head: String) -> Bool {
+  case string.split_once(head, "(") {
+    Ok(#(before, _)) -> !string.contains(before, ":")
+    Error(Nil) -> False
   }
 }
 
