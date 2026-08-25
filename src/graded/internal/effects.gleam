@@ -379,47 +379,54 @@ type ExternalTiers =
 //
 // A line with no effects clause is skipped: it claims nothing on this channel,
 // so it keys nothing here and the tiers below keep answering. Every path into
-// the two maps comes through this fold, so a `None` cannot be read as `[]`
-// anywhere.
+// the two maps comes through here, so a `None` cannot be read as `[]`
+// anywhere. The function tier folds the same selection the bounds loader
+// folds (`declaring_function_externals`), each dict keeping the last entry.
 fn split_externals(
   externals: List(ExternalAnnotation),
   origin: LookupOrigin,
 ) -> ExternalTiers {
-  list.fold(externals, #(dict.new(), dict.new()), fn(accumulator, external) {
-    let #(function_externals, module_externals) = accumulator
-    use effects <- with_declared_effects(external, accumulator)
-    let term = effect_term.from_effect_set(effects)
-    case external.target {
-      ModuleExternal -> #(
-        function_externals,
-        dict.insert(module_externals, external.module, #(
-          term,
-          ModuleExternalOrigin(source: origin),
-        )),
-      )
-      FunctionExternal(function) -> #(
-        dict.insert(
-          function_externals,
-          QualifiedName(external.module, function),
-          #(term, origin),
-        ),
-        module_externals,
-      )
-    }
-  })
+  let function_externals =
+    list.fold(
+      declaring_function_externals(externals),
+      dict.new(),
+      fn(accumulator, entry) {
+        let #(name, effects, _bounds) = entry
+        dict.insert(accumulator, name, #(
+          effect_term.from_effect_set(effects),
+          origin,
+        ))
+      },
+    )
+  let module_externals =
+    list.fold(externals, dict.new(), fn(accumulator, external) {
+      case external.target, external.effects {
+        ModuleExternal, Some(effects) ->
+          dict.insert(accumulator, external.module, #(
+            effect_term.from_effect_set(effects),
+            ModuleExternalOrigin(source: origin),
+          ))
+        _, _ -> accumulator
+      }
+    })
+  #(function_externals, module_externals)
 }
 
-// Run `keying` with the effect set a declaration carries, or keep the
-// accumulator unchanged when it carries none.
-fn with_declared_effects(
-  external: ExternalAnnotation,
-  accumulator: ExternalTiers,
-  keying: fn(EffectSet) -> ExternalTiers,
-) -> ExternalTiers {
-  case external.effects {
-    Some(effects) -> keying(effects)
-    None -> accumulator
-  }
+// Every function external that declares effects, keyed and in file order —
+// the one selection the external tier and the bounds map both fold, last
+// entry winning in each, so on a duplicate declaration the winning term and
+// the winning bounds come off the same line by construction rather than by
+// two rules kept in step.
+fn declaring_function_externals(
+  externals: List(ExternalAnnotation),
+) -> List(#(QualifiedName, EffectSet, List(ParamBound))) {
+  list.filter_map(externals, fn(external) {
+    case external.target, external.effects {
+      FunctionExternal(function), Some(effects) ->
+        Ok(#(QualifiedName(external.module, function), effects, external.params))
+      _, _ -> Error(Nil)
+    }
+  })
 }
 
 // Look up the effect set for a qualified function name, with the source that
@@ -1883,18 +1890,16 @@ pub fn load_spec_params_from_file(
   })
 }
 
-// The bound list beside each function external that declares effects, keyed by
-// qualified name. Folded with the same last-entry-wins rule `split_externals`
-// applies to the term, so on a duplicate declaration the winning term and the
-// winning bounds come off the same line, never mixed across lines.
+// The bound list beside each function external that declares effects, keyed
+// by qualified name — a fold over the same selection `split_externals` folds
+// its function tier from, so on a duplicate declaration the winning term and
+// the winning bounds come off the same line, never mixed across lines.
 fn external_bounds(
   externals: List(ExternalAnnotation),
 ) -> Dict(QualifiedName, List(ParamBound)) {
-  list.fold(externals, dict.new(), fn(acc, external) {
-    case annotation.external_qualified_name(external), external.effects {
-      Ok(qualified), Some(_) -> dict.insert(acc, qualified, external.params)
-      _, _ -> acc
-    }
+  list.fold(declaring_function_externals(externals), dict.new(), fn(acc, entry) {
+    let #(name, _effects, bounds) = entry
+    dict.insert(acc, name, bounds)
   })
 }
 
