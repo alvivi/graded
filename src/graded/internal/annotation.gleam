@@ -519,14 +519,14 @@ fn parse_assume_head(
   unknown_clauses: List(UnknownClause),
 ) -> Result(GradedLine, Nil) {
   use split <- result.try(split_assume_head(head, returns, unknown_clauses))
-  let AssumeHead(path:, written:, params:, term:) = split
+  let AssumeHead(path:, bounds:, term:) = split
   use subject <- result.try(split_assume_path(path))
   // A bound list attaches to a function path alone: a module has no
   // parameters, and a field's callable shape is not per-parameter. Refused
-  // loudly rather than linted — a paren group on either path (empty included)
-  // spells a grammar the path has no slot for.
+  // loudly rather than linted — a paren group on either path (empty included,
+  // retained included) spells a grammar the path has no slot for.
   use <- bool.guard(
-    when: params != None
+    when: bounds != NoBounds
       && {
       case subject {
         AssumeFunction(..) -> False
@@ -542,8 +542,17 @@ fn parse_assume_head(
     // empty effect set for one would turn *keys nothing* into *is pure*. The
     // path is still read for its shape, so a malformed one is refused rather
     // than retained. A bound list is part of the retained path text — a line
-    // that keys nothing gives it no semantics — so `written` keeps it.
-    None, None -> Ok(RetainedAssumeLine(path: written, unknown_clauses:))
+    // that keys nothing gives it no semantics — so the retained spelling
+    // keeps it. Parsed bounds cannot reach this branch: they are built only
+    // beside a term or a `returns` clause.
+    None, None ->
+      Ok(RetainedAssumeLine(
+        path: case bounds {
+          RetainedBounds(written:) -> written
+          NoBounds | ParsedBounds(_) -> path
+        },
+        unknown_clauses:,
+      ))
     _, _ ->
       case subject {
         AssumeModule(module:) ->
@@ -562,7 +571,10 @@ fn parse_assume_head(
             ExternalAnnotation(
               module:,
               target: FunctionExternal(function),
-              params: option.unwrap(params, []),
+              params: case bounds {
+                ParsedBounds(params) -> params
+                NoBounds | RetainedBounds(_) -> []
+              },
               effects:,
               returns:,
             ),
@@ -581,18 +593,23 @@ fn parse_assume_head(
   }
 }
 
-// An `assume` head, split: the bare path, the path as written (bound list
-// included, for the retained line that keeps it verbatim), the bound list
-// (`None` where the head carries no paren group, told apart from an empty one
-// so a paren group on a path with no parameter slot is refused), and the
-// effects term.
+// An `assume` head, split: the bare path, its bound list, and the effects
+// term.
 type AssumeHead {
-  AssumeHead(
-    path: String,
-    written: String,
-    params: Option(List(ParamBound)),
-    term: Option(EffectTerm),
-  )
+  AssumeHead(path: String, bounds: AssumeBounds, term: Option(EffectTerm))
+}
+
+// The bound list an `assume` head carries. The three states are distinct on
+// purpose: a head with no paren group at all, one whose paren group is
+// retained path text — kept verbatim and left unparsed, on a line that keys
+// nothing this version reads — and one whose bounds are this version's
+// semantics, parsed. An *empty* parsed list (`m.f()`) is `ParsedBounds([])`,
+// still a paren group, so the function-path-only rule refuses it on a path
+// with no parameter slot.
+type AssumeBounds {
+  NoBounds
+  RetainedBounds(written: String)
+  ParsedBounds(List(ParamBound))
 }
 
 // Split an `assume` head into its path, its bound list and its effects clause.
@@ -622,38 +639,30 @@ fn split_assume_head(
       // left unparsed, which is how a payload in a newer version's grammar
       // rides through this one. An effects clause or a `returns` clause is a
       // claim of this version's, and bounds beside one are its semantics,
-      // parsed as ever. `Some([])` keeps the function-path-only rule on the
-      // retained head's shape.
+      // parsed as ever.
       let retained_only =
         returns == None && unknown_clauses != [] && string.trim(suffix) == ""
       use <- bool.lazy_guard(when: retained_only, return: fn() {
         Ok(AssumeHead(
           path:,
-          written: string.trim(head),
-          params: Some([]),
+          bounds: RetainedBounds(written: string.trim(head)),
           term: None,
         ))
       })
       use params <- result.try(parse_params_section(params_str))
-      let written = path <> "(" <> params_str <> ")"
       use term <- result.try(parse_effects_suffix(suffix))
       use <- bool.guard(
         when: term == None && claims_nothing,
         return: Error(Nil),
       )
-      Ok(AssumeHead(path:, written:, params: Some(params), term:))
+      Ok(AssumeHead(path:, bounds: ParsedBounds(params), term:))
     }
     _ ->
       case string.contains(head, ":") {
         True ->
           parse_name_colon_effects(head)
           |> result.map(fn(pair) {
-            AssumeHead(
-              path: pair.0,
-              written: pair.0,
-              params: None,
-              term: Some(pair.1),
-            )
+            AssumeHead(path: pair.0, bounds: NoBounds, term: Some(pair.1))
           })
         False -> {
           let path = string.trim(head)
@@ -661,7 +670,7 @@ fn split_assume_head(
             when: path == "" || claims_nothing,
             return: Error(Nil),
           )
-          Ok(AssumeHead(path:, written: path, params: None, term: None))
+          Ok(AssumeHead(path:, bounds: NoBounds, term: None))
         }
       }
   }
