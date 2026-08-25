@@ -20,6 +20,7 @@ import graded/internal/types.{
   UnmatchedParamBoundWarning, UntrackedEffectWarning, Wildcard,
 }
 import qcheck
+import support
 
 // Check basics
 //
@@ -1393,6 +1394,59 @@ pub fn fetch() { httpc.send(request) }"
   check_source_with_externals(source, [annotation], externals)
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
+}
+
+pub fn a_catalog_bounded_externals_bounds_reach_a_call_site_test() {
+  // A bundled catalog file carrying a bounded external: its bounds reach a
+  // consumer's call site and substitute the argument's actual effects. (The
+  // catalog still loads no `where returns` tier — that's the clause half, and
+  // it stays out; this pins the bounds half only.)
+  let root =
+    support.write_fixture("build/checker_catalog_bounded", [
+      #(
+        "catalog/a_pkg@1.0.0.graded",
+        "assume shared/mod.each(f: [f]) : [f]\nassume shared/mod.disk : [Disk]\n",
+      ),
+      #(
+        "manifest.toml",
+        "packages = [\n  { name = \"a_pkg\", version = \"1.0.0\" },\n]\n",
+      ),
+    ])
+  let #(functions, modules, param_bounds, type_fields) =
+    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
+  let kb =
+    effects.knowledge_base_from_catalog(
+      root <> "/build/packages",
+      effects.BundledCatalog(functions:, modules:, param_bounds:, type_fields:),
+      dict.new(),
+    )
+  let source =
+    "import shared/mod
+pub fn run() { mod.each(f: mod.disk) }"
+  let annotation =
+    EffectAnnotation(
+      Check,
+      "run",
+      [],
+      effect_term.from_effect_set(Specific(set.new())),
+      returns: None,
+    )
+  let assert Ok(module) = glance.module(source)
+  let #(violations, _warnings) =
+    checker.check(
+      module,
+      "",
+      [annotation],
+      kb,
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+      types.all_targets(),
+    )
+  let assert [violation] = violations
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
 }
 
 // Infer `read_clock`'s effects in module `ffi_mod`, which wraps a bodyless

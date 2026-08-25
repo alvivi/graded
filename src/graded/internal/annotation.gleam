@@ -500,8 +500,9 @@ type AssumeSubject {
 }
 
 // Parse an `assume <path> : <effects>` line into the annotation its path shape
-// names. A function's or a module's effects reduce to a set, as an assumption
-// is first-order by construction; a field's stay a term.
+// names. A function's or a module's effects reduce to a set — an assumption's
+// effects term is flat, labels and variables, and anything deeper collapses to
+// `[Unknown]` in that reduction; a field's stay a term.
 fn parse_assume_line(rest: String) -> Result(GradedLine, Nil) {
   parse_clause_then(rest, parse_assume_head)
 }

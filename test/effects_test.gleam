@@ -762,6 +762,34 @@ pub fn a_catalog_external_beats_its_own_files_effects_line_test() {
   cleanup(root)
 }
 
+pub fn a_catalog_bounded_external_records_its_bounds_test() {
+  // A bounded `assume` line in a bundled catalog file: the bounds land in the
+  // external tier's params beside the polymorphic term, off the same line.
+  let root =
+    write_fixture("build/eff_catalog_bounded_external", [
+      #("catalog/a_pkg@1.0.0.graded", "assume shared/mod.each(f: [f]) : [f]\n"),
+      #(
+        "manifest.toml",
+        "packages = [\n  { name = \"a_pkg\", version = \"1.0.0\" },\n]\n",
+      ),
+    ])
+
+  let #(all_effects, _module_effects, params, _type_fields) =
+    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
+  dict.get(all_effects, QualifiedName("shared/mod", "each"))
+  |> result.map(fn(entry) { #(effect_term.to_effect_set(entry.0), entry.1) })
+  |> should.equal(
+    Ok(#(
+      types.Polymorphic(set.new(), set.from_list(["f"])),
+      types.Catalog("a_pkg"),
+    )),
+  )
+  dict.get(params, QualifiedName("shared/mod", "each"))
+  |> should.equal(Ok([ParamBound("f", types.TVar("f"))]))
+
+  cleanup(root)
+}
+
 // The manifest both cross-file clash fixtures install: each of the two catalog
 // files is selected only if its package is installed.
 const two_package_manifest = "packages = [
