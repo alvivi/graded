@@ -5070,7 +5070,7 @@ fn explained_violation(
       actual:,
       reason:,
       origin:,
-      fallback: None,
+      fallback: types.NoFallback,
     ),
   )
 }

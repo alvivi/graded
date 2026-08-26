@@ -762,6 +762,40 @@ pub type DirectPipeOp {
 // The violations and warnings the checker reports, and the per-file result
 // that carries them.
 
+// Where the running-Gleam-fallback half of a foreign name's charge stands.
+// Generic over the term's representation: the half travels as an `EffectTerm`
+// until a report grounds it to an `EffectSet`.
+//
+// One three-state value rather than an `Option` beside a flag, so a renderer
+// cannot print union wording over a term the body is no part of: whether the
+// half was charged is matched, not inferred. `FallbackSuppressed` keeps the
+// body's own term so a diagnostic can quote what was overridden.
+pub type FallbackDisposition(term) {
+  // No Gleam fallback body contributes to the charge.
+  NoFallback
+  // A running body's own effects, a component of the charged total.
+  FallbackCharged(term: term)
+  // A running body whose effects the winning `assume` line drops from the
+  // total: the body still runs, and callers pay the declared term alone.
+  // Minted only where a suppressing declaration is in reach beside the
+  // running body, so it only ever appears beside a charged declaration.
+  FallbackSuppressed(term: term)
+}
+
+// Rewrite the term a disposition carries, keeping the disposition itself:
+// substitution and grounding transform the half without deciding anew whether
+// it was charged.
+pub fn map_fallback(
+  fallback: FallbackDisposition(a),
+  transform: fn(a) -> b,
+) -> FallbackDisposition(b) {
+  case fallback {
+    NoFallback -> NoFallback
+    FallbackCharged(term) -> FallbackCharged(transform(term))
+    FallbackSuppressed(term) -> FallbackSuppressed(transform(term))
+  }
+}
+
 // One reachable effect contributor of a function body: the call site, its
 // position, the ground effect set it contributes, and why the set stayed
 // unresolved or which source answered.
@@ -778,10 +812,12 @@ pub type CallExplanation {
     reason: Option(UnknownReason),
     origin: Option(LookupOrigin),
     // What a running Gleam fallback body contributed to `actual`, when the call
-    // reaches an `@external` that has one. `origin` speaks for the declaration
-    // only, so without this the union would be credited to a declaration that
-    // never stated it — `[]` reported as the source of a `[Disk]`.
-    fallback: Option(EffectSet),
+    // reaches an `@external` that has one — or contributed and had suppressed,
+    // where an `assume` line dropped it from the total. `origin` speaks for the
+    // declaration only, so without this the union would be credited to a
+    // declaration that never stated it — `[]` reported as the source of a
+    // `[Disk]`.
+    fallback: FallbackDisposition(EffectSet),
   )
 }
 

@@ -656,6 +656,25 @@ both the declaration and the fallback. An `@external` for every target it is
 compiled for (both, or the one a `@target` narrows it to) is answered by the
 declaration alone.
 
+Whether *callers* pay that body too is decided by who wrote the winning
+declaration. A per-function `assume` from a written spec — your own line, or
+the one a dependency's author ships, path dependencies included — answers
+**alone**, even where the fallback body runs: `assume` means trusted and never
+verified, the line's author can see the body too, and if they wanted the union
+they would have written the wider term. Callers pay the declared term exactly;
+the body's own charge is dropped from the union and reported as suppressed
+wherever the charge is explained, so a body that runs is never silently read
+as absent. The other declaring forms keep the union: a **catalog** entry
+describes the version graded's maintainers annotated, not necessarily the
+installed body, and a **module-level** `assume` is a blanket that never named
+the function it would be silencing — under either, callers still pay the
+declaration beside what the body does. And in every case the external's own
+`check` line weighs the walked body beside the declaration: an `assume`
+changes what callers pay, never what the function's own line proves. Where the
+declaration is out of reach entirely — its targets are ones this build never
+compiles — the fallback body answers instead, suppressed by nothing:
+suppression there would charge a build that didn't happen.
+
 Which targets your package is compiled for comes from `gleam.toml`: the top-level
 `target`, or `[tools.graded].targets` for a package really built for both, which
 is the only place it can say so since `target` names exactly one:
@@ -685,8 +704,10 @@ a `gleam build --target javascript` against such a package is invisible to it:
   is dead text to all four.
 - What a declaration *states* is read on every target. So an
   `@external(javascript, …)` with a Gleam fallback is still foreign code, an
-  `assume` line for it still answers, `graded infer` keeps that line,
-  and callers are charged the declaration beside what the fallback body does.
+  `assume` line for it still answers, `graded infer` keeps that line, and
+  callers are charged the declaration beside what the fallback body does — or
+  the declaration alone, where a written per-function `assume` suppresses the
+  body's half (above).
 
 Declaring `[tools.graded].targets` replaces both readings with what you wrote.
 
@@ -745,15 +766,23 @@ pub fn caller() -> Nil {
 assume myapp/ffi.make_logger : [] where returns : [Stdout]
 ```
 
-Without that clause the call is `[Unknown]`. With it, the declaration answers
-where it stands alone; two readings refuse it, and the call says which:
+Without that clause the call is `[Unknown]`. With it, a written clause is
+trusted even where a Gleam fallback body runs beside the declaration — the
+clause is its author's own line, trusted whole exactly as the effects half of
+a written `assume` is, and this holds by the clause's *own* source: a
+clause-only `assume dep/ffi.make where returns : [Net]` answers even while the
+name's *effects* come from the catalog and keep the body union — two channels,
+two winning lines, each trusted by its own author. One reading still refuses
+the clause, and the call says so:
 
 - **out of reach** — the declaration names only targets this build does not
-  compile, so nothing it describes is what runs. The same reading that drops the
-  external's own declared effects;
-- **a Gleam fallback body also runs** — the declaration covers some targets and
-  the body covers the rest. Effects union the two halves; there is no union of
-  operators, and the closure the body hands back needn't be the foreign one.
+  compile, so nothing it describes is what runs. The same reading that drops
+  the external's own declared effects.
+
+(A clause from a source that does not suppress the running fallback would stay
+refused beside one — the two implementations can hand back different closures
+and there is no union of operators to take — but every declared clause today
+comes from a written spec; the refusing arm waits on a catalog returns tier.)
 
 Three declared clauses are dropped rather than trusted, each flagged by the spec
 lint: an operator with free effect variables (a foreign decorator returning a
@@ -779,10 +808,13 @@ code — your own modules included — is dropped, so no dependency can overrule
 your own body says it hands back. Where a
 dependency's external carries a fallback body that runs on some target, that body
 is walked — read from the dependency's own source, on the targets your build
-compiles — and its effects are unioned into the declaration, exactly as they are
-for one of your own. `[Unknown]` joins the union only where the walk reaches a
+compiles — and its effects are unioned into a catalog or module-level
+declaration, exactly as they are for one of your own, while the package's
+shipped per-function `assume` answers alone with the walked half reported as
+suppressed. `[Unknown]` joins the union only where the walk reaches a
 name nothing declares, or where graded could not read the module the body lives
-in.
+in — and the same shipped line suppresses that `[Unknown]` too, so an
+unreadable module does not widen a declared name.
 
 `graded effect` answers for the public API, so a *private* `@external` exits
 non-zero there as a private ordinary function does — including one a valid

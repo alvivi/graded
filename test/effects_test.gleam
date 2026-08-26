@@ -1982,9 +1982,10 @@ pub fn one_dep_specs_returns_line_cannot_bury_anothers_declaration_test() {
 // callee's answer it reaches — the declaration, the callee's own fallback — is
 // what `with_active_targets` narrows the base to.
 
-// A base holding one foreign name: what the source scan recorded about it, the
-// summary its fallback walked to, and the targets the body doing the calling
-// runs on.
+// A base holding one foreign name: a catalog declaration of `[Disk]` for it —
+// a non-suppressing origin, so these pins stay about which halves the
+// narrowing reaches — what the source scan recorded about it, the summary its
+// fallback walked to, and the targets the body doing the calling runs on.
 fn narrowed_to(
   name: QualifiedName,
   entry: types.ForeignFunction,
@@ -1992,6 +1993,10 @@ fn narrowed_to(
   active: List(String),
 ) -> effects.KnowledgeBase {
   effects.new_knowledge_base()
+  |> effects.with_externals(
+    [external(name.module, name.function, ["Disk"])],
+    types.Catalog("app"),
+  )
   |> effects.with_foreign_functions(dict.from_list([#(name, entry)]))
   |> effects.with_fallback_summaries(
     dict.from_list([
@@ -2014,11 +2019,7 @@ fn declared_for(targets: List(String)) -> types.ForeignFunction {
 }
 
 fn charged(base: effects.KnowledgeBase, name: QualifiedName) -> EffectSet {
-  effects.with_running_fallback(
-    base,
-    name,
-    effect_term.from_effect_set(Specific(set.from_list(["Disk"]))),
-  )
+  effects.declared_charge(base, name).term
   |> effect_term.to_effect_set
 }
 
@@ -2084,17 +2085,18 @@ pub fn no_active_targets_charges_both_halves_test() {
 // the second reads the summaries, so a walked body that stood down one entry
 // and not the other would leave the `[Unknown]` in place under the
 // declaration's own source, where nothing downstream can subtract it. This pair
-// is the one place both entries are visible without a fixture on disk.
+// of bases is the one place both entries are visible without a fixture on disk
+// — and, origin against origin, where a shipped `assume` suppresses the
+// fallback half a catalog declaration keeps unioned.
 
-fn dependency_external_base() -> effects.KnowledgeBase {
+fn dependency_external_base(
+  origin: types.LookupOrigin,
+) -> effects.KnowledgeBase {
   effects.new_knowledge_base()
   |> effects.with_package_targets(
     types.NamedTargets(set.from_list(["erlang", "javascript"])),
   )
-  |> effects.with_externals(
-    [external("dep/ffi", "run", ["Time"])],
-    types.DependencySpec("dep"),
-  )
+  |> effects.with_externals([external("dep/ffi", "run", ["Time"])], origin)
   |> effects.with_dependency_foreign(
     dict.from_list([
       #(
@@ -2109,43 +2111,104 @@ fn dependency_external_base() -> effects.KnowledgeBase {
   )
 }
 
-pub fn a_walked_dependency_fallback_charges_its_summary_test() {
+fn with_walked_fallback(base: effects.KnowledgeBase) -> effects.KnowledgeBase {
+  effects.with_fallback_summaries(
+    base,
+    dict.from_list([
+      #(
+        QualifiedName("dep/ffi", "run"),
+        #(effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))), []),
+      ),
+    ]),
+  )
+}
+
+fn fallback_set(
+  fallback: types.FallbackDisposition(types.EffectTerm),
+) -> types.FallbackDisposition(EffectSet) {
+  types.map_fallback(fallback, effect_term.to_effect_set)
+}
+
+pub fn a_walked_dependency_fallback_joins_a_catalog_declaration_test() {
+  // The catalog describes a version graded's maintainers annotated, not
+  // necessarily the installed body, so it never suppresses: the declaration's
+  // targets and the body's, each charged once and neither widened — no
+  // `[Unknown]` survives anywhere in the total.
   let charge =
-    dependency_external_base()
-    |> effects.with_fallback_summaries(
-      dict.from_list([
-        #(
-          QualifiedName("dep/ffi", "run"),
-          #(
-            effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
-            [],
-          ),
-        ),
-      ]),
-    )
+    dependency_external_base(types.Catalog("dep"))
+    |> with_walked_fallback
     |> effects.declared_charge(QualifiedName("dep/ffi", "run"))
-  // The declaration's targets and the body's, each charged once and neither
-  // widened: no `[Unknown]` survives anywhere in the total.
   charge.term
   |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Time", "Stdout"])))
   charge.fallback
-  |> option.map(effect_term.to_effect_set)
-  |> should.equal(Some(Specific(set.from_list(["Stdout"]))))
+  |> fallback_set
+  |> should.equal(types.FallbackCharged(Specific(set.from_list(["Stdout"]))))
 }
 
-pub fn an_unwalked_dependency_fallback_stays_unknown_test() {
-  // The same base with nothing walked: both entries fire, and the total names
-  // the body graded could not read.
+pub fn a_walked_dependency_fallback_is_suppressed_by_a_shipped_assume_test() {
+  // The dependency author's own `assume` over their own body answers alone:
+  // the walked half is dropped from the union and recorded as suppressed, so
+  // a report can still quote what was overridden.
   let charge =
-    dependency_external_base()
+    dependency_external_base(types.DependencySpec("dep"))
+    |> with_walked_fallback
+    |> effects.declared_charge(QualifiedName("dep/ffi", "run"))
+  charge.term
+  |> effect_term.to_effect_set
+  |> should.equal(Specific(set.from_list(["Time"])))
+  charge.fallback
+  |> fallback_set
+  |> should.equal(types.FallbackSuppressed(Specific(set.from_list(["Stdout"]))))
+}
+
+pub fn an_unwalked_dependency_fallback_stays_unknown_under_the_catalog_test() {
+  // A catalog declaration with nothing walked: both entries fire, and the
+  // total names the body graded could not read.
+  let charge =
+    dependency_external_base(types.Catalog("dep"))
     |> effects.declared_charge(QualifiedName("dep/ffi", "run"))
   charge.term
   |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Time", "Unknown"])))
   charge.fallback
-  |> option.map(effect_term.to_effect_set)
-  |> should.equal(Some(Specific(set.from_list(["Unknown"]))))
+  |> fallback_set
+  |> should.equal(types.FallbackCharged(Specific(set.from_list(["Unknown"]))))
+}
+
+pub fn an_unwalked_path_dependency_fallback_is_suppressed_too_test() {
+  // A path dependency's committed spec is a declaration its author wrote over
+  // their own body — the same trust as an installed dependency's, so the same
+  // suppression.
+  let charge =
+    dependency_external_base(types.PathDependency("dep"))
+    |> effects.declared_charge(QualifiedName("dep/ffi", "run"))
+  charge.term
+  |> effect_term.to_effect_set
+  |> should.equal(Specific(set.from_list(["Time"])))
+  charge.fallback
+  |> fallback_set
+  |> should.equal(
+    types.FallbackSuppressed(Specific(set.from_list(["Unknown"]))),
+  )
+}
+
+pub fn an_unwalked_dependency_fallback_is_suppressed_by_a_shipped_assume_test() {
+  // The same base under the dependency's own `assume`: the `[Unknown]`
+  // standing in for the unwalked body is suppressed exactly as a walked
+  // summary would be — the charge reads the declaration raw, so no widened
+  // half survives under the declaration's source.
+  let charge =
+    dependency_external_base(types.DependencySpec("dep"))
+    |> effects.declared_charge(QualifiedName("dep/ffi", "run"))
+  charge.term
+  |> effect_term.to_effect_set
+  |> should.equal(Specific(set.from_list(["Time"])))
+  charge.fallback
+  |> fallback_set
+  |> should.equal(
+    types.FallbackSuppressed(Specific(set.from_list(["Unknown"]))),
+  )
 }
 
 pub fn self_referential_declaration_pairs_term_and_bounds_test() {

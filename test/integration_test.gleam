@@ -545,13 +545,13 @@ pub fn a_consumer_assume_overrides_a_dependency_bound_list_test() {
   support.cleanup(root)
 }
 
-pub fn a_bounded_assume_over_a_running_fallback_keeps_both_bound_lists_test() {
-  // A target-conditional external whose Gleam fallback also runs: the charge
-  // unions the declared term with the fallback summary's, so the call site
-  // binds through both bound lists — the decoupled `e` through the line's
-  // own, `action` through the fallback's recorded one. With the line's list
-  // standing down, `e` stayed free and a pure callback was charged the
-  // `[Unknown]` it grounds to.
+pub fn a_bounded_assume_over_a_running_fallback_binds_its_own_bounds_test() {
+  // A target-conditional external whose Gleam fallback also runs, under a
+  // bounded `assume`: the line suppresses the fallback half, so the charge is
+  // the declared term alone and the call site binds through the line's own
+  // bound list — the decoupled `e` through the `action` payload that names
+  // it. With the line's list standing down, `e` stayed free and a pure
+  // callback was charged the `[Unknown]` it grounds to.
   let root = "build/bounded_assume_running_fallback"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
@@ -603,14 +603,14 @@ pub fn go_impure() -> Nil {
   support.cleanup(root)
 }
 
-pub fn charge_halves_bind_through_their_own_bounds_test() {
+pub fn a_suppressed_charge_binds_through_the_declared_bounds_alone_test() {
   // `assume ext.run(cb: [other]) : [other]` beside a running fallback whose
-  // *parameter* is also named `other`: the declaration's variable means the
-  // `cb` argument its own payload binds, and the fallback's means the `other`
-  // parameter — the two halves' namespaces stay apart, so neither binding
-  // captures the other's. Each caller hands `run` one `[Disk]` function
-  // through a different half, and each fails a `[]` budget with exactly
-  // `[Disk]`; the all-pure caller passes.
+  // *parameter* is also named `other`: the line suppresses the fallback half,
+  // so its variable means the `cb` argument its own payload binds and nothing
+  // else — the fallback's `other()` call is no longer charged through the
+  // `other` parameter. Only the caller handing `[Disk]` through the declared
+  // half fails its `[]` budget; the one reaching the disk through the
+  // suppressed body's parameter passes on the line's say-so.
   let root = "build/bounded_assume_half_namespaces"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
@@ -661,15 +661,10 @@ pub fn both_pure() -> Nil {
   let assert Ok(results) = graded.run(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
-  r.violations
-  |> list.map(fn(v) { v.function })
-  |> list.sort(string.compare)
-  |> should.equal(["decl_disk", "fallback_disk"])
-  r.violations
-  |> list.each(fn(v) {
-    v.explanation.actual
-    |> should.equal(types.Specific(set.from_list(["Disk"])))
-  })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("decl_disk")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
   support.cleanup(root)
 }
 
@@ -1265,7 +1260,7 @@ pub fn a_running_fallback_body_is_charged_to_every_caller_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "assume ext.log : []
+      "assume ext : []
 assume ext.sink : [Disk]
 check ext.wrapper : []
 check other.calls_it : []
@@ -1424,8 +1419,7 @@ pub fn a_nested_external_still_charges_what_the_fallback_reaches_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "assume ext.a : []
-assume ext.b : []
+      "assume ext : []
 assume ext.d : [Time]
 assume ext.disk : [Disk]
 check ext.wrapper : []
@@ -1480,7 +1474,7 @@ pub fn a_girard_typed_fallback_callback_binds_in_the_same_module_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "assume ext.run : []
+      "assume ext : []
 assume ext.disk : [Disk]
 check ext.uses : []
 check ext.uses_impure : []
@@ -1582,7 +1576,7 @@ pub fn a_girard_typed_fallback_lifts_as_an_operator_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "assume ext.run : []
+      "assume ext : []
 assume app.disk : [Disk]
 check app.go : []
 check app.go_impure : []
@@ -1646,7 +1640,7 @@ pub fn a_fallback_lift_keeps_its_callback_arity_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "assume ext.run : []
+      "assume ext : []
 assume app.disk : [Disk]
 check app.go : [Disk]
 check app.go_swapped : []
@@ -1713,7 +1707,7 @@ pub fn a_labeled_fallback_callback_lifts_under_its_bound_name_test() {
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
-      "assume ext.run : []
+      "assume ext : []
 assume app.disk : [Disk]
 check app.go : []
 check app.go_impure : []
@@ -1767,16 +1761,17 @@ pub fn a_girard_typed_fallback_lifts_locally_as_an_operator_test() {
   // The same shape inside one module: `run` is handed to a sibling `invoke`
   // rather than referenced across a boundary, so the lift goes through the
   // same-module path. It, too, must abstract over the recorded fallback bound
-  // a girard-typed callback exists only as.
+  // a girard-typed callback exists only as. `run` is undeclared — the shape
+  // whose summary is the only story — so the `[Unknown]` it carries rides
+  // every total, and the lift's work shows in the `[Disk]` beside it.
   let root = "build/external_fallback_girard_operator_local"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "assume ext.run : []
-assume ext.disk : [Disk]
-check ext.go : []
-check ext.go_impure : []
+      "assume ext.disk : [Disk]
+check ext.go : [Unknown]
+check ext.go_impure : [Unknown]
 ",
     ),
     #(
@@ -1814,18 +1809,20 @@ pub fn go_impure() -> Nil {
   let assert [violation] = r.violations
   violation.function |> should.equal("go_impure")
   violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  |> should.equal(types.Specific(set.from_list(["Disk", "Unknown"])))
   support.cleanup(root)
 }
 
 pub fn a_substituted_call_reports_a_substituted_fallback_test() {
   // A higher-order external whose fallback calls its function-typed parameter,
-  // called with a `[Disk]` callback. The caller's total substitutes the
-  // callback into the term — `[Disk, Time]` — and the explanation's `fallback`
-  // states the body's share of that total, so it substitutes too: `[Disk]`,
-  // not the polymorphic `[action]` the knowledge base holds before any
-  // arguments are bound. The two fields describe one call, and a structured
-  // consumer must not read a variable the actual set already resolved.
+  // called with a `[Disk]` callback. The boundless `assume` suppresses the
+  // body's half, and the auto-detected `action` bound charges the callback
+  // exactly as it does for a bodyless external — `[Disk, Time]` — while the
+  // explanation's suppressed share states what the body would have charged at
+  // this call site, so it substitutes too: `[Disk]`, not the polymorphic
+  // `[action]` the knowledge base holds before any arguments are bound. The
+  // two fields describe one call, and a structured consumer must not read a
+  // variable the actual set already resolved.
   let root = "build/external_fallback_substituted"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
@@ -1879,7 +1876,9 @@ pub fn via_helper() -> Nil {
     violation.explanation.actual
     |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
     violation.explanation.fallback
-    |> should.equal(Some(types.Specific(set.from_list(["Disk"]))))
+    |> should.equal(
+      types.FallbackSuppressed(types.Specific(set.from_list(["Disk"]))),
+    )
   })
   support.cleanup(root)
 }
@@ -2035,18 +2034,17 @@ pub fn via_factory() -> Nil {
 
 pub fn a_fallback_reaching_a_sibling_fallback_is_charged_it_test() {
   // `a`'s fallback calls `b`, whose fallback reaches the disk; both are
-  // declared `[]`. A single pass over the module summarised `a` against a
-  // knowledge base that did not yet know what `b`'s body does, so `a` recorded
-  // nothing, `check ext.wrapper : []` passed and `infer` published the caller
-  // as pure. The summaries are settled before they are published.
+  // undeclared, so their summaries are the whole story beside the `[Unknown]`
+  // foreign code carries. A single pass over the module summarised `a` against
+  // a knowledge base that did not yet know what `b`'s body does, so `a`
+  // recorded nothing, the disk went uncharged and `infer` under-published the
+  // caller. The summaries are settled before they are published.
   let root = "build/external_fallback_siblings"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
     #(
       "proj.graded",
       "assume disk.write : [Disk]
-assume ext.a : []
-assume ext.b : []
 check ext.wrapper : []
 ",
     ),
@@ -2076,17 +2074,20 @@ pub fn wrapper() -> Nil {
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "wrapper" })
   v.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  |> should.equal(types.Specific(set.from_list(["Disk", "Unknown"])))
   // And the same total is what gets published.
   let assert Ok(preview) = graded.run_infer_dry_run(root)
-  preview |> string.contains("effects ext.wrapper : [Disk]") |> should.be_true()
+  preview
+  |> string.contains("effects ext.wrapper : [Disk, Unknown]")
+  |> should.be_true()
   support.cleanup(root)
 }
 
 pub fn mutually_recursive_fallbacks_settle_to_one_summary_test() {
   // `a`'s fallback calls `b` and `b`'s calls `a`, so neither can be summarised
   // against a settled summary of the other — the cycle circulates the disk one
-  // member per pass. Both land on the same total, and a caller of either is
+  // member per pass. Both are undeclared, so beside the `[Unknown]` foreign
+  // code carries, both land on the same total, and a caller of either is
   // charged it, whichever the walk reaches first.
   let root = "build/external_fallback_mutual"
   support.write_fixture(root, [
@@ -2094,8 +2095,6 @@ pub fn mutually_recursive_fallbacks_settle_to_one_summary_test() {
     #(
       "proj.graded",
       "assume disk.write : [Disk]
-assume ext.a : []
-assume ext.b : []
 check ext.calls_a : []
 check ext.calls_b : []
 ",
@@ -2131,17 +2130,21 @@ pub fn calls_b() -> Nil {
   let assert Ok(results) = graded.run(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
-  let disk = types.Specific(set.from_list(["Disk"]))
+  let total = types.Specific(set.from_list(["Disk", "Unknown"]))
   ["calls_a", "calls_b"]
   |> list.each(fn(function) {
     let assert Ok(v) = list.find(r.violations, fn(v) { v.function == function })
-    v.explanation.actual |> should.equal(disk)
+    v.explanation.actual |> should.equal(total)
   })
   // And both summaries are published as the same total, not one pass short of
   // each other.
   let assert Ok(preview) = graded.run_infer_dry_run(root)
-  preview |> string.contains("effects ext.calls_a : [Disk]") |> should.be_true()
-  preview |> string.contains("effects ext.calls_b : [Disk]") |> should.be_true()
+  preview
+  |> string.contains("effects ext.calls_a : [Disk, Unknown]")
+  |> should.be_true()
+  preview
+  |> string.contains("effects ext.calls_b : [Disk, Unknown]")
+  |> should.be_true()
   support.cleanup(root)
 }
 
@@ -2157,7 +2160,7 @@ pub fn a_recursive_fallback_summary_reaches_a_fixed_point_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "assume ext.retry : []
+      "assume ext : []
 assume ext.disk : [Disk]
 check ext.wrapper : []
 ",
@@ -2207,7 +2210,7 @@ pub fn a_cyclic_import_graph_still_charges_a_running_fallback_test() {
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "assume ext.log : [Stdout]
+      "assume ext : [Stdout]
 assume ext.sink : [Disk]
 check other.calls_it : []
 ",
@@ -2260,10 +2263,12 @@ pub fn calls_it() -> Nil {
 
 pub fn a_fallback_resolves_field_calls_through_type_lines_test() {
   // The fallback body reaches a field a field `assume` line decides. The pass that
-  // summarises it used to run before those lines were installed, so the
-  // summary its callers read disagreed with what the external's own `check`
-  // line reported — and with what `infer` wrote, whose pass installed them
-  // first. Every pass now folds them in the same order.
+  // summarises it used to run before those lines were installed, so the summary
+  // disagreed with what the external's own `check` line reported — and with
+  // what `infer` wrote, whose pass installed them first. Every pass folds them
+  // in the same order: the own line weighs the walked `[Disk]`, and the
+  // caller — paying the suppressing `assume` line's `[]` alone — still has
+  // the same `[Disk]` quoted as the suppressed share.
   let root = "build/external_fallback_type_line"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
@@ -2307,15 +2312,20 @@ pub fn wrapper() -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let disk = types.Specific(set.from_list(["Disk"]))
-  // The external's own line and its caller settle on the same effect.
+  // The external's own line weighs the resolved field call.
   let assert Ok(own) = list.find(r.violations, fn(v) { v.function == "log" })
   own.explanation.actual |> should.equal(disk)
-  let assert Ok(caller) =
-    list.find(r.violations, fn(v) { v.function == "wrapper" })
-  caller.explanation.actual |> should.equal(disk)
-  // And so does what would be written.
+  // The caller pays the line's `[]` alone, and the walk's `[Disk]` reaches it
+  // as the suppressed share the query quotes.
+  list.find(r.violations, fn(v) { v.function == "wrapper" })
+  |> should.equal(Error(Nil))
+  let assert Ok(answered) = graded.run_effect(root, "ext.log")
+  answered
+  |> string.contains("suppressed by the `assume` line: [Disk]")
+  |> should.be_true()
+  // And what would be written states the suppressed caller-side charge.
   let assert Ok(preview) = graded.run_infer_dry_run(root)
-  preview |> string.contains("effects ext.wrapper : [Disk]") |> should.be_true()
+  preview |> string.contains("effects ext.wrapper : []") |> should.be_true()
   support.cleanup(root)
 }
 
@@ -2414,9 +2424,15 @@ pub fn run(action: fn() -> Nil) -> Nil {
   |> string.contains("effects ext.run(action: [action]) : [Time, action]")
   |> should.be_true()
 
-  // The per-function form, unchanged.
-  answer_for("assume ext.run : []\n")
-  |> string.contains("effects ext.run(action: [action]) : [action]")
+  // The per-function form suppresses the fallback half: the term and the
+  // bounds are the line's own, and the body's share is quoted as suppressed
+  // rather than stated over the answer.
+  let per_function = answer_for("assume ext.run : []\n")
+  per_function
+  |> string.contains("effects ext.run : []")
+  |> should.be_true()
+  per_function
+  |> string.contains("suppressed by the `assume` line: [action]")
   |> should.be_true()
   support.cleanup(root)
 }
@@ -2475,15 +2491,16 @@ pub fn a_module_external_resolves_from_catalog_functions_test() {
 
 pub fn a_wired_field_separates_the_fallback_test() {
   // A field wired to a target-conditional external carries the same two sources
-  // a direct call to it does. Reporting the union under the declaration alone
-  // credits an `assume ext.log : []` line with the `[Disk]` its
-  // fallback body did.
+  // a direct call to it does. The `assume ext.log : [Net]` line suppresses the
+  // body's `[Disk]` from the field's charge, and the explanation still quotes
+  // the suppressed half — a body runs that the total no longer counts, and
+  // silence about it would read as no body at all.
   let root = "build/external_fallback_wired_field"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "assume ext.log : []
+      "assume ext.log : [Net]
 assume ext.sink : [Disk]
 check app.uses : []
 ",
@@ -2524,25 +2541,30 @@ pub fn uses() -> Nil {
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [v] = r.violations
   v.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  |> should.equal(types.Specific(set.from_list(["Net"])))
   v.explanation.fallback
-  |> should.equal(Some(types.Specific(set.from_list(["Disk"]))))
+  |> should.equal(
+    types.FallbackSuppressed(types.Specific(set.from_list(["Disk"]))),
+  )
   checker.format_violation(r.file, v)
-  |> string.contains("unioned with its Gleam fallback body")
+  |> string.contains(
+    "its Gleam fallback body's charge suppressed by the `assume` line",
+  )
   |> should.be_true()
   support.cleanup(root)
 }
 
 pub fn a_callers_explanation_separates_the_fallback_test() {
-  // The declaration says `[]` and the body does `[Disk]`, and both travel under
-  // one term. The caller's message has to name the half the declaration
-  // accounts for, or it reads as though the spec line had stated `[Disk]`.
+  // The declaration says `[Net]` and the body does `[Disk]`. The line
+  // suppresses the body's half, so the caller pays `[Net]` alone — and the
+  // message says a body runs that the `assume` line un-charged, or the charge
+  // reads as though no fallback existed.
   let root = "build/external_fallback_caller_provenance"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
     #(
       "proj.graded",
-      "assume ext.log : []
+      "assume ext.log : [Net]
 assume ext.sink : [Disk]
 check ext.wrapper : []
 ",
@@ -2568,21 +2590,27 @@ pub fn wrapper() -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "wrapper" })
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Net"])))
   v.explanation.fallback
-  |> should.equal(Some(types.Specific(set.from_list(["Disk"]))))
+  |> should.equal(
+    types.FallbackSuppressed(types.Specific(set.from_list(["Disk"]))),
+  )
   checker.format_violation(r.file, v)
   |> string.contains(
-    "(from your spec's `assume` line, unioned with its Gleam fallback body)",
+    "(from your spec's `assume` line, its Gleam fallback body's charge"
+    <> " suppressed by the `assume` line)",
   )
   |> should.be_true()
   support.cleanup(root)
 }
 
-pub fn infer_publishes_a_running_fallbacks_effects_test() {
-  // What `infer` writes is what consumers get, and they hold no body to walk.
-  // A pass that recorded the external but not what its fallback does would
-  // publish `effects ext.wrapper : []` over a caller that reaches the disk —
-  // the same under-reporting `check` was fixed for, committed to the spec.
+pub fn infer_publishes_the_suppressed_charge_test() {
+  // What `infer` writes is what consumers get, and it is the caller-side
+  // charge: `assume ext.log : []` answers alone even though the fallback body
+  // reaches the disk, so the published `effects ext.wrapper : []` states
+  // exactly what a caller of `wrapper` pays. The undeclared control beside it
+  // keeps the union: without a line, the body's effects are still published.
   let root = "build/external_fallback_infer"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
@@ -2594,6 +2622,11 @@ pub fn log() -> Nil {
   sink()
 }
 
+@external(javascript, \"ext_ffi\", \"bare\")
+pub fn bare() -> Nil {
+  sink()
+}
+
 @external(erlang, \"ext_ffi\", \"sink\")
 @external(javascript, \"ext_ffi\", \"sink\")
 fn sink() -> Nil
@@ -2601,11 +2634,18 @@ fn sink() -> Nil
 pub fn wrapper() -> Nil {
   log()
 }
+
+pub fn bare_wrapper() -> Nil {
+  bare()
+}
 ",
     ),
   ])
   let assert Ok(preview) = graded.run_infer_dry_run(root)
-  preview |> string.contains("effects ext.wrapper : [Disk]") |> should.be_true()
+  preview |> string.contains("effects ext.wrapper : []\n") |> should.be_true()
+  preview
+  |> string.contains("effects ext.bare_wrapper : [Disk, Unknown]")
+  |> should.be_true()
   support.cleanup(root)
 }
 
@@ -2649,9 +2689,10 @@ pub fn wrapper() -> Nil {
 }
 
 pub fn a_declared_externals_fallback_is_not_credited_to_the_spec_test() {
-  // The declaration says `[]` and the body does `[Disk]`. Both travel under one
-  // term, so the answer has to name the half the declaration accounts for —
-  // otherwise it reads as though the spec line had stated `[Disk]`.
+  // The declaration says `[]` and the body does `[Disk]`. The line suppresses
+  // the body's half, so the answer is the declared term — and the body is
+  // still named, quoted as the suppressed share, so the reader can see what
+  // the line overrode rather than believing no fallback exists.
   let root = "build/external_fallback_provenance"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
@@ -2670,12 +2711,14 @@ fn sink() -> Nil
     ),
   ])
   let assert Ok(answered) = graded.run_effect(root, "ext.log")
-  answered |> string.contains("effects ext.log : [Disk]") |> should.be_true()
+  answered |> string.contains("effects ext.log : []") |> should.be_true()
   answered
   |> string.contains("resolved from your spec's `assume` line")
   |> should.be_true()
-  // The clause that keeps the declaration from being credited with [Disk].
-  answered |> string.contains("Gleam fallback body") |> should.be_true()
+  // The comment that says a body runs which the line un-charged.
+  answered
+  |> string.contains("suppressed by the `assume` line: [Disk]")
+  |> should.be_true()
   support.cleanup(root)
 }
 
@@ -2914,15 +2957,19 @@ pub fn plain_wrapper() -> Nil {
   support.cleanup(root)
 }
 
-pub fn a_declared_dependency_external_with_a_running_fallback_widens_test() {
-  // The union, with the fallback half unknowable. On erlang the dependency's
-  // fallback body is what runs; walked, it reaches an external nothing declares,
-  // so the declaration is widened by the `[Unknown]` that body is worth rather
-  // than read as the whole story.
+pub fn a_dependency_assume_suppresses_its_walked_running_fallback_test() {
+  // On erlang the dependency's fallback body is what runs; walked, it reaches
+  // an external nothing declares. The dependency author's own `assume` line
+  // suppresses that half all the same: the caller pays `[Time]` alone, on the
+  // shipped line's say-so, and the query answers with the same term.
   let root = "build/foreign_values_dep_fallback"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
-    #("proj.graded", "check app.wrapper : [Time]\n"),
+    #(
+      "proj.graded",
+      "check app.wrapper : [Time]\ncheck app.strict : []\n"
+        <> "check app.via_value : [Time]\n",
+    ),
     #("build/packages/dep/dep.graded", "assume dep/ffi.run : [Time]\n"),
     #(
       "build/packages/dep/src/dep/ffi.gleam",
@@ -2942,23 +2989,175 @@ fn hidden() -> Nil
 pub fn wrapper() -> Nil {
   ffi.run()
 }
+
+pub fn strict() -> Nil {
+  ffi.run()
+}
+
+fn invoke(op: fn() -> Nil) -> Nil {
+  op()
+}
+
+pub fn via_value() -> Nil {
+  invoke(ffi.run)
+}
 ",
     ),
   ])
   let assert Ok(results) = graded.run(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  // `wrapper`'s `[Time]` budget holds — the walked body's `[Unknown]` is no
+  // part of the charge — while `strict`'s `[]` budget fails on `[Time]` alone,
+  // with the suppression named beside the shipped line that did it.
   let assert [violation] = r.violations
+  violation.function |> should.equal("strict")
   violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Time", "Unknown"])))
-  // Both halves travel under the declaration's origin, so the message has to
-  // say which half the declaration accounts for. Without it the widened set
-  // reads as what the dependency's spec stated — it stated `[Time]`.
+  |> should.equal(types.Specific(set.from_list(["Time"])))
   violation.explanation.fallback
-  |> should.equal(Some(types.Specific(set.from_list(["Unknown"]))))
+  |> should.equal(
+    types.FallbackSuppressed(types.Specific(set.from_list(["Unknown"]))),
+  )
   checker.format_violation(r.file, violation)
-  |> string.contains("unioned with its Gleam fallback body")
+  |> string.contains(
+    "(from dep's shipped spec, its Gleam fallback body's charge suppressed"
+    <> " by the `assume` line)",
+  )
   |> should.be_true()
+  // The value channel reads the same suppressed term — `via_value`'s `[Time]`
+  // budget held above — and so does the query, which quotes the walked share
+  // it dropped.
+  let assert Ok(answered) = graded.run_effect(root, "dep/ffi.run")
+  answered
+  |> string.contains("effects dep/ffi.run : [Time]")
+  |> should.be_true()
+  answered
+  |> string.contains("suppressed by the `assume` line: [Unknown]")
+  |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_project_assume_suppresses_for_callers_but_not_its_own_line_test() {
+  // The split, on both `why` surfaces at once: a caller pays the declared
+  // term alone and its explanation names the suppression, while the
+  // external's own line still weighs the walked body — `check` is the
+  // verified channel, and an `assume` changes what callers pay, never what
+  // the function's own line proves.
+  let root = "build/external_fallback_own_line_split"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext.log : [Net]
+assume ext.sink : [Disk]
+check ext.log : [Disk, Net]
+check app.wrapper : [Net]
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"log\")
+pub fn log() -> Nil {
+  sink()
+}
+
+@external(erlang, \"ext_ffi\", \"sink\")
+@external(javascript, \"ext_ffi\", \"sink\")
+fn sink() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+pub fn wrapper() -> Nil {
+  ext.log()
+}
+",
+    ),
+  ])
+  // The external's own budget covers declaration and body; the caller's
+  // covers the declaration alone. Both hold.
+  let assert Ok(results) = graded.run(root)
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  // The caller's `why` names the suppression; the external's own does not —
+  // its line reports the declaration with the body as a contributor beside
+  // it, still weighed into the body-inclusive total.
+  let assert Ok(caller_why) = graded.run_why(root, "app.wrapper")
+  caller_why
+  |> string.contains(
+    "its Gleam fallback body's charge suppressed by the `assume` line",
+  )
+  |> should.be_true()
+  let assert Ok(own_why) = graded.run_why(root, "ext.log")
+  own_why |> string.contains("suppressed") |> should.be_false()
+  own_why |> string.contains("[Disk, Net]") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_catalog_declaration_keeps_the_union_test() {
+  // The catalog describes a version graded's maintainers annotated, not
+  // necessarily the installed body, so a catalog `assume` never suppresses —
+  // the running body's half stays in the union, worded as such. The
+  // consumer's clause-only `where returns` line on the same name is trusted
+  // all the same: the clause is the user's own written line, so the returned
+  // operator answers while the effects half keeps the catalog∪body union —
+  // two channels, two winning lines, each trusted by its own author.
+  let root = "build/external_fallback_catalog_union"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "manifest.toml",
+      "packages = [\n  { name = \"envoy\", version = \"1.0.0\" },\n]\n",
+    ),
+    #(
+      "proj.graded",
+      "assume envoy.get where returns : [Net]
+check app.uses : []
+",
+    ),
+    #(
+      "build/packages/envoy/src/envoy.gleam",
+      "@external(javascript, \"./envoy_ffi.mjs\", \"get\")
+pub fn get() -> fn() -> Nil {
+  side()
+  fn() { Nil }
+}
+
+@external(erlang, \"envoy_ffi\", \"side\")
+fn side() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import envoy
+
+pub fn uses() -> Nil {
+  let handle = envoy.get()
+  handle()
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  // The producer call pays the catalog's term unioned with the walked body's
+  // `[Unknown]`, and says so...
+  let assert Ok(producer) =
+    list.find(r.violations, fn(v) { v.explanation.call.module == "envoy" })
+  producer.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Environment", "Unknown"])))
+  checker.format_violation(r.file, producer)
+  |> string.contains(
+    "(from envoy's catalog entry, unioned with its Gleam fallback body)",
+  )
+  |> should.be_true()
+  // ...while the returned operator answers from the consumer's own clause.
+  let assert Ok(applied) =
+    list.find(r.violations, fn(v) { v.explanation.call.module == "<returned>" })
+  applied.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Net"])))
   support.cleanup(root)
 }
 
@@ -3624,13 +3823,15 @@ pub fn calls_returned_operator() -> Nil {
   support.cleanup(root)
 }
 
-pub fn a_declared_return_beside_a_running_fallback_answers_nothing_test() {
+pub fn a_declared_return_beside_a_suppressed_fallback_answers_test() {
   // Both halves in reach: the foreign implementation on the target the line
-  // names, the Gleam body on the one it leaves uncovered. The effects channel
-  // unions the two; there is no union of operators, and the closure the body
-  // hands back needn't be the foreign one, so the declaration answers nothing.
-  // The fully covered producer beside it is what says the refusal is the
-  // fallback's doing.
+  // names, the Gleam body on the one it leaves uncovered. The clause is the
+  // user's own written line, and a written clause is trusted whole — the
+  // refusal that stood here lifts on the clause's own suppressing source, so
+  // both producers' closures resolve and every budget holds. (The refusing
+  // arm survives for a clause from a non-suppressing origin; no such origin
+  // ships clauses until a catalog returns tier exists, which is where it must
+  // be pinned.)
   let root = "build/declared_returns_fallback"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
@@ -3675,17 +3876,7 @@ pub fn calls_covered() -> Nil {
   let assert Ok(results) = graded.run(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
-  let assert [violation] = r.violations
-  violation.function |> should.equal("calls_partial")
-  violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Unknown"])))
-  violation.explanation.reason
-  |> should.equal(Some(types.RefusedDeclaredReturn))
-  checker.format_violation(r.file, violation)
-  |> string.contains(
-    "whose declared return is refused where its Gleam fallback body also runs",
-  )
-  |> should.be_true()
+  r.violations |> should.equal([])
   support.cleanup(root)
 }
 
@@ -4434,7 +4625,10 @@ pub fn every_surface_charges_one_name_one_set_test() {
     MatrixRow(
       name: "ffi.declared_fallback",
       callers: ["call_declared_fallback", "local_declared_fallback"],
-      charge: ["Disk", "Time"],
+      // The `assume` line suppresses the running body's half for callers; the
+      // external's own line still weighs the walked body, as `gov.governed`'s
+      // module-level form does below.
+      charge: ["Time"],
       own_total: ["Disk", "Time"],
       cause: None,
       absent: ["Unknown"],
@@ -4527,7 +4721,9 @@ pub fn every_surface_charges_one_name_one_set_test() {
     MatrixRow(
       name: "ffi.declared_fallback",
       callers: ["call_declared_fallback", "local_declared_fallback"],
-      charge: ["Disk", "Time"],
+      // Suppressed for callers, weighed on the external's own line — the same
+      // split the defaulted matrix pins.
+      charge: ["Time"],
       own_total: ["Disk", "Time"],
       cause: None,
       absent: ["Unknown"],
@@ -5086,10 +5282,11 @@ pub fn a() -> Nil {
 pub fn the_effect_fast_path_defers_a_dependency_fallback_test() {
   // The spec declares the dependency function, so the fast path could answer
   // from the spec alone — but the dependency's own source says the name is
-  // `@external` with a running fallback, and what that body does is added to the
-  // declaration by a walk the fast path performs no part of. The query has to
-  // say what the callers are charged, so it reads that one dependency module,
-  // sees a body runs, and hands the name to the full context.
+  // `@external` with a running fallback, which only a walk the fast path
+  // performs no part of can weigh. The consumer's `assume` suppresses that
+  // body's half, so callers pay `[Time]` alone — and the query still defers
+  // to the full context, whose answer quotes the suppressed `[Net]` share the
+  // fast path could never have seen.
   let root = "build/effect_fast_path_dep_fallback"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
@@ -5119,17 +5316,21 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  // What the caller is charged.
+  // What the caller is charged: the declared term alone, so the `[Time]`
+  // budget holds.
   let assert Ok(results) = graded.run(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
-  let assert [violation] = r.violations
-  violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Time", "Net"])))
+  r.violations |> should.equal([])
   // And what the query answers for the same name: the declaration the spec
-  // states, plus the body it says nothing about.
+  // states, with the walked body's share quoted as suppressed.
   let assert Ok(answered) = graded.run_effect(root, "dep/ffi.run")
-  answered |> string.contains("Net") |> should.be_true()
+  answered
+  |> string.contains("effects dep/ffi.run : [Time]")
+  |> should.be_true()
+  answered
+  |> string.contains("suppressed by the `assume` line: [Net]")
+  |> should.be_true()
   answered
   |> should.equal(
     graded.run_effect_from_project(root, "dep/ffi.run") |> should.be_ok(),
@@ -9936,15 +10137,17 @@ pub fn shout() -> Nil
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
-// The conservative half of the same rule: a body reaching a name nothing
-// declares is still `[Unknown]`. The declaration on the line above states what
-// the foreign implementation does and says nothing about the body beside it.
-pub fn a_dependency_fallback_body_reaching_nothing_stays_unknown_test() {
-  let assert [violation] =
-    dependency_fallback_violations(
-      "dep_fallback_unknown",
-      "assume dep/store.insert : []\n",
-      "@external(javascript, \"./store.mjs\", \"insert\")
+// The per-function shipped line answers alone: the dependency author's own
+// `assume insert : []` suppresses the body's half — even the `[Unknown]` a
+// body reaching an undeclared name is worth — on the shipped line's say-so.
+// The conservative reading survives under the non-suppressing origins: the
+// catalog keeps the union (`a_catalog_declaration_keeps_the_union_test`), and
+// so does a module-level blanket.
+pub fn a_dependency_assume_suppresses_a_body_reaching_nothing_test() {
+  dependency_fallback_violations(
+    "dep_fallback_suppressed",
+    "assume dep/store.insert : []\n",
+    "@external(javascript, \"./store.mjs\", \"insert\")
 pub fn insert() -> Nil {
   hidden()
 }
@@ -9952,11 +10155,8 @@ pub fn insert() -> Nil {
 @external(erlang, \"dep_ffi\", \"hidden\")
 fn hidden() -> Nil
 ",
-    )
-  violation.function |> should.equal("caller")
-  violation.explanation.actual
-  |> types.contains_unknown
-  |> should.be_true
+  )
+  |> should.equal([])
 }
 
 // A fallback body calling a function-typed field on an annotated parameter,

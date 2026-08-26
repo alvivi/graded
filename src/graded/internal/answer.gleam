@@ -50,21 +50,27 @@ pub type EffectAnswer {
 // that body's contribution themselves, so no answer can state a fallback half
 // beside a source that already accounts for the whole term.
 pub type AnswerSource {
-  // The entry the lookup returned, and which map it came from, beside what a
-  // Gleam fallback body running on an uncovered target contributed to the term.
-  // The source speaks for the declaration only, so without that half the union
-  // would read as what the declaration said.
-  Entry(entry: types.EffectSource, fallback: Option(EffectTerm))
+  // The entry the lookup returned, and which map it came from, beside where
+  // what a Gleam fallback body running on an uncovered target did stands in
+  // the term — contributed to it, or suppressed out of it by the `assume`
+  // line. The source speaks for the declaration only, so without that half a
+  // union would read as what the declaration said, and a suppressed body
+  // would go unmentioned.
+  Entry(
+    entry: types.EffectSource,
+    fallback: types.FallbackDisposition(EffectTerm),
+  )
   // A function whose implementation is foreign code — an `@external` — that
   // nothing declares. The entries the knowledge base holds for such a name were
   // inferred over a body the foreign implementation needn't match, so none of
   // them answers, and the effects are the `[Unknown]` `check` and `why` charge
-  // for it, unioned with whatever a running Gleam fallback body does.
+  // for it, unioned with whatever a running Gleam fallback body does. Nothing
+  // declares the name, so its fallback half is never the suppressed one.
   //
   // The bounds beside it bind that fallback's variables: a fallback that calls
   // a function-typed parameter states its effects over the parameter, and
   // without them the line names a variable nothing introduces.
-  UndeclaredExternal(fallback: Option(EffectTerm))
+  UndeclaredExternal(fallback: types.FallbackDisposition(EffectTerm))
   // A function whose implementation is foreign code, whose declaration names
   // only targets this build does not compile, and which no Gleam body runs in
   // the place of: nothing this build reaches implements the name at all. What
@@ -212,31 +218,50 @@ const undeclared_external_source = "an external with no declared effects"
 // The fallback half of a source that carries one. The other two sources carry
 // none: a body running in an unreached declaration's place is the whole of the
 // term, not a half added to it, and there is nothing to name beside it.
-fn source_fallback(source: AnswerSource) -> Option(EffectTerm) {
+//
+// The one funnel both renderers read, and the disposition travels through it
+// whole: whether the half was charged or suppressed is matched at each
+// renderer, so neither can print union wording over a term the body is no
+// part of.
+fn source_fallback(
+  source: AnswerSource,
+) -> types.FallbackDisposition(EffectTerm) {
   case source {
     Entry(fallback:, ..) | UndeclaredExternal(fallback:) -> fallback
-    UnreachedDeclaration | RunningFallbackBody -> None
+    UnreachedDeclaration | RunningFallbackBody -> types.NoFallback
   }
 }
 
 // The half of the answer the declaration does not account for, named apart from
-// it so neither is credited with the other's effects.
-fn graded_fallback(fallback: Option(EffectTerm)) -> String {
+// it so neither is credited with the other's effects — or the half the
+// `assume` line dropped, named so a body that runs is not read as absent.
+fn graded_fallback(fallback: types.FallbackDisposition(EffectTerm)) -> String {
   case fallback {
-    None -> ""
-    Some(term) ->
+    types.NoFallback -> ""
+    types.FallbackCharged(term) ->
       "\n// unioned with its Gleam fallback body, which runs on the targets its"
       <> " `@external` declares no implementation for: "
+      <> annotation.format_effect_term(effect_term.normalize(term))
+    types.FallbackSuppressed(term) ->
+      "\n// its Gleam fallback body runs on the targets its `@external` declares"
+      <> " no implementation for; its charge is suppressed by the `assume` line: "
       <> annotation.format_effect_term(effect_term.normalize(term))
   }
 }
 
-fn prose_fallback(fallback: Option(EffectTerm)) -> List(String) {
+fn prose_fallback(
+  fallback: types.FallbackDisposition(EffectTerm),
+) -> List(String) {
   case fallback {
-    None -> []
-    Some(term) -> [
+    types.NoFallback -> []
+    types.FallbackCharged(term) -> [
       "  plus its Gleam fallback body, which runs on the targets its `@external`"
       <> " declares no implementation for: "
+      <> annotation.format_effect_term(effect_term.normalize(term)),
+    ]
+    types.FallbackSuppressed(term) -> [
+      "  its Gleam fallback body runs on the targets its `@external` declares no"
+      <> " implementation for; the `assume` line suppresses its charge: "
       <> annotation.format_effect_term(effect_term.normalize(term)),
     ]
   }
