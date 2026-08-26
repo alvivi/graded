@@ -1883,6 +1883,62 @@ pub fn via_helper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_ground_assume_rebinds_the_suppressed_share_through_a_helper_test() {
+  // The bounded `assume` charges a ground `[Time]`, so the helper's walk hands
+  // its caller calls with no variable in any *term* — the only variable left
+  // is in the suppressed share, stated over the helper's own parameter. The
+  // local re-attribution binds that share too: `via_helper`'s explanation
+  // quotes `[Disk]`, the body's charge at this call site, not `[Unknown]`.
+  let root = "build/external_fallback_helper_ground"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext.run(action: [action]) : [Time]
+assume app.disk : [Disk]
+check app.via_helper : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(action: fn() -> Nil) -> Nil {
+  action()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+
+fn helper(f: fn() -> Nil) -> Nil {
+  ext.run(f)
+}
+
+pub fn via_helper() -> Nil {
+  helper(disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("via_helper")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Time"])))
+  violation.explanation.fallback
+  |> should.equal(
+    types.FallbackSuppressed(types.Specific(set.from_list(["Disk"]))),
+  )
+  support.cleanup(root)
+}
+
 pub fn a_phantom_binder_is_weighed_as_the_unknown_it_is_test() {
   // `lib.leaky`'s committed term carries a variable that is nobody's parameter
   // — the shape an application graded could not resolve leaves behind. A caller
