@@ -3347,9 +3347,10 @@ fn infer_one_module(
 // effects, param bounds, and returned operators into `base_kb` — with existing
 // (spec / dependency) entries taking priority, so committed effects are never
 // overridden. This lets `check` resolve calls into project modules that haven't
-// been `graded infer`-ed yet, without writing the cache. Falls back to
-// `base_kb` unchanged when the import graph has a cycle (the real
-// `graded infer` reports that error; `check` just degrades to spec-only).
+// been `graded infer`-ed yet, without writing the cache. When the import graph
+// has a cycle the pass is skipped (the real `graded infer` reports that error;
+// `check` degrades to spec-only), but each running fallback's callback shape
+// is still recorded beside the `[Unknown]` its unwalked body carries.
 fn infer_project_in_memory(
   base_kb: KnowledgeBase,
   index: Dict(String, #(String, glance.Module)),
@@ -3359,7 +3360,19 @@ fn infer_project_in_memory(
   package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
   case topo.sort(build_dependency_graph(index)) {
-    Error(_) -> base_kb
+    Error(_) ->
+      dict.fold(index, base_kb, fn(kb, module_path, entry) {
+        let #(_gleam_path, module) = entry
+        fold_fallback_summaries(
+          kb,
+          module_path,
+          checker.unwalked_fallback_effects(
+            module,
+            typeinfo.fn_typed_for_module(type_info, module_path),
+            package_targets,
+          ),
+        )
+      })
     Ok(sorted) ->
       list.fold(sorted, base_kb, fn(kb, module_path) {
         case dict.get(index, module_path) {
@@ -3814,10 +3827,26 @@ fn with_dependency_fallback_effects(
 ) -> KnowledgeBase {
   let retained = retained_fallback_modules(dep_sources)
   use <- bool.guard(when: dict.is_empty(retained), return: knowledge_base)
-  use kb, #(module_path, retained) <- list.fold(
-    dependency_walk_order(retained),
-    knowledge_base,
-  )
+  let #(ordered, cyclic) = dependency_walk_order(retained)
+  // A cycle member's body is never walked, but its callback shape is still
+  // recorded beside the `[Unknown]` an unwalked body carries.
+  let knowledge_base =
+    list.fold(cyclic, knowledge_base, fn(kb, entry) {
+      let #(module_path, retained) = entry
+      case read_and_parse_gleam_or_nil(retained.source_path) {
+        Error(Nil) -> kb
+        Ok(module) ->
+          fold_fallback_summaries(
+            kb,
+            module_path,
+            checker.unwalked_dependency_fallback_effects(
+              module,
+              package_targets,
+            ),
+          )
+      }
+    })
+  use kb, #(module_path, retained) <- list.fold(ordered, knowledge_base)
   // A re-parse that fails is the `UnreadableModule` case one stage later: the
   // module is skipped, and its externals keep the `[Unknown]` an unwalked body
   // carries.
@@ -3879,23 +3908,31 @@ fn retained_fallback_modules(
 // Expected acyclic, because the winning copies are the ones the build compiles
 // against and the compiler accepted that set — but not relied on, which is why
 // the components rather than a plain sort: `scc_order` groups a cycle instead of
-// rejecting the whole graph, so the modules that *can* be ordered still are, and
-// only the members of a cycle are dropped. Those keep today's `[Unknown]`, and a
-// module merely downstream of one reads it as an ordinary unwalked name.
+// rejecting the whole graph, so the modules that *can* be ordered still are.
+// A component of more than one module is a cycle: its members import each
+// other, so no order settles either against the other's summary. Those come
+// back in the second list, walked by nothing, so their callback shapes can
+// still be recorded; a module merely downstream of one reads it as an
+// ordinary unwalked name.
 fn dependency_walk_order(
   retained: Dict(String, RetainedModule),
-) -> List(#(String, RetainedModule)) {
+) -> #(List(#(String, RetainedModule)), List(#(String, RetainedModule))) {
   let components = topo.scc_order(fallback_import_graph(retained))
   warn_on_cyclic_modules(components)
-  use component <- list.filter_map(components)
-  // A component of more than one module is a cycle: its members import each
-  // other, so no order settles either against the other's summary.
-  use module_path <- result.try(case component {
-    [only] -> Ok(only)
-    _ -> Error(Nil)
-  })
-  dict.get(retained, module_path)
-  |> result.map(fn(retained) { #(module_path, retained) })
+  let resolve = fn(paths: List(String)) {
+    list.filter_map(paths, fn(module_path) {
+      dict.get(retained, module_path)
+      |> result.map(fn(retained) { #(module_path, retained) })
+    })
+  }
+  let #(ordered, cyclic) =
+    list.partition(components, fn(component) {
+      case component {
+        [_] -> True
+        _ -> False
+      }
+    })
+  #(resolve(list.flatten(ordered)), resolve(list.flatten(cyclic)))
 }
 
 // Name the modules dropped for importing each other, once for the whole graph.

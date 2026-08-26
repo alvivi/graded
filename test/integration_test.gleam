@@ -1883,6 +1883,68 @@ pub fn via_helper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn an_unwalked_fallback_still_charges_the_callback_test() {
+  // The `c`/`d` import cycle aborts the whole in-memory pass, so `a.run`'s
+  // fallback body is never walked and its summary would be absent. The
+  // callback shape is recorded anyway: under the boundless `assume`, a direct
+  // call and the operator channel both charge the `[Disk]` callback beside
+  // the declared `[Time]`, instead of the value channel lifting the declared
+  // term alone.
+  let root = "build/external_fallback_unwalked"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume a.run : [Time]
+assume a.disk : [Disk]
+check b.direct : []
+check b.via_operator : []
+",
+    ),
+    #(
+      "a.gleam",
+      "@external(javascript, \"a\", \"r\")
+pub fn run(action: fn() -> Nil) -> Nil {
+  action()
+}
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+",
+    ),
+    #(
+      "b.gleam",
+      "import a
+
+pub fn direct() -> Nil {
+  a.run(a.disk)
+}
+
+fn invoke(op: fn(fn() -> Nil) -> Nil, x: fn() -> Nil) -> Nil {
+  op(x)
+}
+
+pub fn via_operator() -> Nil {
+  invoke(a.run, a.disk)
+}
+",
+    ),
+    #("c.gleam", "import d\n\npub fn go() -> Nil {\n  d.go()\n}\n"),
+    #("d.gleam", "import c\n\npub fn go() -> Nil {\n  c.go()\n}\n"),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) = list.find(results, fn(r) { r.file == root <> "/b.gleam" })
+  ["direct", "via_operator"]
+  |> list.each(fn(function) {
+    let assert Ok(violation) =
+      list.find(r.violations, fn(v) { v.function == function })
+    violation.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+  })
+  support.cleanup(root)
+}
+
 pub fn a_narrowed_walk_still_charges_the_callback_test() {
   // `outer`'s fallback runs on javascript alone, and `inner` declares
   // javascript — so from inside that walk `inner`'s own fallback is out of
@@ -11083,6 +11145,88 @@ pub fn shout() -> Nil
 // graph to be acyclic would have nothing to fall back on. Both modules are
 // dropped from the walk and keep the `[Unknown]` an unwalked body carries, and
 // the rest of the run carries on.
+pub fn a_cyclic_dependency_fallback_still_charges_the_callback_test() {
+  // `dep/x` and `dep/y` import each other, so neither fallback body is
+  // walked — the suppressed share is the `[Unknown]` an unwalked body
+  // carries. The callback shape is recorded anyway: under the shipped
+  // boundless-for-`action` line, the direct call and the operator channel
+  // both charge the `[Disk]` callback beside the declared `[Time]`.
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/dep_fallback_cycle_callback",
+      package: "proj",
+      spec: "assume proj.disk : [Disk]
+check proj.direct : []
+check proj.via_operator : []
+",
+      sources: [
+        #(
+          "proj.gleam",
+          "import dep/x
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+pub fn disk() -> Nil
+
+pub fn direct() -> Nil {
+  x.run(disk)
+}
+
+fn invoke(op: fn(fn() -> Nil) -> Nil, cb: fn() -> Nil) -> Nil {
+  op(cb)
+}
+
+pub fn via_operator() -> Nil {
+  invoke(x.run, disk)
+}
+",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: "assume dep/x.run : [Time]\nassume dep/y.tick : []\n",
+      dependency_sources: [
+        #(
+          "dep/x.gleam",
+          "import dep/y
+
+@external(javascript, \"x\", \"r\")
+pub fn run(action: fn() -> Nil) -> Nil {
+  y.tick()
+  action()
+}
+",
+        ),
+        #(
+          "dep/y.gleam",
+          "import dep/x
+
+@external(javascript, \"y\", \"t\")
+pub fn tick() -> Nil {
+  x.run(fn() { Nil })
+}
+",
+        ),
+      ],
+    )
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
+  ["direct", "via_operator"]
+  |> list.each(fn(function) {
+    let assert Ok(violation) =
+      list.find(r.violations, fn(v) { v.function == function })
+    violation.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+  })
+  let assert Ok(direct) =
+    list.find(r.violations, fn(v) { v.function == "direct" })
+  direct.explanation.fallback
+  |> should.equal(
+    types.FallbackSuppressed(types.Specific(set.from_list(["Unknown"]))),
+  )
+  support.cleanup(root)
+}
+
 pub fn a_cycle_between_dependency_fallbacks_stays_unknown_test() {
   let root =
     support.write_project_with_dependency(

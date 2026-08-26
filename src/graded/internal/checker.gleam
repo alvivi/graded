@@ -960,6 +960,57 @@ pub fn dependency_fallback_effects(
   )
 }
 
+// The summaries an aborted walk still owes. An import cycle skips the walk
+// entirely, leaving each running fallback the `[Unknown]` an unwalked body
+// carries — recorded here with the callback shape the walk would have
+// recorded beside it, so a suppressing line's conservative charge and the
+// call-site binding read the same bounds whether the body was walked or not.
+pub fn unwalked_fallback_effects(
+  module: Module,
+  girard_fn_typed: dict.Dict(String, Set(String)),
+  package_targets: types.PackageTargets,
+) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
+  unwalked_summaries(
+    list.filter(module.functions, fn(definition) {
+      foreign_definition(definition, package_targets)
+      && runs_fallback_body(definition, package_targets)
+    }),
+    girard_fn_typed,
+  )
+}
+
+// The same, for a dependency module the walk order dropped for importing
+// another in a cycle.
+pub fn unwalked_dependency_fallback_effects(
+  module: Module,
+  package_targets: types.PackageTargets,
+) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
+  unwalked_summaries(
+    list.filter(module.functions, fn(definition) {
+      extract.declares_external(definition)
+      && has_running_fallback(definition, package_targets)
+    }),
+    dict.new(),
+  )
+}
+
+fn unwalked_summaries(
+  targets: List(Definition(Function)),
+  girard_fn_typed: dict.Dict(String, Set(String)),
+) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
+  targets
+  |> list.map(fn(definition) {
+    let bounds =
+      synthetic_fn_typed_bounds(unbound_fn_typed_params(
+        definition,
+        [],
+        girard_fn_typed,
+      ))
+    #(definition.definition.name, #(effect_term.unknown(), bounds))
+  })
+  |> dict.from_list
+}
+
 // Summarize each of `targets`, which either selector above chose from
 // `module.functions`. The whole module comes along because a fallback body's
 // unqualified calls are resolved against every function beside it — a sibling
