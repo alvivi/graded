@@ -633,16 +633,14 @@ pub fn declared_charge(
   case halves, fallback {
     // Every target this walk runs on has a foreign implementation for `name`, so
     // its Gleam fallback runs only where this walk does not reach. A boundless
-    // suppressing line still keeps the conservative callback charge on this
-    // reading: the foreign implementation may call the callback too, and the
-    // recorded summary bounds stand in for the registry injection they
-    // pre-empt at the call site.
+    // declaration — suppressing or not — still keeps the conservative callback
+    // charge on this reading: the foreign implementation may call the callback
+    // too, the fallback term that would otherwise carry it is no part of the
+    // total, and the recorded summary bounds stand in for the registry
+    // injection they pre-empt at the call site.
     DeclarationOnly, _ ->
       ForeignCharge(
-        term: case suppressed {
-          True -> suppressing_charge_term(knowledge_base, name, declared)
-          False -> declared
-        },
+        term: conservative_callback_charge(knowledge_base, name, declared),
         fallback: types.NoFallback,
         declaration: DeclarationCharged,
       )
@@ -669,7 +667,7 @@ pub fn declared_charge(
       case suppressed {
         True ->
           ForeignCharge(
-            term: suppressing_charge_term(knowledge_base, name, declared),
+            term: conservative_callback_charge(knowledge_base, name, declared),
             fallback: types.FallbackSuppressed(fallback),
             declaration: DeclarationCharged,
           )
@@ -689,16 +687,18 @@ pub fn declared_charge(
   }
 }
 
-// The term a suppressing line charges. A bounded line wrote its own answer
-// for the external's callbacks and stays as written. A boundless line says
-// nothing about them, so the charge keeps one variable per recorded callback
-// parameter — the same conservative share a direct call auto-injects from the
-// registry, kept here so a value channel (an operator argument, a wired
-// field) charges the callback too — while the body's own charge stays
-// suppressed beside it. Only the parameter-named bounds qualify: a dotted
-// field bound (`r.go`) exists solely to bind the suppressed body's own field
-// call, and reviving it would charge the share the line dropped.
-fn suppressing_charge_term(
+// The term a declaration charges where the fallback term carries no part of
+// the total — a suppressing line, whose body share is held apart, or a
+// declaration-only reading, whose fallback is out of reach. A bounded line
+// wrote its own answer for the external's callbacks and stays as written. A
+// boundless one says nothing about them, so the charge keeps one variable per
+// recorded callback parameter — the same conservative share a direct call
+// auto-injects from the registry, kept here so a value channel (an operator
+// argument, a wired field) charges the callback too. Only the parameter-named
+// bounds qualify: a dotted field bound (`r.go`) exists solely to bind the
+// body's own field call, and reviving it would charge the share the reading
+// dropped.
+fn conservative_callback_charge(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
   declared: EffectTerm,
