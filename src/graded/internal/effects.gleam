@@ -622,16 +622,13 @@ pub fn declared_charge(
     Some(#(term, _origin)) -> term
     None -> effect_term.unknown()
   }
-  // The self-referential rewrite exists because of the union: one call-site
-  // bound list serves both halves. A suppressing declaration answers alone
-  // over its own line's bounds, so its term stays as written —
-  // `lookup_param_bounds` keeps that line's bounds leading off the same
-  // predicate, with the fallback summary's behind them for the suppressed
-  // share.
-  let declared = case suppressed {
-    True -> raw
-    False -> declared_beside_fallback(knowledge_base, name, raw)
-  }
+  // One call-site bound list serves both halves, suppressed or not: the
+  // self-referential rewrite renames each declared payload variable to the
+  // parameter that binds it, so the declared term and the fallback summary —
+  // charged as a union, or held apart as a suppressed share — keep distinct
+  // variables for distinct parameters and each binds exactly its own
+  // argument. `lookup_param_bounds` serves the matching rewritten list.
+  let declared = declared_beside_fallback(knowledge_base, name, raw)
   let fallback = running_fallback_term(knowledge_base, name)
   case halves, fallback {
     // Every target this walk runs on has a foreign implementation for `name`, so
@@ -772,23 +769,10 @@ fn raw_declaration(
   }
 }
 
-// Whether a suppressing declaration answers for `name`'s charge — the one
-// selection point both the charged term and the call-site bound list ride, so
-// the term dropping the fallback while the bounds still ride the merged
-// rewritten list cannot happen. False where only the fallback is in reach:
-// there the body answers instead and its bounds must keep binding its term.
-fn suppressed_declaration(
-  knowledge_base: KnowledgeBase,
-  name: QualifiedName,
-) -> Bool {
-  suppressing_declaration(
-    raw_declaration(knowledge_base, name),
-    reachable_halves(knowledge_base, name),
-  )
-}
-
-// The same selection over halves a caller already derived, so `declared_charge`
-// decides once off the values its arms match on.
+// Whether a suppressing declaration answers for `name`'s charge, over halves
+// the caller already derived — `declared_charge` decides once off the values
+// its arms match on. False where only the fallback is in reach: there the
+// body answers instead and its bounds must keep binding its term.
 fn suppressing_declaration(
   declaration: Option(#(EffectTerm, LookupOrigin)),
   halves: ReachableHalves,
@@ -1307,22 +1291,13 @@ pub fn argument_value_effects(
 // over exactly those parameters, including a girard-typed callback no other
 // source names. A per-function bound list — a bounded `assume` line over the
 // fallback-running external — rides *with* them rather than standing down:
-// the foreign charge unions the declared term with the fallback summary's,
-// and each half's variables bind only through its own bounds. The declaring
-// line's list rides in its `self_referential_declaration` half — the pair of
-// the term rewrite `declared_beside_fallback` applies — so a shared name
-// between the halves is always the same parameter binding the same argument.
-// Exact duplicates are dropped, so the common case stays one list.
-//
-// Under a suppressing declaration there is no union, but the list is still
-// both halves': the charge is the declared line's term as written, bound by
-// that line's own bounds, un-rewritten and leading — while the suppressed
-// share is stated over the fallback summary's own parameter names, so the
-// summary's bounds ride behind them. A line whose bound decouples its payload
-// from the parameter name (`cb: [e]`) then still binds the share's `cb` at
-// the call site. A summary bound whose payload variable the line's own
-// payloads already bind is dropped: the line's binding stands, and a
-// same-named fallback parameter cannot rebind the declared term's variable.
+// each half's variables bind only through its own bounds, whether the foreign
+// charge unions the two terms or holds the summary's apart as a suppressed
+// share. The declaring line's list rides in its `self_referential_declaration`
+// half — the pair of the term rewrite `declared_beside_fallback` applies — so
+// a shared name between the halves is always the same parameter binding the
+// same argument. Exact duplicates are dropped, so the common case stays one
+// list.
 pub fn lookup_param_bounds(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -1332,30 +1307,15 @@ pub fn lookup_param_bounds(
     Error(Nil) -> []
   }
   case dict.get(knowledge_base.fallback_summaries, name) {
-    Ok(#(_term, fallback_bounds)) ->
-      case suppressed_declaration(knowledge_base, name) {
-        True -> {
-          let taken = bound_payload_variables(declared)
-          list.append(
-            declared,
-            list.filter(fallback_bounds, fn(bound) {
-              set.is_empty(set.intersection(
-                effect_term.free_vars(bound.effects),
-                taken,
-              ))
-            }),
-          )
-        }
-        False -> {
-          let #(declared, _rename) = self_referential_declaration(declared)
-          list.append(
-            fallback_bounds,
-            list.filter(declared, fn(bound) {
-              !list.contains(fallback_bounds, bound)
-            }),
-          )
-        }
-      }
+    Ok(#(_term, fallback_bounds)) -> {
+      let #(declared, _rename) = self_referential_declaration(declared)
+      list.append(
+        fallback_bounds,
+        list.filter(declared, fn(bound) {
+          !list.contains(fallback_bounds, bound)
+        }),
+      )
+    }
     Error(Nil) -> declared
   }
 }
