@@ -11,13 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - An `assume` line over your own or a dependency's `@external` now answers
   alone even where a Gleam fallback body runs; previously the body's effects
-  were unioned into what callers pay. The external's own `check` line still
-  weighs the body, every explanation of the charge quotes the suppressed half,
-  and a written `assume … where returns` clause on such a name is now trusted
-  too, where it was previously refused whole. A boundless line still charges
-  each function-typed argument's actual effects on top of the declared term,
-  on every call shape. Catalog and module-level assumptions still take the
-  union.
+  were unioned into what callers pay. Explanations quote the suppressed half,
+  the external's own `check` line still weighs the body, and catalog and
+  module-level assumptions keep the union.
+- A written `assume … where returns` clause on such an external is now
+  trusted, where it was previously refused whole.
+- A boundless `assume` over a higher-order external still charges each
+  callback argument's actual effects, on every call shape.
+
+### Fixed
+
+- A call from inside a walked fallback body to an external declared for the
+  walk's targets now charges its callback arguments beside the declaration,
+  instead of the declaration alone.
+- An import cycle no longer drops a higher-order external's callback charge:
+  callers pay each callback argument's effects beside the body's `[Unknown]`.
 
 ## [0.17.0] - 2026-08-26
 
@@ -52,16 +60,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file.
 - A statement past 80 columns wraps its `where` region onto an indented
   continuation, one clause per line; the reader accepts either form.
-
-### Fixed
-
-- A higher-order external read where its declaration covers every target —
-  from inside another fallback body's walk — now charges each function-typed
-  argument's effects beside the declaration, instead of reading the call as
-  the declaration alone.
-- An import cycle no longer drops a higher-order external's callback charge:
-  callers pay each callback argument's effects beside the `[Unknown]` its
-  unwalked fallback reads as, on every call shape.
 
 ### Fixed
 
