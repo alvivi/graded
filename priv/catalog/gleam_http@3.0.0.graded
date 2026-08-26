@@ -1,5 +1,7 @@
 // gleam_http — pure HTTP types and request/response builders
 
 assume gleam/http : []
+assume gleam/http/cookie : []
 assume gleam/http/request : []
 assume gleam/http/response : []
+assume gleam/http/service : []

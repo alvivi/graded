@@ -1,3 +1,10 @@
 // gleam_httpc — HTTP client
 
+assume gleam/httpc.configure : []
+assume gleam/httpc.dispatch : [Http]
+assume gleam/httpc.dispatch_bits : [Http]
+assume gleam/httpc.follow_redirects : []
 assume gleam/httpc.send : [Http]
+assume gleam/httpc.send_bits : [Http]
+assume gleam/httpc.timeout : []
+assume gleam/httpc.verify_tls : []

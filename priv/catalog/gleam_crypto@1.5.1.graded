@@ -1,3 +1,5 @@
-// gleam_crypto — pure cryptographic functions
+// gleam_crypto — cryptographic functions
 
 assume gleam/crypto : []
+
+assume gleam/crypto.strong_random_bytes : [Random]

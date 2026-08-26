@@ -22,6 +22,8 @@ assume gleam/function : []
 assume gleam/iterator : []
 assume gleam/queue : []
 
+assume gleam/float.random : [Random]
+assume gleam/int.random : [Random]
 assume gleam/io.println : [Stdout]
 assume gleam/io.print : [Stdout]
 assume gleam/io.debug : [Stdout]

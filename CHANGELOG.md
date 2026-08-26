@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Catalog entries for the 1.x majors of `gleam_stdlib`, `gleam_erlang` and
+  `gleam_otp`. The old majors stay bundled, so older installs keep resolving.
 - An `assume` line over a function takes a bound list.
   `assume myapp/ffi.each(f: [f]) : [f]` charges a caller the callback
   argument's actual effects, and `assume myapp/ffi.wrap(cb: [cb]) : []
@@ -22,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The catalog entries for `simplifile`, `gleam_httpc`, `gleam_http` and
+  lustre's `server_component` now cover their full surfaces, resolving calls
+  that previously read `[Unknown]`.
+- `gleam/crypto.strong_random_bytes`, `gleam/float.random` and
+  `gleam/int.random` are now charged `[Random]` instead of reading as pure.
 - An `assume` line's `where returns` clause is accepted when the line's own
   bounds scope its variables, instead of being dropped for not being ground;
   the warning for an unscoped clause lists only the open variables.

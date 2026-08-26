@@ -29,6 +29,17 @@ assume lustre.register : [Dom]
 assume lustre.is_registered : [Dom]
 assume lustre.factory : [Process]
 
+// lustre/server_component — pure builders and codecs
+assume lustre/server_component.client_message_to_json : []
+assume lustre/server_component.csrf_token : []
+assume lustre/server_component.element : []
+assume lustre/server_component.include : []
+assume lustre/server_component.method : []
+assume lustre/server_component.route : []
+assume lustre/server_component.runtime_message_decoder : []
+assume lustre/server_component.script : []
+assume lustre/server_component.select : []
+
 // lustre/server_component — effectful runtime management
 assume lustre/server_component.subject : [Process]
 assume lustre/server_component.pid : [Process]
