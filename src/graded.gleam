@@ -3948,7 +3948,8 @@ fn warn_on_cyclic_modules(components: List(List(String))) -> Nil {
   io.println_error(
     "graded: warning: dependency modules import each other in a cycle ("
     <> string.join(list.sort(cyclic, string.compare), ", ")
-    <> "); their Gleam fallback bodies are not walked and read as [Unknown]",
+    <> "); their Gleam fallback bodies are not walked, and each charges an "
+    <> "[Unknown] share beside any callback it may call",
   )
 }
 
