@@ -965,6 +965,10 @@ pub fn dependency_fallback_effects(
 // carries — recorded here with the callback shape the walk would have
 // recorded beside it, so a suppressing line's conservative charge and the
 // call-site binding read the same bounds whether the body was walked or not.
+// The term carries the callback variables too: an unwalked body may call any
+// of them, and a reading that unions this term pays each callback argument's
+// effects beside the `[Unknown]`, named where the walk could not name the
+// rest.
 pub fn unwalked_fallback_effects(
   module: Module,
   girard_fn_typed: dict.Dict(String, Set(String)),
@@ -1006,7 +1010,14 @@ fn unwalked_summaries(
         [],
         girard_fn_typed,
       ))
-    #(definition.definition.name, #(effect_term.unknown(), bounds))
+    let term =
+      effect_term.normalize(
+        TUnion([
+          effect_term.unknown(),
+          ..list.map(bounds, fn(bound) { TVar(bound.name) })
+        ]),
+      )
+    #(definition.definition.name, #(term, bounds))
   })
   |> dict.from_list
 }
