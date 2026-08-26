@@ -1883,6 +1883,52 @@ pub fn via_helper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_narrowed_walk_still_charges_the_callback_test() {
+  // `outer`'s fallback runs on javascript alone, and `inner` declares
+  // javascript — so from inside that walk `inner`'s own fallback is out of
+  // reach and the boundless `assume` answers by itself. The conservative
+  // callback charge still applies on that reading: `inner(disk)` in the
+  // walked body charges `[Disk]`, so `outer`'s own line fails its `[]`
+  // budget instead of reading the body as pure.
+  let root = "build/external_fallback_narrowed_walk"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext.outer : []
+assume ext.inner : []
+assume ext.disk : [Disk]
+check ext.outer : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(erlang, \"o\", \"o\")
+pub fn outer() -> Nil {
+  inner(disk)
+}
+
+@external(javascript, \"i\", \"i\")
+pub fn inner(action: fn() -> Nil) -> Nil {
+  action()
+}
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+pub fn disk() -> Nil
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("outer")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
 pub fn a_value_channel_charges_the_callback_under_a_boundless_assume_test() {
   // `ext.run` handed around as a value instead of called directly: as an
   // operator argument, and wired into a record field. The boundless `assume`

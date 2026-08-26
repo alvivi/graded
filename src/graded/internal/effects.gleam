@@ -635,10 +635,17 @@ pub fn declared_charge(
   let fallback = running_fallback_term(knowledge_base, name)
   case halves, fallback {
     // Every target this walk runs on has a foreign implementation for `name`, so
-    // its Gleam fallback runs only where this walk does not reach.
+    // its Gleam fallback runs only where this walk does not reach. A boundless
+    // suppressing line still keeps the conservative callback charge on this
+    // reading: the foreign implementation may call the callback too, and the
+    // recorded summary bounds stand in for the registry injection they
+    // pre-empt at the call site.
     DeclarationOnly, _ ->
       ForeignCharge(
-        term: declared,
+        term: case suppressed {
+          True -> suppressing_charge_term(knowledge_base, name, declared)
+          False -> declared
+        },
         fallback: types.NoFallback,
         declaration: DeclarationCharged,
       )
