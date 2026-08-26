@@ -1945,6 +1945,68 @@ pub fn via_operator() -> Nil {
   support.cleanup(root)
 }
 
+pub fn an_unwalked_union_still_charges_the_callback_test() {
+  // The `c`/`d` cycle skips every walk, and the module-level `assume` never
+  // suppresses, so a caller pays the declaration unioned with the `[Unknown]`
+  // the unwalked body reads as. The callback rides that union too — the
+  // unwalked body may call it — so a budget admitting `[Time, Unknown]`
+  // still fails on the known `[Disk]`, on the direct call and through the
+  // operator channel alike.
+  let root = "build/external_fallback_unwalked_union"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume a : [Time]
+assume a.disk : [Disk]
+check b.direct : [Time, Unknown]
+check b.via_operator : [Time, Unknown]
+",
+    ),
+    #(
+      "a.gleam",
+      "@external(javascript, \"a\", \"r\")
+pub fn run(action: fn() -> Nil) -> Nil {
+  action()
+}
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+",
+    ),
+    #(
+      "b.gleam",
+      "import a
+
+pub fn direct() -> Nil {
+  a.run(a.disk)
+}
+
+fn invoke(op: fn(fn() -> Nil) -> Nil, x: fn() -> Nil) -> Nil {
+  op(x)
+}
+
+pub fn via_operator() -> Nil {
+  invoke(a.run, a.disk)
+}
+",
+    ),
+    #("c.gleam", "import d\n\npub fn go() -> Nil {\n  d.go()\n}\n"),
+    #("d.gleam", "import c\n\npub fn go() -> Nil {\n  c.go()\n}\n"),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) = list.find(results, fn(r) { r.file == root <> "/b.gleam" })
+  ["direct", "via_operator"]
+  |> list.each(fn(function) {
+    let assert Ok(violation) =
+      list.find(r.violations, fn(v) { v.function == function })
+    violation.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Disk", "Time", "Unknown"])))
+  })
+  support.cleanup(root)
+}
+
 pub fn a_module_declaration_read_alone_still_charges_the_callback_test() {
   // The same declaration-only reading as above, under a *module-level*
   // declaration — one that never suppresses. `inner`'s recorded summary
@@ -11192,10 +11254,11 @@ pub fn shout() -> Nil
 // the rest of the run carries on.
 pub fn a_cyclic_dependency_fallback_still_charges_the_callback_test() {
   // `dep/x` and `dep/y` import each other, so neither fallback body is
-  // walked — the suppressed share is the `[Unknown]` an unwalked body
-  // carries. The callback shape is recorded anyway: under the shipped
+  // walked. The callback shape is recorded anyway: under the shipped
   // boundless-for-`action` line, the direct call and the operator channel
-  // both charge the `[Disk]` callback beside the declared `[Time]`.
+  // both charge the `[Disk]` callback beside the declared `[Time]`, and the
+  // suppressed share quotes what the unwalked body reads as — its `[Unknown]`
+  // plus the callback it may call, bound to this call's `[Disk]`.
   let root =
     support.write_project_with_dependency(
       directory: "build/dep_fallback_cycle_callback",
@@ -11267,7 +11330,7 @@ pub fn tick() -> Nil {
     list.find(r.violations, fn(v) { v.function == "direct" })
   direct.explanation.fallback
   |> should.equal(
-    types.FallbackSuppressed(types.Specific(set.from_list(["Unknown"]))),
+    types.FallbackSuppressed(types.Specific(set.from_list(["Disk", "Unknown"]))),
   )
   support.cleanup(root)
 }
