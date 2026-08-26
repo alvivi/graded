@@ -1979,6 +1979,116 @@ pub fn uses() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_decoupled_bound_lifts_through_a_value_channel_test() {
+  // `assume ext.run(cb: [e]) : [e]` handed to a higher-order helper: the
+  // lift abstracts over the parameter name `cb`, and the charge's variable
+  // names the same parameter, so the application reduces to the callback's
+  // `[Disk]` — not the `[Unknown]` a payload variable left raw under the
+  // binder grounds to.
+  let root = "build/external_fallback_decoupled_lift"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext.run(cb: [e]) : [e]
+assume app.disk : [Disk]
+check app.via_operator : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(cb: fn() -> Nil) -> Nil {
+  cb()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+
+fn invoke(op: fn(fn() -> Nil) -> Nil, x: fn() -> Nil) -> Nil {
+  op(x)
+}
+
+pub fn via_operator() -> Nil {
+  invoke(ext.run, disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("via_operator")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  support.cleanup(root)
+}
+
+pub fn a_colliding_share_still_quotes_its_own_argument_test() {
+  // `assume ext.run(cb: [other]) : [Time, other]` beside a fallback that
+  // calls its *own* parameter named `other`: the declared payload and the
+  // fallback parameter are distinct variables even though they share a
+  // spelling. The charge binds through the `cb` argument — `[Time]` for a
+  // pure one — while the suppressed share binds through the `other`
+  // argument, quoting the `[Disk]` the body would actually have charged.
+  let root = "build/external_fallback_colliding_share"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext.run(cb: [other]) : [Time, other]
+assume ext.disk : [Disk]
+assume ext.noop : []
+check app.fallback_disk : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(cb: fn() -> Nil, other: fn() -> Nil) -> Nil {
+  other()
+}
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+pub fn disk() -> Nil
+
+@external(erlang, \"n\", \"n\")
+@external(javascript, \"n\", \"n\")
+pub fn noop() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+pub fn fallback_disk() -> Nil {
+  ext.run(ext.noop, ext.disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("fallback_disk")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Time"])))
+  violation.explanation.fallback
+  |> should.equal(
+    types.FallbackSuppressed(types.Specific(set.from_list(["Disk"]))),
+  )
+  support.cleanup(root)
+}
+
 pub fn a_value_channel_charges_the_callback_under_a_boundless_assume_test() {
   // `ext.run` handed around as a value instead of called directly: as an
   // operator argument, and wired into a record field. The boundless `assume`
