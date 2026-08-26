@@ -1945,6 +1945,51 @@ pub fn via_operator() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_module_declaration_read_alone_still_charges_the_callback_test() {
+  // The same declaration-only reading as above, under a *module-level*
+  // declaration — one that never suppresses. `inner`'s recorded summary
+  // bounds pre-empt the registry injection while its fallback half is out of
+  // the walk's reach, so nothing else carries the callback: the conservative
+  // charge applies to every boundless declaration read alone, and `outer`'s
+  // walked body weighs `inner(disk)` as `[Disk, Time]`.
+  let root = "build/external_fallback_module_narrowed"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext : [Time]
+assume ext.disk : [Disk]
+check ext.outer : [Time]
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"o\", \"o\")
+pub fn outer() -> Nil {
+  inner(disk)
+}
+
+@external(erlang, \"i\", \"i\")
+pub fn inner(action: fn() -> Nil) -> Nil {
+  action()
+}
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+pub fn disk() -> Nil
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("outer")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+  support.cleanup(root)
+}
+
 pub fn a_narrowed_walk_still_charges_the_callback_test() {
   // `outer`'s fallback runs on javascript alone, and `inner` declares
   // javascript — so from inside that walk `inner`'s own fallback is out of
