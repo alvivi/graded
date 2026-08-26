@@ -110,8 +110,10 @@ pub type KnowledgeBase {
     // What the Gleam fallback body of an `@external` does, where that body runs
     // — the targets its declaration leaves uncovered — paired with the
     // parameter bounds the term is stated over. Ordinary Gleam that runs, so
-    // every caller is charged it on top of whatever declares the external,
-    // exactly as the external's own `check` line covers both. Held apart from
+    // every caller is charged it on top of whatever declares the external —
+    // unless a suppressing declaration answers alone
+    // (`suppresses_running_fallback`) — while the external's own `check` line
+    // always covers both. Held apart from
     // `all_effects` because the declaration has to stay reportable on its own:
     // the two are unioned when a name is charged, and told apart when its
     // provenance is explained. The bounds stay beside the term they bind: which
@@ -541,12 +543,14 @@ pub fn with_fallback_summaries(
 //
 // One value, computed once per lookup, so no two readers assemble the halves
 // themselves and come to different totals: `term` is what a caller pays,
-// `fallback` is the half a running Gleam body contributed on its own, and
-// `declaration` says where what the declaration states stands in the charge.
+// `fallback` is where the half a running Gleam body contributed on its own
+// stands — charged into the total, or suppressed out of it by the winning
+// `assume` line — and `declaration` says where what the declaration states
+// stands in the charge.
 pub type ForeignCharge {
   ForeignCharge(
     term: EffectTerm,
-    fallback: Option(EffectTerm),
+    fallback: types.FallbackDisposition(EffectTerm),
     declaration: DeclarationStanding,
   )
 }
@@ -567,23 +571,50 @@ pub type DeclarationStanding {
   NothingImplementsName
 }
 
-// What `name` costs the code being walked, over the `declared` term whatever
-// declares it states — `[Unknown]` where nothing does.
+// The charge for `name` over what the base itself says declares it — the one
+// derivation behind every surface that answers "what does this name charge,
+// and from where". Each caller takes all three halves from the one value;
+// assembling them from separate calls is how one name came to be charged one
+// set by a caller and another by the query that reports it.
+//
+// The declared half is read raw from the base's own maps rather than taken
+// from a `lookup`: `lookup` widens an unwalked dependency declaration with
+// `[Unknown]` under the declaration's own source, and nothing downstream can
+// tell that half back out — a charge assembled over the widened term would
+// re-union the body a suppressing line dropped. The widening is re-derived on
+// the fallback half instead (`running_fallback_term` backstops with
+// `[Unknown]` off the same question), so every non-suppressed total comes out
+// as `lookup`'s reading does.
 //
 // The declaration alone is the whole story only where it covers every target the
 // walking code runs on. Where it doesn't, a Gleam fallback body runs, and that
 // body is ordinary code whose effects the caller pays too — so the charge is the
-// union. Composition is union, so a caller inherits both.
+// union. Composition is union, so a caller inherits both — unless the winning
+// declaration is one that suppresses the running fallback
+// (`suppresses_running_fallback`): a written `assume` is trusted whole, so the
+// charge is the declared term alone and the body's half rides beside it as
+// `FallbackSuppressed` for the diagnostics that say so.
 //
 // Both halves only where the walking code reaches both. From inside a fallback
 // body the targets are narrower than the package's, and the two halves answer
 // for different ones — see `reachable_halves`.
-pub fn foreign_charge(
+pub fn declared_charge(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
-  declared: EffectTerm,
 ) -> ForeignCharge {
-  let declared = declared_beside_fallback(knowledge_base, name, declared)
+  let suppressed = suppressed_declaration(knowledge_base, name)
+  let raw = case raw_declaration(knowledge_base, name) {
+    Some(#(term, _origin)) -> term
+    None -> effect_term.unknown()
+  }
+  // The self-referential rewrite exists because of the union: one call-site
+  // bound list serves both halves. A suppressing declaration answers alone
+  // over its own line's bounds, so its term stays as written —
+  // `lookup_param_bounds` makes the matching selection off the same predicate.
+  let declared = case suppressed {
+    True -> raw
+    False -> declared_beside_fallback(knowledge_base, name, raw)
+  }
   let fallback = running_fallback_term(knowledge_base, name)
   case reachable_halves(knowledge_base, name), fallback {
     // Every target this walk runs on has a foreign implementation for `name`, so
@@ -591,37 +622,117 @@ pub fn foreign_charge(
     DeclarationOnly, _ ->
       ForeignCharge(
         term: declared,
-        fallback: None,
+        fallback: types.NoFallback,
         declaration: DeclarationCharged,
       )
     // No foreign implementation on any target this walk runs on: the fallback
     // body is what it calls, and the declaration answers for targets it never
-    // reaches.
+    // reaches. Never suppressed — suppression there would charge a build that
+    // didn't happen.
     FallbackOnly, Some(fallback) ->
       ForeignCharge(
         term: fallback,
-        fallback: Some(fallback),
+        fallback: types.FallbackCharged(fallback),
         declaration: FallbackAnswersInstead,
       )
     FallbackOnly, None ->
       ForeignCharge(
         term: effect_term.unknown(),
-        fallback: None,
+        fallback: types.NoFallback,
         declaration: NothingImplementsName,
       )
-    // Both halves in reach, each on its own targets.
+    // Both halves in reach, each on its own targets: the union — or, under a
+    // suppressing declaration, the declared term alone with the body's half
+    // recorded as suppressed, so a report can still quote what was overridden.
     DeclarationAndFallback, Some(fallback) ->
-      ForeignCharge(
-        term: effect_term.normalize(types.TUnion([declared, fallback])),
-        fallback: Some(fallback),
-        declaration: DeclarationCharged,
-      )
+      case suppressed {
+        True ->
+          ForeignCharge(
+            term: declared,
+            fallback: types.FallbackSuppressed(fallback),
+            declaration: DeclarationCharged,
+          )
+        False ->
+          ForeignCharge(
+            term: effect_term.normalize(types.TUnion([declared, fallback])),
+            fallback: types.FallbackCharged(fallback),
+            declaration: DeclarationCharged,
+          )
+      }
     DeclarationAndFallback, None ->
       ForeignCharge(
         term: declared,
-        fallback: None,
+        fallback: types.NoFallback,
         declaration: DeclarationCharged,
       )
+  }
+}
+
+// Whether a declaring origin's line, in reach beside a running Gleam fallback
+// body, answers alone: the fallback half is dropped from the union on its
+// say-so. Only a *written* per-function line over the author's own body — the
+// consumer's `assume`, or the line a dependency's author shipped in their
+// spec. `assume` means trusted and never verified everywhere else in the
+// tool, and the line's author can see the fallback body too; if they wanted
+// the union they would write the wider term.
+//
+// The catalog does not suppress — it describes a version graded's maintainers
+// annotated, not necessarily the installed body. Neither does a module-level
+// `assume`: a blanket over names nothing keys individually never named the
+// function it would be silencing.
+pub fn suppresses_running_fallback(origin: LookupOrigin) -> Bool {
+  case origin {
+    UserExternal | DependencySpec(_) | PathDependency(_) -> True
+    Catalog(_)
+    | ModuleExternalOrigin(_)
+    | CommittedSpec
+    | ProjectInferred
+    | PathDependencyInferred(_)
+    | TypeLine(_) -> False
+  }
+}
+
+// The winning declaring entry for `name`, raw: the value `lookup` computes
+// before `with_dependency_fallback` widens it, held to declaring origins as
+// the charge requires. `None` where nothing declares the name — a
+// non-declaring entry describes a body the foreign implementation needn't
+// match, so it declares no more than no entry at all.
+fn raw_declaration(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Option(#(EffectTerm, LookupOrigin)) {
+  let found = case dict.get(knowledge_base.all_effects, name) {
+    Ok(entry) -> Some(entry)
+    Error(Nil) ->
+      option.from_result(dict.get(knowledge_base.module_effects, name.module))
+  }
+  case found {
+    Some(#(term, origin)) ->
+      case declares_foreign_code(origin) {
+        True -> Some(#(term, origin))
+        False -> None
+      }
+    None -> None
+  }
+}
+
+// Whether a suppressing declaration answers for `name`'s charge — the one
+// selection point both the charged term and the call-site bound list ride, so
+// the term dropping the fallback while the bounds still ride the merged
+// rewritten list cannot happen. False where only the fallback is in reach:
+// there the body answers instead and its bounds must keep binding its term.
+fn suppressed_declaration(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  case raw_declaration(knowledge_base, name) {
+    Some(#(_term, origin)) ->
+      suppresses_running_fallback(origin)
+      && case reachable_halves(knowledge_base, name) {
+        DeclarationAndFallback | DeclarationOnly -> True
+        FallbackOnly -> False
+      }
+    None -> False
   }
 }
 
@@ -700,49 +811,6 @@ pub fn self_referential_declaration(
     effect_term.subst(declared, bindings)
   }
   #(rewritten, rename)
-}
-
-// The charge alone, for a reader that quotes a term without reporting where its
-// halves came from.
-pub fn with_running_fallback(
-  knowledge_base: KnowledgeBase,
-  name: QualifiedName,
-  term: EffectTerm,
-) -> EffectTerm {
-  foreign_charge(knowledge_base, name, term).term
-}
-
-// The charge for `name` over what the base itself says declares it — the one
-// derivation a reader that holds no declaration of its own asks for.
-//
-// Every surface that answers "what does this name charge, and from where" comes
-// through here or through `foreign_charge` beside a declaration it already
-// looked up, and each takes all three halves from the one value. Assembling them
-// from separate calls is how one name came to be charged one set by a caller and
-// another by the query that reports it.
-pub fn declared_charge(
-  knowledge_base: KnowledgeBase,
-  name: QualifiedName,
-) -> ForeignCharge {
-  foreign_charge(knowledge_base, name, declaration_term(knowledge_base, name))
-}
-
-// What declares `name`, as a term: the winning entry where it is a declaring
-// one, and the `[Unknown]` foreign code nothing declares carries where it is
-// not. An entry inferred over a body describes something the foreign
-// implementation needn't match, so it declares nothing here.
-fn declaration_term(
-  knowledge_base: KnowledgeBase,
-  name: QualifiedName,
-) -> EffectTerm {
-  case lookup(knowledge_base, name) {
-    Known(term, source) ->
-      case declares_foreign_code(origin_of(source)) {
-        True -> term
-        False -> effect_term.unknown()
-      }
-    Unknown -> effect_term.unknown()
-  }
 }
 
 // What a running fallback body contributes to `name`'s charge, before the
@@ -1089,9 +1157,12 @@ pub fn lookup_declared(
     return: found,
   )
   case found {
-    Known(term, source) ->
+    Known(_term, source) ->
       case declares_foreign_code(origin_of(source)) {
-        True -> Known(with_running_fallback(knowledge_base, name, term), source)
+        // The term comes off the charge, not off `lookup`'s widened reading:
+        // the charge derives the declared half raw and weighs the fallback —
+        // suppression included — itself.
+        True -> Known(declared_charge(knowledge_base, name).term, source)
         // A non-declaring entry — inference over the body — answers no more
         // than no entry at all, and no less either: rejecting it leaves the
         // external undeclared, not silent, so the fallback its body runs is
@@ -1105,6 +1176,8 @@ pub fn lookup_declared(
 // What an external nothing declares answers: `[Unknown]`, unioned with its
 // walked Gleam fallback body where the reading reaches that body — it is still
 // code that runs, so what it does is charged even where no declaration answers.
+// The charge finds no declaring entry and derives the same `[Unknown]`
+// declared half itself.
 //
 // Charged through the same narrowing every other reader goes through, so a
 // warning quoting this answer names the effects the walk charges and no others:
@@ -1118,7 +1191,7 @@ fn undeclared_lookup(
   case dict.get(knowledge_base.fallback_summaries, name) {
     Ok(_) ->
       Known(
-        foreign_charge(knowledge_base, name, effect_term.unknown()).term,
+        declared_charge(knowledge_base, name).term,
         types.FunctionEntry(origin: ProjectInferred),
       )
     Error(Nil) -> Unknown
@@ -1172,6 +1245,12 @@ pub fn argument_value_effects(
 // the term rewrite `declared_beside_fallback` applies — so a shared name
 // between the halves is always the same parameter binding the same argument.
 // Exact duplicates are dropped, so the common case stays one list.
+//
+// Under a suppressing declaration there is no union and no shared list: the
+// charge is the declared line's term as written, so the binding list is that
+// line's own bounds, un-rewritten — the same `suppressed_declaration`
+// selection the charge makes, so the term and the bounds that bind it cannot
+// drift apart.
 pub fn lookup_param_bounds(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -1181,15 +1260,19 @@ pub fn lookup_param_bounds(
     Error(Nil) -> []
   }
   case dict.get(knowledge_base.fallback_summaries, name) {
-    Ok(#(_term, fallback_bounds)) -> {
-      let #(declared, _rename) = self_referential_declaration(declared)
-      list.append(
-        fallback_bounds,
-        list.filter(declared, fn(bound) {
-          !list.contains(fallback_bounds, bound)
-        }),
-      )
-    }
+    Ok(#(_term, fallback_bounds)) ->
+      case suppressed_declaration(knowledge_base, name) {
+        True -> declared
+        False -> {
+          let #(declared, _rename) = self_referential_declaration(declared)
+          list.append(
+            fallback_bounds,
+            list.filter(declared, fn(bound) {
+              !list.contains(fallback_bounds, bound)
+            }),
+          )
+        }
+      }
     Error(Nil) -> declared
   }
 }
@@ -1633,7 +1716,7 @@ pub fn lookup_returned_operator(
   use found <- result.try(dict.get(knowledge_base.returned_operators, name))
   case found.summary {
     Declared(..) ->
-      case charged_standing(knowledge_base, name) {
+      case charged_standing(knowledge_base, name, found.source) {
         DeclaredReturnAnswers -> Ok(found)
         DeclaredReturnUnbuilt | DeclaredReturnFallbackRuns | NoDeclaredReturn ->
           Error(Nil)
@@ -1657,7 +1740,11 @@ pub type DeclaredReturnStanding {
   // nothing it describes is what runs.
   DeclaredReturnUnbuilt
   // In reach, but a Gleam fallback body runs on some target too, and the
-  // closure that body hands back needn't be the foreign one.
+  // closure that body hands back needn't be the foreign one. Only a clause
+  // from a non-suppressing origin is refused this way — a written spec's
+  // clause is trusted whole (`suppresses_running_fallback` on the clause's
+  // own source). No such origin ships clauses today; the arm is the hook a
+  // catalog returns tier lands on.
   DeclaredReturnFallbackRuns
   // No `where returns` clause keys the name at all.
   NoDeclaredReturn
@@ -1666,8 +1753,9 @@ pub type DeclaredReturnStanding {
 // How a declared return for `name` stands against what this build compiles.
 //
 // The effects channel copes with a declaration and a running fallback body by
-// unioning them; there is no union of operators, so this channel answers only
-// where the declaration is alone. Standing and fallback are two fields of the
+// unioning them; there is no union of operators, so where a running body's
+// closure may stand in for the foreign one, the clause answers only on the
+// say-so of a suppressing origin. Standing and fallback are two fields of the
 // one `ForeignCharge`, read through `declared_charge` because the returns
 // channel holds no declared *effects* term of its own to pass down.
 //
@@ -1683,8 +1771,8 @@ pub fn declared_return_standing(
     Error(Nil) -> NoDeclaredReturn
     Ok(ReturnedOperator(summary: Fresh, ..))
     | Ok(ReturnedOperator(summary: Closed(..), ..)) -> NoDeclaredReturn
-    Ok(ReturnedOperator(summary: Declared(..), ..)) ->
-      charged_standing(knowledge_base, name)
+    Ok(ReturnedOperator(summary: Declared(..), source:, ..)) ->
+      charged_standing(knowledge_base, name, source)
   }
 }
 
@@ -1692,14 +1780,29 @@ pub fn declared_return_standing(
 // alone, without the triage that established there is one to weigh. The lookup
 // reads it having just fetched the entry; the wrapper above adds the fetch for a
 // caller holding only the name.
+//
+// `clause_source` is the `where returns` clause's own origin, not the effects
+// declaration's: the two channels can be won by different tiers (a clause-only
+// user line beside a catalog effects entry), and the clause is trusted by its
+// own author's line. Where a fallback body runs beside the declaration, a
+// suppressing clause source answers — the refusal existed because there is no
+// union of operators to take, and a trusted line takes none — while any other
+// source keeps the refusal.
 fn charged_standing(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
+  clause_source: LookupOrigin,
 ) -> DeclaredReturnStanding {
   let charge = declared_charge(knowledge_base, name)
   case charge.declaration, charge.fallback {
-    DeclarationCharged, None -> DeclaredReturnAnswers
-    DeclarationCharged, Some(_) -> DeclaredReturnFallbackRuns
+    DeclarationCharged, types.NoFallback -> DeclaredReturnAnswers
+    DeclarationCharged, types.FallbackCharged(_)
+    | DeclarationCharged, types.FallbackSuppressed(_)
+    ->
+      case suppresses_running_fallback(clause_source) {
+        True -> DeclaredReturnAnswers
+        False -> DeclaredReturnFallbackRuns
+      }
     FallbackAnswersInstead, _ | NothingImplementsName, _ ->
       DeclaredReturnUnbuilt
   }

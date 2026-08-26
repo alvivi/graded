@@ -635,8 +635,10 @@ fn declaration_explanation(
     reason: resolution.reason,
     origin: resolution.origin,
     // The declaration's own line reports the declaration; the fallback body's
-    // effects reach it as the walked contributors beside it.
-    fallback: None,
+    // effects reach it as the walked contributors beside it. Nothing is
+    // suppressed on this line either way — the body is still weighed here, so
+    // suppressed wording would contradict the body-inclusive total beside it.
+    fallback: types.NoFallback,
   ))
 }
 
@@ -765,7 +767,7 @@ fn undeclared_resolution() -> Resolution {
     term: effect_term.unknown(),
     reason: Some(UndeclaredExternal),
     origin: None,
-    fallback: None,
+    fallback: types.NoFallback,
   )
 }
 
@@ -787,7 +789,7 @@ fn declaration_resolution(
             term:,
             reason: None,
             origin: Some(origin),
-            fallback: None,
+            fallback: types.NoFallback,
           ))
         False -> None
       }
@@ -880,7 +882,7 @@ fn call_explanation(
     actual: ground(collected_term(collected)),
     reason: collected.resolution.reason,
     origin: collected.resolution.origin,
-    fallback: option.map(collected.resolution.fallback, ground),
+    fallback: types.map_fallback(collected.resolution.fallback, ground),
   )
 }
 
@@ -1898,33 +1900,47 @@ const untraceable_argument_clause = ", whose effects depend on an argument that 
 // The source that answered, after the effect set it produced.
 fn origin_suffix(
   origin: option.Option(LookupOrigin),
-  fallback: option.Option(types.EffectSet),
+  fallback: types.FallbackDisposition(types.EffectSet),
   reason: option.Option(UnknownReason),
 ) -> String {
   // A running fallback body is a second source, and the origin speaks only for
   // the declaration. Naming it is what stops a declaration of `[]` being read
-  // as where a `[Disk]` beside it came from.
-  let body = case fallback {
-    Some(_) -> "unioned with its Gleam fallback body"
-    None -> ""
-  }
+  // as where a `[Disk]` beside it came from — and, where the `assume` line
+  // suppressed the body's charge, what says a body runs that the total no
+  // longer counts.
   case origin, fallback {
-    Some(origin), None -> " (from " <> effects.describe_origin(origin) <> ")"
-    Some(origin), Some(_) ->
-      " (from " <> effects.describe_origin(origin) <> ", " <> body <> ")"
-    // No origin and a body. Either nothing declared the external, and the
-    // `[Unknown]` the call's own clause already names is the union's other
+    Some(origin), types.NoFallback ->
+      " (from " <> effects.describe_origin(origin) <> ")"
+    Some(origin), types.FallbackCharged(_) ->
+      " (from "
+      <> effects.describe_origin(origin)
+      <> ", unioned with its Gleam fallback body)"
+    Some(origin), types.FallbackSuppressed(_) ->
+      " (from "
+      <> effects.describe_origin(origin)
+      <> ", "
+      <> suppressed_body_clause
+      <> ")"
+    // No origin and a charged body. Either nothing declared the external, and
+    // the `[Unknown]` the call's own clause already names is the union's other
     // half — or a declaration exists and covers no target the calling body runs
     // on, leaving that body as the whole of what was charged.
-    None, Some(_) ->
+    None, types.FallbackCharged(_) ->
       case reason {
-        Some(UndeclaredExternal) -> " (" <> body <> ")"
+        Some(UndeclaredExternal) -> " (unioned with its Gleam fallback body)"
         _ ->
           " (from its Gleam fallback body, which is what runs on the targets this one does)"
       }
-    None, None -> ""
+    // Suppression is minted only where a declaration is charged, and the
+    // branches that drop the origin drop the fallback share with it.
+    None, types.FallbackSuppressed(_) -> " (" <> suppressed_body_clause <> ")"
+    None, types.NoFallback -> ""
   }
 }
+
+// The clause for a running body an `assume` line un-charged, worded the same
+// wherever a caller-side surface states it.
+const suppressed_body_clause = "its Gleam fallback body's charge suppressed by the `assume` line"
 
 // When the actual set still contains effect variables, the substitution
 // couldn't bind them (e.g. caller's own param has no declared bound).
@@ -2441,16 +2457,18 @@ type Resolution {
     term: EffectTerm,
     reason: option.Option(UnknownReason),
     origin: option.Option(LookupOrigin),
-    // What a running Gleam fallback body contributed to `term`. Carried beside
-    // the origin rather than folded into it: the declaration and the body are
-    // two sources, and one must not be credited with the other's effects.
-    fallback: option.Option(EffectTerm),
+    // Where the half a running Gleam fallback body contributed stands in
+    // `term` — charged into it, or suppressed out of it by an `assume` line.
+    // Carried beside the origin rather than folded into it: the declaration
+    // and the body are two sources, and one must not be credited with the
+    // other's effects.
+    fallback: types.FallbackDisposition(EffectTerm),
   )
 }
 
 // A resolution whose deciding rule adds nothing to the call's own description.
 fn plain_resolution(term: EffectTerm) -> Resolution {
-  Resolution(term:, reason: None, origin: None, fallback: None)
+  Resolution(term:, reason: None, origin: None, fallback: types.NoFallback)
 }
 
 // One call site collected from a function body: the call and what the resolver
@@ -2526,14 +2544,14 @@ fn lookup_parts(
         term:,
         reason: None,
         origin: Some(effects.origin_of(source)),
-        fallback: None,
+        fallback: types.NoFallback,
       )
     effects.Unknown ->
       Resolution(
         term: effect_term.unknown(),
         reason: Some(if_unknown),
         origin: None,
-        fallback: None,
+        fallback: types.NoFallback,
       )
   }
 }
@@ -2552,7 +2570,7 @@ fn substituted(looked_up: Resolution, term: EffectTerm) -> Resolution {
     term:,
     reason: Some(UntraceableArgument),
     origin: None,
-    fallback: None,
+    fallback: types.NoFallback,
   )
 }
 
@@ -2562,11 +2580,12 @@ fn substituted(looked_up: Resolution, term: EffectTerm) -> Resolution {
 // call reports the argument, not the source — and it stays dropped here.
 fn with_substituted_fallback(
   resolution: Resolution,
-  fallback: option.Option(EffectTerm),
+  fallback: types.FallbackDisposition(EffectTerm),
 ) -> Resolution {
   case resolution.fallback {
-    option.Some(_) -> Resolution(..resolution, fallback:)
-    option.None -> resolution
+    types.FallbackCharged(_) | types.FallbackSuppressed(_) ->
+      Resolution(..resolution, fallback:)
+    types.NoFallback -> resolution
   }
 }
 
@@ -3404,7 +3423,12 @@ fn collect_effects(
         memo,
         CollectedCall(
           call: synthetic_call,
-          resolution: Resolution(term: effect, reason:, origin:, fallback: None),
+          resolution: Resolution(
+            term: effect,
+            reason:,
+            origin:,
+            fallback: types.NoFallback,
+          ),
         ),
       )
     })
@@ -3920,7 +3944,7 @@ fn substitute_local_call_effects(
             rebound(one.resolution, bind(collected_term(one)), {
               field_bindings.origins
             })
-            |> with_substituted_fallback(option.map(
+            |> with_substituted_fallback(types.map_fallback(
               one.resolution.fallback,
               bind,
             ))
@@ -3976,7 +4000,7 @@ fn local_substitution_bounds(
 fn substitute_at_call_site(
   call: types.ResolvedCall,
   effect: EffectTerm,
-  fallback: option.Option(EffectTerm),
+  fallback: types.FallbackDisposition(EffectTerm),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
@@ -3991,17 +4015,24 @@ fn substitute_at_call_site(
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
-) -> #(EffectTerm, option.Option(EffectTerm), Memo) {
+) -> #(EffectTerm, types.FallbackDisposition(EffectTerm), Memo) {
   let callee_kb_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
   // Fast path: concrete effect with declared bounds — nothing to
   // substitute. With no declared bounds we still need to fall through
   // in case the registry flags auto-injectable fn-typed params.
   //
-  // The early exits return `fallback` untouched: it is a component of the
-  // term's union, so a term with no free variables has none hiding in its
-  // fallback share either.
+  // A charged fallback share is a component of the term's union, so a term
+  // with no free variables has none hiding in that share either. A
+  // *suppressed* share is no part of the term, so its own variables are
+  // weighed apart — a polymorphic body beside a ground `assume` still has its
+  // overridden share substituted, and the quote of what was suppressed stays
+  // this call site's.
+  let fallback_vars = case fallback {
+    types.FallbackSuppressed(term) -> has_vars(term)
+    types.FallbackCharged(_) | types.NoFallback -> False
+  }
   use <- bool.guard(
-    when: !has_vars(effect) && callee_kb_bounds != [],
+    when: !has_vars(effect) && !fallback_vars && callee_kb_bounds != [],
     return: #(effect, fallback, memo),
   )
   let args = call_args_for(call_args, call.span)
@@ -4009,11 +4040,10 @@ fn substitute_at_call_site(
     [_, ..] -> #(effect, callee_kb_bounds)
     [] -> auto_bounds_from_registry(call.name, effect, args, registry)
   }
-  use <- bool.guard(when: !has_vars(effective_effects), return: #(
-    effective_effects,
-    fallback,
-    memo,
-  ))
+  use <- bool.guard(
+    when: !has_vars(effective_effects) && !fallback_vars,
+    return: #(effective_effects, fallback, memo),
+  )
   let #(bindings, memo) =
     bind_variables(
       call.name,
@@ -4054,7 +4084,7 @@ fn substitute_at_call_site(
   // The fallback share is rewritten by the same bindings as the total it is a
   // component of: the two describe one call, and a variable the total resolved
   // must not survive in the share a structured consumer reads beside it.
-  #(bind(effective_effects), option.map(fallback, bind), memo)
+  #(bind(effective_effects), types.map_fallback(fallback, bind), memo)
 }
 
 // Finish a call-site effect: bind the callee's effect variables, re-key any
@@ -6639,7 +6669,7 @@ fn resolve_field_call(
         term: effect_term.unknown(),
         reason: Some(UntraceableReceiver),
         origin: None,
-        fallback: None,
+        fallback: types.NoFallback,
       ),
       memo,
     )
@@ -6752,7 +6782,7 @@ fn resolve_proven_field(
   let wired_charge = option.map(wired, foreign_charge(knowledge_base, _))
   let wired_fallback = case wired_charge {
     Some(ForeignCharge(resolution:, ..)) -> resolution.fallback
-    None -> None
+    None -> types.NoFallback
   }
   let wired_standing = case wired_charge {
     Some(ForeignCharge(standing:, ..)) -> standing
@@ -6801,7 +6831,7 @@ fn resolve_proven_field(
         term:,
         reason: unresolved_value_reason(term),
         origin:,
-        fallback: None,
+        fallback: types.NoFallback,
       )
   }
   #(resolution, memo)
@@ -6934,7 +6964,7 @@ fn resolve_unproven_field(
               term: field_effect.effects,
               reason: None,
               origin: Some(TypeLine(source:)),
-              fallback: None,
+              fallback: types.NoFallback,
             )
           #(substituted(looked_up, term), memo)
         }
@@ -6984,7 +7014,7 @@ fn resolve_undeclared_field(
           ),
           reason: Some(reason),
           origin: None,
-          fallback: None,
+          fallback: types.NoFallback,
         ),
         memo,
       )
@@ -6994,7 +7024,7 @@ fn resolve_undeclared_field(
         term: effect_term.unknown(),
         reason: Some(UntraceableReceiver),
         origin: None,
-        fallback: None,
+        fallback: types.NoFallback,
       ),
       memo,
     )

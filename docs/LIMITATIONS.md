@@ -339,6 +339,17 @@ pub fn caller() -> Nil {
 assume app.write_log : [Stdout]
 ```
 
+A written per-function `assume` — yours, or the one a dependency's author
+ships — answers **alone**, even for an `@external` whose Gleam fallback body
+runs on some target: the line's author can see that body too, so the body's
+half is dropped from what callers pay and reported as suppressed wherever the
+charge is explained. The catalog and a module-level `assume` still take the
+union of the declaration and the running body — the catalog describes a
+version graded's maintainers annotated, not necessarily the installed body,
+and a module blanket never named the function it would be silencing. The
+external's own `check` line weighs the walked body in every case: an `assume`
+changes what callers pay, never what the function's own line proves.
+
 For common third-party packages, the [bundled catalog](./REFERENCE.md#effect-catalog)
 already supplies these declarations, so you only need `assume` lines for your
 own FFI and for packages the catalog doesn't cover.
@@ -360,11 +371,11 @@ lands in with a field `assume`.
 The closure a producer hands back is the one such channel with a declaring form:
 `assume my_ffi.make_client where returns : [Net]`, and for a foreign decorator
 `assume my_ffi.wrap(cb: [cb]) : [] where returns : [cb]` — the clause's
-variables scoped by the line's own bound list. It is refused where a Gleam
-fallback body runs beside the declaration — the two can hand back different
-closures and there is no union of operators to take — and a clause variable
-the bound list does not name is dropped. The call names whichever refusal
-applied; the rules are in
+variables scoped by the line's own bound list. A written clause is trusted
+even where a Gleam fallback body runs beside the declaration, exactly as the
+effects half of the same line is; it is refused where the declaration is out
+of reach of this build, and a clause variable the bound list does not name is
+dropped. The call names whichever refusal applied; the rules are in
 [Assumptions](./REFERENCE.md#assumptions-foreign-code-and-field-effects).
 
 ### Which targets an `@external` is built for

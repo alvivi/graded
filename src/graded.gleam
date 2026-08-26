@@ -2136,9 +2136,11 @@ fn function_effect(
         source: case fallback {
           // The body running in the declaration's place is the whole of the
           // term, not a half added to it, so it is named as the source and not
-          // beside one.
-          Some(_) -> answer.RunningFallbackBody
-          None -> answer.UnreachedDeclaration
+          // beside one. A suppressed half never reaches this path — it is
+          // minted only where the declaration is charged.
+          types.FallbackCharged(_) | types.FallbackSuppressed(_) ->
+            answer.RunningFallbackBody
+          types.NoFallback -> answer.UnreachedDeclaration
         },
       ),
     ),

@@ -27,7 +27,7 @@ fn function(
     module: "app",
     bounds:,
     term:,
-    source: answer.Entry(FunctionEntry(origin: CommittedSpec), None),
+    source: answer.Entry(FunctionEntry(origin: CommittedSpec), types.NoFallback),
   )
 }
 
@@ -142,7 +142,7 @@ pub fn a_module_level_external_states_its_precedence_test() {
     term: labels(["Time"]),
     source: answer.Entry(
       ModuleExternalEntry(origin: ModuleExternalOrigin(source: UserExternal)),
-      None,
+      types.NoFallback,
     ),
   )
   |> prose
@@ -162,7 +162,7 @@ pub fn a_fallback_body_is_stated_beside_the_source_it_adds_to_test() {
     module: "app",
     bounds: [],
     term: labels(["Time", "Stdout"]),
-    source: answer.UndeclaredExternal(Some(labels(["Stdout"]))),
+    source: answer.UndeclaredExternal(types.FallbackCharged(labels(["Stdout"]))),
   )
   |> prose
   |> should.equal(
@@ -181,7 +181,7 @@ fn from(origin: types.LookupOrigin) -> answer.EffectAnswer {
     module: "app",
     bounds: [],
     term: labels(["Stdout"]),
-    source: answer.Entry(FunctionEntry(origin:), None),
+    source: answer.Entry(FunctionEntry(origin:), types.NoFallback),
   )
 }
 
@@ -205,7 +205,10 @@ pub fn a_source_line_precedes_the_bounds_test() {
     module: "app",
     bounds: [ParamBound("f", labels(["Stdout"]))],
     term: labels(["Stdout"]),
-    source: answer.Entry(FunctionEntry(origin: Catalog("gleam_stdlib")), None),
+    source: answer.Entry(
+      FunctionEntry(origin: Catalog("gleam_stdlib")),
+      types.NoFallback,
+    ),
   )
   |> prose
   |> should.equal(

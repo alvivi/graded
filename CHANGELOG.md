@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- An `assume` line over your own or a dependency's `@external` now answers
+  alone even where a Gleam fallback body runs; previously the body's effects
+  were unioned into what callers pay. The external's own `check` line still
+  weighs the body, every explanation of the charge quotes the suppressed half,
+  and a written `assume … where returns` clause on such a name is now trusted
+  too, where it was previously refused whole. Catalog and module-level
+  assumptions still take the union.
+
 ## [0.17.0] - 2026-08-26
 
 ### Added
