@@ -698,7 +698,9 @@ pub fn declared_charge(
 // parameter — the same conservative share a direct call auto-injects from the
 // registry, kept here so a value channel (an operator argument, a wired
 // field) charges the callback too — while the body's own charge stays
-// suppressed beside it.
+// suppressed beside it. Only the parameter-named bounds qualify: a dotted
+// field bound (`r.go`) exists solely to bind the suppressed body's own field
+// call, and reviving it would charge the share the line dropped.
 fn suppressing_charge_term(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -709,16 +711,20 @@ fn suppressing_charge_term(
     Error(Nil) -> []
   }
   use <- bool.guard(when: line_bounds != [], return: declared)
-  case dict.get(knowledge_base.fallback_summaries, name) {
-    Ok(#(_term, [_, ..] as fallback_bounds)) ->
-      effect_term.normalize(
-        types.TUnion([
-          declared,
-          ..list.map(fallback_bounds, fn(bound) { types.TVar(bound.name) })
-        ]),
-      )
-    _ -> declared
+  let callback_bounds = case dict.get(knowledge_base.fallback_summaries, name) {
+    Ok(#(_term, fallback_bounds)) ->
+      list.filter(fallback_bounds, fn(bound) {
+        !string.contains(bound.name, ".")
+      })
+    Error(Nil) -> []
   }
+  use <- bool.guard(when: callback_bounds == [], return: declared)
+  effect_term.normalize(
+    types.TUnion([
+      declared,
+      ..list.map(callback_bounds, fn(bound) { types.TVar(bound.name) })
+    ]),
+  )
 }
 
 // Whether a declaring origin's line, in reach beside a running Gleam fallback

@@ -1929,6 +1929,56 @@ pub fn disk() -> Nil
   support.cleanup(root)
 }
 
+pub fn a_suppressed_field_call_is_not_charged_through_its_bound_test() {
+  // The fallback's only effect is a field call on its record argument, so the
+  // summary's one bound is the dotted `r.go`. That bound exists solely to
+  // bind the *suppressed* body's variable — a boundless `assume` keeps the
+  // conservative charge for function-typed arguments, not for the field
+  // calls the suppressed body makes, so wiring `disk` into the record
+  // charges nothing.
+  let root = "build/external_fallback_field_bound"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext.run : []
+assume app.disk : [Disk]
+check app.uses : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "pub type Runner {
+  Runner(go: fn() -> Nil)
+}
+
+@external(javascript, \"e\", \"r\")
+pub fn run(r: Runner) -> Nil {
+  r.go()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+
+pub fn uses() -> Nil {
+  ext.run(ext.Runner(go: disk))
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  r.violations |> should.equal([])
+  support.cleanup(root)
+}
+
 pub fn a_value_channel_charges_the_callback_under_a_boundless_assume_test() {
   // `ext.run` handed around as a value instead of called directly: as an
   // operator argument, and wired into a record field. The boundless `assume`
