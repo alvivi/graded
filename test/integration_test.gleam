@@ -1883,6 +1883,72 @@ pub fn via_helper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_declared_sibling_call_pays_what_a_qualified_call_pays_test() {
+  // A higher-order external under a boundless `assume`, called from its own
+  // module and from another. The boundless line says nothing about the
+  // callback, so the auto-detected `action` bound charges it at both call
+  // shapes: the sibling pays the same `[Disk, Time]` the qualified caller
+  // does, with the same substituted suppressed share beside it.
+  let root = "build/external_fallback_sibling_parity"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext.run : [Time]
+assume ext.disk : [Disk]
+assume app.disk : [Disk]
+check app.qualified : []
+check ext.sibling : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(action: fn() -> Nil) -> Nil {
+  action()
+}
+
+pub fn sibling() -> Nil {
+  run(disk)
+}
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+fn disk() -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+
+pub fn qualified() -> Nil {
+  ext.run(disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  [#("app.gleam", "qualified"), #("ext.gleam", "sibling")]
+  |> list.each(fn(expected) {
+    let #(file, function) = expected
+    let assert Ok(r) =
+      list.find(results, fn(r) { r.file == root <> "/" <> file })
+    let assert Ok(violation) =
+      list.find(r.violations, fn(v) { v.function == function })
+    violation.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+    violation.explanation.fallback
+    |> should.equal(
+      types.FallbackSuppressed(types.Specific(set.from_list(["Disk"]))),
+    )
+  })
+  support.cleanup(root)
+}
+
 pub fn a_ground_assume_rebinds_the_suppressed_share_through_a_helper_test() {
   // The bounded `assume` charges a ground `[Time]`, so the helper's walk hands
   // its caller calls with no variable in any *term* — the only variable left

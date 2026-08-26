@@ -3880,22 +3880,54 @@ fn substitute_local_call_effects(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(List(CollectedCall), Memo) {
-  let any_polymorphic =
-    list.any(recursive, fn(one) {
-      has_vars(collected_term(one))
-      || suppressed_share_vars(one.resolution.fallback)
-    })
-  use <- bool.guard(when: !any_polymorphic, return: #(recursive, memo))
   case dict.get(function_map, local_call.function) {
     Error(Nil) -> #(recursive, memo)
     Ok(local_definition) -> {
-      let bounds =
-        local_substitution_bounds(
-          local_definition,
-          local_call.function,
-          context,
-          knowledge_base,
-        )
+      // A foreign sibling was collected as the knowledge base's charge under
+      // its qualified name. Substitute it exactly as a qualified call is —
+      // auto-detected callback bounds included — so both call shapes pay the
+      // same set. A *native* sibling under a module-level declaration keeps
+      // the declaration's set alone; the reference it is handed surfaces as
+      // an untracked-effect warning, not a charge.
+      use <- bool.lazy_guard(
+        when: foreign_definition(local_definition, context.package_targets),
+        return: fn() {
+          let #(memo, calls) =
+            list.map_fold(recursive, memo, fn(memo, one) {
+              let #(concrete, concrete_fallback, memo) =
+                substitute_at_call_site(
+                  one.call,
+                  one.resolution.term,
+                  one.resolution.fallback,
+                  call_args,
+                  function_map,
+                  context,
+                  knowledge_base,
+                  visited,
+                  caller_param_bounds,
+                  caller_param_names,
+                  caller_field_bindings,
+                  registry,
+                  module_types,
+                  cache,
+                  lift_operator_arg,
+                  memo,
+                )
+              let resolution =
+                substituted(one.resolution, concrete)
+                |> with_substituted_fallback(concrete_fallback)
+              #(memo, CollectedCall(..one, resolution:))
+            })
+          #(calls, memo)
+        },
+      )
+      let any_polymorphic =
+        list.any(recursive, fn(one) {
+          has_vars(collected_term(one))
+          || suppressed_share_vars(one.resolution.fallback)
+        })
+      use <- bool.guard(when: !any_polymorphic, return: #(recursive, memo))
+      let bounds = local_polymorphic_bounds(local_definition.definition)
       let args = call_args_for(call_args, local_call.span)
       let callee_name =
         QualifiedName(module: local_sentinel, function: local_call.function)
@@ -3979,35 +4011,6 @@ fn substitute_local_call_effects(
 // effect variable matching the parameter name.
 fn local_polymorphic_bounds(function: Function) -> List(ParamBound) {
   synthetic_fn_typed_bounds(signatures.fn_typed_params_from_function(function))
-}
-
-// The bounds a same-module call site substitutes with. For an ordinary sibling
-// they are derived from its signature, as its own analysis derived them. A
-// foreign sibling's term came from the knowledge base instead — the settled
-// summary of its running fallback — so the bounds recorded beside that summary
-// are the ones its variables answer to: they cover a girard-typed parameter the
-// syntactic derivation cannot see, which is what keeps a same-module `run(pure)`
-// bound exactly as the qualified call from another module is.
-fn local_substitution_bounds(
-  local_definition: Definition(Function),
-  function: String,
-  context: ImportContext,
-  knowledge_base: KnowledgeBase,
-) -> List(ParamBound) {
-  let syntactic = fn() { local_polymorphic_bounds(local_definition.definition) }
-  use <- bool.lazy_guard(
-    when: !foreign_definition(local_definition, context.package_targets),
-    return: syntactic,
-  )
-  case
-    effects.lookup_param_bounds(
-      knowledge_base,
-      QualifiedName(module: context.module_path, function:),
-    )
-  {
-    [] -> syntactic()
-    recorded -> recorded
-  }
 }
 
 // Resolve effect variables at a call site. If the callee's effects
