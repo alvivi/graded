@@ -1939,6 +1939,91 @@ pub fn via_helper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_wired_field_call_rebinds_the_suppressed_share_test() {
+  // A record field wired to a higher-order external under a bounded `assume`,
+  // called on a factory-built receiver — the proven-value path, where the
+  // wired name's charge is read from the knowledge base. The charged term
+  // substitutes at the field call, and the suppressed share substitutes
+  // beside it — `[Disk]`, the body's charge at this call site — whether the
+  // declared term is ground (`run`) or carries the bound's variable (`tap`).
+  let root = "build/external_fallback_wired_field"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext.run(action: [action]) : [Time]
+assume ext.tap(action: [action]) : [Time, action]
+assume app.disk : [Disk]
+check app.via_ground : []
+check app.via_poly : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(action: fn() -> Nil) -> Nil {
+  action()
+}
+
+@external(javascript, \"ext_ffi\", \"tap\")
+pub fn tap(action: fn() -> Nil) -> Nil {
+  action()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+pub type Runner {
+  Runner(go: fn(fn() -> Nil) -> Nil)
+}
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+
+fn make_ground() -> Runner {
+  Runner(go: ext.run)
+}
+
+fn make_poly() -> Runner {
+  Runner(go: ext.tap)
+}
+
+pub fn via_ground() -> Nil {
+  let r = make_ground()
+  r.go(disk)
+}
+
+pub fn via_poly() -> Nil {
+  let r = make_poly()
+  r.go(disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  [
+    #("via_ground", ["Time"]),
+    #("via_poly", ["Disk", "Time"]),
+  ]
+  |> list.each(fn(expected) {
+    let #(function, actual) = expected
+    let assert Ok(violation) =
+      list.find(r.violations, fn(v) { v.function == function })
+    violation.explanation.actual
+    |> should.equal(types.Specific(set.from_list(actual)))
+    violation.explanation.fallback
+    |> should.equal(
+      types.FallbackSuppressed(types.Specific(set.from_list(["Disk"]))),
+    )
+  })
+  support.cleanup(root)
+}
+
 pub fn a_phantom_binder_is_weighed_as_the_unknown_it_is_test() {
   // `lib.leaky`'s committed term carries a variable that is nobody's parameter
   // — the shape an application graded could not resolve leaves behind. A caller

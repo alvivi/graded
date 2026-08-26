@@ -6763,21 +6763,6 @@ fn resolve_proven_field(
       scc_ids,
       memo,
     )
-  let #(term, memo) =
-    resolve_field_effect(
-      field_effect,
-      field_call,
-      call_args,
-      knowledge_base,
-      caller_param_bounds,
-      registry,
-      lift_operator_arg,
-      memo,
-    )
-  // What the proven path records, read off the term after
-  // `resolve_field_effect` has applied the field call's arguments — the point
-  // where a `LocalRef` value's polymorphic self marker has become `[Unknown]`
-  // if nothing bound it.
   // A field wired to an `@external` whose Gleam body runs carries that body's
   // effects exactly as a direct call to the same name does, so the field call
   // names the two sources apart too — the origin speaks for the declaration
@@ -6794,6 +6779,38 @@ fn resolve_proven_field(
     Some(ForeignCharge(resolution:, ..)) -> resolution.fallback
     None -> types.NoFallback
   }
+  // A ground wired term carries no bounds or source of its own; a polymorphic
+  // suppressed share beside it still binds at this call site, through the
+  // wired name's recorded bounds.
+  let field_effect = case
+    field_effect.source,
+    wired,
+    suppressed_share_vars(wired_fallback)
+  {
+    None, Some(name), True ->
+      types.TypeFieldEffect(
+        ..field_effect,
+        bounds: effects.lookup_param_bounds(knowledge_base, name),
+        source: Some(name),
+      )
+    _, _, _ -> field_effect
+  }
+  let #(term, resolved_fallback, memo) =
+    resolve_field_effect(
+      field_effect,
+      wired_fallback,
+      field_call,
+      call_args,
+      knowledge_base,
+      caller_param_bounds,
+      registry,
+      lift_operator_arg,
+      memo,
+    )
+  // What the proven path records, read off the term after
+  // `resolve_field_effect` has applied the field call's arguments — the point
+  // where a `LocalRef` value's polymorphic self marker has become `[Unknown]`
+  // if nothing bound it.
   let wired_standing = case wired_charge {
     Some(ForeignCharge(standing:, ..)) -> standing
     None -> effects.DeclarationCharged
@@ -6815,7 +6832,7 @@ fn resolve_proven_field(
             term: field_effect.effects,
             reason: Some(UndeclaredExternal),
             origin: None,
-            fallback: wired_fallback,
+            fallback: resolved_fallback,
           ),
           wired_standing,
         ),
@@ -6830,7 +6847,7 @@ fn resolve_proven_field(
             term: field_effect.effects,
             reason: None,
             origin:,
-            fallback: wired_fallback,
+            fallback: resolved_fallback,
           ),
           wired_standing,
         ),
@@ -6956,9 +6973,10 @@ fn resolve_unproven_field(
         )
       case declared {
         Some(#(field_effect, source)) -> {
-          let #(term, memo) =
+          let #(term, _fallback, memo) =
             resolve_field_effect(
               field_effect,
+              types.NoFallback,
               field_call,
               call_args,
               knowledge_base,
@@ -7138,6 +7156,9 @@ fn concretize_field_vars_except(
 // use. Any variable left unbound collapses to `[Unknown]`.
 fn resolve_field_effect(
   field_effect: types.TypeFieldEffect,
+  // The wired name's fallback share, rewritten by the same bindings as the
+  // term it sits beside — one call, one substitution for both halves.
+  fallback: types.FallbackDisposition(EffectTerm),
   field_call: types.FieldCall,
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   knowledge_base: KnowledgeBase,
@@ -7146,13 +7167,14 @@ fn resolve_field_effect(
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
-) -> #(EffectTerm, Memo) {
+) -> #(EffectTerm, types.FallbackDisposition(EffectTerm), Memo) {
   // An *operator*-valued field — a single closure field lifted to `λp. …`, or a
   // *union* of such operators from several construction sites (`pure` wires
   // `λ_. []`, `do` wires `λin. [Unknown]`, …). Apply it to the field call's
   // arguments so the application β-reduces — the reducer distributes over a union
   // of operators, `(f ⊔ g)(x) → f(x) ⊔ g(x)` — instead of leaving the raw
-  // operator bounds in the caller's ground effect set.
+  // operator bounds in the caller's ground effect set. A wired *named* function
+  // is never operator-valued, so no fallback share reaches this branch.
   use <- bool.guard(when: is_operator_valued(field_effect.effects), return: #(
     apply_field_operator(
       field_effect.effects,
@@ -7160,11 +7182,19 @@ fn resolve_field_effect(
       knowledge_base,
       caller_param_bounds,
     ),
+    fallback,
     memo,
   ))
-  case has_vars(field_effect.effects), field_effect.source {
-    False, _ -> #(field_effect.effects, memo)
-    True, None -> #(concretize(field_effect.effects), memo)
+  case
+    has_vars(field_effect.effects) || suppressed_share_vars(fallback),
+    field_effect.source
+  {
+    False, _ -> #(field_effect.effects, fallback, memo)
+    True, None -> #(
+      concretize(field_effect.effects),
+      types.map_fallback(fallback, concretize),
+      memo,
+    )
     True, Some(source) -> {
       let args = call_args_for(call_args, field_call.span)
       let #(bindings, memo) =
@@ -7178,7 +7208,8 @@ fn resolve_field_effect(
           lift_operator_arg,
           memo,
         )
-      #(concretize(effect_term.subst(field_effect.effects, bindings)), memo)
+      let bind = fn(term) { concretize(effect_term.subst(term, bindings)) }
+      #(bind(field_effect.effects), types.map_fallback(fallback, bind), memo)
     }
   }
 }
