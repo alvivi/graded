@@ -343,7 +343,10 @@ A written per-function `assume` — yours, or the one a dependency's author
 ships — answers **alone**, even for an `@external` whose Gleam fallback body
 runs on some target: the line's author can see that body too, so the body's
 half is dropped from what callers pay and reported as suppressed wherever the
-charge is explained. The catalog and a module-level `assume` still take the
+charge is explained. A boundless line leaves the external's callbacks
+conservatively charged — callers pay each function-typed argument's actual
+effects on top of the declared term; a line with its own bound list answers
+for the callbacks too. The catalog and a module-level `assume` still take the
 union of the declaration and the running body — the catalog describes a
 version graded's maintainers annotated, not necessarily the installed body,
 and a module blanket never named the function it would be silencing. The

@@ -664,7 +664,12 @@ verified, the line's author can see the body too, and if they wanted the union
 they would have written the wider term. Callers pay the declared term exactly;
 the body's own charge is dropped from the union and reported as suppressed
 wherever the charge is explained, so a body that runs is never silently read
-as absent. The other declaring forms keep the union: a **catalog** entry
+as absent. A **boundless** line answers only for the external's own effects:
+it says nothing about the callbacks, so a caller still pays each
+function-typed argument's actual effects on top of the declared term —
+whether the external is called directly, passed as a value, or wired into a
+field. A line with its own bound list answers for the callbacks too, as
+written. The other declaring forms keep the union: a **catalog** entry
 describes the version graded's maintainers annotated, not necessarily the
 installed body, and a **module-level** `assume` is a blanket that never named
 the function it would be silencing — under either, callers still pay the
