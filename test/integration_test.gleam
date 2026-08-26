@@ -1883,6 +1883,128 @@ pub fn via_helper() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_value_channel_charges_the_callback_under_a_boundless_assume_test() {
+  // `ext.run` handed around as a value instead of called directly: as an
+  // operator argument, and wired into a record field. The boundless `assume`
+  // says nothing about the callback, so every channel keeps the conservative
+  // callback charge a direct call auto-injects — `[Disk, Time]`, never the
+  // bare `[Time]` that would let a check pass or fail on the call's shape.
+  let root = "build/external_fallback_value_channels"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext.run : [Time]
+assume app.disk : [Disk]
+check app.via_operator : []
+check app.via_field : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(action: fn() -> Nil) -> Nil {
+  action()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+pub type Runner {
+  Runner(go: fn(fn() -> Nil) -> Nil)
+}
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+
+fn invoke(op: fn(fn() -> Nil) -> Nil, x: fn() -> Nil) -> Nil {
+  op(x)
+}
+
+pub fn via_operator() -> Nil {
+  invoke(ext.run, disk)
+}
+
+fn make() -> Runner {
+  Runner(go: ext.run)
+}
+
+pub fn via_field() -> Nil {
+  let r = make()
+  r.go(disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  ["via_operator", "via_field"]
+  |> list.each(fn(function) {
+    let assert Ok(violation) =
+      list.find(r.violations, fn(v) { v.function == function })
+    violation.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+  })
+  support.cleanup(root)
+}
+
+pub fn a_suppressed_share_binds_through_the_fallback_bounds_test() {
+  // The `assume` line's bound decouples its payload variable from the
+  // parameter name (`cb: [e]`), while the suppressed body's term is stated
+  // over the parameter itself (`cb`). Each half binds through its own bounds
+  // at the call site: the declared `[Time]` stays as written — `e` never
+  // reaches the term — and the share quotes the `[Disk]` actually
+  // suppressed, not the `[Unknown]` a bound list without `cb` leaves.
+  let root = "build/external_fallback_decoupled_bound"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext.run(cb: [e]) : [Time]
+assume app.disk : [Disk]
+check app.direct : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"run\")
+pub fn run(cb: fn() -> Nil) -> Nil {
+  cb()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+
+pub fn direct() -> Nil {
+  ext.run(disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("direct")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Time"])))
+  violation.explanation.fallback
+  |> should.equal(
+    types.FallbackSuppressed(types.Specific(set.from_list(["Disk"]))),
+  )
+  support.cleanup(root)
+}
+
 pub fn a_declared_sibling_call_pays_what_a_qualified_call_pays_test() {
   // A higher-order external under a boundless `assume`, called from its own
   // module and from another. The boundless line says nothing about the
@@ -2631,12 +2753,14 @@ pub fn run(action: fn() -> Nil) -> Nil {
   |> string.contains("effects ext.run(action: [action]) : [Time, action]")
   |> should.be_true()
 
-  // The per-function form suppresses the fallback half: the term and the
-  // bounds are the line's own, and the body's share is quoted as suppressed
-  // rather than stated over the answer.
+  // The per-function form suppresses the fallback half, but the boundless
+  // line says nothing about the callback: the answer keeps the conservative
+  // `action` variable a call site charges the argument through — the same
+  // shape the other two forms state — and the body's own share is quoted as
+  // suppressed rather than counted in the term.
   let per_function = answer_for("assume ext.run : []\n")
   per_function
-  |> string.contains("effects ext.run : []")
+  |> string.contains("effects ext.run(action: [action]) : [action]")
   |> should.be_true()
   per_function
   |> string.contains("suppressed by the `assume` line: [action]")

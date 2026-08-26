@@ -625,7 +625,9 @@ pub fn declared_charge(
   // The self-referential rewrite exists because of the union: one call-site
   // bound list serves both halves. A suppressing declaration answers alone
   // over its own line's bounds, so its term stays as written —
-  // `lookup_param_bounds` makes the matching selection off the same predicate.
+  // `lookup_param_bounds` keeps that line's bounds leading off the same
+  // predicate, with the fallback summary's behind them for the suppressed
+  // share.
   let declared = case suppressed {
     True -> raw
     False -> declared_beside_fallback(knowledge_base, name, raw)
@@ -663,7 +665,7 @@ pub fn declared_charge(
       case suppressed {
         True ->
           ForeignCharge(
-            term: declared,
+            term: suppressing_charge_term(knowledge_base, name, declared),
             fallback: types.FallbackSuppressed(fallback),
             declaration: DeclarationCharged,
           )
@@ -680,6 +682,35 @@ pub fn declared_charge(
         fallback: types.NoFallback,
         declaration: DeclarationCharged,
       )
+  }
+}
+
+// The term a suppressing line charges. A bounded line wrote its own answer
+// for the external's callbacks and stays as written. A boundless line says
+// nothing about them, so the charge keeps one variable per recorded callback
+// parameter — the same conservative share a direct call auto-injects from the
+// registry, kept here so a value channel (an operator argument, a wired
+// field) charges the callback too — while the body's own charge stays
+// suppressed beside it.
+fn suppressing_charge_term(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+  declared: EffectTerm,
+) -> EffectTerm {
+  let line_bounds = case dict.get(knowledge_base.param_bounds, name) {
+    Ok(bounds) -> bounds
+    Error(Nil) -> []
+  }
+  use <- bool.guard(when: line_bounds != [], return: declared)
+  case dict.get(knowledge_base.fallback_summaries, name) {
+    Ok(#(_term, [_, ..] as fallback_bounds)) ->
+      effect_term.normalize(
+        types.TUnion([
+          declared,
+          ..list.map(fallback_bounds, fn(bound) { types.TVar(bound.name) })
+        ]),
+      )
+    _ -> declared
   }
 }
 
@@ -1270,11 +1301,15 @@ pub fn argument_value_effects(
 // between the halves is always the same parameter binding the same argument.
 // Exact duplicates are dropped, so the common case stays one list.
 //
-// Under a suppressing declaration there is no union and no shared list: the
-// charge is the declared line's term as written, so the binding list is that
-// line's own bounds, un-rewritten — the same `suppressed_declaration`
-// selection the charge makes, so the term and the bounds that bind it cannot
-// drift apart.
+// Under a suppressing declaration there is no union, but the list is still
+// both halves': the charge is the declared line's term as written, bound by
+// that line's own bounds, un-rewritten and leading — while the suppressed
+// share is stated over the fallback summary's own parameter names, so the
+// summary's bounds ride behind them. A line whose bound decouples its payload
+// from the parameter name (`cb: [e]`) then still binds the share's `cb` at
+// the call site. A summary bound whose payload variable the line's own
+// payloads already bind is dropped: the line's binding stands, and a
+// same-named fallback parameter cannot rebind the declared term's variable.
 pub fn lookup_param_bounds(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -1286,7 +1321,18 @@ pub fn lookup_param_bounds(
   case dict.get(knowledge_base.fallback_summaries, name) {
     Ok(#(_term, fallback_bounds)) ->
       case suppressed_declaration(knowledge_base, name) {
-        True -> declared
+        True -> {
+          let taken = bound_payload_variables(declared)
+          list.append(
+            declared,
+            list.filter(fallback_bounds, fn(bound) {
+              set.is_empty(set.intersection(
+                effect_term.free_vars(bound.effects),
+                taken,
+              ))
+            }),
+          )
+        }
         False -> {
           let #(declared, _rename) = self_referential_declaration(declared)
           list.append(

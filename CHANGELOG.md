@@ -14,8 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were unioned into what callers pay. The external's own `check` line still
   weighs the body, every explanation of the charge quotes the suppressed half,
   and a written `assume … where returns` clause on such a name is now trusted
-  too, where it was previously refused whole. Catalog and module-level
-  assumptions still take the union.
+  too, where it was previously refused whole. A boundless line still charges
+  each function-typed argument's actual effects on top of the declared term,
+  on every call shape. Catalog and module-level assumptions still take the
+  union.
 
 ## [0.17.0] - 2026-08-26
 
