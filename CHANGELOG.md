@@ -55,6 +55,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A higher-order external read where its declaration covers every target —
+  from inside another fallback body's walk — now charges each function-typed
+  argument's effects beside the declaration, instead of reading the call as
+  the declaration alone.
+- An import cycle no longer drops a higher-order external's callback charge:
+  callers pay each callback argument's effects beside the `[Unknown]` its
+  unwalked fallback reads as, on every call shape.
+
+### Fixed
+
 - A decoupled bound (`cb: [e]`) scoping a `where returns` clause now binds
   the clause's variable by parameter name, on `effects` and `assume` lines
   alike — previously `[Unknown]`, or, with an aliased payload
