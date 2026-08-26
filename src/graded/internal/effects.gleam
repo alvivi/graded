@@ -437,16 +437,29 @@ pub fn lookup(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> EffectLookup {
-  let found = case dict.get(knowledge_base.all_effects, name) {
-    Ok(#(effect_set, origin)) -> Known(effect_set, types.FunctionEntry(origin:))
-    Error(Nil) ->
-      case dict.get(knowledge_base.module_effects, name.module) {
-        Ok(#(effect_set, origin)) ->
-          Known(effect_set, types.ModuleExternalEntry(origin:))
-        Error(Nil) -> Unknown
-      }
+  let found = case raw_lookup(knowledge_base, name) {
+    Some(#(term, source)) -> Known(term, source)
+    None -> Unknown
   }
   with_dependency_fallback(knowledge_base, name, found)
+}
+
+// The winning entry for `name`, raw: the per-function map first, the
+// module-level fallback second. The one spelling of that tier order — `lookup`
+// widens this value and `raw_declaration` reads it as written, so the two
+// cannot answer off different entries.
+fn raw_lookup(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Option(#(EffectTerm, types.EffectSource)) {
+  case dict.get(knowledge_base.all_effects, name) {
+    Ok(#(term, origin)) -> Some(#(term, types.FunctionEntry(origin:)))
+    Error(Nil) ->
+      case dict.get(knowledge_base.module_effects, name.module) {
+        Ok(#(term, origin)) -> Some(#(term, types.ModuleExternalEntry(origin:)))
+        Error(Nil) -> None
+      }
+  }
 }
 
 // Widen a dependency external's answer by a fallback body nothing walked.
@@ -602,8 +615,10 @@ pub fn declared_charge(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> ForeignCharge {
-  let suppressed = suppressed_declaration(knowledge_base, name)
-  let raw = case raw_declaration(knowledge_base, name) {
+  let declaration = raw_declaration(knowledge_base, name)
+  let halves = reachable_halves(knowledge_base, name)
+  let suppressed = suppressing_declaration(declaration, halves)
+  let raw = case declaration {
     Some(#(term, _origin)) -> term
     None -> effect_term.unknown()
   }
@@ -616,7 +631,7 @@ pub fn declared_charge(
     False -> declared_beside_fallback(knowledge_base, name, raw)
   }
   let fallback = running_fallback_term(knowledge_base, name)
-  case reachable_halves(knowledge_base, name), fallback {
+  case halves, fallback {
     // Every target this walk runs on has a foreign implementation for `name`, so
     // its Gleam fallback runs only where this walk does not reach.
     DeclarationOnly, _ ->
@@ -701,17 +716,14 @@ fn raw_declaration(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Option(#(EffectTerm, LookupOrigin)) {
-  let found = case dict.get(knowledge_base.all_effects, name) {
-    Ok(entry) -> Some(entry)
-    Error(Nil) ->
-      option.from_result(dict.get(knowledge_base.module_effects, name.module))
-  }
-  case found {
-    Some(#(term, origin)) ->
+  case raw_lookup(knowledge_base, name) {
+    Some(#(term, source)) -> {
+      let origin = origin_of(source)
       case declares_foreign_code(origin) {
         True -> Some(#(term, origin))
         False -> None
       }
+    }
     None -> None
   }
 }
@@ -725,10 +737,22 @@ fn suppressed_declaration(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Bool {
-  case raw_declaration(knowledge_base, name) {
+  suppressing_declaration(
+    raw_declaration(knowledge_base, name),
+    reachable_halves(knowledge_base, name),
+  )
+}
+
+// The same selection over halves a caller already derived, so `declared_charge`
+// decides once off the values its arms match on.
+fn suppressing_declaration(
+  declaration: Option(#(EffectTerm, LookupOrigin)),
+  halves: ReachableHalves,
+) -> Bool {
+  case declaration {
     Some(#(_term, origin)) ->
       suppresses_running_fallback(origin)
-      && case reachable_halves(knowledge_base, name) {
+      && case halves {
         DeclarationAndFallback | DeclarationOnly -> True
         FallbackOnly -> False
       }

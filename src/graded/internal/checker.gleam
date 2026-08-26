@@ -1908,38 +1908,39 @@ fn origin_suffix(
   // as where a `[Disk]` beside it came from — and, where the `assume` line
   // suppressed the body's charge, what says a body runs that the total no
   // longer counts.
+  let body = case fallback {
+    types.NoFallback -> ""
+    types.FallbackCharged(_) -> charged_body_clause
+    types.FallbackSuppressed(_) -> suppressed_body_clause
+  }
   case origin, fallback {
     Some(origin), types.NoFallback ->
       " (from " <> effects.describe_origin(origin) <> ")"
-    Some(origin), types.FallbackCharged(_) ->
-      " (from "
-      <> effects.describe_origin(origin)
-      <> ", unioned with its Gleam fallback body)"
-    Some(origin), types.FallbackSuppressed(_) ->
-      " (from "
-      <> effects.describe_origin(origin)
-      <> ", "
-      <> suppressed_body_clause
-      <> ")"
+    Some(origin), types.FallbackCharged(_)
+    | Some(origin), types.FallbackSuppressed(_)
+    -> " (from " <> effects.describe_origin(origin) <> ", " <> body <> ")"
     // No origin and a charged body. Either nothing declared the external, and
     // the `[Unknown]` the call's own clause already names is the union's other
     // half — or a declaration exists and covers no target the calling body runs
     // on, leaving that body as the whole of what was charged.
     None, types.FallbackCharged(_) ->
       case reason {
-        Some(UndeclaredExternal) -> " (unioned with its Gleam fallback body)"
+        Some(UndeclaredExternal) -> " (" <> body <> ")"
         _ ->
           " (from its Gleam fallback body, which is what runs on the targets this one does)"
       }
     // Suppression is minted only where a declaration is charged, and the
     // branches that drop the origin drop the fallback share with it.
-    None, types.FallbackSuppressed(_) -> " (" <> suppressed_body_clause <> ")"
+    None, types.FallbackSuppressed(_) -> " (" <> body <> ")"
     None, types.NoFallback -> ""
   }
 }
 
-// The clause for a running body an `assume` line un-charged, worded the same
-// wherever a caller-side surface states it.
+// The two clauses a running body is named by, each worded the same wherever a
+// caller-side surface states it: one for a body's charge in the total, one for
+// a body an `assume` line un-charged.
+const charged_body_clause = "unioned with its Gleam fallback body"
+
 const suppressed_body_clause = "its Gleam fallback body's charge suppressed by the `assume` line"
 
 // When the actual set still contains effect variables, the substitution

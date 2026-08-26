@@ -2133,14 +2133,14 @@ fn function_effect(
         module:,
         bounds: fallback_bounds,
         term: charge.term,
-        source: case fallback {
+        source: case charge.declaration {
           // The body running in the declaration's place is the whole of the
           // term, not a half added to it, so it is named as the source and not
-          // beside one. A suppressed half never reaches this path — it is
-          // minted only where the declaration is charged.
-          types.FallbackCharged(_) | types.FallbackSuppressed(_) ->
-            answer.RunningFallbackBody
-          types.NoFallback -> answer.UnreachedDeclaration
+          // beside one.
+          effects.FallbackAnswersInstead -> answer.RunningFallbackBody
+          effects.NothingImplementsName -> answer.UnreachedDeclaration
+          // Excluded by the guard this branch sits under.
+          effects.DeclarationCharged -> answer.UnreachedDeclaration
         },
       ),
     ),

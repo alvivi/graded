@@ -2176,12 +2176,13 @@ pub fn an_unwalked_dependency_fallback_stays_unknown_under_the_catalog_test() {
   |> should.equal(types.FallbackCharged(Specific(set.from_list(["Unknown"]))))
 }
 
-pub fn an_unwalked_path_dependency_fallback_is_suppressed_too_test() {
-  // A path dependency's committed spec is a declaration its author wrote over
-  // their own body — the same trust as an installed dependency's, so the same
-  // suppression.
+// The unwalked base under one suppressing origin: the `[Unknown]` standing in
+// for the unwalked body is suppressed exactly as a walked summary would be —
+// the charge reads the declaration raw, so no widened half survives under the
+// declaration's source.
+fn assert_unwalked_fallback_suppressed(origin: types.LookupOrigin) -> Nil {
   let charge =
-    dependency_external_base(types.PathDependency("dep"))
+    dependency_external_base(origin)
     |> effects.declared_charge(QualifiedName("dep/ffi", "run"))
   charge.term
   |> effect_term.to_effect_set
@@ -2194,21 +2195,14 @@ pub fn an_unwalked_path_dependency_fallback_is_suppressed_too_test() {
 }
 
 pub fn an_unwalked_dependency_fallback_is_suppressed_by_a_shipped_assume_test() {
-  // The same base under the dependency's own `assume`: the `[Unknown]`
-  // standing in for the unwalked body is suppressed exactly as a walked
-  // summary would be — the charge reads the declaration raw, so no widened
-  // half survives under the declaration's source.
-  let charge =
-    dependency_external_base(types.DependencySpec("dep"))
-    |> effects.declared_charge(QualifiedName("dep/ffi", "run"))
-  charge.term
-  |> effect_term.to_effect_set
-  |> should.equal(Specific(set.from_list(["Time"])))
-  charge.fallback
-  |> fallback_set
-  |> should.equal(
-    types.FallbackSuppressed(Specific(set.from_list(["Unknown"]))),
-  )
+  assert_unwalked_fallback_suppressed(types.DependencySpec("dep"))
+}
+
+pub fn an_unwalked_path_dependency_fallback_is_suppressed_too_test() {
+  // A path dependency's committed spec is a declaration its author wrote over
+  // their own body — the same trust as an installed dependency's, so the same
+  // suppression.
+  assert_unwalked_fallback_suppressed(types.PathDependency("dep"))
 }
 
 pub fn self_referential_declaration_pairs_term_and_bounds_test() {
