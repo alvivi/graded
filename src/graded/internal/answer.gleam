@@ -235,17 +235,16 @@ fn source_fallback(
 // The half of the answer the declaration does not account for, named apart from
 // it so neither is credited with the other's effects — or the half the
 // `assume` line dropped, named so a body that runs is not read as absent.
+// Both renderers state each half in the one clause below, supplying only their
+// own lead-in, so the two formats cannot drift apart on what they say about
+// the body.
 fn graded_fallback(fallback: types.FallbackDisposition(EffectTerm)) -> String {
   case fallback {
     types.NoFallback -> ""
     types.FallbackCharged(term) ->
-      "\n// unioned with its Gleam fallback body, which runs on the targets its"
-      <> " `@external` declares no implementation for: "
-      <> annotation.format_effect_term(effect_term.normalize(term))
+      "\n// unioned with " <> charged_fallback_clause <> formatted_term(term)
     types.FallbackSuppressed(term) ->
-      "\n// its Gleam fallback body runs on the targets its `@external` declares"
-      <> " no implementation for; its charge is suppressed by the `assume` line: "
-      <> annotation.format_effect_term(effect_term.normalize(term))
+      "\n// " <> suppressed_fallback_clause <> formatted_term(term)
   }
 }
 
@@ -255,16 +254,23 @@ fn prose_fallback(
   case fallback {
     types.NoFallback -> []
     types.FallbackCharged(term) -> [
-      "  plus its Gleam fallback body, which runs on the targets its `@external`"
-      <> " declares no implementation for: "
-      <> annotation.format_effect_term(effect_term.normalize(term)),
+      "  plus " <> charged_fallback_clause <> formatted_term(term),
     ]
     types.FallbackSuppressed(term) -> [
-      "  its Gleam fallback body runs on the targets its `@external` declares no"
-      <> " implementation for; the `assume` line suppresses its charge: "
-      <> annotation.format_effect_term(effect_term.normalize(term)),
+      "  " <> suppressed_fallback_clause <> formatted_term(term),
     ]
   }
+}
+
+const charged_fallback_clause = "its Gleam fallback body, which runs on the"
+  <> " targets its `@external` declares no implementation for: "
+
+const suppressed_fallback_clause = "its Gleam fallback body runs on the targets"
+  <> " its `@external` declares no implementation for; its charge is suppressed"
+  <> " by the `assume` line: "
+
+fn formatted_term(term: EffectTerm) -> String {
+  annotation.format_effect_term(effect_term.normalize(term))
 }
 
 // The sentence a total is stated in, shared by every command that reports one
