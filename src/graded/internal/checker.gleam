@@ -2590,6 +2590,21 @@ fn with_substituted_fallback(
   }
 }
 
+// Whether a fallback share carries variables the enclosing term does not. A
+// charged share is a component of the term's union, so a term with no free
+// variables has none hiding in that share either; a *suppressed* share is no
+// part of the term, so its own variables are weighed apart — a polymorphic
+// body beside a ground `assume` still has its overridden share substituted,
+// and the quote of what was suppressed stays each call site's.
+fn suppressed_share_vars(
+  fallback: types.FallbackDisposition(EffectTerm),
+) -> Bool {
+  case fallback {
+    types.FallbackSuppressed(term) -> has_vars(term)
+    types.FallbackCharged(_) | types.NoFallback -> False
+  }
+}
+
 // The same, for a collected call of a callee's body whose term this caller's
 // bindings have rewritten, plus — for a term that resolved — the source of the
 // wired value one of its field variables bound to.
@@ -3866,7 +3881,10 @@ fn substitute_local_call_effects(
   memo: Memo,
 ) -> #(List(CollectedCall), Memo) {
   let any_polymorphic =
-    list.any(recursive, fn(one) { has_vars(collected_term(one)) })
+    list.any(recursive, fn(one) {
+      has_vars(collected_term(one))
+      || suppressed_share_vars(one.resolution.fallback)
+    })
   use <- bool.guard(when: !any_polymorphic, return: #(recursive, memo))
   case dict.get(function_map, local_call.function) {
     Error(Nil) -> #(recursive, memo)
@@ -4022,16 +4040,7 @@ fn substitute_at_call_site(
   // substitute. With no declared bounds we still need to fall through
   // in case the registry flags auto-injectable fn-typed params.
   //
-  // A charged fallback share is a component of the term's union, so a term
-  // with no free variables has none hiding in that share either. A
-  // *suppressed* share is no part of the term, so its own variables are
-  // weighed apart — a polymorphic body beside a ground `assume` still has its
-  // overridden share substituted, and the quote of what was suppressed stays
-  // this call site's.
-  let fallback_vars = case fallback {
-    types.FallbackSuppressed(term) -> has_vars(term)
-    types.FallbackCharged(_) | types.NoFallback -> False
-  }
+  let fallback_vars = suppressed_share_vars(fallback)
   use <- bool.guard(
     when: !has_vars(effect) && !fallback_vars && callee_kb_bounds != [],
     return: #(effect, fallback, memo),
