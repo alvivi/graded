@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (library API).** Every type graded's public functions name is now
+  defined in the `graded` module, so linking against it never means importing
+  `graded/internal`. A CI gate holds the boundary.
+
+  - `run` returns `List(ModuleReport)` — per module, its path and the warning
+    and violation lines graded prints for it — instead of
+    `List(types.CheckResult)`. The structured results are `@internal`.
+  - `run_effect_formatted` takes `graded.Graded` / `graded.Prose` instead of
+    `answer.Format`.
+  - `run_catalog` is replaced by `catalog_list()` and
+    `catalog_show(package, version, directory)`; it no longer takes
+    `cli.CatalogRequest`.
+  - `run_format_stdin` returns `Result(String, GradedError)`, with a parse
+    failure as `GradedParseError("<stdin>", message)`, instead of
+    `Result(String, annotation.ParseError)`.
+  - `GradedError`'s `GradedParseError` and `InvalidConfig` carry the rendered
+    cause as a `String` instead of `annotation.ParseError` and
+    `config.ConfigError`. `InvalidConfig` now says what was wrong with the
+    manifest, where it named only the path.
+  - `infer_path_dep` and `run_effect_from_project` are `@internal`.
+
+  The CLI is unchanged: every command prints exactly what it printed before.
 - An `assume` line over your own or a dependency's `@external` now answers
   alone even where a Gleam fallback body runs; previously the body's effects
   were unioned into what callers pay. Explanations quote the suppressed half,
