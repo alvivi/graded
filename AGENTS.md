@@ -35,7 +35,7 @@ Tests use **gleeunit** with **qcheck** property generators in `test/generators.g
 
 ## Architecture
 
-Fourteen modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
+Sixteen modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
 
 | File | Responsibility |
 |---|---|
@@ -52,6 +52,8 @@ Fourteen modules, no circular dependencies. Only `src/graded.gleam` is the publi
 | `src/graded/internal/typeinfo.gleam` | Hold girard's per-expression inferred types, keyed by `#(start, end)` span, for receiver-type lookup |
 | `src/graded/internal/signatures.gleam` | Glance-backed parameter signatures: fn-typed and operator (second-order) parameter detection, positions, for call-site substitution |
 | `src/graded/internal/topo.gleam` | Kahn's-algorithm topological sort over a string-keyed dependency graph |
+| `src/graded/internal/lint.gleam` | Spec-file lint: `check`/`assume`/field lines whose target resolves nothing, and `where returns` clauses their own line does not scope |
+| `src/graded/internal/pack.gleam` | Hex tarball patching for `graded pack`: pick the archive, inject the spec through a temporary file, verify, replace |
 | `src/graded/internal/diff.gleam` | Line diff between two renderings of a spec file, for `infer --dry-run` |
 
 ## .graded Annotation Syntax

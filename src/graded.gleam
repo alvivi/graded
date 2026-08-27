@@ -52,23 +52,17 @@ import graded/internal/checker
 import graded/internal/cli
 import graded/internal/config
 import graded/internal/diff
-import graded/internal/effect_term
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
+import graded/internal/lint
+import graded/internal/pack
 import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/topo
 import graded/internal/typeinfo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type EffectTerm, type GradedFile,
-  type QualifiedName, type TypeFieldAnnotation, type Violation, type Warning,
-  AliasedBoundVariableWarning, AnnotationLine, CheckResult,
-  DotlessReturnsClauseWarning, EffectAnnotation, GradedFile, QualifiedName,
-  StaleFunctionExternalWarning, StaleReturnsClauseWarning,
-  UnboundExternalTermVariableWarning, UnclosedReturnsClauseWarning,
-  UngroundReturnsClauseWarning, UnknownClauseWarning, UnmatchedCheckWarning,
-  UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
-  UnmatchedReturnsClauseWarning, UnmatchedTypeFieldWarning,
-  UnverifiedCheckShapeWarning, UnverifiedReturnsClauseWarning,
+  type QualifiedName, type Violation, type Warning, AnnotationLine, CheckResult,
+  EffectAnnotation, GradedFile, QualifiedName,
 }
 import simplifile
 
@@ -324,7 +318,9 @@ pub fn pack_project(
 
   // A spec_file that is absolute or escapes the package root can't be a safe
   // archive-relative entry.
-  use _ <- result.try(validate_archive_entry(entry_name))
+  use _ <- result.try(
+    pack.validate_archive_entry(entry_name) |> result.map_error(pack_error),
+  )
 
   // Read through the parser, before the tarball is opened. A spec this version
   // rejects is one every consumer's loader rejects too, so injecting it ships a
@@ -345,161 +341,69 @@ pub fn pack_project(
     Error(error) -> Error(error)
   })
 
-  use tarball_path <- result.try(resolve_pack_tarball(
-    tarball,
-    project_root,
-    gleam_toml,
-    raw_cfg,
-  ))
+  use tarball_path <- result.try(
+    pack.resolve_tarball(tarball, project_root, gleam_toml, raw_cfg)
+    |> result.map_error(pack_error),
+  )
 
-  // Inject into a temp, verify, then replace the tarball in place, so a failed
-  // transform never leaves a corrupt archive behind. `inject_spec` creates the
-  // temp itself, with an atomic exclusive create it then writes the archive
-  // through — any existing path (a symlink included) is an error — and removes
-  // it again on failure, so only what that call created is ever deleted.
-  let temp = tarball_path <> ".packing"
   use checksum <- result.try(
-    inject_spec(tarball_path, spec, entry_name, temp)
-    |> result.map_error(fn(message) {
-      PackError("could not patch " <> tarball_path <> ": " <> message)
-    }),
-  )
-  use _ <- result.try(
-    verify_tarball(temp, entry_name)
-    |> result.map_error(fn(message) {
-      let _deleted = simplifile.delete(temp)
-      PackError("patched tarball failed verification: " <> message)
-    }),
-  )
-  // A rename failure is the one path that keeps the temp: by here the archive
-  // is written and verified, so it is the run's finished product and deleting
-  // it would throw away the only good copy. It has to be moved or removed by
-  // hand — the next run says so, refusing to write over a path it did not
-  // create.
-  use _ <- result.try(
-    simplifile.rename(temp, tarball_path)
-    |> result.map_error(FileWriteError(tarball_path, _)),
+    pack.patch_tarball(tarball_path, spec, entry_name)
+    |> result.map_error(pack_error),
   )
 
-  Ok(pack_success_message(tarball_path, entry_name, checksum))
+  Ok(pack.success_message(tarball_path, entry_name, checksum))
 }
 
-// Resolve the tarball to patch. An explicit path is validated as a readable hex
-// tarball. Without one, the default `build/<name>-<version>.tar` is opened and
-// its identity checked against the project's name and version, so `pack` can't
-// silently patch the wrong archive.
-fn resolve_pack_tarball(
-  tarball: option.Option(String),
-  project_root: String,
-  gleam_toml: String,
-  cfg: config.GradedConfig,
-) -> Result(String, GradedError) {
-  let package_name = cfg.package_name
-  case tarball {
-    Some(path) -> {
-      use _ <- result.try(
-        read_package_identity(path)
-        |> result.map_error(fn(message) {
-          PackError("not a readable hex tarball: " <> path <> ": " <> message)
-        }),
-      )
-      Ok(path)
-    }
-    None -> {
-      use version <- result.try(option.to_result(
-        cfg.version,
-        PackError(
-          "no `version` in "
-          <> gleam_toml
-          <> "; pass the tarball path explicitly",
-        ),
-      ))
-      let path =
-        filepath.join(
-          project_root,
-          "build/" <> package_name <> "-" <> version <> ".tar",
-        )
-      use #(name, tar_version) <- result.try(
-        read_package_identity(path)
-        |> result.map_error(fn(message) {
-          PackError(
-            "could not read "
-            <> path
-            <> " (run `gleam export hex-tarball` first): "
-            <> message,
-          )
-        }),
-      )
-      case name == package_name && tar_version == version {
-        True -> Ok(path)
-        False ->
-          Error(PackError(
-            "tarball at "
-            <> path
-            <> " is "
-            <> name
-            <> "@"
-            <> tar_version
-            <> ", not the project's "
-            <> package_name
-            <> "@"
-            <> version,
-          ))
-      }
-    }
-  }
-}
-
-// Reject an absolute path or one that escapes the package root: the spec must
-// land at a safe archive-relative location inside the package.
-//
-// Advisory, not the boundary. `graded_pack_ffi` applies the authoritative rule
-// to this entry as well as to the archive's own names, on the platform whose
-// `filename:join` semantics are what the rule defends. The two are deliberately
-// not identical: this one tests a leading `/`, which is Unix-only, and Gleam
-// has no platform-aware path predicate to test instead — `filepath.is_absolute`
-// is the same `starts_with("/")` under a `windows support` TODO. What this buys
-// is an earlier, better-worded rejection of a value the package author wrote in
-// their own gleam.toml. Do not weaken the Erlang guard to match it.
-fn validate_archive_entry(entry: String) -> Result(Nil, GradedError) {
-  let escapes = list.contains(filepath.split(entry), "..")
-  case string.starts_with(entry, "/") || escapes {
-    True ->
-      Error(PackError(
+// Render one archive-patching problem as this module's error. Every variant
+// but the last is a `PackError` carrying the prose the CLI prints; a rename
+// that failed names the OS cause instead, and the verified archive it left
+// behind.
+fn pack_error(problem: pack.PackProblem) -> GradedError {
+  case problem {
+    pack.UnsafeSpecEntry(entry:) ->
+      PackError(
         "configured spec_file `"
         <> entry
         <> "` must be a relative path inside the package",
-      ))
-    False -> Ok(Nil)
+      )
+    pack.UnreadableTarball(path:, message:) ->
+      PackError("not a readable hex tarball: " <> path <> ": " <> message)
+    pack.MissingVersion(gleam_toml:) ->
+      PackError(
+        "no `version` in " <> gleam_toml <> "; pass the tarball path explicitly",
+      )
+    pack.MissingDefaultTarball(path:, message:) ->
+      PackError(
+        "could not read "
+        <> path
+        <> " (run `gleam export hex-tarball` first): "
+        <> message,
+      )
+    pack.WrongTarball(
+      path:,
+      found:,
+      found_version:,
+      expected:,
+      expected_version:,
+    ) ->
+      PackError(
+        "tarball at "
+        <> path
+        <> " is "
+        <> found
+        <> "@"
+        <> found_version
+        <> ", not the project's "
+        <> expected
+        <> "@"
+        <> expected_version,
+      )
+    pack.InjectionFailed(tarball:, message:) ->
+      PackError("could not patch " <> tarball <> ": " <> message)
+    pack.VerificationFailed(message:) ->
+      PackError("patched tarball failed verification: " <> message)
+    pack.ReplaceFailed(path:, temp: _, cause:) -> FileWriteError(path, cause)
   }
-}
-
-fn pack_success_message(
-  tarball: String,
-  entry: String,
-  checksum: String,
-) -> String {
-  "graded: injected "
-  <> entry
-  <> " into "
-  <> tarball
-  <> "\n  checksum "
-  <> checksum
-  <> "\n\nPublish this tarball with the Hex publish API — NOT `gleam publish`,\n"
-  <> "which rebuilds the tarball and drops the injected spec:\n\n"
-  <> "  curl -X POST https://hex.pm/api/publish \\\n"
-  <> "    -H \"authorization: $HEX_API_KEY\" \\\n"
-  <> "    -H \"content-type: application/octet-stream\" \\\n"
-  <> "    --data-binary @"
-  <> shell_quote(tarball)
-  <> "\n\nDocumentation still publishes via `gleam docs publish`."
-}
-
-// Quote a path for a POSIX shell: single-quoted, with embedded single quotes
-// escaped as `'\''`, so the printed publish command survives paths with
-// whitespace or shell metacharacters.
-fn shell_quote(path: String) -> String {
-  "'" <> string.replace(path, "'", "'\\''") <> "'"
 }
 
 // Checking
@@ -562,7 +466,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   // project module. These silently do nothing (a vacuous check, or a field
   // annotation that resolves to [Unknown]), so they're reported against the
   // spec file itself rather than any source file.
-  let results = case validate_spec_annotations(ctx) {
+  let results = case lint.run(lint_context(ctx)) {
     [] -> results
     spec_warnings -> [
       CheckResult(file: cfg.spec_file, violations: [], warnings: spec_warnings),
@@ -953,21 +857,16 @@ fn check_one_file(
 }
 
 // Spec lint
+//
+// The pass itself lives in `graded/internal/lint`; what stays here is the
+// project state it reads. Dependency discovery is handed over as thunks, so a
+// spec with no line kind that asks a question of the dependency tree never
+// pays for the walk.
 
-// Flag `check`/`type`/`external` spec lines whose target resolves nothing. A
-// `check` line names a function that must exist in some project module; a `type`
-// line names a `module.Type.field` that must be a callable (function-typed)
-// field; an `assume` line names foreign code, so it must name
-// something graded cannot see the body of, and something that exists at all.
-// When the qualifier is missing or wrong, the field plainly can't be called, or
-// the declaration covers a body sitting in plain sight, the line is silently
-// dead or silently ignored, so surface it as a warning.
-// Every input is a field of the context the run already assembled, so it
-// travels whole: a lint needing one more piece of it adds no parameter. The
-// `registry` and the linted line's own bound list are the oracle a
-// `where returns` clause's variables are weighed against — the same one the gate
-// that binds them reads, so lint and gate agree by construction.
-fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
+// The lint's view of an assembled context. The dependency scan's own types
+// stay here: the lint's one read of it is the three-state answer about a
+// name, so a closure over `dependency_name` is what crosses the boundary.
+fn lint_context(context: ProjectContext) -> lint.Context {
   let ProjectContext(
     sources: ProjectSources(spec:, index:, package_root:, ..),
     stale_externals:,
@@ -977,451 +876,19 @@ fn validate_spec_annotations(context: ProjectContext) -> List(Warning) {
     registry:,
     ..,
   ) = context
-  let known_functions = known_function_names(index)
-
-  // One pass over the `check` lines, so the warnings come out in the order the
-  // spec writes them. A field path is not a function name, so membership says
-  // nothing about it and the whole line keys nothing. Anything else is a
-  // function whose effects budget the run enforces, whether or not it carries a
-  // clause: the name is weighed for a typo as usual, and the clause is flagged
-  // on its own, since it is the only unverified part of such a line.
-  let check_warnings =
-    annotation.extract_checks(spec)
-    |> list.flat_map(fn(ann) {
-      case annotation.is_field_path(ann.function) {
-        True -> [UnverifiedCheckShapeWarning(name: ann.function)]
-        False -> {
-          let unmatched = case set.contains(known_functions, ann.function) {
-            True -> []
-            False -> [UnmatchedCheckWarning(function: ann.function)]
-          }
-          case ann.returns {
-            None -> unmatched
-            Some(_) ->
-              list.append(unmatched, [
-                UnverifiedReturnsClauseWarning(function: ann.function),
-              ])
-          }
-        }
-      }
-    })
-
-  let externals = annotation.extract_externals(spec)
-  let declared_returns = annotation.assume_returns(spec)
-  let type_fields = annotation.extract_type_fields(spec)
-  // Every lint here tells a dependency module from a typo, and the scan behind
-  // that is the expensive part: walked once here and shared, and not at all for
-  // a spec holding none of these line kinds.
-  let dep_files = case externals, declared_returns, type_fields {
-    [], [], [] -> dict.new()
-    _, _, _ -> dependency_module_files(package_root)
-  }
-  let dep_modules = set.from_list(dict.keys(dep_files))
-
-  // The two declaring forms weigh a name by one rule, over one precomputation —
-  // which reads the whole dependency tree, so it is built only where a
-  // declaring line asks a question of it.
-  let #(external_warnings, returns_clause_warnings) = case
-    externals,
-    declared_returns
-  {
-    [], [] -> #([], [])
-    _, _ -> {
-      let evidence =
-        spec_name_evidence(
-          index,
-          known_functions,
-          package_root,
-          dep_files,
-          catalog,
-          dependencies,
-        )
-      #(
-        external_warnings(externals, evidence, stale_externals),
-        returns_clause_warnings(
-          declared_returns,
-          evidence,
-          stale_returns_clauses,
-        ),
-      )
-    }
-  }
-
-  // The function externals the existence channel just called dead — stale or
-  // unmatched. The lints below skip them, so a line whose one warning says to
-  // remove it gets no second piece of advice about its bound list. Derived
-  // from that channel's own output, so the two gates cannot drift.
-  let dead_externals = dead_external_names(external_warnings)
-
-  // Resolving field `assume` lines also needs per-module type info; build it only when
-  // there are field `assume` lines to check.
-  let type_field_warnings = case type_fields {
-    [] -> []
-    type_fields -> {
-      let project_infos = project_module_infos(index)
-      let module_info = fn(module_path) {
-        lookup_module_info(module_path, project_infos, dep_files)
-      }
-      list.filter_map(type_fields, unmatched_type_field_warning(
-        _,
-        index,
-        dep_modules,
-        module_info,
-      ))
-    }
-  }
-
-  // A clause on an `effects` line is written by `infer` and closed by
-  // construction, so one that is open was hand-edited or written by a future
-  // bug. Reported all the same: the gate drops it silently.
-  let effects_lines = annotation.extract_effects(spec)
-  let clause_warnings =
-    effects_lines
-    |> list.filter_map(unclosed_clause_warning(_, registry))
-
-  // A clause whose key this version does not read. Reported here rather than by
-  // the parser, so a dependency's spec stays silent — its consumer cannot fix it
-  // — and so the cache reader inherits that silence instead of a default nobody
-  // chose. One warning per line, all its keys together.
-  let unknown_clause_warnings =
-    annotation.unknown_clause_lines(spec)
-    |> list.map(fn(line) {
-      let #(path, keys) = line
-      UnknownClauseWarning(path:, keys:)
-    })
-
-  list.flatten([
-    check_warnings,
-    external_warnings,
-    unbound_term_variable_warnings(externals, dead_externals),
-    aliased_bound_variable_warnings(externals, effects_lines, dead_externals),
-    returns_clause_warnings,
-    clause_warnings,
-    unknown_clause_warnings,
-    type_field_warnings,
-  ])
-}
-
-// The term oracle over explicitly bounded `assume` lines: the declared effects
-// term's variables are substitution keys, and call-site binding substitutes
-// each bound's *payload* variables — so a term variable no payload covers can
-// never bind, whatever the bound is named. Lint-only: resolution is already
-// conservative about a leftover variable. Scoped to lines with a non-empty
-// bound list — a boundless polymorphic assume resolves through
-// registry-synthesized bounds and is left alone, and to lines the existence
-// channel has not flagged — a stale or unmatched line's one fix is removal.
-fn unbound_term_variable_warnings(
-  externals: List(types.ExternalAnnotation),
-  dead: Set(String),
-) -> List(Warning) {
-  list.filter_map(externals, fn(external) {
-    use <- bool.guard(when: external.params == [], return: Error(Nil))
-    case annotation.external_qualified_name(external), external.effects {
-      Ok(qualified), Some(effect_set) -> {
-        use <- bool.guard(
-          when: set.contains(dead, types.dotted_name(qualified)),
-          return: Error(Nil),
-        )
-        let covered = effects.bound_payload_variables(external.params)
-        // The declared term is a flat set, so its variables are right on the
-        // `Polymorphic` variant — no term round-trip needed.
-        let term_variables = case effect_set {
-          types.Polymorphic(_labels, variables) -> variables
-          types.Specific(_) | types.Wildcard -> set.new()
-        }
-        let unbound =
-          term_variables
-          |> set.filter(fn(variable) { !set.contains(covered, variable) })
-          |> set.to_list
-          |> list.sort(string.compare)
-        case unbound {
-          [] -> Error(Nil)
-          free_vars ->
-            Ok(UnboundExternalTermVariableWarning(
-              function: types.dotted_name(qualified),
-              free_vars:,
-            ))
-        }
-      }
-      _, _ -> Error(Nil)
-    }
-  })
-}
-
-// The aliasing lint (see `effects.aliased_bound_variables`): a bound payload
-// naming a *different* bound's parameter, on a line whose effects term or
-// `where returns` clause uses that variable — the shape where the term
-// channel (payload-keyed) and the clause channel (name-keyed) charge
-// different arguments. Bounded `assume` lines and `effects` lines alike,
-// since both carry two live channels; a `check` line's clause is never
-// weighed, so its one live channel cannot disagree with itself. Lint-only:
-// each channel's binding stays what it is. A machine-written
-// self-referential list never aliases, so the shape is hand-written.
-fn aliased_bound_variable_warnings(
-  externals: List(types.ExternalAnnotation),
-  effects_lines: List(EffectAnnotation),
-  dead: Set(String),
-) -> List(Warning) {
-  let from_externals =
-    list.filter_map(externals, fn(external) {
-      use qualified <- result.try(annotation.external_qualified_name(external))
-      let function = types.dotted_name(qualified)
-      use <- bool.guard(when: set.contains(dead, function), return: Error(Nil))
-      let term_variables = case external.effects {
-        Some(types.Polymorphic(_labels, variables)) -> variables
-        Some(types.Specific(_)) | Some(types.Wildcard) | None -> set.new()
-      }
-      aliased_bound_warning(
-        function,
-        external.params,
-        set.union(term_variables, returns_variables(external.returns)),
-      )
-    })
-  let from_effects =
-    list.filter_map(effects_lines, fn(ann) {
-      aliased_bound_warning(
-        ann.function,
-        ann.params,
-        set.union(
-          effect_term.free_vars(ann.effects),
-          returns_variables(ann.returns),
-        ),
-      )
-    })
-  list.append(from_externals, from_effects)
-}
-
-// One line's aliasing warning: the collision pairs whose variable the line
-// actually uses, `Error(Nil)` where none is used.
-fn aliased_bound_warning(
-  function: String,
-  params: List(types.ParamBound),
-  used: Set(String),
-) -> Result(Warning, Nil) {
-  let variables =
-    effects.aliased_bound_variables(params)
-    |> list.filter(fn(pair) { set.contains(used, pair.0) })
-  case variables {
-    [] -> Error(Nil)
-    variables -> Ok(AliasedBoundVariableWarning(function:, variables:))
-  }
-}
-
-// A clause's free variables, none where the line carries no clause.
-fn returns_variables(returns: Option(EffectTerm)) -> Set(String) {
-  case returns {
-    Some(operator) -> effect_term.free_vars(operator)
-    None -> set.new()
-  }
-}
-
-// The warning for one `effects` line's `where returns` clause, or `Error(Nil)`
-// where it carries none, names nothing, or is closed.
-//
-// The line's own bound list is what scopes the clause, and the line is right
-// here, so the lint weighs the clause against exactly what the gate weighs it
-// against without consulting the knowledge base at all.
-fn unclosed_clause_warning(
-  annotation_line: EffectAnnotation,
-  registry: SignatureRegistry,
-) -> Result(Warning, Nil) {
-  use operator <- result.try(option.to_result(annotation_line.returns, Nil))
-  use #(module, function) <- result.try(annotation.split_function_name(
-    annotation_line.function,
-  ))
-  case
-    checker.unclosed_clause_variables(
-      operator,
-      QualifiedName(module, function),
-      annotation_line.params,
-      registry,
-    )
-  {
-    [] -> Error(Nil)
-    free_vars ->
-      Ok(UnclosedReturnsClauseWarning(
-        function: annotation_line.function,
-        free_vars:,
-      ))
-  }
-}
-
-// What both declaring forms' lints weigh a name against, precomputed once over
-// the catalog and the dependency scan and then asked per name. One rule, so an
-// `assume` line and a `where returns` clause naming the same
-// function are called dead together or not at all.
-type SpecNameEvidence {
-  SpecNameEvidence(
-    // Whether anything graded can read defines the name.
-    defines: fn(QualifiedName) -> Bool,
-    // Whether the name's module was placed at all — or the dependency tree is
-    // too incomplete for its absence to prove anything.
-    module_placed: fn(String) -> Bool,
+  lint.Context(
+    spec:,
+    index:,
+    stale_externals:,
+    stale_returns_clauses:,
+    catalog:,
+    registry:,
+    dependency_name: dependency_name(dependencies, _),
+    dependency_files: fn() { dependency_module_files(package_root) },
+    dependency_sources_are_complete: fn() {
+      dependency_sources_are_complete(package_root)
+    },
   )
-}
-
-// A dependency is weighed by the function, not by the module: graded holds that
-// dependency's source, so `assume dep/io.typo` over a `dep/io` that
-// defines only `writes` is as dead as one naming no module at all, and the
-// module tier would wave every misspelling through. A module-level line has no
-// function to weigh and is settled by the module alone.
-//
-// Existence only. A name that resolves but that graded cannot introspect is
-// exactly what a declaring line is for, and is never flagged.
-fn spec_name_evidence(
-  index: Dict(String, #(String, glance.Module)),
-  known_functions: Set(String),
-  package_root: String,
-  dep_files: Dict(String, String),
-  catalog: effects.BundledCatalog,
-  dependencies: DependencySources,
-) -> SpecNameEvidence {
-  // The catalog the knowledge base was assembled from, selected against *this*
-  // project's manifest — so a line naming a catalogued function of a package
-  // this project depends on resolves exactly as `check` resolves it.
-  let effects.BundledCatalog(
-    functions: catalog_functions,
-    modules: catalog_modules,
-    ..,
-  ) = catalog
-  // A catalogued module is one the catalog *keys*, whether by a module-level
-  // line or by the per-function lines that are the usual form: the stdlib
-  // catalog holds `gleam/io.println` and no `gleam/io` line, so weighing module
-  // existence by `catalog_modules` alone calls a real module a typo wherever
-  // the dependency's own sources aren't installed to say otherwise.
-  let catalog_function_modules =
-    dict.fold(catalog_functions, set.new(), fn(acc, name, _entry) {
-      set.insert(acc, name.module)
-    })
-  // Whether the tree the lint read is the whole of what this project depends
-  // on. A module it cannot place is a typo only if there was nowhere left for
-  // it to be: with a manifest package whose sources never turned up, the module
-  // may be that package's, and no reading of what is on disk disproves it.
-  let unplaceable_is_unknown = !dependency_sources_are_complete(package_root)
-  // Whether something *outside* this package's own parsed source speaks for the
-  // module: a dependency source the lint could read, or a catalog entry.
-  let claimed = fn(module) {
-    dict.has_key(dep_files, module)
-    || dict.has_key(catalog_modules, module)
-    || set.contains(catalog_function_modules, module)
-  }
-  // And whether anything at all does. Nothing here is what "unplaceable" means.
-  let placed = fn(module) { dict.has_key(index, module) || claimed(module) }
-  let defines = fn(qualified: QualifiedName) {
-    // What answers for the name where no parsed source settles it: a module
-    // something outside this package speaks for, a catalog entry for the exact
-    // name, or a module the lint cannot place at all while the tree is missing
-    // a package that could be holding it. A project module is *not* among them
-    // — it was parsed, and `known_functions` is what it defines.
-    let unparsed_answers =
-      claimed(qualified.module)
-      || dict.has_key(catalog_functions, qualified)
-      || { unplaceable_is_unknown && !placed(qualified.module) }
-    // The catalog is a stand-in for sources graded cannot read, so it is
-    // weighed only where the dependency's own source says nothing: a parsed
-    // module defines what it defines, and a name it provably lacks is a typo
-    // whatever the catalog keys for the module. The lint flags what it can
-    // prove dead, and silence is not proof.
-    set.contains(known_functions, types.dotted_name(qualified))
-    || case dependency_name(dependencies, qualified) {
-      DefinedByDependency -> True
-      AbsentFromDependency -> False
-      UnreadDependency -> unparsed_answers
-    }
-  }
-  SpecNameEvidence(defines:, module_placed: fn(module) {
-    placed(module) || unplaceable_is_unknown
-  })
-}
-
-// One walk of the spec's `assume` lines, yielding the three ways such
-// a line can be dead. Both tiers are covered, since a typo is as likely in the
-// module name as in the function name:
-//
-//   - a per-function line naming one of *this package's* Gleam-bodied functions:
-//     valid syntax, nothing foreign to declare, so it is ignored and the body
-//     walked (see `stale_project_externals`);
-//   - a per-function line whose `module.function` resolves nowhere at all —
-//     dependency, catalog, or project index;
-//   - a module-level line whose module is neither a dependency nor a project
-//     module.
-fn external_warnings(
-  externals: List(types.ExternalAnnotation),
-  evidence: SpecNameEvidence,
-  stale: Set(String),
-) -> List(Warning) {
-  externals
-  // A line carrying only a `where returns` clause claims nothing on this
-  // channel, so this channel has nothing to call dead about it.
-  |> list.filter(fn(external) { external.effects != option.None })
-  |> list.filter_map(fn(external) {
-    case annotation.external_qualified_name(external) {
-      Ok(qualified) -> {
-        let name = types.dotted_name(qualified)
-        case set.contains(stale, name), evidence.defines(qualified) {
-          True, _ -> Ok(StaleFunctionExternalWarning(function: name))
-          False, False -> Ok(UnmatchedFunctionExternalWarning(function: name))
-          False, True -> Error(Nil)
-        }
-      }
-      Error(Nil) ->
-        case evidence.module_placed(external.module) {
-          True -> Error(Nil)
-          False -> Ok(UnmatchedModuleExternalWarning(module: external.module))
-        }
-    }
-  })
-}
-
-// The function names the existence channel's warnings call dead — a stale
-// declaration over a visible body, or one matching nothing anywhere.
-fn dead_external_names(warnings: List(Warning)) -> Set(String) {
-  list.filter_map(warnings, fn(warning) {
-    case warning {
-      StaleFunctionExternalWarning(function:)
-      | UnmatchedFunctionExternalWarning(function:) -> Ok(function)
-      _ -> Error(Nil)
-    }
-  })
-  |> set.from_list()
-}
-
-// The same walk over the `where returns` clauses on the spec's `assume` lines,
-// yielding the ways one can be dead. Two are the existence branches above, read
-// through the same evidence; two are this channel's own, and both are clauses
-// the loader drops:
-//
-//   - a clause on a module path, where nothing keys a whole module's returned
-//     value;
-//   - a polymorphic operator, whose free variables nothing sanitized.
-//
-// One warning per clause, so a clause that is dead twice over is reported by
-// the first rule that catches it.
-fn returns_clause_warnings(
-  declared: List(#(types.ExternalAnnotation, EffectTerm)),
-  evidence: SpecNameEvidence,
-  stale: Set(String),
-) -> List(Warning) {
-  list.filter_map(declared, fn(entry) {
-    let #(external, operator) = entry
-    case annotation.external_qualified_name(external) {
-      Error(Nil) -> Ok(DotlessReturnsClauseWarning(name: external.module))
-      Ok(qualified) -> {
-        let name = types.dotted_name(qualified)
-        // The unscoped variables, listed once and by the same base predicate
-        // the loader and the gate read: emptiness is what admits the clause,
-        // so the same list decides the branch and names it.
-        let open = effects.unscoped_clause_variables(operator, external.params)
-        case set.contains(stale, name), evidence.defines(qualified), open {
-          True, _, _ -> Ok(StaleReturnsClauseWarning(function: name))
-          False, False, _ -> Ok(UnmatchedReturnsClauseWarning(function: name))
-          False, True, [] -> Error(Nil)
-          False, True, free_vars ->
-            Ok(UngroundReturnsClauseWarning(function: name, free_vars:))
-        }
-      }
-    }
-  })
 }
 
 // Whether every package the manifest lists yielded sources graded could read —
@@ -1462,267 +929,6 @@ fn dependency_module_files(package_root: String) -> Dict(String, String) {
     let src_dir = filepath.join(resolve_path(package_root, dep_path), "src")
     dict.merge(acc, effects.source_dir_module_files(src_dir))
   })
-}
-
-// A warning for a field `assume` line that resolves nothing, or `Error(Nil)` when the
-// line is a valid target. Cases:
-//   - unqualified (`type Type.field`): no module to key a receiver's resolved
-//     type, so it's always dead;
-//   - qualified at a *project* module: dead when the type/field doesn't exist,
-//     or the field's declared type plainly can't be called (a record, a scalar,
-//     a tuple). A field whose type can't be resolved (an unintrospectable
-//     dependency) is left alone rather than flagged;
-//   - qualified at a *dependency* module: left alone — the receiver type is the
-//     dependency's, which girard resolves; graded doesn't second-guess it;
-//   - qualified at an unknown module (neither project nor dependency): a typo,
-//     so it's dead and flagged.
-fn unmatched_type_field_warning(
-  tf: TypeFieldAnnotation,
-  index: Dict(String, #(String, glance.Module)),
-  dep_modules: Set(String),
-  module_info: fn(String) -> Result(ModuleInfo, Nil),
-) -> Result(Warning, Nil) {
-  let dead = case tf.module {
-    None -> True
-    Some(module) ->
-      !valid_type_field(module, tf, index, dep_modules, module_info)
-  }
-  case dead {
-    False -> Error(Nil)
-    True -> Ok(UnmatchedTypeFieldWarning(name: annotation.type_field_path(tf)))
-  }
-}
-
-// Whether a qualified field `assume` line is an accepted target. A project type's field
-// must exist and not plainly be non-callable (`Callable`/`Unknown` pass, so an
-// unintrospectable field type is never false-flagged). A dependency-owned type
-// passes untouched; any other module is a typo.
-fn valid_type_field(
-  module: String,
-  tf: TypeFieldAnnotation,
-  index: Dict(String, #(String, glance.Module)),
-  dep_modules: Set(String),
-  module_info: fn(String) -> Result(ModuleInfo, Nil),
-) -> Bool {
-  case dict.get(index, module) {
-    Ok(#(_gleam_path, mod)) ->
-      case lookup_labelled_field(mod, tf.type_name, tf.field) {
-        Ok(field_type) ->
-          classify_field_type(field_type, module, module_info, set.new())
-          != NotCallable
-        Error(Nil) -> False
-      }
-    Error(Nil) -> set.contains(dep_modules, module)
-  }
-}
-
-// Every `module.function` defined across the project (public and private), the
-// set a `check` line's qualified name must belong to.
-fn known_function_names(
-  index: Dict(String, #(String, glance.Module)),
-) -> Set(String) {
-  dict.fold(index, set.new(), fn(acc, module_path, entry) {
-    let #(_gleam_path, module) = entry
-    list.fold(module.functions, acc, fn(acc2, definition) {
-      set.insert(acc2, module_path <> "." <> definition.definition.name)
-    })
-  })
-}
-
-// The labelled field `field` of custom type `type_name` in `module`, or
-// `Error` when no such type or labelled field exists.
-fn lookup_labelled_field(
-  module: glance.Module,
-  type_name: String,
-  field: String,
-) -> Result(glance.Type, Nil) {
-  use definition <- result.try(
-    list.find(module.custom_types, fn(d) { d.definition.name == type_name }),
-  )
-  list.find_map(definition.definition.variants, fn(variant) {
-    list.find_map(variant.fields, fn(f) {
-      case f {
-        glance.LabelledVariantField(label:, item:) if label == field -> Ok(item)
-        _ -> Error(Nil)
-      }
-    })
-  })
-}
-
-// The type-resolution surface graded can read for one module: its type aliases,
-// its own custom-type names, and the two ways another module's type can be
-// referenced — qualified (import alias -> module path) and unqualified
-// (imported type's local name -> #(module path, original name)).
-type ModuleInfo {
-  ModuleInfo(
-    aliases: Dict(String, glance.Type),
-    custom_types: Set(String),
-    qualified_imports: Dict(String, String),
-    unqualified_types: Dict(String, #(String, String)),
-  )
-}
-
-// Whether a field's declared type can be called. Three-valued so the lint flags
-// only what it can prove is non-callable, never guessing on a type it can't
-// resolve.
-type Callable {
-  Callable
-  NotCallable
-  UnknownCallable
-}
-
-fn project_module_infos(
-  index: Dict(String, #(String, glance.Module)),
-) -> Dict(String, ModuleInfo) {
-  dict.map_values(index, fn(_module_path, entry) {
-    let #(_gleam_path, module) = entry
-    module_info_from_glance(module)
-  })
-}
-
-fn module_info_from_glance(module: glance.Module) -> ModuleInfo {
-  let aliases =
-    list.fold(module.type_aliases, dict.new(), fn(acc, definition) {
-      dict.insert(
-        acc,
-        definition.definition.name,
-        definition.definition.aliased,
-      )
-    })
-  let custom_types =
-    list.fold(module.custom_types, set.new(), fn(acc, definition) {
-      set.insert(acc, definition.definition.name)
-    })
-  let #(qualified_imports, unqualified_types) =
-    list.fold(module.imports, #(dict.new(), dict.new()), fn(acc, definition) {
-      let #(quals, unquals) = acc
-      let import_ = definition.definition
-      let alias = case import_.alias {
-        Some(glance.Named(name)) -> name
-        _ -> last_segment(import_.module)
-      }
-      let unquals =
-        list.fold(import_.unqualified_types, unquals, fn(u, unqualified) {
-          let local = case unqualified.alias {
-            Some(a) -> a
-            None -> unqualified.name
-          }
-          dict.insert(u, local, #(import_.module, unqualified.name))
-        })
-      #(dict.insert(quals, alias, import_.module), unquals)
-    })
-  ModuleInfo(aliases:, custom_types:, qualified_imports:, unqualified_types:)
-}
-
-fn last_segment(module_path: String) -> String {
-  module_path |> string.split("/") |> list.last() |> result.unwrap(module_path)
-}
-
-// Resolve a module's introspectable type info: a project module from the index,
-// or a dependency module parsed from its source on demand. `Error` when neither
-// is available (an uninstalled or otherwise unreadable module).
-fn lookup_module_info(
-  module_path: String,
-  project_infos: Dict(String, ModuleInfo),
-  dep_files: Dict(String, String),
-) -> Result(ModuleInfo, Nil) {
-  case dict.get(project_infos, module_path) {
-    Ok(info) -> Ok(info)
-    Error(Nil) ->
-      case dict.get(dep_files, module_path) {
-        Ok(file) -> {
-          use source <- result.try(
-            simplifile.read(file) |> result.replace_error(Nil),
-          )
-          use module <- result.try(
-            glance.module(source) |> result.replace_error(Nil),
-          )
-          Ok(module_info_from_glance(module))
-        }
-        Error(Nil) -> Error(Nil)
-      }
-  }
-}
-
-// Whether `type_`, declared in `module_path`, is a callable function type —
-// following alias chains across project and dependency modules. `seen` guards
-// against alias cycles. A type graded can't introspect resolves to `Unknown`,
-// never `NotCallable`, so the lint won't false-flag it.
-fn classify_field_type(
-  type_: glance.Type,
-  module_path: String,
-  module_info: fn(String) -> Result(ModuleInfo, Nil),
-  seen: Set(String),
-) -> Callable {
-  case type_ {
-    glance.FunctionType(..) -> Callable
-    glance.NamedType(name:, module: None, ..) ->
-      classify_named_type(name, module_path, module_info, seen)
-    glance.NamedType(name:, module: Some(qualifier), ..) ->
-      case module_info(module_path) {
-        Ok(info) ->
-          case dict.get(info.qualified_imports, qualifier) {
-            Ok(real_module) ->
-              classify_named_type(name, real_module, module_info, seen)
-            Error(Nil) -> UnknownCallable
-          }
-        Error(Nil) -> UnknownCallable
-      }
-    // A type variable could be instantiated to a function; don't flag it.
-    glance.VariableType(..) -> UnknownCallable
-    // Tuples and holes are never callable.
-    _ -> NotCallable
-  }
-}
-
-// Classify a bare type name (`module: None`) as seen from `module_path`: a local
-// alias is followed, a local custom type is non-callable, an unqualified import
-// is chased to its defining module, and anything else is a prelude/builtin type
-// (none of which is callable).
-fn classify_named_type(
-  name: String,
-  module_path: String,
-  module_info: fn(String) -> Result(ModuleInfo, Nil),
-  seen: Set(String),
-) -> Callable {
-  let key = module_path <> "." <> name
-  case set.contains(seen, key), module_info(module_path) {
-    True, _ -> UnknownCallable
-    _, Error(Nil) -> UnknownCallable
-    False, Ok(info) ->
-      classify_in_module(
-        name,
-        module_path,
-        info,
-        module_info,
-        set.insert(seen, key),
-      )
-  }
-}
-
-// `name` resolved within `info` (the module that defines or imports it): a local
-// alias is followed, a local custom type is non-callable, and an unqualified
-// import is chased to its source. Anything else is a prelude/builtin type.
-fn classify_in_module(
-  name: String,
-  module_path: String,
-  info: ModuleInfo,
-  module_info: fn(String) -> Result(ModuleInfo, Nil),
-  seen: Set(String),
-) -> Callable {
-  case dict.get(info.aliases, name) {
-    Ok(aliased) -> classify_field_type(aliased, module_path, module_info, seen)
-    Error(Nil) ->
-      case
-        set.contains(info.custom_types, name),
-        dict.get(info.unqualified_types, name)
-      {
-        True, _ -> NotCallable
-        False, Ok(#(real_module, original)) ->
-          classify_named_type(original, real_module, module_info, seen)
-        False, Error(Nil) -> NotCallable
-      }
-  }
 }
 
 // Effect queries
@@ -4024,32 +3230,19 @@ fn fallback_import_graph(
   |> set.from_list
 }
 
-// What a dependency's own source says about one name: the three answers the
-// spec lint owes a `module.function` it did not find in this package.
-type DependencyName {
-  // The module's winning copy parsed and defines the function.
-  DefinedByDependency
-  // It parsed and defines no such function. The one answer that proves a name
-  // absent.
-  AbsentFromDependency
-  // No source graded read says anything: the winning copy would not parse, or
-  // the walk never reached the module. No evidence either way.
-  UnreadDependency
-}
-
 // Answer for `name` from the scan, read off the winning copy of its module and
 // that copy alone — the answer a name is owed is what the source this build
 // compiles against says, not what any copy left on disk beside it still holds.
 fn dependency_name(
   sources: DependencySources,
   name: QualifiedName,
-) -> DependencyName {
+) -> lint.DependencyName {
   case dict.get(sources.modules, name.module) {
-    Error(Nil) | Ok(UnreadableModule) -> UnreadDependency
+    Error(Nil) | Ok(UnreadableModule) -> lint.UnreadDependency
     Ok(ParsedModule(functions:, ..)) ->
       case set.contains(functions, name.function) {
-        True -> DefinedByDependency
-        False -> AbsentFromDependency
+        True -> lint.DefinedByDependency
+        False -> lint.AbsentFromDependency
       }
   }
 }
@@ -4757,29 +3950,3 @@ fn read_stdin() -> String
 @external(erlang, "graded_ffi", "version")
 @external(javascript, "./graded_ffi.mjs", "version")
 fn version() -> String
-
-// Inject a `.graded` spec into a hex tarball at `in_tar`, writing the patched
-// archive to `out_tar` with `spec` placed at the archive-relative `entry_name`.
-// Returns the recomputed inner checksum, or an error message.
-// nolint: stringly_typed_error -- opaque erl_tar diagnostic, wrapped in PackError
-@external(erlang, "graded_pack_ffi", "inject_spec")
-@external(javascript, "./graded_pack_ffi.mjs", "inject_spec")
-fn inject_spec(
-  in_tar: String,
-  spec: String,
-  entry_name: String,
-  out_tar: String,
-) -> Result(String, String)
-
-// Assert a written tarball is internally consistent (checksum + files list) and
-// carries `entry_name`.
-// nolint: stringly_typed_error -- opaque erl_tar diagnostic, wrapped in PackError
-@external(erlang, "graded_pack_ffi", "verify_tarball")
-@external(javascript, "./graded_pack_ffi.mjs", "verify_tarball")
-fn verify_tarball(tar: String, entry_name: String) -> Result(Nil, String)
-
-// Read `#(name, version)` from a hex tarball's `metadata.config`.
-// nolint: stringly_typed_error -- opaque erl_tar diagnostic, wrapped in PackError
-@external(erlang, "graded_pack_ffi", "read_package_identity")
-@external(javascript, "./graded_pack_ffi.mjs", "read_package_identity")
-fn read_package_identity(tar: String) -> Result(#(String, String), String)
