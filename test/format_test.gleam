@@ -4,8 +4,8 @@ import gleam/string
 import gleeunit/should
 import graded/internal/annotation
 import graded/internal/types.{
-  AnnotationLine, BlankLine, Check, CommentLine, Effects, ExternalLine,
-  RetainedAssumeLine, TypeFieldLine,
+  AnnotationLine, AssumeLine, BlankLine, Check, CommentLine, Effects,
+  FieldAssumeLine, RetainedAssumeLine,
 }
 import qcheck
 
@@ -147,8 +147,8 @@ pub fn format_sorted_section_order_test() {
 fn section_index(line: types.GradedLine) -> Int {
   case line {
     CommentLine(_) -> 0
-    ExternalLine(_, _) -> 1
-    TypeFieldLine(_, _) -> 1
+    AssumeLine(_, _) -> 1
+    FieldAssumeLine(_, _) -> 1
     RetainedAssumeLine(..) -> 1
     AnnotationLine(a, _) ->
       case a.kind {

@@ -8,10 +8,10 @@ import gleeunit/should
 import graded/internal/annotation
 import graded/internal/effect_term
 import graded/internal/types.{
-  type EffectTerm, AnnotationLine, BlankLine, Check, CommentLine,
-  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
-  ModuleExternal, ParamBound, Polymorphic, RetainedAssumeLine, Specific, TAbs,
-  TApp, TLabels, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, UnknownClause,
+  type EffectTerm, AnnotationLine, AssumeAnnotation, AssumeLine, BlankLine,
+  Check, CommentLine, EffectAnnotation, Effects, FieldAnnotation,
+  FieldAssumeLine, FunctionAssume, ModuleAssume, ParamBound, Polymorphic,
+  RetainedAssumeLine, Specific, TAbs, TApp, TLabels, TUnion, TVar, UnknownClause,
   Wildcard,
 }
 import qcheck
@@ -377,7 +377,7 @@ pub fn parse_type_field_multiple_effects_test() {
 
 pub fn format_type_field_test() {
   let tf =
-    TypeFieldAnnotation(
+    FieldAnnotation(
       module: None,
       type_name: "Handler",
       field: "on_click",
@@ -389,7 +389,7 @@ pub fn format_type_field_test() {
 
 pub fn format_type_field_qualified_test() {
   let tf =
-    TypeFieldAnnotation(
+    FieldAnnotation(
       module: Some("myapp/router"),
       type_name: "Handler",
       field: "on_click",
@@ -426,7 +426,7 @@ pub fn parse_external_test() {
   let assert Ok(file) = annotation.parse_file(input)
   let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("gleam/http/request")
-  ext.target |> should.equal(FunctionExternal("send"))
+  ext.target |> should.equal(FunctionAssume("send"))
   ext.effects |> should.equal(Some(Specific(set.from_list(["Http"]))))
 }
 
@@ -435,15 +435,15 @@ pub fn parse_external_pure_test() {
   let assert Ok(file) = annotation.parse_file(input)
   let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("gleam/json")
-  ext.target |> should.equal(FunctionExternal("decode"))
+  ext.target |> should.equal(FunctionAssume("decode"))
   ext.effects |> should.equal(Some(Specific(set.new())))
 }
 
 pub fn format_external_test() {
   let ext =
-    ExternalAnnotation(
+    AssumeAnnotation(
       "gleam/httpc",
-      FunctionExternal("send"),
+      FunctionAssume("send"),
       params: [],
       effects: Some(Specific(set.from_list(["Http"]))),
       returns: None,
@@ -461,7 +461,7 @@ pub fn parse_assume_module_test() {
   let assert Ok(file) = annotation.parse_file("assume gleam/io : [Stdout]")
   let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("gleam/io")
-  ext.target |> should.equal(ModuleExternal)
+  ext.target |> should.equal(ModuleAssume)
   ext.effects |> should.equal(Some(Specific(set.from_list(["Stdout"]))))
 }
 
@@ -470,7 +470,7 @@ pub fn parse_assume_function_test() {
     annotation.parse_file("assume gleam/http/request.send : [Http]")
   let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("gleam/http/request")
-  ext.target |> should.equal(FunctionExternal("send"))
+  ext.target |> should.equal(FunctionAssume("send"))
   ext.effects |> should.equal(Some(Specific(set.from_list(["Http"]))))
 }
 
@@ -520,7 +520,7 @@ pub fn parse_assume_function_with_bounds_test() {
   let assert Ok(file) = annotation.parse_file("assume m/ffi.each(f: [f]) : [f]")
   let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("m/ffi")
-  ext.target |> should.equal(FunctionExternal("each"))
+  ext.target |> should.equal(FunctionAssume("each"))
   ext.params |> should.equal([ParamBound("f", TVar("f"))])
   ext.effects
   |> should.equal(Some(Polymorphic(set.new(), set.from_list(["f"]))))
@@ -1087,7 +1087,7 @@ pub fn type_field_roundtrip_test() {
   use tf <- qcheck.given(generators.type_field_gen())
   let formatted = annotation.format_type_field(tf)
   let assert Ok(file) = annotation.parse_file(formatted)
-  let assert [TypeFieldLine(parsed, _)] = file.lines
+  let assert [FieldAssumeLine(parsed, _)] = file.lines
   parsed |> should.equal(tf)
 }
 
@@ -1095,7 +1095,7 @@ pub fn external_roundtrip_test() {
   use ext <- qcheck.given(generators.external_gen())
   let formatted = annotation.format_external(ext)
   let assert Ok(file) = annotation.parse_file(formatted)
-  let assert [ExternalLine(parsed, _)] = file.lines
+  let assert [AssumeLine(parsed, _)] = file.lines
   parsed |> should.equal(ext)
 }
 
@@ -1174,10 +1174,10 @@ pub fn merge_inferred_drops_effect_for_external_test() {
   // functions are kept.
   let file =
     types.GradedFile(lines: [
-      ExternalLine(
-        ExternalAnnotation(
+      AssumeLine(
+        AssumeAnnotation(
           module: "app",
-          target: FunctionExternal("ffi"),
+          target: FunctionAssume("ffi"),
           params: [],
           effects: Some(types.Specific(set.new())),
           returns: None,
@@ -1233,10 +1233,10 @@ fn inferred_line(
 }
 
 fn module_assume(module: String) -> types.GradedLine {
-  ExternalLine(
-    ExternalAnnotation(
+  AssumeLine(
+    AssumeAnnotation(
       module:,
-      target: ModuleExternal,
+      target: ModuleAssume,
       params: [],
       effects: Some(types.Specific(set.new())),
       returns: None,
@@ -1246,10 +1246,10 @@ fn module_assume(module: String) -> types.GradedLine {
 }
 
 fn function_assume(module: String, function: String) -> types.GradedLine {
-  ExternalLine(
-    ExternalAnnotation(
+  AssumeLine(
+    AssumeAnnotation(
       module:,
-      target: FunctionExternal(function),
+      target: FunctionAssume(function),
       params: [],
       effects: Some(types.Specific(set.new())),
       returns: None,
@@ -1298,10 +1298,10 @@ pub fn merge_inferred_composes_the_two_assume_channels_test() {
   merged_effects(
     types.GradedFile(lines: [
       module_assume("db"),
-      ExternalLine(
-        ExternalAnnotation(
+      AssumeLine(
+        AssumeAnnotation(
           module: "db",
-          target: FunctionExternal("make"),
+          target: FunctionAssume("make"),
           params: [],
           effects: None,
           returns: Some(TLabels(set.from_list(["Net"]))),
@@ -1336,10 +1336,10 @@ pub fn merge_inferred_keeps_a_declared_returns_clause_test() {
   // A declaration is preserved in place and never regenerated, and the inferred
   // clause for the same name is dropped: one name, one answer.
   let declared =
-    ExternalLine(
-      ExternalAnnotation(
+    AssumeLine(
+      AssumeAnnotation(
         module: "app",
-        target: FunctionExternal("make"),
+        target: FunctionAssume("make"),
         params: [],
         effects: None,
         returns: Some(TLabels(set.from_list(["Net"]))),
@@ -1396,10 +1396,10 @@ pub fn merge_inferred_keeps_an_unmatched_returns_clause_test() {
   // still the author's line, so the stale-removal path does not reach it.
   let file =
     types.GradedFile(lines: [
-      ExternalLine(
-        ExternalAnnotation(
+      AssumeLine(
+        AssumeAnnotation(
           module: "app",
-          target: FunctionExternal("make"),
+          target: FunctionAssume("make"),
           params: [],
           effects: None,
           returns: Some(TLabels(set.from_list(["Net"]))),
@@ -1417,10 +1417,10 @@ pub fn merge_inferred_rewrites_a_stale_returns_clause_test() {
   // written on the function's `effects` line.
   let file =
     types.GradedFile(lines: [
-      ExternalLine(
-        ExternalAnnotation(
+      AssumeLine(
+        AssumeAnnotation(
           module: "app",
-          target: FunctionExternal("make"),
+          target: FunctionAssume("make"),
           params: [],
           effects: None,
           returns: Some(TLabels(set.from_list(["Net"]))),
@@ -1465,10 +1465,10 @@ pub fn merge_inferred_keeps_the_two_stale_channels_apart_test() {
   // anything about.
   let file =
     types.GradedFile(lines: [
-      ExternalLine(
-        ExternalAnnotation(
+      AssumeLine(
+        AssumeAnnotation(
           module: "app",
-          target: FunctionExternal("make"),
+          target: FunctionAssume("make"),
           params: [],
           effects: None,
           returns: Some(TLabels(set.from_list(["Net"]))),
@@ -1523,10 +1523,10 @@ pub fn merge_inferred_keeps_bounds_on_a_stale_conversion_test() {
   // path rather than being dropped by the conversion.
   let file =
     types.GradedFile(lines: [
-      ExternalLine(
-        ExternalAnnotation(
+      AssumeLine(
+        AssumeAnnotation(
           module: "app",
-          target: FunctionExternal("make"),
+          target: FunctionAssume("make"),
           params: [ParamBound("cb", TVar("cb"))],
           effects: Some(Polymorphic(set.new(), set.from_list(["cb"]))),
           returns: None,
@@ -1548,10 +1548,10 @@ pub fn a_bounded_external_still_suppresses_the_inferred_line_test() {
   // Suppression keys off the effects claim's presence, not the bound list.
   let file =
     types.GradedFile(lines: [
-      ExternalLine(
-        ExternalAnnotation(
+      AssumeLine(
+        AssumeAnnotation(
           module: "m/ffi",
-          target: FunctionExternal("each"),
+          target: FunctionAssume("each"),
           params: [ParamBound("f", TVar("f"))],
           effects: Some(Polymorphic(set.new(), set.from_list(["f"]))),
           returns: None,
@@ -1576,10 +1576,10 @@ pub fn a_clause_only_bounded_line_does_not_suppress_the_inferred_line_test() {
   // A clause-only line claims nothing on the effects channel, bounds or not,
   // so the inferred `effects` line survives beside it.
   let declared =
-    ExternalLine(
-      ExternalAnnotation(
+    AssumeLine(
+      AssumeAnnotation(
         module: "m/ffi",
-        target: FunctionExternal("wrap"),
+        target: FunctionAssume("wrap"),
         params: [ParamBound("cb", TVar("cb"))],
         effects: None,
         returns: Some(TVar("cb")),
@@ -1802,7 +1802,7 @@ pub fn declared_returns_clause_round_trip_test() {
   let assert Ok(file) = annotation.parse_file(line)
   let assert [declared] = annotation.extract_externals(file)
   declared.module |> should.equal("app/ffi")
-  declared.target |> should.equal(FunctionExternal("make_client"))
+  declared.target |> should.equal(FunctionAssume("make_client"))
   declared.returns |> should.equal(Some(TLabels(set.from_list(["Net"]))))
   annotation.format_file(file) |> should.equal(line)
 }
@@ -1975,7 +1975,7 @@ pub fn a_module_assume_with_only_an_unknown_clause_is_retained_test() {
 }
 
 pub fn a_field_assume_with_only_an_unknown_clause_is_retained_test() {
-  // `TypeFieldAnnotation.effects` is a bare term, so a field line cannot claim
+  // `FieldAnnotation.effects` is a bare term, so a field line cannot claim
   // nothing — and fabricating `[]` would flip *keys nothing* into *is pure*.
   let line = "assume m.Handler.on_click where future : [X]"
   let assert Ok(file) = annotation.parse_file(line)

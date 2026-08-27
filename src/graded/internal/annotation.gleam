@@ -8,14 +8,13 @@ import gleam/set
 import gleam/string
 import graded/internal/effect_term
 import graded/internal/types.{
-  type AnnotationKind, type EffectAnnotation, type EffectSet, type EffectTerm,
-  type ExternalAnnotation, type GradedFile, type GradedLine, type ParamBound,
-  type QualifiedName, type TypeFieldAnnotation, type UnknownClause,
-  AnnotationLine, BlankLine, Check, CommentLine, EffectAnnotation, Effects,
-  ExternalAnnotation, ExternalLine, FunctionExternal, GradedFile, ModuleExternal,
-  ParamBound, Polymorphic, RetainedAssumeLine, Specific, TAbs, TApp, TLabels,
-  TTop, TUnion, TVar, TypeFieldAnnotation, TypeFieldLine, UnknownClause,
-  Wildcard,
+  type AnnotationKind, type AssumeAnnotation, type EffectAnnotation,
+  type EffectSet, type EffectTerm, type FieldAnnotation, type GradedFile,
+  type GradedLine, type ParamBound, type QualifiedName, type UnknownClause,
+  AnnotationLine, AssumeAnnotation, AssumeLine, BlankLine, Check, CommentLine,
+  EffectAnnotation, Effects, FieldAnnotation, FieldAssumeLine, FunctionAssume,
+  GradedFile, ModuleAssume, ParamBound, Polymorphic, RetainedAssumeLine,
+  Specific, TAbs, TApp, TLabels, TTop, TUnion, TVar, UnknownClause, Wildcard,
 }
 
 // Parsing
@@ -556,10 +555,10 @@ fn parse_assume_head(
     _, _ ->
       case subject {
         AssumeModule(module:) ->
-          Ok(ExternalLine(
-            ExternalAnnotation(
+          Ok(AssumeLine(
+            AssumeAnnotation(
               module:,
-              target: ModuleExternal,
+              target: ModuleAssume,
               params: [],
               effects:,
               returns:,
@@ -567,10 +566,10 @@ fn parse_assume_head(
             unknown_clauses,
           ))
         AssumeFunction(module:, function:) ->
-          Ok(ExternalLine(
-            ExternalAnnotation(
+          Ok(AssumeLine(
+            AssumeAnnotation(
               module:,
-              target: FunctionExternal(function),
+              target: FunctionAssume(function),
               params: case bounds {
                 ParsedBounds(params) -> params
                 NoBounds | RetainedBounds(_) -> []
@@ -584,8 +583,8 @@ fn parse_assume_head(
           // A field annotation has no slot for a returned operator.
           use <- bool.guard(when: returns != None, return: Error(Nil))
           use effects <- result.try(option.to_result(term, Nil))
-          Ok(TypeFieldLine(
-            TypeFieldAnnotation(module:, type_name:, field:, effects:),
+          Ok(FieldAssumeLine(
+            FieldAnnotation(module:, type_name:, field:, effects:),
             unknown_clauses,
           ))
         }
@@ -962,8 +961,8 @@ pub fn extract_annotations(file: GradedFile) -> List(EffectAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
       AnnotationLine(annotation, _) -> Ok(annotation)
-      TypeFieldLine(_, _) -> Error(Nil)
-      ExternalLine(_, _) -> Error(Nil)
+      FieldAssumeLine(_, _) -> Error(Nil)
+      AssumeLine(_, _) -> Error(Nil)
       RetainedAssumeLine(..) -> Error(Nil)
       CommentLine(_) -> Error(Nil)
       BlankLine -> Error(Nil)
@@ -978,15 +977,15 @@ pub fn extract_annotations(file: GradedFile) -> List(EffectAnnotation) {
 pub fn line_path(line: GradedLine) -> Result(String, Nil) {
   case line {
     AnnotationLine(annotation, _) -> Ok(annotation.function)
-    TypeFieldLine(tf, _) -> Ok(type_field_path(tf))
-    ExternalLine(ext, _) -> Ok(external_sort_key(ext))
+    FieldAssumeLine(tf, _) -> Ok(type_field_path(tf))
+    AssumeLine(ext, _) -> Ok(external_sort_key(ext))
     RetainedAssumeLine(path:, ..) -> Ok(retained_bare_path(path))
     CommentLine(_) | BlankLine -> Error(Nil)
   }
 }
 
 // A retained line's path with its unparsed bound-list text stripped — the
-// bare name before the paren group, which is what a bounded `ExternalLine`'s
+// bare name before the paren group, which is what a bounded `AssumeLine`'s
 // sort key spells too, so the two shapes of a bounded `assume` line sort and
 // are reported alike. Rendering is untouched: the retained line itself keeps
 // its verbatim text.
@@ -1001,8 +1000,8 @@ fn retained_bare_path(path: String) -> String {
 pub fn line_unknown_clauses(line: GradedLine) -> List(UnknownClause) {
   case line {
     AnnotationLine(_, clauses)
-    | TypeFieldLine(_, clauses)
-    | ExternalLine(_, clauses)
+    | FieldAssumeLine(_, clauses)
+    | AssumeLine(_, clauses)
     | RetainedAssumeLine(unknown_clauses: clauses, ..) -> clauses
     CommentLine(_) | BlankLine -> []
   }
@@ -1033,20 +1032,20 @@ pub fn extract_effects(file: GradedFile) -> List(EffectAnnotation) {
 }
 
 // Extract type field annotations from a parsed file.
-pub fn extract_type_fields(file: GradedFile) -> List(TypeFieldAnnotation) {
+pub fn extract_type_fields(file: GradedFile) -> List(FieldAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
-      TypeFieldLine(tf, _) -> Ok(tf)
+      FieldAssumeLine(tf, _) -> Ok(tf)
       _ -> Error(Nil)
     }
   })
 }
 
 // Extract external annotations from a parsed file.
-pub fn extract_externals(file: GradedFile) -> List(ExternalAnnotation) {
+pub fn extract_externals(file: GradedFile) -> List(AssumeAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
-      ExternalLine(external_annotation, _) -> Ok(external_annotation)
+      AssumeLine(external_annotation, _) -> Ok(external_annotation)
       _ -> Error(Nil)
     }
   })
@@ -1074,7 +1073,7 @@ pub fn external_function_names(file: GradedFile) -> set.Set(String) {
 // clause by the target it parsed as — the ones naming no function included.
 pub fn assume_returns(
   file: GradedFile,
-) -> List(#(ExternalAnnotation, EffectTerm)) {
+) -> List(#(AssumeAnnotation, EffectTerm)) {
   list.filter_map(extract_externals(file), fn(ext) {
     case ext.returns {
       Some(operator) -> Ok(#(ext, operator))
@@ -1097,7 +1096,7 @@ pub fn assume_returns_names(file: GradedFile) -> set.Set(String) {
 // function is stated once and the two cannot drift apart.
 fn declaring_function_names(
   file: GradedFile,
-  claims: fn(ExternalAnnotation) -> Bool,
+  claims: fn(AssumeAnnotation) -> Bool,
 ) -> set.Set(String) {
   extract_externals(file)
   |> list.filter_map(fn(ext) {
@@ -1116,8 +1115,8 @@ fn declaring_function_names(
 pub fn module_external_modules(file: GradedFile) -> set.Set(String) {
   list.filter_map(extract_externals(file), fn(ext) {
     case ext.target, ext.effects {
-      ModuleExternal, Some(_) -> Ok(ext.module)
-      ModuleExternal, None | FunctionExternal(_), _ -> Error(Nil)
+      ModuleAssume, Some(_) -> Ok(ext.module)
+      ModuleAssume, None | FunctionAssume(_), _ -> Error(Nil)
     }
   })
   |> set.from_list()
@@ -1282,8 +1281,8 @@ pub fn merge_inferred(
       case line {
         AnnotationLine(a, [_, ..]) if a.kind == Effects -> Ok(a.function)
         AnnotationLine(..)
-        | TypeFieldLine(..)
-        | ExternalLine(..)
+        | FieldAssumeLine(..)
+        | AssumeLine(..)
         | RetainedAssumeLine(..)
         | CommentLine(_)
         | BlankLine -> Error(Nil)
@@ -1319,8 +1318,8 @@ pub fn merge_inferred(
       case line {
         AnnotationLine(a, _) if a.kind == Effects -> Ok(a.function)
         AnnotationLine(_, _) -> Error(Nil)
-        TypeFieldLine(_, _) -> Error(Nil)
-        ExternalLine(_, _) -> Error(Nil)
+        FieldAssumeLine(_, _) -> Error(Nil)
+        AssumeLine(_, _) -> Error(Nil)
         RetainedAssumeLine(..) -> Error(Nil)
         CommentLine(_) -> Error(Nil)
         BlankLine -> Error(Nil)
@@ -1342,12 +1341,12 @@ pub fn merge_inferred(
         AnnotationLine(a, unknown_clauses) if a.kind == Effects ->
           dict.get(inferred_map, a.function)
           |> result.map(AnnotationLine(_, unknown_clauses))
-        ExternalLine(e, unknown_clauses) ->
+        AssumeLine(e, unknown_clauses) ->
           case
             surviving_external(e, stale_externals, stale_returns_clauses),
             unknown_clauses
           {
-            Ok(external), _ -> Ok(ExternalLine(external, unknown_clauses))
+            Ok(external), _ -> Ok(AssumeLine(external, unknown_clauses))
             Error(Nil), [] -> Error(Nil)
             // Both declarations went stale, but the line still carries a clause
             // only a later version can judge. What it keys is gone; what it
@@ -1372,10 +1371,10 @@ pub fn merge_inferred(
 // or `Error(Nil)` where nothing it claimed survives. The record rather than the
 // line, so the call site keeps what the line retained.
 fn surviving_external(
-  external: ExternalAnnotation,
+  external: AssumeAnnotation,
   stale_externals: set.Set(String),
   stale_returns_clauses: set.Set(String),
-) -> Result(ExternalAnnotation, Nil) {
+) -> Result(AssumeAnnotation, Nil) {
   case external_line_name(external) {
     Error(Nil) -> Ok(external)
     Ok(name) -> {
@@ -1389,7 +1388,7 @@ fn surviving_external(
       }
       case effects, returns {
         None, None -> Error(Nil)
-        _, _ -> Ok(ExternalAnnotation(..external, effects:, returns:))
+        _, _ -> Ok(AssumeAnnotation(..external, effects:, returns:))
       }
     }
   }
@@ -1397,10 +1396,10 @@ fn surviving_external(
 
 // The `<module>.<function>` a per-function external names, or `Error(Nil)` for
 // a module-level one.
-fn external_line_name(external: ExternalAnnotation) -> Result(String, Nil) {
+fn external_line_name(external: AssumeAnnotation) -> Result(String, Nil) {
   case external.target {
-    FunctionExternal(_) -> Ok(external_sort_key(external))
-    ModuleExternal -> Error(Nil)
+    FunctionAssume(_) -> Ok(external_sort_key(external))
+    ModuleAssume -> Error(Nil)
   }
 }
 
@@ -1481,11 +1480,11 @@ fn statement_parts(line: GradedLine) -> #(String, List(String)) {
       annotation_head(annotation),
       clause_list(annotation.returns, unknown_clauses),
     )
-    TypeFieldLine(tf, unknown_clauses) -> #(
+    FieldAssumeLine(tf, unknown_clauses) -> #(
       type_field_head(tf),
       clause_list(None, unknown_clauses),
     )
-    ExternalLine(ext, unknown_clauses) -> #(
+    AssumeLine(ext, unknown_clauses) -> #(
       external_head(ext),
       clause_list(ext.returns, unknown_clauses),
     )
@@ -1562,7 +1561,7 @@ pub fn format_sorted(file: GradedFile) -> String {
   let assume_lines =
     sorted_section(file.lines, fn(line) {
       case line {
-        ExternalLine(..) | TypeFieldLine(..) | RetainedAssumeLine(..) ->
+        AssumeLine(..) | FieldAssumeLine(..) | RetainedAssumeLine(..) ->
           line_path(line)
         _ -> Error(Nil)
       }
@@ -1642,12 +1641,12 @@ fn format_operator(term: EffectTerm) -> String {
   }
 }
 
-// Render a TypeFieldAnnotation back to its .graded line format.
-pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
-  inline_statement(statement_parts(TypeFieldLine(tf, [])))
+// Render a FieldAnnotation back to its .graded line format.
+pub fn format_type_field(tf: FieldAnnotation) -> String {
+  inline_statement(statement_parts(FieldAssumeLine(tf, [])))
 }
 
-fn type_field_head(tf: TypeFieldAnnotation) -> String {
+fn type_field_head(tf: FieldAnnotation) -> String {
   "assume " <> type_field_path(tf) <> " : " <> format_effect_term(tf.effects)
 }
 
@@ -1655,7 +1654,7 @@ fn type_field_head(tf: TypeFieldAnnotation) -> String {
 // files when the module is present, the bare form used in cache files
 // otherwise. A sort key, the rendered name in `format_type_field`, and the name
 // the spec lint reports a dead line by, so all three spell one path one way.
-pub fn type_field_path(tf: TypeFieldAnnotation) -> String {
+pub fn type_field_path(tf: FieldAnnotation) -> String {
   let prefix = case tf.module {
     Some(module) -> module <> "."
     None -> ""
@@ -1663,13 +1662,13 @@ pub fn type_field_path(tf: TypeFieldAnnotation) -> String {
   prefix <> tf.type_name <> "." <> tf.field
 }
 
-// Render an ExternalAnnotation back to its `.graded` line format, always on one
+// Render an AssumeAnnotation back to its `.graded` line format, always on one
 // line — see `format_annotation`.
-pub fn format_external(external_annotation: ExternalAnnotation) -> String {
-  inline_statement(statement_parts(ExternalLine(external_annotation, [])))
+pub fn format_external(external_annotation: AssumeAnnotation) -> String {
+  inline_statement(statement_parts(AssumeLine(external_annotation, [])))
 }
 
-fn external_head(external_annotation: ExternalAnnotation) -> String {
+fn external_head(external_annotation: AssumeAnnotation) -> String {
   let effects_clause = case external_annotation.effects {
     Some(effects) -> " : " <> format_effect_set(effects)
     None -> ""
@@ -1681,7 +1680,7 @@ fn external_head(external_annotation: ExternalAnnotation) -> String {
 // effects clause. Shared with `merge_inferred`'s stale-conversion site, which
 // rebuilds a `RetainedAssumeLine` from a semantic line and must keep the bounds
 // in the retained path.
-fn external_path(external_annotation: ExternalAnnotation) -> String {
+fn external_path(external_annotation: AssumeAnnotation) -> String {
   external_sort_key(external_annotation)
   <> bound_list(external_annotation.params)
 }
@@ -1689,7 +1688,7 @@ fn external_path(external_annotation: ExternalAnnotation) -> String {
 // The qualified name (`module` or `module.function`) an external annotation
 // targets. Used both as a sort key and as the rendered name in
 // `format_external`.
-fn external_sort_key(external_annotation: ExternalAnnotation) -> String {
+fn external_sort_key(external_annotation: AssumeAnnotation) -> String {
   case external_qualified_name(external_annotation) {
     Error(Nil) -> external_annotation.module
     Ok(qualified) -> types.dotted_name(qualified)
@@ -1701,11 +1700,11 @@ fn external_sort_key(external_annotation: ExternalAnnotation) -> String {
 // back together, so every reader that keys by that name — and `external_sort_key`,
 // which renders it — agrees on the shape.
 pub fn external_qualified_name(
-  external_annotation: ExternalAnnotation,
+  external_annotation: AssumeAnnotation,
 ) -> Result(QualifiedName, Nil) {
   case external_annotation.target {
-    ModuleExternal -> Error(Nil)
-    FunctionExternal(function) ->
+    ModuleAssume -> Error(Nil)
+    FunctionAssume(function) ->
       Ok(types.QualifiedName(external_annotation.module, function))
   }
 }

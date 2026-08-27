@@ -15,7 +15,7 @@ import graded/internal/annotation
 import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/types.{
-  type EffectTerm, type ParamBound, EffectAnnotation, TypeFieldAnnotation,
+  type EffectTerm, type ParamBound, EffectAnnotation, FieldAnnotation,
 }
 
 // The answer
@@ -119,7 +119,7 @@ pub fn render_graded(answer: EffectAnswer) -> String {
       <> graded_source(module, source)
       <> graded_fallback(source_fallback(source))
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
-      annotation.format_type_field(TypeFieldAnnotation(
+      annotation.format_type_field(FieldAnnotation(
         module:,
         type_name:,
         field:,
@@ -149,7 +149,7 @@ fn effects_line(
 fn graded_source(module: String, source: AnswerSource) -> String {
   "\n// "
   <> case source {
-    Entry(entry: types.ModuleExternalEntry(..), ..) ->
+    Entry(entry: types.ModuleAssumeEntry(..), ..) ->
       "resolved via module-level `assume` for " <> module
     Entry(entry: types.FunctionEntry(origin:), ..) ->
       "resolved from " <> effects.describe_origin(origin)
@@ -376,7 +376,7 @@ fn detail_lines(
   // a module-level external declares none itself, but a running fallback body
   // under it does, and the assumption holds however the entry was reached.
   let source_lines = case source {
-    Entry(entry: types.ModuleExternalEntry(..), ..) -> [
+    Entry(entry: types.ModuleAssumeEntry(..), ..) -> [
       "  source: module-level `assume` for `" <> module <> "`",
       "          used when no per-function entry exists",
     ]

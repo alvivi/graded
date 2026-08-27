@@ -4,11 +4,11 @@ import gleam/option.{None, Some}
 import gleam/set
 import graded/internal/effect_term
 import graded/internal/types.{
-  type EffectSet, type EffectTerm, AnnotationLine, BlankLine, Check, CommentLine,
-  EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
-  GradedFile, ModuleExternal, ParamBound, Polymorphic, RetainedAssumeLine,
-  Specific, TAbs, TApp, TLabels, TTop, TUnion, TVar, TypeFieldAnnotation,
-  TypeFieldLine, UnknownClause, Wildcard,
+  type EffectSet, type EffectTerm, AnnotationLine, AssumeAnnotation, AssumeLine,
+  BlankLine, Check, CommentLine, EffectAnnotation, Effects, FieldAnnotation,
+  FieldAssumeLine, FunctionAssume, GradedFile, ModuleAssume, ParamBound,
+  Polymorphic, RetainedAssumeLine, Specific, TAbs, TApp, TLabels, TTop, TUnion,
+  TVar, UnknownClause, Wildcard,
 }
 import qcheck
 
@@ -249,7 +249,7 @@ pub fn annotation_gen() -> qcheck.Generator(types.EffectAnnotation) {
   EffectAnnotation(kind:, function:, params:, effects:, returns:)
 }
 
-pub fn type_field_gen() -> qcheck.Generator(types.TypeFieldAnnotation) {
+pub fn type_field_gen() -> qcheck.Generator(types.FieldAnnotation) {
   let type_name_gen =
     qcheck.from_generators(qcheck.return("Handler"), [
       qcheck.return("Request"),
@@ -265,12 +265,12 @@ pub fn type_field_gen() -> qcheck.Generator(types.TypeFieldAnnotation) {
     first_order_term_gen(),
     fn(tf, effects) {
       let #(type_name, field) = tf
-      TypeFieldAnnotation(module: None, type_name:, field:, effects:)
+      FieldAnnotation(module: None, type_name:, field:, effects:)
     },
   )
 }
 
-pub fn external_gen() -> qcheck.Generator(types.ExternalAnnotation) {
+pub fn external_gen() -> qcheck.Generator(types.AssumeAnnotation) {
   let module_name_gen =
     qcheck.from_generators(qcheck.return("gleam/io"), [
       qcheck.return("gleam/list"),
@@ -278,8 +278,8 @@ pub fn external_gen() -> qcheck.Generator(types.ExternalAnnotation) {
       qcheck.return("simplifile"),
     ])
   let target_gen =
-    qcheck.from_generators(qcheck.return(ModuleExternal), [
-      qcheck.map(function_name_gen(), FunctionExternal),
+    qcheck.from_generators(qcheck.return(ModuleAssume), [
+      qcheck.map(function_name_gen(), FunctionAssume),
     ])
   // Never both absent: a line carrying neither clause claims nothing and is not
   // a line the parser reads back.
@@ -298,12 +298,12 @@ pub fn external_gen() -> qcheck.Generator(types.ExternalAnnotation) {
   // A bound list rides a function path alone — on a module path it is a parse
   // error, so the generator never pairs the two.
   use params <- qcheck.bind(case target {
-    ModuleExternal -> qcheck.return([])
-    FunctionExternal(_) -> params_gen()
+    ModuleAssume -> qcheck.return([])
+    FunctionAssume(_) -> params_gen()
   })
   use clauses <- qcheck.map(clauses_gen)
   let #(effects, returns) = clauses
-  ExternalAnnotation(module:, target:, params:, effects:, returns:)
+  AssumeAnnotation(module:, target:, params:, effects:, returns:)
 }
 
 // One clause this version does not read. The keys cover the dotted and numeric
@@ -366,9 +366,9 @@ pub fn graded_file_gen() -> qcheck.Generator(types.GradedFile) {
       [
         #(
           1,
-          qcheck.map2(type_field_gen(), unknown_clauses_gen(), TypeFieldLine),
+          qcheck.map2(type_field_gen(), unknown_clauses_gen(), FieldAssumeLine),
         ),
-        #(1, qcheck.map2(external_gen(), unknown_clauses_gen(), ExternalLine)),
+        #(1, qcheck.map2(external_gen(), unknown_clauses_gen(), AssumeLine)),
         #(1, retained_assume_gen()),
         #(1, qcheck.map(comment_gen, CommentLine)),
         #(1, qcheck.return(BlankLine)),

@@ -13,14 +13,14 @@ import graded/internal/annotation
 import graded/internal/config
 import graded/internal/effect_term
 import graded/internal/types.{
-  type ArgumentValue, type EffectAnnotation, type EffectSet, type EffectTerm,
-  type ExternalAnnotation, type FactorySignature, type LookupOrigin,
-  type ParamBound, type QualifiedName, type ReturnProvenance,
-  type TypeFieldAnnotation, type TypeFieldEffect, type UpdateSignature, Catalog,
-  Check, CommittedSpec, ConstructorRef, DependencySpec, Effects,
-  FunctionExternal, FunctionRef, ModuleExternal, ModuleExternalOrigin,
-  PathDependency, PathDependencyInferred, ProjectInferred, QualifiedName,
-  TypeFieldEffect, TypeLine, UserExternal,
+  type ArgumentValue, type AssumeAnnotation, type EffectAnnotation,
+  type EffectSet, type EffectTerm, type FactorySignature, type FieldAnnotation,
+  type LookupOrigin, type ParamBound, type QualifiedName, type ReturnProvenance,
+  type TypeFieldEffect, type UpdateSignature, Catalog, Check, CommittedSpec,
+  ConstructorRef, DependencySpec, Effects, FieldAssumeOrigin, FunctionAssume,
+  FunctionRef, ModuleAssume, ModuleAssumeOrigin, PathDependency,
+  PathDependencyInferred, ProjectInferred, QualifiedName, TypeFieldEffect,
+  UserAssume,
 }
 import simplifile
 import tom
@@ -185,7 +185,7 @@ pub type BundledCatalog {
     functions: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
     modules: Dict(String, #(EffectTerm, LookupOrigin)),
     param_bounds: Dict(QualifiedName, List(ParamBound)),
-    type_fields: List(#(TypeFieldAnnotation, LookupOrigin)),
+    type_fields: List(#(FieldAnnotation, LookupOrigin)),
   )
 }
 
@@ -309,7 +309,7 @@ pub fn lookup_type_field(
 // module; a bare one by "".
 pub fn with_type_fields(
   knowledge_base: KnowledgeBase,
-  type_fields: List(TypeFieldAnnotation),
+  type_fields: List(FieldAnnotation),
   origin: LookupOrigin,
 ) -> KnowledgeBase {
   with_sourced_type_fields(
@@ -322,7 +322,7 @@ pub fn with_type_fields(
 // the file it was read from. A later entry wins on a clash.
 fn with_sourced_type_fields(
   knowledge_base: KnowledgeBase,
-  type_fields: List(#(TypeFieldAnnotation, LookupOrigin)),
+  type_fields: List(#(FieldAnnotation, LookupOrigin)),
 ) -> KnowledgeBase {
   let merged =
     list.fold(type_fields, knowledge_base.type_fields, fn(accumulator, entry) {
@@ -350,9 +350,9 @@ fn with_sourced_type_fields(
 // Function-level externals are added to all_effects.
 //
 // `origin` is the source of these declarations: this project's spec passes
-// `UserExternal`, the bundled catalog passes `Catalog(package)`. A
+// `UserAssume`, the bundled catalog passes `Catalog(package)`. A
 // function-level insert records it beside the effect; a module-level one
-// records it wrapped in `ModuleExternalOrigin`, which names both the kind of
+// records it wrapped in `ModuleAssumeOrigin`, which names both the kind of
 // line and the file it sits in.
 //
 // A declaring line's bound list rides the same fold, at the same precedence:
@@ -362,7 +362,7 @@ fn with_sourced_type_fields(
 // bounds, whose variable names need not match it.
 pub fn with_externals(
   knowledge_base: KnowledgeBase,
-  externals: List(ExternalAnnotation),
+  externals: List(AssumeAnnotation),
   origin: LookupOrigin,
 ) -> KnowledgeBase {
   let #(function_externals, module_externals) =
@@ -396,7 +396,7 @@ type ExternalTiers =
 // anywhere. The function tier folds the same selection the bounds loader
 // folds (`declaring_function_externals`), each dict keeping the last entry.
 fn split_externals(
-  externals: List(ExternalAnnotation),
+  externals: List(AssumeAnnotation),
   origin: LookupOrigin,
 ) -> ExternalTiers {
   let function_externals =
@@ -414,10 +414,10 @@ fn split_externals(
   let module_externals =
     list.fold(externals, dict.new(), fn(accumulator, external) {
       case external.target, external.effects {
-        ModuleExternal, Some(effects) ->
+        ModuleAssume, Some(effects) ->
           dict.insert(accumulator, external.module, #(
             effect_term.from_effect_set(effects),
-            ModuleExternalOrigin(source: origin),
+            ModuleAssumeOrigin(source: origin),
           ))
         _, _ -> accumulator
       }
@@ -431,11 +431,11 @@ fn split_externals(
 // the winning bounds come off the same line by construction rather than by
 // two rules kept in step.
 fn declaring_function_externals(
-  externals: List(ExternalAnnotation),
+  externals: List(AssumeAnnotation),
 ) -> List(#(QualifiedName, EffectSet, List(ParamBound))) {
   list.filter_map(externals, fn(external) {
     case external.target, external.effects {
-      FunctionExternal(function), Some(effects) ->
+      FunctionAssume(function), Some(effects) ->
         Ok(#(QualifiedName(external.module, function), effects, external.params))
       _, _ -> Error(Nil)
     }
@@ -467,7 +467,7 @@ fn raw_lookup(
     Ok(#(term, origin)) -> Some(#(term, types.FunctionEntry(origin:)))
     Error(Nil) ->
       case dict.get(knowledge_base.module_effects, name.module) {
-        Ok(#(term, origin)) -> Some(#(term, types.ModuleExternalEntry(origin:)))
+        Ok(#(term, origin)) -> Some(#(term, types.ModuleAssumeEntry(origin:)))
         Error(Nil) -> None
       }
   }
@@ -629,7 +629,7 @@ fn declared_param_bounds(
   origin: LookupOrigin,
 ) -> List(ParamBound) {
   case origin {
-    ModuleExternalOrigin(_) -> []
+    ModuleAssumeOrigin(_) -> []
     _ -> line_param_bounds(knowledge_base, name)
   }
 }
@@ -646,7 +646,7 @@ fn holds_only_inferred_bounds(
 ) -> Bool {
   line_param_bounds(knowledge_base, name) != []
   && case raw_declaration(knowledge_base, name) {
-    Some(#(_term, ModuleExternalOrigin(_))) -> True
+    Some(#(_term, ModuleAssumeOrigin(_))) -> True
     _ -> False
   }
 }
@@ -912,13 +912,13 @@ fn foreign_registry_callbacks(
 // function it would be silencing.
 pub fn suppresses_running_fallback(origin: LookupOrigin) -> Bool {
   case origin {
-    UserExternal | DependencySpec(_) | PathDependency(_) -> True
+    UserAssume | DependencySpec(_) | PathDependency(_) -> True
     Catalog(_)
-    | ModuleExternalOrigin(_)
+    | ModuleAssumeOrigin(_)
     | CommittedSpec
     | ProjectInferred
     | PathDependencyInferred(_)
-    | TypeLine(_) -> False
+    | FieldAssumeOrigin(_) -> False
   }
 }
 
@@ -1242,7 +1242,7 @@ pub fn is_dependency_foreign_function(
 pub fn origin_of(source: types.EffectSource) -> LookupOrigin {
   case source {
     types.FunctionEntry(origin:) -> origin
-    types.ModuleExternalEntry(origin:) -> origin
+    types.ModuleAssumeEntry(origin:) -> origin
   }
 }
 
@@ -1344,16 +1344,18 @@ pub fn declares_foreign_code(origin: LookupOrigin) -> Bool {
   case origin {
     // A dependency's spec speaks for foreign code as the catalog does, though
     // neither keys a function of the project module under analysis today.
-    UserExternal
+    UserAssume
     | Catalog(_)
-    | ModuleExternalOrigin(_)
+    | ModuleAssumeOrigin(_)
     | DependencySpec(_)
     | PathDependency(_) -> True
     // Inference over a spec-less path dependency's source is not a declaration:
     // it walked an `@external`'s body, which is exactly what no entry may speak
     // for. It ranks below the catalog for the same reason.
-    CommittedSpec | ProjectInferred | PathDependencyInferred(_) | TypeLine(_) ->
-      False
+    CommittedSpec
+    | ProjectInferred
+    | PathDependencyInferred(_)
+    | FieldAssumeOrigin(_) -> False
   }
 }
 
@@ -1626,10 +1628,11 @@ pub fn format_effect_set(effect_set: EffectSet) -> String {
 // reads from this one vocabulary.
 pub fn describe_origin(origin: LookupOrigin) -> String {
   case origin {
-    UserExternal -> "your spec's `assume` line"
-    ModuleExternalOrigin(source:) ->
+    UserAssume -> "your spec's `assume` line"
+    ModuleAssumeOrigin(source:) ->
       "a module-level `assume` in " <> describe_source_file(source)
-    TypeLine(source:) -> "a field `assume` in " <> describe_source_file(source)
+    FieldAssumeOrigin(source:) ->
+      "a field `assume` in " <> describe_source_file(source)
     CommittedSpec
     | ProjectInferred
     | DependencySpec(..)
@@ -1643,14 +1646,14 @@ pub fn describe_origin(origin: LookupOrigin) -> String {
 // Shared with the surfaces that name a *kind* of line and the file it sits in.
 pub fn describe_source_file(origin: LookupOrigin) -> String {
   case origin {
-    UserExternal | CommittedSpec -> "your spec"
+    UserAssume | CommittedSpec -> "your spec"
     ProjectInferred -> "in-memory inference"
     DependencySpec(package:) -> package <> "'s shipped spec"
     PathDependency(package:) -> "path dependency " <> package
     PathDependencyInferred(package:) ->
       "inference over path dependency " <> package <> "'s source"
     Catalog(package:) -> package <> "'s catalog entry"
-    ModuleExternalOrigin(source:) | TypeLine(source:) ->
+    ModuleAssumeOrigin(source:) | FieldAssumeOrigin(source:) ->
       describe_source_file(source)
   }
 }
@@ -2340,7 +2343,7 @@ pub fn load_spec_params_from_file(
 // its function tier from, so on a duplicate declaration the winning term and
 // the winning bounds come off the same line, never mixed across lines.
 fn external_bounds(
-  externals: List(ExternalAnnotation),
+  externals: List(AssumeAnnotation),
 ) -> Dict(QualifiedName, List(ParamBound)) {
   list.fold(declaring_function_externals(externals), dict.new(), fn(acc, entry) {
     let #(name, _effects, bounds) = entry
@@ -2372,8 +2375,8 @@ pub type DepSpec {
     // `where returns` clauses on the spec's `assume` lines, each scoped by
     // that line's own bound list.
     declared_returns: Dict(QualifiedName, ScopedClause),
-    type_fields: List(TypeFieldAnnotation),
-    externals: List(ExternalAnnotation),
+    type_fields: List(FieldAnnotation),
+    externals: List(AssumeAnnotation),
     modules: Set(String),
   )
 }
@@ -2622,9 +2625,9 @@ fn over_catalog(
 fn is_catalog_origin(origin: LookupOrigin) -> Bool {
   case origin {
     Catalog(..) -> True
-    ModuleExternalOrigin(source:) | TypeLine(source:) ->
+    ModuleAssumeOrigin(source:) | FieldAssumeOrigin(source:) ->
       is_catalog_origin(source)
-    UserExternal
+    UserAssume
     | CommittedSpec
     | ProjectInferred
     | DependencySpec(..)
@@ -2738,7 +2741,7 @@ type Dependencies {
     effects: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
     params: Dict(QualifiedName, List(ParamBound)),
     returns: Dict(QualifiedName, ReturnedOperator),
-    type_fields: List(#(TypeFieldAnnotation, LookupOrigin)),
+    type_fields: List(#(FieldAnnotation, LookupOrigin)),
     module_effects: Dict(String, #(EffectTerm, LookupOrigin)),
   )
 }
@@ -2856,7 +2859,7 @@ type CatalogAcc {
     // variable is left with nothing to bind it.
     ext_params: Dict(QualifiedName, List(ParamBound)),
     poly_params: Dict(QualifiedName, List(ParamBound)),
-    type_fields: List(#(TypeFieldAnnotation, LookupOrigin)),
+    type_fields: List(#(FieldAnnotation, LookupOrigin)),
   )
 }
 
@@ -2871,7 +2874,7 @@ pub fn load_catalog(
   Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
   Dict(String, #(EffectTerm, LookupOrigin)),
   Dict(QualifiedName, List(ParamBound)),
-  List(#(TypeFieldAnnotation, LookupOrigin)),
+  List(#(FieldAnnotation, LookupOrigin)),
 ) {
   let installed_versions = manifest_versions(manifest_path)
   let catalog_files = bundled_catalog_files(catalog_dir) |> result.unwrap([])

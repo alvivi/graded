@@ -556,7 +556,7 @@ pub fn run(items) {
 fn check_source_with_type_fields(
   source: String,
   annotations: List(EffectAnnotation),
-  type_fields: List(types.TypeFieldAnnotation),
+  type_fields: List(types.FieldAnnotation),
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
   let kb =
@@ -579,7 +579,7 @@ fn check_source_with_type_fields(
 pub fn field_call_typed_with_registry_test() {
   let source = "pub fn view(handler: Handler) { handler.on_click(event) }"
   let type_fields = [
-    types.TypeFieldAnnotation(
+    types.FieldAnnotation(
       module: None,
       type_name: "Handler",
       field: "on_click",
@@ -606,7 +606,7 @@ pub fn field_call_typed_with_registry_test() {
 fn check_source_with_girard(
   source: String,
   annotations: List(EffectAnnotation),
-  type_fields: List(types.TypeFieldAnnotation),
+  type_fields: List(types.FieldAnnotation),
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
   let module_types = girard_types(module)
@@ -646,9 +646,9 @@ pub fn run(msg: String) -> Nil {
 }
 "
 
-fn validator_to_error_stdout() -> List(types.TypeFieldAnnotation) {
+fn validator_to_error_stdout() -> List(types.FieldAnnotation) {
   [
-    types.TypeFieldAnnotation(
+    types.FieldAnnotation(
       module: None,
       type_name: "Validator",
       field: "to_error",
@@ -811,9 +811,9 @@ pub fn run_external(config: Config, message: String) -> Nil {
   }
 }
 
-fn box_run_stdout() -> List(types.TypeFieldAnnotation) {
+fn box_run_stdout() -> List(types.FieldAnnotation) {
   [
-    types.TypeFieldAnnotation(
+    types.FieldAnnotation(
       module: None,
       type_name: "Box",
       field: "run",
@@ -826,7 +826,7 @@ fn box_run_stdout() -> List(types.TypeFieldAnnotation) {
 // public function's inferred effect set by name.
 fn infer_effects_with_girard(
   source: String,
-  type_fields: List(types.TypeFieldAnnotation),
+  type_fields: List(types.FieldAnnotation),
 ) -> dict.Dict(String, types.EffectSet) {
   let assert Ok(module) = glance.module(source)
   checker.infer(
@@ -934,7 +934,7 @@ pub fn wired_producer_call_field_uses_module_types_test() {
 pub fn field_call_violates_check_test() {
   let source = "pub fn view(handler: Handler) { handler.on_click(event) }"
   let type_fields = [
-    types.TypeFieldAnnotation(
+    types.FieldAnnotation(
       module: None,
       type_name: "Handler",
       field: "on_click",
@@ -1324,11 +1324,10 @@ pub fn caller() -> Nil {
 fn check_source_with_externals(
   source: String,
   annotations: List(EffectAnnotation),
-  externals: List(types.ExternalAnnotation),
+  externals: List(types.AssumeAnnotation),
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
-  let kb =
-    effects.with_externals(knowledge_base(), externals, types.UserExternal)
+  let kb = effects.with_externals(knowledge_base(), externals, types.UserAssume)
   let #(violations, _warnings) =
     checker.check(
       module,
@@ -1349,9 +1348,9 @@ pub fn external_resolves_effects_test() {
     "import gleam/httpc
 pub fn fetch() { httpc.send(request) }"
   let externals = [
-    types.ExternalAnnotation(
+    types.AssumeAnnotation(
       "gleam/httpc",
-      types.FunctionExternal("send"),
+      types.FunctionAssume("send"),
       params: [],
       effects: Some(Specific(set.from_list(["Http"]))),
       returns: None,
@@ -1375,9 +1374,9 @@ pub fn external_violates_check_test() {
     "import gleam/httpc
 pub fn fetch() { httpc.send(request) }"
   let externals = [
-    types.ExternalAnnotation(
+    types.AssumeAnnotation(
       "gleam/httpc",
-      types.FunctionExternal("send"),
+      types.FunctionAssume("send"),
       params: [],
       effects: Some(Specific(set.from_list(["Http"]))),
       returns: None,
@@ -1480,9 +1479,9 @@ pub fn read_clock() { now() }"
 // FFI idiom: an `@external` binding paired with a same-module wrapper.
 pub fn external_same_module_resolves_declared_effects_test() {
   let externals = [
-    types.ExternalAnnotation(
+    types.AssumeAnnotation(
       "ffi_mod",
-      types.FunctionExternal("now"),
+      types.FunctionAssume("now"),
       params: [],
       effects: Some(Specific(set.from_list(["Time"]))),
       returns: None,
@@ -1491,7 +1490,7 @@ pub fn external_same_module_resolves_declared_effects_test() {
   infer_external_wrapper(effects.with_externals(
     knowledge_base(),
     externals,
-    types.UserExternal,
+    types.UserAssume,
   ))
   |> should.equal(Specific(set.from_list(["Time"])))
 }
@@ -3306,7 +3305,7 @@ pub fn infer_operator_param_threads_all_callbacks_test() {
     effects.with_externals(
       knowledge_base(),
       [fs_read_external()],
-      types.UserExternal,
+      types.UserAssume,
     )
   let source =
     "
@@ -3343,7 +3342,7 @@ pub fn infer_operator_param_non_adjacent_callbacks_test() {
     effects.with_externals(
       knowledge_base(),
       [fs_read_external()],
-      types.UserExternal,
+      types.UserAssume,
     )
   let source =
     "
@@ -4484,10 +4483,10 @@ pub fn caller() -> Nil {
 }
 
 // A `fs.read : [FileSystem]` external for second-order operator tests.
-fn fs_read_external() -> types.ExternalAnnotation {
-  types.ExternalAnnotation(
+fn fs_read_external() -> types.AssumeAnnotation {
+  types.AssumeAnnotation(
     "fs",
-    types.FunctionExternal("read"),
+    types.FunctionAssume("read"),
     params: [],
     effects: Some(Specific(set.from_list(["FileSystem"]))),
     returns: None,
@@ -4507,7 +4506,7 @@ fn second_order_violations(
     effects.with_externals(
       knowledge_base(),
       [fs_read_external()],
-      types.UserExternal,
+      types.UserAssume,
     )
   let registry = signatures.from_glance_module("app", module)
   let ann =
@@ -5254,7 +5253,7 @@ pub fn format_warning_unground_returns_clause_test() {
 }
 
 pub fn format_warning_unbound_external_term_variable_test() {
-  types.UnboundExternalTermVariableWarning(function: "ffi.each", free_vars: [
+  types.UnboundAssumeTermVariableWarning(function: "ffi.each", free_vars: [
     "x",
   ])
   |> checker.format_warning("proj.graded", _)
@@ -5597,7 +5596,7 @@ pub fn format_violation_states_a_reason_and_an_origin_together_test() {
     QualifiedName("<field>", "repo.find"),
     Specific(set.from_list(["Unknown"])),
     Some(types.FieldNotAnnotated("dep/repo", "Repo")),
-    Some(types.ModuleExternalOrigin(source: types.UserExternal)),
+    Some(types.ModuleAssumeOrigin(source: types.UserAssume)),
   )
   |> should.equal(
     "src/app.gleam: run calls field `find` on `repo` of type `dep/repo.Repo`, which has no effect annotation for that field, with unresolved effects [Unknown] (from a module-level `assume` in your spec) but declared []",
@@ -6111,7 +6110,7 @@ pub fn run(repo: Repo) -> Nil {
   repo.find(\"x\")
 }"
   let type_fields = [
-    types.TypeFieldAnnotation(
+    types.FieldAnnotation(
       module: None,
       type_name: "Repo",
       field: "find",
@@ -6121,7 +6120,7 @@ pub fn run(repo: Repo) -> Nil {
   let assert [violation] =
     check_source_with_type_fields(source, [pure_check("run")], type_fields)
   violation.explanation.origin
-  |> should.equal(Some(types.TypeLine(source: types.CommittedSpec)))
+  |> should.equal(Some(types.FieldAssumeOrigin(source: types.CommittedSpec)))
   checker.format_violation("src/app.gleam", violation)
   |> should.equal(
     "src/app.gleam: run calls field `find` on `repo` with effects [Storage] (from a field `assume` in your spec) but declared []",

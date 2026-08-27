@@ -24,15 +24,15 @@ import graded/internal/types.{
   type LookupOrigin, type ParamBound, type QualifiedName, type ResolvedCall,
   type UnknownReason, type Violation, type Warning, AliasedBoundVariableWarning,
   CallExplanation, DotlessReturnsClauseWarning, EffectAnnotation, Effects,
-  FieldNotAnnotated, NoKnownEffects, ParamBound, QualifiedName,
-  ReceiverTypeUnresolved, RefusedDeclaredReturn, StaleFunctionExternalWarning,
-  StaleReturnsClauseWarning, TUnion, TVar, TypeLine,
-  UnboundExternalTermVariableWarning, UnbuiltExternal,
+  FieldAssumeOrigin, FieldNotAnnotated, NoKnownEffects, ParamBound,
+  QualifiedName, ReceiverTypeUnresolved, RefusedDeclaredReturn,
+  StaleFunctionAssumeWarning, StaleReturnsClauseWarning, TUnion, TVar,
+  UnboundAssumeTermVariableWarning, UnbuiltExternal,
   UnclosedReturnsClauseWarning, UndeclaredExternal, UngroundReturnsClauseWarning,
-  UnknownClauseWarning, UnmatchedCheckWarning, UnmatchedFieldBoundWarning,
-  UnmatchedFunctionExternalWarning, UnmatchedModuleExternalWarning,
-  UnmatchedParamBoundWarning, UnmatchedReturnsClauseWarning,
-  UnmatchedTypeFieldWarning, UnresolvedFieldValue, UntraceableArgument,
+  UnknownClauseWarning, UnmatchedCheckWarning, UnmatchedFieldAssumeWarning,
+  UnmatchedFieldBoundWarning, UnmatchedFunctionAssumeWarning,
+  UnmatchedModuleAssumeWarning, UnmatchedParamBoundWarning,
+  UnmatchedReturnsClauseWarning, UnresolvedFieldValue, UntraceableArgument,
   UntraceableProducer, UntraceableReceiver, UntrackedEffectWarning,
   UnverifiedCheckShapeWarning, UnverifiedReturnsClauseWarning, Violation,
 }
@@ -1702,22 +1702,22 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> ": warning: the `where returns` clause on check "
       <> function
       <> " is not verified — nothing weighs a check's returned operator. The effects budget on the same line still is, so the check is live; an `assume` line is the trusted form for the clause"
-    UnmatchedTypeFieldWarning(name:) ->
+    UnmatchedFieldAssumeWarning(name:) ->
       file
       <> ": warning: assume "
       <> name
       <> " names no field of any project type — check the module qualifier; the field resolves to [Unknown]"
-    StaleFunctionExternalWarning(function:) ->
+    StaleFunctionAssumeWarning(function:) ->
       file
       <> ": warning: assume "
       <> function
       <> " names a function of this package with a Gleam body — the line declares no foreign code and is ignored; the body is walked instead. There is no replacement: fix the source, or widen the check budget"
-    UnmatchedFunctionExternalWarning(function:) ->
+    UnmatchedFunctionAssumeWarning(function:) ->
       file
       <> ": warning: assume "
       <> function
       <> " names no dependency, catalog, or project function — check the module qualifier; the declaration covers nothing"
-    UnmatchedModuleExternalWarning(module:) ->
+    UnmatchedModuleAssumeWarning(module:) ->
       file
       <> ": warning: assume "
       <> module
@@ -1746,7 +1746,7 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> " has variable(s) "
       <> quoted_names(free_vars)
       <> " the line's bounds do not scope — nothing binds an unscoped variable at a call site, so the clause is ignored. Name the variable in the line's bound list, or spell out the concrete effects"
-    UnboundExternalTermVariableWarning(function:, free_vars:) ->
+    UnboundAssumeTermVariableWarning(function:, free_vars:) ->
       file
       <> ": warning: assume "
       <> function
@@ -7077,7 +7077,7 @@ fn resolve_unproven_field(
             Resolution(
               term: field_effect.effects,
               reason: None,
-              origin: Some(TypeLine(source:)),
+              origin: Some(FieldAssumeOrigin(source:)),
               fallback: types.NoFallback,
             )
           #(substituted(looked_up, term), memo)

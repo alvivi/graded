@@ -832,7 +832,7 @@ fn native_functions_of(
 fn declaring_externals(
   spec: GradedFile,
   stale: Set(String),
-) -> List(types.ExternalAnnotation) {
+) -> List(types.AssumeAnnotation) {
   annotation.extract_externals(spec)
   |> list.filter(fn(external) {
     case annotation.external_qualified_name(external) {
@@ -1486,7 +1486,7 @@ fn function_effect(
     effects.Unknown -> Error(Nil)
     // Which map answered is reported by the lookup itself, so the recorded
     // source can't disagree with the term beside it.
-    effects.Known(term, types.ModuleExternalEntry(origin:)) ->
+    effects.Known(term, types.ModuleAssumeEntry(origin:)) ->
       Ok(answer.FunctionAnswer(
         name:,
         module:,
@@ -1497,7 +1497,7 @@ fn function_effect(
         // in no other.
         bounds: effects.lookup_param_bounds(knowledge_base, qualified),
         term:,
-        source: answer.Entry(types.ModuleExternalEntry(origin:), fallback:),
+        source: answer.Entry(types.ModuleAssumeEntry(origin:), fallback:),
       ))
     effects.Known(term, types.FunctionEntry(origin:)) ->
       Ok(answer.FunctionAnswer(
@@ -3819,7 +3819,7 @@ fn with_spec_externals(
   effects.with_externals(
     knowledge_base,
     declaring_externals(spec, stale_externals),
-    types.UserExternal,
+    types.UserAssume,
   )
 }
 
@@ -3836,7 +3836,7 @@ fn with_spec_declared_returns(
     knowledge_base,
     effects.load_spec_external_returns_from_file(spec)
       |> drop_stale_names(stale_returns_clauses),
-    types.UserExternal,
+    types.UserAssume,
   )
 }
 
