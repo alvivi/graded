@@ -22,6 +22,7 @@ import gleam/json
 import gleam/list
 import gleam/result
 import gleam/string
+import shellout
 import simplifile
 
 const internal_prefix = "graded/internal"
@@ -29,13 +30,9 @@ const internal_prefix = "graded/internal"
 const interface_path = "build/.public_interface.json"
 
 pub fn main() -> Nil {
-  let output = shell("gleam export package-interface --out " <> interface_path)
-  case read_interface() {
+  case export_interface() |> result.try(read_interface) {
     Error(reason) -> {
-      io.println_error(
-        "could not read the exported package interface: " <> reason,
-      )
-      io.println_error(string.trim(output))
+      io.println_error(reason)
       halt(1)
     }
     Ok(interface) ->
@@ -127,10 +124,33 @@ fn value_decoder() -> Decoder(Value) {
   )
 }
 
-fn read_interface() -> Result(Value, String) {
+// Ask the compiler what a consumer sees, leaving the answer at
+// `interface_path`. A non-zero exit is reported with the compiler's own
+// output — nothing here can say more about it than that.
+fn export_interface() -> Result(Nil, String) {
+  shellout.command(
+    run: "gleam",
+    with: ["export", "package-interface", "--out", interface_path],
+    in: ".",
+    opt: [],
+  )
+  |> result.replace(Nil)
+  |> result.map_error(fn(failure) {
+    let #(status, output) = failure
+    "`gleam export package-interface` exited "
+    <> int.to_string(status)
+    <> ":\n"
+    <> string.trim(output)
+  })
+}
+
+fn read_interface(_: Nil) -> Result(Value, String) {
   use source <- result.try(
     simplifile.read(interface_path)
-    |> result.map_error(simplifile.describe_error),
+    |> result.map_error(fn(cause) {
+      "could not read the exported package interface: "
+      <> simplifile.describe_error(cause)
+    }),
   )
   json.parse(source, value_decoder())
   |> result.replace_error("the interface is not readable JSON")
@@ -142,9 +162,6 @@ fn field(value: Value, name: String) -> Result(Value, Nil) {
     _ -> Error(Nil)
   }
 }
-
-@external(erlang, "check_interface_ffi", "run")
-fn shell(command: String) -> String
 
 @external(erlang, "erlang", "halt")
 fn halt(code: Int) -> Nil

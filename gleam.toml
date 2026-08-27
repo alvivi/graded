@@ -34,6 +34,7 @@ gleam_json = ">= 3.0.0 and < 4.0.0"
 gleeunit = ">= 1.0.0 and < 2.0.0"
 glinter = ">= 2.19.2 and < 3.0.0"
 qcheck = ">= 1.0.0 and < 2.0.0"
+shellout = ">= 1.8.0 and < 2.0.0"
 
 [tools.glinter]
 warnings_as_errors = true
