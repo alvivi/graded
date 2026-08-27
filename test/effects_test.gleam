@@ -517,10 +517,10 @@ fn external(
   module: String,
   function: String,
   labels: List(String),
-) -> types.ExternalAnnotation {
-  types.ExternalAnnotation(
+) -> types.AssumeAnnotation {
+  types.AssumeAnnotation(
     module:,
-    target: types.FunctionExternal(function),
+    target: types.FunctionAssume(function),
     params: [],
     effects: Some(Specific(set.from_list(labels))),
     returns: None,
@@ -530,10 +530,10 @@ fn external(
 fn module_external(
   module: String,
   labels: List(String),
-) -> types.ExternalAnnotation {
-  types.ExternalAnnotation(
+) -> types.AssumeAnnotation {
+  types.AssumeAnnotation(
     module:,
-    target: types.ModuleExternal,
+    target: types.ModuleAssume,
     params: [],
     effects: Some(Specific(set.from_list(labels))),
     returns: None,
@@ -580,10 +580,10 @@ pub fn function_external_records_its_origin_test() {
   effects.with_externals(
     effects.new_knowledge_base(),
     [external("app", "now", ["Time"])],
-    types.UserExternal,
+    types.UserAssume,
   )
   |> origin_of(QualifiedName("app", "now"))
-  |> should.equal(option.Some(types.UserExternal))
+  |> should.equal(option.Some(types.UserAssume))
 }
 
 pub fn inferred_entry_records_its_origin_test() {
@@ -629,8 +629,8 @@ pub fn a_module_external_names_the_file_that_declared_it_test() {
   effects.lookup(kb, QualifiedName("fake_clock", "now"))
   |> should.equal(effects.Known(
     effect_term.from_effect_set(Specific(set.from_list(["Time"]))),
-    types.ModuleExternalEntry(
-      origin: types.ModuleExternalOrigin(source: types.Catalog("fake_clock_pkg")),
+    types.ModuleAssumeEntry(
+      origin: types.ModuleAssumeOrigin(source: types.Catalog("fake_clock_pkg")),
     ),
   ))
 }
@@ -951,8 +951,8 @@ pub fn a_dependency_module_external_resolves_test() {
   |> effects.lookup(QualifiedName("dep/internal", "anything"))
   |> should.equal(effects.Known(
     effect_term.from_effect_set(Specific(set.from_list(["Db"]))),
-    types.ModuleExternalEntry(
-      origin: types.ModuleExternalOrigin(source: types.DependencySpec("dep")),
+    types.ModuleAssumeEntry(
+      origin: types.ModuleAssumeOrigin(source: types.DependencySpec("dep")),
     ),
   ))
 }
@@ -988,12 +988,10 @@ pub fn a_user_external_beats_a_dependency_external_test() {
   )
   |> effects.with_externals(
     [external("dep/ffi", "now", ["Mocked"])],
-    types.UserExternal,
+    types.UserAssume,
   )
   |> entry_of(QualifiedName("dep/ffi", "now"))
-  |> should.equal(
-    Ok(#(Specific(set.from_list(["Mocked"])), types.UserExternal)),
-  )
+  |> should.equal(Ok(#(Specific(set.from_list(["Mocked"])), types.UserAssume)))
 }
 
 pub fn a_dependency_external_beats_the_catalog_test() {
@@ -1111,13 +1109,10 @@ pub fn a_path_dep_spec_yields_to_a_user_external_test() {
     ),
   ]
   let declaration =
-    types.ExternalAnnotation(
-      ..external("dep", "run", ["Mocked"]),
-      params: bounds,
-    )
+    types.AssumeAnnotation(..external("dep", "run", ["Mocked"]), params: bounds)
   let kb =
     effects.new_knowledge_base()
-    |> effects.with_externals([declaration], types.UserExternal)
+    |> effects.with_externals([declaration], types.UserAssume)
     |> effects.with_path_dep_spec(
       dep_spec(
         "build/eff_path_dep_under_user",
@@ -1127,9 +1122,7 @@ pub fn a_path_dep_spec_yields_to_a_user_external_test() {
       types.PathDependency("dep"),
     )
   entry_of(kb, QualifiedName("dep", "run"))
-  |> should.equal(
-    Ok(#(Specific(set.from_list(["Mocked"])), types.UserExternal)),
-  )
+  |> should.equal(Ok(#(Specific(set.from_list(["Mocked"])), types.UserAssume)))
   effects.lookup_param_bounds(kb, QualifiedName("dep", "run"))
   |> should.equal(bounds)
 }
@@ -1151,21 +1144,21 @@ pub fn a_path_dep_module_external_overrides_only_the_catalogs_test() {
     )
     |> effects.with_externals(
       [module_external("dep/declared", ["Mocked"])],
-      types.UserExternal,
+      types.UserAssume,
     )
     |> effects.with_path_dep_spec(spec, types.PathDependency("dep"))
   entry_of(kb, QualifiedName("dep/catalogued", "anything"))
   |> should.equal(
     Ok(#(
       Specific(set.from_list(["Time"])),
-      types.ModuleExternalOrigin(source: types.PathDependency("dep")),
+      types.ModuleAssumeOrigin(source: types.PathDependency("dep")),
     )),
   )
   entry_of(kb, QualifiedName("dep/declared", "anything"))
   |> should.equal(
     Ok(#(
       Specific(set.from_list(["Mocked"])),
-      types.ModuleExternalOrigin(source: types.UserExternal),
+      types.ModuleAssumeOrigin(source: types.UserAssume),
     )),
   )
 }
@@ -1178,7 +1171,7 @@ pub fn a_path_dep_function_entry_beats_a_module_external_test() {
     effects.new_knowledge_base()
     |> effects.with_externals(
       [module_external("dep/ffi", ["Mocked"])],
-      types.UserExternal,
+      types.UserAssume,
     )
     |> effects.with_path_dep_spec(
       dep_spec(
@@ -1196,7 +1189,7 @@ pub fn a_path_dep_function_entry_beats_a_module_external_test() {
   // Every other function in the module still answers from the consumer's line.
   origin_of(kb, QualifiedName("dep/ffi", "later"))
   |> should.equal(
-    option.Some(types.ModuleExternalOrigin(source: types.UserExternal)),
+    option.Some(types.ModuleAssumeOrigin(source: types.UserAssume)),
   )
 }
 
@@ -1402,13 +1395,13 @@ pub fn type_fields_distinguish_modules_test() {
     effects.with_type_fields(
       knowledge_base(),
       [
-        types.TypeFieldAnnotation(
+        types.FieldAnnotation(
           option.Some("app/a"),
           "Validator",
           "f",
           effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
         ),
-        types.TypeFieldAnnotation(
+        types.FieldAnnotation(
           option.Some("app/b"),
           "Validator",
           "f",
@@ -1819,7 +1812,7 @@ pub fn a_module_assume_does_not_bury_a_clause_on_the_same_module_test() {
   |> should.equal(
     Ok(#(
       Specific(set.new()),
-      types.ModuleExternalOrigin(types.DependencySpec("db")),
+      types.ModuleAssumeOrigin(types.DependencySpec("db")),
     )),
   )
 }
@@ -2247,7 +2240,7 @@ pub fn a_duplicate_declaration_wins_term_and_bounds_together_test() {
     effects.empty_knowledge_base()
     |> effects.with_externals(
       annotation.extract_externals(file),
-      types.UserExternal,
+      types.UserAssume,
     )
   let name = QualifiedName("m", "f")
   let assert effects.Known(term, _source) = effects.lookup(base, name)
@@ -2297,15 +2290,15 @@ fn bodyless_external_base(
   )
   |> effects.with_externals(
     [
-      types.ExternalAnnotation(
+      types.AssumeAnnotation(
         module: higher_order_ffi.module,
-        target: types.FunctionExternal(higher_order_ffi.function),
+        target: types.FunctionAssume(higher_order_ffi.function),
         params:,
         effects: Some(Specific(set.from_list(["Time"]))),
         returns: None,
       ),
     ],
-    types.UserExternal,
+    types.UserAssume,
   )
   |> effects.with_foreign_functions(
     dict.from_list([
@@ -2431,7 +2424,7 @@ pub fn a_declared_gleam_function_widens_on_the_value_channel_alone_test() {
     effects.new_knowledge_base()
     |> effects.with_externals(
       [module_external("dep/list", [])],
-      types.ModuleExternalOrigin(types.CommittedSpec),
+      types.ModuleAssumeOrigin(types.CommittedSpec),
     )
     |> effects.with_callback_params(dict.from_list([#(name, ["with"])]))
   let assert effects.Known(term, _source) = effects.lookup_declared(base, name)
