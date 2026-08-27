@@ -887,3 +887,84 @@ pub fn effect_over_an_unparseable_spec_errors_test() {
   )
   cleanup(root)
 }
+
+// A summary-less higher-order external's answer
+//
+// A boundless declaration over one says nothing about its callbacks, and the
+// charge keeps a variable per callback parameter the parsed signature names.
+// The query states that variable and the bound that scopes it, on both paths.
+
+// A package whose one module holds a bodyless higher-order `@external`, under
+// the spec line given.
+fn higher_order_external_project(name: String, spec: String) -> String {
+  write_fixture("build/" <> name, [
+    #("gleam.toml", "name = \"" <> name <> "\"\n"),
+    #(name <> ".graded", spec),
+    #("ext.gleam", support.foreign_fn("run", "(action: fn() -> Nil) -> Nil")),
+  ])
+}
+
+pub fn a_bodyless_externals_answer_states_its_callback_bound_test() {
+  // The per-function `assume` states no bounds, so the bound that scopes the
+  // callback variable comes from the pairing alone — and both paths state it.
+  let project =
+    higher_order_external_project(
+      "graded_effect_bodyless_callback",
+      "assume ext.run : [Time]\n",
+    )
+  let expected =
+    Ok(
+      "effects ext.run(action: [action]) : [Time, action]
+// resolved from your spec's `assume` line",
+    )
+  graded.run_effect(project, "ext.run") |> should.equal(expected)
+  graded.run_effect_from_project(project, "ext.run") |> should.equal(expected)
+  cleanup(project)
+}
+
+pub fn a_module_assumed_externals_answer_states_its_callback_bound_test() {
+  // The same under a module-level `assume`, which states no bounds of its own
+  // anywhere: the answer took a running fallback's bounds there, and a bodyless
+  // external has none, so the variable stood in the term with nothing scoping it.
+  let project =
+    higher_order_external_project(
+      "graded_effect_module_assumed_callback",
+      "assume ext : [Time]\n",
+    )
+  let expected =
+    Ok(
+      "effects ext.run(action: [action]) : [Time, action]
+// resolved via module-level `assume` for ext",
+    )
+  graded.run_effect(project, "ext.run") |> should.equal(expected)
+  graded.run_effect_from_project(project, "ext.run") |> should.equal(expected)
+  cleanup(project)
+}
+
+pub fn a_dependency_externals_callback_answers_the_same_on_both_paths_test() {
+  // The dependency half of the fast path: the module the queried name lives in
+  // is parsed over there for its foreign names, and its callback parameters
+  // come off that same parse. Without them the fast path answered the declared
+  // term bare while the full context charged the callback beside it.
+  let project =
+    write_fixture("build/graded_effect_dependency_callback", [
+      #("gleam.toml", "name = \"graded_effect_dependency_callback\"\n"),
+      #(
+        "graded_effect_dependency_callback.graded",
+        "assume dep/ffi.run : [Time]\n",
+      ),
+      #(
+        "build/packages/dep/src/dep/ffi.gleam",
+        support.foreign_fn("run", "(action: fn() -> Nil) -> Nil"),
+      ),
+    ])
+  let expected =
+    Ok(
+      "effects dep/ffi.run(action: [action]) : [Time, action]
+// resolved from your spec's `assume` line",
+    )
+  graded.run_effect(project, "dep/ffi.run") |> should.equal(expected)
+  graded.run_effect_from_project(project, "dep/ffi.run")
+  |> should.equal(expected)
+  cleanup(project)
+}

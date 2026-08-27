@@ -126,6 +126,14 @@ pub type KnowledgeBase {
     // is one a walk reached, which is what `widens_with_dependency_fallback`
     // reads to tell a walked dependency body from an unwalked one.
     fallback_summaries: Dict(QualifiedName, #(EffectTerm, List(ParamBound))),
+    // The callback parameters of every function whose signature graded parsed,
+    // in position order — the signature registry's fn-typed parameters, folded
+    // in as plain names so this module stays glance-free. Read only where a
+    // *declaration* answers for a name and states no bounds of its own: there
+    // the callback share the declaration is silent about is one variable per
+    // name here, so a value channel charges the callback the same way a direct
+    // call's registry auto-injection does.
+    callback_params: Dict(QualifiedName, List(String)),
     // The targets the package under analysis is built for, and whether it named
     // them. Every foreign lookup is read on the build's own targets, and a
     // declaration is read on the wider set an assumption cannot narrow — see
@@ -225,6 +233,7 @@ pub fn knowledge_base_from_catalog(
     dependency_foreign:,
     project_functions: dict.new(),
     fallback_summaries: dict.new(),
+    callback_params: dict.new(),
     package_targets: types.all_targets(),
     active_targets: None,
   )
@@ -250,6 +259,7 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     dependency_foreign: dict.new(),
     project_functions: dict.new(),
     fallback_summaries: dict.new(),
+    callback_params: dict.new(),
     package_targets: types.all_targets(),
     active_targets: None,
   )
@@ -273,6 +283,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     dependency_foreign: dict.new(),
     project_functions: dict.new(),
     fallback_summaries: dict.new(),
+    callback_params: dict.new(),
     package_targets: types.all_targets(),
     active_targets: None,
   )
@@ -551,6 +562,90 @@ pub fn with_fallback_summaries(
   )
 }
 
+// Record the callback parameters of the functions whose signatures graded
+// parsed, in position order. Merged into what is already recorded, so a caller
+// that parses one more module — the single-module fast path — adds to it.
+pub fn with_callback_params(
+  knowledge_base: KnowledgeBase,
+  callbacks: Dict(QualifiedName, List(String)),
+) -> KnowledgeBase {
+  KnowledgeBase(
+    ..knowledge_base,
+    callback_params: dict.merge(knowledge_base.callback_params, callbacks),
+  )
+}
+
+// The callback parameter names recorded for `name`, in position order. Empty
+// where no parsed signature keys it — a dependency whose source is absent or
+// would not parse, which is where this widening degrades to charging nothing.
+fn registry_callback_names(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> List(String) {
+  dict.get(knowledge_base.callback_params, name) |> result.unwrap([])
+}
+
+// Whether a declaration's silence about `name`'s callbacks is filled in from
+// the signature registry: a parsed signature says the name takes a callback at
+// all, it states no bounds of its own, no fallback summary carries the callback
+// variables already, and a declaration answers for the name.
+//
+// The bounds and summary gates are what keep this off every name that already
+// answers for its callbacks: a bounded line wrote its own answer, and a
+// recorded summary's bounds are the ones `conservative_callback_charge`
+// prefers. Requiring a declaration is what keeps an undeclared external out —
+// nothing speaks for it, and synthesizing a variable would put one in the term
+// no line ever scoped.
+//
+// Asked cheapest and most selective first, because every value channel asks it
+// of every name it resolves: almost nothing takes a callback at all, so the one
+// lookup that settles that comes before the three that weigh how the name is
+// declared — `raw_declaration`, the dearest of them, last.
+fn synthesizes_registry_share(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  registry_callback_names(knowledge_base, name) != []
+  && line_param_bounds(knowledge_base, name) == []
+  && !dict.has_key(knowledge_base.fallback_summaries, name)
+  && option.is_some(raw_declaration(knowledge_base, name))
+}
+
+// Which side of the foreign split owns `name`'s synthesized callback share.
+// Two readings of one question, so the halves cannot drift into overlapping or
+// leaving a gap between them.
+//
+// The foreign half is folded into the charge itself, where every channel —
+// direct call included — reads it. The other half is a value channel's alone:
+// ordinary Gleam a catalog entry or module-level `assume` declares is reached
+// by direct calls too (a sibling's, through `declares_for_callers`), and those
+// are charged precisely from the argument in hand, so widening them would
+// charge a share nothing binds.
+fn synthesizes_foreign_share(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  synthesizes_registry_share(knowledge_base, name)
+  && is_value_opaque(knowledge_base, name)
+}
+
+fn synthesizes_channel_share(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  synthesizes_registry_share(knowledge_base, name)
+  && !is_value_opaque(knowledge_base, name)
+}
+
+// The bounds a per-function line states for `name`, raw — the map's own entry,
+// before a fallback summary's bounds are paired with it.
+fn line_param_bounds(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> List(ParamBound) {
+  dict.get(knowledge_base.param_bounds, name) |> result.unwrap([])
+}
+
 // What a foreign name costs the code being walked, and which halves the charge
 // is made of.
 //
@@ -629,6 +724,13 @@ pub fn declared_charge(
   // variables for distinct parameters and each binds exactly its own
   // argument. `lookup_param_bounds` serves the matching rewritten list.
   let declared = declared_beside_fallback(knowledge_base, name, raw)
+  // What the declaration charges wherever it answers without a running
+  // fallback beside it — three of the readings below. One definition, so no two
+  // of them can come to different terms, and deferred, so the three that read a
+  // fallback body instead pay nothing to have it in scope.
+  let alone = fn() {
+    conservative_callback_charge(knowledge_base, name, declared)
+  }
   let fallback = running_fallback_term(knowledge_base, name)
   case halves, fallback {
     // Every target this walk runs on has a foreign implementation for `name`, so
@@ -636,11 +738,12 @@ pub fn declared_charge(
     // declaration — suppressing or not — still keeps the conservative callback
     // charge on this reading: the foreign implementation may call the callback
     // too, the fallback term that would otherwise carry it is no part of the
-    // total, and the recorded summary bounds stand in for the registry
-    // injection they pre-empt at the call site.
+    // total, and the recorded summary bounds — or, for a name no summary
+    // covers, the parsed signature's callback parameters — stand in for the
+    // registry injection they pre-empt at the call site.
     DeclarationOnly, _ ->
       ForeignCharge(
-        term: conservative_callback_charge(knowledge_base, name, declared),
+        term: alone(),
         fallback: types.NoFallback,
         declaration: DeclarationCharged,
       )
@@ -667,7 +770,7 @@ pub fn declared_charge(
       case suppressed {
         True ->
           ForeignCharge(
-            term: conservative_callback_charge(knowledge_base, name, declared),
+            term: alone(),
             fallback: types.FallbackSuppressed(fallback),
             declaration: DeclarationCharged,
           )
@@ -678,9 +781,14 @@ pub fn declared_charge(
             declaration: DeclarationCharged,
           )
       }
+    // A declaration beside a fallback body nothing runs — a single-target
+    // external under defaulted targets, whose Gleam body the declaration's own
+    // target never reaches. The declaration is the whole charge, and being
+    // boundless it says nothing about the callbacks, so the same conservative
+    // share rides it.
     DeclarationAndFallback, None ->
       ForeignCharge(
-        term: declared,
+        term: alone(),
         fallback: types.NoFallback,
         declaration: DeclarationCharged,
       )
@@ -698,30 +806,55 @@ pub fn declared_charge(
 // bounds qualify: a dotted field bound (`r.go`) exists solely to bind the
 // body's own field call, and reviving it would charge the share the reading
 // dropped.
+//
+// A summary-less external — a bodyless one, or one whose declaration covers
+// every target — has no recorded bounds to read the callbacks off, so the
+// names come from the parsed signature instead
+// (`synthesizes_registry_share`). Without that the share stood on the direct
+// call alone, where the checker injects it from the same registry, and the
+// same external passed to a helper or wired into a field charged nothing for
+// its callback.
+//
+// Foreign names only on that last reading. Ordinary Gleam under a module-level
+// `assume` comes through this derivation too — a sibling call into one is
+// charged what declares it — and that is a *direct* call, where the checker's
+// registry injection answers with the argument's shape in hand and declines
+// the ones it cannot trace. Synthesizing here would charge that call a
+// variable no bound list of this name's binds. What such a name owes on a
+// value channel is `declared_effects`'.
 fn conservative_callback_charge(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
   declared: EffectTerm,
 ) -> EffectTerm {
-  let line_bounds = case dict.get(knowledge_base.param_bounds, name) {
-    Ok(bounds) -> bounds
-    Error(Nil) -> []
-  }
-  use <- bool.guard(when: line_bounds != [], return: declared)
-  let callback_bounds = case dict.get(knowledge_base.fallback_summaries, name) {
-    Ok(#(_term, fallback_bounds)) ->
-      list.filter(fallback_bounds, fn(bound) {
-        !string.contains(bound.name, ".")
-      })
-    Error(Nil) -> []
-  }
-  use <- bool.guard(when: callback_bounds == [], return: declared)
-  effect_term.normalize(
-    types.TUnion([
-      declared,
-      ..list.map(callback_bounds, fn(bound) { types.TVar(bound.name) })
-    ]),
+  use <- bool.guard(
+    when: line_param_bounds(knowledge_base, name) != [],
+    return: declared,
   )
+  let callback_names = case dict.get(knowledge_base.fallback_summaries, name) {
+    Ok(#(_term, fallback_bounds)) ->
+      fallback_bounds
+      |> list.filter(fn(bound) { !string.contains(bound.name, ".") })
+      |> list.map(fn(bound) { bound.name })
+    Error(Nil) -> foreign_registry_callbacks(knowledge_base, name)
+  }
+  use <- bool.guard(when: callback_names == [], return: declared)
+  effect_term.normalize(
+    types.TUnion([declared, ..list.map(callback_names, types.TVar)]),
+  )
+}
+
+// The registry's callback names for a summary-less *foreign* name, and none
+// for anything else — the reading `conservative_callback_charge` falls back to
+// where no recorded summary names the callbacks.
+fn foreign_registry_callbacks(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> List(String) {
+  case synthesizes_foreign_share(knowledge_base, name) {
+    True -> registry_callback_names(knowledge_base, name)
+    False -> []
+  }
 }
 
 // Whether a declaring origin's line, in reach beside a running Gleam fallback
@@ -1193,6 +1326,15 @@ pub fn declares_foreign_code(origin: LookupOrigin) -> Bool {
 // record field and a `check` line all come through here, so no two of them can
 // charge one name differently — a raw `lookup` that skipped the rule is exactly
 // how a stale `effects` line for an `@external` used to be believed.
+//
+// One share rides *beside* this boundary rather than inside it: the callback a
+// boundless declaration over a **non-foreign** name is silent about. It cannot
+// live here, because a same-module sibling's direct call routes through this
+// same answer (`declares_for_callers`) and a direct call already charges its
+// callbacks precisely, from the argument in hand. So a value channel reads
+// `declared_effects` and `value_channel_bounds`, which add it, and this
+// function answers those names as written. The invariant above holds outright
+// for foreign names, whose share `declared_charge` folds in below.
 pub fn lookup_declared(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -1253,13 +1395,84 @@ fn undeclared_lookup(
 // The same as an `EffectTerm`, `[Unknown]` where nothing answers for the name.
 // The term may be second-order (carry operator applications) for higher-order
 // functions; callers reduce it at the resolution boundary.
+//
+// This is the value channels' reading — a function passed to a higher-order
+// callee, lifted as an operator argument, or wired into a record field — and it
+// carries the conservative callback share for a *declared* name the charge
+// itself does not widen. A foreign name's share rides its charge, so every
+// channel reads one term; a Gleam function a catalog entry or a module-level
+// `assume` declares has no charge to ride, and a declaration silent about its
+// callbacks says nothing about what the value does with them.
 pub fn declared_effects(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> EffectTerm {
   case lookup_declared(knowledge_base, name) {
-    Known(effect_term, _) -> effect_term
+    Known(effect_term, _) ->
+      value_channel_term(knowledge_base, name, effect_term)
     Unknown -> effect_term.unknown()
+  }
+}
+
+// `term` with one variable per recorded callback parameter, where a
+// declaration answers for `name` and states no bounds of its own. A foreign
+// name is left alone: `declared_charge` already unioned the same share into
+// the term every one of its channels reads, and unioning it twice would only
+// re-derive it.
+//
+fn value_channel_term(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+  term: EffectTerm,
+) -> EffectTerm {
+  use <- bool.guard(
+    when: !synthesizes_channel_share(knowledge_base, name),
+    return: term,
+  )
+  effect_term.normalize(
+    types.TUnion([
+      term,
+      ..list.map(registry_callback_names(knowledge_base, name), types.TVar)
+    ]),
+  )
+}
+
+// The same as `declared_effects`, with the source that answered travelling
+// beside the term — for the value channel that records provenance rather than
+// rendering it, a function wired into a record field.
+//
+// A value channel reads this rather than `lookup_declared`, whose answer is the
+// direct call's: pairing the two by hand at the call site is a step a later
+// channel can forget, and forgetting it silently under-charges every
+// non-foreign declared name.
+pub fn lookup_value_channel(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> EffectLookup {
+  case lookup_declared(knowledge_base, name) {
+    Known(term, source) ->
+      Known(value_channel_term(knowledge_base, name, term), source)
+    Unknown -> Unknown
+  }
+}
+
+// The bounds that bind what a value channel reads: `lookup_param_bounds`,
+// widened to the synthesized callback bounds where a declaration answers for
+// `name`, states none itself, and the channel's term carries the synthesized
+// variables. The bounds a channel binds with pair with the term it charges —
+// a variable no bound binds resolves to nothing, and `[Unknown]` is what a
+// consumer then reads where the argument's own effect was in hand.
+pub fn value_channel_bounds(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> List(ParamBound) {
+  case lookup_param_bounds(knowledge_base, name) {
+    [] ->
+      case synthesizes_channel_share(knowledge_base, name) {
+        True -> synthesized_callback_bounds(knowledge_base, name)
+        False -> []
+      }
+    bounds -> bounds
   }
 }
 
@@ -1298,14 +1511,27 @@ pub fn argument_value_effects(
 // a shared name between the halves is always the same parameter binding the
 // same argument. Exact duplicates are dropped, so the common case stays one
 // list.
+//
+// Where neither states any — a boundless declaration over a summary-less
+// foreign name — the bounds are synthesized from the parsed signature, one
+// self-referential bound per callback parameter. They pair with the variables
+// `conservative_callback_charge` unions into that name's term: a term carrying
+// a variable no bound binds is one the call site cannot resolve, and a bound
+// list without its term would send the call site's fast path straight past the
+// substitution. Foreign names only — a catalog-declared Gleam function keeps
+// its direct calls on the checker's registry auto-injection, which reads the
+// argument's shape before it charges anything.
+//
+// This is therefore the **direct call's** list. A channel that reads a name as
+// a *value* — an operator argument, a wired field — wants
+// `value_channel_bounds`, which pairs with the term `declared_effects` hands
+// that channel; binding a value channel with this list under-charges every
+// non-foreign declared name.
 pub fn lookup_param_bounds(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> List(types.ParamBound) {
-  let declared = case dict.get(knowledge_base.param_bounds, name) {
-    Ok(bounds) -> bounds
-    Error(Nil) -> []
-  }
+  let declared = line_param_bounds(knowledge_base, name)
   case dict.get(knowledge_base.fallback_summaries, name) {
     Ok(#(_term, fallback_bounds)) -> {
       let #(declared, _rename) = self_referential_declaration(declared)
@@ -1316,8 +1542,25 @@ pub fn lookup_param_bounds(
         }),
       )
     }
-    Error(Nil) -> declared
+    Error(Nil) ->
+      case synthesizes_foreign_share(knowledge_base, name) {
+        True -> synthesized_callback_bounds(knowledge_base, name)
+        False -> declared
+      }
   }
+}
+
+// One self-referential bound per recorded callback parameter — the bound list
+// pairing the variables `conservative_callback_charge` synthesizes.
+fn synthesized_callback_bounds(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> List(ParamBound) {
+  knowledge_base
+  |> registry_callback_names(name)
+  |> list.map(fn(callback) {
+    types.ParamBound(name: callback, effects: types.TVar(callback))
+  })
 }
 
 // Format an effect set for display: [] for empty, [_] for wildcard, [A, B]

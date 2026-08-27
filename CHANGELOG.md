@@ -16,8 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   module-level assumptions keep the union.
 - A written `assume … where returns` clause on such an external is now
   trusted, where it was previously refused whole.
-- A boundless `assume` over a higher-order external still charges each
-  callback argument's actual effects, on every call shape.
+- A boundless `assume` over a higher-order external charges each callback
+  argument's actual effects on every channel — called directly, passed to a
+  helper, wired into a record field, or referenced by a sibling — and
+  `[Unknown]` at any call shape graded cannot trace. An external with no Gleam
+  fallback body, and one a catalog or a dependency's spec declares, are covered
+  too; previously only a direct call to them charged the callback, so checks
+  that passed because such an external was handed around as a value may now
+  fail. A line with its own bound list answers for its callbacks as written.
+- A Gleam function a catalog entry or a module-level `assume` declares — such
+  as `gleam/list.map` — charges its callback argument's effects when it is
+  passed as a value or wired into a record field. Its direct calls are
+  unchanged.
 
 ### Fixed
 

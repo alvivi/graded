@@ -2272,3 +2272,174 @@ pub fn a_later_self_binding_clears_an_earlier_alias_test() {
   ])
   |> should.equal([#("cb", "other")])
 }
+
+// A summary-less external's callback share
+//
+// A boundless declaration says nothing about the callbacks of the external it
+// declares, and a bodyless one leaves no fallback summary to read them off.
+// The parsed signature names them instead, and the charge and the bounds take
+// them from that one source — so a value channel charges the callback the same
+// way a direct call's registry injection does.
+
+const higher_order_ffi: QualifiedName = QualifiedName("app/ffi", "run")
+
+// A base holding one bodyless higher-order `@external`, declared for every
+// target this package builds — so a declaration alone answers for it and no
+// fallback body runs. `callbacks` is what a parsed signature says its callback
+// parameters are; `params` is what the declaring line states.
+fn bodyless_external_base(
+  params: List(ParamBound),
+  callbacks: List(String),
+) -> effects.KnowledgeBase {
+  effects.new_knowledge_base()
+  |> effects.with_package_targets(
+    types.NamedTargets(set.from_list(["erlang", "javascript"])),
+  )
+  |> effects.with_externals(
+    [
+      types.ExternalAnnotation(
+        module: higher_order_ffi.module,
+        target: types.FunctionExternal(higher_order_ffi.function),
+        params:,
+        effects: Some(Specific(set.from_list(["Time"]))),
+        returns: None,
+      ),
+    ],
+    types.UserExternal,
+  )
+  |> effects.with_foreign_functions(
+    dict.from_list([
+      #(
+        higher_order_ffi,
+        types.ForeignFunction(
+          runs_fallback_body: False,
+          compiled_targets: set.from_list(["erlang", "javascript"]),
+          declared_targets: set.from_list(["erlang", "javascript"]),
+        ),
+      ),
+    ]),
+  )
+  |> effects.with_callback_params(
+    dict.from_list([#(higher_order_ffi, callbacks)]),
+  )
+}
+
+pub fn a_boundless_declaration_charges_its_registry_callbacks_test() {
+  // Nothing but the parsed signature says `run` takes a callback, and the
+  // boundless line says nothing about it. The charge keeps a variable for it,
+  // so every channel that reads the charge charges the callback.
+  let base = bodyless_external_base([], ["action"])
+  charged(base, higher_order_ffi)
+  |> should.equal(Polymorphic(
+    set.from_list(["Time"]),
+    set.from_list(["action"]),
+  ))
+  effects.lookup_param_bounds(base, higher_order_ffi)
+  |> should.equal([ParamBound(name: "action", effects: types.TVar("action"))])
+}
+
+pub fn an_unparsed_signature_charges_no_callback_test() {
+  // No signature recorded — a dependency whose source is absent or would not
+  // parse. Nothing names a callback, so nothing is synthesized and the answer
+  // is the declaration as written.
+  let base = bodyless_external_base([], [])
+  charged(base, higher_order_ffi)
+  |> should.equal(Specific(set.from_list(["Time"])))
+  effects.lookup_param_bounds(base, higher_order_ffi) |> should.equal([])
+}
+
+pub fn a_bounded_declaration_keeps_its_own_callback_answer_test() {
+  // The line wrote its own answer for the callback: a ground budget for it,
+  // which stays as written and admits no synthesized variable beside it.
+  let base =
+    bodyless_external_base(
+      [
+        ParamBound(
+          name: "action",
+          effects: effect_term.from_effect_set(Specific(set.new())),
+        ),
+      ],
+      ["action"],
+    )
+  charged(base, higher_order_ffi)
+  |> should.equal(Specific(set.from_list(["Time"])))
+  effects.lookup_param_bounds(base, higher_order_ffi)
+  |> should.equal([
+    ParamBound(
+      name: "action",
+      effects: effect_term.from_effect_set(Specific(set.new())),
+    ),
+  ])
+}
+
+pub fn an_undeclared_external_synthesizes_no_callback_test() {
+  // Nothing declares the name, so nothing scopes a variable for its callback:
+  // the external carries the `[Unknown]` it always did, with no bounds beside
+  // it.
+  let base =
+    effects.new_knowledge_base()
+    |> effects.with_package_targets(
+      types.NamedTargets(set.from_list(["erlang", "javascript"])),
+    )
+    |> effects.with_foreign_functions(
+      dict.from_list([
+        #(
+          higher_order_ffi,
+          types.ForeignFunction(
+            runs_fallback_body: False,
+            compiled_targets: set.from_list(["erlang", "javascript"]),
+            declared_targets: set.from_list(["erlang", "javascript"]),
+          ),
+        ),
+      ]),
+    )
+    |> effects.with_callback_params(
+      dict.from_list([#(higher_order_ffi, ["action"])]),
+    )
+  charged(base, higher_order_ffi)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+  effects.lookup_param_bounds(base, higher_order_ffi) |> should.equal([])
+}
+
+pub fn a_walked_fallbacks_bounds_lead_the_registrys_test() {
+  // A recorded summary states its own bounds over the parameters the body
+  // names, girard-typed callbacks included. Those lead: the registry's list is
+  // the stand-in for a name no summary covers.
+  let base =
+    bodyless_external_base([], ["action"])
+    |> effects.with_fallback_summaries(
+      dict.from_list([
+        #(
+          higher_order_ffi,
+          #(types.TVar("cb"), [
+            ParamBound(name: "cb", effects: types.TVar("cb")),
+          ]),
+        ),
+      ]),
+    )
+  effects.lookup_param_bounds(base, higher_order_ffi)
+  |> should.equal([ParamBound(name: "cb", effects: types.TVar("cb"))])
+}
+
+pub fn a_declared_gleam_function_widens_on_the_value_channel_alone_test() {
+  // Ordinary Gleam a module-level `assume` declares: its direct calls keep the
+  // checker's registry injection, which reads the argument's shape first, so
+  // neither the lookup nor the bounds it binds with move. The value channels
+  // have no such counterpart, so they charge the callback here.
+  let name = QualifiedName("dep/list", "each")
+  let base =
+    effects.new_knowledge_base()
+    |> effects.with_externals(
+      [module_external("dep/list", [])],
+      types.ModuleExternalOrigin(types.CommittedSpec),
+    )
+    |> effects.with_callback_params(dict.from_list([#(name, ["with"])]))
+  let assert effects.Known(term, _source) = effects.lookup_declared(base, name)
+  effect_term.to_effect_set(term) |> should.equal(Specific(set.new()))
+  effects.lookup_param_bounds(base, name) |> should.equal([])
+  effects.declared_effects(base, name)
+  |> effect_term.to_effect_set
+  |> should.equal(Polymorphic(set.new(), set.from_list(["with"])))
+  effects.value_channel_bounds(base, name)
+  |> should.equal([ParamBound(name: "with", effects: types.TVar("with"))])
+}

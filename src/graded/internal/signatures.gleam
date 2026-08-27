@@ -154,7 +154,7 @@ pub fn fn_typed_param_names_ordered(
     None -> []
     Some(params) ->
       params
-      |> list.sort(fn(a, b) { int.compare(a.position, b.position) })
+      |> by_position()
       |> list.filter_map(fn(p) {
         // The bound-name match wins for a syntactically fn-typed parameter
         // too: a labeled fallback callback (`with action:`) records its bound
@@ -180,6 +180,49 @@ pub fn fn_typed_param_names_ordered(
         }
       })
   }
+}
+
+// Every registry entry's fn-typed parameter names, in position order, keyed by
+// the function they belong to. Entries with no fn-typed parameter are dropped,
+// so a key here is a function that takes a callback.
+//
+// The in-body name leads and the label is the fallback — the reverse of
+// `fn_typed_param_names`' preference, and deliberately so. These names are
+// synthesized into the callback share a boundless declaration charges, and the
+// bounds recorded beside it; a recorded fallback summary states its own bounds
+// over in-body names, and `ordered_callback_param_names` binds over them too.
+// Naming the label instead would leave one channel's variable free of the
+// other's binder for every labeled callback.
+//
+// Strictly `is_fn_typed`, where `fn_typed_param_names_ordered` also counts an
+// unannotated parameter its bound list names. That function is *binding* an
+// operator whose term already holds the variable; this one is deciding whether
+// to put a variable there at all, and an unannotated parameter is no evidence
+// of a callback — synthesizing one per girard-typed parameter would charge a
+// share for every argument a declared function takes.
+pub fn callback_param_names(
+  registry: SignatureRegistry,
+) -> Dict(QualifiedName, List(String)) {
+  use acc, name, params <- dict.fold(registry.signatures, dict.new())
+  let callbacks =
+    params
+    |> list.filter(fn(p) { p.is_fn_typed })
+    |> by_position()
+    |> list.filter_map(fn(p) {
+      option.to_result(option.or(p.name, p.label), Nil)
+    })
+  case callbacks {
+    [] -> acc
+    _ -> dict.insert(acc, name, callbacks)
+  }
+}
+
+// A parameter list in declaration order. `from_glance_module` already builds
+// one that way, so this is a defence rather than a repair — but every reader
+// that depends on the order states that dependence through this one function,
+// so two of them cannot come to different orders.
+fn by_position(params: List(ParameterInfo)) -> List(ParameterInfo) {
+  list.sort(params, fn(a, b) { int.compare(a.position, b.position) })
 }
 
 // The argument positions of the callbacks of one *operator* parameter — the

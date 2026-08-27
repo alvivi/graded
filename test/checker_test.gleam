@@ -4578,12 +4578,28 @@ pub fn plain(x: String) -> String {
 
 fn infer_annotation(source: String, name: String) -> EffectAnnotation {
   let assert Ok(module) = glance.module(source)
-  let registry = signatures.from_glance_module("m", module)
+  infer_annotation_with(
+    module,
+    name,
+    knowledge_base(),
+    signatures.from_glance_module("m", module),
+  )
+}
+
+// The same over an already-parsed module, against a caller-chosen base and
+// registry — for the callers whose scenario is which knowledge the analysis has,
+// not what the source says.
+fn infer_annotation_with(
+  module: glance.Module,
+  name: String,
+  knowledge_base: effects.KnowledgeBase,
+  registry: signatures.SignatureRegistry,
+) -> EffectAnnotation {
   let inferred =
     checker.infer(
       module,
       "",
-      knowledge_base(),
+      knowledge_base,
       [],
       registry,
       dict.new(),
@@ -6696,4 +6712,107 @@ pub fn an_open_clause_degrades_to_unknown_test() {
   // `ghost` is no parameter of `dep.wrap`, so there is nothing to bind it to.
   returned_call_effects("effects dep.wrap(f: [f]) : [] where returns : [ghost]")
   |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+// A catalog-declared Gleam higher-order function on a value channel
+//
+// `gleam/list.map` is declared by a module-level catalog `assume`, and nothing
+// anywhere states what its callback costs. A direct call reads the argument's
+// shape at the call site and charges it there; a value channel has no such
+// reading, so the declaration's silence about the callback is charged as the
+// callback's own effect instead of vanishing.
+
+fn list_value_channel_kb() -> effects.KnowledgeBase {
+  knowledge_base()
+  |> effects.with_callback_params(
+    signatures.callback_param_names(list_registry()),
+  )
+}
+
+// The inferred effects of one named function of `source`, analysed with
+// `gleam/list`'s signature and its callback parameters both in reach.
+fn list_value_channel_effects(source: String, function: String) -> EffectSet {
+  let assert Ok(module) = glance.module(source)
+  infer_annotation_with(
+    module,
+    function,
+    list_value_channel_kb(),
+    list_registry(),
+  ).effects
+  |> effect_term.to_effect_set
+}
+
+pub fn a_declared_map_passed_as_a_value_charges_its_callback_test() {
+  // `list.map` handed to a helper that calls it. Its callback is *labelled*
+  // (`with fun:`), so the binder has to be the in-body name the synthesized
+  // variable carries: named after the label, the variable stays free, the
+  // application goes stuck, and the precise `[Stdout]` collapses to
+  // `[Unknown]`.
+  let source =
+    "
+import gleam/io
+import gleam/list
+
+fn invoke(
+  op: fn(List(String), fn(String) -> Nil) -> List(Nil),
+  xs: List(String),
+) -> List(Nil) {
+  op(xs, io.println)
+}
+
+pub fn run(xs: List(String)) -> List(Nil) {
+  invoke(list.map, xs)
+}
+"
+  list_value_channel_effects(source, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn a_declared_map_wired_into_a_field_charges_its_callback_test() {
+  // The same name wired into a record field and called through it.
+  let source =
+    "
+import gleam/io
+import gleam/list
+
+pub type Mapper {
+  Mapper(go: fn(List(String), fn(String) -> Nil) -> List(Nil))
+}
+
+fn make() -> Mapper {
+  Mapper(go: list.map)
+}
+
+pub fn via_field(xs: List(String)) -> List(Nil) {
+  let m = make()
+  m.go(xs, io.println)
+}
+"
+  list_value_channel_effects(source, "via_field")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn a_declared_maps_direct_call_keeps_its_auto_bounds_test() {
+  // The direct-call channel is untouched: a tracked reference still charges
+  // its effect, and an inline closure — whose body the extractor walks
+  // separately — still charges nothing, rather than the `[Unknown]` a
+  // synthesized bound with nothing to bind would give.
+  let tracked =
+    "
+import gleam/io
+import gleam/list
+pub fn run(xs: List(String)) -> List(Nil) {
+  list.map(xs, io.println)
+}
+"
+  list_value_channel_effects(tracked, "run")
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+  let closure =
+    "
+import gleam/list
+pub fn run(xs: List(Int)) -> List(Int) {
+  list.map(xs, fn(x) { x + 1 })
+}
+"
+  list_value_channel_effects(closure, "run") |> should.equal(types.empty())
 }
