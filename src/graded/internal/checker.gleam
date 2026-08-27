@@ -29,12 +29,13 @@ import graded/internal/types.{
   StaleFunctionAssumeWarning, StaleReturnsClauseWarning, TUnion, TVar,
   UnboundAssumeTermVariableWarning, UnbuiltExternal,
   UnclosedReturnsClauseWarning, UndeclaredExternal, UngroundReturnsClauseWarning,
-  UnknownClauseWarning, UnmatchedCheckWarning, UnmatchedFieldAssumeWarning,
-  UnmatchedFieldBoundWarning, UnmatchedFunctionAssumeWarning,
-  UnmatchedModuleAssumeWarning, UnmatchedParamBoundWarning,
-  UnmatchedReturnsClauseWarning, UnresolvedFieldValue, UntraceableArgument,
-  UntraceableProducer, UntraceableReceiver, UntrackedEffectWarning,
-  UnverifiedCheckShapeWarning, UnverifiedReturnsClauseWarning, Violation,
+  UnkeyedEffectsShapeWarning, UnknownClauseWarning, UnmatchedCheckWarning,
+  UnmatchedFieldAssumeWarning, UnmatchedFieldBoundWarning,
+  UnmatchedFunctionAssumeWarning, UnmatchedModuleAssumeWarning,
+  UnmatchedParamBoundWarning, UnmatchedReturnsClauseWarning,
+  UnresolvedFieldValue, UntraceableArgument, UntraceableProducer,
+  UntraceableReceiver, UntrackedEffectWarning, UnverifiedCheckShapeWarning,
+  UnverifiedReturnsClauseWarning, Violation,
 }
 
 // Entry points
@@ -1701,6 +1702,11 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> ": warning: check "
       <> name
       <> " is a shape nothing verifies yet — a check on a field keys nothing; an `assume` line is the trusted form"
+    UnkeyedEffectsShapeWarning(name:) ->
+      file
+      <> ": warning: effects "
+      <> name
+      <> " is not a function path — only `module.function` keys an effects line, so this one resolves nothing and the next `graded infer` drops it; `assume` is the line that takes a field or module path"
     UnverifiedReturnsClauseWarning(function:) ->
       file
       <> ": warning: the `where returns` clause on check "

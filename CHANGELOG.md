@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `graded check` now warns about an `effects` line whose path is not
+  `module.function` — a field path (`myapp/ui.Handler.on_click`) or a bare
+  module path. Such a line resolves nothing and the next `graded infer` deletes
+  it, both silently until now. A field's effect is declared with an `assume`
+  line. An `effects` line naming a function that no longer exists is untouched:
+  that tier is regenerated from source.
+
 ### Changed
 
 - **Breaking (library API).** Every type the public API names is now defined in
