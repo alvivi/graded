@@ -2343,6 +2343,11 @@ pub type LocalCache {
     // `type Resolver = fn(...)`) to its underlying function type and callback
     // positions.
     fn_alias_types: dict.Dict(String, glance.Type),
+    // girard's fn-typed parameter names, function name → parameter names. A
+    // parameter that infers to a function without carrying a `fn(...)`
+    // annotation is recognised as effect-polymorphic wherever a walk reaches
+    // it from inside the module, not only at the module's top level.
+    girard_fn_typed: dict.Dict(String, Set(String)),
   )
 }
 
@@ -2390,7 +2395,13 @@ pub fn build_scc_ids(
     |> set.from_list()
   topo.scc_order(local_call_graph(definitions, context))
   |> list.index_fold(
-    LocalCache(dict.new(), dict.new(), set.new(), fn_alias_types),
+    LocalCache(
+      dict.new(),
+      dict.new(),
+      set.new(),
+      fn_alias_types,
+      girard_fn_typed,
+    ),
     fn(cache, component, id) {
       let scc_id =
         list.fold(component, cache.scc_id, fn(ids, name) {
@@ -2407,6 +2418,7 @@ pub fn build_scc_ids(
         members: dict.insert(cache.members, id, component),
         collapsible:,
         fn_alias_types: cache.fn_alias_types,
+        girard_fn_typed: cache.girard_fn_typed,
       )
     },
   )
@@ -3994,7 +4006,8 @@ fn substitute_local_call_effects(
           || suppressed_share_vars(one.resolution.fallback)
         })
       use <- bool.guard(when: !any_polymorphic, return: #(recursive, memo))
-      let bounds = local_polymorphic_bounds(local_definition.definition)
+      let bounds =
+        local_polymorphic_bounds(local_definition, cache.girard_fn_typed)
       let args = call_args_for(call_args, local_call.span)
       let callee_name =
         QualifiedName(module: local_sentinel, function: local_call.function)
@@ -4076,8 +4089,19 @@ fn substitute_local_call_effects(
 // Derive the polymorphic param bounds a local function would carry
 // after auto-inference: one bound per fn-typed parameter, with an
 // effect variable matching the parameter name.
-fn local_polymorphic_bounds(function: Function) -> List(ParamBound) {
-  synthetic_fn_typed_bounds(signatures.fn_typed_params_from_function(function))
+//
+// The same set the walk abstracted over, girard's parameters included, so a
+// term the walk left polymorphic is bound here rather than substituting
+// nothing and collapsing to `[Unknown]`.
+fn local_polymorphic_bounds(
+  definition: Definition(Function),
+  girard_fn_typed: dict.Dict(String, Set(String)),
+) -> List(ParamBound) {
+  synthetic_fn_typed_bounds(unbound_fn_typed_params(
+    definition,
+    [],
+    girard_fn_typed,
+  ))
 }
 
 // Resolve effect variables at a call site. If the callee's effects
@@ -5931,7 +5955,14 @@ fn lift_local_function(
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
   let function = definition.definition
-  let fn_param_names = ordered_fn_typed_param_names(function)
+  // girard's names come along: a callback carrying no `fn(...)` annotation
+  // needs its binder here too, or the lifted term's variable stays free and
+  // the application goes stuck.
+  let fn_param_names =
+    ordered_callback_param_names(
+      function,
+      typeinfo.fn_typed_params(cache.girard_fn_typed, name),
+    )
   // A sibling a declaration answers for is lifted from that declaration, not
   // from the body beside it — the rule a direct same-module call into it
   // already follows — abstracted over its own callback parameters so an
@@ -6404,8 +6435,10 @@ fn memoized_local(
       // can produce effect variables too (nested higher-order calls stay
       // polymorphic through the transitive analysis).
       let nested_bounds =
-        synthetic_fn_typed_bounds(signatures.fn_typed_params_from_function(
-          local_definition.definition,
+        synthetic_fn_typed_bounds(unbound_fn_typed_params(
+          local_definition,
+          [],
+          cache.girard_fn_typed,
         ))
       let key = memo_key(local_call.function, visited, cache)
       case dict.get(memo.locals, key) {
