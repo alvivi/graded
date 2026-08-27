@@ -92,6 +92,17 @@ pub type DependencyName {
 pub type ModuleInfoMemo =
   Dict(String, Result(ModuleInfo, Nil))
 
+// Where the classifier reads types from, and what it has read so far. The two
+// sources never change across a pass and the memo does, so they travel
+// together rather than as three arguments through a mutual recursion.
+type Resolver {
+  Resolver(
+    index: Dict(String, #(String, glance.Module)),
+    dep_files: Dict(String, String),
+    memo: ModuleInfoMemo,
+  )
+}
+
 // Flag `check`/`type`/`external` spec lines whose target resolves nothing. A
 // `check` line names a function that must exist in some project module; a `type`
 // line names a `module.Type.field` that must be a callable (function-typed)
@@ -117,7 +128,6 @@ pub fn run_recording_lookups(
     index:,
     stale_externals:,
     stale_returns_clauses:,
-    catalog:,
     registry:,
     ..,
   ) = context
@@ -160,8 +170,6 @@ pub fn run_recording_lookups(
     [], [], [] -> dict.new()
     _, _, _ -> context.dependency_files()
   }
-  let dep_modules = set.from_list(dict.keys(dep_files))
-
   // The two declaring forms weigh a name by one rule, over one precomputation —
   // which reads the whole dependency tree, so it is built only where a
   // declaring line asks a question of it.
@@ -171,8 +179,7 @@ pub fn run_recording_lookups(
   {
     [], [] -> #([], [])
     _, _ -> {
-      let evidence =
-        spec_name_evidence(index, known_functions, dep_files, catalog, context)
+      let evidence = spec_name_evidence(known_functions, dep_files, context)
       #(
         external_warnings(externals, evidence, stale_externals),
         returns_clause_warnings(
@@ -190,26 +197,23 @@ pub fn run_recording_lookups(
   // from that channel's own output, so the two gates cannot drift.
   let dead_externals = dead_external_names(external_warnings)
 
-  // Resolving field `assume` lines also needs per-module type info; build it only when
-  // there are field `assume` lines to check.
-  let #(type_field_warnings, memo) = case type_fields {
-    [] -> #([], dict.new())
+  // Resolving field `assume` lines needs per-module type info, which the
+  // resolver builds on demand and keeps: only the modules a field line names,
+  // and whatever its alias chain reaches, are ever read.
+  let #(type_field_warnings, resolver) = case type_fields {
+    [] -> #([], Resolver(index:, dep_files:, memo: dict.new()))
     type_fields -> {
-      let project_infos = project_module_infos(index)
-      let #(memo, warnings) =
-        list.map_fold(type_fields, dict.new(), fn(memo, tf) {
-          let #(warning, memo) =
-            unmatched_type_field_warning(
-              tf,
-              index,
-              dep_modules,
-              project_infos,
-              dep_files,
-              memo,
-            )
-          #(memo, warning)
-        })
-      #(list.filter_map(warnings, fn(w) { w }), memo)
+      let #(resolver, warnings) =
+        list.map_fold(
+          type_fields,
+          Resolver(index:, dep_files:, memo: dict.new()),
+          fn(resolver, tf) {
+            let #(warning, resolver) =
+              unmatched_type_field_warning(tf, resolver)
+            #(resolver, warning)
+          },
+        )
+      #(list.filter_map(warnings, fn(w) { w }), resolver)
     }
   }
 
@@ -243,7 +247,7 @@ pub fn run_recording_lookups(
       unknown_clause_warnings,
       type_field_warnings,
     ]),
-    memo,
+    resolver.memo,
   )
 }
 
@@ -414,12 +418,11 @@ type SpecNameEvidence {
 // Existence only. A name that resolves but that graded cannot introspect is
 // exactly what a declaring line is for, and is never flagged.
 fn spec_name_evidence(
-  index: Dict(String, #(String, glance.Module)),
   known_functions: Set(String),
   dep_files: Dict(String, String),
-  catalog: effects.BundledCatalog,
   context: Context,
 ) -> SpecNameEvidence {
+  let Context(index:, catalog:, ..) = context
   // The catalog the knowledge base was assembled from, selected against *this*
   // project's manifest — so a line naming a catalogued function of a package
   // this project depends on resolves exactly as `check` resolves it.
@@ -582,33 +585,20 @@ fn returns_clause_warnings(
 //     so it's dead and flagged.
 fn unmatched_type_field_warning(
   tf: FieldAnnotation,
-  index: Dict(String, #(String, glance.Module)),
-  dep_modules: Set(String),
-  project_infos: Dict(String, ModuleInfo),
-  dep_files: Dict(String, String),
-  memo: ModuleInfoMemo,
-) -> #(Result(Warning, Nil), ModuleInfoMemo) {
-  let #(dead, memo) = case tf.module {
-    None -> #(True, memo)
+  resolver: Resolver,
+) -> #(Result(Warning, Nil), Resolver) {
+  let #(dead, resolver) = case tf.module {
+    None -> #(True, resolver)
     Some(module) -> {
-      let #(valid, memo) =
-        valid_type_field(
-          module,
-          tf,
-          index,
-          dep_modules,
-          project_infos,
-          dep_files,
-          memo,
-        )
-      #(!valid, memo)
+      let #(valid, resolver) = valid_type_field(module, tf, resolver)
+      #(!valid, resolver)
     }
   }
   case dead {
-    False -> #(Error(Nil), memo)
+    False -> #(Error(Nil), resolver)
     True -> #(
       Ok(UnmatchedFieldAssumeWarning(name: annotation.type_field_path(tf))),
-      memo,
+      resolver,
     )
   }
 }
@@ -620,30 +610,19 @@ fn unmatched_type_field_warning(
 fn valid_type_field(
   module: String,
   tf: FieldAnnotation,
-  index: Dict(String, #(String, glance.Module)),
-  dep_modules: Set(String),
-  project_infos: Dict(String, ModuleInfo),
-  dep_files: Dict(String, String),
-  memo: ModuleInfoMemo,
-) -> #(Bool, ModuleInfoMemo) {
-  case dict.get(index, module) {
+  resolver: Resolver,
+) -> #(Bool, Resolver) {
+  case dict.get(resolver.index, module) {
     Ok(#(_gleam_path, mod)) ->
       case lookup_labelled_field(mod, tf.type_name, tf.field) {
         Ok(field_type) -> {
-          let #(callable, memo) =
-            classify_field_type(
-              field_type,
-              module,
-              project_infos,
-              dep_files,
-              set.new(),
-              memo,
-            )
-          #(callable != NotCallable, memo)
+          let #(callable, resolver) =
+            classify_field_type(field_type, module, set.new(), resolver)
+          #(callable != NotCallable, resolver)
         }
-        Error(Nil) -> #(False, memo)
+        Error(Nil) -> #(False, resolver)
       }
-    Error(Nil) -> #(set.contains(dep_modules, module), memo)
+    Error(Nil) -> #(dict.has_key(resolver.dep_files, module), resolver)
   }
 }
 
@@ -696,19 +675,10 @@ pub type ModuleInfo {
 // Whether a field's declared type can be called. Three-valued so the lint flags
 // only what it can prove is non-callable, never guessing on a type it can't
 // resolve.
-pub type Callable {
+type Callable {
   Callable
   NotCallable
   UnknownCallable
-}
-
-fn project_module_infos(
-  index: Dict(String, #(String, glance.Module)),
-) -> Dict(String, ModuleInfo) {
-  dict.map_values(index, fn(_module_path, entry) {
-    let #(_gleam_path, module) = entry
-    module_info_from_glance(module)
-  })
 }
 
 fn module_info_from_glance(module: glance.Module) -> ModuleInfo {
@@ -754,17 +724,15 @@ fn last_segment(module_path: String) -> String {
 // is available (an uninstalled or otherwise unreadable module).
 fn lookup_module_info(
   module_path: String,
-  project_infos: Dict(String, ModuleInfo),
-  dep_files: Dict(String, String),
-  memo: ModuleInfoMemo,
-) -> #(Result(ModuleInfo, Nil), ModuleInfoMemo) {
-  case dict.get(memo, module_path) {
-    Ok(cached) -> #(cached, memo)
+  resolver: Resolver,
+) -> #(Result(ModuleInfo, Nil), Resolver) {
+  case dict.get(resolver.memo, module_path) {
+    Ok(cached) -> #(cached, resolver)
     Error(Nil) -> {
-      let info = case dict.get(project_infos, module_path) {
-        Ok(info) -> Ok(info)
+      let info = case dict.get(resolver.index, module_path) {
+        Ok(#(_gleam_path, module)) -> Ok(module_info_from_glance(module))
         Error(Nil) -> {
-          use file <- result.try(dict.get(dep_files, module_path))
+          use file <- result.try(dict.get(resolver.dep_files, module_path))
           use source <- result.try(
             simplifile.read(file) |> result.replace_error(Nil),
           )
@@ -774,7 +742,13 @@ fn lookup_module_info(
           Ok(module_info_from_glance(module))
         }
       }
-      #(info, dict.insert(memo, module_path, info))
+      #(
+        info,
+        Resolver(
+          ..resolver,
+          memo: dict.insert(resolver.memo, module_path, info),
+        ),
+      )
     }
   }
 }
@@ -786,46 +760,29 @@ fn lookup_module_info(
 fn classify_field_type(
   type_: glance.Type,
   module_path: String,
-  project_infos: Dict(String, ModuleInfo),
-  dep_files: Dict(String, String),
   seen: Set(String),
-  memo: ModuleInfoMemo,
-) -> #(Callable, ModuleInfoMemo) {
+  resolver: Resolver,
+) -> #(Callable, Resolver) {
   case type_ {
-    glance.FunctionType(..) -> #(Callable, memo)
+    glance.FunctionType(..) -> #(Callable, resolver)
     glance.NamedType(name:, module: None, ..) ->
-      classify_named_type(
-        name,
-        module_path,
-        project_infos,
-        dep_files,
-        seen,
-        memo,
-      )
+      classify_named_type(name, module_path, seen, resolver)
     glance.NamedType(name:, module: Some(qualifier), ..) -> {
-      let #(info, memo) =
-        lookup_module_info(module_path, project_infos, dep_files, memo)
+      let #(info, resolver) = lookup_module_info(module_path, resolver)
       case info {
         Ok(info) ->
           case dict.get(info.qualified_imports, qualifier) {
             Ok(real_module) ->
-              classify_named_type(
-                name,
-                real_module,
-                project_infos,
-                dep_files,
-                seen,
-                memo,
-              )
-            Error(Nil) -> #(UnknownCallable, memo)
+              classify_named_type(name, real_module, seen, resolver)
+            Error(Nil) -> #(UnknownCallable, resolver)
           }
-        Error(Nil) -> #(UnknownCallable, memo)
+        Error(Nil) -> #(UnknownCallable, resolver)
       }
     }
     // A type variable could be instantiated to a function; don't flag it.
-    glance.VariableType(..) -> #(UnknownCallable, memo)
+    glance.VariableType(..) -> #(UnknownCallable, resolver)
     // Tuples and holes are never callable.
-    _ -> #(NotCallable, memo)
+    _ -> #(NotCallable, resolver)
   }
 }
 
@@ -836,28 +793,23 @@ fn classify_field_type(
 fn classify_named_type(
   name: String,
   module_path: String,
-  project_infos: Dict(String, ModuleInfo),
-  dep_files: Dict(String, String),
   seen: Set(String),
-  memo: ModuleInfoMemo,
-) -> #(Callable, ModuleInfoMemo) {
+  resolver: Resolver,
+) -> #(Callable, Resolver) {
   let key = module_path <> "." <> name
   use <- bool.lazy_guard(when: set.contains(seen, key), return: fn() {
-    #(UnknownCallable, memo)
+    #(UnknownCallable, resolver)
   })
-  let #(info, memo) =
-    lookup_module_info(module_path, project_infos, dep_files, memo)
+  let #(info, resolver) = lookup_module_info(module_path, resolver)
   case info {
-    Error(Nil) -> #(UnknownCallable, memo)
+    Error(Nil) -> #(UnknownCallable, resolver)
     Ok(info) ->
       classify_in_module(
         name,
         module_path,
         info,
-        project_infos,
-        dep_files,
         set.insert(seen, key),
-        memo,
+        resolver,
       )
   }
 }
@@ -869,37 +821,20 @@ fn classify_in_module(
   name: String,
   module_path: String,
   info: ModuleInfo,
-  project_infos: Dict(String, ModuleInfo),
-  dep_files: Dict(String, String),
   seen: Set(String),
-  memo: ModuleInfoMemo,
-) -> #(Callable, ModuleInfoMemo) {
+  resolver: Resolver,
+) -> #(Callable, Resolver) {
   case dict.get(info.aliases, name) {
-    Ok(aliased) ->
-      classify_field_type(
-        aliased,
-        module_path,
-        project_infos,
-        dep_files,
-        seen,
-        memo,
-      )
+    Ok(aliased) -> classify_field_type(aliased, module_path, seen, resolver)
     Error(Nil) ->
       case
         set.contains(info.custom_types, name),
         dict.get(info.unqualified_types, name)
       {
-        True, _ -> #(NotCallable, memo)
+        True, _ -> #(NotCallable, resolver)
         False, Ok(#(real_module, original)) ->
-          classify_named_type(
-            original,
-            real_module,
-            project_infos,
-            dep_files,
-            seen,
-            memo,
-          )
-        False, Error(Nil) -> #(NotCallable, memo)
+          classify_named_type(original, real_module, seen, resolver)
+        False, Error(Nil) -> #(NotCallable, resolver)
       }
   }
 }
