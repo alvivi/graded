@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back to defaults, so the package name came from the directory and `check`
   and `infer` silently used a spec file the manifest never named. A missing
   `gleam.toml` still falls back to defaults.
+- A helper whose callback parameter carries no `fn(...)` annotation now charges
+  its callers in the same module the callback's own effects, as callers in
+  another module already paid. The same answer now reaches a reference to that
+  helper handed to a higher-order function. Both read `[Unknown]` before.
 - A call from inside a walked fallback body to an external declared for the
   walk's targets now charges its callback arguments beside the declaration,
   instead of the declaration alone.
