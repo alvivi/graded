@@ -16,24 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   module-level assumptions keep the union.
 - A written `assume … where returns` clause on such an external is now
   trusted, where it was previously refused whole.
-- A boundless `assume` over a higher-order external charges each callback
-  argument's actual effects on every channel — called directly, passed to a
-  helper, wired into a record field, or referenced by a sibling — and
-  `[Unknown]` at any call shape graded cannot trace. An external with no Gleam
-  fallback body, and one a catalog or a dependency's spec declares, are covered
-  too; previously only a direct call to them charged the callback, so checks
-  that passed because such an external was handed around as a value may now
-  fail. A line with its own bound list answers for its callbacks as written.
-- A module-level `assume` states what its functions' own bodies cost and
-  nothing about the callbacks they are handed, matching a boundless
-  per-function line. `assume myapp/util : []` over a higher-order
-  `util.each(cb)` now charges each caller the callback it passes, whether it
-  calls `each` directly, hands it to a helper, or does either from inside the
-  declared module. Previously such a callback was charged to nobody, so an
-  effectful function passed to a module-assumed helper passed a pure check.
-- A Gleam function a catalog entry declares — such as `gleam/list.map` —
-  charges its callback argument's effects when it is passed as a value or
-  wired into a record field. Its direct calls are unchanged.
+- A boundless `assume` over a higher-order external now charges its callback
+  argument however the external is reached — called, passed to a helper, wired
+  into a field, referenced by a sibling — where only a direct call charged it
+  before. Checks that passed because the external was handed around as a value
+  may now fail; a line with its own bound list is unaffected.
+- A module-level `assume` says nothing about the callbacks its functions are
+  handed, so `assume myapp/util : []` over `util.each(cb)` now charges each
+  caller the callback it passes. Previously that callback was charged to
+  nobody.
+- A Gleam function a catalog entry declares — `gleam/list.map` and kin —
+  charges its callback when passed as a value or wired into a field. Direct
+  calls are unchanged.
 
 ### Fixed
 
