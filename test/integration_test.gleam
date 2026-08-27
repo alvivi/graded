@@ -1630,11 +1630,15 @@ pub fn a_fallback_lift_keeps_its_callback_arity_test() {
   // `run` has two girard-typed callbacks and invokes only the second; the
   // first contributes no variable to the settled term, so recording bounds
   // for surviving variables alone dropped it — and the lift rebuilt from the
-  // recorded names abstracted over `second` only, binding the *first* passed
-  // callback to it and leaving the second application stuck. Both budgets
-  // below then failed: the disk callback's effects landed on the wrong
-  // parameter and `[Unknown]` covered the rest. The bounds keep the full
-  // callback shape, so each argument reaches its own binder.
+  // recorded names abstracted over `second` only, leaving the second
+  // application stuck and `[Unknown]` covering the rest. The bounds keep the
+  // full callback shape, so both applications reduce and neither budget sees
+  // an `[Unknown]` a stuck spine would put there.
+  //
+  // Both shapes cost `[Disk]` wherever the disk callback is passed: `second`
+  // because the body calls it, and `first` because `keep` is a name
+  // `assume ext : []` declares, which states its own effects and nothing about
+  // the callback it is handed.
   let root = "build/external_fallback_callback_arity"
   support.write_fixture(root, [
     #("gleam.toml", support.dual_target_toml("proj")),
@@ -1643,7 +1647,7 @@ pub fn a_fallback_lift_keeps_its_callback_arity_test() {
       "assume ext : []
 assume app.disk : [Disk]
 check app.go : [Disk]
-check app.go_swapped : []
+check app.go_swapped : [Disk]
 ",
     ),
     #(
@@ -2529,6 +2533,94 @@ pub fn via_operator() -> Nil {
   violation.function |> should.equal("via_operator")
   violation.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+  support.cleanup(root)
+}
+
+pub fn a_module_assumed_helper_charges_its_callback_on_every_shape_test() {
+  // `assume m : []` over ordinary higher-order Gleam states what `each`'s own
+  // body costs and says nothing about the callback handed to it — the same
+  // reading a boundless per-function line gets. Every shape pays the callback:
+  // called or handed around, from inside the declared module or outside it.
+  //
+  // The same-module halves are the ones a declaration answers for through the
+  // sibling path, which kept the declaration's set alone and charged the
+  // callback to nobody; the cross-module halves were blocked by a second
+  // reading, the bounds this run's own inference recorded over the very body
+  // the line speaks over.
+  let root = "build/module_assumed_helper_callback"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume m : []
+assume m.disk : [Disk]
+check m.same_module_call : []
+check m.same_module_value : []
+check other.cross_module_call : []
+check other.cross_module_value : []
+",
+    ),
+    #(
+      "m.gleam",
+      "pub fn each(cb: fn() -> Nil) -> Nil {
+  cb()
+}
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+
+fn invoke(op: fn(fn() -> Nil) -> Nil, x: fn() -> Nil) -> Nil {
+  op(x)
+}
+
+pub fn same_module_call() -> Nil {
+  each(disk)
+}
+
+pub fn same_module_value() -> Nil {
+  invoke(each, disk)
+}
+",
+    ),
+    #(
+      "other.gleam",
+      "import m
+
+fn invoke(op: fn(fn() -> Nil) -> Nil, x: fn() -> Nil) -> Nil {
+  op(x)
+}
+
+pub fn cross_module_call() -> Nil {
+  m.each(m.disk)
+}
+
+pub fn cross_module_value() -> Nil {
+  invoke(m.each, m.disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let charged =
+    results
+    |> list.flat_map(fn(r) { r.violations })
+    |> list.filter_map(fn(violation) {
+      case violation.explanation.actual {
+        types.Specific(effects) ->
+          case set.contains(effects, "Disk") {
+            True -> Ok(violation.function)
+            False -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+    })
+    |> list.sort(string.compare)
+  charged
+  |> should.equal([
+    "cross_module_call", "cross_module_value", "same_module_call",
+    "same_module_value",
+  ])
   support.cleanup(root)
 }
 
@@ -10146,7 +10238,7 @@ pub fn a_governed_native_body_still_warns_about_its_references_test() {
       "proj.graded",
       "assume ffi.disk : [Disk]
 assume governed : [Net]
-check governed.wrapped : [Net]
+check governed.wrapped : [Disk, Net]
 check governed.strict : []
 ",
     ),
@@ -10180,9 +10272,11 @@ pub fn strict() -> Nil {
     list.find(results, fn(r) { r.file == root <> "/governed.gleam" })
 
   // A budget covers both halves: the declaration, and the visible body beside
-  // it. Both bodies call `helper`, a sibling the same line governs, so both
-  // halves are the `[Net]` a caller of `helper` from anywhere pays — `strict`
-  // breaks its `[]` on each and `wrapped` meets its `[Net]` on both.
+  // it. Both bodies call `helper`, a sibling the same line governs — and that
+  // line states `helper`'s own effects, not what it does with the callback it
+  // is handed, so a caller pays the `[Net]` plus the `[Disk]` reference it
+  // passes. `strict` breaks its `[]` on the declaration half and on the call;
+  // `wrapped` meets a budget stating both.
   r.violations
   |> list.map(fn(violation) {
     let assert types.Specific(effects) = violation.explanation.actual
@@ -10191,7 +10285,7 @@ pub fn strict() -> Nil {
     <> string.join(set.to_list(effects) |> list.sort(string.compare), ",")
   })
   |> list.sort(string.compare)
-  |> should.equal(["strict: Net", "strict: Net"])
+  |> should.equal(["strict: Disk,Net", "strict: Net"])
 
   // Both bodies still pass the reference, so both warn.
   r.warnings

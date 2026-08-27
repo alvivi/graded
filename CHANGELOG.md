@@ -24,10 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   too; previously only a direct call to them charged the callback, so checks
   that passed because such an external was handed around as a value may now
   fail. A line with its own bound list answers for its callbacks as written.
-- A Gleam function a catalog entry or a module-level `assume` declares — such
-  as `gleam/list.map` — charges its callback argument's effects when it is
-  passed as a value or wired into a record field. Its direct calls are
-  unchanged.
+- A module-level `assume` states what its functions' own bodies cost and
+  nothing about the callbacks they are handed, matching a boundless
+  per-function line. `assume myapp/util : []` over a higher-order
+  `util.each(cb)` now charges each caller the callback it passes, whether it
+  calls `each` directly, hands it to a helper, or does either from inside the
+  declared module. Previously such a callback was charged to nobody, so an
+  effectful function passed to a module-assumed helper passed a pure check.
+- A Gleam function a catalog entry declares — such as `gleam/list.map` —
+  charges its callback argument's effects when it is passed as a value or
+  wired into a record field. Its direct calls are unchanged.
 
 ### Fixed
 
