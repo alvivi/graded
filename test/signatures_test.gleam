@@ -85,14 +85,14 @@ pub type Runner {
 }
 "
   let assert Ok(module) = glance.module(source)
-  signatures.fn_typed_fields_from_module(module, set.new())
+  signatures.fn_typed_fields_from_module(module, alias_map_of(module))
   |> should.equal(set.from_list([#("Runner", "run")]))
 }
 
 pub fn glance_detects_fn_typed_field_via_alias_test() {
   // A field declared through a module-local function alias (`run: Action` with
-  // `type Action = fn() -> Nil`) is callable, so it is recorded when the alias
-  // is in the resolved function-alias set.
+  // `type Action = fn() -> Nil`) is callable, so it is recorded — the alias is
+  // chased through the module's own alias map, as a parameter's is.
   let source =
     "
 pub type Action = fn() -> Nil
@@ -102,7 +102,7 @@ pub type Runner {
 }
 "
   let assert Ok(module) = glance.module(source)
-  signatures.fn_typed_fields_from_module(module, set.from_list(["Action"]))
+  signatures.fn_typed_fields_from_module(module, alias_map_of(module))
   |> should.equal(set.from_list([#("Runner", "run")]))
 }
 
@@ -116,7 +116,7 @@ pub type Wrapped {
 }
 "
   let assert Ok(module) = glance.module(source)
-  signatures.fn_typed_fields_from_module(module, set.new())
+  signatures.fn_typed_fields_from_module(module, alias_map_of(module))
   |> should.equal(set.new())
 }
 
