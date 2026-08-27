@@ -2288,11 +2288,8 @@ fn bodyless_external_base(
   |> effects.with_assumes(
     [
       types.AssumeAnnotation(
-        module: higher_order_ffi.module,
-        target: types.FunctionAssume(higher_order_ffi.function),
+        ..assume(higher_order_ffi.module, higher_order_ffi.function, ["Time"]),
         params:,
-        effects: Some(Specific(set.from_list(["Time"]))),
-        returns: None,
       ),
     ],
     types.UserAssume,

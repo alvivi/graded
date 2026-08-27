@@ -1348,13 +1348,7 @@ pub fn external_resolves_effects_test() {
     "import gleam/httpc
 pub fn fetch() { httpc.send(request) }"
   let assumes = [
-    types.AssumeAnnotation(
-      "gleam/httpc",
-      types.FunctionAssume("send"),
-      params: [],
-      effects: Some(Specific(set.from_list(["Http"]))),
-      returns: None,
-    ),
+    simple_assume("gleam/httpc", "send", ["Http"]),
   ]
   let annotation =
     EffectAnnotation(
@@ -1374,13 +1368,7 @@ pub fn external_violates_check_test() {
     "import gleam/httpc
 pub fn fetch() { httpc.send(request) }"
   let assumes = [
-    types.AssumeAnnotation(
-      "gleam/httpc",
-      types.FunctionAssume("send"),
-      params: [],
-      effects: Some(Specific(set.from_list(["Http"]))),
-      returns: None,
-    ),
+    simple_assume("gleam/httpc", "send", ["Http"]),
   ]
   let annotation =
     EffectAnnotation(
@@ -1479,13 +1467,7 @@ pub fn read_clock() { now() }"
 // FFI idiom: an `@external` binding paired with a same-module wrapper.
 pub fn external_same_module_resolves_declared_effects_test() {
   let assumes = [
-    types.AssumeAnnotation(
-      "ffi_mod",
-      types.FunctionAssume("now"),
-      params: [],
-      effects: Some(Specific(set.from_list(["Time"]))),
-      returns: None,
-    ),
+    simple_assume("ffi_mod", "now", ["Time"]),
   ]
   infer_external_wrapper(effects.with_assumes(
     knowledge_base(),
@@ -4482,13 +4464,22 @@ pub fn caller() -> Nil {
   |> should.be_true()
 }
 
-// A `fs.read : [FileSystem]` external for second-order operator tests.
+// A `fs.read : [FileSystem]` assume for second-order operator tests.
 fn fs_read_external() -> types.AssumeAnnotation {
+  simple_assume("fs", "read", ["FileSystem"])
+}
+
+// A boundless per-function `assume` declaring a flat effect set.
+fn simple_assume(
+  module: String,
+  function: String,
+  labels: List(String),
+) -> types.AssumeAnnotation {
   types.AssumeAnnotation(
-    "fs",
-    types.FunctionAssume("read"),
+    module,
+    types.FunctionAssume(function),
     params: [],
-    effects: Some(Specific(set.from_list(["FileSystem"]))),
+    effects: Some(Specific(set.from_list(labels))),
     returns: None,
   )
 }
