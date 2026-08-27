@@ -864,6 +864,15 @@ pub type Warning {
   // weighs a check's returned operator, while the effects budget on the same
   // line is checked as any other. So the line is live and the clause is not.
   UnverifiedReturnsClauseWarning(function: String)
+  // An `effects` line whose path is not `module.function` — a field path
+  // (`m.Handler.on_click`) or a bare module path. Only a function path keys
+  // this tier, so the line resolves nothing and the next `infer`, which
+  // rewrites the tier from source, drops it without a word. The `check`
+  // counterpart is `UnverifiedCheckShapeWarning`. A *dangling* function path is
+  // deliberately not this: a stale line regenerating is the tier's normal life,
+  // while these two shapes are ones no run can ever key. `name` is the subject
+  // as written.
+  UnkeyedEffectsShapeWarning(name: String)
   // A field `assume` line whose module/type/field matches no field of a project custom
   // type — unqualified, mis-qualified, or a typo. The annotation then resolves
   // nothing and the field call silently degrades to `[Unknown]`, so it's

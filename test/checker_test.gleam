@@ -5210,6 +5210,17 @@ pub fn format_warning_unverified_check_shape_test() {
   )
 }
 
+pub fn format_warning_unkeyed_effects_shape_test() {
+  // The sentence carries the whole rule: what keys the tier, that this line
+  // does not, and that the next `infer` removes it — a reader who sees it after
+  // the removal has no line left to read.
+  types.UnkeyedEffectsShapeWarning(name: "app.Handler.on_click")
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: effects app.Handler.on_click is not a function path — only `module.function` keys an effects line, so this one resolves nothing and the next `graded infer` drops it; `assume` is the line that takes a field or module path",
+  )
+}
+
 pub fn format_warning_unverified_returns_clause_test() {
   // Scoped to the clause: the sentence has to keep the budget on the same line
   // out of what it calls unverified, or a reader deletes a check that runs.

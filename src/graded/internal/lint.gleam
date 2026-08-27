@@ -4,8 +4,8 @@
 // spec file rather than any source file: a `check` naming no project function,
 // an `assume` covering a body sitting in plain sight or naming nothing at all,
 // a field `assume` whose field cannot be called, a `where returns` clause its
-// own line does not scope. Such a line is silently dead, so it is surfaced as
-// a warning.
+// own line does not scope, an `effects` line whose path is not a function's.
+// Such a line is silently dead, so it is surfaced as a warning.
 //
 // The pass reads a `Context` the caller assembles from the run it already
 // performed. Dependency discovery arrives as thunks, not values: the walk they
@@ -31,10 +31,10 @@ import graded/internal/types.{
   DotlessReturnsClauseWarning, QualifiedName, StaleFunctionAssumeWarning,
   StaleReturnsClauseWarning, UnboundAssumeTermVariableWarning,
   UnclosedReturnsClauseWarning, UngroundReturnsClauseWarning,
-  UnknownClauseWarning, UnmatchedCheckWarning, UnmatchedFieldAssumeWarning,
-  UnmatchedFunctionAssumeWarning, UnmatchedModuleAssumeWarning,
-  UnmatchedReturnsClauseWarning, UnverifiedCheckShapeWarning,
-  UnverifiedReturnsClauseWarning,
+  UnkeyedEffectsShapeWarning, UnknownClauseWarning, UnmatchedCheckWarning,
+  UnmatchedFieldAssumeWarning, UnmatchedFunctionAssumeWarning,
+  UnmatchedModuleAssumeWarning, UnmatchedReturnsClauseWarning,
+  UnverifiedCheckShapeWarning, UnverifiedReturnsClauseWarning,
 }
 import simplifile
 
@@ -103,11 +103,12 @@ type Resolver {
   )
 }
 
-// Flag `check`/`assume` spec lines whose target resolves nothing. A
+// Flag `check`/`assume`/`effects` spec lines whose target resolves nothing. A
 // `check` line names a function that must exist in some project module; a field
 // `assume` line names a `module.Type.field` that must be a callable
 // (function-typed) field; an `assume` line names foreign code, so it must name
-// something graded cannot see the body of, and something that exists at all.
+// something graded cannot see the body of, and something that exists at all; an
+// `effects` line names a function by shape, whatever it resolves to.
 // When the qualifier is missing or wrong, the field plainly can't be called, or
 // the declaration covers a body sitting in plain sight, the line is silently
 // dead or silently ignored, so surface it as a warning.
@@ -225,6 +226,21 @@ pub fn run_recording_lookups(
     effects_lines
     |> list.filter_map(unclosed_clause_warning(_, registry))
 
+  // Only a `module.function` path keys an `effects` line, so the question is
+  // put to `split_function_name` — the reader every consumer of this tier goes
+  // through — rather than to a second classification of the same path. A
+  // dangling function path is left alone on purpose: this tier is rewritten
+  // from source on every `infer`, so a stale line is a line doing its job,
+  // while a field or module path is one no run can key at all.
+  let effects_shape_warnings =
+    effects_lines
+    |> list.filter_map(fn(ann) {
+      case annotation.split_function_name(ann.function) {
+        Ok(_) -> Error(Nil)
+        Error(Nil) -> Ok(UnkeyedEffectsShapeWarning(name: ann.function))
+      }
+    })
+
   // A clause whose key this version does not read. Reported here rather than by
   // the parser, so a dependency's spec stays silent — its consumer cannot fix it
   // — and so the cache reader inherits that silence instead of a default nobody
@@ -239,6 +255,7 @@ pub fn run_recording_lookups(
   #(
     list.flatten([
       check_warnings,
+      effects_shape_warnings,
       assume_warnings,
       unbound_term_variable_warnings(assumes, dead_assumes),
       aliased_bound_variable_warnings(assumes, effects_lines, dead_assumes),

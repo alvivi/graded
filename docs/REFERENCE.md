@@ -70,6 +70,12 @@ effects myapp/router.handle_request : [Http, Stdout]
 Written by `graded infer` for every public function. Regenerated on each run — do
 not edit by hand. (The cache holds the same lines for private functions too.)
 
+The path is a function: `module.function`. A field path or a bare module path
+parses here and keys nothing — only `assume` takes those — so the line resolves
+nothing and the next `infer` drops it; `graded check` warns about the shape. A
+path naming a function that no longer exists draws no warning, since rewriting
+this tier from source is what `infer` does.
+
 ### `check` — enforced invariant
 
 ```

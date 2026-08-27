@@ -18,8 +18,8 @@ import graded/internal/annotation
 import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/types.{
-  type EffectSet, type Warning, Specific, UnknownClauseWarning,
-  UnmatchedCheckWarning, UnmatchedFieldAssumeWarning,
+  type EffectSet, type Warning, Specific, UnkeyedEffectsShapeWarning,
+  UnknownClauseWarning, UnmatchedCheckWarning, UnmatchedFieldAssumeWarning,
   UnverifiedCheckShapeWarning,
 }
 import simplifile
@@ -203,6 +203,46 @@ pub fn a_field_shaped_check_warns_about_its_shape_test() {
     warnings,
     UnmatchedCheckWarning(function: "opts.Opts.on_change"),
   )
+}
+
+// The same mistake one tier over. An `effects` line only ever keys
+// `module.function`, so a field path on one is a line no run can read — and
+// `infer`, which rewrites this tier from source, deletes it without a word.
+pub fn a_field_shaped_effects_line_warns_about_its_shape_test() {
+  let warnings =
+    lint_warnings("effects_shape", [
+      #("opts.gleam", opts_module),
+      #("app.graded", "effects opts.Opts.on_change : []\n"),
+    ])
+
+  expect_warning(
+    warnings,
+    UnkeyedEffectsShapeWarning(name: "opts.Opts.on_change"),
+  )
+}
+
+pub fn a_module_shaped_effects_line_warns_about_its_shape_test() {
+  let warnings =
+    lint_warnings("effects_shape_module", [
+      #("opts.gleam", opts_module),
+      #("app.graded", "effects opts : []\n"),
+    ])
+
+  expect_warning(warnings, UnkeyedEffectsShapeWarning(name: "opts"))
+}
+
+// The line the shape lint must not draw. A dangling function path is stale, not
+// malformed: this tier is regenerated from source on every `infer`, so a line
+// outliving its function is the tier working as designed, and warning about it
+// would fire on every renamed function until the next `infer`.
+pub fn a_dangling_effects_line_is_not_a_shape_warning_test() {
+  let warnings =
+    lint_warnings("effects_shape_dangling", [
+      #("opts.gleam", opts_module),
+      #("app.graded", "effects opts.ghost : []\n"),
+    ])
+
+  refute_warning(warnings, UnkeyedEffectsShapeWarning(name: "opts.ghost"))
 }
 
 pub fn qualified_check_and_type_lines_do_not_warn_test() {
