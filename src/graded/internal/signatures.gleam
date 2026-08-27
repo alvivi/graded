@@ -308,7 +308,7 @@ fn parameter_infos(
       })
     let callback_positions = case resolved {
       Some(FunctionType(_, param_types, _)) ->
-        all_function_indices(param_types, alias_map)
+        fn_typed_argument_positions(param_types, alias_map)
       _ -> []
     }
     ParameterInfo(
@@ -343,14 +343,14 @@ pub fn type_alias_map(
 // collapsing it to `[Unknown]`.
 pub fn fn_typed_fields_from_module(
   module: Module,
-  fn_aliases: Set(String),
+  alias_map: Dict(String, glance.Type),
 ) -> Set(#(String, String)) {
   module.custom_types
   |> list.flat_map(fn(definition) {
     let type_name = definition.definition.name
     definition.definition.variants
     |> list.flat_map(fn(variant) { variant.fields })
-    |> list.filter_map(labelled_fn_field(type_name, _, fn_aliases))
+    |> list.filter_map(labelled_fn_field(type_name, _, alias_map))
   })
   |> set.from_list()
 }
@@ -360,27 +360,15 @@ pub fn fn_typed_fields_from_module(
 fn labelled_fn_field(
   type_name: String,
   field: glance.VariantField,
-  fn_aliases: Set(String),
+  alias_map: Dict(String, glance.Type),
 ) -> Result(#(String, String), Nil) {
   case field {
     glance.LabelledVariantField(item:, label:) ->
-      case is_field_fn_typed(item, fn_aliases) {
+      case is_fn_typed(item, alias_map) {
         True -> Ok(#(type_name, label))
         False -> Error(Nil)
       }
     _ -> Error(Nil)
-  }
-}
-
-// Whether a field's declared type is callable: a direct `fn(..)` or a
-// module-local alias that resolves to one (`run: Action` with
-// `type Action = fn() -> Nil`). Mirrors the alias handling applied to fn-typed
-// parameters.
-fn is_field_fn_typed(type_: glance.Type, fn_aliases: Set(String)) -> Bool {
-  case type_ {
-    FunctionType(_, _, _) -> True
-    glance.NamedType(name:, module: None, ..) -> set.contains(fn_aliases, name)
-    _ -> False
   }
 }
 
@@ -390,29 +378,55 @@ fn is_field_fn_typed(type_: glance.Type, fn_aliases: Set(String)) -> Bool {
 // parameters and operator shapes straight off glance annotations, for
 // definition-site inference where no registry lookup applies.
 
-// Names of a local function's fn-typed parameters, detected from
-// glance AST type annotations. Returns names of parameters whose
-// type annotation is `fn(...) -> ...`, or a module-local alias resolving to
-// one (`run: Action` with `type Action = fn() -> Nil`).
+// Whether a declared type is callable: a `fn(...)` written out, or a
+// module-local alias resolving to one (`run: Action` with
+// `type Action = fn() -> Nil`). The one alias-aware reading of "is this a
+// callback", so the registry, the definition-site detection below and the
+// checker's bound synthesis cannot come to different answers about one
+// parameter.
+pub fn is_fn_typed(
+  type_: glance.Type,
+  alias_map: Dict(String, glance.Type),
+) -> Bool {
+  resolve_function_type(type_, alias_map) |> result.is_ok
+}
+
+// In-body names of a function's callback parameters, in declaration order.
+// A parameter named in `extra` counts as one however its type reads — the
+// girard-typed case, which carries no annotation for the alias map to chase,
+// and a callback a settled summary records a bound for.
 //
-// Parameters without explicit type annotations (or with non-function
-// types) are omitted.
+// Parameters carrying a non-function type, and discarded ones, are omitted.
+pub fn ordered_callback_params(
+  function: Function,
+  alias_map: Dict(String, glance.Type),
+  extra: Set(String),
+) -> List(String) {
+  list.filter_map(function.parameters, fn(param) {
+    case param.name {
+      glance.Named(name) ->
+        case
+          option.unwrap(
+            option.map(param.type_, is_fn_typed(_, alias_map)),
+            False,
+          )
+          || set.contains(extra, name)
+        {
+          True -> Ok(name)
+          False -> Error(Nil)
+        }
+      glance.Discarded(_) -> Error(Nil)
+    }
+  })
+}
+
+// The same as a set, with no extras: the parameters a signature alone shows
+// are callbacks.
 pub fn fn_typed_params_from_function(
   function: Function,
   alias_map: Dict(String, glance.Type),
 ) -> Set(String) {
-  function.parameters
-  |> list.filter_map(fn(param) {
-    case param.type_ {
-      Some(type_) ->
-        case resolve_function_type(type_, alias_map), param.name {
-          Ok(_), glance.Named(name) -> Ok(name)
-          _, _ -> Error(Nil)
-        }
-      None -> Error(Nil)
-    }
-  })
-  |> set.from_list()
+  ordered_callback_params(function, alias_map, set.new()) |> set.from_list()
 }
 
 // Every fn-typed parameter of a function, mapped to the *shape* of its
@@ -450,34 +464,22 @@ pub fn operator_param_shapes(
 
 // One operator parameter's callback shape: each function-typed argument's
 // index paired with that argument's own callback positions. Every layer is
-// resolved through `alias_map`.
+// resolved through `alias_map`, each layer exactly once.
 fn callback_shape(
   param_types: List(glance.Type),
   alias_map: Dict(String, glance.Type),
 ) -> List(#(Int, List(Int))) {
-  param_types
-  |> list.index_map(fn(type_, index) { #(index, type_) })
-  |> list.filter_map(fn(pair) {
-    let #(index, type_) = pair
-    use _ <- result.try(resolve_function_type(type_, alias_map))
-    Ok(#(index, operator_callback_positions_of_type(type_, alias_map)))
+  fn_typed_arguments(param_types, alias_map)
+  |> list.map(fn(pair) {
+    let #(index, resolved) = pair
+    case resolved {
+      FunctionType(_, inner, _) -> #(
+        index,
+        fn_typed_argument_positions(inner, alias_map),
+      )
+      _ -> #(index, [])
+    }
   })
-}
-
-// The callback positions of an operator-shaped *type* — the function-typed
-// argument indices of a `fn(.., fn(..) -> _, ..) -> _`, in order. Empty when
-// the type isn't a function type that takes a function (i.e. not an operator).
-// Used to lift a function *returned* by a producer (its declared return type).
-// The type and each of its arguments resolve through `alias_map`.
-pub fn operator_callback_positions_of_type(
-  type_: glance.Type,
-  alias_map: Dict(String, glance.Type),
-) -> List(Int) {
-  case resolve_function_type(type_, alias_map) {
-    Ok(FunctionType(_, param_types, _)) ->
-      all_function_indices(param_types, alias_map)
-    _ -> []
-  }
 }
 
 // Resolve a type to its underlying function type, following module-local type
@@ -534,7 +536,7 @@ pub fn returned_callback_positions(
   use resolved <- result.try(resolve_function_type(type_, alias_map))
   case resolved {
     FunctionType(_, param_types, _) ->
-      Ok(all_function_indices(param_types, alias_map))
+      Ok(fn_typed_argument_positions(param_types, alias_map))
     _ -> Error(Nil)
   }
 }
@@ -546,19 +548,29 @@ pub fn assignment_name(name: glance.AssignmentName) -> Option(String) {
   }
 }
 
-// The indices of the function-typed arguments in a type list, in order. These
-// are the callback positions for an operator parameter's own argument list. An
-// argument spelled through a module-local alias counts.
-fn all_function_indices(
+// The function-typed arguments of a type list: each one's index paired with
+// its type resolved through `alias_map`, in order. The one place an argument
+// list is filtered for callbacks, so a reader that needs only the indices and
+// one that needs the resolved types read the same rule.
+fn fn_typed_arguments(
+  types: List(glance.Type),
+  alias_map: Dict(String, glance.Type),
+) -> List(#(Int, glance.Type)) {
+  types
+  |> list.index_map(fn(type_, index) { #(index, type_) })
+  |> list.filter_map(fn(pair) {
+    use resolved <- result.map(resolve_function_type(pair.1, alias_map))
+    #(pair.0, resolved)
+  })
+}
+
+// Their indices alone — the callback positions for an operator parameter's
+// own argument list.
+fn fn_typed_argument_positions(
   types: List(glance.Type),
   alias_map: Dict(String, glance.Type),
 ) -> List(Int) {
-  types
-  |> list.index_map(fn(t, i) {
-    #(i, resolve_function_type(t, alias_map) |> result.is_ok)
-  })
-  |> list.filter(fn(pair) { pair.1 })
-  |> list.map(fn(pair) { pair.0 })
+  fn_typed_arguments(types, alias_map) |> list.map(fn(pair) { pair.0 })
 }
 
 // Dependency loading
