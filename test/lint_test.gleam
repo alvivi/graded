@@ -50,7 +50,7 @@ fn context(
   lint.Context(
     spec:,
     index: index_of(modules),
-    stale_externals: set.new(),
+    stale_assumes: set.new(),
     stale_returns_clauses: set.new(),
     catalog: empty_catalog(),
     registry: signatures.empty(),

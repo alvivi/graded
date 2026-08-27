@@ -424,7 +424,7 @@ pub fn parse_type_field_qualified_deep_module_test() {
 pub fn parse_external_test() {
   let input = "assume gleam/http/request.send : [Http]"
   let assert Ok(file) = annotation.parse_file(input)
-  let assert [ext] = annotation.extract_externals(file)
+  let assert [ext] = annotation.extract_assumes(file)
   ext.module |> should.equal("gleam/http/request")
   ext.target |> should.equal(FunctionAssume("send"))
   ext.effects |> should.equal(Some(Specific(set.from_list(["Http"]))))
@@ -433,7 +433,7 @@ pub fn parse_external_test() {
 pub fn parse_external_pure_test() {
   let input = "assume gleam/json.decode : []"
   let assert Ok(file) = annotation.parse_file(input)
-  let assert [ext] = annotation.extract_externals(file)
+  let assert [ext] = annotation.extract_assumes(file)
   ext.module |> should.equal("gleam/json")
   ext.target |> should.equal(FunctionAssume("decode"))
   ext.effects |> should.equal(Some(Specific(set.new())))
@@ -448,7 +448,7 @@ pub fn format_external_test() {
       effects: Some(Specific(set.from_list(["Http"]))),
       returns: None,
     )
-  annotation.format_external(ext)
+  annotation.format_assume(ext)
   |> should.equal("assume gleam/httpc.send : [Http]")
 }
 
@@ -459,7 +459,7 @@ pub fn format_external_test() {
 
 pub fn parse_assume_module_test() {
   let assert Ok(file) = annotation.parse_file("assume gleam/io : [Stdout]")
-  let assert [ext] = annotation.extract_externals(file)
+  let assert [ext] = annotation.extract_assumes(file)
   ext.module |> should.equal("gleam/io")
   ext.target |> should.equal(ModuleAssume)
   ext.effects |> should.equal(Some(Specific(set.from_list(["Stdout"]))))
@@ -468,7 +468,7 @@ pub fn parse_assume_module_test() {
 pub fn parse_assume_function_test() {
   let assert Ok(file) =
     annotation.parse_file("assume gleam/http/request.send : [Http]")
-  let assert [ext] = annotation.extract_externals(file)
+  let assert [ext] = annotation.extract_assumes(file)
   ext.module |> should.equal("gleam/http/request")
   ext.target |> should.equal(FunctionAssume("send"))
   ext.effects |> should.equal(Some(Specific(set.from_list(["Http"]))))
@@ -518,7 +518,7 @@ pub fn assume_over_an_empty_segment_is_invalid_test() {
 
 pub fn parse_assume_function_with_bounds_test() {
   let assert Ok(file) = annotation.parse_file("assume m/ffi.each(f: [f]) : [f]")
-  let assert [ext] = annotation.extract_externals(file)
+  let assert [ext] = annotation.extract_assumes(file)
   ext.module |> should.equal("m/ffi")
   ext.target |> should.equal(FunctionAssume("each"))
   ext.params |> should.equal([ParamBound("f", TVar("f"))])
@@ -531,7 +531,7 @@ pub fn parse_assume_clause_only_bounded_test() {
   // list's own colons must not be read as the effects separator.
   let line = "assume m/ffi.wrap(cb: [cb]) where returns : [cb]"
   let assert Ok(file) = annotation.parse_file(line)
-  let assert [ext] = annotation.extract_externals(file)
+  let assert [ext] = annotation.extract_assumes(file)
   ext.params |> should.equal([ParamBound("cb", TVar("cb"))])
   ext.effects |> should.equal(None)
   ext.returns |> should.equal(Some(TVar("cb")))
@@ -550,7 +550,7 @@ pub fn assume_second_order_effects_term_collapses_test() {
   // conservative `[Unknown]`.
   let assert Ok(file) =
     annotation.parse_file("assume m.f(cb: [cb]) : [action([cb])]")
-  let assert [ext] = annotation.extract_externals(file)
+  let assert [ext] = annotation.extract_assumes(file)
   ext.effects |> should.equal(Some(Specific(set.from_list(["Unknown"]))))
 }
 
@@ -560,7 +560,7 @@ pub fn an_operator_spelled_assume_term_collapses_test() {
   // flat reduction collapses it to `[Unknown]`, exactly as the bracketed
   // application spelling does.
   let assert Ok(file) = annotation.parse_file("assume m.f : fn(cb) -> [cb]")
-  let assert [ext] = annotation.extract_externals(file)
+  let assert [ext] = annotation.extract_assumes(file)
   ext.effects |> should.equal(Some(Specific(set.from_list(["Unknown"]))))
 }
 
@@ -571,7 +571,7 @@ pub fn a_bounded_operator_spelled_assume_term_collapses_test() {
   // refuses the whole file over the one line.
   let assert Ok(file) =
     annotation.parse_file("assume m.f(cb: [cb]) : fn(x) -> [x]")
-  let assert [ext] = annotation.extract_externals(file)
+  let assert [ext] = annotation.extract_assumes(file)
   ext.effects |> should.equal(Some(Specific(set.from_list(["Unknown"]))))
   ext.params |> should.equal([ParamBound(name: "cb", effects: TVar("cb"))])
 }
@@ -662,7 +662,7 @@ pub fn parse_returns_clause_on_a_check_line_test() {
 pub fn parse_returns_clause_on_an_assume_line_test() {
   let assert Ok(file) =
     annotation.parse_file("assume m/ffi.make : [Net] where returns : [Net]")
-  let assert [ext] = annotation.extract_externals(file)
+  let assert [ext] = annotation.extract_assumes(file)
   ext.effects |> should.equal(Some(Specific(set.from_list(["Net"]))))
   ext.returns |> should.equal(Some(TLabels(set.from_list(["Net"]))))
 }
@@ -673,20 +673,20 @@ pub fn a_clause_only_assume_claims_no_effects_test() {
   // answering for it — `None`, never the empty set.
   let assert Ok(file) =
     annotation.parse_file("assume m/ffi.make_client where returns : [Net]")
-  let assert [ext] = annotation.extract_externals(file)
+  let assert [ext] = annotation.extract_assumes(file)
   ext.effects |> should.equal(None)
   ext.returns |> should.equal(Some(TLabels(set.from_list(["Net"]))))
-  annotation.format_external(ext)
+  annotation.format_assume(ext)
   |> should.equal("assume m/ffi.make_client where returns : [Net]")
 }
 
 pub fn a_clause_only_assume_names_no_effects_function_test() {
-  // `external_function_names` keys the effects channel. A clause-only line
+  // `assume_function_names` keys the effects channel. A clause-only line
   // declares only what the producer returns, so it must not drop the inferred
   // `effects` line for the name or blank its bounds.
   let assert Ok(file) =
     annotation.parse_file("assume m.make where returns : [Net]")
-  annotation.external_function_names(file)
+  annotation.assume_function_names(file)
   |> set.to_list
   |> should.equal([])
 }
@@ -1093,7 +1093,7 @@ pub fn type_field_roundtrip_test() {
 
 pub fn external_roundtrip_test() {
   use ext <- qcheck.given(generators.external_gen())
-  let formatted = annotation.format_external(ext)
+  let formatted = annotation.format_assume(ext)
   let assert Ok(file) = annotation.parse_file(formatted)
   let assert [AssumeLine(parsed, _)] = file.lines
   parsed |> should.equal(ext)
@@ -1800,7 +1800,7 @@ pub fn returns_clause_multi_callback_round_trip_test() {
 pub fn declared_returns_clause_round_trip_test() {
   let line = "assume app/ffi.make_client where returns : [Net]"
   let assert Ok(file) = annotation.parse_file(line)
-  let assert [declared] = annotation.extract_externals(file)
+  let assert [declared] = annotation.extract_assumes(file)
   declared.module |> should.equal("app/ffi")
   declared.target |> should.equal(FunctionAssume("make_client"))
   declared.returns |> should.equal(Some(TLabels(set.from_list(["Net"]))))
@@ -1810,7 +1810,7 @@ pub fn declared_returns_clause_round_trip_test() {
 pub fn declared_returns_operator_clause_round_trip_test() {
   let line = "assume m.wrap where returns : fn(cb) -> [cb]"
   let assert Ok(file) = annotation.parse_file(line)
-  let assert [declared] = annotation.extract_externals(file)
+  let assert [declared] = annotation.extract_assumes(file)
   declared.returns |> should.equal(Some(TAbs("cb", TVar("cb"))))
   annotation.format_file(file) |> should.equal(line)
 }
@@ -1956,7 +1956,7 @@ pub fn a_function_assume_with_only_an_unknown_clause_is_retained_test() {
       UnknownClause(key: "returns.0", payload: "[Net]"),
     ]),
   ])
-  annotation.extract_externals(file) |> should.equal([])
+  annotation.extract_assumes(file) |> should.equal([])
   annotation.extract_annotations(file) |> should.equal([])
   annotation.format_file(file) |> should.equal(line)
 }
@@ -1970,7 +1970,7 @@ pub fn a_module_assume_with_only_an_unknown_clause_is_retained_test() {
       UnknownClause(key: "future", payload: "[X]"),
     ]),
   ])
-  annotation.module_external_modules(file) |> set.to_list() |> should.equal([])
+  annotation.module_assume_modules(file) |> set.to_list() |> should.equal([])
   annotation.format_file(file) |> should.equal(line)
 }
 
@@ -2029,7 +2029,7 @@ pub fn a_bounded_assume_with_only_an_unknown_clause_keeps_its_bounds_test() {
       UnknownClause(key: "future", payload: "[X]"),
     ]),
   ])
-  annotation.extract_externals(file) |> should.equal([])
+  annotation.extract_assumes(file) |> should.equal([])
   annotation.format_file(file) |> should.equal(line)
 }
 
@@ -2045,7 +2045,7 @@ pub fn a_retained_assume_keeps_a_payload_this_version_cannot_read_test() {
       UnknownClause(key: "future", payload: "[X]"),
     ]),
   ])
-  annotation.extract_externals(file) |> should.equal([])
+  annotation.extract_assumes(file) |> should.equal([])
   annotation.format_file(file) |> should.equal(line)
 }
 
@@ -2262,10 +2262,10 @@ pub fn the_semantic_renderers_never_wrap_test() {
     annotation.parse_file(
       "assume dep/some/rather/long/module/path.make_the_client_for_the_session where returns : [Net]",
     )
-  let assert [external] = annotation.extract_externals(file)
-  { string.length(annotation.format_external(external)) > 80 }
+  let assert [assume] = annotation.extract_assumes(file)
+  { string.length(annotation.format_assume(assume)) > 80 }
   |> should.be_true()
-  string.contains(annotation.format_external(external), "\n")
+  string.contains(annotation.format_assume(assume), "\n")
   |> should.be_false()
 }
 

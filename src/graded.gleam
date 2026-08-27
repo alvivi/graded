@@ -540,7 +540,7 @@ type ProjectContext {
     // they name one of this package's own Gleam-bodied functions. Decided once
     // here: the knowledge base is assembled without them, and the spec lint
     // reports them, so the two can't disagree about which lines are live.
-    stale_externals: Set(String),
+    stale_assumes: Set(String),
     // The same about the `where returns` clauses, on the value channel. Two
     // sets rather than one: each suppresses only its own channel's lines, and
     // each is reported by its own warning.
@@ -615,7 +615,7 @@ fn load_project_context(
 // The expensive half: everything a context holds beyond the parsed sources.
 fn project_context(sources: ProjectSources) -> ProjectContext {
   let ProjectSources(cfg:, spec:, index:, package_root:, ..) = sources
-  let declared_modules = annotation.module_external_modules(spec)
+  let declared_modules = annotation.module_assume_modules(spec)
   // The package's targets under both readings, which together decide whether a
   // function is foreign code or the Gleam body is its only implementation, and
   // whether a fallback body beside a declaration runs. One value for the whole
@@ -623,8 +623,8 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
   // the consumer's target, not its own.
   let package_targets = cfg.targets
   let native_of = native_functions_of(index, package_targets)
-  let stale_externals = stale_project_externals(spec, native_of)
-  let stale_returns_clauses = stale_project_external_returns(spec, native_of)
+  let stale_assumes = stale_project_assumes(spec, native_of)
+  let stale_returns_clauses = stale_project_assume_returns(spec, native_of)
   let dep_sources = dependency_sources(package_root, package_targets)
   let registry =
     signatures.merge(
@@ -654,7 +654,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // Consumer externals are applied before path-dep inference so a module-level
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
-    |> with_spec_externals(spec, stale_externals)
+    |> with_spec_assumes(spec, stale_assumes)
     // Applied before path-dep inference for the same reason the externals above
     // are, one channel over: a spec-less path dependency's bodies are summarized
     // during that pass, and a consumer line declaring what one of its producers
@@ -676,7 +676,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // against. Before this package's own inference, whose walks read the
     // summaries this leaves behind.
     |> with_dependency_fallback_effects(dep_sources, registry, package_targets)
-    |> with_committed_spec(spec, stale_externals)
+    |> with_committed_spec(spec, stale_assumes)
     // Recorded before the inference pass below, so an `@external` resolves to
     // what declares it while this project's own modules are being inferred, not
     // only when they are later checked.
@@ -738,7 +738,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     sources:,
     registry:,
     type_info:,
-    stale_externals:,
+    stale_assumes:,
     stale_returns_clauses:,
     knowledge_base:,
     catalog:,
@@ -775,22 +775,22 @@ fn project_foreign_functions(
 // with a body is the line's documented use, and dep sources are scanned, so
 // "has a body" is knowable there too), one outside a scoped run, or one that
 // would not parse all leave the line standing.
-fn stale_project_externals(
+fn stale_project_assumes(
   spec: GradedFile,
   native_of: fn(String) -> Result(Set(String), Nil),
 ) -> Set(String) {
-  declaring_nothing(annotation.external_function_names(spec), native_of)
+  declaring_nothing(annotation.assume_function_names(spec), native_of)
 }
 
 // The returned-operator declarations that declare nothing: the same rule one
 // channel over, over the same predicate, so the two cannot drift apart.
 //
-// Derived apart from `stale_project_externals` and threaded apart from it. That
+// Derived apart from `stale_project_assumes` and threaded apart from it. That
 // set drives the effects channel's two suppressions — committed `effects` lines
 // with their bounds, and the inferred lines `infer` writes — and a returns name
 // reaching either would delete a function's effect lines because its *value* was
 // declared.
-fn stale_project_external_returns(
+fn stale_project_assume_returns(
   spec: GradedFile,
   native_of: fn(String) -> Result(Set(String), Nil),
 ) -> Set(String) {
@@ -817,7 +817,7 @@ fn declaring_nothing(
 }
 
 // A module's Gleam-bodied function names as the project index holds them, in
-// the shape `stale_project_externals` asks for.
+// the shape `stale_project_assumes` asks for.
 fn native_functions_of(
   index: Dict(String, #(String, glance.Module)),
   package_targets: types.PackageTargets,
@@ -831,13 +831,13 @@ fn native_functions_of(
 }
 
 // The spec's external declarations minus the ones that declare nothing.
-fn declaring_externals(
+fn declaring_assumes(
   spec: GradedFile,
   stale: Set(String),
 ) -> List(types.AssumeAnnotation) {
-  annotation.extract_externals(spec)
-  |> list.filter(fn(external) {
-    case annotation.external_qualified_name(external) {
+  annotation.extract_assumes(spec)
+  |> list.filter(fn(assume) {
+    case annotation.assume_qualified_name(assume) {
       Ok(qualified) -> !set.contains(stale, types.dotted_name(qualified))
       Error(Nil) -> True
     }
@@ -918,7 +918,7 @@ fn check_one_file(
 fn lint_context(context: ProjectContext) -> lint.Context {
   let ProjectContext(
     sources: ProjectSources(spec:, index:, package_root:, ..),
-    stale_externals:,
+    stale_assumes:,
     stale_returns_clauses:,
     catalog:,
     dependencies:,
@@ -928,7 +928,7 @@ fn lint_context(context: ProjectContext) -> lint.Context {
   lint.Context(
     spec:,
     index:,
-    stale_externals:,
+    stale_assumes:,
     stale_returns_clauses:,
     catalog:,
     registry:,
@@ -1108,7 +1108,7 @@ fn answer_from(
 //   are merged last of all, so an exact key wins outright. A bare line's
 //   module-less key is a fallback, not a decision, and stays with the full
 //   context.
-// - A per-function `assume <module>.<function>`: `with_externals`
+// - A per-function `assume <module>.<function>`: `with_assumes`
 //   inserts over whatever came before, and every later layer keeps existing
 //   entries, so nothing can displace it.
 // - Any name in one of this package's own modules: dependency, catalog and
@@ -1135,7 +1135,7 @@ fn spec_answer(
     Ok(#(module, _function)) -> {
       let project_modules = project_module_files(directory)
       use <- bool.guard(
-        when: !set.contains(annotation.external_function_names(spec), name)
+        when: !set.contains(annotation.assume_function_names(spec), name)
           && !dict.has_key(project_modules, module),
         return: Error(Nil),
       )
@@ -1150,7 +1150,7 @@ fn spec_answer(
         targets,
       ))
       let stale =
-        stale_project_externals(spec, fn(queried) {
+        stale_project_assumes(spec, fn(queried) {
           case queried == module {
             True -> Ok(parsed.native)
             False -> Error(Nil)
@@ -1218,13 +1218,13 @@ fn spec_answer(
 // which this path never reaches.
 fn spec_knowledge_base(
   spec: GradedFile,
-  stale_externals: Set(String),
+  stale_assumes: Set(String),
   targets: types.PackageTargets,
 ) -> KnowledgeBase {
   effects.new_knowledge_base()
   |> effects.with_package_targets(targets)
-  |> with_spec_externals(spec, stale_externals)
-  |> with_committed_spec(spec, stale_externals)
+  |> with_spec_assumes(spec, stale_assumes)
+  |> with_committed_spec(spec, stale_assumes)
   |> with_spec_type_fields(spec)
 }
 
@@ -2483,7 +2483,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
   use #(spec_on_disk, spec) <- result.try(read_spec_on_disk(cfg.spec_file))
-  let declared_modules = annotation.module_external_modules(spec)
+  let declared_modules = annotation.module_assume_modules(spec)
 
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.try(parse_all_files(gleam_files))
@@ -2492,8 +2492,8 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   // dependency it is built with.
   let package_targets = cfg.targets
   let native_of = native_functions_of(index, package_targets)
-  let stale_externals = stale_project_externals(spec, native_of)
-  let stale_returns_clauses = stale_project_external_returns(spec, native_of)
+  let stale_assumes = stale_project_assumes(spec, native_of)
+  let stale_returns_clauses = stale_project_assume_returns(spec, native_of)
 
   // Build a signature registry covering every project module so the checker can
   // do positional argument matching for cross-module polymorphic calls. Hoisted
@@ -2520,7 +2520,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     // Consumer externals are applied before path-dep inference so a module-level
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
-    |> with_spec_externals(spec, stale_externals)
+    |> with_spec_assumes(spec, stale_assumes)
     // Declared returns are state no inference pass re-derives. Without them the
     // walk of a caller's body writes `[Unknown]` where `check` scores the same
     // body from the declaration, and the two commands disagree about it — so
@@ -2598,7 +2598,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     merged_spec: annotation.merge_inferred(
       spec,
       public_annotations,
-      stale_externals,
+      stale_assumes,
       stale_returns_clauses,
     ),
     cache_files: list.reverse(cache_files),
@@ -3805,14 +3805,14 @@ fn infer_path_dep_module(
 // answer by a test comparing the two, not by this grouping.
 
 // The spec's `assume` declarations, minus the stale ones.
-fn with_spec_externals(
+fn with_spec_assumes(
   knowledge_base: KnowledgeBase,
   spec: GradedFile,
-  stale_externals: Set(String),
+  stale_assumes: Set(String),
 ) -> KnowledgeBase {
-  effects.with_externals(
+  effects.with_assumes(
     knowledge_base,
-    declaring_externals(spec, stale_externals),
+    declaring_assumes(spec, stale_assumes),
     types.UserAssume,
   )
 }
@@ -3828,7 +3828,7 @@ fn with_spec_declared_returns(
 ) -> KnowledgeBase {
   effects.with_declared_returned_operators(
     knowledge_base,
-    effects.load_spec_external_returns_from_file(spec)
+    effects.load_spec_assume_returns_from_file(spec)
       |> drop_stale_names(stale_returns_clauses),
     types.UserAssume,
   )
@@ -3873,34 +3873,34 @@ fn with_spec_type_fields(
 fn with_committed_spec(
   knowledge_base: KnowledgeBase,
   spec: GradedFile,
-  stale_externals: Set(String),
+  stale_assumes: Set(String),
 ) -> KnowledgeBase {
   // Read off the spec being folded, not taken from the caller: the modules to
   // drop are a property of that spec, and a caller passing any other set folds
   // in the very lines this function exists to drop.
-  let declared_modules = annotation.module_external_modules(spec)
+  let declared_modules = annotation.module_assume_modules(spec)
   knowledge_base
   |> effects.with_inferred(
     effects.load_spec_effects_from_file(spec)
       |> effects.drop_module_declared(declared_modules)
-      |> drop_stale_names(stale_externals),
+      |> drop_stale_names(stale_assumes),
     types.CommittedSpec,
   )
   |> effects.with_inferred_params(
     effects.load_spec_params_from_file(spec)
     |> effects.drop_module_declared(declared_modules)
-    |> drop_stale_names(stale_externals),
+    |> drop_stale_names(stale_assumes),
   )
 }
 
 // Drop every entry whose dotted name a stale per-function external also names.
 fn drop_stale_names(
   entries: Dict(QualifiedName, a),
-  stale_externals: Set(String),
+  stale_assumes: Set(String),
 ) -> Dict(QualifiedName, a) {
-  use <- bool.guard(set.is_empty(stale_externals), entries)
+  use <- bool.guard(set.is_empty(stale_assumes), entries)
   dict.filter(entries, fn(name, _value) {
-    !set.contains(stale_externals, types.dotted_name(name))
+    !set.contains(stale_assumes, types.dotted_name(name))
   })
 }
 

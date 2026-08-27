@@ -978,7 +978,7 @@ pub fn line_path(line: GradedLine) -> Result(String, Nil) {
   case line {
     AnnotationLine(annotation, _) -> Ok(annotation.function)
     FieldAssumeLine(tf, _) -> Ok(type_field_path(tf))
-    AssumeLine(ext, _) -> Ok(external_sort_key(ext))
+    AssumeLine(ext, _) -> Ok(assume_sort_key(ext))
     RetainedAssumeLine(path:, ..) -> Ok(retained_bare_path(path))
     CommentLine(_) | BlankLine -> Error(Nil)
   }
@@ -1042,10 +1042,10 @@ pub fn extract_type_fields(file: GradedFile) -> List(FieldAnnotation) {
 }
 
 // Extract external annotations from a parsed file.
-pub fn extract_externals(file: GradedFile) -> List(AssumeAnnotation) {
+pub fn extract_assumes(file: GradedFile) -> List(AssumeAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
-      AssumeLine(external_annotation, _) -> Ok(external_annotation)
+      AssumeLine(assume_annotation, _) -> Ok(assume_annotation)
       _ -> Error(Nil)
     }
   })
@@ -1064,7 +1064,7 @@ pub fn extract_externals(file: GradedFile) -> List(AssumeAnnotation) {
 // source that has a visible Gleam body declares nothing — the callers see that
 // body — and its name reaches both readers as `stale`, which restores the
 // `effects` line to authority over it.
-pub fn external_function_names(file: GradedFile) -> set.Set(String) {
+pub fn assume_function_names(file: GradedFile) -> set.Set(String) {
   declaring_function_names(file, fn(ext) { option.is_some(ext.effects) })
 }
 
@@ -1074,7 +1074,7 @@ pub fn external_function_names(file: GradedFile) -> set.Set(String) {
 pub fn assume_returns(
   file: GradedFile,
 ) -> List(#(AssumeAnnotation, EffectTerm)) {
-  list.filter_map(extract_externals(file), fn(ext) {
+  list.filter_map(extract_assumes(file), fn(ext) {
     case ext.returns {
       Some(operator) -> Ok(#(ext, operator))
       None -> Error(Nil)
@@ -1098,10 +1098,10 @@ fn declaring_function_names(
   file: GradedFile,
   claims: fn(AssumeAnnotation) -> Bool,
 ) -> set.Set(String) {
-  extract_externals(file)
+  extract_assumes(file)
   |> list.filter_map(fn(ext) {
     case claims(ext) {
-      True -> external_line_name(ext)
+      True -> assume_line_name(ext)
       False -> Error(Nil)
     }
   })
@@ -1112,8 +1112,8 @@ fn declaring_function_names(
 // <module> : [...]` line (no `.`). Per-function externals (`<module>.<fn>`)
 // don't count — they target one function, not the whole module. These are the
 // modules whose source inference the consumer's declaration overrides.
-pub fn module_external_modules(file: GradedFile) -> set.Set(String) {
-  list.filter_map(extract_externals(file), fn(ext) {
+pub fn module_assume_modules(file: GradedFile) -> set.Set(String) {
+  list.filter_map(extract_assumes(file), fn(ext) {
     case ext.target, ext.effects {
       ModuleAssume, Some(_) -> Ok(ext.module)
       ModuleAssume, None | FunctionAssume(_), _ -> Error(Nil)
@@ -1232,7 +1232,7 @@ pub fn split_type_field_name(
 pub fn merge_inferred(
   file: GradedFile,
   inferred: List(EffectAnnotation),
-  stale_externals: set.Set(String),
+  stale_assumes: set.Set(String),
   stale_returns_clauses: set.Set(String),
 ) -> GradedFile {
   // The value channel first, so the two suppressions compose: a name both an
@@ -1267,12 +1267,12 @@ pub fn merge_inferred(
   // is dropped below and the inferred `effects` line written in its place, which
   // is what stops `check` warning about it forever while the spec under-reports
   // the function.
-  let external_functions =
-    set.difference(external_function_names(file), stale_externals)
+  let assume_functions =
+    set.difference(assume_function_names(file), stale_assumes)
   // A module-level `assume mod : [...]` declares the whole module's
   // effect, so every inferred `effects mod.fn` line is likewise redundant and
   // would shadow the declaration. Drop them all for the declared module.
-  let external_modules = module_external_modules(file)
+  let assumed_modules = module_assume_modules(file)
   // The `effects` lines carrying a clause this version does not read. Scoped to
   // `effects` lines because those are the only ones rebuilt from `inferred_map`
   // below; every other line kind survives on its own path.
@@ -1301,8 +1301,8 @@ pub fn merge_inferred(
       option.is_some(annotation.returns)
       || set.contains(retaining_effects, annotation.function)
       || {
-        !set.contains(external_functions, annotation.function)
-        && !in_external_module(annotation.function, external_modules)
+        !set.contains(assume_functions, annotation.function)
+        && !in_assumed_module(annotation.function, assumed_modules)
       }
     })
 
@@ -1343,17 +1343,17 @@ pub fn merge_inferred(
           |> result.map(AnnotationLine(_, unknown_clauses))
         AssumeLine(e, unknown_clauses) ->
           case
-            surviving_external(e, stale_externals, stale_returns_clauses),
+            surviving_assume(e, stale_assumes, stale_returns_clauses),
             unknown_clauses
           {
-            Ok(external), _ -> Ok(AssumeLine(external, unknown_clauses))
+            Ok(assume), _ -> Ok(AssumeLine(assume, unknown_clauses))
             Error(Nil), [] -> Error(Nil)
             // Both declarations went stale, but the line still carries a clause
             // only a later version can judge. What it keys is gone; what it
             // retains is not — the bound list included, which rides the
             // retained path.
             Error(Nil), _ ->
-              Ok(RetainedAssumeLine(path: external_path(e), unknown_clauses:))
+              Ok(RetainedAssumeLine(path: assume_path(e), unknown_clauses:))
           }
         _ -> Ok(line)
       }
@@ -1370,25 +1370,25 @@ pub fn merge_inferred(
 // One `assume` line's annotation after the stale claims are stripped from it,
 // or `Error(Nil)` where nothing it claimed survives. The record rather than the
 // line, so the call site keeps what the line retained.
-fn surviving_external(
-  external: AssumeAnnotation,
-  stale_externals: set.Set(String),
+fn surviving_assume(
+  assume: AssumeAnnotation,
+  stale_assumes: set.Set(String),
   stale_returns_clauses: set.Set(String),
 ) -> Result(AssumeAnnotation, Nil) {
-  case external_line_name(external) {
-    Error(Nil) -> Ok(external)
+  case assume_line_name(assume) {
+    Error(Nil) -> Ok(assume)
     Ok(name) -> {
-      let effects = case set.contains(stale_externals, name) {
+      let effects = case set.contains(stale_assumes, name) {
         True -> None
-        False -> external.effects
+        False -> assume.effects
       }
       let returns = case set.contains(stale_returns_clauses, name) {
         True -> None
-        False -> external.returns
+        False -> assume.returns
       }
       case effects, returns {
         None, None -> Error(Nil)
-        _, _ -> Ok(AssumeAnnotation(..external, effects:, returns:))
+        _, _ -> Ok(AssumeAnnotation(..assume, effects:, returns:))
       }
     }
   }
@@ -1396,9 +1396,9 @@ fn surviving_external(
 
 // The `<module>.<function>` a per-function external names, or `Error(Nil)` for
 // a module-level one.
-fn external_line_name(external: AssumeAnnotation) -> Result(String, Nil) {
-  case external.target {
-    FunctionAssume(_) -> Ok(external_sort_key(external))
+fn assume_line_name(assume: AssumeAnnotation) -> Result(String, Nil) {
+  case assume.target {
+    FunctionAssume(_) -> Ok(assume_sort_key(assume))
     ModuleAssume -> Error(Nil)
   }
 }
@@ -1414,13 +1414,13 @@ fn names_of_lines(
 // Whether a qualified function name's module carries a module-level external.
 // Short-circuits when nothing is declared (the common case), so the qualified
 // name isn't split needlessly.
-fn in_external_module(
+fn in_assumed_module(
   function: String,
-  external_modules: set.Set(String),
+  assumed_modules: set.Set(String),
 ) -> Bool {
-  use <- bool.guard(set.is_empty(external_modules), False)
+  use <- bool.guard(set.is_empty(assumed_modules), False)
   case split_qualified_name(function) {
-    Ok(#(module, _function)) -> set.contains(external_modules, module)
+    Ok(#(module, _function)) -> set.contains(assumed_modules, module)
     Error(Nil) -> False
   }
 }
@@ -1485,7 +1485,7 @@ fn statement_parts(line: GradedLine) -> #(String, List(String)) {
       clause_list(None, unknown_clauses),
     )
     AssumeLine(ext, unknown_clauses) -> #(
-      external_head(ext),
+      assume_head(ext),
       clause_list(ext.returns, unknown_clauses),
     )
     RetainedAssumeLine(path:, unknown_clauses:) -> #(
@@ -1664,48 +1664,47 @@ pub fn type_field_path(tf: FieldAnnotation) -> String {
 
 // Render an AssumeAnnotation back to its `.graded` line format, always on one
 // line — see `format_annotation`.
-pub fn format_external(external_annotation: AssumeAnnotation) -> String {
-  inline_statement(statement_parts(AssumeLine(external_annotation, [])))
+pub fn format_assume(assume_annotation: AssumeAnnotation) -> String {
+  inline_statement(statement_parts(AssumeLine(assume_annotation, [])))
 }
 
-fn external_head(external_annotation: AssumeAnnotation) -> String {
-  let effects_clause = case external_annotation.effects {
+fn assume_head(assume_annotation: AssumeAnnotation) -> String {
+  let effects_clause = case assume_annotation.effects {
     Some(effects) -> " : " <> format_effect_set(effects)
     None -> ""
   }
-  "assume " <> external_path(external_annotation) <> effects_clause
+  "assume " <> assume_path(assume_annotation) <> effects_clause
 }
 
 // The path an `assume` line renders, bound list included — no keyword and no
 // effects clause. Shared with `merge_inferred`'s stale-conversion site, which
 // rebuilds a `RetainedAssumeLine` from a semantic line and must keep the bounds
 // in the retained path.
-fn external_path(external_annotation: AssumeAnnotation) -> String {
-  external_sort_key(external_annotation)
-  <> bound_list(external_annotation.params)
+fn assume_path(assume_annotation: AssumeAnnotation) -> String {
+  assume_sort_key(assume_annotation) <> bound_list(assume_annotation.params)
 }
 
 // The qualified name (`module` or `module.function`) an external annotation
 // targets. Used both as a sort key and as the rendered name in
-// `format_external`.
-fn external_sort_key(external_annotation: AssumeAnnotation) -> String {
-  case external_qualified_name(external_annotation) {
-    Error(Nil) -> external_annotation.module
+// `format_assume`.
+fn assume_sort_key(assume_annotation: AssumeAnnotation) -> String {
+  case assume_qualified_name(assume_annotation) {
+    Error(Nil) -> assume_annotation.module
     Ok(qualified) -> types.dotted_name(qualified)
   }
 }
 
 // The `QualifiedName` a per-function `assume` line targets, `Error(Nil)` for a
 // module-level one. The one place an external's module and function are put
-// back together, so every reader that keys by that name — and `external_sort_key`,
+// back together, so every reader that keys by that name — and `assume_sort_key`,
 // which renders it — agrees on the shape.
-pub fn external_qualified_name(
-  external_annotation: AssumeAnnotation,
+pub fn assume_qualified_name(
+  assume_annotation: AssumeAnnotation,
 ) -> Result(QualifiedName, Nil) {
-  case external_annotation.target {
+  case assume_annotation.target {
     ModuleAssume -> Error(Nil)
     FunctionAssume(function) ->
-      Ok(types.QualifiedName(external_annotation.module, function))
+      Ok(types.QualifiedName(assume_annotation.module, function))
   }
 }
 
