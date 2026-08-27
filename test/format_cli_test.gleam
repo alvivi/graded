@@ -72,10 +72,11 @@ pub fn format_stdin_is_idempotent_over_returns_clauses_test() {
 // A spec still on a retired spelling is refused by name, with the rewrite —
 // which is the migration instruction an editor shows.
 pub fn format_stdin_reports_a_retired_spelling_test() {
-  let error =
+  let assert graded.GradedParseError(path:, message:) =
     graded.run_format_stdin("external effects m/ffi.send : [Http]")
     |> should.be_error
-  annotation.describe_parse_error(error)
+  path |> should.equal("<stdin>")
+  message
   |> should.equal(
     "1: external effects m/ffi.send : [Http]\n  `external effects <path> : <effects>` is retired; write `assume <path> : <effects>`",
   )
@@ -99,6 +100,12 @@ pub fn format_stdin_fails_on_unparseable_input_test() {
 pub fn format_stdin_names_the_rejected_line_test() {
   graded.run_format_stdin("effects m.f : []\n" <> bad_spec)
   |> should.equal(
-    Error(annotation.InvalidLine(2, "@@@ not a valid graded line @@@")),
+    Error(graded.GradedParseError(
+      "<stdin>",
+      annotation.describe_parse_error(annotation.InvalidLine(
+        2,
+        "@@@ not a valid graded line @@@",
+      )),
+    )),
   )
 }

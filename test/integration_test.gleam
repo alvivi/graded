@@ -25,7 +25,7 @@ import support
 // their [] budgets, while impure and transitively impure callers fail them.
 
 pub fn pure_view_passes_test() {
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let pure_result =
     list.find(results, fn(r) { r.file == "test/fixtures/pure_view.gleam" })
   let assert Ok(r) = pure_result
@@ -37,7 +37,7 @@ pub fn let_bound_view_passes_test() {
   // mapped over a list. The view is pure, so the `check view : []` invariant
   // must pass — the let-bound closure resolves to its body effect, not
   // `[Unknown]`.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let result =
     list.find(results, fn(r) { r.file == "test/fixtures/let_bound_view.gleam" })
   let assert Ok(r) = result
@@ -52,7 +52,7 @@ pub fn recursive_fn_arg_resolves_pure_test() {
   // info active (as here), the operator-lift path reaches the recursive
   // reference; before the fix it leaked a phantom variable that became
   // [Unknown], failing the `check walk : []` budget.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let result =
     list.find(results, fn(r) {
       r.file == "test/fixtures/recursive_fn_arg.gleam"
@@ -74,7 +74,7 @@ pub fn recursive_returned_operator_resolves_pure_test() {
   // and the second-order one (`pick_cb`/`run_cb`, returning a callback-taking
   // `fn(fn() -> Nil) -> Nil`) — the latter exercises the neutral operator's
   // binder over the callback position rather than a ground pure.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let result =
     list.find(results, fn(r) {
       r.file == "test/fixtures/recursive_returned_operator.gleam"
@@ -84,7 +84,7 @@ pub fn recursive_returned_operator_resolves_pure_test() {
 }
 
 pub fn impure_view_fails_test() {
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let impure_result =
     list.find(results, fn(r) { r.file == "test/fixtures/impure_view.gleam" })
   let assert Ok(r) = impure_result
@@ -95,7 +95,7 @@ pub fn impure_view_fails_test() {
 }
 
 pub fn transitive_violation_detected_test() {
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let trans_result =
     list.find(results, fn(r) { r.file == "test/fixtures/transitive.gleam" })
   let assert Ok(r) = trans_result
@@ -112,7 +112,7 @@ pub fn validator_flow_violation_detected_test() {
   // validator_flow.run constructs a Validator locally and calls its
   // field. The field is wired to io.println so the run function's
   // effects are [Stdout] — the check budget of [] must fail.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let validator_result =
     list.find(results, fn(r) { r.file == "test/fixtures/validator_flow.gleam" })
   let assert Ok(r) = validator_result
@@ -127,7 +127,7 @@ pub fn factory_field_violation_detected_test() {
   // that wires the field to its parameter. With no `type` annotation, factory
   // field provenance resolves v.to_error to io.println's [Stdout], so the []
   // check budget must fail. (B1: the escape-hatch annotation is unnecessary.)
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let factory_result =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_field.gleam" })
   let assert Ok(r) = factory_result
@@ -145,7 +145,7 @@ pub fn inline_construction_field_resolves_through_construction_test() {
   // construction provenance yields the precise [Stdout] — not the conservative
   // [Unknown] of an untraceable receiver. Reporting it as [] would be unsound,
   // so the [] budget must still fail, now with actual [Stdout].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/inline_construction_field.gleam"
@@ -164,7 +164,7 @@ pub fn field_union_polymorphic_on_param_receiver_test() {
   // bound `p.run` and, with no bound supplied on the `check` line, grounds to
   // [Unknown]. A caller that supplies a concrete `Parser` (a proven construction)
   // resolves it precisely instead.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let union_result =
     list.find(results, fn(r) { r.file == "test/fixtures/field_union.gleam" })
   let assert Ok(r) = union_result
@@ -185,7 +185,7 @@ pub fn external_is_unknown_test() {
   // `run` — which calls it — inherits that. Against a `[]` budget this must be a
   // violation with actual `[Unknown]`. Without the fix the FFI (and its caller)
   // would be `[]` and the check would pass — a soundness hole.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let ffi_result =
     list.find(results, fn(r) { r.file == "test/fixtures/ffi_external.gleam" })
   let assert Ok(r) = ffi_result
@@ -202,7 +202,7 @@ pub fn external_same_module_declared_effects_test() {
   // `[Unknown]` an undeclared external yields. `read_clock` calls `now()` bare,
   // so against a `[]` budget the actual must be the declared `[Time]`. Without
   // the fix the local path bypassed the knowledge base and reported `[Unknown]`.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let same_module_result =
     list.find(results, fn(r) {
       r.file == "test/fixtures/external_same_module.gleam"
@@ -221,7 +221,7 @@ pub fn check_line_on_an_external_checks_its_declaration_test() {
   // nothing declares carries `[Unknown]`, which exceeds it too — including the
   // one whose pure-looking Gleam fallback body would otherwise pass it. A budget
   // that covers the declaration passes.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/external_budget.gleam" })
   r.violations
@@ -247,7 +247,7 @@ pub fn a_committed_effects_line_does_not_declare_an_external_test() {
   // Inference over a body says nothing about foreign code, so the line declares
   // nothing and the budget is checked against `[Unknown]`; trusting its `[]`
   // would pass a budget no declaration backs.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/external_budget.gleam" })
   let assert Ok(stale) =
@@ -265,7 +265,7 @@ pub fn a_caller_of_an_external_is_charged_what_declares_it_test() {
   // line does not answer for the external, so it may not answer for a call into
   // it either: the caller is charged the same `[Unknown]`, not the `[]` that
   // would let a budget pass on the strength of a line nothing backs.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/external_budget.gleam" })
   let assert Ok(wrapper) =
@@ -288,7 +288,7 @@ pub fn a_caller_of_an_external_is_charged_what_declares_it_test() {
       "import ffi\n\npub fn wrapper() -> Nil {\n  ffi.clock()\n}\n",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -304,7 +304,7 @@ pub fn an_external_passed_as_a_value_is_charged_what_declares_it_test() {
   // the same declaration a direct call goes through, so both carry `[Unknown]`.
   // Walking the bodyless `@external` instead would lift it to `[]` and let a
   // budget pass here that `wrapper`'s direct call fails.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/external_budget.gleam" })
   let assert Ok(callback) =
@@ -346,7 +346,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -383,7 +383,7 @@ pub fn a_bounded_assume_charges_the_arguments_effects_test() {
       "import ffi\n\npub fn run() -> Nil {\n  ffi.each(ffi.disk_read)\n}\n",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -413,7 +413,7 @@ pub fn a_decoupled_bound_name_still_binds_test() {
       "import ffi\n\npub fn run() -> Nil {\n  ffi.map(ffi.disk_read)\n}\n",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -446,7 +446,7 @@ pub fn a_ground_budget_on_an_assume_is_inert_test() {
       "import ffi\n\npub fn run() -> Nil {\n  ffi.each(ffi.log)\n}\n",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   r.violations |> should.equal([])
@@ -479,7 +479,7 @@ pub fn a_dependency_specs_bounded_assume_substitutes_test() {
         ),
       ],
     )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -541,7 +541,7 @@ pub fn a_consumer_assume_overrides_a_dependency_bound_list_test() {
         ),
       ],
     )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
   support.cleanup(root)
 }
@@ -594,7 +594,7 @@ pub fn go_impure() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -659,7 +659,7 @@ pub fn both_pure() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -692,7 +692,7 @@ pub fn a_declared_clause_closed_by_its_bounds_binds_test() {
       "import ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(ffi.disk_read)\n  f()\n}\n",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -724,7 +724,7 @@ pub fn a_clause_only_bounded_declaration_binds_test() {
       "import ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(ffi.disk_read)\n  f()\n}\n",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   // The producer call itself reports its own undeclared-external row; the
@@ -759,7 +759,7 @@ pub fn a_decoupled_bound_scoping_a_clause_binds_by_parameter_name_test() {
       "import ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(ffi.disk_read)\n  f()\n}\n",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -796,7 +796,7 @@ pub fn an_aliased_payload_does_not_capture_a_clause_variable_test() {
       "import ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(ffi.disk_read, ffi.noop)\n  f()\n}\n",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -825,7 +825,7 @@ pub fn an_unscoped_declared_clause_is_dropped_test() {
       "import ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(fn() { Nil })\n  f()\n}\n",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -854,7 +854,7 @@ pub fn a_dotted_variable_in_a_declared_clause_is_dropped_test() {
       "import ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(fn() { Nil })\n  f()\n}\n",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -886,7 +886,7 @@ pub fn differing_bounds_on_the_two_channels_each_bind_their_own_test() {
       "import ffi\n\npub fn run() -> Nil {\n  let f = ffi.wrap(ffi.disk_read)\n  f()\n}\n",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert Ok(direct) =
@@ -935,7 +935,7 @@ pub fn run() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ffi.gleam" })
   let assert [violation] = r.violations
@@ -970,7 +970,7 @@ pub fn a_dependency_specs_declared_decorator_binds_test() {
         ),
       ],
     )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -1006,7 +1006,7 @@ pub fn a_closed_clause_with_a_decoupled_bound_binds_by_parameter_name_test() {
         #("dep/ffi.gleam", support.foreign_fn("disk_read", "() -> Nil")),
       ],
     )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -1040,7 +1040,7 @@ fn sink() -> Nil
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let assert [violation] = r.violations
@@ -1097,7 +1097,7 @@ pub fn calls_built_field() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   r.violations |> should.equal([])
@@ -1153,7 +1153,7 @@ pub fn calls_built_field() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   r.violations |> should.equal([])
@@ -1198,7 +1198,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
   support.cleanup(root)
 }
@@ -1236,7 +1236,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   // The declaration stands: no violation against the budget it states, and no
   // lint calling the line stale.
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
@@ -1293,7 +1293,7 @@ pub fn calls_it() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let disk = types.Specific(set.from_list(["Disk"]))
 
   let assert Ok(same_module) =
@@ -1352,7 +1352,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   // Both walks of `a`'s body agree — the summary its callers are charged
   // through, and the walk its own `check` line performs.
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
@@ -1401,7 +1401,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
   // `c` itself is unchanged: an ordinary caller is compiled for both targets,
   // so it pays the declaration on one and that same body on the other.
@@ -1452,7 +1452,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let assert Ok(violation) =
@@ -1506,7 +1506,7 @@ pub fn uses_impure() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let assert [violation] = r.violations
@@ -1559,7 +1559,7 @@ pub fn go() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
   support.cleanup(root)
 }
@@ -1617,7 +1617,7 @@ pub fn go_impure() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -1694,7 +1694,7 @@ pub fn go_swapped() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
   support.cleanup(root)
 }
@@ -1752,7 +1752,7 @@ pub fn go_impure() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -1808,7 +1808,7 @@ pub fn go_impure() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let assert [violation] = r.violations
@@ -1869,7 +1869,7 @@ pub fn via_helper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   // Directly, and re-bound through a helper whose own walk left the share
@@ -1938,7 +1938,7 @@ pub fn via_operator() -> Nil {
     #("c.gleam", "import d\n\npub fn go() -> Nil {\n  d.go()\n}\n"),
     #("d.gleam", "import c\n\npub fn go() -> Nil {\n  c.go()\n}\n"),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) = list.find(results, fn(r) { r.file == root <> "/b.gleam" })
   ["direct", "via_operator"]
   |> list.each(fn(function) {
@@ -2000,7 +2000,7 @@ pub fn via_operator() -> Nil {
     #("c.gleam", "import d\n\npub fn go() -> Nil {\n  d.go()\n}\n"),
     #("d.gleam", "import c\n\npub fn go() -> Nil {\n  c.go()\n}\n"),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) = list.find(results, fn(r) { r.file == root <> "/b.gleam" })
   ["direct", "via_operator"]
   |> list.each(fn(function) {
@@ -2047,7 +2047,7 @@ pub fn disk() -> Nil
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let assert [violation] = r.violations
@@ -2093,7 +2093,7 @@ pub fn disk() -> Nil
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let assert [violation] = r.violations
@@ -2146,7 +2146,7 @@ pub fn uses() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   r.violations |> should.equal([])
@@ -2195,7 +2195,7 @@ pub fn via_operator() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -2249,7 +2249,7 @@ pub fn fallback_disk() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -2319,7 +2319,7 @@ pub fn via_field() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   ["via_operator", "via_field"]
@@ -2387,7 +2387,7 @@ pub fn via_field() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   ["direct", "via_operator", "via_field"]
@@ -2440,7 +2440,7 @@ pub fn via_operator() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -2480,7 +2480,7 @@ pub fn via_sibling() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let assert Ok(violation) =
@@ -2527,7 +2527,7 @@ pub fn via_operator() -> Nil {
       ),
     ],
   )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -2602,7 +2602,7 @@ pub fn cross_module_value() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let charged =
     results
     |> list.flat_map(fn(r) { r.violations })
@@ -2677,7 +2677,7 @@ pub fn hands_over_a_called_callback() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) = list.find(results, fn(r) { r.file == root <> "/m.gleam" })
   ["hands_over_an_uncalled_callback", "hands_over_a_called_callback"]
   |> list.each(fn(function) {
@@ -2728,7 +2728,7 @@ pub fn quiet_go() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   r.warnings
@@ -2786,7 +2786,7 @@ pub fn direct() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -2848,7 +2848,7 @@ pub fn qualified() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   [#("app.gleam", "qualified"), #("ext.gleam", "sibling")]
   |> list.each(fn(expected) {
     let #(file, function) = expected
@@ -2908,7 +2908,7 @@ pub fn via_helper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -2986,7 +2986,7 @@ pub fn via_poly() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   [
@@ -3038,7 +3038,7 @@ pub fn strict() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -3127,7 +3127,7 @@ pub fn via_factory() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let total = types.Specific(set.from_list(["Disk", "Unknown"]))
@@ -3193,7 +3193,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "wrapper" })
@@ -3251,7 +3251,7 @@ pub fn calls_b() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let total = types.Specific(set.from_list(["Disk", "Unknown"]))
@@ -3313,7 +3313,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "wrapper" })
@@ -3371,7 +3371,7 @@ pub fn calls_it() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(caller) =
     list.find(results, fn(r) { r.file == root <> "/other.gleam" })
   let assert [calls_it] = caller.violations
@@ -3432,7 +3432,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let disk = types.Specific(set.from_list(["Disk"]))
@@ -3499,7 +3499,7 @@ pub fn uses_impure() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   // The pure callback is not charged for the fallback's call to it.
@@ -3607,7 +3607,7 @@ pub fn a_module_external_resolves_from_catalog_functions_test() {
     ),
     #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   // Only the module that really resolves nowhere is flagged.
   results
   |> list.flat_map(fn(r) { r.warnings })
@@ -3662,7 +3662,7 @@ pub fn uses() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [v] = r.violations
@@ -3712,7 +3712,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "wrapper" })
@@ -3801,7 +3801,7 @@ pub fn wrapper() -> Nil {
     ),
   ])
   // What the caller is charged.
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "wrapper" })
@@ -3873,7 +3873,7 @@ fn sink() -> Nil
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   r.violations |> should.equal([])
@@ -3892,7 +3892,7 @@ pub fn foreign_value_channels_are_opaque_test() {
   // Five channels, each paired in the fixture with the same shape written as
   // ordinary Gleam. Only the foreign half exceeds the budget the pair shares —
   // the rule refuses foreign values, not values.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/foreign_values.gleam" })
   r.violations
@@ -3981,7 +3981,7 @@ pub fn calls_via_provenance() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   r.violations
@@ -4026,7 +4026,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -4073,7 +4073,7 @@ pub fn plain_wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -4130,7 +4130,7 @@ pub fn via_value() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   // `wrapper`'s `[Time]` budget holds — the walked body's `[Unknown]` is no
@@ -4204,7 +4204,7 @@ pub fn wrapper() -> Nil {
   ])
   // The external's own budget covers declaration and body; the caller's
   // covers the declaration alone. Both hold.
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
   // The caller's `why` names the suppression; the external's own does not —
   // its line reports the declaration with the body as a contributor beside
@@ -4265,7 +4265,7 @@ pub fn uses() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   // The producer call pays the catalog's term unioned with the walked body's
@@ -4315,7 +4315,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -4378,7 +4378,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
   support.cleanup(root)
 }
@@ -4417,7 +4417,7 @@ pub fn wrapper() -> Nil {
     ),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -4473,7 +4473,7 @@ pub fn wrapper() -> Nil {
     ),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -4565,7 +4565,7 @@ pub fn tick() -> Nil {
     ..sources
   ])
 
-  let assert Ok(results) = graded.run(defaulted)
+  let assert Ok(results) = graded.check_project(defaulted)
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
   results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
 
@@ -4586,7 +4586,7 @@ pub fn tick() -> Nil {
   caller |> string.contains("Disk") |> should.be_false()
 
   // And every one of them reads as the named-target package does, word for word.
-  let assert Ok(named_results) = graded.run(named)
+  let assert Ok(named_results) = graded.check_project(named)
   named_results
   |> list.flat_map(fn(r) { r.violations })
   |> should.equal([])
@@ -4633,7 +4633,7 @@ pub fn wrapper() -> Nil {
     ),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(own) =
     list.find(results, fn(r) { r.file == root <> "/ffi.gleam" })
   let assert [own_violation] = own.violations
@@ -4720,7 +4720,7 @@ pub fn tock() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
 
@@ -4847,7 +4847,7 @@ pub fn calls_built_field() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   r.violations
@@ -4889,7 +4889,7 @@ pub fn calls_wrapped() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -4929,7 +4929,7 @@ pub fn calls_returned_operator() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   // The producer call is charged [Unknown] too — nothing this build compiles
@@ -4999,7 +4999,7 @@ pub fn calls_covered() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   r.violations |> should.equal([])
@@ -5039,7 +5039,7 @@ pub fn caller() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
 
   let assert Ok(Nil) = graded.run_infer(root)
@@ -5084,7 +5084,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -5158,7 +5158,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -5200,7 +5200,7 @@ pub fn caller() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
 
   let assert Ok(preview) = graded.run_infer_dry_run(root)
@@ -5253,7 +5253,7 @@ pub fn caller() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -5298,7 +5298,7 @@ pub fn make() -> fn() -> Nil
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
@@ -5341,7 +5341,7 @@ assume ffi.fold(g: [g]) : [g]
         <> support.foreign_fn("fold", "(g: fn() -> Nil) -> Nil"),
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   // `ffi.fold`'s term variable is covered by its bound's payload, so the term
   // oracle stays silent for it.
   results
@@ -5397,7 +5397,7 @@ effects app.twin(cb: [e], other: [cb]) : [cb] where returns : [cb]
       "pub fn twin(cb: fn() -> Nil, other: fn() -> Nil) -> fn() -> Nil {\n  other()\n  cb\n}\n",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
@@ -5444,7 +5444,7 @@ effects app.twin(other: [cb], cb: [cb]) : [cb] where returns : [cb]
       "pub fn twin(other: fn() -> Nil, cb: fn() -> Nil) -> fn() -> Nil {\n  other()\n  cb\n}\n",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
@@ -5471,7 +5471,7 @@ assume nowhere.gone(cb: [cb]) : [zz]
     ),
     #("app.gleam", "pub fn local(cb: fn() -> Nil) -> Nil {\n  cb()\n}\n"),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
@@ -5572,7 +5572,7 @@ pub fn caller() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ffi.gleam" })
   support.cleanup(root)
@@ -5628,7 +5628,7 @@ pub fn shout() -> Nil
     ),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   // Neither caller pays more than the declaration.
   let assert Ok(caller) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
@@ -5683,7 +5683,7 @@ pub fn wrapper() -> Nil {
     ),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -5892,7 +5892,7 @@ pub fn every_surface_charges_one_name_one_set_test() {
   |> list.each(fn(configuration) {
     let #(root, toml, rows) = configuration
     support.write_fixture(root, [#("gleam.toml", toml), ..matrix_sources()])
-    let assert Ok(results) = graded.run(root)
+    let assert Ok(results) = graded.check_project(root)
     list.each(rows, check_matrix_row(root, results, _))
     support.cleanup(root)
   })
@@ -6162,7 +6162,7 @@ pub fn j() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   // The JavaScript caller reaches the foreign implementation and fails; the
   // Erlang one reaches the fallback and passes. One violation, and it is that
   // one -- neither answer stands in for the other.
@@ -6232,7 +6232,7 @@ pub fn w() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
   // And what `infer` publishes for it says the same.
   let assert Ok(answered) = graded.run_effect(root, "ext.w")
@@ -6272,7 +6272,7 @@ pub fn w() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
   let assert Ok(answered) = graded.run_effect(root, "dep/ffi.run")
   answered |> string.contains("Disk") |> should.be_false()
@@ -6305,7 +6305,7 @@ pub fn w() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
   support.cleanup(root)
 }
@@ -6353,7 +6353,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
   support.cleanup(root)
 }
@@ -6396,7 +6396,7 @@ pub fn a() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -6444,7 +6444,7 @@ pub fn wrapper() -> Nil {
   ])
   // What the caller is charged: the declared term alone, so the `[Time]`
   // budget holds.
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   r.violations |> should.equal([])
@@ -6489,7 +6489,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -6536,7 +6536,7 @@ pub fn make() -> fn() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root <> "/proj")
+  let assert Ok(results) = graded.check_project(root <> "/proj")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/proj/src/app.gleam" })
   { r.violations != [] } |> should.be_true()
@@ -6594,7 +6594,7 @@ pub fn run() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root <> "/proj")
+  let assert Ok(results) = graded.check_project(root <> "/proj")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/proj/src/app.gleam" })
   let assert [violation] = r.violations
@@ -6607,7 +6607,7 @@ pub fn one_helper_called_twice_is_reported_once_test() {
   // Two calls into one helper collect that helper's single site twice, and both
   // copies say the same thing. `why` prints one line for it, so `check` reports
   // one violation for it.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/why_target.gleam" })
   r.violations
@@ -6629,7 +6629,7 @@ pub fn opaque_receiver_violation_detected_test() {
   // and the `assume opaque_receiver.Validator.to_error : [Stdout]` annotation
   // resolves the field call, so the [] check budget must fail. This is the
   // milestone-3b case that 0.6.0's same-function value flow could not handle.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let opaque_result =
     list.find(results, fn(r) { r.file == "test/fixtures/opaque_receiver.gleam" })
   let assert Ok(r) = opaque_result
@@ -6648,7 +6648,7 @@ pub fn field_bound_resolves_untraceable_receiver_test() {
   // `check field_bound.caller(v.to_error: [Stdout]) : []` line resolves the
   // field call to [Stdout], so the [] budget must fail with that precise
   // effect (not the [Unknown] graded would otherwise fall back to).
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let field_bound_result =
     list.find(results, fn(r) { r.file == "test/fixtures/field_bound.gleam" })
   let assert Ok(r) = field_bound_result
@@ -6665,7 +6665,7 @@ pub fn opaque_fn_typed_field_discharges_via_bound_test() {
   // becomes a synthetic field-effect variable rather than [Unknown]. The
   // `check opaque_field.exec(r.run: [Stdout]) : []` field bound discharges that
   // variable to [Stdout], so the [] budget must fail with the precise [Stdout].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/opaque_field.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "exec" })
@@ -6679,7 +6679,7 @@ pub fn opaque_fn_typed_field_unbound_is_unknown_test() {
   // concretizes to [Unknown] — the soundness floor — and the [] budget fails
   // with [Unknown], never silently []. This is the invariant the polymorphic
   // field-bound feature must never violate.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/opaque_field.gleam" })
   let assert Ok(v) =
@@ -6816,7 +6816,7 @@ pub fn factory_forward_resolves_through_factory_test() {
   // parameter. The `check ...caller(resolver: [Stdout]) : []` bound discharges
   // it to [Stdout], so the [] budget fails with the precise effect — not the
   // [Unknown] an untraced factory return would collapse to.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
@@ -6827,7 +6827,7 @@ pub fn factory_forward_resolves_through_factory_test() {
 pub fn factory_forward_resolves_through_inline_constructor_test() {
   // Same forwarding for an inline *constructor* argument
   // (`inner(Options(resolver: resolver))`).
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
@@ -6839,7 +6839,7 @@ pub fn factory_forward_resolves_through_inline_constructor_test() {
 pub fn factory_forward_resolves_through_labeled_factory_test() {
   // Labeled factory wiring (`inner(make_options(resolver: resolver))`) routes
   // through the factory's parameter label to the same field, so it forwards too.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
@@ -6852,7 +6852,7 @@ pub fn factory_forward_resolves_through_shorthand_factory_test() {
   // Shorthand labeled wiring (`make_options(resolver:)`) is sugar for
   // `make_options(resolver: resolver)`, so its value is the `resolver` variable
   // and it forwards the same way — not the [Unknown] an opaque shorthand gives.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
@@ -6870,7 +6870,7 @@ pub fn factory_forward_marker_survives_sibling_source_test() {
   // it to [Stdout]. The sibling `relay` source belongs to a *different*
   // construction site and no longer pollutes this receiver: the nominal index is
   // never consulted for a parameter receiver, so [Unknown] is gone.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
@@ -6885,7 +6885,7 @@ pub fn factory_forward_resolves_through_factory_alias_test() {
   // the constructed field wiring, so `o.resolver` re-keys onto the caller's
   // `resolver` parameter and the `resolver: [Stdout]` bound discharges it — the
   // [] budget fails with [Stdout], not the [Unknown] an opaque alias gave before.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
@@ -6898,7 +6898,7 @@ pub fn factory_forward_resolves_through_constructor_alias_test() {
   // factory_forward.caller_ctor_alias binds an inline constructor before passing
   // it (`let o = Options(resolver: resolver); inner(o)`). The constructor wiring
   // forwards the same way, so the bound discharges to [Stdout].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
@@ -6912,7 +6912,7 @@ pub fn factory_forward_resolves_through_nested_construction_test() {
   // (`inner_holder(make_holder(make_options(resolver)))`). Each hop's field
   // wiring is traced in turn, so `holder.options.resolver` re-keys onto the
   // caller's `resolver` and the bound discharges to [Stdout].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
@@ -6926,7 +6926,7 @@ pub fn factory_forward_computed_alias_stays_unknown_test() {
   // (`let o = get_options(make_options(resolver)); inner(o)`). The binding is an
   // opaque call result, not a traceable construction, so forwarding doesn't
   // apply and the field call concretizes to [Unknown].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
@@ -6941,7 +6941,7 @@ pub fn factory_forward_shadowed_alias_stays_unknown_test() {
   // get_options(o); inner(o)`). The shadowing binding clears the stale factory
   // provenance, so the field call concretizes to [Unknown] — proving a
   // reassignment can never leave a forwarded effect understated.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
@@ -6956,7 +6956,7 @@ pub fn factory_forward_computed_receiver_resolves_test() {
   // `get_options` returns its parameter, so return-value provenance forwards the
   // factory-wired `resolver` onto the caller's `resolver` and the bound
   // discharges it to [Stdout] — where before Phase 1 it collapsed to [Unknown].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/factory_forward.gleam" })
   let assert Ok(v) =
@@ -7013,7 +7013,7 @@ pub fn nested_field_resolves_via_type_line_test() {
   // [Disk]` line resolves it, and the [] budget fails with the precise [Disk].
   // Before nested extraction this collapsed to a computed application
   // ([Unknown]).
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/nested_field.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "via_type" })
@@ -7025,7 +7025,7 @@ pub fn nested_field_discharges_via_dotted_bound_test() {
   // (`check nested_field.via_bound(o.inner.run: [Stdout]) : []`). The nested
   // `o.inner.run` field call carries the dotted path `o.inner` as its object, so
   // the bound matches and discharges to [Stdout], winning over the field `assume` line.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/nested_field.gleam" })
   let assert Ok(v) =
@@ -7039,7 +7039,7 @@ pub fn nested_field_unbound_is_unknown_test() {
   // field `assume` line and no field bound. The synthetic field-effect variable can't be
   // discharged, so it concretizes to [Unknown] — the soundness floor — and the
   // [] budget fails with [Unknown], never silently [].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/nested_field.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "unbound" })
@@ -7083,7 +7083,7 @@ fn run_project_with_spec(
   spec: String,
 ) -> List(types.CheckResult) {
   write_project(root, [#("proj.gleam", source)], spec)
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results
 }
 
@@ -7136,7 +7136,7 @@ pub fn check_over_an_unreadable_spec_errors_test() {
   let assert Ok(Nil) = simplifile.delete(root <> "/proj.graded")
   let assert Ok(Nil) = simplifile.create_directory(root <> "/proj.graded")
 
-  graded.run(root)
+  graded.check_project(root)
   |> should.equal(
     Error(graded.FileReadError(root <> "/proj.graded", simplifile.Eisdir)),
   )
@@ -7163,11 +7163,14 @@ pub fn check_over_an_unreadable_manifest_errors_test() {
   let assert Ok(Nil) = simplifile.create_directory(root <> "/gleam.toml")
 
   let toml = root <> "/gleam.toml"
-  graded.run(root)
+  graded.check_project(root)
   |> should.equal(
     Error(graded.InvalidConfig(
       path: toml,
-      cause: config.TomlReadError(toml, simplifile.Eisdir),
+      message: config.describe_error(config.TomlReadError(
+        toml,
+        simplifile.Eisdir,
+      )),
     )),
   )
   let _ = simplifile.delete(root)
@@ -7291,7 +7294,7 @@ pub fn provenance_cross_module_getter_resolves_test() {
     ],
     "check app.caller(config.options.resolver: [Stdout]) : []\n",
   )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
@@ -7327,7 +7330,7 @@ pub fn provenance_cross_module_getter_over_construction_resolves_test() {
     ],
     "check app.caller(resolver: [Stdout]) : []\n",
   )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
@@ -7363,7 +7366,7 @@ pub fn provenance_cross_module_rebuild_resolves_test() {
     ],
     "check app.caller(resolver: [Stdout]) : []\n",
   )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
@@ -7399,7 +7402,7 @@ pub fn provenance_cross_module_labeled_resolves_test() {
     ],
     "check app.caller(resolver: [Stdout]) : []\n",
   )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
@@ -7674,7 +7677,7 @@ pub fn nested_field_pipe_target_resolves_test() {
   // captured (resolved by `assume pipe_field.Inner.run : [Disk]`) and the []
   // budget fails with [Disk]. Before the fix the pipe target fell through to the
   // generic walker, dropped the effect, and the budget passed unsoundly.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/pipe_field.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "via_pipe" })
@@ -7763,7 +7766,7 @@ pub fn nested_field_resolves_cross_module_type_line_test() {
         <> "assume svc.OrganizationService.create : [Storage, Time]\n",
     )
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/handler.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "handle" })
@@ -7784,7 +7787,7 @@ pub fn closure_field_effect_from_construction_test() {
   // A record field wired to an *inline closure* at construction resolves to the
   // closure body's effect ([Stdout]) without a hand-written `type` annotation —
   // previously this fell back to [Unknown].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let closure_result =
     list.find(results, fn(r) { r.file == "test/fixtures/closure_field.gleam" })
   let assert Ok(r) = closure_result
@@ -7799,7 +7802,7 @@ pub fn operator_typed_closure_field_test() {
   // An *operator-typed* field (a closure that calls its own callback) is lifted
   // to `λnext. [next]` and applied at the field call `m.wrap(io.println)`,
   // resolving to the supplied callback's [Stdout] — previously [Unknown].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let operator_result =
     list.find(results, fn(r) { r.file == "test/fixtures/operator_field.gleam" })
   let assert Ok(r) = operator_result
@@ -7816,7 +7819,7 @@ pub fn inferred_field_effect_from_construction_test() {
   // (`Logger(emit: io.println)`) per receiver, so `l.emit()` resolves to the
   // precise [Stdout] — the in-package construction is proven for this receiver,
   // not borrowed from the nominal index.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let inferred_result =
     list.find(results, fn(r) { r.file == "test/fixtures/inferred_field.gleam" })
   let assert Ok(r) = inferred_result
@@ -7832,7 +7835,7 @@ pub fn local_field_value_resolved_test() {
   // record field and binds the receiver from a call (`let l = make()`). Tier 2's
   // call-result provenance grounds `make`'s return construction per receiver, so
   // `l.emit()` resolves the wired same-module function to the precise [Stdout].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let local_result =
     list.find(results, fn(r) { r.file == "test/fixtures/local_field.gleam" })
   let assert Ok(r) = local_result
@@ -8016,7 +8019,7 @@ effects dep.with_resolver : []
 ",
     )
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
@@ -8048,7 +8051,7 @@ pub fn builder_field_whole_caller_union_test() {
   // separate effect — nuance #2) with the overridden field call's [Stdout]. The
   // two surface as separate per-call violations against the [] budget; together
   // they cover the whole-caller union.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/builder_field.gleam" })
   let union =
@@ -8065,7 +8068,7 @@ pub fn builder_field_whole_caller_union_test() {
 
 // The reported effect of `function`'s violation in one `test/fixtures` file.
 fn fixture_actual(file: String, function: String) -> types.EffectSet {
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/" <> file })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == function })
@@ -8221,7 +8224,7 @@ pub fn named_fn_arg_resolves_test() {
   // function's real effect, so the [] budget fails with the precise [Stdout] —
   // not the [Unknown] graded fell back to before (inline closures already
   // resolved; named references did not).
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/named_fn_arg.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
@@ -8234,7 +8237,7 @@ pub fn labeled_callback_resolves_test() {
   // [Stdout]) with a Gleam label (`with:`). Argument-to-parameter matching now
   // binds the labelled argument, so the parameter's effect variable discharges
   // to [Stdout] instead of leaking unresolved into the fully-applied caller.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/labeled_callback.gleam"
@@ -8250,7 +8253,7 @@ pub fn record_update_field_walked_test() {
   // only if the extractor walks the updated field values, not just the base
   // record. Without that, the [Stdout] is silently dropped and `run` wrongly
   // resolves to [].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/record_update.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
@@ -8263,7 +8266,7 @@ pub fn shadowed_param_resolves_through_bound_test() {
   // same-module function of the same name (handler : [Stdout]). The forwarded
   // argument must resolve through the param bound ([]), not by lifting the
   // shadowed function — so the [] budget holds and `run` has no violation.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/shadow_param.gleam" })
   list.any(r.violations, fn(v) { v.function == "run" }) |> should.be_false()
@@ -8274,7 +8277,7 @@ pub fn aliased_param_call_resolves_through_bound_test() {
   // and calls the alias directly. The call must resolve through the parameter's
   // bound ([]), not the shadowed same-module `handler` nor [Unknown], so the []
   // budget holds and `run_alias` has no violation.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == "test/fixtures/shadow_param.gleam" })
   list.any(r.violations, fn(v) { v.function == "run_alias" })
@@ -8309,7 +8312,7 @@ pub fn infer_then_check_round_trip_test() {
   { list.length(all) > list.length(checks) } |> should.be_true()
 
   // Check still catches violations via the spec's check annotations.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let impure_result =
     list.find(results, fn(r) { r.file == "test/fixtures/impure_view.gleam" })
   let assert Ok(r) = impure_result
@@ -8352,7 +8355,7 @@ pub fn run_resolves_deps_from_target_dir_test() {
       "effects dep.fetch : [Http]\n",
     )
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
@@ -8432,7 +8435,7 @@ pub fn path_dep_hof_param_discharges_from_source_test() {
   let app_root = "build/pd_src_app"
   setup_path_dep_project(app_root, "pd_src_dep", False)
 
-  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(results) = graded.check_project(app_root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
 
@@ -8458,7 +8461,7 @@ pub fn path_dep_hof_param_discharges_from_spec_test() {
   let app_root = "build/pd_spec_app"
   setup_path_dep_project(app_root, "pd_spec_dep", True)
 
-  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(results) = graded.check_project(app_root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
 
@@ -8539,7 +8542,7 @@ fn run_path_dep_project(
   let assert Ok(Nil) = simplifile.write(app_root <> "/app.graded", spec)
   let assert Ok(Nil) = simplifile.write(app_root <> "/app.gleam", app_src)
 
-  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(results) = graded.check_project(app_root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
   r
@@ -8812,7 +8815,7 @@ pub fn path_dep_cross_module_positional_discharges_test() {
       "import dep/b\n\npub fn caller() -> Int {\n  b.run()\n}\n",
     )
 
-  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(results) = graded.check_project(app_root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
   list.any(r.violations, fn(v) { v.function == "caller" })
@@ -8845,7 +8848,7 @@ fn run_project_module_fixture(
   let root = "build/" <> name <> "_proj"
   write_project(root, [#("app.gleam", app_src), ..modules], spec)
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   r
@@ -9057,7 +9060,7 @@ pub fn path_dep_ships_type_field_test() {
         <> "pub fn use_field(r: Repo) -> Int {\n  r.find(\"x\")\n}\n",
     )
 
-  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(results) = graded.check_project(app_root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
   let assert Ok(v) =
@@ -9102,7 +9105,7 @@ pub fn installed_dep_ships_type_field_test() {
         <> "pub fn use_field(r: Repo) -> Int {\n  r.find(\"x\")\n}\n",
     )
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert Ok(v) =
@@ -9126,7 +9129,7 @@ pub fn provenance_passthrough_resolves_test() {
   // (`Passthrough`), so `o.resolver` forwards onto the caller's `resolver` and
   // the `resolver: [Stdout]` bound discharges it — the [] budget fails with
   // [Stdout], not the [Unknown] an untraced call result would collapse to.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_passthrough.gleam"
@@ -9141,7 +9144,7 @@ pub fn provenance_getter_resolves_test() {
   // to `inner`. `get_options` returns `config.options` (a `Path`), so `o.resolver`
   // forwards through the getter's path onto the caller's `resolver` and the
   // bound discharges it to [Stdout].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_getter.gleam"
@@ -9159,7 +9162,7 @@ pub fn provenance_rebuild_resolves_test() {
   // resolved as a forwarding field variable — never by the nominal index — so the
   // rebuild's sibling receiver-path wiring no longer leaks a conservative
   // [Unknown]. The result is the precise [Stdout] alone.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_rebuild.gleam"
@@ -9178,7 +9181,7 @@ pub fn provenance_partial_build_resolves_test() {
   // `inner`'s parameter receiver keeps the field call polymorphic, so the sibling
   // receiver-path wiring no longer leaks an [Unknown] — the precise [Stdout]
   // stands alone.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_partial.gleam"
@@ -9194,7 +9197,7 @@ pub fn provenance_shorthand_build_resolves_test() {
   // resolver` — so the `Build` provenance keeps the parameter-rooted `resolver`
   // field and `o.resolver` forwards onto the caller's `resolver`, discharging to
   // [Stdout]. Classifying the shorthand field as opaque left it [Unknown].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_shorthand.gleam"
@@ -9212,7 +9215,7 @@ pub fn provenance_labeled_resolves_test() {
   // through, `o.resolver` re-keys onto the caller's `resolver`, and the bound
   // discharges to [Stdout] — where before the labeled call site widened to
   // [Unknown].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_labeled.gleam"
@@ -9266,7 +9269,7 @@ pub fn provenance_binding_resolves_test() {
   // constructed `Options` forwards through, `o.resolver` re-keys onto the
   // caller's `resolver`, and the bound discharges to [Stdout] — proving
   // provenance survives the binding rather than widening at it.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_binding.gleam"
@@ -9283,7 +9286,7 @@ pub fn provenance_recursion_resolves_test() {
   // through, converging to a `Passthrough`. The constructed `Options` forwards
   // through, `o.resolver` re-keys onto the caller's `resolver`, and the bound
   // discharges to [Stdout] — where a naive walk widened on the recursion.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_recursion.gleam"
@@ -9299,7 +9302,7 @@ pub fn provenance_branch_resolves_test() {
   // `Passthrough`s. The join grounds each branch and forwards `o.resolver` onto
   // the caller's `resolver` through both, discharging the bound to [Stdout] —
   // where before value-level joins it was [Unknown].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_branch.gleam"
@@ -9316,7 +9319,7 @@ pub fn provenance_branch_of_paths_resolves_test() {
   // forwards `o.resolver` onto the caller's `resolver`, discharging the bound to
   // [Stdout] — where `classify_case_options` gates path branches, the receiver
   // would collapse to [Unknown].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_branch_path.gleam"
@@ -9333,7 +9336,7 @@ pub fn provenance_branch_of_builds_resolves_test() {
   // the caller's `resolver` (discharging to [Stdout]). `inner`'s parameter
   // receiver keeps the field call polymorphic, so the branches' receiver-path
   // wiring no longer leaks an [Unknown] — the precise [Stdout] stands alone.
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_branch_build.gleam"
@@ -9347,7 +9350,7 @@ pub fn provenance_computed_deep_stays_unknown_test() {
   // provenance_computed_deep.caller passes `deep(resolver)` to `inner`. `deep`'s
   // return is a nested call (`get(make(resolver))`), whose provenance is
   // `Opaque` (no helper-call composition in Phase 1), so it stays [Unknown].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_computed_deep.gleam"
@@ -9361,7 +9364,7 @@ pub fn provenance_external_stays_unknown_test() {
   // provenance_external.caller passes `load_options(resolver)` to `inner`.
   // `load_options` is an external with no visible body, so its provenance can't
   // be traced and the field call concretizes to [Unknown].
-  let assert Ok(results) = graded.run("test/fixtures")
+  let assert Ok(results) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(results, fn(r) {
       r.file == "test/fixtures/provenance_external.gleam"
@@ -9416,7 +9419,7 @@ pub fn a_scoped_run_charges_what_the_whole_package_run_charges_test() {
   scoped_package(root)
   let scoped = root <> "/src/sub"
 
-  let assert Ok(results) = graded.run(scoped)
+  let assert Ok(results) = graded.check_project(scoped)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == scoped <> "/inner.gleam" })
   let assert [violation] = r.violations
@@ -9449,7 +9452,7 @@ pub fn a_scoped_run_reads_the_same_result_from_an_absolute_path_test() {
   let assert Ok(cwd) = simplifile.current_directory()
   let absolute = filepath.join(cwd, root <> "/src/sub")
 
-  let assert Ok(results) = graded.run(absolute)
+  let assert Ok(results) = graded.check_project(absolute)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == absolute <> "/inner.gleam" })
   let assert [violation] = r.violations
@@ -9471,7 +9474,7 @@ pub fn equivalent_spellings_of_a_scope_read_alike_test() {
 
   [scoped, scoped <> "/", scoped <> "//", "./" <> scoped, root <> "/src/./sub"]
   |> list.each(fn(spelling) {
-    let assert Ok(results) = graded.run(spelling)
+    let assert Ok(results) = graded.check_project(spelling)
     let assert Ok(r) =
       list.find(results, fn(r) { r.file == scoped <> "/inner.gleam" })
     let assert [violation] = r.violations
@@ -9539,7 +9542,7 @@ pub fn now() -> Nil
     #("app.gleam", "import ffi\n\npub fn go() -> Nil {\n  ffi.now()\n}\n"),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -9587,7 +9590,7 @@ pub fn a_stale_project_external_is_ignored_everywhere_test() {
   stale_external_project(root)
   let disk = types.Specific(set.from_list(["Disk"]))
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(own) =
     list.find(results, fn(r) { r.file == root <> "/m.gleam" })
   let assert [violation] = own.violations
@@ -9641,7 +9644,7 @@ pub fn write() -> Nil
     #("caller.gleam", "import m\n\npub fn go() -> Nil {\n  m.logs()\n}\n"),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(caller) =
     list.find(results, fn(r) { r.file == root <> "/caller.gleam" })
   let assert [call] = caller.violations
@@ -9658,7 +9661,7 @@ pub fn a_stale_project_external_warns_once_test() {
   let root = "build/stale_external_warning"
   stale_external_project(root)
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([types.StaleFunctionExternalWarning(function: "m.logs")])
@@ -9703,7 +9706,7 @@ pub fn a_dependency_external_over_a_visible_body_is_untouched_test() {
     ),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
   support.cleanup(root)
@@ -9719,7 +9722,7 @@ pub fn a_module_level_external_over_a_project_module_is_untouched_test() {
     #("m.gleam", "pub fn logs() -> Nil {\n  Nil\n}\n"),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
   let assert Ok(r) = list.find(results, fn(r) { r.file == root <> "/m.gleam" })
   let assert [violation] = r.violations
@@ -9763,7 +9766,7 @@ pub fn shout() -> Nil
     ),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) = list.find(results, fn(r) { r.file == root <> "/m.gleam" })
   let assert [violation] = r.violations
   violation.function |> should.equal("logs")
@@ -9795,7 +9798,7 @@ pub fn a_catalogued_modules_uncatalogued_function_is_not_flagged_test() {
     ),
     #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
   support.cleanup(root)
 }
@@ -9823,7 +9826,7 @@ assume m.go : []
     ),
     #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   // The dependency lines are silent; the project ones are unchanged — `m` was
   // parsed, so it defines what it defines, and `m.go`'s Gleam body is right
   // there for the stale lint to name.
@@ -9862,7 +9865,7 @@ assume here/io.typo : [Disk]
     ),
     #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
@@ -9907,7 +9910,7 @@ assume dep/io : [Disk]
     #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
@@ -9944,7 +9947,7 @@ pub fn a_parsed_dependency_source_outranks_the_catalog_in_the_lint_test() {
     #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
@@ -9965,7 +9968,7 @@ pub fn an_external_on_an_unreadable_dependency_is_not_flagged_test() {
     #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
   support.cleanup(root)
 }
@@ -9992,7 +9995,7 @@ pub fn a_stale_duplicate_dependency_copy_does_not_answer_for_a_name_test() {
     #("dep/src/dep/mod.gleam", "pub fn reads() -> Nil {\n  Nil\n}\n"),
   ])
 
-  let assert Ok(results) = graded.run(root <> "/proj")
+  let assert Ok(results) = graded.check_project(root <> "/proj")
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
@@ -10023,7 +10026,7 @@ pub fn a_stale_copy_does_not_stand_in_for_an_unreadable_one_test() {
     #("dep/src/dep/mod.gleam", "pub fn ( not gleam\n"),
   ])
 
-  let assert Ok(results) = graded.run(root <> "/proj")
+  let assert Ok(results) = graded.check_project(root <> "/proj")
   results |> list.flat_map(fn(r) { r.warnings }) |> should.equal([])
   support.cleanup(root)
 }
@@ -10060,7 +10063,7 @@ pub fn writes() -> Nil
     #("dep/src/dep/mod.gleam", "pub fn writes() -> Nil {\n  Nil\n}\n"),
   ])
 
-  let assert Ok(results) = graded.run(root <> "/proj")
+  let assert Ok(results) = graded.check_project(root <> "/proj")
   results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
   support.cleanup(root)
 }
@@ -10082,7 +10085,7 @@ pub fn an_external_on_a_function_less_dependency_module_is_flagged_test() {
     #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
@@ -10139,7 +10142,7 @@ pub fn declared_go() -> Nil {
     ),
   ])
 
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   // Only the declared external is quoted, and it is quoted with what declares it.
@@ -10218,7 +10221,7 @@ pub fn pass_loud() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   r.warnings
@@ -10299,7 +10302,7 @@ pub fn pass_erlang_only() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   r.warnings
@@ -10362,7 +10365,7 @@ pub fn strict() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/governed.gleam" })
 
@@ -10451,7 +10454,7 @@ pub fn running() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
   r.warnings
@@ -10524,7 +10527,7 @@ pub fn caller() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -10627,7 +10630,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(app_root)
+  let assert Ok(results) = graded.check_project(app_root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -10680,7 +10683,7 @@ pub fn wrapper() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert [violation] = r.violations
@@ -10705,11 +10708,14 @@ pub fn a_returns_clause_on_a_field_path_is_refused_test() {
 ",
     ),
   ])
-  graded.run(root)
+  graded.check_project(root)
   |> should.equal(
     Error(graded.GradedParseError(
       root <> "/proj.graded",
-      annotation.InvalidLine(1, "assume app.Handler.run where returns : [Net]"),
+      annotation.describe_parse_error(annotation.InvalidLine(
+        1,
+        "assume app.Handler.run where returns : [Net]",
+      )),
     )),
   )
   support.cleanup(root)
@@ -10725,11 +10731,14 @@ pub fn check_over_an_unparseable_spec_errors_test() {
   let root = "/tmp/graded_check_unparseable"
   let _ = support.write_unparseable_spec_project(root)
 
-  graded.run(root)
+  graded.check_project(root)
   |> should.equal(
     Error(graded.GradedParseError(
       root <> "/proj.graded",
-      annotation.InvalidLine(2, "not a graded line"),
+      annotation.describe_parse_error(annotation.InvalidLine(
+        2,
+        "not a graded line",
+      )),
     )),
   )
   support.cleanup(root)
@@ -10787,7 +10796,7 @@ pub fn caller() -> Nil {
       dependency_spec: clause,
       dependency_sources: [#("dep/wrap.gleam", dep_source)],
     )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(violation) =
     results
     |> list.flat_map(fn(result) { result.violations })
@@ -10910,7 +10919,7 @@ pub fn caller() -> Nil {
     #("dep/dep.graded", dependency_spec),
     #("dep/src/" <> module <> ".gleam", dep_source),
   ])
-  let assert Ok(results) = graded.run(root <> "/proj")
+  let assert Ok(results) = graded.check_project(root <> "/proj")
   let assert Ok(violation) =
     results
     |> list.flat_map(fn(result) { result.violations })
@@ -11080,7 +11089,7 @@ pub fn run() -> Nil {
   // At check time the two channels answer from their own sources: `db.make`'s
   // own [Disk] is suppressed by the module declaration, while the closure it
   // returns still resolves to [Stdout] through the clause on the kept line.
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert [violation] = list.flat_map(results, fn(r) { r.violations })
   violation.function |> should.equal("run")
   violation.explanation.actual
@@ -11109,7 +11118,7 @@ fn clause_lint_warnings(
     #("proj.graded", spec),
     #("proj.gleam", source),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let warnings = list.flat_map(results, fn(r) { r.warnings })
   support.cleanup(root)
   warnings
@@ -11196,7 +11205,7 @@ pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
 ",
     ),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([types.UnverifiedReturnsClauseWarning(function: "proj.wrap")])
@@ -11241,7 +11250,7 @@ pub fn caller() -> Nil {
       dependency_spec: dependency_spec,
       dependency_sources: [#("dep/store.gleam", dependency_source)],
     )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let violations = list.flat_map(results, fn(result) { result.violations })
   // The query agrees with what `check` charged, whichever path answered it.
   let assert Ok(answered) = graded.run_effect(root, "dep/store.insert")
@@ -11367,7 +11376,7 @@ pub fn insert(r: Runner) -> Nil {
         ),
       ],
     )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   support.cleanup(root)
   list.flat_map(results, fn(result) { result.violations })
 }
@@ -11462,7 +11471,7 @@ pub fn insert(r: " <> annotation <> ") -> Nil {
 "),
       ],
     )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   support.cleanup(root)
   list.flat_map(results, fn(result) { result.violations })
 }
@@ -11556,7 +11565,7 @@ pub fn scribble() -> Nil
 ",
       ),
     ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let violations = list.flat_map(results, fn(result) { result.violations })
   support.cleanup(root)
   violations
@@ -11768,7 +11777,7 @@ pub fn tick() -> Nil {
         ),
       ],
     )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
   ["direct", "via_operator"]
@@ -11829,7 +11838,7 @@ pub fn helper() -> Nil {
         ),
       ],
     )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert [violation] = list.flat_map(results, fn(r) { r.violations })
   violation.function |> should.equal("caller")
   violation.explanation.actual
@@ -12051,7 +12060,7 @@ pub fn an_inferred_alias_callback_spec_checks_clean_test() {
   let root = "build/alias_callback_roundtrip"
   alias_callback_project(root)
   let assert Ok(Nil) = graded.run_infer(root)
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   list.flat_map(results, fn(r) { r.violations }) |> should.equal([])
   list.flat_map(results, fn(r) { r.warnings }) |> should.equal([])
   support.cleanup(root)
@@ -12121,7 +12130,7 @@ pub fn tick() -> Nil {
         ),
       ],
     )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
   ["direct", "via_operator"]
@@ -12240,5 +12249,60 @@ pub fn piping_into_a_capture_binds_the_callback_test() {
   // without the capture — conservatively, not as pure.
   inferred_effects(annotations, "proj.discard_nested_field")
   |> should.equal(inferred_effects(annotations, "proj.nested_field_direct"))
+  support.cleanup(root)
+}
+
+// The public check result
+//
+// `run` hands back what `main` prints: per module, its rendered warnings and
+// its rendered violations. Both halves, and both rendered by the one renderer
+// the CLI reads, so a caller and the terminal cannot disagree.
+
+pub fn the_public_report_renders_the_structured_result_test() {
+  let root = "build/public_report"
+  write_project(
+    root,
+    [
+      #(
+        "proj.gleam",
+        "import gleam/io
+
+pub fn shout() -> Nil {
+  io.println(\"x\")
+}
+",
+      ),
+    ],
+    "check proj.shout : []\ncheck proj.missing : []\n",
+  )
+
+  let assert Ok(reports) = graded.run(root)
+  let assert Ok(structured) = graded.check_project(root)
+
+  // One report per structured result, in the same order and under the same
+  // file, holding exactly what the checker's own renderers produce.
+  list.map(reports, fn(report) { report.file })
+  |> should.equal(list.map(structured, fn(result) { result.file }))
+  list.zip(reports, structured)
+  |> list.each(fn(pair) {
+    let #(report, result) = pair
+    report.violations
+    |> should.equal(
+      list.map(result.violations, checker.format_violation(result.file, _)),
+    )
+    report.warnings
+    |> should.equal(
+      list.map(result.warnings, checker.format_warning(result.file, _)),
+    )
+  })
+
+  // And both halves are really there: a dead `check` line earns a warning
+  // against the spec file, the live one a violation against the source.
+  list.flat_map(reports, fn(report) { report.warnings })
+  |> list.any(string.contains(_, "proj.missing"))
+  |> should.be_true
+  list.flat_map(reports, fn(report) { report.violations })
+  |> list.any(string.contains(_, "shout"))
+  |> should.be_true
   support.cleanup(root)
 }

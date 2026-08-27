@@ -58,7 +58,7 @@ fn lint_warnings(
       "/tmp/graded_release_" <> name,
       list.append(project_files(), files),
     )
-  let assert Ok(results) = graded.run(directory)
+  let assert Ok(results) = graded.check_project(directory)
   let warnings = list.flat_map(results, fn(r) { r.warnings })
   cleanup(directory)
   warnings
@@ -265,7 +265,7 @@ pub fn a_dependency_spec_unknown_clause_is_silent_test() {
         ),
       ],
     )
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let warnings = list.flat_map(results, fn(r) { r.warnings })
   cleanup(root)
 

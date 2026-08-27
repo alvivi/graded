@@ -240,3 +240,15 @@ pub fn module_path_for_source(
   }
   filepath.strip_extension(relative)
 }
+
+// What went wrong reading a `gleam.toml`, as prose. The one renderer, so the
+// public error a caller reads and the message the CLI prints cannot fork.
+pub fn describe_error(error: ConfigError) -> String {
+  case error {
+    TomlReadError(path:, cause:) ->
+      "could not read " <> path <> ": " <> simplifile.describe_error(cause)
+    MissingPackageName(path:) ->
+      "no `name` field in " <> path <> ", or it is not a string"
+    TomlParseError(path:) -> path <> " is not valid TOML"
+  }
+}
