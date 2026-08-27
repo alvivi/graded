@@ -235,7 +235,12 @@ pub fn infer_with_returns(
       // variables instead of [Unknown]. The same bounds every other walk of a
       // body uses.
       let fn_typed_params =
-        unbound_fn_typed_params(definition, param_bounds, girard_fn_typed)
+        unbound_fn_typed_params(
+          definition,
+          param_bounds,
+          cache.fn_alias_types,
+          girard_fn_typed,
+        )
       let effective_bounds = effective_bounds(param_bounds, fn_typed_params)
       // A bodyless `@external` is opaque FFI — conservatively `[Unknown]`, not
       // the `[]` its empty body would otherwise infer.
@@ -377,7 +382,12 @@ pub fn explain(
       let #(_memo, explained) =
         list.map_fold(bounds, new_memo(), fn(memo, bounds) {
           let fn_typed_params =
-            unbound_fn_typed_params(definition, bounds, girard_fn_typed)
+            unbound_fn_typed_params(
+              definition,
+              bounds,
+              cache.fn_alias_types,
+              girard_fn_typed,
+            )
           let #(contribution, memo) =
             contributors(
               definition,
@@ -979,6 +989,7 @@ pub fn unwalked_fallback_effects(
       foreign_definition(definition, package_targets)
       && runs_fallback_body(definition, package_targets)
     }),
+    signatures.type_alias_map(module.type_aliases),
     girard_fn_typed,
   )
 }
@@ -994,12 +1005,14 @@ pub fn unwalked_dependency_fallback_effects(
       extract.declares_external(definition)
       && has_running_fallback(definition, package_targets)
     }),
+    signatures.type_alias_map(module.type_aliases),
     dict.new(),
   )
 }
 
 fn unwalked_summaries(
   targets: List(Definition(Function)),
+  alias_map: dict.Dict(String, glance.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
 ) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
   targets
@@ -1008,6 +1021,7 @@ fn unwalked_summaries(
       synthetic_fn_typed_bounds(unbound_fn_typed_params(
         definition,
         [],
+        alias_map,
         girard_fn_typed,
       ))
     let term =
@@ -1276,7 +1290,12 @@ fn walk_component(
         // fallback has no `check` line of its own to declare any, so every one
         // of them is synthesised.
         let fn_typed_params =
-          unbound_fn_typed_params(definition, [], walk.girard_fn_typed)
+          unbound_fn_typed_params(
+            definition,
+            [],
+            walk.cache.fn_alias_types,
+            walk.girard_fn_typed,
+          )
         let synthetic_bounds = synthetic_fn_typed_bounds(fn_typed_params)
         let #(pairs, memo) =
           collect_effects(
@@ -2184,15 +2203,23 @@ fn synthetic_fn_typed_bounds(fn_typed_params: Set(String)) -> List(ParamBound) {
 // bounds already name is left to what was declared for it, which is the more
 // specific claim.
 //
-// Detected from the glance signature and from girard's inferred one, which
-// covers a parameter carrying no `fn(...)` annotation.
+// Detected from the glance signature — through the module's own type aliases,
+// so `run: Action` with `type Action = fn() -> Nil` counts — and from girard's
+// inferred one, which covers a parameter carrying no annotation at all. The
+// alias leg is deterministic where girard's is best-effort, so a bound stays
+// where girard declines the function.
+//
+// The one answer to "which of this function's parameters are callbacks":
+// every walk, every substitution and every lift reads it, so no two of them
+// can abstract over different parameters.
 fn unbound_fn_typed_params(
   definition: Definition(Function),
   declared: List(ParamBound),
+  alias_map: dict.Dict(String, glance.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
 ) -> Set(String) {
   let declared_names = effects.bound_name_set(declared)
-  signatures.fn_typed_params_from_function(definition.definition)
+  signatures.fn_typed_params_from_function(definition.definition, alias_map)
   |> set.union(typeinfo.fn_typed_params(
     girard_fn_typed,
     definition.definition.name,
@@ -2375,15 +2402,12 @@ pub fn build_scc_ids(
   // silently drop a fn-typed parameter and let an effect-polymorphic function be
   // wrongly collapsed. Resolving aliases ourselves keeps the collapse decision
   // independent of girard's availability.
-  let fn_aliases = function_type_aliases(module.type_aliases)
-  let fn_alias_types = type_alias_map(module.type_aliases)
+  let fn_alias_types = signatures.type_alias_map(module.type_aliases)
   let needs_exact =
     list.filter_map(definitions, fn(definition) {
       let name = definition.definition.name
       let first_order =
-        signatures.fn_typed_params_from_function(definition.definition)
-        |> set.union(alias_fn_typed_params(definition.definition, fn_aliases))
-        |> set.union(typeinfo.fn_typed_params(girard_fn_typed, name))
+        unbound_fn_typed_params(definition, [], fn_alias_types, girard_fn_typed)
         |> set.is_empty()
       case
         first_order && !foreign_definition(definition, context.package_targets)
@@ -2430,46 +2454,13 @@ pub fn build_scc_ids(
 fn function_type_aliases(
   aliases: List(Definition(glance.TypeAlias)),
 ) -> Set(String) {
-  let alias_map = type_alias_map(aliases)
+  let alias_map = signatures.type_alias_map(aliases)
   list.filter(dict.keys(alias_map), fn(name) {
     signatures.resolve_function_type(
       glance.NamedType(Span(0, 0), name, None, []),
       alias_map,
     )
     |> result.is_ok
-  })
-  |> set.from_list()
-}
-
-// Module-local type aliases as a raw `name → aliased type` map. Shared by the
-// collapse decision (`function_type_aliases`) and the returns machinery
-// (`LocalCache.fn_alias_types`).
-fn type_alias_map(
-  aliases: List(Definition(glance.TypeAlias)),
-) -> dict.Dict(String, glance.Type) {
-  list.fold(aliases, dict.new(), fn(acc, definition) {
-    dict.insert(acc, definition.definition.name, definition.definition.aliased)
-  })
-}
-
-// Parameters of `function` whose declared type resolves to a function through a
-// module-local alias. The direct `fn(...)` case is already covered by
-// `signatures.fn_typed_params_from_function`; this adds the alias-resolved ones.
-fn alias_fn_typed_params(
-  function: Function,
-  fn_aliases: Set(String),
-) -> Set(String) {
-  list.filter_map(function.parameters, fn(parameter) {
-    case parameter.name, parameter.type_ {
-      glance.Named(name),
-        Some(glance.NamedType(name: type_name, module: None, ..))
-      ->
-        case set.contains(fn_aliases, type_name) {
-          True -> Ok(name)
-          False -> Error(Nil)
-        }
-      _, _ -> Error(Nil)
-    }
   })
   |> set.from_list()
 }
@@ -3044,6 +3035,7 @@ fn check_annotation(
         unbound_fn_typed_params(
           function_definition,
           annotation.params,
+          cache.fn_alias_types,
           girard_fn_typed,
         )
       // The same contributors `why` explains — including the declaration that
@@ -3308,7 +3300,10 @@ fn collect_effects(
   // The function's own fn-typed params join the inherited ambient operators, so
   // a closure in this body that captures one resolves it to its effect variable.
   let operator_params =
-    dict.merge(ambient_operators, signatures.operator_param_shapes(function))
+    dict.merge(
+      ambient_operators,
+      signatures.operator_param_shapes(function, cache.fn_alias_types),
+    )
   let lift_operator_arg =
     build_lift_operator_arg(
       context,
@@ -4006,8 +4001,7 @@ fn substitute_local_call_effects(
           || suppressed_share_vars(one.resolution.fallback)
         })
       use <- bool.guard(when: !any_polymorphic, return: #(recursive, memo))
-      let bounds =
-        local_polymorphic_bounds(local_definition, cache.girard_fn_typed)
+      let bounds = local_polymorphic_bounds(local_definition, cache)
       let args = call_args_for(call_args, local_call.span)
       let callee_name =
         QualifiedName(module: local_sentinel, function: local_call.function)
@@ -4015,15 +4009,10 @@ fn substitute_local_call_effects(
       // single-entry registry from this local function's glance AST so
       // positional argument matching has parameter info to work with.
       let local_registry =
-        signatures.from_glance_module(
+        signatures.from_single_function(
           local_sentinel,
-          glance.Module(
-            imports: [],
-            custom_types: [],
-            type_aliases: [],
-            constants: [],
-            functions: [local_definition],
-          ),
+          local_definition,
+          cache.fn_alias_types,
         )
       let merged_registry = signatures.merge(registry, local_registry)
       let #(bindings, memo) =
@@ -4095,12 +4084,13 @@ fn substitute_local_call_effects(
 // nothing and collapsing to `[Unknown]`.
 fn local_polymorphic_bounds(
   definition: Definition(Function),
-  girard_fn_typed: dict.Dict(String, Set(String)),
+  cache: LocalCache,
 ) -> List(ParamBound) {
   synthetic_fn_typed_bounds(unbound_fn_typed_params(
     definition,
     [],
-    girard_fn_typed,
+    cache.fn_alias_types,
+    cache.girard_fn_typed,
   ))
 }
 
@@ -5488,15 +5478,10 @@ fn bind_producer_params(
           // detection whatever the summary: a `Declared` summary's carried
           // bounds replace only the scoping list, never the registry.
           let local_registry =
-            signatures.from_glance_module(
+            signatures.from_single_function(
               "",
-              glance.Module(
-                imports: [],
-                custom_types: [],
-                type_aliases: [],
-                constants: [],
-                functions: [definition],
-              ),
+              definition,
+              cache.fn_alias_types,
             )
           // A **Declared** summary — an assumption over this package's own
           // `@external`, whose producer is called from its own module — binds
@@ -5513,7 +5498,7 @@ fn bind_producer_params(
             effects.Declared(bounds:) -> bounds
             effects.Fresh | effects.Closed(..) ->
               definition.definition
-              |> ordered_fn_typed_param_names()
+              |> ordered_fn_typed_param_names(cache.fn_alias_types)
               |> list.map(self_referential_bound)
           }
           #(scoping, signatures.merge(registry, local_registry))
@@ -5624,11 +5609,13 @@ fn compute_returned_operator(
   case gated {
     Error(Nil) -> #(Error(Nil), memo)
     Ok(#(positions, value)) -> {
-      let producer_operators = signatures.operator_param_shapes(function)
+      let producer_operators =
+        signatures.operator_param_shapes(function, cache.fn_alias_types)
       // All fn-typed params of the producer. `ordered_fn_typed_param_names` and
       // `operator_param_shapes` filter to the same set (fn-typed Named params), so
       // this covers both seed origins S1 (producer_bounds) and S3 (ambient ops).
-      let ordered_params = ordered_fn_typed_param_names(function)
+      let ordered_params =
+        ordered_fn_typed_param_names(function, cache.fn_alias_types)
       let producer_params = set.from_list(ordered_params)
       // Fix D S1: seed the producer's params as sentinels (`$op$name`) rather than
       // self-referential, so a residual leaked var of the same name cannot merge
@@ -5961,6 +5948,7 @@ fn lift_local_function(
   let fn_param_names =
     ordered_callback_param_names(
       function,
+      cache.fn_alias_types,
       typeinfo.fn_typed_params(cache.girard_fn_typed, name),
     )
   // A sibling a declaration answers for is lifted from that declaration, not
@@ -5992,6 +5980,7 @@ fn lift_local_function(
       let params =
         ordered_callback_param_names(
           function,
+          cache.fn_alias_types,
           value_channel_bound_names(knowledge_base, qualified),
         )
       #(
@@ -6092,22 +6081,35 @@ fn lift_operator_miss(
   #(operator, Memo(..memo, lifts: dict.insert(memo.lifts, key, operator)))
 }
 
-// In-body names of a function's fn-typed parameters, in declaration order.
-fn ordered_fn_typed_param_names(function: Function) -> List(String) {
-  ordered_callback_param_names(function, set.new())
+// In-body names of a function's fn-typed parameters, in declaration order,
+// read through the module's own type aliases.
+fn ordered_fn_typed_param_names(
+  function: Function,
+  alias_map: dict.Dict(String, glance.Type),
+) -> List(String) {
+  ordered_callback_param_names(function, alias_map, set.new())
 }
 
 // The same, counting parameters named in `bound_names` as fn-typed too — a
 // running fallback's girard-typed callback carries no `fn(...)` annotation and
-// exists only as the bound recorded beside its settled summary.
+// exists only as the bound recorded beside its settled summary. The alias map
+// is this function's own input rather than folded into `bound_names`: an
+// alias-typed callback is read off the source, so it must be found with no
+// girard run and with no summary recorded.
 fn ordered_callback_param_names(
   function: Function,
+  alias_map: dict.Dict(String, glance.Type),
   bound_names: Set(String),
 ) -> List(String) {
   list.filter_map(function.parameters, fn(param) {
-    case param.type_, param.name {
-      Some(glance.FunctionType(..)), glance.Named(name) -> Ok(name)
-      _, glance.Named(name) ->
+    let fn_typed = case param.type_ {
+      Some(type_) ->
+        signatures.resolve_function_type(type_, alias_map) |> result.is_ok
+      None -> False
+    }
+    case fn_typed, param.name {
+      True, glance.Named(name) -> Ok(name)
+      False, glance.Named(name) ->
         case set.contains(bound_names, name) {
           True -> Ok(name)
           False -> Error(Nil)
@@ -6438,6 +6440,7 @@ fn memoized_local(
         synthetic_fn_typed_bounds(unbound_fn_typed_params(
           local_definition,
           [],
+          cache.fn_alias_types,
           cache.girard_fn_typed,
         ))
       let key = memo_key(local_call.function, visited, cache)
