@@ -3,7 +3,6 @@ import gleam/string
 import gleeunit/should
 import graded
 import graded/internal/annotation
-import graded/internal/answer
 import graded/internal/checker
 import graded/internal/cli
 import simplifile
@@ -155,7 +154,7 @@ pub fn a_higher_order_function_explains_as_the_query_answers_it_test() {
     "  calls parameter `action` with effects [action]",
   ])
   let assert Ok(answered) =
-    graded.run_effect_formatted(fixtures, "why_target.forwards", answer.Graded)
+    graded.run_effect_formatted(fixtures, "why_target.forwards", graded.Graded)
   answered
   |> string.contains("effects why_target.forwards(action: [action]) : [action]")
   |> should.be_true()
@@ -207,7 +206,7 @@ pub fn an_external_agrees_with_the_violation_for_it_test() {
   // One vocabulary, as for an ordinary call: the clause `check` prints when an
   // external blows the budget on its own `check` line is the line `why` prints
   // for that external, phrase for phrase.
-  let assert Ok(results) = graded.run(fixtures)
+  let assert Ok(results) = graded.check_project(fixtures)
   let assert Ok(result) =
     list.find(results, fn(r) { r.file == fixtures <> "/external_budget.gleam" })
   let assert Ok(violation) =
@@ -292,7 +291,7 @@ pub fn a_module_external_explains_an_ordinary_function_test() {
   output |> string.contains("is an external") |> should.be_false()
   // The one answer, in each command's own words.
   let assert Ok(effect) =
-    graded.run_effect_formatted(root, "probe.helper", answer.Prose)
+    graded.run_effect_formatted(root, "probe.helper", graded.Prose)
   effect
   |> string.contains("probe.helper has effects [Disk]")
   |> should.be_true()
@@ -309,7 +308,7 @@ pub fn a_module_external_violation_uses_the_same_wording_test() {
     #("proj.graded", "assume probe : [Disk]\ncheck probe.helper : []\n"),
     #("probe.gleam", "pub fn helper() -> Nil {\n  Nil\n}\n"),
   ])
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(result) =
     list.find(results, fn(r) { r.file == root <> "/probe.gleam" })
   let assert [violation] = result.violations
@@ -340,7 +339,7 @@ pub fn a_function_with_no_contributors_says_so_test() {
 pub fn agrees_with_the_violation_for_the_same_call_test() {
   // One vocabulary: the clause `check` prints for a violating call is the line
   // `why` prints for it, phrase for phrase.
-  let assert Ok(results) = graded.run(fixtures)
+  let assert Ok(results) = graded.check_project(fixtures)
   let assert Ok(result) =
     list.find(results, fn(r) { r.file == fixtures <> "/impure_view.gleam" })
   let assert [violation] = result.violations
@@ -427,7 +426,10 @@ pub fn why_over_an_unparseable_spec_errors_test() {
   |> should.equal(
     Error(graded.GradedParseError(
       root <> "/proj.graded",
-      annotation.InvalidLine(2, "not a graded line"),
+      annotation.describe_parse_error(annotation.InvalidLine(
+        2,
+        "not a graded line",
+      )),
     )),
   )
   support.cleanup(root)
