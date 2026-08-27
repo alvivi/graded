@@ -5932,25 +5932,36 @@ fn lift_local_function(
 ) -> #(EffectTerm, Memo) {
   let function = definition.definition
   let fn_param_names = ordered_fn_typed_param_names(function)
-  // An `@external` has no body to lift. It is charged what declares the foreign
-  // code — the rule a direct same-module call into it already follows —
-  // abstracted over its own callback parameters so an application of the lifted
-  // operator still reduces. Walking the empty or fallback body instead would
-  // lift an undeclared external to `[]`, and a caller passing it to a
-  // higher-order helper would inherit that `[]` while a direct call to the same
-  // name inherits `[Unknown]`. The recorded bounds name callback parameters
-  // too: a running fallback's girard-typed callback has no `fn(...)`
-  // annotation, and without its binder the summary's variable stays free and
-  // the application goes stuck.
+  // A sibling a declaration answers for is lifted from that declaration, not
+  // from the body beside it — the rule a direct same-module call into it
+  // already follows — abstracted over its own callback parameters so an
+  // application of the lifted operator still reduces.
+  //
+  // An `@external` has no body to lift at all: walking the empty or fallback
+  // body would lift an undeclared one to `[]`, and a caller passing it to a
+  // higher-order helper would inherit that `[]` while a direct call to the
+  // same name inherits `[Unknown]`.
+  //
+  // Ordinary Gleam under a module-level `assume` has a body, and walking it is
+  // just as wrong: the line is what its callers pay, and a helper that happens
+  // not to call the callback it is handed lifts to `λcb. []` — handing a
+  // caller a free pass the same line refuses a direct call. The term is the
+  // value channel's for that reason, so the sibling reference and a
+  // cross-module one read one answer.
+  //
+  // The bounds name callback parameters the signature does not: a running
+  // fallback's girard-typed callback carries no `fn(...)` annotation, and
+  // without its binder the term's variable stays free and the application goes
+  // stuck.
   use <- bool.lazy_guard(
-    when: foreign_definition(definition, context.package_targets),
+    when: declares_for_callers(definition, context, knowledge_base),
     return: fn() {
       let qualified = QualifiedName(module: context.module_path, function: name)
-      let declared = foreign_resolution(knowledge_base, qualified).term
+      let declared = effects.declared_effects(knowledge_base, qualified)
       let params =
         ordered_callback_param_names(
           function,
-          recorded_bound_names(knowledge_base, qualified),
+          value_channel_bound_names(knowledge_base, qualified),
         )
       #(
         list.fold_right(params, declared, fn(acc, param) {
@@ -6119,22 +6130,15 @@ pub fn unclosed_clause_variables(
   })
 }
 
-// The parameter names `name`'s recorded bounds state effects over, for the
+// The parameter names a value channel's bounds state effects over, for the
 // binders a lifted operator abstracts over. For one of this package's running
-// fallbacks these carry the girard-typed callbacks no syntactic signature shows.
-fn recorded_bound_names(
-  knowledge_base: KnowledgeBase,
-  name: QualifiedName,
-) -> Set(String) {
-  effects.bound_name_set(effects.lookup_param_bounds(knowledge_base, name))
-}
-
-// The same for the value channels, whose term may carry a callback variable
-// the recorded bounds do not name — a declared Gleam function's synthesized
-// share. The binder has to be the variable the term holds free: where the
-// callback is labeled, `fn_typed_param_names_ordered` prefers the label unless
-// a bound names the parameter, and a binder named after the label leaves the
-// term's variable free, the application stuck, and the result `[Unknown]`.
+// fallbacks these carry the girard-typed callbacks no syntactic signature
+// shows, and for a declared name they carry its synthesized callback share.
+//
+// The binder has to be the variable the term holds free: where the callback is
+// labeled, `fn_typed_param_names_ordered` prefers the label unless a bound
+// names the parameter, and a binder named after the label leaves the term's
+// variable free, the application stuck, and the result `[Unknown]`.
 fn value_channel_bound_names(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
