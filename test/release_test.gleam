@@ -205,29 +205,28 @@ pub fn a_field_shaped_check_warns_about_its_shape_test() {
   )
 }
 
-// The same mistake one tier over. An `effects` line only ever keys
-// `module.function`, so a field path on one is a line no run can read — and
-// `infer`, which rewrites this tier from source, deletes it without a word.
-pub fn a_field_shaped_effects_line_warns_about_its_shape_test() {
+// The same mistake one tier over, in all three spellings. An `effects` line
+// only ever keys `module.function`, so a field path — qualified or with its
+// module implied by the type — and a bare module path are lines no run can
+// read, and `infer`, which rewrites this tier from source, deletes them
+// without a word. One fixture, since the three lines are read by one pass.
+pub fn a_field_or_module_shaped_effects_line_warns_about_its_shape_test() {
   let warnings =
     lint_warnings("effects_shape", [
       #("opts.gleam", opts_module),
-      #("app.graded", "effects opts.Opts.on_change : []\n"),
+      #(
+        "app.graded",
+        "effects opts.Opts.on_change : []\neffects Opts.on_change : []\neffects opts : []\n",
+      ),
     ])
 
   expect_warning(
     warnings,
     UnkeyedEffectsShapeWarning(name: "opts.Opts.on_change"),
   )
-}
-
-pub fn a_module_shaped_effects_line_warns_about_its_shape_test() {
-  let warnings =
-    lint_warnings("effects_shape_module", [
-      #("opts.gleam", opts_module),
-      #("app.graded", "effects opts : []\n"),
-    ])
-
+  // The spelling the segment count alone cannot tell from a function: read as
+  // `module.function` it names a module `Opts`, which no Gleam module is.
+  expect_warning(warnings, UnkeyedEffectsShapeWarning(name: "Opts.on_change"))
   expect_warning(warnings, UnkeyedEffectsShapeWarning(name: "opts"))
 }
 
