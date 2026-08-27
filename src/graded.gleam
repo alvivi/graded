@@ -91,8 +91,9 @@ pub type GradedError {
   GleamParseError(path: String, cause: glance.Error)
   /// A `.graded` annotation file could not be parsed.
   GradedParseError(path: String, cause: annotation.ParseError)
-  /// `gleam.toml` was present but malformed, or missing its `name`. A missing
-  /// `gleam.toml` is tolerated and does not produce this error.
+  /// `gleam.toml` was present but malformed, unreadable, or missing its
+  /// `name`. A missing `gleam.toml` is tolerated and does not produce this
+  /// error.
   InvalidConfig(path: String, cause: config.ConfigError)
   /// One or more `.graded` files are not formatted (returned by `run_format_check`).
   FormatCheckFailed(paths: List(String))
@@ -3691,8 +3692,11 @@ fn read_config(directory: String) -> Result(config.GradedConfig, GradedError) {
   let toml_path = filepath.join(project_root, "gleam.toml")
   use raw <- result.try(case config.read(toml_path) {
     Ok(cfg) -> Ok(cfg)
-    // Missing gleam.toml: fall back to defaults. Malformed gleam.toml: error.
-    Error(config.TomlReadError(..)) ->
+    // Missing gleam.toml: fall back to defaults. A gleam.toml that is there
+    // and unreadable — a directory, no permission, a failing device — is an
+    // error, so a spec file named from the directory is never written in place
+    // of the one the manifest names.
+    Error(config.TomlReadError(_, simplifile.Enoent)) ->
       Ok(config.defaults_for(default_package_name(project_root)))
     Error(cause) -> Error(InvalidConfig(path: toml_path, cause:))
   })

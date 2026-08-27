@@ -11,6 +11,7 @@ import graded
 import graded/internal/annotation
 import graded/internal/checker
 import graded/internal/cli
+import graded/internal/config
 import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/signatures
@@ -7138,6 +7139,36 @@ pub fn check_over_an_unreadable_spec_errors_test() {
   graded.run(root)
   |> should.equal(
     Error(graded.FileReadError(root <> "/proj.graded", simplifile.Eisdir)),
+  )
+  let _ = simplifile.delete(root)
+  Nil
+}
+
+// Unreadable manifests
+//
+// A `gleam.toml` that is there but cannot be read is not the same as a package
+// with no `gleam.toml`: defaulting the package name to the directory's would
+// read and write a spec file the manifest never named.
+
+pub fn check_over_an_unreadable_manifest_errors_test() {
+  // Rooted outside the repository so the walk-up stops at this directory
+  // rather than adopting graded's own manifest.
+  let root = "/tmp/graded_unreadable_manifest"
+  write_project(
+    root,
+    [#("proj.gleam", "pub fn main() -> Nil {\n  Nil\n}\n")],
+    "",
+  )
+  let assert Ok(Nil) = simplifile.delete(root <> "/gleam.toml")
+  let assert Ok(Nil) = simplifile.create_directory(root <> "/gleam.toml")
+
+  let toml = root <> "/gleam.toml"
+  graded.run(root)
+  |> should.equal(
+    Error(graded.InvalidConfig(
+      path: toml,
+      cause: config.TomlReadError(toml, simplifile.Eisdir),
+    )),
   )
   let _ = simplifile.delete(root)
   Nil

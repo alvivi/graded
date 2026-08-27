@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `gleam.toml` that is there but cannot be read — a directory, a permission
+  error, a failing device — is now reported. Previously any read failure fell
+  back to defaults, so the package name came from the directory and `check`
+  and `infer` silently used a spec file the manifest never named. A missing
+  `gleam.toml` still falls back to defaults.
 - A call from inside a walked fallback body to an external declared for the
   walk's targets now charges its callback arguments beside the declaration,
   instead of the declaration alone.
