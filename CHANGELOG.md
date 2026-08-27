@@ -9,28 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Breaking (library API).** Every type graded's public functions name is now
-  defined in the `graded` module, so linking against it never means importing
-  `graded/internal`. A CI gate holds the boundary.
+- **Breaking (library API).** Every type the public API names is now defined in
+  `graded` itself, so calling it never means importing `graded/internal`. The
+  CLI is unchanged.
 
-  - `run` returns `List(ModuleReport)` — per module, its path and the warning
-    and violation lines graded prints for it — instead of
-    `List(types.CheckResult)`. The structured results are `@internal`.
-  - `run_effect_formatted` takes `graded.Graded` / `graded.Prose` instead of
-    `answer.Format`.
-  - `run_catalog` is replaced by `catalog_list()` and
-    `catalog_show(package, version, directory)`; it no longer takes
-    `cli.CatalogRequest`.
-  - `run_format_stdin` returns `Result(String, GradedError)`, with a parse
-    failure as `GradedParseError("<stdin>", message)`, instead of
-    `Result(String, annotation.ParseError)`.
-  - `GradedError`'s `GradedParseError` and `InvalidConfig` carry the rendered
-    cause as a `String` instead of `annotation.ParseError` and
-    `config.ConfigError`. `InvalidConfig` now says what was wrong with the
-    manifest, where it named only the path.
+  - `run` returns `List(ModuleReport)` — per file, its rendered warnings and
+    violations — not `List(types.CheckResult)`.
+  - `run_effect_formatted` takes `graded.Graded` / `graded.Prose`.
+  - `catalog_list` and `catalog_show` replace `run_catalog`.
+  - `run_format_stdin` returns `Result(String, GradedError)`.
+  - `GradedParseError` and `InvalidConfig` carry the cause as a `String`, and
+    `InvalidConfig` now says what was wrong with the manifest.
   - `infer_path_dep` and `run_effect_from_project` are `@internal`.
-
-  The CLI is unchanged: every command prints exactly what it printed before.
 - An `assume` line over your own or a dependency's `@external` now answers
   alone even where a Gleam fallback body runs; previously the body's effects
   were unioned into what callers pay. Explanations quote the suppressed half,
@@ -53,29 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A `gleam.toml` that is there but cannot be read — a directory, a permission
-  error, a failing device — is now reported. Previously any read failure fell
-  back to defaults, so the package name came from the directory and `check`
-  and `infer` silently used a spec file the manifest never named. A missing
-  `gleam.toml` still falls back to defaults.
-- A callback parameter spelled through a `fn` type alias — `run(action:
-  Action)` with `type Action = fn() -> Nil` — now resolves like a directly
-  annotated one: the bound is written on the inferred line, the call site binds
-  the argument, and a second-order parameter whose own callback is aliased
-  keeps its shape. Such a call read `[Unknown]`, or, where a lift discharged
-  the argument, an under-approximation. A boundless `assume` over an external
-  whose callback is aliased now charges that callback to its callers too, so a
-  check that passed on the old answer may now fail.
+- A `gleam.toml` that cannot be read is now an error naming the cause. Any read
+  failure used to fall back to defaults, so `check` and `infer` silently used a
+  spec file named after the directory. A missing `gleam.toml` still defaults.
+- A callback parameter typed through a `fn` alias — `run(action: Action)` with
+  `type Action = fn() -> Nil` — now resolves like a directly annotated one. It
+  read `[Unknown]`, or charged too little where the callback was discharged, so
+  checks that passed on the old answer may now fail.
 - A helper whose callback parameter carries no `fn(...)` annotation now charges
-  its callers in the same module the callback's own effects, as callers in
-  another module already paid. The same answer now reaches a reference to that
-  helper handed to a higher-order function. Both read `[Unknown]` before.
-- Piping into a function capture — `x |> f(_, y)` — now tracks the piped
-  value at the discard's position, with the discard's label, so a callback
-  reaching a parameter that way is charged to the caller. Such a call resolved
-  nothing about its arguments, which read as pure where the callee's effects
-  are its callback's. Every callee shape is covered: qualified, unqualified,
-  and a nested field access.
+  callers in its own module what callers elsewhere paid, not `[Unknown]`.
+- `x |> f(_, y)` now charges the caller the callback it pipes in. The piped
+  value bound nothing, so such a call could read as pure.
 - A call from inside a walked fallback body to an external declared for the
   walk's targets now charges its callback arguments beside the declaration,
   instead of the declaration alone.
