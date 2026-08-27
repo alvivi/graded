@@ -33,21 +33,28 @@ CI runs five gates, in this order. Run them locally before pushing — green her
 means green on CI:
 
 ```sh
-gleam format --check src/ test/          # formatting (test/ too, not just src/)
-gleam build --warnings-as-errors         # no warnings allowed
-gleam test                               # full suite
-gleam run -m glinter                     # lint (warnings are errors)
-python3 scripts/check_public_interface.py  # public API names no internal type
+gleam format --check src/ test/       # formatting (test/ too, not just src/)
+gleam build --warnings-as-errors      # no warnings allowed
+gleam test                            # full suite
+gleam run -m glinter                  # lint (warnings are errors)
+gleam run -m check_public_interface   # public API names no internal type
 ```
 
 `gleam format src/ test/` (no `--check`) fixes formatting in place. Lint rules and
 the `warnings_as_errors` setting live under `[tools.glinter]` in `gleam.toml`.
 
-The last gate walks the package interface Gleam exports and fails if anything a
-consumer can name — a parameter, a return type, a variant field — resolves to a
-`graded/internal` module. Everything the public API names is defined in
-`src/graded.gleam`; a function that exists only for graded's own tests is marked
-`@internal`, which keeps it out of the interface entirely.
+The last gate asks the compiler for the package interface and fails if anything
+a consumer can name — a parameter, a return type, a variant field — resolves to
+a `graded/internal` module. It lives in
+[`test/check_public_interface.gleam`](test/check_public_interface.gleam), so it
+never reaches the published package. Reading the compiler's own answer is the
+point: deriving the same thing from source would mean re-implementing
+`@internal`, import-alias resolution and type-alias expansion, and a bug in any
+of those makes the gate pass while the leak ships.
+
+Everything the public API names is defined in `src/graded.gleam`; a function
+that exists only for graded's own tests is marked `@internal`, which keeps it
+out of the interface entirely.
 
 ## Adding a catalog entry
 
