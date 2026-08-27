@@ -2035,8 +2035,113 @@ fn extract_pipe_target(
     glance.Case(location: span, ..) ->
       pipe_into_operator_value(expression, span, context, env, pipe_args)
 
+    // `value |> f(a, _, b)` — a function capture as the pipe target, which is
+    // `f(a, value, b)`: the piped value takes the discard's position and the
+    // explicit arguments keep theirs on either side of it.
+    glance.FnCapture(
+      location: span,
+      label:,
+      function: function_expression,
+      arguments_before:,
+      arguments_after:,
+    ) -> {
+      let discard = list.length(arguments_before)
+      // The discard's own label rides with the piped value. Inserting it
+      // unlabelled mis-binds a call site writing its labelled arguments in
+      // another order than the callee declares them.
+      let piped =
+        list.map(pipe_args, fn(argument) {
+          CallArgument(..argument, position: discard, label:)
+        })
+      let args =
+        list.flatten([
+          classify_arguments(arguments_before, context, env, 0),
+          piped,
+          classify_arguments(arguments_after, context, env, discard + 1),
+        ])
+      let arguments =
+        merge(
+          extract_from_arguments(arguments_before, context, env),
+          extract_from_arguments(arguments_after, context, env),
+        )
+      pipe_into_capture(
+        function_expression,
+        span,
+        context,
+        env,
+        arguments,
+        args,
+      )
+    }
+
     // Any other shape — handle normally; no arg tracking.
     _ -> extract_from_expression(expression, context, env)
+  }
+}
+
+// The callee half of a piped function capture, by the shape the capture names:
+// qualified (`x |> m.f(_, y)`), a nested field access (`x |> o.inner.run(_)`),
+// or unqualified (`x |> f(_, y)`) — the same three the ordinary pipe branches
+// resolve. `arguments` is the walk of the capture's explicit arguments, and
+// `args` the full argument list with the piped value already at the discard's
+// position. Any other callee shape names nothing to key the call by, so the
+// capture's parts are walked as values.
+fn pipe_into_capture(
+  function_expression: Expression,
+  span: glance.Span,
+  context: ImportContext,
+  env: Env,
+  arguments: ExtractResult,
+  args: List(CallArgument),
+) -> ExtractResult {
+  case function_expression {
+    glance.FieldAccess(
+      container: glance.Variable(receiver_span, alias),
+      label: function_name,
+      ..,
+    ) ->
+      merge_with_args(
+        resolve_qualified_call(
+          alias,
+          function_name,
+          span,
+          receiver_span,
+          context,
+          env,
+        ),
+        arguments,
+        span,
+        args,
+      )
+
+    glance.FieldAccess(container: receiver, label: function_name, ..) ->
+      merge_with_args(
+        resolve_nested_field_call(
+          receiver,
+          function_name,
+          span,
+          receiver.location,
+          context,
+          env,
+        ),
+        merge(extract_from_expression(receiver, context, env), arguments),
+        span,
+        args,
+      )
+
+    glance.Variable(name:, ..) ->
+      merge_with_args(
+        resolve_variable_call(name, span, context, env),
+        arguments,
+        span,
+        args,
+      )
+
+    _ ->
+      merge(
+        extract_from_expression(function_expression, context, env),
+        arguments,
+      )
   }
 }
 
