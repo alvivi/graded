@@ -314,7 +314,88 @@ pub fn caller() -> Nil {
 
 or declare the budget explicitly (`check app.caller : [_]`, or the precise set).
 
-## 5. External (FFI) and un-annotated precompiled code
+## 5. A function returned inside a tuple or `Result`
+
+graded traces a returned function when it *is* the return value. One returned
+**inside** a structure — a tuple element, an `Ok`, anything the caller has to
+destructure — has no position of its own to be filed under, so two things go
+wrong, from two independent causes.
+
+**An inline closure charges the function that builds it.** A producer that only
+*constructs* a closure is charged its latent effect, because there is nowhere
+else to put it:
+
+```gleam
+import app/ffi     // ffi.emit : [Stdout]
+
+pub fn connect(url: String) -> Result(fn(String) -> Nil, Nil) {
+  case url {
+    "" -> Error(Nil)
+    _ -> Ok(fn(msg) { ffi.emit(msg) })   // built here, called by whoever unwraps it
+  }
+}
+
+pub fn is_reachable(url: String) -> Bool {
+  case connect(url) {
+    Ok(_send) -> True                    // never calls `_send`
+    Error(_) -> False
+  }
+}
+```
+
+`connect` infers `[Stdout]` though it emits nothing, and `is_reachable` inherits
+it. That is an over-approximation, so nothing is understated — but it is the one
+limitation here that makes `check` report a violation naming a call the body does
+not make:
+
+```
+is_reachable calls app/ffi.emit with effects [Stdout] (from your spec's `assume` line) but declared []
+```
+
+**A structural position is `[Unknown]` once it is unpacked.** Nothing records
+which half a caller destructured out:
+
+```gleam
+pub fn make_pair() -> #(fn() -> Nil, fn() -> Nil) {
+  #(shout, quiet)      // shout : [Stdout], quiet : []
+}
+
+pub fn use_right() -> Nil {
+  let #(_l, r) = make_pair()
+  r()                  // [Unknown] — the tuple position has no path
+}
+```
+
+`use_left` and `use_right` infer the same set, though only one of them calls the
+impure half.
+
+**How to avoid it** — return a record with named function fields, filled with
+named functions rather than inline closures. The field gives the call a path
+graded resolves from the construction site, and a reference passed as a value
+costs the builder nothing:
+
+```gleam
+pub type Pair {
+  Pair(left: fn() -> Nil, right: fn() -> Nil)
+}
+
+pub fn make_pair() -> Pair {
+  Pair(left: shout, right: quiet)   // [] — references, not closures
+}
+
+pub fn use_right() -> Nil {
+  let pair = make_pair()
+  pair.right()                      // [] — resolves to `quiet`
+}
+```
+
+Each half of that fix stands alone: named functions in a tuple keep the producer
+pure but leave the unpacked call `[Unknown]`; inline closures in a record resolve
+the field but still charge the builder. If the shape is essential, widen the
+budget (`check app/pair.use_right : [_]`), which gives up the invariant for that
+function.
+
+## 6. External (FFI) and un-annotated precompiled code
 
 graded can't see across an `@external` boundary, so FFI functions are `[Unknown]`
 — even when the declaration carries a pure-looking Gleam fallback body, since the
