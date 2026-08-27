@@ -14,7 +14,7 @@ import graded/internal/cli
 import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/signatures
-import graded/internal/types
+import graded/internal/types.{type EffectTerm}
 import simplifile
 import support
 
@@ -11804,5 +11804,94 @@ pub fn helper() -> Nil {
   violation.explanation.actual
   |> types.contains_unknown
   |> should.be_true
+  support.cleanup(root)
+}
+
+// Girard-typed callback parameters
+//
+// A parameter carrying no `fn(...)` annotation is a callback all the same when
+// girard infers a function type for it. Every channel that reaches such a
+// helper — a same-module call, the operator lift of a reference to it, a
+// cross-module call — charges the one answer.
+
+// The package the section runs over: `apply` takes an unannotated callback,
+// and three callers reach it. `ffi.shout` is the only source of an effect, so
+// nothing here depends on an installed dependency.
+fn girard_callback_project(root: String) -> List(types.EffectAnnotation) {
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/ffi.gleam",
+      support.foreign_fn("shout", "() -> Nil"),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/proj.gleam",
+      "import ffi
+
+pub fn shout() -> Nil {
+  ffi.shout()
+}
+
+pub fn apply(f) {
+  f()
+}
+
+pub fn same_module() -> Nil {
+  apply(shout)
+}
+
+pub fn twice(g: fn(fn() -> Nil) -> Nil, cb: fn() -> Nil) -> Nil {
+  g(cb)
+}
+
+pub fn via_lift() -> Nil {
+  twice(apply, shout)
+}
+",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/other.gleam",
+      "import proj
+
+pub fn cross_module() -> Nil {
+  proj.apply(proj.shout)
+}
+",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/proj.graded", "assume ffi.shout : [Stdout]\n")
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(content) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(file) = annotation.parse_file(content)
+  annotation.extract_annotations(file)
+}
+
+fn inferred_effects(
+  annotations: List(types.EffectAnnotation),
+  function: String,
+) -> EffectTerm {
+  let assert Ok(annotation) =
+    list.find(annotations, fn(a) { a.function == function })
+  annotation.effects
+}
+
+pub fn girard_typed_callback_charges_every_caller_alike_test() {
+  let root = "build/girard_callback_parity"
+  let annotations = girard_callback_project(root)
+  let stdout = types.TLabels(set.from_list(["Stdout"]))
+
+  // The helper itself: one bound over the unannotated parameter.
+  inferred_effects(annotations, "proj.apply")
+  |> should.equal(types.TVar("f"))
+  // The caller beside it, the caller in another module, and the lift of a
+  // reference to it all charge the callback's own effects.
+  inferred_effects(annotations, "proj.same_module") |> should.equal(stdout)
+  inferred_effects(annotations, "other.cross_module") |> should.equal(stdout)
+  inferred_effects(annotations, "proj.via_lift") |> should.equal(stdout)
   support.cleanup(root)
 }

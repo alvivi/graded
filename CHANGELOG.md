@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A helper whose callback parameter carries no `fn(...)` annotation now charges
+  its callers in the same module the callback's own effects, as callers in
+  another module already paid. The same answer now reaches a reference to that
+  helper handed to a higher-order function. Both read `[Unknown]` before.
 - A call from inside a walked fallback body to an external declared for the
   walk's targets now charges its callback arguments beside the declaration,
   instead of the declaration alone.
