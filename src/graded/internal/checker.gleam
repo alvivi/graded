@@ -3945,14 +3945,19 @@ fn substitute_local_call_effects(
   case dict.get(function_map, local_call.function) {
     Error(Nil) -> #(recursive, memo)
     Ok(local_definition) -> {
-      // A foreign sibling was collected as the knowledge base's charge under
-      // its qualified name. Substitute it exactly as a qualified call is —
-      // auto-detected callback bounds included — so both call shapes pay the
-      // same set. A *native* sibling under a module-level declaration keeps
-      // the declaration's set alone; the reference it is handed surfaces as
-      // an untracked-effect warning, not a charge.
+      // A sibling a declaration answers for was collected as the knowledge
+      // base's charge under its qualified name. Substitute it exactly as a
+      // qualified call is — auto-detected callback bounds included — so both
+      // call shapes pay the same set.
+      //
+      // A *native* sibling under a module-level `assume` comes through here
+      // too. That line states the function's own effects and says nothing
+      // about what it does with a callback it is handed, exactly as a
+      // boundless per-function line does; keeping the declaration's set alone
+      // charged its callback to nobody, and let a same-module caller pass an
+      // effectful function to a module-assumed helper for free.
       use <- bool.lazy_guard(
-        when: foreign_definition(local_definition, context.package_targets),
+        when: declares_for_callers(local_definition, context, knowledge_base),
         return: fn() {
           let #(memo, calls) =
             list.map_fold(recursive, memo, fn(memo, one) {

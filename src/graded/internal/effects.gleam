@@ -599,16 +599,56 @@ fn registry_callback_names(
 //
 // Asked cheapest and most selective first, because every value channel asks it
 // of every name it resolves: almost nothing takes a callback at all, so the one
-// lookup that settles that comes before the three that weigh how the name is
-// declared — `raw_declaration`, the dearest of them, last.
+// lookup that settles that comes before the two that weigh how the name is
+// declared — `raw_declaration`, the dearer of them, last.
 fn synthesizes_registry_share(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Bool {
   registry_callback_names(knowledge_base, name) != []
-  && line_param_bounds(knowledge_base, name) == []
   && !dict.has_key(knowledge_base.fallback_summaries, name)
-  && option.is_some(raw_declaration(knowledge_base, name))
+  && case raw_declaration(knowledge_base, name) {
+    None -> False
+    Some(#(_term, origin)) ->
+      declared_param_bounds(knowledge_base, name, origin) == []
+  }
+}
+
+// The bounds the *declaration* states for `name`.
+//
+// None where it is a module-level `assume`, which cannot state any: the grammar
+// refuses a bound list on a module path, so whatever `param_bounds` holds under
+// such a name came from somewhere else — this run's inference over the very
+// body the declaration speaks over, or a committed line for it. Those describe
+// what the body does with its callback, which is exactly what the declaration
+// overrode, and reading them as the declaration's own answer is what let a
+// module-level `assume` silently vouch for every callback its functions take.
+fn declared_param_bounds(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+  origin: LookupOrigin,
+) -> List(ParamBound) {
+  case origin {
+    ModuleExternalOrigin(_) -> []
+    _ -> line_param_bounds(knowledge_base, name)
+  }
+}
+
+// Whether `name`'s recorded bounds are inference's rather than a declaration's
+// — a module-level `assume` standing over a body this run also walked. They
+// bind nothing in the term the declaration put in that body's place, and
+// holding them out is what lets the call site's own registry injection run:
+// that reading weighs each argument's shape, declining the closures whose
+// bodies are walked separately, where a synthesized bound binds them all.
+fn holds_only_inferred_bounds(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  line_param_bounds(knowledge_base, name) != []
+  && case raw_declaration(knowledge_base, name) {
+    Some(#(_term, ModuleExternalOrigin(_))) -> True
+    _ -> False
+  }
 }
 
 // Which side of the foreign split owns `name`'s synthesized callback share.
@@ -616,11 +656,12 @@ fn synthesizes_registry_share(
 // leaving a gap between them.
 //
 // The foreign half is folded into the charge itself, where every channel —
-// direct call included — reads it. The other half is a value channel's alone:
-// ordinary Gleam a catalog entry or module-level `assume` declares is reached
-// by direct calls too (a sibling's, through `declares_for_callers`), and those
-// are charged precisely from the argument in hand, so widening them would
-// charge a share nothing binds.
+// direct call included — reads it. The other half is a value channel's alone,
+// because a *direct* call into ordinary Gleam has a better reading available:
+// the call site's own registry injection, which weighs each argument's shape
+// and declines the closures whose bodies are walked separately. That reading
+// only runs where the callee states no bounds, which is what
+// `holds_only_inferred_bounds` restores for a module-declared name.
 fn synthesizes_foreign_share(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -1545,7 +1586,16 @@ pub fn lookup_param_bounds(
     Error(Nil) ->
       case synthesizes_foreign_share(knowledge_base, name) {
         True -> synthesized_callback_bounds(knowledge_base, name)
-        False -> declared
+        // Inference's own bounds over a body a module-level `assume` speaks
+        // over are held out: they bind nothing in the term that declaration
+        // put in the body's place, and stating them tells the call site a
+        // bound list already answers, which stands its registry injection down
+        // and leaves the callback charged to nobody.
+        False ->
+          case holds_only_inferred_bounds(knowledge_base, name) {
+            True -> []
+            False -> declared
+          }
       }
   }
 }
