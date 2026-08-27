@@ -2624,6 +2624,70 @@ pub fn cross_module_value() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_module_assumed_sibling_lifts_from_its_declaration_test() {
+  // The sibling *value* channel, isolated from every other reading. `ignore`
+  // never calls its callback, so walking its body lifts it to `λcb. []` and
+  // the disk callback rides through free; the declaration is what its callers
+  // pay, and it says nothing about the callback. `util.invoke` sits outside
+  // the assumed module so nothing but the lift can charge anything — the twin
+  // whose body does call the callback would pass either way, and is here to
+  // show the lift still reduces rather than going stuck.
+  let root = "build/module_assumed_sibling_lift"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume m : []
+assume m.disk : [Disk]
+check m.hands_over_an_uncalled_callback : []
+check m.hands_over_a_called_callback : []
+",
+    ),
+    #(
+      "util.gleam",
+      "pub fn invoke(op: fn(fn() -> Nil) -> Nil, x: fn() -> Nil) -> Nil {
+  op(x)
+}
+",
+    ),
+    #(
+      "m.gleam",
+      "import util
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+
+pub fn ignore(cb: fn() -> Nil) -> Nil {
+  Nil
+}
+
+pub fn calls(cb: fn() -> Nil) -> Nil {
+  cb()
+}
+
+pub fn hands_over_an_uncalled_callback() -> Nil {
+  util.invoke(ignore, disk)
+}
+
+pub fn hands_over_a_called_callback() -> Nil {
+  util.invoke(calls, disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) = list.find(results, fn(r) { r.file == root <> "/m.gleam" })
+  ["hands_over_an_uncalled_callback", "hands_over_a_called_callback"]
+  |> list.each(fn(function) {
+    let assert Ok(violation) =
+      list.find(r.violations, fn(v) { v.function == function })
+    violation.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Disk"])))
+  })
+  support.cleanup(root)
+}
+
 pub fn a_bodyless_externals_reference_warns_as_a_summarys_does_test() {
   // A reference to a var-carrying name warns quoting the set it carries, which
   // is what a summary-shaped one already did. The widened names inherit it:
