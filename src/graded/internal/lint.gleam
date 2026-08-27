@@ -26,14 +26,14 @@ import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/types.{
-  type EffectAnnotation, type EffectTerm, type GradedFile, type QualifiedName,
-  type TypeFieldAnnotation, type Warning, AliasedBoundVariableWarning,
-  DotlessReturnsClauseWarning, QualifiedName, StaleFunctionExternalWarning,
-  StaleReturnsClauseWarning, UnboundExternalTermVariableWarning,
+  type EffectAnnotation, type EffectTerm, type FieldAnnotation, type GradedFile,
+  type QualifiedName, type Warning, AliasedBoundVariableWarning,
+  DotlessReturnsClauseWarning, QualifiedName, StaleFunctionAssumeWarning,
+  StaleReturnsClauseWarning, UnboundAssumeTermVariableWarning,
   UnclosedReturnsClauseWarning, UngroundReturnsClauseWarning,
-  UnknownClauseWarning, UnmatchedCheckWarning, UnmatchedFunctionExternalWarning,
-  UnmatchedModuleExternalWarning, UnmatchedReturnsClauseWarning,
-  UnmatchedTypeFieldWarning, UnverifiedCheckShapeWarning,
+  UnknownClauseWarning, UnmatchedCheckWarning, UnmatchedFieldAssumeWarning,
+  UnmatchedFunctionAssumeWarning, UnmatchedModuleAssumeWarning,
+  UnmatchedReturnsClauseWarning, UnverifiedCheckShapeWarning,
   UnverifiedReturnsClauseWarning,
 }
 import simplifile
@@ -256,7 +256,7 @@ pub fn run_recording_lookups(
 // registry-synthesized bounds and is left alone, and to lines the existence
 // channel has not flagged — a stale or unmatched line's one fix is removal.
 fn unbound_term_variable_warnings(
-  externals: List(types.ExternalAnnotation),
+  externals: List(types.AssumeAnnotation),
   dead: Set(String),
 ) -> List(Warning) {
   list.filter_map(externals, fn(external) {
@@ -282,7 +282,7 @@ fn unbound_term_variable_warnings(
         case unbound {
           [] -> Error(Nil)
           free_vars ->
-            Ok(UnboundExternalTermVariableWarning(
+            Ok(UnboundAssumeTermVariableWarning(
               function: types.dotted_name(qualified),
               free_vars:,
             ))
@@ -303,7 +303,7 @@ fn unbound_term_variable_warnings(
 // each channel's binding stays what it is. A machine-written
 // self-referential list never aliases, so the shape is hand-written.
 fn aliased_bound_variable_warnings(
-  externals: List(types.ExternalAnnotation),
+  externals: List(types.AssumeAnnotation),
   effects_lines: List(EffectAnnotation),
   dead: Set(String),
 ) -> List(Warning) {
@@ -490,7 +490,7 @@ fn spec_name_evidence(
 //   - a module-level line whose module is neither a dependency nor a project
 //     module.
 fn external_warnings(
-  externals: List(types.ExternalAnnotation),
+  externals: List(types.AssumeAnnotation),
   evidence: SpecNameEvidence,
   stale: Set(String),
 ) -> List(Warning) {
@@ -503,15 +503,15 @@ fn external_warnings(
       Ok(qualified) -> {
         let name = types.dotted_name(qualified)
         case set.contains(stale, name), evidence.defines(qualified) {
-          True, _ -> Ok(StaleFunctionExternalWarning(function: name))
-          False, False -> Ok(UnmatchedFunctionExternalWarning(function: name))
+          True, _ -> Ok(StaleFunctionAssumeWarning(function: name))
+          False, False -> Ok(UnmatchedFunctionAssumeWarning(function: name))
           False, True -> Error(Nil)
         }
       }
       Error(Nil) ->
         case evidence.module_placed(external.module) {
           True -> Error(Nil)
-          False -> Ok(UnmatchedModuleExternalWarning(module: external.module))
+          False -> Ok(UnmatchedModuleAssumeWarning(module: external.module))
         }
     }
   })
@@ -522,8 +522,8 @@ fn external_warnings(
 fn dead_external_names(warnings: List(Warning)) -> Set(String) {
   list.filter_map(warnings, fn(warning) {
     case warning {
-      StaleFunctionExternalWarning(function:)
-      | UnmatchedFunctionExternalWarning(function:) -> Ok(function)
+      StaleFunctionAssumeWarning(function:)
+      | UnmatchedFunctionAssumeWarning(function:) -> Ok(function)
       _ -> Error(Nil)
     }
   })
@@ -542,7 +542,7 @@ fn dead_external_names(warnings: List(Warning)) -> Set(String) {
 // One warning per clause, so a clause that is dead twice over is reported by
 // the first rule that catches it.
 fn returns_clause_warnings(
-  declared: List(#(types.ExternalAnnotation, EffectTerm)),
+  declared: List(#(types.AssumeAnnotation, EffectTerm)),
   evidence: SpecNameEvidence,
   stale: Set(String),
 ) -> List(Warning) {
@@ -581,7 +581,7 @@ fn returns_clause_warnings(
 //   - qualified at an unknown module (neither project nor dependency): a typo,
 //     so it's dead and flagged.
 fn unmatched_type_field_warning(
-  tf: TypeFieldAnnotation,
+  tf: FieldAnnotation,
   index: Dict(String, #(String, glance.Module)),
   dep_modules: Set(String),
   project_infos: Dict(String, ModuleInfo),
@@ -607,7 +607,7 @@ fn unmatched_type_field_warning(
   case dead {
     False -> #(Error(Nil), memo)
     True -> #(
-      Ok(UnmatchedTypeFieldWarning(name: annotation.type_field_path(tf))),
+      Ok(UnmatchedFieldAssumeWarning(name: annotation.type_field_path(tf))),
       memo,
     )
   }
@@ -619,7 +619,7 @@ fn unmatched_type_field_warning(
 // passes untouched; any other module is a typo.
 fn valid_type_field(
   module: String,
-  tf: TypeFieldAnnotation,
+  tf: FieldAnnotation,
   index: Dict(String, #(String, glance.Module)),
   dep_modules: Set(String),
   project_infos: Dict(String, ModuleInfo),

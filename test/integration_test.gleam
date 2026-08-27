@@ -3610,7 +3610,7 @@ pub fn a_module_external_resolves_from_catalog_functions_test() {
   // Only the module that really resolves nowhere is flagged.
   results
   |> list.flat_map(fn(r) { r.warnings })
-  |> should.equal([types.UnmatchedModuleExternalWarning(module: "nowhere/mod")])
+  |> should.equal([types.UnmatchedModuleAssumeWarning(module: "nowhere/mod")])
   support.cleanup(root)
 }
 
@@ -5346,7 +5346,7 @@ assume ffi.fold(g: [g]) : [g]
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
-    types.UnboundExternalTermVariableWarning(function: "ffi.each", free_vars: [
+    types.UnboundAssumeTermVariableWarning(function: "ffi.each", free_vars: [
       "x",
     ]),
     types.UngroundReturnsClauseWarning(function: "ffi.trace", free_vars: [
@@ -5474,8 +5474,8 @@ assume nowhere.gone(cb: [cb]) : [zz]
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
-    types.StaleFunctionExternalWarning(function: "app.local"),
-    types.UnmatchedFunctionExternalWarning(function: "nowhere.gone"),
+    types.StaleFunctionAssumeWarning(function: "app.local"),
+    types.UnmatchedFunctionAssumeWarning(function: "nowhere.gone"),
   ])
   support.cleanup(root)
 }
@@ -8666,7 +8666,7 @@ pub fn path_dep_shipped_module_external_resolves_test() {
   v.explanation.actual |> should.equal(types.Specific(set.from_list(["Time"])))
   v.explanation.origin
   |> should.equal(
-    Some(types.ModuleExternalOrigin(source: types.PathDependency("dep"))),
+    Some(types.ModuleAssumeOrigin(source: types.PathDependency("dep"))),
   )
 }
 
@@ -8686,7 +8686,7 @@ pub fn consumer_module_external_beats_a_shipped_one_test() {
   v.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Mocked"])))
   v.explanation.origin
-  |> should.equal(Some(types.ModuleExternalOrigin(source: types.UserExternal)))
+  |> should.equal(Some(types.ModuleAssumeOrigin(source: types.UserAssume)))
 }
 
 pub fn path_dep_module_external_propagates_through_wrapper_test() {
@@ -9630,7 +9630,7 @@ pub fn a_stale_project_external_warns_once_test() {
   let assert Ok(results) = graded.check_project(root)
   results
   |> list.flat_map(fn(r) { r.warnings })
-  |> should.equal([types.StaleFunctionExternalWarning(function: "m.logs")])
+  |> should.equal([types.StaleFunctionAssumeWarning(function: "m.logs")])
   support.cleanup(root)
 }
 
@@ -9799,8 +9799,8 @@ assume m.go : []
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
-    types.UnmatchedFunctionExternalWarning(function: "m.no_such"),
-    types.StaleFunctionExternalWarning(function: "m.go"),
+    types.UnmatchedFunctionAssumeWarning(function: "m.no_such"),
+    types.StaleFunctionAssumeWarning(function: "m.go"),
   ])
   support.cleanup(root)
 }
@@ -9835,7 +9835,7 @@ assume here/io.typo : [Disk]
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
-    types.UnmatchedFunctionExternalWarning(function: "here/io.typo"),
+    types.UnmatchedFunctionAssumeWarning(function: "here/io.typo"),
   ])
   support.cleanup(root)
 }
@@ -9880,11 +9880,11 @@ assume dep/io : [Disk]
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
-    types.UnmatchedFunctionExternalWarning(function: "m.no_such"),
-    types.UnmatchedModuleExternalWarning(module: "nowhere/mod"),
+    types.UnmatchedFunctionAssumeWarning(function: "m.no_such"),
+    types.UnmatchedModuleAssumeWarning(module: "nowhere/mod"),
     // `dep/io` is a real dependency module, but it defines `writes` and not
     // `typo`. The module tier would have waved the misspelling through.
-    types.UnmatchedFunctionExternalWarning(function: "dep/io.typo"),
+    types.UnmatchedFunctionAssumeWarning(function: "dep/io.typo"),
   ])
   support.cleanup(root)
 }
@@ -9917,7 +9917,7 @@ pub fn a_parsed_dependency_source_outranks_the_catalog_in_the_lint_test() {
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
-    types.UnmatchedFunctionExternalWarning(function: "gleam/list.typo"),
+    types.UnmatchedFunctionAssumeWarning(function: "gleam/list.typo"),
   ])
   support.cleanup(root)
 }
@@ -9965,7 +9965,7 @@ pub fn a_stale_duplicate_dependency_copy_does_not_answer_for_a_name_test() {
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
-    types.UnmatchedFunctionExternalWarning(function: "dep/mod.writes"),
+    types.UnmatchedFunctionAssumeWarning(function: "dep/mod.writes"),
   ])
   support.cleanup(root)
 }
@@ -10055,7 +10055,7 @@ pub fn an_external_on_a_function_less_dependency_module_is_flagged_test() {
   results
   |> list.flat_map(fn(r) { r.warnings })
   |> should.equal([
-    types.UnmatchedFunctionExternalWarning(function: "types_only/mod.whatever"),
+    types.UnmatchedFunctionAssumeWarning(function: "types_only/mod.whatever"),
   ])
   support.cleanup(root)
 }

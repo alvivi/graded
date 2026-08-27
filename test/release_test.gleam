@@ -19,7 +19,8 @@ import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/types.{
   type EffectSet, type Warning, Specific, UnknownClauseWarning,
-  UnmatchedCheckWarning, UnmatchedTypeFieldWarning, UnverifiedCheckShapeWarning,
+  UnmatchedCheckWarning, UnmatchedFieldAssumeWarning,
+  UnverifiedCheckShapeWarning,
 }
 import simplifile
 import support.{cleanup, write_fixture}
@@ -180,7 +181,7 @@ pub fn unqualified_check_and_type_lines_warn_test() {
       #("app.graded", "assume Opts.on_change : []\ncheck run : []\n"),
     ])
 
-  expect_warning(warnings, UnmatchedTypeFieldWarning(name: "Opts.on_change"))
+  expect_warning(warnings, UnmatchedFieldAssumeWarning(name: "Opts.on_change"))
   expect_warning(warnings, UnmatchedCheckWarning(function: "run"))
 }
 
@@ -290,7 +291,7 @@ pub fn mismatched_qualifier_warns_test() {
       #("app.graded", "assume opts.Opts.gone : []\ncheck opts.missing : []\n"),
     ])
 
-  expect_warning(warnings, UnmatchedTypeFieldWarning(name: "opts.Opts.gone"))
+  expect_warning(warnings, UnmatchedFieldAssumeWarning(name: "opts.Opts.gone"))
   expect_warning(warnings, UnmatchedCheckWarning(function: "opts.missing"))
 }
 
@@ -307,7 +308,7 @@ pub fn dependency_type_field_does_not_warn_test() {
     ),
     #("app.graded", "assume widgets/ui.Config.on_click : [Dom]\n"),
   ])
-  |> refute_warning(UnmatchedTypeFieldWarning(
+  |> refute_warning(UnmatchedFieldAssumeWarning(
     name: "widgets/ui.Config.on_click",
   ))
 }
@@ -323,7 +324,7 @@ pub fn unknown_module_qualifier_warns_test() {
     ),
     #("app.graded", "assume optz.Opts.on_change : []\n"),
   ])
-  |> expect_warning(UnmatchedTypeFieldWarning(name: "optz.Opts.on_change"))
+  |> expect_warning(UnmatchedFieldAssumeWarning(name: "optz.Opts.on_change"))
 }
 
 // A field declared through a module-local function alias (`callback: Handler`
@@ -343,7 +344,7 @@ pub type Widget {
     ),
     #("app.graded", "assume widget.Widget.callback : [Dom]\n"),
   ])
-  |> refute_warning(UnmatchedTypeFieldWarning(name: "widget.Widget.callback"))
+  |> refute_warning(UnmatchedFieldAssumeWarning(name: "widget.Widget.callback"))
 }
 
 // A field typed with a function alias imported from another project module
@@ -363,7 +364,7 @@ pub type Widget {
     ),
     #("app.graded", "assume widget.Widget.callback : [Dom]\n"),
   ])
-  |> refute_warning(UnmatchedTypeFieldWarning(name: "widget.Widget.callback"))
+  |> refute_warning(UnmatchedFieldAssumeWarning(name: "widget.Widget.callback"))
 }
 
 // A module-local alias that delegates to an imported alias
@@ -386,7 +387,7 @@ pub type Widget {
     ),
     #("app.graded", "assume widget.Widget.callback : [Dom]\n"),
   ])
-  |> refute_warning(UnmatchedTypeFieldWarning(name: "widget.Widget.callback"))
+  |> refute_warning(UnmatchedFieldAssumeWarning(name: "widget.Widget.callback"))
 }
 
 // A field whose type is a non-function type owned by an installed dependency
@@ -409,7 +410,7 @@ pub type Widget {
     ),
     #("app.graded", "assume widget.Widget.value : []\n"),
   ])
-  |> expect_warning(UnmatchedTypeFieldWarning(name: "widget.Widget.value"))
+  |> expect_warning(UnmatchedFieldAssumeWarning(name: "widget.Widget.value"))
 }
 
 // The dependency counterpart of the project case: a field typed with a
@@ -432,7 +433,7 @@ pub type Widget {
     ),
     #("app.graded", "assume widget.Widget.callback : [Dom]\n"),
   ])
-  |> refute_warning(UnmatchedTypeFieldWarning(name: "widget.Widget.callback"))
+  |> refute_warning(UnmatchedFieldAssumeWarning(name: "widget.Widget.callback"))
 }
 
 // A field `assume` line on a project type whose field isn't function-typed can never
@@ -443,7 +444,7 @@ pub fn non_function_field_annotation_warns_test() {
     #("rec.gleam", "pub type Rec {\n  Rec(count: Int)\n}\n"),
     #("app.graded", "assume rec.Rec.count : []\n"),
   ])
-  |> expect_warning(UnmatchedTypeFieldWarning(name: "rec.Rec.count"))
+  |> expect_warning(UnmatchedFieldAssumeWarning(name: "rec.Rec.count"))
 }
 
 // Bundled catalog file names

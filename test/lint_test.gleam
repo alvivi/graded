@@ -15,7 +15,7 @@ import graded/internal/annotation
 import graded/internal/effects
 import graded/internal/lint
 import graded/internal/signatures
-import graded/internal/types.{QualifiedName, UnmatchedTypeFieldWarning}
+import graded/internal/types.{QualifiedName, UnmatchedFieldAssumeWarning}
 
 // Fixture setup
 //
@@ -83,7 +83,7 @@ fn field_warnings(
   |> lint.run
   |> list.filter_map(fn(warning) {
     case warning {
-      UnmatchedTypeFieldWarning(name:) -> Ok(name)
+      UnmatchedFieldAssumeWarning(name:) -> Ok(name)
       _ -> Error(Nil)
     }
   })
@@ -294,6 +294,6 @@ pub fn a_dependency_that_lacks_the_name_is_flagged_test() {
   )
   |> lint.run
   |> should.equal([
-    types.UnmatchedFunctionExternalWarning(function: "dep/io.typo"),
+    types.UnmatchedFunctionAssumeWarning(function: "dep/io.typo"),
   ])
 }

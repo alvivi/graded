@@ -280,14 +280,14 @@ pub type EffectAnnotation {
   )
 }
 
-// Effect annotation for a type's field (e.g., `type Handler.on_click : [Dom]`).
+// Effect annotation for a type's field (e.g. `assume myapp.Handler.on_click : [Dom]`).
 //
 // `module` is `Some(...)` when the annotation comes from a spec file (one
 // file per package, qualified names like `myapp.Handler.on_click`) and
 // `None` when it comes from a per-module cache file (bare names scoped to
 // the file's module by location).
-pub type TypeFieldAnnotation {
-  TypeFieldAnnotation(
+pub type FieldAnnotation {
+  FieldAnnotation(
     module: Option(String),
     type_name: String,
     field: String,
@@ -295,7 +295,7 @@ pub type TypeFieldAnnotation {
   )
 }
 
-// Whether a type field's effect was hand-written on a `type Type.field : [...]`
+// Whether a type field's effect was hand-written on an `assume m.Type.field : [...]`
 // line (`Declared`) or inferred from a construction site (`Inferred`). A field
 // call on a parameter/opaque receiver consults only `Declared` lines — an
 // inferred, nominal-type-keyed entry never resolves such a receiver, since it
@@ -357,7 +357,7 @@ pub type UnknownReason {
 pub type LookupOrigin {
   // A per-function declaring line in this project's spec: an
   // `assume` line, with or without a `where returns` clause.
-  UserExternal
+  UserAssume
   // A committed `effects` line in this project's spec.
   CommittedSpec
   // In-memory inference over this project's source, this run.
@@ -375,12 +375,12 @@ pub type LookupOrigin {
   Catalog(package: String)
   // An `assume <module>` line answered for a name nothing else keys.
   // `source` is the file that declares it. Named apart from
-  // `ExternalTarget.ModuleExternal`, which shares this module's namespace.
-  ModuleExternalOrigin(source: LookupOrigin)
+  // `AssumeTarget.ModuleAssume`, which shares this module's namespace.
+  ModuleAssumeOrigin(source: LookupOrigin)
   // A hand-written field `assume` line resolved a field call. `source` is the file that
   // declares it. Set only by the field path, never stored beside a function
   // entry.
-  TypeLine(source: LookupOrigin)
+  FieldAssumeOrigin(source: LookupOrigin)
 }
 
 // Which of the knowledge base's two maps answered a function lookup. Reported
@@ -391,9 +391,9 @@ pub type EffectSource {
   // `origin` names the source that wrote it.
   FunctionEntry(origin: LookupOrigin)
   // The function's module carries `assume <module> : [...]`. Reached
-  // only when nothing keys the function itself, so a per-function external or a
+  // only when nothing keys the function itself, so a per-function `assume` or a
   // catalog line for it takes precedence; it carries no per-function bounds.
-  ModuleExternalEntry(origin: LookupOrigin)
+  ModuleAssumeEntry(origin: LookupOrigin)
 }
 
 // A type field's resolved effect in the knowledge base. `effects` is the field
@@ -446,11 +446,11 @@ pub type ForeignFunction {
 }
 
 // Whether an external targets a whole module or a specific function.
-pub type ExternalTarget {
+pub type AssumeTarget {
   // `assume gleam/list : []` — the entire module is pure.
-  ModuleExternal
+  ModuleAssume
   // `assume gleam/httpc.send : [Http]` — a specific function.
-  FunctionExternal(name: String)
+  FunctionAssume(name: String)
 }
 
 // A trusted declaration (`assume gleam/httpc.send : [Http]`).
@@ -472,10 +472,10 @@ pub type ExternalTarget {
 //
 // `returns` carries the `where returns` clause, meaningful for a function
 // target; a clause on a module path is a lint.
-pub type ExternalAnnotation {
-  ExternalAnnotation(
+pub type AssumeAnnotation {
+  AssumeAnnotation(
     module: String,
-    target: ExternalTarget,
+    target: AssumeTarget,
     params: List(ParamBound),
     effects: Option(EffectSet),
     returns: Option(EffectTerm),
@@ -500,14 +500,8 @@ pub type GradedLine {
     annotation: EffectAnnotation,
     unknown_clauses: List(UnknownClause),
   )
-  TypeFieldLine(
-    type_field: TypeFieldAnnotation,
-    unknown_clauses: List(UnknownClause),
-  )
-  ExternalLine(
-    external: ExternalAnnotation,
-    unknown_clauses: List(UnknownClause),
-  )
+  FieldAssumeLine(field: FieldAnnotation, unknown_clauses: List(UnknownClause))
+  AssumeLine(assume: AssumeAnnotation, unknown_clauses: List(UnknownClause))
   // An `assume` line whose every clause is one this version does not know, so
   // it carries no semantics at all: it keys nothing and is retained for its
   // clauses alone. One variant for all three path shapes — function, module and
@@ -875,26 +869,26 @@ pub type Warning {
   // nothing and the field call silently degrades to `[Unknown]`, so it's
   // flagged. `name` is the annotation as written (`Opts.on_change` when
   // unqualified, `myapp/opts.Opts.on_change` when qualified).
-  UnmatchedTypeFieldWarning(name: String)
+  UnmatchedFieldAssumeWarning(name: String)
   // A per-function `assume <module>.<function>` line naming one of
   // this package's own ordinary Gleam functions — a body graded can see and
   // every caller runs. The syntax declares foreign code, so the line describes
   // nothing the body does not; it is ignored and the body is walked instead.
   // Scoped to modules the project index holds: declaring a *dependency*
   // function with a visible body is the line's documented use.
-  StaleFunctionExternalWarning(function: String)
+  StaleFunctionAssumeWarning(function: String)
   // A per-function `assume <module>.<function>` line whose name
   // resolves nowhere — no dependency, no catalog entry, no project module. The
   // declaration then covers nothing, so it is a typo rather than a budget.
-  UnmatchedFunctionExternalWarning(function: String)
+  UnmatchedFunctionAssumeWarning(function: String)
   // A module-level `assume <module>` line whose module is neither an
   // installed dependency, a path dependency, nor a project module. Same
   // reasoning one tier up: the declaration governs no module at all.
-  UnmatchedModuleExternalWarning(module: String)
+  UnmatchedModuleAssumeWarning(module: String)
   // A `where returns` clause on an `assume <module>.<function>` line naming
   // one of this package's
   // own ordinary Gleam functions. The same rule as
-  // `StaleFunctionExternalWarning` one channel over: the body is visible, so
+  // `StaleFunctionAssumeWarning` one channel over: the body is visible, so
   // every caller resolves what it hands back for itself and the line declares
   // nothing. It is ignored and the body walked instead.
   StaleReturnsClauseWarning(function: String)
@@ -918,7 +912,7 @@ pub type Warning {
   // so no call site can ever bind it and resolution stays conservative.
   // Scoped to lines with an explicit bound list: a boundless polymorphic
   // assume resolves through registry-synthesized bounds and is not a defect.
-  UnboundExternalTermVariableWarning(function: String, free_vars: List(String))
+  UnboundAssumeTermVariableWarning(function: String, free_vars: List(String))
   // A bound whose payload names a *different* bound's parameter, on a line
   // whose effects term or `where returns` clause uses that variable. The two
   // binding channels then disagree: the term binds the variable through the

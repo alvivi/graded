@@ -4,8 +4,8 @@ import gleeunit/should
 import graded/internal/answer
 import graded/internal/types.{
   Catalog, CommittedSpec, Declared, DependencySpec, FunctionEntry,
-  ModuleExternalEntry, ModuleExternalOrigin, ParamBound, TAbs, TLabels, TUnion,
-  TVar, UserExternal,
+  ModuleAssumeEntry, ModuleAssumeOrigin, ParamBound, TAbs, TLabels, TUnion, TVar,
+  UserAssume,
 }
 
 // Rendering one lookup
@@ -141,7 +141,7 @@ pub fn a_module_level_external_states_its_precedence_test() {
     bounds: [],
     term: labels(["Time"]),
     source: answer.Entry(
-      ModuleExternalEntry(origin: ModuleExternalOrigin(source: UserExternal)),
+      ModuleAssumeEntry(origin: ModuleAssumeOrigin(source: UserAssume)),
       types.NoFallback,
     ),
   )
@@ -259,7 +259,7 @@ pub fn the_graded_renderer_writes_spec_syntax_test() {
 pub fn the_graded_renderer_comments_the_source_test() {
   // The same vocabulary as prose, inside a comment, so the whole answer still
   // parses as `.graded`.
-  from(UserExternal)
+  from(UserAssume)
   |> answer.render(answer.Graded)
   |> should.equal(
     "effects app.run : [Stdout]\n// resolved from your spec's `assume` line",
