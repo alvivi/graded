@@ -2216,22 +2216,26 @@ fn unbound_fn_typed_params(
   cache: LocalCache,
 ) -> Set(String) {
   let declared_names = effects.bound_name_set(declared)
-  cached_callback_params(definition, cache)
+  cached_callback_params(definition.definition, cache)
   |> set.from_list
   |> set.filter(fn(name) { !set.contains(declared_names, name) })
 }
 
 // In declaration order, which the lift path needs to abstract over them.
 fn cached_callback_params(
-  definition: Definition(Function),
+  function: Function,
   cache: LocalCache,
 ) -> List(String) {
-  case dict.get(cache.callback_params, definition.definition.name) {
+  case dict.get(cache.callback_params, function.name) {
     Ok(params) -> params
-    // A definition the cache was not built over — nothing keys it, so derive
-    // it from the same two sources rather than reporting no callbacks.
+    // A function the cache was not built over — nothing keys it, so derive it
+    // from the same two sources rather than reporting no callbacks.
     Error(Nil) ->
-      callback_params(definition, cache.fn_alias_types, cache.girard_fn_typed)
+      signatures.ordered_callback_params(
+        function,
+        cache.fn_alias_types,
+        typeinfo.fn_typed_params(cache.girard_fn_typed, function.name),
+      )
   }
 }
 
@@ -5478,22 +5482,18 @@ fn bind_producer_params(
             )
           // A **Declared** summary — an assumption over this package's own
           // `@external`, whose producer is called from its own module — binds
-          // against the bounds its line carries: syntactic fn-typed detection
-          // fails exactly where the line is needed (an alias-typed callback, a
-          // bound name differing from the label). `Fresh` and `Closed` keep
-          // the bounds derived from the definition's fn-typed parameters —
-          // deliberately for `Closed` too: a same-module `Closed` clause sits
-          // on a function whose definition is right here, this run's fresh
-          // inference replaces such a committed summary anyway, and where the
-          // derived list misses a callback the hoisted synthesis below still
-          // binds the clause's variables by name.
+          // against the bounds its line carries: a written line is the more
+          // specific claim, and detection cannot see a bound name differing
+          // from the label. `Fresh` and `Closed` scope over the producer's own
+          // callback parameters — the canonical set, so the clause is scoped
+          // by exactly what the walk that produced it abstracted over.
+          // Deliberately so for `Closed` too: a same-module `Closed` clause
+          // sits on a function whose definition is right here, and this run's
+          // fresh inference replaces such a committed summary anyway.
           let scoping = case summary {
             effects.Declared(bounds:) -> bounds
             effects.Fresh | effects.Closed(..) ->
-              definition.definition
-              |> signatures.fn_typed_params_from_function(cache.fn_alias_types)
-              |> set.to_list
-              |> list.sort(string.compare)
+              cached_callback_params(definition.definition, cache)
               |> list.map(self_referential_bound)
           }
           #(scoping, signatures.merge(registry, local_registry))
@@ -5606,15 +5606,11 @@ fn compute_returned_operator(
     Ok(#(positions, value)) -> {
       let producer_operators =
         signatures.operator_param_shapes(function, cache.fn_alias_types)
-      // All fn-typed params of the producer. `ordered_fn_typed_param_names` and
-      // `operator_param_shapes` filter to the same set (fn-typed Named params), so
-      // this covers both seed origins S1 (producer_bounds) and S3 (ambient ops).
-      let ordered_params =
-        signatures.ordered_callback_params(
-          function,
-          cache.fn_alias_types,
-          set.new(),
-        )
+      // Every callback parameter of the producer, canonically — girard's
+      // included, so a producer whose callback carries no `fn(...)` annotation
+      // is abstracted over here as the walk abstracted over it. Covers both
+      // seed origins S1 (producer_bounds) and S3 (ambient ops).
+      let ordered_params = cached_callback_params(function, cache)
       let producer_params = set.from_list(ordered_params)
       // Fix D S1: seed the producer's params as sentinels (`$op$name`) rather than
       // self-referential, so a residual leaked var of the same name cannot merge
@@ -6049,7 +6045,7 @@ fn lift_operator_miss(
   // The canonical callback set, in declaration order: a callback carrying no
   // `fn(...)` annotation needs its binder here too, or the lifted term's
   // variable stays free and the application goes stuck.
-  let fn_param_names = cached_callback_params(definition, cache)
+  let fn_param_names = cached_callback_params(function, cache)
   let bounds = list.map(fn_param_names, self_referential_bound)
   let #(body_pairs, memo) =
     collect_effects(
