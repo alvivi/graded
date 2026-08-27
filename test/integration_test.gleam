@@ -11806,3 +11806,121 @@ pub fn helper() -> Nil {
   |> should.be_true
   support.cleanup(root)
 }
+
+// Pipes into a function capture
+//
+// `x |> f(_, y)` is `f(x, y)`, so the piped value binds the parameter at the
+// discard's position — a callback among them. Every callee shape the ordinary
+// pipe branches resolve is covered, and a receiver nothing traces reads the
+// `[Unknown]` the direct call reads rather than passing for pure.
+
+fn pipe_capture_project(root: String) -> List(types.EffectAnnotation) {
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/ffi.gleam",
+      support.foreign_fn("shout", "() -> Nil"),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/helper.gleam",
+      "pub type Inner {
+  Inner(run: fn(fn() -> Nil, Int) -> Nil)
+}
+
+pub type Outer {
+  Outer(inner: Inner)
+}
+
+pub fn apply(cb: fn() -> Nil, n: Int) -> Nil {
+  case n {
+    0 -> Nil
+    _ -> cb()
+  }
+}
+
+pub fn labelled(callback cb: fn() -> Nil, times n: Int) -> Nil {
+  apply(cb, n)
+}
+",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/proj.gleam",
+      "import ffi
+import helper
+
+pub fn shout() -> Nil {
+  ffi.shout()
+}
+
+fn local(cb: fn() -> Nil, n: Int) -> Nil {
+  helper.apply(cb, n)
+}
+
+pub fn discard_first() -> Nil {
+  shout |> helper.apply(_, 1)
+}
+
+pub fn discard_later() -> Nil {
+  1 |> helper.apply(shout, _)
+}
+
+pub fn discard_labelled() -> Nil {
+  shout |> helper.labelled(times: 1, callback: _)
+}
+
+pub fn discard_local() -> Nil {
+  shout |> local(_, 1)
+}
+
+pub fn discard_nested_field(o: helper.Outer) -> Nil {
+  shout |> o.inner.run(_, 1)
+}
+
+pub fn nested_field_direct(o: helper.Outer) -> Nil {
+  o.inner.run(shout, 1)
+}
+",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/proj.graded", "assume ffi.shout : [Stdout]\n")
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(content) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(file) = annotation.parse_file(content)
+  annotation.extract_annotations(file)
+}
+
+fn effects_named(
+  annotations: List(types.EffectAnnotation),
+  function: String,
+) -> types.EffectTerm {
+  let assert Ok(annotation) =
+    list.find(annotations, fn(a) { a.function == function })
+  annotation.effects
+}
+
+pub fn piping_into_a_capture_binds_the_callback_test() {
+  let root = "build/pipe_capture_project"
+  let annotations = pipe_capture_project(root)
+  let stdout = types.TLabels(set.from_list(["Stdout"]))
+
+  [
+    "proj.discard_first",
+    "proj.discard_later",
+    "proj.discard_labelled",
+    "proj.discard_local",
+  ]
+  |> list.each(fn(function) {
+    effects_named(annotations, function) |> should.equal(stdout)
+  })
+
+  // A receiver with no traceable construction resolves the same way it does
+  // without the capture — conservatively, not as pure.
+  effects_named(annotations, "proj.discard_nested_field")
+  |> should.equal(effects_named(annotations, "proj.nested_field_direct"))
+  support.cleanup(root)
+}

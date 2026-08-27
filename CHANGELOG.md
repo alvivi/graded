@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Piping into a function capture — `x |> f(_, y)` — now tracks the piped
+  value at the discard's position, with the discard's label, so a callback
+  reaching a parameter that way is charged to the caller. Such a call resolved
+  nothing about its arguments, which read as pure where the callee's effects
+  are its callback's. Every callee shape is covered: qualified, unqualified,
+  and a nested field access.
 - A call from inside a walked fallback body to an external declared for the
   walk's targets now charges its callback arguments beside the declaration,
   instead of the declaration alone.
