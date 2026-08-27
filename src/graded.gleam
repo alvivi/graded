@@ -183,7 +183,9 @@ pub fn main() -> Nil {
     ["effect", ..rest] ->
       report(cli.parse_effect_args(rest), fn(arguments) {
         let #(name, directory, format) = arguments
-        run_effect_formatted(directory, name, public_format(format))
+        // The decoder already answers in the renderer's own vocabulary, so
+        // the CLI takes the internal path rather than converting twice.
+        effect_answer(directory, name) |> result.map(answer.render(_, format))
       })
 
     ["why", ..rest] ->
@@ -1026,14 +1028,6 @@ pub fn run_effect_formatted(
 ) -> Result(String, GradedError) {
   effect_answer(directory, name)
   |> result.map(answer.render(_, answer_format(format)))
-}
-
-// And back, for the CLI's own decoder, which reads the internal enum.
-fn public_format(format: answer.Format) -> Format {
-  case format {
-    answer.Graded -> Graded
-    answer.Prose -> Prose
-  }
 }
 
 fn answer_format(format: Format) -> answer.Format {
