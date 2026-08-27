@@ -2064,14 +2064,10 @@ fn extract_pipe_target(
           extract_from_arguments(arguments_before, context, env),
           extract_from_arguments(arguments_after, context, env),
         )
-      pipe_into_capture(
-        function_expression,
-        span,
-        context,
-        env,
-        arguments,
-        args,
-      )
+      piped_call(function_expression, span, context, env, arguments, args)
+      |> result.lazy_unwrap(fn() {
+        extract_from_expression(expression, context, env)
+      })
     }
 
     // Any other shape — handle normally; no arg tracking.
@@ -2079,28 +2075,30 @@ fn extract_pipe_target(
   }
 }
 
-// The callee half of a piped function capture, by the shape the capture names:
-// qualified (`x |> m.f(_, y)`), a nested field access (`x |> o.inner.run(_)`),
-// or unqualified (`x |> f(_, y)`) — the same three the ordinary pipe branches
-// resolve. `arguments` is the walk of the capture's explicit arguments, and
-// `args` the full argument list with the piped value already at the discard's
-// position. Any other callee shape names nothing to key the call by, so the
-// capture's parts are walked as values.
-fn pipe_into_capture(
-  function_expression: Expression,
+// The callee half of a piped call, by the shape the target names: qualified
+// (`x |> m.f(y)`), a nested field access (`x |> o.inner.run(y)`), or
+// unqualified (`x |> f(y)`). `arguments` is the walk of the explicit
+// arguments, and `args` the full argument list with the piped value already at
+// its position — which is what differs between an ordinary pipe, where it
+// leads, and a capture, where it takes the discard's place.
+//
+// `Error(Nil)` where the callee is none of the three, so each caller keeps its
+// own fallback for a target that names nothing to key a call by.
+fn piped_call(
+  callee: Expression,
   span: glance.Span,
   context: ImportContext,
   env: Env,
   arguments: ExtractResult,
   args: List(CallArgument),
-) -> ExtractResult {
-  case function_expression {
+) -> Result(ExtractResult, Nil) {
+  case callee {
     glance.FieldAccess(
       container: glance.Variable(receiver_span, alias),
       label: function_name,
       ..,
     ) ->
-      merge_with_args(
+      Ok(merge_with_args(
         resolve_qualified_call(
           alias,
           function_name,
@@ -2112,10 +2110,10 @@ fn pipe_into_capture(
         arguments,
         span,
         args,
-      )
+      ))
 
     glance.FieldAccess(container: receiver, label: function_name, ..) ->
-      merge_with_args(
+      Ok(merge_with_args(
         resolve_nested_field_call(
           receiver,
           function_name,
@@ -2127,21 +2125,17 @@ fn pipe_into_capture(
         merge(extract_from_expression(receiver, context, env), arguments),
         span,
         args,
-      )
+      ))
 
     glance.Variable(name:, ..) ->
-      merge_with_args(
+      Ok(merge_with_args(
         resolve_variable_call(name, span, context, env),
         arguments,
         span,
         args,
-      )
+      ))
 
-    _ ->
-      merge(
-        extract_from_expression(function_expression, context, env),
-        arguments,
-      )
+    _ -> Error(Nil)
   }
 }
 
