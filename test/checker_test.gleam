@@ -1321,13 +1321,13 @@ pub fn caller() -> Nil {
 // `external` annotations resolve third-party and same-module `@external`
 // calls that would otherwise be [Unknown].
 
-fn check_source_with_externals(
+fn check_source_with_assumes(
   source: String,
   annotations: List(EffectAnnotation),
-  externals: List(types.AssumeAnnotation),
+  assumes: List(types.AssumeAnnotation),
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
-  let kb = effects.with_externals(knowledge_base(), externals, types.UserAssume)
+  let kb = effects.with_assumes(knowledge_base(), assumes, types.UserAssume)
   let #(violations, _warnings) =
     checker.check(
       module,
@@ -1347,7 +1347,7 @@ pub fn external_resolves_effects_test() {
   let source =
     "import gleam/httpc
 pub fn fetch() { httpc.send(request) }"
-  let externals = [
+  let assumes = [
     types.AssumeAnnotation(
       "gleam/httpc",
       types.FunctionAssume("send"),
@@ -1364,7 +1364,7 @@ pub fn fetch() { httpc.send(request) }"
       effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
       returns: None,
     )
-  check_source_with_externals(source, [annotation], externals)
+  check_source_with_assumes(source, [annotation], assumes)
   |> should.equal([])
 }
 
@@ -1373,7 +1373,7 @@ pub fn external_violates_check_test() {
   let source =
     "import gleam/httpc
 pub fn fetch() { httpc.send(request) }"
-  let externals = [
+  let assumes = [
     types.AssumeAnnotation(
       "gleam/httpc",
       types.FunctionAssume("send"),
@@ -1390,7 +1390,7 @@ pub fn fetch() { httpc.send(request) }"
       effect_term.from_effect_set(Specific(set.new())),
       returns: None,
     )
-  check_source_with_externals(source, [annotation], externals)
+  check_source_with_assumes(source, [annotation], assumes)
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
 }
@@ -1478,7 +1478,7 @@ pub fn read_clock() { now() }"
 // module — not the `[Unknown]` an undeclared external yields. Regression for the
 // FFI idiom: an `@external` binding paired with a same-module wrapper.
 pub fn external_same_module_resolves_declared_effects_test() {
-  let externals = [
+  let assumes = [
     types.AssumeAnnotation(
       "ffi_mod",
       types.FunctionAssume("now"),
@@ -1487,9 +1487,9 @@ pub fn external_same_module_resolves_declared_effects_test() {
       returns: None,
     ),
   ]
-  infer_external_wrapper(effects.with_externals(
+  infer_external_wrapper(effects.with_assumes(
     knowledge_base(),
-    externals,
+    assumes,
     types.UserAssume,
   ))
   |> should.equal(Specific(set.from_list(["Time"])))
@@ -3302,7 +3302,7 @@ pub fn infer_operator_param_threads_all_callbacks_test() {
   // as a curried application `((action [Stdout]) [FileSystem])` — neither is
   // dropped (the previous single-callback behaviour lost `fs.read`).
   let kb =
-    effects.with_externals(
+    effects.with_assumes(
       knowledge_base(),
       [fs_read_external()],
       types.UserAssume,
@@ -3339,7 +3339,7 @@ pub fn infer_operator_param_non_adjacent_callbacks_test() {
   // Callbacks interleaved with non-function arguments (positions 1 and 3) still
   // thread in order.
   let kb =
-    effects.with_externals(
+    effects.with_assumes(
       knowledge_base(),
       [fs_read_external()],
       types.UserAssume,
@@ -4503,7 +4503,7 @@ fn second_order_violations(
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
   let kb =
-    effects.with_externals(
+    effects.with_assumes(
       knowledge_base(),
       [fs_read_external()],
       types.UserAssume,

@@ -513,7 +513,7 @@ pub fn with_inferred_adds_new_entries_test() {
 // pair. These pin what each writer records, and that a losing source labels
 // nothing.
 
-fn external(
+fn assume(
   module: String,
   function: String,
   labels: List(String),
@@ -527,7 +527,7 @@ fn external(
   )
 }
 
-fn module_external(
+fn module_assume(
   module: String,
   labels: List(String),
 ) -> types.AssumeAnnotation {
@@ -577,9 +577,9 @@ fn entry_of(
 }
 
 pub fn function_external_records_its_origin_test() {
-  effects.with_externals(
+  effects.with_assumes(
     effects.new_knowledge_base(),
-    [external("app", "now", ["Time"])],
+    [assume("app", "now", ["Time"])],
     types.UserAssume,
   )
   |> origin_of(QualifiedName("app", "now"))
@@ -621,9 +621,9 @@ pub fn a_module_external_names_the_file_that_declared_it_test() {
   // Module-level externals live in their own map and are reported as the module
   // entry, whose origin names both the kind of line and the file it sits in.
   let kb =
-    effects.with_externals(
+    effects.with_assumes(
       effects.new_knowledge_base(),
-      [module_external("fake_clock", ["Time"])],
+      [module_assume("fake_clock", ["Time"])],
       types.Catalog("fake_clock_pkg"),
     )
   effects.lookup(kb, QualifiedName("fake_clock", "now"))
@@ -655,7 +655,7 @@ pub fn a_dependency_spec_entry_names_its_package_test() {
 
 pub fn a_catalog_entry_names_its_package_test() {
   // `gleam/io.println` is an `assume` line in the bundled catalog, so
-  // this covers the catalog's route through `with_externals` — the one that
+  // this covers the catalog's route through `with_assumes` — the one that
   // made the origin a parameter rather than a constant.
   let root = "build/eff_catalog_origin"
   let _ = simplifile.delete(root)
@@ -986,8 +986,8 @@ pub fn a_user_external_beats_a_dependency_external_test() {
     "dep",
     "assume dep/ffi.now : [Time]\n",
   )
-  |> effects.with_externals(
-    [external("dep/ffi", "now", ["Mocked"])],
+  |> effects.with_assumes(
+    [assume("dep/ffi", "now", ["Mocked"])],
     types.UserAssume,
   )
   |> entry_of(QualifiedName("dep/ffi", "now"))
@@ -1034,8 +1034,8 @@ pub fn a_path_dep_spec_overrides_a_catalog_entry_test() {
   // travel with its term — a term that binds `cb` is useless without them.
   let kb =
     effects.new_knowledge_base()
-    |> effects.with_externals(
-      [external("dep/ffi", "now", ["Catalogued"]), external("dep", "run", [])],
+    |> effects.with_assumes(
+      [assume("dep/ffi", "now", ["Catalogued"]), assume("dep", "run", [])],
       types.Catalog("dep"),
     )
     |> effects.with_path_dep_spec(
@@ -1109,10 +1109,10 @@ pub fn a_path_dep_spec_yields_to_a_user_external_test() {
     ),
   ]
   let declaration =
-    types.AssumeAnnotation(..external("dep", "run", ["Mocked"]), params: bounds)
+    types.AssumeAnnotation(..assume("dep", "run", ["Mocked"]), params: bounds)
   let kb =
     effects.new_knowledge_base()
-    |> effects.with_externals([declaration], types.UserAssume)
+    |> effects.with_assumes([declaration], types.UserAssume)
     |> effects.with_path_dep_spec(
       dep_spec(
         "build/eff_path_dep_under_user",
@@ -1138,12 +1138,12 @@ pub fn a_path_dep_module_external_overrides_only_the_catalogs_test() {
     )
   let kb =
     effects.new_knowledge_base()
-    |> effects.with_externals(
-      [module_external("dep/catalogued", ["Catalogued"])],
+    |> effects.with_assumes(
+      [module_assume("dep/catalogued", ["Catalogued"])],
       types.Catalog("dep"),
     )
-    |> effects.with_externals(
-      [module_external("dep/declared", ["Mocked"])],
+    |> effects.with_assumes(
+      [module_assume("dep/declared", ["Mocked"])],
       types.UserAssume,
     )
     |> effects.with_path_dep_spec(spec, types.PathDependency("dep"))
@@ -1169,8 +1169,8 @@ pub fn a_path_dep_function_entry_beats_a_module_external_test() {
   // entry answers first — per-function beats module-level, whoever wrote it.
   let kb =
     effects.new_knowledge_base()
-    |> effects.with_externals(
-      [module_external("dep/ffi", ["Mocked"])],
+    |> effects.with_assumes(
+      [module_assume("dep/ffi", ["Mocked"])],
       types.UserAssume,
     )
     |> effects.with_path_dep_spec(
@@ -1200,8 +1200,8 @@ pub fn a_source_inferred_path_dep_yields_to_the_catalog_test() {
   // [Unknown] for the FFI bodies a catalog entry describes precisely, so
   // reordering this needs its own design.
   effects.new_knowledge_base()
-  |> effects.with_externals(
-    [external("dep/ffi", "now", ["Catalogued"])],
+  |> effects.with_assumes(
+    [assume("dep/ffi", "now", ["Catalogued"])],
     types.Catalog("dep"),
   )
   |> effects.with_inferred(
@@ -1986,8 +1986,8 @@ fn narrowed_to(
   active: List(String),
 ) -> effects.KnowledgeBase {
   effects.new_knowledge_base()
-  |> effects.with_externals(
-    [external(name.module, name.function, ["Disk"])],
+  |> effects.with_assumes(
+    [assume(name.module, name.function, ["Disk"])],
     types.Catalog("app"),
   )
   |> effects.with_foreign_functions(dict.from_list([#(name, entry)]))
@@ -2089,7 +2089,7 @@ fn dependency_external_base(
   |> effects.with_package_targets(
     types.NamedTargets(set.from_list(["erlang", "javascript"])),
   )
-  |> effects.with_externals([external("dep/ffi", "run", ["Time"])], origin)
+  |> effects.with_assumes([assume("dep/ffi", "run", ["Time"])], origin)
   |> effects.with_dependency_foreign(
     dict.from_list([
       #(
@@ -2238,10 +2238,7 @@ pub fn a_duplicate_declaration_wins_term_and_bounds_together_test() {
     )
   let base =
     effects.empty_knowledge_base()
-    |> effects.with_externals(
-      annotation.extract_externals(file),
-      types.UserAssume,
-    )
+    |> effects.with_assumes(annotation.extract_assumes(file), types.UserAssume)
   let name = QualifiedName("m", "f")
   let assert effects.Known(term, _source) = effects.lookup(base, name)
   effect_term.to_effect_set(term)
@@ -2288,7 +2285,7 @@ fn bodyless_external_base(
   |> effects.with_package_targets(
     types.NamedTargets(set.from_list(["erlang", "javascript"])),
   )
-  |> effects.with_externals(
+  |> effects.with_assumes(
     [
       types.AssumeAnnotation(
         module: higher_order_ffi.module,
@@ -2422,8 +2419,8 @@ pub fn a_declared_gleam_function_widens_on_the_value_channel_alone_test() {
   let name = QualifiedName("dep/list", "each")
   let base =
     effects.new_knowledge_base()
-    |> effects.with_externals(
-      [module_external("dep/list", [])],
+    |> effects.with_assumes(
+      [module_assume("dep/list", [])],
       types.ModuleAssumeOrigin(types.CommittedSpec),
     )
     |> effects.with_callback_params(dict.from_list([#(name, ["with"])]))

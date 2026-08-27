@@ -360,20 +360,19 @@ fn with_sourced_type_fields(
 // where the line carries none, which pins the pair against a later
 // existing-keeps gap-fill — so the term never pairs with a lower tier's
 // bounds, whose variable names need not match it.
-pub fn with_externals(
+pub fn with_assumes(
   knowledge_base: KnowledgeBase,
-  externals: List(AssumeAnnotation),
+  assumes: List(AssumeAnnotation),
   origin: LookupOrigin,
 ) -> KnowledgeBase {
-  let #(function_externals, module_externals) =
-    split_externals(externals, origin)
+  let #(function_assumes, module_assumes) = split_assumes(assumes, origin)
   KnowledgeBase(
     ..knowledge_base,
-    all_effects: dict.merge(knowledge_base.all_effects, function_externals),
-    module_effects: dict.merge(knowledge_base.module_effects, module_externals),
+    all_effects: dict.merge(knowledge_base.all_effects, function_assumes),
+    module_effects: dict.merge(knowledge_base.module_effects, module_assumes),
     param_bounds: dict.merge(
       knowledge_base.param_bounds,
-      external_bounds(externals),
+      assume_bounds(assumes),
     ),
   )
 }
@@ -394,14 +393,14 @@ type ExternalTiers =
 // so it keys nothing here and the tiers below keep answering. Every path into
 // the two maps comes through here, so a `None` cannot be read as `[]`
 // anywhere. The function tier folds the same selection the bounds loader
-// folds (`declaring_function_externals`), each dict keeping the last entry.
-fn split_externals(
-  externals: List(AssumeAnnotation),
+// folds (`declaring_function_assumes`), each dict keeping the last entry.
+fn split_assumes(
+  assumes: List(AssumeAnnotation),
   origin: LookupOrigin,
 ) -> ExternalTiers {
-  let function_externals =
+  let function_assumes =
     list.fold(
-      declaring_function_externals(externals),
+      declaring_function_assumes(assumes),
       dict.new(),
       fn(accumulator, entry) {
         let #(name, effects, _bounds) = entry
@@ -411,18 +410,18 @@ fn split_externals(
         ))
       },
     )
-  let module_externals =
-    list.fold(externals, dict.new(), fn(accumulator, external) {
-      case external.target, external.effects {
+  let module_assumes =
+    list.fold(assumes, dict.new(), fn(accumulator, assume) {
+      case assume.target, assume.effects {
         ModuleAssume, Some(effects) ->
-          dict.insert(accumulator, external.module, #(
+          dict.insert(accumulator, assume.module, #(
             effect_term.from_effect_set(effects),
             ModuleAssumeOrigin(source: origin),
           ))
         _, _ -> accumulator
       }
     })
-  #(function_externals, module_externals)
+  #(function_assumes, module_assumes)
 }
 
 // Every function external that declares effects, keyed and in file order —
@@ -430,13 +429,13 @@ fn split_externals(
 // entry winning in each, so on a duplicate declaration the winning term and
 // the winning bounds come off the same line by construction rather than by
 // two rules kept in step.
-fn declaring_function_externals(
-  externals: List(AssumeAnnotation),
+fn declaring_function_assumes(
+  assumes: List(AssumeAnnotation),
 ) -> List(#(QualifiedName, EffectSet, List(ParamBound))) {
-  list.filter_map(externals, fn(external) {
-    case external.target, external.effects {
+  list.filter_map(assumes, fn(assume) {
+    case assume.target, assume.effects {
       FunctionAssume(function), Some(effects) ->
-        Ok(#(QualifiedName(external.module, function), effects, external.params))
+        Ok(#(QualifiedName(assume.module, function), effects, assume.params))
       _, _ -> Error(Nil)
     }
   })
@@ -2316,18 +2315,18 @@ pub fn load_spec_effects_from_file(
 pub fn load_spec_params_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, List(ParamBound)) {
-  let from_externals = external_bounds(annotation.extract_externals(file))
-  // The same population `annotation.external_function_names` selects, derived
+  let from_assumes = assume_bounds(annotation.extract_assumes(file))
+  // The same population `annotation.assume_function_names` selects, derived
   // from the one extraction above rather than a second walk of the file.
-  let external_functions =
-    from_externals
+  let assume_functions =
+    from_assumes
     |> dict.keys()
     |> list.map(types.dotted_name)
     |> set.from_list()
-  list.fold(annotation.extract_annotations(file), from_externals, fn(acc, ann) {
+  list.fold(annotation.extract_annotations(file), from_assumes, fn(acc, ann) {
     use <- bool.guard(when: ann.kind == Check, return: acc)
     use <- bool.guard(
-      when: set.contains(external_functions, ann.function),
+      when: set.contains(assume_functions, ann.function),
       return: acc,
     )
     case annotation.split_function_name(ann.function) {
@@ -2339,13 +2338,13 @@ pub fn load_spec_params_from_file(
 }
 
 // The bound list beside each function external that declares effects, keyed
-// by qualified name — a fold over the same selection `split_externals` folds
+// by qualified name — a fold over the same selection `split_assumes` folds
 // its function tier from, so on a duplicate declaration the winning term and
 // the winning bounds come off the same line, never mixed across lines.
-fn external_bounds(
-  externals: List(AssumeAnnotation),
+fn assume_bounds(
+  assumes: List(AssumeAnnotation),
 ) -> Dict(QualifiedName, List(ParamBound)) {
-  list.fold(declaring_function_externals(externals), dict.new(), fn(acc, entry) {
+  list.fold(declaring_function_assumes(assumes), dict.new(), fn(acc, entry) {
     let #(name, _effects, bounds) = entry
     dict.insert(acc, name, bounds)
   })
@@ -2355,7 +2354,7 @@ fn external_bounds(
 // maps hold the terms, bounds and returned-operator summaries; `type_fields` and
 // `externals` stay lists, since where each lands in the knowledge base is the
 // merging caller's decision (`with_type_fields`'s insert order against the
-// project spec; `split_externals`'s two tiers).
+// project spec; `split_assumes`'s two tiers).
 //
 // The two returns maps are held apart because only one of them is a
 // declaration, and the sanitizing below weighs them by exactly that.
@@ -2376,7 +2375,7 @@ pub type DepSpec {
     // that line's own bound list.
     declared_returns: Dict(QualifiedName, ScopedClause),
     type_fields: List(FieldAnnotation),
-    externals: List(AssumeAnnotation),
+    assumes: List(AssumeAnnotation),
     modules: Set(String),
   )
 }
@@ -2412,7 +2411,7 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
       DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [], set.new())
     }
     Ok(file) -> {
-      let declared_modules = annotation.module_external_modules(file)
+      let declared_modules = annotation.module_assume_modules(file)
       // Loaded through the same two readers a package uses for its *own* spec,
       // so a dependency's `check` budgets and externally-declared functions are
       // scoped identically one package boundary away: a `check` line's bounds
@@ -2437,9 +2436,9 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
         params: load_spec_params_from_file(file)
           |> drop_module_declared(declared_modules),
         returns: load_spec_returns_from_file(file),
-        declared_returns: load_spec_external_returns_from_file(file),
+        declared_returns: load_spec_assume_returns_from_file(file),
         type_fields: annotation.extract_type_fields(file),
-        externals: annotation.extract_externals(file),
+        assumes: annotation.extract_assumes(file),
         modules: package_modules(dep_root),
       )
     }
@@ -2508,8 +2507,8 @@ fn sanitize_dep_spec(
   // function's own effect, so the dep's `effects` line for that name is still
   // inference over an `@external` fallback body and still drops.
   let declared =
-    list.fold(dep.externals, set.new(), fn(acc, external) {
-      case annotation.external_qualified_name(external), external.effects {
+    list.fold(dep.assumes, set.new(), fn(acc, assume) {
+      case annotation.assume_qualified_name(assume), assume.effects {
         Ok(qualified), Some(_) -> set.insert(acc, qualified)
         _, _ -> acc
       }
@@ -2551,11 +2550,10 @@ fn sanitize_dep_spec(
 // line: where the `effects` line is kept for a clause, that clause carries its
 // own scoping bounds on the returns channel.
 fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> ExternalTiers {
-  let #(function_externals, module_externals) =
-    split_externals(dep.externals, origin)
+  let #(function_assumes, module_assumes) = split_assumes(dep.assumes, origin)
   #(
-    dict.merge(with_origin(dep.effects, origin), function_externals),
-    module_externals,
+    dict.merge(with_origin(dep.effects, origin), function_assumes),
+    module_assumes,
   )
 }
 
@@ -2585,7 +2583,7 @@ pub fn with_path_dep_spec(
   // `dependency_foreign` before this fold — a committed spec is as capable of
   // carrying a stale line for its own `@external` as an installed one is.
   let dep = sanitize_dep_spec(dep, knowledge_base.dependency_foreign)
-  let #(decided, module_externals) = decided_entries(dep, origin)
+  let #(decided, module_assumes) = decided_entries(dep, origin)
   let winning = over_catalog(knowledge_base.all_effects, decided)
   KnowledgeBase(
     ..knowledge_base,
@@ -2598,7 +2596,7 @@ pub fn with_path_dep_spec(
     ),
     module_effects: dict.merge(
       knowledge_base.module_effects,
-      over_catalog(knowledge_base.module_effects, module_externals),
+      over_catalog(knowledge_base.module_effects, module_assumes),
     ),
   )
   |> gap_filling_declared_returns(dep.declared_returns, origin)
@@ -2680,7 +2678,7 @@ fn read_spec_file(
 // the `where returns` clauses on a parsed spec's `effects` lines, and those
 // only. A `check` line's clause keys nothing — it asserts what a function
 // returns rather than declaring it — and an `assume` line's goes through
-// `load_spec_external_returns_from_file` instead.
+// `load_spec_assume_returns_from_file` instead.
 //
 // The line's own bound list travels with the clause it scopes: the clause has
 // no bound list of its own, and read apart from that list its variables answer
@@ -2705,15 +2703,15 @@ pub fn load_spec_returns_from_file(
 // per-function, and a name that resolves nowhere would otherwise sit in the
 // file looking effective. The closed-by-own-bounds rule is applied where the
 // summaries are tagged, in `declared_returns`.
-pub fn load_spec_external_returns_from_file(
+pub fn load_spec_assume_returns_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, ScopedClause) {
   annotation.assume_returns(file)
   |> list.filter_map(fn(entry) {
-    let #(external, operator) = entry
-    annotation.external_qualified_name(external)
+    let #(assume, operator) = entry
+    annotation.assume_qualified_name(assume)
     |> result.map(fn(qualified) {
-      #(qualified, ScopedClause(operator:, bounds: external.params))
+      #(qualified, ScopedClause(operator:, bounds: assume.params))
     })
   })
   |> dict.from_list()
@@ -2771,7 +2769,7 @@ fn load_dependencies(
       let dep_root = packages_directory <> "/" <> package_name
       let dep =
         sanitize_dep_spec(load_dep_spec(dep_root, package_name), foreign)
-      let #(decided, module_externals) = decided_entries(dep, origin)
+      let #(decided, module_assumes) = decided_entries(dep, origin)
       Dependencies(
         effects: dict.merge(acc.effects, decided),
         params: dict.merge(acc.params, dep.params),
@@ -2790,7 +2788,7 @@ fn load_dependencies(
           acc.type_fields,
           list.map(dep.type_fields, fn(field) { #(field, origin) }),
         ),
-        module_effects: dict.merge(acc.module_effects, module_externals),
+        module_effects: dict.merge(acc.module_effects, module_assumes),
       )
     },
   )
@@ -2910,9 +2908,9 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
         Error(_) -> acc
         Ok(graded_file) -> {
           let origin = Catalog(package:)
-          let externals = annotation.extract_externals(graded_file)
-          let #(function_externals, module_externals) =
-            split_externals(externals, origin)
+          let assumes = annotation.extract_assumes(graded_file)
+          let #(function_assumes, module_assumes) =
+            split_assumes(assumes, origin)
           // Same two readers as a package's own spec and as `load_dep_spec`, so
           // a catalog entry's `check` budgets and externally-declared functions
           // are scoped like everyone else's. Merging with the new file second
@@ -2926,19 +2924,19 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
           let file_poly_effects =
             load_spec_effects_from_file(graded_file)
             |> dict.filter(fn(name, _term) {
-              !dict.has_key(function_externals, name)
+              !dict.has_key(function_assumes, name)
             })
             |> with_origin(origin)
           CatalogAcc(
-            ext_effects: dict.merge(acc.ext_effects, function_externals),
-            module_effects: dict.merge(acc.module_effects, module_externals),
+            ext_effects: dict.merge(acc.ext_effects, function_assumes),
+            module_effects: dict.merge(acc.module_effects, module_assumes),
             poly_effects: dict.merge(acc.poly_effects, file_poly_effects),
             // An external's bounds come off its own line — empty for the
             // common ground declaration, and the written list for a
             // polymorphic one — keyed by the same last-wins fold as the term,
             // so the line whose term wins a name is the line whose bounds
             // pair with it.
-            ext_params: dict.merge(acc.ext_params, external_bounds(externals)),
+            ext_params: dict.merge(acc.ext_params, assume_bounds(assumes)),
             poly_params: dict.merge(
               acc.poly_params,
               // A catalog entry describes a package graded has no source for,

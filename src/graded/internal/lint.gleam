@@ -51,7 +51,7 @@ pub type Context {
     // their `where returns` clauses. Decided by the run that assembled the
     // knowledge base without them, so lint and loader cannot disagree about
     // which lines are live.
-    stale_externals: Set(String),
+    stale_assumes: Set(String),
     stale_returns_clauses: Set(String),
     // The bundled catalog this project's knowledge base was assembled against,
     // so a line naming a catalogued function resolves as `check` resolves it.
@@ -126,7 +126,7 @@ pub fn run_recording_lookups(
   let Context(
     spec:,
     index:,
-    stale_externals:,
+    stale_assumes:,
     stale_returns_clauses:,
     registry:,
     ..,
@@ -160,28 +160,28 @@ pub fn run_recording_lookups(
       }
     })
 
-  let externals = annotation.extract_externals(spec)
+  let assumes = annotation.extract_assumes(spec)
   let declared_returns = annotation.assume_returns(spec)
   let type_fields = annotation.extract_type_fields(spec)
   // Every lint here tells a dependency module from a typo, and the scan behind
   // that is the expensive part: walked once here and shared, and not at all for
   // a spec holding none of these line kinds.
-  let dep_files = case externals, declared_returns, type_fields {
+  let dep_files = case assumes, declared_returns, type_fields {
     [], [], [] -> dict.new()
     _, _, _ -> context.dependency_files()
   }
   // The two declaring forms weigh a name by one rule, over one precomputation —
   // which reads the whole dependency tree, so it is built only where a
   // declaring line asks a question of it.
-  let #(external_warnings, returns_clause_warnings) = case
-    externals,
+  let #(assume_warnings, returns_clause_warnings) = case
+    assumes,
     declared_returns
   {
     [], [] -> #([], [])
     _, _ -> {
       let evidence = spec_name_evidence(known_functions, dep_files, context)
       #(
-        external_warnings(externals, evidence, stale_externals),
+        assume_warnings(assumes, evidence, stale_assumes),
         returns_clause_warnings(
           declared_returns,
           evidence,
@@ -195,7 +195,7 @@ pub fn run_recording_lookups(
   // unmatched. The lints below skip them, so a line whose one warning says to
   // remove it gets no second piece of advice about its bound list. Derived
   // from that channel's own output, so the two gates cannot drift.
-  let dead_externals = dead_external_names(external_warnings)
+  let dead_assumes = dead_assume_names(assume_warnings)
 
   // Resolving field `assume` lines needs per-module type info, which the
   // resolver builds on demand and keeps: only the modules a field line names,
@@ -239,9 +239,9 @@ pub fn run_recording_lookups(
   #(
     list.flatten([
       check_warnings,
-      external_warnings,
-      unbound_term_variable_warnings(externals, dead_externals),
-      aliased_bound_variable_warnings(externals, effects_lines, dead_externals),
+      assume_warnings,
+      unbound_term_variable_warnings(assumes, dead_assumes),
+      aliased_bound_variable_warnings(assumes, effects_lines, dead_assumes),
       returns_clause_warnings,
       clause_warnings,
       unknown_clause_warnings,
@@ -260,18 +260,18 @@ pub fn run_recording_lookups(
 // registry-synthesized bounds and is left alone, and to lines the existence
 // channel has not flagged — a stale or unmatched line's one fix is removal.
 fn unbound_term_variable_warnings(
-  externals: List(types.AssumeAnnotation),
+  assumes: List(types.AssumeAnnotation),
   dead: Set(String),
 ) -> List(Warning) {
-  list.filter_map(externals, fn(external) {
-    use <- bool.guard(when: external.params == [], return: Error(Nil))
-    case annotation.external_qualified_name(external), external.effects {
+  list.filter_map(assumes, fn(assume) {
+    use <- bool.guard(when: assume.params == [], return: Error(Nil))
+    case annotation.assume_qualified_name(assume), assume.effects {
       Ok(qualified), Some(effect_set) -> {
         use <- bool.guard(
           when: set.contains(dead, types.dotted_name(qualified)),
           return: Error(Nil),
         )
-        let covered = effects.bound_payload_variables(external.params)
+        let covered = effects.bound_payload_variables(assume.params)
         // The declared term is a flat set, so its variables are right on the
         // `Polymorphic` variant — no term round-trip needed.
         let term_variables = case effect_set {
@@ -307,23 +307,23 @@ fn unbound_term_variable_warnings(
 // each channel's binding stays what it is. A machine-written
 // self-referential list never aliases, so the shape is hand-written.
 fn aliased_bound_variable_warnings(
-  externals: List(types.AssumeAnnotation),
+  assumes: List(types.AssumeAnnotation),
   effects_lines: List(EffectAnnotation),
   dead: Set(String),
 ) -> List(Warning) {
-  let from_externals =
-    list.filter_map(externals, fn(external) {
-      use qualified <- result.try(annotation.external_qualified_name(external))
+  let from_assumes =
+    list.filter_map(assumes, fn(assume) {
+      use qualified <- result.try(annotation.assume_qualified_name(assume))
       let function = types.dotted_name(qualified)
       use <- bool.guard(when: set.contains(dead, function), return: Error(Nil))
-      let term_variables = case external.effects {
+      let term_variables = case assume.effects {
         Some(types.Polymorphic(_labels, variables)) -> variables
         Some(types.Specific(_)) | Some(types.Wildcard) | None -> set.new()
       }
       aliased_bound_warning(
         function,
-        external.params,
-        set.union(term_variables, returns_variables(external.returns)),
+        assume.params,
+        set.union(term_variables, returns_variables(assume.returns)),
       )
     })
   let from_effects =
@@ -337,7 +337,7 @@ fn aliased_bound_variable_warnings(
         ),
       )
     })
-  list.append(from_externals, from_effects)
+  list.append(from_assumes, from_effects)
 }
 
 // One line's aliasing warning: the collision pairs whose variable the line
@@ -487,22 +487,22 @@ fn spec_name_evidence(
 //
 //   - a per-function line naming one of *this package's* Gleam-bodied functions:
 //     valid syntax, nothing foreign to declare, so it is ignored and the body
-//     walked (see `stale_project_externals`);
+//     walked (see `stale_project_assumes`);
 //   - a per-function line whose `module.function` resolves nowhere at all —
 //     dependency, catalog, or project index;
 //   - a module-level line whose module is neither a dependency nor a project
 //     module.
-fn external_warnings(
-  externals: List(types.AssumeAnnotation),
+fn assume_warnings(
+  assumes: List(types.AssumeAnnotation),
   evidence: SpecNameEvidence,
   stale: Set(String),
 ) -> List(Warning) {
-  externals
+  assumes
   // A line carrying only a `where returns` clause claims nothing on this
   // channel, so this channel has nothing to call dead about it.
-  |> list.filter(fn(external) { external.effects != option.None })
-  |> list.filter_map(fn(external) {
-    case annotation.external_qualified_name(external) {
+  |> list.filter(fn(assume) { assume.effects != option.None })
+  |> list.filter_map(fn(assume) {
+    case annotation.assume_qualified_name(assume) {
       Ok(qualified) -> {
         let name = types.dotted_name(qualified)
         case set.contains(stale, name), evidence.defines(qualified) {
@@ -512,9 +512,9 @@ fn external_warnings(
         }
       }
       Error(Nil) ->
-        case evidence.module_placed(external.module) {
+        case evidence.module_placed(assume.module) {
           True -> Error(Nil)
-          False -> Ok(UnmatchedModuleAssumeWarning(module: external.module))
+          False -> Ok(UnmatchedModuleAssumeWarning(module: assume.module))
         }
     }
   })
@@ -522,7 +522,7 @@ fn external_warnings(
 
 // The function names the existence channel's warnings call dead — a stale
 // declaration over a visible body, or one matching nothing anywhere.
-fn dead_external_names(warnings: List(Warning)) -> Set(String) {
+fn dead_assume_names(warnings: List(Warning)) -> Set(String) {
   list.filter_map(warnings, fn(warning) {
     case warning {
       StaleFunctionAssumeWarning(function:)
@@ -550,15 +550,15 @@ fn returns_clause_warnings(
   stale: Set(String),
 ) -> List(Warning) {
   list.filter_map(declared, fn(entry) {
-    let #(external, operator) = entry
-    case annotation.external_qualified_name(external) {
-      Error(Nil) -> Ok(DotlessReturnsClauseWarning(name: external.module))
+    let #(assume, operator) = entry
+    case annotation.assume_qualified_name(assume) {
+      Error(Nil) -> Ok(DotlessReturnsClauseWarning(name: assume.module))
       Ok(qualified) -> {
         let name = types.dotted_name(qualified)
         // The unscoped variables, listed once and by the same base predicate
         // the loader and the gate read: emptiness is what admits the clause,
         // so the same list decides the branch and names it.
-        let open = effects.unscoped_clause_variables(operator, external.params)
+        let open = effects.unscoped_clause_variables(operator, assume.params)
         case set.contains(stale, name), evidence.defines(qualified), open {
           True, _, _ -> Ok(StaleReturnsClauseWarning(function: name))
           False, False, _ -> Ok(UnmatchedReturnsClauseWarning(function: name))
