@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A callback parameter spelled through a `fn` type alias — `run(action:
+  Action)` with `type Action = fn() -> Nil` — now resolves like a directly
+  annotated one: the bound is written on the inferred line, the call site binds
+  the argument, and a second-order parameter whose own callback is aliased
+  keeps its shape. Such a call read `[Unknown]`, or, where a lift discharged
+  the argument, an under-approximation. A boundless `assume` over an external
+  whose callback is aliased now charges that callback to its callers too, so a
+  check that passed on the old answer may now fail.
 - A helper whose callback parameter carries no `fn(...)` annotation now charges
   its callers in the same module the callback's own effects, as callers in
   another module already paid. The same answer now reaches a reference to that

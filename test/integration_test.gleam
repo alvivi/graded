@@ -11895,3 +11895,210 @@ pub fn girard_typed_callback_charges_every_caller_alike_test() {
   inferred_effects(annotations, "proj.via_lift") |> should.equal(stdout)
   support.cleanup(root)
 }
+
+// Callback parameters spelled through a `fn` type alias
+//
+// `run(action: Action)` with `type Action = fn() -> Nil` takes a callback, and
+// every reading says so: the bound `infer` writes, the call-site binding beside
+// it and across the module boundary, the shape of a second-order parameter
+// whose own callback is aliased too, and the conservative charge a boundless
+// declaration makes.
+
+// The package the section runs over. `ffi.shout` is the only source of an
+// effect, and `ffi.each` is a boundless declared external taking an
+// alias-typed callback.
+fn alias_callback_project(root: String) -> Nil {
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/ffi.gleam", "pub type Callback =
+  fn() -> Nil
+
+" <> support.foreign_fn("shout", "() -> Nil") <> "
+" <> support.foreign_fn("each", "(cb: Callback) -> Nil"))
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/proj.gleam",
+      "import ffi
+
+pub type Action =
+  fn() -> Nil
+
+pub type Callback =
+  fn() -> Nil
+
+pub type Op =
+  fn(Callback) -> Nil
+
+pub fn shout() -> Nil {
+  ffi.shout()
+}
+
+pub fn run(action: Action) -> Nil {
+  action()
+}
+
+pub fn same_module() -> Nil {
+  run(shout)
+}
+
+pub fn use_op(op: Op, cb: Callback) -> Nil {
+  op(cb)
+}
+
+pub fn drive() -> Nil {
+  use_op(run, shout)
+}
+",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/other.gleam",
+      "import ffi
+import proj
+
+pub fn cross_module() -> Nil {
+  proj.run(proj.shout)
+}
+
+pub fn via_declared_external() -> Nil {
+  ffi.each(proj.shout)
+}
+",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/proj.graded",
+      "assume ffi.shout : [Stdout]\nassume ffi.each : []\n",
+    )
+  Nil
+}
+
+pub fn an_alias_typed_callback_resolves_like_an_annotated_one_test() {
+  let root = "build/alias_callback_project"
+  alias_callback_project(root)
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(content) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(file) = annotation.parse_file(content)
+  let annotations = annotation.extract_annotations(file)
+  let stdout = types.TLabels(set.from_list(["Stdout"]))
+
+  // The bound is written, so a line stays closed by itself with no girard run.
+  let assert Ok(run) =
+    list.find(annotations, fn(a) { a.function == "proj.run" })
+  run.effects |> should.equal(types.TVar("action"))
+  run.params |> list.map(fn(b) { b.name }) |> should.equal(["action"])
+
+  // Bound at the call site, beside the definition and from another module.
+  inferred_effects(annotations, "proj.same_module") |> should.equal(stdout)
+  inferred_effects(annotations, "other.cross_module") |> should.equal(stdout)
+
+  // A second-order parameter whose own callback is aliased keeps its shape,
+  // so applying it to the callback reduces instead of going stuck.
+  let assert Ok(use_op) =
+    list.find(annotations, fn(a) { a.function == "proj.use_op" })
+  use_op.params
+  |> list.map(fn(b) { b.name })
+  |> list.sort(string.compare)
+  |> should.equal(["cb", "op"])
+  use_op.effects
+  |> should.equal(types.TApp(types.TVar("op"), types.TVar("cb")))
+  inferred_effects(annotations, "proj.drive") |> should.equal(stdout)
+
+  // A boundless declaration says nothing about its callbacks, so the caller
+  // pays the one it passes — through the alias too.
+  inferred_effects(annotations, "other.via_declared_external")
+  |> should.equal(stdout)
+  support.cleanup(root)
+}
+
+pub fn an_inferred_alias_callback_spec_checks_clean_test() {
+  // The spec `infer` writes for the same package passes `check`: every bound
+  // it names is one the closedness oracle admits.
+  let root = "build/alias_callback_roundtrip"
+  alias_callback_project(root)
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(results) = graded.run(root)
+  list.flat_map(results, fn(r) { r.violations }) |> should.equal([])
+  list.flat_map(results, fn(r) { r.warnings }) |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_cyclic_dependency_records_an_alias_typed_callback_test() {
+  // The cycle skips the walk, so `dep/x.run` keeps the `[Unknown]` an unwalked
+  // body carries — with its callback recorded beside it, though the callback is
+  // spelled through an alias. Both callers pay the `[Disk]` they pass.
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/dep_cycle_alias_callback",
+      package: "proj",
+      spec: "assume proj.disk : [Disk]
+check proj.direct : []
+check proj.via_operator : []
+",
+      sources: [
+        #(
+          "proj.gleam",
+          "import dep/x
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+pub fn disk() -> Nil
+
+pub fn direct() -> Nil {
+  x.run(disk)
+}
+
+fn invoke(op: fn(fn() -> Nil) -> Nil, cb: fn() -> Nil) -> Nil {
+  op(cb)
+}
+
+pub fn via_operator() -> Nil {
+  invoke(x.run, disk)
+}
+",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: "assume dep/x.run : [Time]\nassume dep/y.tick : []\n",
+      dependency_sources: [
+        #(
+          "dep/x.gleam",
+          "import dep/y
+
+pub type Action =
+  fn() -> Nil
+
+@external(javascript, \"x\", \"r\")
+pub fn run(action: Action) -> Nil {
+  y.tick()
+  action()
+}
+",
+        ),
+        #(
+          "dep/y.gleam",
+          "import dep/x
+
+@external(javascript, \"y\", \"t\")
+pub fn tick() -> Nil {
+  x.run(fn() { Nil })
+}
+",
+        ),
+      ],
+    )
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/proj.gleam" })
+  ["direct", "via_operator"]
+  |> list.each(fn(function) {
+    let assert Ok(violation) =
+      list.find(r.violations, fn(v) { v.function == function })
+    violation.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+  })
+  support.cleanup(root)
+}

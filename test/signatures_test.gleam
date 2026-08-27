@@ -22,7 +22,10 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
 "
   let assert Ok(module) = glance.module(source)
   let assert [definition] = module.functions
-  signatures.fn_typed_params_from_function(definition.definition)
+  signatures.fn_typed_params_from_function(
+    definition.definition,
+    signatures.type_alias_map(module.type_aliases),
+  )
   |> should.equal(set.from_list(["f"]))
 }
 
@@ -35,7 +38,10 @@ pub fn greet(name: String) -> String {
 "
   let assert Ok(module) = glance.module(source)
   let assert [definition] = module.functions
-  signatures.fn_typed_params_from_function(definition.definition)
+  signatures.fn_typed_params_from_function(
+    definition.definition,
+    signatures.type_alias_map(module.type_aliases),
+  )
   |> should.equal(set.new())
 }
 
@@ -48,7 +54,10 @@ pub fn apply(f, x) {
 "
   let assert Ok(module) = glance.module(source)
   let assert [definition] = module.functions
-  signatures.fn_typed_params_from_function(definition.definition)
+  signatures.fn_typed_params_from_function(
+    definition.definition,
+    signatures.type_alias_map(module.type_aliases),
+  )
   |> should.equal(set.new())
 }
 
@@ -61,7 +70,10 @@ pub fn apply2(f: fn(Int) -> Int, g: fn(Int) -> Int, x: Int) -> Int {
 "
   let assert Ok(module) = glance.module(source)
   let assert [definition] = module.functions
-  signatures.fn_typed_params_from_function(definition.definition)
+  signatures.fn_typed_params_from_function(
+    definition.definition,
+    signatures.type_alias_map(module.type_aliases),
+  )
   |> should.equal(set.from_list(["f", "g"]))
 }
 
@@ -114,9 +126,7 @@ pub type Wrapped {
 // module-local aliases, keeping callback positions.
 
 fn alias_map_of(module: glance.Module) -> dict.Dict(String, glance.Type) {
-  list.fold(module.type_aliases, dict.new(), fn(acc, d) {
-    dict.insert(acc, d.definition.name, d.definition.aliased)
-  })
+  signatures.type_alias_map(module.type_aliases)
 }
 
 fn return_type_of(module: glance.Module, name: String) -> glance.Type {
@@ -216,6 +226,101 @@ pub fn make() -> foo.Resolver { todo }
   let map = alias_map_of(module)
   signatures.resolve_function_type(return_type_of(module, "make"), map)
   |> should.be_error()
+}
+
+// Alias-typed parameters in the registry
+//
+// A parameter spelled through a module-local `fn` alias is the callback its
+// underlying type says it is. The registry resolves it at every depth: the
+// parameter's own type, an alias of an alias, and the callback positions
+// inside an operator parameter's own argument list.
+
+fn params_of(
+  source: String,
+  function: String,
+) -> List(signatures.ParameterInfo) {
+  let assert Ok(module) = glance.module(source)
+  let assert Some(params) =
+    signatures.lookup(
+      signatures.from_glance_module("m", module),
+      QualifiedName(module: "m", function: function),
+    )
+  params
+}
+
+pub fn registry_reads_an_alias_typed_param_as_fn_typed_test() {
+  let assert [param] =
+    params_of(
+      "
+pub type Action = fn() -> Nil
+pub fn run(action: Action) -> Nil { action() }
+",
+      "run",
+    )
+  param.is_fn_typed |> should.be_true
+  param.is_annotated |> should.be_true
+  param.is_operator |> should.be_false
+  param.callback_positions |> should.equal([])
+}
+
+pub fn registry_reads_an_alias_of_an_alias_as_fn_typed_test() {
+  let assert [param] =
+    params_of(
+      "
+pub type Action = Runner
+pub type Runner = fn() -> Nil
+pub fn run(action: Action) -> Nil { action() }
+",
+      "run",
+    )
+  param.is_fn_typed |> should.be_true
+}
+
+pub fn registry_reads_an_alias_typed_operator_param_test() {
+  // Both layers are aliases: the parameter's own type, and the callback it
+  // takes. The callback position is read through the inner one.
+  let assert [param] =
+    params_of(
+      "
+pub type Callback = fn() -> Nil
+pub type Op = fn(Callback) -> Nil
+pub fn drive(op: Op) -> Nil { op(fn() { Nil }) }
+",
+      "drive",
+    )
+  param.is_fn_typed |> should.be_true
+  param.is_operator |> should.be_true
+  param.callback_positions |> should.equal([0])
+}
+
+pub fn registry_leaves_a_non_function_alias_first_order_test() {
+  let assert [param] =
+    params_of(
+      "
+pub type Id = Int
+pub fn keep(id: Id) -> Id { id }
+",
+      "keep",
+    )
+  param.is_fn_typed |> should.be_false
+  param.is_annotated |> should.be_true
+}
+
+pub fn operator_param_shapes_resolve_aliases_at_every_depth_test() {
+  // `op`'s type, its callback, and that callback's own callback are each
+  // spelled through an alias.
+  let source =
+    "
+pub type Inner = fn() -> Nil
+pub type Callback = fn(Inner) -> Nil
+pub type Op = fn(Callback) -> Nil
+pub fn drive(op: Op) -> Nil { todo }
+"
+  let assert Ok(module) = glance.module(source)
+  let assert Ok(definition) =
+    list.find(module.functions, fn(d) { d.definition.name == "drive" })
+  signatures.operator_param_shapes(definition.definition, alias_map_of(module))
+  |> should.equal(dict.from_list([#("op", [#(0, [0])])]))
 }
 
 // Parsing a dependency source tree
