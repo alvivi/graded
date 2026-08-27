@@ -508,7 +508,7 @@ fn with_logger(action: fn(fn(String) -> Nil) -> Nil) -> Nil {
 
   // `check` re-resolves the consumer by loading that line, flagging main.run's
   // precise [Stdout] against the [] budget (it would be [Unknown] without it).
-  let assert Ok(results) = graded.run(directory)
+  let assert Ok(results) = graded.check_project(directory)
   let assert Ok(main_result) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/main.gleam") })
   let assert [violation, ..] = main_result.violations
@@ -554,7 +554,7 @@ pub fn use_resolver() -> Nil {
     ])
 
   let assert Ok(Nil) = graded.run_infer(directory)
-  let assert Ok(results) = graded.run(directory)
+  let assert Ok(results) = graded.check_project(directory)
   let assert Ok(config_result) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/config.gleam") })
   let assert [violation, ..] = config_result.violations
@@ -608,7 +608,7 @@ pub fn use_resolver() -> Nil {
     ])
 
   let assert Ok(Nil) = graded.run_infer(directory)
-  let assert Ok(results) = graded.run(directory)
+  let assert Ok(results) = graded.check_project(directory)
   let assert Ok(factory_result) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/factory.gleam") })
   let assert [violation, ..] = factory_result.violations
@@ -668,7 +668,7 @@ pub fn use_runner() -> Nil {
   |> should.be_true()
   string.contains(spec, "Unknown") |> should.be_true()
 
-  let assert Ok(results) = graded.run(directory)
+  let assert Ok(results) = graded.check_project(directory)
   let assert Ok(factory_result) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/factory.gleam") })
   let assert [violation, ..] = factory_result.violations
@@ -717,7 +717,7 @@ pub fn use_run() -> Nil {
       #("app.graded", "check app/factory.use_run : []\n"),
     ])
   let assert Ok(Nil) = graded.run_infer(directory)
-  let assert Ok(results) = graded.run(directory)
+  let assert Ok(results) = graded.check_project(directory)
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/factory.gleam") })
   let assert [violation, ..] = r.violations
@@ -770,7 +770,7 @@ pub fn use_run() -> Nil {
       ),
     ])
   let assert Ok(Nil) = graded.run_infer(directory)
-  let assert Ok(results) = graded.run(directory)
+  let assert Ok(results) = graded.check_project(directory)
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/factory.gleam") })
   let assert [violation, ..] = r.violations
@@ -823,7 +823,7 @@ pub fn use_field() -> Nil {
       #("app.graded", "check app/c.use_field : []\n"),
     ])
   let assert Ok(Nil) = graded.run_infer(directory)
-  let assert Ok(results) = graded.run(directory)
+  let assert Ok(results) = graded.check_project(directory)
   let assert Ok(c_result) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/c.gleam") })
   let assert [violation, ..] = c_result.violations
@@ -880,7 +880,7 @@ pub fn use_field() -> Nil {
       ),
     ])
   let assert Ok(Nil) = graded.run_infer(directory)
-  let assert Ok(results) = graded.run(directory)
+  let assert Ok(results) = graded.check_project(directory)
   let assert Ok(c_result) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/c.gleam") })
   let assert [violation, ..] = c_result.violations
@@ -918,7 +918,7 @@ pub fn use_field(r: Rec) -> Nil {
       #("app.graded", "check app/factory.use_field : []\n"),
     ])
   let assert Ok(Nil) = graded.run_infer(directory)
-  let assert Ok(results) = graded.run(directory)
+  let assert Ok(results) = graded.check_project(directory)
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/factory.gleam") })
   let assert [violation, ..] = r.violations
@@ -962,7 +962,7 @@ pub fn run() -> Nil {
       #("app.graded", "check app/a.run : []\n"),
     ])
 
-  let assert Ok(results) = graded.run(directory)
+  let assert Ok(results) = graded.check_project(directory)
   let assert Ok(a_result) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/a.gleam") })
   let assert [violation, ..] = a_result.violations
@@ -1191,7 +1191,7 @@ pub fn run_resolves_absolute_path_dependency_test() {
       ),
     ])
 
-  let assert Ok(results) = graded.run(app_dir)
+  let assert Ok(results) = graded.check_project(app_dir)
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "src/main.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
@@ -1255,7 +1255,7 @@ pub fn caller(resolver: fn() -> Nil) -> Nil {
       ),
     ])
 
-  let assert Ok(results) = graded.run(app_dir)
+  let assert Ok(results) = graded.check_project(app_dir)
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "src/main.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
@@ -1333,7 +1333,7 @@ pub fn run() -> Nil {
       ),
     ])
 
-  let assert Ok(results) = graded.run(app_dir)
+  let assert Ok(results) = graded.check_project(app_dir)
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "src/main.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
@@ -1635,7 +1635,7 @@ pub fn run() -> Nil {
 }
 
 fn field_module_actual(directory: String) -> EffectSet {
-  let assert Ok(results) = graded.run(directory)
+  let assert Ok(results) = graded.check_project(directory)
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/consumer.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
@@ -1734,7 +1734,7 @@ pub fn run() -> Nil {
       #("app.graded", "check app/consumer.run : []\n"),
     ])
 
-  let assert Ok(results) = graded.run(directory)
+  let assert Ok(results) = graded.check_project(directory)
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "app/consumer.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
@@ -1816,7 +1816,7 @@ pub fn leak() -> Nil {
 
   // Pre-fix the module derived as `src/app`, so `check app.leak` matched no
   // module and no violation surfaced — a false-green exit. The check must run.
-  let assert Ok(results) = graded.run(root)
+  let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "src/app.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "leak" })

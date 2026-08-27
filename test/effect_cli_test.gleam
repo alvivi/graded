@@ -62,7 +62,7 @@ pub fn a_committed_effects_line_does_not_answer_for_an_external_test() {
     graded.run_effect_formatted(
       fixtures,
       "external_budget.stale_inferred",
-      answer.Prose,
+      graded.Prose,
     )
   prose
   |> should.equal(
@@ -461,7 +461,7 @@ pub fn a_path_dependency_answer_names_the_dependency_test() {
 
 fn prose(name: String) -> String {
   let assert Ok(output) =
-    graded.run_effect_formatted(fixtures, name, answer.Prose)
+    graded.run_effect_formatted(fixtures, name, graded.Prose)
   output
 }
 
@@ -515,9 +515,9 @@ fn out_of_reach_outputs(name: String, body: String) -> #(String, String) {
       ),
     ])
   let assert Ok(prose_output) =
-    graded.run_effect_formatted(project, "dep/ffi.run", answer.Prose)
+    graded.run_effect_formatted(project, "dep/ffi.run", graded.Prose)
   let assert Ok(graded_output) =
-    graded.run_effect_formatted(project, "dep/ffi.run", answer.Graded)
+    graded.run_effect_formatted(project, "dep/ffi.run", graded.Graded)
   cleanup(project)
   #(prose_output, graded_output)
 }
@@ -588,7 +588,7 @@ pub fn op() -> Nil {
       ),
     ])
   let assert Ok(prose_output) =
-    graded.run_effect_formatted(project, "raw.op", answer.Prose)
+    graded.run_effect_formatted(project, "raw.op", graded.Prose)
   prose_output
   |> should.equal(
     "raw.op has effects [Disk, Unknown]; part of them could not be determined
@@ -596,7 +596,7 @@ pub fn op() -> Nil {
   plus its Gleam fallback body, which runs on the targets its `@external` declares no implementation for: [Disk]",
   )
   let assert Ok(graded_output) =
-    graded.run_effect_formatted(project, "raw.op", answer.Graded)
+    graded.run_effect_formatted(project, "raw.op", graded.Graded)
   graded_output
   |> should_parse
   |> should.equal(
@@ -619,7 +619,7 @@ pub fn graded_format_still_round_trips_test() {
   // The parseable contract now belongs to `--format=graded`, and holds for the
   // provenance-carrying answers too.
   let assert Ok(output) =
-    graded.run_effect_formatted(fixtures, "fake_clock.now", answer.Graded)
+    graded.run_effect_formatted(fixtures, "fake_clock.now", graded.Graded)
   should_parse(output)
   |> should.equal(
     "effects fake_clock.now : [Time]\n// resolved via module-level `assume` for fake_clock",
@@ -632,9 +632,9 @@ pub fn the_formats_agree_on_the_effect_set_test() {
   ["impure_view.view", "fake_clock.now", "external_same_module.read_clock"]
   |> list.each(fn(name) {
     let assert Ok(graded_output) =
-      graded.run_effect_formatted(fixtures, name, answer.Graded)
+      graded.run_effect_formatted(fixtures, name, graded.Graded)
     let assert Ok(prose_output) =
-      graded.run_effect_formatted(fixtures, name, answer.Prose)
+      graded.run_effect_formatted(fixtures, name, graded.Prose)
     let assert Ok(effect_set) = string.split_once(graded_output, " : ")
     let assert Ok(#(rendered, _)) =
       string.split_once(effect_set.1 <> "\n", "\n")
@@ -882,7 +882,10 @@ pub fn effect_over_an_unparseable_spec_errors_test() {
   |> should.equal(
     Error(graded.GradedParseError(
       root <> "/proj.graded",
-      annotation.InvalidLine(2, "not a graded line"),
+      annotation.describe_parse_error(annotation.InvalidLine(
+        2,
+        "not a graded line",
+      )),
     )),
   )
   cleanup(root)

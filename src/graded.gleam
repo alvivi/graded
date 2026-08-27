@@ -21,14 +21,18 @@
 ////
 //// ## Programmatic API
 ////
-//// Use `run` to check a directory and get back a list of `CheckResult` values,
-//// each containing any violations found per file. Use `run_infer` to infer
-//// effects and write `.graded` files, or `run_infer_dry_run` to get back a
-//// diff of what that write would change without performing it. Use
-//// `run_effect` to resolve one function or type-field name and get its
-//// `.graded` line back, `run_why` to get the effects of one function explained
-//// call by call, or `run_catalog` to read graded's own bundled catalog — none
-//// of them touching anything on disk.
+//// Use `run` to check a directory and get back one `ModuleReport` per file,
+//// carrying the warning and violation lines graded prints for it. Use
+//// `run_infer` to infer effects and write `.graded` files, or
+//// `run_infer_dry_run` to get back a diff of what that write would change
+//// without performing it. Use `run_effect` to resolve one function or
+//// type-field name and get its `.graded` line back, `run_why` to get the
+//// effects of one function explained call by call, or `catalog_list` /
+//// `catalog_show` to read graded's own bundled catalog — none of them
+//// touching anything on disk.
+////
+//// Every type this module's signatures name is defined here. Nothing under
+//// `graded/internal` is part of the API, and a release may change it freely.
 ////
 
 import argv
@@ -61,8 +65,8 @@ import graded/internal/topo
 import graded/internal/typeinfo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type EffectTerm, type GradedFile,
-  type QualifiedName, type Violation, type Warning, AnnotationLine, CheckResult,
-  EffectAnnotation, GradedFile, QualifiedName,
+  type QualifiedName, AnnotationLine, CheckResult, EffectAnnotation, GradedFile,
+  QualifiedName,
 }
 import simplifile
 
@@ -72,6 +76,10 @@ import simplifile
 // to the per-command runners below.
 
 /// Errors that can occur during checking, inference, or formatting.
+///
+/// Every variant is renderable on its own: where the cause is a graded type,
+/// the variant carries what graded would print for it rather than the type
+/// itself, so naming an error never means importing `graded/internal`.
 pub type GradedError {
   /// Could not read the source directory.
   DirectoryReadError(path: String, cause: simplifile.FileError)
@@ -83,12 +91,13 @@ pub type GradedError {
   DirectoryCreateError(path: String, cause: simplifile.FileError)
   /// A `.gleam` source file could not be parsed.
   GleamParseError(path: String, cause: glance.Error)
-  /// A `.graded` annotation file could not be parsed.
-  GradedParseError(path: String, cause: annotation.ParseError)
+  /// A `.graded` annotation file could not be parsed. `message` is the
+  /// description graded itself prints, line number and hint included.
+  GradedParseError(path: String, message: String)
   /// `gleam.toml` was present but malformed, unreadable, or missing its
   /// `name`. A missing `gleam.toml` is tolerated and does not produce this
-  /// error.
-  InvalidConfig(path: String, cause: config.ConfigError)
+  /// error. `message` describes what was wrong with it.
+  InvalidConfig(path: String, message: String)
   /// One or more `.graded` files are not formatted (returned by `run_format_check`).
   FormatCheckFailed(paths: List(String))
   /// The project's import graph contains a cycle. Gleam disallows circular
@@ -138,13 +147,11 @@ pub fn main() -> Nil {
     ["format", "--stdin"] ->
       case run_format_stdin(read_stdin()) {
         Ok(output) -> io.print(output)
-        Error(error) -> {
-          io.println_error(
-            "graded: error: parse error in stdin:"
-            <> annotation.describe_parse_error(error),
-          )
+        Error(GradedParseError(message:, ..)) -> {
+          io.println_error("graded: error: parse error in stdin:" <> message)
           halt(1)
         }
+        Error(error) -> fail(error)
       }
 
     ["format", "--check", ..rest] ->
@@ -176,7 +183,7 @@ pub fn main() -> Nil {
     ["effect", ..rest] ->
       report(cli.parse_effect_args(rest), fn(arguments) {
         let #(name, directory, format) = arguments
-        run_effect_formatted(directory, name, format)
+        run_effect_formatted(directory, name, public_format(format))
       })
 
     ["why", ..rest] ->
@@ -412,13 +419,52 @@ fn pack_error(problem: pack.PackProblem) -> GradedError {
 // The `check` command: assemble the knowledge base for the project, run the
 // checker over each source file, and collect violations and warnings.
 
+/// What checking one file found, as the lines graded prints for it.
+///
+/// Both halves, because both are what a caller acts on: the CLI prints the
+/// warnings with their count and the violations with theirs, and exits on the
+/// violations alone. A count is `list.length` of the list.
+pub type ModuleReport {
+  ModuleReport(
+    /// The source file these results belong to — the spec file, for the
+    /// warnings a spec line earns on its own.
+    file: String,
+    /// One rendered line per warning, in the order graded reports them.
+    warnings: List(String),
+    /// One rendered line per violation, likewise.
+    violations: List(String),
+  )
+}
+
 /// Run the checker on all .gleam files in a directory.
 ///
 /// Reads the project's single spec file (default `<package_name>.graded`)
-/// to find inferred public-API effects, `check` invariants, `external`
-/// hints, and `type` field annotations, then reports violations per source
-/// file.
-pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
+/// to find inferred public-API effects, `check` invariants, `assume`
+/// declarations, and field annotations, then reports one `ModuleReport` per
+/// source file, plus one for the spec file itself where a spec line is dead.
+pub fn run(directory: String) -> Result(List(ModuleReport), GradedError) {
+  check_project(directory) |> result.map(list.map(_, module_report))
+}
+
+// One file's results, rendered exactly as the CLI prints them.
+fn module_report(result: CheckResult) -> ModuleReport {
+  ModuleReport(
+    file: result.file,
+    warnings: list.map(result.warnings, checker.format_warning(result.file, _)),
+    violations: list.map(result.violations, checker.format_violation(
+      result.file,
+      _,
+    )),
+  )
+}
+
+// The same run, keeping the structured results. `why` and graded's own tests
+// read the resolution behind a violation; a caller linking against the module
+// gets the rendered form, so the structured types stay free to change.
+@internal
+pub fn check_project(
+  directory: String,
+) -> Result(List(CheckResult), GradedError) {
   use ctx <- result.try(load_project_context(directory))
   let ProjectContext(sources:, registry:, type_info:, knowledge_base:, ..) = ctx
   let ProjectSources(
@@ -958,20 +1004,43 @@ pub fn run_effect(
   directory: String,
   name: String,
 ) -> Result(String, GradedError) {
-  run_effect_formatted(directory, name, answer.Graded)
+  run_effect_formatted(directory, name, Graded)
 }
 
-/// Look up one name's effect and render it in `format`: `answer.Graded` for
-/// the `.graded` line above, `answer.Prose` for sentences describing the same
-/// answer. Both render one structured answer, so they can differ in wording but
-/// never in what they report.
+/// How `run_effect_formatted` renders an answer.
+pub type Format {
+  /// A `.graded` line, with any provenance as a `//` comment — the whole
+  /// output parses as spec syntax.
+  Graded
+  /// Sentences describing the same answer, as `graded effect` prints them.
+  Prose
+}
+
+/// Look up one name's effect and render it in `format`. Both formats render
+/// one structured answer, so they can differ in wording but never in what they
+/// report.
 pub fn run_effect_formatted(
   directory: String,
   name: String,
-  format: answer.Format,
+  format: Format,
 ) -> Result(String, GradedError) {
   effect_answer(directory, name)
-  |> result.map(answer.render(_, format))
+  |> result.map(answer.render(_, answer_format(format)))
+}
+
+// And back, for the CLI's own decoder, which reads the internal enum.
+fn public_format(format: answer.Format) -> Format {
+  case format {
+    answer.Graded -> Graded
+    answer.Prose -> Prose
+  }
+}
+
+fn answer_format(format: Format) -> answer.Format {
+  case format {
+    Graded -> answer.Graded
+    Prose -> answer.Prose
+  }
 }
 
 // Resolve `name` to a structured answer, trying the spec-only fast path first.
@@ -996,6 +1065,7 @@ fn effect_answer(
 /// Exposed (pub) primarily so a test can assert the two paths agree. A
 /// fast-path answer is only correct if it is what the full context would have
 /// said, byte for byte; nothing else about the two is allowed to differ.
+@internal
 pub fn run_effect_from_project(
   directory: String,
   name: String,
@@ -1662,19 +1732,32 @@ fn why_block(
 // listing marks the file each installed package resolves to; the show forms
 // print one file verbatim under a header naming it and why it was chosen.
 
-/// List the bundled catalog, or print one bundled catalog file.
-///
-/// `ListCatalog` prints one `package@version` line per bundled file, sorted,
-/// with a comment on the line each of this project's installed packages
-/// resolves to. `ShowCatalog` prints one file: at the version this project
-/// installs, or at the version the request names, under a `//` header line that
-/// says which file it is and why — so the output is itself a valid `.graded`
-/// file.
+/// List the bundled catalog: one `package@version` line per bundled file,
+/// sorted, with a comment on the line each installed package of the project
+/// the process runs in resolves to.
 ///
 /// This is graded's bundled catalog alone: a dependency's shipped spec, a path
-/// dependency's spec and your own `assume` all override it, so
-/// `run_effect` is what answers which source wins for a name. Nothing is
-/// written to disk.
+/// dependency's spec and your own `assume` all override it, so `run_effect` is
+/// what answers which source wins for a name. Nothing is written to disk.
+pub fn catalog_list() -> Result(String, GradedError) {
+  run_catalog(cli.ListCatalog)
+}
+
+/// Print one bundled catalog file for `package`, under a `//` header line
+/// saying which file it is and why — so the output is itself a valid `.graded`
+/// file. `version` names a bundled version exactly; `None` selects the one
+/// `directory`'s project installs. Nothing is written to disk.
+pub fn catalog_show(
+  package: String,
+  version: option.Option(String),
+  directory: String,
+) -> Result(String, GradedError) {
+  run_catalog(cli.ShowCatalog(package:, version:, directory:))
+}
+
+// The two forms behind `catalog_list` and `catalog_show`, over the CLI's own
+// decoded request so `main` dispatches without rebuilding it.
+@internal
 pub fn run_catalog(request: cli.CatalogRequest) -> Result(String, GradedError) {
   use manifest <- result.try(case request {
     // The listing takes no directory of its own, so it walks up from the one
@@ -1927,12 +2010,11 @@ pub fn run_format(directory: String) -> Result(Nil, GradedError) {
 
 /// Format a `.graded` spec given as a string, as `graded format --stdin` does
 /// for editor integration: parse the input, then sort and reformat it. Returns
-/// the input's parse error if it doesn't parse.
-pub fn run_format_stdin(
-  input: String,
-) -> Result(String, annotation.ParseError) {
-  use file <- result.map(annotation.parse_file(input))
-  annotation.format_sorted(file)
+/// a `GradedParseError` naming `<stdin>` if the input doesn't parse.
+pub fn run_format_stdin(input: String) -> Result(String, GradedError) {
+  annotation.parse_file(input)
+  |> result.map(annotation.format_sorted)
+  |> result.map_error(graded_parse_error("<stdin>", _))
 }
 
 /// Check that the project's spec file is already formatted. Returns error
@@ -1964,7 +2046,7 @@ fn format_one_spec(
     Ok(content) ->
       annotation.parse_file(content)
       |> result.map(fn(file) { Some(annotation.format_sorted(file)) })
-      |> result.map_error(GradedParseError(spec_path, _))
+      |> result.map_error(graded_parse_error(spec_path, _))
   }
 }
 
@@ -2904,7 +2986,11 @@ fn read_config(directory: String) -> Result(config.GradedConfig, GradedError) {
     // of the one the manifest names.
     Error(config.TomlReadError(_, simplifile.Enoent)) ->
       Ok(config.defaults_for(default_package_name(project_root)))
-    Error(cause) -> Error(InvalidConfig(path: toml_path, cause:))
+    Error(cause) ->
+      Error(InvalidConfig(
+        path: toml_path,
+        message: config.describe_error(cause),
+      ))
   })
   Ok(
     config.GradedConfig(
@@ -3424,7 +3510,7 @@ fn read_spec_on_disk(
     Ok(content) ->
       annotation.parse_file(content)
       |> result.map(fn(file) { #(content, file) })
-      |> result.map_error(GradedParseError(spec_path, _))
+      |> result.map_error(graded_parse_error(spec_path, _))
   }
 }
 
@@ -3558,6 +3644,7 @@ fn fold_inferred_into_kb(
 /// inference on a temporary directory tree without going through
 /// `gleam.toml` resolution. Production callers go through
 /// `enrich_with_path_deps` which reads `gleam.toml` to discover dep paths.
+@internal
 pub fn infer_path_dep(
   dep_path: String,
   base_kb: KnowledgeBase,
@@ -3830,12 +3917,10 @@ fn drop_stale_names(
 
 fn run_check(directory: String) -> Nil {
   case run(directory) {
-    Ok(results) -> {
-      let violations =
-        list.flat_map(results, fn(check_result) { check_result.violations })
-      let warnings =
-        list.flat_map(results, fn(check_result) { check_result.warnings })
-      list.each(results, print_warnings)
+    Ok(reports) -> {
+      let violations = list.flat_map(reports, fn(report) { report.violations })
+      let warnings = list.flat_map(reports, fn(report) { report.warnings })
+      list.each(warnings, io.println)
       case warnings {
         [] -> Nil
         _ ->
@@ -3846,7 +3931,7 @@ fn run_check(directory: String) -> Nil {
       case violations {
         [] -> io.println("graded: all checks passed")
         _ -> {
-          list.each(results, print_violations)
+          list.each(violations, io.println)
           io.println(
             "\ngraded: "
             <> int.to_string(list.length(violations))
@@ -3860,6 +3945,16 @@ fn run_check(directory: String) -> Nil {
   }
 }
 
+// The public parse error for a spec file: the description graded prints for
+// the cause, so the variant carries no internal type. One renderer, so the
+// wording a caller reads and the wording the CLI prints cannot fork.
+fn graded_parse_error(
+  path: String,
+  cause: annotation.ParseError,
+) -> GradedError {
+  GradedParseError(path:, message: annotation.describe_parse_error(cause))
+}
+
 fn format_error(error: GradedError) -> String {
   case error {
     DirectoryReadError(path, _) -> "Could not read directory: " <> path
@@ -3867,9 +3962,10 @@ fn format_error(error: GradedError) -> String {
     FileWriteError(path, _) -> "Could not write: " <> path
     DirectoryCreateError(path, _) -> "Could not create directory: " <> path
     GleamParseError(path, _) -> "Could not parse: " <> path
-    GradedParseError(path, cause) ->
-      "Parse error in " <> path <> ":" <> annotation.describe_parse_error(cause)
-    InvalidConfig(path, _) -> "Invalid gleam.toml: " <> path
+    GradedParseError(path, message) ->
+      "Parse error in " <> path <> ":" <> message
+    InvalidConfig(path, message) ->
+      "Invalid gleam.toml: " <> path <> ": " <> message
     FormatCheckFailed(paths:) ->
       "Unformatted .graded files:\n"
       <> string.join(list.map(paths, fn(path) { "  " <> path }), "\n")
@@ -3919,26 +4015,6 @@ pub fn format_catalog_problem(problem: CatalogProblem) -> String {
       "no bundled catalog directory; looked in "
       <> string.join(candidates, ", ")
   }
-}
-
-fn print_violations(check_result: CheckResult) -> Nil {
-  list.each(check_result.violations, fn(violation) {
-    print_violation(check_result.file, violation)
-  })
-}
-
-fn print_violation(file: String, violation: Violation) -> Nil {
-  io.println(checker.format_violation(file, violation))
-}
-
-fn print_warnings(check_result: CheckResult) -> Nil {
-  list.each(check_result.warnings, fn(warning) {
-    print_warning(check_result.file, warning)
-  })
-}
-
-fn print_warning(file: String, warning: Warning) -> Nil {
-  io.println(checker.format_warning(file, warning))
 }
 
 @external(erlang, "erlang", "halt")

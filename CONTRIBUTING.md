@@ -29,18 +29,25 @@ is per-clone, so the `git config` line above is needed once after cloning.
 
 ## Pre-flight checklist
 
-CI runs four gates, in this order. Run them locally before pushing — green here
+CI runs five gates, in this order. Run them locally before pushing — green here
 means green on CI:
 
 ```sh
-gleam format --check src/ test/    # formatting (test/ too, not just src/)
-gleam build --warnings-as-errors   # no warnings allowed
-gleam test                         # full suite
-gleam run -m glinter               # lint (warnings are errors)
+gleam format --check src/ test/          # formatting (test/ too, not just src/)
+gleam build --warnings-as-errors         # no warnings allowed
+gleam test                               # full suite
+gleam run -m glinter                     # lint (warnings are errors)
+python3 scripts/check_public_interface.py  # public API names no internal type
 ```
 
 `gleam format src/ test/` (no `--check`) fixes formatting in place. Lint rules and
 the `warnings_as_errors` setting live under `[tools.glinter]` in `gleam.toml`.
+
+The last gate walks the package interface Gleam exports and fails if anything a
+consumer can name — a parameter, a return type, a variant field — resolves to a
+`graded/internal` module. Everything the public API names is defined in
+`src/graded.gleam`; a function that exists only for graded's own tests is marked
+`@internal`, which keeps it out of the interface entirely.
 
 ## Adding a catalog entry
 

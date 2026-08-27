@@ -153,7 +153,10 @@ pub fn dry_run_over_an_unparseable_spec_errors_test() {
   |> should.equal(
     Error(graded.GradedParseError(
       root <> "/proj.graded",
-      annotation.InvalidLine(2, "this line is not a graded annotation"),
+      annotation.describe_parse_error(annotation.InvalidLine(
+        2,
+        "this line is not a graded annotation",
+      )),
     )),
   )
   simplifile.read(root <> "/proj.graded") |> should.equal(Ok(existing))
@@ -484,7 +487,10 @@ pub fn infer_over_an_unparseable_spec_writes_nothing_test() {
   |> should.equal(
     Error(graded.GradedParseError(
       root <> "/proj.graded",
-      annotation.InvalidLine(2, "not a graded line"),
+      annotation.describe_parse_error(annotation.InvalidLine(
+        2,
+        "not a graded line",
+      )),
     )),
   )
   simplifile.read(root <> "/proj.graded") |> should.equal(Ok(before))

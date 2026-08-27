@@ -236,15 +236,17 @@ pub fn pack_refuses_a_spec_that_does_not_parse_test() {
   let assert Ok(before) = simplifile.read_bits(tarball)
 
   // The standard parse error, naming the file and the retired line.
-  let assert Error(graded.GradedParseError(path, cause)) =
+  let assert Error(graded.GradedParseError(path, message)) =
     graded.pack_project(root, None)
   string.ends_with(path, "dep.graded") |> should.be_true()
-  cause
-  |> should.equal(annotation.RetiredSpelling(
-    2,
-    "returns dep.make : [Stdout]",
-    annotation.RetiredReturns,
-  ))
+  message
+  |> should.equal(
+    annotation.describe_parse_error(annotation.RetiredSpelling(
+      2,
+      "returns dep.make : [Stdout]",
+      annotation.RetiredReturns,
+    )),
+  )
 
   // The tarball is untouched and the run left no scratch path behind: the spec
   // is refused before either is opened.
@@ -325,7 +327,7 @@ pub fn pack_consumer_resolves_injected_spec_test() {
 
   // packdep is not in the catalog, so `packdep.work` resolves to [Stdout] only
   // by reading the injected spec at build/packages/packdep/packdep.graded.
-  let assert Ok(results) = graded.run(consumer)
+  let assert Ok(results) = graded.check_project(consumer)
   let assert Ok(r) =
     list.find(results, fn(r) { string.ends_with(r.file, "src/main.gleam") })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "run" })
