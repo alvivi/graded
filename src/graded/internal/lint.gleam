@@ -226,18 +226,25 @@ pub fn run_recording_lookups(
     effects_lines
     |> list.filter_map(unclosed_clause_warning(_, registry))
 
-  // Only a `module.function` path keys an `effects` line, so the question is
-  // put to `split_function_name` — the reader every consumer of this tier goes
-  // through — rather than to a second classification of the same path. A
-  // dangling function path is left alone on purpose: this tier is rewritten
-  // from source on every `infer`, so a stale line is a line doing its job,
-  // while a field or module path is one no run can key at all.
+  // Only a `module.function` path keys an `effects` line. The question goes to
+  // the two readers that already answer it — `split_function_name`, which every
+  // consumer of this tier goes through, and the field reader the `check` lint
+  // above asks — rather than to a third classification of the same path. Both
+  // are needed: the segment count alone reads `Handler.on_click`, the field
+  // spelling whose module its type implies, as a function of a module named
+  // `Handler`, and no Gleam module is named that. A dangling function path is
+  // left alone on purpose: this tier is rewritten from source on every `infer`,
+  // so a stale line is a line doing its job, while a field or module path is
+  // one no run can key at all.
   let effects_shape_warnings =
     effects_lines
     |> list.filter_map(fn(ann) {
-      case annotation.split_function_name(ann.function) {
-        Ok(_) -> Error(Nil)
-        Error(Nil) -> Ok(UnkeyedEffectsShapeWarning(name: ann.function))
+      case
+        annotation.is_field_path(ann.function),
+        annotation.split_function_name(ann.function)
+      {
+        False, Ok(_) -> Error(Nil)
+        _, _ -> Ok(UnkeyedEffectsShapeWarning(name: ann.function))
       }
     })
 
