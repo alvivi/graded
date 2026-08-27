@@ -1,6 +1,8 @@
 import glance
 import gleam/dict
+import gleam/int
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/set.{type Set}
 import gleeunit/should
 import graded/internal/extract
@@ -392,6 +394,89 @@ pub fn target() { \"hi\" |> println }"
   result.resolved
   |> list.map(fn(r) { r.name })
   |> should.equal([QualifiedName("gleam/io", "println")])
+}
+
+// Pipes into a function capture
+//
+// `x |> f(_, y)` is `f(x, y)`: the piped value takes the discard's position,
+// carries the discard's label, and the callee is resolved by the shape the
+// capture names.
+
+// The arguments recorded for the one resolved call `src`'s `target` makes,
+// as `#(position, label, value)` in position order.
+fn captured_args(
+  src: String,
+) -> List(#(Int, option.Option(String), types.ArgumentValue)) {
+  let result = parse_and_extract(src)
+  let assert [call] = result.resolved
+  let assert Ok(args) = dict.get(result.call_args, extract.span_key(call.span))
+  args
+  |> list.sort(fn(a, b) { int.compare(a.position, b.position) })
+  |> list.map(fn(arg) { #(arg.position, arg.label, arg.value) })
+}
+
+pub fn pipe_into_capture_at_position_zero_test() {
+  captured_args(
+    "import gleam/io
+import helper
+pub fn target() { io.println |> helper.apply(_, 1) }",
+  )
+  |> should.equal([
+    #(0, None, FunctionRef(QualifiedName("gleam/io", "println"))),
+    #(1, None, OtherExpression),
+  ])
+}
+
+pub fn pipe_into_capture_at_a_later_position_test() {
+  captured_args(
+    "import gleam/io
+import helper
+pub fn target() { io.println |> helper.apply(1, _) }",
+  )
+  |> should.equal([
+    #(0, None, OtherExpression),
+    #(1, None, FunctionRef(QualifiedName("gleam/io", "println"))),
+  ])
+}
+
+pub fn pipe_into_a_labelled_capture_test() {
+  // The labelled arguments are written in the other order than the callee
+  // declares them, so only the label the discard carries binds it correctly.
+  captured_args(
+    "import gleam/io
+import helper
+pub fn target() { io.println |> helper.apply(times: 1, callback: _) }",
+  )
+  |> should.equal([
+    #(0, Some("times"), OtherExpression),
+    #(1, Some("callback"), FunctionRef(QualifiedName("gleam/io", "println"))),
+  ])
+}
+
+pub fn pipe_into_a_local_capture_test() {
+  let result =
+    parse_and_extract(
+      "import gleam/io
+pub fn target() { io.println |> helper(_, 1) }",
+    )
+  let assert [call] = result.local
+  call.function |> should.equal("helper")
+  let assert Ok(args) = dict.get(result.call_args, extract.span_key(call.span))
+  let assert Ok(piped) = list.find(args, fn(a) { a.position == 0 })
+  piped.value |> should.equal(FunctionRef(QualifiedName("gleam/io", "println")))
+}
+
+pub fn pipe_into_a_nested_field_capture_test() {
+  let result =
+    parse_and_extract(
+      "import gleam/io
+pub fn target(o) { io.println |> o.inner.run(_, 1) }",
+    )
+  let assert [call] = result.field
+  call.label |> should.equal("run")
+  let assert Ok(args) = dict.get(result.call_args, extract.span_key(call.span))
+  let assert Ok(piped) = list.find(args, fn(a) { a.position == 0 })
+  piped.value |> should.equal(FunctionRef(QualifiedName("gleam/io", "println")))
 }
 
 pub fn closure_test() {
