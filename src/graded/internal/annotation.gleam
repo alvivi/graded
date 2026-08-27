@@ -1109,7 +1109,7 @@ fn declaring_function_names(
 }
 
 // The modules a file declares with a module-level `assume
-// <module> : [...]` line (no `.`). Per-function externals (`<module>.<fn>`)
+// <module> : [...]` line (no `.`). Per-function assumes (`<module>.<fn>`)
 // don't count — they target one function, not the whole module. These are the
 // modules whose source inference the consumer's declaration overrides.
 pub fn module_assume_modules(file: GradedFile) -> set.Set(String) {
@@ -1232,8 +1232,8 @@ pub fn split_type_field_name(
 pub fn merge_inferred(
   file: GradedFile,
   inferred: List(EffectAnnotation),
-  stale_assumes: set.Set(String),
-  stale_returns_clauses: set.Set(String),
+  stale_assumes stale_assumes: set.Set(String),
+  stale_returns_clauses stale_returns_clauses: set.Set(String),
 ) -> GradedFile {
   // The value channel first, so the two suppressions compose: a name both an
   // effects declaration and a returns declaration cover loses its clause here

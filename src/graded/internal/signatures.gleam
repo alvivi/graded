@@ -338,7 +338,7 @@ pub fn type_alias_map(
 // direct `fn(..)` or a module-local alias resolving to one (`fn_aliases`). Only
 // labelled fields are included — an unlabelled field can't be reached by a
 // `record.field(..)` call. The boundary-scoped analog of
-// `fn_typed_params_from_function`: it lets the checker treat a `fn`-typed field
+// `ordered_callback_params`: it lets the checker treat a `fn`-typed field
 // on an opaque receiver as polymorphic (a field-effect variable) instead of
 // collapsing it to `[Unknown]`.
 pub fn fn_typed_fields_from_module(
@@ -418,15 +418,6 @@ pub fn ordered_callback_params(
       glance.Discarded(_) -> Error(Nil)
     }
   })
-}
-
-// The same as a set, with no extras: the parameters a signature alone shows
-// are callbacks.
-pub fn fn_typed_params_from_function(
-  function: Function,
-  alias_map: Dict(String, glance.Type),
-) -> Set(String) {
-  ordered_callback_params(function, alias_map, set.new()) |> set.from_list()
 }
 
 // Every fn-typed parameter of a function, mapped to the *shape* of its

@@ -543,7 +543,7 @@ to a dependency, so a field `assume` line may name a dependency module
 dependencies — girard reads the dependency's source to type the receiver. A
 dependency can also **ship** its own field `assume` lines in its committed spec file; a
 consumer picks them up automatically, the same way it inherits a dependency's
-`effects` and `external` annotations, so the capability-record pattern needs no
+`effects` and `assume` annotations, so the capability-record pattern needs no
 per-consumer re-declaration. A consumer's own field `assume` line still wins on a clash.
 
 ## Assumptions: foreign code and field effects

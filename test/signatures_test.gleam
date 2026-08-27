@@ -22,11 +22,12 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
 "
   let assert Ok(module) = glance.module(source)
   let assert [definition] = module.functions
-  signatures.fn_typed_params_from_function(
+  signatures.ordered_callback_params(
     definition.definition,
     signatures.type_alias_map(module.type_aliases),
+    set.new(),
   )
-  |> should.equal(set.from_list(["f"]))
+  |> should.equal(["f"])
 }
 
 pub fn glance_skips_non_fn_params_test() {
@@ -38,11 +39,12 @@ pub fn greet(name: String) -> String {
 "
   let assert Ok(module) = glance.module(source)
   let assert [definition] = module.functions
-  signatures.fn_typed_params_from_function(
+  signatures.ordered_callback_params(
     definition.definition,
     signatures.type_alias_map(module.type_aliases),
+    set.new(),
   )
-  |> should.equal(set.new())
+  |> should.equal([])
 }
 
 pub fn glance_skips_unannotated_params_test() {
@@ -54,11 +56,12 @@ pub fn apply(f, x) {
 "
   let assert Ok(module) = glance.module(source)
   let assert [definition] = module.functions
-  signatures.fn_typed_params_from_function(
+  signatures.ordered_callback_params(
     definition.definition,
     signatures.type_alias_map(module.type_aliases),
+    set.new(),
   )
-  |> should.equal(set.new())
+  |> should.equal([])
 }
 
 pub fn glance_detects_multiple_fn_typed_params_test() {
@@ -70,11 +73,12 @@ pub fn apply2(f: fn(Int) -> Int, g: fn(Int) -> Int, x: Int) -> Int {
 "
   let assert Ok(module) = glance.module(source)
   let assert [definition] = module.functions
-  signatures.fn_typed_params_from_function(
+  signatures.ordered_callback_params(
     definition.definition,
     signatures.type_alias_map(module.type_aliases),
+    set.new(),
   )
-  |> should.equal(set.from_list(["f", "g"]))
+  |> should.equal(["f", "g"])
 }
 
 pub fn glance_detects_fn_typed_record_field_test() {

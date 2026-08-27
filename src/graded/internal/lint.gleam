@@ -103,10 +103,10 @@ type Resolver {
   )
 }
 
-// Flag `check`/`type`/`external` spec lines whose target resolves nothing. A
-// `check` line names a function that must exist in some project module; a `type`
-// line names a `module.Type.field` that must be a callable (function-typed)
-// field; an `assume` line names foreign code, so it must name
+// Flag `check`/`assume` spec lines whose target resolves nothing. A
+// `check` line names a function that must exist in some project module; a field
+// `assume` line names a `module.Type.field` that must be a callable
+// (function-typed) field; an `assume` line names foreign code, so it must name
 // something graded cannot see the body of, and something that exists at all.
 // When the qualifier is missing or wrong, the field plainly can't be called, or
 // the declaration covers a body sitting in plain sight, the line is silently
@@ -191,7 +191,7 @@ pub fn run_recording_lookups(
     }
   }
 
-  // The function externals the existence channel just called dead — stale or
+  // The function assumes the existence channel just called dead — stale or
   // unmatched. The lints below skip them, so a line whose one warning says to
   // remove it gets no second piece of advice about its bound list. Derived
   // from that channel's own output, so the two gates cannot drift.
@@ -272,14 +272,8 @@ fn unbound_term_variable_warnings(
           return: Error(Nil),
         )
         let covered = effects.bound_payload_variables(assume.params)
-        // The declared term is a flat set, so its variables are right on the
-        // `Polymorphic` variant — no term round-trip needed.
-        let term_variables = case effect_set {
-          types.Polymorphic(_labels, variables) -> variables
-          types.Specific(_) | types.Wildcard -> set.new()
-        }
         let unbound =
-          term_variables
+          declared_term_variables(Some(effect_set))
           |> set.filter(fn(variable) { !set.contains(covered, variable) })
           |> set.to_list
           |> list.sort(string.compare)
@@ -316,14 +310,13 @@ fn aliased_bound_variable_warnings(
       use qualified <- result.try(annotation.assume_qualified_name(assume))
       let function = types.dotted_name(qualified)
       use <- bool.guard(when: set.contains(dead, function), return: Error(Nil))
-      let term_variables = case assume.effects {
-        Some(types.Polymorphic(_labels, variables)) -> variables
-        Some(types.Specific(_)) | Some(types.Wildcard) | None -> set.new()
-      }
       aliased_bound_warning(
         function,
         assume.params,
-        set.union(term_variables, returns_variables(assume.returns)),
+        set.union(
+          declared_term_variables(assume.effects),
+          returns_variables(assume.returns),
+        ),
       )
     })
   let from_effects =
@@ -361,6 +354,16 @@ fn returns_variables(returns: Option(EffectTerm)) -> Set(String) {
   case returns {
     Some(operator) -> effect_term.free_vars(operator)
     None -> set.new()
+  }
+}
+
+// The variables an `assume` line's declared effects half names. The declared
+// term is a flat set, so they are right on the `Polymorphic` variant — no term
+// round-trip needed. A line with no effects half names none.
+fn declared_term_variables(effects: Option(types.EffectSet)) -> Set(String) {
+  case effects {
+    Some(types.Polymorphic(_labels, variables)) -> variables
+    Some(types.Specific(_)) | Some(types.Wildcard) | None -> set.new()
   }
 }
 

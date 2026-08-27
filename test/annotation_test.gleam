@@ -1440,8 +1440,8 @@ pub fn merge_inferred_rewrites_a_stale_returns_clause_test() {
   annotation.merge_inferred(
     file,
     inferred,
-    set.new(),
-    set.from_list(["app.make"]),
+    stale_assumes: set.new(),
+    stale_returns_clauses: set.from_list(["app.make"]),
   )
   |> should.equal(
     types.GradedFile(lines: [
@@ -1498,8 +1498,8 @@ pub fn merge_inferred_keeps_the_two_stale_channels_apart_test() {
   annotation.merge_inferred(
     file,
     inferred,
-    set.new(),
-    set.from_list(["app.make"]),
+    stale_assumes: set.new(),
+    stale_returns_clauses: set.from_list(["app.make"]),
   )
   |> should.equal(
     types.GradedFile(lines: [
@@ -1534,7 +1534,12 @@ pub fn merge_inferred_keeps_bounds_on_a_stale_conversion_test() {
         [UnknownClause(key: "future", payload: "[X]")],
       ),
     ])
-  annotation.merge_inferred(file, [], set.from_list(["app.make"]), set.new())
+  annotation.merge_inferred(
+    file,
+    [],
+    stale_assumes: set.from_list(["app.make"]),
+    stale_returns_clauses: set.new(),
+  )
   |> should.equal(
     types.GradedFile(lines: [
       RetainedAssumeLine(path: "app.make(cb: [cb])", unknown_clauses: [

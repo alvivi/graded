@@ -345,9 +345,9 @@ fn with_sourced_type_fields(
   KnowledgeBase(..knowledge_base, type_fields: merged)
 }
 
-// Merge external annotations into a knowledge base.
-// Module-level externals record the whole module's declared effect.
-// Function-level externals are added to all_effects.
+// Merge assume annotations into a knowledge base.
+// Module-level assumes record the whole module's declared effect.
+// Function-level assumes are added to all_effects.
 //
 // `origin` is the source of these declarations: this project's spec passes
 // `UserAssume`, the bundled catalog passes `Catalog(package)`. A
@@ -379,13 +379,13 @@ pub fn with_assumes(
 
 // The two tiers a set of `assume` lines feeds: function-level entries
 // keyed by `QualifiedName`, module-level ones keyed by module name.
-type ExternalTiers =
+type AssumeTiers =
   #(
     Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
     Dict(String, #(EffectTerm, LookupOrigin)),
   )
 
-// Sort external annotations into the two maps they feed, each term paired with
+// Sort assume annotations into the two maps they feed, each term paired with
 // the source that declared it. Splitting is separate from merging so each
 // caller decides its own precedence.
 //
@@ -397,7 +397,7 @@ type ExternalTiers =
 fn split_assumes(
   assumes: List(AssumeAnnotation),
   origin: LookupOrigin,
-) -> ExternalTiers {
+) -> AssumeTiers {
   let function_assumes =
     list.fold(
       declaring_function_assumes(assumes),
@@ -424,8 +424,8 @@ fn split_assumes(
   #(function_assumes, module_assumes)
 }
 
-// Every function external that declares effects, keyed and in file order —
-// the one selection the external tier and the bounds map both fold, last
+// Every function assume that declares effects, keyed and in file order —
+// the one selection the assume tier and the bounds map both fold, last
 // entry winning in each, so on a duplicate declaration the winning term and
 // the winning bounds come off the same line by construction rather than by
 // two rules kept in step.
@@ -2316,28 +2316,23 @@ pub fn load_spec_params_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, List(ParamBound)) {
   let from_assumes = assume_bounds(annotation.extract_assumes(file))
-  // The same population `annotation.assume_function_names` selects, derived
-  // from the one extraction above rather than a second walk of the file.
-  let assume_functions =
-    from_assumes
-    |> dict.keys()
-    |> list.map(types.dotted_name)
-    |> set.from_list()
   list.fold(annotation.extract_annotations(file), from_assumes, fn(acc, ann) {
     use <- bool.guard(when: ann.kind == Check, return: acc)
-    use <- bool.guard(
-      when: set.contains(assume_functions, ann.function),
-      return: acc,
-    )
     case annotation.split_function_name(ann.function) {
-      Ok(#(module, function)) ->
-        dict.insert(acc, QualifiedName(module:, function:), ann.params)
+      Ok(#(module, function)) -> {
+        let name = QualifiedName(module:, function:)
+        // A name a declaring line already keyed answers to that line's bounds.
+        case dict.has_key(from_assumes, name) {
+          True -> acc
+          False -> dict.insert(acc, name, ann.params)
+        }
+      }
       Error(_) -> acc
     }
   })
 }
 
-// The bound list beside each function external that declares effects, keyed
+// The bound list beside each function assume that declares effects, keyed
 // by qualified name — a fold over the same selection `split_assumes` folds
 // its function tier from, so on a duplicate declaration the winning term and
 // the winning bounds come off the same line, never mixed across lines.
@@ -2352,7 +2347,7 @@ fn assume_bounds(
 
 // Everything one dependency's spec file declares. The four `QualifiedName`-keyed
 // maps hold the terms, bounds and returned-operator summaries; `type_fields` and
-// `externals` stay lists, since where each lands in the knowledge base is the
+// `assumes` stay lists, since where each lands in the knowledge base is the
 // merging caller's decision (`with_type_fields`'s insert order against the
 // project spec; `split_assumes`'s two tiers).
 //
@@ -2549,7 +2544,7 @@ fn sanitize_dep_spec(
 // pairs with the bounds `load_spec_params_from_file` records off that same
 // line: where the `effects` line is kept for a clause, that clause carries its
 // own scoping bounds on the returns channel.
-fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> ExternalTiers {
+fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> AssumeTiers {
   let #(function_assumes, module_assumes) = split_assumes(dep.assumes, origin)
   #(
     dict.merge(with_origin(dep.effects, origin), function_assumes),
@@ -2848,14 +2843,14 @@ fn priv_directory() -> Result(String, Nil)
 
 type CatalogAcc {
   CatalogAcc(
-    ext_effects: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+    assume_effects: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
     module_effects: Dict(String, #(EffectTerm, LookupOrigin)),
     poly_effects: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
     // The bounds of each tier, held apart and merged the way the terms beside
     // them are: a name's term and its bounds must come out of one file, or a
     // polymorphic term wins with another file's empty bounds beside it and its
     // variable is left with nothing to bind it.
-    ext_params: Dict(QualifiedName, List(ParamBound)),
+    assume_params: Dict(QualifiedName, List(ParamBound)),
     poly_params: Dict(QualifiedName, List(ParamBound)),
     type_fields: List(#(FieldAnnotation, LookupOrigin)),
   )
@@ -2887,9 +2882,9 @@ pub fn load_catalog(
   // bounds are merged by the same rule and in the same order, so the file whose
   // term wins a name is the file whose bounds pair with it.
   #(
-    dict.merge(acc.ext_effects, acc.poly_effects),
+    dict.merge(acc.assume_effects, acc.poly_effects),
     acc.module_effects,
-    dict.merge(acc.ext_params, acc.poly_params),
+    dict.merge(acc.assume_params, acc.poly_params),
     acc.type_fields,
   )
 }
@@ -2928,7 +2923,7 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
             })
             |> with_origin(origin)
           CatalogAcc(
-            ext_effects: dict.merge(acc.ext_effects, function_assumes),
+            assume_effects: dict.merge(acc.assume_effects, function_assumes),
             module_effects: dict.merge(acc.module_effects, module_assumes),
             poly_effects: dict.merge(acc.poly_effects, file_poly_effects),
             // An external's bounds come off its own line — empty for the
@@ -2936,7 +2931,7 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
             // polymorphic one — keyed by the same last-wins fold as the term,
             // so the line whose term wins a name is the line whose bounds
             // pair with it.
-            ext_params: dict.merge(acc.ext_params, assume_bounds(assumes)),
+            assume_params: dict.merge(acc.assume_params, assume_bounds(assumes)),
             poly_params: dict.merge(
               acc.poly_params,
               // A catalog entry describes a package graded has no source for,

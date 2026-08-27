@@ -830,7 +830,7 @@ fn native_functions_of(
   }
 }
 
-// The spec's external declarations minus the ones that declare nothing.
+// The spec's assume declarations minus the ones that declare nothing.
 fn declaring_assumes(
   spec: GradedFile,
   stale: Set(String),
@@ -1989,7 +1989,7 @@ fn compare_catalog_files(
 // file, sort it, and write or compare the normalized form.
 
 /// Format the project's spec file in place. The spec file is the single
-/// source of truth for hand-written `check`/`external`/field `assume` lines and
+/// source of truth for hand-written `check`/`assume` lines and
 /// the inferred public-API effects.
 pub fn run_format(directory: String) -> Result(Nil, GradedError) {
   use cfg <- result.try(read_config(directory))
@@ -2598,8 +2598,8 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     merged_spec: annotation.merge_inferred(
       spec,
       public_annotations,
-      stale_assumes,
-      stale_returns_clauses,
+      stale_assumes:,
+      stale_returns_clauses:,
     ),
     cache_files: list.reverse(cache_files),
   ))

@@ -1008,7 +1008,11 @@ fn unwalked_summaries(
   |> list.map(fn(definition) {
     let bounds =
       synthetic_fn_typed_bounds(
-        set.from_list(callback_params(definition, alias_map, girard_fn_typed)),
+        set.from_list(callback_params(
+          definition.definition,
+          alias_map,
+          girard_fn_typed,
+        )),
       )
     let term =
       effect_term.normalize(
@@ -2177,11 +2181,6 @@ fn synthetic_fn_typed_bounds(fn_typed_params: Set(String)) -> List(ParamBound) {
   |> list.map(self_referential_bound)
 }
 
-// The function-typed parameters a set of declared bounds leaves unbound: the
-// ones a walk resolves to an effect variable of their own name. A parameter the
-// bounds already name is left to what was declared for it, which is the more
-// specific claim.
-//
 // A function's callback parameters, in declaration order.
 //
 // Detected from the glance signature — through the module's own type aliases,
@@ -2190,26 +2189,29 @@ fn synthetic_fn_typed_bounds(fn_typed_params: Set(String)) -> List(ParamBound) {
 // alias leg is deterministic where girard's is best-effort, so a bound stays
 // where girard declines the function.
 //
-// The one answer to "which of this function's parameters are callbacks":
-// every walk, every substitution and every lift reads it, so no two of them
-// can abstract over different parameters.
+// The one answer to "which of this function's parameters are callbacks" on the
+// effects channel: every walk, every substitution and every lift over a
+// producer reads it through `cached_callback_params`, so no two of them can
+// abstract over different parameters. Two sites deliberately ask a different
+// question and so derive their own: the declares-for-callers lift widens the
+// set with the value channel's bound names, and the closure gate admits the
+// registry's girard-free set.
 fn callback_params(
-  definition: Definition(Function),
+  function: Function,
   alias_map: dict.Dict(String, glance.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
 ) -> List(String) {
   signatures.ordered_callback_params(
-    definition.definition,
+    function,
     alias_map,
-    typeinfo.fn_typed_params(girard_fn_typed, definition.definition.name),
+    typeinfo.fn_typed_params(girard_fn_typed, function.name),
   )
 }
 
-// The same set for a function of the module the cache was built over, read off
-// the cache rather than recomputed: `build_scc_ids` derives it for every
-// function to decide collapsibility, so every later reader is a lookup.
-// `declared` names the bounds a line already carries, which are left to what
-// was declared for them — the more specific claim.
+// The function-typed parameters a set of declared bounds leaves unbound: the
+// ones a walk resolves to an effect variable of their own name. A parameter the
+// bounds already name is left to what was declared for it, which is the more
+// specific claim.
 fn unbound_fn_typed_params(
   definition: Definition(Function),
   declared: List(ParamBound),
@@ -2221,7 +2223,10 @@ fn unbound_fn_typed_params(
   |> set.filter(fn(name) { !set.contains(declared_names, name) })
 }
 
-// In declaration order, which the lift path needs to abstract over them.
+// The same set for a function of the module the cache was built over, read off
+// the cache rather than recomputed: `build_scc_ids` derives it for every
+// function to decide collapsibility, so every later reader is a lookup. In
+// declaration order, which the lift path needs to abstract over them.
 fn cached_callback_params(
   function: Function,
   cache: LocalCache,
@@ -2231,11 +2236,7 @@ fn cached_callback_params(
     // A function the cache was not built over — nothing keys it, so derive it
     // from the same two sources rather than reporting no callbacks.
     Error(Nil) ->
-      signatures.ordered_callback_params(
-        function,
-        cache.fn_alias_types,
-        typeinfo.fn_typed_params(cache.girard_fn_typed, function.name),
-      )
+      callback_params(function, cache.fn_alias_types, cache.girard_fn_typed)
   }
 }
 
@@ -2425,7 +2426,7 @@ pub fn build_scc_ids(
       dict.insert(
         acc,
         definition.definition.name,
-        callback_params(definition, fn_alias_types, girard_fn_typed),
+        callback_params(definition.definition, fn_alias_types, girard_fn_typed),
       )
     })
   let needs_exact =
