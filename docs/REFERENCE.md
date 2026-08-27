@@ -597,6 +597,16 @@ own line). Use the module-level form when one budget fits the module. A
 per-function `assume mod.fn` or a catalog `effects` line for the same
 function takes precedence over a module-level external.
 
+The declared set is what the module's functions cost *on their own*. It says
+nothing about a callback one of them is handed, so a caller that passes an
+effectful function to a higher-order name in the module pays that function's
+effects on top: under `assume gleam/list : []`, `list.map(xs, io.println)`
+is still charged the `[Stdout]` of `io.println`. That holds however the
+higher-order name is reached — called, passed to a helper, or wired into a
+record field. To state a callback's budget instead of having it charged, give
+the function a per-function line with a bound list (`assume mod.each(cb: []) :
+[]`), which is available wherever a per-function line is.
+
 For a *dependency* module whose functions differ, use the per-function form. For
 one of **your own** modules, the per-function form is not the answer — it names a
 function graded can see the body of, so it is stale (above). The module-level form
