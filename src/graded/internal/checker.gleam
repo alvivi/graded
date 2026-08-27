@@ -5063,7 +5063,7 @@ fn operator_term_for_argument(
         signatures.fn_typed_param_names_ordered(
           registry,
           name,
-          recorded_bound_names(knowledge_base, name),
+          value_channel_bound_names(knowledge_base, name),
         )
         |> list.fold_right(body, fn(acc, param) { types.TAbs(param, acc) })
       #(operator, memo)
@@ -6124,6 +6124,19 @@ fn recorded_bound_names(
   effects.bound_name_set(effects.lookup_param_bounds(knowledge_base, name))
 }
 
+// The same for the value channels, whose term may carry a callback variable
+// the recorded bounds do not name — a declared Gleam function's synthesized
+// share. The binder has to be the variable the term holds free: where the
+// callback is labeled, `fn_typed_param_names_ordered` prefers the label unless
+// a bound names the parameter, and a binder named after the label leaves the
+// term's variable free, the application stuck, and the result `[Unknown]`.
+fn value_channel_bound_names(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Set(String) {
+  effects.bound_name_set(effects.value_channel_bounds(knowledge_base, name))
+}
+
 // Argument matching
 //
 // Locate the call argument bound to a named callee parameter — by label, then
@@ -6540,7 +6553,11 @@ fn value_field_effect(
     // an `@external` wired into a field is charged the same `[Unknown]` a call
     // to it is, and `local_function_field_effect` declines to walk its body.
     Some(name) ->
-      case effects.lookup_declared(knowledge_base, name) {
+      // Read as the value channel it is: a declaration silent about the wired
+      // function's callbacks says nothing about what calling the field does
+      // with them, so the term carries a variable for each. A no-op for a
+      // foreign name, whose charge carries the same share already.
+      case effects.lookup_value_channel(knowledge_base, name) {
         effects.Known(effect, source) -> #(
           known_field_effect(effect, knowledge_base, name),
           Some(effects.origin_of(source)),
@@ -6636,6 +6653,11 @@ fn value_field_effect(
 // The field effect of a wired function as the knowledge base reports it: a
 // concrete effect carries no bounds or source; an effect-polymorphic one keeps
 // the wired function's bounds and identity for substitution at the field call.
+//
+// The bounds are the value channel's, which pair with the term this channel
+// reads: a callback variable synthesized into that term binds through a bound
+// of the same name, and without it the field call resolves the argument it was
+// handed to nothing.
 fn known_field_effect(
   field_effects: EffectTerm,
   knowledge_base: KnowledgeBase,
@@ -6646,7 +6668,7 @@ fn known_field_effect(
     True ->
       types.TypeFieldEffect(
         field_effects,
-        effects.lookup_param_bounds(knowledge_base, name),
+        effects.value_channel_bounds(knowledge_base, name),
         Some(name),
         types.Inferred,
       )

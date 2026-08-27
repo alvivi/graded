@@ -693,6 +693,11 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // Before anything is looked up: every foreign lookup is read on the targets
     // this build compiles, and every command reads them the same way.
     |> effects.with_package_targets(cfg.targets)
+    // Which parameters of a declared name are callbacks, from the one registry
+    // this run builds. Ahead of the path-dependency and fallback-body walks
+    // below: a body walked there charges a declared name the same conservative
+    // callback share a body walked at check time does.
+    |> effects.with_callback_params(signatures.callback_param_names(registry))
     // Consumer externals are applied before path-dep inference so a module-level
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
@@ -1889,19 +1894,24 @@ fn spec_answer(
         when: runs_a_fallback_body(parsed.foreign, name),
         return: Error(Nil),
       )
-      let dependency_foreign =
-        dependency_foreign_for(directory, project_modules, module, targets)
+      let dependency =
+        dependency_facts_for(directory, project_modules, module, targets)
       // And a *dependency's* external whose fallback body runs, for the same
       // reason: the full context walks that body during its dependency pass and
       // charges the name what it does, so answering from the declaration alone
       // would quote a charge `check` does not levy.
       use <- bool.guard(
-        when: runs_a_fallback_body(dependency_foreign, name),
+        when: runs_a_fallback_body(dependency.foreign, name),
         return: Error(Nil),
       )
       answer_from(
         with_module_facts(spec_knowledge_base(spec, stale, targets), parsed)
-          |> effects.with_dependency_foreign(dependency_foreign),
+          |> effects.with_dependency_foreign(dependency.foreign)
+          // The dependency module's own callback parameters, from the parse
+          // above: a boundless declaration over one of its higher-order
+          // externals charges a variable per callback, and an answer without
+          // them quotes the declared term the full context widened.
+          |> effects.with_callback_params(dependency.callbacks),
         name,
       )
     }
@@ -1965,34 +1975,51 @@ fn runs_a_fallback_body(
   }
 }
 
-// What a *dependency's* source says is `@external` in the queried module.
+// What a *dependency's* source says about the queried module: which of its
+// functions are `@external`, and which parameters of each are callbacks. Both
+// come off one parse, because both answer the same question about the same
+// module and a second parse could read a different copy of it.
+type DependencyModuleFacts {
+  DependencyModuleFacts(
+    foreign: Dict(QualifiedName, types.ForeignFunction),
+    callbacks: Dict(QualifiedName, List(String)),
+  )
+}
+
+// What a *dependency's* source says about the queried module.
 //
 // Empty for one of this package's own modules: Gleam forbids a dependency from
 // keying one, so nothing over there can change the answer. For a dependency
 // module — which a per-function `assume` line may name — the
 // declaration alone understates an `@external` whose Gleam fallback body runs,
 // because the full context walks that body and unions what it does into the
-// charge. One module is located and parsed to settle it, so the fast path can
-// tell that case and hand it back rather than answer where the full context
-// would say more.
-fn dependency_foreign_for(
+// charge. It also understates a boundless declaration over a higher-order one,
+// whose callbacks the full context charges off this same signature. One module
+// is located and parsed to settle both, so the fast path can tell the first
+// case and hand it back, and answer the second as the full context does.
+fn dependency_facts_for(
   directory: String,
   project_modules: Dict(String, String),
   module: String,
   package_targets: types.PackageTargets,
-) -> Dict(QualifiedName, types.ForeignFunction) {
-  use <- bool.guard(
-    when: dict.has_key(project_modules, module),
-    return: dict.new(),
-  )
+) -> DependencyModuleFacts {
+  let none = DependencyModuleFacts(foreign: dict.new(), callbacks: dict.new())
+  use <- bool.guard(when: dict.has_key(project_modules, module), return: none)
   let files = dependency_module_files(resolve_package_root(directory))
   // A dependency graded cannot locate or parse is one the full context cannot
   // read either, so both answer from the declaration alone.
-  use <- bool.guard(when: !dict.has_key(files, module), return: dict.new())
+  use <- bool.guard(when: !dict.has_key(files, module), return: none)
   case dict.get(files, module) |> result.try(read_and_parse_gleam_or_nil) {
     Ok(parsed) ->
-      checker.dependency_foreign_functions(parsed, module, package_targets)
-    Error(Nil) -> dict.new()
+      DependencyModuleFacts(
+        foreign: checker.dependency_foreign_functions(
+          parsed,
+          module,
+          package_targets,
+        ),
+        callbacks: module_callback_params(module, parsed),
+      )
+    Error(Nil) -> none
   }
 }
 
@@ -2024,6 +2051,12 @@ type ModuleFacts {
     foreign: Dict(QualifiedName, types.ForeignFunction),
     visibility: Dict(String, Dict(String, types.Visibility)),
     native: Set(String),
+    // Which parameters of each of its functions are callbacks — what the full
+    // context reads off the whole-package registry, taken here from the one
+    // module this path parses. A boundless declaration over a higher-order
+    // `@external` charges a variable per callback, so an answer without them
+    // quotes a narrower term than `check` levies.
+    callbacks: Dict(QualifiedName, List(String)),
   )
 }
 
@@ -2048,6 +2081,7 @@ fn module_source_facts(
         foreign: dict.new(),
         visibility: dict.new(),
         native: set.new(),
+        callbacks: dict.new(),
       ))
     Ok(path) -> {
       use module <- result.map(
@@ -2059,12 +2093,27 @@ fn module_source_facts(
           #(module_path, checker.function_visibility(module)),
         ]),
         native: checker.native_function_names(module, package_targets),
+        callbacks: module_callback_params(module_path, module),
       )
     }
   }
 }
 
-// Fold one module's source facts into a knowledge base, in the same two calls
+// The callback parameters of one parsed module's functions — what the full
+// context reads off the whole-package registry, derived here from the single
+// module a fast-path answer parses. Both fast-path halves take it from here, so
+// neither can read a module's signatures differently from the other.
+fn module_callback_params(
+  module_path: String,
+  module: glance.Module,
+) -> Dict(QualifiedName, List(String)) {
+  signatures.callback_param_names(signatures.from_glance_module(
+    module_path,
+    module,
+  ))
+}
+
+// Fold one module's source facts into a knowledge base, in the same three calls
 // the full context makes over the whole package.
 fn with_module_facts(
   knowledge_base: KnowledgeBase,
@@ -2073,6 +2122,7 @@ fn with_module_facts(
   knowledge_base
   |> effects.with_foreign_functions(facts.foreign)
   |> effects.with_project_functions(facts.visibility)
+  |> effects.with_callback_params(facts.callbacks)
 }
 
 // Render `name` as an `effects` line, or `Error(Nil)` when it isn't a known
@@ -2163,7 +2213,12 @@ fn function_effect(
       Ok(answer.FunctionAnswer(
         name:,
         module:,
-        bounds: fallback_bounds,
+        // The full pairing, as the function-entry answer below takes: a
+        // module-level `assume` states no bounds of its own, and where the
+        // charge synthesized a callback variable for one of the module's
+        // higher-order externals, the bound that scopes it is in this list and
+        // in no other.
+        bounds: effects.lookup_param_bounds(knowledge_base, qualified),
         term:,
         source: answer.Entry(types.ModuleExternalEntry(origin:), fallback:),
       ))
@@ -3176,6 +3231,9 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       dependency_foreign(dep_sources),
     )
     |> effects.with_package_targets(cfg.targets)
+    // As in `project_context`: the callback parameters of every parsed
+    // signature, in reach of the walks below.
+    |> effects.with_callback_params(signatures.callback_param_names(registry))
     // Consumer externals are applied before path-dep inference so a module-level
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.

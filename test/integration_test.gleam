@@ -2327,6 +2327,269 @@ pub fn via_field() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_bodyless_externals_callback_is_charged_on_every_channel_test() {
+  // `ext.run` is bodyless — foreign on every target, so no fallback summary
+  // records what its callbacks are — and its `assume` line is boundless. Only
+  // the parsed signature says it takes one. A direct call recovered the charge
+  // from that signature at the call site; every value channel read the bare
+  // `[Time]`, so an effectful callback passed a pure check on the call's shape
+  // alone. All three charge `[Disk, Time]`.
+  let root = "build/bodyless_external_value_channels"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ext.run : [Time]
+assume app.disk : [Disk]
+check app.direct : []
+check app.via_operator : []
+check app.via_field : []
+",
+    ),
+    #("ext.gleam", support.foreign_fn("run", "(action: fn() -> Nil) -> Nil")),
+    #(
+      "app.gleam",
+      "import ext
+
+pub type Runner {
+  Runner(go: fn(fn() -> Nil) -> Nil)
+}
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+
+fn invoke(op: fn(fn() -> Nil) -> Nil, x: fn() -> Nil) -> Nil {
+  op(x)
+}
+
+pub fn direct() -> Nil {
+  ext.run(disk)
+}
+
+pub fn via_operator() -> Nil {
+  invoke(ext.run, disk)
+}
+
+fn make() -> Runner {
+  Runner(go: ext.run)
+}
+
+pub fn via_field() -> Nil {
+  let r = make()
+  r.go(disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  ["direct", "via_operator", "via_field"]
+  |> list.each(fn(function) {
+    let assert Ok(violation) =
+      list.find(r.violations, fn(v) { v.function == function })
+    violation.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+  })
+  support.cleanup(root)
+}
+
+pub fn an_unbuilt_bodyless_externals_callback_is_charged_too_test() {
+  // The same name under defaulted targets, declared for javascript alone and
+  // with no Gleam body to run in its place: the declaration stands beside a
+  // fallback that is not there, the reading graded cannot narrow further. That
+  // arm returned the declared term bare, so the callback share stopped at the
+  // arm rather than at the shape of the line.
+  let root = "build/unbuilt_bodyless_external_callback"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ext.run : [Time]
+assume app.disk : [Disk]
+check app.via_operator : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"m\", \"run\")
+pub fn run(action: fn() -> Nil) -> Nil
+",
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+
+fn invoke(op: fn(fn() -> Nil) -> Nil, x: fn() -> Nil) -> Nil {
+  op(x)
+}
+
+pub fn via_operator() -> Nil {
+  invoke(ext.run, disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("via_operator")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+  support.cleanup(root)
+}
+
+pub fn a_sibling_bodyless_external_charges_its_callback_test() {
+  // The same external passed to a helper in its *own* module, which resolves
+  // through the definition rather than through the knowledge base. The lift
+  // reads the same charge, so the sibling channel charges what the cross-module
+  // one does.
+  let root = "build/bodyless_external_sibling_channel"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ext.run : [Time]
+assume ext.disk : [Disk]
+check ext.via_sibling : []
+",
+    ),
+    #(
+      "ext.gleam",
+      support.foreign_fn("run", "(action: fn() -> Nil) -> Nil")
+        <> support.foreign_fn("disk", "() -> Nil")
+        <> "
+fn invoke(op: fn(fn() -> Nil) -> Nil, x: fn() -> Nil) -> Nil {
+  op(x)
+}
+
+pub fn via_sibling() -> Nil {
+  invoke(run, disk)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/ext.gleam" })
+  let assert Ok(violation) =
+    list.find(r.violations, fn(v) { v.function == "via_sibling" })
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+  support.cleanup(root)
+}
+
+pub fn a_dependency_externals_callback_is_charged_on_a_value_channel_test() {
+  // A dependency's bodyless higher-order `@external`, declared by the
+  // dependency's own shipped spec. The consumer never calls it directly — it
+  // hands it to a helper — and the callback it hands over is charged.
+  let root = "build/dependency_bodyless_external_value_channel"
+  support.write_project_with_dependency(
+    directory: root,
+    package: "proj",
+    spec: "assume app.disk : [Disk]\ncheck app.via_operator : []\n",
+    sources: [
+      #(
+        "app.gleam",
+        "import dep/ffi
+
+@external(erlang, \"a\", \"d\")
+@external(javascript, \"a\", \"d\")
+pub fn disk() -> Nil
+
+fn invoke(op: fn(fn() -> Nil) -> Nil, x: fn() -> Nil) -> Nil {
+  op(x)
+}
+
+pub fn via_operator() -> Nil {
+  invoke(ffi.run, disk)
+}
+",
+      ),
+    ],
+    dependency: "dep",
+    dependency_spec: "assume dep/ffi.run : [Time]\n",
+    dependency_sources: [
+      #(
+        "dep/ffi.gleam",
+        support.foreign_fn("run", "(action: fn() -> Nil) -> Nil"),
+      ),
+    ],
+  )
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert [violation] = r.violations
+  violation.function |> should.equal("via_operator")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk", "Time"])))
+  support.cleanup(root)
+}
+
+pub fn a_bodyless_externals_reference_warns_as_a_summarys_does_test() {
+  // A reference to a var-carrying name warns quoting the set it carries, which
+  // is what a summary-shaped one already did. The widened names inherit it:
+  // the `[Time]`-declared external quotes both halves, and the pure one quotes
+  // its variable alone rather than falling silent.
+  let root = "build/bodyless_external_reference_warning"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ext.loud : [Time]
+assume ext.quiet : []
+check app.loud_go : [_]
+check app.quiet_go : [_]
+",
+    ),
+    #(
+      "ext.gleam",
+      support.foreign_fn("loud", "(action: fn() -> Nil) -> Nil")
+        <> support.foreign_fn("quiet", "(action: fn() -> Nil) -> Nil"),
+    ),
+    #(
+      "app.gleam",
+      "import ext
+
+pub fn apply_callback(f: fn(fn() -> Nil) -> Nil) -> Nil {
+  f(fn() { Nil })
+}
+
+pub fn loud_go() -> Nil {
+  apply_callback(ext.loud)
+}
+
+pub fn quiet_go() -> Nil {
+  apply_callback(ext.quiet)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.run(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  r.warnings
+  |> list.map(fn(warning) {
+    let assert types.UntrackedEffectWarning(function:, effects:, ..) = warning
+    #(function, effects)
+  })
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  |> should.equal([
+    #(
+      "loud_go",
+      types.Polymorphic(set.from_list(["Time"]), set.from_list(["action"])),
+    ),
+    #("quiet_go", types.Polymorphic(set.new(), set.from_list(["action"]))),
+  ])
+  support.cleanup(root)
+}
+
 pub fn a_suppressed_share_binds_through_the_fallback_bounds_test() {
   // The `assume` line's bound decouples its payload variable from the
   // parameter name (`cb: [e]`), while the suppressed body's term is stated
