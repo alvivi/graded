@@ -3015,6 +3015,10 @@ pub fn caller() -> Nil {
           types.FactorySignature(
             fields: dict.from_list([#("to_error", 0)]),
             param_labels: dict.new(),
+            constructor: types.BuiltConstructor(
+              module: "dep",
+              variant: "Validator",
+            ),
           ),
         ),
       ]),

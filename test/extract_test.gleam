@@ -1072,3 +1072,138 @@ pub fn an_unreadable_target_argument_stays_foreign_test() {
   is_foreign("@external(\"erlang\", \"m\", \"f\")\npub fn target() { Nil }")
   |> should.be_true()
 }
+
+// Construction sites
+//
+// Where a body builds a value of a custom type, with the constructor resolved
+// to its defining module through the import context. A field `check` weighs
+// the values wired at these sites, so a site that resolves to no module is not
+// recorded at all rather than attributed to the wrong type.
+
+fn constructions_of(src: String) -> List(types.Construction) {
+  let assert Ok(module) = glance.module(src)
+  let ctx =
+    extract.build_import_context(module)
+    |> extract.with_module_path("app")
+  let assert Ok(func) =
+    list.find(module.functions, fn(def) { def.definition.name == "target" })
+  extract.extract_function_calls(func.definition, ctx).constructions
+}
+
+pub fn construction_records_a_same_module_constructor_test() {
+  constructions_of(
+    "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+fn logger() { Nil }
+
+fn target() {
+  Handler(run: logger)
+}
+",
+  )
+  |> list.map(fn(c) { #(c.module, c.variant, dict.to_list(c.fields)) })
+  |> should.equal([
+    #("app", "Handler", [#("run", types.LocalRef("logger"))]),
+  ])
+}
+
+pub fn construction_routes_a_positional_argument_to_its_label_test() {
+  // A same-module constructor has declared labels, so a positional argument
+  // reaches the field it fills.
+  constructions_of(
+    "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+fn logger() { Nil }
+
+fn target() {
+  Handler(logger)
+}
+",
+  )
+  |> list.map(fn(c) { dict.to_list(c.fields) })
+  |> should.equal([[#("run", types.LocalRef("logger"))]])
+}
+
+pub fn construction_records_a_qualified_constructor_by_defining_module_test() {
+  constructions_of(
+    "import app/handler
+
+fn logger() { Nil }
+
+fn target() {
+  handler.Handler(run: logger)
+}
+",
+  )
+  |> list.map(fn(c) { #(c.module, c.variant) })
+  |> should.equal([#("app/handler", "Handler")])
+}
+
+pub fn construction_records_an_unqualified_import_by_defining_module_test() {
+  constructions_of(
+    "import app/handler.{Handler}
+
+fn logger() { Nil }
+
+fn target() {
+  Handler(run: logger)
+}
+",
+  )
+  |> list.map(fn(c) { #(c.module, c.variant) })
+  |> should.equal([#("app/handler", "Handler")])
+}
+
+pub fn construction_skips_an_unresolvable_constructor_test() {
+  // Neither this module's own types nor an import names it, so no check could
+  // own the site.
+  constructions_of(
+    "fn target() {
+  Handler(run: logger)
+}
+
+fn logger() { Nil }
+",
+  )
+  |> should.equal([])
+}
+
+pub fn record_update_records_only_the_written_fields_test() {
+  constructions_of(
+    "pub type Handler {
+  Handler(run: fn() -> Nil, name: String)
+}
+
+fn logger() { Nil }
+
+fn target(base) {
+  Handler(..base, run: logger)
+}
+",
+  )
+  |> list.map(fn(c) { #(c.variant, dict.to_list(c.fields)) })
+  |> should.equal([#("Handler", [#("run", types.LocalRef("logger"))])])
+}
+
+pub fn construction_records_a_nested_site_test() {
+  // The walk reaches a construction wherever it sits, so a site inside a
+  // closure is a site.
+  constructions_of(
+    "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+fn logger() { Nil }
+
+fn target() {
+  fn() { Handler(run: logger) }
+}
+",
+  )
+  |> list.map(fn(c) { c.variant })
+  |> should.equal(["Handler"])
+}
