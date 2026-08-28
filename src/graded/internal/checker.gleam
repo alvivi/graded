@@ -20,22 +20,27 @@ import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/topo
 import graded/internal/typeinfo
 import graded/internal/types.{
-  type CallExplanation, type EffectAnnotation, type EffectTerm, type LocalCall,
-  type LookupOrigin, type ParamBound, type QualifiedName, type ResolvedCall,
-  type UnknownReason, type Violation, type Warning, AliasedBoundVariableWarning,
-  CallExplanation, DotlessReturnsClauseWarning, EffectAnnotation, Effects,
-  FieldAssumeOrigin, FieldNotAnnotated, NoKnownEffects, ParamBound,
+  type CallExplanation, type CheckFinding, type ConstructionSite,
+  type EffectAnnotation, type EffectTerm, type LocalCall, type LookupOrigin,
+  type ParamBound, type QualifiedName, type ResolvedCall,
+  type ReturnedOperatorReason, type UnknownReason, type UnprovedCause,
+  type Violation, type Warning, AliasedBoundVariableWarning, CallExplanation,
+  DotlessReturnsClauseWarning, EffectAnnotation, Effects, FieldAssumeOrigin,
+  FieldBoundList, FieldNotAnnotated, FieldReturnsClause, FieldSiteViolation,
+  NoKnownEffects, NoReturnAnnotation, NonCallableReturnViolation, ParamBound,
   QualifiedName, ReceiverTypeUnresolved, RefusedDeclaredReturn,
-  StaleFunctionAssumeWarning, StaleReturnsClauseWarning, TUnion, TVar,
-  UnboundAssumeTermVariableWarning, UnbuiltExternal,
-  UnclosedReturnsClauseWarning, UndeclaredExternal, UngroundReturnsClauseWarning,
-  UnkeyedEffectsShapeWarning, UnknownClauseWarning, UnmatchedCheckWarning,
-  UnmatchedFieldAssumeWarning, UnmatchedFieldBoundWarning,
+  ReturnIsNotAFunction, ReturnsClauseViolation, StaleFunctionAssumeWarning,
+  StaleReturnsClauseWarning, TUnion, TVar, UnboundAssumeTermVariableWarning,
+  UnbuiltExternal, UncalledFactory, UnclosedReturnsClauseWarning,
+  UndeclaredExternal, UndeclaredForeignReturn, UnderivableReturnedOperator,
+  UngroundReturnsClauseWarning, UnkeyedEffectsShapeWarning, UnknownClauseWarning,
+  UnmatchedCheckWarning, UnmatchedFieldAssumeWarning, UnmatchedFieldBoundWarning,
   UnmatchedFunctionAssumeWarning, UnmatchedModuleAssumeWarning,
-  UnmatchedParamBoundWarning, UnmatchedReturnsClauseWarning,
-  UnresolvedFieldValue, UntraceableArgument, UntraceableProducer,
-  UntraceableReceiver, UntrackedEffectWarning, UnverifiedCheckShapeWarning,
-  UnverifiedReturnsClauseWarning, Violation,
+  UnmatchedParamBoundWarning, UnmatchedReturnsClauseWarning, UnprovedCheck,
+  UnprovedForeignFallback, UnresolvedFieldValue, UnresolvedReturnTail,
+  UnsupportedCheckComponent, UntraceableArgument, UntraceableProducer,
+  UntraceableReceiver, UntracedFieldValue, UntrackedEffectWarning,
+  UnverifiedCheckShapeWarning, UnverifiedReturnsClauseWarning, Violation,
 }
 
 // Entry points
@@ -1807,7 +1812,85 @@ pub fn format_violation(file: String, violation: Violation) -> String {
   <> format_call_explanation(violation.explanation)
   <> " but declared "
   <> effects.format_effect_set(violation.declared)
-  <> variables_hint(violation)
+  <> variables_hint(violation.function, violation.explanation)
+}
+
+// Render a `check` finding as the line `graded check` reports. An unproved
+// outcome is worded as something graded could not prove, never as something
+// the checked code violates: it rides the reported channel so the run exits
+// non-zero, but the limit is the analysis's.
+pub fn format_finding(file: String, finding: CheckFinding) -> String {
+  case finding {
+    ReturnsClauseViolation(function:, declared:, computed:) ->
+      file
+      <> ": "
+      <> function
+      <> " returns the operator "
+      <> annotation.format_operator(computed)
+      <> " but its `where returns` clause declares "
+      <> annotation.format_operator(declared)
+    NonCallableReturnViolation(function:, declared:) ->
+      file
+      <> ": "
+      <> function
+      <> " does not return a function, so its `where returns` clause "
+      <> annotation.format_operator(declared)
+      <> " describes an operator the function never hands back"
+    FieldSiteViolation(field_path:, declared:, actual:, site:) ->
+      file
+      <> ": "
+      <> site.function
+      <> " wires "
+      <> field_path
+      <> " with effects "
+      <> annotation.format_operator(actual)
+      <> " but the field is declared "
+      <> annotation.format_operator(declared)
+    UnprovedCheck(subject:, cause:, site:) ->
+      file
+      <> ": could not prove check "
+      <> subject
+      <> site_clause(site)
+      <> " — "
+      <> unproved_cause_clause(cause)
+  }
+}
+
+fn site_clause(site: Option(ConstructionSite)) -> String {
+  case site {
+    None -> ""
+    Some(site) -> " at " <> site.function
+  }
+}
+
+fn unproved_cause_clause(cause: UnprovedCause) -> String {
+  case cause {
+    UntracedFieldValue ->
+      "the value wired here does not resolve to a function graded can follow; an `assume` line is the trusted form for a field it cannot"
+    UncalledFactory(factory:) ->
+      "the field is wired from a parameter of `"
+      <> factory
+      <> "`, and no call of it is visible in this package"
+    UnderivableReturnedOperator(reason:) -> underivable_clause(reason)
+    UndeclaredForeignReturn ->
+      "the producer is foreign, so its returned operator comes from a declaration rather than from source, and nothing declares one; an `assume … where returns` line is what answers for it"
+    UnprovedForeignFallback ->
+      "the external's Gleam fallback body runs, and there is no union of operators to weigh it with the declaration; the clause holds only when it agrees with the declaration and the fallback's own returned operator is proved beside it"
+    UnsupportedCheckComponent(component: FieldBoundList) ->
+      "a bound list on a field path is not verified, and the bounds are what scope the effects term, so the budget cannot be read without them"
+    UnsupportedCheckComponent(component: FieldReturnsClause) ->
+      "a `where returns` clause on a field path is not verified — nothing keys an operator returned by calling a field. The field budget on the same line still is"
+  }
+}
+
+fn underivable_clause(reason: ReturnedOperatorReason) -> String {
+  case reason {
+    NoReturnAnnotation ->
+      "the function carries no return type annotation, so the operator it hands back cannot be derived from source"
+    ReturnIsNotAFunction -> "its return type is not a function type"
+    UnresolvedReturnTail ->
+      "the value it returns does not resolve to a function graded can follow"
+  }
 }
 
 // What the function did and the effects it picked up doing it. The effects are
@@ -2016,13 +2099,10 @@ const suppressed_body_clause = "its Gleam fallback body's charge suppressed by t
 // When the actual set still contains effect variables, the substitution
 // couldn't bind them (e.g. caller's own param has no declared bound).
 // Hint at the fix instead of letting the user puzzle over `[e_xxx]`.
-fn variables_hint(violation: Violation) -> String {
-  use <- bool.guard(
-    when: !types.has_variables(violation.explanation.actual),
-    return: "",
-  )
+fn variables_hint(function: String, explanation: CallExplanation) -> String {
+  use <- bool.guard(when: !types.has_variables(explanation.actual), return: "")
   "\n  hint: actual effects contain unresolved variables; add a `check "
-  <> violation.function
+  <> function
   <> "(<param>: [...])` bound, or pass a function reference / constructor"
   <> " whose effects are known"
 }
