@@ -11447,21 +11447,52 @@ pub fn wired() -> Handler {
   ])
 }
 
-pub fn a_wrong_arity_declared_operator_is_an_author_error_test() {
-  field_check_lines(
-    "field_check_arity",
-    "check proj.Handler.run : [] where returns : [Http]\n",
-    "pub type Handler {
-  Handler(run: fn(String) -> Nil)
+pub fn an_unproved_field_site_is_the_only_finding_and_still_fails_test() {
+  // The exit contract: `graded check` prints "all checks passed" and exits
+  // zero exactly when this list is empty, so an unproved-only spec has to
+  // leave something in it.
+  let reported =
+    field_check_lines("field_check_exit", pure_budget, handler_sites <> "
+pub fn wired_opaque(chosen: List(fn() -> Nil)) -> Handler {
+  let assert [first, ..] = chosen
+  Handler(run: first)
+}
+")
+  reported.violations |> list.length() |> should.equal(1)
+  let assert [line] = reported.violations
+  string.contains(line, "could not prove") |> should.be_true
 }
 
-pub fn wired() -> Handler {
-  Handler(run: fn(_msg) { Nil })
+pub fn a_heterogeneous_factory_selects_its_own_variants_signature_test() {
+  // The factory builds one variant of a type whose other variant gives the
+  // label a different arity. Measured against the sibling's signature the
+  // canonicalized site would carry the wrong number of binders.
+  field_check_lines(
+    "field_check_variant_factory",
+    pure_budget,
+    "import ffi
+
+pub type Handler {
+  Simple(run: fn() -> Nil)
+  Detailed(run: fn(String, Int) -> Nil)
+}
+
+pub fn detail(run: fn(String, Int) -> Nil) -> Handler {
+  Detailed(run: run)
+}
+
+fn shout(_msg: String, _n: Int) -> Nil {
+  ffi.print()
+}
+
+pub fn built() -> Handler {
+  detail(shout)
 }
 ",
   ).violations
-  |> list.filter(fn(line) { string.contains(line, "argument(s)") })
-  |> should.equal([])
+  |> should.equal([
+    "build/field_check_variant_factory/proj.gleam: built wires proj.Handler.run with effects fn(_, _) -> [Stdout] but the field is declared []",
+  ])
 }
 
 pub fn a_heterogeneous_type_measures_each_site_by_its_variant_test() {

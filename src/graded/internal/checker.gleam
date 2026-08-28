@@ -4142,15 +4142,12 @@ fn unconstrained_stand_in(
   }
 }
 
-// A term wrapped in `count` binders that the body never mentions.
+// A term wrapped in `count` binders that the body never mentions. One name
+// serves every binder: none of them occurs in the body, so the inner ones
+// shadow nothing, and repeating it keeps the rendered operator readable.
 fn constant_operator(count: Int, body: EffectTerm, base: String) -> EffectTerm {
-  let taken = effect_term.free_vars(body)
-  let names =
-    positions(count)
-    |> list.fold([], fn(names, _position) {
-      [unused_name(base, set.union(taken, set.from_list(names))), ..names]
-    })
-  wrap_binders(names, body)
+  let name = unused_name(base, effect_term.free_vars(body))
+  wrap_binders(list.map(positions(count), fn(_position) { name }), body)
 }
 
 // `[0, 1, …, count - 1]`, empty for a count of zero.
