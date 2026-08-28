@@ -971,6 +971,15 @@ pub type CheckFinding {
     actual: EffectTerm,
     site: ConstructionSite,
   )
+  // A field `check` whose declared operator takes a different number of
+  // arguments than the field the site builds. One line has one arity, so a
+  // heterogeneous type can disagree with it at one variant and not another.
+  FieldArityViolation(
+    field_path: String,
+    declared: EffectTerm,
+    arity: Int,
+    site: ConstructionSite,
+  )
   // Something a `check` line asserts that graded could not prove. `site` is
   // present when the finding belongs to one construction site.
   UnprovedCheck(

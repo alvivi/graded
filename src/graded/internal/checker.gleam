@@ -25,16 +25,17 @@ import graded/internal/types.{
   type LookupOrigin, type ParamBound, type QualifiedName, type ResolvedCall,
   type ReturnedOperatorReason, type UnknownReason, type UnprovedCause,
   type Violation, type Warning, AliasedBoundVariableWarning, CallExplanation,
-  DotlessReturnsClauseWarning, EffectAnnotation, Effects, FieldAssumeOrigin,
-  FieldBoundList, FieldNotAnnotated, FieldReturnsClause, FieldSiteViolation,
-  NoKnownEffects, NoReturnAnnotation, NonCallableReturnViolation, ParamBound,
-  QualifiedName, ReceiverTypeUnresolved, RefusedDeclaredReturn,
-  ReturnIsNotAFunction, ReturnsClauseViolation, StaleFunctionAssumeWarning,
-  StaleReturnsClauseWarning, TUnion, TVar, UnboundAssumeTermVariableWarning,
-  UnbuiltExternal, UncalledFactory, UnclosedReturnsClauseWarning,
-  UndeclaredExternal, UndeclaredForeignReturn, UnderivableReturnedOperator,
-  UngroundReturnsClauseWarning, UnkeyedEffectsShapeWarning, UnknownClauseWarning,
-  UnmatchedCheckWarning, UnmatchedFieldAssumeWarning, UnmatchedFieldBoundWarning,
+  DotlessReturnsClauseWarning, EffectAnnotation, Effects, FieldArityViolation,
+  FieldAssumeOrigin, FieldBoundList, FieldNotAnnotated, FieldReturnsClause,
+  FieldSiteViolation, NoKnownEffects, NoReturnAnnotation,
+  NonCallableReturnViolation, ParamBound, QualifiedName, ReceiverTypeUnresolved,
+  RefusedDeclaredReturn, ReturnIsNotAFunction, ReturnsClauseViolation,
+  StaleFunctionAssumeWarning, StaleReturnsClauseWarning, TUnion, TVar,
+  UnboundAssumeTermVariableWarning, UnbuiltExternal, UncalledFactory,
+  UnclosedReturnsClauseWarning, UndeclaredExternal, UndeclaredForeignReturn,
+  UnderivableReturnedOperator, UngroundReturnsClauseWarning,
+  UnkeyedEffectsShapeWarning, UnknownClauseWarning, UnmatchedCheckWarning,
+  UnmatchedFieldAssumeWarning, UnmatchedFieldBoundWarning,
   UnmatchedFunctionAssumeWarning, UnmatchedModuleAssumeWarning,
   UnmatchedParamBoundWarning, UnmatchedReturnsClauseWarning, UnprovedCheck,
   UnprovedForeignFallback, UnresolvedFieldValue, UnresolvedReturnTail,
@@ -1839,6 +1840,18 @@ pub fn format_finding(file: String, finding: CheckFinding) -> String {
       <> " does not return a function, so its `where returns` clause "
       <> annotation.format_operator(declared)
       <> " describes an operator the function never hands back"
+    FieldArityViolation(field_path:, declared:, arity:, site:) ->
+      file
+      <> ": "
+      <> site.function
+      <> " builds "
+      <> variant_of(site)
+      <> ", whose "
+      <> field_path
+      <> " takes "
+      <> int.to_string(arity)
+      <> " argument(s), but the check declares the operator "
+      <> annotation.format_operator(declared)
     FieldSiteViolation(field_path:, declared:, actual:, site:) ->
       file
       <> ": "
@@ -1857,6 +1870,10 @@ pub fn format_finding(file: String, finding: CheckFinding) -> String {
       <> " — "
       <> unproved_cause_clause(cause)
   }
+}
+
+fn variant_of(site: ConstructionSite) -> String {
+  site.constructor.variant
 }
 
 fn listed_components(components: List(CheckComponent)) -> String {
@@ -3281,6 +3298,879 @@ fn check_annotation(
 
       #(#(violations, findings, warnings), memo)
     }
+  }
+}
+
+// Construction-site resolution
+//
+// What one site wires into a checked field, as something to weigh — or as the
+// limit that stopped it resolving. `value_field_effect` answers a conservative
+// `[Unknown]` for a value it cannot follow, which a budget reads as an effect
+// the site performs; a `check` has to tell that apart from a value carrying no
+// function at all, so the untraceable shapes are refused here instead.
+
+// One field `check` line, resolved to the type it names. The type's defining
+// module is where the check is keyed; its construction sites are anywhere.
+pub type FieldCheck {
+  FieldCheck(
+    path: String,
+    module: String,
+    type_name: String,
+    field: String,
+    declared: EffectTerm,
+  )
+}
+
+// What one module's construction sites prove about the package's field
+// `check` lines.
+pub type FieldSiteReport {
+  FieldSiteReport(
+    findings: List(CheckFinding),
+    // Templates in this module that wire a checked field from one of their own
+    // parameters. What such a site wires is decided by the template's callers,
+    // so one no visible call reaches proves nothing.
+    templates: List(FieldTemplate),
+    // The templates this module's calls reached, by qualified name.
+    called: Set(String),
+  )
+}
+
+// A factory or update builder that wires a checked field from a parameter,
+// held until the package-wide pass knows whether anything calls it.
+pub type FieldTemplate {
+  FieldTemplate(
+    function: String,
+    check_path: String,
+    site: types.ConstructionSite,
+  )
+}
+
+// Weigh every construction site one module holds against the field `check`
+// lines they touch. The checks are the package's, because a type's sites are
+// wherever the package builds it; the findings are this module's, because that
+// is the file they are reported against.
+pub fn check_field_sites(
+  module: Module,
+  module_path: String,
+  file: String,
+  checks: List(FieldCheck),
+  field_index: types.FieldIndex,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  girard_fn_typed: dict.Dict(String, Set(String)),
+  package_targets: types.PackageTargets,
+) -> FieldSiteReport {
+  let function_map = build_function_map(module)
+  let ModuleContext(context:, cache:) =
+    module_context(
+      module,
+      module_path,
+      knowledge_base,
+      girard_fn_typed,
+      package_targets,
+    )
+  let module_functions = set.from_list(dict.keys(function_map))
+  let #(report, _memo) =
+    list.fold(
+      module.functions,
+      #(
+        FieldSiteReport(findings: [], templates: [], called: set.new()),
+        new_memo(),
+      ),
+      fn(state: #(FieldSiteReport, Memo), definition) {
+        let #(report, memo) = state
+        let #(next, memo) =
+          function_field_sites(
+            definition.definition,
+            module_path,
+            file,
+            checks,
+            field_index,
+            module_functions,
+            context,
+            knowledge_base,
+            function_map,
+            registry,
+            module_types,
+            cache,
+            memo,
+          )
+        #(
+          FieldSiteReport(
+            findings: list.append(report.findings, next.findings),
+            templates: list.append(report.templates, next.templates),
+            called: set.union(report.called, next.called),
+          ),
+          memo,
+        )
+      },
+    )
+  report
+}
+
+// One function body's sites: the values it wires directly, and the values its
+// calls to templates wire through them.
+fn function_field_sites(
+  function: Function,
+  module_path: String,
+  file: String,
+  checks: List(FieldCheck),
+  field_index: types.FieldIndex,
+  module_functions: Set(String),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  function_map: dict.Dict(String, Definition(Function)),
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  cache: LocalCache,
+  memo: Memo,
+) -> #(FieldSiteReport, Memo) {
+  let extracted = extract.extract_function_calls(function, context)
+  let parameters = function_parameter_names(function)
+  let weigh = fn(state: #(FieldSiteReport, Memo), wired: WiredField) {
+    let #(report, memo) = state
+    let #(findings, templates, called, memo) =
+      weigh_wired_field(
+        wired,
+        parameters,
+        module_functions,
+        context,
+        knowledge_base,
+        function_map,
+        registry,
+        module_types,
+        cache,
+        memo,
+      )
+    #(
+      FieldSiteReport(
+        findings: list.append(report.findings, findings),
+        templates: list.append(report.templates, templates),
+        called: set.union(report.called, called),
+      ),
+      memo,
+    )
+  }
+  list.fold(
+    list.append(
+      constructed_fields(extracted, function.name, file, checks, field_index),
+      template_fields(
+        extracted,
+        function.name,
+        file,
+        checks,
+        field_index,
+        context,
+        module_path,
+      ),
+    ),
+    #(FieldSiteReport(findings: [], templates: [], called: set.new()), memo),
+    weigh,
+  )
+}
+
+// One checked field at one site, with everything the verdict needs.
+type WiredField {
+  WiredField(
+    check: FieldCheck,
+    signature: types.CallableFieldSignature,
+    value: types.ArgumentValue,
+    site: types.ConstructionSite,
+    // The template this value came through, `None` for a direct construction.
+    // A value wired from a parameter of the enclosing function is the
+    // template's own business, not the construction's.
+    through: Option(String),
+  )
+}
+
+// Every checked field a body's direct constructions wire.
+fn constructed_fields(
+  extracted: extract.ExtractResult,
+  enclosing: String,
+  file: String,
+  checks: List(FieldCheck),
+  field_index: types.FieldIndex,
+) -> List(WiredField) {
+  use construction <- list.flat_map(extracted.constructions)
+  let built =
+    types.BuiltConstructor(
+      module: construction.module,
+      variant: construction.variant,
+    )
+  use #(check, signature, site) <- list.flat_map(matching_checks(
+    built,
+    checks,
+    field_index,
+    enclosing,
+    file,
+    construction.span,
+  ))
+  case dict.get(construction.fields, check.field) {
+    Ok(value) -> [WiredField(check:, signature:, value:, site:, through: None)]
+    Error(Nil) -> []
+  }
+}
+
+// Every checked field a body's calls to factory or update templates wire.
+// A template names what it builds, so the site is attributed by the identity
+// recorded on the template rather than inferred at the call.
+fn template_fields(
+  extracted: extract.ExtractResult,
+  enclosing: String,
+  file: String,
+  checks: List(FieldCheck),
+  field_index: types.FieldIndex,
+  context: ImportContext,
+  module_path: String,
+) -> List(WiredField) {
+  use call <- list.flat_map(template_calls(extracted, context, module_path))
+  use #(check, signature, site) <- list.flat_map(matching_checks(
+    call.constructor,
+    checks,
+    field_index,
+    enclosing,
+    file,
+    call.span,
+  ))
+  case dict.get(call.fields, check.field) {
+    Error(Nil) -> []
+    Ok(position) ->
+      case template_argument(call.arguments, position, call.param_labels) {
+        Some(value) -> [
+          WiredField(
+            check:,
+            signature:,
+            value:,
+            site:,
+            through: Some(call.callee),
+          ),
+        ]
+        None -> []
+      }
+  }
+}
+
+// The checks one constructor's sites answer to, each with the callable
+// signature of the variant actually built. A label callable in some variants
+// and not this one is not this check's business.
+fn matching_checks(
+  built: types.BuiltConstructor,
+  checks: List(FieldCheck),
+  field_index: types.FieldIndex,
+  enclosing: String,
+  file: String,
+  span: Span,
+) -> List(#(FieldCheck, types.CallableFieldSignature, types.ConstructionSite)) {
+  case dict.get(field_index.variant_types, #(built.module, built.variant)) {
+    Error(Nil) -> []
+    Ok(type_name) -> {
+      let site =
+        types.ConstructionSite(
+          file:,
+          function: enclosing,
+          span:,
+          constructor: types.ConstructorIdentity(
+            module: built.module,
+            type_name:,
+            variant: built.variant,
+          ),
+        )
+      use check <- list.filter_map(checks)
+      use <- bool.guard(
+        when: check.module != built.module || check.type_name != type_name,
+        return: Error(Nil),
+      )
+      dict.get(field_index.callable, #(
+        built.module,
+        type_name,
+        built.variant,
+        check.field,
+      ))
+      |> result.map(fn(signature) { #(check, signature, site) })
+    }
+  }
+}
+
+// One site's verdict: a value wired from a parameter of the enclosing function
+// belongs to that function's own callers, and everything else is resolved and
+// weighed here.
+fn weigh_wired_field(
+  wired: WiredField,
+  parameters: Set(String),
+  module_functions: Set(String),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  function_map: dict.Dict(String, Definition(Function)),
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  cache: LocalCache,
+  memo: Memo,
+) -> #(List(CheckFinding), List(FieldTemplate), Set(String), Memo) {
+  let called = case wired.through {
+    Some(callee) -> set.from_list([callee])
+    None -> set.new()
+  }
+  case wired.value, wired.through {
+    // The enclosing function threads its own argument into the field, so what
+    // it wires is whatever its callers pass. Held until the package-wide pass
+    // knows whether any call reaches it.
+    types.LocalRef(name:), None ->
+      case
+        set.contains(parameters, name) && !set.contains(module_functions, name)
+      {
+        True -> #(
+          [],
+          [
+            FieldTemplate(
+              function: qualified_site_function(wired.site),
+              check_path: wired.check.path,
+              site: wired.site,
+            ),
+          ],
+          called,
+          memo,
+        )
+        False ->
+          resolved_verdict(
+            wired,
+            called,
+            module_functions,
+            context,
+            knowledge_base,
+            function_map,
+            registry,
+            module_types,
+            cache,
+            memo,
+          )
+      }
+    _, _ ->
+      resolved_verdict(
+        wired,
+        called,
+        module_functions,
+        context,
+        knowledge_base,
+        function_map,
+        registry,
+        module_types,
+        cache,
+        memo,
+      )
+  }
+}
+
+fn resolved_verdict(
+  wired: WiredField,
+  called: Set(String),
+  module_functions: Set(String),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  function_map: dict.Dict(String, Definition(Function)),
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  cache: LocalCache,
+  memo: Memo,
+) -> #(List(CheckFinding), List(FieldTemplate), Set(String), Memo) {
+  let #(resolved, memo) =
+    resolve_site_value(
+      wired.value,
+      module_functions,
+      context,
+      knowledge_base,
+      function_map,
+      registry,
+      module_types,
+      cache,
+      memo,
+    )
+  let findings = case resolved {
+    Error(cause) -> [
+      UnprovedCheck(subject: wired.check.path, cause:, site: Some(wired.site)),
+    ]
+    Ok(effect) ->
+      case
+        field_site_comparison(
+          effect.effects,
+          effect.bounds,
+          wired.check.declared,
+          wired.signature,
+        )
+      {
+        FieldWithinBudget -> []
+        FieldOverBudget(actual:) -> [
+          FieldSiteViolation(
+            field_path: wired.check.path,
+            declared: wired.check.declared,
+            actual:,
+            site: wired.site,
+          ),
+        ]
+        DeclaredArityMismatch(arity:) -> [
+          FieldArityViolation(
+            field_path: wired.check.path,
+            declared: wired.check.declared,
+            arity:,
+            site: wired.site,
+          ),
+        ]
+      }
+  }
+  #(findings, [], called, memo)
+}
+
+// A template call the walked body makes, normalized over the two template
+// kinds so one reader serves both.
+type TemplateCall {
+  TemplateCall(
+    callee: String,
+    constructor: types.BuiltConstructor,
+    fields: dict.Dict(String, Int),
+    param_labels: dict.Dict(String, Int),
+    arguments: List(types.CallArgument),
+    span: Span,
+  )
+}
+
+fn template_calls(
+  extracted: extract.ExtractResult,
+  context: ImportContext,
+  module_path: String,
+) -> List(TemplateCall) {
+  let resolved =
+    list.flat_map(extracted.resolved, fn(call) {
+      template_call_of(
+        types.dotted_name(call.name),
+        cross_template(context, call.name.module, call.name.function),
+        call.span,
+        extracted,
+      )
+    })
+  let local =
+    list.flat_map(extracted.local, fn(call) {
+      template_call_of(
+        types.dotted_name(QualifiedName(module_path, call.function)),
+        local_template(context, call.function),
+        call.span,
+        extracted,
+      )
+    })
+  list.append(resolved, local)
+}
+
+fn template_call_of(
+  callee: String,
+  template: Option(
+    #(types.BuiltConstructor, dict.Dict(String, Int), dict.Dict(String, Int)),
+  ),
+  span: Span,
+  extracted: extract.ExtractResult,
+) -> List(TemplateCall) {
+  case template {
+    None -> []
+    Some(#(constructor, fields, param_labels)) -> [
+      TemplateCall(
+        callee:,
+        constructor:,
+        fields:,
+        param_labels:,
+        arguments: dict.get(extracted.call_args, #(span.start, span.end))
+          |> result.unwrap([]),
+        span:,
+      ),
+    ]
+  }
+}
+
+fn local_template(
+  context: ImportContext,
+  name: String,
+) -> Option(
+  #(types.BuiltConstructor, dict.Dict(String, Int), dict.Dict(String, Int)),
+) {
+  case dict.get(context.factories, name), dict.get(context.updates, name) {
+    Ok(factory), _ ->
+      Some(#(factory.constructor, factory.fields, factory.param_labels))
+    Error(Nil), Ok(update) ->
+      Some(#(update.constructor, update.fields, update.param_labels))
+    Error(Nil), Error(Nil) -> None
+  }
+}
+
+fn cross_template(
+  context: ImportContext,
+  module: String,
+  function: String,
+) -> Option(
+  #(types.BuiltConstructor, dict.Dict(String, Int), dict.Dict(String, Int)),
+) {
+  case
+    dict.get(context.cross_factories, #(module, function)),
+    dict.get(context.cross_updates, #(module, function))
+  {
+    Ok(factory), _ ->
+      Some(#(factory.constructor, factory.fields, factory.param_labels))
+    Error(Nil), Ok(update) ->
+      Some(#(update.constructor, update.fields, update.param_labels))
+    Error(Nil), Error(Nil) -> None
+  }
+}
+
+// The argument a template's field is wired from: matched by the parameter's
+// label where the call used one, else by position — the same rule the checker
+// binds a parameter bound's argument by.
+fn template_argument(
+  arguments: List(types.CallArgument),
+  position: Int,
+  param_labels: dict.Dict(String, Int),
+) -> Option(types.ArgumentValue) {
+  let label =
+    param_labels
+    |> dict.to_list()
+    |> list.find(fn(pair) { pair.1 == position })
+    |> result.map(fn(pair) { pair.0 })
+  let labelled =
+    list.find(arguments, fn(argument) {
+      case argument.label, label {
+        Some(written), Ok(declared) -> written == declared
+        Some(_), Error(Nil) | None, _ -> False
+      }
+    })
+  case labelled {
+    Ok(argument) -> Some(argument.value)
+    Error(Nil) ->
+      list.find(arguments, fn(argument) {
+        argument.position == position && argument.label == None
+      })
+      |> result.map(fn(argument) { argument.value })
+      |> option.from_result
+  }
+}
+
+fn function_parameter_names(function: Function) -> Set(String) {
+  function.parameters
+  |> list.filter_map(fn(parameter) {
+    case parameter.name {
+      glance.Named(name) -> Ok(name)
+      glance.Discarded(_) -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+}
+
+fn qualified_site_function(site: types.ConstructionSite) -> String {
+  site.function
+}
+
+// Resolve one construction site's wired value. `Error` names an analysis limit
+// and never a defect at the site.
+fn resolve_site_value(
+  value: types.ArgumentValue,
+  module_functions: Set(String),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  function_map: dict.Dict(String, Definition(Function)),
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  cache: LocalCache,
+  memo: Memo,
+) -> #(Result(types.TypeFieldEffect, UnprovedCause), Memo) {
+  use <- bool.guard(
+    when: !traceable_field_value(value, module_functions),
+    return: #(Error(UntracedFieldValue), memo),
+  )
+  let #(effect, _origin, memo) =
+    value_field_effect(
+      value,
+      module_functions,
+      context,
+      knowledge_base,
+      function_map,
+      set.new(),
+      registry,
+      module_types,
+      cache,
+      memo,
+    )
+  #(Ok(effect), memo)
+}
+
+// Whether a wired value names something a proof can follow: a function, an
+// inline closure, or a call whose result is one. A bare local that is not a
+// module function is a parameter or an opaque binding — the polymorphic self
+// marker stands for it, which is a placeholder rather than an effect — and a
+// record, a branch, a receiver path or a computed expression carries no
+// function at all.
+fn traceable_field_value(
+  value: types.ArgumentValue,
+  module_functions: Set(String),
+) -> Bool {
+  case value {
+    types.FunctionRef(..)
+    | types.Closure(..)
+    | types.ReturnedOperator(..)
+    | types.CallResult(..) -> True
+    types.LocalRef(name:) -> set.contains(module_functions, name)
+    types.ConstructorRef
+    | types.Choice(..)
+    | types.ReceiverPath(..)
+    | types.Constructed(..)
+    | types.Updated(..)
+    | types.OtherExpression -> False
+  }
+}
+
+// Construction-site comparison
+//
+// What a field `check` weighs one construction site against. Both sides are
+// canonicalized to `λp₀ … λpₙ₋₁. body` at the field's own arity first, because
+// the wired value arrives in three different shapes — an inline closure is
+// already abstracted, a named concrete function is ground, a named polymorphic
+// one is a free term beside its bounds — and comparing shapes rather than
+// budgets would report correct code for two of them.
+//
+// The arity comes from the field's signature, never from either term: measuring
+// a term against itself proves nothing.
+
+// The verdict on one wired value.
+pub type FieldComparison {
+  FieldWithinBudget
+  // `actual` is the canonicalized, grounded term, so the diagnostic quotes
+  // what was actually weighed.
+  FieldOverBudget(actual: EffectTerm)
+  // The author declared an operator of a different arity than the field the
+  // site builds. Their error, not a site's.
+  DeclaredArityMismatch(arity: Int)
+}
+
+// Weigh one wired value against a field's declared budget. `bounds` are the
+// wired function's own parameter bounds, which name the variables the
+// symbolic lift binds; they are empty for a ground value or an inline closure.
+pub fn field_site_comparison(
+  actual: EffectTerm,
+  bounds: List(ParamBound),
+  declared: EffectTerm,
+  signature: types.CallableFieldSignature,
+) -> FieldComparison {
+  case canonical_declared(declared, signature.arity) {
+    Error(Nil) -> DeclaredArityMismatch(arity: signature.arity)
+    Ok(declared_operator) -> {
+      let grounded =
+        canonical_actual(actual, bounds, signature.arity)
+        |> ground_unconstrained(declared_operator, signature)
+      case effect_term.operator_subset(grounded, declared_operator) {
+        True -> FieldWithinBudget
+        False -> FieldOverBudget(actual: grounded)
+      }
+    }
+  }
+}
+
+// The declared side at the field's arity: a ground budget is the constant
+// operator at that arity — well-defined however many arguments the field takes,
+// which is what lets one line cover a heterogeneous type — while a declared
+// operator has one fixed arity and disagreeing with the field's is an error.
+fn canonical_declared(
+  declared: EffectTerm,
+  arity: Int,
+) -> Result(EffectTerm, Nil) {
+  case declared {
+    types.TAbs(_, _) -> {
+      let #(binders, _body) = abstraction_spine(declared)
+      case list.length(binders) == arity {
+        True -> Ok(declared)
+        False -> Error(Nil)
+      }
+    }
+    types.TLabels(_)
+    | types.TTop
+    | types.TVar(_)
+    | types.TApp(_, _)
+    | TUnion(_) -> Ok(constant_operator(arity, declared, "_"))
+  }
+}
+
+// The actual side at the field's arity. An inline closure already arrives
+// abstracted over its parameters; a ground term lifts to the constant operator
+// exactly as a ground declared budget does; a polymorphic one is lifted
+// *symbolically*, since a construction site has no field-call arguments to
+// bind its variables with.
+fn canonical_actual(
+  actual: EffectTerm,
+  bounds: List(ParamBound),
+  arity: Int,
+) -> EffectTerm {
+  case actual {
+    types.TAbs(_, _) -> actual
+    types.TLabels(_)
+    | types.TTop
+    | types.TVar(_)
+    | types.TApp(_, _)
+    | TUnion(_) ->
+      case effect_term.is_ground(actual) {
+        True -> constant_operator(arity, actual, "_")
+        False -> symbolic_lift(actual, bounds, arity)
+      }
+  }
+}
+
+// Lift a polymorphic field effect to `λc₀ … λcₙ₋₁. term[payload_var(i) := cᵢ]`.
+//
+// A bound's *name* identifies the argument while the free variables of its
+// *payload* are what bind to that argument's effects, so the substitution keys
+// come from the payload — `cb: [e]` binds `e`, not `cb`. A binder standing in
+// an operator position stays a bare higher-kinded variable, still applied;
+// eta-expanding it here would collapse the distinction the grounding step
+// below depends on.
+fn symbolic_lift(
+  term: EffectTerm,
+  bounds: List(ParamBound),
+  arity: Int,
+) -> EffectTerm {
+  let taken = effect_term.free_vars(term)
+  let #(binders, bindings) =
+    positions(arity)
+    |> list.fold(#([], dict.new()), fn(state, position) {
+      let #(names, acc) = state
+      let bound = list_at(bounds, position)
+      let binder =
+        unused_name(
+          case bound {
+            Some(bound) -> bound.name
+            None -> "p" <> int.to_string(position)
+          },
+          set.union(taken, set.from_list(names)),
+        )
+      let payload = case bound {
+        Some(bound) -> effect_term.free_vars(bound.effects)
+        None -> set.new()
+      }
+      #(
+        [binder, ..names],
+        set.fold(payload, acc, fn(acc, variable) {
+          dict.insert(acc, variable, TVar(binder))
+        }),
+      )
+    })
+  wrap_binders(list.reverse(binders), effect_term.subst(term, bindings))
+}
+
+// Ground the binders the author's declaration does not constrain.
+//
+// Synthesized-ness is a property of what the author wrote — a position whose
+// binder the declared body never mentions, which is every position of a ground
+// budget. It is read off the declared side, never off whatever the lift
+// happened to build.
+//
+// The substitution goes into the *body*, with the spine peeled, because a
+// binding shadowed by the binder it is descending under is deliberately
+// dropped: substituting into the whole operator would leave it untouched.
+//
+// An operator-valued binder is replaced by a constant `[Unknown]` operator at
+// that binder's own callback arity, not by `[Unknown]` itself: a ground term in
+// operator position leaves the application stuck, and a stuck application never
+// matches a ground budget.
+fn ground_unconstrained(
+  actual: EffectTerm,
+  declared: EffectTerm,
+  signature: types.CallableFieldSignature,
+) -> EffectTerm {
+  let #(declared_binders, declared_body) = abstraction_spine(declared)
+  let declared_free = effect_term.free_vars(declared_body)
+  let #(actual_binders, actual_body) = abstraction_spine(actual)
+  let bindings =
+    list.index_fold(declared_binders, dict.new(), fn(acc, binder, position) {
+      case set.contains(declared_free, binder) {
+        True -> acc
+        False ->
+          case list_at(actual_binders, position) {
+            Some(name) ->
+              dict.insert(
+                acc,
+                name,
+                unconstrained_stand_in(signature, position),
+              )
+            None -> acc
+          }
+      }
+    })
+  wrap_binders(actual_binders, effect_term.subst(actual_body, bindings))
+}
+
+// What an unconstrained binder at one position stands for: `[Unknown]` for a
+// flat one, and for an operator-valued one the constant `[Unknown]` operator
+// curried once per *inner* callback position — the number of effect arguments
+// the callee applies it to, which is not its source arity.
+fn unconstrained_stand_in(
+  signature: types.CallableFieldSignature,
+  position: Int,
+) -> EffectTerm {
+  case list.key_find(signature.callbacks, position) {
+    Ok(inner) ->
+      constant_operator(list.length(inner), effect_term.unknown(), "_")
+    Error(Nil) -> effect_term.unknown()
+  }
+}
+
+// A term wrapped in `count` binders that the body never mentions.
+fn constant_operator(count: Int, body: EffectTerm, base: String) -> EffectTerm {
+  let taken = effect_term.free_vars(body)
+  let names =
+    positions(count)
+    |> list.fold([], fn(names, _position) {
+      [unused_name(base, set.union(taken, set.from_list(names))), ..names]
+    })
+  wrap_binders(names, body)
+}
+
+// `[0, 1, …, count - 1]`, empty for a count of zero.
+fn positions(count: Int) -> List(Int) {
+  positions_down(count - 1, [])
+}
+
+fn positions_down(from: Int, acc: List(Int)) -> List(Int) {
+  use <- bool.guard(when: from < 0, return: acc)
+  positions_down(from - 1, [from, ..acc])
+}
+
+// A name no listed variable uses, from `base` and then `base` plus a counter.
+fn unused_name(base: String, taken: Set(String)) -> String {
+  use <- bool.guard(when: !set.contains(taken, base), return: base)
+  unused_name_from(base, taken, 0)
+}
+
+fn unused_name_from(base: String, taken: Set(String), n: Int) -> String {
+  let candidate = base <> int.to_string(n)
+  case set.contains(taken, candidate) {
+    True -> unused_name_from(base, taken, n + 1)
+    False -> candidate
+  }
+}
+
+// An operator's binders in order, and the body under all of them.
+fn abstraction_spine(term: EffectTerm) -> #(List(String), EffectTerm) {
+  case term {
+    types.TAbs(param, body) -> {
+      let #(inner, leaf) = abstraction_spine(body)
+      #([param, ..inner], leaf)
+    }
+    types.TLabels(_)
+    | types.TTop
+    | types.TVar(_)
+    | types.TApp(_, _)
+    | TUnion(_) -> #([], term)
+  }
+}
+
+fn wrap_binders(names: List(String), body: EffectTerm) -> EffectTerm {
+  list.fold_right(names, body, fn(acc, name) { types.TAbs(name, acc) })
+}
+
+fn list_at(items: List(a), index: Int) -> Option(a) {
+  case list.drop(items, index) {
+    [item, ..] -> Some(item)
+    [] -> None
   }
 }
 
