@@ -37,7 +37,7 @@ fn check_source(
   annotations: List(EffectAnnotation),
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
-  let #(violations, _warnings) =
+  let #(violations, _findings, _warnings) =
     checker.check(
       module,
       "",
@@ -562,7 +562,7 @@ fn check_source_with_type_fields(
   let assert Ok(module) = glance.module(source)
   let kb =
     effects.with_type_fields(knowledge_base(), type_fields, types.CommittedSpec)
-  let #(violations, _warnings) =
+  let #(violations, _findings, _warnings) =
     checker.check(
       module,
       "",
@@ -613,7 +613,7 @@ fn check_source_with_girard(
   let module_types = girard_types(module)
   let kb =
     effects.with_type_fields(knowledge_base(), type_fields, types.CommittedSpec)
-  let #(violations, _warnings) =
+  let #(violations, _findings, _warnings) =
     checker.check(
       module,
       "",
@@ -1171,7 +1171,7 @@ pub fn annotate(options: Options) -> Nil {
       stdout,
       returns: None,
     )
-  let #(violations, warnings) =
+  let #(violations, _findings, warnings) =
     checker.check(
       module,
       "",
@@ -1302,7 +1302,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(Specific(set.new())),
       returns: None,
     )
-  let #(violations, _warnings) =
+  let #(violations, _findings, _warnings) =
     checker.check(
       module,
       "",
@@ -1329,7 +1329,7 @@ fn check_source_with_assumes(
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
   let kb = effects.with_assumes(knowledge_base(), assumes, types.UserAssume)
-  let #(violations, _warnings) =
+  let #(violations, _findings, _warnings) =
     checker.check(
       module,
       "",
@@ -1420,7 +1420,7 @@ pub fn run() { mod.each(f: mod.disk) }"
       returns: None,
     )
   let assert Ok(module) = glance.module(source)
-  let #(violations, _warnings) =
+  let #(violations, _findings, _warnings) =
     checker.check(
       module,
       "",
@@ -1546,7 +1546,7 @@ fn check_warnings(
   annotations: List(EffectAnnotation),
 ) -> List(types.Warning) {
   let assert Ok(module) = glance.module(source)
-  let #(_violations, warnings) =
+  let #(_violations, _findings, warnings) =
     checker.check(
       module,
       "",
@@ -1890,7 +1890,7 @@ pub fn check_no_false_positives_test() {
           effect_term.from_effect_set(declared),
           returns: None,
         )
-      let #(violations, _) =
+      let #(violations, _findings, _) =
         checker.check(
           module,
           "",
@@ -1923,7 +1923,7 @@ fn provenance_caller_effect(src: String, label: String) -> EffectSet {
       effect_term.from_effect_set(Specific(set.new())),
       returns: None,
     )
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -1988,7 +1988,7 @@ pub fn check_wildcard_never_violates_test() {
           effect_term.from_effect_set(Wildcard),
           returns: None,
         )
-      let #(violations, _) =
+      let #(violations, _findings, _) =
         checker.check(
           module,
           "",
@@ -2022,7 +2022,7 @@ pub fn check_empty_budget_detects_effects_test() {
               effect_term.from_effect_set(types.empty()),
               returns: None,
             )
-          let #(violations, _) =
+          let #(violations, _findings, _) =
             checker.check(
               module,
               "",
@@ -2058,7 +2058,7 @@ pub fn check_violations_iff_not_subset_test() {
           effect_term.from_effect_set(declared),
           returns: None,
         )
-      let #(violations, _) =
+      let #(violations, _findings, _) =
         checker.check(
           module,
           "",
@@ -2186,7 +2186,7 @@ pub fn check_terminates_with_cycles_test() {
           effect_term.from_effect_set(types.empty()),
           returns: None,
         )
-      let #(violations, _) =
+      let #(violations, _findings, _) =
         checker.check(
           module,
           "",
@@ -2390,7 +2390,7 @@ pub fn new() {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -2424,7 +2424,7 @@ pub fn new() {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -2457,7 +2457,7 @@ pub fn new() {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -2725,7 +2725,7 @@ pub fn run(x: Int) {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -2904,7 +2904,7 @@ pub fn main(msg: String) {
 "
   let assert Ok(module) = glance.module(source)
   let registry = signatures.from_glance_module("", module)
-  let #(violations, _warnings) =
+  let #(violations, _findings, _warnings) =
     checker.check(
       module,
       "",
@@ -3028,7 +3028,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       returns: None,
     )
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -3048,7 +3048,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(types.empty()),
       returns: None,
     )
-  let #(failed, _) =
+  let #(failed, _findings, _) =
     checker.check(
       module,
       "",
@@ -3162,7 +3162,7 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       returns: None,
     )
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -3192,7 +3192,7 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       effect_term.from_effect_set(types.empty()),
       returns: None,
     )
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -3223,7 +3223,7 @@ pub fn caller() -> Nil { app.with_logger(fn(logger) { logger(\"hi\") }) }"
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       returns: None,
     )
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -3484,7 +3484,7 @@ pub fn let_bound_closure_direct_call_satisfies_pure_check_test() {
   let assert Ok(module) = glance.module(source)
   let ann =
     EffectAnnotation(Check, "direct_let", [], effect_term.pure(), returns: None)
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -4116,7 +4116,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       returns: None,
     )
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -4136,7 +4136,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(types.empty()),
       returns: None,
     )
-  let #(fail_violations, _) =
+  let #(fail_violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -4195,7 +4195,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       returns: None,
     )
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -4316,7 +4316,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       returns: None,
     )
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -4336,7 +4336,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(types.empty()),
       returns: None,
     )
-  let #(failed, _) =
+  let #(failed, _findings, _) =
     checker.check(
       module,
       "",
@@ -4509,7 +4509,7 @@ fn second_order_violations(
       effect_term.from_effect_set(Specific(set.from_list(budget))),
       returns: None,
     )
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -5219,16 +5219,6 @@ pub fn format_warning_unkeyed_effects_shape_test() {
   |> checker.format_warning("proj.graded", _)
   |> should.equal(
     "proj.graded: warning: effects app.Handler.on_click is not a function path — only `module.function` keys an effects line, so this one resolves nothing and the next `graded infer` drops it; `assume` is the line that takes a field or module path",
-  )
-}
-
-pub fn format_warning_unverified_returns_clause_test() {
-  // Scoped to the clause: the sentence has to keep the budget on the same line
-  // out of what it calls unverified, or a reader deletes a check that runs.
-  types.UnverifiedReturnsClauseWarning(function: "app.traced")
-  |> checker.format_warning("proj.graded", _)
-  |> should.equal(
-    "proj.graded: warning: the `where returns` clause on check app.traced is not verified — nothing weighs a check's returned operator. The effects budget on the same line still is, so the check is live; an `assume` line is the trusted form for the clause",
   )
 }
 
@@ -6205,7 +6195,7 @@ pub fn run() -> Nil {
       effects.load_spec_returns_from_file(spec),
       types.DependencySpec("dep"),
     )
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -6297,7 +6287,7 @@ pub fn new() {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -6339,7 +6329,7 @@ pub fn new() {
       ]),
       types.CommittedSpec,
     )
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -6370,7 +6360,7 @@ pub fn new() {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -6406,7 +6396,7 @@ pub fn run() -> Nil {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -6750,7 +6740,7 @@ pub fn new() {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -6834,7 +6824,7 @@ fn noisy() -> Nil {
   let assert Ok(module) = glance.module(source)
   let registry =
     signatures.merge(signatures.from_glance_module("app", module), dep_registry)
-  let #(violations, _) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",

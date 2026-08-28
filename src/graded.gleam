@@ -866,7 +866,9 @@ fn project_function_visibility(
 // Group a parsed spec file's `check` annotations by their module path. Used
 // during `run` to hand each source file only the checks that apply to it.
 // The checker expects bare function names per module, so we strip the
-// module qualifier from the grouped annotations.
+// module qualifier from the grouped annotations. The `where returns` clause
+// travels with the line: the checker weighs it against the operator the
+// function hands back.
 fn checks_grouped_by_module(
   spec: GradedFile,
 ) -> Dict(String, List(EffectAnnotation)) {
@@ -874,7 +876,7 @@ fn checks_grouped_by_module(
     case annotation.split_function_name(ann.function) {
       Error(_) -> acc
       Ok(#(module, function)) -> {
-        let bare = EffectAnnotation(..ann, function:, returns: None)
+        let bare = EffectAnnotation(..ann, function:)
         let existing = case dict.get(acc, module) {
           Ok(list) -> list
           Error(_) -> []
@@ -898,7 +900,7 @@ fn check_one_file(
   girard_fn_typed: Dict(String, Set(String)),
   package_targets: types.PackageTargets,
 ) -> CheckResult {
-  let #(violations, warnings) =
+  let #(violations, findings, warnings) =
     checker.check(
       module,
       module_path,
@@ -909,7 +911,7 @@ fn check_one_file(
       girard_fn_typed,
       package_targets,
     )
-  CheckResult(file: gleam_path, violations:, findings: [], warnings:)
+  CheckResult(file: gleam_path, violations:, findings:, warnings:)
 }
 
 // Spec lint

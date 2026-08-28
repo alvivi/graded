@@ -951,10 +951,6 @@ pub type Warning {
   // (`m.Handler.on_click`). The line parses and keys nothing. `name` is the
   // subject as written.
   UnverifiedCheckShapeWarning(name: String)
-  // A `where returns` clause on a `check` line. Scoped to the clause: nothing
-  // weighs a check's returned operator, while the effects budget on the same
-  // line is checked as any other. So the line is live and the clause is not.
-  UnverifiedReturnsClauseWarning(function: String)
   // An `effects` line whose path is not `module.function` — a field path
   // (`m.Handler.on_click`) or a bare module path. Only a function path keys
   // this tier, so the line resolves nothing and the next `infer`, which

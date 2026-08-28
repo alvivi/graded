@@ -34,7 +34,7 @@ import graded/internal/types.{
   UnkeyedEffectsShapeWarning, UnknownClauseWarning, UnmatchedCheckWarning,
   UnmatchedFieldAssumeWarning, UnmatchedFunctionAssumeWarning,
   UnmatchedModuleAssumeWarning, UnmatchedReturnsClauseWarning,
-  UnverifiedCheckShapeWarning, UnverifiedReturnsClauseWarning,
+  UnverifiedCheckShapeWarning,
 }
 import simplifile
 
@@ -146,16 +146,9 @@ pub fn run_recording_lookups(
       case annotation.is_field_path(ann.function) {
         True -> [UnverifiedCheckShapeWarning(name: ann.function)]
         False -> {
-          let unmatched = case set.contains(known_functions, ann.function) {
+          case set.contains(known_functions, ann.function) {
             True -> []
             False -> [UnmatchedCheckWarning(function: ann.function)]
-          }
-          case ann.returns {
-            None -> unmatched
-            Some(_) ->
-              list.append(unmatched, [
-                UnverifiedReturnsClauseWarning(function: ann.function),
-              ])
           }
         }
       }

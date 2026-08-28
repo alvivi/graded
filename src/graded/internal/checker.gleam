@@ -40,7 +40,7 @@ import graded/internal/types.{
   UnprovedForeignFallback, UnresolvedFieldValue, UnresolvedReturnTail,
   UnsupportedCheckComponent, UntraceableArgument, UntraceableProducer,
   UntraceableReceiver, UntracedFieldValue, UntrackedEffectWarning,
-  UnverifiedCheckShapeWarning, UnverifiedReturnsClauseWarning, Violation,
+  UnverifiedCheckShapeWarning, Violation,
 }
 
 // Entry points
@@ -62,7 +62,7 @@ pub fn check(
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
   package_targets: types.PackageTargets,
-) -> #(List(Violation), List(Warning)) {
+) -> #(List(Violation), List(CheckFinding), List(Warning)) {
   let function_map = build_function_map(module)
   let ModuleContext(context:, cache:) =
     module_context(
@@ -91,8 +91,9 @@ pub fn check(
       #(memo, result)
     })
   let violations = list.flat_map(results, fn(r) { r.0 })
-  let warnings = list.flat_map(results, fn(r) { r.1 })
-  #(violations, warnings)
+  let findings = list.flat_map(results, fn(r) { r.1 })
+  let warnings = list.flat_map(results, fn(r) { r.2 })
+  #(violations, findings, warnings)
 }
 
 // Infer the effect set for every public function in a module.
@@ -1712,11 +1713,6 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> ": warning: effects "
       <> name
       <> " is not a function path — only `module.function` keys an effects line, so this one resolves nothing and the next `graded infer` drops it; `assume` is the line that takes a field or module path"
-    UnverifiedReturnsClauseWarning(function:) ->
-      file
-      <> ": warning: the `where returns` clause on check "
-      <> function
-      <> " is not verified — nothing weighs a check's returned operator. The effects budget on the same line still is, so the check is live; an `assume` line is the trusted form for the clause"
     UnmatchedFieldAssumeWarning(name:) ->
       file
       <> ": warning: assume "
@@ -3119,11 +3115,11 @@ fn check_annotation(
   module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
-) -> #(#(List(Violation), List(Warning)), Memo) {
+) -> #(#(List(Violation), List(CheckFinding), List(Warning)), Memo) {
   case dict.get(function_map, annotation.function) {
     // Silently skip: the annotation may be stale or apply to a different
     // build target. Missing functions are not an error.
-    Error(Nil) -> #(#([], []), memo)
+    Error(Nil) -> #(#([], [], []), memo)
     Ok(function_definition) -> {
       let fn_typed_params =
         unbound_fn_typed_params(function_definition, annotation.params, cache)
@@ -3252,9 +3248,206 @@ fn check_annotation(
         |> list.append(unmatched_field_bound_warnings)
         |> list.append(unmatched_param_bound_warnings)
 
-      #(#(violations, warnings), memo)
+      let #(findings, memo) =
+        check_returns_clause(
+          annotation,
+          function_definition,
+          function_map,
+          context,
+          knowledge_base,
+          registry,
+          module_types,
+          cache,
+          memo,
+        )
+
+      #(#(violations, findings, warnings), memo)
     }
   }
+}
+
+// Returned-operator checking
+//
+// Verify a `check` line's `where returns` clause against the operator the
+// function actually hands back. The comparison is a subset in the same
+// direction as the effects half — declared ⊇ computed — so one line means one
+// thing in both of its channels.
+
+fn check_returns_clause(
+  annotation: EffectAnnotation,
+  function_definition: Definition(Function),
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  cache: LocalCache,
+  memo: Memo,
+) -> #(List(CheckFinding), Memo) {
+  case annotation.returns {
+    None -> #([], memo)
+    Some(declared) ->
+      case foreign_definition(function_definition, context.package_targets) {
+        // Only the foreign implementation decides what a foreign name returns,
+        // so the value channel says nothing about one and a declaration is what
+        // answers.
+        True ->
+          foreign_returns_clause(
+            annotation,
+            declared,
+            function_definition,
+            function_map,
+            context,
+            knowledge_base,
+            registry,
+            module_types,
+            cache,
+            memo,
+          )
+        False -> {
+          let #(computed, memo) =
+            compute_returned_operator(
+              function_definition.definition,
+              context,
+              function_map,
+              knowledge_base,
+              set.new(),
+              registry,
+              module_types,
+              cache,
+              memo,
+            )
+          #(
+            weigh_returned_operator(annotation.function, declared, computed),
+            memo,
+          )
+        }
+      }
+  }
+}
+
+// One computed operator against one declared clause. A derivation that failed
+// is a violation only where it proves the function returns no function at all;
+// the other two causes leave the question open, which is an analysis limit and
+// reads as one.
+fn weigh_returned_operator(
+  function: String,
+  declared: EffectTerm,
+  computed: Result(EffectTerm, ReturnedOperatorReason),
+) -> List(CheckFinding) {
+  case computed {
+    Ok(operator) ->
+      case effect_term.operator_subset(operator, declared) {
+        True -> []
+        False -> [
+          ReturnsClauseViolation(function:, declared:, computed: operator),
+        ]
+      }
+    Error(ReturnIsNotAFunction) -> [
+      NonCallableReturnViolation(function:, declared:),
+    ]
+    Error(NoReturnAnnotation) -> [
+      unproved_clause(function, NoReturnAnnotation),
+    ]
+    Error(UnresolvedReturnTail) -> [
+      unproved_clause(function, UnresolvedReturnTail),
+    ]
+  }
+}
+
+fn unproved_clause(
+  function: String,
+  reason: ReturnedOperatorReason,
+) -> CheckFinding {
+  UnprovedCheck(
+    subject: function,
+    cause: UnderivableReturnedOperator(reason:),
+    site: None,
+  )
+}
+
+// A foreign producer's clause. The declaration is read raw rather than through
+// the standing that gates a caller's trust, because the standing calls a
+// written clause settled even where a Gleam fallback body runs beside it — the
+// one case that needs a second proof. There is no union of operators, so where
+// a body runs the clause holds only when it contains the declaration *and* the
+// body's own returned operator.
+fn foreign_returns_clause(
+  annotation: EffectAnnotation,
+  declared: EffectTerm,
+  function_definition: Definition(Function),
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  cache: LocalCache,
+  memo: Memo,
+) -> #(List(CheckFinding), Memo) {
+  let name =
+    QualifiedName(module: context.module_path, function: annotation.function)
+  let fallback = effects.declared_charge(knowledge_base, name).fallback
+  case effects.declared_returned_operator(knowledge_base, name), fallback {
+    Error(Nil), types.NoFallback -> #(
+      [
+        UnprovedCheck(
+          subject: annotation.function,
+          cause: UndeclaredForeignReturn,
+          site: None,
+        ),
+      ],
+      memo,
+    )
+    Error(Nil), types.FallbackCharged(_)
+    | Error(Nil), types.FallbackSuppressed(_)
+    -> #([unproved_foreign_fallback(annotation.function)], memo)
+    Ok(operator), types.NoFallback -> #(
+      weigh_returned_operator(annotation.function, declared, Ok(operator)),
+      memo,
+    )
+    Ok(operator), types.FallbackCharged(_)
+    | Ok(operator), types.FallbackSuppressed(_)
+    ->
+      case
+        weigh_returned_operator(annotation.function, declared, Ok(operator))
+      {
+        [] -> {
+          let #(computed, memo) =
+            compute_returned_operator(
+              function_definition.definition,
+              context,
+              function_map,
+              knowledge_base,
+              set.new(),
+              registry,
+              module_types,
+              cache,
+              memo,
+            )
+          case computed {
+            Ok(body_operator) -> #(
+              weigh_returned_operator(
+                annotation.function,
+                declared,
+                Ok(body_operator),
+              ),
+              memo,
+            )
+            Error(NoReturnAnnotation)
+            | Error(ReturnIsNotAFunction)
+            | Error(UnresolvedReturnTail) -> #(
+              [unproved_foreign_fallback(annotation.function)],
+              memo,
+            )
+          }
+        }
+        findings -> #(findings, memo)
+      }
+  }
+}
+
+fn unproved_foreign_fallback(function: String) -> CheckFinding {
+  UnprovedCheck(subject: function, cause: UnprovedForeignFallback, site: None)
 }
 
 // What a budget weighs one contributor against: the set `why` prints, with

@@ -11171,22 +11171,20 @@ pub fn an_open_clause_beside_a_bound_from_another_line_is_reported_test() {
   ])
 }
 
-pub fn a_check_clause_is_unverified_while_its_budget_still_is_test() {
-  // A `check` asserts what a function returns; nothing verifies that yet, and
-  // reading its clause onto the returns channel would make the assertion the
-  // trusted answer. The warning is scoped to the clause, because the effects
-  // budget on the same line is enforced as on any other `check` — the body here
-  // prints over a `[]` budget, and the run reports the violation. An agent that
-  // read the warning as covering the whole line would delete a live check.
-  let root = "build/clause_lint_check"
+// A verified `where returns` clause on a `check` line
+//
+// The clause states the operator the function hands back, and the check holds
+// when the declared operator contains the computed one — the same direction the
+// effects budget on the same line reads in. Where no operator can be derived
+// the line is reported as unproved rather than as a false assertion, since the
+// limit is graded's and not the author's.
+
+// The findings a spec's `check` lines earn against one producer module.
+fn clause_check_findings(name: String, spec: String) -> List(String) {
+  let root = "build/" <> name
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
-    #(
-      "proj.graded",
-      "assume ffi.print : [Stdout]
-check proj.wrap(f: []) : [] where returns : [ghost]
-",
-    ),
+    #("proj.graded", spec),
     #(
       "ffi.gleam",
       "@external(erlang, \"ffi_module\", \"print\")
@@ -11199,21 +11197,196 @@ pub fn print() -> Nil
       "import ffi
 
 pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
-  ffi.print()
+  fn() {
+    f()
+    ffi.print()
+  }
+}
+
+pub fn plain() -> Nil {
+  Nil
+}
+
+pub fn unannotated(f: fn() -> Nil) {
   fn() { f() }
 }
 ",
     ),
   ])
-  let assert Ok(results) = graded.check_project(root)
-  results
-  |> list.flat_map(fn(r) { r.warnings })
-  |> should.equal([types.UnverifiedReturnsClauseWarning(function: "proj.wrap")])
-  let assert [violation] = list.flat_map(results, fn(r) { r.violations })
-  violation.function |> should.equal("wrap")
-  violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  let assert Ok(reports) = graded.run(root)
+  let violations = list.flat_map(reports, fn(r) { r.violations })
   support.cleanup(root)
+  violations
+}
+
+pub fn a_clause_containing_the_returned_operator_passes_test() {
+  clause_check_findings(
+    "clause_check_pass",
+    "assume ffi.print : [Stdout]\ncheck proj.wrap(f: [f]) : [f, Stdout] where returns : [Stdout, f]\n",
+  )
+  |> should.equal([])
+}
+
+pub fn a_clause_wider_than_the_returned_operator_passes_test() {
+  // Declared ⊇ computed, exactly as the effects half reads: a budget, not an
+  // equality.
+  clause_check_findings(
+    "clause_check_wider",
+    "assume ffi.print : [Stdout]\ncheck proj.wrap(f: [f]) : [f, Stdout] where returns : [Stdout, f, Http]\n",
+  )
+  |> should.equal([])
+}
+
+pub fn a_clause_narrower_than_the_returned_operator_violates_test() {
+  clause_check_findings(
+    "clause_check_narrow",
+    "assume ffi.print : [Stdout]\ncheck proj.wrap(f: [f]) : [f, Stdout] where returns : [Stdout]\n",
+  )
+  |> should.equal([
+    "build/clause_check_narrow/proj.gleam: wrap returns the operator [Stdout, f] but its `where returns` clause declares [Stdout]",
+  ])
+}
+
+pub fn a_clause_on_a_function_returning_no_function_violates_test() {
+  // The one gate step that proves the author wrong rather than leaving the
+  // question open: the return type is annotated, and it is not a function.
+  clause_check_findings(
+    "clause_check_non_callable",
+    "check proj.plain : [] where returns : [Stdout]\n",
+  )
+  |> should.equal([
+    "build/clause_check_non_callable/proj.gleam: plain does not return a function, so its `where returns` clause [Stdout] describes an operator the function never hands back",
+  ])
+}
+
+pub fn a_clause_without_a_return_annotation_is_unproved_test() {
+  // Nothing here says the assertion is false — the gate never reached the
+  // question — so the line is unproved, and worded as graded's limit.
+  clause_check_findings(
+    "clause_check_unannotated",
+    "check proj.unannotated(f: [f]) : [f] where returns : [f]\n",
+  )
+  |> should.equal([
+    "build/clause_check_unannotated/proj.gleam: could not prove check unannotated — the function carries no return type annotation, so the operator it hands back cannot be derived from source",
+  ])
+}
+
+pub fn a_verified_clause_does_not_answer_for_a_consumer_test() {
+  // D8: a `check` proves, it never answers. Were the clause read onto the
+  // returned-operator channel, the consumer below would resolve the producer's
+  // result as `[_]` and blow its own `[Stdout]` budget. Asserting the absence
+  // of a violation here is asserting the resolution, since a wildcard actual
+  // fails against any finite budget.
+  let root = "build/clause_check_answers_nothing"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ffi.print : [Stdout]
+check proj/producer.wrap : [] where returns : [_]
+check proj/consumer.run : [Stdout]
+",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"print\")
+@external(javascript, \"ffi_module\", \"print\")
+pub fn print() -> Nil
+",
+    ),
+    #(
+      "proj/producer.gleam",
+      "import ffi
+
+pub fn wrap() -> fn() -> Nil {
+  fn() { ffi.print() }
+}
+",
+    ),
+    #(
+      "proj/consumer.gleam",
+      "import proj/producer
+
+pub fn run() -> Nil {
+  let handler = producer.wrap()
+  handler()
+}
+",
+    ),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([])
+  support.cleanup(root)
+}
+
+// A foreign producer's clause
+//
+// Only the foreign implementation decides what an `@external` returns, so a
+// declaration is what answers for one. Where a Gleam fallback body runs beside
+// the declaration there is no union of operators to take, so the clause holds
+// only when the declaration and the body's own returned operator each contain
+// it.
+
+fn foreign_clause_findings(name: String, spec: String) -> List(String) {
+  let root = "build/" <> name
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #("proj.graded", spec),
+    #(
+      "log.gleam",
+      "@external(erlang, \"log_module\", \"write\")
+@external(javascript, \"log_module\", \"write\")
+pub fn write() -> Nil
+",
+    ),
+    #(
+      "ffi.gleam",
+      "import log
+
+@external(erlang, \"ffi_module\", \"make\")
+pub fn make() -> fn() -> Nil {
+  fn() { log.write() }
+}
+",
+    ),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  let violations = list.flat_map(reports, fn(r) { r.violations })
+  support.cleanup(root)
+  violations
+}
+
+pub fn a_foreign_clause_with_no_declaration_is_unproved_test() {
+  foreign_clause_findings(
+    "clause_check_foreign_undeclared",
+    "assume log.write : [Http]\ncheck ffi.make : [_] where returns : [Http]\n",
+  )
+  |> should.equal([
+    "build/clause_check_foreign_undeclared/ffi.gleam: could not prove check make — the external's Gleam fallback body runs, and there is no union of operators to weigh it with the declaration; the clause holds only when it agrees with the declaration and the fallback's own returned operator is proved beside it",
+  ])
+}
+
+pub fn a_foreign_clause_agreeing_with_both_halves_passes_test() {
+  foreign_clause_findings(
+    "clause_check_foreign_agrees",
+    "assume log.write : [Http]\nassume ffi.make where returns : [Http]\ncheck ffi.make : [_] where returns : [Http]\n",
+  )
+  |> should.equal([])
+}
+
+pub fn a_foreign_clause_the_running_fallback_disagrees_with_fails_test() {
+  // The declaration and the clause agree, and the running Gleam body hands
+  // back something else. `DeclaredReturnStanding` calls a written clause
+  // settled here, so a check reading only the standing would pass this.
+  foreign_clause_findings(
+    "clause_check_foreign_fallback",
+    "assume log.write : [Http]\nassume ffi.make where returns : [Stdout]\ncheck ffi.make : [_] where returns : [Stdout]\n",
+  )
+  |> should.equal([
+    "build/clause_check_foreign_fallback/ffi.gleam: make returns the operator [Http] but its `where returns` clause declares [Stdout]",
+  ])
 }
 
 // A dependency's running Gleam fallback body
