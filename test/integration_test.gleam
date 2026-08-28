@@ -8126,6 +8126,15 @@ pub fn builder_shadow_closure_param_collision_forwarded_is_unknown_test() {
   |> should.equal(types.Specific(set.from_list(["Unknown"])))
 }
 
+pub fn builder_shadow_fixed_sibling_is_unknown_test() {
+  // A builder that writes one field from a fixed value states no overlay: the
+  // fields it does not write would fall through to a base that grounds nothing.
+  // The field pass reads such a builder for the fields it *does* route; a field
+  // call through it still resolves [Unknown].
+  builder_shadow_actual("run_fixed_sibling")
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
 pub fn builder_chain_update_preserves_resolver_test() {
   // A later `with_reporter` update preserves the resolver set by an earlier
   // `with_resolver` — the overlay composes.
@@ -11428,6 +11437,43 @@ pub fn dirty() -> Handler {
   ).violations
   |> should.equal([
     "build/field_check_shadowed_factory/proj.gleam: dirty wires proj.Handler.run with effects [Stdout] but the field is declared []",
+  ])
+}
+
+pub fn an_update_builder_writing_a_fixed_sibling_is_weighed_test() {
+  // The builder wires the checked field from its own parameter and writes a
+  // sibling from a fixed value. A builder that routes every field it writes is
+  // what states an overlay, and reading that requirement here left the whole
+  // builder invisible: the field pass reported that no call reaches it and
+  // never weighed the argument this call passes.
+  field_check_lines(
+    "field_check_update_fixed_sibling",
+    "assume ffi.print : [Stdout]\ncheck proj.Options.resolver : []\n",
+    "import ffi
+
+pub type Options {
+  Options(resolver: fn() -> Nil, retries: Int)
+}
+
+fn quiet() -> Nil {
+  Nil
+}
+
+pub fn base() -> Options {
+  Options(resolver: quiet, retries: 0)
+}
+
+pub fn with_resolver(o: Options, resolver: fn() -> Nil) -> Options {
+  Options(..o, resolver: resolver, retries: 3)
+}
+
+pub fn dirty() -> Options {
+  with_resolver(base(), ffi.print)
+}
+",
+  ).violations
+  |> should.equal([
+    "build/field_check_update_fixed_sibling/proj.gleam: dirty wires proj.Options.resolver with effects [Stdout] but the field is declared []",
   ])
 }
 

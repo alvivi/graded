@@ -106,3 +106,34 @@ pub fn run_closure_param_collision_forwarded() -> Nil {
   }
   build(disk_resolver)
 }
+
+// P1: the builder routes `resolver` from its parameter and writes `target` from
+// a fixed value, leaving `retries` alone. It states no overlay — a partial one
+// would let the fields it does not write fall through to a base that grounds
+// nothing — so a field read through it stays [Unknown].
+pub type Tuned {
+  Tuned(resolver: fn(String) -> Nil, target: String, retries: Int)
+}
+
+fn wrap_tuned(tuned: Tuned) -> Tuned {
+  tuned
+}
+
+@target(erlang)
+fn opaque_tuned() -> Tuned {
+  wrap_tuned(Tuned(resolver: disk_resolver, target: "erlang", retries: 0))
+}
+
+pub fn tune(tuned: Tuned, resolver: fn(String) -> Nil) -> Tuned {
+  Tuned(..tuned, resolver:, target: "erlang")
+}
+
+pub fn annotate_tuned(source: String, tuned: Tuned) -> Nil {
+  tuned.resolver(source)
+}
+
+@target(erlang)
+pub fn run_fixed_sibling() -> Nil {
+  let tuned = opaque_tuned() |> tune(silent)
+  annotate_tuned("x", tuned)
+}
