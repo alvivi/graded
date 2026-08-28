@@ -5420,7 +5420,7 @@ fn resolve_returned_operator(
         local_definition(function_map, callee.function, context.package_targets)
       {
         False, NativeDefinition(definition) -> {
-          let #(result, memo) =
+          let #(computed, memo) =
             compute_returned_operator(
               definition.definition,
               context,
@@ -5432,7 +5432,12 @@ fn resolve_returned_operator(
               cache,
               memo,
             )
-          #(result.map(result, fn(op) { #(op, effects.Fresh, None) }), memo)
+          #(
+            computed
+              |> result.replace_error(Nil)
+              |> result.map(fn(op) { #(op, effects.Fresh, None) }),
+            memo,
+          )
         }
         // A recursive producer call — the producer is already on the analysis
         // stack, so this branch contributes the neutral operator (pure over the
@@ -5653,9 +5658,11 @@ fn bind_producer_params(
 
 // Compute the operator a function returns, for the returned-operator KB and for
 // same-module on-demand resolution: classify its return expression and lift it
-// with the callback positions of its declared return type. `Error` when the
-// function doesn't return an operator-shaped value (no return-type annotation,
-// non-function tail, or a tail that doesn't resolve to a function/operator).
+// with the callback positions of its declared return type. `Error` carries
+// which step of the gate failed, because the three are not one outcome: only a
+// return type that is provably not a function proves the function returns no
+// operator, while a missing annotation or an unresolvable tail leave the
+// question open.
 //
 // The producer's own operator parameters are seeded both as caller bounds (so a
 // returned bare parameter, `fn wrap(base) { base }`, resolves to its variable)
@@ -5673,23 +5680,29 @@ fn compute_returned_operator(
   module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
-) -> #(Result(EffectTerm, Nil), Memo) {
+) -> #(Result(EffectTerm, ReturnedOperatorReason), Memo) {
   // Gate on the return type being *a function* (so there's something to record
   // when called), not specifically operator-shaped — a first-order returned
   // function (`fn make() -> fn() -> Nil`) carries a latent effect too. The
   // callback positions may be empty (a first-order return has no callbacks);
   // `returned_callback_positions` errors only when the return isn't a function.
   let gated = {
-    use return_type <- result.try(option.to_result(function.return, Nil))
-    use positions <- result.try(signatures.returned_callback_positions(
-      return_type,
-      cache.fn_alias_types,
+    use return_type <- result.try(option.to_result(
+      function.return,
+      NoReturnAnnotation,
     ))
-    use value <- result.try(extract.return_value(function, context))
+    use positions <- result.try(
+      signatures.returned_callback_positions(return_type, cache.fn_alias_types)
+      |> result.replace_error(ReturnIsNotAFunction),
+    )
+    use value <- result.try(
+      extract.return_value(function, context)
+      |> result.replace_error(UnresolvedReturnTail),
+    )
     Ok(#(positions, value))
   }
   case gated {
-    Error(Nil) -> #(Error(Nil), memo)
+    Error(reason) -> #(Error(reason), memo)
     Ok(#(positions, value)) -> {
       let producer_operators =
         signatures.operator_param_shapes(function, cache.fn_alias_types)
@@ -5762,7 +5775,7 @@ fn collapse_and_rename_back(
 // Classify the lifted return value into the operator a producer records.
 fn compute_returned_operator_result(
   operator: EffectTerm,
-) -> Result(EffectTerm, Nil) {
+) -> Result(EffectTerm, ReturnedOperatorReason) {
   // Record the operator a producer returns:
   //   - an abstraction (`λcb. …`, possibly polymorphic in the producer's
   //     params), a bare operator parameter returned directly (`TVar`, the
@@ -5783,12 +5796,12 @@ fn compute_returned_operator_result(
     types.TAbs(_, _) | types.TVar(_) | types.TUnion(_) -> Ok(operator)
     types.TLabels(_) | types.TTop ->
       case operator == effect_term.unknown() {
-        True -> Error(Nil)
+        True -> Error(UnresolvedReturnTail)
         False -> Ok(operator)
       }
     types.TApp(_, _) ->
       case effect_term.is_ground(operator) {
-        True -> Error(Nil)
+        True -> Error(UnresolvedReturnTail)
         False -> Ok(operator)
       }
   }
