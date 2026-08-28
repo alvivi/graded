@@ -16,7 +16,7 @@ import graded/internal/extract
 import graded/internal/signatures
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
-  ParamBound, Polymorphic, QualifiedName, Specific, TAbs, TLabels,
+  ParamBound, Polymorphic, QualifiedName, Specific, TAbs, TApp, TLabels, TVar,
   UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning, UntrackedEffectWarning,
   Wildcard,
 }
@@ -5223,6 +5223,181 @@ pub fn format_warning_unkeyed_effects_shape_test() {
   |> checker.format_warning("proj.graded", _)
   |> should.equal(
     "proj.graded: warning: effects app.Handler.on_click is not a function path — only `module.function` keys an effects line, so this one resolves nothing and the next `graded infer` drops it; `assume` is the line that takes a field or module path",
+  )
+}
+
+// Construction-site comparison
+//
+// D9: both sides canonicalized to the field's own arity before comparing, the
+// wired value's three shapes reaching the same budget, and the binders the
+// declaration leaves unconstrained grounded before the comparison runs.
+
+fn field_signature(
+  arity: Int,
+  callbacks: List(#(Int, List(Int))),
+) -> types.CallableFieldSignature {
+  types.CallableFieldSignature(arity:, callbacks:)
+}
+
+fn weigh(
+  actual: types.EffectTerm,
+  bounds: List(types.ParamBound),
+  declared: types.EffectTerm,
+  signature: types.CallableFieldSignature,
+) -> checker.FieldComparison {
+  checker.field_site_comparison(actual, bounds, declared, signature)
+}
+
+fn label_term(items: List(String)) -> types.EffectTerm {
+  TLabels(set.from_list(items))
+}
+
+pub fn an_inline_closure_meets_a_ground_budget_test() {
+  weigh(
+    TAbs("msg", label_term(["Stdout"])),
+    [],
+    label_term(["Stdout"]),
+    field_signature(1, []),
+  )
+  |> should.equal(checker.FieldWithinBudget)
+}
+
+pub fn a_named_concrete_function_meets_a_ground_budget_test() {
+  // The actual is *ground* — no binders at all. Lifting only the declared side
+  // would compare arity 0 against arity 1 and report correct code.
+  weigh(
+    label_term(["Stdout"]),
+    [],
+    label_term(["Stdout"]),
+    field_signature(1, []),
+  )
+  |> should.equal(checker.FieldWithinBudget)
+}
+
+pub fn a_named_polymorphic_function_meets_a_ground_budget_test() {
+  // Lifted symbolically: the bound's *payload* variable is the substitution
+  // key, and the binder it becomes is then unconstrained, so it grounds.
+  weigh(
+    TVar("e"),
+    [ParamBound(name: "cb", effects: TVar("e"))],
+    effect_term.unknown(),
+    field_signature(1, []),
+  )
+  |> should.equal(checker.FieldWithinBudget)
+}
+
+pub fn a_higher_order_field_meets_unknown_but_not_pure_test() {
+  // `λnext. [next]` against `[Unknown]` passes only because the synthesized
+  // binder is grounded first; against `[]` it violates.
+  weigh(
+    TAbs("next", TVar("next")),
+    [],
+    effect_term.unknown(),
+    field_signature(1, [#(0, [])]),
+  )
+  |> should.equal(checker.FieldWithinBudget)
+
+  weigh(
+    TAbs("next", TVar("next")),
+    [],
+    label_term([]),
+    field_signature(1, [#(0, [])]),
+  )
+  |> should.equal(
+    checker.FieldOverBudget(actual: TAbs("next", effect_term.unknown())),
+  )
+}
+
+pub fn an_operator_valued_binder_grounds_to_a_constant_operator_test() {
+  // `[Unknown]` in operator position would leave `[[Unknown]([Stdout])]`
+  // stuck, and a stuck application never matches a ground budget. The stand-in
+  // is an operator, so the redex fires and the body reaches [Unknown].
+  weigh(
+    TAbs("op", TApp(TVar("op"), label_term(["Stdout"]))),
+    [],
+    effect_term.unknown(),
+    field_signature(1, [#(0, [0])]),
+  )
+  |> should.equal(checker.FieldWithinBudget)
+}
+
+pub fn a_named_polymorphic_operator_field_canonicalizes_then_grounds_test() {
+  // The lifting path, not a term written straight into operator form: the
+  // bound's payload `op` is substituted by the binder, which stays a bare
+  // higher-kinded variable and is still applied.
+  weigh(
+    TApp(TVar("op"), label_term(["Stdout"])),
+    [ParamBound(name: "run", effects: TVar("op"))],
+    effect_term.unknown(),
+    field_signature(1, [#(0, [0])]),
+  )
+  |> should.equal(checker.FieldWithinBudget)
+}
+
+pub fn a_nested_callback_shape_grounds_at_the_inner_arity_test() {
+  // `fn(op: fn(Int, fn() -> Nil) -> Nil)`: `op`'s source arity is two, but only
+  // its second parameter is fn-typed, so the stand-in needs one effect binder.
+  // Curried twice, the redex would not fire and the body would stay stuck.
+  weigh(
+    TAbs("op", TApp(TVar("op"), label_term(["Stdout"]))),
+    [],
+    effect_term.unknown(),
+    field_signature(1, [#(0, [1])]),
+  )
+  |> should.equal(checker.FieldWithinBudget)
+}
+
+pub fn a_constrained_binder_is_not_grounded_test() {
+  // The declaration mentions its binder, so the position is constrained and
+  // the two align by position instead.
+  weigh(
+    TAbs("next", TVar("next")),
+    [],
+    TAbs("cb", TVar("cb")),
+    field_signature(1, [#(0, [])]),
+  )
+  |> should.equal(checker.FieldWithinBudget)
+}
+
+pub fn a_wrong_arity_declared_operator_is_an_author_error_test() {
+  weigh(
+    TAbs("a", TAbs("b", label_term([]))),
+    [],
+    TAbs("cb", label_term(["Stdout"])),
+    field_signature(2, []),
+  )
+  |> should.equal(checker.DeclaredArityMismatch(arity: 2))
+}
+
+pub fn a_ground_budget_covers_every_arity_test() {
+  // One line, a heterogeneous type: a constant budget is well-defined at every
+  // arity, so no variant needs a special case.
+  weigh(
+    label_term(["Stdout"]),
+    [],
+    label_term(["Stdout"]),
+    field_signature(0, []),
+  )
+  |> should.equal(checker.FieldWithinBudget)
+
+  weigh(
+    label_term(["Stdout"]),
+    [],
+    label_term(["Stdout"]),
+    field_signature(3, []),
+  )
+  |> should.equal(checker.FieldWithinBudget)
+}
+
+pub fn a_site_over_its_budget_violates_test() {
+  weigh(
+    TAbs("msg", label_term(["Stdout", "Http"])),
+    [],
+    label_term(["Stdout"]),
+    field_signature(1, []),
+  )
+  |> should.equal(
+    checker.FieldOverBudget(actual: TAbs("msg", label_term(["Http", "Stdout"]))),
   )
 }
 
