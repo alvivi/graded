@@ -34,7 +34,7 @@ import graded/internal/types.{
   UnkeyedEffectsShapeWarning, UnknownClauseWarning, UnmatchedCheckWarning,
   UnmatchedFieldAssumeWarning, UnmatchedFunctionAssumeWarning,
   UnmatchedModuleAssumeWarning, UnmatchedReturnsClauseWarning,
-  UnverifiedCheckShapeWarning,
+  UnsupportedFieldCheckWarning, UnverifiedCheckShapeWarning,
 }
 import simplifile
 
@@ -140,17 +140,23 @@ pub fn run_recording_lookups(
   // function whose effects budget the run enforces, whether or not it carries a
   // clause: the name is weighed for a typo as usual, and the clause is flagged
   // on its own, since it is the only unverified part of such a line.
+  let checks = annotation.extract_checks(spec)
   let check_warnings =
-    annotation.extract_checks(spec)
+    checks
     |> list.flat_map(fn(ann) {
       case annotation.is_field_path(ann.function) {
-        True -> [UnverifiedCheckShapeWarning(name: ann.function)]
-        False -> {
+        True ->
+          case unsupported_field_components(ann) {
+            [] -> [UnverifiedCheckShapeWarning(name: ann.function)]
+            components -> [
+              UnsupportedFieldCheckWarning(name: ann.function, components:),
+            ]
+          }
+        False ->
           case set.contains(known_functions, ann.function) {
             True -> []
             False -> [UnmatchedCheckWarning(function: ann.function)]
           }
-        }
       }
     })
 
@@ -213,10 +219,12 @@ pub fn run_recording_lookups(
 
   // A clause on an `effects` line is written by `infer` and closed by
   // construction, so one that is open was hand-edited or written by a future
-  // bug. Reported all the same: the gate drops it silently.
+  // bug. Reported all the same: the gate drops it silently. A `check` line's
+  // clause is weighed against what the function returns, and an open one names
+  // a variable nothing in the comparison can bind, so it is linted beside it.
   let effects_lines = annotation.extract_effects(spec)
   let clause_warnings =
-    effects_lines
+    list.append(effects_lines, checks)
     |> list.filter_map(unclosed_clause_warning(_, registry))
 
   // Only a `module.function` path keys an `effects` line. The question goes to
@@ -258,7 +266,11 @@ pub fn run_recording_lookups(
       effects_shape_warnings,
       assume_warnings,
       unbound_term_variable_warnings(assumes, dead_assumes),
-      aliased_bound_variable_warnings(assumes, effects_lines, dead_assumes),
+      aliased_bound_variable_warnings(
+        assumes,
+        list.append(effects_lines, checks),
+        dead_assumes,
+      ),
       returns_clause_warnings,
       clause_warnings,
       unknown_clause_warnings,
@@ -312,14 +324,14 @@ fn unbound_term_variable_warnings(
 // naming a *different* bound's parameter, on a line whose effects term or
 // `where returns` clause uses that variable — the shape where the term
 // channel (payload-keyed) and the clause channel (name-keyed) charge
-// different arguments. Bounded `assume` lines and `effects` lines alike,
-// since both carry two live channels; a `check` line's clause is never
-// weighed, so its one live channel cannot disagree with itself. Lint-only:
-// each channel's binding stays what it is. A machine-written
-// self-referential list never aliases, so the shape is hand-written.
+// different arguments. Every bounded line carries two live channels — an
+// `assume`, an `effects`, and a `check`, whose clause is weighed against the
+// operator its function returns — so all three are linted. Lint-only: each
+// channel's binding stays what it is. A machine-written self-referential list
+// never aliases, so the shape is hand-written.
 fn aliased_bound_variable_warnings(
   assumes: List(types.AssumeAnnotation),
-  effects_lines: List(EffectAnnotation),
+  bounded_lines: List(EffectAnnotation),
   dead: Set(String),
 ) -> List(Warning) {
   let from_assumes =
@@ -336,8 +348,8 @@ fn aliased_bound_variable_warnings(
         ),
       )
     })
-  let from_effects =
-    list.filter_map(effects_lines, fn(ann) {
+  let from_lines =
+    list.filter_map(bounded_lines, fn(ann) {
       aliased_bound_warning(
         ann.function,
         ann.params,
@@ -347,7 +359,7 @@ fn aliased_bound_variable_warnings(
         ),
       )
     })
-  list.append(from_assumes, from_effects)
+  list.append(from_assumes, from_lines)
 }
 
 // One line's aliasing warning: the collision pairs whose variable the line
@@ -382,6 +394,24 @@ fn declared_term_variables(effects: Option(types.EffectSet)) -> Set(String) {
     Some(types.Polymorphic(_labels, variables)) -> variables
     Some(types.Specific(_)) | Some(types.Wildcard) | None -> set.new()
   }
+}
+
+// The components a field-path `check` carries that a field head gives no
+// meaning: a bound list, since nothing scopes one on a field head, and a
+// `where returns` clause, since nothing keys an operator returned by calling a
+// field. Listed in the order the grammar writes them.
+fn unsupported_field_components(
+  annotation_line: EffectAnnotation,
+) -> List(types.CheckComponent) {
+  let bounds = case annotation_line.params {
+    [] -> []
+    [_, ..] -> [types.FieldBoundList]
+  }
+  let clause = case annotation_line.returns {
+    None -> []
+    Some(_) -> [types.FieldReturnsClause]
+  }
+  list.append(bounds, clause)
 }
 
 // The warning for one `effects` line's `where returns` clause, or `Error(Nil)`

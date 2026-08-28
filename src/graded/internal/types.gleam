@@ -951,6 +951,12 @@ pub type Warning {
   // (`m.Handler.on_click`). The line parses and keys nothing. `name` is the
   // subject as written.
   UnverifiedCheckShapeWarning(name: String)
+  // A `check` on a field path carrying a component a field head gives no
+  // meaning: a bound list, a `where returns` clause, or both. Nothing scopes a
+  // bound list on a field head, and nothing keys an operator returned by
+  // calling a field. `components` lists what was unsupported, in the order the
+  // grammar writes them.
+  UnsupportedFieldCheckWarning(name: String, components: List(CheckComponent))
   // An `effects` line whose path is not `module.function` — a field path
   // (`m.Handler.on_click`) or a bare module path. Only a function path keys
   // this tier, so the line resolves nothing and the next `infer`, which
