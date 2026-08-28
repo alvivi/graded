@@ -403,7 +403,7 @@ fn declared_term_variables(effects: Option(types.EffectSet)) -> Set(String) {
 // meaning: a bound list, since nothing scopes one on a field head, and a
 // `where returns` clause, since nothing keys an operator returned by calling a
 // field. Listed in the order the grammar writes them.
-fn unsupported_field_components(
+pub fn unsupported_field_components(
   annotation_line: EffectAnnotation,
 ) -> List(types.CheckComponent) {
   let bounds = case annotation_line.params {

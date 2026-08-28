@@ -519,11 +519,12 @@ fn factory_signature(
 pub fn public_factory_signatures(
   module: Module,
   module_path: String,
+  context: ImportContext,
   package_targets: Set(String),
 ) -> Dict(#(String, String), FactorySignature) {
   signature_map(
     public_functions(module, package_targets),
-    build_import_context(module) |> with_module_path(module_path),
+    context,
     factory_signature,
   )
   |> dict.to_list()
@@ -539,11 +540,12 @@ pub fn public_factory_signatures(
 pub fn public_update_signatures(
   module: Module,
   module_path: String,
+  context: ImportContext,
   package_targets: Set(String),
 ) -> Dict(#(String, String), UpdateSignature) {
   signature_map(
     public_functions(module, package_targets),
-    build_import_context(module) |> with_module_path(module_path),
+    context,
     update_signature,
   )
   |> dict.to_list()
@@ -2849,7 +2851,11 @@ fn construction_result(
         True -> empty()
         False ->
           ExtractResult(..empty(), constructions: [
-            types.Construction(module:, variant:, fields:, span:),
+            types.Construction(
+              constructor: types.BuiltConstructor(module:, variant:),
+              fields:,
+              span:,
+            ),
           ])
       }
     _ -> empty()

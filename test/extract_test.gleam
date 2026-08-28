@@ -1107,9 +1107,11 @@ fn target() {
 }
 ",
   )
-  |> list.map(fn(c) { #(c.module, c.variant, dict.to_list(c.fields)) })
+  |> list.map(fn(c) { #(c.constructor, dict.to_list(c.fields)) })
   |> should.equal([
-    #("app", "Handler", [#("run", types.LocalRef("logger"))]),
+    #(types.BuiltConstructor(module: "app", variant: "Handler"), [
+      #("run", types.LocalRef("logger")),
+    ]),
   ])
 }
 
@@ -1143,8 +1145,10 @@ fn target() {
 }
 ",
   )
-  |> list.map(fn(c) { #(c.module, c.variant) })
-  |> should.equal([#("app/handler", "Handler")])
+  |> list.map(fn(c) { c.constructor })
+  |> should.equal([
+    types.BuiltConstructor(module: "app/handler", variant: "Handler"),
+  ])
 }
 
 pub fn construction_records_an_unqualified_import_by_defining_module_test() {
@@ -1158,8 +1162,10 @@ fn target() {
 }
 ",
   )
-  |> list.map(fn(c) { #(c.module, c.variant) })
-  |> should.equal([#("app/handler", "Handler")])
+  |> list.map(fn(c) { c.constructor })
+  |> should.equal([
+    types.BuiltConstructor(module: "app/handler", variant: "Handler"),
+  ])
 }
 
 pub fn construction_skips_an_unresolvable_constructor_test() {
@@ -1189,7 +1195,7 @@ fn target(base) {
 }
 ",
   )
-  |> list.map(fn(c) { #(c.variant, dict.to_list(c.fields)) })
+  |> list.map(fn(c) { #(c.constructor.variant, dict.to_list(c.fields)) })
   |> should.equal([#("Handler", [#("run", types.LocalRef("logger"))])])
 }
 
@@ -1208,6 +1214,6 @@ fn target() {
 }
 ",
   )
-  |> list.map(fn(c) { c.variant })
+  |> list.map(fn(c) { c.constructor.variant })
   |> should.equal(["Handler"])
 }

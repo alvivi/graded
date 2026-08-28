@@ -592,24 +592,17 @@ fn field_check_results(
 ) -> FieldCheckResults {
   // A shape nothing gives a meaning is rejected on the violations channel, not
   // merely linted: a warning exits zero, and a line that was never proved must
-  // not pass. A `where returns` clause leaves the field budget on the same line
-  // supported, so only the clause is refused; a bound list is what scopes the
-  // effects term, so the whole line goes.
-  let #(refused, weighable) =
-    list.partition(field_checks, fn(ann) { ann.params != [] })
+  // not pass. Which components a field head does not support is the lint's
+  // rule, read from there so the warning and the finding cannot drift.
   let unsupported =
-    list.append(
-      list.map(refused, fn(ann) {
-        unsupported_field_finding(ann.function, types.FieldBoundList)
-      }),
-      list.filter_map(weighable, fn(ann) {
-        case ann.returns {
-          None -> Error(Nil)
-          Some(_) ->
-            Ok(unsupported_field_finding(ann.function, types.FieldReturnsClause))
-        }
-      }),
-    )
+    list.flat_map(field_checks, fn(ann) {
+      lint.unsupported_field_components(ann)
+      |> list.map(unsupported_field_finding(ann.function, _))
+    })
+  // A bound list is what scopes the effects term, so a line carrying one is not
+  // weighed at all; a `where returns` clause leaves the budget on the same line
+  // supported, so that line still is.
+  let weighable = list.filter(field_checks, fn(ann) { ann.params == [] })
   let #(checks, unmatched) = resolve_field_checks(weighable, ctx.field_index)
   use <- bool.lazy_guard(when: checks == [], return: fn() {
     FieldCheckResults(
@@ -627,7 +620,6 @@ fn field_check_results(
         checker.check_field_sites(
           module,
           module_path,
-          gleam_path,
           checks,
           ctx.field_index,
           knowledge_base,
@@ -638,9 +630,13 @@ fn field_check_results(
         ),
       )
     })
-  let called =
-    list.fold(reports, set.new(), fn(acc, entry) {
-      set.union(acc, { entry.1 }.called)
+  // What every module together saw: which templates something called, and which
+  // checks any site at all answered. Both are meaningless per module.
+  let #(called, touched) =
+    list.fold(reports, #(set.new(), set.new()), fn(acc, entry) {
+      let #(called, touched) = acc
+      let #(_gleam_path, report) = entry
+      #(set.union(called, report.called), set.union(touched, report.touched))
     })
   // A template whose field is wired from one of its own parameters proves
   // nothing on its own: what it wires is whatever its callers pass. One no
@@ -665,10 +661,6 @@ fn field_check_results(
     })
   // A check no site anywhere in the package answered holds vacuously, which is
   // not a proof. Counted over every module, so a scoped run does not report it.
-  let touched =
-    list.fold(reports, set.new(), fn(acc, entry) {
-      set.union(acc, { entry.1 }.touched)
-    })
   let unconstructed =
     checks
     |> list.filter(fn(check) { !set.contains(touched, check.path) })
@@ -946,6 +938,10 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // effects it settled — an `@external`'s running fallback, whose callers
     // read the summary and never the body — kept an answer the two commands
     // would then disagree about.
+    //
+    // After `with_builders` folded the dependencies' factories, since this
+    // merges rather than replaces and the later fold wins: this package's own
+    // modules answer for a path a dependency also claims.
     |> effects.with_factories(
       qualify_by_module(index, fn(module_path, module) {
         extract.factory_map(
@@ -2434,9 +2430,6 @@ fn read_and_parse_gleam(
   |> result.map_error(GleamParseError(gleam_path, _))
 }
 
-// Build a signature registry covering every project module. Used by
-// the checker's call-site substitution to resolve effect variables
-// when the caller passes positional (unlabeled) arguments.
 // What every project module says about its custom types' record fields, keyed
 // the same way a dependency's is so the two merge into one package-wide index.
 fn build_project_field_index(
@@ -2455,6 +2448,9 @@ fn build_project_field_index(
   })
 }
 
+// Build a signature registry covering every project module. Used by
+// the checker's call-site substitution to resolve effect variables
+// when the caller passes positional (unlabeled) arguments.
 fn build_project_registry(
   index: Dict(String, #(String, glance.Module)),
 ) -> SignatureRegistry {
@@ -3703,18 +3699,25 @@ fn source_dir_sources(
     empty_dependency_sources(),
   )
   let scanned = case parsed {
-    Ok(module) ->
+    Ok(module) -> {
+      // The two template readings below each walk this module's imports and
+      // constructors; built once here rather than once per reading.
+      let context =
+        extract.build_import_context(module)
+        |> extract.with_module_path(module_path)
       ParsedModule(
         functions: module_function_names(module),
         registry: signatures.from_glance_module(module_path, module),
         updates: extract.public_update_signatures(
           module,
           module_path,
+          context,
           types.declaration_targets(package_targets),
         ),
         factories: extract.public_factory_signatures(
           module,
           module_path,
+          context,
           types.declaration_targets(package_targets),
         ),
         foreign: checker.dependency_foreign_functions(
@@ -3730,6 +3733,7 @@ fn source_dir_sources(
           signatures.type_alias_map(module.type_aliases),
         ),
       )
+    }
     Error(Nil) -> UnreadableModule
   }
   DependencySources(modules: dict.insert(acc.modules, module_path, scanned))

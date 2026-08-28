@@ -641,17 +641,16 @@ pub type CallArgument {
 }
 
 // One construction of a custom type in a function body: which constructor was
-// called, what each labelled field was wired to, and where. `module` is the
-// module the constructor is defined in, resolved through the import context —
-// a construction whose constructor the context cannot resolve is not recorded
-// at all, since a site that names no type can be attributed to no check.
+// called, what each labelled field was wired to, and where. The constructor is
+// resolved to its defining module through the import context — a construction
+// whose constructor the context cannot place is not recorded at all, since a
+// site that names no type can be attributed to no check.
 //
 // A record update records only the fields it writes: those replace what the
 // base held, and every other field is the base's own construction's business.
 pub type Construction {
   Construction(
-    module: String,
-    variant: String,
+    constructor: BuiltConstructor,
     fields: Dict(String, ArgumentValue),
     span: Span,
   )
@@ -881,16 +880,12 @@ pub type CallExplanation {
   )
 }
 
-// Where the package builds a value of a custom type. A field `check` is
-// package-wide, so a site names the file it sits in as well as the enclosing
-// function and the span, which is what tells two sites in one function apart.
+// Where the package builds a value of a custom type: the enclosing function a
+// diagnostic names it by, and what it builds. The file is the report's own —
+// a field `check` is package-wide, and its findings are grouped by the file
+// they are reported against rather than by anything the site carries.
 pub type ConstructionSite {
-  ConstructionSite(
-    file: String,
-    function: String,
-    span: Span,
-    constructor: ConstructorIdentity,
-  )
+  ConstructionSite(function: String, constructor: ConstructorIdentity)
 }
 
 // The constructor a site builds, named down to the variant. Variants of one
