@@ -7,8 +7,8 @@ import gleam/list
 import gleam/set.{type Set}
 import gleeunit/should
 import graded/internal/effect_term.{
-  free_vars, from_effect_set, normalize, normalize_bounded, pure, subst,
-  to_effect_set, unknown,
+  alpha_equivalent, free_vars, from_effect_set, normalize, normalize_bounded,
+  operator_subset, pure, rename_binder, subst, to_effect_set, unknown,
 }
 import graded/internal/types.{
   type EffectSet, type EffectTerm, Polymorphic, Specific, TAbs, TApp, TLabels,
@@ -346,4 +346,138 @@ pub fn capture_avoidance_unit_test() {
 pub fn unknown_term_unit_test() {
   to_effect_set(unknown())
   |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+// P-CMP: term-level comparison
+//
+// `alpha_equivalent` and `operator_subset` — the relations the `check`
+// verifier compares operators with, where collapsing to a ground `EffectSet`
+// first would let two different residual applications pass for each other.
+
+// A binder name outside the generators' variable pool, so renaming a binder to
+// it can never capture a free variable of the generated body.
+const unused_binder = "zz"
+
+pub fn alpha_equivalent_reflexive_property_test() {
+  use term <- qcheck.given(generators.effect_term_gen())
+  alpha_equivalent(term, term)
+  |> should.be_true
+}
+
+pub fn operator_subset_reflexive_property_test() {
+  use term <- qcheck.given(generators.effect_term_gen())
+  operator_subset(term, term)
+  |> should.be_true
+}
+
+pub fn alpha_equivalent_stable_under_binder_renaming_property_test() {
+  use term <- qcheck.given(generators.effect_term_gen())
+  let operator = TAbs("e", term)
+  alpha_equivalent(operator, rename_binder(operator, to: unused_binder))
+  |> should.be_true
+}
+
+pub fn operator_subset_stable_under_binder_renaming_property_test() {
+  use term <- qcheck.given(generators.effect_term_gen())
+  let operator = TAbs("e", term)
+  let renamed = rename_binder(operator, to: unused_binder)
+  { operator_subset(operator, renamed) && operator_subset(renamed, operator) }
+  |> should.be_true
+}
+
+pub fn operator_subset_of_top_property_test() {
+  use term <- qcheck.given(generators.effect_term_gen())
+  operator_subset(term, TTop)
+  |> should.be_true
+}
+
+// Residual applications never match through a shared `[Unknown]`: the only way
+// two of them compare is alpha-equivalence. Stated over one free operator so
+// the declared side is neither `TTop` nor a union containing one.
+pub fn residual_applications_match_only_up_to_alpha_property_test() {
+  use #(x, y) <- qcheck.given(qcheck.tuple2(
+    generators.effect_term_gen(),
+    generators.effect_term_gen(),
+  ))
+  let actual = TApp(TVar("action"), x)
+  let declared = TApp(TVar("action"), y)
+  operator_subset(actual, declared)
+  |> should.equal(alpha_equivalent(actual, declared))
+}
+
+pub fn union_of_operators_dominates_member_unit_test() {
+  // λx.[]  ⊆  (λx.[] ⊔ λx.[Stdout]) — a branching producer's union on the
+  // declared side. Fails if the arity-mismatch arm is tested before the union
+  // arms, because a `TAbs` actual then never reaches the union.
+  let pure_operator = TAbs("x", pure())
+  let stdout_operator = TAbs("x", labels(["Stdout"]))
+  operator_subset(pure_operator, TUnion([pure_operator, stdout_operator]))
+  |> should.be_true
+}
+
+pub fn union_actual_needs_every_member_covered_unit_test() {
+  // Every member of a union actual must fit the declared budget on its own.
+  let covered = TUnion([labels(["Stdout"]), TApp(TVar("action"), pure())])
+  operator_subset(covered, labels(["Stdout"]))
+  |> should.be_false
+}
+
+pub fn union_actual_members_all_covered_unit_test() {
+  let actual = TUnion([labels(["Stdout"]), TVar("e")])
+  operator_subset(actual, TUnion([labels(["Stdout", "Http"]), TVar("e")]))
+  |> should.be_true
+}
+
+pub fn top_actual_against_union_is_not_vacuous_unit_test() {
+  // `[_]` as the actual against a finite union must fail. Without its own arm
+  // the union partition finds no actual members at all and passes vacuously.
+  operator_subset(TTop, TUnion([labels(["Stdout"]), TVar("e")]))
+  |> should.be_false
+}
+
+pub fn differing_residual_arguments_violate_unit_test() {
+  // fn(cb) -> [action([cb])] against fn(cb) -> [action([Stdout])]: both sides
+  // collapse to [Unknown] as effect sets, so a set-level comparison would
+  // accept a claim that is false.
+  let actual = TAbs("cb", TApp(TVar("action"), TVar("cb")))
+  let declared = TAbs("cb", TApp(TVar("action"), labels(["Stdout"])))
+  operator_subset(actual, declared)
+  |> should.be_false
+}
+
+pub fn matching_residual_arguments_pass_unit_test() {
+  let actual = TAbs("cb", TApp(TVar("action"), TVar("cb")))
+  let declared = TAbs("other", TApp(TVar("action"), TVar("other")))
+  operator_subset(actual, declared)
+  |> should.be_true
+}
+
+pub fn operator_against_ground_is_arity_mismatch_unit_test() {
+  operator_subset(TAbs("cb", pure()), labels(["Stdout"]))
+  |> should.be_false
+  operator_subset(labels(["Stdout"]), TAbs("cb", labels(["Stdout"])))
+  |> should.be_false
+}
+
+pub fn operator_bodies_compare_as_budgets_unit_test() {
+  operator_subset(
+    TAbs("cb", labels(["Stdout"])),
+    TAbs("cb", labels(["Stdout", "Http"])),
+  )
+  |> should.be_true
+  operator_subset(
+    TAbs("cb", labels(["Stdout", "Http"])),
+    TAbs("cb", labels(["Stdout"])),
+  )
+  |> should.be_false
+}
+
+pub fn rename_binder_leaves_non_operators_alone_unit_test() {
+  rename_binder(labels(["Stdout"]), to: unused_binder)
+  |> should.equal(labels(["Stdout"]))
+}
+
+pub fn rename_binder_renames_bound_occurrences_unit_test() {
+  rename_binder(TAbs("cb", TUnion([labels(["Http"]), TVar("cb")])), to: "next")
+  |> should.equal(TAbs("next", TUnion([labels(["Http"]), TVar("next")])))
 }
