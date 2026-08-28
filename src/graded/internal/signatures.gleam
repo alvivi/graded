@@ -355,6 +355,62 @@ pub fn fn_typed_fields_from_module(
   |> set.from_list()
 }
 
+// The callable record fields of a module's custom types, keyed by
+// `#(module, type_name, variant, field)` and carrying the shape a field
+// `check` measures a construction site against. Qualified by the module that
+// *defines* the type, the same rule a field `assume` line is keyed by, so a
+// package-wide pass never confuses same-named types from two modules.
+//
+// Per variant rather than per type: Gleam lets two variants give one label
+// different types — a different arity, different callback positions, or
+// callable in one variant and not the other — and a site is always one
+// variant's constructor.
+pub fn callable_fields_from_module(
+  module_path: String,
+  module: Module,
+  alias_map: Dict(String, glance.Type),
+) -> Dict(#(String, String, String, String), types.CallableFieldSignature) {
+  module.custom_types
+  |> list.flat_map(fn(definition) {
+    let type_name = definition.definition.name
+    definition.definition.variants
+    |> list.flat_map(fn(variant) {
+      variant.fields
+      |> list.filter_map(callable_field_signature(_, alias_map))
+      |> list.map(fn(entry) {
+        let #(label, signature) = entry
+        #(#(module_path, type_name, variant.name, label), signature)
+      })
+    })
+  })
+  |> dict.from_list()
+}
+
+// One labelled field's callable shape, `Error(Nil)` for an unlabelled or
+// non-callable field. The arity is the field's own parameter count, which is
+// what an inline closure wired into it is abstracted over.
+fn callable_field_signature(
+  field: glance.VariantField,
+  alias_map: Dict(String, glance.Type),
+) -> Result(#(String, types.CallableFieldSignature), Nil) {
+  use #(item, label) <- result.try(case field {
+    glance.LabelledVariantField(item:, label:) -> Ok(#(item, label))
+    glance.UnlabelledVariantField(..) -> Error(Nil)
+  })
+  use resolved <- result.try(resolve_function_type(item, alias_map))
+  case resolved {
+    FunctionType(_, param_types, _) ->
+      Ok(#(
+        label,
+        types.CallableFieldSignature(
+          arity: list.length(param_types),
+          callbacks: callback_shape(param_types, alias_map),
+        ),
+      ))
+    _ -> Error(Nil)
+  }
+}
+
 // A `#(type_name, label)` entry for a labelled, callable field; `Error(Nil)`
 // for an unlabelled or non-fn field.
 fn labelled_fn_field(
@@ -456,7 +512,7 @@ pub fn operator_param_shapes(
 // One operator parameter's callback shape: each function-typed argument's
 // index paired with that argument's own callback positions. Every layer is
 // resolved through `alias_map`, each layer exactly once.
-fn callback_shape(
+pub fn callback_shape(
   param_types: List(glance.Type),
   alias_map: Dict(String, glance.Type),
 ) -> List(#(Int, List(Int))) {

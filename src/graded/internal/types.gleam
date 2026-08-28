@@ -687,6 +687,19 @@ pub type FieldCallProvenance {
   Untraceable
 }
 
+// One callable record field's shape, as a field `check` measures a
+// construction site against. `arity` is how many parameters the field's
+// `fn(..)` type takes — the number of binders both sides canonicalize to.
+// `callbacks` pairs each fn-typed parameter's position with that parameter's
+// own callback positions, which is how many effect binders the constant
+// operator standing in for an unconstrained one is curried over.
+//
+// Keyed per variant by its readers: variants of one type may give a label
+// different types, and a construction site names the variant it builds.
+pub type CallableFieldSignature {
+  CallableFieldSignature(arity: Int, callbacks: List(#(Int, List(Int))))
+}
+
 // A *factory* function's signature. `fields` maps each constructor field the
 // factory wires to one of its own parameters to that parameter's position; a
 // call `make(io.println)` to `fn make(logger) { Validator(to_error: logger) }`
