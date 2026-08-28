@@ -433,7 +433,9 @@ pub type ModuleReport {
     file: String,
     /// One rendered line per warning, in the order graded reports them.
     warnings: List(String),
-    /// One rendered line per violation, likewise.
+    /// One rendered line per violation, likewise. A `check` graded could not
+    /// prove is reported here too, worded as such: it is not a proof, so the
+    /// run must not pass on it.
     violations: List(String),
   )
 }
@@ -453,10 +455,10 @@ fn module_report(result: CheckResult) -> ModuleReport {
   ModuleReport(
     file: result.file,
     warnings: list.map(result.warnings, checker.format_warning(result.file, _)),
-    violations: list.map(result.violations, checker.format_violation(
-      result.file,
-      _,
-    )),
+    violations: list.append(
+      list.map(result.violations, checker.format_violation(result.file, _)),
+      list.map(result.findings, checker.format_finding(result.file, _)),
+    ),
   )
 }
 
@@ -518,7 +520,12 @@ pub fn check_project(
   let results = case lint.run(lint_context(ctx)) {
     [] -> results
     spec_warnings -> [
-      CheckResult(file: cfg.spec_file, violations: [], warnings: spec_warnings),
+      CheckResult(
+        file: cfg.spec_file,
+        violations: [],
+        findings: [],
+        warnings: spec_warnings,
+      ),
       ..results
     ]
   }
@@ -902,7 +909,7 @@ fn check_one_file(
       girard_fn_typed,
       package_targets,
     )
-  CheckResult(file: gleam_path, violations:, warnings:)
+  CheckResult(file: gleam_path, violations:, findings: [], warnings:)
 }
 
 // Spec lint

@@ -16,8 +16,9 @@ import graded/internal/extract
 import graded/internal/signatures
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
-  ParamBound, Polymorphic, QualifiedName, Specific, UnmatchedFieldBoundWarning,
-  UnmatchedParamBoundWarning, UntrackedEffectWarning, Wildcard,
+  ParamBound, Polymorphic, QualifiedName, Specific, TAbs, TLabels,
+  UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning, UntrackedEffectWarning,
+  Wildcard,
 }
 import qcheck
 import support
@@ -5228,6 +5229,160 @@ pub fn format_warning_unverified_returns_clause_test() {
   |> checker.format_warning("proj.graded", _)
   |> should.equal(
     "proj.graded: warning: the `where returns` clause on check app.traced is not verified — nothing weighs a check's returned operator. The effects budget on the same line still is, so the check is live; an `assume` line is the trusted form for the clause",
+  )
+}
+
+// Finding reporting
+//
+// The lines `graded check` prints for the shapes that are not one call over
+// budget. The unproved wordings carry the whole burden of not blaming the
+// author's code, since they exit non-zero exactly as a violation does.
+
+fn site(function: String) -> types.ConstructionSite {
+  types.ConstructionSite(
+    file: "src/app.gleam",
+    function:,
+    span: glance.Span(0, 0),
+    constructor: types.ConstructorIdentity(
+      module: "app",
+      type_name: "Handler",
+      variant: "Handler",
+    ),
+  )
+}
+
+pub fn format_finding_returns_clause_violation_test() {
+  types.ReturnsClauseViolation(
+    function: "app.traced",
+    declared: TAbs("cb", TLabels(set.from_list(["Stdout"]))),
+    computed: TAbs("cb", TLabels(set.from_list(["Http", "Stdout"]))),
+  )
+  |> checker.format_finding("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: app.traced returns the operator fn(cb) -> [Http, Stdout] but its `where returns` clause declares fn(cb) -> [Stdout]",
+  )
+}
+
+pub fn format_finding_non_callable_return_test() {
+  types.NonCallableReturnViolation(
+    function: "app.plain",
+    declared: TAbs("cb", TLabels(set.from_list(["Stdout"]))),
+  )
+  |> checker.format_finding("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: app.plain does not return a function, so its `where returns` clause fn(cb) -> [Stdout] describes an operator the function never hands back",
+  )
+}
+
+pub fn format_finding_field_site_violation_test() {
+  types.FieldSiteViolation(
+    field_path: "app.Handler.on_click",
+    declared: TLabels(set.new()),
+    actual: TLabels(set.from_list(["Stdout"])),
+    site: site("app.make"),
+  )
+  |> checker.format_finding("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: app.make wires app.Handler.on_click with effects [Stdout] but the field is declared []",
+  )
+}
+
+// Every unproved cause reads as a limit graded hit, never as a claim about the
+// checked code — the line exits the run non-zero either way, so the wording is
+// the only thing telling the two apart.
+pub fn format_finding_untraced_field_value_test() {
+  types.UnprovedCheck(
+    subject: "app.Handler.on_click",
+    cause: types.UntracedFieldValue,
+    site: option.Some(site("app.make")),
+  )
+  |> checker.format_finding("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: could not prove check app.Handler.on_click at app.make — the value wired here does not resolve to a function graded can follow; an `assume` line is the trusted form for a field it cannot",
+  )
+}
+
+pub fn format_finding_uncalled_factory_test() {
+  types.UnprovedCheck(
+    subject: "app.Handler.on_click",
+    cause: types.UncalledFactory(factory: "app.make"),
+    site: option.Some(site("app.make")),
+  )
+  |> checker.format_finding("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: could not prove check app.Handler.on_click at app.make — the field is wired from a parameter of `app.make`, and no call of it is visible in this package",
+  )
+}
+
+pub fn format_finding_missing_return_annotation_test() {
+  types.UnprovedCheck(
+    subject: "app.traced",
+    cause: types.UnderivableReturnedOperator(reason: types.NoReturnAnnotation),
+    site: option.None,
+  )
+  |> checker.format_finding("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: could not prove check app.traced — the function carries no return type annotation, so the operator it hands back cannot be derived from source",
+  )
+}
+
+pub fn format_finding_unresolved_return_tail_test() {
+  types.UnprovedCheck(
+    subject: "app.traced",
+    cause: types.UnderivableReturnedOperator(reason: types.UnresolvedReturnTail),
+    site: option.None,
+  )
+  |> checker.format_finding("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: could not prove check app.traced — the value it returns does not resolve to a function graded can follow",
+  )
+}
+
+pub fn format_finding_undeclared_foreign_return_test() {
+  types.UnprovedCheck(
+    subject: "app.native",
+    cause: types.UndeclaredForeignReturn,
+    site: option.None,
+  )
+  |> checker.format_finding("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: could not prove check app.native — the producer is foreign, so its returned operator comes from a declaration rather than from source, and nothing declares one; an `assume … where returns` line is what answers for it",
+  )
+}
+
+pub fn format_finding_unproved_foreign_fallback_test() {
+  types.UnprovedCheck(
+    subject: "app.native",
+    cause: types.UnprovedForeignFallback,
+    site: option.None,
+  )
+  |> checker.format_finding("src/app.gleam", _)
+  |> should.equal(
+    "src/app.gleam: could not prove check app.native — the external's Gleam fallback body runs, and there is no union of operators to weigh it with the declaration; the clause holds only when it agrees with the declaration and the fallback's own returned operator is proved beside it",
+  )
+}
+
+pub fn format_finding_field_bound_list_test() {
+  types.UnprovedCheck(
+    subject: "app.Handler.run",
+    cause: types.UnsupportedCheckComponent(component: types.FieldBoundList),
+    site: option.None,
+  )
+  |> checker.format_finding("proj.graded", _)
+  |> should.equal(
+    "proj.graded: could not prove check app.Handler.run — a bound list on a field path is not verified, and the bounds are what scope the effects term, so the budget cannot be read without them",
+  )
+}
+
+pub fn format_finding_field_returns_clause_test() {
+  types.UnprovedCheck(
+    subject: "app.Handler.run",
+    cause: types.UnsupportedCheckComponent(component: types.FieldReturnsClause),
+    site: option.None,
+  )
+  |> checker.format_finding("proj.graded", _)
+  |> should.equal(
+    "proj.graded: could not prove check app.Handler.run — a `where returns` clause on a field path is not verified — nothing keys an operator returned by calling a field. The field budget on the same line still is",
   )
 }
 

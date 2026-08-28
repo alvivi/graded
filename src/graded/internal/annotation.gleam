@@ -1634,7 +1634,7 @@ pub fn clause_free_vars(returns: Option(EffectTerm)) -> set.Set(String) {
 
 // Format an operator term — a `TAbs` as `fn(cb) -> [body]`, anything else as a
 // plain effect term (e.g. a polymorphic returned operator that's a bare `[v]`).
-fn format_operator(term: EffectTerm) -> String {
+pub fn format_operator(term: EffectTerm) -> String {
   case term {
     TAbs(_, _) -> render_abstraction(term)
     other -> format_effect_term(other)

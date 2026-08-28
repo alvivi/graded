@@ -815,12 +815,103 @@ pub type CallExplanation {
   )
 }
 
+// Where the package builds a value of a custom type. A field `check` is
+// package-wide, so a site names the file it sits in as well as the enclosing
+// function and the span, which is what tells two sites in one function apart.
+pub type ConstructionSite {
+  ConstructionSite(
+    file: String,
+    function: String,
+    span: Span,
+    constructor: ConstructorIdentity,
+  )
+}
+
+// The constructor a site builds, named down to the variant. Variants of one
+// type may give a label different types, so the variant is what selects the
+// callable signature a site is measured against.
+pub type ConstructorIdentity {
+  ConstructorIdentity(module: String, type_name: String, variant: String)
+}
+
+// Which step of the gate that derives a producer's returned operator failed.
+// Only `ReturnIsNotAFunction` proves the author wrong; the other two say the
+// operator could not be derived, which is an analysis limit.
+pub type ReturnedOperatorReason {
+  NoReturnAnnotation
+  ReturnIsNotAFunction
+  UnresolvedReturnTail
+}
+
+// Why a `check` could not be proved. Every one of these is a limit of the
+// analysis rather than a defect in the checked code, so each renders as
+// something graded could not prove and never as something the code violates.
+pub type UnprovedCause {
+  // The value wired into the checked field at this site is not traceable to a
+  // function.
+  UntracedFieldValue
+  // The site wires the field from a parameter of `factory`, and no call of
+  // that factory is visible in the package.
+  UncalledFactory(factory: String)
+  // The producer returns a function, but no operator could be derived from it.
+  UnderivableReturnedOperator(reason: ReturnedOperatorReason)
+  // The producer is foreign and no trusted `where returns` clause answers for
+  // what it returns.
+  UndeclaredForeignReturn
+  // A target-dependent external whose Gleam fallback runs: the clause holds
+  // only when it agrees with the trusted declaration *and* the fallback's own
+  // returned operator is proved, and one of those two halves is missing.
+  UnprovedForeignFallback
+  // A `check` line carrying a component nothing verifies.
+  UnsupportedCheckComponent(component: CheckComponent)
+}
+
+// The combined `check` shapes that parse and that nothing gives a meaning:
+// a bound list or a `where returns` clause on a field path.
+pub type CheckComponent {
+  FieldBoundList
+  FieldReturnsClause
+}
+
 // A single effect violation: an annotated function called something that
 // exceeds its declared effect budget. The call is held as the explanation
 // `why` prints for it, so a violation states what a contributor states and the
 // two can't drift apart.
 pub type Violation {
   Violation(function: String, declared: EffectSet, explanation: CallExplanation)
+}
+
+// A `check` finding that is not about one call exceeding a budget: an operator
+// the declared clause does not contain, a construction site outside a field's
+// budget, or an assertion graded could not prove. These ride the same reported
+// channel as `Violation` — the run exits on that channel, and a `check` nothing
+// proved must not pass — so a reader of one must report the other.
+pub type CheckFinding {
+  // A `where returns` clause declaring an operator that does not contain the
+  // one the function actually returns.
+  ReturnsClauseViolation(
+    function: String,
+    declared: EffectTerm,
+    computed: EffectTerm,
+  )
+  // A `where returns` clause on a function whose annotated return type is not
+  // a function: there is no operator for the clause to describe.
+  NonCallableReturnViolation(function: String, declared: EffectTerm)
+  // A construction site wiring a value into a checked field whose effects
+  // exceed the field's declared budget.
+  FieldSiteViolation(
+    field_path: String,
+    declared: EffectTerm,
+    actual: EffectTerm,
+    site: ConstructionSite,
+  )
+  // Something a `check` line asserts that graded could not prove. `site` is
+  // present when the finding belongs to one construction site.
+  UnprovedCheck(
+    subject: String,
+    cause: UnprovedCause,
+    site: Option(ConstructionSite),
+  )
 }
 
 // A warning surfaced during checking.
@@ -942,11 +1033,14 @@ pub type Warning {
   UnknownClauseWarning(path: String, keys: List(String))
 }
 
-// Result of checking one file.
+// Result of checking one file. `violations` and `findings` are two shapes of
+// one reported channel: the run exits on both together, so a caller rendering
+// one renders the other.
 pub type CheckResult {
   CheckResult(
     file: String,
     violations: List(Violation),
+    findings: List(CheckFinding),
     warnings: List(Warning),
   )
 }
