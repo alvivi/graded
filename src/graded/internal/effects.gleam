@@ -2067,6 +2067,22 @@ pub fn lookup_returned_operator(
   }
 }
 
+// The `where returns` clause a declaration keys for `name`, read without the
+// standing that decides whether a caller may trust it. The `check` path reads
+// it this way on purpose: where a Gleam fallback body runs beside the
+// declaration the standing calls the clause settled, and that is exactly the
+// case where the fallback's own returned operator has to be proved beside it.
+pub fn declared_returned_operator(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Result(EffectTerm, Nil) {
+  use found <- result.try(dict.get(knowledge_base.returned_operators, name))
+  case found.summary {
+    Declared(..) -> Ok(found.operator)
+    Fresh | Closed(..) -> Error(Nil)
+  }
+}
+
 // Where a declared return stands for one name — read both by the lookup that
 // trusts it and by the diagnostic that reports its refusal, so a call and its
 // explanation cannot disagree about which gate answered.
