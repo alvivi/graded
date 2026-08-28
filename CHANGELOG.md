@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Two `check` shapes are now verified instead of warned about. `check
+  <module>.<Type>.<field> : [...]` proves that every value the package wires
+  into a function-typed field stays within the budget — direct constructions,
+  record updates, and calls to a factory or update builder that wires the field
+  — and `check <module>.<function> : [...] where returns : <operator>` proves
+  the operator the function hands back is contained by the one the clause
+  declares. Both prove without answering: neither becomes a resolution source,
+  so an `assume` line is still what declares a field's effect or a foreign
+  producer's returned operator.
+
+  A field `check` covers this package's own construction sites; a public
+  constructor or factory called from outside is not one graded can see. Where an
+  assertion can be neither proved nor disproved — a wired value graded cannot
+  trace, a factory no visible call reaches, a producer with no return type
+  annotation, a foreign producer nothing declares — the line is reported as
+  unproved beside the violations, and `graded check` exits non-zero on it rather
+  than passing on something nothing proved.
+
+  A `check` line's `where returns` clause is now linted for unbound and aliased
+  variables like every other live clause. A bound list or a `where returns`
+  clause on a *field* path has no meaning and is reported as unsupported; for a
+  clause, the field budget on the same line is still verified. New warnings
+  cover a field path naming no field, a field no variant makes callable, and a
+  callable field nothing in the package constructs a value of.
+
 ## [0.18.0] - 2026-08-28
 
 ### Added
