@@ -11520,6 +11520,147 @@ pub fn dirty() -> Handler {
   ])
 }
 
+pub fn a_site_no_build_compiles_is_not_weighed_test() {
+  // `@target(javascript)` in an Erlang-only package: the body is built by no
+  // build of it, and the effects channel says so — `infer` writes the function
+  // as pure and a `check` on it passes. The field pass walked every function
+  // whatever its targets, so it alone charged a site to code that does not
+  // exist. The live site beside it is still weighed.
+  let root = "build/field_check_dead_target"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\ntarget = \"erlang\"\n"),
+    #(
+      "proj.graded",
+      "assume ffi.print : [Stdout]\ncheck proj.Handler.run : []\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"print\")
+@external(javascript, \"ffi_module\", \"print\")
+pub fn print() -> Nil
+",
+    ),
+    #(
+      "proj.gleam",
+      "import ffi
+
+pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+@target(javascript)
+pub fn dead_js() -> Handler {
+  Handler(run: ffi.print)
+}
+
+pub fn live_dirty() -> Handler {
+  Handler(run: ffi.print)
+}
+",
+    ),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([
+    "build/field_check_dead_target/proj.gleam: live_dirty wires proj.Handler.run with effects [Stdout] but the field is declared []",
+  ])
+  support.cleanup(root)
+}
+
+pub fn a_site_in_a_defaulted_target_body_is_still_weighed_test() {
+  // The other half of the same reading: the package names no target, so a
+  // `--target` graded never sees may compile this body. Dropping it on the
+  // narrow reading would lose a real site.
+  let root = "build/field_check_defaulted_target"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ffi.print : [Stdout]\ncheck proj.Handler.run : []\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"print\")
+@external(javascript, \"ffi_module\", \"print\")
+pub fn print() -> Nil
+",
+    ),
+    #(
+      "proj.gleam",
+      "import ffi
+
+pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+@target(javascript)
+pub fn maybe_built() -> Handler {
+  Handler(run: ffi.print)
+}
+",
+    ),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([
+    "build/field_check_defaulted_target/proj.gleam: maybe_built wires proj.Handler.run with effects [Stdout] but the field is declared []",
+  ])
+  support.cleanup(root)
+}
+
+pub fn a_site_is_weighed_on_the_targets_its_body_runs_on_test() {
+  // The site wires a name whose only declaration is JavaScript's, in a body
+  // built for Erlang alone — where that name is its Gleam fallback. Read
+  // package-wide, the field pass charged the site an effect no build of this
+  // body can perform, while `check proj.direct : []` on the same body reading
+  // the same name passed: one name, two totals.
+  let root = "build/field_check_site_targets"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext : [Disk]
+check proj.Handler.run : []
+check proj.direct : []
+",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"b\")
+pub fn b() -> Nil {
+  Nil
+}
+",
+    ),
+    #(
+      "proj.gleam",
+      "import ext
+
+pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+@target(erlang)
+pub fn make() -> Handler {
+  Handler(run: ext.b)
+}
+
+@target(erlang)
+pub fn direct() -> Nil {
+  ext.b()
+}
+",
+    ),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([])
+  support.cleanup(root)
+}
+
 pub fn an_update_builder_writing_a_fixed_sibling_is_weighed_test() {
   // The builder wires the checked field from its own parameter and writes a
   // sibling from a fixed value. A builder that routes every field it writes is

@@ -3391,6 +3391,20 @@ pub fn check_field_sites(
       #(empty_site_report(), new_memo()),
       fn(state: #(FieldSiteReport, Memo), definition) {
         let #(report, memo) = state
+        // A body no build of this package compiles builds no value: `@target`
+        // keeps a definition out of the field pass exactly as it keeps one out
+        // of the effects channel, which infers and checks the same function as
+        // pure. Weighed anyway, this channel alone charged a site to code that
+        // does not exist.
+        use <- bool.guard(
+          when: !body_is_built(definition, package_targets),
+          return: state,
+        )
+        // And a body that is built is read on the targets it runs on, the same
+        // narrowing every other walk of one performs: a site wiring a name the
+        // build reaches no declaration of is weighed by what runs there.
+        let #(knowledge_base, memo) =
+          body_walk(knowledge_base, memo, definition, package_targets)
         let #(next, memo) =
           function_field_sites(
             definition.definition,
@@ -3410,6 +3424,21 @@ pub fn check_field_sites(
       },
     )
   report
+}
+
+// Whether any build of this package compiles a definition's body.
+//
+// Read on `declaration_targets`, the wider of the two: this decision *drops* a
+// body from the pass, and where the package names no target a `--target` graded
+// never sees may still compile it. A body left in is weighed on its own targets;
+// one dropped is never weighed at all.
+fn body_is_built(
+  definition: Definition(Function),
+  package_targets: types.PackageTargets,
+) -> Bool {
+  body_targets(definition, types.declaration_targets(package_targets))
+  |> set.is_empty
+  |> bool.negate
 }
 
 // One function body's sites: the values it wires directly, and the values its
