@@ -564,35 +564,42 @@ pub fn awaits_declared_labels(
 
 // One function's tail: a construction of another module's record — named
 // through an import alias, or imported unqualified and defined nowhere here —
-// carrying an argument no label of its own routes.
+// carrying an argument no label of its own routes. The tail is read by the
+// same `constructor_call_parts` the factory and update signatures read theirs
+// by, so one place decides what a construction in tail position is.
 fn tail_awaits_declared_labels(
   function: glance.Function,
   context: ImportContext,
 ) -> Bool {
   case list.last(function.body) {
-    Ok(glance.Expression(glance.Call(function: callee, arguments:, ..))) ->
-      constructs_another_modules_record(callee, context)
-      && list.any(arguments, fn(argument) {
-        case argument {
-          glance.UnlabelledField(..) -> True
-          glance.LabelledField(..) | glance.ShorthandField(..) -> False
-        }
-      })
+    Ok(glance.Expression(expression)) ->
+      case constructor_call_parts(expression) {
+        Ok(#(variant, alias, arguments)) ->
+          another_modules_variant(variant, alias, context)
+          && list.any(arguments, is_unlabelled)
+        Error(Nil) -> False
+      }
     _ -> False
   }
 }
 
-fn constructs_another_modules_record(
-  callee: Expression,
+// Whether a construction names a variant this module does not define: through
+// an import alias, or unqualified and declared nowhere here.
+fn another_modules_variant(
+  variant: String,
+  alias: Option(String),
   context: ImportContext,
 ) -> Bool {
-  case callee {
-    glance.FieldAccess(container: glance.Variable(..), label: variant, ..) ->
-      is_constructor_name(variant)
-    glance.Variable(name: variant, ..) ->
-      is_constructor_name(variant)
-      && !dict.has_key(context.constructors, variant)
-    _ -> False
+  case alias {
+    Some(_) -> True
+    None -> !dict.has_key(context.constructors, variant)
+  }
+}
+
+fn is_unlabelled(argument: Field(Expression)) -> Bool {
+  case argument {
+    glance.UnlabelledField(..) -> True
+    glance.LabelledField(..) | glance.ShorthandField(..) -> False
   }
 }
 

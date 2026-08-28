@@ -11408,81 +11408,70 @@ pub fn dirty() -> Handler {
   ])
 }
 
+// The violations a two-module fixture earns, where the type is defined in one
+// module and constructed in another. `field_check_lines`'s single source file
+// cannot express the boundary these cross.
+fn imported_field_check_violations(
+  name: String,
+  app_source: String,
+) -> List(String) {
+  let root = "build/" <> name
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ffi.print : [Stdout]\ncheck proj/handler.Handler.run : []\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"print\")
+@external(javascript, \"ffi_module\", \"print\")
+pub fn print() -> Nil
+",
+    ),
+    #(
+      "proj/handler.gleam",
+      "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+",
+    ),
+    #("proj/app.gleam", app_source),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  let violations = list.flat_map(reports, fn(r) { r.violations })
+  support.cleanup(root)
+  violations
+}
+
 pub fn a_positional_construction_of_an_imported_record_is_weighed_test() {
   // A record with labelled fields is constructed positionally as readily across
   // a module boundary as inside one. Read without the defining module's labels,
   // the unlabelled argument routed to no field: the construction wired nothing,
   // the site was never weighed, and the run passed with a warning that nothing
   // constructs the type.
-  let root = "build/field_check_imported_positional"
-  support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
-    #(
-      "proj.graded",
-      "assume ffi.print : [Stdout]\ncheck proj/handler.Handler.run : []\n",
-    ),
-    #(
-      "ffi.gleam",
-      "@external(erlang, \"ffi_module\", \"print\")
-@external(javascript, \"ffi_module\", \"print\")
-pub fn print() -> Nil
-",
-    ),
-    #(
-      "proj/handler.gleam",
-      "pub type Handler {
-  Handler(run: fn() -> Nil)
-}
-",
-    ),
-    #(
-      "proj/app.gleam",
-      "import ffi
+  imported_field_check_violations(
+    "field_check_imported_positional",
+    "import ffi
 import proj/handler
 
 pub fn build() -> handler.Handler {
   handler.Handler(ffi.print)
 }
 ",
-    ),
-  ])
-  let assert Ok(reports) = graded.run(root)
-  reports
-  |> list.flat_map(fn(r) { r.violations })
+  )
   |> should.equal([
     "build/field_check_imported_positional/proj/app.gleam: build wires proj/handler.Handler.run with effects [Stdout] but the field is declared []",
   ])
-  support.cleanup(root)
 }
 
 pub fn a_factory_constructing_an_imported_record_positionally_is_weighed_test() {
   // The same labels a direct construction routes through: a factory whose tail
   // constructs another module's record positionally wires the field from its own
   // parameter, so its call sites are weighed.
-  let root = "build/field_check_imported_positional_factory"
-  support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
-    #(
-      "proj.graded",
-      "assume ffi.print : [Stdout]\ncheck proj/handler.Handler.run : []\n",
-    ),
-    #(
-      "ffi.gleam",
-      "@external(erlang, \"ffi_module\", \"print\")
-@external(javascript, \"ffi_module\", \"print\")
-pub fn print() -> Nil
-",
-    ),
-    #(
-      "proj/handler.gleam",
-      "pub type Handler {
-  Handler(run: fn() -> Nil)
-}
-",
-    ),
-    #(
-      "proj/app.gleam",
-      "import ffi
+  imported_field_check_violations(
+    "field_check_imported_positional_factory",
+    "import ffi
 import proj/handler
 
 pub fn make(run: fn() -> Nil) -> handler.Handler {
@@ -11493,15 +11482,10 @@ pub fn dirty() -> handler.Handler {
   make(ffi.print)
 }
 ",
-    ),
-  ])
-  let assert Ok(reports) = graded.run(root)
-  reports
-  |> list.flat_map(fn(r) { r.violations })
+  )
   |> should.equal([
     "build/field_check_imported_positional_factory/proj/app.gleam: dirty wires proj/handler.Handler.run with effects [Stdout] but the field is declared []",
   ])
-  support.cleanup(root)
 }
 
 pub fn a_binding_shadowing_a_factory_is_not_a_call_of_it_test() {
