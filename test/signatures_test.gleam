@@ -124,6 +124,115 @@ pub type Wrapped {
   |> should.equal(set.new())
 }
 
+// Callable-field signatures
+//
+// The shape a field `check` measures a construction site against: the field's
+// own arity, and for each fn-typed parameter that parameter's own callback
+// positions. Keyed per variant, because variants of one type may give a label
+// different types.
+
+fn callable_fields(
+  source: String,
+) -> dict.Dict(#(String, String, String, String), types.CallableFieldSignature) {
+  let assert Ok(module) = glance.module(source)
+  signatures.callable_fields_from_module("app", module, alias_map_of(module))
+}
+
+pub fn callable_field_records_arity_and_callbacks_test() {
+  callable_fields(
+    "
+pub type Handler {
+  Handler(run: fn(String) -> Nil, name: String)
+}
+",
+  )
+  |> should.equal(
+    dict.from_list([
+      #(
+        #("app", "Handler", "Handler", "run"),
+        types.CallableFieldSignature(arity: 1, callbacks: []),
+      ),
+    ]),
+  )
+}
+
+pub fn callable_field_records_a_nested_callback_shape_test() {
+  // `op`'s source arity is two, but only its second parameter is fn-typed —
+  // so the constant operator standing in for an unconstrained `op` needs one
+  // effect binder, not two. A flat position list cannot say that.
+  callable_fields(
+    "
+pub type Handler {
+  Handler(run: fn(fn(Int, fn() -> Nil) -> Nil) -> Nil)
+}
+",
+  )
+  |> should.equal(
+    dict.from_list([
+      #(
+        #("app", "Handler", "Handler", "run"),
+        types.CallableFieldSignature(arity: 1, callbacks: [#(0, [1])]),
+      ),
+    ]),
+  )
+}
+
+pub fn callable_field_is_keyed_per_variant_test() {
+  // One label, two variants, two arities: a site is measured against the
+  // signature of the variant it builds.
+  callable_fields(
+    "
+pub type Handler {
+  Simple(run: fn() -> Nil)
+  Detailed(run: fn(String, Int) -> Nil)
+}
+",
+  )
+  |> should.equal(
+    dict.from_list([
+      #(
+        #("app", "Handler", "Simple", "run"),
+        types.CallableFieldSignature(arity: 0, callbacks: []),
+      ),
+      #(
+        #("app", "Handler", "Detailed", "run"),
+        types.CallableFieldSignature(arity: 2, callbacks: []),
+      ),
+    ]),
+  )
+}
+
+pub fn callable_field_resolves_an_alias_test() {
+  callable_fields(
+    "
+pub type Action = fn(String) -> Nil
+
+pub type Handler {
+  Handler(run: Action)
+}
+",
+  )
+  |> should.equal(
+    dict.from_list([
+      #(
+        #("app", "Handler", "Handler", "run"),
+        types.CallableFieldSignature(arity: 1, callbacks: []),
+      ),
+    ]),
+  )
+}
+
+pub fn callable_fields_skip_unlabelled_and_plain_fields_test() {
+  callable_fields(
+    "
+pub type Handler {
+  Handler(fn() -> Nil, name: String)
+}
+",
+  )
+  |> should.equal(dict.new())
+}
+
 // Alias-aware return-type resolution (Fix A)
 //
 // Resolving a producer's return type to its underlying function type through

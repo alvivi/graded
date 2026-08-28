@@ -563,6 +563,14 @@ type ProjectContext {
     // `assume` line gives it — a question this walk already parsed
     // every dependency module to answer for the registry.
     dependencies: DependencySources,
+    // Every callable record field this package can construct a value of, its
+    // dependencies' types included, keyed by the module that defines the type.
+    // A field `check` is package-wide and reaches a dependency-defined type,
+    // so the shape it measures a site against is gathered package-wide too.
+    callable_fields: Dict(
+      #(String, String, String, String),
+      types.CallableFieldSignature,
+    ),
   )
 }
 
@@ -750,6 +758,10 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     knowledge_base:,
     catalog:,
     dependencies: dep_sources,
+    callable_fields: dict.merge(
+      dependency_callable_fields(dep_sources),
+      build_project_callable_fields(index),
+    ),
   )
 }
 
@@ -2204,6 +2216,24 @@ fn read_and_parse_gleam(
 // Build a signature registry covering every project module. Used by
 // the checker's call-site substitution to resolve effect variables
 // when the caller passes positional (unlabeled) arguments.
+// The callable record fields every project module declares, keyed the same way
+// a dependency's are so the two merge into one package-wide map.
+fn build_project_callable_fields(
+  index: Dict(String, #(String, glance.Module)),
+) -> Dict(#(String, String, String, String), types.CallableFieldSignature) {
+  dict.fold(index, dict.new(), fn(acc, module_path, entry) {
+    let #(_gleam_path, module) = entry
+    dict.merge(
+      acc,
+      signatures.callable_fields_from_module(
+        module_path,
+        module,
+        signatures.type_alias_map(module.type_aliases),
+      ),
+    )
+  })
+}
+
 fn build_project_registry(
   index: Dict(String, #(String, glance.Module)),
 ) -> SignatureRegistry {
@@ -3111,6 +3141,13 @@ type ScannedModule {
     // thing to keep in step with how those entries are selected.
     source_path: String,
     imports: List(String),
+    // The callable record fields its custom types declare, keyed by
+    // `#(module, type, variant, field)`. Read from the source the consumer
+    // compiled against, for the same reason `updates` is.
+    callable_fields: Dict(
+      #(String, String, String, String),
+      types.CallableFieldSignature,
+    ),
   )
   // The file would not read or parse. Recorded rather than dropped so it
   // shadows any copy of the path scanned before it, and contributes nothing in
@@ -3131,6 +3168,17 @@ fn dependency_registry(sources: DependencySources) -> SignatureRegistry {
   use acc, _path, scanned <- dict.fold(sources.modules, signatures.empty())
   case scanned {
     ParsedModule(registry:, ..) -> signatures.merge(acc, registry)
+    UnreadableModule -> acc
+  }
+}
+
+// The callable record fields the scanned copies declare.
+fn dependency_callable_fields(
+  sources: DependencySources,
+) -> Dict(#(String, String, String, String), types.CallableFieldSignature) {
+  use acc, _path, scanned <- dict.fold(sources.modules, dict.new())
+  case scanned {
+    ParsedModule(callable_fields:, ..) -> dict.merge(acc, callable_fields)
     UnreadableModule -> acc
   }
 }
@@ -3430,6 +3478,11 @@ fn source_dir_sources(
         ),
         source_path:,
         imports: module_import_paths(module),
+        callable_fields: signatures.callable_fields_from_module(
+          module_path,
+          module,
+          signatures.type_alias_map(module.type_aliases),
+        ),
       )
     Error(Nil) -> UnreadableModule
   }
