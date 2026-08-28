@@ -175,7 +175,12 @@ fn subst_abs(
   }
 }
 
-fn fresh(base: String, avoid: Set(String)) -> String {
+// A name no listed variable uses: `base` itself where it is free, else `base`
+// with the lowest counter that is. The one naming convention for a synthesized
+// binder, so a term built here and one built by a caller cannot collide by
+// following different rules.
+pub fn fresh(base: String, avoid: Set(String)) -> String {
+  use <- bool.guard(when: !set.contains(avoid, base), return: base)
   fresh_loop(base, avoid, 0)
 }
 

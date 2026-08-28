@@ -556,7 +556,7 @@ pub fn operator_param_shapes(
 // One operator parameter's callback shape: each function-typed argument's
 // index paired with that argument's own callback positions. Every layer is
 // resolved through `alias_map`, each layer exactly once.
-pub fn callback_shape(
+fn callback_shape(
   param_types: List(glance.Type),
   alias_map: Dict(String, glance.Type),
 ) -> List(#(Int, List(Int))) {

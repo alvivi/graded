@@ -1858,7 +1858,7 @@ pub fn format_finding(file: String, finding: CheckFinding) -> String {
       <> ": "
       <> site.function
       <> " builds "
-      <> variant_of(site)
+      <> site.constructor.variant
       <> ", whose "
       <> field_path
       <> " takes "
@@ -1883,10 +1883,6 @@ pub fn format_finding(file: String, finding: CheckFinding) -> String {
       <> " — "
       <> unproved_cause_clause(cause)
   }
-}
-
-fn variant_of(site: ConstructionSite) -> String {
-  site.constructor.variant
 }
 
 fn listed_components(components: List(CheckComponent)) -> String {
@@ -3368,7 +3364,6 @@ pub type FieldTemplate {
 pub fn check_field_sites(
   module: Module,
   module_path: String,
-  file: String,
   checks: List(FieldCheck),
   field_index: types.FieldIndex,
   knowledge_base: KnowledgeBase,
@@ -3397,7 +3392,6 @@ pub fn check_field_sites(
           function_field_sites(
             definition.definition,
             module_path,
-            file,
             checks,
             field_index,
             module_functions,
@@ -3420,7 +3414,6 @@ pub fn check_field_sites(
 fn function_field_sites(
   function: Function,
   module_path: String,
-  file: String,
   checks: List(FieldCheck),
   field_index: types.FieldIndex,
   module_functions: Set(String),
@@ -3433,10 +3426,10 @@ fn function_field_sites(
   memo: Memo,
 ) -> #(FieldSiteReport, Memo) {
   let extracted = extract.extract_function_calls(function, context)
-  let parameters = function_parameter_names(function)
+  let parameters = named_function_params(function)
   let weigh = fn(state: #(FieldSiteReport, Memo), wired: WiredField) {
     let #(report, memo) = state
-    let #(findings, templates, called, memo) =
+    let #(findings, templates, memo) =
       weigh_wired_field(
         wired,
         types.dotted_name(QualifiedName(module_path, function.name)),
@@ -3456,7 +3449,10 @@ fn function_field_sites(
         FieldSiteReport(
           findings:,
           templates:,
-          called:,
+          called: case wired.through {
+            Some(callee) -> set.from_list([callee])
+            None -> set.new()
+          },
           touched: set.from_list([wired.check.path]),
         ),
       ),
@@ -3465,11 +3461,10 @@ fn function_field_sites(
   }
   list.fold(
     list.append(
-      constructed_fields(extracted, function.name, file, checks, field_index),
+      constructed_fields(extracted, function.name, checks, field_index),
       template_fields(
         extracted,
         function.name,
-        file,
         checks,
         field_index,
         context,
@@ -3520,23 +3515,15 @@ type WiredField {
 fn constructed_fields(
   extracted: extract.ExtractResult,
   enclosing: String,
-  file: String,
   checks: List(FieldCheck),
   field_index: types.FieldIndex,
 ) -> List(WiredField) {
   use construction <- list.flat_map(extracted.constructions)
-  let built =
-    types.BuiltConstructor(
-      module: construction.module,
-      variant: construction.variant,
-    )
   use #(check, signature, site) <- list.flat_map(matching_checks(
-    built,
+    construction.constructor,
     checks,
     field_index,
     enclosing,
-    file,
-    construction.span,
   ))
   case dict.get(construction.fields, check.field) {
     Ok(value) -> [WiredField(check:, signature:, value:, site:, through: None)]
@@ -3550,7 +3537,6 @@ fn constructed_fields(
 fn template_fields(
   extracted: extract.ExtractResult,
   enclosing: String,
-  file: String,
   checks: List(FieldCheck),
   field_index: types.FieldIndex,
   context: ImportContext,
@@ -3562,8 +3548,6 @@ fn template_fields(
     checks,
     field_index,
     enclosing,
-    file,
-    call.span,
   ))
   case dict.get(call.fields, check.field) {
     Error(Nil) -> []
@@ -3591,17 +3575,13 @@ fn matching_checks(
   checks: List(FieldCheck),
   field_index: types.FieldIndex,
   enclosing: String,
-  file: String,
-  span: Span,
 ) -> List(#(FieldCheck, types.CallableFieldSignature, types.ConstructionSite)) {
   case dict.get(field_index.variant_types, #(built.module, built.variant)) {
     Error(Nil) -> []
     Ok(type_name) -> {
       let site =
         types.ConstructionSite(
-          file:,
           function: enclosing,
-          span:,
           constructor: types.ConstructorIdentity(
             module: built.module,
             type_name:,
@@ -3639,64 +3619,58 @@ fn weigh_wired_field(
   module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
-) -> #(List(CheckFinding), List(FieldTemplate), Set(String), Memo) {
-  let called = case wired.through {
-    Some(callee) -> set.from_list([callee])
-    None -> set.new()
-  }
-  case wired.value, wired.through {
-    // The enclosing function threads its own argument into the field, so what
-    // it wires is whatever its callers pass. Held until the package-wide pass
-    // knows whether any call reaches it.
+) -> #(List(CheckFinding), List(FieldTemplate), Memo) {
+  // The enclosing function threads its own argument into the field, so what it
+  // wires is whatever its callers pass. Held until the package-wide pass knows
+  // whether any call reaches it.
+  let from_parameter = case wired.value, wired.through {
     types.LocalRef(name:), None ->
-      case
-        set.contains(parameters, name) && !set.contains(module_functions, name)
-      {
-        True -> #(
-          [],
-          [
-            FieldTemplate(
-              function: enclosing,
-              check_path: wired.check.path,
-              site: wired.site,
-            ),
-          ],
-          called,
+      set.contains(parameters, name) && !set.contains(module_functions, name)
+    types.LocalRef(..), Some(_)
+    | types.FunctionRef(..), _
+    | types.Closure(..), _
+    | types.ReturnedOperator(..), _
+    | types.CallResult(..), _
+    | types.ConstructorRef, _
+    | types.Choice(..), _
+    | types.ReceiverPath(..), _
+    | types.Constructed(..), _
+    | types.Updated(..), _
+    | types.OtherExpression, _
+    -> False
+  }
+  case from_parameter {
+    True -> #(
+      [],
+      [
+        FieldTemplate(
+          function: enclosing,
+          check_path: wired.check.path,
+          site: wired.site,
+        ),
+      ],
+      memo,
+    )
+    False -> {
+      let #(findings, memo) =
+        resolved_verdict(
+          wired,
+          module_functions,
+          context,
+          knowledge_base,
+          function_map,
+          registry,
+          module_types,
+          cache,
           memo,
         )
-        False ->
-          resolved_verdict(
-            wired,
-            called,
-            module_functions,
-            context,
-            knowledge_base,
-            function_map,
-            registry,
-            module_types,
-            cache,
-            memo,
-          )
-      }
-    _, _ ->
-      resolved_verdict(
-        wired,
-        called,
-        module_functions,
-        context,
-        knowledge_base,
-        function_map,
-        registry,
-        module_types,
-        cache,
-        memo,
-      )
+      #(findings, [], memo)
+    }
   }
 }
 
 fn resolved_verdict(
   wired: WiredField,
-  called: Set(String),
   module_functions: Set(String),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
@@ -3705,7 +3679,7 @@ fn resolved_verdict(
   module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   memo: Memo,
-) -> #(List(CheckFinding), List(FieldTemplate), Set(String), Memo) {
+) -> #(List(CheckFinding), Memo) {
   let #(resolved, memo) =
     resolve_site_value(
       wired.value,
@@ -3750,11 +3724,20 @@ fn resolved_verdict(
         ]
       }
   }
-  #(findings, [], called, memo)
+  #(findings, memo)
 }
 
-// A template call the walked body makes, normalized over the two template
-// kinds so one reader serves both.
+// What one template builds and how its call's arguments reach the fields,
+// normalized over the two template kinds so one reader serves both.
+type Template {
+  Template(
+    constructor: types.BuiltConstructor,
+    fields: dict.Dict(String, Int),
+    param_labels: dict.Dict(String, Int),
+  )
+}
+
+// A template call the walked body makes.
 type TemplateCall {
   TemplateCall(
     callee: String,
@@ -3775,7 +3758,16 @@ fn template_calls(
     list.flat_map(extracted.resolved, fn(call) {
       template_call_of(
         types.dotted_name(call.name),
-        cross_template(context, call.name.module, call.name.function),
+        template_of(
+          dict.get(context.cross_factories, #(
+            call.name.module,
+            call.name.function,
+          )),
+          dict.get(context.cross_updates, #(
+            call.name.module,
+            call.name.function,
+          )),
+        ),
         call.span,
         extracted,
       )
@@ -3784,7 +3776,10 @@ fn template_calls(
     list.flat_map(extracted.local, fn(call) {
       template_call_of(
         types.dotted_name(QualifiedName(module_path, call.function)),
-        local_template(context, call.function),
+        template_of(
+          dict.get(context.factories, call.function),
+          dict.get(context.updates, call.function),
+        ),
         call.span,
         extracted,
       )
@@ -3792,22 +3787,43 @@ fn template_calls(
   list.append(resolved, local)
 }
 
+// What a factory or an update builder wires, read off whichever of the two
+// keys the callee. A factory wins where a name somehow keys both.
+fn template_of(
+  factory: Result(types.FactorySignature, Nil),
+  update: Result(types.UpdateSignature, Nil),
+) -> Option(Template) {
+  case factory, update {
+    Ok(factory), _ ->
+      Some(Template(
+        constructor: factory.constructor,
+        fields: factory.fields,
+        param_labels: factory.param_labels,
+      ))
+    Error(Nil), Ok(update) ->
+      Some(Template(
+        constructor: update.constructor,
+        fields: update.fields,
+        param_labels: update.param_labels,
+      ))
+    Error(Nil), Error(Nil) -> None
+  }
+}
+
 fn template_call_of(
   callee: String,
-  template: Option(
-    #(types.BuiltConstructor, dict.Dict(String, Int), dict.Dict(String, Int)),
-  ),
+  template: Option(Template),
   span: Span,
   extracted: extract.ExtractResult,
 ) -> List(TemplateCall) {
   case template {
     None -> []
-    Some(#(constructor, fields, param_labels)) -> [
+    Some(template) -> [
       TemplateCall(
         callee:,
-        constructor:,
-        fields:,
-        param_labels:,
+        constructor: template.constructor,
+        fields: template.fields,
+        param_labels: template.param_labels,
         arguments: dict.get(extracted.call_args, #(span.start, span.end))
           |> result.unwrap([]),
         span:,
@@ -3816,80 +3832,23 @@ fn template_call_of(
   }
 }
 
-fn local_template(
-  context: ImportContext,
-  name: String,
-) -> Option(
-  #(types.BuiltConstructor, dict.Dict(String, Int), dict.Dict(String, Int)),
-) {
-  case dict.get(context.factories, name), dict.get(context.updates, name) {
-    Ok(factory), _ ->
-      Some(#(factory.constructor, factory.fields, factory.param_labels))
-    Error(Nil), Ok(update) ->
-      Some(#(update.constructor, update.fields, update.param_labels))
-    Error(Nil), Error(Nil) -> None
-  }
-}
-
-fn cross_template(
-  context: ImportContext,
-  module: String,
-  function: String,
-) -> Option(
-  #(types.BuiltConstructor, dict.Dict(String, Int), dict.Dict(String, Int)),
-) {
-  case
-    dict.get(context.cross_factories, #(module, function)),
-    dict.get(context.cross_updates, #(module, function))
-  {
-    Ok(factory), _ ->
-      Some(#(factory.constructor, factory.fields, factory.param_labels))
-    Error(Nil), Ok(update) ->
-      Some(#(update.constructor, update.fields, update.param_labels))
-    Error(Nil), Error(Nil) -> None
-  }
-}
-
 // The argument a template's field is wired from: matched by the parameter's
-// label where the call used one, else by position — the same rule the checker
-// binds a parameter bound's argument by.
+// label where the call used one, else by position — the same helpers a
+// parameter bound's argument is bound by.
 fn template_argument(
   arguments: List(types.CallArgument),
   position: Int,
   param_labels: dict.Dict(String, Int),
 ) -> Option(types.ArgumentValue) {
-  let label =
-    param_labels
-    |> dict.to_list()
-    |> list.find(fn(pair) { pair.1 == position })
-    |> result.map(fn(pair) { pair.0 })
-  let labelled =
-    list.find(arguments, fn(argument) {
-      case argument.label, label {
-        Some(written), Ok(declared) -> written == declared
-        Some(_), Error(Nil) | None, _ -> False
-      }
-    })
-  case labelled {
-    Ok(argument) -> Some(argument.value)
-    Error(Nil) ->
-      list.find(arguments, fn(argument) {
-        argument.position == position && argument.label == None
-      })
-      |> result.map(fn(argument) { argument.value })
-      |> option.from_result
+  let by_label = case
+    param_labels |> dict.to_list() |> list.find(fn(pair) { pair.1 == position })
+  {
+    Ok(#(label, _)) -> find_arg_by_label(arguments, label)
+    Error(Nil) -> None
   }
-}
-
-fn function_parameter_names(function: Function) -> Set(String) {
-  function.parameters
-  |> list.filter_map(fn(parameter) {
-    case parameter.name {
-      glance.Named(name) -> Ok(name)
-      glance.Discarded(_) -> Error(Nil)
-    }
-  })
-  |> set.from_list()
+  by_label
+  |> option.lazy_or(fn() { find_arg_at_position(arguments, position) })
+  |> option.map(fn(argument) { argument.value })
 }
 
 // Resolve one construction site's wired value. `Error` names an analysis limit
@@ -4006,7 +3965,7 @@ fn canonical_declared(
 ) -> Result(EffectTerm, Nil) {
   case declared {
     types.TAbs(_, _) -> {
-      let #(binders, _body) = abstraction_spine(declared)
+      let #(binders, _body) = peel_abstractions(declared, [])
       case list.length(binders) == arity {
         True -> Ok(declared)
         False -> Error(Nil)
@@ -4059,12 +4018,12 @@ fn symbolic_lift(
 ) -> EffectTerm {
   let taken = effect_term.free_vars(term)
   let #(binders, bindings) =
-    positions(arity)
+    positions_up_to(arity)
     |> list.fold(#([], dict.new()), fn(state, position) {
       let #(names, acc) = state
-      let bound = list_at(bounds, position)
+      let bound = extract.at(bounds, position) |> option.from_result
       let binder =
-        unused_name(
+        effect_term.fresh(
           case bound {
             Some(bound) -> bound.name
             None -> "p" <> int.to_string(position)
@@ -4105,22 +4064,22 @@ fn ground_unconstrained(
   declared: EffectTerm,
   signature: types.CallableFieldSignature,
 ) -> EffectTerm {
-  let #(declared_binders, declared_body) = abstraction_spine(declared)
+  let #(declared_binders, declared_body) = peel_abstractions(declared, [])
   let declared_free = effect_term.free_vars(declared_body)
-  let #(actual_binders, actual_body) = abstraction_spine(actual)
+  let #(actual_binders, actual_body) = peel_abstractions(actual, [])
   let bindings =
     list.index_fold(declared_binders, dict.new(), fn(acc, binder, position) {
       case set.contains(declared_free, binder) {
         True -> acc
         False ->
-          case list_at(actual_binders, position) {
-            Some(name) ->
+          case extract.at(actual_binders, position) {
+            Ok(name) ->
               dict.insert(
                 acc,
                 name,
                 unconstrained_stand_in(signature, position),
               )
-            None -> acc
+            Error(Nil) -> acc
           }
       }
     })
@@ -4146,58 +4105,12 @@ fn unconstrained_stand_in(
 // serves every binder: none of them occurs in the body, so the inner ones
 // shadow nothing, and repeating it keeps the rendered operator readable.
 fn constant_operator(count: Int, body: EffectTerm, base: String) -> EffectTerm {
-  let name = unused_name(base, effect_term.free_vars(body))
-  wrap_binders(list.map(positions(count), fn(_position) { name }), body)
-}
-
-// `[0, 1, …, count - 1]`, empty for a count of zero.
-fn positions(count: Int) -> List(Int) {
-  positions_down(count - 1, [])
-}
-
-fn positions_down(from: Int, acc: List(Int)) -> List(Int) {
-  use <- bool.guard(when: from < 0, return: acc)
-  positions_down(from - 1, [from, ..acc])
-}
-
-// A name no listed variable uses, from `base` and then `base` plus a counter.
-fn unused_name(base: String, taken: Set(String)) -> String {
-  use <- bool.guard(when: !set.contains(taken, base), return: base)
-  unused_name_from(base, taken, 0)
-}
-
-fn unused_name_from(base: String, taken: Set(String), n: Int) -> String {
-  let candidate = base <> int.to_string(n)
-  case set.contains(taken, candidate) {
-    True -> unused_name_from(base, taken, n + 1)
-    False -> candidate
-  }
-}
-
-// An operator's binders in order, and the body under all of them.
-fn abstraction_spine(term: EffectTerm) -> #(List(String), EffectTerm) {
-  case term {
-    types.TAbs(param, body) -> {
-      let #(inner, leaf) = abstraction_spine(body)
-      #([param, ..inner], leaf)
-    }
-    types.TLabels(_)
-    | types.TTop
-    | types.TVar(_)
-    | types.TApp(_, _)
-    | TUnion(_) -> #([], term)
-  }
+  let name = effect_term.fresh(base, effect_term.free_vars(body))
+  wrap_binders(list.map(positions_up_to(count), fn(_position) { name }), body)
 }
 
 fn wrap_binders(names: List(String), body: EffectTerm) -> EffectTerm {
   list.fold_right(names, body, fn(acc, name) { types.TAbs(name, acc) })
-}
-
-fn list_at(items: List(a), index: Int) -> Option(a) {
-  case list.drop(items, index) {
-    [item, ..] -> Some(item)
-    [] -> None
-  }
 }
 
 // Returned-operator checking
@@ -4320,9 +4233,14 @@ fn foreign_returns_clause(
 ) -> #(List(CheckFinding), Memo) {
   let name =
     QualifiedName(module: context.module_path, function: annotation.function)
-  let fallback = effects.declared_charge(knowledge_base, name).fallback
-  case effects.declared_returned_operator(knowledge_base, name), fallback {
-    Error(Nil), types.NoFallback -> #(
+  // Only whether a Gleam body runs matters here; whether its charge is counted
+  // or suppressed is the effects channel's question, not this one.
+  let body_runs = case effects.declared_charge(knowledge_base, name).fallback {
+    types.NoFallback -> False
+    types.FallbackCharged(_) | types.FallbackSuppressed(_) -> True
+  }
+  case effects.declared_returned_operator(knowledge_base, name), body_runs {
+    Error(Nil), False -> #(
       [
         UnprovedCheck(
           subject: annotation.function,
@@ -4332,16 +4250,15 @@ fn foreign_returns_clause(
       ],
       memo,
     )
-    Error(Nil), types.FallbackCharged(_)
-    | Error(Nil), types.FallbackSuppressed(_)
-    -> #([unproved_foreign_fallback(annotation.function)], memo)
-    Ok(operator), types.NoFallback -> #(
+    Error(Nil), True -> #(
+      [unproved_foreign_fallback(annotation.function)],
+      memo,
+    )
+    Ok(operator), False -> #(
       weigh_returned_operator(annotation.function, declared, Ok(operator)),
       memo,
     )
-    Ok(operator), types.FallbackCharged(_)
-    | Ok(operator), types.FallbackSuppressed(_)
-    ->
+    Ok(operator), True ->
       case
         weigh_returned_operator(annotation.function, declared, Ok(operator))
       {
@@ -4367,9 +4284,7 @@ fn foreign_returns_clause(
               ),
               memo,
             )
-            Error(NoReturnAnnotation)
-            | Error(ReturnIsNotAFunction)
-            | Error(UnresolvedReturnTail) -> #(
+            Error(_) -> #(
               [unproved_foreign_fallback(annotation.function)],
               memo,
             )

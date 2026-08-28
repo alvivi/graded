@@ -5401,9 +5401,7 @@ pub fn a_site_over_its_budget_violates_test() {
 
 fn site(function: String) -> types.ConstructionSite {
   types.ConstructionSite(
-    file: "src/app.gleam",
     function:,
-    span: glance.Span(0, 0),
     constructor: types.ConstructorIdentity(
       module: "app",
       type_name: "Handler",
