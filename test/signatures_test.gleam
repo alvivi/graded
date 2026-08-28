@@ -131,11 +131,15 @@ pub type Wrapped {
 // positions. Keyed per variant, because variants of one type may give a label
 // different types.
 
+fn field_index_of(source: String) -> types.FieldIndex {
+  let assert Ok(module) = glance.module(source)
+  signatures.field_index_from_module("app", module, alias_map_of(module))
+}
+
 fn callable_fields(
   source: String,
 ) -> dict.Dict(#(String, String, String, String), types.CallableFieldSignature) {
-  let assert Ok(module) = glance.module(source)
-  signatures.callable_fields_from_module("app", module, alias_map_of(module))
+  field_index_of(source).callable
 }
 
 pub fn callable_field_records_arity_and_callbacks_test() {
@@ -198,6 +202,39 @@ pub type Handler {
         #("app", "Handler", "Detailed", "run"),
         types.CallableFieldSignature(arity: 2, callbacks: []),
       ),
+    ]),
+  )
+}
+
+pub fn field_index_records_every_labelled_field_test() {
+  // Callable or not: a `check` naming a field that exists and is not callable
+  // is a different diagnostic from one naming no field at all.
+  field_index_of(
+    "
+pub type Handler {
+  Handler(run: fn() -> Nil, name: String, fn() -> Nil)
+}
+",
+  ).labels
+  |> should.equal(
+    set.from_list([#("app", "Handler", "run"), #("app", "Handler", "name")]),
+  )
+}
+
+pub fn field_index_maps_each_variant_to_its_type_test() {
+  // A construction site names its variant while a `check` names the type.
+  field_index_of(
+    "
+pub type Handler {
+  Simple(run: fn() -> Nil)
+  Detailed(run: fn() -> Nil)
+}
+",
+  ).variant_types
+  |> should.equal(
+    dict.from_list([
+      #(#("app", "Simple"), "Handler"),
+      #(#("app", "Detailed"), "Handler"),
     ]),
   )
 }

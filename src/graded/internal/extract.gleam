@@ -488,12 +488,25 @@ fn factory_signature(
         _ -> acc
       }
     })
+  // The module the constructor is defined in — this one when the call is
+  // unqualified, the alias's target when it is qualified. A constructor the
+  // import context cannot place is not a template: no check could own its
+  // sites.
+  use defining_module <- result.try(constructor_module(
+    alias,
+    constructor,
+    context,
+  ))
   case dict.is_empty(field_to_param) {
     True -> Error(Nil)
     False ->
       Ok(FactorySignature(
         fields: field_to_param,
         param_labels: param_label_map(function),
+        constructor: types.BuiltConstructor(
+          module: defining_module,
+          variant: constructor,
+        ),
       ))
   }
 }
@@ -555,11 +568,18 @@ fn update_signature(
 ) -> Result(UpdateSignature, Nil) {
   // Peek at the tail before splitting the body: every function in every scanned
   // module reaches here, and all but a builder bails on this one match.
-  use #(record, fields) <- result.try(case list.last(function.body) {
-    Ok(glance.Expression(glance.RecordUpdate(record:, fields:, ..))) ->
-      Ok(#(record, fields))
-    _ -> Error(Nil)
-  })
+  use #(record, fields, module_alias, variant) <- result.try(
+    case list.last(function.body) {
+      Ok(glance.Expression(glance.RecordUpdate(
+        record:,
+        fields:,
+        module: module_alias,
+        constructor:,
+        ..,
+      ))) -> Ok(#(record, fields, module_alias, constructor))
+      _ -> Error(Nil)
+    },
+  )
   let init = case list.reverse(function.body) {
     [_tail, ..init_reversed] -> list.reverse(init_reversed)
     [] -> []
@@ -593,6 +613,11 @@ fn update_signature(
       dict.insert(acc, field.label, position)
     }),
   )
+  use defining_module <- result.try(constructor_module(
+    module_alias,
+    variant,
+    context,
+  ))
   case dict.is_empty(field_to_param) {
     True -> Error(Nil)
     False ->
@@ -600,6 +625,7 @@ fn update_signature(
         base_param:,
         fields: field_to_param,
         param_labels: param_label_map(function),
+        constructor: types.BuiltConstructor(module: defining_module, variant:),
       ))
   }
 }
@@ -706,6 +732,10 @@ pub type ExtractResult {
     // [Unknown] rather than being silently dropped as pure.
     unknown_apps: List(glance.Span),
     call_args: Dict(#(Int, Int), List(CallArgument)),
+    // Every custom-type value the walked body constructs, direct constructions
+    // and record updates alike. A field `check` weighs the values a package
+    // wires into a field, and these are where it wires them.
+    constructions: List(types.Construction),
   )
 }
 
@@ -1708,27 +1738,40 @@ fn extract_from_expression(
       ),
       arguments:,
     ) ->
-      merge_with_args(
-        resolve_qualified_call(
+      merge(
+        qualified_construction(
           alias,
           function_name,
+          arguments,
           span,
-          receiver_span,
           context,
           env,
         ),
-        extract_from_arguments(arguments, context, env),
-        span,
-        classify_arguments(arguments, context, env, 0),
+        merge_with_args(
+          resolve_qualified_call(
+            alias,
+            function_name,
+            span,
+            receiver_span,
+            context,
+            env,
+          ),
+          extract_from_arguments(arguments, context, env),
+          span,
+          classify_arguments(arguments, context, env, 0),
+        ),
       )
 
     // Unqualified or local call: println(x) or helper(x)
     glance.Call(location: span, function: glance.Variable(_, name), arguments:) ->
-      merge_with_args(
-        resolve_variable_call(name, span, context, env),
-        extract_from_arguments(arguments, context, env),
-        span,
-        classify_arguments(arguments, context, env, 0),
+      merge(
+        unqualified_construction(name, arguments, span, context, env),
+        merge_with_args(
+          resolve_variable_call(name, span, context, env),
+          extract_from_arguments(arguments, context, env),
+          span,
+          classify_arguments(arguments, context, env, 0),
+        ),
       )
 
     // Nested field-access call: `d.svc.find(args)` or `make_svc().find(args)`.
@@ -1831,13 +1874,29 @@ fn extract_from_expression(
 
     // Record update: walk the base record and every updated field value
     // (a field item is absent only for shorthand `Rec(..base, field:)`).
-    glance.RecordUpdate(record:, fields:, ..) ->
-      list.fold(
-        fields,
-        extract_from_expression(record, context, env),
-        fn(accumulated, field) {
-          merge_optional(accumulated, field.item, context, env)
-        },
+    glance.RecordUpdate(
+      location: span,
+      module: module_alias,
+      constructor:,
+      record:,
+      fields:,
+    ) ->
+      merge(
+        update_construction(
+          module_alias,
+          constructor,
+          fields,
+          span,
+          context,
+          env,
+        ),
+        list.fold(
+          fields,
+          extract_from_expression(record, context, env),
+          fn(accumulated, field) {
+            merge_optional(accumulated, field.item, context, env)
+          },
+        ),
       )
 
     // Function reference: qualified name used as a value (not called).
@@ -2635,6 +2694,147 @@ fn pipe_desugar(
   }
 }
 
+// The module a constructor named at a call site is defined in, resolved
+// through the import context and never by name matching: an alias's target,
+// this module's own custom types, or an unqualified import. `Error(Nil)` where
+// the context places it nowhere — such a constructor names no type any check
+// could own.
+fn constructor_module(
+  alias: Option(String),
+  variant: String,
+  context: ImportContext,
+) -> Result(String, Nil) {
+  case alias {
+    Some(alias) -> dict.get(context.aliases, alias)
+    None ->
+      case dict.has_key(context.constructors, variant) {
+        True -> Ok(context.module_path)
+        False ->
+          dict.get(context.unqualified, variant)
+          |> result.map(fn(imported) { imported.module })
+      }
+  }
+}
+
+// Construction sites
+//
+// Where the walked body builds a value of a custom type. The constructor is
+// resolved to its defining module through the import context — never by name
+// matching — because a field `check` names the module the type is defined in
+// and a site that resolves to no module belongs to no check.
+
+// A qualified construction (`handler.Handler(run: f)`). Not a constructor, or
+// an alias the import context does not know, records nothing.
+fn qualified_construction(
+  alias: String,
+  variant: String,
+  arguments: List(Field(Expression)),
+  span: glance.Span,
+  context: ImportContext,
+  env: Env,
+) -> ExtractResult {
+  use <- bool.guard(when: !is_constructor_name(variant), return: empty())
+  case constructor_module(Some(alias), variant, context) {
+    Ok(module) ->
+      construction_result(
+        module,
+        variant,
+        classify_constructor(variant, Some(alias), arguments, context, env),
+        span,
+      )
+    Error(Nil) -> empty()
+  }
+}
+
+// An unqualified construction (`Handler(run: f)`), from this module's own
+// custom types or from an unqualified import. A same-module constructor keeps
+// its declared labels, so positional arguments route to their fields.
+fn unqualified_construction(
+  variant: String,
+  arguments: List(Field(Expression)),
+  span: glance.Span,
+  context: ImportContext,
+  env: Env,
+) -> ExtractResult {
+  use <- bool.guard(when: !is_constructor_name(variant), return: empty())
+  // A same-module constructor has declared labels to route positional
+  // arguments with; an imported one keeps only its labelled fields, exactly as
+  // the rest of extraction reads one.
+  let own = dict.has_key(context.constructors, variant)
+  case constructor_module(None, variant, context) {
+    Ok(module) ->
+      construction_result(
+        module,
+        variant,
+        classify_constructor(
+          variant,
+          case own {
+            True -> None
+            False -> Some(module)
+          },
+          arguments,
+          context,
+          env,
+        ),
+        span,
+      )
+    Error(Nil) -> empty()
+  }
+}
+
+// A record update (`Handler(..base, run: g)`), qualified or not. Only the
+// fields it writes are recorded.
+fn update_construction(
+  module_alias: Option(String),
+  variant: String,
+  fields: List(glance.RecordUpdateField(Expression)),
+  span: glance.Span,
+  context: ImportContext,
+  env: Env,
+) -> ExtractResult {
+  case constructor_module(module_alias, variant, context) {
+    Error(Nil) -> empty()
+    Ok(module) -> {
+      let wired =
+        list.fold(fields, dict.new(), fn(acc, field) {
+          dict.insert(
+            acc,
+            field.label,
+            record_update_field_value(field, context, env),
+          )
+        })
+      construction_result(
+        module,
+        variant,
+        BoundConstructor(fields: wired),
+        span,
+      )
+    }
+  }
+}
+
+// One construction record, from a constructor classification that routed at
+// least one field. A construction routing none is not recorded: it wires
+// nothing a field check could weigh.
+fn construction_result(
+  module: String,
+  variant: String,
+  classified: LocalBinding,
+  span: glance.Span,
+) -> ExtractResult {
+  case classified {
+    BoundConstructor(fields:) ->
+      case dict.is_empty(fields) {
+        True -> empty()
+        False ->
+          ExtractResult(..empty(), constructions: [
+            types.Construction(module:, variant:, fields:, span:),
+          ])
+      }
+    _ -> empty()
+  }
+}
+
 // An inline record update (`Options(..base, resolver: r)`) as an argument value:
 // classify the base and each updated field into an `Updated` overlay. A
 // shorthand field (`resolver:`) is the variable named by the label. With no
@@ -3326,6 +3526,7 @@ fn empty() -> ExtractResult {
     direct_closure_ops: [],
     unknown_apps: [],
     call_args: dict.new(),
+    constructions: [],
   )
 }
 
@@ -3343,5 +3544,6 @@ fn merge(left: ExtractResult, right: ExtractResult) -> ExtractResult {
     ),
     unknown_apps: list.append(left.unknown_apps, right.unknown_apps),
     call_args: dict.merge(left.call_args, right.call_args),
+    constructions: list.append(left.constructions, right.constructions),
   )
 }

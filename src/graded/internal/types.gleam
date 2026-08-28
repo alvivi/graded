@@ -640,6 +640,23 @@ pub type CallArgument {
   CallArgument(position: Int, label: Option(String), value: ArgumentValue)
 }
 
+// One construction of a custom type in a function body: which constructor was
+// called, what each labelled field was wired to, and where. `module` is the
+// module the constructor is defined in, resolved through the import context —
+// a construction whose constructor the context cannot resolve is not recorded
+// at all, since a site that names no type can be attributed to no check.
+//
+// A record update records only the fields it writes: those replace what the
+// base held, and every other field is the base's own construction's business.
+pub type Construction {
+  Construction(
+    module: String,
+    variant: String,
+    fields: Dict(String, ArgumentValue),
+    span: Span,
+  )
+}
+
 // A local (unresolved) call — needs transitive analysis.
 pub type LocalCall {
   LocalCall(function: String, span: Span)
@@ -687,6 +704,24 @@ pub type FieldCallProvenance {
   Untraceable
 }
 
+// What a package knows about its custom types' record fields, gathered over
+// every project and dependency module. A field `check` is package-wide, so
+// each of these is too.
+pub type FieldIndex {
+  FieldIndex(
+    // Every labelled field of every custom type, keyed `#(module, type,
+    // field)`. What tells a `check` naming no field at all from one naming a
+    // field that exists and is not callable.
+    labels: Set(#(String, String, String)),
+    // The callable fields' shapes, per variant.
+    callable: Dict(#(String, String, String, String), CallableFieldSignature),
+    // The type each variant belongs to, keyed `#(module, variant)`. A
+    // construction site names the variant it builds while a `check` names the
+    // type, and this is what joins the two.
+    variant_types: Dict(#(String, String), String),
+  )
+}
+
 // One callable record field's shape, as a field `check` measures a
 // construction site against. `arity` is how many parameters the field's
 // `fn(..)` type takes — the number of binders both sides canonicalize to.
@@ -708,7 +743,24 @@ pub type CallableFieldSignature {
 // maps each factory parameter's Gleam label to its position, so a labeled call
 // (`make(logger: io.println)`) routes to the same fields as the positional one.
 pub type FactorySignature {
-  FactorySignature(fields: Dict(String, Int), param_labels: Dict(String, Int))
+  FactorySignature(
+    fields: Dict(String, Int),
+    param_labels: Dict(String, Int),
+    constructor: BuiltConstructor,
+  )
+}
+
+// The constructor a factory or update template builds: the module that defines
+// it and the variant's own name. A factory call names no type, so the template
+// carries what it builds rather than the call site inferring it — and it names
+// the *variant*, because variants of one type may give a label different types
+// and a site has to be measured against the one it builds.
+//
+// The type's own name is not readable where a template is built: an imported
+// constructor's defining module is not parsed there. It is resolved from this
+// pair package-wide, which selects exactly one variant and so exactly one type.
+pub type BuiltConstructor {
+  BuiltConstructor(module: String, variant: String)
 }
 
 // An *update builder*'s signature: its body is a record update of one of its
@@ -725,6 +777,7 @@ pub type UpdateSignature {
     base_param: Int,
     fields: Dict(String, Int),
     param_labels: Dict(String, Int),
+    constructor: BuiltConstructor,
   )
 }
 

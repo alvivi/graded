@@ -365,25 +365,69 @@ pub fn fn_typed_fields_from_module(
 // different types — a different arity, different callback positions, or
 // callable in one variant and not the other — and a site is always one
 // variant's constructor.
-pub fn callable_fields_from_module(
+pub fn field_index_from_module(
   module_path: String,
   module: Module,
   alias_map: Dict(String, glance.Type),
-) -> Dict(#(String, String, String, String), types.CallableFieldSignature) {
-  module.custom_types
-  |> list.flat_map(fn(definition) {
+) -> types.FieldIndex {
+  list.fold(module.custom_types, empty_field_index(), fn(acc, definition) {
     let type_name = definition.definition.name
-    definition.definition.variants
-    |> list.flat_map(fn(variant) {
-      variant.fields
-      |> list.filter_map(callable_field_signature(_, alias_map))
-      |> list.map(fn(entry) {
-        let #(label, signature) = entry
-        #(#(module_path, type_name, variant.name, label), signature)
-      })
+    list.fold(definition.definition.variants, acc, fn(acc, variant) {
+      let labels =
+        variant.fields
+        |> list.filter_map(field_label)
+        |> list.map(fn(label) { #(module_path, type_name, label) })
+        |> set.from_list()
+      let callable =
+        variant.fields
+        |> list.filter_map(callable_field_signature(_, alias_map))
+        |> list.map(fn(entry) {
+          let #(label, signature) = entry
+          #(#(module_path, type_name, variant.name, label), signature)
+        })
+        |> dict.from_list()
+      types.FieldIndex(
+        labels: set.union(acc.labels, labels),
+        callable: dict.merge(acc.callable, callable),
+        variant_types: dict.insert(
+          acc.variant_types,
+          #(module_path, variant.name),
+          type_name,
+        ),
+      )
     })
   })
-  |> dict.from_list()
+}
+
+// An index over no module at all — the fold's seed and the empty merge.
+pub fn empty_field_index() -> types.FieldIndex {
+  types.FieldIndex(
+    labels: set.new(),
+    callable: dict.new(),
+    variant_types: dict.new(),
+  )
+}
+
+// Combine two field indexes; the right one wins on a repeated key, the same
+// way the signature registry's merge resolves one.
+pub fn merge_field_index(
+  left: types.FieldIndex,
+  right: types.FieldIndex,
+) -> types.FieldIndex {
+  types.FieldIndex(
+    labels: set.union(left.labels, right.labels),
+    callable: dict.merge(left.callable, right.callable),
+    variant_types: dict.merge(left.variant_types, right.variant_types),
+  )
+}
+
+// A labelled field's label; `Error(Nil)` for an unlabelled one, which no
+// `record.field(..)` call can reach.
+fn field_label(field: glance.VariantField) -> Result(String, Nil) {
+  case field {
+    glance.LabelledVariantField(label:, ..) -> Ok(label)
+    glance.UnlabelledVariantField(..) -> Error(Nil)
+  }
 }
 
 // One labelled field's callable shape, `Error(Nil)` for an unlabelled or
