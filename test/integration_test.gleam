@@ -11171,6 +11171,92 @@ pub fn an_open_clause_beside_a_bound_from_another_line_is_reported_test() {
   ])
 }
 
+pub fn an_open_clause_on_a_check_line_is_reported_test() {
+  // A `check` line's clause is weighed now, so it earns the same diagnostics
+  // every other live clause does: `ghost` names no callback parameter, so
+  // nothing in the comparison can bind it.
+  clause_lint_warnings(
+    "clause_lint_check_open",
+    "check proj.wrap(f: [f]) : [] where returns : [ghost]\n",
+    annotated_wrap,
+  )
+  |> should.equal([
+    types.UnclosedReturnsClauseWarning(function: "proj.wrap", free_vars: [
+      "ghost",
+    ]),
+  ])
+}
+
+pub fn an_aliased_bound_on_a_check_line_is_reported_test() {
+  // The term channel binds by payload and the clause channel by name, so a
+  // payload naming a *different* bound's parameter charges two different
+  // arguments on one line. A `check` line carries both channels now.
+  clause_lint_warnings(
+    "clause_lint_check_aliased",
+    "check proj.pair(g: [g], f: [g]) : [g] where returns : [g]\n",
+    "pub fn pair(f: fn() -> Nil, g: fn() -> Nil) -> fn() -> Nil {
+  f()
+  fn() { g() }
+}
+",
+  )
+  |> should.equal([
+    types.AliasedBoundVariableWarning(function: "proj.pair", variables: [
+      #("g", "f"),
+    ]),
+  ])
+}
+
+pub fn a_field_check_carrying_a_bound_list_is_reported_test() {
+  clause_lint_warnings(
+    "clause_lint_field_bounds",
+    "check proj.Handler.run(cb: [cb]) : [cb]\n",
+    handler_type,
+  )
+  |> should.equal([
+    types.UnsupportedFieldCheckWarning(name: "proj.Handler.run", components: [
+      types.FieldBoundList,
+    ]),
+  ])
+}
+
+pub fn a_field_check_carrying_a_clause_is_reported_test() {
+  clause_lint_warnings(
+    "clause_lint_field_clause",
+    "check proj.Handler.run : [] where returns : [Http]\n",
+    handler_type,
+  )
+  |> should.equal([
+    types.UnsupportedFieldCheckWarning(name: "proj.Handler.run", components: [
+      types.FieldReturnsClause,
+    ]),
+  ])
+}
+
+pub fn a_field_check_carrying_both_is_reported_once_test() {
+  clause_lint_warnings(
+    "clause_lint_field_both",
+    "check proj.Handler.run(cb: [cb]) : [cb] where returns : [Http]\n",
+    handler_type,
+  )
+  |> should.equal([
+    types.UnsupportedFieldCheckWarning(name: "proj.Handler.run", components: [
+      types.FieldBoundList,
+      types.FieldReturnsClause,
+    ]),
+  ])
+}
+
+// A custom type with one callable field, for the field-shaped lints.
+const handler_type = "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+pub fn build(run: fn() -> Nil) -> Handler {
+  Handler(run:)
+}
+"
+
 // A verified `where returns` clause on a `check` line
 //
 // The clause states the operator the function hands back, and the check holds

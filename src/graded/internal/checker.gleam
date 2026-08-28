@@ -20,9 +20,9 @@ import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/topo
 import graded/internal/typeinfo
 import graded/internal/types.{
-  type CallExplanation, type CheckFinding, type ConstructionSite,
-  type EffectAnnotation, type EffectTerm, type LocalCall, type LookupOrigin,
-  type ParamBound, type QualifiedName, type ResolvedCall,
+  type CallExplanation, type CheckComponent, type CheckFinding,
+  type ConstructionSite, type EffectAnnotation, type EffectTerm, type LocalCall,
+  type LookupOrigin, type ParamBound, type QualifiedName, type ResolvedCall,
   type ReturnedOperatorReason, type UnknownReason, type UnprovedCause,
   type Violation, type Warning, AliasedBoundVariableWarning, CallExplanation,
   DotlessReturnsClauseWarning, EffectAnnotation, Effects, FieldAssumeOrigin,
@@ -38,9 +38,9 @@ import graded/internal/types.{
   UnmatchedFunctionAssumeWarning, UnmatchedModuleAssumeWarning,
   UnmatchedParamBoundWarning, UnmatchedReturnsClauseWarning, UnprovedCheck,
   UnprovedForeignFallback, UnresolvedFieldValue, UnresolvedReturnTail,
-  UnsupportedCheckComponent, UntraceableArgument, UntraceableProducer,
-  UntraceableReceiver, UntracedFieldValue, UntrackedEffectWarning,
-  UnverifiedCheckShapeWarning, Violation,
+  UnsupportedCheckComponent, UnsupportedFieldCheckWarning, UntraceableArgument,
+  UntraceableProducer, UntraceableReceiver, UntracedFieldValue,
+  UntrackedEffectWarning, UnverifiedCheckShapeWarning, Violation,
 }
 
 // Entry points
@@ -1708,6 +1708,13 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> ": warning: check "
       <> name
       <> " is a shape nothing verifies yet — a check on a field keys nothing; an `assume` line is the trusted form"
+    UnsupportedFieldCheckWarning(name:, components:) ->
+      file
+      <> ": warning: check "
+      <> name
+      <> " carries "
+      <> listed_components(components)
+      <> " on a field path, which nothing verifies — a field check weighs the values the package wires into the field, and a field head scopes no bound list and keys no returned operator"
     UnkeyedEffectsShapeWarning(name:) ->
       file
       <> ": warning: effects "
@@ -1850,6 +1857,17 @@ pub fn format_finding(file: String, finding: CheckFinding) -> String {
       <> " — "
       <> unproved_cause_clause(cause)
   }
+}
+
+fn listed_components(components: List(CheckComponent)) -> String {
+  components
+  |> list.map(fn(component) {
+    case component {
+      FieldBoundList -> "a bound list"
+      FieldReturnsClause -> "a `where returns` clause"
+    }
+  })
+  |> string.join(" and ")
 }
 
 fn site_clause(site: Option(ConstructionSite)) -> String {

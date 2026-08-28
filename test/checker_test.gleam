@@ -5376,6 +5376,17 @@ pub fn format_finding_field_returns_clause_test() {
   )
 }
 
+pub fn format_warning_unsupported_field_check_test() {
+  types.UnsupportedFieldCheckWarning(name: "app.Handler.run", components: [
+    types.FieldBoundList,
+    types.FieldReturnsClause,
+  ])
+  |> checker.format_warning("proj.graded", _)
+  |> should.equal(
+    "proj.graded: warning: check app.Handler.run carries a bound list and a `where returns` clause on a field path, which nothing verifies — a field check weighs the values the package wires into the field, and a field head scopes no bound list and keys no returned operator",
+  )
+}
+
 pub fn format_warning_unclosed_returns_clause_test() {
   types.UnclosedReturnsClauseWarning(function: "app.traced", free_vars: [
     "ghost", "other",
