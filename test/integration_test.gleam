@@ -11989,6 +11989,66 @@ pub fn make(run: fn() -> Nil) -> Handler {
   support.cleanup(root)
 }
 
+pub fn a_dependency_factory_routes_by_declared_labels_test() {
+  // The dependency's factory constructs a record defined in another of its own
+  // modules, positionally. Those labels belong to the defining module, which a
+  // scan of one module at a time does not hold: the factory wired nothing, the
+  // project's call of it was no site, and the run passed with a warning that
+  // nothing constructs the type.
+  let root = "build/field_check_dependency_positional"
+  support.write_project_with_dependency(
+    directory: root,
+    package: "proj",
+    spec: "assume ffi.print : [Stdout]\ncheck dep/handler.Handler.run : []\n",
+    sources: [
+      #(
+        "src/ffi.gleam",
+        "@external(erlang, \"ffi_module\", \"print\")
+@external(javascript, \"ffi_module\", \"print\")
+pub fn print() -> Nil
+",
+      ),
+      #(
+        "src/proj.gleam",
+        "import dep/make
+import ffi
+
+pub fn built() -> handler.Handler {
+  make.positional(ffi.print)
+}
+",
+      ),
+    ],
+    dependency: "dep",
+    dependency_spec: "",
+    dependency_sources: [
+      #(
+        "dep/handler.gleam",
+        "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+",
+      ),
+      #(
+        "dep/make.gleam",
+        "import dep/handler
+
+pub fn positional(run: fn() -> Nil) -> handler.Handler {
+  handler.Handler(run)
+}
+",
+      ),
+    ],
+  )
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([
+    "build/field_check_dependency_positional/src/proj.gleam: built wires dep/handler.Handler.run with effects [Stdout] but the field is declared []",
+  ])
+  support.cleanup(root)
+}
+
 // A verified `where returns` clause on a `check` line
 //
 // The clause states the operator the function hands back, and the check holds

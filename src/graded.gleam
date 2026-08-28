@@ -3355,6 +3355,9 @@ type ScannedModule {
     // ordered field labels. A consumer constructing one positionally routes its
     // arguments through these.
     constructors: Dict(#(String, String), List(Option(String))),
+    // Whether the two maps above are everything this module's source states, or
+    // whether a construction in it waits on another module's declared labels.
+    signatures: SignatureState,
     // Every `@external` it declares. Scanned here because this walk already
     // parses each dependency module once, and because it is the only evidence a
     // consumer has: a dependency's spec cannot be trusted to say which of its
@@ -3660,6 +3663,17 @@ fn dependency_name(
 
 // Merge two scans; `b`'s copy of a module path replaces `a`'s whole, so no path
 // is ever spoken for by two copies at once.
+// Whether a scanned module's derived signatures are final.
+//
+// A module is scanned on its own, and a positional construction of another
+// module's record routes through labels that module declares — read only once
+// every module has been scanned. A module whose signatures wait on those is
+// read again then, and no other module is.
+type SignatureState {
+  SignaturesFinal
+  SignaturesAwaitLabels
+}
+
 fn merge_dependency_sources(
   a: DependencySources,
   b: DependencySources,
@@ -3677,6 +3691,106 @@ fn dependency_sources(
     packages_dir_sources(packages_dir(package_root), package_targets),
     path_dep_sources(package_root, package_targets),
   )
+  |> with_declared_labels(package_targets)
+}
+
+// Derive again the signatures that waited on another module's declared labels.
+//
+// A dependency constructs a record defined in another module positionally as
+// readily as one of its own, and the labels that routes through belong to the
+// module defining the constructor — in hand only once every dependency module
+// is scanned. Only the modules that named one are read again, and the pass runs
+// at all only where some module did.
+fn with_declared_labels(
+  sources: DependencySources,
+  package_targets: types.PackageTargets,
+) -> DependencySources {
+  use <- bool.guard(when: !awaits_labels(sources), return: sources)
+  let constructors = dependency_constructors(sources)
+  DependencySources(
+    modules: dict.map_values(sources.modules, fn(module_path, scanned) {
+      case scanned {
+        ParsedModule(signatures: SignaturesAwaitLabels, source_path:, ..) ->
+          case read_and_parse_gleam(source_path) {
+            Ok(module) ->
+              with_routed_templates(
+                scanned,
+                module,
+                module_path,
+                constructors,
+                package_targets,
+              )
+            // A copy that no longer reads or parses keeps what the first scan
+            // derived, exactly as an unreadable one keeps nothing.
+            Error(_) -> scanned
+          }
+        ParsedModule(..) | UnreadableModule -> scanned
+      }
+    }),
+  )
+}
+
+fn awaits_labels(sources: DependencySources) -> Bool {
+  dict.values(sources.modules)
+  |> list.any(fn(scanned) {
+    case scanned {
+      ParsedModule(signatures: SignaturesAwaitLabels, ..) -> True
+      ParsedModule(..) | UnreadableModule -> False
+    }
+  })
+}
+
+// One module's factories and update builders, derived with every module's
+// declared labels in reach. Everything else the first scan read of it stands:
+// this is the same source, read again for the one derivation that needed more
+// than it.
+fn with_routed_templates(
+  scanned: ScannedModule,
+  module: glance.Module,
+  module_path: String,
+  constructors: Dict(#(String, String), List(Option(String))),
+  package_targets: types.PackageTargets,
+) -> ScannedModule {
+  case scanned {
+    UnreadableModule -> scanned
+    ParsedModule(
+      functions:,
+      registry:,
+      constructors: own_constructors,
+      foreign:,
+      source_path:,
+      imports:,
+      field_index:,
+      ..,
+    ) -> {
+      let context =
+        extract.build_import_context(module)
+        |> extract.with_module_path(module_path)
+        |> extract.with_cross_constructors(constructors)
+      ParsedModule(
+        functions:,
+        registry:,
+        updates: extract.public_update_signatures(
+          module,
+          module_path,
+          context,
+          types.declaration_targets(package_targets),
+        ),
+        factories: extract.public_factory_signatures(
+          module,
+          module_path,
+          context,
+          types.declaration_targets(package_targets),
+        ),
+        constructors: own_constructors,
+        signatures: SignaturesFinal,
+        foreign:,
+        source_path:,
+        imports:,
+        field_index:,
+      )
+    }
+  }
 }
 
 // Attach the builders derived from dependency source and from the current
@@ -3763,6 +3877,16 @@ fn source_dir_sources(
           types.declaration_targets(package_targets),
         ),
         constructors: extract.constructor_registry(module_path, module),
+        signatures: case
+          extract.awaits_declared_labels(
+            module,
+            context,
+            types.declaration_targets(package_targets),
+          )
+        {
+          True -> SignaturesAwaitLabels
+          False -> SignaturesFinal
+        },
         foreign: checker.dependency_foreign_functions(
           module,
           module_path,

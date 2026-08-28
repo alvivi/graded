@@ -38,10 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A record of another module's type constructed **positionally**
   (`handler.Handler(io.println)`) now routes its arguments to the fields they
-  fill, through the labels the defining module declares. Only labeled wiring
-  resolved across a module boundary before, so a field call on such a record
-  read `[Unknown]`. A dependency function constructing a record from another
-  module of that same dependency positionally is still unresolved.
+  fill, through the labels the defining module declares — this package's modules
+  and its dependencies' alike. Only labeled wiring resolved across a module
+  boundary before, so a field call on such a record read `[Unknown]`.
 
 ## [0.18.0] - 2026-08-28
 
