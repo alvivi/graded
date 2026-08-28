@@ -5231,13 +5231,20 @@ fn field_signature(
   types.CallableFieldSignature(arity:, callbacks:)
 }
 
+// `bounds` are the wired function's own parameter bounds, each at the position
+// it constrains.
 fn weigh(
   actual: types.EffectTerm,
-  bounds: List(types.ParamBound),
+  bounds: List(#(Int, types.ParamBound)),
   declared: types.EffectTerm,
   signature: types.CallableFieldSignature,
 ) -> checker.FieldComparison {
-  checker.field_site_comparison(actual, bounds, declared, signature)
+  checker.field_site_comparison(
+    actual,
+    dict.from_list(bounds),
+    declared,
+    signature,
+  )
 }
 
 fn label_term(items: List(String)) -> types.EffectTerm {
@@ -5271,9 +5278,23 @@ pub fn a_named_polymorphic_function_meets_a_ground_budget_test() {
   // key, and the binder it becomes is then unconstrained, so it grounds.
   weigh(
     TVar("e"),
-    [ParamBound(name: "cb", effects: TVar("e"))],
+    [#(0, ParamBound(name: "cb", effects: TVar("e")))],
     effect_term.unknown(),
     field_signature(1, []),
+  )
+  |> should.equal(checker.FieldWithinBudget)
+}
+
+pub fn a_bound_binds_the_parameter_it_names_test() {
+  // `fn(Int, fn() -> Nil)` bounded on its callback alone: one bound, at
+  // position one. Bound to position zero instead, the payload lands on the
+  // parameter the declaration leaves unconstrained and the callback grounds --
+  // reporting `[Unknown]` for a site plainly within its budget.
+  weigh(
+    TVar("e"),
+    [#(1, ParamBound(name: "cb", effects: TVar("e")))],
+    TAbs("n", TAbs("cb", TVar("cb"))),
+    field_signature(2, [#(1, [])]),
   )
   |> should.equal(checker.FieldWithinBudget)
 }
@@ -5319,7 +5340,7 @@ pub fn a_named_polymorphic_operator_field_canonicalizes_then_grounds_test() {
   // higher-kinded variable and is still applied.
   weigh(
     TApp(TVar("op"), label_term(["Stdout"])),
-    [ParamBound(name: "run", effects: TVar("op"))],
+    [#(0, ParamBound(name: "run", effects: TVar("op")))],
     effect_term.unknown(),
     field_signature(1, [#(0, [0])]),
   )

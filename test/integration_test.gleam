@@ -11449,6 +11449,55 @@ pub fn make(run: fn() -> Nil) -> Handler {
   ])
 }
 
+pub fn a_wired_bound_binds_the_parameter_it_names_test() {
+  // The wired function is bounded on its callback alone (`handle(cb: [cb])`),
+  // and that callback is its *second* parameter. Read as arity-aligned, the
+  // bound landed on the leading `Int` and the callback grounded, reporting
+  // `[Unknown]` for a site the declaration plainly covers. The impure site
+  // below is still weighed against the same line.
+  let source =
+    "import ffi
+
+pub type Handler {
+  Handler(run: fn(Int, fn() -> Nil) -> Nil)
+}
+
+pub fn handle(n: Int, cb: fn() -> Nil) -> Nil {
+  let _ = n
+  cb()
+}
+
+pub fn loud(n: Int, cb: fn() -> Nil) -> Nil {
+  let _ = n
+  ffi.print()
+  cb()
+}
+"
+  field_check_lines(
+    "field_check_bound_position",
+    "check proj.Handler.run : fn(n, cb) -> [cb]\n",
+    source <> "
+pub fn wired() -> Handler {
+  Handler(run: handle)
+}
+",
+  ).violations
+  |> should.equal([])
+
+  field_check_lines(
+    "field_check_bound_position_loud",
+    "assume ffi.print : [Stdout]\ncheck proj.Handler.run : fn(n, cb) -> [cb]\n",
+    source <> "
+pub fn wired() -> Handler {
+  Handler(run: loud)
+}
+",
+  ).violations
+  |> should.equal([
+    "build/field_check_bound_position_loud/proj.gleam: wired wires proj.Handler.run with effects fn(p0, cb0) -> [Stdout, cb0] but the field is declared fn(n, cb) -> [cb]",
+  ])
+}
+
 pub fn a_higher_order_field_meets_unknown_and_not_pure_test() {
   // D9: the binder the declaration leaves unconstrained is grounded before the
   // comparison, so `[Unknown]` covers a field that runs its callback and `[]`
