@@ -124,9 +124,10 @@ its own parameters. A label callable in only some variants is checked at the
 variants that make it callable.
 
 A ground budget covers a field of any arity, so one line covers a type whose
-variants give the label different types. A budget written as an *operator* —
-through a `where returns` clause — has one fixed arity, and a variant whose field
-takes a different number of arguments is reported as an author error.
+variants give the label different types. A budget written in the [operator
+spelling](#effect-set-syntax) (`check myapp.Handler.run : fn(n, cb) -> [cb]`) has
+one fixed arity, and a variant whose field takes a different number of arguments
+is reported as an author error.
 
 **It proves this package's own construction sites.** A public constructor or a
 public factory can be called from outside the package, and no package-local pass
