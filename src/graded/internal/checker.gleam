@@ -1366,14 +1366,17 @@ fn module_context(
       module_path,
       module,
       types.declaration_targets(package_targets),
+      effects.constructors(knowledge_base),
     ))
     |> extract.with_updates(extract.update_map(
       module_path,
       module,
       types.declaration_targets(package_targets),
+      effects.constructors(knowledge_base),
     ))
     |> extract.with_cross_factories(effects.factories(knowledge_base))
     |> extract.with_cross_updates(effects.updates(knowledge_base))
+    |> extract.with_cross_constructors(effects.constructors(knowledge_base))
     |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(
       module,
       signatures.type_alias_map(module.type_aliases),
