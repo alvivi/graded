@@ -861,6 +861,9 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
   // Read once and kept: the knowledge base is built from it and the spec lint
   // weighs the same entries.
   let catalog = effects.load_project_catalog(manifest_path(package_root))
+  // Built once for the whole run: every module's factory scan below routes its
+  // constructions through the same labels.
+  let constructors = package_constructors(index, dep_sources)
 
   let kb_base =
     effects.knowledge_base_from_catalog(
@@ -948,6 +951,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
           module_path,
           module,
           types.declaration_targets(package_targets),
+          constructors,
         )
       }),
     )
@@ -2762,6 +2766,8 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       build_project_registry(index),
     )
   let type_info = build_type_index(index, package_root)
+  // As in `project_context`: one map for the run, not one per module.
+  let constructors = package_constructors(index, dep_sources)
 
   let kb_base =
     effects.load_knowledge_base(
@@ -2804,6 +2810,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
           module_path,
           module,
           types.declaration_targets(package_targets),
+          constructors,
         )
       }),
     )
@@ -3344,6 +3351,10 @@ type ScannedModule {
     // one crosses a package boundary, and a consumer's call to one wires the
     // field from its own argument.
     factories: Dict(#(String, String), types.FactorySignature),
+    // The constructors it defines, by `#(module path, variant)`, with their
+    // ordered field labels. A consumer constructing one positionally routes its
+    // arguments through these.
+    constructors: Dict(#(String, String), List(Option(String))),
     // Every `@external` it declares. Scanned here because this walk already
     // parses each dependency module once, and because it is the only evidence a
     // consumer has: a dependency's spec cannot be trusted to say which of its
@@ -3412,6 +3423,32 @@ fn dependency_factories(
   use acc, _path, scanned <- dict.fold(sources.modules, dict.new())
   case scanned {
     ParsedModule(factories:, ..) -> dict.merge(acc, factories)
+    UnreadableModule -> acc
+  }
+}
+
+// Every constructor the package can name, keyed by `#(defining module,
+// variant)`: its dependencies' and its own, the package's own winning a clash.
+fn package_constructors(
+  index: Dict(String, #(String, glance.Module)),
+  dep_sources: DependencySources,
+) -> Dict(#(String, String), List(Option(String))) {
+  dict.merge(
+    dependency_constructors(dep_sources),
+    dict.fold(index, dict.new(), fn(acc, module_path, entry) {
+      let #(_gleam_path, module) = entry
+      dict.merge(acc, extract.constructor_registry(module_path, module))
+    }),
+  )
+}
+
+// The constructors the scanned copies define.
+fn dependency_constructors(
+  sources: DependencySources,
+) -> Dict(#(String, String), List(Option(String))) {
+  use acc, _path, scanned <- dict.fold(sources.modules, dict.new())
+  case scanned {
+    ParsedModule(constructors:, ..) -> dict.merge(acc, constructors)
     UnreadableModule -> acc
   }
 }
@@ -3654,7 +3691,11 @@ fn with_builders(
   dep_sources: DependencySources,
   package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
+  // The constructor labels first: a builder that constructs another module's
+  // record positionally routes its arguments through them.
+  let constructors = package_constructors(index, dep_sources)
   knowledge_base
+  |> effects.with_constructors(constructors)
   |> effects.with_factories(dependency_factories(dep_sources))
   |> effects.with_updates(dependency_updates(dep_sources))
   |> effects.with_updates(
@@ -3663,6 +3704,7 @@ fn with_builders(
         module_path,
         module,
         types.declaration_targets(package_targets),
+        constructors,
       )
     }),
   )
@@ -3720,6 +3762,7 @@ fn source_dir_sources(
           context,
           types.declaration_targets(package_targets),
         ),
+        constructors: extract.constructor_registry(module_path, module),
         foreign: checker.dependency_foreign_functions(
           module,
           module_path,

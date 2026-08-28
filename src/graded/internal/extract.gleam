@@ -103,6 +103,11 @@ pub type ImportContext {
     // a field `assume` for that type is keyed by.
     unqualified_types: Dict(String, QualifiedName),
     constructors: Dict(String, List(Option(String))),
+    // Other modules' constructors, keyed by `#(defining module, variant)`, with
+    // the same ordered labels. A record is constructed positionally as readily
+    // across a module boundary as inside one, and without these an unlabelled
+    // argument routes to no field at all.
+    cross_constructors: Dict(#(String, String), List(Option(String))),
     // Same-module factory functions (bare name -> signature) and other modules'
     // factories (keyed by `#(defining module, function)`), so a let-bound
     // factory call resolves the result's fields like a direct construction.
@@ -159,6 +164,15 @@ pub fn with_factories(
 
 // Attach the package-wide `#(defining module, function) -> factory signature`
 // map, so a let-bound *cross-module* factory call resolves its result's fields.
+// Record the constructors other modules define, so a positional construction of
+// one routes its arguments to the right fields.
+pub fn with_cross_constructors(
+  context: ImportContext,
+  cross_constructors: Dict(#(String, String), List(Option(String))),
+) -> ImportContext {
+  ImportContext(..context, cross_constructors:)
+}
+
 pub fn with_cross_factories(
   context: ImportContext,
   cross_factories: Dict(#(String, String), FactorySignature),
@@ -245,6 +259,7 @@ pub fn build_import_context(module: Module) -> ImportContext {
     unqualified:,
     unqualified_types:,
     constructors:,
+    cross_constructors: dict.new(),
     factories: dict.new(),
     cross_factories: dict.new(),
     fn_typed_fields: set.new(),
@@ -253,6 +268,19 @@ pub fn build_import_context(module: Module) -> ImportContext {
     cross_updates: dict.new(),
     package_targets: types.all_targets(),
   )
+}
+
+// Every constructor a module defines, keyed by `#(module path, variant)` — the
+// same ordered labels the same-module registry holds, for a reader that resolves
+// a construction to the module defining it.
+pub fn constructor_registry(
+  module_path: String,
+  module: Module,
+) -> Dict(#(String, String), List(Option(String))) {
+  build_constructor_registry(module)
+  |> dict.to_list()
+  |> list.map(fn(entry) { #(#(module_path, entry.0), entry.1) })
+  |> dict.from_list()
 }
 
 fn build_constructor_registry(
@@ -440,10 +468,13 @@ pub fn factory_map(
   module_path: String,
   module: Module,
   package_targets: Set(String),
+  cross_constructors: Dict(#(String, String), List(Option(String))),
 ) -> Dict(String, FactorySignature) {
   signature_map(
     native_functions(module, package_targets),
-    build_import_context(module) |> with_module_path(module_path),
+    build_import_context(module)
+      |> with_module_path(module_path)
+      |> with_cross_constructors(cross_constructors),
     factory_signature,
   )
 }
@@ -574,10 +605,13 @@ pub fn update_map(
   module_path: String,
   module: Module,
   package_targets: Set(String),
+  cross_constructors: Dict(#(String, String), List(Option(String))),
 ) -> Dict(String, UpdateSignature) {
   signature_map(
     native_functions(module, package_targets),
-    build_import_context(module) |> with_module_path(module_path),
+    build_import_context(module)
+      |> with_module_path(module_path)
+      |> with_cross_constructors(cross_constructors),
     update_signature,
   )
 }
@@ -1643,12 +1677,15 @@ fn classify_constructor(
   context: ImportContext,
   env: Env,
 ) -> LocalBinding {
-  // Only same-module constructors have declared labels to route positional
-  // arguments with; a cross-module call keeps just its labelled fields.
+  // The constructor's declared labels, read from the module that defines it:
+  // this one for an unqualified construction, the resolved module for a
+  // qualified one. Without them an unlabelled argument routes to no field, and
+  // a positional construction wires nothing at all.
   let declared_labels = case module {
-    None -> dict.get(context.constructors, type_name) |> result.unwrap([])
-    Some(_) -> []
+    None -> dict.get(context.constructors, type_name)
+    Some(module) -> dict.get(context.cross_constructors, #(module, type_name))
   }
+  let declared_labels = result.unwrap(declared_labels, [])
   let #(fields, _remaining) =
     list.fold(arguments, #(dict.new(), declared_labels), fn(acc, field) {
       let #(fields_acc, remaining) = acc
@@ -2794,7 +2831,7 @@ fn qualified_construction(
       construction_result(
         module,
         variant,
-        classify_constructor(variant, Some(alias), arguments, context, env),
+        classify_constructor(variant, Some(module), arguments, context, env),
         span,
       )
     Error(Nil) -> empty()

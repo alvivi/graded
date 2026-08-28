@@ -70,6 +70,11 @@ pub type KnowledgeBase {
     // http)`) compose an overlay of its base. Same-module builders are derived
     // locally, like factories.
     updates: Dict(#(String, String), UpdateSignature),
+    // Package-wide constructor field labels, keyed by `#(defining module,
+    // variant)`. Lets a construction of another module's record route its
+    // positional arguments to the fields they fill. (A same-module
+    // constructor's labels are derived locally from the module.)
+    constructors: Dict(#(String, String), List(Option(String))),
     // Module-level externals: a whole module's declared effect paired with the
     // source that declared it, keyed by module name. Consulted by `lookup` when
     // `all_effects` has no entry for a name, so every function in the module
@@ -224,6 +229,7 @@ pub fn knowledge_base_from_catalog(
     // from specs (a serialized signature could skew from the source a consumer
     // compiled against); this starts empty.
     updates: dict.new(),
+    constructors: dict.new(),
     // A dependency's module-level external wins over a catalog one for the same
     // module, matching `all_effects`.
     module_effects: dict.merge(cat_module_effects, deps.module_effects),
@@ -253,6 +259,7 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     returned_operators: dict.new(),
     factories: dict.new(),
     updates: dict.new(),
+    constructors: dict.new(),
     module_effects: dict.new(),
     provenance: dict.new(),
     foreign_functions: dict.new(),
@@ -277,6 +284,7 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
     returned_operators: dict.new(),
     factories: dict.new(),
     updates: dict.new(),
+    constructors: dict.new(),
     module_effects: cat_module_effects,
     provenance: dict.new(),
     foreign_functions: dict.new(),
@@ -2043,6 +2051,27 @@ pub fn updates(
   knowledge_base: KnowledgeBase,
 ) -> Dict(#(String, String), UpdateSignature) {
   knowledge_base.updates
+}
+
+// Merge a constructor-label map (keyed by `#(module, variant)`) into the
+// knowledge base, on the same terms as the builder maps above: derived from
+// source at run time, dependency modules first and the current package last.
+pub fn with_constructors(
+  knowledge_base: KnowledgeBase,
+  constructors: Dict(#(String, String), List(Option(String))),
+) -> KnowledgeBase {
+  KnowledgeBase(
+    ..knowledge_base,
+    constructors: dict.merge(knowledge_base.constructors, constructors),
+  )
+}
+
+// The package-wide constructor-label map, for threading into a module's
+// extraction context as the constructors other modules define.
+pub fn constructors(
+  knowledge_base: KnowledgeBase,
+) -> Dict(#(String, String), List(Option(String))) {
+  knowledge_base.constructors
 }
 
 // Look up the operator a function returns, if known, with how it was produced

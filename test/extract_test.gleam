@@ -26,6 +26,7 @@ fn provenance_of(src: String) -> types.ReturnProvenance {
       "app",
       module,
       types.every_target(),
+      dict.new(),
     ))
   let assert Ok(func) =
     list.find(module.functions, fn(def) { def.definition.name == "target" })
@@ -981,6 +982,31 @@ pub fn target() {
 }"
   let result = parse_and_extract(src)
   result.resolved
+  |> list.map(fn(r) { r.name })
+  |> should.equal([QualifiedName("gleam/io", "println")])
+}
+
+pub fn positional_qualified_constructor_field_call_resolves_test() {
+  // Another module's record is constructed positionally as readily as with
+  // labels. Without that module's declared labels the unlabelled argument
+  // routed to no field, so the construction wired nothing and the field call
+  // fell back to `[Unknown]`.
+  let src =
+    "import gleam/io
+import other
+pub fn target() {
+  let v = other.Validator(io.println)
+  v.to_error(1)
+}"
+  let assert Ok(module) = glance.module(src)
+  let context =
+    extract.build_import_context(module)
+    |> extract.with_cross_constructors(
+      dict.from_list([#(#("other", "Validator"), [Some("to_error")])]),
+    )
+  let assert Ok(func) =
+    list.find(module.functions, fn(def) { def.definition.name == "target" })
+  extract.extract_calls(func.definition.body, context).resolved
   |> list.map(fn(r) { r.name })
   |> should.equal([QualifiedName("gleam/io", "println")])
 }

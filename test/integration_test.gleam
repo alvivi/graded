@@ -11408,6 +11408,102 @@ pub fn dirty() -> Handler {
   ])
 }
 
+pub fn a_positional_construction_of_an_imported_record_is_weighed_test() {
+  // A record with labelled fields is constructed positionally as readily across
+  // a module boundary as inside one. Read without the defining module's labels,
+  // the unlabelled argument routed to no field: the construction wired nothing,
+  // the site was never weighed, and the run passed with a warning that nothing
+  // constructs the type.
+  let root = "build/field_check_imported_positional"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ffi.print : [Stdout]\ncheck proj/handler.Handler.run : []\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"print\")
+@external(javascript, \"ffi_module\", \"print\")
+pub fn print() -> Nil
+",
+    ),
+    #(
+      "proj/handler.gleam",
+      "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+",
+    ),
+    #(
+      "proj/app.gleam",
+      "import ffi
+import proj/handler
+
+pub fn build() -> handler.Handler {
+  handler.Handler(ffi.print)
+}
+",
+    ),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([
+    "build/field_check_imported_positional/proj/app.gleam: build wires proj/handler.Handler.run with effects [Stdout] but the field is declared []",
+  ])
+  support.cleanup(root)
+}
+
+pub fn a_factory_constructing_an_imported_record_positionally_is_weighed_test() {
+  // The same labels a direct construction routes through: a factory whose tail
+  // constructs another module's record positionally wires the field from its own
+  // parameter, so its call sites are weighed.
+  let root = "build/field_check_imported_positional_factory"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ffi.print : [Stdout]\ncheck proj/handler.Handler.run : []\n",
+    ),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"print\")
+@external(javascript, \"ffi_module\", \"print\")
+pub fn print() -> Nil
+",
+    ),
+    #(
+      "proj/handler.gleam",
+      "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+",
+    ),
+    #(
+      "proj/app.gleam",
+      "import ffi
+import proj/handler
+
+pub fn make(run: fn() -> Nil) -> handler.Handler {
+  handler.Handler(run)
+}
+
+pub fn dirty() -> handler.Handler {
+  make(ffi.print)
+}
+",
+    ),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([
+    "build/field_check_imported_positional_factory/proj/app.gleam: dirty wires proj/handler.Handler.run with effects [Stdout] but the field is declared []",
+  ])
+  support.cleanup(root)
+}
+
 pub fn a_binding_shadowing_a_factory_is_not_a_call_of_it_test() {
   // A parameter named like the factory is a call of that parameter, and the
   // package's own precedence reads an unqualified call the same way. Matched by
