@@ -208,14 +208,6 @@ conservative.
 > field is read (`let v = make(io.println); v.to_error(..)`), graded resolves the
 > field through the factory for both positional and labeled wiring.
 
-A record is constructed positionally as readily as with labels, and graded routes
-a positional argument to its field through the labels the *defining* module
-declares — this package's modules and its dependencies' alike. One case is left
-out: a dependency function that constructs a record defined in **another module
-of that same dependency** positionally. The dependency's modules are scanned one
-at a time, so that construction wires nothing, and a call into such a factory
-resolves `[Unknown]`. Labeled wiring across the same boundary resolves.
-
 Return-value provenance lives only in the in-process knowledge base; it is not
 serialized to `.graded` spec files or the catalog. A computed-receiver call
 forwards into a dependency only when graded infers that dependency's source in

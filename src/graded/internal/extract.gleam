@@ -543,6 +543,59 @@ fn factory_signature(
   }
 }
 
+// Whether a module's public signatures wait on labels another module declares.
+//
+// A positional argument routes to its field through the labels the *defining*
+// module declares, so a function whose tail constructs another module's record
+// positionally derives nothing from a scan of this module alone. Answering True
+// is what marks such a module to be read again once every module's labels are
+// in hand; a scan that answers False derived everything it can.
+//
+// Over-approximate by design: it reads the tail's shape and not what routing
+// would make of it, so an extra module read is the worst it costs.
+pub fn awaits_declared_labels(
+  module: Module,
+  context: ImportContext,
+  package_targets: Set(String),
+) -> Bool {
+  public_functions(module, package_targets)
+  |> list.any(fn(function) { tail_awaits_declared_labels(function, context) })
+}
+
+// One function's tail: a construction of another module's record — named
+// through an import alias, or imported unqualified and defined nowhere here —
+// carrying an argument no label of its own routes.
+fn tail_awaits_declared_labels(
+  function: glance.Function,
+  context: ImportContext,
+) -> Bool {
+  case list.last(function.body) {
+    Ok(glance.Expression(glance.Call(function: callee, arguments:, ..))) ->
+      constructs_another_modules_record(callee, context)
+      && list.any(arguments, fn(argument) {
+        case argument {
+          glance.UnlabelledField(..) -> True
+          glance.LabelledField(..) | glance.ShorthandField(..) -> False
+        }
+      })
+    _ -> False
+  }
+}
+
+fn constructs_another_modules_record(
+  callee: Expression,
+  context: ImportContext,
+) -> Bool {
+  case callee {
+    glance.FieldAccess(container: glance.Variable(..), label: variant, ..) ->
+      is_constructor_name(variant)
+    glance.Variable(name: variant, ..) ->
+      is_constructor_name(variant)
+      && !dict.has_key(context.constructors, variant)
+    _ -> False
+  }
+}
+
 // The *public* factories of a module as runtime signatures, keyed by
 // `#(module_path, name)`. The dependency counterpart of `factory_map`: only a
 // public factory is callable across a package boundary, and it is read from
