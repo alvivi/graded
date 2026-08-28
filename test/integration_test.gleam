@@ -11399,6 +11399,38 @@ pub fn dirty() -> Handler {
   ])
 }
 
+pub fn a_binding_shadowing_a_factory_is_not_a_call_of_it_test() {
+  // A parameter named like the factory is a call of that parameter, and the
+  // package's own precedence reads an unqualified call the same way. Matched by
+  // name, `unrelated` was reported as wiring a field it never touches — while
+  // the real call site below is still weighed.
+  field_check_lines(
+    "field_check_shadowed_factory",
+    pure_budget,
+    "import ffi
+
+pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+pub fn make(run: fn() -> Nil) -> Handler {
+  Handler(run: run)
+}
+
+pub fn unrelated(make: fn(fn() -> Nil) -> Nil) -> Nil {
+  make(ffi.print)
+}
+
+pub fn dirty() -> Handler {
+  make(ffi.print)
+}
+",
+  ).violations
+  |> should.equal([
+    "build/field_check_shadowed_factory/proj.gleam: dirty wires proj.Handler.run with effects [Stdout] but the field is declared []",
+  ])
+}
+
 pub fn a_factory_no_call_reaches_is_unproved_test() {
   field_check_lines(
     "field_check_uncalled",

@@ -980,7 +980,10 @@ fn resolve_variable_call(
     // A top-level parameter: a local call resolved via the function's param
     // bounds (fn-typed params) or transitive analysis, shadowing any unqualified
     // import of the same name.
-    BoundLocal -> ExtractResult(..empty(), local: [LocalCall(name, span)])
+    BoundLocal ->
+      ExtractResult(..empty(), local: [
+        LocalCall(name, span, types.LexicalBinding),
+      ])
     // A let-bound returned operator applied directly: `let h = pick(); h(cb)`.
     // Emit a direct-operator call so the checker resolves the producer's
     // returned operator and applies it to this call's arguments (captured in
@@ -1010,8 +1013,10 @@ fn resolve_variable_call(
     // name resolving to the import. A multi-segment receiver path can't name a
     // callable, so it stays a local call the checker leaves `[Unknown]`.
     BoundReceiverPath(path) ->
-      ExtractResult(..empty(), local: [LocalCall(path, span)])
-    _ -> resolve_unqualified_call(name, span, context)
+      ExtractResult(..empty(), local: [
+        LocalCall(path, span, types.LexicalBinding),
+      ])
+    _ -> resolve_unqualified_call(name, span, context, env)
   }
 }
 
@@ -1019,6 +1024,7 @@ fn resolve_unqualified_call(
   name: String,
   span: glance.Span,
   context: ImportContext,
+  env: Env,
 ) -> ExtractResult {
   case is_constructor_name(name) {
     True -> empty()
@@ -1028,7 +1034,10 @@ fn resolve_unqualified_call(
           ExtractResult(..empty(), resolved: [
             ResolvedCall(qualified_name, span),
           ])
-        Error(Nil) -> ExtractResult(..empty(), local: [LocalCall(name, span)])
+        Error(Nil) ->
+          ExtractResult(..empty(), local: [
+            LocalCall(name, span, local_scope(name, env)),
+          ])
       }
   }
 }
@@ -1186,7 +1195,9 @@ fn resolve_constructor_field_call(
     Ok(FunctionRef(name: qualified)) ->
       ExtractResult(..empty(), resolved: [ResolvedCall(qualified, span)])
     Ok(LocalRef(name: local_name)) ->
-      ExtractResult(..empty(), local: [LocalCall(local_name, span)])
+      ExtractResult(..empty(), local: [
+        LocalCall(local_name, span, types.LexicalBinding),
+      ])
     Ok(ConstructorRef) -> empty()
     Ok(types.Closure(_, _, _) as value)
     | Ok(types.ReturnedOperator(_, _) as value)
@@ -1671,6 +1682,16 @@ fn classify_constructor(
 
 fn resolve_env(name: String, env: Env) -> LocalBinding {
   dict.get(env, name) |> result.unwrap(BoundOpaque)
+}
+
+// What a called name refers to: the binding that covers it, or the module's own
+// definitions where none does. A top-level function is never in the env, so a
+// name the env holds is the binding and nothing else.
+fn local_scope(name: String, env: Env) -> types.LocalScope {
+  case dict.has_key(env, name) {
+    True -> types.LexicalBinding
+    False -> types.ModuleDefinition
+  }
 }
 
 // `use` bindings come from the callback call-site, which we can't
@@ -2324,7 +2345,9 @@ fn extract_expression_call(
     LocalRef(name:) ->
       merge_with_args(
         base,
-        ExtractResult(..empty(), local: [LocalCall(name, span)]),
+        ExtractResult(..empty(), local: [
+          LocalCall(name, span, local_scope(name, env)),
+        ]),
         span,
         call_args,
       )

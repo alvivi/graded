@@ -658,7 +658,21 @@ pub type Construction {
 
 // A local (unresolved) call — needs transitive analysis.
 pub type LocalCall {
-  LocalCall(function: String, span: Span)
+  LocalCall(function: String, span: Span, scope: LocalScope)
+}
+
+// What an unqualified call's name refers to at the point it is called.
+//
+// The name alone does not say: a parameter or local named like a sibling
+// function shadows it, and a reader that matches the module's own definitions
+// by name attributes the call to code the body never reaches.
+pub type LocalScope {
+  // A binding in scope at the call — a parameter, a `let`, or a value that
+  // reached the callee position through one. It names that binding and nothing
+  // the module defines.
+  LexicalBinding
+  // No binding covers the name, so the module's own definitions answer for it.
+  ModuleDefinition
 }
 
 // A field access call: object.label(args) where object is a local variable.
