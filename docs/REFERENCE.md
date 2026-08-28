@@ -91,6 +91,65 @@ The name is module-qualified (`myapp/router.handle_request`). A `check` whose na
 matches no function in any project module — most often a missing module qualifier —
 never runs against anything and passes silently; `graded check` warns about it.
 
+A `check` can also name a **function-typed field** of a custom type, and can carry
+a [`where returns` clause](#where-returns--returned-operators-and-latent-effects)
+declaring the operator the function hands back:
+
+```
+check myapp.Handler.on_click : [Dom]
+check myapp.traced(action: [action]) : [] where returns : [action]
+```
+
+Both are verified. The field form is described below; the clause is compared
+against the operator graded computes from the function's own body, declared
+containing computed, the same direction the effects budget on the same line reads
+in.
+
+A `check` **proves**; it never **answers**. Neither form enters the knowledge base:
+a verified field budget does not resolve a field call, and a verified clause does
+not resolve what a consumer of the producer gets back. `assume` is the line that
+answers.
+
+#### `check` on a function-typed field
+
+```
+check myapp/dom.Handler.on_click : []
+```
+
+The type is module-qualified by the module that *defines* it, as in a field
+`assume`; its construction sites are wherever the package builds a value of it.
+Every site is weighed: a direct construction, a record update that writes the
+field, and a call to a factory or update builder that wires the field from one of
+its own parameters. A label callable in only some variants is checked at the
+variants that make it callable.
+
+A ground budget covers a field of any arity, so one line covers a type whose
+variants give the label different types. A budget written as an *operator* —
+through a `where returns` clause — has one fixed arity, and a variant whose field
+takes a different number of arguments is reported as an author error.
+
+**It proves this package's own construction sites.** A public constructor or a
+public factory can be called from outside the package, and no package-local pass
+sees those calls. A passing field `check` is therefore not a whole-program
+guarantee.
+
+Three outcomes per site. A wired value within the budget proves it; one outside it
+is a violation; and a value graded cannot trace — an opaque local, or a factory no
+visible call reaches — is reported as **unproved**. An unproved outcome is not a
+claim about your code, but it is not a proof either, so it is reported beside the
+violations and `graded check` exits non-zero on it. The escape for a field graded
+genuinely cannot follow is a field `assume` line.
+
+`graded check` warns when the path names no field of any type it can see, when it
+names a field no variant makes callable, and when it names a callable field
+nothing in the package constructs a value of.
+
+A bound list on a field path (`check myapp.Handler.run(cb: [cb]) : [cb]`) has no
+meaning: nothing scopes a bound list on a field head. A `where returns` clause on
+one has none either: nothing keys an operator returned by *calling* a field. Both
+are warned about, and the unsupported component is reported as unproved — for a
+clause, the field budget on the same line is still verified.
+
 ### `assume` — what graded is told rather than shown
 
 ```
@@ -153,6 +212,13 @@ it. An unqualified or mis-qualified one keys nothing, so the field silently
 resolves to `[Unknown]`; `graded check` warns when a field `assume` matches no
 field of any project type.
 
+A [`check` on a field](#check-on-a-function-typed-field) reads its path by the
+same shapes and the same qualification rule, and does the opposite job: the
+`assume` declares what the field's effect *is* for every receiver, while the
+`check` proves that every value the package wires into the field stays within a
+budget. An unqualified `check` path is resolved against every module defining a
+type of that name.
+
 ### `where returns` — returned operators and latent effects
 
 A clause of the statement, not a statement of its own:
@@ -198,8 +264,27 @@ list, while a foreign decorator writes
 `assume myapp/ffi.wrap(cb: [cb]) : [] where returns : [cb]` and a caller
 invoking the returned closure is charged its argument's actual effects.
 
-On a `check` line it parses and keys nothing: verifying what a function returns
-is not implemented, and `graded check` says so.
+On a `check` line the clause is an assertion `graded check` verifies: the operator
+it declares must contain the one the function's body hands back. Four outcomes,
+because a derivation that failed is not proof of a false assertion:
+
+- The operator is derived and the clause contains it — the check holds.
+- The operator is derived and the clause does not contain it — a violation.
+- The function's return type is annotated and is provably not a function — a
+  violation. The clause describes something the function never hands back.
+- No operator could be derived — the function carries no return type annotation,
+  or its returned value does not resolve — the line is **unproved**, reported
+  beside the violations and worded as graded's own limit.
+
+A **foreign** producer is the fifth case. Only its foreign implementation decides
+what it returns, so an `assume … where returns` declaration is what the clause is
+checked against, and with none the line is unproved. Where a Gleam fallback body
+runs beside the declaration there is no union of operators to weigh the two with,
+so the clause holds only when it contains the declaration *and* the fallback's own
+returned operator.
+
+A `check` line's clause is scoped by that line's own bound list, and is linted for
+an unbound variable and for an aliased bound exactly as an `assume` line's is.
 
 #### The clause list
 
@@ -496,6 +581,12 @@ The field's effect comes from one of:
   assume myapp.Handler.on_click : [Dom]
   assume myapp/router.Request.send : [Http]
   ```
+
+  A [`check` on the same field](#check-on-a-function-typed-field) is the other
+  half of the pair, and never a source: the `assume` declares what the field's
+  effect *is* wherever it is called, while the `check` proves that every value
+  the package wires into it stays within a budget. A passing field `check`
+  changes nothing about what a field call resolves to.
 
 - **inference from construction sites** — when no field `assume` exists, graded
   reads

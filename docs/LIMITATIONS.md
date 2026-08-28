@@ -484,6 +484,57 @@ is actually built, or leave the field out. A package that declares no `target` i
 read as compiled for both, which charges a declaration and its running fallback
 body alike rather than deciding either away.
 
+## 7. A `check` graded could not prove
+
+The sections above are about *resolution* falling back to `[Unknown]`. A `check`
+has a second failure mode: it asserts something graded could not decide either
+way. Such a line is reported as **unproved** — beside the violations, so
+`graded check` exits non-zero, and worded as graded's own limit rather than as a
+defect in your code.
+
+**A construction site whose wired value cannot be traced.** A field `check` weighs
+the values the package wires into a field. A site wiring something graded cannot
+follow to a function — a destructured local, a value pulled out of a data
+structure, a computed expression — has nothing to weigh.
+
+```gleam
+pub fn build(chosen: List(fn() -> Nil)) -> Handler {
+  let assert [first, ..] = chosen
+  Handler(run: first)          // could not prove check m.Handler.run
+}
+```
+
+**A factory no visible call reaches.** A factory wires the field from its own
+parameter, so what it wires is whatever its callers pass. A factory this package
+never calls — a public one built for consumers, say — has no site to weigh, and
+none outside the package is one graded can see.
+
+**How to avoid both** — wire the field at a site graded can trace, or declare the
+field with an `assume` line, which is the trusted form for a field graded cannot
+follow.
+
+**A `where returns` clause whose operator cannot be derived.** The clause is
+verified against the operator the function's body hands back. Deriving one needs
+a return type annotation and a returned value that resolves to a function; a
+function missing either leaves the assertion undecided.
+
+```gleam
+pub fn wrap(f) {                // no return type annotation
+  fn() { f() }
+}
+```
+
+**A foreign producer's clause.** Only its foreign implementation decides what an
+`@external` returns, so an `assume … where returns` declaration is what answers
+for one; with none, the clause is unproved. Where a Gleam fallback body runs
+beside the declaration there is no union of *operators* the way the effects
+channel unions effect sets, so the clause has to contain the declaration and the
+fallback's own returned operator separately — either half missing leaves it
+unproved.
+
+**How to avoid these** — annotate the producer's return type, or declare what a
+foreign producer returns with `assume <name> where returns : <operator>`.
+
 ---
 
 Every fallback above is the conservative `[Unknown]`, never a silent `[]`: graded
