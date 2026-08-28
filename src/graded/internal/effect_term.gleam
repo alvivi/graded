@@ -392,3 +392,209 @@ fn term_key(term: EffectTerm) -> String {
       <> ")"
   }
 }
+
+// Comparison
+//
+// Ordering and equality *on terms*, as opposed to on the ground `EffectSet`
+// they reduce to. Collapsing to a set first is unsound for anything that stays
+// residual: every stuck application reduces to `[Unknown]`, so `action([cb])`
+// and `action([Stdout])` would compare equal. These relations keep the term
+// structure and are conservative — they can reject a declaration that is
+// genuinely a superset in a way the structure does not show, never accept one
+// that is not.
+
+// Reserved prefix for the depth-indexed binder names alpha-canonicalization
+// mints. `$` is un-representable in a Gleam identifier, so a canonical name can
+// never coincide with a variable read from source or with `sentinel_prefix`.
+const binder_prefix = "$db$"
+
+// True iff two terms are equal up to the names of their bound variables. Free
+// variables are compared by name — they are the producer's own parameters and
+// mean the same thing on both sides.
+pub fn alpha_equivalent(a: EffectTerm, b: EffectTerm) -> Bool {
+  alpha_canonical(a) == alpha_canonical(b)
+}
+
+// Rename an operator's outermost binder, capture-avoiding. `subst` cannot do
+// this: `subst_abs` deletes the bound name from the bindings by design, so
+// substituting the binder's own name is a no-op. Anything that is not an
+// abstraction is returned unchanged.
+pub fn rename_binder(term: EffectTerm, to name: String) -> EffectTerm {
+  case term {
+    TAbs(param, body) ->
+      TAbs(name, subst(body, dict.from_list([#(param, TVar(name))])))
+    TLabels(_) | TTop | TVar(_) | TApp(_, _) | TUnion(_) -> term
+  }
+}
+
+// True iff `actual` is contained in `declared` as *terms*: a total relation
+// over every `EffectTerm` variant, defined so that neither side has to be
+// ground. The wildcard absorbs everything; unions are compared member-wise;
+// operators are compared under aligned binders; and two residual applications
+// match only when they are alpha-equivalent.
+pub fn operator_subset(actual: EffectTerm, declared: EffectTerm) -> Bool {
+  subset_normalized(normalize(actual), normalize(declared))
+}
+
+// The relation itself, over already-normalized terms. The case order is
+// load-bearing: the wildcard arms come first so they absorb before anything
+// partitions, and both union arms precede the operator/non-operator mismatch
+// arm so a union of operators is not read as an arity mismatch.
+fn subset_normalized(actual: EffectTerm, declared: EffectTerm) -> Bool {
+  case declared, actual {
+    // The author declined to constrain: anything is within budget.
+    TTop, _ -> True
+    // An unconstrained actual against a finite declared budget cannot be
+    // proved, mirroring `types.is_subset`'s own wildcard arm.
+    _, TTop -> False
+    TUnion(members), _ -> union_declared_subset(actual, members)
+    TLabels(_), TUnion(members)
+    | TVar(_), TUnion(members)
+    | TApp(_, _), TUnion(members)
+    | TAbs(_, _), TUnion(members)
+    -> list.all(members, subset_normalized(_, declared))
+    TAbs(d_param, d_body), TAbs(a_param, a_body) ->
+      abs_subset(a_param, a_body, d_param, d_body)
+    // Arity mismatch, in either direction.
+    TAbs(_, _), TLabels(_)
+    | TAbs(_, _), TVar(_)
+    | TAbs(_, _), TApp(_, _)
+    | TLabels(_), TAbs(_, _)
+    | TVar(_), TAbs(_, _)
+    | TApp(_, _), TAbs(_, _)
+    -> False
+    // Two residual applications: nothing weaker than alpha-equivalence, or
+    // `action([cb])` would pass against `action([Stdout])`.
+    TApp(_, _), TApp(_, _) -> alpha_equivalent(actual, declared)
+    // A residual application against a ground budget, or the reverse: the
+    // structure gives no evidence either way, so reject conservatively.
+    TApp(_, _), TLabels(_)
+    | TApp(_, _), TVar(_)
+    | TLabels(_), TApp(_, _)
+    | TVar(_), TApp(_, _)
+    -> False
+    TLabels(_), TLabels(_)
+    | TLabels(_), TVar(_)
+    | TVar(_), TLabels(_)
+    | TVar(_), TVar(_)
+    -> types.is_subset(ground_set(actual), ground_set(declared))
+  }
+}
+
+// A declared union: split both sides into a ground part (label sets and bare
+// variables) and the residual members (operators and applications). The ground
+// parts compare as effect sets; every residual member of `actual` needs some
+// residual member of `declared` that dominates it.
+fn union_declared_subset(
+  actual: EffectTerm,
+  declared_members: List(EffectTerm),
+) -> Bool {
+  let actual_members = case actual {
+    TUnion(members) -> members
+    TLabels(_) | TTop | TVar(_) | TApp(_, _) | TAbs(_, _) -> [actual]
+  }
+  let #(actual_ground, actual_residual) = partition_ground(actual_members)
+  let #(declared_ground, declared_residual) = partition_ground(declared_members)
+  types.is_subset(
+    union_ground_set(actual_ground),
+    union_ground_set(declared_ground),
+  )
+  && list.all(actual_residual, fn(member) {
+    list.any(declared_residual, subset_normalized(member, _))
+  })
+}
+
+fn partition_ground(
+  members: List(EffectTerm),
+) -> #(List(EffectTerm), List(EffectTerm)) {
+  list.partition(members, fn(member) {
+    case member {
+      TLabels(_) | TVar(_) -> True
+      TTop | TApp(_, _) | TAbs(_, _) | TUnion(_) -> False
+    }
+  })
+}
+
+// Two operators: rename both binders to one fresh name, then compare the
+// bodies. Renaming changes the keys unions are sorted by, so the bodies are
+// re-normalized before the recursive step.
+fn abs_subset(
+  actual_param: String,
+  actual_body: EffectTerm,
+  declared_param: String,
+  declared_body: EffectTerm,
+) -> Bool {
+  let shared =
+    fresh(
+      actual_param,
+      set.union(free_vars(actual_body), free_vars(declared_body)),
+    )
+  let renamed_actual =
+    rename_binder(TAbs(actual_param, actual_body), to: shared)
+  let renamed_declared =
+    rename_binder(TAbs(declared_param, declared_body), to: shared)
+  case renamed_actual, renamed_declared {
+    TAbs(_, a_body), TAbs(_, d_body) ->
+      subset_normalized(normalize(a_body), normalize(d_body))
+    _, _ -> False
+  }
+}
+
+// The effect set of a ground member. Only ever called on `TLabels` / `TVar`,
+// where the conversion is exact — `to_effect_set` is not usable here because
+// it collapses residual members to `[Unknown]`.
+fn ground_set(term: EffectTerm) -> EffectSet {
+  case term {
+    TLabels(labels) -> Specific(labels)
+    TVar(name) -> Polymorphic(set.new(), set.from_list([name]))
+    TTop -> Wildcard
+    TApp(_, _) | TAbs(_, _) | TUnion(_) -> Specific(set.new())
+  }
+}
+
+fn union_ground_set(members: List(EffectTerm)) -> EffectSet {
+  list.fold(members, types.empty(), fn(acc, member) {
+    types.union(acc, ground_set(member))
+  })
+}
+
+// Rename every binder to its nesting depth, so that alpha-equivalent terms
+// become syntactically equal. The normalization on either side of the renaming
+// is what makes it total: the first reduces both terms, the second re-sorts
+// unions whose member order was keyed on the original binder names.
+fn alpha_canonical(term: EffectTerm) -> EffectTerm {
+  normalize(canonicalize_binders(normalize(term), dict.new(), 0))
+}
+
+fn canonicalize_binders(
+  term: EffectTerm,
+  renamed: Dict(String, String),
+  depth: Int,
+) -> EffectTerm {
+  case term {
+    TLabels(_) | TTop -> term
+    TVar(name) ->
+      case dict.get(renamed, name) {
+        Ok(canonical) -> TVar(canonical)
+        Error(Nil) -> term
+      }
+    TApp(operator, arg) ->
+      TApp(
+        canonicalize_binders(operator, renamed, depth),
+        canonicalize_binders(arg, renamed, depth),
+      )
+    TUnion(terms) ->
+      TUnion(list.map(terms, canonicalize_binders(_, renamed, depth)))
+    TAbs(param, body) -> {
+      let canonical = binder_prefix <> int.to_string(depth)
+      TAbs(
+        canonical,
+        canonicalize_binders(
+          body,
+          dict.insert(renamed, param, canonical),
+          depth + 1,
+        ),
+      )
+    }
+  }
+}
