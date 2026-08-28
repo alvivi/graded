@@ -3967,40 +3967,33 @@ fn bound_positions(
   signature: types.CallableFieldSignature,
   registry: SignatureRegistry,
 ) -> dict.Dict(Int, ParamBound) {
-  let parameters =
-    source
-    |> option.map(signatures.lookup(registry, _))
-    |> option.flatten
-  case parameters {
-    Some(parameters) ->
-      list.fold(bounds, dict.new(), fn(acc, bound) {
-        case parameter_position(parameters, bound.name) {
-          Some(position) -> dict.insert(acc, position, bound)
-          None -> acc
-        }
-      })
-    None ->
-      list.zip(
-        list.map(signature.callbacks, fn(callback) { callback.0 }),
-        bounds,
-      )
-      |> dict.from_list()
+  case source {
+    Some(name) ->
+      case signatures.lookup(registry, name) {
+        // Every bound placed by `param_info`, the lookup a bound's name is
+        // resolved against a signature by everywhere else in this file.
+        Some(_recorded) ->
+          list.fold(bounds, dict.new(), fn(acc, bound) {
+            case param_info(name, bound.name, registry) {
+              Some(parameter) -> dict.insert(acc, parameter.position, bound)
+              None -> acc
+            }
+          })
+        None -> callback_positions(bounds, signature)
+      }
+    None -> callback_positions(bounds, signature)
   }
 }
 
-// The position a parameter of this name occupies, matched by either the label a
-// caller writes or the name the body reads — the two spellings a bound is
-// written under.
-fn parameter_position(
-  parameters: List(signatures.ParameterInfo),
-  name: String,
-) -> Option(Int) {
-  parameters
-  |> list.find(fn(parameter) {
-    parameter.label == Some(name) || parameter.name == Some(name)
-  })
-  |> option.from_result
-  |> option.map(fn(parameter) { parameter.position })
+// The bounds at the field's own callback positions, in order. What a wired name
+// no signature records is read by: the value has the field's type, so its
+// function-typed parameters are exactly the field's.
+fn callback_positions(
+  bounds: List(ParamBound),
+  signature: types.CallableFieldSignature,
+) -> dict.Dict(Int, ParamBound) {
+  list.zip(list.map(signature.callbacks, fn(callback) { callback.0 }), bounds)
+  |> dict.from_list()
 }
 
 // Weigh one wired value against a field's declared budget. `bounds` are the

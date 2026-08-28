@@ -888,7 +888,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // during that pass, and a consumer line declaring what one of its producers
     // hands back has to be in reach while they are, not only afterwards.
     |> with_spec_declared_returns(spec, stale_returns_clauses)
-    |> with_builders(index, dep_sources, package_targets)
+    |> with_builders(index, dep_sources, package_targets, constructors)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
     // Ahead of the fallback walk below, not merely ahead of the inference pass:
     // the field a dependency's fallback body calls may be declared here rather
@@ -2789,7 +2789,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     // they are folded here, at the point `check` folds them, ahead of the
     // path-dep pass whose own inference reads them too.
     |> with_spec_declared_returns(spec, stale_returns_clauses)
-    |> with_builders(index, dep_sources, package_targets)
+    |> with_builders(index, dep_sources, package_targets, constructors)
     |> enrich_with_path_deps(package_root, declared_modules, package_targets)
     // As in `project_context`: in reach of the fallback walk below, which
     // resolves a dependency body's field calls through these lines.
@@ -3753,23 +3753,13 @@ fn with_routed_templates(
 ) -> ScannedModule {
   case scanned {
     UnreadableModule -> scanned
-    ParsedModule(
-      functions:,
-      registry:,
-      constructors: own_constructors,
-      foreign:,
-      source_path:,
-      imports:,
-      field_index:,
-      ..,
-    ) -> {
+    ParsedModule(..) -> {
       let context =
         extract.build_import_context(module)
         |> extract.with_module_path(module_path)
         |> extract.with_cross_constructors(constructors)
       ParsedModule(
-        functions:,
-        registry:,
+        ..scanned,
         updates: extract.public_update_signatures(
           module,
           module_path,
@@ -3782,12 +3772,7 @@ fn with_routed_templates(
           context,
           types.declaration_targets(package_targets),
         ),
-        constructors: own_constructors,
         signatures: SignaturesFinal,
-        foreign:,
-        source_path:,
-        imports:,
-        field_index:,
       )
     }
   }
@@ -3804,10 +3789,11 @@ fn with_builders(
   index: Dict(String, #(String, glance.Module)),
   dep_sources: DependencySources,
   package_targets: types.PackageTargets,
+  // Folded once for the run by the caller, which reads it too: a builder that
+  // constructs another module's record positionally routes its arguments
+  // through these labels.
+  constructors: Dict(#(String, String), List(Option(String))),
 ) -> KnowledgeBase {
-  // The constructor labels first: a builder that constructs another module's
-  // record positionally routes its arguments through them.
-  let constructors = package_constructors(index, dep_sources)
   knowledge_base
   |> effects.with_constructors(constructors)
   |> effects.with_factories(dependency_factories(dep_sources))
