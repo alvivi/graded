@@ -5207,14 +5207,6 @@ pub fn format_warning_stale_returns_clauses_test() {
   )
 }
 
-pub fn format_warning_unverified_check_shape_test() {
-  types.UnverifiedCheckShapeWarning(name: "app.Handler.on_click")
-  |> checker.format_warning("proj.graded", _)
-  |> should.equal(
-    "proj.graded: warning: check app.Handler.on_click is a shape nothing verifies yet — a check on a field keys nothing; an `assume` line is the trusted form",
-  )
-}
-
 pub fn format_warning_unkeyed_effects_shape_test() {
   // The sentence carries the whole rule: what keys the tier, that this line
   // does not, and that the next `infer` removes it — a reader who sees it after

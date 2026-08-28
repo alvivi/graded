@@ -1999,14 +1999,19 @@ pub fn with_fresh_returned_operators(
   KnowledgeBase(..knowledge_base, returned_operators: merged)
 }
 
-// Attach the package-wide factory map (keyed by `#(module, function)`), so a
-// let-bound cross-module factory call binds its result's fields. Replaces any
-// existing map (it's computed once per run).
+// Merge a factory map (keyed by `#(module, function)`) into the knowledge
+// base, so a let-bound cross-module factory call binds its result's fields.
+// Merged rather than replaced, on the same terms as `with_updates`: the
+// callers fold installed-dependency source and then the current package's own
+// modules, and a later merge wins on a clash.
 pub fn with_factories(
   knowledge_base: KnowledgeBase,
   factories: Dict(#(String, String), FactorySignature),
 ) -> KnowledgeBase {
-  KnowledgeBase(..knowledge_base, factories:)
+  KnowledgeBase(
+    ..knowledge_base,
+    factories: dict.merge(knowledge_base.factories, factories),
+  )
 }
 
 // The package-wide factory map, for threading into a module's extraction

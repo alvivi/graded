@@ -11257,6 +11257,484 @@ pub fn build(run: fn() -> Nil) -> Handler {
 }
 "
 
+// A verified `check` on a record field
+//
+// A field `check` is package-wide: a type's construction sites are wherever
+// the package builds it, and each is weighed against the field's budget. What
+// it proves is this package's own sites — a public constructor or factory can
+// be called from outside, and no package-local pass sees those calls.
+
+// The lines a spec's field `check` earns against one module.
+fn field_check_lines(name: String, spec: String, source: String) -> Reported {
+  let root = "build/" <> name
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", spec),
+    #(
+      "ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"print\")
+@external(javascript, \"ffi_module\", \"print\")
+pub fn print() -> Nil
+",
+    ),
+    #("proj.gleam", source),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  let reported =
+    Reported(
+      violations: list.flat_map(reports, fn(r) { r.violations }),
+      warnings: list.flat_map(reports, fn(r) { r.warnings }),
+    )
+  support.cleanup(root)
+  reported
+}
+
+type Reported {
+  Reported(violations: List(String), warnings: List(String))
+}
+
+const pure_budget = "assume ffi.print : [Stdout]\ncheck proj.Handler.run : []\n"
+
+const handler_sites = "import ffi
+
+pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+fn quiet() -> Nil {
+  Nil
+}
+
+fn loud() -> Nil {
+  ffi.print()
+}
+
+pub fn wired_pure() -> Handler {
+  Handler(run: quiet)
+}
+
+pub fn wired_closure() -> Handler {
+  Handler(run: fn() { Nil })
+}
+"
+
+pub fn a_site_wiring_a_pure_function_passes_test() {
+  field_check_lines("field_check_pure", pure_budget, handler_sites).violations
+  |> should.equal([])
+}
+
+pub fn a_site_wiring_an_impure_function_violates_test() {
+  field_check_lines("field_check_impure", pure_budget, handler_sites <> "
+pub fn wired_loud() -> Handler {
+  Handler(run: loud)
+}
+").violations
+  |> should.equal([
+    "build/field_check_impure/proj.gleam: wired_loud wires proj.Handler.run with effects [Stdout] but the field is declared []",
+  ])
+}
+
+pub fn a_site_wiring_an_impure_closure_violates_test() {
+  field_check_lines("field_check_closure", pure_budget, handler_sites <> "
+pub fn wired_loud_closure() -> Handler {
+  Handler(run: fn() { ffi.print() })
+}
+").violations
+  |> should.equal([
+    "build/field_check_closure/proj.gleam: wired_loud_closure wires proj.Handler.run with effects [Stdout] but the field is declared []",
+  ])
+}
+
+pub fn a_site_wiring_an_untraceable_value_is_unproved_test() {
+  // The limit is graded's, so the line says what could not be proved and never
+  // that the code violates anything — and still exits the run non-zero, which
+  // is the whole point of it riding this channel.
+  field_check_lines("field_check_opaque", pure_budget, handler_sites <> "
+pub fn wired_opaque(chosen: List(fn() -> Nil)) -> Handler {
+  let assert [first, ..] = chosen
+  Handler(run: first)
+}
+").violations
+  |> should.equal([
+    "build/field_check_opaque/proj.gleam: could not prove check proj.Handler.run at wired_opaque — the value wired here does not resolve to a function graded can follow; an `assume` line is the trusted form for a field it cannot",
+  ])
+}
+
+pub fn a_factory_is_proved_through_its_call_sites_test() {
+  // D2: the factory wires the field from its own parameter, which resolves to
+  // the polymorphic self marker. Reporting the factory itself would fail every
+  // ordinary factory; the call sites are what wire a value.
+  field_check_lines(
+    "field_check_factory",
+    pure_budget,
+    "import ffi
+
+pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+fn quiet() -> Nil {
+  Nil
+}
+
+fn loud() -> Nil {
+  ffi.print()
+}
+
+pub fn make(run: fn() -> Nil) -> Handler {
+  Handler(run: run)
+}
+
+pub fn clean() -> Handler {
+  make(quiet)
+}
+
+pub fn dirty() -> Handler {
+  make(loud)
+}
+",
+  ).violations
+  |> should.equal([
+    "build/field_check_factory/proj.gleam: dirty wires proj.Handler.run with effects [Stdout] but the field is declared []",
+  ])
+}
+
+pub fn a_factory_no_call_reaches_is_unproved_test() {
+  field_check_lines(
+    "field_check_uncalled",
+    pure_budget,
+    "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+pub fn make(run: fn() -> Nil) -> Handler {
+  Handler(run: run)
+}
+",
+  ).violations
+  |> should.equal([
+    "build/field_check_uncalled/proj.gleam: could not prove check proj.Handler.run at make — the field is wired from a parameter of `proj.make`, and no call of it is visible in this package",
+  ])
+}
+
+pub fn a_higher_order_field_meets_unknown_and_not_pure_test() {
+  // D9: the binder the declaration leaves unconstrained is grounded before the
+  // comparison, so `[Unknown]` covers a field that runs its callback and `[]`
+  // does not.
+  let source =
+    "pub type Handler {
+  Handler(run: fn(fn() -> Nil) -> Nil)
+}
+
+pub fn wired() -> Handler {
+  Handler(run: fn(next) { next() })
+}
+"
+  field_check_lines(
+    "field_check_ho_unknown",
+    "check proj.Handler.run : [Unknown]\n",
+    source,
+  ).violations
+  |> should.equal([])
+
+  field_check_lines(
+    "field_check_ho_pure",
+    "check proj.Handler.run : []\n",
+    source,
+  ).violations
+  |> should.equal([
+    "build/field_check_ho_pure/proj.gleam: wired wires proj.Handler.run with effects fn(next) -> [Unknown] but the field is declared []",
+  ])
+}
+
+pub fn a_wrong_arity_declared_operator_is_an_author_error_test() {
+  field_check_lines(
+    "field_check_arity",
+    "check proj.Handler.run : [] where returns : [Http]\n",
+    "pub type Handler {
+  Handler(run: fn(String) -> Nil)
+}
+
+pub fn wired() -> Handler {
+  Handler(run: fn(_msg) { Nil })
+}
+",
+  ).violations
+  |> list.filter(fn(line) { string.contains(line, "argument(s)") })
+  |> should.equal([])
+}
+
+pub fn a_heterogeneous_type_measures_each_site_by_its_variant_test() {
+  // One label, two variants, two arities. A ground budget is well-defined at
+  // every arity, so both sites are weighed against the same line.
+  field_check_lines(
+    "field_check_variants",
+    pure_budget,
+    "import ffi
+
+pub type Handler {
+  Simple(run: fn() -> Nil)
+  Detailed(run: fn(String, Int) -> Nil)
+}
+
+pub fn simple() -> Handler {
+  Simple(run: fn() { Nil })
+}
+
+pub fn detailed() -> Handler {
+  Detailed(run: fn(_msg, _n) { ffi.print() })
+}
+",
+  ).violations
+  |> should.equal([
+    "build/field_check_variants/proj.gleam: detailed wires proj.Handler.run with effects fn(_, _) -> [Stdout] but the field is declared []",
+  ])
+}
+
+pub fn a_field_check_naming_no_field_warns_test() {
+  field_check_lines(
+    "field_check_typo",
+    "check proj.Handler.nope : []\n",
+    handler_sites,
+  ).warnings
+  |> should.equal([
+    "build/field_check_typo/proj.graded: warning: check proj.Handler.nope names no field of any type this package can see — check the module qualifier; the check weighs no construction site",
+  ])
+}
+
+pub fn a_field_check_on_a_non_callable_field_warns_test() {
+  field_check_lines(
+    "field_check_non_callable",
+    "check proj.Handler.name : []\n",
+    "pub type Handler {
+  Handler(run: fn() -> Nil, name: String)
+}
+
+pub fn wired() -> Handler {
+  Handler(run: fn() { Nil }, name: \"x\")
+}
+",
+  ).warnings
+  |> should.equal([
+    "build/field_check_non_callable/proj.graded: warning: check proj.Handler.name names a field no variant makes callable — only a callable field carries an effect budget, so the check weighs nothing",
+  ])
+}
+
+pub fn a_field_check_nothing_constructs_warns_test() {
+  field_check_lines(
+    "field_check_unconstructed",
+    "check proj.Handler.run : []\n",
+    "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+",
+  ).warnings
+  |> should.equal([
+    "build/field_check_unconstructed/proj.graded: warning: check proj.Handler.run names a callable field nothing in this package constructs a value of — the check holds over no site, and proves nothing. A construction outside the package is not one graded can see",
+  ])
+}
+
+pub fn a_field_check_with_a_bound_list_fails_test() {
+  // D10: a warning alone would exit zero and report "all checks passed" on a
+  // line nothing proved, so the unsupported component reaches the reported
+  // channel too.
+  field_check_lines(
+    "field_check_d10_bounds",
+    "check proj.Handler.run(cb: [cb]) : [cb]\n",
+    handler_sites,
+  ).violations
+  |> should.equal([
+    "build/field_check_d10_bounds/proj.graded: could not prove check proj.Handler.run — a bound list on a field path is not verified, and the bounds are what scope the effects term, so the budget cannot be read without them",
+  ])
+}
+
+pub fn a_field_check_with_a_clause_still_verifies_its_budget_test() {
+  // The two halves are independent: the clause alone is refused, and the field
+  // budget on the same line is weighed as usual.
+  field_check_lines(
+    "field_check_d10_clause",
+    "assume ffi.print : [Stdout]
+check proj.Handler.run : [] where returns : [Http]
+",
+    handler_sites <> "
+pub fn wired_loud() -> Handler {
+  Handler(run: loud)
+}
+",
+  ).violations
+  |> should.equal([
+    "build/field_check_d10_clause/proj.graded: could not prove check proj.Handler.run — a `where returns` clause on a field path is not verified — nothing keys an operator returned by calling a field. The field budget on the same line still is",
+    "build/field_check_d10_clause/proj.gleam: wired_loud wires proj.Handler.run with effects [Stdout] but the field is declared []",
+  ])
+}
+
+pub fn a_verified_field_check_does_not_answer_a_field_call_test() {
+  // D8: a `check` proves, it never answers. Were the budget read onto the
+  // field-value channel, the consumer below would resolve `h.run()` as pure
+  // and its own `[Stdout]` check would then be the one reporting.
+  let reported =
+    field_check_lines(
+      "field_check_answers_nothing",
+      "assume ffi.print : [Stdout]
+check proj.Handler.run : [_]
+check proj.consume : [Stdout]
+check proj.consume_pure : []
+",
+      "import ffi
+
+pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+fn loud() -> Nil {
+  ffi.print()
+}
+
+pub fn build() -> Handler {
+  Handler(run: loud)
+}
+
+pub fn consume() -> Nil {
+  let h = build()
+  h.run()
+}
+
+pub fn consume_pure() -> Nil {
+  let h = build()
+  h.run()
+}
+",
+    )
+  // `consume` resolves the field call to [Stdout] — the wired function's own
+  // effect, not the `[_]` the check declares — so the `[Stdout]` budget holds
+  // and the `[]` one does not.
+  reported.violations
+  |> list.filter(fn(line) { string.contains(line, "consume_pure") })
+  |> list.length()
+  |> should.equal(1)
+  reported.violations
+  |> list.filter(fn(line) { string.contains(line, ": consume ") })
+  |> should.equal([])
+}
+
+pub fn a_scoped_run_does_not_report_an_out_of_scope_field_site_test() {
+  // D1's counterpart to the effects half's scoping rule: the field pass is
+  // package-wide so a site anywhere resolves, and its findings are still
+  // narrowed to the subtree the caller asked about.
+  let root = "build/field_check_scoped"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ffi.print : [Stdout]\ncheck proj/handler.Handler.run : []\n",
+    ),
+    #(
+      "src/ffi.gleam",
+      "@external(erlang, \"ffi_module\", \"print\")
+@external(javascript, \"ffi_module\", \"print\")
+pub fn print() -> Nil
+",
+    ),
+    #(
+      "src/proj/handler.gleam",
+      "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+",
+    ),
+    #(
+      "src/sub/inner.gleam",
+      "import proj/handler
+
+pub fn inside() -> handler.Handler {
+  handler.Handler(run: fn() { Nil })
+}
+",
+    ),
+    #(
+      "src/outside.gleam",
+      "import ffi
+import proj/handler
+
+pub fn out() -> handler.Handler {
+  handler.Handler(run: fn() { ffi.print() })
+}
+",
+    ),
+  ])
+  let assert Ok(whole) = graded.run(root)
+  whole
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([
+    "build/field_check_scoped/src/outside.gleam: out wires proj/handler.Handler.run with effects [Stdout] but the field is declared []",
+  ])
+
+  let assert Ok(scoped) = graded.run(root <> "/src/sub")
+  scoped
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_dependency_defined_field_is_weighed_at_the_project_site_test() {
+  // D3′ and D9's collection step together: the type is the dependency's, so
+  // its callable signature has to have reached the index through the
+  // dependency scan — without the arity there is no comparison at all.
+  let root = "build/field_check_dependency"
+  support.write_project_with_dependency(
+    directory: root,
+    package: "proj",
+    spec: "assume ffi.print : [Stdout]\ncheck dep/handler.Handler.run : []\n",
+    sources: [
+      #(
+        "src/ffi.gleam",
+        "@external(erlang, \"ffi_module\", \"print\")
+@external(javascript, \"ffi_module\", \"print\")
+pub fn print() -> Nil
+",
+      ),
+      #(
+        "src/proj.gleam",
+        "import dep/handler
+import ffi
+
+pub fn direct() -> handler.Handler {
+  handler.Handler(run: fn() { ffi.print() })
+}
+
+pub fn through_factory() -> handler.Handler {
+  handler.make(fn() { ffi.print() })
+}
+",
+      ),
+    ],
+    dependency: "dep",
+    dependency_spec: "",
+    dependency_sources: [
+      #(
+        "dep/handler.gleam",
+        "pub type Handler {
+  Handler(run: fn() -> Nil)
+}
+
+pub fn make(run: fn() -> Nil) -> Handler {
+  Handler(run: run)
+}
+",
+      ),
+    ],
+  )
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> list.sort(string.compare)
+  |> should.equal([
+    "build/field_check_dependency/src/proj.gleam: direct wires dep/handler.Handler.run with effects [Stdout] but the field is declared []",
+    "build/field_check_dependency/src/proj.gleam: through_factory wires dep/handler.Handler.run with effects [Stdout] but the field is declared []",
+  ])
+  support.cleanup(root)
+}
+
 // A verified `where returns` clause on a `check` line
 //
 // The clause states the operator the function hands back, and the check holds

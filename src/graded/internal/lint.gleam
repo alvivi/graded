@@ -34,7 +34,7 @@ import graded/internal/types.{
   UnkeyedEffectsShapeWarning, UnknownClauseWarning, UnmatchedCheckWarning,
   UnmatchedFieldAssumeWarning, UnmatchedFunctionAssumeWarning,
   UnmatchedModuleAssumeWarning, UnmatchedReturnsClauseWarning,
-  UnsupportedFieldCheckWarning, UnverifiedCheckShapeWarning,
+  UnsupportedFieldCheckWarning,
 }
 import simplifile
 
@@ -145,9 +145,12 @@ pub fn run_recording_lookups(
     checks
     |> list.flat_map(fn(ann) {
       case annotation.is_field_path(ann.function) {
+        // A field path's own diagnostics belong to the pass that weighs its
+        // construction sites, which is the only reader that knows whether the
+        // field exists, is callable, and is built anywhere.
         True ->
           case unsupported_field_components(ann) {
-            [] -> [UnverifiedCheckShapeWarning(name: ann.function)]
+            [] -> []
             components -> [
               UnsupportedFieldCheckWarning(name: ann.function, components:),
             ]

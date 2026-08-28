@@ -437,12 +437,13 @@ fn native_functions(
 // precomputed up front (like the constructor-label map). Keyed by bare
 // function name.
 pub fn factory_map(
+  module_path: String,
   module: Module,
   package_targets: Set(String),
 ) -> Dict(String, FactorySignature) {
   signature_map(
     native_functions(module, package_targets),
-    build_import_context(module),
+    build_import_context(module) |> with_module_path(module_path),
     factory_signature,
   )
 }
@@ -511,6 +512,25 @@ fn factory_signature(
   }
 }
 
+// The *public* factories of a module as runtime signatures, keyed by
+// `#(module_path, name)`. The dependency counterpart of `factory_map`: only a
+// public factory is callable across a package boundary, and it is read from
+// the source the consumer compiled against so the signature cannot skew.
+pub fn public_factory_signatures(
+  module: Module,
+  module_path: String,
+  package_targets: Set(String),
+) -> Dict(#(String, String), FactorySignature) {
+  signature_map(
+    public_functions(module, package_targets),
+    build_import_context(module) |> with_module_path(module_path),
+    factory_signature,
+  )
+  |> dict.to_list()
+  |> list.map(fn(entry) { #(#(module_path, entry.0), entry.1) })
+  |> dict.from_list()
+}
+
 // The *public* update builders of a module as runtime signatures, keyed by
 // `#(module_path, name)`. Used to derive a dependency's builders from its source
 // under `build/packages` — the source the consumer compiled against — so the
@@ -523,7 +543,7 @@ pub fn public_update_signatures(
 ) -> Dict(#(String, String), UpdateSignature) {
   signature_map(
     public_functions(module, package_targets),
-    build_import_context(module),
+    build_import_context(module) |> with_module_path(module_path),
     update_signature,
   )
   |> dict.to_list()
@@ -549,12 +569,13 @@ fn public_functions(
 // is a record update of one of its parameters, with every updated field wired to
 // a parameter. Purely syntactic, precomputed up front. Keyed by bare name.
 pub fn update_map(
+  module_path: String,
   module: Module,
   package_targets: Set(String),
 ) -> Dict(String, UpdateSignature) {
   signature_map(
     native_functions(module, package_targets),
-    build_import_context(module),
+    build_import_context(module) |> with_module_path(module_path),
     update_signature,
   )
 }

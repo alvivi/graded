@@ -22,7 +22,11 @@ fn provenance_of(src: String) -> types.ReturnProvenance {
   let assert Ok(module) = glance.module(src)
   let ctx =
     extract.build_import_context(module)
-    |> extract.with_factories(extract.factory_map(module, types.every_target()))
+    |> extract.with_factories(extract.factory_map(
+      "app",
+      module,
+      types.every_target(),
+    ))
   let assert Ok(func) =
     list.find(module.functions, fn(def) { def.definition.name == "target" })
   extract.return_provenance(func.definition, ctx)
