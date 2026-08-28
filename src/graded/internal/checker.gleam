@@ -3700,7 +3700,12 @@ fn resolved_verdict(
       case
         field_site_comparison(
           effect.effects,
-          effect.bounds,
+          bound_positions(
+            effect.bounds,
+            effect.source,
+            wired.signature,
+            registry,
+          ),
           wired.check.declared,
           wired.signature,
         )
@@ -3941,12 +3946,67 @@ pub type FieldComparison {
   DeclaredArityMismatch(arity: Int)
 }
 
+// Where each of a wired function's bounds sits in its own parameter list.
+//
+// A bound list names the parameters it constrains and skips the rest, so it is
+// sparse: `f(cb: [cb])` on `fn(Int, fn() -> Nil)` is one bound for parameter
+// one. Read as arity-aligned it bound that budget to parameter zero, and the
+// callback the declaration constrains grounded as if nothing constrained it.
+//
+// The wired function's recorded signature places a bound by the name it is
+// written under. Where no signature records it — a wired name graded parsed no
+// source for — the bounds fall on the field's own callback positions in order:
+// the value has the field's type, so its function-typed parameters are exactly
+// those.
+fn bound_positions(
+  bounds: List(ParamBound),
+  source: Option(QualifiedName),
+  signature: types.CallableFieldSignature,
+  registry: SignatureRegistry,
+) -> dict.Dict(Int, ParamBound) {
+  let parameters =
+    source
+    |> option.map(signatures.lookup(registry, _))
+    |> option.flatten
+  case parameters {
+    Some(parameters) ->
+      list.fold(bounds, dict.new(), fn(acc, bound) {
+        case parameter_position(parameters, bound.name) {
+          Some(position) -> dict.insert(acc, position, bound)
+          None -> acc
+        }
+      })
+    None ->
+      list.zip(
+        list.map(signature.callbacks, fn(callback) { callback.0 }),
+        bounds,
+      )
+      |> dict.from_list()
+  }
+}
+
+// The position a parameter of this name occupies, matched by either the label a
+// caller writes or the name the body reads — the two spellings a bound is
+// written under.
+fn parameter_position(
+  parameters: List(signatures.ParameterInfo),
+  name: String,
+) -> Option(Int) {
+  parameters
+  |> list.find(fn(parameter) {
+    parameter.label == Some(name) || parameter.name == Some(name)
+  })
+  |> option.from_result
+  |> option.map(fn(parameter) { parameter.position })
+}
+
 // Weigh one wired value against a field's declared budget. `bounds` are the
-// wired function's own parameter bounds, which name the variables the
-// symbolic lift binds; they are empty for a ground value or an inline closure.
+// wired function's own parameter bounds at the positions they constrain, which
+// name the variables the symbolic lift binds; they are empty for a ground value
+// or an inline closure.
 pub fn field_site_comparison(
   actual: EffectTerm,
-  bounds: List(ParamBound),
+  bounds: dict.Dict(Int, ParamBound),
   declared: EffectTerm,
   signature: types.CallableFieldSignature,
 ) -> FieldComparison {
@@ -3995,7 +4055,7 @@ fn canonical_declared(
 // bind its variables with.
 fn canonical_actual(
   actual: EffectTerm,
-  bounds: List(ParamBound),
+  bounds: dict.Dict(Int, ParamBound),
   arity: Int,
 ) -> EffectTerm {
   case actual {
@@ -4022,7 +4082,7 @@ fn canonical_actual(
 // below depends on.
 fn symbolic_lift(
   term: EffectTerm,
-  bounds: List(ParamBound),
+  bounds: dict.Dict(Int, ParamBound),
   arity: Int,
 ) -> EffectTerm {
   let taken = effect_term.free_vars(term)
@@ -4030,7 +4090,7 @@ fn symbolic_lift(
     positions_up_to(arity)
     |> list.fold(#([], dict.new()), fn(state, position) {
       let #(names, acc) = state
-      let bound = extract.at(bounds, position) |> option.from_result
+      let bound = dict.get(bounds, position) |> option.from_result
       let binder =
         effect_term.fresh(
           case bound {
