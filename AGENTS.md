@@ -39,7 +39,7 @@ Sixteen modules, no circular dependencies. Only `src/graded.gleam` is the public
 
 | File | Responsibility |
 |---|---|
-| `src/graded.gleam` | CLI entry point + public API: orchestrate `run_infer` (write spec + cache), `run_infer_dry_run` (preview it), `run` (check the spec against source), `run_effect` (look up one name, read-only) and `pack_project` (inject the spec into the hex tarball); run girard type inference; scan dependency sources once into the signature registry and the update-builder map. Every type the public API names is defined here — nothing under `graded/internal` is part of it, and `scripts/check_public_interface.py` gates that |
+| `src/graded.gleam` | CLI entry point + public API: orchestrate `run_infer` (write spec + cache), `run_infer_dry_run` (preview it), `run` (check the spec against source), `run_effect` (look up one name, read-only) and `pack_project` (inject the spec into the hex tarball); run girard type inference; scan dependency sources once into the signature registry and the update-builder map. Every type the public API names is defined here — nothing under `graded/internal` is part of it, and `test/check_public_interface.gleam` (`gleam run -m check_public_interface`) gates that |
 | `src/graded/internal/cli.gleam` | Pure command-line argument decoders for `main`'s dispatch branches |
 | `src/graded/internal/answer.gleam` | One `graded effect` lookup held as data (`EffectAnswer`), plus the prose and `.graded` renderers over it |
 | `src/graded/internal/types.gleam` | Shared types: QualifiedName, EffectSet, EffectTerm, EffectAnnotation, ParamBound, FieldCall, TypeFieldAnnotation, Violation |
