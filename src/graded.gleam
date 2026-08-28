@@ -479,7 +479,28 @@ pub fn check_project(
     parsed:,
     ..,
   ) = sources
-  let checks_by_module = checks_grouped_by_module(spec)
+  let #(field_checks, function_checks) =
+    list.partition(annotation.extract_checks(spec), fn(ann) {
+      annotation.is_field_path(ann.function)
+    })
+  let checks_by_module = checks_grouped_by_module(function_checks)
+
+  // A field `check` is package-wide: a type's construction sites are wherever
+  // the package builds it, so the pass runs over every parsed module and the
+  // findings are grouped back onto the file that earned each one. The `reported`
+  // narrowing below then drops the ones outside the asked-about subtree, as it
+  // does for every other result.
+  let field_report =
+    field_check_results(
+      field_checks,
+      parsed,
+      directory,
+      ctx,
+      knowledge_base,
+      registry,
+      type_info,
+      cfg.targets,
+    )
 
   // Every module of the package was analysed, so a call out of the asked-about
   // subtree resolved against the real callee and each module kept the path its
@@ -500,37 +521,237 @@ pub fn check_project(
         Ok(list) -> list
         Error(_) -> []
       }
-      check_one_file(
-        gleam_path,
-        module_path,
-        module,
-        module_checks,
-        knowledge_base,
-        registry,
-        typeinfo.for_module(type_info, module_path),
-        typeinfo.fn_typed_for_module(type_info, module_path),
-        cfg.targets,
-      )
+      let result =
+        check_one_file(
+          gleam_path,
+          module_path,
+          module,
+          module_checks,
+          knowledge_base,
+          registry,
+          typeinfo.for_module(type_info, module_path),
+          typeinfo.fn_typed_for_module(type_info, module_path),
+          cfg.targets,
+        )
+      case dict.get(field_report.findings, gleam_path) {
+        Ok(findings) ->
+          CheckResult(
+            ..result,
+            findings: list.append(result.findings, findings),
+          )
+        Error(Nil) -> result
+      }
     })
 
   // Spec-level lint: `check`/field `assume` lines whose target doesn't exist in any
   // project module. These silently do nothing (a vacuous check, or a field
   // annotation that resolves to [Unknown]), so they're reported against the
   // spec file itself rather than any source file.
-  let results = case lint.run(lint_context(ctx)) {
-    [] -> results
-    spec_warnings -> [
-      CheckResult(
-        file: cfg.spec_file,
-        violations: [],
-        findings: [],
-        warnings: spec_warnings,
-      ),
+  let spec_warnings =
+    list.append(lint.run(lint_context(ctx)), field_report.warnings)
+  let results = case spec_warnings, field_report.spec_findings {
+    [], [] -> results
+    warnings, findings -> [
+      CheckResult(file: cfg.spec_file, violations: [], findings:, warnings:),
       ..results
     ]
   }
 
   Ok(results)
+}
+
+// Field checks
+//
+// A field `check` names a type by the module that defines it and is proved by
+// the construction sites the package holds, which are anywhere in it. The pass
+// is package-wide for that reason and its findings are grouped by the file
+// whose sites earned them, so a scoped run reports what it was asked about.
+//
+// What it proves is this package's own sites. A public constructor or factory
+// can be called from outside, and no package-local pass sees those calls.
+
+// The field pass's results: findings by constructing file, findings the spec
+// line earns on its own, and the spec-file warnings.
+type FieldCheckResults {
+  FieldCheckResults(
+    findings: Dict(String, List(types.CheckFinding)),
+    spec_findings: List(types.CheckFinding),
+    warnings: List(types.Warning),
+  )
+}
+
+fn field_check_results(
+  field_checks: List(EffectAnnotation),
+  parsed: List(#(String, glance.Module)),
+  directory: String,
+  ctx: ProjectContext,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  type_info: typeinfo.TypeInfo,
+  package_targets: types.PackageTargets,
+) -> FieldCheckResults {
+  // A shape nothing gives a meaning is rejected on the violations channel, not
+  // merely linted: a warning exits zero, and a line that was never proved must
+  // not pass. A `where returns` clause leaves the field budget on the same line
+  // supported, so only the clause is refused; a bound list is what scopes the
+  // effects term, so the whole line goes.
+  let #(refused, weighable) =
+    list.partition(field_checks, fn(ann) { ann.params != [] })
+  let unsupported =
+    list.append(
+      list.map(refused, fn(ann) {
+        unsupported_field_finding(ann.function, types.FieldBoundList)
+      }),
+      list.filter_map(weighable, fn(ann) {
+        case ann.returns {
+          None -> Error(Nil)
+          Some(_) ->
+            Ok(unsupported_field_finding(ann.function, types.FieldReturnsClause))
+        }
+      }),
+    )
+  let #(checks, unmatched) = resolve_field_checks(weighable, ctx.field_index)
+  use <- bool.lazy_guard(when: checks == [], return: fn() {
+    FieldCheckResults(
+      findings: dict.new(),
+      spec_findings: unsupported,
+      warnings: unmatched,
+    )
+  })
+  let reports =
+    list.map(parsed, fn(entry) {
+      let #(gleam_path, module) = entry
+      let module_path = config.module_path_for_source(gleam_path, directory)
+      #(
+        gleam_path,
+        checker.check_field_sites(
+          module,
+          module_path,
+          gleam_path,
+          checks,
+          ctx.field_index,
+          knowledge_base,
+          registry,
+          typeinfo.for_module(type_info, module_path),
+          typeinfo.fn_typed_for_module(type_info, module_path),
+          package_targets,
+        ),
+      )
+    })
+  let called =
+    list.fold(reports, set.new(), fn(acc, entry) {
+      set.union(acc, { entry.1 }.called)
+    })
+  // A template whose field is wired from one of its own parameters proves
+  // nothing on its own: what it wires is whatever its callers pass. One no
+  // visible call reaches is an analysis limit, reported as one.
+  let findings =
+    list.fold(reports, dict.new(), fn(acc, entry) {
+      let #(gleam_path, report) = entry
+      let uncalled =
+        report.templates
+        |> list.filter(fn(template) { !set.contains(called, template.function) })
+        |> list.map(fn(template) {
+          types.UnprovedCheck(
+            subject: template.check_path,
+            cause: types.UncalledFactory(factory: template.function),
+            site: Some(template.site),
+          )
+        })
+      case list.append(report.findings, uncalled) {
+        [] -> acc
+        found -> dict.insert(acc, gleam_path, found)
+      }
+    })
+  // A check no site anywhere in the package answered holds vacuously, which is
+  // not a proof. Counted over every module, so a scoped run does not report it.
+  let touched =
+    list.fold(reports, set.new(), fn(acc, entry) {
+      set.union(acc, { entry.1 }.touched)
+    })
+  let unconstructed =
+    checks
+    |> list.filter(fn(check) { !set.contains(touched, check.path) })
+    |> list.map(fn(check) {
+      types.UnconstructedFieldCheckWarning(name: check.path)
+    })
+    |> list.unique()
+  FieldCheckResults(
+    findings:,
+    spec_findings: unsupported,
+    warnings: list.append(unmatched, unconstructed),
+  )
+}
+
+fn unsupported_field_finding(
+  path: String,
+  component: types.CheckComponent,
+) -> types.CheckFinding {
+  types.UnprovedCheck(
+    subject: path,
+    cause: types.UnsupportedCheckComponent(component:),
+    site: None,
+  )
+}
+
+// Resolve each field `check` line to the type it names, and warn about the
+// lines that name none. A qualified path names its type's defining module; an
+// unqualified one is resolved against every module defining a type of that
+// name, since the line has no other way to say which.
+fn resolve_field_checks(
+  field_checks: List(EffectAnnotation),
+  field_index: types.FieldIndex,
+) -> #(List(checker.FieldCheck), List(types.Warning)) {
+  let callable_labels =
+    field_index.callable
+    |> dict.keys()
+    |> list.map(fn(key) {
+      let #(module, type_name, _variant, field) = key
+      #(module, type_name, field)
+    })
+    |> set.from_list()
+  list.fold(field_checks, #([], []), fn(acc, ann) {
+    let #(checks, warnings) = acc
+    let targets = case annotation.split_type_field_name(ann.function) {
+      Error(Nil) -> []
+      Ok(#(Some(module), type_name, field)) ->
+        case set.contains(field_index.labels, #(module, type_name, field)) {
+          True -> [#(module, type_name, field)]
+          False -> []
+        }
+      Ok(#(None, type_name, field)) ->
+        field_index.labels
+        |> set.to_list()
+        |> list.filter(fn(label) { label.1 == type_name && label.2 == field })
+    }
+    let declared = list.filter(targets, set.contains(callable_labels, _))
+    case targets, declared {
+      [], _ -> #(checks, [
+        types.UnmatchedFieldCheckWarning(name: ann.function),
+        ..warnings
+      ])
+      _, [] -> #(checks, [
+        types.NonCallableFieldCheckWarning(name: ann.function),
+        ..warnings
+      ])
+      _, declared -> #(
+        list.append(
+          checks,
+          list.map(declared, fn(target) {
+            let #(module, type_name, field) = target
+            checker.FieldCheck(
+              path: ann.function,
+              module:,
+              type_name:,
+              field:,
+              declared: ann.effects,
+            )
+          }),
+        ),
+        warnings,
+      )
+    }
+  })
 }
 
 // Everything a read-only command needs about a project: the parsed sources, the
@@ -726,10 +947,13 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // read the summary and never the body — kept an answer the two commands
     // would then disagree about.
     |> effects.with_factories(
-      qualify_by_module(index, extract.factory_map(
-        _,
-        types.declaration_targets(package_targets),
-      )),
+      qualify_by_module(index, fn(module_path, module) {
+        extract.factory_map(
+          module_path,
+          module,
+          types.declaration_targets(package_targets),
+        )
+      }),
     )
   // Fill gaps for project modules not (yet) in the spec by inferring them in
   // memory, so `check` resolves cross-module calls without a prior `graded infer`.
@@ -879,9 +1103,9 @@ fn project_function_visibility(
 // travels with the line: the checker weighs it against the operator the
 // function hands back.
 fn checks_grouped_by_module(
-  spec: GradedFile,
+  checks: List(EffectAnnotation),
 ) -> Dict(String, List(EffectAnnotation)) {
-  list.fold(annotation.extract_checks(spec), dict.new(), fn(acc, ann) {
+  list.fold(checks, dict.new(), fn(acc, ann) {
     case annotation.split_function_name(ann.function) {
       Error(_) -> acc
       Ok(#(module, function)) -> {
@@ -2244,11 +2468,11 @@ fn build_project_registry(
 // `name -> value` map, qualifying each entry with the module it came from.
 fn qualify_by_module(
   index: Dict(String, #(String, glance.Module)),
-  per_module: fn(glance.Module) -> Dict(String, value),
+  per_module: fn(String, glance.Module) -> Dict(String, value),
 ) -> Dict(#(String, String), value) {
   dict.fold(index, dict.new(), fn(acc, path, entry) {
     let #(_gleam_path, module) = entry
-    dict.fold(per_module(module), acc, fn(inner, name, value) {
+    dict.fold(per_module(path, module), acc, fn(inner, name, value) {
       dict.insert(inner, #(path, name), value)
     })
   })
@@ -2579,10 +2803,13 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   let base_kb =
     kb_base
     |> effects.with_factories(
-      qualify_by_module(index, extract.factory_map(
-        _,
-        types.declaration_targets(package_targets),
-      )),
+      qualify_by_module(index, fn(module_path, module) {
+        extract.factory_map(
+          module_path,
+          module,
+          types.declaration_targets(package_targets),
+        )
+      }),
     )
 
   let graph = build_dependency_graph(index)
@@ -3117,6 +3344,10 @@ type ScannedModule {
     // stale serialized `update` line — it takes precedence over the spec-loaded
     // map.
     updates: Dict(#(String, String), types.UpdateSignature),
+    // The factories it exports, on the same terms as `updates`: only a public
+    // one crosses a package boundary, and a consumer's call to one wires the
+    // field from its own argument.
+    factories: Dict(#(String, String), types.FactorySignature),
     // Every `@external` it declares. Scanned here because this walk already
     // parses each dependency module once, and because it is the only evidence a
     // consumer has: a dependency's spec cannot be trusted to say which of its
@@ -3174,6 +3405,17 @@ fn dependency_field_index(sources: DependencySources) -> types.FieldIndex {
   case scanned {
     ParsedModule(field_index:, ..) ->
       signatures.merge_field_index(acc, field_index)
+    UnreadableModule -> acc
+  }
+}
+
+// The factories the scanned copies export.
+fn dependency_factories(
+  sources: DependencySources,
+) -> Dict(#(String, String), types.FactorySignature) {
+  use acc, _path, scanned <- dict.fold(sources.modules, dict.new())
+  case scanned {
+    ParsedModule(factories:, ..) -> dict.merge(acc, factories)
     UnreadableModule -> acc
   }
 }
@@ -3417,12 +3659,16 @@ fn with_builders(
   package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
   knowledge_base
+  |> effects.with_factories(dependency_factories(dep_sources))
   |> effects.with_updates(dependency_updates(dep_sources))
   |> effects.with_updates(
-    qualify_by_module(index, extract.update_map(
-      _,
-      types.declaration_targets(package_targets),
-    )),
+    qualify_by_module(index, fn(module_path, module) {
+      extract.update_map(
+        module_path,
+        module,
+        types.declaration_targets(package_targets),
+      )
+    }),
   )
 }
 
@@ -3462,6 +3708,11 @@ fn source_dir_sources(
         functions: module_function_names(module),
         registry: signatures.from_glance_module(module_path, module),
         updates: extract.public_update_signatures(
+          module,
+          module_path,
+          types.declaration_targets(package_targets),
+        ),
+        factories: extract.public_factory_signatures(
           module,
           module_path,
           types.declaration_targets(package_targets),

@@ -28,20 +28,21 @@ import graded/internal/types.{
   DotlessReturnsClauseWarning, EffectAnnotation, Effects, FieldArityViolation,
   FieldAssumeOrigin, FieldBoundList, FieldNotAnnotated, FieldReturnsClause,
   FieldSiteViolation, NoKnownEffects, NoReturnAnnotation,
-  NonCallableReturnViolation, ParamBound, QualifiedName, ReceiverTypeUnresolved,
-  RefusedDeclaredReturn, ReturnIsNotAFunction, ReturnsClauseViolation,
-  StaleFunctionAssumeWarning, StaleReturnsClauseWarning, TUnion, TVar,
-  UnboundAssumeTermVariableWarning, UnbuiltExternal, UncalledFactory,
-  UnclosedReturnsClauseWarning, UndeclaredExternal, UndeclaredForeignReturn,
+  NonCallableFieldCheckWarning, NonCallableReturnViolation, ParamBound,
+  QualifiedName, ReceiverTypeUnresolved, RefusedDeclaredReturn,
+  ReturnIsNotAFunction, ReturnsClauseViolation, StaleFunctionAssumeWarning,
+  StaleReturnsClauseWarning, TUnion, TVar, UnboundAssumeTermVariableWarning,
+  UnbuiltExternal, UncalledFactory, UnclosedReturnsClauseWarning,
+  UnconstructedFieldCheckWarning, UndeclaredExternal, UndeclaredForeignReturn,
   UnderivableReturnedOperator, UngroundReturnsClauseWarning,
   UnkeyedEffectsShapeWarning, UnknownClauseWarning, UnmatchedCheckWarning,
   UnmatchedFieldAssumeWarning, UnmatchedFieldBoundWarning,
-  UnmatchedFunctionAssumeWarning, UnmatchedModuleAssumeWarning,
-  UnmatchedParamBoundWarning, UnmatchedReturnsClauseWarning, UnprovedCheck,
-  UnprovedForeignFallback, UnresolvedFieldValue, UnresolvedReturnTail,
-  UnsupportedCheckComponent, UnsupportedFieldCheckWarning, UntraceableArgument,
-  UntraceableProducer, UntraceableReceiver, UntracedFieldValue,
-  UntrackedEffectWarning, UnverifiedCheckShapeWarning, Violation,
+  UnmatchedFieldCheckWarning, UnmatchedFunctionAssumeWarning,
+  UnmatchedModuleAssumeWarning, UnmatchedParamBoundWarning,
+  UnmatchedReturnsClauseWarning, UnprovedCheck, UnprovedForeignFallback,
+  UnresolvedFieldValue, UnresolvedReturnTail, UnsupportedCheckComponent,
+  UnsupportedFieldCheckWarning, UntraceableArgument, UntraceableProducer,
+  UntraceableReceiver, UntracedFieldValue, UntrackedEffectWarning, Violation,
 }
 
 // Entry points
@@ -1362,10 +1363,12 @@ fn module_context(
     |> extract.with_module_path(module_path)
     |> extract.with_package_targets(package_targets)
     |> extract.with_factories(extract.factory_map(
+      module_path,
       module,
       types.declaration_targets(package_targets),
     ))
     |> extract.with_updates(extract.update_map(
+      module_path,
       module,
       types.declaration_targets(package_targets),
     ))
@@ -1704,11 +1707,21 @@ pub fn format_warning(file: String, warning: Warning) -> String {
       <> ": warning: check "
       <> function
       <> " names no function in any project module — check the module qualifier; the check never runs"
-    UnverifiedCheckShapeWarning(name:) ->
+    UnmatchedFieldCheckWarning(name:) ->
       file
       <> ": warning: check "
       <> name
-      <> " is a shape nothing verifies yet — a check on a field keys nothing; an `assume` line is the trusted form"
+      <> " names no field of any type this package can see — check the module qualifier; the check weighs no construction site"
+    NonCallableFieldCheckWarning(name:) ->
+      file
+      <> ": warning: check "
+      <> name
+      <> " names a field no variant makes callable — only a callable field carries an effect budget, so the check weighs nothing"
+    UnconstructedFieldCheckWarning(name:) ->
+      file
+      <> ": warning: check "
+      <> name
+      <> " names a callable field nothing in this package constructs a value of — the check holds over no site, and proves nothing. A construction outside the package is not one graded can see"
     UnsupportedFieldCheckWarning(name:, components:) ->
       file
       <> ": warning: check "
@@ -3332,6 +3345,9 @@ pub type FieldSiteReport {
     templates: List(FieldTemplate),
     // The templates this module's calls reached, by qualified name.
     called: Set(String),
+    // The `check` paths at least one site in this module answered to. A check
+    // no site anywhere in the package answers holds vacuously.
+    touched: Set(String),
   )
 }
 
@@ -3374,10 +3390,7 @@ pub fn check_field_sites(
   let #(report, _memo) =
     list.fold(
       module.functions,
-      #(
-        FieldSiteReport(findings: [], templates: [], called: set.new()),
-        new_memo(),
-      ),
+      #(empty_site_report(), new_memo()),
       fn(state: #(FieldSiteReport, Memo), definition) {
         let #(report, memo) = state
         let #(next, memo) =
@@ -3396,14 +3409,7 @@ pub fn check_field_sites(
             cache,
             memo,
           )
-        #(
-          FieldSiteReport(
-            findings: list.append(report.findings, next.findings),
-            templates: list.append(report.templates, next.templates),
-            called: set.union(report.called, next.called),
-          ),
-          memo,
-        )
+        #(merge_site_reports(report, next), memo)
       },
     )
   report
@@ -3433,6 +3439,7 @@ fn function_field_sites(
     let #(findings, templates, called, memo) =
       weigh_wired_field(
         wired,
+        types.dotted_name(QualifiedName(module_path, function.name)),
         parameters,
         module_functions,
         context,
@@ -3444,10 +3451,14 @@ fn function_field_sites(
         memo,
       )
     #(
-      FieldSiteReport(
-        findings: list.append(report.findings, findings),
-        templates: list.append(report.templates, templates),
-        called: set.union(report.called, called),
+      merge_site_reports(
+        report,
+        FieldSiteReport(
+          findings:,
+          templates:,
+          called:,
+          touched: set.from_list([wired.check.path]),
+        ),
       ),
       memo,
     )
@@ -3465,8 +3476,29 @@ fn function_field_sites(
         module_path,
       ),
     ),
-    #(FieldSiteReport(findings: [], templates: [], called: set.new()), memo),
+    #(empty_site_report(), memo),
     weigh,
+  )
+}
+
+fn empty_site_report() -> FieldSiteReport {
+  FieldSiteReport(
+    findings: [],
+    templates: [],
+    called: set.new(),
+    touched: set.new(),
+  )
+}
+
+fn merge_site_reports(
+  left: FieldSiteReport,
+  right: FieldSiteReport,
+) -> FieldSiteReport {
+  FieldSiteReport(
+    findings: list.append(left.findings, right.findings),
+    templates: list.append(left.templates, right.templates),
+    called: set.union(left.called, right.called),
+    touched: set.union(left.touched, right.touched),
   )
 }
 
@@ -3597,6 +3629,7 @@ fn matching_checks(
 // weighed here.
 fn weigh_wired_field(
   wired: WiredField,
+  enclosing: String,
   parameters: Set(String),
   module_functions: Set(String),
   context: ImportContext,
@@ -3623,7 +3656,7 @@ fn weigh_wired_field(
           [],
           [
             FieldTemplate(
-              function: qualified_site_function(wired.site),
+              function: enclosing,
               check_path: wired.check.path,
               site: wired.site,
             ),
@@ -3857,10 +3890,6 @@ fn function_parameter_names(function: Function) -> Set(String) {
     }
   })
   |> set.from_list()
-}
-
-fn qualified_site_function(site: types.ConstructionSite) -> String {
-  site.function
 }
 
 // Resolve one construction site's wired value. `Error` names an analysis limit

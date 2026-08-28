@@ -1019,13 +1019,19 @@ pub type Warning {
   // A `check` line whose qualified function name matches no function defined in
   // any project module — a missing module qualifier or a typo. The check then
   // never runs against any function and passes vacuously, so it's flagged.
-  // A `check` whose subject is a field rather than a function is
-  // `UnverifiedCheckShapeWarning` instead.
+  // A `check` whose subject is a field rather than a function is weighed by
+  // the field pass, and reports through its own warnings.
   UnmatchedCheckWarning(function: String)
-  // A `check` line over a shape nothing verifies yet: a field path
-  // (`m.Handler.on_click`). The line parses and keys nothing. `name` is the
-  // subject as written.
-  UnverifiedCheckShapeWarning(name: String)
+  // A `check` on a field path naming no field of any type this package can
+  // see — a typo, or a missing module qualifier. The check weighs no
+  // construction site at all.
+  UnmatchedFieldCheckWarning(name: String)
+  // A `check` on a field path naming a real field that no variant makes
+  // callable. Only a callable field has a budget to weigh.
+  NonCallableFieldCheckWarning(name: String)
+  // A `check` on a callable field that nothing in this package constructs a
+  // value of. The line holds, over no site, so it proves nothing.
+  UnconstructedFieldCheckWarning(name: String)
   // A `check` on a field path carrying a component a field head gives no
   // meaning: a bound list, a `where returns` clause, or both. Nothing scopes a
   // bound list on a field head, and nothing keys an operator returned by
@@ -1036,7 +1042,7 @@ pub type Warning {
   // (`m.Handler.on_click`) or a bare module path. Only a function path keys
   // this tier, so the line resolves nothing and the next `infer`, which
   // rewrites the tier from source, drops it without a word. The `check`
-  // counterpart is `UnverifiedCheckShapeWarning`. A *dangling* function path is
+  // counterpart is `UnmatchedFieldCheckWarning`. A *dangling* function path is
   // deliberately not this: a stale line regenerating is the tier's normal life,
   // while these two shapes are ones no run can ever key. `name` is the subject
   // as written.
