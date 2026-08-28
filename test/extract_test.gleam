@@ -348,6 +348,16 @@ fn parse_and_extract(src: String) -> extract.ExtractResult {
   extract.extract_calls(func.definition.body, ctx)
 }
 
+// The same walk with `target`'s own parameters seeded, as every caller in the
+// pipeline walks a body.
+fn parse_and_extract_function(src: String) -> extract.ExtractResult {
+  let assert Ok(module) = glance.module(src)
+  let ctx = extract.build_import_context(module)
+  let assert Ok(func) =
+    list.find(module.functions, fn(def) { def.definition.name == "target" })
+  extract.extract_function_calls(func.definition, ctx)
+}
+
 pub fn qualified_call_test() {
   let src =
     "import gleam/io
@@ -378,6 +388,29 @@ fn helper() { Nil }"
   result.local
   |> list.map(fn(l) { l.function })
   |> should.equal(["helper"])
+}
+
+pub fn local_call_scope_test() {
+  // The name alone does not say what an unqualified call reaches: `sibling` is
+  // whatever the module defines, while a parameter and a destructured local
+  // name their own binding however a sibling is named. A reader matching the
+  // module\'s own definitions by name attributes those calls to code the body
+  // never reaches.
+  let src =
+    "pub fn target(shadowed: fn() -> Nil) {
+  sibling()
+  shadowed()
+  let #(destructured, _) = #(fn() { Nil }, 1)
+  destructured()
+}
+fn sibling() { Nil }"
+  parse_and_extract_function(src).local
+  |> list.map(fn(l) { #(l.function, l.scope) })
+  |> should.equal([
+    #("sibling", types.ModuleDefinition),
+    #("shadowed", types.LexicalBinding),
+    #("destructured", types.LexicalBinding),
+  ])
 }
 
 pub fn pipe_qualified_test() {

@@ -3776,10 +3776,19 @@ fn template_calls(
     list.flat_map(extracted.local, fn(call) {
       template_call_of(
         types.dotted_name(QualifiedName(module_path, call.function)),
-        template_of(
-          dict.get(context.factories, call.function),
-          dict.get(context.updates, call.function),
-        ),
+        // Only a name the module's own definitions answer for can name a
+        // template. A parameter or local shadowing a sibling factory is a call
+        // to that binding, and matching it by name attributed the binding's
+        // arguments to a factory the body never calls -- the same precedence
+        // the effects channel reads an unqualified call by.
+        case call.scope {
+          types.LexicalBinding -> None
+          types.ModuleDefinition ->
+            template_of(
+              dict.get(context.factories, call.function),
+              dict.get(context.updates, call.function),
+            )
+        },
         call.span,
         extracted,
       )
