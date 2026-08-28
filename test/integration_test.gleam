@@ -11916,6 +11916,41 @@ pub fn run() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_clause_is_verified_on_the_producer_targets_test() {
+  // The check side of the narrowing `infer` performs: a `@target(erlang)`
+  // producer's closure over a JavaScript-only external returns what that
+  // external's Erlang fallback does, so the clause `infer` writes is the clause
+  // `check` verifies. Computed package-wide, the operator carried the
+  // unreachable declaration's effect and every written line failed its own
+  // check.
+  let root = "build/clause_check_target_restricted"
+  support.write_fixture(root, [
+    #("gleam.toml", support.dual_target_toml("proj")),
+    #(
+      "proj.graded",
+      "assume ext.b : [Disk]\ncheck ext.make : [] where returns : []\n",
+    ),
+    #(
+      "ext.gleam",
+      "@external(javascript, \"ext_ffi\", \"b\")
+pub fn b() -> Nil {
+  Nil
+}
+
+@target(erlang)
+pub fn make() -> fn() -> Nil {
+  fn() { b() }
+}
+",
+    ),
+  ])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([])
+  support.cleanup(root)
+}
+
 // A foreign producer's clause
 //
 // Only the foreign implementation decides what an `@external` returns, so a

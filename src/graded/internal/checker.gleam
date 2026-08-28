@@ -4152,6 +4152,19 @@ fn check_returns_clause(
             memo,
           )
         False -> {
+          // The operator a producer hands back is what its own body builds, so
+          // it is computed on the targets that body runs on — the same
+          // narrowing the summary walk performs before deriving the clause
+          // `graded infer` writes. Reading the names it calls package-wide here
+          // charges the clause a declaration this body never reaches, and the
+          // written clause fails its own check.
+          let #(knowledge_base, memo) =
+            body_walk(
+              knowledge_base,
+              memo,
+              function_definition,
+              context.package_targets,
+            )
           let #(computed, memo) =
             compute_returned_operator(
               function_definition.definition,
@@ -4263,6 +4276,15 @@ fn foreign_returns_clause(
         weigh_returned_operator(annotation.function, declared, Ok(operator))
       {
         [] -> {
+          // The fallback body is read on the targets it runs on, exactly as the
+          // non-foreign branch reads an ordinary body.
+          let #(knowledge_base, memo) =
+            body_walk(
+              knowledge_base,
+              memo,
+              function_definition,
+              context.package_targets,
+            )
           let #(computed, memo) =
             compute_returned_operator(
               function_definition.definition,
