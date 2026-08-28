@@ -782,16 +782,29 @@ pub type BuiltConstructor {
 // maps each updated field label to the parameter position wiring it (`resolver`
 // -> 1). A call `with_resolver(base, http)` then builds an `Updated` overlay of
 // the base argument with those fields replaced. `param_labels` maps each
-// parameter's Gleam label to its position, for labeled calls. Only builders whose
-// every updated field is wired to a parameter qualify — a field wired to a fixed
-// value would need the base to ground, so such a function stays a plain call.
+// parameter's Gleam label to its position, for labeled calls. `fields` holds the
+// fields wired to a parameter and `coverage` says whether that is all of them.
 pub type UpdateSignature {
   UpdateSignature(
     base_param: Int,
     fields: Dict(String, Int),
     param_labels: Dict(String, Int),
     constructor: BuiltConstructor,
+    coverage: UpdateCoverage,
   )
+}
+
+// Whether an update builder writes every field it updates from a parameter.
+//
+// The two readers of a builder want different things from one. An overlay
+// states what a call's result holds, so it is built only from a builder that
+// routes every field it writes: a field written from a fixed or rebound value
+// would fall through to the base and under-report. A field `check` weighs one
+// named field, and a builder that routes *that* field routes the caller's
+// argument into it however its siblings are written.
+pub type UpdateCoverage {
+  EveryFieldRouted
+  SomeFieldsFixed
 }
 
 // A *returned operator applied directly*: `let h = pick_handler(); h(cb)`.

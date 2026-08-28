@@ -624,18 +624,21 @@ fn update_signature(
   use base_param <- result.try(
     live_param(classify_expression(record, context, env)),
   )
-  // Every updated field must be wired to a live parameter. A field wired to a
-  // fixed value (or a rebound name) disqualifies the whole signature — that field
-  // would need the base to ground, so the function stays a plain call (its
-  // receiver widens to Unknown).
-  use field_to_param <- result.try(
-    list.try_fold(fields, dict.new(), fn(acc, field) {
-      use position <- result.map(
-        live_param(record_update_field_value(field, context, env)),
-      )
-      dict.insert(acc, field.label, position)
-    }),
-  )
+  // The updated fields wired to a live parameter, and whether that is all of
+  // them. A field wired to a fixed value (or a rebound name) would need the base
+  // to ground, so it routes nothing — it is left out of the signature and marks
+  // the coverage its readers weigh a builder by.
+  let field_to_param =
+    list.fold(fields, dict.new(), fn(acc, field) {
+      case live_param(record_update_field_value(field, context, env)) {
+        Ok(position) -> dict.insert(acc, field.label, position)
+        Error(Nil) -> acc
+      }
+    })
+  let coverage = case dict.size(field_to_param) == list.length(fields) {
+    True -> types.EveryFieldRouted
+    False -> types.SomeFieldsFixed
+  }
   use defining_module <- result.try(constructor_module(
     module_alias,
     variant,
@@ -649,6 +652,7 @@ fn update_signature(
         fields: field_to_param,
         param_labels: param_label_map(function),
         constructor: types.BuiltConstructor(module: defining_module, variant:),
+        coverage:,
       ))
   }
 }
@@ -2680,8 +2684,13 @@ fn update_constructed_or_producer(
   // names doesn't match an argument of this call — an arity mismatch from a
   // signature that has skewed from the callee's source — widen to the plain-call
   // path rather than build a partial overlay whose missing updated field would
-  // silently fall through to the base and under-report.
+  // silently fall through to the base and under-report. A builder that writes a
+  // field from a fixed value states no overlay for the same reason.
   let routed = {
+    use <- bool.guard(
+      when: signature.coverage == types.SomeFieldsFixed,
+      return: Error(Nil),
+    )
     use base <- result.try(dict.get(by_position, signature.base_param))
     use fields <- result.map(
       signature.fields
