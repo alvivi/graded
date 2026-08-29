@@ -235,6 +235,9 @@ pub fn build_import_context(module: Module) -> ImportContext {
         let import_ = definition.definition
         let module_path = import_.module
 
+        // Two unaliased imports whose last segments match key the same
+        // alias and the later one wins by fold order. The compiler rejects
+        // that module, so the key is unique in anything that compiles.
         let alias = case import_.alias {
           Some(glance.Named(name)) -> name
           Some(glance.Discarded(_)) -> last_segment(module_path)
