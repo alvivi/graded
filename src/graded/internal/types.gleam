@@ -132,8 +132,9 @@ pub type EffectSet {
 // Wildcard as declared always passes; Wildcard as actual against a
 // finite declared set always fails. Polymorphic sets are conservatively
 // handled: as `actual`, any unresolved variables fail the subset check
-// (substitution should happen before comparison); as `declared`,
-// variables are treated as open slots that accept anything.
+// (substitution should happen before comparison); as `declared`, an
+// actual's variables must each be named by the declared set, so a
+// declared variable accepts itself, not anything.
 pub fn is_subset(actual: EffectSet, declared: EffectSet) -> Bool {
   case declared, actual {
     Wildcard, _ -> True
