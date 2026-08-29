@@ -1,16 +1,20 @@
 import { readFileSync } from "node:fs";
-import { Error as GError } from "./gleam.mjs";
+import { Ok, Error as GError } from "./gleam.mjs";
 
-// Read all of standard input to EOF and return it as a single string.
+// Read all of standard input to EOF, as `Ok(string)` or `Error(reason)`. The
+// reason is worded here, in the sentence the Erlang half words it with, so both
+// targets print the same thing for the same failure.
 export function read_stdin() {
   try {
-    return readFileSync(0, "utf8");
+    return new Ok(readFileSync(0, "utf8"));
   } catch (error) {
     // EOF on an empty / closed stdin reads as no input.
     if (error.code === "EOF" || error.code === "EAGAIN") {
-      return "";
+      return new Ok("");
     }
-    throw error;
+    return new GError(
+      "stdin could not be read: " + (error.code ?? error.message),
+    );
   }
 }
 

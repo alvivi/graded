@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `graded format --stdin` now reports a read error and exits non-zero on the
+  Erlang target, instead of treating it as end-of-input — a failed read
+  truncated the spec, formatted what it had, and exited successfully. The read
+  is UTF-8 on both targets.
 - A catalog file whose name does not carry a `major.minor.patch` version is now
   skipped with a warning, rather than read as some other version — `1.x.3` read
   as `1.0.3` and could outrank a correctly named file for the same package.
