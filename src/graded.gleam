@@ -4016,7 +4016,7 @@ fn enrich_with_path_deps(
       Ok(True) ->
         effects.with_path_dep_spec(
           kb,
-          effects.load_dep_spec(resolved_dep_path, name),
+          effects.load_dep_spec_at(resolved_dep_path, spec_path, name),
           types.PathDependency(package: name),
         )
       _ ->

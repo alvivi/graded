@@ -8646,6 +8646,26 @@ pub fn a_committed_path_dep_external_still_declares_test() {
   v.explanation.origin |> should.equal(Some(types.PathDependency("dep")))
 }
 
+pub fn a_malformed_path_dep_spec_keeps_the_spec_branch_test() {
+  // A path dependency shipping a spec file that does not parse stays on the
+  // spec branch: its entries are ignored and the consumer falls back to the
+  // tiers below, rather than inferring over the dependency's source. Source
+  // inference would answer `[]` for the dep's pure function; the empty spec
+  // answers nothing, so the call charges [Unknown].
+  let r =
+    run_path_dep_spec_fixture(
+      "pd_malformed_spec",
+      [#("dep.gleam", "pub fn noop() -> Nil {\n  Nil\n}\n")],
+      "not a spec line\n",
+      "check app.caller : []\n",
+      "import dep\n\npub fn caller() -> Nil {\n  dep.noop()\n}\n",
+    )
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.origin |> should.equal(None)
+}
+
 pub fn path_dep_module_level_external_preserves_effect_test() {
   // A non-empty module-level external propagates that exact set, it does not
   // collapse to pure. `assume dep : [Database]` makes `dep.touch`
