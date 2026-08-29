@@ -9,7 +9,7 @@ import graded/internal/extract
 import graded/internal/types.{
   type QualifiedName, Build, CallResult, Choice, FieldParam, FieldPath,
   FieldValue, FunctionRef, Join, Opaque, OtherExpression, Passthrough, Path,
-  QualifiedName,
+  QualifiedName, Untraceable,
 }
 
 // Return provenance
@@ -1275,4 +1275,158 @@ fn target() {
   )
   |> list.map(fn(c) { c.constructor.variant })
   |> should.equal(["Handler"])
+}
+
+// Receivers that shadow an import alias
+//
+// `receiver.label` where `receiver` names both a local binding and an imported
+// module resolves the way the compiler resolves it: the binding's type has a
+// field `label` → the field call, and the module is the fallback where it does
+// not. Two shapes prove "does not" — an inline `fn` literal, and a construction
+// whose routing wired every field the type declares — and nothing else does.
+
+pub fn a_shadowed_receivers_wired_field_beats_the_module_test() {
+  // `int` shadows `gleam/int`, and the record it holds has a `to_string` field
+  // wired to an impure function. Reading the alias first resolved this to
+  // `gleam/int.to_string` — pure — for a body that calls `shout`.
+  let src =
+    "import gleam/int
+pub type Fmt {
+  Fmt(to_string: fn(String) -> Nil)
+}
+
+fn shout(s) {
+  Nil
+}
+
+pub fn target() {
+  let int = Fmt(to_string: shout)
+  int.to_string(\"hi\")
+}"
+  let result = parse_and_extract_function(src)
+  result.resolved |> should.equal([])
+  result.local |> list.map(fn(l) { l.function }) |> should.equal(["shout"])
+}
+
+pub fn a_complete_construction_without_the_label_takes_the_module_test() {
+  // Every field this construction's type declares was wired, so a label the
+  // dict does not hold is a label the type does not have — the compiler's
+  // fallback, and the reading that compiles.
+  let src =
+    "import gleam/int
+pub type Fmt {
+  Fmt(other: fn(String) -> Nil)
+}
+
+fn shout(s) {
+  Nil
+}
+
+pub fn target() {
+  let int = Fmt(other: shout)
+  int.to_string(\"hi\")
+}"
+  let result = parse_and_extract_function(src)
+  result.resolved
+  |> list.map(fn(r) { r.name })
+  |> should.equal([QualifiedName("gleam/int", "to_string")])
+  result.field |> should.equal([])
+}
+
+pub fn a_shadowing_closure_takes_the_module_test() {
+  // An inline `fn` literal is a function, and a function value has no fields:
+  // the module is the only reading that compiles.
+  let src =
+    "import gleam/io
+pub fn target() {
+  let io = fn(_n: Int) { Nil }
+  io.println(\"hi\")
+}"
+  let result = parse_and_extract_function(src)
+  result.resolved
+  |> list.map(fn(r) { r.name })
+  |> should.equal([QualifiedName("gleam/io", "println")])
+  result.field |> should.equal([])
+}
+
+pub fn a_partial_construction_without_the_label_is_untraceable_test() {
+  // A positional construction of a type whose declared labels are not in reach
+  // wires nothing, so the absent label means untraced, not absent. Answering
+  // the module here is the undercharge one level over.
+  let src =
+    "import gleam/int
+import other
+
+pub fn target() {
+  let int = other.Fmt(shout)
+  int.to_string(\"hi\")
+}
+
+fn shout(s) {
+  Nil
+}"
+  let result = parse_and_extract_function(src)
+  result.resolved |> should.equal([])
+  let assert [call] = result.field
+  call.label |> should.equal("to_string")
+  call.provenance |> should.equal(Untraceable)
+}
+
+pub fn a_shadowing_imported_constant_is_untraceable_test() {
+  // `classify_expression` mints a `BoundFunctionRef` for any lowercase imported
+  // name, and a Gleam constant may be a record whose field is callable. It
+  // proves nothing about the value's type, so it takes the field branch.
+  let src =
+    "import dep_mod
+import gleam/int
+
+pub fn target() {
+  let int = dep_mod.default_fmt
+  int.to_string(\"hi\")
+}"
+  let result = parse_and_extract_function(src)
+  result.resolved |> should.equal([])
+  let assert [call] = result.field
+  call.provenance |> should.equal(Untraceable)
+}
+
+pub fn a_shadowing_case_over_call_results_is_untraceable_test() {
+  // `classify_case_options` admits call results, so "function-like" is a
+  // lifting property, not proof of a function value: a `case` over
+  // record-returning calls has fields.
+  let src =
+    "import gleam/int
+
+fn make() {
+  Nil
+}
+
+pub fn target(flag) {
+  let int = case flag {
+    True -> make()
+    False -> make()
+  }
+  int.to_string(\"hi\")
+}"
+  let result = parse_and_extract_function(src)
+  result.resolved |> should.equal([])
+  let assert [call] = result.field
+  call.provenance |> should.equal(Untraceable)
+}
+
+pub fn a_shadowing_binding_extraction_cannot_type_is_untraceable_test() {
+  // The stage-1 residual: extraction cannot ask what type the binding has, so
+  // an opaque one funnels to `[Unknown]` rather than to the module's effects.
+  // Over-approximate, and the direction that cannot undercharge.
+  let src =
+    "import gleam/int
+
+pub fn target() {
+  let int = 42
+  int.to_string(\"hi\")
+}"
+  let result = parse_and_extract_function(src)
+  result.resolved |> should.equal([])
+  let assert [call] = result.field
+  call.provenance |> should.equal(Untraceable)
 }

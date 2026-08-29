@@ -30,7 +30,9 @@ import graded/internal/types.{
 // bindings.
 type LocalBinding {
   BoundFunctionRef(name: QualifiedName)
-  BoundConstructor(fields: Dict(String, ArgumentValue))
+  // A let-bound record value and the fields a construction wired into it, with
+  // whether that wiring is the type's whole field set.
+  BoundConstructor(fields: Dict(String, ArgumentValue), coverage: FieldCoverage)
   // A let-bound alias of a receiver path or a forwarded parameter (`let options
   // = config.options`, `let forwarded = options`). `path` is the dotted path the
   // alias stands for (single-segment for a bare parameter), so a later use as a
@@ -71,6 +73,20 @@ type LocalBinding {
   // field-selectively; a later use as a receiver argument forwards through it.
   BoundUpdated(base: ArgumentValue, fields: Dict(String, ArgumentValue))
   BoundOpaque
+}
+
+// Whether a `BoundConstructor`'s `fields` is the whole field set of the type
+// the receiver holds, which is what decides how a *missing* label reads. A
+// direct construction whose every argument reached a declared label wires every
+// field the type has, since Gleam requires them all be supplied — so a label
+// absent from it is a label the type does not have. Anything else — a factory
+// call, which routes only what the factory wires from its own parameters, a
+// positional construction of a type whose labels are not in reach, or a value
+// round-tripped through `Constructed` — traced a subset, so an absent label
+// means untraced, not absent.
+type FieldCoverage {
+  CompleteConstruction
+  PartialConstruction
 }
 
 type Env =
@@ -508,7 +524,7 @@ fn factory_signature(
   let fields = case
     classify_constructor(constructor, module, arguments, context, dict.new())
   {
-    BoundConstructor(fields:) -> fields
+    BoundConstructor(fields:, ..) -> fields
     _ -> dict.new()
   }
   let param_positions = param_position_map(function)
@@ -919,7 +935,8 @@ fn binding_from_argument_value(value: ArgumentValue) -> LocalBinding {
     types.Choice(options) -> BoundChoice(options)
     types.ReturnedOperator(callee, args) | types.CallResult(callee, args) ->
       BoundReturnedOperator(callee, args)
-    Constructed(fields:) -> BoundConstructor(fields:)
+    Constructed(fields:) ->
+      BoundConstructor(fields:, coverage: PartialConstruction)
     types.Updated(base:, fields:) -> BoundUpdated(base:, fields:)
     LocalRef(..) | ConstructorRef | types.ReceiverPath(..) | OtherExpression ->
       BoundOpaque
@@ -1168,6 +1185,28 @@ fn resolve_qualified_call(
   }
 }
 
+// `alias.label` where `alias` names an imported module, a local binding, or
+// both. Where it names both, the compiler resolves the call type-directed: a
+// binding whose type has a field `label` takes the field, and the module is the
+// fallback where it does not — so reading the alias first undercharged a call
+// to a wired field that happens to share an import's name, and overcharged a
+// field call whose receiver shadows a module the label also names.
+//
+// Two shapes prove a binding's type has no such field, and nothing else does: an
+// inline `fn` literal, which is a function and so has no fields at all, and a
+// construction whose routing wired every field the type declares, where a label
+// the dict does not hold is the type's own answer. Every other binding a
+// shadowing name can hold — an imported name, which may be a record constant, a
+// call result, a `case` over either — can be a record with a callable field, so
+// it takes the field branch and resolves exactly as an unshadowed receiver of
+// the same shape does. Where that resolution fails it yields `[Unknown]`, which
+// over-approximates; answering the module there is the undercharge.
+//
+// The alias is read first for cost: only a receiver that shadows an import
+// reaches the env at all, so an ordinary module call pays one dict lookup.
+// Membership is tested with `dict.get` rather than `resolve_env`, which answers
+// `BoundOpaque` both for a name the env does not hold and for one it holds
+// opaquely — the two cases this has to tell apart.
 fn qualified_call_lookup(
   alias: String,
   function_name: String,
@@ -1178,56 +1217,141 @@ fn qualified_call_lookup(
 ) -> ExtractResult {
   case dict.get(context.aliases, alias) {
     Ok(module_path) ->
-      ExtractResult(..empty(), resolved: [
-        ResolvedCall(QualifiedName(module_path, function_name), span),
-      ])
-    Error(Nil) ->
-      case resolve_env(alias, env) {
-        BoundConstructor(fields:) ->
-          resolve_constructor_field_call(
-            alias,
-            function_name,
-            span,
-            receiver_span,
-            fields,
-          )
-        // A let-bound call result (`let l = make(); l.emit()`): the receiver's
-        // whole value is the call, resolved at check time through the callee's
-        // return provenance. Carried as `ProvenReceiver` so the field is read per
-        // receiver, never borrowed from the nominal index.
-        BoundReturnedOperator(callee, args) ->
-          ExtractResult(..empty(), field: [
-            FieldCall(
-              alias,
-              function_name,
-              span,
-              receiver_span,
-              types.ProvenReceiver(types.CallResult(callee, args)),
-            ),
-          ])
-        // A let-bound record-update overlay: the receiver's whole value is the
-        // overlay, read field-selectively at check time.
-        BoundUpdated(base:, fields:) ->
-          ExtractResult(..empty(), field: [
-            FieldCall(
-              alias,
-              function_name,
-              span,
-              receiver_span,
-              types.ProvenReceiver(types.Updated(base:, fields:)),
-            ),
-          ])
-        _ ->
-          ExtractResult(..empty(), field: [
-            FieldCall(
-              alias,
-              function_name,
-              span,
-              receiver_span,
-              field_receiver_provenance(alias, env),
-            ),
-          ])
+      case dict.get(env, alias) {
+        Error(Nil) -> module_call(module_path, function_name, span)
+        Ok(binding) ->
+          case shadowed_receiver_has_field(binding, function_name) {
+            False -> module_call(module_path, function_name, span)
+            True ->
+              env_field_call(
+                binding,
+                alias,
+                function_name,
+                span,
+                receiver_span,
+                env,
+              )
+          }
       }
+    Error(Nil) ->
+      env_field_call(
+        resolve_env(alias, env),
+        alias,
+        function_name,
+        span,
+        receiver_span,
+        env,
+      )
+  }
+}
+
+fn module_call(
+  module_path: String,
+  function_name: String,
+  span: glance.Span,
+) -> ExtractResult {
+  ExtractResult(..empty(), resolved: [
+    ResolvedCall(QualifiedName(module_path, function_name), span),
+  ])
+}
+
+// Whether a binding that shadows an import alias could have a field `label` —
+// the question the compiler answers from the receiver's type, answered here
+// from what extraction proved about the value. Every variant is named, so a
+// variant added later fails the build here rather than defaulting into whichever
+// branch a catch-all held.
+fn shadowed_receiver_has_field(binding: LocalBinding, label: String) -> Bool {
+  case binding {
+    // An inline `fn` literal is a function, and a function value has no fields.
+    BoundClosure(..) -> False
+    // Every field the type declares was wired, so an absent label is absent
+    // from the type.
+    BoundConstructor(fields:, coverage: CompleteConstruction) ->
+      dict.has_key(fields, label)
+    // A traced subset: an absent label was untraced, not absent.
+    BoundConstructor(coverage: PartialConstruction, ..) -> True
+    // A lowercase imported name is not necessarily a function — a Gleam
+    // constant may be a record, and a record's field may be callable — so this
+    // proves nothing about the value's type.
+    BoundFunctionRef(..) -> True
+    // "Function-like" is what `classify_case_options` tests, which admits call
+    // results and unresolved locals: a `case` over record-returning calls is a
+    // `BoundChoice` whose value has fields.
+    BoundChoice(..) -> True
+    BoundUpdated(..)
+    | BoundReturnedOperator(..)
+    | BoundReceiverPath(..)
+    | BoundParam
+    | BoundLocal
+    | BoundOpaque -> True
+  }
+}
+
+// The field call a bare-identifier receiver resolves to, by what its binding
+// holds. Reached for an unshadowed receiver, and for a shadowed one the rule
+// above sent here.
+fn env_field_call(
+  binding: LocalBinding,
+  alias: String,
+  function_name: String,
+  span: glance.Span,
+  receiver_span: glance.Span,
+  env: Env,
+) -> ExtractResult {
+  case binding {
+    BoundConstructor(fields:, ..) ->
+      resolve_constructor_field_call(
+        alias,
+        function_name,
+        span,
+        receiver_span,
+        fields,
+      )
+    // A let-bound call result (`let l = make(); l.emit()`): the receiver's
+    // whole value is the call, resolved at check time through the callee's
+    // return provenance. Carried as `ProvenReceiver` so the field is read per
+    // receiver, never borrowed from the nominal index.
+    BoundReturnedOperator(callee, args) ->
+      ExtractResult(..empty(), field: [
+        FieldCall(
+          alias,
+          function_name,
+          span,
+          receiver_span,
+          types.ProvenReceiver(types.CallResult(callee, args)),
+        ),
+      ])
+    // A let-bound record-update overlay: the receiver's whole value is the
+    // overlay, read field-selectively at check time.
+    BoundUpdated(base:, fields:) ->
+      ExtractResult(..empty(), field: [
+        FieldCall(
+          alias,
+          function_name,
+          span,
+          receiver_span,
+          types.ProvenReceiver(types.Updated(base:, fields:)),
+        ),
+      ])
+    // Everything else resolves through the receiver's own provenance: a
+    // parameter-rooted path names the parameter, and a shadowed, computed
+    // or opaque value is untraceable and reads as `[Unknown]`.
+    BoundFunctionRef(..)
+    | BoundClosure(..)
+    | BoundChoice(..)
+    | BoundReceiverPath(..)
+    | BoundParam
+    | BoundLocal
+    | BoundOpaque ->
+      ExtractResult(..empty(), field: [
+        FieldCall(
+          alias,
+          function_name,
+          span,
+          receiver_span,
+          field_receiver_provenance(alias, env),
+        ),
+      ])
   }
 }
 
@@ -1661,7 +1785,9 @@ fn factory_construction(
     )
   case dict.is_empty(fields) {
     True -> Error(Nil)
-    False -> Ok(BoundConstructor(fields:))
+    // A factory routes only the fields it wires from its own parameters, so
+    // what it did not route was never the whole set to begin with.
+    False -> Ok(BoundConstructor(fields:, coverage: PartialConstruction))
   }
 }
 
@@ -1718,7 +1844,8 @@ fn classify_rhs_ref(
     // a `let` stays opaque for forwarding (Phase 1 forwards inline receivers).
     types.ReturnedOperator(callee, args) | types.CallResult(callee, args) ->
       BoundReturnedOperator(callee, args)
-    Constructed(fields:) -> BoundConstructor(fields:)
+    Constructed(fields:) ->
+      BoundConstructor(fields:, coverage: PartialConstruction)
     types.Updated(base:, fields:) -> BoundUpdated(base:, fields:)
     // A receiver-path alias (`let options = config.options`): capture the
     // canonical path so a forwarded field var re-keys onto `config.options`
@@ -1749,39 +1876,58 @@ fn classify_constructor(
     Some(module) -> dict.get(context.cross_constructors, #(module, type_name))
   }
   let declared_labels = result.unwrap(declared_labels, [])
-  let #(fields, _remaining) =
-    list.fold(arguments, #(dict.new(), declared_labels), fn(acc, field) {
-      let #(fields_acc, remaining) = acc
-      case field {
-        glance.LabelledField(label:, item:, ..) -> #(
-          dict.insert(
-            fields_acc,
-            label,
-            classify_expression(item, context, env),
-          ),
-          remaining,
-        )
-        // A shorthand field (`SelectOptions(on_change:)`) is sugar for
-        // `on_change: on_change`, so its value is the variable named by the
-        // label — matching how `classify_arguments` reads a shorthand argument.
-        glance.ShorthandField(label:, ..) -> #(
-          dict.insert(fields_acc, label, classify_variable(label, context, env)),
-          remaining,
-        )
-        glance.UnlabelledField(item:) -> {
-          let value = classify_expression(item, context, env)
-          case remaining {
-            [Some(label), ..rest] -> #(
-              dict.insert(fields_acc, label, value),
-              rest,
-            )
-            [_, ..rest] -> #(fields_acc, rest)
-            [] -> #(fields_acc, [])
+  // Coverage rides the fold, derived from the routing rather than from the fact
+  // that this is a direct construction: an argument that reaches no label wires
+  // nothing, and every field Gleam required the caller to supply is then a
+  // field this binding does not hold.
+  let #(fields, _remaining, coverage) =
+    list.fold(
+      arguments,
+      #(dict.new(), declared_labels, CompleteConstruction),
+      fn(acc, field) {
+        let #(fields_acc, remaining, coverage) = acc
+        case field {
+          glance.LabelledField(label:, item:, ..) -> #(
+            dict.insert(
+              fields_acc,
+              label,
+              classify_expression(item, context, env),
+            ),
+            remaining,
+            coverage,
+          )
+          // A shorthand field (`SelectOptions(on_change:)`) is sugar for
+          // `on_change: on_change`, so its value is the variable named by the
+          // label — matching how `classify_arguments` reads a shorthand argument.
+          glance.ShorthandField(label:, ..) -> #(
+            dict.insert(
+              fields_acc,
+              label,
+              classify_variable(label, context, env),
+            ),
+            remaining,
+            coverage,
+          )
+          glance.UnlabelledField(item:) -> {
+            let value = classify_expression(item, context, env)
+            case remaining {
+              [Some(label), ..rest] -> #(
+                dict.insert(fields_acc, label, value),
+                rest,
+                coverage,
+              )
+              // An unlabelled field has no name a field call could use, so its
+              // absence from the dict cannot be misread as the type lacking it.
+              [None, ..rest] -> #(fields_acc, rest, coverage)
+              // No declared labels left to route to: this argument wired
+              // nothing, and the dict is a subset of the type's fields.
+              [] -> #(fields_acc, [], PartialConstruction)
+            }
           }
         }
-      }
-    })
-  BoundConstructor(fields: field_values(fields, env))
+      },
+    )
+  BoundConstructor(fields: field_values(fields, env), coverage:)
 }
 
 fn resolve_env(name: String, env: Env) -> LocalBinding {
@@ -2552,7 +2698,7 @@ fn classify_local_binding(
     // A let-bound construction/factory result resolves to its field wiring, so a
     // forwarded callee field var re-keys through it (`let o = make_options(r);
     // inner(o)` re-keys `o.resolver` onto `r`).
-    BoundConstructor(fields:) -> Constructed(fields:)
+    BoundConstructor(fields:, ..) -> Constructed(fields:)
     // A let-bound record-update overlay resolves to the overlay, so a later field
     // call or forwarding reads it field-selectively.
     BoundUpdated(base:, fields:) -> types.Updated(base:, fields:)
@@ -2961,7 +3107,7 @@ fn update_construction(
       construction_result(
         module,
         variant,
-        BoundConstructor(fields: wired),
+        BoundConstructor(fields: wired, coverage: PartialConstruction),
         span,
       )
     }
@@ -2978,7 +3124,7 @@ fn construction_result(
   span: glance.Span,
 ) -> ExtractResult {
   case classified {
-    BoundConstructor(fields:) ->
+    BoundConstructor(fields:, ..) ->
       case dict.is_empty(fields) {
         True -> empty()
         False ->
@@ -3043,7 +3189,7 @@ fn constructed_value(
   env: Env,
 ) -> types.ArgumentValue {
   case classify_constructor(type_name, module, arguments, context, env) {
-    BoundConstructor(fields:) -> Constructed(fields:)
+    BoundConstructor(fields:, ..) -> Constructed(fields:)
     _ -> OtherExpression
   }
 }
