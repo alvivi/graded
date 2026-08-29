@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A catalog file whose name does not carry a `major.minor.patch` version is now
+  skipped with a warning, rather than read as some other version — `1.x.3` read
+  as `1.0.3` and could outrank a correctly named file for the same package.
 - A record of another module's type constructed positionally
   (`handler.Handler(io.println)`) now routes its arguments to the fields they
   fill, through the defining module's labels — this package's modules and its

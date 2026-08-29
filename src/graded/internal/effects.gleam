@@ -3037,9 +3037,12 @@ pub type CatalogFile {
 
 // Every `{package}@{version}.graded` file under `catalog_dir`, in directory
 // order. A file whose name carries no `@`, or more than one, names no package
-// and version and is skipped. The read error is returned rather than folded
-// into an empty list, so a caller for which the directory is the subject can
-// tell "no catalog there" from "nothing bundled".
+// and version and is skipped. So is one whose version is not a
+// `major.minor.patch`: `parse_semver` would read it as some other version —
+// `1.x.3` as `#(1, 0, 3)` — and answer for a version nobody named, so the file
+// is dropped with a warning instead. The read error is returned rather than
+// folded into an empty list, so a caller for which the directory is the subject
+// can tell "no catalog there" from "nothing bundled".
 pub fn bundled_catalog_files(
   catalog_dir: String,
 ) -> Result(List(CatalogFile), simplifile.FileError) {
@@ -3050,10 +3053,34 @@ pub fn bundled_catalog_files(
     let name = path |> filepath.base_name |> filepath.strip_extension
     case string.split(name, "@") {
       [package, version] ->
-        Ok(CatalogFile(package:, version:, parsed: parse_semver(version), path:))
+        case strict_semver(version) {
+          Ok(parsed) -> Ok(CatalogFile(package:, version:, parsed:, path:))
+          Error(Nil) -> {
+            io.println_error(
+              "graded: warning: catalog file "
+              <> path
+              <> " names the version `"
+              <> version
+              <> "`, which is not a `major.minor.patch`; it is skipped",
+            )
+            Error(Nil)
+          }
+        }
       _ -> Error(Nil)
     }
   })
+}
+
+// The `major.minor.patch` a catalog file name declares, or `Error(Nil)` for a
+// version selection cannot place. Stricter than `parse_semver`, which stays
+// total because `pick_best_version` and `select_catalog_file` compare whatever
+// it returns: here all three components must be present and numeric once the
+// pre-release or build suffix is dropped.
+fn strict_semver(version: String) -> Result(#(Int, Int, Int), Nil) {
+  case list.try_map(string.split(version_core(version), "."), int.parse) {
+    Ok([major, minor, patch]) -> Ok(#(major, minor, patch))
+    Ok(_) | Error(Nil) -> Error(Nil)
+  }
 }
 
 // Which rule chose a package's catalog file. Both variants carry it as `file`,
