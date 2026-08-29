@@ -1,11 +1,16 @@
-// Tests for `graded/internal/config` — gleam.toml `[tools.graded]` parsing.
-// Fixtures are written under `/tmp/` so they don't get picked up by the
-// Gleam compiler as project sources.
+// Tests for `graded/internal/config` — gleam.toml `[tools.graded]` parsing
+// and source-path-to-module-name resolution. Fixtures are written under
+// `/tmp/` so they don't get picked up by the Gleam compiler as project
+// sources.
 
 import filepath
+import glance
+import gleam/dict
+import gleam/list
 import gleam/set
 import gleeunit/should
 import graded/internal/config
+import graded/internal/extract
 import graded/internal/types
 import simplifile
 
@@ -236,4 +241,69 @@ pub fn a_missing_gleam_toml_is_every_target_test() {
   // compiler's default could stand in for, so both readings are every target.
   config.defaults_for("myapp").targets
   |> should.equal(types.NamedTargets(types.every_target()))
+}
+
+// Module paths
+//
+// `config.module_path_for_source` turns a source file path into the dotted
+// module name, and that name has to agree with what `extract` reads off an
+// import.
+
+pub fn module_path_simple_test() {
+  config.module_path_for_source("src/app.gleam", "src")
+  |> should.equal("app")
+}
+
+pub fn module_path_nested_test() {
+  config.module_path_for_source("src/app/router.gleam", "src")
+  |> should.equal("app/router")
+}
+
+pub fn module_path_custom_directory_test() {
+  config.module_path_for_source("test/fixtures/view.gleam", "test/fixtures")
+  |> should.equal("view")
+}
+
+pub fn module_path_deeply_nested_test() {
+  config.module_path_for_source("src/app/web/handlers/auth.gleam", "src")
+  |> should.equal("app/web/handlers/auth")
+}
+
+// Critical: the dotted module name we compute for a `.gleam` file must
+// exactly match the string `extract.build_import_context` produces when
+// another module imports it. The topological sort relies on intersecting
+// these two views — if they ever drift, dependency edges silently
+// disappear and inference degenerates back to the per-file behaviour.
+pub fn module_path_matches_import_context_test() {
+  // Compute the module name for a fake "leaf" file as it would live on disk.
+  let leaf_module = config.module_path_for_source("src/app/d.gleam", "src")
+
+  // Parse a sibling that imports it and read what extract sees.
+  let src =
+    "import app/d
+pub fn run() { d.format(\"hi\") }"
+  let assert Ok(module) = glance.module(src)
+  let ctx = extract.build_import_context(module)
+
+  // The extracted import path must match what we computed from the file path.
+  ctx.aliases
+  |> dict.values()
+  |> list.contains(leaf_module)
+  |> should.be_true()
+}
+
+pub fn module_path_matches_import_context_nested_test() {
+  let leaf_module =
+    config.module_path_for_source("src/app/web/handlers/auth.gleam", "src")
+
+  let src =
+    "import app/web/handlers/auth
+pub fn run() { auth.check() }"
+  let assert Ok(module) = glance.module(src)
+  let ctx = extract.build_import_context(module)
+
+  ctx.aliases
+  |> dict.values()
+  |> list.contains(leaf_module)
+  |> should.be_true()
 }
