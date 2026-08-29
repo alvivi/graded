@@ -272,11 +272,12 @@ pub fn new_knowledge_base() -> KnowledgeBase {
   )
 }
 
-// Build a knowledge base from the catalog only (no dependency scanning).
-pub fn empty_knowledge_base() -> KnowledgeBase {
+// Build a knowledge base from the catalog only (no dependency scanning),
+// selecting versions from `package_root`'s `manifest.toml`.
+pub fn empty_knowledge_base(package_root: String) -> KnowledgeBase {
   let catalog_dir = catalog_directory()
   let #(cat_effects, cat_module_effects, cat_params, cat_type_fields) =
-    load_catalog(catalog_dir, "manifest.toml")
+    load_catalog(catalog_dir, filepath.join(package_root, "manifest.toml"))
   KnowledgeBase(
     all_effects: cat_effects,
     param_bounds: cat_params,
