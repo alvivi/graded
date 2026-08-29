@@ -145,13 +145,25 @@ pub fn main() -> Nil {
     ["--version", ..] -> io.println("graded " <> version())
 
     ["format", "--stdin"] ->
-      case run_format_stdin(read_stdin()) {
-        Ok(output) -> io.print(output)
-        Error(GradedParseError(message:, ..)) -> {
-          io.println_error("graded: error: parse error in stdin:" <> message)
+      case read_stdin() {
+        // The read failure has no meaning to a library consumer — this is the
+        // only caller — so it is reported here rather than through a new
+        // `GradedError` variant.
+        Error(reason) -> {
+          io.println_error("graded: error: " <> reason)
           halt(1)
         }
-        Error(error) -> fail(error)
+        Ok(input) ->
+          case run_format_stdin(input) {
+            Ok(output) -> io.print(output)
+            Error(GradedParseError(message:, ..)) -> {
+              io.println_error(
+                "graded: error: parse error in stdin:" <> message,
+              )
+              halt(1)
+            }
+            Error(error) -> fail(error)
+          }
       }
 
     ["format", "--check", ..rest] ->
@@ -4543,10 +4555,14 @@ pub fn format_catalog_problem(problem: CatalogProblem) -> String {
 @external(javascript, "./graded_ffi.mjs", "halt")
 fn halt(code: Int) -> Nil
 
-// Read all of standard input to EOF as a single string.
+// Read all of standard input to EOF as a single string, or the reason it could
+// not be read. A read error is reported rather than folded into end-of-input:
+// `format --stdin` writes its result back over what the user is editing, and a
+// truncated read wrote a shortened file with a successful exit.
+// nolint: stringly_typed_error -- opaque platform read diagnostic, printed by the CLI
 @external(erlang, "graded_ffi", "read_stdin")
 @external(javascript, "./graded_ffi.mjs", "read_stdin")
-fn read_stdin() -> String
+fn read_stdin() -> Result(String, String)
 
 // graded's own version, from the loaded OTP application's `vsn`.
 @external(erlang, "graded_ffi", "version")

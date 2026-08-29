@@ -49,6 +49,13 @@ pub fn format_fails_on_unparseable_spec_test() {
 // formatted result, for editor integration. `run_format_stdin` is the pure
 // transform behind it: parse, sort, reformat.
 
+pub fn format_stdin_accepts_empty_input_test() {
+  // A closed or empty stdin is no input, not a failure — the FFI reports only a
+  // genuine read error, which is what stops the formatted result being written
+  // back over a truncated read.
+  graded.run_format_stdin("") |> should.equal(Ok("\n"))
+}
+
 pub fn format_stdin_sorts_and_normalizes_test() {
   graded.run_format_stdin("effects myapp.b:[Http]\ncheck  myapp.a : []")
   |> should.equal(Ok("check myapp.a : []\n\neffects myapp.b : [Http]\n"))

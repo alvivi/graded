@@ -1,9 +1,21 @@
 -module(graded_ffi).
 -export([read_stdin/0, priv_directory/0, version/0]).
 
-% Read all of standard input to EOF and return it as a single binary.
+% Read all of standard input to EOF, as `{ok, Binary}` or `{error, Reason}`.
+% The read is set to UTF-8 explicitly, so the two targets agree on encoding as
+% well as on failure: a mid-read error is reported rather than folded into eof,
+% which truncated the input and let `format` write a shortened file back.
 read_stdin() ->
-    unicode:characters_to_binary(read_lines(standard_io)).
+    _ = io:setopts(standard_io, [{encoding, utf8}]),
+    case read_lines(standard_io) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Lines} ->
+            case unicode:characters_to_binary(Lines) of
+                Binary when is_binary(Binary) -> {ok, Binary};
+                _ -> {error, <<"stdin could not be read: not valid UTF-8">>}
+            end
+    end.
 
 % graded's own `priv` directory, located via the loaded application rather than
 % the process working directory. Absolute when graded runs from a release or
@@ -27,7 +39,20 @@ version() ->
 
 read_lines(Device) ->
     case io:get_line(Device, "") of
-        eof -> [];
-        {error, _} -> [];
-        Line -> [Line | read_lines(Device)]
+        eof ->
+            {ok, []};
+        {error, Reason} ->
+            {error, read_error(Reason)};
+        Line ->
+            case read_lines(Device) of
+                {ok, Rest} -> {ok, [Line | Rest]};
+                {error, Reason} -> {error, Reason}
+            end
     end.
+
+% The sentence both targets word a read failure with, the platform's own reason
+% after it.
+read_error(Reason) ->
+    unicode:characters_to_binary(
+        io_lib:format("stdin could not be read: ~p", [Reason])
+    ).
