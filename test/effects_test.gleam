@@ -1085,6 +1085,38 @@ pub fn bundled_catalog_files_keeps_the_raw_version_string_test() {
   |> should.equal([#("beta", "1.2.0-rc1", #(1, 2, 0))])
 }
 
+pub fn a_malformed_catalog_version_is_skipped_test() {
+  // `parse_semver` reads `1.x.3` as `#(1, 0, 3)`, which would outrank the
+  // correctly named 1.0.0 file for an installed 1.0.5 and answer for a version
+  // nobody named. The malformed file is dropped, so 1.0.0 is what is left to
+  // select.
+  let root =
+    write_fixture("build/eff_catalog_malformed_version", [
+      #("foo@1.x.3.graded", "effects foo.run : []\n"),
+      #("foo@1.0.0.graded", "effects foo.run : []\n"),
+    ])
+  let assert Ok(files) = effects.bundled_catalog_files(root)
+  cleanup(root)
+  files |> file_labels |> should.equal(["foo@1.0.0"])
+  let assert Ok(selection) = effects.select_catalog_file(files, "foo", "1.0.5")
+  selection.file.version |> should.equal("1.0.0")
+}
+
+pub fn a_catalog_holding_only_a_malformed_version_selects_nothing_test() {
+  // Nothing stands in for the skipped file: a typo makes the entry absent, not
+  // the fallback the highest-bundled rule would otherwise reach for.
+  let root =
+    write_fixture("build/eff_catalog_only_malformed", [
+      #("foo@1.2.graded", "effects foo.run : []\n"),
+    ])
+  let assert Ok(files) = effects.bundled_catalog_files(root)
+  cleanup(root)
+  files |> should.equal([])
+  effects.select_catalog_file(files, "foo", "1.0.5")
+  |> result.is_error
+  |> should.be_true()
+}
+
 pub fn bundled_catalog_files_reports_an_unreadable_directory_test() {
   effects.bundled_catalog_files("build/eff_catalog_missing")
   |> result.is_error
