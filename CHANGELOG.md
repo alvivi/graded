@@ -9,38 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Two `check` shapes are now verified instead of warned about. `check
-  <module>.<Type>.<field> : [...]` proves that every value the package wires
-  into a function-typed field stays within the budget — direct constructions,
-  record updates, and calls to a factory or update builder that wires the field
-  — and `check <module>.<function> : [...] where returns : <operator>` proves
-  the operator the function hands back is contained by the one the clause
-  declares. Both prove without answering: neither becomes a resolution source,
-  so an `assume` line is still what declares a field's effect or a foreign
-  producer's returned operator.
+- `check <module>.<Type>.<field> : [...]` is now verified instead of warned
+  about: every value the package wires into a function-typed field — direct
+  construction, record update, or a call to a factory or update builder — must
+  stay within the budget. Sites outside the package are not visible, so a
+  constructor called from elsewhere is not covered.
+- `check <module>.<function> : [...] where returns : <operator>` is now verified
+  too: the operator the function hands back must be contained by the declared
+  one. Neither shape answers a lookup — an `assume` line still declares a
+  field's effect or a foreign producer's returned operator.
+- An assertion that can be neither proved nor disproved — an untraceable wired
+  value, a factory no visible call reaches, a producer with no return type
+  annotation — is reported as unproved and `graded check` exits non-zero,
+  instead of passing.
+- Warnings for a field path naming no field, a field no variant makes callable,
+  and a callable field nothing in the package constructs.
 
-  A field `check` covers this package's own construction sites; a public
-  constructor or factory called from outside is not one graded can see. Where an
-  assertion can be neither proved nor disproved — a wired value graded cannot
-  trace, a factory no visible call reaches, a producer with no return type
-  annotation, a foreign producer nothing declares — the line is reported as
-  unproved beside the violations, and `graded check` exits non-zero on it rather
-  than passing on something nothing proved.
+### Changed
 
-  A `check` line's `where returns` clause is now linted for unbound and aliased
-  variables like every other live clause. A bound list or a `where returns`
-  clause on a *field* path has no meaning and is reported as unsupported; for a
-  clause, the field budget on the same line is still verified. New warnings
-  cover a field path naming no field, a field no variant makes callable, and a
-  callable field nothing in the package constructs a value of.
+- A `check` line's `where returns` clause is linted for unbound and aliased
+  variables like every other live clause. A bound list or `where returns` clause
+  on a *field* path is reported as unsupported; the field budget on that line is
+  still verified.
 
 ### Fixed
 
-- A record of another module's type constructed **positionally**
+- A record of another module's type constructed positionally
   (`handler.Handler(io.println)`) now routes its arguments to the fields they
-  fill, through the labels the defining module declares — this package's modules
-  and its dependencies' alike. Only labeled wiring resolved across a module
-  boundary before, so a field call on such a record read `[Unknown]`.
+  fill, through the defining module's labels — this package's modules and its
+  dependencies' alike. Only labeled wiring crossed a module boundary before, so
+  a field call on such a record read `[Unknown]`.
 
 ## [0.18.0] - 2026-08-28
 
