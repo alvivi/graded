@@ -556,11 +556,18 @@ pub type ArgumentValue {
     captures: List(#(String, ArgumentValue)),
     body: List(Statement),
   )
-  // A value selected among several function-like options by a `case`/`if`
+  // A value selected among several liftable options by a `case`/`if`
   // (`case c { True -> f  False -> g }`). When passed to an operator parameter,
   // each option is lifted and the results are joined (`(f ⊔ g)(cb) = f(cb) ⊔
-  // g(cb)`), so the effect over-approximates every branch. Any non-function
-  // branch makes the whole expression `OtherExpression` instead.
+  // g(cb)`), so the effect over-approximates every branch.
+  //
+  // What the predicate behind it tests is liftability, not the value's type:
+  // `classify_case_options` admits a call result, a returned operator and an
+  // unresolved local beside a function reference and a closure, because an
+  // option it cannot lift widens to `[Unknown]`, which is sound for lifting. So
+  // a `Choice` is not proof that the value is a function — a `case` over
+  // record-returning calls is one — and a branch it cannot classify at all
+  // makes the whole expression `OtherExpression` instead.
   Choice(options: List(ArgumentValue))
   // A value produced by *calling* a function that returns a function
   // (`let h = pick_handler()`). `callee` names the producer; a `""` module is

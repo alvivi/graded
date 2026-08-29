@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A field call whose receiver shares a name with an imported module now resolves
+  the way the compiler resolves it: the receiver's own field wins where the
+  value is known to have it, and the module is the fallback where a complete
+  construction proves it does not. The import used to win outright, so
+  `let int = Fmt(to_string: shout)` followed by `int.to_string("hi")` was
+  charged `gleam/int.to_string` — pure — for a body that writes to stdout. A
+  `check` line that passed on such a receiver may now fail. Where graded cannot
+  tell whether the receiver has the field, the call reads `[Unknown]` rather
+  than the module's effects.
 - `graded format --stdin` now reports a read error and exits non-zero on the
   Erlang target, instead of treating it as end-of-input — a failed read
   truncated the spec, formatted what it had, and exited successfully. The read

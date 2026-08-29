@@ -7077,6 +7077,153 @@ fn infer_project(
   annotation.extract_annotations(file)
 }
 
+// Receivers that shadow an import alias
+//
+// The effect sets the resolution rule produces, end to end: a wired field's own
+// effects where the receiver has that field, the module's where a complete
+// construction proves it does not, and `[Unknown]` — never the shadowed
+// module's — wherever extraction could not tell. `loud.emit` and `loud.holler`
+// are impure and `loud.quiet` is pure, so every case below reads differently
+// under the two branches.
+
+fn shadow_effects(name: String) -> types.EffectTerm {
+  let root = "build/shadowed_receiver"
+  write_project(
+    root,
+    [
+      #(
+        "loud.gleam",
+        "@external(erlang, \"loud_ffi\", \"emit\")
+pub fn emit(s: String) -> Nil
+
+pub fn holler(s: String) -> Nil {
+  emit(s)
+}
+
+pub fn quiet(s: String) -> Nil {
+  Nil
+}
+",
+      ),
+      #(
+        "dep_mod.gleam",
+        "import loud
+
+pub type Boxed {
+  Boxed(emit: fn(String) -> Nil)
+}
+
+pub const default_boxed = Boxed(emit: loud.emit)
+",
+      ),
+      #(
+        "proj.gleam",
+        "import dep_mod
+import loud
+
+pub type Fmt {
+  Fmt(
+    quiet: fn(String) -> Nil,
+    other: fn(String) -> Nil,
+    emit: fn(String) -> Nil,
+  )
+}
+
+fn shout(s: String) -> Nil {
+  loud.emit(s)
+}
+
+pub fn make_fmt(o: fn(String) -> Nil) -> Fmt {
+  Fmt(quiet: shout, other: o, emit: shout)
+}
+
+pub fn wired_field_wins() -> Nil {
+  let loud = Fmt(quiet: shout, other: shout, emit: shout)
+  loud.quiet(\"hi\")
+}
+
+pub fn absent_field_takes_the_module() -> Nil {
+  let loud = Fmt(quiet: shout, other: shout, emit: shout)
+  loud.holler(\"hi\")
+}
+
+pub fn closure_takes_the_module() -> Nil {
+  let loud = fn(_s: String) { Nil }
+  loud.emit(\"hi\")
+}
+
+pub fn factory_routed_field() -> Nil {
+  let loud = make_fmt(shout)
+  loud.other(\"hi\")
+}
+
+pub fn factory_untraced_field() -> Nil {
+  let loud = make_fmt(shout)
+  loud.emit(\"hi\")
+}
+
+pub fn imported_constant_field() -> Nil {
+  let loud = dep_mod.default_boxed
+  loud.emit(\"hi\")
+}
+",
+      ),
+    ],
+    "assume loud.emit : [Stdout]\n",
+  )
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(content) = simplifile.read(root <> "/proj.graded")
+  let assert Ok(file) = annotation.parse_file(content)
+  let assert Ok(annotation) =
+    list.find(annotation.extract_annotations(file), fn(a) {
+      a.function == "proj." <> name
+    })
+  annotation.effects
+}
+
+pub fn a_shadowed_receivers_wired_field_is_charged_test() {
+  // The undercharge: `loud` shadows the module `loud`, whose `quiet` is pure,
+  // and the record's own `quiet` field is wired to a function that is not.
+  shadow_effects("wired_field_wins")
+  |> should.equal(types.TLabels(set.from_list(["Stdout"])))
+}
+
+pub fn a_complete_constructions_absent_field_reads_the_module_test() {
+  // The overcharge, the other way: this construction wired every field the
+  // type declares, and `holler` is none of them — so the call is the module's,
+  // which is what compiles.
+  shadow_effects("absent_field_takes_the_module")
+  |> should.equal(types.TLabels(set.from_list(["Stdout"])))
+}
+
+pub fn a_shadowing_closure_reads_the_module_test() {
+  // A function value has no fields, so `loud.emit` is the module's.
+  shadow_effects("closure_takes_the_module")
+  |> should.equal(types.TLabels(set.from_list(["Stdout"])))
+}
+
+pub fn a_factory_routed_field_keeps_its_effects_test() {
+  // A partial binding is not an unknown one: the field the factory did route
+  // resolves through the machinery it always did.
+  shadow_effects("factory_routed_field")
+  |> should.equal(types.TLabels(set.from_list(["Stdout"])))
+}
+
+pub fn a_factory_unrouted_field_is_unknown_test() {
+  // The factory fills `emit` internally, so this binding never traced it.
+  // Absent means untraced here, and answering `loud.emit` would credit the
+  // call with a declaration that describes another function.
+  shadow_effects("factory_untraced_field")
+  |> should.equal(types.TLabels(set.from_list(["Unknown"])))
+}
+
+pub fn a_shadowing_imported_constant_is_unknown_test() {
+  // A lowercase imported name can be a record constant with a callable field —
+  // which is what this is — so it proves nothing about the value's type.
+  shadow_effects("imported_constant_field")
+  |> should.equal(types.TLabels(set.from_list(["Unknown"])))
+}
+
 fn run_project_with_spec(
   root: String,
   source: String,
