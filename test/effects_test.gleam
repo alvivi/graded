@@ -26,7 +26,7 @@ import support.{cleanup, write_fixture}
 // effectful functions, pure stdlib modules, and the Unknown fallback.
 
 fn knowledge_base() -> effects.KnowledgeBase {
-  effects.empty_knowledge_base()
+  effects.empty_knowledge_base(".")
 }
 
 pub fn known_effectful_test() {
@@ -2237,7 +2237,7 @@ pub fn a_duplicate_declaration_wins_term_and_bounds_together_test() {
       "assume m.f(a: [a]) : [a, X]\nassume m.f(b: [b]) : [b, Y]",
     )
   let base =
-    effects.empty_knowledge_base()
+    effects.empty_knowledge_base(".")
     |> effects.with_assumes(annotation.extract_assumes(file), types.UserAssume)
   let name = QualifiedName("m", "f")
   let assert effects.Known(term, _source) = effects.lookup(base, name)

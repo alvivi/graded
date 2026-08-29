@@ -6794,7 +6794,7 @@ fn checker_infer_opaque_field() -> Result(List(types.EffectAnnotation), Nil) {
   Ok(checker.infer(
     module,
     "opaque_field",
-    effects.empty_knowledge_base(),
+    effects.empty_knowledge_base("."),
     [],
     signatures.empty(),
     dict.new(),
@@ -6991,7 +6991,7 @@ fn checker_infer_factory_forward() -> Result(List(types.EffectAnnotation), Nil) 
   Ok(checker.infer(
     module,
     "factory_forward",
-    effects.empty_knowledge_base(),
+    effects.empty_knowledge_base("."),
     [],
     signatures.from_glance_module("factory_forward", module),
     dict.new(),

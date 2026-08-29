@@ -29,7 +29,7 @@ import support
 // effects, transitive calls, closures, and unknown locals.
 
 fn knowledge_base() -> effects.KnowledgeBase {
-  effects.empty_knowledge_base()
+  effects.empty_knowledge_base(".")
 }
 
 fn check_source(
@@ -2372,7 +2372,7 @@ fn polymorphic_kb() -> effects.KnowledgeBase {
         ),
       ]),
     ])
-  effects.empty_knowledge_base()
+  effects.empty_knowledge_base(".")
   |> effects.with_inferred(
     dict.map_values(effects_map, fn(_, v) { effect_term.from_effect_set(v) }),
     types.ProjectInferred,
@@ -2562,7 +2562,7 @@ fn two_callback_kb() -> effects.KnowledgeBase {
         ),
       ]),
     ])
-  effects.empty_knowledge_base()
+  effects.empty_knowledge_base(".")
   |> effects.with_inferred(
     dict.map_values(effects_map, fn(_, v) { effect_term.from_effect_set(v) }),
     types.ProjectInferred,
@@ -2677,7 +2677,7 @@ fn apply_twice_kb_and_registry() -> #(
   signatures.SignatureRegistry,
 ) {
   let kb =
-    effects.empty_knowledge_base()
+    effects.empty_knowledge_base(".")
     |> effects.with_inferred(
       dict.from_list([
         #(
@@ -2840,7 +2840,7 @@ pub fn mixed_tracked_and_closure_args_test() {
       signatures.from_glance_module("helpers", db_module),
     )
   let kb =
-    effects.empty_knowledge_base()
+    effects.empty_knowledge_base(".")
     |> effects.with_inferred(
       dict.from_list([
         #(
@@ -6677,7 +6677,7 @@ pub fn run() {
 }"
   let assert Ok(module) = glance.module(source)
   let knowledge_base =
-    effects.empty_knowledge_base()
+    effects.empty_knowledge_base(".")
     |> effects.with_inferred(
       dict.from_list([
         #(QualifiedName("helper/lib", "use_op"), types.TVar("cb")),
@@ -6722,7 +6722,7 @@ pub fn go(r: Runner) -> Nil {
       "app",
       "go",
       [[]],
-      effects.empty_knowledge_base(),
+      effects.empty_knowledge_base("."),
       signatures.from_glance_module("app", module),
       dict.new(),
       dict.new(),
@@ -6752,7 +6752,7 @@ pub fn run(r: Runner) -> Nil {
   checker.fallback_effects(
     module,
     "app",
-    effects.empty_knowledge_base(),
+    effects.empty_knowledge_base("."),
     signatures.from_glance_module("app", module),
     dict.new(),
     dict.new(),
@@ -6778,7 +6778,7 @@ pub fn run() -> Nil {
 }"
   let assert Ok(module) = glance.module(source)
   let knowledge_base =
-    effects.empty_knowledge_base()
+    effects.empty_knowledge_base(".")
     |> effects.with_inferred(
       dict.from_list([
         #(QualifiedName("helper/lib", "use_op"), types.TVar("cb")),
