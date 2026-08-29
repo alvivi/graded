@@ -6,6 +6,7 @@
 // have to read back. Every fact a renderer states has to be a field here; a
 // renderer that re-derives one can drift from the lookup that produced it.
 
+import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -29,6 +30,13 @@ pub type EffectAnswer {
     module: String,
     bounds: List(ParamBound),
     term: EffectTerm,
+    // The operator the function hands back, where a `where returns` clause or
+    // an inferred summary states one. The whole record, not the term alone: a
+    // clause is three facts — the operator, the bound list that scopes *it*,
+    // and the tier that wrote it — and neither of the last two is the effects
+    // channel's `bounds` or `source`, which are merged and can disagree with
+    // it by design.
+    returns: Option(effects.ReturnedOperator),
     source: AnswerSource,
   )
   // A field of a custom type, declared by a field `assume` line. `module` is `None` for
@@ -114,10 +122,13 @@ pub fn render_graded(answer: EffectAnswer) -> String {
     // a module-level external declares no per-function bounds itself, but a
     // running fallback body under it states its own effects over the parameters
     // it calls.
-    FunctionAnswer(name:, module:, bounds:, term:, source:) ->
-      effects_line(name, bounds, term)
+    FunctionAnswer(name:, module:, bounds:, term:, returns:, source:) -> {
+      let clause = clause_rendering(returns, bounds)
+      effects_line(name, bounds, term, line_clause(clause))
       <> graded_source(module, source)
+      <> graded_clause(clause, entry_origin(source))
       <> graded_fallback(source_fallback(source))
+    }
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
       annotation.format_type_field(FieldAnnotation(
         module:,
@@ -134,14 +145,119 @@ fn effects_line(
   name: String,
   bounds: List(ParamBound),
   term: EffectTerm,
+  returns: Option(EffectTerm),
 ) -> String {
   annotation.format_annotation(EffectAnnotation(
     kind: types.Effects,
     function: name,
     params: bounds,
     effects: term,
-    returns: None,
+    returns:,
   ))
+}
+
+// How a `where returns` clause is stated.
+//
+// A `.graded` line carries one bound list, scoping both halves, so the clause
+// can ride the line only where the list printed on it is the list that scopes
+// the clause. In a spec file that is always so — both loaders fill the summary
+// off the same line — but the knowledge base merges the effects channel's
+// bounds, and a clause printed against a merged list would bind its variables
+// to budgets no annotation paired it with. That clause goes to the comment
+// channel instead, where it needs no line to be valid.
+type ClauseRendering {
+  NoClause
+  OnLine(operator: EffectTerm, source: types.LookupOrigin)
+  InComment(operator: EffectTerm, source: types.LookupOrigin)
+}
+
+// Which of the two a clause takes. `Fresh` carries no bounds by design — it is
+// scoped by the params-channel entry, which is this answer's own bound list —
+// so it always rides the line; `Closed` and `Declared` carry the list that
+// scopes them and ride the line only where it is the one being printed. The
+// bounds themselves are compared, not the names they bind: a line pairing the
+// same `f` with a different budget binds every variable the clause names and
+// still means something neither channel holds.
+fn clause_rendering(
+  returns: Option(effects.ReturnedOperator),
+  bounds: List(ParamBound),
+) -> ClauseRendering {
+  case returns {
+    None -> NoClause
+    Some(effects.ReturnedOperator(operator:, summary:, source:)) ->
+      case summary {
+        effects.Fresh -> OnLine(operator, source)
+        effects.Closed(bounds: scoping) | effects.Declared(bounds: scoping) ->
+          case scoping == bounds {
+            True -> OnLine(operator, source)
+            False -> InComment(operator, source)
+          }
+      }
+  }
+}
+
+fn line_clause(clause: ClauseRendering) -> Option(EffectTerm) {
+  case clause {
+    OnLine(operator:, ..) -> Some(operator)
+    InComment(..) | NoClause -> None
+  }
+}
+
+// The clause's own provenance, stated apart from the effects entry's. The one
+// `// resolved from` comment above names the effects channel alone, and the two
+// channels can be written by different tiers — a clause-only `assume` beside a
+// catalog effects entry is the shape — so a clause printed under that comment
+// would be attributed to a source that did not write it. Where the same source
+// wrote both, one statement says so rather than repeating the origin.
+fn graded_clause(
+  clause: ClauseRendering,
+  entry: Result(types.LookupOrigin, Nil),
+) -> String {
+  case clause {
+    NoClause -> ""
+    OnLine(..) | InComment(..) -> "\n// " <> clause_note(clause, entry)
+  }
+}
+
+// The one wording both clause notes share: the operator, where it came from,
+// and — for a clause the line could not carry — why it is here rather than on
+// the line.
+fn clause_note(
+  clause: ClauseRendering,
+  entry: Result(types.LookupOrigin, Nil),
+) -> String {
+  case clause {
+    NoClause -> ""
+    OnLine(operator:, source:) ->
+      "returns "
+      <> annotation.format_operator(operator)
+      <> clause_attribution(source, entry)
+    InComment(operator:, source:) ->
+      "returns "
+      <> annotation.format_operator(operator)
+      <> clause_attribution(source, entry)
+      <> ", scoped by bounds this line does not carry"
+  }
+}
+
+fn clause_attribution(
+  source: types.LookupOrigin,
+  entry: Result(types.LookupOrigin, Nil),
+) -> String {
+  use <- bool.guard(when: entry == Ok(source), return: ", from the same source")
+  ", from " <> effects.describe_origin(source)
+}
+
+// The origin of the entry that answered the effects channel, where one keyed
+// it. The three sources no entry wrote carry none, so a clause beside them is
+// always attributed to itself.
+fn entry_origin(source: AnswerSource) -> Result(types.LookupOrigin, Nil) {
+  case source {
+    Entry(entry: types.FunctionEntry(origin:), ..)
+    | Entry(entry: types.ModuleAssumeEntry(origin:), ..) -> Ok(origin)
+    UndeclaredExternal(..) | UnreachedDeclaration | RunningFallbackBody ->
+      Error(Nil)
+  }
 }
 
 // The comment naming what answered: the source that wrote the winning entry,
@@ -185,13 +301,14 @@ fn graded_origin(origin: types.TypeFieldOrigin) -> String {
 
 pub fn render_prose(answer: EffectAnswer) -> String {
   case answer {
-    FunctionAnswer(name:, module:, bounds:, term:, source:) ->
+    FunctionAnswer(name:, module:, bounds:, term:, returns:, source:) ->
       [
         function_sentence(name, bounds, term),
-        ..list.append(
+        ..list.flatten([
           detail_lines(bounds, module, source),
+          prose_clause(returns, entry_origin(source)),
           prose_fallback(source_fallback(source)),
-        )
+        ])
       ]
       |> string.join("\n")
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
@@ -245,6 +362,40 @@ fn graded_fallback(fallback: types.FallbackDisposition(EffectTerm)) -> String {
       "\n// unioned with " <> charged_fallback_clause <> formatted_term(term)
     types.FallbackSuppressed(term) ->
       "\n// " <> suppressed_fallback_clause <> formatted_term(term)
+  }
+}
+
+// The returns channel in prose. No line has to carry it here, so the clause is
+// always stated — with the bounds that scope it where the summary carries its
+// own, which is the list its variables answer to whatever the effects channel
+// above pairs them with.
+fn prose_clause(
+  returns: Option(effects.ReturnedOperator),
+  entry: Result(types.LookupOrigin, Nil),
+) -> List(String) {
+  case returns {
+    None -> []
+    Some(effects.ReturnedOperator(operator:, summary:, source:)) -> {
+      let stated = [
+        "  returns "
+        <> annotation.format_operator(operator)
+        <> clause_attribution(source, entry),
+      ]
+      case summary {
+        effects.Fresh -> stated
+        effects.Closed(bounds:) | effects.Declared(bounds:) ->
+          case bounds {
+            [] -> stated
+            _ ->
+              list.append(stated, [
+                "  that clause is scoped by "
+                <> bounds
+                |> list.map(annotation.format_param_bound)
+                |> string.join(", "),
+              ])
+          }
+      }
+    }
   }
 }
 

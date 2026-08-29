@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `graded effect` now states the `where returns` clause a name answers with, in
+  both formats. A clause the `.graded` line cannot carry — one scoped by a bound
+  list that is not the line's — is stated in the comment channel instead, and
+  either way the clause names the source that wrote it, which need not be the
+  one that wrote the effects half.
 - A `check` line's `where returns` clause is linted for unbound and aliased
   variables like every other live clause. A bound list or `where returns` clause
   on a *field* path is reported as unsupported; the field budget on that line is

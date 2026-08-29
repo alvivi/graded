@@ -971,3 +971,75 @@ pub fn a_dependency_externals_callback_answers_the_same_on_both_paths_test() {
   |> should.equal(expected)
   cleanup(project)
 }
+
+// The `where returns` channel
+//
+// A clause is part of what the knowledge base answers with, so both formats
+// state it — and both paths state the same one.
+
+pub fn a_declared_returns_clause_rides_the_line_test() {
+  // `assume foreign_values.declared_returns_operator where returns : [Disk]`.
+  // The clause is scoped by the same (empty) bound list the effects half is, so
+  // it renders on the line rather than in the comment channel.
+  lookup("foreign_values.declared_returns_operator")
+  |> should.equal(
+    "effects foreign_values.declared_returns_operator : [] where returns : [Disk]
+// resolved from your spec's `assume` line
+// returns [Disk], from the same source",
+  )
+}
+
+pub fn an_inferred_returns_clause_is_stated_too_test() {
+  // Nothing declares this one: the clause is the summary this run's inference
+  // made, and it is stated exactly as a declared one is.
+  lookup("foreign_values.native_returns_operator")
+  |> should.equal(
+    "effects foreign_values.native_returns_operator : [] where returns : [Disk]
+// resolved from in-memory inference
+// returns [Disk], from the same source",
+  )
+}
+
+pub fn prose_states_the_clause_after_the_source_test() {
+  let assert Ok(output) =
+    graded.run_effect_formatted(
+      fixtures,
+      "foreign_values.declared_returns_operator",
+      graded.Prose,
+    )
+  output
+  |> should.equal(
+    "foreign_values.declared_returns_operator is pure — no effects ([])
+  source: your spec's `assume` line
+  returns [Disk], from the same source",
+  )
+}
+
+pub fn both_paths_state_one_clause_test() {
+  // The parity assertion: the fast path folds the spec's clauses, and declines
+  // outright for a producer whose clause the full context would infer by
+  // walking its body.
+  let name = "foreign_values.declared_returns_operator"
+  graded.run_effect(fixtures, name)
+  |> should.equal(graded.run_effect_from_project(fixtures, name))
+}
+
+pub fn a_stale_clause_only_assume_reaches_neither_path_test() {
+  // A clause-only `assume` over a function this package gives a Gleam body is
+  // stale: the walk sees the body for itself. The clause channel has its own
+  // staleness derivation, and the fast path runs it — without it the fast
+  // answer would carry a clause the full answer drops.
+  let project =
+    write_fixture("/tmp/graded_effect_stale_clause", [
+      #("gleam.toml", "name = \"probe\"\nversion = \"1.0.0\"\n"),
+      #(
+        "probe.graded",
+        "effects m.make : []\nassume m.make where returns : [Net]\n",
+      ),
+      #("src/m.gleam", "pub fn make() -> Nil {\n  Nil\n}\n"),
+    ])
+  let expected = Ok("effects m.make : []\n// resolved from your spec")
+  graded.run_effect(project, "m.make") |> should.equal(expected)
+  graded.run_effect_from_project(project, "m.make") |> should.equal(expected)
+  cleanup(project)
+}
