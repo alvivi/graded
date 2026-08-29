@@ -4566,6 +4566,49 @@ pub fn plain(x: String) -> String {
   set.contains(cache.collapsible, plain_scc) |> should.be_true()
 }
 
+// Recursion classification
+//
+// The components that need a fixed point are recorded on the cache the SCC
+// pass already builds: a component with two or more members, and a singleton
+// whose lone function calls itself. Everything else settles in one walk.
+
+pub fn the_scc_cache_records_which_components_recurse_test() {
+  let source =
+    "pub fn ping(n: Int) -> Int {
+  pong(n)
+}
+
+pub fn pong(n: Int) -> Int {
+  ping(n)
+}
+
+pub fn countdown(n: Int) -> Int {
+  countdown(n)
+}
+
+pub fn plain(n: Int) -> Int {
+  n
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let context = extract.build_import_context(module)
+  let cache = checker.build_scc_ids(module, context, dict.new())
+
+  // A two-member cycle.
+  let assert Ok(ping_scc) = dict.get(cache.scc_id, "ping")
+  let assert Ok(pong_scc) = dict.get(cache.scc_id, "pong")
+  ping_scc |> should.equal(pong_scc)
+  set.contains(cache.recursive, ping_scc) |> should.be_true()
+
+  // A singleton calling itself.
+  let assert Ok(countdown_scc) = dict.get(cache.scc_id, "countdown")
+  set.contains(cache.recursive, countdown_scc) |> should.be_true()
+
+  // A singleton calling nothing.
+  let assert Ok(plain_scc) = dict.get(cache.scc_id, "plain")
+  set.contains(cache.recursive, plain_scc) |> should.be_false()
+}
+
 // Inference soundness regressions
 //
 // Shared single-module infer helpers for the issue-1/2/3 regression sections

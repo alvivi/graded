@@ -1067,7 +1067,7 @@ fn walk_fallbacks(
   // where every fallback in the module used to be re-walked until the module as
   // a whole stopped changing, at least twice each and once more for every link
   // in the longest chain.
-  let recursive = recursive_components(module.functions, context, cache)
+  let recursive = cache.recursive
   let #(settled, _knowledge_base) =
     fallback_components(targets, cache)
     |> list.fold(#(dict.new(), knowledge_base), fn(state, entry) {
@@ -1126,38 +1126,6 @@ fn fallback_components(
       Ok(_), Error(Nil) -> order.Lt
       Error(Nil), Ok(_) -> order.Gt
       Error(Nil), Error(Nil) -> order.Eq
-    }
-  })
-}
-
-// The call-graph components that reach themselves: one holding more than a
-// single function, and one whose lone function calls itself. Only these need a
-// fixed point — anything else states its summary on the walk that first makes
-// it, and a second walk could only confirm what the knowledge base already
-// holds unchanged.
-fn recursive_components(
-  definitions: List(Definition(Function)),
-  context: ImportContext,
-  cache: LocalCache,
-) -> Set(Int) {
-  let names =
-    definitions
-    |> list.map(fn(definition) { definition.definition.name })
-    |> set.from_list
-  let multi_member =
-    dict.fold(cache.members, set.new(), fn(acc, id, members) {
-      case members {
-        [_, _, ..] -> set.insert(acc, id)
-        _ -> acc
-      }
-    })
-  list.fold(definitions, multi_member, fn(acc, definition) {
-    let name = definition.definition.name
-    let calls_itself =
-      set.contains(recursion_edges(definition.definition, context, names), name)
-    case calls_itself, dict.get(cache.scc_id, name) {
-      True, Ok(id) -> set.insert(acc, id)
-      True, Error(Nil) | False, _ -> acc
     }
   })
 }
@@ -2502,6 +2470,11 @@ pub type LocalCache {
     scc_id: dict.Dict(String, Int),
     // SCC id → the names of its member functions.
     members: dict.Dict(Int, List(String)),
+    // SCC ids that reach themselves: one holding more than a single function,
+    // and one whose lone function calls itself. Only these need a fixed point
+    // when their fallback bodies are settled — anything else states its
+    // summary on the walk that first makes it.
+    recursive: Set(Int),
     // SCC ids that may be *collapsed*: every member is first-order (no fn-typed
     // params) and has a body. Such a component's members are all mutually
     // reachable, so they share one full-reachability effect set — computed once
@@ -2527,7 +2500,7 @@ pub type LocalCache {
 }
 
 // Index a module's functions by call-graph SCC, recording for each component
-// its members and whether it is collapsible.
+// its members, whether it is collapsible, and whether it reaches itself.
 //
 // `girard_fn_typed` carries girard's per-function fn-typed parameter names so a
 // parameter that *infers* to a function without a `fn(...)` annotation is still
@@ -2571,11 +2544,13 @@ pub fn build_scc_ids(
       }
     })
     |> set.from_list()
-  topo.scc_order(local_call_graph(definitions, context))
+  let graph = local_call_graph(definitions, context)
+  topo.scc_order(graph)
   |> list.index_fold(
     LocalCache(
       dict.new(),
       dict.new(),
+      set.new(),
       set.new(),
       fn_alias_types,
       girard_fn_typed,
@@ -2592,9 +2567,23 @@ pub fn build_scc_ids(
         True -> set.insert(cache.collapsible, id)
         False -> cache.collapsible
       }
+      let recursive = case component {
+        [_, _, ..] -> set.insert(cache.recursive, id)
+        [only] ->
+          case dict.get(graph, only) {
+            Ok(edges) ->
+              case set.contains(edges, only) {
+                True -> set.insert(cache.recursive, id)
+                False -> cache.recursive
+              }
+            Error(Nil) -> cache.recursive
+          }
+        [] -> cache.recursive
+      }
       LocalCache(
         scc_id:,
         members: dict.insert(cache.members, id, component),
+        recursive:,
         collapsible:,
         fn_alias_types: cache.fn_alias_types,
         girard_fn_typed: cache.girard_fn_typed,
