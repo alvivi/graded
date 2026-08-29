@@ -2235,7 +2235,8 @@ fn bound_call_kind(name: String) -> CallKind {
 fn field_call_receiver(field_call: types.FieldCall) -> String {
   case field_call.provenance {
     types.ParameterRoot(path) -> path
-    _ -> field_call.object
+    types.ProvenValue(_) | types.ProvenReceiver(_) | types.Untraceable ->
+      field_call.object
   }
 }
 
