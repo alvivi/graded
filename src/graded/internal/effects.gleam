@@ -2437,7 +2437,22 @@ pub type DepSpec {
 // types needs to resolve at a consumer's call site, or the `assume`
 // lines the dep author wrote for its FFI.
 pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
-  case read_spec_file(config.spec_file_for(dep_root, package_name)) {
+  load_dep_spec_at(
+    dep_root,
+    config.spec_file_for(dep_root, package_name),
+    package_name,
+  )
+}
+
+// The same load, over a spec path the caller already resolved. `dep_root` stays
+// beside it: a `DepSpec` also carries the dependency's own module list, which is
+// read off its source tree and which no spec path yields.
+pub fn load_dep_spec_at(
+  dep_root: String,
+  spec_path: String,
+  package_name: String,
+) -> DepSpec {
+  case read_spec_file(spec_path) {
     Error(reason) -> {
       case reason {
         SpecMissing -> Nil
