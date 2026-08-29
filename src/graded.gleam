@@ -1374,7 +1374,7 @@ fn spec_answer(
     // function *before* it considers a type field, so the fast path may not
     // answer at all — from either renderer — until it knows no other source can
     // key that function.
-    Ok(#(module, _function)) -> {
+    Ok(#(module, function)) -> {
       let project_modules = project_module_files(directory)
       use <- bool.guard(
         when: !set.contains(annotation.assume_function_names(spec), name)
@@ -1391,13 +1391,26 @@ fn spec_answer(
         module,
         targets,
       ))
-      let stale =
-        stale_project_assumes(spec, fn(queried) {
-          case queried == module {
-            True -> Ok(parsed.native)
-            False -> Error(Nil)
-          }
-        })
+      let native_of = fn(queried) {
+        case queried == module {
+          True -> Ok(parsed.native)
+          False -> Error(Nil)
+        }
+      }
+      let stale = stale_project_assumes(spec, native_of)
+      // The clause channel's own staleness, derived beside the effects
+      // channel's rather than reused from it: the two drive different
+      // suppressions, and a returns name reaching the effects set would delete
+      // a function's effect lines because its *value* was declared.
+      let stale_returns = stale_project_assume_returns(spec, native_of)
+      // A producer's returned-operator clause is inferred by walking its body,
+      // and a fresh summary outranks the committed clause the spec carries for
+      // the same name — so the spec's word is not final about it, whatever the
+      // spec says. Left whole to the full context, which walks that body.
+      use <- bool.guard(
+        when: set.contains(parsed.producers, function),
+        return: Error(Nil),
+      )
       // An `@external` of this package's whose Gleam fallback body runs is
       // charged that body's effects on top of its declaration, and walking a
       // body is exactly what the fast path exists not to do. Deferred whole, so
@@ -1418,7 +1431,10 @@ fn spec_answer(
         return: Error(Nil),
       )
       answer_from(
-        with_module_facts(spec_knowledge_base(spec, stale, targets), parsed)
+        with_module_facts(
+          spec_knowledge_base(spec, stale, stale_returns, targets),
+          parsed,
+        )
           |> effects.with_dependency_foreign(dependency.foreign)
           // The dependency module's own callback parameters, from the parse
           // above: a boundless declaration over one of its higher-order
@@ -1440,7 +1456,10 @@ fn spec_answer(
     // carrying none fell back to the bare key, so it isn't the spec's decision.
     Error(Nil) ->
       case
-        type_field_effect(spec_knowledge_base(spec, set.new(), targets), name)
+        type_field_effect(
+          spec_knowledge_base(spec, set.new(), set.new(), targets),
+          name,
+        )
       {
         Ok(answer.TypeFieldAnswer(module: Some(_), ..) as found) -> Ok(found)
         Ok(answer.TypeFieldAnswer(module: None, ..))
@@ -1453,20 +1472,27 @@ fn spec_answer(
 // The spec layers of `load_project_context`'s knowledge base, folded in the same
 // order and by the same functions, over nothing else.
 //
-// Neither the spec's inferred clauses nor its declared ones are
-// among them: a returned-operator summary is consumed while walking a body, and
-// a fast-path answer is one no body was walked for. That holds for the declared
-// ones as much as the inferred — the declaration answers a call of the value,
-// which this path never reaches.
+// The spec's clause channel is among them, both halves: `graded effect` states
+// the `where returns` clause a name answers with, so a fast-path answer without
+// one would differ from the full context's for the same name. No body is walked
+// here — the clauses are read off the spec exactly as the full context reads
+// them back, and each stale filter is applied to the channel it was derived
+// for.
 fn spec_knowledge_base(
   spec: GradedFile,
   stale_assumes: Set(String),
+  stale_returns_clauses: Set(String),
   targets: types.PackageTargets,
 ) -> KnowledgeBase {
   effects.new_knowledge_base()
   |> effects.with_package_targets(targets)
   |> with_spec_assumes(spec, stale_assumes)
+  |> with_spec_declared_returns(spec, stale_returns_clauses)
   |> with_committed_spec(spec, stale_assumes)
+  |> effects.with_closed_returned_operators(
+    effects.load_spec_returns_from_file(spec),
+    types.CommittedSpec,
+  )
   |> with_spec_type_fields(spec)
 }
 
@@ -1570,6 +1596,11 @@ type ModuleFacts {
     // `@external` charges a variable per callback, so an answer without them
     // quotes a narrower term than `check` levies.
     callbacks: Dict(QualifiedName, List(String)),
+    // Which of its functions return a function — the producers whose returned
+    // operator the full context infers by walking their bodies. A fresh summary
+    // outranks the spec's committed clause for the same name, so a producer's
+    // clause is not the spec's to decide and the fast path declines it.
+    producers: Set(String),
   )
 }
 
@@ -1595,6 +1626,7 @@ fn module_source_facts(
         visibility: dict.new(),
         native: set.new(),
         callbacks: dict.new(),
+        producers: set.new(),
       ))
     Ok(path) -> {
       use module <- result.map(
@@ -1607,6 +1639,7 @@ fn module_source_facts(
         ]),
         native: checker.native_function_names(module, package_targets),
         callbacks: module_callback_params(module_path, module),
+        producers: producer_names(module),
       )
     }
   }
@@ -1624,6 +1657,23 @@ fn module_callback_params(
     module_path,
     module,
   ))
+}
+
+// The module's functions whose declared return type is a function — through the
+// module's own type aliases too, by the same alias-aware reading the walk uses.
+// A function with no return annotation is not one: the returns pass reads the
+// declared type, so a body handing back a closure under no annotation carries
+// no summary either.
+fn producer_names(module: glance.Module) -> Set(String) {
+  let aliases = signatures.type_alias_map(module.type_aliases)
+  module.functions
+  |> list.filter_map(fn(definition) {
+    let function = definition.definition
+    use return_type <- result.try(option.to_result(function.return, Nil))
+    signatures.resolve_function_type(return_type, aliases)
+    |> result.replace(function.name)
+  })
+  |> set.from_list
 }
 
 // Fold one module's source facts into a knowledge base, in the same three calls
@@ -1670,6 +1720,15 @@ fn function_effect(
   // is what keeps the answer reading as `check` and `why` read the same name.
   let charge = effects.declared_charge(knowledge_base, qualified)
   let fallback = charge.fallback
+  // The returns channel, read through the same gate a call site goes through:
+  // a declaration out of reach, one with a running fallback beside it, and an
+  // opaque value's inferred summary all answer nothing there, so an answer
+  // that printed one would put this command at odds with `check` and `why` on
+  // the same name. Derived once beside the charge, since all four answers
+  // below are built from that charge.
+  let returns =
+    effects.lookup_returned_operator(knowledge_base, qualified)
+    |> option.from_result
   // The bounds a running fallback body states its effects over: a fallback
   // that calls a function-typed parameter names that parameter, and without
   // its bound the line names a variable nothing introduces. They ride the
@@ -1696,6 +1755,7 @@ fn function_effect(
         module:,
         bounds: fallback_bounds,
         term: charge.term,
+        returns:,
         source: case charge.declaration {
           // The body running in the declaration's place is the whole of the
           // term, not a half added to it, so it is named as the source and not
@@ -1715,6 +1775,7 @@ fn function_effect(
       module:,
       bounds: fallback_bounds,
       term: charge.term,
+      returns:,
       source: answer.UndeclaredExternal(fallback:),
     )),
   )
@@ -1733,6 +1794,7 @@ fn function_effect(
         // in no other.
         bounds: effects.lookup_param_bounds(knowledge_base, qualified),
         term:,
+        returns:,
         source: answer.Entry(types.ModuleAssumeEntry(origin:), fallback:),
       ))
     effects.Known(term, types.FunctionEntry(origin:)) ->
@@ -1741,6 +1803,7 @@ fn function_effect(
         module:,
         bounds: effects.lookup_param_bounds(knowledge_base, qualified),
         term:,
+        returns:,
         source: answer.Entry(types.FunctionEntry(origin:), fallback:),
       ))
   }

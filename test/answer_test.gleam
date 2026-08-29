@@ -2,10 +2,11 @@ import gleam/option.{None, Some}
 import gleam/set
 import gleeunit/should
 import graded/internal/answer
+import graded/internal/effects
 import graded/internal/types.{
   Catalog, CommittedSpec, Declared, DependencySpec, FunctionEntry,
-  ModuleAssumeEntry, ModuleAssumeOrigin, ParamBound, TAbs, TLabels, TUnion, TVar,
-  UserAssume,
+  ModuleAssumeEntry, ModuleAssumeOrigin, ParamBound, ProjectInferred, TAbs,
+  TLabels, TUnion, TVar, UserAssume,
 }
 
 // Rendering one lookup
@@ -27,12 +28,17 @@ fn function(
     module: "app",
     bounds:,
     term:,
+    returns: None,
     source: answer.Entry(FunctionEntry(origin: CommittedSpec), types.NoFallback),
   )
 }
 
 fn prose(answer_value: answer.EffectAnswer) -> String {
   answer.render(answer_value, answer.Prose)
+}
+
+fn graded(answer_value: answer.EffectAnswer) -> String {
+  answer.render(answer_value, answer.Graded)
 }
 
 // Effects a function forwards from an argument
@@ -140,6 +146,7 @@ pub fn a_module_level_external_states_its_precedence_test() {
     module: "fake_clock",
     bounds: [],
     term: labels(["Time"]),
+    returns: None,
     source: answer.Entry(
       ModuleAssumeEntry(origin: ModuleAssumeOrigin(source: UserAssume)),
       types.NoFallback,
@@ -162,6 +169,7 @@ pub fn a_fallback_body_is_stated_beside_the_source_it_adds_to_test() {
     module: "app",
     bounds: [],
     term: labels(["Time", "Stdout"]),
+    returns: None,
     source: answer.UndeclaredExternal(types.FallbackCharged(labels(["Stdout"]))),
   )
   |> prose
@@ -181,6 +189,7 @@ fn from(origin: types.LookupOrigin) -> answer.EffectAnswer {
     module: "app",
     bounds: [],
     term: labels(["Stdout"]),
+    returns: None,
     source: answer.Entry(FunctionEntry(origin:), types.NoFallback),
   )
 }
@@ -205,6 +214,7 @@ pub fn a_source_line_precedes_the_bounds_test() {
     module: "app",
     bounds: [ParamBound("f", labels(["Stdout"]))],
     term: labels(["Stdout"]),
+    returns: None,
     source: answer.Entry(
       FunctionEntry(origin: Catalog("gleam_stdlib")),
       types.NoFallback,
@@ -275,4 +285,118 @@ pub fn the_formats_report_the_same_effects_test() {
   )
   answer.render(answer_value, answer.Prose)
   |> should.equal("app.run has effects [Stdout, Time]\n  source: your spec")
+}
+
+// The `where returns` channel
+//
+// A clause travels with the bound list that scopes it and the tier that wrote
+// it, neither of which is the effects channel's. The renderers state both
+// rather than borrowing the effects entry's.
+
+fn with_clause(
+  bounds: List(types.ParamBound),
+  entry: types.LookupOrigin,
+  returns: effects.ReturnedOperator,
+) -> answer.EffectAnswer {
+  answer.FunctionAnswer(
+    name: "app.run",
+    module: "app",
+    bounds:,
+    term: labels(["Stdout"]),
+    returns: Some(returns),
+    source: answer.Entry(FunctionEntry(origin: entry), types.NoFallback),
+  )
+}
+
+pub fn a_clause_scoped_by_the_line_rides_it_test() {
+  // The effects bounds are the ones that scope the clause, so one line carries
+  // both halves — and one statement covers both origins.
+  with_clause(
+    [ParamBound("f", TVar("f"))],
+    CommittedSpec,
+    effects.ReturnedOperator(
+      operator: TVar("f"),
+      summary: effects.Closed(bounds: [ParamBound("f", TVar("f"))]),
+      source: CommittedSpec,
+    ),
+  )
+  |> graded
+  |> should.equal(
+    "effects app.run(f: [f]) : [Stdout] where returns : [f]
+// resolved from your spec
+// returns [f], from the same source",
+  )
+}
+
+pub fn a_clause_scoped_by_other_bounds_stays_off_the_line_test() {
+  // The effects channel's bounds pair `f` with `[Stdout]`; the clause was
+  // written against `f: [Net]`. Both lists bind `f`, and a line carrying the
+  // first would state a clause neither channel holds — so the clause goes to
+  // the comment channel, which needs no scoping list to be valid.
+  with_clause(
+    [ParamBound("f", labels(["Stdout"]))],
+    CommittedSpec,
+    effects.ReturnedOperator(
+      operator: TVar("f"),
+      summary: effects.Closed(bounds: [ParamBound("f", labels(["Net"]))]),
+      source: CommittedSpec,
+    ),
+  )
+  |> graded
+  |> should.equal(
+    "effects app.run(f: [Stdout]) : [Stdout]
+// resolved from your spec
+// returns [f], from the same source, scoped by bounds this line does not carry",
+  )
+}
+
+pub fn a_clause_from_another_tier_names_its_own_source_test() {
+  // A clause-only `assume` beside a catalogued effects entry: the two channels
+  // answer from different tiers by design, and the one `// resolved from`
+  // comment names the effects entry alone. Attributing the clause to it would
+  // credit the catalog with a line the user wrote.
+  let answer_value =
+    with_clause(
+      [],
+      Catalog("gleam_stdlib"),
+      effects.ReturnedOperator(
+        operator: labels(["Net"]),
+        summary: effects.Declared(bounds: []),
+        source: UserAssume,
+      ),
+    )
+  answer_value
+  |> graded
+  |> should.equal(
+    "effects app.run : [Stdout] where returns : [Net]
+// resolved from gleam_stdlib's catalog entry
+// returns [Net], from your spec's `assume` line",
+  )
+  answer_value
+  |> prose
+  |> should.equal(
+    "app.run has effects [Stdout]
+  source: gleam_stdlib's catalog entry
+  returns [Net], from your spec's `assume` line",
+  )
+}
+
+pub fn a_fresh_clause_is_scoped_by_the_answers_own_bounds_test() {
+  // `Fresh` carries no bounds by design — it is scoped by the params-channel
+  // entry, which is this answer's bound list — so it always rides the line.
+  with_clause(
+    [ParamBound("f", TVar("f"))],
+    ProjectInferred,
+    effects.ReturnedOperator(
+      operator: TVar("f"),
+      summary: effects.Fresh,
+      source: ProjectInferred,
+    ),
+  )
+  |> graded
+  |> should.equal(
+    "effects app.run(f: [f]) : [Stdout] where returns : [f]
+// resolved from in-memory inference
+// returns [f], from the same source",
+  )
 }
