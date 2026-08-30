@@ -219,7 +219,7 @@ pub fn main() -> Nil {
 }
 
 fn pack_and_report(directory: String) -> Nil {
-  case pack_project(resolve_package_root(directory), None) {
+  case pack_project(resolve_package_root(directory)) {
     Ok(message) -> io.println(message)
     Error(error) -> fail(error)
   }
@@ -312,14 +312,11 @@ Usage:
 // publish`, which rebuilds the tarball and drops the injected file).
 
 /// Inject the configured `.graded` spec into `project_root`'s hex tarball.
-/// `tarball` overrides the default `build/<name>-<version>.tar`. Returns a
-/// success message (with the publish command), a `GradedParseError` when the
-/// spec does not parse — nothing a consumer would read is ever packed — or a
-/// `PackError`.
-pub fn pack_project(
-  project_root: String,
-  tarball: option.Option(String),
-) -> Result(String, GradedError) {
+/// The archive patched is `build/<name>-<version>.tar` and no other path.
+/// Returns a success message (with the publish command), a `GradedParseError`
+/// when the spec does not parse — nothing a consumer would read is ever packed
+/// — or a `PackError`.
+pub fn pack_project(project_root: String) -> Result(String, GradedError) {
   let gleam_toml = filepath.join(project_root, "gleam.toml")
 
   // The raw (relative) spec path is the archive entry; the resolved path is
@@ -364,7 +361,7 @@ pub fn pack_project(
   })
 
   use tarball_path <- result.try(
-    pack.resolve_tarball(tarball, project_root, gleam_toml, raw_cfg)
+    pack.resolve_tarball(project_root, gleam_toml, raw_cfg)
     |> result.map_error(pack_error),
   )
 
@@ -388,12 +385,8 @@ fn pack_error(problem: pack.PackProblem) -> GradedError {
         <> entry
         <> "` must be a relative path inside the package",
       )
-    pack.UnreadableTarball(path:, message:) ->
-      PackError("not a readable hex tarball: " <> path <> ": " <> message)
     pack.MissingVersion(gleam_toml:) ->
-      PackError(
-        "no `version` in " <> gleam_toml <> "; pass the tarball path explicitly",
-      )
+      PackError("no `version` in " <> gleam_toml <> "; add one to publish")
     pack.MissingDefaultTarball(path:, message:) ->
       PackError(
         "could not read "
