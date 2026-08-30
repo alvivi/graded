@@ -2590,7 +2590,8 @@ fn qualify_by_module(
 // Type index
 
 // Run girard's whole-package type inference once over every project module
-// and fold the result into a `TypeInfo` (module path -> span start -> type).
+// and fold the result into a `TypeInfo`: per-module expression types keyed by
+// their `#(start, end)` span, plus the fn-typed parameters girard inferred.
 // girard is best-effort: a function it can't type contributes no expressions,
 // so the checker silently falls back to syntax-level resolution for it.
 fn build_type_index(
