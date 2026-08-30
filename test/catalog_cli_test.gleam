@@ -512,8 +512,12 @@ pub fn the_manifest_is_the_enclosing_packages_test() {
 pub fn a_tie_selects_one_file_for_both_paths_test() {
   let root =
     support.write_fixture("build/catalog_cli_tie", [
+      // A tie has to be built out of two names the reader *keeps*: a
+      // pre-release suffix is not one of them, since selection compares three
+      // numbers and a name carrying one is skipped outright. Leading zeros are
+      // digits, so these two are both well-formed and both parse to `1.0.0`.
       #("catalog/foo@1.0.0.graded", "assume foo/x.run : [Release]\n"),
-      #("catalog/foo@1.0.0-rc1.graded", "assume foo/x.run : [Prerelease]\n"),
+      #("catalog/foo@01.0.0.graded", "assume foo/x.run : [Padded]\n"),
       #("manifest.toml", manifest_for("foo", "1.0.0")),
     ])
   let printed =
@@ -531,7 +535,7 @@ pub fn a_tie_selects_one_file_for_both_paths_test() {
   let assert Ok(#(term, _origin)) =
     dict.get(function_effects, types.QualifiedName("foo/x", "run"))
   let assert Ok(resolved) =
-    ["Release", "Prerelease"]
+    ["Release", "Padded"]
     |> list.find(fn(label) {
       effect_term.to_effect_set(term) == types.from_labels([label])
     })

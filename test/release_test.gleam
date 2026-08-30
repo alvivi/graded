@@ -8,7 +8,6 @@
 
 import filepath
 import gleam/dict
-import gleam/int
 import gleam/list
 import gleam/set
 import gleam/string
@@ -505,9 +504,14 @@ fn malformed_catalog_name(path: String) -> Result(String, Nil) {
   let name = path |> filepath.base_name |> filepath.strip_extension
   case string.split(name, "@") {
     [_package, version] ->
-      case list.try_map(string.split(version, "."), int.parse) {
-        Ok([major, minor, patch]) if #(major, minor, patch) != #(0, 0, 0) ->
-          Error(Nil)
+      // The same reader the runtime path validates a name with, so the gate
+      // that stops a file shipping and the loader that skips it cannot come to
+      // different answers about one name. The `above 0.0.0` half is this
+      // lint's alone: `parse_semver` reads an unplaceable version as `#(0, 0,
+      // 0)`, so a file genuinely named that is one nothing distinguishes from
+      // a typo.
+      case effects.strict_semver(version) {
+        Ok(parsed) if parsed != #(0, 0, 0) -> Error(Nil)
         Ok(_) | Error(Nil) ->
           Ok(
             path

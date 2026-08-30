@@ -3072,7 +3072,8 @@ pub fn bundled_catalog_files(
 }
 
 // The `major.minor.patch` a catalog file name declares, or `Error(Nil)` for a
-// version selection cannot place: exactly three components, each numeric, and
+// version selection cannot place: exactly three components, each a run of
+// decimal digits, and
 // **no pre-release or build suffix**. A catalog file name is authored under a
 // documented rule that forbids one (CONTRIBUTING, "Adding a catalog entry"),
 // and the whole reason it forbids one is that selection compares the three
@@ -3087,11 +3088,31 @@ pub fn bundled_catalog_files(
 // thing to be installed and has to compare as `1.2.0`. A filename is authored;
 // an installed version is whatever the user has. The two sides are strict and
 // lenient for that reason.
-fn strict_semver(version: String) -> Result(#(Int, Int, Int), Nil) {
-  case list.try_map(string.split(version, "."), int.parse) {
+pub fn strict_semver(version: String) -> Result(#(Int, Int, Int), Nil) {
+  case list.try_map(string.split(version, "."), numeric_component) {
     Ok([major, minor, patch]) -> Ok(#(major, minor, patch))
     Ok(_) | Error(Nil) -> Error(Nil)
   }
+}
+
+// One component of that version: decimal digits, and nothing else.
+//
+// `int.parse` is not that test on its own — it accepts a leading sign, so
+// `1.+2.3` would read as `#(1, 2, 3)` and *impersonate* the plain `1.2.3` it is
+// not, selected as an exact match for that installed version; and `-1.2.3`
+// would read as `#(-1, 2, 3)`, which sorts below every real version and is
+// still selected wherever it is the only file bundled for its package. Both are
+// versions nobody named, which is the whole complaint this reader exists for.
+fn numeric_component(component: String) -> Result(Int, Nil) {
+  use <- bool.guard(
+    when: component == "" || !list.all(string.to_graphemes(component), is_digit),
+    return: Error(Nil),
+  )
+  int.parse(component)
+}
+
+fn is_digit(grapheme: String) -> Bool {
+  string.contains(does: "0123456789", contain: grapheme)
 }
 
 // Which rule chose a package's catalog file. Both variants carry it as `file`,
