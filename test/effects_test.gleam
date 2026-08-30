@@ -1071,18 +1071,40 @@ pub fn bundled_catalog_files_reads_the_versioned_names_test() {
   |> should.equal(["argv@1.1.0", "lustre@4.0.0", "lustre@5.0.0"])
 }
 
-pub fn bundled_catalog_files_keeps_the_raw_version_string_test() {
-  // `parse_semver` reads `1.2.0-rc1` as `#(1, 2, 0)`; the raw string is what a
-  // caller prints, so both survive side by side.
+pub fn a_prerelease_catalog_version_is_skipped_test() {
+  // A catalog file name may not carry a pre-release or build suffix, because
+  // selection compares the three numbers and nothing else — kept, `1.2.0-rc1`
+  // would be selected as the stable 1.2.0 and answer for an API the
+  // pre-release does not describe. `release_test`'s name lint says the same of
+  // the files graded itself ships.
   let root =
     write_fixture("build/eff_catalog_prerelease", [
       #("beta@1.2.0-rc1.graded", "effects beta.run : []\n"),
+      #("beta@1.2.0+build.5.graded", "effects beta.run : []\n"),
+      #("beta@1.1.0.graded", "effects beta.run : []\n"),
     ])
   let assert Ok(files) = effects.bundled_catalog_files(root)
   cleanup(root)
-  files
-  |> list.map(fn(file) { #(file.package, file.version, file.parsed) })
-  |> should.equal([#("beta", "1.2.0-rc1", #(1, 2, 0))])
+  files |> file_labels |> should.equal(["beta@1.1.0"])
+  // And the stable file below them is what an installed 1.2.0 selects, rather
+  // than either suffixed name reading as an exact match for it.
+  let assert Ok(selection) = effects.select_catalog_file(files, "beta", "1.2.0")
+  selection.file.version |> should.equal("1.1.0")
+}
+
+pub fn an_installed_prerelease_version_still_compares_by_its_prefix_test() {
+  // The other side of that asymmetry: a *filename* is authored under the rule,
+  // but an installed version is whatever the user's manifest says, and
+  // `1.2.0-rc1` installed has to compare as `1.2.0` rather than as nothing.
+  let root =
+    write_fixture("build/eff_catalog_installed_prerelease", [
+      #("beta@1.2.0.graded", "effects beta.run : []\n"),
+    ])
+  let assert Ok(files) = effects.bundled_catalog_files(root)
+  cleanup(root)
+  let assert Ok(selection) =
+    effects.select_catalog_file(files, "beta", "1.2.0-rc1")
+  selection.file.version |> should.equal("1.2.0")
 }
 
 pub fn a_malformed_catalog_version_is_skipped_test() {

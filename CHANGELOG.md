@@ -52,9 +52,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Erlang target, instead of treating it as end-of-input — a failed read
   truncated the spec, formatted what it had, and exited successfully. The read
   is UTF-8 on both targets.
-- A catalog file whose name does not carry a `major.minor.patch` version is now
-  skipped with a warning, rather than read as some other version — `1.x.3` read
-  as `1.0.3` and could outrank a correctly named file for the same package.
+- A catalog file whose name does not carry a bare `major.minor.patch` version is
+  now skipped with a warning, rather than read as some other version — `1.x.3`
+  read as `1.0.3` and could outrank a correctly named file for the same package,
+  and `1.2.3-rc.1` read as the stable `1.2.3` and answered for it. Catalog file
+  names have never permitted a pre-release or build suffix; the installed
+  version a file is selected *against* still compares by its `major.minor.patch`
+  prefix, suffix and all.
 - A record of another module's type constructed positionally
   (`handler.Handler(io.println)`) now routes its arguments to the fields they
   fill, through the defining module's labels — this package's modules and its
