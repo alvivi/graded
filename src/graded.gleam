@@ -1068,6 +1068,17 @@ fn declaring_nothing(
   })
 }
 
+// The names the spec still declares a `where returns` clause for: every
+// `assume … where returns` in it, minus the ones this package's own source
+// makes stale. What the fast path checks a dependency name against, since a
+// clause the spec no longer declares leaves the tiers below it free to answer.
+fn surviving_returns_declarations(
+  spec: GradedFile,
+  stale_returns_clauses: Set(String),
+) -> Set(String) {
+  set.difference(annotation.assume_returns_names(spec), stale_returns_clauses)
+}
+
 // A module's Gleam-bodied function names as the project index holds them, in
 // the shape `stale_project_assumes` asks for.
 fn native_functions_of(
@@ -1421,6 +1432,29 @@ fn spec_answer(
       // spec says. Left whole to the full context, which walks that body.
       use <- bool.guard(
         when: set.contains(parsed.producers, function),
+        return: Error(Nil),
+      )
+      // The same question one tier down, and it is the returns channel alone
+      // that asks it. A name outside this package's own modules can carry a
+      // `where returns` clause from a source this path never reads — an
+      // installed dependency's shipped spec, a path dependency's spec, or
+      // inference over a spec-less path dependency's source — and on that
+      // channel the consumer's own declaration is what displaces it
+      // (`with_declared_returned_operators` lets the incoming entry win, and
+      // the consumer's fold runs last). So the spec settles this name only
+      // where it declares the clause itself; a *committed* clause does not
+      // count, since that fold gap-fills and a dependency's declaration folded
+      // earlier outranks it.
+      //
+      // The effects channel is still final here — a per-function `assume`
+      // outranks every later layer — but an answer is one value, so it goes
+      // whole to the full context or not at all.
+      use <- bool.guard(
+        when: !dict.has_key(project_modules, module)
+          && !set.contains(
+          surviving_returns_declarations(spec, stale_returns),
+          name,
+        ),
         return: Error(Nil),
       )
       // An `@external` of this package's whose Gleam fallback body runs is

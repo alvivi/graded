@@ -1024,6 +1024,67 @@ pub fn both_paths_state_one_clause_test() {
   |> should.equal(graded.run_effect_from_project(fixtures, name))
 }
 
+pub fn a_dependencys_own_returns_clause_reaches_both_paths_test() {
+  // The clause channel's tier order is fold order, and a dependency's shipped
+  // declaration is folded where the fast path cannot see it. The project spec
+  // per-function `assume`s this name, which settles the *effects* channel
+  // outright — but not the returns one, so the fast path has to decline rather
+  // than answer half of what the full context says.
+  let project =
+    write_fixture("build/graded_effect_dep_clause", [
+      #("gleam.toml", "name = \"proj\"\n"),
+      #("proj.graded", "assume dep/ffi.make : [Net]\n"),
+      #(
+        "build/packages/dep/dep.graded",
+        "assume dep/ffi.make : [Net] where returns : [Net]\n",
+      ),
+      #(
+        "build/packages/dep/src/dep/ffi.gleam",
+        support.foreign_fn("make", "() -> fn() -> Nil"),
+      ),
+    ])
+  let expected =
+    Ok(
+      "effects dep/ffi.make : [Net] where returns : [Net]
+// resolved from your spec's `assume` line
+// returns [Net], from dep's shipped spec",
+    )
+  graded.run_effect(project, "dep/ffi.make") |> should.equal(expected)
+  graded.run_effect_from_project(project, "dep/ffi.make")
+  |> should.equal(expected)
+  cleanup(project)
+}
+
+pub fn a_consumers_own_clause_still_answers_on_the_fast_path_test() {
+  // The other half of that rule: on this channel the consumer's declaration is
+  // folded last and wins, so where the spec declares the clause itself its word
+  // *is* final and the fast path may still answer — with the consumer's
+  // operator, not the dependency's.
+  let project =
+    write_fixture("build/graded_effect_consumer_clause", [
+      #("gleam.toml", "name = \"proj\"\n"),
+      #("proj.graded", "assume dep/ffi.make : [Net] where returns : [Disk]\n"),
+      #(
+        "build/packages/dep/dep.graded",
+        "assume dep/ffi.make : [Net] where returns : [Net]\n",
+      ),
+      #(
+        "build/packages/dep/src/dep/ffi.gleam",
+        support.foreign_fn("make", "() -> fn() -> Nil"),
+      ),
+    ])
+  let expected =
+    Ok(
+      "effects dep/ffi.make : [Net] where returns : [Disk]
+// resolved from your spec's `assume` line
+// returns [Disk], from the same source",
+    )
+  graded.run_effect(project, "dep/ffi.make") |> should.equal(expected)
+  graded.run_effect_from_project(project, "dep/ffi.make")
+  |> should.equal(expected)
+  cleanup(project)
+}
+
 pub fn a_stale_clause_only_assume_reaches_neither_path_test() {
   // A clause-only `assume` over a function this package gives a Gleam body is
   // stale: the walk sees the body for itself. The clause channel has its own
