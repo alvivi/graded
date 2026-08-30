@@ -53,7 +53,7 @@ Sixteen modules, no circular dependencies. Only `src/graded.gleam` is the public
 | `src/graded/internal/signatures.gleam` | Glance-backed parameter signatures: fn-typed and operator (second-order) parameter detection, positions, for call-site substitution |
 | `src/graded/internal/topo.gleam` | Kahn's-algorithm topological sort over a string-keyed dependency graph |
 | `src/graded/internal/lint.gleam` | Spec-file lint: `check`/`assume`/field lines whose target resolves nothing, `effects` lines whose path is not a function's, and `where returns` clauses their own line does not scope |
-| `src/graded/internal/pack.gleam` | Hex tarball patching for `graded pack`: pick the archive, inject the spec through a temporary file, verify, replace |
+| `src/graded/internal/pack.gleam` | Hex tarball patching for `graded pack`: resolve `build/<name>-<version>.tar` and check its `metadata.config` names this project, inject the spec through a temporary file, verify, replace |
 | `src/graded/internal/diff.gleam` | Line diff between two renderings of a spec file, for `infer --dry-run` |
 
 ## .graded Annotation Syntax

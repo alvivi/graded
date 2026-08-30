@@ -4,7 +4,6 @@
 // Project trees are materialised under `build/` (gitignored) at runtime.
 
 import gleam/list
-import gleam/option.{None, Some}
 import gleam/set
 import gleam/string
 import gleeunit/should
@@ -42,7 +41,7 @@ pub fn pack_injects_and_reports_test() {
   let tarball =
     setup_dep(root, "dep", "1.0.0", "dep.graded", "effects dep.work : []\n")
 
-  let assert Ok(message) = graded.pack_project(root, None)
+  let assert Ok(message) = graded.pack_project(root)
   string.contains(message, "injected dep.graded") |> should.be_true()
   // The publish guidance names the Hex API, never `gleam publish`, and
   // shell-quotes the tarball path.
@@ -75,7 +74,7 @@ pub fn pack_preserves_entry_modes_test() {
     #("priv/helper", "#!/bin/sh\n", 0o755),
   ])
 
-  let assert Ok(_) = graded.pack_project(root, None)
+  let assert Ok(_) = graded.pack_project(root)
 
   let dest = root <> "/unpacked"
   unpack_inner(tarball, dest)
@@ -92,9 +91,9 @@ pub fn pack_rerun_is_idempotent_test() {
   let tarball =
     setup_dep(root, "dep", "1.0.0", "dep.graded", "effects dep.work : []\n")
 
-  let assert Ok(_) = graded.pack_project(root, None)
+  let assert Ok(_) = graded.pack_project(root)
   write_file(root <> "/dep.graded", "effects dep.work : [Stdout]\n")
-  let assert Ok(_) = graded.pack_project(root, None)
+  let assert Ok(_) = graded.pack_project(root)
 
   metadata_files(tarball)
   |> list.filter(fn(file) { file == "dep.graded" })
@@ -118,7 +117,7 @@ pub fn pack_scratch_collision_is_an_error_test() {
   // A user directory at the `.packing` temp path survives the failed pack.
   let packing_marker = tarball <> ".packing"
   write_file(packing_marker <> "/keep.txt", "precious\n")
-  let assert Error(_) = graded.pack_project(root, None)
+  let assert Error(_) = graded.pack_project(root)
   simplifile.read(packing_marker <> "/keep.txt")
   |> should.equal(Ok("precious\n"))
   let assert Ok(Nil) = simplifile.delete(packing_marker)
@@ -127,7 +126,7 @@ pub fn pack_scratch_collision_is_an_error_test() {
   // and the failed run cleans up its own temp file.
   let work_marker = tarball <> ".packing.work"
   write_file(work_marker <> "/keep.txt", "precious\n")
-  let assert Error(_) = graded.pack_project(root, None)
+  let assert Error(_) = graded.pack_project(root)
   simplifile.read(work_marker <> "/keep.txt") |> should.equal(Ok("precious\n"))
   simplifile.is_file(tarball <> ".packing") |> should.equal(Ok(False))
   let assert Ok(Nil) = simplifile.delete(work_marker)
@@ -136,19 +135,19 @@ pub fn pack_scratch_collision_is_an_error_test() {
   // the pack fails and nothing is written through to the symlink's target.
   let assert Ok(Nil) =
     simplifile.create_symlink("dangling_target", packing_marker)
-  let assert Error(_) = graded.pack_project(root, None)
+  let assert Error(_) = graded.pack_project(root)
   simplifile.is_file(root <> "/build/dangling_target")
   |> should.equal(Ok(False))
 
   cleanup(root)
 }
 
-pub fn pack_default_tarball_identity_mismatch_test() {
+pub fn pack_requires_the_default_tarball_test() {
   let root = "build/pack_mismatch"
   let _ = simplifile.delete(root)
   // Project declares version 2.0.0, but only a 1.0.0 tarball exists — the
-  // default path build/dep-2.0.0.tar is missing, so pack errors rather than
-  // patching the wrong archive.
+  // default path build/dep-2.0.0.tar is missing, so pack names that path
+  // rather than reaching for the well-formed archive beside it.
   write_file(root <> "/gleam.toml", "name = \"dep\"\nversion = \"2.0.0\"\n")
   write_file(root <> "/dep.graded", "effects dep.work : []\n")
   let tarball = root <> "/build/dep-1.0.0.tar"
@@ -157,17 +156,42 @@ pub fn pack_default_tarball_identity_mismatch_test() {
     #("src/dep.gleam", "pub fn work() {\n  Nil\n}\n"),
   ])
 
-  let assert Error(_) = graded.pack_project(root, None)
+  let assert Error(graded.PackError(message)) = graded.pack_project(root)
+  string.contains(message, "build/dep-2.0.0.tar") |> should.be_true()
   cleanup(root)
 }
 
-pub fn pack_explicit_tarball_test() {
-  let root = "build/pack_explicit"
-  let tarball =
-    setup_dep(root, "dep", "9.9.9", "dep.graded", "effects dep.work : []\n")
+pub fn pack_refuses_another_packages_tarball_test() {
+  let root = "build/pack_wrong_tarball"
+  let _ = simplifile.delete(root)
+  // The archive sits at the expected default path but its metadata names
+  // another package, so patching it would touch the wrong release.
+  write_file(root <> "/gleam.toml", "name = \"dep\"\nversion = \"1.0.0\"\n")
+  write_file(root <> "/dep.graded", "effects dep.work : []\n")
+  let tarball = root <> "/build/dep-1.0.0.tar"
+  ensure_parent(tarball)
+  build_tarball(tarball, "other", "9.9.9", [
+    #("src/other.gleam", "pub fn work() {\n  Nil\n}\n"),
+  ])
 
-  // No default build/dep-<version>.tar is looked for; the explicit path is used.
-  let assert Ok(_) = graded.pack_project(root, Some(tarball))
+  let assert Error(graded.PackError(message)) = graded.pack_project(root)
+  string.contains(message, "not the project's") |> should.be_true()
+  string.contains(message, "other") |> should.be_true()
+  string.contains(message, "9.9.9") |> should.be_true()
+  cleanup(root)
+}
+
+pub fn pack_requires_a_version_in_gleam_toml_test() {
+  let root = "build/pack_no_version"
+  let _ = simplifile.delete(root)
+  // Without a version there is no default tarball path to derive, and the
+  // advice is the field to add — not an archive path, which `pack` never takes.
+  write_file(root <> "/gleam.toml", "name = \"dep\"\n")
+  write_file(root <> "/dep.graded", "effects dep.work : []\n")
+
+  let assert Error(graded.PackError(message)) = graded.pack_project(root)
+  string.contains(message, "no `version` in") |> should.be_true()
+  string.contains(message, "tarball path") |> should.be_false()
   cleanup(root)
 }
 
@@ -185,7 +209,7 @@ pub fn pack_custom_spec_file_test() {
     #("src/dep.gleam", "pub fn work() {\n  Nil\n}\n"),
   ])
 
-  let assert Ok(_) = graded.pack_project(root, None)
+  let assert Ok(_) = graded.pack_project(root)
 
   // The spec lands at the configured archive-relative path, not `dep.graded`.
   let dest = root <> "/unpacked"
@@ -202,7 +226,9 @@ pub fn pack_rejects_absolute_spec_path_test() {
     root <> "/gleam.toml",
     "name = \"dep\"\n\n[tools.graded]\nspec_file = \"/etc/dep.graded\"\n",
   )
-  let assert Error(_) = graded.pack_project(root, Some("unused.tar"))
+  // No archive is built: entry validation runs before the tarball is resolved,
+  // so the run fails on the spec path with nothing at build/dep-<version>.tar.
+  let assert Error(_) = graded.pack_project(root)
   cleanup(root)
 }
 
@@ -213,7 +239,8 @@ pub fn pack_rejects_escaping_spec_path_test() {
     root <> "/gleam.toml",
     "name = \"dep\"\n\n[tools.graded]\nspec_file = \"../escape.graded\"\n",
   )
-  let assert Error(_) = graded.pack_project(root, Some("unused.tar"))
+  // As above: the spec path is refused before any archive is looked for.
+  let assert Error(_) = graded.pack_project(root)
   cleanup(root)
 }
 
@@ -237,7 +264,7 @@ pub fn pack_refuses_a_spec_that_does_not_parse_test() {
 
   // The standard parse error, naming the file and the retired line.
   let assert Error(graded.GradedParseError(path, message)) =
-    graded.pack_project(root, None)
+    graded.pack_project(root)
   string.ends_with(path, "dep.graded") |> should.be_true()
   message
   |> should.equal(
@@ -269,7 +296,7 @@ pub fn pack_without_a_spec_names_infer_test() {
     #("src/dep.gleam", "pub fn work() {\n  Nil\n}\n"),
   ])
 
-  let assert Error(graded.PackError(message)) = graded.pack_project(root, None)
+  let assert Error(graded.PackError(message)) = graded.pack_project(root)
   string.contains(message, "no spec file at") |> should.be_true()
   string.contains(message, "run `graded infer` first") |> should.be_true()
   cleanup(root)
@@ -289,7 +316,7 @@ pub fn pack_reports_an_unreadable_spec_as_a_read_error_test() {
   case simplifile.read(spec) {
     Error(_) -> {
       let assert Error(graded.FileReadError(path, _cause)) =
-        graded.pack_project(root, None)
+        graded.pack_project(root)
       path |> should.equal(spec)
     }
     Ok(_) -> Nil
@@ -310,7 +337,7 @@ pub fn pack_consumer_resolves_injected_spec_test() {
       "packdep.graded",
       "effects packdep.work : [Stdout]\n",
     )
-  let assert Ok(_) = graded.pack_project(dep_root, None)
+  let assert Ok(_) = graded.pack_project(dep_root)
 
   // Simulate `gleam` installing the published dependency: unpack the patched
   // tarball's inner contents into the consumer's build/packages/packdep/.
@@ -373,7 +400,7 @@ fn setup_crafted(root: String, members: List(Member)) -> String {
 
 // The `PackError` message `pack` fails a project with.
 fn pack_error(root: String) -> String {
-  let assert Error(graded.PackError(message)) = graded.pack_project(root, None)
+  let assert Error(graded.PackError(message)) = graded.pack_project(root)
   message
 }
 

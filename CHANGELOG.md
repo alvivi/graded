@@ -36,8 +36,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a *field* path is reported as unsupported; the field budget on that line is
   still verified.
 
+### Removed
+
+- `graded.pack_project` no longer takes a tarball path: the signature is now
+  `pack_project(project_root: String)`, and the archive it patches is
+  `build/<name>-<version>.tar` and no other. The `graded pack` command never
+  accepted an archive path, so nothing changes for it. A caller that named a
+  path builds the archive at the default location instead — re-run `gleam
+  export hex-tarball` if it built the archive itself, or copy the one it kept
+  to `build/<name>-<version>.tar` before packing.
+
 ### Fixed
 
+- `graded pack` on a package whose `gleam.toml` states no `version` now says to
+  add one, instead of advising a tarball path that no caller could pass.
 - `graded infer --dry-run` no longer stalls previewing a large spec file. A
   five-thousand-line spec with every tenth line changed took 43 seconds to
   preview and now takes milliseconds.

@@ -8,7 +8,7 @@
 
 import filepath
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option
 import gleam/result
 import gleam/string
 import graded/internal/config
@@ -21,8 +21,6 @@ pub type PackProblem {
   // The configured `spec_file` is absolute or escapes the package root, so it
   // names no safe archive-relative entry.
   UnsafeSpecEntry(entry: String)
-  // The tarball the caller named is not a readable hex tarball.
-  UnreadableTarball(path: String, message: String)
   // No default tarball path can be derived: `gleam.toml` states no `version`.
   MissingVersion(gleam_toml: String)
   // The default tarball is there and holds another package or version, so
@@ -82,51 +80,39 @@ pub fn patch_tarball(
   Ok(checksum)
 }
 
-// Resolve the tarball to patch. An explicit path is validated as a readable hex
-// tarball. Without one, the default `build/<name>-<version>.tar` is opened and
-// its identity checked against the project's name and version, so `pack` can't
-// silently patch the wrong archive.
+// Resolve the tarball to patch: `build/<name>-<version>.tar`, the one archive
+// the command touches. It is opened and its identity checked against the
+// project's name and version, so `pack` can't silently patch the wrong
+// archive.
 pub fn resolve_tarball(
-  tarball: Option(String),
   project_root: String,
   gleam_toml: String,
   cfg: config.GradedConfig,
 ) -> Result(String, PackProblem) {
   let package_name = cfg.package_name
-  case tarball {
-    Some(path) -> {
-      use _ <- result.try(
-        read_package_identity(path)
-        |> result.map_error(UnreadableTarball(path, _)),
-      )
-      Ok(path)
-    }
-    None -> {
-      use version <- result.try(option.to_result(
-        cfg.version,
-        MissingVersion(gleam_toml),
+  use version <- result.try(option.to_result(
+    cfg.version,
+    MissingVersion(gleam_toml),
+  ))
+  let path =
+    filepath.join(
+      project_root,
+      "build/" <> package_name <> "-" <> version <> ".tar",
+    )
+  use #(name, tar_version) <- result.try(
+    read_package_identity(path)
+    |> result.map_error(MissingDefaultTarball(path, _)),
+  )
+  case name == package_name && tar_version == version {
+    True -> Ok(path)
+    False ->
+      Error(WrongTarball(
+        path:,
+        found: name,
+        found_version: tar_version,
+        expected: package_name,
+        expected_version: version,
       ))
-      let path =
-        filepath.join(
-          project_root,
-          "build/" <> package_name <> "-" <> version <> ".tar",
-        )
-      use #(name, tar_version) <- result.try(
-        read_package_identity(path)
-        |> result.map_error(MissingDefaultTarball(path, _)),
-      )
-      case name == package_name && tar_version == version {
-        True -> Ok(path)
-        False ->
-          Error(WrongTarball(
-            path:,
-            found: name,
-            found_version: tar_version,
-            expected: package_name,
-            expected_version: version,
-          ))
-      }
-    }
   }
 }
 
