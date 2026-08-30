@@ -62,6 +62,42 @@ pub fn contextual_nearby_edits_make_one_hunk_test() {
   |> should.equal(Some("- a\n+ A\n  b\n- c\n+ C"))
 }
 
+// Ambiguous alignments
+//
+// Inputs whose longest common subsequence is not unique: two alignments keep
+// the same number of lines, so which one the diff picks is a choice rather
+// than a consequence. These pin the choice, since it decides where the `-`
+// and `+` lines land in a preview.
+
+// `b` is the line both sides agree on the position of relative to nothing
+// else, so it stays context and `a` moves around it.
+pub fn contextual_swapped_lines_test() {
+  diff.contextual("a\nb\n", "b\na\n")
+  |> should.equal(Some("- a\n  b\n+ a"))
+}
+
+pub fn contextual_dropping_a_repeated_line_test() {
+  diff.contextual("a\nb\na\n", "a\nb\n")
+  |> should.equal(Some("  a\n  b\n- a"))
+}
+
+pub fn contextual_adding_a_repeated_line_test() {
+  diff.contextual("a\nb\n", "a\nb\na\n")
+  |> should.equal(Some("  a\n  b\n+ a"))
+}
+
+// Two lines trading places around a third: the removals lead and the
+// additions follow, rather than the pair being split into two hunks.
+pub fn contextual_reordered_lines_test() {
+  diff.contextual("a\nb\na\nc\n", "a\nc\na\nb\n")
+  |> should.equal(Some("  a\n- b\n- a\n  c\n+ a\n+ b"))
+}
+
+pub fn contextual_collapsing_a_repeated_line_test() {
+  diff.contextual("a\na\n", "a\n")
+  |> should.equal(Some("  a\n- a"))
+}
+
 // Trailing newlines
 //
 // `annotation.format_file` does not append a trailing newline, so a spec file
