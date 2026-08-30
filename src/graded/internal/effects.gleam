@@ -3023,9 +3023,9 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
 
 // One bundled catalog file, as its `{package}@{version}.graded` name reads. The
 // raw `version` string is what a caller prints; `parsed` is the
-// `major.minor.patch` prefix `parse_semver` reads off it, which selection and
-// sorting compare and which drops any pre-release or build suffix
-// (`1.2.0-rc.1` parses to `#(1, 2, 0)`).
+// `major.minor.patch` selection and sorting compare. A name carrying a
+// pre-release or build suffix is not one of these — `bundled_catalog_files`
+// skips it — so the two always say the same thing about a file that exists.
 pub type CatalogFile {
   CatalogFile(
     package: String,
@@ -3037,10 +3037,10 @@ pub type CatalogFile {
 
 // Every `{package}@{version}.graded` file under `catalog_dir`, in directory
 // order. A file whose name carries no `@`, or more than one, names no package
-// and version and is skipped. So is one whose version is not a
+// and version and is skipped. So is one whose version is not a bare
 // `major.minor.patch`: `parse_semver` would read it as some other version —
-// `1.x.3` as `#(1, 0, 3)` — and answer for a version nobody named, so the file
-// is dropped with a warning instead. The read error is returned rather than
+// `1.x.3` as `#(1, 0, 3)`, `1.2.3-rc.1` as the stable `#(1, 2, 3)` — and answer
+// for a version nobody named, so the file is dropped with a warning instead. The read error is returned rather than
 // folded into an empty list, so a caller for which the directory is the subject
 // can tell "no catalog there" from "nothing bundled".
 pub fn bundled_catalog_files(
@@ -3072,12 +3072,23 @@ pub fn bundled_catalog_files(
 }
 
 // The `major.minor.patch` a catalog file name declares, or `Error(Nil)` for a
-// version selection cannot place. Stricter than `parse_semver`, which stays
-// total because `pick_best_version` and `select_catalog_file` compare whatever
-// it returns: here all three components must be present and numeric once the
-// pre-release or build suffix is dropped.
+// version selection cannot place: exactly three components, each numeric, and
+// **no pre-release or build suffix**. A catalog file name is authored under a
+// documented rule that forbids one (CONTRIBUTING, "Adding a catalog entry"),
+// and the whole reason it forbids one is that selection compares the three
+// numbers and nothing else — so `foo@1.2.3-rc.1.graded` accepted here would be
+// selected as the stable 1.2.3 and answer for an API the pre-release does not
+// describe. `release_test`'s name lint says the same thing about the files
+// graded itself ships; this is that rule at runtime.
+//
+// Deliberately *not* `version_core` first, and deliberately not `parse_semver`.
+// That reader stays total and suffix-dropping because it also reads the
+// **installed** version out of `manifest.toml`, where `1.2.0-rc1` is a real
+// thing to be installed and has to compare as `1.2.0`. A filename is authored;
+// an installed version is whatever the user has. The two sides are strict and
+// lenient for that reason.
 fn strict_semver(version: String) -> Result(#(Int, Int, Int), Nil) {
-  case list.try_map(string.split(version_core(version), "."), int.parse) {
+  case list.try_map(string.split(version, "."), int.parse) {
     Ok([major, minor, patch]) -> Ok(#(major, minor, patch))
     Ok(_) | Error(Nil) -> Error(Nil)
   }
