@@ -532,10 +532,29 @@ fn hunks(edits: List(Edit)) -> List(List(Edit)) {
       }
     })
     |> merge_ranges
-  list.map(ranges, fn(range) {
-    let #(start, end) = range
-    edits |> list.drop(start) |> list.take(end - start + 1)
-  })
+  cut_ranges(edits, 0, ranges, [])
+}
+
+// Cut each range out of the edit list in one forward pass. Ranges ascend and
+// none overlaps the one before it, so the walk never goes back: each range
+// drops what lies between it and where the previous one started, then takes
+// its own span from there. `offset` is where the list in hand begins.
+fn cut_ranges(
+  edits: List(Edit),
+  offset: Int,
+  ranges: List(#(Int, Int)),
+  acc: List(List(Edit)),
+) -> List(List(Edit)) {
+  case ranges {
+    [] -> list.reverse(acc)
+    [#(start, end), ..rest] -> {
+      let remaining = list.drop(edits, start - offset)
+      cut_ranges(remaining, start, rest, [
+        list.take(remaining, end - start + 1),
+        ..acc
+      ])
+    }
+  }
 }
 
 fn is_change(edit: Edit) -> Bool {
