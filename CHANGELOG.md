@@ -38,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `graded infer --dry-run` no longer stalls previewing a large spec file.
+  Unchanged lines now pin the two renderings together, so the search runs on
+  the gaps between them rather than on everything from the first change to the
+  last; a five-thousand-line spec whose every tenth line moved previewed in
+  43 seconds and now previews in under 20 milliseconds.
 - A field call whose receiver shares a name with an imported module now resolves
   to the receiver's own field where the value is known to have one, instead of
   to the module. `let int = Fmt(to_string: shout)` then `int.to_string("hi")`
