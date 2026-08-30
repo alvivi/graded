@@ -1124,6 +1124,28 @@ pub fn a_malformed_catalog_version_is_skipped_test() {
   selection.file.version |> should.equal("1.0.0")
 }
 
+pub fn a_signed_catalog_version_component_is_skipped_test() {
+  // `int.parse` accepts a leading sign, so digits are checked before it runs.
+  // `1.+2.3` is the sharper of the two: it parses to `#(1, 2, 3)` and
+  // impersonates the plain `1.2.3` it is not, selected as an exact match for
+  // that installed version. `-1.2.3` sorts below every real version and is
+  // still selected wherever it is the only file for its package.
+  let root =
+    write_fixture("build/eff_catalog_signed_version", [
+      #("foo@-1.2.3.graded", "effects foo.run : []\n"),
+      #("bar@1.+2.3.graded", "effects bar.run : []\n"),
+    ])
+  let assert Ok(files) = effects.bundled_catalog_files(root)
+  cleanup(root)
+  files |> should.equal([])
+  effects.select_catalog_file(files, "foo", "1.0.0")
+  |> result.is_error
+  |> should.be_true()
+  effects.select_catalog_file(files, "bar", "1.2.3")
+  |> result.is_error
+  |> should.be_true()
+}
+
 pub fn a_catalog_holding_only_a_malformed_version_selects_nothing_test() {
   // Nothing stands in for the skipped file: a typo makes the entry absent, not
   // the fallback the highest-bundled rule would otherwise reach for.
