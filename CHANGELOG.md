@@ -28,10 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `graded effect` now states the `where returns` clause a name answers with, in
-  both formats. A clause the `.graded` line cannot carry — one scoped by a bound
-  list that is not the line's — is stated in the comment channel instead, and
-  either way the clause names the source that wrote it, which need not be the
-  one that wrote the effects half.
+  both formats, naming the source that wrote it — which need not be the one that
+  wrote the effects half. A clause the printed line's own bounds do not scope is
+  stated in the comment channel instead.
 - A `check` line's `where returns` clause is linted for unbound and aliased
   variables like every other live clause. A bound list or `where returns` clause
   on a *field* path is reported as unsupported; the field budget on that line is
@@ -40,25 +39,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A field call whose receiver shares a name with an imported module now resolves
-  the way the compiler resolves it: the receiver's own field wins where the
-  value is known to have it, and the module is the fallback where a complete
-  construction proves it does not. The import used to win outright, so
-  `let int = Fmt(to_string: shout)` followed by `int.to_string("hi")` was
-  charged `gleam/int.to_string` — pure — for a body that writes to stdout. A
-  `check` line that passed on such a receiver may now fail. Where graded cannot
-  tell whether the receiver has the field, the call reads `[Unknown]` rather
-  than the module's effects.
-- `graded format --stdin` now reports a read error and exits non-zero on the
-  Erlang target, instead of treating it as end-of-input — a failed read
-  truncated the spec, formatted what it had, and exited successfully. The read
-  is UTF-8 on both targets.
-- A catalog file whose name does not carry a bare `major.minor.patch` version is
-  now skipped with a warning, rather than read as some other version — `1.x.3`
-  read as `1.0.3` and could outrank a correctly named file for the same package,
-  and `1.2.3-rc.1` read as the stable `1.2.3` and answered for it. Catalog file
-  names have never permitted a pre-release or build suffix; the installed
-  version a file is selected *against* still compares by its `major.minor.patch`
-  prefix, suffix and all.
+  to the receiver's own field where the value is known to have one, instead of
+  to the module. `let int = Fmt(to_string: shout)` then `int.to_string("hi")`
+  was charged the pure `gleam/int.to_string` for a body that writes to stdout,
+  so a `check` line that passed on such a receiver may now fail.
+- `graded format --stdin` now reports a read error and exits non-zero instead of
+  treating it as end-of-input, which truncated the spec and exited successfully.
+  The read is UTF-8 on both targets.
+- A catalog file whose name is not a bare `major.minor.patch` is now skipped
+  with a warning, rather than read as some other version — `1.x.3` as `1.0.3`,
+  `1.2.3-rc.1` as the stable `1.2.3`. The installed version a file is selected
+  against still compares by its prefix.
 - A record of another module's type constructed positionally
   (`handler.Handler(io.println)`) now routes its arguments to the fields they
   fill, through the defining module's labels — this package's modules and its
