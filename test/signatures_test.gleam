@@ -558,7 +558,66 @@ pub type Partial {
     )
   let assert Some(info) = signatures.accessor_info(registry, #("m", "Partial"))
   info.any_label |> should.equal(set.from_list(["map", "n"]))
+  info.every_label |> should.equal(set.new())
   info.opaque_ |> should.be_false()
+}
+
+pub fn accessor_index_intersects_labels_on_field_index_test() {
+  // The every-variant set is what an un-narrowed receiver reads, and an
+  // accessor compiles to a fixed element position: `at` sits at index 0 in both
+  // variants and is granted even though its siblings differ, while `off` sits
+  // at 0 in one and 1 in the other and is granted by neither.
+  let registry =
+    accessors_of(
+      "
+pub type Shared {
+  A(at: fn(Int) -> Int, n: Int)
+  B(at: fn(Int) -> Int, flag: Bool)
+}
+
+pub type Reordered {
+  First(off: fn(Int) -> Int, n: Int)
+  Second(n: Int, off: fn(Int) -> Int)
+}
+",
+      "m",
+    )
+  let assert Some(shared) = signatures.accessor_info(registry, #("m", "Shared"))
+  shared.any_label |> should.equal(set.from_list(["at", "n", "flag"]))
+  shared.every_label |> should.equal(set.from_list(["at"]))
+  let assert Some(reordered) =
+    signatures.accessor_info(registry, #("m", "Reordered"))
+  reordered.any_label |> should.equal(set.from_list(["off", "n"]))
+  reordered.every_label |> should.equal(set.new())
+}
+
+pub fn accessor_index_counts_unlabelled_fields_as_positions_test() {
+  // An unlabelled field takes an element position, so a label after one in a
+  // variant and not the other sits at different indices and is granted by
+  // neither reading.
+  let registry =
+    accessors_of(
+      "
+pub type Mixed {
+  Padded(Int, map: fn(Int) -> Int)
+  Bare(map: fn(Int) -> Int)
+}
+",
+      "m",
+    )
+  let assert Some(info) = signatures.accessor_info(registry, #("m", "Mixed"))
+  info.any_label |> should.equal(set.from_list(["map"]))
+  info.every_label |> should.equal(set.new())
+}
+
+pub fn a_single_variant_type_grants_every_label_it_declares_test() {
+  // Nothing to intersect against, so the two sets coincide — the shape nearly
+  // every record takes, and the one the narrowing rule must leave alone.
+  let registry =
+    accessors_of("pub type Fmt { Fmt(map: fn(Int) -> Int, n: Int) }", "m")
+  let assert Some(info) = signatures.accessor_info(registry, #("m", "Fmt"))
+  info.any_label |> should.equal(set.from_list(["map", "n"]))
+  info.every_label |> should.equal(info.any_label)
 }
 
 pub fn accessor_index_holds_a_type_with_no_labelled_fields_test() {
@@ -580,8 +639,10 @@ pub type Pair {
     )
   let assert Some(colour) = signatures.accessor_info(registry, #("m", "Colour"))
   colour.any_label |> should.equal(set.new())
+  colour.every_label |> should.equal(set.new())
   let assert Some(pair) = signatures.accessor_info(registry, #("m", "Pair"))
   pair.any_label |> should.equal(set.new())
+  pair.every_label |> should.equal(set.new())
   signatures.accessor_info(registry, #("m", "Absent")) |> should.equal(None)
 }
 
@@ -642,6 +703,7 @@ pub fn every_prelude_type_is_seeded_into_the_accessor_index_test() {
       let assert Some(info) =
         signatures.accessor_info(registry, #("gleam", name))
       info.any_label |> should.equal(set.new())
+      info.every_label |> should.equal(set.new())
       info.opaque_ |> should.be_false()
     },
   )
