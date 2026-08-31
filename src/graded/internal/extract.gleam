@@ -1230,6 +1230,7 @@ fn qualified_call_lookup(
                 span,
                 receiver_span,
                 env,
+                Some(module_path),
               )
           }
       }
@@ -1241,6 +1242,7 @@ fn qualified_call_lookup(
         span,
         receiver_span,
         env,
+        None,
       )
   }
 }
@@ -1290,6 +1292,9 @@ fn shadowed_receiver_has_field(binding: LocalBinding, label: String) -> Bool {
 // The field call a bare-identifier receiver resolves to, by what its binding
 // holds. Reached for an unshadowed receiver, and for a shadowed one the rule
 // above sent here.
+// `shadowed_module` names the module the receiver's name also imports, carried
+// on every call this cannot prove has the field so the checker can re-read it
+// once the receiver's type is known.
 fn env_field_call(
   binding: LocalBinding,
   alias: String,
@@ -1297,6 +1302,7 @@ fn env_field_call(
   span: glance.Span,
   receiver_span: glance.Span,
   env: Env,
+  shadowed_module: Option(String),
 ) -> ExtractResult {
   case binding {
     BoundConstructor(fields:, ..) ->
@@ -1306,6 +1312,7 @@ fn env_field_call(
         span,
         receiver_span,
         fields,
+        shadowed_module,
       )
     // A let-bound call result (`let l = make(); l.emit()`): the receiver's
     // whole value is the call, resolved at check time through the callee's
@@ -1319,6 +1326,7 @@ fn env_field_call(
           span,
           receiver_span,
           types.ProvenReceiver(types.CallResult(callee, args)),
+          shadowed_module,
         ),
       ])
     // A let-bound record-update overlay: the receiver's whole value is the
@@ -1331,6 +1339,7 @@ fn env_field_call(
           span,
           receiver_span,
           types.ProvenReceiver(types.Updated(base:, fields:)),
+          shadowed_module,
         ),
       ])
     // Everything else resolves through the receiver's own provenance: a
@@ -1350,6 +1359,7 @@ fn env_field_call(
           span,
           receiver_span,
           field_receiver_provenance(alias, env),
+          shadowed_module,
         ),
       ])
   }
@@ -1409,12 +1419,17 @@ fn bind_receiver_path(path: String, env: Env) -> LocalBinding {
 // site; the complex field values (closure, call result, returned operator,
 // inline construction) carry `ProvenValue` so the checker resolves them per
 // receiver, and anything unwired or opaque is `Untraceable`.
+//
+// A label the routing did wire is the type's own answer that it has the field,
+// so no reading of it as a module call survives; only the miss stays ambiguous
+// and carries `shadowed_module` on.
 fn resolve_constructor_field_call(
   alias: String,
   label: String,
   span: glance.Span,
   receiver_span: glance.Span,
   fields: Dict(String, ArgumentValue),
+  shadowed_module: Option(String),
 ) -> ExtractResult {
   case dict.get(fields, label) {
     Ok(FunctionRef(name: qualified)) ->
@@ -1429,15 +1444,25 @@ fn resolve_constructor_field_call(
     | Ok(types.CallResult(_, _) as value)
     | Ok(Constructed(_) as value) ->
       ExtractResult(..empty(), field: [
-        FieldCall(alias, label, span, receiver_span, ProvenValue(value)),
+        FieldCall(alias, label, span, receiver_span, ProvenValue(value), None),
       ])
     Ok(types.Choice(_))
     | Ok(types.ReceiverPath(_))
     | Ok(types.Updated(_, _))
-    | Ok(OtherExpression)
-    | Error(Nil) ->
+    | Ok(OtherExpression) ->
       ExtractResult(..empty(), field: [
-        FieldCall(alias, label, span, receiver_span, Untraceable),
+        FieldCall(alias, label, span, receiver_span, Untraceable, None),
+      ])
+    Error(Nil) ->
+      ExtractResult(..empty(), field: [
+        FieldCall(
+          alias,
+          label,
+          span,
+          receiver_span,
+          Untraceable,
+          shadowed_module,
+        ),
       ])
   }
 }
@@ -1484,6 +1509,7 @@ fn resolve_nested_field_call(
             span,
             receiver_span,
             fields,
+            None,
           )
         _ ->
           ExtractResult(..empty(), field: [
@@ -1493,6 +1519,9 @@ fn resolve_nested_field_call(
               span,
               receiver_span,
               field_receiver_provenance(object, env),
+              // A nested receiver is not a bare identifier, so it shadows
+              // nothing.
+              None,
             ),
           ])
       }

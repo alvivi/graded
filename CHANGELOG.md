@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A call through a name that shadows an imported module now resolves to that
+  module where the receiver's type declares the label on no variant, instead of
+  reading `[Unknown]`. A parameter named `result`, `list` or `int` no longer
+  leaves every public entry that reaches it undetermined.
 - A name bound by a `case` pattern no longer inherits the type annotation of the
   parameter it shadows, so a field call on it is charged against the value it
   actually names. Effect sets that were under-reported for such a body grow, and

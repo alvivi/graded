@@ -434,3 +434,19 @@ pub fn why_over_an_unparseable_spec_errors_test() {
   )
   support.cleanup(root)
 }
+
+pub fn explains_a_shadowed_receiver_as_a_module_call_test() {
+  // `result` names the parameter, and `Thing` declares no `try` field, so the
+  // compiler reads `gleam/result.try`. The explanation must name that call —
+  // not a field call on `result`, and not the `[Unknown]` an unresolvable one
+  // carries. Asserting only the effect set would miss a module read dropped on
+  // the floor: the set is the same either way.
+  why("shadow_receiver.shadowed")
+  |> lines
+  |> should.equal([
+    "shadow_receiver.shadowed has effects [Stdout]",
+    "declared check shadow_receiver.shadowed : [Stdout]",
+    "  calls gleam/result.try with effects [] (from a module-level `assume` in gleam_stdlib's catalog entry)",
+    "  calls gleam/io.println with effects [Stdout] (from gleam_stdlib's catalog entry)",
+  ])
+}

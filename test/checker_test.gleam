@@ -7206,3 +7206,411 @@ pub fn run(xs: List(Int)) -> List(Int) {
 "
   list_value_channel_effects(closure, "run") |> should.equal(types.empty())
 }
+
+// Shadowed receivers
+//
+// A field call whose receiver's name shadows an imported module carries both
+// readings out of extraction; the splitter picks between them from the
+// receiver's type. Answering "the module" where the type really has the field
+// would charge a pure module function for an effectful one, so every row that
+// proves nothing keeps the field.
+
+// Split one function's field calls against a registry and a girard type map.
+fn split_shadowed(
+  source: String,
+  module_path: String,
+  registry: signatures.SignatureRegistry,
+  types_of: fn(List(types.FieldCall)) -> dict.Dict(#(Int, Int), girard.Type),
+) -> #(List(types.ResolvedCall), List(types.FieldCall)) {
+  let assert Ok(module) = glance.module(source)
+  let context =
+    extract.ImportContext(
+      ..extract.build_import_context(module),
+      module_path: module_path,
+    )
+  let assert Ok(definition) =
+    list.find(module.functions, fn(def) { def.definition.name == "target" })
+  let function = definition.definition
+  let extracted = extract.extract_function_calls(function, context)
+  let cache = checker.build_scc_ids(module, context, dict.new())
+  checker.split_shadowed_field_calls(
+    extracted.field,
+    registry,
+    context,
+    types_of(extracted.field),
+    cache,
+    function,
+  )
+}
+
+// No girard types at all — the syntactic annotation is the only evidence.
+fn no_types(
+  _calls: List(types.FieldCall),
+) -> dict.Dict(#(Int, Int), girard.Type) {
+  dict.new()
+}
+
+// Give every field call's receiver the same girard type.
+fn typed_receivers(
+  type_: girard.Type,
+) -> fn(List(types.FieldCall)) -> dict.Dict(#(Int, Int), girard.Type) {
+  fn(calls: List(types.FieldCall)) {
+    list.fold(calls, dict.new(), fn(acc, call: types.FieldCall) {
+      dict.insert(acc, extract.span_key(call.receiver_span), type_)
+    })
+  }
+}
+
+fn registry_of(
+  source: String,
+  module_path: String,
+) -> signatures.SignatureRegistry {
+  let assert Ok(module) = glance.module(source)
+  signatures.from_glance_module(module_path, module)
+}
+
+// Assert the one field call stayed one: an empty module-read list alone would
+// also hold if extraction had produced no field call at all.
+fn stays_a_field(
+  split: #(List(types.ResolvedCall), List(types.FieldCall)),
+) -> Nil {
+  split.0 |> should.equal([])
+  list.length(split.1) |> should.equal(1)
+}
+
+// One call to `<module>.<label>`, the shape a module reading takes.
+fn module_reads(
+  split: #(List(types.ResolvedCall), List(types.FieldCall)),
+) -> List(types.QualifiedName) {
+  list.map(split.0, fn(call) { call.name })
+}
+
+const shadowing_body = "import gleam/list
+
+pub type Partial {
+  A(map: fn(String) -> String)
+  B(n: Int)
+}
+
+pub type Bare {
+  Bare(n: Int)
+}
+
+pub fn target(list: Bare) -> String {
+  list.map(\"hi\")
+}
+"
+
+pub fn a_label_on_no_variant_reads_as_the_module_test() {
+  let registry = registry_of(shadowing_body, "m")
+  let split = split_shadowed(shadowing_body, "m", registry, no_types)
+  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+  split.1 |> should.equal([])
+}
+
+pub fn a_label_on_one_variant_of_two_stays_a_field_test() {
+  // A `case` can narrow the binding to the variant that declares it, so the
+  // field is reachable and the module reading would under-report it.
+  let source = string.replace(shadowing_body, "list: Bare", "list: Partial")
+  let registry = registry_of(source, "m")
+  let split = split_shadowed(source, "m", registry, no_types)
+  stays_a_field(split)
+}
+
+pub fn a_label_on_every_variant_stays_a_field_test() {
+  let source =
+    "import gleam/list
+
+pub type Both {
+  C(map: fn(String) -> String)
+  D(map: fn(String) -> String)
+}
+
+pub fn target(list: Both) -> String {
+  list.map(\"hi\")
+}
+"
+  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
+  stays_a_field(split)
+}
+
+pub fn a_non_callable_label_on_every_variant_stays_a_field_test() {
+  // The compiler selects the accessor and does not backtrack, so this shape is
+  // a type error rather than a module read — it cannot reach graded from a real
+  // package, and the table keeps the field branch regardless of callability.
+  let source =
+    "import gleam/list
+
+pub type Blocker {
+  E(map: String)
+  F(map: String)
+}
+
+pub fn target(list: Blocker) -> String {
+  list.map(\"hi\")
+}
+"
+  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
+  stays_a_field(split)
+}
+
+pub fn a_type_the_package_never_indexed_stays_a_field_test() {
+  // An empty registry proves nothing about `Bare`, which is a different answer
+  // from "the type declares no such label".
+  let split = split_shadowed(shadowing_body, "m", signatures.empty(), no_types)
+  stays_a_field(split)
+}
+
+pub fn an_opaque_type_read_from_another_module_reads_as_the_module_test() {
+  // Outside its defining module an opaque type grants no accessor at all, and
+  // no `case` there can narrow it either — its constructors are invisible too.
+  let source =
+    "import dep/model
+import gleam/list
+
+pub fn target(list: model.Hidden) -> String {
+  list.map(\"hi\")
+}
+"
+  let registry =
+    registry_of(
+      "pub opaque type Hidden {
+  Hidden(map: fn(String) -> String)
+}
+",
+      "dep/model",
+    )
+  let split = split_shadowed(source, "m", registry, no_types)
+  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+}
+
+pub fn an_opaque_type_read_from_its_own_module_stays_a_field_test() {
+  let source =
+    "import gleam/list
+
+pub opaque type Hidden {
+  Hidden(map: fn(String) -> String)
+}
+
+pub fn target(list: Hidden) -> String {
+  list.map(\"hi\")
+}
+"
+  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
+  stays_a_field(split)
+}
+
+pub fn a_girard_named_receiver_decides_the_reading_test() {
+  // girard names the type's defining module, so the index is keyed exactly.
+  let source =
+    "import gleam/list
+
+pub fn target(list) -> String {
+  list.map(\"hi\")
+}
+"
+  let registry = registry_of("pub type Bare { Bare(n: Int) }", "m")
+  let split =
+    split_shadowed(
+      source,
+      "m",
+      registry,
+      typed_receivers(girard.Named("m", "Bare", [])),
+    )
+  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+}
+
+pub fn a_girard_var_receiver_stays_a_field_test() {
+  // girard emits `Var` both for a real generic and for an inference variable it
+  // never resolved, so a `Var` is a miss, not a proof of fieldlessness.
+  let source =
+    "import gleam/list
+
+pub fn target(list) -> String {
+  list.map(\"hi\")
+}
+"
+  let split =
+    split_shadowed(
+      source,
+      "m",
+      registry_of(shadowing_body, "m"),
+      typed_receivers(girard.Var(1)),
+    )
+  stays_a_field(split)
+}
+
+pub fn a_fn_typed_receiver_annotation_reads_as_the_module_test() {
+  let source =
+    "import gleam/list
+
+pub fn target(list: fn(Int) -> Int) -> String {
+  list.map(\"hi\")
+}
+"
+  let split = split_shadowed(source, "m", signatures.empty(), no_types)
+  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+}
+
+pub fn a_tuple_receiver_annotation_reads_as_the_module_test() {
+  let source =
+    "import gleam/list
+
+pub fn target(list: #(Int, Int)) -> String {
+  list.map(\"hi\")
+}
+"
+  let split = split_shadowed(source, "m", signatures.empty(), no_types)
+  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+}
+
+pub fn a_source_level_generic_receiver_reads_as_the_module_test() {
+  // A written `a` is provably a generic, and Gleam has no row polymorphism —
+  // information girard's `Var` has already lost.
+  let source =
+    "import gleam/list
+
+pub fn target(list: a) -> String {
+  list.map(\"hi\")
+}
+"
+  let split = split_shadowed(source, "m", signatures.empty(), no_types)
+  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+}
+
+pub fn an_unannotated_receiver_stays_a_field_test() {
+  let source =
+    "import gleam/list
+
+pub fn target(list) -> String {
+  list.map(\"hi\")
+}
+"
+  let split = split_shadowed(source, "m", signatures.empty(), no_types)
+  stays_a_field(split)
+}
+
+pub fn an_unshadowed_field_call_never_enters_the_table_test() {
+  // No import of that name, so nothing to decide — it resolves exactly as it
+  // did before, whatever the type says.
+  let source =
+    "pub type Bare {
+  Bare(n: Int)
+}
+
+pub fn target(thing: Bare) -> String {
+  thing.map(\"hi\")
+}
+"
+  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
+  stays_a_field(split)
+}
+
+pub fn a_rebound_receiver_name_ignores_the_stale_annotation_test() {
+  // `Runner(..) as list` names the clause's value, not the parameter, so the
+  // parameter's annotation says nothing about the receiver. Read through it,
+  // `map` is on no variant of `Empty` and the effectful field would be charged
+  // as a pure `gleam/list.map`.
+  let source =
+    "import gleam/list
+
+pub type Empty {
+  Empty(n: Int)
+}
+
+pub type Runner {
+  Runner(map: fn(String) -> String)
+}
+
+pub fn target(list: Empty, r: Runner) -> String {
+  case r {
+    Runner(..) as list -> list.map(\"hi\")
+  }
+}
+"
+  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
+  stays_a_field(split)
+}
+
+pub fn a_let_rebound_receiver_name_ignores_the_stale_annotation_test() {
+  let source =
+    "import gleam/list
+
+pub type Empty {
+  Empty(n: Int)
+}
+
+pub fn target(list: Empty, r) -> String {
+  let list = r
+  list.map(\"hi\")
+}
+"
+  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
+  stays_a_field(split)
+}
+
+pub fn a_receiver_annotation_follows_a_type_alias_test() {
+  let source =
+    "import gleam/list
+
+pub type Bare {
+  Bare(n: Int)
+}
+
+pub type Chained = Alias
+
+pub type Alias = Bare
+
+pub fn target(list: Chained) -> String {
+  list.map(\"hi\")
+}
+"
+  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
+  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+}
+
+pub fn a_type_alias_cycle_terminates_test() {
+  let source =
+    "import gleam/list
+
+pub type A = B
+
+pub type B = A
+
+pub fn target(list: A) -> String {
+  list.map(\"hi\")
+}
+"
+  let split = split_shadowed(source, "m", signatures.empty(), no_types)
+  stays_a_field(split)
+}
+
+pub fn an_alias_of_a_function_type_reads_as_the_module_test() {
+  let source =
+    "import gleam/list
+
+pub type Handler = fn(String) -> String
+
+pub fn target(list: Handler) -> String {
+  list.map(\"hi\")
+}
+"
+  let split = split_shadowed(source, "m", signatures.empty(), no_types)
+  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+}
+
+pub fn an_imported_type_annotation_keys_on_its_own_module_test() {
+  // `import dep/model.{type Runner}` writes the type unqualified, but the line
+  // that indexes it is keyed by the module that declares it.
+  let source =
+    "import dep/model.{type Runner}
+import gleam/list
+
+pub fn target(list: Runner) -> String {
+  list.map(\"hi\")
+}
+"
+  let registry = registry_of("pub type Runner { Runner(n: Int) }", "dep/model")
+  let split = split_shadowed(source, "m", registry, no_types)
+  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+}

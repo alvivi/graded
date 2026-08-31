@@ -4554,12 +4554,27 @@ fn collect_effects(
       cache,
     )
 
+  // A field call whose receiver's name shadows an imported module is two
+  // readings until the receiver's type decides between them. Split before the
+  // resolved fold, so a call that reads as the module is folded here like any
+  // other qualified call rather than appended to a list already consumed.
+  let #(module_reads, field_reads) =
+    split_shadowed_field_calls(
+      result.field,
+      registry,
+      context,
+      module_types,
+      cache,
+      function,
+    )
+  let resolved_calls = list.append(result.resolved, module_reads)
+
   // Resolved calls: qualified names looked up directly in the knowledge
   // base. If the callee's effects are polymorphic (contain effect
   // variables), bind the variables by matching arguments at fn-typed
   // parameter positions and substitute for concrete effects.
   let #(memo, resolved_effects) =
-    list.map_fold(result.resolved, memo, fn(memo, call) {
+    list.map_fold(resolved_calls, memo, fn(memo, call) {
       let looked_up = lookup_parts(knowledge_base, call.name, NoKnownEffects)
       let #(concrete, concrete_fallback, memo) =
         substitute_at_call_site(
@@ -4662,7 +4677,7 @@ fn collect_effects(
 
   // Field calls: object.method(args) resolved via type field annotations.
   let #(memo, field_effects) =
-    list.map_fold(result.field, memo, fn(memo, field_call) {
+    list.map_fold(field_reads, memo, fn(memo, field_call) {
       let synthetic_call =
         sentinel_call(field_call_kind(field_call), field_call.span)
       let #(resolution, memo) =
@@ -8618,6 +8633,276 @@ fn concretize(term: EffectTerm) -> EffectTerm {
       dict.insert(d, var, effect_term.unknown())
     })
   effect_term.normalize(effect_term.subst(term, bindings))
+}
+
+// Shadowed receivers
+//
+// `use v <- result.try(r)` inside `fn f(result: Type, ..)` is a call to
+// `gleam/result.try`, not a field call on `result`: Gleam reads a bare
+// identifier that shadows an import as the module wherever the binding's type
+// grants no record accessor for the label. Extraction cannot ask what type a
+// receiver has, so it carries both readings on the call and the decision is
+// taken here, where girard's types and the accessor index are in scope.
+
+// How much is known about a shadowed receiver's type.
+//
+// Not an `Option(#(String, String))`: `typeinfo.receiver_type` answers `None`
+// for a function type, a tuple and a type variable as readily as for a span it
+// has no entry for, and those are types that carry no field at all — reading
+// every `None` as "unknown" would leave an annotated `fn(..)` parameter at
+// `[Unknown]` where the compiler must select the module.
+type ReceiverShape {
+  NamedReceiver(module: String, type_name: String)
+  FieldlessReceiver
+  UnknownReceiver
+}
+
+// The prelude's types, which no module declaration produces and which grant no
+// accessor. A bare `Int` annotation keys as `#("", "Int")`, so the index entry
+// under `gleam` needs a key of its own.
+const prelude_type_names = [
+  "Int", "Float", "String", "Bool", "Nil", "BitArray", "UtfCodepoint", "List",
+  "Result",
+]
+
+// Split the field calls into the ones the receiver's type says are calls to the
+// module its name shadows, and the ones that stay field calls.
+//
+// The module reads join the *resolved* list, so each takes the whole resolved
+// path — knowledge-base lookup, call-site substitution, origin reporting and
+// `graded why` prose — with no separate code of its own. That is why this runs
+// before the resolved fold rather than inside the field loop, which the fold has
+// already passed.
+pub fn split_shadowed_field_calls(
+  field_calls: List(types.FieldCall),
+  registry: SignatureRegistry,
+  context: ImportContext,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  cache: LocalCache,
+  function: Function,
+) -> #(List(ResolvedCall), List(types.FieldCall)) {
+  let #(module_reads, field_reads) =
+    list.fold(field_calls, #([], []), fn(acc, call) {
+      let #(module_reads, field_reads) = acc
+      case
+        shadowed_module_read(
+          call,
+          registry,
+          context,
+          module_types,
+          cache,
+          function,
+        )
+      {
+        Some(module_path) -> #(
+          [
+            types.ResolvedCall(
+              name: QualifiedName(module: module_path, function: call.label),
+              span: call.span,
+            ),
+            ..module_reads
+          ],
+          field_reads,
+        )
+        None -> #(module_reads, [call, ..field_reads])
+      }
+    })
+  #(list.reverse(module_reads), list.reverse(field_reads))
+}
+
+// The module a shadowed field call actually reads, or `None` where it stays a
+// field call. Every uncertainty answers `None`: choosing the module where a
+// field is real charges a pure module function for an effectful field, which is
+// the undercharge direction.
+fn shadowed_module_read(
+  call: types.FieldCall,
+  registry: SignatureRegistry,
+  context: ImportContext,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  cache: LocalCache,
+  function: Function,
+) -> Option(String) {
+  case call.shadowed_module {
+    None -> None
+    Some(module_path) ->
+      case receiver_shape(call, context, module_types, cache, function) {
+        UnknownReceiver -> None
+        FieldlessReceiver -> Some(module_path)
+        NamedReceiver(module:, type_name:) ->
+          case
+            grants_no_accessor(
+              registry,
+              #(module, type_name),
+              call.label,
+              context,
+            )
+          {
+            True -> Some(module_path)
+            False -> None
+          }
+      }
+  }
+}
+
+// The receiver's type, girard first and the written annotation second.
+//
+// girard only ever answers with a `Named` type, so it can promote an unknown
+// receiver to a named one but never contradicts the annotation. Its `Var` is
+// *not* fieldless — girard emits one both for a real generic and for an
+// inference variable it never resolved, and calling an unresolved one fieldless
+// would undercharge — so it falls through to the annotation like any other miss.
+fn receiver_shape(
+  call: types.FieldCall,
+  context: ImportContext,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  cache: LocalCache,
+  function: Function,
+) -> ReceiverShape {
+  case
+    typeinfo.receiver_type(
+      module_types,
+      call.receiver_span.start,
+      call.receiver_span.end,
+    )
+  {
+    Some(#(module, type_name)) -> NamedReceiver(module:, type_name:)
+    None ->
+      // The annotation answers only where the receiver still *is* the parameter
+      // of that name. A `let` or a clause pattern can rebind the name to a value
+      // of another type, and the stale annotation would then charge a module
+      // call for a field the value really has. That matters most exactly where
+      // girard is absent: path-dependency inference is handed no types at all.
+      case call.provenance {
+        types.ParameterRoot(path:) if path == call.object ->
+          syntactic_receiver_shape(
+            function,
+            call.object,
+            context,
+            cache.fn_alias_types,
+          )
+        _ -> UnknownReceiver
+      }
+  }
+}
+
+// The shape a written parameter annotation gives the receiver.
+//
+// Separate from `syntactic_param_type`, which answers named types only because
+// rule 3 keys `type`-line lookups by nominal type: here a `fn(..)`, a tuple and
+// a type variable are answers in their own right.
+fn syntactic_receiver_shape(
+  function: Function,
+  object: String,
+  context: ImportContext,
+  alias_map: dict.Dict(String, glance.Type),
+) -> ReceiverShape {
+  case
+    list.find(function.parameters, fn(param) {
+      case param.name {
+        glance.Named(name) -> name == object
+        glance.Discarded(_) -> False
+      }
+    })
+  {
+    Ok(glance.FunctionParameter(type_: Some(annotation), ..)) ->
+      annotated_receiver_shape(annotation, context, alias_map, set.new())
+    _ -> UnknownReceiver
+  }
+}
+
+// One annotation's shape, following module-local type aliases to what they
+// name. A `fn(..)` or a tuple carries no fields; a *source-level* type variable
+// is provably a generic, and Gleam has no row polymorphism, so the compiler
+// reads the module through all three. A hole says nothing. `visited` keeps a
+// mutually recursive alias pair from spinning.
+fn annotated_receiver_shape(
+  annotation: glance.Type,
+  context: ImportContext,
+  alias_map: dict.Dict(String, glance.Type),
+  visited: Set(String),
+) -> ReceiverShape {
+  case annotation {
+    glance.NamedType(name:, module: None, ..) ->
+      case dict.get(alias_map, name), set.contains(visited, name) {
+        Ok(aliased), False ->
+          annotated_receiver_shape(
+            aliased,
+            context,
+            alias_map,
+            set.insert(visited, name),
+          )
+        Ok(_), True -> UnknownReceiver
+        Error(Nil), _ -> named_receiver_shape(name, None, context)
+      }
+    glance.NamedType(name:, module:, ..) ->
+      named_receiver_shape(name, module, context)
+    glance.FunctionType(..) | glance.TupleType(..) | glance.VariableType(..) ->
+      FieldlessReceiver
+    glance.HoleType(..) -> UnknownReceiver
+  }
+}
+
+// A named annotation read through the module's imports. An alias that stands
+// for no import names nothing, and nothing is what the shape says.
+fn named_receiver_shape(
+  name: String,
+  module: Option(String),
+  context: ImportContext,
+) -> ReceiverShape {
+  case annotated_type_module(name, module, context) {
+    Some(#(type_module, type_name)) ->
+      NamedReceiver(module: type_module, type_name:)
+    None -> UnknownReceiver
+  }
+}
+
+// Whether the receiver's type grants no accessor for `label`, the one reading
+// that makes the call the module's.
+//
+// A type the package never parsed proves nothing. An opaque type read from
+// outside its defining module grants no accessor there, and no `case` there can
+// narrow it either, since its constructors are invisible too. A label on at
+// least one variant stays the field's: a pattern can narrow the binding to that
+// variant, and the field is real through the narrowed name.
+fn grants_no_accessor(
+  registry: SignatureRegistry,
+  receiver_type: #(String, String),
+  label: String,
+  context: ImportContext,
+) -> Bool {
+  let found =
+    accessor_lookup_keys(receiver_type, context.module_path)
+    |> list.find_map(fn(key) {
+      signatures.accessor_info(registry, key)
+      |> option.to_result(Nil)
+      |> result.map(fn(info) { #(key, info) })
+    })
+  case found {
+    Error(Nil) -> False
+    Ok(#(#(defining_module, _), info)) ->
+      case info.opaque_ && defining_module != context.module_path {
+        True -> True
+        False -> !set.contains(info.any_label, label)
+      }
+  }
+}
+
+// The keys the accessor index is consulted under — rule 3's key list, extended
+// for a bare prelude name, whose entry is keyed under `gleam` and which no
+// module-qualified key reaches.
+fn accessor_lookup_keys(
+  receiver_type: #(String, String),
+  module_path: String,
+) -> List(#(String, String)) {
+  let keys = declared_type_field_keys(Some(receiver_type), module_path)
+  case receiver_type {
+    #("", name) ->
+      case list.contains(prelude_type_names, name) {
+        True -> list.append(keys, [#("gleam", name)])
+        False -> keys
+      }
+    _ -> keys
+  }
 }
 
 // The nominal type name declared on the function parameter named `object`, if
