@@ -18,7 +18,12 @@ import graded/internal/types.{
 // — passthroughs, field paths, rebuilt records, joins over branches — and
 // widens to `Opaque` wherever the value can't be traced.
 
-fn provenance_of(src: String) -> types.ReturnProvenance {
+// `target` and the import context it is read against, with the module's
+// factories in scope — so a factory call binds like the construction it
+// performs rather than as an opaque call result.
+fn target_with_factories(
+  src: String,
+) -> #(glance.Function, extract.ImportContext) {
   let assert Ok(module) = glance.module(src)
   let ctx =
     extract.build_import_context(module)
@@ -30,7 +35,12 @@ fn provenance_of(src: String) -> types.ReturnProvenance {
     ))
   let assert Ok(func) =
     list.find(module.functions, fn(def) { def.definition.name == "target" })
-  extract.return_provenance(func.definition, ctx)
+  #(func.definition, ctx)
+}
+
+fn provenance_of(src: String) -> types.ReturnProvenance {
+  let #(function, ctx) = target_with_factories(src)
+  extract.return_provenance(function, ctx)
 }
 
 pub fn provenance_passthrough_test() {
@@ -1844,18 +1854,8 @@ pub fn target() {
   let list = build(fn(_s) { Nil })
   list.map(\"hi\")
 }"
-  let assert Ok(module) = glance.module(src)
-  let ctx =
-    extract.build_import_context(module)
-    |> extract.with_factories(extract.factory_map(
-      "app",
-      module,
-      types.every_target(),
-      dict.new(),
-    ))
-  let assert Ok(func) =
-    list.find(module.functions, fn(def) { def.definition.name == "target" })
-  let result = extract.extract_function_calls(func.definition, ctx)
+  let #(function, ctx) = target_with_factories(src)
+  let result = extract.extract_function_calls(function, ctx)
   let assert [call] = result.field
   call.receiver_narrowing |> should.equal(types.UnnarrowedReceiver)
 }
