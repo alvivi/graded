@@ -8440,6 +8440,35 @@ pub fn aliased_param_call_resolves_through_bound_test() {
   |> should.be_false()
 }
 
+// Shadowed receivers on a type whose label is not on every variant
+//
+// `shadow_receiver.Logger` declares `println` on one of two variants, so Gleam
+// grants no accessor for it and only a narrowed receiver reaches the field.
+
+pub fn an_un_narrowed_receiver_is_charged_as_the_module_call_test() {
+  // shadow_receiver.logger_param takes a plain `Logger` parameter, which
+  // nothing narrowed: the compiler emits `gleam/io.println` and the [Stdout] it
+  // carries must reach the caller. Read as a field, the call would ground to
+  // the pure function `make_logger` wires and the effect would vanish.
+  let assert Ok(answered) =
+    graded.run_effect("test/fixtures", "shadow_receiver.logger_param")
+  answered
+  |> string.contains("effects shadow_receiver.logger_param : [Stdout]")
+  |> should.be_true()
+}
+
+pub fn a_narrowed_receiver_stays_a_field_call_test() {
+  // shadow_receiver.logger_narrowed reaches the same label through a `case`
+  // clause that fixes the variant, where the field is real. No construction
+  // site is in reach of that receiver, so it stays [Unknown] rather than
+  // borrowing the module's effect.
+  let assert Ok(answered) =
+    graded.run_effect("test/fixtures", "shadow_receiver.logger_narrowed")
+  answered
+  |> string.contains("effects shadow_receiver.logger_narrowed : [Unknown]")
+  |> should.be_true()
+}
+
 // Infer/check round trip
 //
 // `run_infer` regenerates the fixtures spec in place, preserving the
