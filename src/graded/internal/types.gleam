@@ -703,7 +703,23 @@ pub type FieldCall {
     // `<module>.<label>` once it knows the type. `None` on every unshadowed
     // field call, and on one whose receiver provably has the field.
     shadowed_module: Option(String),
+    // Whether a pattern or a construction fixed which variant the receiver
+    // holds. Read only alongside `shadowed_module`, since it decides which
+    // labels of the receiver's type count as accessors there.
+    receiver_narrowing: ReceiverNarrowing,
   )
+}
+
+// Whether a field call's receiver is known to hold one particular variant of
+// its type.
+//
+// The two answers pick different label sets out of the accessor index: a
+// receiver no pattern narrowed grants only the labels every variant declares at
+// the same field index, while a narrowed one can reach a label its variant
+// alone declares.
+pub type ReceiverNarrowing {
+  UnnarrowedReceiver
+  PossiblyNarrowedReceiver
 }
 
 // What extraction proved about a field call's receiver, driving the checker's
