@@ -312,8 +312,27 @@ pub fn from_glance_module(
     })
   SignatureRegistry(
     signatures:,
-    accessors: accessors_from_module(module_path, module),
+    accessors: dict.merge(
+      prelude_accessors(),
+      accessors_from_module(module_path, module),
+    ),
   )
+}
+
+// The nine types the prelude declares. No module declaration produces them, and
+// none grants a record accessor, so a receiver annotated with one is decided
+// rather than left unindexed. Seeded on every parsed module, which is what
+// carries them through `merge`; a project type of the same name keys under its
+// own module and is unaffected.
+fn prelude_accessors() -> Dict(#(String, String), AccessorInfo) {
+  [
+    "Int", "Float", "String", "Bool", "Nil", "BitArray", "UtfCodepoint", "List",
+    "Result",
+  ]
+  |> list.map(fn(name) {
+    #(#("gleam", name), AccessorInfo(any_label: set.new(), opaque_: False))
+  })
+  |> dict.from_list()
 }
 
 // Each custom type a module declares, with the union of its variants' labels.

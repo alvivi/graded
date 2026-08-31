@@ -626,3 +626,42 @@ pub fn f(x) { x }",
   signatures.accessor_info(signatures.merge(registry, local), #("m", "Thing"))
   |> should.be_some()
 }
+
+pub fn every_prelude_type_is_seeded_into_the_accessor_index_test() {
+  // A prelude receiver (`int: Int`) types as `Named("gleam", "Int", [])`, which
+  // no module declaration produces — without the seed the index misses it and
+  // a call through the shadowing name stays `[Unknown]`. `UtfCodepoint` is the
+  // one an enumeration written from memory drops.
+  let registry = accessors_of("pub fn f(x) { x }", "m")
+  list.each(
+    [
+      "Int", "Float", "String", "Bool", "Nil", "BitArray", "UtfCodepoint",
+      "List", "Result",
+    ],
+    fn(name) {
+      let assert Some(info) =
+        signatures.accessor_info(registry, #("gleam", name))
+      info.any_label |> should.equal(set.new())
+      info.opaque_ |> should.be_false()
+    },
+  )
+}
+
+pub fn the_prelude_seed_survives_a_merge_test() {
+  let dep = accessors_of("pub type Runner { Runner(n: Int) }", "dep")
+  let project = accessors_of("pub type Thing { Thing(n: Int) }", "m")
+  signatures.accessor_info(signatures.merge(dep, project), #("gleam", "Int"))
+  |> should.be_some()
+}
+
+pub fn a_project_type_named_like_a_prelude_type_keys_apart_test() {
+  // The seed is keyed under `gleam`, so a module's own `Result` is its own
+  // entry and neither shadows the other.
+  let registry =
+    accessors_of("pub type Result { Result(map: fn(Int) -> Int) }", "m")
+  let assert Some(own) = signatures.accessor_info(registry, #("m", "Result"))
+  own.any_label |> should.equal(set.from_list(["map"]))
+  let assert Some(prelude) =
+    signatures.accessor_info(registry, #("gleam", "Result"))
+  prelude.any_label |> should.equal(set.new())
+}

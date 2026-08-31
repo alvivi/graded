@@ -14019,3 +14019,21 @@ pub fn shadowed(list: Empty, r: Runner) -> String {
   |> string.contains("effects dep.shadowed(r.map: [r.map]) : [r.map]")
   |> should.be_true()
 }
+
+pub fn a_prelude_receiver_reads_as_the_module_test() {
+  // `int: Int` types as `Named("gleam", "Int", [])`, which no module
+  // declaration produces, and the written annotation keys as `#("", "Int")`.
+  // Only a fixture runs both key shapes against the seeded entry.
+  shadow_effect_line(
+    "shadow_prelude",
+    "import gleam/int
+
+pub fn shadowed(int: Int) -> String {
+  int.to_string(int)
+}
+",
+    "shadowed",
+  )
+  |> string.contains("effects ext.shadowed : []")
+  |> should.be_true()
+}
