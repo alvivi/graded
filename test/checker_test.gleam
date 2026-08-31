@@ -7308,13 +7308,147 @@ pub fn a_label_on_no_variant_reads_as_the_module_test() {
   split.1 |> should.equal([])
 }
 
-pub fn a_label_on_one_variant_of_two_stays_a_field_test() {
-  // A `case` can narrow the binding to the variant that declares it, so the
-  // field is reachable and the module reading would under-report it.
+pub fn a_label_on_one_variant_of_two_reads_as_the_module_test() {
+  // The receiver is a plain parameter, which nothing narrowed: Gleam grants an
+  // accessor only for a label every variant declares, so the compiler emits the
+  // module call and charging the field would under-report it.
   let source = string.replace(shadowing_body, "list: Bare", "list: Partial")
   let registry = registry_of(source, "m")
   let split = split_shadowed(source, "m", registry, no_types)
+  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+  split.1 |> should.equal([])
+}
+
+pub fn a_label_on_one_variant_narrowed_to_it_stays_a_field_test() {
+  // The same type reached through a `case` on the receiver: the clause fixes
+  // which variant it holds, the field is real through it, and the module
+  // reading would charge a pure module function for an effectful field.
+  let source =
+    "import gleam/list
+
+pub type Partial {
+  A(map: fn(String) -> String)
+  B(n: Int)
+}
+
+pub fn target(list: Partial) -> String {
+  case list {
+    A(..) -> list.map(\"hi\")
+    B(..) -> \"\"
+  }
+}
+"
+  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
   stays_a_field(split)
+}
+
+pub fn a_clause_bound_receiver_of_one_variant_stays_a_field_test() {
+  // `A(..) as list` names the clause's own value, which the pattern already
+  // fixed to the variant declaring the label. The receiver is not the parameter
+  // of its name, so its type reaches the rule through girard.
+  let source =
+    "import gleam/list
+
+pub type Partial {
+  A(map: fn(String) -> String)
+  B(n: Int)
+}
+
+pub fn target(r: Partial) -> String {
+  case r {
+    A(..) as list -> list.map(\"hi\")
+    B(..) -> \"\"
+  }
+}
+"
+  let split =
+    split_shadowed(
+      source,
+      "m",
+      registry_of(source, "m"),
+      typed_receivers(girard.Named("m", "Partial", [])),
+    )
+  stays_a_field(split)
+}
+
+pub fn a_label_at_differing_indices_reads_as_the_module_test() {
+  // Every variant declares `map`, but at different field positions, and an
+  // accessor compiles to a fixed one — so the type grants none and the compiler
+  // reads the module through an un-narrowed receiver.
+  let source =
+    "import gleam/list
+
+pub type Reordered {
+  First(map: fn(String) -> String, n: Int)
+  Second(n: Int, map: fn(String) -> String)
+}
+
+pub fn target(list: Reordered) -> String {
+  list.map(\"hi\")
+}
+"
+  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
+  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+  split.1 |> should.equal([])
+}
+
+pub fn an_un_narrowed_call_result_receiver_reads_as_the_module_test() {
+  // A call result carries no written annotation, so its type comes from girard
+  // alone — and narrowing does not cross the function boundary it came back
+  // through.
+  let source =
+    "import gleam/list
+
+pub type Partial {
+  A(map: fn(String) -> String)
+  B(n: Int)
+}
+
+pub fn make() -> Partial {
+  A(fn(s) { s })
+}
+
+pub fn target() -> String {
+  let list = make()
+  list.map(\"hi\")
+}
+"
+  let split =
+    split_shadowed(
+      source,
+      "m",
+      registry_of(source, "m"),
+      typed_receivers(girard.Named("m", "Partial", [])),
+    )
+  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+  split.1 |> should.equal([])
+}
+
+pub fn an_un_narrowed_alias_receiver_reads_as_the_module_test() {
+  // An alias roots at the name it aliases, so it too reaches a type only
+  // through girard.
+  let source =
+    "import gleam/list
+
+pub type Partial {
+  A(map: fn(String) -> String)
+  B(n: Int)
+}
+
+pub fn target(r: Partial) -> String {
+  let list = r
+  list.map(\"hi\")
+}
+"
+  let split =
+    split_shadowed(
+      source,
+      "m",
+      registry_of(source, "m"),
+      typed_receivers(girard.Named("m", "Partial", [])),
+    )
+  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+  split.1 |> should.equal([])
 }
 
 pub fn a_label_on_every_variant_stays_a_field_test() {

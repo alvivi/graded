@@ -1663,7 +1663,7 @@ pub fn an_alias_of_a_narrowed_name_narrows_test() {
 }
 
 pub fn an_alias_outlives_a_rebinding_of_its_source_test() {
-  // The alias\'s narrowing is fixed where it is taken, the same way its
+  // The alias's narrowing is fixed where it is taken, the same way its
   // canonical path is: rebinding the name it was taken from cannot reach back.
   narrowing_of(
     "pub fn target(r: Runner) {
@@ -1680,7 +1680,7 @@ pub fn an_alias_outlives_a_rebinding_of_its_source_test() {
 }
 
 pub fn a_clause_pattern_name_is_possibly_narrowed_test() {
-  // `Fast(..) as list` binds the clause\'s own name, which the pattern already
+  // `Fast(..) as list` binds the clause's own name, which the pattern already
   // fixed to one variant.
   narrowing_of(
     "pub fn target(r: Runner) {

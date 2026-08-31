@@ -8717,6 +8717,7 @@ fn shadowed_module_read(
               #(module, type_name),
               call.label,
               context,
+              call.receiver_narrowing,
             )
           {
             True -> Some(module_path)
@@ -8855,14 +8856,20 @@ fn named_receiver_shape(
 //
 // A type the package never parsed proves nothing. An opaque type read from
 // outside its defining module grants no accessor there, and no `case` there can
-// narrow it either, since its constructors are invisible too. A label on at
-// least one variant stays the field's: a pattern can narrow the binding to that
-// variant, and the field is real through the narrowed name.
+// narrow it either, since its constructors are invisible too.
+//
+// Which labels count as accessors is what the receiver's narrowing decides. A
+// receiver a pattern or a construction fixed to one variant reaches a label
+// that variant alone declares, so any variant's label keeps the field. One that
+// nothing narrowed reaches only the labels every variant declares at the same
+// field index — exactly the accessors the compiler compiles — and a label
+// outside that set is the module's, whatever other variants declare.
 fn grants_no_accessor(
   registry: SignatureRegistry,
   receiver_type: #(String, String),
   label: String,
   context: ImportContext,
+  narrowing: types.ReceiverNarrowing,
 ) -> Bool {
   let found =
     accessor_lookup_keys(receiver_type, context.module_path)
@@ -8874,9 +8881,14 @@ fn grants_no_accessor(
     })
   case found {
     Error(Nil) -> False
-    Ok(#(defining_module, info)) ->
+    Ok(#(defining_module, info)) -> {
+      let granted = case narrowing {
+        types.UnnarrowedReceiver -> info.every_label
+        types.PossiblyNarrowedReceiver -> info.any_label
+      }
       { info.opaque_ && defining_module != context.module_path }
-      || !set.contains(info.any_label, label)
+      || !set.contains(granted, label)
+    }
   }
 }
 
