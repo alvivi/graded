@@ -48,6 +48,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A call through a local name that shadows an imported module, on a type whose
+  label is missing from some variants or sits at a different field position in
+  them, is now charged as the module call the compiler emits. It was read as a
+  record field, which the label's construction site then grounded — so a body
+  calling `gleam/io.println` through a parameter named `io` could be reported
+  pure. A receiver a `case` clause, a `let assert` or a construction fixed to
+  one variant keeps the field. Inferred sets grow for these bodies and a `check`
+  line over one can start failing.
 - A call through a name that shadows an imported module now resolves to that
   module where the receiver's type declares the label on no variant, instead of
   reading `[Unknown]`. A parameter named `result`, `list` or `int` no longer
