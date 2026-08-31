@@ -841,7 +841,18 @@ fn pre_tail_env(
   function: glance.Function,
   context: ImportContext,
 ) -> Env {
-  list.fold(init, seed_parameters(function.parameters), fn(acc, statement) {
+  bind_statements(init, context, seed_parameters(function.parameters))
+}
+
+// Thread a run of statements' bindings into the environment, in order — the
+// scope in effect after them. Every reader that needs a body's scope part-way
+// through shares it, so a `let` binds the same way wherever it is read from.
+fn bind_statements(
+  statements: List(glance.Statement),
+  context: ImportContext,
+  env: Env,
+) -> Env {
+  list.fold(statements, env, fn(acc, statement) {
     case statement {
       glance.Assignment(pattern:, value:, kind:, ..) ->
         bind_assignment(pattern, kind, value, context, acc)
@@ -849,6 +860,21 @@ fn pre_tail_env(
       _ -> acc
     }
   })
+}
+
+// A block's tail expression and the environment in effect at it, or `None`
+// where the block ends in something other than an expression and so evaluates
+// to no value a caller can read.
+fn block_tail(
+  statements: List(glance.Statement),
+  context: ImportContext,
+  env: Env,
+) -> Option(#(glance.Expression, Env)) {
+  case list.reverse(statements) {
+    [glance.Expression(tail), ..init_reversed] ->
+      Some(#(tail, bind_statements(list.reverse(init_reversed), context, env)))
+    _ -> None
+  }
 }
 
 // Each labeled parameter's position (0-based) in a function's parameter list,
@@ -1735,7 +1761,7 @@ fn bind_assignment(
 ) -> Env {
   case pattern {
     glance.PatternVariable(name:, ..) -> {
-      let narrows = rhs_narrows(value, env)
+      let narrows = rhs_narrows(value, context, env)
       let bound = env_bind(env, name, classify_rhs(value, context, env))
       case narrows {
         True -> env_narrow(bound, name)
@@ -1756,7 +1782,11 @@ fn bind_assignment(
 // A factory call does not — it binds like a construction, but its result comes
 // back across a function boundary — and neither does a projection, a block, or
 // any other computed value.
-fn rhs_narrows(expression: glance.Expression, env: Env) -> Bool {
+fn rhs_narrows(
+  expression: glance.Expression,
+  context: ImportContext,
+  env: Env,
+) -> Bool {
   case expression {
     glance.Variable(name:, ..) -> env_is_narrowed(env, name)
     glance.Call(function: glance.Variable(_, name), ..) ->
@@ -1765,6 +1795,16 @@ fn rhs_narrows(expression: glance.Expression, env: Env) -> Bool {
       function: glance.FieldAccess(container: glance.Variable(..), label:, ..),
       ..,
     ) -> is_constructor_name(label)
+    // A block hands back its tail, and the compiler narrows through it — a
+    // nested block included. Read the tail in the block's own scope, so a `let`
+    // inside it that rebinds the source clears the mark exactly as one outside
+    // would. A `case` right-hand side narrows nothing, even where every branch
+    // hands back the same narrowed name, so it is not this arm.
+    glance.Block(statements:, ..) ->
+      case block_tail(statements, context, env) {
+        Some(#(tail, inner_env)) -> rhs_narrows(tail, context, inner_env)
+        None -> False
+      }
     _ -> False
   }
 }
@@ -3481,21 +3521,9 @@ fn classify_block(
   context: ImportContext,
   env: Env,
 ) -> types.ArgumentValue {
-  case list.reverse(statements) {
-    [glance.Expression(tail), ..init_reversed] -> {
-      let inner_env =
-        list.fold(list.reverse(init_reversed), env, fn(accumulator, statement) {
-          case statement {
-            glance.Assignment(pattern:, value:, kind:, ..) ->
-              bind_assignment(pattern, kind, value, context, accumulator)
-            glance.Use(patterns:, ..) ->
-              bind_use_patterns(patterns, accumulator)
-            _ -> accumulator
-          }
-        })
-      classify_expression(tail, context, inner_env)
-    }
-    _ -> OtherExpression
+  case block_tail(statements, context, env) {
+    Some(#(tail, inner_env)) -> classify_expression(tail, context, inner_env)
+    None -> OtherExpression
   }
 }
 
