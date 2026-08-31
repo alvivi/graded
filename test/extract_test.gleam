@@ -1556,6 +1556,310 @@ pub fn target() {
   call.shadowed_module |> should.equal(None)
 }
 
+// Narrowing on a shadowed receiver
+//
+// A receiver whose variant no pattern fixed grants only the accessors every
+// variant declares, so extraction records whether anything narrowed it. The
+// marks are exact in both directions: one that fires too readily keeps the
+// undercharge the strict reading exists to close, and one that fires too rarely
+// reads the module where the compiler reads a real field.
+
+// The two-variant type the narrowing cases are written against: `map` is
+// declared on `Fast` alone, and `list` shadows `gleam/list`.
+const narrowing_prelude = "import gleam/list
+import other
+
+pub type Runner {
+  Fast(map: fn(String) -> Nil)
+  Slow(n: Int)
+}
+
+pub type Config {
+  Config(runner: Runner)
+}
+
+fn make() -> Runner {
+  Fast(fn(_s) { Nil })
+}
+
+"
+
+// The narrowing recorded on the one field call `target` emits.
+fn narrowing_of(body: String) -> types.ReceiverNarrowing {
+  let result = parse_and_extract_function(narrowing_prelude <> body)
+  let assert [call] = result.field
+  call.receiver_narrowing
+}
+
+pub fn a_variant_pattern_on_the_subject_narrows_it_test() {
+  // The subject narrows without an `as`: inside the clause `list` is known to
+  // be a `Fast`, and the compiler reads the field.
+  narrowing_of(
+    "pub fn target(list: Runner) {
+  case list {
+    Fast(..) -> list.map(\"hi\")
+  }
+}",
+  )
+  |> should.equal(types.PossiblyNarrowedReceiver)
+}
+
+pub fn a_second_subject_column_narrows_its_own_subject_test() {
+  narrowing_of(
+    "pub fn target(n: Int, list: Runner) {
+  case n, list {
+    0, Fast(..) -> list.map(\"hi\")
+  }
+}",
+  )
+  |> should.equal(types.PossiblyNarrowedReceiver)
+}
+
+pub fn alternatives_selecting_one_variant_narrow_test() {
+  narrowing_of(
+    "pub fn target(list: Runner, flag: Bool) {
+  case list, flag {
+    Fast(..), True | Fast(..), False -> list.map(\"hi\")
+  }
+}",
+  )
+  |> should.equal(types.PossiblyNarrowedReceiver)
+}
+
+pub fn a_let_assert_over_a_variant_pattern_narrows_test() {
+  narrowing_of(
+    "pub fn target(list: Runner) {
+  let assert Fast(_) = list
+  list.map(\"hi\")
+}",
+  )
+  |> should.equal(types.PossiblyNarrowedReceiver)
+}
+
+pub fn a_direct_construction_narrows_the_name_it_binds_test() {
+  // A construction fixes the variant even where its routing traced no field:
+  // this one is positional against a constructor whose labels are out of reach.
+  narrowing_of(
+    "pub fn target() {
+  let list = other.Fast(fn(_s) { Nil })
+  list.map(\"hi\")
+}",
+  )
+  |> should.equal(types.PossiblyNarrowedReceiver)
+}
+
+pub fn an_alias_of_a_narrowed_name_narrows_test() {
+  narrowing_of(
+    "pub fn target(r: Runner) {
+  case r {
+    Fast(..) -> {
+      let list = r
+      list.map(\"hi\")
+    }
+  }
+}",
+  )
+  |> should.equal(types.PossiblyNarrowedReceiver)
+}
+
+pub fn an_alias_outlives_a_rebinding_of_its_source_test() {
+  // The alias\'s narrowing is fixed where it is taken, the same way its
+  // canonical path is: rebinding the name it was taken from cannot reach back.
+  narrowing_of(
+    "pub fn target(r: Runner) {
+  case r {
+    Fast(..) -> {
+      let list = r
+      let r = make()
+      list.map(\"hi\")
+    }
+  }
+}",
+  )
+  |> should.equal(types.PossiblyNarrowedReceiver)
+}
+
+pub fn a_clause_pattern_name_is_possibly_narrowed_test() {
+  // `Fast(..) as list` binds the clause\'s own name, which the pattern already
+  // fixed to one variant.
+  narrowing_of(
+    "pub fn target(r: Runner) {
+  case r {
+    Fast(..) as list -> list.map(\"hi\")
+  }
+}",
+  )
+  |> should.equal(types.PossiblyNarrowedReceiver)
+}
+
+pub fn a_wildcard_pattern_narrows_nothing_test() {
+  narrowing_of(
+    "pub fn target(list: Runner) {
+  case list {
+    _ -> list.map(\"hi\")
+  }
+}",
+  )
+  |> should.equal(types.UnnarrowedReceiver)
+}
+
+pub fn a_variable_pattern_narrows_nothing_test() {
+  narrowing_of(
+    "pub fn target(list: Runner) {
+  case list {
+    other -> list.map(\"hi\")
+  }
+}",
+  )
+  |> should.equal(types.UnnarrowedReceiver)
+}
+
+pub fn alternatives_reaching_two_variants_narrow_nothing_test() {
+  narrowing_of(
+    "pub fn target(list: Runner) {
+  case list {
+    Fast(..) | Slow(..) -> list.map(\"hi\")
+  }
+}",
+  )
+  |> should.equal(types.UnnarrowedReceiver)
+}
+
+pub fn a_tuple_literal_subject_narrows_nothing_test() {
+  // The subject is the tuple, not the variable it holds, and the compiler
+  // leaves the variable un-narrowed.
+  narrowing_of(
+    "pub fn target(n: Int, list: Runner) {
+  case #(n, list) {
+    #(0, Fast(..)) -> list.map(\"hi\")
+  }
+}",
+  )
+  |> should.equal(types.UnnarrowedReceiver)
+}
+
+pub fn an_ordinary_let_over_a_variant_pattern_narrows_nothing_test() {
+  // Well-typed only on a single-variant type, whose every-variant and
+  // any-variant label sets coincide, so the mark would buy nothing.
+  narrowing_of(
+    "pub fn target(list: Runner) {
+  let Fast(_) = list
+  list.map(\"hi\")
+}",
+  )
+  |> should.equal(types.UnnarrowedReceiver)
+}
+
+pub fn a_let_assert_selecting_no_variant_narrows_nothing_test() {
+  narrowing_of(
+    "pub fn target(list: Runner) {
+  let assert _ = list
+  list.map(\"hi\")
+}",
+  )
+  |> should.equal(types.UnnarrowedReceiver)
+}
+
+pub fn narrowing_dies_with_the_clause_test() {
+  narrowing_of(
+    "pub fn target(list: Runner) {
+  case list {
+    Fast(..) -> Nil
+  }
+  list.map(\"hi\")
+}",
+  )
+  |> should.equal(types.UnnarrowedReceiver)
+}
+
+pub fn a_rebinding_clears_the_mark_test() {
+  narrowing_of(
+    "pub fn target(list: Runner) {
+  case list {
+    Fast(..) -> {
+      let list = make()
+      list.map(\"hi\")
+    }
+  }
+}",
+  )
+  |> should.equal(types.UnnarrowedReceiver)
+}
+
+pub fn a_call_result_is_un_narrowed_test() {
+  narrowing_of(
+    "pub fn target() {
+  let list = make()
+  list.map(\"hi\")
+}",
+  )
+  |> should.equal(types.UnnarrowedReceiver)
+}
+
+pub fn an_alias_of_an_un_narrowed_parameter_is_un_narrowed_test() {
+  narrowing_of(
+    "pub fn target(r: Runner) {
+  let list = r
+  list.map(\"hi\")
+}",
+  )
+  |> should.equal(types.UnnarrowedReceiver)
+}
+
+pub fn a_closure_parameter_is_un_narrowed_test() {
+  narrowing_of(
+    "pub fn target() {
+  fn(list: Runner) { list.map(\"hi\") }
+}",
+  )
+  |> should.equal(types.UnnarrowedReceiver)
+}
+
+pub fn a_projection_off_a_narrowed_value_is_un_narrowed_test() {
+  // Narrowing does not survive a projection: `c.runner` is an ordinary
+  // `Runner`, whatever `c` was fixed to, and the compiler reads the module
+  // through it.
+  narrowing_of(
+    "pub fn target(c: Config) {
+  case c {
+    Config(..) -> {
+      let list = c.runner
+      list.map(\"hi\")
+    }
+  }
+}",
+  )
+  |> should.equal(types.UnnarrowedReceiver)
+}
+
+pub fn a_factory_result_is_un_narrowed_test() {
+  // A factory result binds exactly as a direct construction does, so the
+  // binding alone cannot tell the two apart — only the mark can, and a value
+  // that came back across a function boundary carries none.
+  let src = narrowing_prelude <> "pub fn build(f: fn(String) -> Nil) -> Runner {
+  Fast(f)
+}
+
+pub fn target() {
+  let list = build(fn(_s) { Nil })
+  list.map(\"hi\")
+}"
+  let assert Ok(module) = glance.module(src)
+  let ctx =
+    extract.build_import_context(module)
+    |> extract.with_factories(extract.factory_map(
+      "app",
+      module,
+      types.every_target(),
+      dict.new(),
+    ))
+  let assert Ok(func) =
+    list.find(module.functions, fn(def) { def.definition.name == "target" })
+  let result = extract.extract_function_calls(func.definition, ctx)
+  let assert [call] = result.field
+  call.receiver_narrowing |> should.equal(types.UnnarrowedReceiver)
+}
+
 pub fn a_complete_construction_without_the_label_is_a_module_call_test() {
   // Every field the type declares was wired, so the absent label is absent from
   // the type: extraction settles it without the checker's help.
