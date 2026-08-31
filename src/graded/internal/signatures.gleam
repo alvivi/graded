@@ -354,28 +354,31 @@ fn accessors_from_module(
 ) -> Dict(#(String, String), AccessorInfo) {
   list.fold(module.custom_types, dict.new(), fn(acc, definition) {
     let declaration = definition.definition
-    let any_label =
-      declaration.variants
-      |> list.flat_map(fn(variant) { variant.fields })
-      |> list.filter_map(field_label)
-      |> set.from_list()
+    // Both sets are projections of one `label -> index` table per variant, so
+    // the variants are walked once and the two readings taken off the result.
+    let indexed = list.map(declaration.variants, labels_by_index)
     dict.insert(
       acc,
       #(module_path, declaration.name),
       AccessorInfo(
-        any_label:,
-        every_label: every_variant_labels(declaration.variants),
+        any_label: any_variant_labels(indexed),
+        every_label: every_variant_labels(indexed),
         opaque_: declaration.opaque_,
       ),
     )
   })
 }
 
+// Every label any variant declares, whatever position it takes there.
+fn any_variant_labels(indexed: List(Dict(String, Int))) -> Set(String) {
+  indexed |> list.flat_map(dict.keys) |> set.from_list()
+}
+
 // The labels every variant declares at the same field index. A type with one
 // variant answers its whole label set, and a type with no variants answers the
 // empty set.
-fn every_variant_labels(variants: List(glance.Variant)) -> Set(String) {
-  case list.map(variants, labels_by_index) {
+fn every_variant_labels(indexed: List(Dict(String, Int))) -> Set(String) {
+  case indexed {
     [] -> set.new()
     [first, ..rest] ->
       list.fold(rest, first, fn(shared, variant) {

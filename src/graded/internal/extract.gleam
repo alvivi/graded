@@ -101,7 +101,6 @@ type Env {
   Env(bindings: Dict(String, LocalBinding), narrowed: Set(String))
 }
 
-// An environment holding nothing.
 fn env_new() -> Env {
   Env(bindings: dict.new(), narrowed: set.new())
 }
@@ -1354,87 +1353,6 @@ fn shadowed_receiver_has_field(binding: LocalBinding, label: String) -> Bool {
   }
 }
 
-// The field call a bare-identifier receiver resolves to, by what its binding
-// holds. Reached for an unshadowed receiver, and for a shadowed one the rule
-// above sent here.
-// `shadowed_module` names the module the receiver's name also imports, carried
-// on every call this cannot prove has the field so the checker can re-read it
-// once the receiver's type is known.
-fn env_field_call(
-  binding: LocalBinding,
-  alias: String,
-  function_name: String,
-  span: glance.Span,
-  receiver_span: glance.Span,
-  env: Env,
-  shadowed_module: Option(String),
-) -> ExtractResult {
-  let narrowing = receiver_narrowing(alias, binding, env)
-  case binding {
-    BoundConstructor(fields:, ..) ->
-      resolve_constructor_field_call(
-        alias,
-        function_name,
-        span,
-        receiver_span,
-        fields,
-        shadowed_module,
-        narrowing,
-      )
-    // A let-bound call result (`let l = make(); l.emit()`): the receiver's
-    // whole value is the call, resolved at check time through the callee's
-    // return provenance. Carried as `ProvenReceiver` so the field is read per
-    // receiver, never borrowed from the nominal index.
-    BoundReturnedOperator(callee, args) ->
-      ExtractResult(..empty(), field: [
-        FieldCall(
-          alias,
-          function_name,
-          span,
-          receiver_span,
-          types.ProvenReceiver(types.CallResult(callee, args)),
-          shadowed_module,
-          narrowing,
-        ),
-      ])
-    // A let-bound record-update overlay: the receiver's whole value is the
-    // overlay, read field-selectively at check time.
-    BoundUpdated(base:, fields:) ->
-      ExtractResult(..empty(), field: [
-        FieldCall(
-          alias,
-          function_name,
-          span,
-          receiver_span,
-          types.ProvenReceiver(types.Updated(base:, fields:)),
-          shadowed_module,
-          narrowing,
-        ),
-      ])
-    // Everything else resolves through the receiver's own provenance: a
-    // parameter-rooted path names the parameter, and a shadowed, computed
-    // or opaque value is untraceable and reads as `[Unknown]`.
-    BoundFunctionRef(..)
-    | BoundClosure(..)
-    | BoundChoice(..)
-    | BoundReceiverPath(..)
-    | BoundParam
-    | BoundLocal
-    | BoundOpaque ->
-      ExtractResult(..empty(), field: [
-        FieldCall(
-          alias,
-          function_name,
-          span,
-          receiver_span,
-          field_receiver_provenance(alias, env),
-          shadowed_module,
-          narrowing,
-        ),
-      ])
-  }
-}
-
 // Whether the receiver a field call reads is known to hold one variant of its
 // type — the mark the env carries, and what the binding alone says where none
 // was written.
@@ -1475,6 +1393,71 @@ fn binding_narrowing(binding: LocalBinding) -> ReceiverNarrowing {
     // Unreachable through a shadowed receiver: a `fn` literal has no fields, so
     // the module reading was taken before this.
     BoundClosure(..) -> PossiblyNarrowedReceiver
+  }
+}
+
+// The field call a bare-identifier receiver resolves to, by what its binding
+// holds. Reached for an unshadowed receiver, and for a shadowed one the rule
+// above sent here.
+// `shadowed_module` names the module the receiver's name also imports, carried
+// on every call this cannot prove has the field so the checker can re-read it
+// once the receiver's type is known.
+fn env_field_call(
+  binding: LocalBinding,
+  alias: String,
+  function_name: String,
+  span: glance.Span,
+  receiver_span: glance.Span,
+  env: Env,
+  shadowed_module: Option(String),
+) -> ExtractResult {
+  let narrowing = receiver_narrowing(alias, binding, env)
+  // Every reading below is the same call under a different provenance, so the
+  // call is spelled once and the branches choose what the receiver proved.
+  let field_call = fn(provenance) {
+    ExtractResult(..empty(), field: [
+      FieldCall(
+        alias,
+        function_name,
+        span,
+        receiver_span,
+        provenance,
+        shadowed_module,
+        narrowing,
+      ),
+    ])
+  }
+  case binding {
+    BoundConstructor(fields:, ..) ->
+      resolve_constructor_field_call(
+        alias,
+        function_name,
+        span,
+        receiver_span,
+        fields,
+        shadowed_module,
+        narrowing,
+      )
+    // A let-bound call result (`let l = make(); l.emit()`): the receiver's
+    // whole value is the call, resolved at check time through the callee's
+    // return provenance. Carried as `ProvenReceiver` so the field is read per
+    // receiver, never borrowed from the nominal index.
+    BoundReturnedOperator(callee, args) ->
+      field_call(types.ProvenReceiver(types.CallResult(callee, args)))
+    // A let-bound record-update overlay: the receiver's whole value is the
+    // overlay, read field-selectively at check time.
+    BoundUpdated(base:, fields:) ->
+      field_call(types.ProvenReceiver(types.Updated(base:, fields:)))
+    // Everything else resolves through the receiver's own provenance: a
+    // parameter-rooted path names the parameter, and a shadowed, computed
+    // or opaque value is untraceable and reads as `[Unknown]`.
+    BoundFunctionRef(..)
+    | BoundClosure(..)
+    | BoundChoice(..)
+    | BoundReceiverPath(..)
+    | BoundParam
+    | BoundLocal
+    | BoundOpaque -> field_call(field_receiver_provenance(alias, env))
   }
 }
 
@@ -1787,11 +1770,13 @@ fn rhs_narrows(expression: glance.Expression, env: Env) -> Bool {
 }
 
 // `let assert Loud(_) = io` fixes which variant `io` holds for the rest of the
-// scope, the same way a `case` clause fixes its subject. An ordinary `let` over
-// a variant pattern is well-typed only on a single-variant type, whose two
-// label sets coincide, so it needs no mark; a pattern selecting no variant
-// (`let assert _ = io`) fixes nothing; and a computed right-hand side names
-// nothing to mark.
+// scope, which is a `case` of one subject and one alternative — so it narrows
+// through the same rule, and a pattern selecting no variant (`let assert _ =
+// io`) or a computed right-hand side fixes nothing there too.
+//
+// An ordinary `let` over a variant pattern is the one thing specific to an
+// assignment: it is well-typed only on a single-variant type, whose two label
+// sets coincide, so it needs no mark.
 fn narrow_asserted_subject(
   pattern: glance.Pattern,
   kind: glance.AssignmentKind,
@@ -1800,11 +1785,7 @@ fn narrow_asserted_subject(
 ) -> Env {
   case kind {
     glance.Let -> env
-    glance.LetAssert(..) ->
-      case value, selected_variant(pattern) {
-        glance.Variable(name:, ..), Some(_) -> env_narrow(env, name)
-        _, _ -> env
-      }
+    glance.LetAssert(..) -> narrow_subjects([value], [[pattern]], env)
   }
 }
 
@@ -2863,33 +2844,29 @@ fn narrow_subjects(
   env: Env,
 ) -> Env {
   use env, subject, column <- list.index_fold(subjects, env)
-  case subject, column_variant(alternatives, column) {
-    glance.Variable(name:, ..), Some(_) -> env_narrow(env, name)
+  case subject, column_narrows(alternatives, column) {
+    glance.Variable(name:, ..), True -> env_narrow(env, name)
     _, _ -> env
   }
 }
 
-// The one variant every alternative selects in a subject's own column, `None`
-// where they disagree or any of them selects none. `case io, b { Loud(..), True
-// | Quiet(..), False -> .. }` reaches two variants and fixes neither.
-fn column_variant(
+// Whether every alternative selects the same one variant in a subject's own
+// column. `case io, b { Loud(..), True | Quiet(..), False -> .. }` reaches two
+// variants and fixes neither, and so does a column any alternative leaves
+// unselected.
+fn column_narrows(
   alternatives: List(List(glance.Pattern)),
   column: Int,
-) -> Option(String) {
+) -> Bool {
   let selected =
     list.map(alternatives, fn(alternative) {
-      case at(alternative, column) {
-        Ok(pattern) -> selected_variant(pattern)
-        Error(Nil) -> None
-      }
+      at(alternative, column)
+      |> result.map(selected_variant)
+      |> result.unwrap(None)
     })
-  case selected {
-    [Some(variant), ..rest] ->
-      case list.all(rest, fn(other) { other == Some(variant) }) {
-        True -> Some(variant)
-        False -> None
-      }
-    [] | [None, ..] -> None
+  case list.unique(selected) {
+    [Some(_)] -> True
+    _ -> False
   }
 }
 

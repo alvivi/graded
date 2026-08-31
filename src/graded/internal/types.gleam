@@ -711,12 +711,8 @@ pub type FieldCall {
 }
 
 // Whether a field call's receiver is known to hold one particular variant of
-// its type.
-//
-// The two answers pick different label sets out of the accessor index: a
-// receiver no pattern narrowed grants only the labels every variant declares at
-// the same field index, while a narrowed one can reach a label its variant
-// alone declares.
+// its type. Which labels of that type count as accessors follows from it, and
+// is stated where the reading is taken.
 pub type ReceiverNarrowing {
   UnnarrowedReceiver
   PossiblyNarrowedReceiver
