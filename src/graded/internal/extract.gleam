@@ -89,8 +89,41 @@ type FieldCoverage {
   PartialConstruction
 }
 
-type Env =
-  Dict(String, LocalBinding)
+// The lexical environment threaded through a body walk: what each in-scope
+// name is bound to, beside the names whose value is statically known to be one
+// variant of its type. Narrowing rides here rather than on `LocalBinding`
+// because it is orthogonal to what a name is bound to — a call result is
+// narrowed by a `case` on it exactly as a parameter is — and because it is
+// flow-sensitive: a clause's env carries the marks the clause's patterns wrote
+// and is discarded with the clause.
+type Env {
+  Env(bindings: Dict(String, LocalBinding), narrowed: Set(String))
+}
+
+// An environment holding nothing.
+fn env_new() -> Env {
+  Env(bindings: dict.new(), narrowed: set.new())
+}
+
+// Bind `name`, clearing any narrowing it carried: the mark describes the value
+// the name held, so a rebinding drops it by construction.
+fn env_bind(env: Env, name: String, binding: LocalBinding) -> Env {
+  Env(
+    bindings: dict.insert(env.bindings, name, binding),
+    narrowed: set.delete(env.narrowed, name),
+  )
+}
+
+// What `name` is bound to, `Error(Nil)` where the env does not hold it — which
+// is a different answer from a name it holds opaquely.
+fn env_get(env: Env, name: String) -> Result(LocalBinding, Nil) {
+  dict.get(env.bindings, name)
+}
+
+// Whether the env holds `name` at all.
+fn env_has(env: Env, name: String) -> Bool {
+  dict.has_key(env.bindings, name)
+}
 
 // Import context and module indexes
 //
@@ -522,7 +555,7 @@ fn factory_signature(
   // bare parameter reference classifies as `LocalRef(name)`), then keep the
   // fields whose value is one of the function's parameters.
   let fields = case
-    classify_constructor(constructor, module, arguments, context, dict.new())
+    classify_constructor(constructor, module, arguments, context, env_new())
   {
     BoundConstructor(fields:, ..) -> fields
     _ -> dict.new()
@@ -884,7 +917,7 @@ pub fn extract_calls(
   statements: List(Statement),
   context: ImportContext,
 ) -> ExtractResult {
-  walk_scope(statements, context, dict.new())
+  walk_scope(statements, context, env_new())
 }
 
 // Extract all calls from a function body, seeding the function's own parameters
@@ -910,8 +943,8 @@ pub fn extract_function_calls_with_captures(
   captures: List(#(String, ArgumentValue)),
 ) -> ExtractResult {
   let seeded =
-    list.fold(captures, dict.new(), fn(env, capture) {
-      dict.insert(env, capture.0, binding_from_argument_value(capture.1))
+    list.fold(captures, env_new(), fn(env, capture) {
+      env_bind(env, capture.0, binding_from_argument_value(capture.1))
     })
   let env = bind_names(seeded, names(function.parameters), BoundLocal)
   walk_scope(function.body, context, env)
@@ -950,7 +983,7 @@ fn callable_captures(
   env: Env,
   params: List(String),
 ) -> List(#(String, ArgumentValue)) {
-  env
+  env.bindings
   |> dict.to_list
   |> list.filter_map(fn(entry) {
     let #(name, binding) = entry
@@ -972,7 +1005,7 @@ fn callable_captures(
 // Seed each named top-level parameter as `BoundLocal`. Discarded parameters
 // (`_`) bind nothing.
 fn seed_parameters(parameters: List(glance.FunctionParameter)) -> Env {
-  bind_names(dict.new(), names(parameters), BoundLocal)
+  bind_names(env_new(), names(parameters), BoundLocal)
 }
 
 // Bind each named parameter to `binding` in `env`; discarded parameters (`_`)
@@ -984,7 +1017,7 @@ fn bind_names(
 ) -> Env {
   list.fold(names, env, fn(env, name) {
     case name {
-      glance.Named(name) -> dict.insert(env, name, binding)
+      glance.Named(name) -> env_bind(env, name, binding)
       glance.Discarded(_) -> env
     }
   })
@@ -1217,7 +1250,7 @@ fn qualified_call_lookup(
 ) -> ExtractResult {
   case dict.get(context.aliases, alias) {
     Ok(module_path) ->
-      case dict.get(env, alias) {
+      case env_get(env, alias) {
         Error(Nil) -> module_call(module_path, function_name, span)
         Ok(binding) ->
           case shadowed_receiver_has_field(binding, function_name) {
@@ -1619,13 +1652,13 @@ fn bind_assignment(
 ) -> Env {
   case pattern {
     glance.PatternVariable(name:, ..) ->
-      dict.insert(env, name, classify_rhs(value, context, env))
+      env_bind(env, name, classify_rhs(value, context, env))
     _ -> fold_pattern_names(pattern, env, bind_opaque)
   }
 }
 
 fn bind_opaque(env: Env, name: String) -> Env {
-  dict.insert(env, name, BoundOpaque)
+  env_bind(env, name, BoundOpaque)
 }
 
 // Classify the right-hand side of a `let name = rhs`. Unrecognised
@@ -1709,7 +1742,7 @@ fn unshadowed(
   env: Env,
   then: fn() -> Result(a, Nil),
 ) -> Result(a, Nil) {
-  use <- bool.guard(dict.has_key(env, name), Error(Nil))
+  use <- bool.guard(env_has(env, name), Error(Nil))
   then()
 }
 
@@ -1848,7 +1881,7 @@ fn classify_rhs_ref(
   case classify_expression(expression, context, env) {
     FunctionRef(name:) -> BoundFunctionRef(name:)
     LocalRef(name:) ->
-      case dict.get(env, name) {
+      case env_get(env, name) {
         // Aliasing a top-level parameter (`let forwarded = options`): capture the
         // canonical parameter path so a forwarded field var re-keys onto it at
         // the use site rather than onto the dead alias name. Any other binding is
@@ -1952,14 +1985,14 @@ fn classify_constructor(
 }
 
 fn resolve_env(name: String, env: Env) -> LocalBinding {
-  dict.get(env, name) |> result.unwrap(BoundOpaque)
+  env_get(env, name) |> result.unwrap(BoundOpaque)
 }
 
 // What a called name refers to: the binding that covers it, or the module's own
 // definitions where none does. A top-level function is never in the env, so a
 // name the env holds is the binding and nothing else.
 fn local_scope(name: String, env: Env) -> types.LocalScope {
-  case dict.has_key(env, name) {
+  case env_has(env, name) {
     True -> types.LexicalBinding
     False -> types.ModuleDefinition
   }
@@ -2701,7 +2734,7 @@ fn classify_variable(
   env: Env,
 ) -> types.ArgumentValue {
   use <- bool.guard(when: is_constructor_name(name), return: ConstructorRef)
-  case dict.get(env, name) {
+  case env_get(env, name) {
     Ok(binding) -> classify_local_binding(binding, name)
     Error(Nil) ->
       case dict.get(context.unqualified, name) {
@@ -2761,7 +2794,7 @@ fn classify_local_binding(
 fn field_value(value: ArgumentValue, env: Env) -> ArgumentValue {
   case value {
     LocalRef(name:) ->
-      case dict.get(env, name) {
+      case env_get(env, name) {
         Ok(BoundParam) -> OtherExpression
         Ok(BoundFunctionRef(..))
         | Ok(BoundConstructor(..))
@@ -3366,7 +3399,7 @@ pub fn return_value(
 ) -> Result(ArgumentValue, Nil) {
   case list.last(function.body) {
     Ok(glance.Expression(expression)) ->
-      Ok(classify_expression(expression, context, dict.new()))
+      Ok(classify_expression(expression, context, env_new()))
     _ -> Error(Nil)
   }
 }
