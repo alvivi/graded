@@ -91,6 +91,12 @@ pub type AccessorInfo {
     // effectful field into a pure module call: a label on some variants only is
     // reachable through a pattern that narrows the binding to one of them.
     any_label: Set(String),
+    // The labels sitting at the same field index in every variant — the
+    // accessors the type grants on a receiver no pattern narrowed. The index
+    // is part of the condition because an accessor compiles to a fixed
+    // `erlang:element/2` position, so a label at differing positions across
+    // variants grants nothing.
+    every_label: Set(String),
     // `opaque` on the declaration — the accessors exist only inside the
     // defining module, and so do the constructors a narrowing would need.
     opaque_: Bool,
@@ -330,14 +336,18 @@ fn prelude_accessors() -> Dict(#(String, String), AccessorInfo) {
     "Result",
   ]
   |> list.map(fn(name) {
-    #(#("gleam", name), AccessorInfo(any_label: set.new(), opaque_: False))
+    #(
+      #("gleam", name),
+      AccessorInfo(any_label: set.new(), every_label: set.new(), opaque_: False),
+    )
   })
   |> dict.from_list()
 }
 
-// Each custom type a module declares, with the union of its variants' labels.
-// A type whose variants label nothing still gets an entry: "indexed, and grants
-// no accessor for this label" is the answer the whole index exists to give.
+// Each custom type a module declares, with the union of its variants' labels
+// beside their every-variant intersection. A type whose variants label nothing
+// still gets an entry: "indexed, and grants no accessor for this label" is the
+// answer the whole index exists to give.
 fn accessors_from_module(
   module_path: String,
   module: Module,
@@ -352,9 +362,43 @@ fn accessors_from_module(
     dict.insert(
       acc,
       #(module_path, declaration.name),
-      AccessorInfo(any_label:, opaque_: declaration.opaque_),
+      AccessorInfo(
+        any_label:,
+        every_label: every_variant_labels(declaration.variants),
+        opaque_: declaration.opaque_,
+      ),
     )
   })
+}
+
+// The labels every variant declares at the same field index. A type with one
+// variant answers its whole label set, and a type with no variants answers the
+// empty set.
+fn every_variant_labels(variants: List(glance.Variant)) -> Set(String) {
+  case list.map(variants, labels_by_index) {
+    [] -> set.new()
+    [first, ..rest] ->
+      list.fold(rest, first, fn(shared, variant) {
+        dict.filter(shared, fn(label, index) {
+          dict.get(variant, label) == Ok(index)
+        })
+      })
+      |> dict.keys()
+      |> set.from_list()
+  }
+}
+
+// One variant's labels mapped to the element position each occupies.
+// Unlabelled fields take positions too, so they are counted and then dropped
+// rather than skipped.
+fn labels_by_index(variant: glance.Variant) -> Dict(String, Int) {
+  variant.fields
+  |> list.index_map(fn(field, index) { #(field_label(field), index) })
+  |> list.filter_map(fn(entry) {
+    let #(label, index) = entry
+    result.map(label, fn(label) { #(label, index) })
+  })
+  |> dict.from_list()
 }
 
 // A registry holding one function, against an alias map handed in. The
