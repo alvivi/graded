@@ -696,6 +696,13 @@ pub type FieldCall {
     span: Span,
     receiver_span: Span,
     provenance: FieldCallProvenance,
+    // The module the receiver's name also imports, where the name shadows one
+    // and extraction could not prove the binding's type lacks `label`. The
+    // compiler reads that module wherever the receiver's type grants no
+    // accessor for the label, so the checker re-reads the call as a call to
+    // `<module>.<label>` once it knows the type. `None` on every unshadowed
+    // field call, and on one whose receiver provably has the field.
+    shadowed_module: Option(String),
   )
 }
 

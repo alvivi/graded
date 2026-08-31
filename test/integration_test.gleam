@@ -13684,3 +13684,338 @@ pub fn shout() -> Nil {
   |> should.be_true
   support.cleanup(root)
 }
+
+// Shadowed receivers, end to end
+//
+// A parameter or local named `result`, `list` or `int` shadows the stdlib
+// module of the same name, and the compiler reads the module wherever the
+// receiver's type grants no accessor for the label. These run the annotation
+// through the real key shapes a project builds — the one thing a splitter test
+// against a hand-built registry cannot check.
+
+// The installed stdlib, so `gleam/io` and the shadowed modules resolve through
+// the bundled catalog rather than reading `[Unknown]`.
+const stdlib_manifest = "packages = [
+  { name = \"gleam_stdlib\", version = \"1.0.3\" },
+]
+"
+
+// One project module, its inferred effect line as `graded effect` renders it.
+fn shadow_effect_line(
+  name: String,
+  source: String,
+  function: String,
+) -> String {
+  let root =
+    support.write_fixture("build/" <> name, [
+      #("gleam.toml", "name = \"proj\"\n"),
+      #("manifest.toml", stdlib_manifest),
+      #("ext.gleam", source),
+    ])
+  let assert Ok(answered) = graded.run_effect(root, "ext." <> function)
+  support.cleanup(root)
+  answered
+}
+
+pub fn a_shadowed_receiver_of_a_local_type_reads_as_the_module_test() {
+  // The motivating shape, with the type written unqualified: `result` names the
+  // parameter, `girard.Type` has no `try` field, and the compiler reads
+  // `gleam/result.try`. Keyed bare, the lookup would miss the project's own
+  // module and leave the whole function `[Unknown]`.
+  shadow_effect_line(
+    "shadow_local_type",
+    "import gleam/io
+import gleam/result
+
+pub type Thing {
+  Thing(n: Int)
+}
+
+pub fn shadowed(result: Thing, r: Result(Int, Nil)) -> Result(Int, Nil) {
+  use v <- result.try(r)
+  io.println(\"hi\")
+  Ok(v + result.n)
+}
+",
+    "shadowed",
+  )
+  |> string.contains("effects ext.shadowed : [Stdout]")
+  |> should.be_true()
+}
+
+pub fn a_shadowed_receiver_of_an_imported_type_reads_as_the_module_test() {
+  // `import model.{type Runner}` writes the type unqualified here, but the
+  // index entry is keyed by the module that declares it.
+  let root =
+    support.write_fixture("build/shadow_imported_type", [
+      #("gleam.toml", "name = \"proj\"\n"),
+      #("manifest.toml", stdlib_manifest),
+      #("model.gleam", "pub type Runner {\n  Runner(n: Int)\n}\n"),
+      #(
+        "ext.gleam",
+        "import gleam/io
+import gleam/list
+import model.{type Runner}
+
+pub fn shadowed(list: Runner) -> Nil {
+  io.println(\"hi\")
+  list.each([1, 2], fn(_x) { Nil })
+}
+",
+      ),
+    ])
+  let assert Ok(answered) = graded.run_effect(root, "ext.shadowed")
+  answered
+  |> string.contains("effects ext.shadowed : [Stdout]")
+  |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_shadowed_receiver_behind_a_type_alias_reads_as_the_module_test() {
+  // Chained aliases resolve to the type they name; the alias itself is not in
+  // the index, so reading it directly would leave the call `[Unknown]`.
+  shadow_effect_line(
+    "shadow_alias",
+    "import gleam/io
+import gleam/list
+
+pub type Thing {
+  Thing(n: Int)
+}
+
+pub type Chained = Alias
+
+pub type Alias = Thing
+
+pub fn shadowed(list: Chained) -> Nil {
+  io.println(\"hi\")
+  list.each([1, 2], fn(_x) { Nil })
+}
+",
+    "shadowed",
+  )
+  |> string.contains("effects ext.shadowed : [Stdout]")
+  |> should.be_true()
+}
+
+pub fn a_fieldless_receiver_annotation_reads_as_the_module_test() {
+  // A `fn(..)`, a tuple and a source-level generic carry no fields at all, so
+  // the compiler must read the module through each. `syntactic_param_type`
+  // answers named types only, which is why these need a query of their own.
+  let source =
+    "import gleam/list
+
+pub fn fn_recv(list: fn(Int) -> Int) -> Nil {
+  list.each([1, 2], fn(_x) { Nil })
+}
+
+pub fn tuple_recv(list: #(Int, Int)) -> Nil {
+  list.each([1, 2], fn(_x) { Nil })
+}
+
+pub fn generic_recv(list: a) -> Nil {
+  list.each([1, 2], fn(_x) { Nil })
+}
+"
+  list.each(["fn_recv", "tuple_recv", "generic_recv"], fn(function) {
+    shadow_effect_line("shadow_fieldless_" <> function, source, function)
+    |> string.contains("Unknown")
+    |> should.be_false()
+  })
+}
+
+pub fn a_narrowed_variant_field_stays_charged_test() {
+  // `map` is on `A` only, and the clause narrows `list` to `A`, so the field is
+  // real and effectful. Reading it as `gleam/list.map` would report it pure —
+  // the undercharge the "on no variant" rule exists to prevent.
+  shadow_effect_line(
+    "shadow_narrowed_variant",
+    "import gleam/list
+
+pub type Partial {
+  A(map: fn(String) -> String)
+  B(n: Int)
+}
+
+pub fn shadowed(p: Partial) -> String {
+  case p {
+    A(..) as list -> list.map(\"hello\")
+    B(..) -> \"\"
+  }
+}
+",
+    "shadowed",
+  )
+  |> string.contains("Unknown")
+  |> should.be_true()
+}
+
+pub fn a_wired_field_on_a_shadowing_name_keeps_its_effect_test() {
+  // The undercharge the shadowed-receiver rule closed in the first place: a
+  // record with a printing `to_string` field, bound to a name that shadows
+  // `gleam/int`. Its effect must still be charged.
+  shadow_effect_line(
+    "shadow_wired_field",
+    "import gleam/int
+import gleam/io
+
+pub type Fmt {
+  Fmt(to_string: fn(String) -> Nil)
+}
+
+pub fn shout(message: String) -> Nil {
+  io.println(message)
+}
+
+pub fn shadowed() -> Nil {
+  let int = Fmt(to_string: shout)
+  int.to_string(\"hi\")
+}
+",
+    "shadowed",
+  )
+  |> string.contains("effects ext.shadowed : [Stdout]")
+  |> should.be_true()
+}
+
+pub fn a_shadowed_receiver_in_a_fallback_body_reads_as_the_module_test() {
+  // A fallback body is walked through `walk_fallbacks`, which builds its own
+  // module context — the accessor index has to reach that path too.
+  let root =
+    support.write_fixture("build/shadow_fallback", [
+      #("gleam.toml", support.dual_target_toml("proj")),
+      #("manifest.toml", stdlib_manifest),
+      #(
+        "ext.gleam",
+        "import gleam/io
+import gleam/result
+
+pub type Thing {
+  Thing(n: Int)
+}
+
+@external(erlang, \"ext_ffi\", \"shadowed\")
+pub fn shadowed(result: Thing, r: Result(Int, Nil)) -> Result(Int, Nil) {
+  use v <- result.try(r)
+  io.println(\"hi\")
+  Ok(v + result.n)
+}
+",
+      ),
+    ])
+  let assert Ok(answered) = graded.run_effect(root, "ext.shadowed")
+  // The declaration's own `[Unknown]` stays; the walked body contributes
+  // `[Stdout]` and no `Unknown` of its own.
+  answered |> string.contains("Stdout") |> should.be_true()
+  support.cleanup(root)
+}
+
+// A path dependency's own source, inferred with no girard types at all — the
+// syntactic annotation is the only evidence there is.
+fn path_dep_effect_line(
+  name: String,
+  dep_source: String,
+  function: String,
+) -> String {
+  let app_root = "build/" <> name <> "_app"
+  let dep_root = "build/" <> name <> "_dep"
+  support.write_fixture(dep_root, [
+    #("gleam.toml", "name = \"dep\"\n"),
+    #("src/dep.gleam", dep_source),
+  ])
+  let _ = simplifile.write(dep_root <> "/manifest.toml", stdlib_manifest)
+  support.write_fixture(app_root, [
+    #(
+      "gleam.toml",
+      "name = \"app\"\n\n[dependencies]\ndep = { path = \"../"
+        <> name
+        <> "_dep\" }\n",
+    ),
+    #("manifest.toml", stdlib_manifest),
+    #("app.gleam", "import dep\n\npub fn caller() -> Nil {\n  Nil\n}\n"),
+  ])
+  let assert Ok(answered) = graded.run_effect(app_root, "dep." <> function)
+  support.cleanup(app_root)
+  support.cleanup(dep_root)
+  answered
+}
+
+pub fn a_path_dependency_annotated_receiver_reads_as_the_module_test() {
+  // Path-dependency inference is handed empty type maps, so the annotation is
+  // the whole answer — and it must reclassify there exactly as in the project.
+  path_dep_effect_line(
+    "shadow_path_dep",
+    "import gleam/io
+import gleam/list
+
+pub type Thing {
+  Thing(n: Int)
+}
+
+pub fn shadowed(list: Thing) -> Nil {
+  io.println(\"hi\")
+  list.each([1, 2], fn(_x) { Nil })
+}
+",
+    "shadowed",
+  )
+  |> string.contains("effects dep.shadowed : [Stdout]")
+  |> should.be_true()
+}
+
+pub fn a_path_dependency_rebound_receiver_stays_charged_test() {
+  // The liveness gate with no girard to fall back on: `Runner(..) as list`
+  // names the clause's value, so the parameter's `Empty` annotation says
+  // nothing. Read through it, `map` is on no variant and the effectful field
+  // would be charged as a pure `gleam/list.map`.
+  path_dep_effect_line(
+    "shadow_path_dep_rebound",
+    "import gleam/list
+
+pub type Empty {
+  Empty(n: Int)
+}
+
+pub type Runner {
+  Runner(map: fn(String) -> String)
+}
+
+pub fn shadowed(list: Empty, r: Runner) -> String {
+  case r {
+    Runner(..) as list -> list.map(\"hi\")
+  }
+}
+",
+    "shadowed",
+  )
+  |> string.contains("Unknown")
+  |> should.be_true()
+}
+
+pub fn a_path_dependency_let_rebound_receiver_stays_charged_test() {
+  // A `let` rebinding is already covered by the provenance gate: the receiver
+  // roots at `r`, not at the `list` the annotation names, so the field stays a
+  // field — here a polymorphic one. Resolved to `gleam/list.map` the answer
+  // would be a flat `[]`.
+  path_dep_effect_line(
+    "shadow_path_dep_let_rebound",
+    "import gleam/list
+
+pub type Empty {
+  Empty(n: Int)
+}
+
+pub type Runner {
+  Runner(map: fn(String) -> String)
+}
+
+pub fn shadowed(list: Empty, r: Runner) -> String {
+  let list = r
+  list.map(\"hi\")
+}
+",
+    "shadowed",
+  )
+  |> string.contains("effects dep.shadowed(r.map: [r.map]) : [r.map]")
+  |> should.be_true()
+}

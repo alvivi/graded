@@ -1461,3 +1461,118 @@ pub fn an_unshadowed_parameter_receiver_stays_parameter_rooted_test() {
   let assert [call] = result.field
   call.provenance |> should.equal(ParameterRoot("list"))
 }
+
+// The alternative reading of a shadowed receiver
+//
+// A field call whose receiver's name shadows an import carries the module it
+// shadows, so the checker can re-read the call once it knows the receiver's
+// type. Everything extraction already proved about the value records `None`,
+// and so does every receiver that shadows nothing.
+
+pub fn an_unshadowed_receiver_carries_no_alternative_test() {
+  let src =
+    "pub fn target(thing) {
+  thing.emit(\"hi\")
+}"
+  let result = parse_and_extract_function(src)
+  let assert [call] = result.field
+  call.shadowed_module |> should.equal(None)
+}
+
+pub fn a_nested_receiver_carries_no_alternative_test() {
+  // `d.svc.find(..)` is not a bare identifier, so it can shadow no alias.
+  let src =
+    "import gleam/int
+
+pub fn target(d) {
+  d.int.to_string(\"hi\")
+}"
+  let result = parse_and_extract_function(src)
+  let assert [call] = result.field
+  call.object |> should.equal("d.int")
+  call.shadowed_module |> should.equal(None)
+}
+
+pub fn a_shadowing_parameter_carries_the_module_test() {
+  let src =
+    "import gleam/int
+
+pub fn target(int) {
+  int.to_string(\"hi\")
+}"
+  let result = parse_and_extract_function(src)
+  let assert [call] = result.field
+  call.shadowed_module |> should.equal(Some("gleam/int"))
+}
+
+pub fn a_shadowing_opaque_local_carries_the_module_test() {
+  let src =
+    "import gleam/int
+
+pub fn target() {
+  let int = 42
+  int.to_string(\"hi\")
+}"
+  let result = parse_and_extract_function(src)
+  let assert [call] = result.field
+  call.shadowed_module |> should.equal(Some("gleam/int"))
+}
+
+pub fn a_shadowing_partial_construction_carries_the_module_test() {
+  let src =
+    "import gleam/int
+import other
+
+pub fn target() {
+  let int = other.Fmt(shout)
+  int.to_string(\"hi\")
+}
+
+fn shout(s) {
+  Nil
+}"
+  let result = parse_and_extract_function(src)
+  let assert [call] = result.field
+  call.shadowed_module |> should.equal(Some("gleam/int"))
+}
+
+pub fn a_wired_field_on_a_shadowing_receiver_carries_no_alternative_test() {
+  // The construction wired the label, which is the type's own answer that it
+  // has the field — no module reading of the call survives.
+  let src =
+    "import gleam/int
+
+pub type Fmt {
+  Fmt(to_string: fn(String) -> Nil)
+}
+
+pub fn target() {
+  let int = Fmt(to_string: fn(_s) { Nil })
+  int.to_string(\"hi\")
+}"
+  let result = parse_and_extract_function(src)
+  let assert [call] = result.field
+  call.label |> should.equal("to_string")
+  call.shadowed_module |> should.equal(None)
+}
+
+pub fn a_complete_construction_without_the_label_is_a_module_call_test() {
+  // Every field the type declares was wired, so the absent label is absent from
+  // the type: extraction settles it without the checker's help.
+  let src =
+    "import gleam/int
+
+pub type Fmt {
+  Fmt(shout: fn(String) -> Nil)
+}
+
+pub fn target() {
+  let int = Fmt(shout: fn(_s) { Nil })
+  int.to_string(\"hi\")
+}"
+  let result = parse_and_extract_function(src)
+  result.field |> should.equal([])
+  result.resolved
+  |> list.map(fn(r) { r.name })
+  |> should.equal([QualifiedName("gleam/int", "to_string")])
+}
