@@ -7547,6 +7547,30 @@ pub fn target(list: Chained) -> String {
   module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
 }
 
+pub fn an_alias_whose_body_is_a_type_variable_stays_a_field_test() {
+  // `type Identity(a) = a` resolves to a bare `a`, but that variable is the
+  // alias's own parameter standing for `Runner` — not a generic written on the
+  // receiver. Read as fieldless it would rewrite an effectful `Runner.map` call
+  // as the pure `gleam/list.map`, which is the undercharge direction. The
+  // written-generic case above must keep reading as the module.
+  let source =
+    "import gleam/list
+
+pub type Identity(a) =
+  a
+
+pub type Runner {
+  Runner(map: fn(String) -> String)
+}
+
+pub fn target(list: Identity(Runner)) -> String {
+  list.map(\"hi\")
+}
+"
+  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
+  stays_a_field(split)
+}
+
 pub fn a_type_alias_cycle_terminates_test() {
   let source =
     "import gleam/list

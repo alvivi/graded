@@ -13992,6 +13992,34 @@ pub fn shadowed(list: Empty, r: Runner) -> String {
   |> should.be_true()
 }
 
+pub fn a_path_dependency_alias_of_a_type_variable_stays_charged_test() {
+  // `type Identity(a) = a` resolves to a bare `a`, which is the alias's own
+  // parameter standing for `Runner` — not a generic written on the receiver.
+  // Read as fieldless, the effectful `Runner.map` call was rewritten as the
+  // pure `gleam/list.map` and the whole function inferred `[]`. Only a path
+  // dependency reaches it: the project path has girard's type for the receiver
+  // and never consults the annotation.
+  path_dep_effect_line(
+    "shadow_path_dep_variable_alias",
+    "import gleam/list
+
+pub type Identity(a) =
+  a
+
+pub type Runner {
+  Runner(map: fn(String) -> String)
+}
+
+pub fn shadowed(list: Identity(Runner)) -> String {
+  list.map(\"hi\")
+}
+",
+    "shadowed",
+  )
+  |> string.contains("effects dep.shadowed : [Unknown]")
+  |> should.be_true()
+}
+
 pub fn a_path_dependency_let_rebound_receiver_stays_charged_test() {
   // A `let` rebinding is already covered by the provenance gate: the receiver
   // roots at `r`, not at the `list` the annotation names, so the field stays a
