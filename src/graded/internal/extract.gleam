@@ -1431,6 +1431,11 @@ fn resolve_constructor_field_call(
   fields: Dict(String, ArgumentValue),
   shadowed_module: Option(String),
 ) -> ExtractResult {
+  let untraceable = fn(shadowed) {
+    ExtractResult(..empty(), field: [
+      FieldCall(alias, label, span, receiver_span, Untraceable, shadowed),
+    ])
+  }
   case dict.get(fields, label) {
     Ok(FunctionRef(name: qualified)) ->
       ExtractResult(..empty(), resolved: [ResolvedCall(qualified, span)])
@@ -1449,21 +1454,8 @@ fn resolve_constructor_field_call(
     Ok(types.Choice(_))
     | Ok(types.ReceiverPath(_))
     | Ok(types.Updated(_, _))
-    | Ok(OtherExpression) ->
-      ExtractResult(..empty(), field: [
-        FieldCall(alias, label, span, receiver_span, Untraceable, None),
-      ])
-    Error(Nil) ->
-      ExtractResult(..empty(), field: [
-        FieldCall(
-          alias,
-          label,
-          span,
-          receiver_span,
-          Untraceable,
-          shadowed_module,
-        ),
-      ])
+    | Ok(OtherExpression) -> untraceable(None)
+    Error(Nil) -> untraceable(shadowed_module)
   }
 }
 
