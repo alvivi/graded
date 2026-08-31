@@ -8,8 +8,8 @@ import gleeunit/should
 import graded/internal/extract
 import graded/internal/types.{
   type QualifiedName, Build, CallResult, Choice, FieldParam, FieldPath,
-  FieldValue, FunctionRef, Join, Opaque, OtherExpression, Passthrough, Path,
-  QualifiedName, Untraceable,
+  FieldValue, FunctionRef, Join, Opaque, OtherExpression, ParameterRoot,
+  Passthrough, Path, QualifiedName, Untraceable,
 }
 
 // Return provenance
@@ -1429,4 +1429,35 @@ pub fn target() {
   result.resolved |> should.equal([])
   let assert [call] = result.field
   call.provenance |> should.equal(Untraceable)
+}
+
+pub fn a_clause_pattern_binding_shadows_the_parameter_it_names_test() {
+  // `case r { Runner(..) as list -> .. }` binds its own `list`, so the field
+  // call names the clause's value and not the parameter of the same name.
+  // Read through the parameter, the receiver would carry the annotation of a
+  // value the body never reaches.
+  let src =
+    "pub fn target(list: Empty, r: Runner) {
+  case r {
+    Runner(..) as list -> list.map(\"hi\")
+  }
+}"
+  let result = parse_and_extract_function(src)
+  let assert [call] = result.field
+  call.object |> should.equal("list")
+  call.provenance |> should.equal(Untraceable)
+}
+
+pub fn an_unshadowed_parameter_receiver_stays_parameter_rooted_test() {
+  // The counterpart: a clause that binds nothing of the name leaves the
+  // parameter in scope, so the receiver still roots at it.
+  let src =
+    "pub fn target(list: Empty, r: Runner) {
+  case r {
+    Runner(..) -> list.map(\"hi\")
+  }
+}"
+  let result = parse_and_extract_function(src)
+  let assert [call] = result.field
+  call.provenance |> should.equal(ParameterRoot("list"))
 }

@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A name bound by a `case` pattern no longer inherits the type annotation of the
+  parameter it shadows, so a field call on it is charged against the value it
+  actually names. Effect sets that were under-reported for such a body grow, and
+  a `check` line over one can start failing.
 - `graded pack` on a package whose `gleam.toml` states no `version` now says to
   add one, instead of advising a tarball path that no caller could pass.
 - `graded infer --dry-run` no longer stalls previewing a large spec file. A

@@ -2610,15 +2610,27 @@ fn extract_expression_call(
   }
 }
 
+// A clause's names are bound by matching, not by an expression, so every one of
+// them is opaque — and it is inserted before the body is walked, so a
+// pattern-bound name shadows an enclosing parameter of the same name (`case r {
+// Runner(..) as list -> list.map(..) }` names the clause's `list`, not the
+// parameter). Left out, the body reads the outer binding and charges the field
+// call against a value it does not name.
 fn extract_from_clause(
   clause: Clause,
   context: ImportContext,
   env: Env,
 ) -> ExtractResult {
-  let body_result = extract_from_expression(clause.body, context, env)
+  let clause_env =
+    list.fold(clause.patterns, env, fn(acc, alternative) {
+      list.fold(alternative, acc, fn(inner, pattern) {
+        fold_pattern_names(pattern, inner, bind_opaque)
+      })
+    })
+  let body_result = extract_from_expression(clause.body, context, clause_env)
   case clause.guard {
     Some(guard) ->
-      merge(body_result, extract_from_expression(guard, context, env))
+      merge(body_result, extract_from_expression(guard, context, clause_env))
     None -> body_result
   }
 }
