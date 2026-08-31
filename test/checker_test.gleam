@@ -7440,42 +7440,20 @@ pub fn target(list) -> String {
   stays_a_field(split)
 }
 
-pub fn a_fn_typed_receiver_annotation_reads_as_the_module_test() {
-  let source =
-    "import gleam/list
+pub fn a_fieldless_receiver_annotation_reads_as_the_module_test() {
+  // Three annotations that carry no fields at all. A written `a` is provably a
+  // generic, and Gleam has no row polymorphism — information girard's `Var` has
+  // already lost, which is why the annotation decides where its type does not.
+  list.each(["fn(Int) -> Int", "#(Int, Int)", "a"], fn(annotation) {
+    let source = "import gleam/list
 
-pub fn target(list: fn(Int) -> Int) -> String {
+pub fn target(list: " <> annotation <> ") -> String {
   list.map(\"hi\")
 }
 "
-  let split = split_shadowed(source, "m", signatures.empty(), no_types)
-  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-}
-
-pub fn a_tuple_receiver_annotation_reads_as_the_module_test() {
-  let source =
-    "import gleam/list
-
-pub fn target(list: #(Int, Int)) -> String {
-  list.map(\"hi\")
-}
-"
-  let split = split_shadowed(source, "m", signatures.empty(), no_types)
-  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-}
-
-pub fn a_source_level_generic_receiver_reads_as_the_module_test() {
-  // A written `a` is provably a generic, and Gleam has no row polymorphism —
-  // information girard's `Var` has already lost.
-  let source =
-    "import gleam/list
-
-pub fn target(list: a) -> String {
-  list.map(\"hi\")
-}
-"
-  let split = split_shadowed(source, "m", signatures.empty(), no_types)
-  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+    let split = split_shadowed(source, "m", signatures.empty(), no_types)
+    module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+  })
 }
 
 pub fn an_unannotated_receiver_stays_a_field_test() {

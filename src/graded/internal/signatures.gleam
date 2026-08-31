@@ -668,31 +668,36 @@ pub fn resolve_function_type(
   type_: glance.Type,
   alias_map: Dict(String, glance.Type),
 ) -> Result(glance.Type, Nil) {
-  resolve_function_type_seen(type_, alias_map, set.new())
+  case resolve_alias(type_, alias_map) {
+    FunctionType(..) as resolved -> Ok(resolved)
+    _ -> Error(Nil)
+  }
 }
 
-fn resolve_function_type_seen(
+// What a type spells once module-local aliases are followed as far as they go.
+// A type that names no alias is its own answer, and so is the alias a cycle
+// closes on — so every caller reads the chain's end without a `Result` for
+// "went nowhere", which is not a failure.
+pub fn resolve_alias(
+  type_: glance.Type,
+  alias_map: Dict(String, glance.Type),
+) -> glance.Type {
+  resolve_alias_seen(type_, alias_map, set.new())
+}
+
+fn resolve_alias_seen(
   type_: glance.Type,
   alias_map: Dict(String, glance.Type),
   seen: Set(String),
-) -> Result(glance.Type, Nil) {
+) -> glance.Type {
   case type_ {
-    FunctionType(..) -> Ok(type_)
     glance.NamedType(name:, module: None, ..) ->
-      case set.contains(seen, name) {
-        True -> Error(Nil)
-        False ->
-          case dict.get(alias_map, name) {
-            Ok(aliased) ->
-              resolve_function_type_seen(
-                aliased,
-                alias_map,
-                set.insert(seen, name),
-              )
-            Error(Nil) -> Error(Nil)
-          }
+      case set.contains(seen, name), dict.get(alias_map, name) {
+        False, Ok(aliased) ->
+          resolve_alias_seen(aliased, alias_map, set.insert(seen, name))
+        _, _ -> type_
       }
-    _ -> Error(Nil)
+    _ -> type_
   }
 }
 

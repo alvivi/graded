@@ -8657,14 +8657,6 @@ type ReceiverShape {
   UnknownReceiver
 }
 
-// The prelude's types, which no module declaration produces and which grant no
-// accessor. A bare `Int` annotation keys as `#("", "Int")`, so the index entry
-// under `gleam` needs a key of its own.
-const prelude_type_names = [
-  "Int", "Float", "String", "Bool", "Nil", "BitArray", "UtfCodepoint", "List",
-  "Result",
-]
-
 // Split the field calls into the ones the receiver's type says are calls to the
 // module its name shadows, and the ones that stay field calls.
 //
@@ -8681,33 +8673,23 @@ pub fn split_shadowed_field_calls(
   cache: LocalCache,
   function: Function,
 ) -> #(List(ResolvedCall), List(types.FieldCall)) {
-  let #(module_reads, field_reads) =
-    list.fold(field_calls, #([], []), fn(acc, call) {
-      let #(module_reads, field_reads) = acc
-      case
-        shadowed_module_read(
-          call,
-          registry,
-          context,
-          module_types,
-          cache,
-          function,
-        )
-      {
-        Some(module_path) -> #(
-          [
-            types.ResolvedCall(
-              name: QualifiedName(module: module_path, function: call.label),
-              span: call.span,
-            ),
-            ..module_reads
-          ],
-          field_reads,
-        )
-        None -> #(module_reads, [call, ..field_reads])
-      }
-    })
-  #(list.reverse(module_reads), list.reverse(field_reads))
+  use acc, call <- list.fold_right(field_calls, #([], []))
+  let #(module_reads, field_reads) = acc
+  case
+    shadowed_module_read(call, registry, context, module_types, cache, function)
+  {
+    Some(module_path) -> #(
+      [
+        types.ResolvedCall(
+          name: QualifiedName(module: module_path, function: call.label),
+          span: call.span,
+        ),
+        ..module_reads
+      ],
+      field_reads,
+    )
+    None -> #(module_reads, [call, ..field_reads])
+  }
 }
 
 // The module a shadowed field call actually reads, or `None` where it stays a
@@ -8796,6 +8778,20 @@ fn syntactic_receiver_shape(
   context: ImportContext,
   alias_map: dict.Dict(String, glance.Type),
 ) -> ReceiverShape {
+  case parameter_annotation(function, object) {
+    Some(annotation) -> annotated_receiver_shape(annotation, context, alias_map)
+    None -> UnknownReceiver
+  }
+}
+
+// The type annotation written on the parameter named `object`, if it carries
+// one. Both readings of a receiver's annotation — the nominal type rule 3 keys
+// by, and the shape the shadowed-receiver split decides from — start here, so
+// how a receiver name is matched against a parameter is stated once.
+fn parameter_annotation(
+  function: Function,
+  object: String,
+) -> option.Option(glance.Type) {
   case
     list.find(function.parameters, fn(param) {
       case param.name {
@@ -8804,36 +8800,22 @@ fn syntactic_receiver_shape(
       }
     })
   {
-    Ok(glance.FunctionParameter(type_: Some(annotation), ..)) ->
-      annotated_receiver_shape(annotation, context, alias_map, set.new())
-    _ -> UnknownReceiver
+    Ok(glance.FunctionParameter(type_:, ..)) -> type_
+    Error(Nil) -> None
   }
 }
 
-// One annotation's shape, following module-local type aliases to what they
-// name. A `fn(..)` or a tuple carries no fields; a *source-level* type variable
-// is provably a generic, and Gleam has no row polymorphism, so the compiler
-// reads the module through all three. A hole says nothing. `visited` keeps a
-// mutually recursive alias pair from spinning.
+// One annotation's shape, read through the module's type aliases. A `fn(..)` or
+// a tuple carries no fields; a *source-level* type variable is provably a
+// generic, and Gleam has no row polymorphism, so the compiler reads the module
+// through all three. A hole says nothing, and so does the alias a cycle closes
+// on — it names a type the index does not hold.
 fn annotated_receiver_shape(
   annotation: glance.Type,
   context: ImportContext,
   alias_map: dict.Dict(String, glance.Type),
-  visited: Set(String),
 ) -> ReceiverShape {
-  case annotation {
-    glance.NamedType(name:, module: None, ..) ->
-      case dict.get(alias_map, name), set.contains(visited, name) {
-        Ok(aliased), False ->
-          annotated_receiver_shape(
-            aliased,
-            context,
-            alias_map,
-            set.insert(visited, name),
-          )
-        Ok(_), True -> UnknownReceiver
-        Error(Nil), _ -> named_receiver_shape(name, None, context)
-      }
+  case signatures.resolve_alias(annotation, alias_map) {
     glance.NamedType(name:, module:, ..) ->
       named_receiver_shape(name, module, context)
     glance.FunctionType(..) | glance.TupleType(..) | glance.VariableType(..) ->
@@ -8873,34 +8855,34 @@ fn grants_no_accessor(
   let found =
     accessor_lookup_keys(receiver_type, context.module_path)
     |> list.find_map(fn(key) {
-      signatures.accessor_info(registry, key)
-      |> option.to_result(Nil)
-      |> result.map(fn(info) { #(key, info) })
+      case signatures.accessor_info(registry, key) {
+        Some(info) -> Ok(#(key.0, info))
+        None -> Error(Nil)
+      }
     })
   case found {
     Error(Nil) -> False
-    Ok(#(#(defining_module, _), info)) ->
-      case info.opaque_ && defining_module != context.module_path {
-        True -> True
-        False -> !set.contains(info.any_label, label)
-      }
+    Ok(#(defining_module, info)) ->
+      { info.opaque_ && defining_module != context.module_path }
+      || !set.contains(info.any_label, label)
   }
 }
 
-// The keys the accessor index is consulted under — rule 3's key list, extended
-// for a bare prelude name, whose entry is keyed under `gleam` and which no
-// module-qualified key reaches.
+// The keys the accessor index is consulted under — rule 3's key list, plus
+// `#("gleam", name)` for a bare annotation, which is where the prelude's own
+// entries are keyed and which no module-qualified key reaches.
+//
+// Appending it needs no list of prelude names to gate on: a bare name the
+// module itself declares already matched `#(module_path, name)`, and a bare
+// name it does not declare is either the prelude's or absent from the index
+// either way.
 fn accessor_lookup_keys(
   receiver_type: #(String, String),
   module_path: String,
 ) -> List(#(String, String)) {
   let keys = declared_type_field_keys(Some(receiver_type), module_path)
   case receiver_type {
-    #("", name) ->
-      case list.contains(prelude_type_names, name) {
-        True -> list.append(keys, [#("gleam", name)])
-        False -> keys
-      }
+    #("", name) -> list.append(keys, [#("gleam", name)])
     _ -> keys
   }
 }
@@ -8913,18 +8895,9 @@ fn syntactic_param_type(
   object: String,
   context: ImportContext,
 ) -> option.Option(#(String, String)) {
-  case
-    list.find(function.parameters, fn(param) {
-      case param.name {
-        glance.Named(name) -> name == object
-        glance.Discarded(_) -> False
-      }
-    })
-  {
-    Ok(glance.FunctionParameter(
-      type_: Some(glance.NamedType(name: type_name, module:, ..)),
-      ..,
-    )) -> annotated_type_module(type_name, module, context)
+  case parameter_annotation(function, object) {
+    Some(glance.NamedType(name: type_name, module:, ..)) ->
+      annotated_type_module(type_name, module, context)
     _ -> None
   }
 }
