@@ -69,19 +69,57 @@ pub type ParameterInfo {
 // absent from the registry fall back to glance-AST inspection at the
 // definition site, or are treated as opaque at call sites.
 pub type SignatureRegistry {
-  SignatureRegistry(signatures: Dict(QualifiedName, List(ParameterInfo)))
+  SignatureRegistry(
+    signatures: Dict(QualifiedName, List(ParameterInfo)),
+    // Every custom type whose declaration this package parsed, keyed by
+    // `#(defining module, type name)`. Present-but-labelless is a different
+    // answer from absent, which is why this rides a dict of its own rather than
+    // reusing `types.FieldIndex.labels`.
+    accessors: Dict(#(String, String), AccessorInfo),
+  )
+}
+
+// What one custom type's declaration says about the record accessors it grants.
+//
+// Read to tell a call through a name that shadows an imported module apart from
+// a field call on a record: the compiler reads the module only where the
+// receiver's type grants no accessor for the label.
+pub type AccessorInfo {
+  AccessorInfo(
+    // Every label any variant declares. A label absent here is absent from the
+    // type under every narrowing, which is the only reading that cannot turn an
+    // effectful field into a pure module call: a label on some variants only is
+    // reachable through a pattern that narrows the binding to one of them.
+    any_label: Set(String),
+    // `opaque` on the declaration — the accessors exist only inside the
+    // defining module, and so do the constructors a narrowing would need.
+    opaque_: Bool,
+  )
 }
 
 // An empty registry — nothing known about any function's parameters.
 pub fn empty() -> SignatureRegistry {
-  SignatureRegistry(signatures: dict.new())
+  SignatureRegistry(signatures: dict.new(), accessors: dict.new())
 }
 
 // Merge two registries. On key conflict, `b` wins (so later-loaded
 // interfaces override earlier ones — useful when the project's own
 // interface is loaded after dependency interfaces).
 pub fn merge(a: SignatureRegistry, b: SignatureRegistry) -> SignatureRegistry {
-  SignatureRegistry(signatures: dict.merge(a.signatures, b.signatures))
+  SignatureRegistry(
+    signatures: dict.merge(a.signatures, b.signatures),
+    accessors: dict.merge(a.accessors, b.accessors),
+  )
+}
+
+// What a receiver's nominal type grants, or `None` where the package never
+// parsed that type's declaration — the case a caller must resolve toward the
+// field, since nothing was proved about it.
+pub fn accessor_info(
+  registry: SignatureRegistry,
+  type_key: #(String, String),
+) -> Option(AccessorInfo) {
+  dict.get(registry.accessors, type_key) |> option.from_result()
 }
 
 // Look up a function's parameter signatures.
@@ -272,7 +310,32 @@ pub fn from_glance_module(
         parameter_infos(definition.definition, alias_map),
       )
     })
-  SignatureRegistry(signatures:)
+  SignatureRegistry(
+    signatures:,
+    accessors: accessors_from_module(module_path, module),
+  )
+}
+
+// Each custom type a module declares, with the union of its variants' labels.
+// A type whose variants label nothing still gets an entry: "indexed, and grants
+// no accessor for this label" is the answer the whole index exists to give.
+fn accessors_from_module(
+  module_path: String,
+  module: Module,
+) -> Dict(#(String, String), AccessorInfo) {
+  list.fold(module.custom_types, dict.new(), fn(acc, definition) {
+    let declaration = definition.definition
+    let any_label =
+      declaration.variants
+      |> list.flat_map(fn(variant) { variant.fields })
+      |> list.filter_map(field_label)
+      |> set.from_list()
+    dict.insert(
+      acc,
+      #(module_path, declaration.name),
+      AccessorInfo(any_label:, opaque_: declaration.opaque_),
+    )
+  })
 }
 
 // A registry holding one function, against an alias map handed in. The
@@ -292,6 +355,9 @@ pub fn from_single_function(
         parameter_infos(definition.definition, alias_map),
       ),
     ]),
+    // One function says nothing about any type's accessors. Merged into a real
+    // registry it leaves that one's index intact.
+    accessors: dict.new(),
   )
 }
 

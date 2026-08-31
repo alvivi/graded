@@ -528,3 +528,101 @@ pub fn parse_source_dir_skips_missing_src_test() {
   let _ = simplifile.delete(dir)
   Nil
 }
+
+// The accessor index
+//
+// What each custom type's declaration grants, keyed by type rather than by
+// label: whether the type was indexed at all, every label any variant declares,
+// and whether the declaration is opaque.
+
+fn accessors_of(
+  source: String,
+  module_path: String,
+) -> signatures.SignatureRegistry {
+  let assert Ok(module) = glance.module(source)
+  signatures.from_glance_module(module_path, module)
+}
+
+pub fn accessor_index_unions_labels_across_variants_test() {
+  // The union, not the intersection: a label on one variant of two is reachable
+  // through a pattern that narrows to it, so the type does grant it.
+  let registry =
+    accessors_of(
+      "
+pub type Partial {
+  A(map: fn(Int) -> Int)
+  B(n: Int)
+}
+",
+      "m",
+    )
+  let assert Some(info) = signatures.accessor_info(registry, #("m", "Partial"))
+  info.any_label |> should.equal(set.from_list(["map", "n"]))
+  info.opaque_ |> should.be_false()
+}
+
+pub fn accessor_index_holds_a_type_with_no_labelled_fields_test() {
+  // "Indexed, and declares no such label" has to be distinguishable from "never
+  // indexed", so a labelless type still gets an entry.
+  let registry =
+    accessors_of(
+      "
+pub type Colour {
+  Red
+  Green
+}
+
+pub type Pair {
+  Pair(Int, Int)
+}
+",
+      "m",
+    )
+  let assert Some(colour) = signatures.accessor_info(registry, #("m", "Colour"))
+  colour.any_label |> should.equal(set.new())
+  let assert Some(pair) = signatures.accessor_info(registry, #("m", "Pair"))
+  pair.any_label |> should.equal(set.new())
+  signatures.accessor_info(registry, #("m", "Absent")) |> should.equal(None)
+}
+
+pub fn accessor_index_carries_opacity_test() {
+  let registry =
+    accessors_of(
+      "
+pub opaque type Hidden {
+  Hidden(map: fn(Int) -> Int)
+}
+",
+      "m",
+    )
+  let assert Some(info) = signatures.accessor_info(registry, #("m", "Hidden"))
+  info.opaque_ |> should.be_true()
+  info.any_label |> should.equal(set.from_list(["map"]))
+}
+
+pub fn merge_propagates_the_accessor_index_test() {
+  // The registry is how the index reaches the checker, so both operands of a
+  // merge must survive it.
+  let dep =
+    accessors_of("pub type Runner { Runner(map: fn(Int) -> Int) }", "dep")
+  let project = accessors_of("pub type Thing { Thing(n: Int) }", "m")
+  let merged = signatures.merge(dep, project)
+  signatures.accessor_info(merged, #("dep", "Runner")) |> should.be_some()
+  signatures.accessor_info(merged, #("m", "Thing")) |> should.be_some()
+}
+
+pub fn merging_a_single_function_registry_keeps_the_index_test() {
+  // The same-module registries put a `from_single_function` registry on the
+  // winning side of the merge; its empty index must not erase the real one.
+  let assert Ok(module) =
+    glance.module(
+      "pub type Thing { Thing(n: Int) }
+pub fn f(x) { x }",
+    )
+  let registry = signatures.from_glance_module("m", module)
+  let assert [definition] = module.functions
+  let local = signatures.from_single_function("m", definition, dict.new())
+  signatures.accessor_info(local, #("m", "Thing")) |> should.equal(None)
+  signatures.accessor_info(signatures.merge(registry, local), #("m", "Thing"))
+  |> should.be_some()
+}
