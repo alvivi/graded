@@ -7614,3 +7614,47 @@ pub fn target(list: Runner) -> String {
   let split = split_shadowed(source, "m", registry, no_types)
   module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
 }
+
+pub fn a_prelude_receiver_annotation_reads_as_the_module_test() {
+  // `int.to_string(1)` where `int: Int` is `gleam/int.to_string`: no prelude
+  // type grants an accessor. The annotation keys as `#("", "Int")`, so the
+  // lookup needs the extra `#("gleam", ..)` key to reach the seeded entry.
+  list.each(
+    [
+      "Int", "Float", "String", "Bool", "Nil", "BitArray", "UtfCodepoint",
+      "List", "Result",
+    ],
+    fn(type_name) {
+      let source = "import gleam/int
+
+pub fn target(int: " <> type_name <> ") -> String {
+  int.to_string(1)
+}
+"
+      let split =
+        split_shadowed(source, "m", registry_of(source, "m"), no_types)
+      module_reads(split)
+      |> should.equal([types.QualifiedName("gleam/int", "to_string")])
+    },
+  )
+}
+
+pub fn a_girard_typed_prelude_receiver_reads_as_the_module_test() {
+  // girard names the prelude module directly, so the key is exact.
+  let source =
+    "import gleam/int
+
+pub fn target(int) -> String {
+  int.to_string(1)
+}
+"
+  let split =
+    split_shadowed(
+      source,
+      "m",
+      registry_of(source, "m"),
+      typed_receivers(girard.Named("gleam", "Int", [])),
+    )
+  module_reads(split)
+  |> should.equal([types.QualifiedName("gleam/int", "to_string")])
+}
