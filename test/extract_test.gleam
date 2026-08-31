@@ -1702,6 +1702,106 @@ pub fn a_clause_pattern_name_is_possibly_narrowed_test() {
   |> should.equal(types.PossiblyNarrowedReceiver)
 }
 
+pub fn a_block_alias_of_a_narrowed_name_narrows_test() {
+  // The compiler narrows through a block: `let io = { r }` emits the record
+  // field, so reading it as un-narrowed would rewrite an effectful field call
+  // as a call to the module the name shadows.
+  narrowing_of(
+    "pub fn target(r: Runner) {
+  case r {
+    Fast(..) -> {
+      let list = { r }
+      list.map(\"hi\")
+    }
+  }
+}",
+  )
+  |> should.equal(types.PossiblyNarrowedReceiver)
+}
+
+pub fn a_block_alias_with_leading_statements_narrows_test() {
+  narrowing_of(
+    "pub fn target(r: Runner) {
+  case r {
+    Fast(..) -> {
+      let list = {
+        let _n = 1
+        r
+      }
+      list.map(\"hi\")
+    }
+  }
+}",
+  )
+  |> should.equal(types.PossiblyNarrowedReceiver)
+}
+
+pub fn a_nested_block_alias_narrows_test() {
+  narrowing_of(
+    "pub fn target(r: Runner) {
+  case r {
+    Fast(..) -> {
+      let list = { { r } }
+      list.map(\"hi\")
+    }
+  }
+}",
+  )
+  |> should.equal(types.PossiblyNarrowedReceiver)
+}
+
+pub fn a_block_that_rebinds_the_source_narrows_nothing_test() {
+  // The tail is read in the block's own scope, so the inner `let` clears the
+  // mark exactly as one outside the block would — and the compiler agrees,
+  // emitting the module call here.
+  narrowing_of(
+    "pub fn target(r: Runner) {
+  case r {
+    Fast(..) -> {
+      let list = {
+        let r = make()
+        r
+      }
+      list.map(\"hi\")
+    }
+  }
+}",
+  )
+  |> should.equal(types.UnnarrowedReceiver)
+}
+
+pub fn a_block_returning_a_call_result_narrows_nothing_test() {
+  narrowing_of(
+    "pub fn target() {
+  let list = { make() }
+  list.map(\"hi\")
+}",
+  )
+  |> should.equal(types.UnnarrowedReceiver)
+}
+
+pub fn a_case_right_hand_side_stays_possibly_narrowed_test() {
+  // The mark does not follow a `case`'s branches — the compiler emits the
+  // module call here even though every branch hands back the same narrowed
+  // name. The binding is a join, though, which the table reads as possibly
+  // narrowed whatever the mark says, so the call keeps the field and answers
+  // `[Unknown]`: imprecise, and not the direction that under-reports.
+  narrowing_of(
+    "pub fn target(r: Runner, flag: Bool) {
+  case r {
+    Fast(..) -> {
+      let list = case flag {
+        True -> r
+        False -> r
+      }
+      list.map(\"hi\")
+    }
+  }
+}",
+  )
+  |> should.equal(types.PossiblyNarrowedReceiver)
+}
+
 pub fn a_wildcard_pattern_narrows_nothing_test() {
   narrowing_of(
     "pub fn target(list: Runner) {
