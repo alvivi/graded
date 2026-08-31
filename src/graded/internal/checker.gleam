@@ -8805,22 +8805,34 @@ fn parameter_annotation(
   }
 }
 
-// One annotation's shape, read through the module's type aliases. A `fn(..)` or
-// a tuple carries no fields; a *source-level* type variable is provably a
-// generic, and Gleam has no row polymorphism, so the compiler reads the module
-// through all three. A hole says nothing, and so does the alias a cycle closes
-// on — it names a type the index does not hold.
+// One annotation's shape, read through the module's type aliases.
+//
+// A variable *written on the parameter* is provably a generic: Gleam has no row
+// polymorphism, so no field call goes through one and the compiler reads the
+// module. A variable the alias map arrives at is a different thing entirely —
+// it is bound by the alias's own parameter list and stands for whatever
+// argument the annotation passed (`type Identity(a) = a`, reached from
+// `Identity(Runner)`, yields a bare `a`), which `resolve_alias` does not
+// substitute. Calling that one fieldless would rewrite a real field call on the
+// argument's type as a pure module call, so it says nothing instead.
+//
+// A `fn(..)` or a tuple carries no fields under any substitution, so both are
+// fieldless wherever they are reached. A hole says nothing, and neither does
+// the alias a cycle closes on — it names a type the index does not hold.
 fn annotated_receiver_shape(
   annotation: glance.Type,
   context: ImportContext,
   alias_map: dict.Dict(String, glance.Type),
 ) -> ReceiverShape {
-  case signatures.resolve_alias(annotation, alias_map) {
-    glance.NamedType(name:, module:, ..) ->
-      named_receiver_shape(name, module, context)
-    glance.FunctionType(..) | glance.TupleType(..) | glance.VariableType(..) ->
-      FieldlessReceiver
-    glance.HoleType(..) -> UnknownReceiver
+  case annotation {
+    glance.VariableType(..) -> FieldlessReceiver
+    _ ->
+      case signatures.resolve_alias(annotation, alias_map) {
+        glance.NamedType(name:, module:, ..) ->
+          named_receiver_shape(name, module, context)
+        glance.FunctionType(..) | glance.TupleType(..) -> FieldlessReceiver
+        glance.VariableType(..) | glance.HoleType(..) -> UnknownReceiver
+      }
   }
 }
 
