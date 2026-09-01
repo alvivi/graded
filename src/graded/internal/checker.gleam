@@ -8861,9 +8861,11 @@ fn named_receiver_shape(
 // Which labels count as accessors is what the receiver's narrowing decides. A
 // receiver a pattern or a construction fixed to one variant reaches a label
 // that variant alone declares, so any variant's label keeps the field. One that
-// nothing narrowed reaches only the labels every variant declares at the same
-// field index — exactly the accessors the compiler compiles — and a label
-// outside that set is the module's, whatever other variants declare.
+// nothing narrowed reaches only the labels every variant declares at one field
+// index and one type — the accessors the compiler compiles — and a label
+// outside that set is the module's, whatever other variants declare. A label
+// leaves that set on proof and not on doubt: two field types a syntax-level
+// read cannot part keep it.
 fn grants_no_accessor(
   registry: SignatureRegistry,
   receiver_type: #(String, String),

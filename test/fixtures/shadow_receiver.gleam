@@ -68,3 +68,30 @@ pub fn logger_narrowed(l: Logger) -> Nil {
     Quiet(..) -> Nil
   }
 }
+
+// A two-variant type declaring `println` at one field index on both variants
+// and at two types. An accessor needs one type to return, so Gleam grants none
+// here either, and an un-narrowed receiver reads `gleam/io.println` — while `n`
+// agrees on both index and type and stays the record's own field.
+pub type Typed {
+  Text(println: fn(String) -> Nil, n: Int)
+  Number(println: fn(Int) -> Nil, n: Int)
+}
+
+pub fn make_typed() -> Typed {
+  Text(quiet_print, 1)
+}
+
+pub fn typed_param(io: Typed) -> Int {
+  io.println("hi")
+  io.n
+}
+
+// The narrowed counterpart: the clause fixes the variant, so the field is real
+// whatever the other variant declares it at, and the call is the record's.
+pub fn typed_narrowed(t: Typed) -> Nil {
+  case t {
+    Text(..) as io -> io.println("hi")
+    Number(..) -> Nil
+  }
+}
