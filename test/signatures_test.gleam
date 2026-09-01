@@ -591,6 +591,162 @@ pub type Reordered {
   reordered.every_label |> should.equal(set.new())
 }
 
+pub fn accessor_index_intersects_labels_on_field_type_test() {
+  // A label at one index across variants but declared at two types is no
+  // accessor either — the compiler has no one type to give it. `at` differs in
+  // its parameter and is granted by neither variant; `n` agrees and is granted.
+  let registry =
+    accessors_of(
+      "
+pub type Retyped {
+  A(at: fn(String) -> Nil, n: Int)
+  B(at: fn(Int) -> Nil, n: Int)
+}
+",
+      "m",
+    )
+  let assert Some(info) = signatures.accessor_info(registry, #("m", "Retyped"))
+  info.any_label |> should.equal(set.from_list(["at", "n"]))
+  info.every_label |> should.equal(set.from_list(["n"]))
+}
+
+pub fn accessor_index_reads_one_type_through_two_spellings_test() {
+  // One type written as a module-local alias in one variant and spelled out in
+  // the other is one type to the compiler, so the label stays an accessor. The
+  // spans the two spellings were read at differ and say nothing.
+  let registry =
+    accessors_of(
+      "
+type Handler =
+  fn(String) -> Nil
+
+pub type Spelled {
+  A(at: Handler, n: Int)
+  B(at: fn(String) -> Nil, n: Int)
+}
+",
+      "m",
+    )
+  let assert Some(info) = signatures.accessor_info(registry, #("m", "Spelled"))
+  info.every_label |> should.equal(set.from_list(["at", "n"]))
+}
+
+pub fn accessor_index_expands_a_parameterised_alias_test() {
+  // `Handler(String)` and the `fn(String) -> Nil` it stands for are one type,
+  // and the compiler grants one accessor for a label written both ways. The
+  // arguments a reference carries are substituted for the alias's own
+  // parameters, so `Pair(Int)` and `Pair(String)` still part.
+  let registry =
+    accessors_of(
+      "
+type Handler(a) =
+  fn(a) -> Nil
+
+type Pair(a) =
+  #(a, a)
+
+pub type Spelled {
+  A(at: Handler(String), n: Int)
+  B(at: fn(String) -> Nil, n: Int)
+}
+
+pub type Parted {
+  C(at: Pair(Int), n: Int)
+  D(at: Pair(String), n: Int)
+}
+",
+      "m",
+    )
+  let assert Some(spelled) =
+    signatures.accessor_info(registry, #("m", "Spelled"))
+  spelled.every_label |> should.equal(set.from_list(["at", "n"]))
+  let assert Some(parted) = signatures.accessor_info(registry, #("m", "Parted"))
+  parted.every_label |> should.equal(set.from_list(["n"]))
+}
+
+pub fn accessor_index_keeps_a_label_it_cannot_part_test() {
+  // A name another module exports may be that module's alias for the very type
+  // written beside it, and this registry never read that module — whether the
+  // name arrives qualified or is imported bare, where it looks like one of the
+  // module's own. Dropping the label on a guess would rewrite a real field call
+  // to the shadowed module and charge a pure module function for it, so an
+  // undecided pair keeps the label. Two *arguments* under one such head are
+  // still parted: whatever `dep.Box` stands for, it does not stand for two
+  // things at once.
+  let registry =
+    accessors_of(
+      "
+import dep.{type Box, type Handler}
+
+pub type Unread {
+  A(at: dep.Handler, n: Int)
+  B(at: fn(String) -> Nil, n: Int)
+}
+
+pub type Bare {
+  E(at: Handler, n: Int)
+  F(at: fn(String) -> Nil, n: Int)
+}
+
+pub type Argued {
+  C(at: dep.Box(Int), n: Int)
+  D(at: dep.Box(String), n: Int)
+}
+",
+      "m",
+    )
+  let assert Some(unread) = signatures.accessor_info(registry, #("m", "Unread"))
+  unread.every_label |> should.equal(set.from_list(["at", "n"]))
+  let assert Some(bare) = signatures.accessor_info(registry, #("m", "Bare"))
+  bare.every_label |> should.equal(set.from_list(["at", "n"]))
+  let assert Some(argued) = signatures.accessor_info(registry, #("m", "Argued"))
+  argued.every_label |> should.equal(set.from_list(["n"]))
+}
+
+pub fn accessor_index_parts_the_module_s_own_names_test() {
+  // What the module declares itself, and what the prelude gives it, names
+  // itself: no import can turn `Int` into `String` behind the comparison, so a
+  // label written at two of them is parted and the accessor is denied. Without
+  // this the undecided reading would swallow the rule whole.
+  let registry =
+    accessors_of(
+      "
+import dep.{type Handler}
+
+pub type Own {
+  A(at: Handler, other: fn(String) -> Nil, n: Int)
+  B(at: Handler, other: fn(Int) -> Nil, n: String)
+}
+",
+      "m",
+    )
+  let assert Some(info) = signatures.accessor_info(registry, #("m", "Own"))
+  info.every_label |> should.equal(set.from_list(["at"]))
+}
+
+pub fn accessor_index_survives_a_self_referential_alias_test() {
+  // An alias standing for itself is expanded once and then left, so the index
+  // is built rather than looped on — with or without parameters to substitute.
+  let registry =
+    accessors_of(
+      "
+type Loop =
+  List(Loop)
+
+type Nest(a) =
+  List(Nest(a))
+
+pub type Cyclic {
+  A(at: Loop, deep: Nest(Int), n: Int)
+  B(at: Loop, deep: Nest(Int), n: Int)
+}
+",
+      "m",
+    )
+  let assert Some(info) = signatures.accessor_info(registry, #("m", "Cyclic"))
+  info.every_label |> should.equal(set.from_list(["at", "deep", "n"]))
+}
+
 pub fn accessor_index_counts_unlabelled_fields_as_positions_test() {
   // An unlabelled field takes an element position, so a label after one in a
   // variant and not the other sits at different indices and is granted by

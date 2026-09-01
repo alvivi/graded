@@ -8469,6 +8469,106 @@ pub fn a_narrowed_receiver_stays_a_field_call_test() {
   |> should.be_true()
 }
 
+pub fn an_un_narrowed_receiver_typed_apart_is_the_module_call_test() {
+  // Both variants declare `print` at field index 0 and at two types. An
+  // accessor has one type to return, so the compiler grants none and reads the
+  // shadowed module through the name — compiling this source emits
+  // `log:print/1` and never reads the receiver. Taken for a field, the label
+  // would take the budget of the pure function `make` wires and the [Stdout]
+  // would vanish.
+  let root = "build/shadow_receiver_typed_apart"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "assume log.print : [Stdout]\n"),
+    #("log.gleam", support.foreign_fn("print", "(s: String) -> Nil")),
+    #("shapes.gleam", "pub type Handler =\n  fn(String) -> Nil\n"),
+    #(
+      "typed.gleam",
+      "import log
+import shapes.{type Handler}
+
+pub type Typed {
+  Text(print: fn(String) -> Nil, n: Int)
+  Number(print: fn(Int) -> Nil, n: Int)
+}
+
+fn quiet(_s: String) -> Nil {
+  Nil
+}
+
+pub fn make() -> Typed {
+  Text(quiet, 1)
+}
+
+pub fn un_narrowed(log: Typed) -> Int {
+  log.print(\"hi\")
+  log.n
+}
+
+pub fn narrowed(t: Typed) -> Nil {
+  case t {
+    Text(..) as log -> log.print(\"hi\")
+    Number(..) -> Nil
+  }
+}
+
+pub type Local(a) =
+  fn(a) -> Nil
+
+pub type Aliased {
+  Short(print: Local(String), n: Int)
+  Long(print: fn(String) -> Nil, n: Int)
+}
+
+pub fn aliased(log: Aliased) -> Int {
+  log.print(\"hi\")
+  log.n
+}
+
+pub type Borrowed {
+  Brief(print: Handler, n: Int)
+  Full(print: fn(String) -> Nil, n: Int)
+}
+
+pub fn borrowed(log: Borrowed) -> Int {
+  log.print(\"hi\")
+  log.n
+}
+",
+    ),
+  ])
+  let assert Ok(preview) = graded.run_infer_dry_run(root)
+  preview
+  |> string.contains("effects typed.un_narrowed : [Stdout]")
+  |> should.be_true()
+  // A clause that fixes the variant reaches the record's own field, whatever
+  // type the other variant gives the label. No construction site is in reach of
+  // that receiver, so the field is [Unknown] — imprecise, and the direction
+  // that cannot under-report.
+  preview
+  |> string.contains("effects typed.narrowed : [Unknown]")
+  |> should.be_true()
+  // `Handler(String)` and the `fn(String) -> Nil` beside it are one type, so
+  // this label *is* an accessor and the receiver keeps its field — read as the
+  // module's, an effectful field would be charged the module function's
+  // budget instead of its own.
+  preview
+  |> string.contains(
+    "effects typed.aliased(log.print: [log.print]) : [log.print]",
+  )
+  |> should.be_true()
+  // `Handler` arrives from another module under a bare name, where it looks
+  // like one of this module's own types. It is that module's alias for the
+  // `fn(String) -> Nil` beside it, so the label is an accessor here too, and
+  // the receiver keeps its field rather than being read as the module's.
+  preview
+  |> string.contains(
+    "effects typed.borrowed(log.print: [log.print]) : [log.print]",
+  )
+  |> should.be_true()
+  support.cleanup(root)
+}
+
 // Infer/check round trip
 //
 // `run_infer` regenerates the fixtures spec in place, preserving the

@@ -11,6 +11,7 @@
 // modules are parsed from `build/packages/<dep>/src/` on demand.
 
 import glance.{type Definition, type Function, type Module, FunctionType}
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -91,11 +92,17 @@ pub type AccessorInfo {
     // effectful field into a pure module call: a label on some variants only is
     // reachable through a pattern that narrows the binding to one of them.
     any_label: Set(String),
-    // The labels sitting at the same field index in every variant — the
-    // accessors the type grants on a receiver no pattern narrowed. The index
-    // is part of the condition because an accessor compiles to a fixed
+    // The labels every variant declares at one field index *and* one type —
+    // the accessors the type grants on a receiver no pattern narrowed. The
+    // index is part of the condition because an accessor compiles to a fixed
     // `erlang:element/2` position, so a label at differing positions across
-    // variants grants nothing.
+    // variants grants nothing. The type is part of it because the accessor
+    // needs one type to return: a label written `fn(String) -> Nil` on one
+    // variant and `fn(Int) -> Nil` on another grants nothing either, and the
+    // compiler says so. Two spellings of one type are one type — the aliases a
+    // module declares are expanded through their own parameters before the
+    // comparison — and a pair this module's aliases cannot decide keeps the
+    // label rather than losing it on a guess.
     every_label: Set(String),
     // `opaque` on the declaration — the accessors exist only inside the
     // defining module, and so do the constructors a narrowing would need.
@@ -320,7 +327,7 @@ pub fn from_glance_module(
     signatures:,
     accessors: dict.merge(
       prelude_accessors(),
-      accessors_from_module(module_path, module),
+      accessors_from_module(module_path, module, type_scope(module)),
     ),
   )
 }
@@ -351,39 +358,58 @@ fn prelude_accessors() -> Dict(#(String, String), AccessorInfo) {
 fn accessors_from_module(
   module_path: String,
   module: Module,
+  scope: TypeScope,
 ) -> Dict(#(String, String), AccessorInfo) {
   list.fold(module.custom_types, dict.new(), fn(acc, definition) {
     let declaration = definition.definition
-    // Both sets are projections of one `label -> index` table per variant, so
+    // Both sets are projections of one `label -> slot` table per variant, so
     // the variants are walked once and the two readings taken off the result.
-    let indexed = list.map(declaration.variants, labels_by_index)
+    let indexed = list.map(declaration.variants, labels_by_slot(_, scope))
     dict.insert(
       acc,
       #(module_path, declaration.name),
       AccessorInfo(
         any_label: any_variant_labels(indexed),
-        every_label: every_variant_labels(indexed),
+        every_label: every_variant_labels(indexed, scope),
         opaque_: declaration.opaque_,
       ),
     )
   })
 }
 
-// Every label any variant declares, whatever position it takes there.
-fn any_variant_labels(indexed: List(Dict(String, Int))) -> Set(String) {
+// Where one labelled field sits: the element position it occupies and the type
+// it is declared at, both of which every variant must agree on for the label to
+// be an accessor.
+type Slot =
+  #(Int, glance.Type)
+
+// Every label any variant declares, whatever slot it takes there.
+fn any_variant_labels(indexed: List(Dict(String, Slot))) -> Set(String) {
   indexed |> list.flat_map(dict.keys) |> set.from_list()
 }
 
-// The labels every variant declares at the same field index. A type with one
-// variant answers its whole label set, and a type with no variants answers the
-// empty set.
-fn every_variant_labels(indexed: List(Dict(String, Int))) -> Set(String) {
+// The labels every variant declares in the same slot. A type with one variant
+// answers its whole label set, and a type with no variants answers the empty
+// set.
+//
+// A label is dropped only where two variants are *proved* to slot it
+// differently. Selecting the module on a field that is real charges a pure
+// module function for an effectful field, so a pair of types a syntax-level
+// read cannot decide keeps the label rather than costing it.
+fn every_variant_labels(
+  indexed: List(Dict(String, Slot)),
+  scope: TypeScope,
+) -> Set(String) {
   case indexed {
     [] -> set.new()
     [first, ..rest] ->
       list.fold(rest, first, fn(shared, variant) {
-        dict.filter(shared, fn(label, index) {
-          dict.get(variant, label) == Ok(index)
+        dict.filter(shared, fn(label, slot) {
+          case dict.get(variant, label) {
+            Ok(#(index, type_)) ->
+              index == slot.0 && compare_types(slot.1, type_, scope) != Differs
+            Error(Nil) -> False
+          }
         })
       })
       |> dict.keys()
@@ -391,18 +417,246 @@ fn every_variant_labels(indexed: List(Dict(String, Int))) -> Set(String) {
   }
 }
 
-// One variant's labels mapped to the element position each occupies.
-// Unlabelled fields take positions too, so they are counted and then dropped
-// rather than skipped.
-fn labels_by_index(variant: glance.Variant) -> Dict(String, Int) {
+// One variant's labels mapped to the slot each occupies. Unlabelled fields take
+// positions too, so they are counted and then dropped rather than skipped.
+fn labels_by_slot(
+  variant: glance.Variant,
+  scope: TypeScope,
+) -> Dict(String, Slot) {
   variant.fields
-  |> list.index_map(fn(field, index) { #(field_label(field), index) })
+  |> list.index_map(fn(field, index) {
+    #(field_label(field), #(index, comparable_type(field.item, scope)))
+  })
   |> list.filter_map(fn(entry) {
-    let #(label, index) = entry
-    result.map(label, fn(label) { #(label, index) })
+    let #(label, slot) = entry
+    result.map(label, fn(label) { #(label, slot) })
   })
   |> dict.from_list()
 }
+
+// What a module says about the names its variants' field types are written
+// with, which is what deciding whether two of them are one type takes.
+type TypeScope {
+  TypeScope(
+    // The module's own aliases, each with the parameters it takes — what an
+    // alias reference carrying arguments needs to expand. The
+    // parameter-carrying twin of `type_alias_map`, which the rest of the
+    // registry reads.
+    aliases: Dict(String, #(List(String), glance.Type)),
+    // Type names the module imported unqualified, under the name it reads them
+    // by. Written bare like the module's own types, they may still be another
+    // module's alias for anything at all, and that module's declarations are
+    // not in reach here.
+    imported: Set(String),
+  )
+}
+
+fn type_scope(module: Module) -> TypeScope {
+  TypeScope(
+    aliases: list.fold(module.type_aliases, dict.new(), fn(acc, definition) {
+      let alias = definition.definition
+      dict.insert(acc, alias.name, #(alias.parameters, alias.aliased))
+    }),
+    imported: list.fold(module.imports, set.new(), fn(acc, definition) {
+      list.fold(definition.definition.unqualified_types, acc, fn(acc, imported) {
+        set.insert(acc, option.unwrap(imported.alias, imported.name))
+      })
+    }),
+  )
+}
+
+// A field's declared type in the form two variants' fields are compared in:
+// every span zeroed, and every module-local alias expanded through its own
+// parameters.
+//
+// The spans go because glance hangs the source position it read a type at on
+// every node of it, and no two variants are written at one position. The
+// aliases are expanded because `Handler(String)` and the `fn(String) -> Nil` it
+// stands for are one type to the compiler, and the accessor it grants is one
+// accessor.
+fn comparable_type(type_: glance.Type, scope: TypeScope) -> glance.Type {
+  comparable_type_seen(type_, scope, set.new())
+}
+
+// `seen` holds the alias names expanded on the way to here, which stops an
+// alias standing for itself from expanding forever. An alias handed the wrong
+// number of arguments has no expansion to give and keeps its own name.
+fn comparable_type_seen(
+  type_: glance.Type,
+  scope: TypeScope,
+  seen: Set(String),
+) -> glance.Type {
+  let recur = fn(inner) { comparable_type_seen(inner, scope, seen) }
+  case type_ {
+    glance.NamedType(name:, module: None, parameters:, ..) -> {
+      let arguments = list.map(parameters, recur)
+      let expanded = case
+        set.contains(seen, name),
+        dict.get(scope.aliases, name)
+      {
+        False, Ok(#(alias_parameters, body)) ->
+          list.strict_zip(alias_parameters, arguments)
+          |> result.map(fn(bindings) {
+            substitute_type_variables(body, dict.from_list(bindings))
+            |> comparable_type_seen(scope, set.insert(seen, name))
+          })
+        _, _ -> Error(Nil)
+      }
+      case expanded {
+        Ok(type_) -> type_
+        Error(Nil) ->
+          glance.NamedType(
+            location: no_span,
+            name:,
+            module: None,
+            parameters: arguments,
+          )
+      }
+    }
+    glance.NamedType(name:, module:, parameters:, ..) ->
+      glance.NamedType(
+        location: no_span,
+        name:,
+        module:,
+        parameters: list.map(parameters, recur),
+      )
+    glance.TupleType(elements:, ..) ->
+      glance.TupleType(location: no_span, elements: list.map(elements, recur))
+    glance.FunctionType(parameters:, return:, ..) ->
+      glance.FunctionType(
+        location: no_span,
+        parameters: list.map(parameters, recur),
+        return: recur(return),
+      )
+    glance.VariableType(name:, ..) ->
+      glance.VariableType(location: no_span, name:)
+    glance.HoleType(name:, ..) -> glance.HoleType(location: no_span, name:)
+  }
+}
+
+// An alias body with its own parameters replaced by the arguments the reference
+// carries, so `Handler(String)` expands to `fn(String) -> Nil` rather than to
+// the `fn(a) -> Nil` that would read as `Handler(Int)` too.
+fn substitute_type_variables(
+  type_: glance.Type,
+  bindings: Dict(String, glance.Type),
+) -> glance.Type {
+  let recur = fn(inner) { substitute_type_variables(inner, bindings) }
+  case type_ {
+    glance.VariableType(name:, ..) ->
+      case dict.get(bindings, name) {
+        Ok(bound) -> bound
+        Error(Nil) -> type_
+      }
+    glance.NamedType(location:, name:, module:, parameters:) ->
+      glance.NamedType(
+        location:,
+        name:,
+        module:,
+        parameters: list.map(parameters, recur),
+      )
+    glance.TupleType(location:, elements:) ->
+      glance.TupleType(location:, elements: list.map(elements, recur))
+    glance.FunctionType(location:, parameters:, return:) ->
+      glance.FunctionType(
+        location:,
+        parameters: list.map(parameters, recur),
+        return: recur(return),
+      )
+    glance.HoleType(..) -> type_
+  }
+}
+
+// What comparing two variants' field types settles. `Differs` is a proof that
+// no one accessor can serve both; `Undecided` is the answer for a pair this
+// module's own aliases and spans cannot separate — a name qualified by a module
+// whose aliases were never read may stand for the very type beside it.
+type TypeAgreement {
+  Agrees
+  Differs
+  Undecided
+}
+
+fn compare_types(
+  left: glance.Type,
+  right: glance.Type,
+  scope: TypeScope,
+) -> TypeAgreement {
+  use <- bool.guard(left == right, Agrees)
+  case left, right {
+    glance.NamedType(name: l_name, module: l_module, parameters: l_args, ..),
+      glance.NamedType(name: r_name, module: r_module, parameters: r_args, ..)
+      if l_name == r_name && l_module == r_module
+    -> compare_type_lists(l_args, r_args, scope)
+    glance.TupleType(elements: l_elements, ..),
+      glance.TupleType(elements: r_elements, ..)
+    -> compare_type_lists(l_elements, r_elements, scope)
+    glance.FunctionType(parameters: l_params, return: l_return, ..),
+      glance.FunctionType(parameters: r_params, return: r_return, ..)
+    ->
+      combine([
+        compare_type_lists(l_params, r_params, scope),
+        compare_types(l_return, r_return, scope),
+      ])
+    _, _ -> undecided_or_apart(left, right, scope)
+  }
+}
+
+// Two heads that did not match: undecided where either may still stand for
+// something else, and proved apart where neither can.
+fn undecided_or_apart(
+  left: glance.Type,
+  right: glance.Type,
+  scope: TypeScope,
+) -> TypeAgreement {
+  use <- bool.guard(
+    stands_for_anything(left, scope) || stands_for_anything(right, scope),
+    Undecided,
+  )
+  Differs
+}
+
+// Two type lists compared position by position. Lists of different lengths are
+// different types: no head takes two arities.
+fn compare_type_lists(
+  left: List(glance.Type),
+  right: List(glance.Type),
+  scope: TypeScope,
+) -> TypeAgreement {
+  case list.strict_zip(left, right) {
+    Ok(pairs) ->
+      combine(
+        list.map(pairs, fn(pair) { compare_types(pair.0, pair.1, scope) }),
+      )
+    Error(Nil) -> Differs
+  }
+}
+
+// What a head's children settle for the head itself. One child proved apart
+// puts the two types apart whatever the rest read, so `Differs` anywhere
+// carries; short of that an undecided child leaves the whole undecided.
+fn combine(agreements: List(TypeAgreement)) -> TypeAgreement {
+  use <- bool.guard(list.contains(agreements, Differs), Differs)
+  use <- bool.guard(list.contains(agreements, Undecided), Undecided)
+  Agrees
+}
+
+// Whether a type's head could still stand for something else: a name qualified
+// by another module, a name imported unqualified from one, or a local alias
+// `comparable_type` declined to expand. Each may be the type written beside it
+// under another name. What is left — the module's own types and the prelude's —
+// names itself.
+fn stands_for_anything(type_: glance.Type, scope: TypeScope) -> Bool {
+  case type_ {
+    glance.NamedType(module: Some(_), ..) -> True
+    glance.NamedType(name:, module: None, ..) ->
+      dict.has_key(scope.aliases, name) || set.contains(scope.imported, name)
+    _ -> False
+  }
+}
+
+// The position every comparable type is written at.
+const no_span = glance.Span(0, 0)
 
 // A registry holding one function, against an alias map handed in. The
 // synthetic same-module registries build a `glance.Module` around a single
