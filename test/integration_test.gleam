@@ -1,4 +1,5 @@
 import filepath
+import girard
 import glance
 import gleam/dict
 import gleam/list
@@ -8567,6 +8568,253 @@ pub fn borrowed(log: Borrowed) -> Int {
   )
   |> should.be_true()
   support.cleanup(root)
+}
+
+// Typed-frontend soundness invariants
+//
+// The invariants a typed-resolution frontend has to preserve, pinned against
+// what graded does today. Three of them are reachable now:
+//
+//   1. an effectful record field colliding with a pure module of the receiver's
+//      name is never charged the module's result;
+//   2. a call girard supplied no typed evidence for never resolves to the
+//      plausible same-named module function;
+//   3. types sharpen an unresolved call; they never replace a target the syntax
+//      path already proved.
+//
+// Three more wait on a girard API that reports the semantic identity of a
+// reference, and cannot be written against today's annotations:
+//
+//   - a three-state resolution result (proved module call / proved field call /
+//     undecided) rather than an inferred type the checker re-reads;
+//   - missing, skipped, unsupported and conflicting typed evidence all mapping
+//     to that undecided state;
+//   - telling "analysed and unresolved" apart from "the function was skipped"
+//     and "no annotation was recorded for this span".
+//
+// `test/fixtures/field_module_collision.gleam` carries the collision. Compiling
+// it emits `erlang:element(2, List)` for every one of its calls, so the field is
+// the whole charge in each; the module half (`gleam/list`) is pure, which is
+// what makes an accidental module reading silent rather than loud.
+
+pub fn a_pure_module_never_answers_for_an_effectful_field_test() {
+  // Every receiver shape this branch touches, against the same collision: a
+  // direct construction, a `case` clause, a `let assert`, a plain alias, a
+  // block-wrapped alias, an alias taken inside the narrowed branch, and a
+  // rebinding after narrowing. The `check ... : []` line on each is the
+  // assertion — it has to fail, and fail with the field's own [Net] or with
+  // [Unknown]. Passing would mean `gleam/list` had answered for a call that
+  // goes out to the network.
+  let shapes = [
+    #("direct_construction", ["Net"]),
+    #("case_narrowed", ["Unknown"]),
+    #("let_assert_narrowed", ["Net"]),
+    #("simple_alias", ["Net"]),
+    #("block_alias", ["Net"]),
+    #("alias_in_narrowed_branch", ["Unknown"]),
+    #("rebound_after_narrowing", ["Net"]),
+  ]
+  let assert Ok(results) = graded.check_project("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/field_module_collision.gleam"
+    })
+  list.each(shapes, fn(shape) {
+    let #(function, charged) = shape
+    let assert Ok(violation) =
+      list.find(r.violations, fn(v) { v.function == function })
+    violation.explanation.actual
+    |> should.equal(types.Specific(set.from_list(charged)))
+  })
+}
+
+pub fn the_module_half_of_the_field_collision_is_pure_test() {
+  // The control the invariant above rests on: `count` reaches the very same
+  // `gleam/list` under its own name and passes its [] budget. The module really
+  // is pure, so a receiver read as one would report nothing at all.
+  let assert Ok(results) = graded.check_project("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/field_module_collision.gleam"
+    })
+  list.any(r.violations, fn(v) { v.function == "count" })
+  |> should.be_false()
+}
+
+pub fn a_call_girard_declined_to_type_stays_a_field_test() {
+  // girard carries no narrowing across a binding, so it reads `list.send` as an
+  // accessor on an un-narrowed `Client`, finds no such field, and declines the
+  // three alias functions outright. No type reaches those receivers — and with
+  // no typed evidence the call must stay the record's own field rather than
+  // resolve to the same-named `gleam/list.send`, which the module-level
+  // `assume gleam/list : []` would answer for with nothing.
+  //
+  // The skip list is asserted alongside the charge: if girard learns to type
+  // these, the premise is gone and this test should be re-pointed rather than
+  // quietly keep passing for another reason.
+  let assert Ok(source) =
+    simplifile.read("test/fixtures/field_module_collision.gleam")
+  let assert Ok(module) = glance.module(source)
+  let results =
+    girard.annotate_package(
+      [#("field_module_collision", module)],
+      girard.default_options(),
+    )
+  let assert Ok(girard_result) = dict.get(results, "field_module_collision")
+  girard_result.skipped
+  |> list.map(fn(entry) { entry.0 })
+  |> list.sort(string.compare)
+  |> should.equal(["alias_in_narrowed_branch", "block_alias", "simple_alias"])
+
+  let assert Ok(checked) = graded.check_project("test/fixtures")
+  let assert Ok(r) =
+    list.find(checked, fn(r) {
+      r.file == "test/fixtures/field_module_collision.gleam"
+    })
+  let assert Ok(violation) =
+    list.find(r.violations, fn(v) { v.function == "simple_alias" })
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Net"])))
+}
+
+pub fn girard_types_do_not_replace_a_syntax_proved_target_test() {
+  // The collision fixture inferred twice, with girard's types and with none.
+  // Five of its eight functions the syntax path already proves — a qualified
+  // `gleam/list` call, the construction sites' own wiring, and the field calls
+  // whose receiver a written parameter annotation names — and the typed run has
+  // to charge each of those the same target. Where the two differ, the untyped
+  // run must be the one that said [Unknown]: a sharpening, never a swap.
+  //
+  // girard declines three of the module's functions, so the guard below is what
+  // keeps the comparison from running on an empty type map.
+  let assert Ok(source) =
+    simplifile.read("test/fixtures/field_module_collision.gleam")
+  let assert Ok(module) = glance.module(source)
+  girard_span_types("field_module_collision", module)
+  |> dict.is_empty()
+  |> should.be_false()
+
+  let untyped =
+    infer_fixture(
+      module: "field_module_collision",
+      spec: collision_spec,
+      with_types: False,
+    )
+  untyped
+  |> should.equal([
+    #(
+      "alias_in_narrowed_branch",
+      "effects alias_in_narrowed_branch : [Unknown]",
+    ),
+    #("block_alias", "effects block_alias : [Net]"),
+    #("case_narrowed", "effects case_narrowed : [Unknown]"),
+    #("count", "effects count : []"),
+    #("direct_construction", "effects direct_construction : [Net]"),
+    #("let_assert_narrowed", "effects let_assert_narrowed : [Net]"),
+    #("rebound_after_narrowing", "effects rebound_after_narrowing : [Net]"),
+    #("simple_alias", "effects simple_alias : [Net]"),
+  ])
+
+  let typed =
+    infer_fixture(
+      module: "field_module_collision",
+      spec: collision_spec,
+      with_types: True,
+    )
+  list.each(untyped, fn(entry) {
+    let #(function, untyped_line) = entry
+    let assert Ok(typed_line) = list.key_find(typed, function)
+    case typed_line == untyped_line {
+      True -> Nil
+      False -> string.contains(untyped_line, "Unknown") |> should.be_true()
+    }
+  })
+}
+
+pub fn girard_types_sharpen_a_call_the_syntax_path_cannot_trace_test() {
+  // The complement, and what keeps the paired run above from being a comparison
+  // that could never differ: `nested_field.via_type` calls `o.inner.run()`,
+  // whose receiver is the intermediate `o.inner` rather than a bare name, so
+  // the syntax path has no nominal type for it and the call is [Unknown].
+  // girard types that sub-expression as `Inner`, the field `assume` answers,
+  // and the typed run names [Disk] — a target the untyped run had not proved,
+  // not a different one it had.
+  let spec = "assume nested_field.Inner.run : [Disk]\n"
+  infer_fixture(module: "nested_field", spec:, with_types: False)
+  |> list.key_find("via_type")
+  |> should.equal(Ok("effects via_type : [Unknown]"))
+  infer_fixture(module: "nested_field", spec:, with_types: True)
+  |> list.key_find("via_type")
+  |> should.equal(Ok("effects via_type : [Disk]"))
+}
+
+// The declarations `field_module_collision` needs, and nothing else: the pure
+// module its receivers are named after, the effectful function its
+// constructions wire, and the field's own budget.
+const collision_spec = "assume gleam/list : []
+assume field_module_collision.net_send : [Net]
+assume field_module_collision.Client.send : [Net]
+"
+
+// Infer one fixture module against a knowledge base built from `spec` alone,
+// with girard's per-expression types or with none, and render each public
+// function's annotation. Sorted by function name so two runs compare directly.
+fn infer_fixture(
+  module module_path: String,
+  spec spec_source: String,
+  with_types with_types: Bool,
+) -> List(#(String, String)) {
+  let assert Ok(source) =
+    simplifile.read("test/fixtures/" <> module_path <> ".gleam")
+  let assert Ok(module) = glance.module(source)
+  let assert Ok(spec) = annotation.parse_file(spec_source)
+  let knowledge_base =
+    effects.empty_knowledge_base(".")
+    |> effects.with_assumes(annotation.extract_assumes(spec), types.UserAssume)
+    |> effects.with_type_fields(
+      annotation.extract_type_fields(spec),
+      types.UserAssume,
+    )
+  let module_types = case with_types {
+    False -> dict.new()
+    True -> girard_span_types(module_path, module)
+  }
+  checker.infer(
+    module,
+    module_path,
+    knowledge_base,
+    [],
+    signatures.from_glance_module(module_path, module),
+    module_types,
+    dict.new(),
+    types.all_targets(),
+  )
+  |> list.map(fn(a) { #(a.function, annotation.format_annotation(a)) })
+  |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+}
+
+// girard's inferred type for every expression in a module, keyed by span — the
+// same fold `build_type_index` does, over one module. `annotate_package` is the
+// entry graded itself calls: it is best-effort, so a module holding functions
+// girard declines still yields the types of the ones it read, where
+// `annotate_module` would return the first error and no types at all.
+fn girard_span_types(
+  module_path: String,
+  module: glance.Module,
+) -> dict.Dict(#(Int, Int), girard.Type) {
+  let results =
+    girard.annotate_package([#(module_path, module)], girard.default_options())
+  case dict.get(results, module_path) {
+    Error(Nil) -> dict.new()
+    Ok(result) ->
+      list.fold(result.annotated.expressions, dict.new(), fn(acc, annotation) {
+        dict.insert(
+          acc,
+          #(annotation.span.start, annotation.span.end),
+          annotation.type_,
+        )
+      })
+  }
 }
 
 // Infer/check round trip
