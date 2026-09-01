@@ -8641,6 +8641,138 @@ pub fn the_module_half_of_the_field_collision_is_pure_test() {
   |> should.be_false()
 }
 
+pub fn a_narrowed_receiver_beats_the_module_that_exports_the_label_test() {
+  // The same collision one step harder. `field_module_collision` names its field
+  // `send` and `gleam/list` exports no such function, so girard reaches the
+  // field reading by elimination and the module branch is never taken.
+  // `narrowed_module_collision` names its field `println` against `gleam/io`,
+  // which does export it, so both readings are live at once and only the
+  // receiver's narrowed type separates them.
+  //
+  // Compiling the fixture emits `erlang:element(2, Io)` for all three receiver
+  // calls (gleam 1.18.0), so the field is the whole charge. The [] budget on
+  // each has to fail, and fail with the field's [Net] or with [Unknown] —
+  // passing, or failing with the module's [Stdout], would mean `gleam/io`
+  // answered for a call that goes out to the network.
+  let assert Ok(results) = graded.check_project("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/narrowed_module_collision.gleam"
+    })
+  list.each(
+    ["case_narrowed", "let_assert_narrowed", "direct_construction"],
+    fn(function) {
+      let assert Ok(violation) =
+        list.find(r.violations, fn(v) { v.function == function })
+      charges_the_field_not_the_module(violation)
+    },
+  )
+}
+
+pub fn the_module_half_of_the_narrowed_collision_answers_under_its_own_name_test() {
+  // The control: `greet` reaches `gleam/io` under the name that really is the
+  // module, and the compiler emits `gleam_stdlib:println` there. Its [Stdout]
+  // budget passes, which is what makes an accidental module reading above
+  // visible as [Stdout] rather than as nothing at all.
+  let assert Ok(results) = graded.check_project("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/narrowed_module_collision.gleam"
+    })
+  list.any(r.violations, fn(v) { v.function == "greet" })
+  |> should.be_false()
+}
+
+pub fn a_pure_module_never_answers_for_a_narrowed_effectful_field_test() {
+  // The same fixture at `field_module_collision`'s polarity, which the shared
+  // spec cannot express: `gleam/io.println` declared pure, so the module half
+  // answers with nothing and a wrong reading is silent rather than merely
+  // wrong. The three receiver calls must still fail their [] budgets with the
+  // field's [Net] or with [Unknown]; `greet`, which really is the module, must
+  // pass its own.
+  //
+  // The declaration is per-function rather than module-level because the
+  // catalog outranks a module-level `assume` and answers [Stdout] for
+  // `gleam/io.println` regardless.
+  let root = "build/narrowed_collision_pure_module"
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(source) =
+    simplifile.read("test/fixtures/narrowed_module_collision.gleam")
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/gleam.toml", "name = \"proj\"\n")
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/narrowed_module_collision.gleam", source)
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/proj.graded",
+      "assume gleam/io.println : []
+assume narrowed_module_collision.net_send : [Net]
+assume narrowed_module_collision.Client.println : [Net]
+check narrowed_module_collision.greet : []
+check narrowed_module_collision.case_narrowed : []
+check narrowed_module_collision.let_assert_narrowed : []
+check narrowed_module_collision.direct_construction : []
+",
+    )
+
+  let assert Ok(results) = graded.check_project(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == root <> "/narrowed_module_collision.gleam"
+    })
+  list.any(r.violations, fn(v) { v.function == "greet" })
+  |> should.be_false()
+  list.each(
+    ["case_narrowed", "let_assert_narrowed", "direct_construction"],
+    fn(function) {
+      let assert Ok(violation) =
+        list.find(r.violations, fn(v) { v.function == function })
+      charges_the_field_not_the_module(violation)
+    },
+  )
+
+  let assert Ok(Nil) = simplifile.delete(root)
+}
+
+// A narrowed-collision violation charges the field's [Net] or [Unknown], and
+// never the module's own answer. Shared by the two polarities: under the
+// fixtures spec the module answers [Stdout], under a spec declaring it pure the
+// budget would simply have passed, and both readings are excluded here.
+fn charges_the_field_not_the_module(violation: types.Violation) -> Nil {
+  case violation.explanation.actual {
+    types.Specific(labels) -> {
+      { set.contains(labels, "Net") || set.contains(labels, "Unknown") }
+      |> should.be_true()
+      set.contains(labels, "Stdout") |> should.be_false()
+    }
+    _ -> should.fail()
+  }
+}
+
+pub fn girard_resolves_the_narrowed_collision_to_the_module_test() {
+  // The premise the two tests above guard against, pinned so the authoritative
+  // flip cannot land while it holds. girard declines none of these functions —
+  // a skip would route them to [Unknown] safely — it types them and resolves
+  // the calls to `gleam/io.println`, because `infer_callee` selects a module
+  // export whenever `accessor` grants no label shared by every variant, and
+  // never consults the variant a pattern narrowed the receiver to.
+  //
+  // When girard learns to consult it, this test should be re-pointed at the
+  // resolution it then reports rather than quietly keep passing.
+  let assert Ok(source) =
+    simplifile.read("test/fixtures/narrowed_module_collision.gleam")
+  let assert Ok(module) = glance.module(source)
+  let results =
+    girard.annotate_package(
+      [#("narrowed_module_collision", module)],
+      girard.default_options(),
+    )
+  let assert Ok(girard_result) = dict.get(results, "narrowed_module_collision")
+  girard_result.skipped
+  |> should.equal([])
+}
+
 pub fn a_call_girard_declined_to_type_stays_a_field_test() {
   // girard carries no narrowing across a binding, so it reads `list.send` as an
   // accessor on an un-narrowed `Client`, finds no such field, and declines the
