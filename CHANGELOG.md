@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inside the branch that narrowed it, now charges the field's own effects
   instead of `[Unknown]`. A `check` line over such a body that could not be
   satisfied before now can be.
+- A receiver that is a bare alias of another parameter (`let list = e`) is now
+  read against *that* parameter's type annotation rather than against nothing.
+  Where the type declares the label on no variant the call resolves to the
+  module the receiver's name shadows, instead of reading `[Unknown]`; where it
+  declares it, the field is kept as before. An alias of a *field* of a
+  parameter is unaffected — its type is the field's, which no annotation on the
+  parameter states.
 
 ### Fixed
 

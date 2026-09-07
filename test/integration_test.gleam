@@ -14559,10 +14559,10 @@ pub fn shadowed(list: Identity(Runner)) -> String {
 }
 
 pub fn a_path_dependency_let_rebound_receiver_stays_charged_test() {
-  // A `let` rebinding is already covered by the provenance gate: the receiver
-  // roots at `r`, not at the `list` the annotation names, so the field stays a
-  // field — here a polymorphic one. Resolved to `gleam/list.map` the answer
-  // would be a flat `[]`.
+  // The receiver roots at `r`, not at the `list` the shadowed annotation names,
+  // so it is `r`'s type the reading is taken from — and `Runner` declares `map`
+  // on its only variant, so the field stays a field, here a polymorphic one.
+  // Resolved to `gleam/list.map` the answer would be a flat `[]`.
   path_dep_effect_line(
     "shadow_path_dep_let_rebound",
     "import gleam/list
@@ -14583,6 +14583,61 @@ pub fn shadowed(list: Empty, r: Runner) -> String {
     "shadowed",
   )
   |> string.contains("effects dep.shadowed(r.map: [r.map]) : [r.map]")
+  |> should.be_true()
+}
+
+pub fn a_path_dependency_alias_reads_the_aliased_parameters_type_test() {
+  // The other polarity of the same rule. The alias again names a parameter
+  // other than the shadowed one, and it is again that parameter's annotation
+  // the receiver's type is read from — but `Empty` declares no `map` on any
+  // variant, so the compiler reads `gleam/list.map` and so does graded.
+  path_dep_effect_line(
+    "shadow_path_dep_alias_fieldless",
+    "import gleam/list
+
+pub type Empty {
+  Empty(n: Int)
+}
+
+pub type Runner {
+  Runner(map: fn(String) -> String)
+}
+
+pub fn shadowed(r: Runner, e: Empty) -> String {
+  let list = e
+  list.map(\"hi\")
+}
+",
+    "shadowed",
+  )
+  |> string.contains("effects dep.shadowed : []")
+  |> should.be_true()
+}
+
+pub fn a_path_dependency_projection_alias_reads_no_type_test() {
+  // A dotted path is a projection out of a parameter, and its type is the
+  // field's rather than the parameter's — so the parameter's annotation says
+  // nothing about this receiver and the reading stays unsettled.
+  path_dep_effect_line(
+    "shadow_path_dep_projection_alias",
+    "import gleam/list
+
+pub type Inner {
+  Inner(n: Int)
+}
+
+pub type Outer {
+  Outer(inner: Inner)
+}
+
+pub fn shadowed(o: Outer) -> String {
+  let list = o.inner
+  list.map(\"hi\")
+}
+",
+    "shadowed",
+  )
+  |> string.contains("effects dep.shadowed : [Unknown]")
   |> should.be_true()
 }
 

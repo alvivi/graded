@@ -8992,19 +8992,28 @@ fn receiver_shape(
   {
     Some(#(module, type_name)) -> NamedReceiver(module:, type_name:)
     None ->
-      // The annotation answers only where the receiver still *is* the parameter
-      // of that name. A `let` or a clause pattern can rebind the name to a value
-      // of another type, and the stale annotation would then charge a module
-      // call for a field the value really has. That matters most exactly where
-      // girard is absent: path-dependency inference is handed no types at all.
+      // The annotation answers only where the receiver's value *is* a
+      // parameter's. The provenance names which one, canonicalized where the
+      // receiver reached it through an alias, so a `let` or a clause pattern
+      // that rebound the name to a value of another type names that value's own
+      // root rather than the shadowed parameter's — a stale annotation would
+      // charge a module call for a field the value really has. A dotted path is
+      // a projection *out of* a parameter, whose type is the field's and not the
+      // parameter's, so only a bare one describes this receiver. All of which
+      // matters most exactly where girard is absent: path-dependency inference
+      // is handed no types at all.
       case call.provenance {
-        types.ParameterRoot(path:) if path == call.object ->
-          syntactic_receiver_shape(
-            function,
-            call.object,
-            context,
-            cache.fn_alias_types,
-          )
+        types.ParameterRoot(path:) ->
+          case string.split(path, ".") {
+            [name] ->
+              syntactic_receiver_shape(
+                function,
+                name,
+                context,
+                cache.fn_alias_types,
+              )
+            _ -> UnknownReceiver
+          }
         _ -> UnknownReceiver
       }
   }
