@@ -692,7 +692,9 @@ pub type LocalScope {
 
 // A field access call: object.label(args) where object is a local variable.
 // `span` is the whole call's span (for diagnostics); `receiver_span` is the
-// receiver variable's own span, used to look up its inferred type.
+// receiver variable's own span, used to look up its inferred type;
+// `access_span` is the `object.label` access itself, the span girard keys its
+// resolution of the site by.
 // `provenance` records what extraction proved about the receiver, so the checker
 // can resolve the call by concrete evidence (a wired field value), a live
 // parameter root, or conservatively as `[Unknown]`.
@@ -702,6 +704,7 @@ pub type FieldCall {
     label: String,
     span: Span,
     receiver_span: Span,
+    access_span: Span,
     provenance: FieldCallProvenance,
     // The module the receiver's name also imports, where the name shadows one
     // and extraction could not prove the binding's type lacks `label`. The

@@ -1460,6 +1460,7 @@ fn env_field_call(
           site.label,
           site.call_span,
           site.receiver_span,
+          site.access_span,
           provenance,
           shadowed_module,
           narrowing,
@@ -1567,6 +1568,7 @@ fn resolve_constructor_field_call(
           site.label,
           site.call_span,
           site.receiver_span,
+          site.access_span,
           Untraceable,
           shadowed,
           narrowing,
@@ -1605,6 +1607,7 @@ fn resolve_constructor_field_call(
             site.label,
             site.call_span,
             site.receiver_span,
+            site.access_span,
             ProvenValue(value),
             None,
             narrowing,
@@ -1673,6 +1676,7 @@ fn resolve_nested_field_call(
                 site.label,
                 site.call_span,
                 site.receiver_span,
+                site.access_span,
                 field_receiver_provenance(site.object, env),
                 // A nested receiver is not a bare identifier, so it shadows
                 // nothing, and nothing reads its narrowing.
