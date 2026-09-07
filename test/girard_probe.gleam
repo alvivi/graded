@@ -246,16 +246,42 @@ fn resolver(
 
 // Reporting
 
-fn report_package(
-  root: String,
+// What girard covered in one package, counted the way the report states it.
+//
+// A top-level function is typed only if girard walked its module, walked the
+// definition, and did not abandon it — so the typed count subtracts the skips,
+// the definitions left out of the build for the other target, and the functions
+// of any module girard declined outright. `dropped` carries constants beside
+// functions, and a constant is not in the function count to begin with, so the
+// two are counted apart and only the function half is subtracted.
+pub type Coverage {
+  Coverage(
+    // Top-level functions in the package's sources.
+    functions: Int,
+    // Top-level functions in the modules girard returned a result for.
+    walked_functions: Int,
+    // The error bucket of every skipped definition that is a function.
+    skipped: List(String),
+    // Definitions left out of the build for the other target: functions and
+    // constants together, which is what the dropped line reports.
+    dropped_definitions: Int,
+    // The function half of them.
+    dropped_functions: Int,
+  )
+}
+
+// The functions girard typed: walked, in the build, and not abandoned.
+pub fn typed_functions(coverage: Coverage) -> Int {
+  coverage.walked_functions
+  - list.length(coverage.skipped)
+  - coverage.dropped_functions
+}
+
+// One package's coverage, from its parsed modules and girard's results.
+pub fn coverage(
   entries: List(#(String, glance.Module)),
   results: Dict(String, girard.ModuleResult),
-  rows: List(ClassificationCheck),
-) -> Nil {
-  let total_functions =
-    list.fold(entries, 0, fn(acc, entry) {
-      acc + list.length({ entry.1 }.functions)
-    })
+) -> Coverage {
   let function_names =
     list.fold(entries, set.new(), fn(acc, entry) {
       let #(module_path, module) = entry
@@ -263,22 +289,63 @@ fn report_package(
         set.insert(acc, #(module_path, definition.definition.name))
       })
     })
-  let skipped_functions =
-    dict.to_list(results)
-    |> list.flat_map(fn(pair) {
-      let #(module_path, module_result) = pair
-      list.filter_map(module_result.skipped, fn(entry) {
-        case set.contains(function_names, #(module_path, entry.0)) {
-          True -> Ok(checker.error_bucket(entry.1))
-          False -> Error(Nil)
-        }
+  // Keyed by span, not by name: a `@target` pair shares one name, and only one
+  // half of it is dropped.
+  let function_spans =
+    list.fold(entries, set.new(), fn(acc, entry) {
+      let #(module_path, module) = entry
+      list.fold(module.functions, acc, fn(acc, definition) {
+        let location = { definition.definition }.location
+        set.insert(acc, #(module_path, location.start, location.end))
       })
     })
-  let dropped_definitions =
-    dict.to_list(results)
-    |> list.fold(0, fn(acc, pair) {
-      acc + list.length({ pair.1 }.annotated.dropped)
-    })
+  Coverage(
+    functions: list.fold(entries, 0, fn(acc, entry) {
+      acc + list.length({ entry.1 }.functions)
+    }),
+    walked_functions: list.fold(entries, 0, fn(acc, entry) {
+      let #(module_path, module) = entry
+      case dict.has_key(results, module_path) {
+        True -> acc + list.length(module.functions)
+        False -> acc
+      }
+    }),
+    skipped: dict.to_list(results)
+      |> list.flat_map(fn(pair) {
+        let #(module_path, module_result) = pair
+        list.filter_map(module_result.skipped, fn(entry) {
+          case set.contains(function_names, #(module_path, entry.0)) {
+            True -> Ok(checker.error_bucket(entry.1))
+            False -> Error(Nil)
+          }
+        })
+      }),
+    dropped_definitions: dict.to_list(results)
+      |> list.fold(0, fn(acc, pair) {
+        acc + list.length({ pair.1 }.annotated.dropped)
+      }),
+    dropped_functions: dict.to_list(results)
+      |> list.fold(0, fn(acc, pair) {
+        let #(module_path, module_result) = pair
+        acc
+        + list.count(module_result.annotated.dropped, fn(dropped) {
+          set.contains(function_spans, #(
+            module_path,
+            dropped.span.start,
+            dropped.span.end,
+          ))
+        })
+      }),
+  )
+}
+
+fn report_package(
+  root: String,
+  entries: List(#(String, glance.Module)),
+  results: Dict(String, girard.ModuleResult),
+  rows: List(ClassificationCheck),
+) -> Nil {
+  let counted = coverage(entries, results)
   let missing_modules =
     list.length(entries) - list.length(dict.to_list(results))
 
@@ -287,22 +354,23 @@ fn report_package(
   io.println("")
   io.println("modules: " <> int.to_string(list.length(entries)))
   io.println("modules girard dropped: " <> int.to_string(missing_modules))
-  io.println("top-level functions: " <> int.to_string(total_functions))
+  io.println("top-level functions: " <> int.to_string(counted.functions))
   io.println(
-    "girard-skipped functions: "
-    <> int.to_string(list.length(skipped_functions)),
+    "girard-skipped functions: " <> int.to_string(list.length(counted.skipped)),
   )
   io.println(
-    "girard-typed functions: "
-    <> int.to_string(total_functions - list.length(skipped_functions)),
+    "girard-typed functions: " <> int.to_string(typed_functions(counted)),
   )
   io.println(
     "definitions dropped for the other target: "
-    <> int.to_string(dropped_definitions),
+    <> int.to_string(counted.dropped_definitions)
+    <> " (functions: "
+    <> int.to_string(counted.dropped_functions)
+    <> ")",
   )
   io.println("")
   io.println("skip reasons:")
-  print_tally(tally(skipped_functions))
+  print_tally(tally(counted.skipped))
   report_rows(rows)
 }
 
