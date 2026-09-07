@@ -1238,6 +1238,9 @@ pub type GradedClassification {
   // A field call the split left alone, carrying the module its name shadows
   // where it shadows one.
   Field(shadowed: Option(String))
+  // A field call whose receiver's name shadows a module and whose type
+  // establishes neither reading, charged `[Unknown]` rather than either one.
+  UndecidedShadowed(shadowed: String)
   // A field whose receiver's construction site already named the value wired
   // in, so the call was charged that value rather than the field.
   WiredValue(value: WiredValue)
@@ -1285,4 +1288,8 @@ pub type CompatiblePair {
   // classification and nothing else — a wired value under a girard `ModuleFn`
   // is the undercharge shape and stays a disagreement.
   WiredValueVersusMember
+  // graded established neither reading and charged `[Unknown]`; girard named
+  // the member. `[Unknown]` names nothing to contradict and undercharges
+  // nothing, so the pair is compatible against either proved target.
+  UndecidedVersusMember
 }
