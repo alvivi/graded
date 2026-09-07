@@ -8080,7 +8080,6 @@ fn row(
   label: String,
   graded: types.GradedClassification,
   typed: types.TypedClassification,
-  relation: types.Relation,
 ) -> types.ClassificationCheck {
   types.ClassificationCheck(
     module: "app",
@@ -8090,7 +8089,6 @@ fn row(
     span: glance.Span(0, 1),
     graded:,
     typed:,
-    relation:,
   )
 }
 
@@ -8100,7 +8098,6 @@ pub fn an_agreeing_module_call_line_names_the_module_test() {
     "println",
     types.SyntaxModule("gleam/io"),
     types.ProvedModuleCall("gleam/io", "println"),
-    types.Agree,
   )
   |> checker.format_typed_resolution()
   |> should.equal(
@@ -8114,7 +8111,6 @@ pub fn an_agreeing_field_call_line_names_the_member_test() {
     "send",
     types.Field(Some("gleam/list")),
     types.ProvedFieldCall(#("app", "Client"), "send"),
-    types.Agree,
   )
   |> checker.format_typed_resolution()
   |> should.equal("list.send: typed resolution field Client.send (agrees)")
@@ -8126,7 +8122,6 @@ pub fn a_compatible_line_names_the_value_graded_charged_test() {
     "to_error",
     types.WiredValue(types.WiredFunction(QualifiedName("gleam/io", "println"))),
     types.ProvedFieldCall(#("app", "Validator"), "to_error"),
-    types.Compatible(types.WiredValueVersusMember),
   )
   |> checker.format_typed_resolution()
   |> should.equal(
@@ -8140,7 +8135,6 @@ pub fn a_disagreeing_line_states_both_readings_test() {
     "println",
     types.Field(Some("gleam/io")),
     types.ProvedModuleCall("gleam/io", "println"),
-    types.Disagree,
   )
   |> checker.format_typed_resolution()
   |> should.equal(
@@ -8154,7 +8148,6 @@ pub fn a_line_with_no_typed_evidence_states_the_reason_test() {
     "println",
     types.Field(Some("gleam/io")),
     types.Undecided(types.FunctionSkipped("NoSuchField")),
-    types.NoTypedEvidence(types.FunctionSkipped("NoSuchField")),
   )
   |> checker.format_typed_resolution()
   |> should.equal(
@@ -8168,7 +8161,6 @@ pub fn a_dropped_definitions_line_says_so_test() {
     "println",
     types.SyntaxModule("gleam/io"),
     types.Undecided(types.DefinitionDropped),
-    types.NoTypedEvidence(types.DefinitionDropped),
   )
   |> checker.format_typed_resolution()
   |> should.equal(
@@ -8185,7 +8177,6 @@ pub fn an_undecided_shadowed_line_names_the_unknown_it_charged_test() {
     "send",
     types.UndecidedShadowed("gleam/list"),
     types.ProvedFieldCall(#("app", "Client"), "send"),
-    types.Compatible(types.UndecidedVersusMember),
   )
   |> checker.format_typed_resolution()
   |> should.equal(

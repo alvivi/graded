@@ -330,9 +330,9 @@ fn report_rows(rows: List(ClassificationCheck)) -> Nil {
 
   let undecided =
     list.filter(rows, fn(check) {
-      case check.relation {
+      case checker.relate(check) {
         types.NoTypedEvidence(..) -> True
-        types.Agree | types.Compatible(..) | types.Disagree -> False
+        types.Compared(..) -> False
       }
     })
   io.println("")
@@ -345,7 +345,9 @@ fn report_rows(rows: List(ClassificationCheck)) -> Nil {
   print_tally(tally(list.map(undecided, relation_label)))
 
   let disagree =
-    list.filter(rows, fn(check) { check.relation == types.Disagree })
+    list.filter(rows, fn(check) {
+      checker.relate(check) == types.Compared(types.Disagree)
+    })
   io.println("")
   io.println("disagreements (one read the module, the other the field):")
   io.println("  " <> int.to_string(list.length(disagree)))
@@ -353,13 +355,13 @@ fn report_rows(rows: List(ClassificationCheck)) -> Nil {
 }
 
 fn relation_label(check: ClassificationCheck) -> String {
-  case check.relation {
-    types.Agree -> "agree"
-    types.Compatible(types.WiredValueVersusMember) ->
+  case checker.relate(check) {
+    types.Compared(types.Agree) -> "agree"
+    types.Compared(types.Compatible(types.WiredValueVersusMember)) ->
       "compatible:wired-value-vs-member"
-    types.Compatible(types.UndecidedVersusMember) ->
+    types.Compared(types.Compatible(types.UndecidedVersusMember)) ->
       "compatible:undecided-vs-member"
-    types.Disagree -> "disagree"
+    types.Compared(types.Disagree) -> "disagree"
     types.NoTypedEvidence(reason:) ->
       "no-typed-evidence:" <> undecided_label(reason)
   }

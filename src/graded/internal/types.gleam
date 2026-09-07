@@ -1257,8 +1257,9 @@ pub type WiredValue {
 
 // One ambiguous call, classified both ways. Lossless on purpose: `typed` is
 // kept whether or not the two agree, since it names the member an agreeing row
-// reaches, which neither `Field` nor `SyntaxModule` can say on its own.
-// `relation` is the one derived field.
+// reaches, which neither `Field` nor `SyntaxModule` can say on its own. How the
+// two stand to each other is read off the pair by `checker.relate` rather than
+// stored beside it, so no row can state a standing its own halves deny.
 pub type ClassificationCheck {
   ClassificationCheck(
     module: String,
@@ -1269,16 +1270,26 @@ pub type ClassificationCheck {
     span: Span,
     graded: GradedClassification,
     typed: TypedClassification,
-    relation: Relation,
   )
 }
 
-// How the two classifications stand to each other.
+// How the two classifications stand to each other: a comparison wherever girard
+// named a target, and the reason it named none wherever it did not. The reason
+// is restated here rather than left in `typed` alone, so a caller routing rows
+// by relation reads it off the one value it already matched on.
 pub type Relation {
+  Compared(comparison: Comparison)
+  NoTypedEvidence(reason: UndecidedReason)
+}
+
+// How graded's answer stands to a target girard proved. Reachable only where
+// there is a target to stand against, which is why it is a type of its own: a
+// row with no typed evidence has no comparison, rather than one more variant
+// every reader of a comparison has to answer for.
+pub type Comparison {
   Agree
   Compatible(pair: CompatiblePair)
   Disagree
-  NoTypedEvidence(reason: UndecidedReason)
 }
 
 // A pair that names different things without contradicting each other.

@@ -14740,7 +14740,9 @@ fn non_agree_rows(
   checks: List(types.ClassificationCheck),
 ) -> List(types.ClassificationCheck) {
   checks
-  |> list.filter(fn(check) { check.relation != types.Agree })
+  |> list.filter(fn(check) {
+    checker.relate(check) != types.Compared(types.Agree)
+  })
   |> list.map(fn(check) {
     types.ClassificationCheck(..check, span: glance.Span(0, 0))
   })
@@ -14760,7 +14762,6 @@ fn row(
   label label: String,
   graded graded: types.GradedClassification,
   typed typed: types.TypedClassification,
-  relation relation: types.Relation,
 ) -> types.ClassificationCheck {
   types.ClassificationCheck(
     module:,
@@ -14770,7 +14771,6 @@ fn row(
     span: glance.Span(0, 0),
     graded:,
     typed:,
-    relation:,
   )
 }
 
@@ -14778,7 +14778,8 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
   // Six rows, all the same shape: graded resolved the field at the receiver's
   // construction site and charged the value wired in, while girard named the
   // member the access reaches. Neither is wrong — they name different halves of
-  // one site — which is why the pair is `Compatible` and not `Disagree`.
+  // one site — which is why `relate` reads each pair as `Compatible` and not as
+  // `Disagree`.
   //
   // No `Disagree` and no `NoTypedEvidence` row exists over these fixtures:
   // girard types every fixture function, and wherever the two both answer they
@@ -14787,7 +14788,6 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
   let wired_function = fn(module, name) {
     types.WiredValue(types.WiredFunction(types.QualifiedName(module, name)))
   }
-  let compatible = types.Compatible(types.WiredValueVersusMember)
   non_agree_rows(fixture_classifications())
   |> should.equal([
     row(
@@ -14797,7 +14797,6 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
       label: "to_error",
       graded: wired_function("gleam/io", "println"),
       typed: types.ProvedFieldCall(#("factory_field", "Validator"), "to_error"),
-      relation: compatible,
     ),
     row(
       module: "field_module_collision",
@@ -14809,7 +14808,6 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
         #("field_module_collision", "Client"),
         "send",
       ),
-      relation: compatible,
     ),
     row(
       module: "field_module_collision",
@@ -14821,7 +14819,6 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
         #("field_module_collision", "Client"),
         "send",
       ),
-      relation: compatible,
     ),
     row(
       module: "inline_construction_field",
@@ -14833,7 +14830,6 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
         #("inline_construction_field", "Validator"),
         "to_error",
       ),
-      relation: compatible,
     ),
     row(
       module: "narrowed_module_collision",
@@ -14845,7 +14841,6 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
         #("narrowed_module_collision", "Client"),
         "println",
       ),
-      relation: compatible,
     ),
     row(
       module: "validator_flow",
@@ -14854,7 +14849,6 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
       label: "to_error",
       graded: wired_function("gleam/io", "println"),
       typed: types.ProvedFieldCall(#("validator_flow", "Validator"), "to_error"),
-      relation: compatible,
     ),
   ])
 }
@@ -14909,7 +14903,8 @@ pub fn everywhere() -> Nil {
   let assert Ok(checks) = graded.classification_checks(root)
   relation_of(checks, "browser_only")
   |> should.equal(Ok(types.NoTypedEvidence(types.DefinitionDropped)))
-  relation_of(checks, "everywhere") |> should.equal(Ok(types.Agree))
+  relation_of(checks, "everywhere")
+  |> should.equal(Ok(types.Compared(types.Agree)))
   support.cleanup(root)
 }
 
@@ -14937,7 +14932,8 @@ pub fn beam_only() -> Nil {
     ),
   ])
   let assert Ok(checks) = graded.classification_checks(root)
-  relation_of(checks, "browser_only") |> should.equal(Ok(types.Agree))
+  relation_of(checks, "browser_only")
+  |> should.equal(Ok(types.Compared(types.Agree)))
   relation_of(checks, "beam_only")
   |> should.equal(Ok(types.NoTypedEvidence(types.DefinitionDropped)))
   support.cleanup(root)
@@ -14970,10 +14966,10 @@ pub fn go() -> Nil {
   ])
   let assert Ok(checks) = graded.classification_checks(root)
   list.filter(checks, fn(check) { check.function == "go" })
-  |> list.map(fn(check) { #(check.label, check.relation) })
+  |> list.map(fn(check) { #(check.label, checker.relate(check)) })
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
   |> should.equal([
-    #("print", types.Agree),
+    #("print", types.Compared(types.Agree)),
     #("println", types.NoTypedEvidence(types.DefinitionDropped)),
   ])
   support.cleanup(root)
@@ -14985,7 +14981,7 @@ fn relation_of(
   function: String,
 ) -> Result(types.Relation, Nil) {
   list.find(checks, fn(check) { check.function == function })
-  |> result.map(fn(check) { check.relation })
+  |> result.map(checker.relate)
 }
 
 pub fn every_ambiguous_call_is_classified_once_test() {

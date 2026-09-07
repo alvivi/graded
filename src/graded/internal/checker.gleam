@@ -21,13 +21,14 @@ import graded/internal/topo
 import graded/internal/typeinfo
 import graded/internal/types.{
   type CallExplanation, type CheckComponent, type CheckFinding,
-  type ClassificationCheck, type ConstructionSite, type EffectAnnotation,
-  type EffectTerm, type GradedClassification, type LocalCall, type LookupOrigin,
-  type ParamBound, type QualifiedName, type Relation, type ResolvedCall,
-  type ReturnedOperatorReason, type TypedClassification, type UndecidedReason,
-  type UnknownReason, type UnprovedCause, type Violation, type Warning, Agree,
+  type ClassificationCheck, type Comparison, type ConstructionSite,
+  type EffectAnnotation, type EffectTerm, type GradedClassification,
+  type LocalCall, type LookupOrigin, type ParamBound, type QualifiedName,
+  type Relation, type ResolvedCall, type ReturnedOperatorReason,
+  type TypedClassification, type UndecidedReason, type UnknownReason,
+  type UnprovedCause, type Violation, type Warning, Agree,
   AliasedBoundVariableWarning, AmbiguousShadowedReceiver, CallExplanation,
-  ClassificationCheck, Compatible, DefinitionDropped, Disagree,
+  ClassificationCheck, Compared, Compatible, DefinitionDropped, Disagree,
   DotlessReturnsClauseWarning, EffectAnnotation, Effects, Field,
   FieldArityViolation, FieldAssumeOrigin, FieldBoundList, FieldNotAnnotated,
   FieldReturnsClause, FieldSiteViolation, FunctionSkipped, NoKnownEffects,
@@ -1961,9 +1962,19 @@ pub fn format_typed_resolution(check: ClassificationCheck) -> String {
     Undecided(reason:) ->
       site <> ": no typed resolution (" <> undecided_reason_text(reason) <> ")"
     ProvedModuleCall(module:, name:) ->
-      resolution_line(site, "module " <> module <> "." <> name, check)
+      resolution_line(
+        site,
+        "module " <> module <> "." <> name,
+        against_module(check.graded),
+        check,
+      )
     ProvedFieldCall(receiver: #(_module, type_name), label:) ->
-      resolution_line(site, "field " <> type_name <> "." <> label, check)
+      resolution_line(
+        site,
+        "field " <> type_name <> "." <> label,
+        against_field(check.graded),
+        check,
+      )
   }
 }
 
@@ -1973,15 +1984,14 @@ pub fn format_typed_resolution(check: ClassificationCheck) -> String {
 fn resolution_line(
   site: String,
   target: String,
+  comparison: Comparison,
   check: ClassificationCheck,
 ) -> String {
-  let standing = case check.relation {
+  let standing = case comparison {
     Agree -> "agrees"
     Compatible(WiredValueVersusMember) | Compatible(UndecidedVersusMember) ->
       "compatible; graded charged " <> graded_target(check)
     Disagree -> "DISAGREES with graded's " <> graded_target(check)
-    // Unreachable: a resolved `typed` never relates as no evidence.
-    NoTypedEvidence(reason:) -> undecided_reason_text(reason)
   }
   site <> ": typed resolution " <> target <> " (" <> standing <> ")"
 }
@@ -8958,7 +8968,6 @@ pub fn classify_definition(
       span: row.site.access_span,
       graded:,
       typed:,
-      relation: relate(graded, typed),
     )
   })
 }
@@ -8988,33 +8997,37 @@ fn graded_classification(
   }
 }
 
-// How the two classifications stand to each other.
-//
-// The wired-value cells are the asymmetric pair: against a proved field the two
-// name different halves of the same site and agree in substance, while against
-// a proved module call graded charged a wired value where the compiler reads
-// the module — the undercharge shape, which the pair must never absorb. The
-// undecided cells are symmetric the other way: `[Unknown]` covers whichever
-// target girard proved, so it contradicts neither.
-fn relate(
-  graded: GradedClassification,
-  typed: TypedClassification,
-) -> Relation {
-  case typed {
+// How the two classifications on a row stand to each other. Read off the pair
+// on demand rather than carried beside it: the row states what each side made
+// of the site, and this is the one reading of the two together.
+pub fn relate(check: ClassificationCheck) -> Relation {
+  case check.typed {
     Undecided(reason:) -> NoTypedEvidence(reason)
-    ProvedFieldCall(..) ->
-      case graded {
-        Field(..) -> Agree
-        WiredValue(..) -> Compatible(WiredValueVersusMember)
-        UndecidedShadowed(..) -> Compatible(UndecidedVersusMember)
-        SyntaxModule(..) | TypeSelectedModule(..) -> Disagree
-      }
-    ProvedModuleCall(..) ->
-      case graded {
-        SyntaxModule(..) | TypeSelectedModule(..) -> Agree
-        UndecidedShadowed(..) -> Compatible(UndecidedVersusMember)
-        Field(..) | WiredValue(..) -> Disagree
-      }
+    ProvedFieldCall(..) -> Compared(against_field(check.graded))
+    ProvedModuleCall(..) -> Compared(against_module(check.graded))
+  }
+}
+
+// graded's answer against a field girard proved. The two name different halves
+// of one site wherever graded answered with the value wired in, and nothing at
+// all wherever it left the reading undecided — neither contradicts the member.
+fn against_field(graded: GradedClassification) -> Comparison {
+  case graded {
+    Field(..) -> Agree
+    WiredValue(..) -> Compatible(WiredValueVersusMember)
+    UndecidedShadowed(..) -> Compatible(UndecidedVersusMember)
+    SyntaxModule(..) | TypeSelectedModule(..) -> Disagree
+  }
+}
+
+// graded's answer against a module call girard proved. The wired-value cell is
+// the asymmetric one: here graded charged a value where the compiler reads the
+// module, which is the undercharge shape and no compatible pair.
+fn against_module(graded: GradedClassification) -> Comparison {
+  case graded {
+    SyntaxModule(..) | TypeSelectedModule(..) -> Agree
+    UndecidedShadowed(..) -> Compatible(UndecidedVersusMember)
+    Field(..) | WiredValue(..) -> Disagree
   }
 }
 
