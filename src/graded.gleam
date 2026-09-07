@@ -861,7 +861,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
       dependency_registry(dep_sources),
       build_project_registry(index),
     )
-  let type_info = build_type_index(index, package_root)
+  let type_info = build_type_index(index, package_root, package_targets)
 
   // Read once and kept: the knowledge base is built from it and the spec lint
   // weighs the same entries.
@@ -2584,15 +2584,19 @@ fn qualify_by_module(
 
 // Run girard's whole-package type inference once over every project module
 // and fold the result into a `TypeInfo`: per-module expression types keyed by
-// their `#(start, end)` span, plus the fn-typed parameters girard inferred.
+// their `#(start, end)` span, the fn-typed parameters girard inferred, and
+// girard's own reading of each module — the member every reference resolved to,
+// the definitions it declined, and the ones it left out for the other target.
 // girard is best-effort: a function it can't type contributes no expressions,
 // so the checker silently falls back to syntax-level resolution for it.
 fn build_type_index(
   index: Dict(String, #(String, glance.Module)),
   package_root: String,
+  package_targets: types.PackageTargets,
 ) -> typeinfo.TypeInfo {
   let options =
     girard.default_options()
+    |> girard.with_target(girard_target(package_targets))
     |> girard.with_resolver(build_girard_resolver(
       index,
       dependency_module_files(package_root),
@@ -2630,7 +2634,52 @@ fn build_type_index(
         Error(Nil) -> Error(Nil)
       }
     })
-  typeinfo.from_modules(span_types, fn_typed, [], [], [])
+  let resolutions =
+    list.map(results, fn(pair) {
+      let #(module_path, module_result) = pair
+      let by_span =
+        list.fold(
+          module_result.annotated.resolutions,
+          dict.new(),
+          fn(acc, reference) {
+            dict.insert(
+              acc,
+              #(reference.span.start, reference.span.end),
+              reference.resolution,
+            )
+          },
+        )
+      #(module_path, by_span)
+    })
+  let skipped =
+    list.map(results, fn(pair) {
+      let #(module_path, module_result) = pair
+      #(module_path, dict.from_list(module_result.skipped))
+    })
+  let dropped =
+    list.map(results, fn(pair) {
+      let #(module_path, module_result) = pair
+      let names =
+        list.fold(module_result.annotated.dropped, set.new(), fn(acc, entry) {
+          set.insert(acc, entry.name)
+        })
+      #(module_path, names)
+    })
+  typeinfo.from_modules(span_types, fn_typed, resolutions, skipped, dropped)
+}
+
+// The one target girard is run on. Gleam compiles a whole build for a single
+// target, and girard takes one per run, so a package naming both is typed on
+// Erlang and its JavaScript-only definitions come back as `dropped` rather than
+// silently absent. `build_targets` is the reading to take: a package naming no
+// target is compiled for Erlang, exactly as `gleam build` defaults.
+@internal
+pub fn girard_target(package_targets: types.PackageTargets) -> girard.Target {
+  let targets = types.build_targets(package_targets)
+  case set.contains(targets, "erlang"), set.contains(targets, "javascript") {
+    False, True -> girard.JavaScript
+    _, _ -> girard.Erlang
+  }
 }
 
 // From girard's inferred top-level signatures, the set of function-typed
@@ -2868,7 +2917,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       dependency_registry(dep_sources),
       build_project_registry(index),
     )
-  let type_info = build_type_index(index, package_root)
+  let type_info = build_type_index(index, package_root, package_targets)
   // As in `project_context`: one map for the run, not one per module.
   let constructors = package_constructors(index, dep_sources)
 
