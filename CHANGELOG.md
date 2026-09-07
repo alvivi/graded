@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `graded why` now prints a **typed resolutions** section after the blocks: one
+  line per `name.label(args)` in the function's own body, stating what the type
+  inference resolved the site to beside what graded charged it as, and whether
+  the two agree, name different halves of one site, or disagree. Nothing about
+  the charge changes — the resolutions are reported beside graded's answer,
+  never in place of it.
+
 ### Changed
 
 - girard 3.0.0 or later is required.

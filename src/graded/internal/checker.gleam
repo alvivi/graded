@@ -24,8 +24,8 @@ import graded/internal/types.{
   type ClassificationCheck, type ConstructionSite, type EffectAnnotation,
   type EffectTerm, type GradedClassification, type LocalCall, type LookupOrigin,
   type ParamBound, type QualifiedName, type Relation, type ResolvedCall,
-  type ReturnedOperatorReason, type TypedClassification, type UnknownReason,
-  type UnprovedCause, type Violation, type Warning, Agree,
+  type ReturnedOperatorReason, type TypedClassification, type UndecidedReason,
+  type UnknownReason, type UnprovedCause, type Violation, type Warning, Agree,
   AliasedBoundVariableWarning, CallExplanation, ClassificationCheck, Compatible,
   DefinitionDropped, Disagree, DotlessReturnsClauseWarning, EffectAnnotation,
   Effects, Field, FieldArityViolation, FieldAssumeOrigin, FieldBoundList,
@@ -364,11 +364,13 @@ pub fn explain(
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
+  // girard's own reading of this module, for the typed-resolution lines.
+  evidence: typeinfo.ModuleEvidence,
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
   package_targets: types.PackageTargets,
-) -> Result(List(ExplainedBlock), Nil) {
+) -> Result(ExplainResult, Nil) {
   // The lookup comes before the rest of the module analysis, so a name this
   // module does not define costs one map build rather than a whole-module walk.
   let function_map = build_function_map(module)
@@ -389,13 +391,17 @@ pub fn explain(
     // needs no walking apparatus: answered here, ahead of the call graph and the
     // SCC pass `module_context` builds, and repeated per block unchanged.
     Some(explanation) ->
-      list.map(bounds, fn(bounds) {
-        ExplainedBlock(
-          bounds:,
-          total: effect_term.from_effect_set(explanation.actual),
-          explanations: [explanation],
-        )
-      })
+      // No body is walked, so no call of it is classified either.
+      ExplainResult(
+        blocks: list.map(bounds, fn(bounds) {
+          ExplainedBlock(
+            bounds:,
+            total: effect_term.from_effect_set(explanation.actual),
+            explanations: [explanation],
+          )
+        }),
+        classifications: [],
+      )
     None -> {
       let ModuleContext(context:, cache:) =
         module_context(
@@ -458,9 +464,34 @@ pub fn explain(
             ),
           )
         })
-      explained
+      // Held outside the per-bounds blocks: the observation is per definition,
+      // so a function with three `check` lines states its typed resolutions
+      // once rather than once per block.
+      ExplainResult(
+        blocks: explained,
+        classifications: classify_definition(
+          definition.definition,
+          module_path,
+          registry,
+          context,
+          module_types,
+          cache,
+          evidence,
+        ),
+      )
     }
   }
+}
+
+// What `explain` answers with: one block per bounds set, plus the typed
+// resolution of every ambiguous call lexically in the function — which is per
+// definition rather than per bounds set, so it rides beside the blocks rather
+// than inside them.
+pub type ExplainResult {
+  ExplainResult(
+    blocks: List(ExplainedBlock),
+    classifications: List(ClassificationCheck),
+  )
 }
 
 // One `check` line's worth of `explain` output: the bounds the walk actually
@@ -1938,6 +1969,70 @@ fn underivable_clause(reason: ReturnedOperatorReason) -> String {
 // a reason discharged by a bound describes nothing the reader can still see.
 // The origin is stated whenever one was recorded, including beside an
 // `[Unknown]` a source claims — there, naming the source *is* the explanation.
+// One ambiguous call's typed resolution, as `graded why` prints it: what girard
+// resolved the site to, and how that stands to what graded charged. The two
+// halves are both stated whenever they differ, so a reader sees the pair rather
+// than a verdict on it.
+pub fn format_typed_resolution(check: ClassificationCheck) -> String {
+  let site = check.object <> "." <> check.label
+  case check.relation {
+    NoTypedEvidence(reason:) ->
+      site <> ": no typed resolution (" <> undecided_reason_text(reason) <> ")"
+    Agree ->
+      site <> ": typed resolution " <> typed_target(check.typed) <> " (agrees)"
+    Compatible(WiredValueVersusMember) ->
+      site
+      <> ": typed resolution "
+      <> typed_target(check.typed)
+      <> " (compatible; graded charged "
+      <> graded_target(check)
+      <> ")"
+    Disagree ->
+      site
+      <> ": typed resolution "
+      <> typed_target(check.typed)
+      <> " (DISAGREES with graded's "
+      <> graded_target(check)
+      <> ")"
+  }
+}
+
+// girard's half of a row. The `Undecided` arm is unreachable from
+// `format_typed_resolution`, which states the reason on its own line instead.
+fn typed_target(typed: TypedClassification) -> String {
+  case typed {
+    ProvedModuleCall(module:, name:) -> "module " <> module <> "." <> name
+    ProvedFieldCall(receiver: #(_module, type_name), label:) ->
+      "field " <> type_name <> "." <> label
+    Undecided(reason:) -> "none (" <> undecided_reason_text(reason) <> ")"
+  }
+}
+
+// graded's half of a row, named as the thing it charged.
+fn graded_target(check: ClassificationCheck) -> String {
+  case check.graded {
+    SyntaxModule(module:) | TypeSelectedModule(module:) ->
+      "module call " <> module <> "." <> check.label
+    Field(..) -> "field call " <> check.object <> "." <> check.label
+    WiredValue(WiredFunction(name:)) ->
+      "the wired " <> name.module <> "." <> name.function
+    WiredValue(WiredLocal(name:)) -> "the wired " <> name
+    WiredValue(WiredConstructor) -> "the wired constructor"
+  }
+}
+
+// Why girard's answer decided nothing here.
+fn undecided_reason_text(reason: UndecidedReason) -> String {
+  case reason {
+    DefinitionDropped -> "definition dropped for the other build target"
+    FunctionSkipped(bucket:) -> "function skipped: " <> bucket
+    NoResolutionAtSpan -> "no reference recorded at this span"
+    ReceiverTypeUnknown -> "receiver type not fixed at the access"
+    NotACallTarget(kind:) -> "not a call target: " <> kind
+    ReceiverNotNominal -> "receiver type is not nominal"
+  }
+}
+
 pub fn format_call_explanation(explanation: CallExplanation) -> String {
   let kind = call_kind(explanation.call)
   let unresolved = types.contains_unknown(explanation.actual)

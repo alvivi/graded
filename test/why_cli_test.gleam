@@ -26,6 +26,10 @@ fn lines(output: String) -> List(String) {
 }
 
 pub fn explains_a_checked_function_test() {
+  // The typed resolutions follow the block, once for the body: two agreeing
+  // module calls, which only the resolution girard reported can name — the
+  // contributor lines above name the same two functions, but from graded's own
+  // reading of them.
   why("impure_view.view")
   |> lines
   |> should.equal([
@@ -33,6 +37,44 @@ pub fn explains_a_checked_function_test() {
     "declared check impure_view.view : []",
     "  calls gleam/io.println with effects [Stdout] (from gleam_stdlib's catalog entry)",
     "  calls gleam/list.map with effects [] (from a module-level `assume` in gleam_stdlib's catalog entry)",
+    "",
+    "typed resolutions",
+    "  io.println: typed resolution module gleam/io.println (agrees)",
+    "  list.map: typed resolution module gleam/list.map (agrees)",
+  ])
+}
+
+pub fn explains_an_agreeing_field_call_test() {
+  // The other agreeing polarity: girard proves the record's own field, graded
+  // reads it as one too. Only the typed resolution can name the member —
+  // `field Client.send` — which the contributor line, keyed by receiver rather
+  // than by type, does not say.
+  why("field_module_collision.simple_alias")
+  |> lines
+  |> should.equal([
+    "field_module_collision.simple_alias has effects [Net]",
+    "declared check field_module_collision.simple_alias : []",
+    "  calls field `send` on `c` with effects [Net] (from a field `assume` in your spec)",
+    "",
+    "typed resolutions",
+    "  list.send: typed resolution field Client.send (agrees)",
+  ])
+}
+
+pub fn explains_a_compatible_wired_value_test() {
+  // The two name different halves of one site and neither is wrong: girard
+  // names the member the access reaches, graded the value the construction site
+  // wired into it. The line states both, so a reader can see it is a pair and
+  // not a contradiction.
+  why("validator_flow.run")
+  |> lines
+  |> should.equal([
+    "validator_flow.run has effects [Stdout]",
+    "declared check validator_flow.run : []",
+    "  calls gleam/io.println with effects [Stdout] (from gleam_stdlib's catalog entry)",
+    "",
+    "typed resolutions",
+    "  v.to_error: typed resolution field Validator.to_error (compatible; graded charged the wired gleam/io.println)",
   ])
 }
 
@@ -40,6 +82,10 @@ pub fn explains_a_function_without_a_check_line_test() {
   // Nothing to declare, so the block is the header and its contributors. The
   // target calls one helper twice: both calls collect that helper's single site
   // identically, and the one line here is the collapse of the pair.
+  //
+  // No typed-resolution block either: the body's only call is a bare name, and
+  // the helper's own `io.println` is lexically the helper's — one `why` on it
+  // away, and not carried up here.
   let output = why("why_target.calls_helper_twice")
   string.contains(output, "declared") |> should.be_false()
   output
@@ -71,6 +117,9 @@ pub fn explains_a_private_function_test() {
   |> should.equal([
     "transitive.helper has effects [Stdout]",
     "  calls gleam/io.println with effects [Stdout] (from gleam_stdlib's catalog entry)",
+    "",
+    "typed resolutions",
+    "  io.println: typed resolution module gleam/io.println (agrees)",
   ])
   graded.run_effect(fixtures, "transitive.helper") |> should.be_error()
 }
@@ -448,5 +497,9 @@ pub fn explains_a_shadowed_receiver_as_a_module_call_test() {
     "declared check shadow_receiver.shadowed : [Stdout]",
     "  calls gleam/result.try with effects [] (from a module-level `assume` in gleam_stdlib's catalog entry)",
     "  calls gleam/io.println with effects [Stdout] (from gleam_stdlib's catalog entry)",
+    "",
+    "typed resolutions",
+    "  result.try: typed resolution module gleam/result.try (agrees)",
+    "  io.println: typed resolution module gleam/io.println (agrees)",
   ])
 }

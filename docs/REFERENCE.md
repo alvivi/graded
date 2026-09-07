@@ -1125,6 +1125,30 @@ Two things about the contributor list are worth knowing:
   prints a block for each, in spec-file order. With no `check` line there is a
   single block, analysed with no bounds.
 
+After the blocks, a **typed resolutions** section lists every `name.label(args)`
+in the function's own body that could be read as either a module call or a field
+call, with what the type inference resolved it to beside what graded charged it
+as:
+
+```
+typed resolutions
+  io.println: typed resolution module gleam/io.println (agrees)
+  v.to_error: typed resolution field Validator.to_error (compatible; graded charged the wired gleam/io.println)
+```
+
+`agrees` is the common case. `compatible` means the two name different halves of
+one site and neither is wrong — most often, graded resolved the field at its
+construction site and charged the value wired in, where the type inference names
+the member the access reaches. `DISAGREES` means one read the module where the
+other read the field, which is worth reporting. A line reading `no typed
+resolution` names why there was none — the enclosing definition was dropped for
+the other build target, or the inference declined it.
+
+The section covers the named function's own body only. A contributor reached
+through a same-module call is one `why` on that callee away, and its resolutions
+belong to its own body. Nothing here changes a charge: the resolutions are
+reported beside graded's answer, never in place of it.
+
 ## Effect catalog
 
 graded ships versioned catalog files for common Gleam packages, so you get effect

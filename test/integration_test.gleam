@@ -14855,6 +14855,75 @@ pub fn the_collision_fixtures_never_read_the_module_test() {
   })
 }
 
+pub fn a_definition_dropped_for_the_other_target_has_no_typed_evidence_test() {
+  // Gleam compiles a whole build for one target, and girard takes one per run,
+  // so an Erlang-target package's `@target(javascript)` definitions are left
+  // out — reported as dropped rather than silently absent, which is what tells
+  // "girard never walked this" apart from "girard walked it and said nothing".
+  let root = "build/dropped_target_erlang"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"app\"\n"),
+    #(
+      "src/app.gleam",
+      "import gleam/io
+
+@target(javascript)
+pub fn browser_only() -> Nil {
+  io.println(\"hi\")
+}
+
+pub fn everywhere() -> Nil {
+  io.println(\"hi\")
+}
+",
+    ),
+  ])
+  let assert Ok(checks) = graded.classification_checks(root)
+  relation_of(checks, "browser_only")
+  |> should.equal(Ok(types.NoTypedEvidence(types.DefinitionDropped)))
+  relation_of(checks, "everywhere") |> should.equal(Ok(types.Agree))
+  support.cleanup(root)
+}
+
+pub fn a_javascript_target_package_types_its_javascript_definitions_test() {
+  // The same module under a package that names JavaScript: girard is run on
+  // that target, so the definition is in the build and typed like any other,
+  // and it is the Erlang-only one that is dropped.
+  let root = "build/dropped_target_javascript"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"app\"\ntarget = \"javascript\"\n"),
+    #(
+      "src/app.gleam",
+      "import gleam/io
+
+@target(javascript)
+pub fn browser_only() -> Nil {
+  io.println(\"hi\")
+}
+
+@target(erlang)
+pub fn beam_only() -> Nil {
+  io.println(\"hi\")
+}
+",
+    ),
+  ])
+  let assert Ok(checks) = graded.classification_checks(root)
+  relation_of(checks, "browser_only") |> should.equal(Ok(types.Agree))
+  relation_of(checks, "beam_only")
+  |> should.equal(Ok(types.NoTypedEvidence(types.DefinitionDropped)))
+  support.cleanup(root)
+}
+
+// The relation of the one row `function` records.
+fn relation_of(
+  checks: List(types.ClassificationCheck),
+  function: String,
+) -> Result(types.Relation, Nil) {
+  list.find(checks, fn(check) { check.function == function })
+  |> result.map(fn(check) { check.relation })
+}
+
 pub fn every_ambiguous_call_is_classified_once_test() {
   // A function reached from several callers is walked by the classification
   // pass as itself and nowhere else, so no site is counted twice. Spans are
