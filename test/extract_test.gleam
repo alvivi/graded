@@ -2297,3 +2297,83 @@ pub fn target(list: Client) -> Nil {
   access_span_names_the_access(src, first)
   access_span_names_the_access(src, second)
 }
+
+// The lowered field call's own access span
+//
+// A `FieldCall` carries the access span so the checker can ask girard what the
+// site resolved to. It is the same span the row records, on every shape a
+// field call is written in.
+
+// The one `FieldCall` and the one ambiguous row `target` produces.
+fn one_field_call(src: String) -> #(types.FieldCall, extract.AmbiguousCall) {
+  let result = parse_and_extract_function(src)
+  let assert [call] = result.field
+  let assert [row] = result.ambiguous
+  #(call, row)
+}
+
+// The call's access span is the row's, and it cuts out the access text.
+fn field_call_access_matches(src: String) -> Nil {
+  let #(call, row) = one_field_call(src)
+  call.access_span |> should.equal(row.site.access_span)
+  sliced(src, call.access_span)
+  |> should.equal(row.site.object <> "." <> call.label)
+  Nil
+}
+
+pub fn a_direct_field_calls_access_span_is_the_rows_test() {
+  field_call_access_matches(
+    "pub type Client {
+  Live(send: fn(String) -> Nil)
+  Dead(n: Int)
+}
+
+pub fn target(client: Client) -> Nil {
+  client.send(\"hi\")
+}",
+  )
+}
+
+pub fn a_nested_field_calls_access_span_is_the_rows_test() {
+  field_call_access_matches(
+    "pub type Inner {
+  Inner(run: fn() -> Nil)
+}
+
+pub type Outer {
+  Outer(inner: Inner)
+}
+
+pub fn target(o: Outer) -> Nil {
+  o.inner.run()
+}",
+  )
+}
+
+pub fn a_piped_field_calls_access_span_is_the_rows_test() {
+  field_call_access_matches(
+    "pub type Client {
+  Live(send: fn(String) -> Nil)
+  Dead(n: Int)
+}
+
+pub fn target(client: Client) -> Nil {
+  \"hi\" |> client.send
+}",
+  )
+}
+
+pub fn a_use_field_calls_access_span_is_the_rows_test() {
+  field_call_access_matches(
+    "pub type Runner {
+  Runner(each: fn(fn(Int) -> Nil) -> Nil)
+  Empty(n: Int)
+}
+
+pub fn target(runner: Runner) -> Nil {
+  use v <- runner.each
+  echo v
+  Nil
+}",
+  )
+}
