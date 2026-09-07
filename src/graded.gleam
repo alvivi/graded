@@ -4186,6 +4186,7 @@ fn enrich_with_path_deps(
         case
           infer_path_dep(
             resolved_dep_path,
+            package_root,
             kb,
             consumer_modules,
             package_targets,
@@ -4251,6 +4252,50 @@ fn fold_inferred_into_kb(
   |> effects.with_fresh_returned_operators(returns, lookup_origin)
 }
 
+// Every module of a path dependency's `src/` tree, keyed the way the type index
+// and the effect inference both read it: module path -> #(source file, parsed
+// module). A file that does not parse is left out, as it is for the project.
+@internal
+pub fn path_dep_index(
+  dep_path: String,
+) -> Dict(String, #(String, glance.Module)) {
+  let source_dir = dep_path <> "/src"
+  let gleam_files = case simplifile.get_files(source_dir) {
+    Ok(found) ->
+      list.filter(found, fn(path) { string.ends_with(path, ".gleam") })
+    Error(_) -> []
+  }
+  list.filter_map(gleam_files, fn(gleam_path) {
+    use module <- result.map(
+      read_and_parse_gleam(gleam_path) |> result.map_error(fn(_) { Nil }),
+    )
+    #(
+      config.module_path_for_source(gleam_path, source_dir),
+      #(gleam_path, module),
+    )
+  })
+  |> dict.from_list()
+}
+
+// girard's reading of a path dependency, built exactly as the project's is.
+// The resolver is seeded with the *consumer's* package root: a dep resolves its
+// own modules from `dep_index` and everything else — the packages it and the
+// consumer share — from the consumer's `build/packages`, which is the one tree
+// Gleam installs for both. Without it girard could not type a dep function
+// whose signature names a dependency type, and every shadowed receiver in the
+// dep would read `[Unknown]`.
+//
+// Exposed (pub) so a test can ask what girard read of a dep directly, rather
+// than inferring it from a charge.
+@internal
+pub fn path_dep_type_info(
+  dep_index: Dict(String, #(String, glance.Module)),
+  package_root: String,
+  package_targets: types.PackageTargets,
+) -> typeinfo.TypeInfo {
+  build_type_index(dep_index, package_root, package_targets)
+}
+
 /// Build the dependency-graph index for a single path dep, topo-sort it,
 /// then infer every module in dependency order. Returns the union of all
 /// inferred effects, polymorphic param bounds, returned-operator signatures,
@@ -4269,6 +4314,7 @@ fn fold_inferred_into_kb(
 @internal
 pub fn infer_path_dep(
   dep_path: String,
+  package_root: String,
   base_kb: KnowledgeBase,
   consumer_modules: Set(String),
   package_targets: types.PackageTargets,
@@ -4281,29 +4327,19 @@ pub fn infer_path_dep(
   ),
   Nil,
 ) {
-  let source_dir = dep_path <> "/src"
-  let gleam_files = case simplifile.get_files(source_dir) {
-    Ok(found) ->
-      list.filter(found, fn(path) { string.ends_with(path, ".gleam") })
-    Error(_) -> []
-  }
+  let index_with_paths = path_dep_index(dep_path)
+  // girard's reading of the dep, resolved from the consumer's tree — the one
+  // place a dep's own imports of installed packages can be found.
+  let type_info =
+    path_dep_type_info(index_with_paths, package_root, package_targets)
 
-  let entries =
-    list.filter_map(gleam_files, fn(gleam_path) {
-      use module <- result.try(
-        read_and_parse_gleam(gleam_path) |> result.map_error(fn(_) { Nil }),
-      )
-      let module_path = config.module_path_for_source(gleam_path, source_dir)
-      // Path-dep checks come from the dep's spec file (loaded by
-      // enrich_with_path_deps), not from per-module files. Inference here
-      // only needs the parsed module.
-      Ok(#(module_path, module, []))
-    })
-
+  // Path-dep checks come from the dep's spec file (loaded by
+  // enrich_with_path_deps), not from per-module files. Inference here only
+  // needs the parsed module.
   let index =
-    list.fold(entries, dict.new(), fn(acc, entry) {
-      let #(module_path, module, checks) = entry
-      dict.insert(acc, module_path, #(module, checks))
+    dict.map_values(index_with_paths, fn(_module_path, entry) {
+      let #(_gleam_path, module) = entry
+      #(module, [])
     })
 
   let graph =
@@ -4342,6 +4378,7 @@ pub fn infer_path_dep(
           module_path,
           index,
           registry,
+          type_info,
           consumer_modules,
           origin,
           package_targets,
@@ -4362,6 +4399,7 @@ fn infer_path_dep_module(
   module_path: String,
   index: Dict(String, #(glance.Module, List(types.EffectAnnotation))),
   registry: SignatureRegistry,
+  type_info: typeinfo.TypeInfo,
   consumer_modules: Set(String),
   lookup_origin: types.LookupOrigin,
   package_targets: types.PackageTargets,
@@ -4376,7 +4414,6 @@ fn infer_path_dep_module(
   case dict.get(index, module_path) {
     Error(_) -> state
     Ok(#(module, checks)) -> {
-      // Path-dep inference skips girard in v1 (cost/benefit): pass no types.
       let #(annotations, returned_operators, provenance) =
         checker.infer_with_returns(
           module,
@@ -4384,8 +4421,8 @@ fn infer_path_dep_module(
           kb,
           checks,
           registry,
-          typeinfo.no_reading(),
-          dict.new(),
+          typeinfo.reading_for_module(type_info, module_path),
+          typeinfo.fn_typed_for_module(type_info, module_path),
           package_targets,
         )
       // Qualify the module's results once, then both fold them into the dep's

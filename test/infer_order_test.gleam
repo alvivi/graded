@@ -1142,7 +1142,13 @@ pub fn run(value: String) -> Nil {
     )
 
   let assert Ok(#(inferred, _params, _returns, _provenance)) =
-    graded.infer_path_dep(dep_path, base_kb, set.new(), types.all_targets())
+    graded.infer_path_dep(
+      dep_path,
+      dep_path,
+      base_kb,
+      set.new(),
+      types.all_targets(),
+    )
 
   let assert Ok(d_effects) =
     dict.get(inferred, QualifiedName(module: "dep/d", function: "shout"))

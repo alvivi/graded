@@ -14502,8 +14502,112 @@ pub fn shadowed(result: Thing, r: Result(Int, Nil)) -> Result(Int, Nil) {
   support.cleanup(root)
 }
 
-// A path dependency's own source, inferred with no girard types at all — the
-// syntactic annotation is the only evidence there is.
+// girard over a path dependency
+//
+// A path dependency is typed from the *consumer's* tree: its own modules come
+// from its own index, and everything else from the consumer's
+// `build/packages`, which is the one place Gleam installs what the two share.
+// The fixture below is written so that middle lookup is the only one that can
+// answer — the module the dep calls into exists nowhere else, so girard cannot
+// type the dep at all without it.
+
+// The dep's module, in the shape a shadowed receiver takes in the wild: a
+// parameter named after a sibling module, a call through it that is the
+// module's, and a value from a package only the consumer installs flowing into
+// that call.
+const typed_path_dep_source = "import dep/request.{type Request}
+import graded_only_here/thing
+
+pub fn handle(request: Request) -> String {
+  request.path(request, thing.suffix())
+}
+"
+
+// The sibling module the receiver's name shadows. `path` is the module
+// function the call resolves to; `Request` declares no such field.
+const typed_path_dep_request = "import gleam/io
+
+pub type Request {
+  Request(body: String)
+}
+
+pub fn path(request: Request, suffix: String) -> String {
+  io.println(request.body)
+  request.body <> suffix
+}
+"
+
+// The package that exists only under the consumer's `build/packages`: not in
+// the dep's index, and nowhere on the process cwd's own tree.
+const consumer_only_package = "pub fn suffix() -> String {
+  \"!\"
+}
+"
+
+// The consumer and the path dependency it declares, materialised together.
+fn typed_path_dep_fixture() -> #(String, String) {
+  let dep_root =
+    support.write_fixture("build/typed_path_dep_dep", [
+      #("gleam.toml", "name = \"dep\"\n"),
+      #("manifest.toml", stdlib_manifest),
+      #("src/dep.gleam", typed_path_dep_source),
+      #("src/dep/request.gleam", typed_path_dep_request),
+    ])
+  let app_root =
+    support.write_fixture("build/typed_path_dep_app", [
+      #(
+        "gleam.toml",
+        "name = \"app\"\n\n[dependencies]\ndep = { path = \"../typed_path_dep_dep\" }\n",
+      ),
+      #("manifest.toml", stdlib_manifest),
+      #("app.gleam", "import dep\n\npub fn caller() -> Nil {\n  Nil\n}\n"),
+      // The consumer-only package's own budget, so the only [Unknown] the
+      // charge could carry is one the shadowed call left.
+      #("app.graded", "assume graded_only_here/thing.suffix : []\n"),
+      #(
+        "build/packages/graded_only_here/src/graded_only_here/thing.gleam",
+        consumer_only_package,
+      ),
+    ])
+  #(app_root, dep_root)
+}
+
+pub fn girard_types_a_path_dependency_from_the_consumers_tree_test() {
+  let #(app_root, dep_root) = typed_path_dep_fixture()
+  let type_info =
+    graded.path_dep_type_info(
+      graded.path_dep_index(dep_root),
+      app_root,
+      types.all_targets(),
+    )
+  let reading = typeinfo.reading_for_module(type_info, "dep")
+  // girard typed the function: it declined nothing, which it could not have
+  // done without resolving `graded_only_here/thing` through the consumer.
+  reading.evidence.skipped |> should.equal(dict.new())
+  let assert Ok(#(before, _after)) =
+    string.split_once(typed_path_dep_source, "request.path")
+  let start = string.byte_size(before)
+  typeinfo.resolution_at(
+    reading.evidence.resolutions,
+    start,
+    start + string.byte_size("request.path"),
+  )
+  |> should.equal(Some(girard.ModuleFn("dep/request", "path")))
+  support.cleanup(app_root)
+  support.cleanup(dep_root)
+}
+
+pub fn a_typed_path_dependencys_module_call_is_charged_test() {
+  let #(app_root, dep_root) = typed_path_dep_fixture()
+  let assert Ok(answered) = graded.run_effect(app_root, "dep.handle")
+  answered |> string.contains("Stdout") |> should.be_true()
+  answered |> string.contains("Unknown") |> should.be_false()
+  support.cleanup(app_root)
+  support.cleanup(dep_root)
+}
+
+// A path dependency's own source, inferred through the consumer that declares
+// it — girard reads the dep the way it reads the project.
 fn path_dep_effect_line(
   name: String,
   dep_source: String,
@@ -14533,8 +14637,8 @@ fn path_dep_effect_line(
 }
 
 pub fn a_path_dependency_annotated_receiver_reads_as_the_module_test() {
-  // Path-dependency inference is handed empty type maps, so the annotation is
-  // the whole answer — and it must reclassify there exactly as in the project.
+  // A shadowed receiver in a path dependency reclassifies exactly as one in the
+  // project: `Thing` declares no `each`, so the call is `gleam/list.each`.
   path_dep_effect_line(
     "shadow_path_dep",
     "import gleam/io
@@ -14608,7 +14712,7 @@ pub fn shadowed(list: Identity(Runner)) -> String {
 ",
     "shadowed",
   )
-  |> string.contains("effects dep.shadowed : [Unknown]")
+  |> string.contains("effects dep.shadowed(list.map: [list.map]) : [list.map]")
   |> should.be_true()
 }
 

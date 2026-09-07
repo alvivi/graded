@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A path dependency inferred from its source is now typed by the type inference
+  the way the project is, resolved from the consuming project's installed
+  packages. A receiver whose type only inference knows now resolves inside a
+  path dependency too, so a call it used to charge `[Unknown]` is charged what
+  the field or the module answers, and the higher-order parameters it now sees
+  sharpen the dependency's own inference.
 - girard 3.0.0 or later is required: the typed resolutions `graded why` prints
   are read from the reference resolutions it reports.
 - A field call whose receiver is an alias of a narrowed value, or is bound
