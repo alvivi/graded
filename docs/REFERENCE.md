@@ -1142,12 +1142,25 @@ construction site and charged the value wired in, where the type inference names
 the member the access reaches. `DISAGREES` means one read the module where the
 other read the field, which is worth reporting. A line reading `no typed
 resolution` names why there was none — the enclosing definition was dropped for
-the other build target, or the inference declined it.
+the other build target, the inference declined the function, nothing was
+recorded at the site, or what was recorded is not this site's target.
 
 The section covers the named function's own body only. A contributor reached
 through a same-module call is one `why` on that callee away, and its resolutions
-belong to its own body. Nothing here changes a charge: the resolutions are
-reported beside graded's answer, never in place of it.
+belong to its own body.
+
+For most rows nothing here changes a charge: the resolution is reported beside
+graded's answer, never in place of it. The exception is a call whose receiver
+also names a module *and* whose reading extraction could not settle lexically —
+there the resolution shown is what decides whether the call is charged as the
+module or as the field, and it decides so only where it names exactly the site's
+module and function, or the site's field on a nominal receiver. Where it names
+something else, or nothing was established, the call is charged `[Unknown]` and
+the line says why; such a row reads `decided by the type inference` rather than
+`agrees`, since the two halves are one answer stated twice. A call extraction
+settled on its own — a receiver the scope does not bind, a closure or a complete
+construction, a wired field value — is charged from that proof, and the
+resolution is reported beside it (the `compatible` rows are these).
 
 ## Effect catalog
 

@@ -12,6 +12,13 @@
 // a pure enhancement layer (it can only ever upgrade an `[Unknown]`, never
 // change an already-resolved result).
 //
+// The one exception is a call through a name that shadows an imported module.
+// Which of the two the compiler reads is *decided* by girard's resolution of
+// that access, and the call reads `[Unknown]` wherever that resolution
+// establishes neither reading: it recorded nothing, recorded an explicit
+// unresolved, recorded something that is not a module function or a nominal
+// record field, or recorded a target whose identity is not the site's.
+//
 // Beside the types, girard's own reading of each reference is retained: which
 // member a field access or a bare callee resolved to, which definitions it
 // declined to type, and which it left out for the other build target. Those

@@ -484,7 +484,69 @@ is actually built, or leave the field out. A package that declares no `target` i
 read as compiled for both, which charges a declaration and its running fallback
 body alike rather than deciding either away.
 
-## 7. A `check` graded could not prove
+## 7. A call through a name that shadows an imported module
+
+A parameter or local named after an imported module (`fn handle(request:
+Request)` beside `import wisp/request`) makes `request.path(..)` two possible
+calls: the module's function, or a `path` field on the record. Gleam reads the
+module wherever the receiver's type grants no record accessor for the label, and
+the field wherever it does — so which one it is depends on a type, not on the
+text.
+
+graded takes that reading from the type inference's own resolution of the
+access, which is the compiler's rule already applied. The call is the module's
+where the resolution names exactly the module the receiver's name shadows and
+the accessed label, and the field's where it names that label on a receiver with
+a nominal type.
+
+Where the resolution establishes neither, the call charges `[Unknown]` rather
+than guessing, and `graded check` and `graded why` name the reason:
+
+| reason | what happened |
+|---|---|
+| definition dropped for the other build target | The definition is `@target`-gated for the target this package is *not* typed on, so nothing in it was walked. |
+| function skipped | The inference declined the enclosing function (its error bucket is named). A function it cannot type is one no reading of this site exists for. |
+| no reference recorded at this span | The function was typed, but nothing was recorded at the access. |
+| receiver type not fixed at the access | The receiver's type was settled only after the access, so the member was never named. |
+| not a call target | The access resolved to a module constant, a constructor or a local binding — none of which the knowledge base has an entry for. |
+| receiver type is not nominal | A field on a type with no nominal identity, which nothing can be keyed by. |
+| resolved to `X`, which is not this site's target | A target was proved, but under another module, another function or another label than the site names. Expected at no site; one is worth reporting. |
+
+```gleam
+import gleam/io
+
+pub type Logger {
+  Loud(println: fn(String) -> Nil)
+  Quiet(n: Int)
+}
+
+@target(javascript)
+pub fn dropped(io: Logger) -> Nil {
+  io.println("hi")               // [Unknown]: definition dropped for the
+}                                // other build target
+```
+
+The first two are the structural ones — a package naming both targets is typed
+on one of them, and a function the inference declines takes every shadowed call
+in it with it.
+
+**How to avoid it** — rename the binding, which removes the ambiguity outright
+and is what the compiler's own reading depends on not needing. Failing that, a
+field `check` bound naming the field asserts that this *is* the field call and
+what it costs:
+
+```
+check m.dropped(io.println: [Stdout]) : [Stdout]
+```
+
+Nothing weaker discharges it: the wiring a `type` line or a construction site
+would supply is the very reading in doubt.
+
+A path dependency is typed the same way — from the consuming project's installed
+packages — so a shadowed receiver inside one reads exactly as it would in the
+project.
+
+## 8. A `check` graded could not prove
 
 The sections above are about *resolution* falling back to `[Unknown]`. A `check`
 has a second failure mode: it asserts something graded could not decide either
