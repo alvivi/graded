@@ -706,25 +706,13 @@ pub type FieldCall {
     access_span: Span,
     provenance: FieldCallProvenance,
     // The module the receiver's name also imports, where the name shadows one
-    // and extraction could not prove the binding's type lacks `label`. The
-    // compiler reads that module wherever the receiver's type grants no
-    // accessor for the label, so the checker re-reads the call as a call to
-    // `<module>.<label>` once it knows the type. `None` on every unshadowed
-    // field call, and on one whose receiver provably has the field.
+    // and extraction could not prove the binding's type lacks `label`. Which
+    // of the two the compiler reads is decided by the type inference's own
+    // resolution of the access, so the checker re-reads the call there. `None`
+    // on every unshadowed field call, and on one whose receiver provably has
+    // the field.
     shadowed_module: Option(String),
-    // Whether a pattern or a construction fixed which variant the receiver
-    // holds. Read only alongside `shadowed_module`, since it decides which
-    // labels of the receiver's type count as accessors there.
-    receiver_narrowing: ReceiverNarrowing,
   )
-}
-
-// Whether a field call's receiver is known to hold one particular variant of
-// its type. Which labels of that type count as accessors follows from it, and
-// is stated where the reading is taken.
-pub type ReceiverNarrowing {
-  UnnarrowedReceiver
-  PossiblyNarrowedReceiver
 }
 
 // What extraction proved about a field call's receiver, driving the checker's
