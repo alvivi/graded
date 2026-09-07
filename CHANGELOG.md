@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A call through a receiver that shadows an imported module, whose variant
+  nothing fixed and whose type is unknown, now charges `[Unknown]` instead of
+  the value its construction site wired in. Neither reading is established
+  there — the label may be an accessor of the whole type or of one variant, and
+  with no type nothing says which — so charging the wired value could report a
+  body pure that calls the module. Where the type is known, and it is wherever
+  girard types the enclosing function, nothing changes.
 - A call through an un-narrowed call result named after an imported module,
   whose label sits on one variant of the receiver's type only, is now charged
   as the module call the compiler emits. Such a body — `let io = make_logger()`

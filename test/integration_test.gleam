@@ -8909,6 +8909,38 @@ pub fn girard_types_sharpen_a_call_the_syntax_path_cannot_trace_test() {
   |> should.equal(Ok("effects via_type : [Disk]"))
 }
 
+pub fn an_untyped_shadowed_call_result_charges_unknown_test() {
+  // The one charge that turns on whether girard answered. `io` is a call result
+  // named after `gleam/io`, and `println` sits on one of `Logger`'s two
+  // variants: typed, the variant rule sends the call to the module and the body
+  // prints; untyped, neither reading is established, so the call charges
+  // [Unknown] instead of grounding through `make_logger`'s wiring to the pure
+  // `quiet_print`. Compiling the fixture emits `gleam_stdlib:println`, so
+  // [Stdout] is the compiler's own answer and [Unknown] the sound
+  // approximation of it.
+  infer_fixture(
+    module: "shadow_receiver",
+    spec: shadow_receiver_spec,
+    with_types: True,
+  )
+  |> list.key_find("logger_call_result")
+  |> should.equal(Ok("effects logger_call_result : [Stdout]"))
+
+  infer_fixture(
+    module: "shadow_receiver",
+    spec: shadow_receiver_spec,
+    with_types: False,
+  )
+  |> list.key_find("logger_call_result")
+  |> should.equal(Ok("effects logger_call_result : [Unknown]"))
+}
+
+// The declarations `shadow_receiver` needs: the module its receivers are named
+// after, and the field budget the record's own reading would answer with.
+const shadow_receiver_spec = "assume gleam/io.println : [Stdout]
+assume shadow_receiver.Logger.println : [Stdout]
+"
+
 // The declarations `field_module_collision` needs, and nothing else: the pure
 // module its receivers are named after, the effectful function its
 // constructions wire, and the field's own budget.

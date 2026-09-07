@@ -40,11 +40,11 @@ pub fn logger_param(io: Logger) -> Int {
 }
 
 // A call result is un-narrowed too, and the compiler reads the module through
-// it — but no type reaches this receiver: girard records one only where it
-// reads the call as a field, and the written annotation answers only for the
-// parameter of the receiver's own name. So the call stays a field here and
-// grounds to the pure function `make_logger` wired, which is the undercharge
-// this shape still carries.
+// it. girard types the receiver, so the variant rule reaches the same reading.
+// With no type for the receiver neither reading is established — `println` is
+// on one variant only, and nothing says which variant this call result holds —
+// so the call charges [Unknown] rather than grounding to the pure function
+// `make_logger` wired.
 pub fn logger_call_result() -> Int {
   let io = make_logger()
   io.println("hi")
