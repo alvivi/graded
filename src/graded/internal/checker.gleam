@@ -4688,19 +4688,14 @@ fn collect_effects(
   // split could establish on its own. Nothing weaker discharges it — the wiring
   // a `type` line or a construction site would supply is the reading in doubt.
   let undecided_effects =
-    list.map(undecided, fn(call) {
-      let resolution = case
-        list.find(param_bounds, fn(bound) {
-          bound.name == field_call_target(call)
-        })
-      {
-        Ok(bound) -> plain_resolution(bound.effects)
-        Error(Nil) ->
+    list.map(undecided, fn(entry) {
+      let UndecidedShadowedCall(call:, shadowed:) = entry
+      let resolution = case field_bound_resolution(call, param_bounds) {
+        Some(resolution) -> resolution
+        None ->
           Resolution(
             term: effect_term.unknown(),
-            reason: Some(
-              AmbiguousShadowedReceiver(option.unwrap(call.shadowed_module, "")),
-            ),
+            reason: Some(AmbiguousShadowedReceiver(shadowed)),
             origin: None,
             fallback: types.NoFallback,
           )
@@ -8417,6 +8412,21 @@ fn declared_type_field_keys(
   }
 }
 
+// Rule 2 wherever a field call is charged: a hand-written field bound on the
+// enclosing `check` line (`check f(recv.field: [..])`). User-declared, so it
+// wins over the `type` line and the param fallback, and its effects answer
+// verbatim — a concrete effect set, no call-site substitution.
+fn field_bound_resolution(
+  field_call: types.FieldCall,
+  param_bounds: List(ParamBound),
+) -> Option(Resolution) {
+  let target = field_call_target(field_call)
+  case list.find(param_bounds, fn(bound) { bound.name == target }) {
+    Ok(bound) -> Some(plain_resolution(bound.effects))
+    Error(Nil) -> None
+  }
+}
+
 fn resolve_unproven_field(
   field_call: types.FieldCall,
   function: Function,
@@ -8434,14 +8444,9 @@ fn resolve_unproven_field(
   // through the parameter it stands for — so bound matching, `type`-line lookup,
   // and the field variable all key on the path the bare parameter would use.
   let receiver_object = field_call_receiver(field_call)
-  // Rule 2: a hand-written field bound on the enclosing `check` line
-  // (`check f(recv.field: [..])`). User-declared, so it wins over the `type`
-  // line and the param fallback. The bound's effects are returned verbatim — a
-  // concrete effect set, no call-site substitution.
-  let field_target = field_call_target(field_call)
-  case list.find(caller_param_bounds, fn(b) { b.name == field_target }) {
-    Ok(bound) -> #(plain_resolution(bound.effects), memo)
-    Error(Nil) -> {
+  case field_bound_resolution(field_call, caller_param_bounds) {
+    Some(resolution) -> #(resolution, memo)
+    None -> {
       let receiver_type =
         typeinfo.receiver_type(
           module_types,
@@ -8939,12 +8944,8 @@ pub fn classify_definition(
       dict.insert(acc, extract.span_key(call.span), call.name.module)
     })
   let undecided =
-    list.fold(split.undecided, dict.new(), fn(acc, call) {
-      dict.insert(
-        acc,
-        extract.span_key(call.span),
-        option.unwrap(call.shadowed_module, ""),
-      )
+    list.fold(split.undecided, dict.new(), fn(acc, entry) {
+      dict.insert(acc, extract.span_key(entry.call.span), entry.shadowed)
     })
   list.map(result.ambiguous, fn(row) {
     let graded = graded_classification(row, moved, undecided)
@@ -9048,7 +9049,7 @@ type ReceiverShape {
 type ShadowedReading {
   ReadsTheModule(module: String)
   ReadsTheField
-  ReadsNeither
+  ReadsNeither(module: String)
 }
 
 // What the shadowed-receiver split makes of a module's field calls: the ones the
@@ -9070,8 +9071,16 @@ pub type ShadowedSplit {
   ShadowedSplit(
     module_reads: List(ResolvedCall),
     field_reads: List(types.FieldCall),
-    undecided: List(types.FieldCall),
+    undecided: List(UndecidedShadowedCall),
   )
+}
+
+// A field call neither reading is established for, with the module its
+// receiver's name shadows. `ReadsNeither` is reached under a shadowed receiver
+// and nowhere else, so the module is carried on the entry rather than read back
+// out of an `Option` that can no longer be empty.
+pub type UndecidedShadowedCall {
+  UndecidedShadowedCall(call: types.FieldCall, shadowed: String)
 }
 
 pub fn split_shadowed_field_calls(
@@ -9096,7 +9105,11 @@ pub fn split_shadowed_field_calls(
       ])
     ReadsTheField ->
       ShadowedSplit(..split, field_reads: [call, ..split.field_reads])
-    ReadsNeither -> ShadowedSplit(..split, undecided: [call, ..split.undecided])
+    ReadsNeither(module_path) ->
+      ShadowedSplit(..split, undecided: [
+        UndecidedShadowedCall(call:, shadowed: module_path),
+        ..split.undecided
+      ])
   }
 }
 
@@ -9124,7 +9137,7 @@ fn shadowed_module_read(
       case receiver_shape(call, context, module_types, cache, function) {
         UnknownReceiver ->
           case call.receiver_narrowing {
-            types.UnnarrowedReceiver -> ReadsNeither
+            types.UnnarrowedReceiver -> ReadsNeither(module_path)
             types.PossiblyNarrowedReceiver -> ReadsTheField
           }
         FieldlessReceiver -> ReadsTheModule(module_path)
