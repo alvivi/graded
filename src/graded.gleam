@@ -467,6 +467,18 @@ fn module_report(result: CheckResult) -> ModuleReport {
   )
 }
 
+// Every ambiguous call in the package, classified by graded and by girard and
+// the pair compared — `Agree` rows included, so a caller filters rather than
+// guesses what was left out. Spec-independent: the pass ignores the annotation
+// list, so a module with no `check` line contributes its rows like any other.
+@internal
+pub fn classification_checks(
+  directory: String,
+) -> Result(List(types.ClassificationCheck), GradedError) {
+  use results <- result.map(check_project(directory))
+  list.flat_map(results, fn(result) { result.classification_checks })
+}
+
 // The same run, keeping the structured results. `why` and graded's own tests
 // read the resolution behind a violation; a caller linking against the module
 // gets the rendered form, so the structured types stay free to change.
@@ -536,6 +548,7 @@ pub fn check_project(
           registry,
           typeinfo.for_module(type_info, module_path),
           typeinfo.fn_typed_for_module(type_info, module_path),
+          typeinfo.evidence_for_module(type_info, module_path),
           cfg.targets,
         )
       case dict.get(field_report.findings, gleam_path) {
@@ -557,7 +570,13 @@ pub fn check_project(
   let results = case spec_warnings, field_report.spec_findings {
     [], [] -> results
     warnings, findings -> [
-      CheckResult(file: cfg.spec_file, violations: [], findings:, warnings:),
+      CheckResult(
+        file: cfg.spec_file,
+        violations: [],
+        findings:,
+        warnings:,
+        classification_checks: [],
+      ),
       ..results
     ]
   }
@@ -1147,9 +1166,10 @@ fn check_one_file(
   registry: SignatureRegistry,
   module_types: Dict(#(Int, Int), girard.Type),
   girard_fn_typed: Dict(String, Set(String)),
+  evidence: typeinfo.ModuleEvidence,
   package_targets: types.PackageTargets,
 ) -> CheckResult {
-  let #(violations, findings, warnings) =
+  let #(violations, findings, warnings, classification_checks) =
     checker.check(
       module,
       module_path,
@@ -1158,9 +1178,16 @@ fn check_one_file(
       registry,
       module_types,
       girard_fn_typed,
+      evidence,
       package_targets,
     )
-  CheckResult(file: gleam_path, violations:, findings:, warnings:)
+  CheckResult(
+    file: gleam_path,
+    violations:,
+    findings:,
+    warnings:,
+    classification_checks:,
+  )
 }
 
 // Spec lint

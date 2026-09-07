@@ -21,19 +21,24 @@ import graded/internal/topo
 import graded/internal/typeinfo
 import graded/internal/types.{
   type CallExplanation, type CheckComponent, type CheckFinding,
-  type ConstructionSite, type EffectAnnotation, type EffectTerm, type LocalCall,
-  type LookupOrigin, type ParamBound, type QualifiedName, type ResolvedCall,
-  type ReturnedOperatorReason, type UnknownReason, type UnprovedCause,
-  type Violation, type Warning, AliasedBoundVariableWarning, CallExplanation,
-  DotlessReturnsClauseWarning, EffectAnnotation, Effects, FieldArityViolation,
-  FieldAssumeOrigin, FieldBoundList, FieldNotAnnotated, FieldReturnsClause,
-  FieldSiteViolation, NoKnownEffects, NoReturnAnnotation,
-  NonCallableFieldCheckWarning, NonCallableReturnViolation, ParamBound,
-  QualifiedName, ReceiverTypeUnresolved, RefusedDeclaredReturn,
-  ReturnIsNotAFunction, ReturnsClauseViolation, StaleFunctionAssumeWarning,
-  StaleReturnsClauseWarning, TUnion, TVar, UnboundAssumeTermVariableWarning,
-  UnbuiltExternal, UncalledFactory, UnclosedReturnsClauseWarning,
-  UnconstructedFieldCheckWarning, UndeclaredExternal, UndeclaredForeignReturn,
+  type ClassificationCheck, type ConstructionSite, type EffectAnnotation,
+  type EffectTerm, type GradedClassification, type LocalCall, type LookupOrigin,
+  type ParamBound, type QualifiedName, type Relation, type ResolvedCall,
+  type ReturnedOperatorReason, type TypedClassification, type UnknownReason,
+  type UnprovedCause, type Violation, type Warning, Agree,
+  AliasedBoundVariableWarning, CallExplanation, ClassificationCheck, Compatible,
+  DefinitionDropped, Disagree, DotlessReturnsClauseWarning, EffectAnnotation,
+  Effects, Field, FieldArityViolation, FieldAssumeOrigin, FieldBoundList,
+  FieldNotAnnotated, FieldReturnsClause, FieldSiteViolation, FunctionSkipped,
+  NoKnownEffects, NoResolutionAtSpan, NoReturnAnnotation, NoTypedEvidence,
+  NonCallableFieldCheckWarning, NonCallableReturnViolation, NotACallTarget,
+  ParamBound, ProvedFieldCall, ProvedModuleCall, QualifiedName,
+  ReceiverNotNominal, ReceiverTypeUnknown, ReceiverTypeUnresolved,
+  RefusedDeclaredReturn, ReturnIsNotAFunction, ReturnsClauseViolation,
+  StaleFunctionAssumeWarning, StaleReturnsClauseWarning, SyntaxModule, TUnion,
+  TVar, TypeSelectedModule, UnboundAssumeTermVariableWarning, UnbuiltExternal,
+  UncalledFactory, UnclosedReturnsClauseWarning, UnconstructedFieldCheckWarning,
+  Undecided, UndeclaredExternal, UndeclaredForeignReturn,
   UnderivableReturnedOperator, UngroundReturnsClauseWarning,
   UnkeyedEffectsShapeWarning, UnknownClauseWarning, UnmatchedCheckWarning,
   UnmatchedFieldAssumeWarning, UnmatchedFieldBoundWarning,
@@ -43,6 +48,8 @@ import graded/internal/types.{
   UnresolvedFieldValue, UnresolvedReturnTail, UnsupportedCheckComponent,
   UnsupportedFieldCheckWarning, UntraceableArgument, UntraceableProducer,
   UntraceableReceiver, UntracedFieldValue, UntrackedEffectWarning, Violation,
+  WiredConstructor, WiredFunction, WiredLocal, WiredValue,
+  WiredValueVersusMember,
 }
 
 // Entry points
@@ -63,8 +70,16 @@ pub fn check(
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
+  // girard's own reading of this module: recorded beside graded's for every
+  // ambiguous call, and charged for nothing.
+  evidence: typeinfo.ModuleEvidence,
   package_targets: types.PackageTargets,
-) -> #(List(Violation), List(CheckFinding), List(Warning)) {
+) -> #(
+  List(Violation),
+  List(CheckFinding),
+  List(Warning),
+  List(ClassificationCheck),
+) {
   let function_map = build_function_map(module)
   let ModuleContext(context:, cache:) =
     module_context(
@@ -95,7 +110,18 @@ pub fn check(
   let violations = list.flat_map(results, fn(r) { r.0 })
   let findings = list.flat_map(results, fn(r) { r.1 })
   let warnings = list.flat_map(results, fn(r) { r.2 })
-  #(violations, findings, warnings)
+  let classifications =
+    classify_module(
+      module,
+      module_path,
+      knowledge_base,
+      registry,
+      module_types,
+      girard_fn_typed,
+      evidence,
+      package_targets,
+    )
+  #(violations, findings, warnings, classifications)
 }
 
 // Infer the effect set for every public function in a module.
@@ -8647,31 +8673,6 @@ fn concretize(term: EffectTerm) -> EffectTerm {
 // after the receiver's type was fixed, and every resolution kind that is not a
 // call target all read `Undecided`, each keeping the reason it got there by.
 
-pub type TypedClassification {
-  ProvedModuleCall(module: String, name: String)
-  ProvedFieldCall(receiver: #(String, String), label: String)
-  Undecided(reason: UndecidedReason)
-}
-
-// Why girard's answer decides nothing at a site.
-pub type UndecidedReason {
-  // The enclosing definition was left out of the build for the other target, so
-  // nothing inside it was walked.
-  DefinitionDropped
-  // girard declined to type the enclosing definition, under this error bucket.
-  FunctionSkipped(bucket: String)
-  // girard walked the definition and recorded no reference at the span.
-  NoResolutionAtSpan
-  // girard fixed the receiver's type only after the access, so it typed the
-  // field without ever naming the member.
-  ReceiverTypeUnknown
-  // A resolution that is not a call target: a local binding, a constructor, or
-  // a module constant in callee position.
-  NotACallTarget(kind: String)
-  // A field of a type with no nominal identity, which nothing can be keyed by.
-  ReceiverNotNominal
-}
-
 // What girard resolved the reference at `access_span` to, inside `function`.
 //
 // The checks run in the order the absences nest: a dropped definition was never
@@ -8741,6 +8742,138 @@ pub fn error_bucket(error: girard.Error) -> String {
     girard.MissingArgument -> "MissingArgument"
     girard.Unsupported(feature) -> "Unsupported(" <> feature <> ")"
     girard.ParseFailed(..) -> "ParseFailed"
+  }
+}
+
+// The dual run
+//
+// Every ambiguous call in the module classified both ways and the pair
+// compared. A pass of its own beside `check`: it lowers no effect, recurses
+// into no callee and touches no memo, so a function three callers reach is
+// walked here once, as itself.
+
+// Classify every ambiguous call in every top-level definition of `module`,
+// whether or not a `check` line names one, and compare graded's answer with
+// girard's.
+pub fn classify_module(
+  module: Module,
+  module_path: String,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  girard_fn_typed: dict.Dict(String, Set(String)),
+  evidence: typeinfo.ModuleEvidence,
+  package_targets: types.PackageTargets,
+) -> List(ClassificationCheck) {
+  let ModuleContext(context:, cache:) =
+    module_context(
+      module,
+      module_path,
+      knowledge_base,
+      girard_fn_typed,
+      package_targets,
+    )
+  list.flat_map(module.functions, fn(definition) {
+    classify_definition(
+      definition.definition,
+      module_path,
+      registry,
+      context,
+      module_types,
+      cache,
+      evidence,
+    )
+  })
+}
+
+// One definition's rows. The body is extracted once, its ambiguous calls read
+// off the result, and the shadowed split run over the same field calls
+// `collect_effects` runs it over — so the classification compared is the one
+// charged, joined back on the call span each row carries.
+pub fn classify_definition(
+  function: Function,
+  module_path: String,
+  registry: SignatureRegistry,
+  context: ImportContext,
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  cache: LocalCache,
+  evidence: typeinfo.ModuleEvidence,
+) -> List(ClassificationCheck) {
+  let result =
+    extract.extract_function_calls_with_captures(function, context, [])
+  let #(module_reads, _field_reads) =
+    split_shadowed_field_calls(
+      result.field,
+      registry,
+      context,
+      module_types,
+      cache,
+      function,
+    )
+  let moved =
+    list.fold(module_reads, dict.new(), fn(acc, call) {
+      dict.insert(acc, #(call.span.start, call.span.end), call.name.module)
+    })
+  list.map(result.ambiguous, fn(row) {
+    let graded = graded_classification(row, moved)
+    let typed = classify_typed(row.access_span, function.name, evidence)
+    ClassificationCheck(
+      module: module_path,
+      function: function.name,
+      object: row.object,
+      label: row.label,
+      span: row.access_span,
+      graded:,
+      typed:,
+      relation: relate(graded, typed),
+    )
+  })
+}
+
+// graded's final answer for one row: the extractor's verdict, with a field call
+// the split moved to the module read as the module instead. `moved` is keyed by
+// call span rather than zipped in list order, since a body calling the same
+// label twice — one receiver narrowed, one not — moves one and keeps the other.
+fn graded_classification(
+  row: extract.AmbiguousCall,
+  moved: dict.Dict(#(Int, Int), String),
+) -> GradedClassification {
+  case row.verdict {
+    extract.AsModule(module:) -> SyntaxModule(module)
+    extract.AsWiredFunction(name:) -> WiredValue(WiredFunction(name))
+    extract.AsWiredLocal(name:) -> WiredValue(WiredLocal(name))
+    extract.AsWiredConstructor -> WiredValue(WiredConstructor)
+    extract.AsField(shadowed:) ->
+      case dict.get(moved, #(row.call_span.start, row.call_span.end)) {
+        Ok(module) -> TypeSelectedModule(module)
+        Error(Nil) -> Field(shadowed)
+      }
+  }
+}
+
+// How the two classifications stand to each other.
+//
+// The wired-value cells are the asymmetric pair: against a proved field the two
+// name different halves of the same site and agree in substance, while against
+// a proved module call graded charged a wired value where the compiler reads
+// the module — the undercharge shape, which the pair must never absorb.
+fn relate(
+  graded: GradedClassification,
+  typed: TypedClassification,
+) -> Relation {
+  case typed {
+    Undecided(reason:) -> NoTypedEvidence(reason)
+    ProvedFieldCall(..) ->
+      case graded {
+        Field(..) -> Agree
+        WiredValue(..) -> Compatible(WiredValueVersusMember)
+        SyntaxModule(..) | TypeSelectedModule(..) -> Disagree
+      }
+    ProvedModuleCall(..) ->
+      case graded {
+        SyntaxModule(..) | TypeSelectedModule(..) -> Agree
+        Field(..) | WiredValue(..) -> Disagree
+      }
   }
 }
 
