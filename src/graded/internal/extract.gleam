@@ -966,7 +966,73 @@ pub type ExtractResult {
     // and record updates alike. A field `check` weighs the values a package
     // wires into a field, and these are where it wires them.
     constructions: List(types.Construction),
+    // Every `name.label(args)` the walk had to decide between a module call and
+    // a field call, recorded beside the call it was lowered to. Nothing reads
+    // these to charge an effect; they exist so the decision can be compared
+    // against girard's for the same span.
+    ambiguous: List(AmbiguousCall),
   )
+}
+
+// One `name.label(args)` whose callee is a field access, recorded before it is
+// lowered. The four lowerings a construction-site field can take collapse into
+// call shapes that no longer say where they came from — a wired function reads
+// as an ordinary module call, a wired local as a lexical one, a wired
+// constructor as nothing at all — so the verdict is kept here rather than
+// recovered from the call.
+//
+// `access_span` is glance's own span for the `name.label` access, which is the
+// span girard keys its resolution by. `call_span` is the whole call, the span
+// the lowered call carries, so a row joins back to the checker's decision on it.
+pub type AmbiguousCall {
+  AmbiguousCall(
+    object: String,
+    label: String,
+    access_span: glance.Span,
+    call_span: glance.Span,
+    receiver_span: glance.Span,
+    verdict: ExtractionVerdict,
+  )
+}
+
+// What extraction made of an ambiguous call. `AsModule` and `AsField` are the
+// two readings of `name.label`; the three `AsWired*` verdicts are a field call
+// the receiver's construction site already answered, named by the kind of value
+// it wired in.
+pub type ExtractionVerdict {
+  AsModule(module: String)
+  AsField(shadowed: Option(String))
+  AsWiredFunction(name: QualifiedName)
+  AsWiredLocal(name: String)
+  AsWiredConstructor
+}
+
+// Where an ambiguous call sits and what it is spelled as: everything an
+// `AmbiguousCall` row needs except the verdict, built once at the call shape and
+// carried to whichever builder lowers it.
+pub type CallSite {
+  CallSite(
+    object: String,
+    label: String,
+    access_span: glance.Span,
+    call_span: glance.Span,
+    receiver_span: glance.Span,
+  )
+}
+
+// The row for `site` under `verdict`, as an otherwise empty result to merge into
+// whatever the site was lowered to.
+fn observed(site: CallSite, verdict: ExtractionVerdict) -> ExtractResult {
+  ExtractResult(..empty(), ambiguous: [
+    AmbiguousCall(
+      site.object,
+      site.label,
+      site.access_span,
+      site.call_span,
+      site.receiver_span,
+      verdict,
+    ),
+  ])
 }
 
 // Extract all calls from a list of statements, with an empty lexical scope.
@@ -1254,24 +1320,13 @@ fn resolve_unqualified_call(
 // call), a locally-constructed record (field-call resolution via env),
 // or an unknown local (FieldCall for type-level annotation lookup).
 fn resolve_qualified_call(
-  alias: String,
-  function_name: String,
-  span: glance.Span,
-  receiver_span: glance.Span,
+  site: CallSite,
   context: ImportContext,
   env: Env,
 ) -> ExtractResult {
-  case is_constructor_name(function_name) {
+  case is_constructor_name(site.label) {
     True -> empty()
-    False ->
-      qualified_call_lookup(
-        alias,
-        function_name,
-        span,
-        receiver_span,
-        context,
-        env,
-      )
+    False -> qualified_call_lookup(site, context, env)
   }
 }
 
@@ -1298,53 +1353,31 @@ fn resolve_qualified_call(
 // `BoundOpaque` both for a name the env does not hold and for one it holds
 // opaquely — the two cases this has to tell apart.
 fn qualified_call_lookup(
-  alias: String,
-  function_name: String,
-  span: glance.Span,
-  receiver_span: glance.Span,
+  site: CallSite,
   context: ImportContext,
   env: Env,
 ) -> ExtractResult {
-  case dict.get(context.aliases, alias) {
+  case dict.get(context.aliases, site.object) {
     Ok(module_path) ->
-      case env_get(env, alias) {
-        Error(Nil) -> module_call(module_path, function_name, span)
+      case env_get(env, site.object) {
+        Error(Nil) -> module_call(site, module_path)
         Ok(binding) ->
-          case shadowed_receiver_has_field(binding, function_name) {
-            False -> module_call(module_path, function_name, span)
-            True ->
-              env_field_call(
-                binding,
-                alias,
-                function_name,
-                span,
-                receiver_span,
-                env,
-                Some(module_path),
-              )
+          case shadowed_receiver_has_field(binding, site.label) {
+            False -> module_call(site, module_path)
+            True -> env_field_call(binding, site, env, Some(module_path))
           }
       }
-    Error(Nil) ->
-      env_field_call(
-        resolve_env(alias, env),
-        alias,
-        function_name,
-        span,
-        receiver_span,
-        env,
-        None,
-      )
+    Error(Nil) -> env_field_call(resolve_env(site.object, env), site, env, None)
   }
 }
 
-fn module_call(
-  module_path: String,
-  function_name: String,
-  span: glance.Span,
-) -> ExtractResult {
-  ExtractResult(..empty(), resolved: [
-    ResolvedCall(QualifiedName(module_path, function_name), span),
-  ])
+fn module_call(site: CallSite, module_path: String) -> ExtractResult {
+  merge(
+    ExtractResult(..empty(), resolved: [
+      ResolvedCall(QualifiedName(module_path, site.label), site.call_span),
+    ]),
+    observed(site, AsModule(module_path)),
+  )
 }
 
 // Whether a binding that shadows an import alias could have a field `label` —
@@ -1430,40 +1463,32 @@ fn binding_narrowing(binding: LocalBinding) -> ReceiverNarrowing {
 // once the receiver's type is known.
 fn env_field_call(
   binding: LocalBinding,
-  alias: String,
-  function_name: String,
-  span: glance.Span,
-  receiver_span: glance.Span,
+  site: CallSite,
   env: Env,
   shadowed_module: Option(String),
 ) -> ExtractResult {
-  let narrowing = receiver_narrowing(alias, binding, env)
+  let narrowing = receiver_narrowing(site.object, binding, env)
   // Every reading below is the same call under a different provenance, so the
   // call is spelled once and the branches choose what the receiver proved.
   let field_call = fn(provenance) {
-    ExtractResult(..empty(), field: [
-      FieldCall(
-        alias,
-        function_name,
-        span,
-        receiver_span,
-        provenance,
-        shadowed_module,
-        narrowing,
-      ),
-    ])
+    merge(
+      ExtractResult(..empty(), field: [
+        FieldCall(
+          site.object,
+          site.label,
+          site.call_span,
+          site.receiver_span,
+          provenance,
+          shadowed_module,
+          narrowing,
+        ),
+      ]),
+      observed(site, AsField(shadowed_module)),
+    )
   }
   case binding {
     BoundConstructor(fields:, ..) ->
-      resolve_constructor_field_call(
-        alias,
-        function_name,
-        span,
-        receiver_span,
-        fields,
-        shadowed_module,
-        narrowing,
-      )
+      resolve_constructor_field_call(site, fields, shadowed_module, narrowing)
     // A let-bound call result (`let l = make(); l.emit()`): the receiver's
     // whole value is the call, resolved at check time through the callee's
     // return provenance. Carried as `ProvenReceiver` so the field is read per
@@ -1483,7 +1508,7 @@ fn env_field_call(
     | BoundReceiverPath(..)
     | BoundParam
     | BoundLocal
-    | BoundOpaque -> field_call(field_receiver_provenance(alias, env))
+    | BoundOpaque -> field_call(field_receiver_provenance(site.object, env))
   }
 }
 
@@ -1546,50 +1571,61 @@ fn bind_receiver_path(path: String, env: Env) -> LocalBinding {
 // so no reading of it as a module call survives; only the miss stays ambiguous
 // and carries `shadowed_module` on.
 fn resolve_constructor_field_call(
-  alias: String,
-  label: String,
-  span: glance.Span,
-  receiver_span: glance.Span,
+  site: CallSite,
   fields: Dict(String, ArgumentValue),
   shadowed_module: Option(String),
   narrowing: ReceiverNarrowing,
 ) -> ExtractResult {
   let untraceable = fn(shadowed) {
-    ExtractResult(..empty(), field: [
-      FieldCall(
-        alias,
-        label,
-        span,
-        receiver_span,
-        Untraceable,
-        shadowed,
-        narrowing,
-      ),
-    ])
+    merge(
+      ExtractResult(..empty(), field: [
+        FieldCall(
+          site.object,
+          site.label,
+          site.call_span,
+          site.receiver_span,
+          Untraceable,
+          shadowed,
+          narrowing,
+        ),
+      ]),
+      observed(site, AsField(shadowed)),
+    )
   }
-  case dict.get(fields, label) {
+  case dict.get(fields, site.label) {
     Ok(FunctionRef(name: qualified)) ->
-      ExtractResult(..empty(), resolved: [ResolvedCall(qualified, span)])
+      merge(
+        ExtractResult(..empty(), resolved: [
+          ResolvedCall(qualified, site.call_span),
+        ]),
+        observed(site, AsWiredFunction(qualified)),
+      )
     Ok(LocalRef(name: local_name)) ->
-      ExtractResult(..empty(), local: [
-        LocalCall(local_name, span, types.LexicalBinding),
-      ])
-    Ok(ConstructorRef) -> empty()
+      merge(
+        ExtractResult(..empty(), local: [
+          LocalCall(local_name, site.call_span, types.LexicalBinding),
+        ]),
+        observed(site, AsWiredLocal(local_name)),
+      )
+    Ok(ConstructorRef) -> observed(site, AsWiredConstructor)
     Ok(types.Closure(_, _, _) as value)
     | Ok(types.ReturnedOperator(_, _) as value)
     | Ok(types.CallResult(_, _) as value)
     | Ok(Constructed(_) as value) ->
-      ExtractResult(..empty(), field: [
-        FieldCall(
-          alias,
-          label,
-          span,
-          receiver_span,
-          ProvenValue(value),
-          None,
-          narrowing,
-        ),
-      ])
+      merge(
+        ExtractResult(..empty(), field: [
+          FieldCall(
+            site.object,
+            site.label,
+            site.call_span,
+            site.receiver_span,
+            ProvenValue(value),
+            None,
+            narrowing,
+          ),
+        ]),
+        observed(site, AsField(None)),
+      )
     Ok(types.Choice(_))
     | Ok(types.ReceiverPath(_))
     | Ok(types.Updated(_, _))
@@ -1617,6 +1653,7 @@ fn resolve_nested_field_call(
   label: String,
   span: glance.Span,
   receiver_span: glance.Span,
+  access_span: glance.Span,
   context: ImportContext,
   env: Env,
 ) -> ExtractResult {
@@ -1627,6 +1664,7 @@ fn resolve_nested_field_call(
         Some(path) -> path
         None -> computed_receiver
       }
+      let site = CallSite(object, label, access_span, span, receiver_span)
       // An inline-construction receiver (`Options(resolver: r).resolver()` or an
       // inline factory call) directly wires the queried field, so route it
       // through the constructor-field resolver — a fn ref resolves at the site,
@@ -1635,28 +1673,28 @@ fn resolve_nested_field_call(
       case classify_expression(receiver, context, env) {
         Constructed(fields:) ->
           resolve_constructor_field_call(
-            object,
-            label,
-            span,
-            receiver_span,
+            site,
             fields,
             None,
             PossiblyNarrowedReceiver,
           )
         _ ->
-          ExtractResult(..empty(), field: [
-            FieldCall(
-              object,
-              label,
-              span,
-              receiver_span,
-              field_receiver_provenance(object, env),
-              // A nested receiver is not a bare identifier, so it shadows
-              // nothing, and nothing reads its narrowing.
-              None,
-              PossiblyNarrowedReceiver,
-            ),
-          ])
+          merge(
+            ExtractResult(..empty(), field: [
+              FieldCall(
+                object,
+                label,
+                span,
+                receiver_span,
+                field_receiver_provenance(object, env),
+                // A nested receiver is not a bare identifier, so it shadows
+                // nothing, and nothing reads its narrowing.
+                None,
+                PossiblyNarrowedReceiver,
+              ),
+            ]),
+            observed(site, AsField(None)),
+          )
       }
     }
   }
@@ -2252,9 +2290,9 @@ fn extract_from_expression(
     glance.Call(
       location: span,
       function: glance.FieldAccess(
+        location: access_span,
         container: glance.Variable(receiver_span, alias),
         label: function_name,
-        ..,
       ),
       arguments:,
     ) ->
@@ -2269,10 +2307,7 @@ fn extract_from_expression(
         ),
         merge_with_args(
           resolve_qualified_call(
-            alias,
-            function_name,
-            span,
-            receiver_span,
+            CallSite(alias, function_name, access_span, span, receiver_span),
             context,
             env,
           ),
@@ -2302,7 +2337,11 @@ fn extract_from_expression(
     // walked and recorded for call-site substitution.
     glance.Call(
       location: span,
-      function: glance.FieldAccess(container: receiver, label:, ..),
+      function: glance.FieldAccess(
+        location: access_span,
+        container: receiver,
+        label:,
+      ),
       arguments:,
     ) ->
       merge_with_args(
@@ -2311,6 +2350,7 @@ fn extract_from_expression(
           label,
           span,
           receiver.location,
+          access_span,
           context,
           env,
         ),
@@ -2499,10 +2539,7 @@ fn extract_pipe_target(
     ) ->
       attach_pipe_args(
         resolve_qualified_call(
-          alias,
-          function_name,
-          span,
-          receiver_span,
+          CallSite(alias, function_name, span, span, receiver_span),
           context,
           env,
         ),
@@ -2525,6 +2562,7 @@ fn extract_pipe_target(
           function_name,
           span,
           receiver.location,
+          span,
           context,
           env,
         ),
@@ -2545,18 +2583,15 @@ fn extract_pipe_target(
     glance.Call(
       location: span,
       function: glance.FieldAccess(
+        location: access_span,
         container: glance.Variable(receiver_span, alias),
         label: function_name,
-        ..,
       ),
       arguments:,
     ) ->
       merge_with_args(
         resolve_qualified_call(
-          alias,
-          function_name,
-          span,
-          receiver_span,
+          CallSite(alias, function_name, access_span, span, receiver_span),
           context,
           env,
         ),
@@ -2570,9 +2605,9 @@ fn extract_pipe_target(
     glance.Call(
       location: span,
       function: glance.FieldAccess(
+        location: access_span,
         container: receiver,
         label: function_name,
-        ..,
       ),
       arguments:,
     ) ->
@@ -2582,6 +2617,7 @@ fn extract_pipe_target(
           function_name,
           span,
           receiver.location,
+          access_span,
           context,
           env,
         ),
@@ -2676,16 +2712,13 @@ fn piped_call(
 ) -> Result(ExtractResult, Nil) {
   case callee {
     glance.FieldAccess(
+      location: access_span,
       container: glance.Variable(receiver_span, alias),
       label: function_name,
-      ..,
     ) ->
       Ok(merge_with_args(
         resolve_qualified_call(
-          alias,
-          function_name,
-          span,
-          receiver_span,
+          CallSite(alias, function_name, access_span, span, receiver_span),
           context,
           env,
         ),
@@ -2694,13 +2727,18 @@ fn piped_call(
         args,
       ))
 
-    glance.FieldAccess(container: receiver, label: function_name, ..) ->
+    glance.FieldAccess(
+      location: access_span,
+      container: receiver,
+      label: function_name,
+    ) ->
       Ok(merge_with_args(
         resolve_nested_field_call(
           receiver,
           function_name,
           span,
           receiver.location,
+          access_span,
           context,
           env,
         ),
@@ -4107,6 +4145,7 @@ fn empty() -> ExtractResult {
     unknown_apps: [],
     call_args: dict.new(),
     constructions: [],
+    ambiguous: [],
   )
 }
 
@@ -4125,5 +4164,6 @@ fn merge(left: ExtractResult, right: ExtractResult) -> ExtractResult {
     unknown_apps: list.append(left.unknown_apps, right.unknown_apps),
     call_args: dict.merge(left.call_args, right.call_args),
     constructions: list.append(left.constructions, right.constructions),
+    ambiguous: list.append(left.ambiguous, right.ambiguous),
   )
 }

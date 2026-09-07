@@ -4,6 +4,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/set.{type Set}
+import gleam/string
 import gleeunit/should
 import graded/internal/extract
 import graded/internal/types.{
@@ -1979,4 +1980,316 @@ pub fn target() {
   result.resolved
   |> list.map(fn(r) { r.name })
   |> should.equal([QualifiedName("gleam/int", "to_string")])
+}
+
+// Ambiguous calls
+//
+// Every `name.label(args)` the walk has to decide between a module call and a
+// field call is recorded beside the call it is lowered to, keyed by the span
+// glance gives the `name.label` access — which is the span girard keys its own
+// resolution by. Four of the lowerings say nothing about where they came from
+// (a wired function reads as an ordinary module call, a wired local as a
+// lexical one, a wired constructor as nothing at all), so the verdict is what
+// the row carries.
+
+// The source text a span cuts out, so a span assertion reads as the code it
+// names rather than as a pair of offsets.
+fn sliced(src: String, span: glance.Span) -> String {
+  string.slice(src, span.start, span.end - span.start)
+}
+
+// The one ambiguous row `target` records, with the source it was read from.
+fn one_ambiguous(src: String) -> #(String, extract.AmbiguousCall) {
+  let result = parse_and_extract_function(src)
+  let assert [row] = result.ambiguous
+  #(src, row)
+}
+
+// Every row's access span is the `object.label` text, starts where the receiver
+// starts, and ends where the label ends — the three properties that make it the
+// same key girard records.
+fn access_span_names_the_access(
+  src: String,
+  row: extract.AmbiguousCall,
+) -> Nil {
+  sliced(src, row.access_span)
+  |> should.equal(row.object <> "." <> row.label)
+  row.access_span.start |> should.equal(row.receiver_span.start)
+  sliced(src, row.receiver_span) |> should.equal(row.object)
+  Nil
+}
+
+pub fn a_module_call_on_a_non_binding_alias_is_recorded_test() {
+  // Not ambiguous — the alias names no binding — but a girard `RecordField` at
+  // this span would be a finding worth seeing rather than a silence, so the row
+  // is recorded anyway.
+  let #(src, row) =
+    one_ambiguous(
+      "import gleam/io
+pub fn target() -> Nil {
+  io.println(\"hi\")
+}",
+    )
+  access_span_names_the_access(src, row)
+  row.verdict |> should.equal(extract.AsModule("gleam/io"))
+  sliced(src, row.call_span) |> should.equal("io.println(\"hi\")")
+}
+
+pub fn a_module_calls_row_carries_the_lowered_calls_span_test() {
+  let result =
+    parse_and_extract_function(
+      "import gleam/io
+pub fn target() -> Nil {
+  io.println(\"hi\")
+}",
+    )
+  let assert [row] = result.ambiguous
+  let assert [call] = result.resolved
+  row.call_span |> should.equal(call.span)
+}
+
+pub fn a_plain_field_call_is_recorded_test() {
+  let #(src, row) =
+    one_ambiguous(
+      "pub type Client {
+  Live(send: fn(String) -> Nil)
+  Dead(n: Int)
+}
+
+pub fn target(client: Client) -> Nil {
+  client.send(\"hi\")
+}",
+    )
+  access_span_names_the_access(src, row)
+  row.verdict |> should.equal(extract.AsField(None))
+}
+
+pub fn a_shadowed_field_calls_row_names_the_module_it_shadows_test() {
+  let #(src, row) =
+    one_ambiguous(
+      "import gleam/list
+
+pub type Client {
+  Live(send: fn(String) -> Nil)
+  Dead(n: Int)
+}
+
+pub fn target(list: Client) -> Nil {
+  list.send(\"hi\")
+}",
+    )
+  access_span_names_the_access(src, row)
+  row.verdict |> should.equal(extract.AsField(Some("gleam/list")))
+}
+
+pub fn a_field_wired_to_a_function_reference_is_recorded_test() {
+  // Lowered to a plain `ResolvedCall`, which the `module_call` arm produces
+  // too: without the row the two are indistinguishable.
+  let #(src, row) =
+    one_ambiguous(
+      "import gleam/io
+
+pub type Fmt {
+  Fmt(shout: fn(String) -> Nil)
+}
+
+pub fn target() -> Nil {
+  let f = Fmt(shout: io.println)
+  f.shout(\"hi\")
+}",
+    )
+  access_span_names_the_access(src, row)
+  row.verdict
+  |> should.equal(extract.AsWiredFunction(QualifiedName("gleam/io", "println")))
+}
+
+pub fn a_field_wired_to_a_local_reference_is_recorded_test() {
+  // Lowered to a `LocalCall`, which says nothing about the field it came
+  // through.
+  let #(src, row) =
+    one_ambiguous(
+      "pub type Fmt {
+  Fmt(shout: fn(String) -> Nil)
+}
+
+fn quiet(_s: String) -> Nil {
+  Nil
+}
+
+pub fn target() -> Nil {
+  let f = Fmt(shout: quiet)
+  f.shout(\"hi\")
+}",
+    )
+  access_span_names_the_access(src, row)
+  row.verdict |> should.equal(extract.AsWiredLocal("quiet"))
+}
+
+pub fn a_field_wired_to_a_constructor_is_recorded_test() {
+  // The one lowering that emits nothing at all: a constructor is pure, so no
+  // call is recorded for the site and the row is the only trace it leaves.
+  let src =
+    "pub type Fmt {
+  Fmt(wrap: fn(String) -> Result(String, Nil))
+}
+
+pub fn target() -> Result(String, Nil) {
+  let f = Fmt(wrap: Ok)
+  f.wrap(\"hi\")
+}"
+  let result = parse_and_extract_function(src)
+  result.resolved |> should.equal([])
+  result.local |> should.equal([])
+  result.field |> should.equal([])
+  let assert [row] = result.ambiguous
+  access_span_names_the_access(src, row)
+  row.verdict |> should.equal(extract.AsWiredConstructor)
+}
+
+pub fn a_nested_inline_construction_receiver_is_recorded_test() {
+  // The receiver is a construction rather than a bare name, so it has no source
+  // path to name — but the access span still cuts out the whole access.
+  let src =
+    "import gleam/io
+
+pub type Fmt {
+  Fmt(shout: fn(String) -> Nil)
+}
+
+pub fn target() -> Nil {
+  Fmt(shout: io.println).shout(\"hi\")
+}"
+  let result = parse_and_extract_function(src)
+  let assert [row] = result.ambiguous
+  row.object |> should.equal(extract.computed_receiver)
+  row.label |> should.equal("shout")
+  sliced(src, row.access_span)
+  |> should.equal("Fmt(shout: io.println).shout")
+  row.access_span.start |> should.equal(row.receiver_span.start)
+  row.verdict
+  |> should.equal(extract.AsWiredFunction(QualifiedName("gleam/io", "println")))
+}
+
+pub fn a_nested_field_call_is_recorded_test() {
+  let #(src, row) =
+    one_ambiguous(
+      "pub type Inner {
+  Inner(run: fn() -> Nil)
+}
+
+pub type Outer {
+  Outer(inner: Inner)
+}
+
+pub fn target(o: Outer) -> Nil {
+  o.inner.run()
+}",
+    )
+  access_span_names_the_access(src, row)
+  row.object |> should.equal("o.inner")
+  row.verdict |> should.equal(extract.AsField(None))
+}
+
+// Ambiguous calls under each call shape
+//
+// The four shapes a `name.label` callee can be written in desugar to the same
+// builders, and each has to key the row by the access glance reports for it —
+// the pipe target and the `use` callee being the two where the access span and
+// the call span come apart differently from the direct shape.
+
+pub fn a_bare_pipe_target_records_its_access_as_the_whole_call_test() {
+  // `"hi" |> io.println` has no argument list of its own, so the access is the
+  // whole call.
+  let #(src, row) =
+    one_ambiguous(
+      "import gleam/io
+pub fn target() -> Nil {
+  \"hi\" |> io.println
+}",
+    )
+  access_span_names_the_access(src, row)
+  row.access_span |> should.equal(row.call_span)
+  row.verdict |> should.equal(extract.AsModule("gleam/io"))
+}
+
+pub fn a_pipe_target_with_arguments_records_the_access_alone_test() {
+  let #(src, row) =
+    one_ambiguous(
+      "import gleam/string
+pub fn target() -> String {
+  \"hi\" |> string.append(\"!\")
+}",
+    )
+  access_span_names_the_access(src, row)
+  sliced(src, row.call_span) |> should.equal("string.append(\"!\")")
+  row.verdict |> should.equal(extract.AsModule("gleam/string"))
+}
+
+pub fn a_use_callee_records_its_access_test() {
+  let #(src, row) =
+    one_ambiguous(
+      "import gleam/result
+pub fn target(r: Result(Int, Nil)) -> Result(Int, Nil) {
+  use v <- result.try(r)
+  Ok(v)
+}",
+    )
+  access_span_names_the_access(src, row)
+  row.verdict |> should.equal(extract.AsModule("gleam/result"))
+}
+
+pub fn a_bare_name_call_records_no_row_test() {
+  parse_and_extract_function(
+    "fn helper() -> Nil {
+  Nil
+}
+
+pub fn target() -> Nil {
+  helper()
+}",
+  ).ambiguous
+  |> should.equal([])
+}
+
+pub fn a_qualified_constructor_call_records_no_row_test() {
+  // A constructor is pure and skipped at extraction, and girard resolves it to
+  // `Constructor` rather than to a member a call could reach.
+  parse_and_extract_function(
+    "import app/types
+
+pub fn target() -> types.Thing {
+  types.Thing(1)
+}",
+  ).ambiguous
+  |> should.equal([])
+}
+
+pub fn every_ambiguous_call_in_a_body_is_recorded_once_test() {
+  // Two calls through the same label, one receiver narrowed by a construction
+  // and one an un-narrowed parameter: two rows, each keyed by its own access.
+  let src =
+    "import gleam/list
+
+pub type Client {
+  Live(send: fn(String) -> Nil)
+  Dead(n: Int)
+}
+
+fn quiet(_s: String) -> Nil {
+  Nil
+}
+
+pub fn target(list: Client) -> Nil {
+  list.send(\"one\")
+  let wired = Live(quiet)
+  wired.send(\"two\")
+}"
+  let result = parse_and_extract_function(src)
+  let assert [first, second] = result.ambiguous
+  first.object |> should.equal("list")
+  first.verdict |> should.equal(extract.AsField(Some("gleam/list")))
+  second.object |> should.equal("wired")
+  second.verdict |> should.equal(extract.AsWiredLocal("quiet"))
+  access_span_names_the_access(src, first)
+  access_span_names_the_access(src, second)
 }
