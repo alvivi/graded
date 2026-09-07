@@ -273,17 +273,28 @@ pub fn build_import_context(module: Module) -> ImportContext {
         let import_ = definition.definition
         let module_path = import_.module
 
-        // Two unaliased imports whose last segments match key the same
-        // alias and the later one wins by fold order. The compiler rejects
-        // that module, so the key is unique in anything that compiles.
+        // The name this import is written under here: its alias where it has
+        // one, and its last segment where it has none. A *discarded* alias
+        // (`import gleam/http as _ghttp`) binds no module name at all — the
+        // import is there for its unqualified items — so it must not key the
+        // last segment either: another module of that name may be imported
+        // beside it, and reading a call through it under the discarded one
+        // charges a function the body never reaches.
+        //
+        // Two unaliased imports whose last segments match key the same alias.
+        // The compiler rejects that module, so the key is unique in anything
+        // that compiles.
         let alias = case import_.alias {
-          Some(glance.Named(name)) -> name
-          Some(glance.Discarded(_)) -> last_segment(module_path)
-          None -> last_segment(module_path)
+          Some(glance.Named(name)) -> Some(name)
+          Some(glance.Discarded(_)) -> None
+          None -> Some(last_segment(module_path))
         }
 
         #(
-          dict.insert(state.0, alias, module_path),
+          case alias {
+            Some(name) -> dict.insert(state.0, name, module_path)
+            None -> state.0
+          },
           fold_unqualified(state.1, import_.unqualified_values, module_path),
           fold_unqualified(state.2, import_.unqualified_types, module_path),
         )
