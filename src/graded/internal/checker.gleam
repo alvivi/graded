@@ -8899,6 +8899,18 @@ type ReceiverShape {
   UnknownReceiver
 }
 
+// What a field call whose receiver's name shadows an import reads.
+//
+// The two readings are not exhaustive. The field reading is the compiler's only
+// where the receiver's variant is fixed or the label is an accessor of the whole
+// type, and with no type for the receiver the second cannot be established at
+// all — so a shadowed, un-narrowed, untyped receiver reads as neither.
+type ShadowedReading {
+  ReadsTheModule(module: String)
+  ReadsTheField
+  ReadsNeither
+}
+
 // Split the field calls into the ones the receiver's type says are calls to the
 // module its name shadows, and the ones that stay field calls.
 //
@@ -8907,6 +8919,10 @@ type ReceiverShape {
 // `graded why` prose — with no separate code of its own. That is why this runs
 // before the resolved fold rather than inside the field loop, which the fold has
 // already passed.
+//
+// A call that reads as neither stays a field call and loses its provenance: it
+// would otherwise resolve through the value its receiver was traced to, and that
+// value is the field's — the reading nothing here established.
 pub fn split_shadowed_field_calls(
   field_calls: List(types.FieldCall),
   registry: SignatureRegistry,
@@ -8920,7 +8936,7 @@ pub fn split_shadowed_field_calls(
   case
     shadowed_module_read(call, registry, context, module_types, cache, function)
   {
-    Some(module_path) -> #(
+    ReadsTheModule(module_path) -> #(
       [
         types.ResolvedCall(
           name: QualifiedName(module: module_path, function: call.label),
@@ -8930,14 +8946,24 @@ pub fn split_shadowed_field_calls(
       ],
       field_reads,
     )
-    None -> #(module_reads, [call, ..field_reads])
+    ReadsTheField -> #(module_reads, [call, ..field_reads])
+    ReadsNeither -> #(module_reads, [
+      types.FieldCall(..call, provenance: types.Untraceable),
+      ..field_reads
+    ])
   }
 }
 
-// The module a shadowed field call actually reads, or `None` where it stays a
-// field call. Every uncertainty answers `None`: choosing the module where a
-// field is real charges a pure module function for an effectful field, which is
-// the undercharge direction.
+// Which of the two readings a shadowed field call takes. An uncertainty that
+// leaves the field reading standing answers `ReadsTheField`: choosing the module
+// where a field is real charges a pure module function for an effectful field,
+// which is the undercharge direction.
+//
+// The one uncertainty that leaves *neither* standing is a receiver with no type.
+// `PossiblyNarrowedReceiver` keeps the field: a pattern or a construction fixed
+// the variant, so the field exists and the compiler reads it. An un-narrowed
+// receiver reaches only the accessors every variant declares, and with no type
+// there is nothing to ask which those are.
 fn shadowed_module_read(
   call: types.FieldCall,
   registry: SignatureRegistry,
@@ -8945,13 +8971,17 @@ fn shadowed_module_read(
   module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   function: Function,
-) -> Option(String) {
+) -> ShadowedReading {
   case call.shadowed_module {
-    None -> None
+    None -> ReadsTheField
     Some(module_path) ->
       case receiver_shape(call, context, module_types, cache, function) {
-        UnknownReceiver -> None
-        FieldlessReceiver -> Some(module_path)
+        UnknownReceiver ->
+          case call.receiver_narrowing {
+            types.UnnarrowedReceiver -> ReadsNeither
+            types.PossiblyNarrowedReceiver -> ReadsTheField
+          }
+        FieldlessReceiver -> ReadsTheModule(module_path)
         NamedReceiver(module:, type_name:) ->
           case
             grants_no_accessor(
@@ -8962,8 +8992,8 @@ fn shadowed_module_read(
               call.receiver_narrowing,
             )
           {
-            True -> Some(module_path)
-            False -> None
+            True -> ReadsTheModule(module_path)
+            False -> ReadsTheField
           }
       }
   }
