@@ -48,11 +48,15 @@ pub type TypeInfo {
 //
 // A skip keeps only `error_bucket`'s answer rather than the `girard.Error`: the
 // error carries whole inferred type trees, and nothing reads them.
+//
+// The drops are keyed by the definition's `#(start, end)` span rather than by
+// its name: a `@target(erlang)` and a `@target(javascript)` definition share one
+// name, and only one of the two is left out of the build.
 pub type ModuleEvidence {
   ModuleEvidence(
     resolutions: Dict(#(Int, Int), Resolution),
     skipped: Dict(String, String),
-    dropped: Set(String),
+    dropped: Set(#(Int, Int)),
   )
 }
 
@@ -85,7 +89,7 @@ pub fn evidence_of(
       dict.insert(acc, entry.0, skip_bucket(entry.1))
     }),
     dropped: list.fold(result.annotated.dropped, set.new(), fn(acc, definition) {
-      set.insert(acc, definition.name)
+      set.insert(acc, #(definition.span.start, definition.span.end))
     }),
   )
 }
@@ -228,7 +232,14 @@ pub fn skip_reason(
   }
 }
 
-// Whether girard left `function` out of the build for the other target.
-pub fn is_dropped(module_dropped: Set(String), function: String) -> Bool {
-  set.contains(module_dropped, function)
+// Whether girard left the definition spanning `#(start, end)` out of the build
+// for the other target. The span is the definition's own — from its `pub`, `fn`
+// or `const` keyword to its closing token — which is what tells the two halves
+// of a `@target` pair apart where their name cannot.
+pub fn is_dropped(
+  module_dropped: Set(#(Int, Int)),
+  start: Int,
+  end: Int,
+) -> Bool {
+  set.contains(module_dropped, #(start, end))
 }

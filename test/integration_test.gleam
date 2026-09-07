@@ -14943,6 +14943,42 @@ pub fn beam_only() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_target_pairs_kept_twin_reads_its_own_resolution_test() {
+  // Both halves of a `@target` pair carry one name, so the drop is read by the
+  // definition's span: the JavaScript twin an Erlang build leaves out has no
+  // typed evidence, and the Erlang twin girard walked reads the resolution
+  // recorded inside it rather than its sibling's absence. The two call
+  // different labels, so each row names the twin it came from.
+  let root = "build/dropped_target_pair"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"app\"\n"),
+    #(
+      "src/app.gleam",
+      "import gleam/io
+
+@target(javascript)
+pub fn go() -> Nil {
+  io.println(\"hi\")
+}
+
+@target(erlang)
+pub fn go() -> Nil {
+  io.print(\"hi\")
+}
+",
+    ),
+  ])
+  let assert Ok(checks) = graded.classification_checks(root)
+  list.filter(checks, fn(check) { check.function == "go" })
+  |> list.map(fn(check) { #(check.label, check.relation) })
+  |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+  |> should.equal([
+    #("print", types.Agree),
+    #("println", types.NoTypedEvidence(types.DefinitionDropped)),
+  ])
+  support.cleanup(root)
+}
+
 // The relation of the one row `function` records.
 fn relation_of(
   checks: List(types.ClassificationCheck),

@@ -8788,21 +8788,28 @@ fn concretize(term: EffectTerm) -> EffectTerm {
 // after the receiver's type was fixed, and every resolution kind that is not a
 // call target all read `Undecided`, each keeping the reason it got there by.
 
-// What girard resolved the reference at `access_span` to, inside `function`.
+// What girard resolved the reference at `access_span` to, inside `definition`.
 //
 // The checks run in the order the absences nest: a dropped definition was never
 // walked, a skipped one was walked and abandoned, and only then is the absence
-// of a resolution at the span the span's own.
+// of a resolution at the span the span's own. The drop is read by the
+// definition's own span and the skip by its name, which is how each is keyed on
+// girard's side — so one half of a `@target` pair being left out of the build
+// says nothing about the half that is in it.
 pub fn classify_typed(
   access_span: Span,
-  function: String,
+  definition: Function,
   evidence: typeinfo.ModuleEvidence,
 ) -> TypedClassification {
   use <- bool.guard(
-    typeinfo.is_dropped(evidence.dropped, function),
+    typeinfo.is_dropped(
+      evidence.dropped,
+      definition.location.start,
+      definition.location.end,
+    ),
     Undecided(DefinitionDropped),
   )
-  case typeinfo.skip_reason(evidence.skipped, function) {
+  case typeinfo.skip_reason(evidence.skipped, definition.name) {
     Some(bucket) -> Undecided(FunctionSkipped(bucket))
     None ->
       case
@@ -8931,7 +8938,7 @@ pub fn classify_definition(
     })
   list.map(result.ambiguous, fn(row) {
     let graded = graded_classification(row, moved)
-    let typed = classify_typed(row.site.access_span, function.name, evidence)
+    let typed = classify_typed(row.site.access_span, function, evidence)
     ClassificationCheck(
       module: module_path,
       function: function.name,

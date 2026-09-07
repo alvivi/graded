@@ -264,7 +264,7 @@ pub fn from_modules_serves_each_module_its_own_evidence_test() {
             #(#(0, 9), RecordField(Named("app/count", "Counter", []), "bump")),
           ]),
           skipped: dict.new(),
-          dropped: set.from_list(["browser_only"]),
+          dropped: set.from_list([#(40, 79)]),
         ),
       ),
     ])
@@ -273,13 +273,13 @@ pub fn from_modules_serves_each_module_its_own_evidence_test() {
   |> should.equal(Some(ModuleFn("gleam/io", "println")))
   typeinfo.skip_reason(log.skipped, "render")
   |> should.equal(Some("ArityMismatch"))
-  typeinfo.is_dropped(log.dropped, "browser_only") |> should.be_false()
+  typeinfo.is_dropped(log.dropped, 40, 79) |> should.be_false()
 
   let count = typeinfo.evidence_for_module(info, "app/count")
   typeinfo.resolution_at(count.resolutions, 0, 9)
   |> should.equal(Some(RecordField(Named("app/count", "Counter", []), "bump")))
   typeinfo.skip_reason(count.skipped, "render") |> should.equal(None)
-  typeinfo.is_dropped(count.dropped, "browser_only") |> should.be_true()
+  typeinfo.is_dropped(count.dropped, 40, 79) |> should.be_true()
 }
 
 pub fn an_unknown_module_has_no_evidence_test() {
@@ -290,14 +290,14 @@ pub fn an_unknown_module_has_no_evidence_test() {
         typeinfo.ModuleEvidence(
           resolutions: index([#(#(0, 9), ModuleFn("gleam/io", "println"))]),
           skipped: dict.from_list([#("render", "ArityMismatch")]),
-          dropped: set.from_list(["browser_only"]),
+          dropped: set.from_list([#(40, 79)]),
         ),
       ),
     ])
   let evidence = typeinfo.evidence_for_module(info, "app/other")
   typeinfo.resolution_at(evidence.resolutions, 0, 9) |> should.equal(None)
   typeinfo.skip_reason(evidence.skipped, "render") |> should.equal(None)
-  typeinfo.is_dropped(evidence.dropped, "browser_only") |> should.be_false()
+  typeinfo.is_dropped(evidence.dropped, 40, 79) |> should.be_false()
 }
 
 pub fn a_function_girard_typed_has_no_skip_reason_test() {
