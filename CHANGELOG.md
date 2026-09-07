@@ -18,17 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- girard 3.0.0 or later is required.
+- girard 3.0.0 or later is required: the typed resolutions `graded why` prints
+  are read from the reference resolutions it reports.
 - A field call whose receiver is an alias of a narrowed value, or is bound
   inside the branch that narrowed it, now charges the field's own effects
   instead of `[Unknown]`. A `check` line over such a body that could not be
   satisfied before now can be.
 - A receiver that shadows an imported module and whose inferred type is a tuple
-  or a function now resolves to that module, instead of reading `[Unknown]`.
-  Neither carries a record field, so the module is the compiler's reading; a
-  *written* `fn(..)` or tuple annotation already had this effect, and now the
-  inferred type does too — which reaches a closure parameter, where no
-  annotation on the enclosing function is in scope.
+  or a function now resolves to that module, instead of reading `[Unknown]`. A
+  *written* `fn(..)` or tuple annotation already had this effect; the inferred
+  type now reaches closure parameters too, where no annotation on the enclosing
+  function is in scope.
 - A receiver that is a bare alias of another parameter (`let list = e`) is now
   read against *that* parameter's type annotation rather than against nothing.
   Where the type declares the label on no variant the call resolves to the
@@ -41,15 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A call through a receiver that shadows an imported module, whose variant
   nothing fixed and whose type is unknown, now charges `[Unknown]` instead of
-  the value its construction site wired in. Neither reading is established
-  there — the label may be an accessor of the whole type or of one variant, and
-  with no type nothing says which — so charging the wired value could report a
-  body pure that calls the module. Where the type is known, and it is wherever
-  girard types the enclosing function, nothing changes. A hand-written field
-  bound (`check f(c.send: [Net])`) still answers for such a call: naming the
-  field declares which reading it is. `graded check` and `graded why` report the
-  call as one whose receiver also names a module and whose type nothing fixes,
-  rather than as one whose value could not be traced.
+  the value its construction site wired in. A hand-written field bound
+  (`check f(c.send: [Net])`) still answers for such a call, and where the
+  receiver's type is known — which it is wherever girard types the enclosing
+  function — nothing changes. `graded check` and `graded why` report the call as
+  one whose receiver also names a module and whose type nothing fixes, rather
+  than as one whose value could not be traced.
 - A call through an un-narrowed call result named after an imported module,
   whose label sits on one variant of the receiver's type only, is now charged
   as the module call the compiler emits. Such a body — `let io = make_logger()`
