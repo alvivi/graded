@@ -8635,6 +8635,115 @@ fn concretize(term: EffectTerm) -> EffectTerm {
   effect_term.normalize(effect_term.subst(term, bindings))
 }
 
+// girard's reading of an ambiguous call
+//
+// The same question the shadowed-receiver split answers from the syntax and the
+// receiver's type, answered instead from what girard resolved the reference to.
+// It decides nothing here: it is recorded beside graded's own answer so the two
+// can be compared per site.
+//
+// Three states and no fourth. A missing annotation, a skipped function, a
+// dropped definition, a span girard recorded nothing at, an access it reached
+// after the receiver's type was fixed, and every resolution kind that is not a
+// call target all read `Undecided`, each keeping the reason it got there by.
+
+pub type TypedClassification {
+  ProvedModuleCall(module: String, name: String)
+  ProvedFieldCall(receiver: #(String, String), label: String)
+  Undecided(reason: UndecidedReason)
+}
+
+// Why girard's answer decides nothing at a site.
+pub type UndecidedReason {
+  // The enclosing definition was left out of the build for the other target, so
+  // nothing inside it was walked.
+  DefinitionDropped
+  // girard declined to type the enclosing definition, under this error bucket.
+  FunctionSkipped(bucket: String)
+  // girard walked the definition and recorded no reference at the span.
+  NoResolutionAtSpan
+  // girard fixed the receiver's type only after the access, so it typed the
+  // field without ever naming the member.
+  ReceiverTypeUnknown
+  // A resolution that is not a call target: a local binding, a constructor, or
+  // a module constant in callee position.
+  NotACallTarget(kind: String)
+  // A field of a type with no nominal identity, which nothing can be keyed by.
+  ReceiverNotNominal
+}
+
+// What girard resolved the reference at `access_span` to, inside `function`.
+//
+// The checks run in the order the absences nest: a dropped definition was never
+// walked, a skipped one was walked and abandoned, and only then is the absence
+// of a resolution at the span the span's own.
+pub fn classify_typed(
+  access_span: Span,
+  function: String,
+  evidence: typeinfo.ModuleEvidence,
+) -> TypedClassification {
+  use <- bool.guard(
+    typeinfo.is_dropped(evidence.dropped, function),
+    Undecided(DefinitionDropped),
+  )
+  case typeinfo.skip_reason(evidence.skipped, function) {
+    Some(error) -> Undecided(FunctionSkipped(error_bucket(error)))
+    None ->
+      case
+        typeinfo.resolution_at(
+          evidence.resolutions,
+          access_span.start,
+          access_span.end,
+        )
+      {
+        None -> Undecided(NoResolutionAtSpan)
+        Some(resolution) -> resolved_classification(resolution)
+      }
+  }
+}
+
+// One `girard.Resolution` as a classification. Only the two kinds that name a
+// call target answer; the rest keep their kind as the reason.
+fn resolved_classification(
+  resolution: girard.Resolution,
+) -> TypedClassification {
+  case resolution {
+    girard.RecordField(receiver: girard.Named(module, name, _), label:) ->
+      ProvedFieldCall(receiver: #(module, name), label:)
+    girard.RecordField(..) -> Undecided(ReceiverNotNominal)
+    girard.ModuleFn(module:, name:) -> ProvedModuleCall(module:, name:)
+    girard.ModuleConstant(..) -> Undecided(NotACallTarget("ModuleConstant"))
+    girard.Constructor(..) -> Undecided(NotACallTarget("Constructor"))
+    girard.LocalVariable(..) -> Undecided(NotACallTarget("LocalVariable"))
+    girard.Unresolved(girard.RecordAccessUnknownType) ->
+      Undecided(ReceiverTypeUnknown)
+  }
+}
+
+// A girard error as a stable, constructor-level bucket. `Unsupported` splits by
+// its feature string, which is the one part of an error that names a distinct
+// gap rather than a distinct program.
+pub fn error_bucket(error: girard.Error) -> String {
+  case error {
+    girard.TypeMismatch(..) -> "TypeMismatch"
+    girard.ArityMismatch -> "ArityMismatch"
+    girard.RecursiveType(..) -> "RecursiveType"
+    girard.UnboundVariable(..) -> "UnboundVariable"
+    girard.UnknownConstructor(..) -> "UnknownConstructor"
+    girard.UnknownModule(..) -> "UnknownModule"
+    girard.NoSuchExport(..) -> "NoSuchExport"
+    girard.NoSuchField(..) -> "NoSuchField"
+    girard.NotARecord -> "NotARecord"
+    girard.NotATuple -> "NotATuple"
+    girard.TupleIndexOutOfRange(..) -> "TupleIndexOutOfRange"
+    girard.UnknownLabel(..) -> "UnknownLabel"
+    girard.AmbiguousCall -> "AmbiguousCall"
+    girard.MissingArgument -> "MissingArgument"
+    girard.Unsupported(feature) -> "Unsupported(" <> feature <> ")"
+    girard.ParseFailed(..) -> "ParseFailed"
+  }
+}
+
 // Shadowed receivers
 //
 // `use v <- result.try(r)` inside `fn f(result: Type, ..)` is a call to
