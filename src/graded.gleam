@@ -2017,22 +2017,50 @@ pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
       ctx.registry,
       typeinfo.for_module(ctx.type_info, module_path),
       typeinfo.fn_typed_for_module(ctx.type_info, module_path),
+      typeinfo.evidence_for_module(ctx.type_info, module_path),
       ctx.sources.cfg.targets,
     )
     |> result.replace_error(FunctionNotFound(name)),
   )
+  let checker.ExplainResult(blocks: explained, classifications:) = explained
   // One block per bounds set is `explain`'s contract, so a length mismatch is a
   // broken invariant rather than a case to render: `strict_zip` makes it a crash
   // here instead of blocks silently dropped from the output.
   // nolint: assert_ok_pattern -- a broken invariant, not an error to handle
   let assert Ok(blocks) = list.strict_zip(checks, explained)
     as "explain returns one block per bounds set"
-  blocks
-  |> list.map(fn(block) {
-    let #(check, checker.ExplainedBlock(bounds:, total:, explanations:)) = block
-    why_block(name, check, bounds, total, explanations)
-  })
+  let rendered =
+    blocks
+    |> list.map(fn(block) {
+      let #(check, checker.ExplainedBlock(bounds:, total:, explanations:)) =
+        block
+      why_block(name, check, bounds, total, explanations)
+    })
+  // After the blocks and once, not per block: the resolutions are a property of
+  // the body, which every block explains the same one of.
+  list.append(rendered, typed_resolution_block(classifications))
   |> string.join("\n\n")
+}
+
+// What girard resolved each ambiguous call in the body to, beside what graded
+// charged it as. Only the sites lexically in the named function: a contributor
+// reached through a same-module call is one `why` on that callee away, and its
+// resolutions belong to its own body.
+fn typed_resolution_block(
+  classifications: List(types.ClassificationCheck),
+) -> List(String) {
+  case classifications {
+    [] -> []
+    checks -> [
+      ["typed resolutions"]
+      |> list.append(
+        list.map(checks, fn(check) {
+          "  " <> checker.format_typed_resolution(check)
+        }),
+      )
+      |> string.join("\n"),
+    ]
+  }
 }
 
 // Whether the module defines a function by this name. Publicity is not

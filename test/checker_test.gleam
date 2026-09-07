@@ -6718,12 +6718,15 @@ fn explain_blocks(
     registry,
     dict.new(),
     dict.new(),
+    typeinfo.evidence_for_module(typeinfo.none(), ""),
     types.all_targets(),
   )
   // These tests assert on contributors; the effective bounds and total term
   // paired with each block are `why`'s headline concern and are exercised
   // through it.
-  |> result.map(list.map(_, fn(block) { block.explanations }))
+  |> result.map(fn(explained) {
+    list.map(explained.blocks, fn(block) { block.explanations })
+  })
 }
 
 // The common case: one bound set, the empty knowledge base, one block back.
@@ -6764,9 +6767,10 @@ pub fn run() {
       ]),
       types.ProjectInferred,
     )
-  let assert Ok([
-    checker.ExplainedBlock(total:, explanations: [explanation], ..),
-  ]) =
+  let assert Ok(checker.ExplainResult(
+    blocks: [checker.ExplainedBlock(total:, explanations: [explanation], ..)],
+    ..,
+  )) =
     checker.explain(
       module,
       "app",
@@ -6776,6 +6780,7 @@ pub fn run() {
       signatures.from_glance_module("app", module),
       dict.new(),
       dict.new(),
+      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   total |> should.equal(effect_term.unknown())
@@ -6796,7 +6801,10 @@ pub fn go(r: Runner) -> Nil {
   r.run()
 }"
   let assert Ok(module) = glance.module(source)
-  let assert Ok([checker.ExplainedBlock(bounds:, total:, ..)]) =
+  let assert Ok(checker.ExplainResult(
+    blocks: [checker.ExplainedBlock(bounds:, total:, ..)],
+    ..,
+  )) =
     checker.explain(
       module,
       "app",
@@ -6806,6 +6814,7 @@ pub fn go(r: Runner) -> Nil {
       signatures.from_glance_module("app", module),
       dict.new(),
       dict.new(),
+      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   total |> should.equal(types.TVar("r.run"))
@@ -7994,4 +8003,149 @@ pub fn an_unsupported_error_buckets_by_its_feature_test() {
   |> should.equal(
     types.Undecided(types.FunctionSkipped("Unsupported(bit arrays)")),
   )
+}
+
+// The typed-resolution line
+//
+// The wording `graded why` prints for one row. Each relation states both halves
+// wherever they differ, so a reader sees the pair rather than a verdict on it —
+// and the two agreeing forms name the member or the module, which is exactly
+// what graded's own classification cannot say on its own.
+
+fn row(
+  object: String,
+  label: String,
+  graded: types.GradedClassification,
+  typed: types.TypedClassification,
+  relation: types.Relation,
+) -> types.ClassificationCheck {
+  types.ClassificationCheck(
+    module: "app",
+    function: "target",
+    object:,
+    label:,
+    span: glance.Span(0, 1),
+    graded:,
+    typed:,
+    relation:,
+  )
+}
+
+pub fn an_agreeing_module_call_line_names_the_module_test() {
+  row(
+    "io",
+    "println",
+    types.SyntaxModule("gleam/io"),
+    types.ProvedModuleCall("gleam/io", "println"),
+    types.Agree,
+  )
+  |> checker.format_typed_resolution()
+  |> should.equal(
+    "io.println: typed resolution module gleam/io.println (agrees)",
+  )
+}
+
+pub fn an_agreeing_field_call_line_names_the_member_test() {
+  row(
+    "list",
+    "send",
+    types.Field(Some("gleam/list")),
+    types.ProvedFieldCall(#("app", "Client"), "send"),
+    types.Agree,
+  )
+  |> checker.format_typed_resolution()
+  |> should.equal("list.send: typed resolution field Client.send (agrees)")
+}
+
+pub fn a_compatible_line_names_the_value_graded_charged_test() {
+  row(
+    "v",
+    "to_error",
+    types.WiredValue(types.WiredFunction(QualifiedName("gleam/io", "println"))),
+    types.ProvedFieldCall(#("app", "Validator"), "to_error"),
+    types.Compatible(types.WiredValueVersusMember),
+  )
+  |> checker.format_typed_resolution()
+  |> should.equal(
+    "v.to_error: typed resolution field Validator.to_error (compatible; graded charged the wired gleam/io.println)",
+  )
+}
+
+pub fn a_disagreeing_line_states_both_readings_test() {
+  row(
+    "io",
+    "println",
+    types.Field(Some("gleam/io")),
+    types.ProvedModuleCall("gleam/io", "println"),
+    types.Disagree,
+  )
+  |> checker.format_typed_resolution()
+  |> should.equal(
+    "io.println: typed resolution module gleam/io.println (DISAGREES with graded's field call io.println)",
+  )
+}
+
+pub fn a_line_with_no_typed_evidence_states_the_reason_test() {
+  row(
+    "io",
+    "println",
+    types.Field(Some("gleam/io")),
+    types.Undecided(types.FunctionSkipped("NoSuchField")),
+    types.NoTypedEvidence(types.FunctionSkipped("NoSuchField")),
+  )
+  |> checker.format_typed_resolution()
+  |> should.equal(
+    "io.println: no typed resolution (function skipped: NoSuchField)",
+  )
+}
+
+pub fn a_dropped_definitions_line_says_so_test() {
+  row(
+    "io",
+    "println",
+    types.SyntaxModule("gleam/io"),
+    types.Undecided(types.DefinitionDropped),
+    types.NoTypedEvidence(types.DefinitionDropped),
+  )
+  |> checker.format_typed_resolution()
+  |> should.equal(
+    "io.println: no typed resolution (definition dropped for the other build target)",
+  )
+}
+
+pub fn explain_states_its_typed_resolutions_once_per_function_test() {
+  // Two bound sets, so two blocks — but the resolutions are a property of the
+  // body, which both blocks explain the same one of, so they are stated once
+  // beside the blocks rather than repeated inside each.
+  let source =
+    "import gleam/io
+
+pub fn target(f: fn() -> Nil, g: fn() -> Nil) -> Nil {
+  f()
+  g()
+  io.println(\"hi\")
+}"
+  let assert Ok(module) = glance.module(source)
+  let assert Ok(explained) =
+    checker.explain(
+      module,
+      "app",
+      "target",
+      [
+        [ParamBound("f", types.TLabels(set.from_list(["Stdout"])))],
+        [
+          ParamBound("g", types.TLabels(set.from_list(["Stdout"]))),
+        ],
+      ],
+      effects.empty_knowledge_base("."),
+      signatures.from_glance_module("app", module),
+      dict.new(),
+      dict.new(),
+      typeinfo.evidence_for_module(typeinfo.none(), ""),
+      types.all_targets(),
+    )
+  list.length(explained.blocks) |> should.equal(2)
+  explained.classifications
+  |> list.map(fn(check) { #(check.function, check.object, check.label) })
+  |> should.equal([#("target", "io", "println")])
 }
