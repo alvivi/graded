@@ -7891,11 +7891,12 @@ pub fn target(int) -> String {
 // answer authoritative can route each reason on its own.
 
 // A `ModuleEvidence` slice with one resolution at spans 10..19, and the skips
-// and drops given.
+// and drops given. Drops are keyed by definition span, so `target`'s own is
+// `#(0, 40)`.
 fn evidence(
   resolution: option.Option(girard.Resolution),
   skipped: List(#(String, String)),
-  dropped: List(String),
+  dropped: List(#(Int, Int)),
 ) -> typeinfo.ModuleEvidence {
   typeinfo.ModuleEvidence(
     resolutions: case resolution {
@@ -7907,13 +7908,23 @@ fn evidence(
   )
 }
 
+// The definition every case below classifies inside: `target`, spanning 0..40.
+const target = glance.Function(
+  location: glance.Span(0, 40),
+  name: "target",
+  publicity: glance.Public,
+  parameters: [],
+  return: None,
+  body: [],
+)
+
 // The access span every case below classifies at.
 const access = glance.Span(10, 19)
 
 pub fn a_record_field_on_a_nominal_receiver_is_a_proved_field_call_test() {
   checker.classify_typed(
     access,
-    "target",
+    target,
     evidence(
       Some(girard.RecordField(girard.Named("app/log", "Logger", []), "print")),
       [],
@@ -7926,7 +7937,7 @@ pub fn a_record_field_on_a_nominal_receiver_is_a_proved_field_call_test() {
 pub fn a_module_function_is_a_proved_module_call_test() {
   checker.classify_typed(
     access,
-    "target",
+    target,
     evidence(Some(girard.ModuleFn("gleam/io", "println")), [], []),
   )
   |> should.equal(types.ProvedModuleCall("gleam/io", "println"))
@@ -7937,7 +7948,7 @@ pub fn a_record_field_on_a_non_nominal_receiver_is_undecided_test() {
   // field it names.
   checker.classify_typed(
     access,
-    "target",
+    target,
     evidence(Some(girard.RecordField(girard.Var(3), "print")), [], []),
   )
   |> should.equal(types.Undecided(types.ReceiverNotNominal))
@@ -7946,7 +7957,7 @@ pub fn a_record_field_on_a_non_nominal_receiver_is_undecided_test() {
 pub fn a_module_constant_is_not_a_call_target_test() {
   checker.classify_typed(
     access,
-    "target",
+    target,
     evidence(Some(girard.ModuleConstant("app/conf", "default")), [], []),
   )
   |> should.equal(types.Undecided(types.NotACallTarget("ModuleConstant")))
@@ -7955,7 +7966,7 @@ pub fn a_module_constant_is_not_a_call_target_test() {
 pub fn a_constructor_is_not_a_call_target_test() {
   checker.classify_typed(
     access,
-    "target",
+    target,
     evidence(Some(girard.Constructor("app/log", "Live")), [], []),
   )
   |> should.equal(types.Undecided(types.NotACallTarget("Constructor")))
@@ -7964,7 +7975,7 @@ pub fn a_constructor_is_not_a_call_target_test() {
 pub fn a_local_variable_is_not_a_call_target_test() {
   checker.classify_typed(
     access,
-    "target",
+    target,
     evidence(Some(girard.LocalVariable("handler")), [], []),
   )
   |> should.equal(types.Undecided(types.NotACallTarget("LocalVariable")))
@@ -7973,21 +7984,21 @@ pub fn a_local_variable_is_not_a_call_target_test() {
 pub fn an_unresolved_receiver_type_is_undecided_test() {
   checker.classify_typed(
     access,
-    "target",
+    target,
     evidence(Some(girard.Unresolved(girard.RecordAccessUnknownType)), [], []),
   )
   |> should.equal(types.Undecided(types.ReceiverTypeUnknown))
 }
 
 pub fn a_span_girard_recorded_nothing_at_is_undecided_test() {
-  checker.classify_typed(access, "target", evidence(None, [], []))
+  checker.classify_typed(access, target, evidence(None, [], []))
   |> should.equal(types.Undecided(types.NoResolutionAtSpan))
 }
 
 pub fn a_resolution_at_another_span_does_not_answer_test() {
   checker.classify_typed(
     glance.Span(10, 25),
-    "target",
+    target,
     evidence(Some(girard.ModuleFn("gleam/io", "println")), [], []),
   )
   |> should.equal(types.Undecided(types.NoResolutionAtSpan))
@@ -7996,7 +8007,7 @@ pub fn a_resolution_at_another_span_does_not_answer_test() {
 pub fn a_skipped_function_is_undecided_under_its_error_bucket_test() {
   checker.classify_typed(
     access,
-    "target",
+    target,
     evidence(
       Some(girard.ModuleFn("gleam/io", "println")),
       [#("target", "NoSuchField")],
@@ -8009,7 +8020,7 @@ pub fn a_skipped_function_is_undecided_under_its_error_bucket_test() {
 pub fn another_functions_skip_does_not_decide_this_one_test() {
   checker.classify_typed(
     access,
-    "target",
+    target,
     evidence(
       Some(girard.ModuleFn("gleam/io", "println")),
       [#("other", "NoSuchField")],
@@ -8024,20 +8035,32 @@ pub fn a_dropped_definition_is_undecided_before_anything_else_test() {
   // list and its spans say nothing — the drop is read first.
   checker.classify_typed(
     access,
-    "target",
+    target,
     evidence(
       Some(girard.ModuleFn("gleam/io", "println")),
       [#("target", "ArityMismatch")],
-      ["target"],
+      [#(0, 40)],
     ),
   )
   |> should.equal(types.Undecided(types.DefinitionDropped))
 }
 
+pub fn another_definitions_drop_does_not_decide_this_one_test() {
+  // A `@target` pair shares one name and not one span, so the twin left out of
+  // the build drops on its own span alone and the twin girard typed reads the
+  // resolution recorded inside it.
+  checker.classify_typed(
+    access,
+    target,
+    evidence(Some(girard.ModuleFn("gleam/io", "println")), [], [#(41, 80)]),
+  )
+  |> should.equal(types.ProvedModuleCall("gleam/io", "println"))
+}
+
 pub fn an_unsupported_error_buckets_by_its_feature_test() {
   checker.classify_typed(
     access,
-    "target",
+    target,
     evidence(None, [#("target", "Unsupported(bit arrays)")], []),
   )
   |> should.equal(
