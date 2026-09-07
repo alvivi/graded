@@ -8840,16 +8840,16 @@ pub fn a_narrowed_alias_girard_types_stays_a_field_test() {
 }
 
 pub fn girard_types_do_not_replace_a_syntax_proved_target_test() {
-  // The collision fixture inferred twice, with girard's types and with none.
-  // Six of its eight functions the syntax path already proves — a qualified
-  // `gleam/list` call, the construction sites' own wiring, and the field calls
-  // whose receiver a written parameter annotation names — and the typed run has
-  // to charge each of those the same target. Where the two differ, the untyped
-  // run must be the one that said [Unknown]: a sharpening, never a swap.
+  // The collision fixture inferred twice, with the inference's reading and with
+  // none. What the extractor proves on its own — a qualified `gleam/list` call
+  // and the construction sites' own wiring — the typed run has to charge the
+  // same target. Every call the reading decides is [Unknown] without one, so
+  // where the two differ the untyped run is the one that said [Unknown]: a
+  // sharpening, never a swap.
   //
   // girard types every one of the module's functions, which the premise test
   // above pins; the guard below is what keeps the comparison from running on an
-  // empty type map should that ever stop holding.
+  // empty reading should that ever stop holding.
   let assert Ok(source) =
     simplifile.read("test/fixtures/field_module_collision.gleam")
   let assert Ok(module) = glance.module(source)
@@ -8869,13 +8869,13 @@ pub fn girard_types_do_not_replace_a_syntax_proved_target_test() {
       "alias_in_narrowed_branch",
       "effects alias_in_narrowed_branch : [Unknown]",
     ),
-    #("block_alias", "effects block_alias : [Net]"),
+    #("block_alias", "effects block_alias : [Unknown]"),
     #("case_narrowed", "effects case_narrowed : [Unknown]"),
     #("count", "effects count : []"),
     #("direct_construction", "effects direct_construction : [Net]"),
-    #("let_assert_narrowed", "effects let_assert_narrowed : [Net]"),
+    #("let_assert_narrowed", "effects let_assert_narrowed : [Unknown]"),
     #("rebound_after_narrowing", "effects rebound_after_narrowing : [Net]"),
-    #("simple_alias", "effects simple_alias : [Net]"),
+    #("simple_alias", "effects simple_alias : [Unknown]"),
   ])
 
   let typed =
@@ -8935,6 +8935,135 @@ pub fn an_untyped_shadowed_call_result_charges_unknown_test() {
   )
   |> list.key_find("logger_call_result")
   |> should.equal(Ok("effects logger_call_result : [Unknown]"))
+}
+
+// A definition left out of the build for the other target
+//
+// The inference is run for one target, so a `@target(javascript)` definition in
+// an Erlang package is dropped rather than typed. graded still walks it, and a
+// shadowed receiver inside one is therefore decided by nothing: the call reads
+// [Unknown], and every report says which of the reasons it was. Kept out of
+// `test/fixtures` so the corpus there stays free of rows with no typed
+// evidence.
+const dropped_definition_source = "import gleam/io
+
+pub type Logger {
+  Loud(println: fn(String) -> Nil)
+  Quiet(n: Int)
+}
+
+@target(javascript)
+pub fn dropped(io: Logger) -> Nil {
+  io.println(\"hi\")
+}
+"
+
+fn dropped_definition_project() -> String {
+  support.write_fixture("build/dropped_definition_shadow", [
+    #("gleam.toml", "name = \"app\"\n"),
+    #("manifest.toml", stdlib_manifest),
+    #("m.gleam", dropped_definition_source),
+  ])
+}
+
+pub fn a_dropped_definitions_shadowed_call_charges_unknown_test() {
+  let root = dropped_definition_project()
+  let assert Ok(answered) = graded.run_effect(root, "m.dropped")
+  answered
+  |> string.contains("effects m.dropped : [Unknown]")
+  |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_dropped_definitions_why_names_the_drop_test() {
+  let root = dropped_definition_project()
+  let assert Ok(why) = graded.run_why(root, "m.dropped")
+  why
+  |> string.contains(
+    "io.println: no typed resolution (definition dropped for the other build target)",
+  )
+  |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn a_dropped_definitions_check_names_the_drop_test() {
+  let root =
+    support.write_fixture("build/dropped_definition_shadow_check", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #("manifest.toml", stdlib_manifest),
+      #("app.graded", "check m.dropped : []\n"),
+      #("m.gleam", dropped_definition_source),
+    ])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(report: graded.ModuleReport) { report.violations })
+  |> list.any(string.contains(
+    _,
+    "which also names the module `gleam/io`, and for which the type inference did not establish the module-or-field reading (definition dropped for the other build target)",
+  ))
+  |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn an_untyped_shadowed_call_says_why_it_charged_unknown_test() {
+  // The charge above, as `graded check` and `graded why` report it. With no
+  // reading of the module there is no resolution at the site, and both the
+  // violation's clause and the typed-resolution line say exactly that — the
+  // reader is told which module the receiver's name also stands for and what
+  // the inference failed to establish, not merely that something was unknown.
+  let assert Ok(source) = simplifile.read("test/fixtures/shadow_receiver.gleam")
+  let assert Ok(module) = glance.module(source)
+  let assert Ok(spec) = annotation.parse_file(shadow_receiver_spec)
+  let knowledge_base =
+    effects.empty_knowledge_base(".")
+    |> effects.with_assumes(annotation.extract_assumes(spec), types.UserAssume)
+    |> effects.with_type_fields(
+      annotation.extract_type_fields(spec),
+      types.UserAssume,
+    )
+  let #(violations, _findings, _warnings) =
+    checker.check(
+      module,
+      "shadow_receiver",
+      [
+        types.EffectAnnotation(
+          types.Check,
+          "logger_call_result",
+          [],
+          effect_term.from_effect_set(types.Specific(set.new())),
+          returns: None,
+        ),
+      ],
+      knowledge_base,
+      signatures.from_glance_module("shadow_receiver", module),
+      typeinfo.no_reading(),
+      dict.new(),
+      types.all_targets(),
+    )
+  let assert [violation] = violations
+  checker.format_call_explanation(violation.explanation)
+  |> should.equal(
+    "calls field `println` on `io`, which also names the module `gleam/io`, and for which the type inference did not establish the module-or-field reading (no reference recorded at this span), with unresolved effects [Unknown]",
+  )
+
+  let assert Ok(explained) =
+    checker.explain(
+      module,
+      "shadow_receiver",
+      "logger_call_result",
+      [[]],
+      knowledge_base,
+      signatures.from_glance_module("shadow_receiver", module),
+      typeinfo.no_reading(),
+      dict.new(),
+      types.all_targets(),
+    )
+  explained.classifications
+  |> list.map(checker.format_typed_resolution)
+  |> list.filter(string.starts_with(_, "io.println"))
+  |> should.equal([
+    "io.println: no typed resolution (no reference recorded at this span)",
+  ])
 }
 
 pub fn a_girard_typed_fieldless_receiver_reads_as_the_module_test() {
@@ -14745,10 +14874,10 @@ pub fn shadowed(list: Empty, r: Runner) -> String {
 }
 
 pub fn a_path_dependency_alias_reads_the_aliased_parameters_type_test() {
-  // The other polarity of the same rule. The alias again names a parameter
-  // other than the shadowed one, and it is again that parameter's annotation
-  // the receiver's type is read from — but `Empty` declares no `map` on any
-  // variant, so the compiler reads `gleam/list.map` and so does graded.
+  // The other polarity of the same rule. The receiver is an alias of a
+  // parameter other than the shadowed one, and `Empty` declares no `each` on
+  // any variant, so the compiler reads `gleam/list.each` and so does graded —
+  // in a path dependency as in the project.
   path_dep_effect_line(
     "shadow_path_dep_alias_fieldless",
     "import gleam/list
@@ -14758,12 +14887,12 @@ pub type Empty {
 }
 
 pub type Runner {
-  Runner(map: fn(String) -> String)
+  Runner(each: fn(List(Int), fn(Int) -> Nil) -> Nil)
 }
 
-pub fn shadowed(r: Runner, e: Empty) -> String {
+pub fn shadowed(r: Runner, e: Empty) -> Nil {
   let list = e
-  list.map(\"hi\")
+  list.each([1, 2], fn(_x) { Nil })
 }
 ",
     "shadowed",

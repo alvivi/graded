@@ -331,13 +331,12 @@ pub type UnknownReason {
   // bound, or wired value decides. The payload names the receiver type; the
   // module is "" for the syntactic fallback, which has none.
   FieldNotAnnotated(module: String, type_name: String)
-  // A call through a receiver whose name shadows an imported module, whose
-  // variant nothing fixed and whose type is unknown. Neither reading is
-  // established there — the label may be an accessor of the whole type or of
-  // one variant, and with no type nothing says which — so the call is charged
+  // A call through a receiver whose name shadows an imported module, for which
+  // the type inference established neither reading — so the call is charged
   // neither the module's effects nor the field's. The payload names the
-  // shadowed module, which is half of what the reader has to disambiguate.
-  AmbiguousShadowedReceiver(module: String)
+  // shadowed module, which is half of what the reader has to disambiguate, and
+  // why the reading was not established.
+  AmbiguousShadowedReceiver(module: String, reason: UndecidedReason)
   // A field call whose receiver's construction could not be traced or grounded.
   UntraceableReceiver
   // A field call whose receiver's construction was traced, but the wired
@@ -1226,6 +1225,11 @@ pub type UndecidedReason {
   NotACallTarget(kind: String)
   // A field of a type with no nominal identity, which nothing can be keyed by.
   ReceiverNotNominal
+  // A target proved for a site the reader did not ask about: a module function
+  // under another module or another name, or a field under another label. The
+  // payload names what was resolved, so a reader sees which of the two the span
+  // landed on.
+  ResolutionMismatch(resolved: String)
 }
 
 // What graded finally made of the call — the extractor's verdict, with the
@@ -1241,9 +1245,10 @@ pub type GradedClassification {
   // A field call the split left alone, carrying the module its name shadows
   // where it shadows one.
   Field(shadowed: Option(String))
-  // A field call whose receiver's name shadows a module and whose type
-  // establishes neither reading, charged `[Unknown]` rather than either one.
-  UndecidedShadowed(shadowed: String)
+  // A field call whose receiver's name shadows a module and whose site the type
+  // inference established neither reading for, charged `[Unknown]` rather than
+  // either one, with the reason it established none.
+  UndecidedShadowed(shadowed: String, reason: UndecidedReason)
   // A field whose receiver's construction site already named the value wired
   // in, so the call was charged that value rather than the field.
   WiredValue(value: WiredValue)
@@ -1302,8 +1307,4 @@ pub type CompatiblePair {
   // classification and nothing else — a wired value under a girard `ModuleFn`
   // is the undercharge shape and stays a disagreement.
   WiredValueVersusMember
-  // graded established neither reading and charged `[Unknown]`; girard named
-  // the member. `[Unknown]` names nothing to contradict and undercharges
-  // nothing, so the pair is compatible against either proved target.
-  UndecidedVersusMember
 }

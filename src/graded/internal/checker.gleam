@@ -36,14 +36,15 @@ import graded/internal/types.{
   NonCallableFieldCheckWarning, NonCallableReturnViolation, NotACallTarget,
   ParamBound, ProvedFieldCall, ProvedModuleCall, QualifiedName,
   ReceiverNotNominal, ReceiverTypeUnknown, ReceiverTypeUnresolved,
-  RefusedDeclaredReturn, ReturnIsNotAFunction, ReturnsClauseViolation,
-  StaleFunctionAssumeWarning, StaleReturnsClauseWarning, SyntaxModule, TUnion,
-  TVar, TypeSelectedModule, UnboundAssumeTermVariableWarning, UnbuiltExternal,
-  UncalledFactory, UnclosedReturnsClauseWarning, UnconstructedFieldCheckWarning,
-  Undecided, UndecidedShadowed, UndecidedVersusMember, UndeclaredExternal,
-  UndeclaredForeignReturn, UnderivableReturnedOperator,
-  UngroundReturnsClauseWarning, UnkeyedEffectsShapeWarning, UnknownClauseWarning,
-  UnmatchedCheckWarning, UnmatchedFieldAssumeWarning, UnmatchedFieldBoundWarning,
+  RefusedDeclaredReturn, ResolutionMismatch, ReturnIsNotAFunction,
+  ReturnsClauseViolation, StaleFunctionAssumeWarning, StaleReturnsClauseWarning,
+  SyntaxModule, TUnion, TVar, TypeSelectedModule,
+  UnboundAssumeTermVariableWarning, UnbuiltExternal, UncalledFactory,
+  UnclosedReturnsClauseWarning, UnconstructedFieldCheckWarning, Undecided,
+  UndecidedShadowed, UndeclaredExternal, UndeclaredForeignReturn,
+  UnderivableReturnedOperator, UngroundReturnsClauseWarning,
+  UnkeyedEffectsShapeWarning, UnknownClauseWarning, UnmatchedCheckWarning,
+  UnmatchedFieldAssumeWarning, UnmatchedFieldBoundWarning,
   UnmatchedFieldCheckWarning, UnmatchedFunctionAssumeWarning,
   UnmatchedModuleAssumeWarning, UnmatchedParamBoundWarning,
   UnmatchedReturnsClauseWarning, UnprovedCheck, UnprovedForeignFallback,
@@ -453,10 +454,8 @@ pub fn explain(
         classifications: classify_definition(
           definition.definition,
           module_path,
-          registry,
           context,
           reading,
-          cache,
         ),
       )
     }
@@ -1962,14 +1961,14 @@ pub fn format_typed_resolution(check: ClassificationCheck) -> String {
       resolution_line(
         site,
         "module " <> module <> "." <> name,
-        against_module(check.graded),
+        against_module(check.graded, module, name == check.label),
         check,
       )
     ProvedFieldCall(receiver: #(_module, type_name), label:) ->
       resolution_line(
         site,
         "field " <> type_name <> "." <> label,
-        against_field(check.graded),
+        against_field(check.graded, label == check.label),
         check,
       )
   }
@@ -1984,11 +1983,15 @@ fn resolution_line(
   comparison: Comparison,
   check: ClassificationCheck,
 ) -> String {
-  let standing = case comparison {
-    Agree -> "agrees"
-    Compatible(WiredValueVersusMember) | Compatible(UndecidedVersusMember) ->
+  let standing = case comparison, check.graded {
+    // A shadowed call graded read as the module was read there *by* this
+    // resolution, so the row is one answer stated twice and says so rather
+    // than claiming a comparison that did not happen.
+    Agree, TypeSelectedModule(..) -> "decided by the type inference"
+    Agree, _ -> "agrees"
+    Compatible(WiredValueVersusMember), _ ->
       "compatible; graded charged " <> graded_target(check)
-    Disagree -> "DISAGREES with graded's " <> graded_target(check)
+    Disagree, _ -> "DISAGREES with graded's " <> graded_target(check)
   }
   site <> ": typed resolution " <> target <> " (" <> standing <> ")"
 }
@@ -1999,8 +2002,14 @@ fn graded_target(check: ClassificationCheck) -> String {
     SyntaxModule(module:) | TypeSelectedModule(module:) ->
       "module call " <> module <> "." <> check.label
     Field(..) -> "field call " <> check.object <> "." <> check.label
-    UndecidedShadowed(shadowed:) ->
-      "[Unknown] where " <> check.object <> " also names " <> shadowed
+    UndecidedShadowed(shadowed:, reason:) ->
+      "[Unknown] where "
+      <> check.object
+      <> " also names "
+      <> shadowed
+      <> " ("
+      <> undecided_reason_text(reason)
+      <> ")"
     WiredValue(WiredFunction(name:)) -> "the wired " <> types.dotted_name(name)
     WiredValue(WiredLocal(name:)) -> "the wired " <> name
     WiredValue(WiredConstructor) -> "the wired constructor"
@@ -2016,6 +2025,8 @@ fn undecided_reason_text(reason: UndecidedReason) -> String {
     ReceiverTypeUnknown -> "receiver type not fixed at the access"
     NotACallTarget(kind:) -> "not a call target: " <> kind
     ReceiverNotNominal -> "receiver type is not nominal"
+    ResolutionMismatch(resolved:) ->
+      "resolved to " <> resolved <> ", which is not this site's target"
   }
 }
 
@@ -2106,10 +2117,12 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         // Not "could not be traced": the value may well have been. What is
         // undecided is whether this is a field call at all, and the module it
         // would otherwise be is the other half the reader has to weigh.
-        AmbiguousShadowedReceiver(module:) ->
+        AmbiguousShadowedReceiver(module:, reason:) ->
           ", which also names the module `"
           <> module
-          <> "` and whose type nothing here fixes,"
+          <> "`, and for which the type inference did not establish the module-or-field reading ("
+          <> undecided_reason_text(reason)
+          <> "),"
         UntraceableReceiver -> ", whose value could not be traced,"
         UnresolvedFieldValue ->
           ", whose wired value's effects could not be resolved,"
@@ -4676,14 +4689,7 @@ fn collect_effects(
   // resolved fold, so a call that reads as the module is folded here like any
   // other qualified call rather than appended to a list already consumed.
   let ShadowedSplit(module_reads:, field_reads:, undecided:) =
-    split_shadowed_field_calls(
-      result.field,
-      registry,
-      context,
-      reading,
-      cache,
-      function,
-    )
+    split_shadowed_field_calls(result.field, reading, function)
   let resolved_calls = list.append(result.resolved, module_reads)
   // A call neither reading is established for. Charged here rather than through
   // the field resolver, which would answer with the value the receiver was
@@ -4696,13 +4702,13 @@ fn collect_effects(
   // a `type` line or a construction site would supply is the reading in doubt.
   let undecided_effects =
     list.map(undecided, fn(entry) {
-      let UndecidedShadowedCall(call:, shadowed:) = entry
+      let UndecidedShadowedCall(call:, shadowed:, reason:) = entry
       let resolution = case field_bound_resolution(call, param_bounds) {
         Some(resolution) -> resolution
         None ->
           Resolution(
             term: effect_term.unknown(),
-            reason: Some(AmbiguousShadowedReceiver(shadowed)),
+            reason: Some(AmbiguousShadowedReceiver(shadowed, reason)),
             origin: None,
             fallback: types.NoFallback,
           )
@@ -8895,12 +8901,11 @@ pub fn classify_module(
   module: Module,
   module_path: String,
   knowledge_base: KnowledgeBase,
-  registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
   girard_fn_typed: dict.Dict(String, Set(String)),
   package_targets: types.PackageTargets,
 ) -> List(ClassificationCheck) {
-  let ModuleContext(context:, cache:) =
+  let ModuleContext(context:, cache: _) =
     module_context(
       module,
       module_path,
@@ -8909,14 +8914,7 @@ pub fn classify_module(
       package_targets,
     )
   list.flat_map(module.functions, fn(definition) {
-    classify_definition(
-      definition.definition,
-      module_path,
-      registry,
-      context,
-      reading,
-      cache,
-    )
+    classify_definition(definition.definition, module_path, context, reading)
   })
 }
 
@@ -8927,29 +8925,22 @@ pub fn classify_module(
 pub fn classify_definition(
   function: Function,
   module_path: String,
-  registry: SignatureRegistry,
   context: ImportContext,
   reading: typeinfo.ModuleReading,
-  cache: LocalCache,
 ) -> List(ClassificationCheck) {
   let result =
     extract.extract_function_calls_with_captures(function, context, [])
-  let split =
-    split_shadowed_field_calls(
-      result.field,
-      registry,
-      context,
-      reading,
-      cache,
-      function,
-    )
+  let split = split_shadowed_field_calls(result.field, reading, function)
   let moved =
     list.fold(split.module_reads, dict.new(), fn(acc, call) {
       dict.insert(acc, extract.span_key(call.span), call.name.module)
     })
   let undecided =
     list.fold(split.undecided, dict.new(), fn(acc, entry) {
-      dict.insert(acc, extract.span_key(entry.call.span), entry.shadowed)
+      dict.insert(acc, extract.span_key(entry.call.span), #(
+        entry.shadowed,
+        entry.reason,
+      ))
     })
   list.map(result.ambiguous, fn(row) {
     let graded = graded_classification(row, moved, undecided)
@@ -8975,7 +8966,7 @@ pub fn classify_definition(
 fn graded_classification(
   row: extract.AmbiguousCall,
   moved: dict.Dict(#(Int, Int), String),
-  undecided: dict.Dict(#(Int, Int), String),
+  undecided: dict.Dict(#(Int, Int), #(String, UndecidedReason)),
 ) -> GradedClassification {
   case row.verdict {
     extract.AsModule(module:) -> SyntaxModule(module)
@@ -8984,7 +8975,7 @@ fn graded_classification(
       let span = extract.span_key(row.site.call_span)
       case dict.get(moved, span), dict.get(undecided, span) {
         Ok(module), _ -> TypeSelectedModule(module)
-        Error(Nil), Ok(module) -> UndecidedShadowed(module)
+        Error(Nil), Ok(#(module, reason)) -> UndecidedShadowed(module, reason)
         Error(Nil), Error(Nil) -> Field(shadowed)
       }
     }
@@ -8997,31 +8988,53 @@ fn graded_classification(
 pub fn relate(check: ClassificationCheck) -> Relation {
   case check.typed {
     Undecided(reason:) -> NoTypedEvidence(reason)
-    ProvedFieldCall(..) -> Compared(against_field(check.graded))
-    ProvedModuleCall(..) -> Compared(against_module(check.graded))
+    ProvedFieldCall(label:, ..) ->
+      Compared(against_field(check.graded, label == check.label))
+    ProvedModuleCall(module:, name:) ->
+      Compared(against_module(check.graded, module, name == check.label))
   }
 }
 
-// graded's answer against a field girard proved. The two name different halves
-// of one site wherever graded answered with the value wired in, and nothing at
-// all wherever it left the reading undecided — neither contradicts the member.
-fn against_field(graded: GradedClassification) -> Comparison {
+// graded's answer against a field the inference proved. The two name different
+// halves of one site wherever graded answered with the value wired in — that
+// does not contradict the member.
+//
+// `same_label` is the identity half of the comparison: a proved field under
+// another label is not this site's answer, so agreement is off the table
+// whatever graded made of it. graded's own undecided is derived from the
+// inference's answer, so an undecided beside a proved target is either that
+// mismatch or an internal inconsistency, and both must be seen.
+fn against_field(graded: GradedClassification, same_label: Bool) -> Comparison {
   case graded {
-    Field(..) -> Agree
-    WiredValue(..) -> Compatible(WiredValueVersusMember)
-    UndecidedShadowed(..) -> Compatible(UndecidedVersusMember)
-    SyntaxModule(..) | TypeSelectedModule(..) -> Disagree
+    Field(..) if same_label -> Agree
+    WiredValue(..) if same_label -> Compatible(WiredValueVersusMember)
+    Field(..)
+    | WiredValue(..)
+    | UndecidedShadowed(..)
+    | SyntaxModule(..)
+    | TypeSelectedModule(..) -> Disagree
   }
 }
 
-// graded's answer against a module call girard proved. The wired-value cell is
-// the asymmetric one: here graded charged a value where the compiler reads the
-// module, which is the undercharge shape and no compatible pair.
-fn against_module(graded: GradedClassification) -> Comparison {
+// graded's answer against a module call the inference proved. The wired-value
+// cell is the asymmetric one: here graded charged a value where the compiler
+// reads the module, which is the undercharge shape and no compatible pair.
+//
+// Both halves of the identity are weighed: a module call graded read under
+// another module, or under another function than the site's label, is not the
+// answer graded gave.
+fn against_module(
+  graded: GradedClassification,
+  module: String,
+  same_name: Bool,
+) -> Comparison {
   case graded {
-    SyntaxModule(..) | TypeSelectedModule(..) -> Agree
-    UndecidedShadowed(..) -> Compatible(UndecidedVersusMember)
-    Field(..) | WiredValue(..) -> Disagree
+    SyntaxModule(m) | TypeSelectedModule(m) if m == module && same_name -> Agree
+    SyntaxModule(..)
+    | TypeSelectedModule(..)
+    | UndecidedShadowed(..)
+    | Field(..)
+    | WiredValue(..) -> Disagree
   }
 }
 
@@ -9031,32 +9044,25 @@ fn against_module(graded: GradedClassification) -> Comparison {
 // `gleam/result.try`, not a field call on `result`: Gleam reads a bare
 // identifier that shadows an import as the module wherever the binding's type
 // grants no record accessor for the label. Extraction cannot ask what type a
-// receiver has, so it carries both readings on the call and the decision is
-// taken here, where girard's types and the accessor index are in scope.
-
-// How much is known about a shadowed receiver's type.
-//
-// Not an `Option(#(String, String))`: `typeinfo.receiver_type` answers `None`
-// for a function type, a tuple and a type variable as readily as for a span it
-// has no entry for, and those are types that carry no field at all — reading
-// every `None` as "unknown" would leave an annotated `fn(..)` parameter at
-// `[Unknown]` where the compiler must select the module.
-type ReceiverShape {
-  NamedReceiver(module: String, type_name: String)
-  FieldlessReceiver
-  UnknownReceiver
-}
+// receiver has, so it carries both readings on the call, and the decision is
+// taken here from the type inference's own resolution of the access — the
+// compiler's rule already applied, rather than re-derived from the labels each
+// variant declares. Where that resolution establishes neither reading, the call
+// is charged `[Unknown]` and keeps the reason.
 
 // What a field call whose receiver's name shadows an import reads.
 //
-// The two readings are not exhaustive. The field reading is the compiler's only
-// where the receiver's variant is fixed or the label is an accessor of the whole
-// type, and with no type for the receiver the second cannot be established at
-// all — so a shadowed, un-narrowed, untyped receiver reads as neither.
+// The two readings are not exhaustive: where the type inference resolved the
+// site to neither of them — or to a target that is not this site's — the call
+// reads as neither, and the reason rides the third state.
+//
+// `ReadsTheModule` carries the whole name the inference resolved, so the
+// lowered call is the pair it named rather than one reassembled from the
+// shadowed module and the accessed label.
 type ShadowedReading {
-  ReadsTheModule(module: String)
+  ReadsTheModule(name: QualifiedName)
   ReadsTheField
-  ReadsNeither(module: String)
+  ReadsNeither(module: String, reason: UndecidedReason)
 }
 
 // What the shadowed-receiver split makes of a module's field calls: the ones the
@@ -9083,168 +9089,92 @@ pub type ShadowedSplit {
 }
 
 // A field call neither reading is established for, with the module its
-// receiver's name shadows. `ReadsNeither` is reached under a shadowed receiver
-// and nowhere else, so the module is carried on the entry rather than read back
-// out of an `Option` that can no longer be empty.
+// receiver's name shadows and the reason the inference established neither.
+// `ReadsNeither` is reached under a shadowed receiver and nowhere else, so the
+// module is carried on the entry rather than read back out of an `Option` that
+// can no longer be empty.
 pub type UndecidedShadowedCall {
-  UndecidedShadowedCall(call: types.FieldCall, shadowed: String)
+  UndecidedShadowedCall(
+    call: types.FieldCall,
+    shadowed: String,
+    reason: UndecidedReason,
+  )
 }
 
 pub fn split_shadowed_field_calls(
   field_calls: List(types.FieldCall),
-  registry: SignatureRegistry,
-  context: ImportContext,
   reading: typeinfo.ModuleReading,
-  cache: LocalCache,
   function: Function,
 ) -> ShadowedSplit {
   use split, call <- list.fold_right(field_calls, ShadowedSplit([], [], []))
-  case shadowed_module_read(call, registry, context, reading, cache, function) {
-    ReadsTheModule(module_path) ->
+  case shadowed_module_read(call, function, reading) {
+    ReadsTheModule(name:) ->
       ShadowedSplit(..split, module_reads: [
-        types.ResolvedCall(
-          name: QualifiedName(module: module_path, function: call.label),
-          span: call.span,
-        ),
+        types.ResolvedCall(name:, span: call.span),
         ..split.module_reads
       ])
     ReadsTheField ->
       ShadowedSplit(..split, field_reads: [call, ..split.field_reads])
-    ReadsNeither(module_path) ->
+    ReadsNeither(module: module_path, reason:) ->
       ShadowedSplit(..split, undecided: [
-        UndecidedShadowedCall(call:, shadowed: module_path),
+        UndecidedShadowedCall(call:, shadowed: module_path, reason:),
         ..split.undecided
       ])
   }
 }
 
-// Which of the two readings a shadowed field call takes. An uncertainty that
-// leaves the field reading standing answers `ReadsTheField`: choosing the module
-// where a field is real charges a pure module function for an effectful field,
-// which is the undercharge direction.
+// Which of the two readings a shadowed field call takes, decided by what the
+// type inference resolved the access to and by nothing else. Gleam's rule —
+// the module wherever the receiver's type grants no accessor for the label,
+// the field wherever it does — is the compiler's own, and the resolution is
+// that rule already applied.
 //
-// The one uncertainty that leaves *neither* standing is a receiver with no type.
-// `PossiblyNarrowedReceiver` keeps the field: a pattern or a construction fixed
-// the variant, so the field exists and the compiler reads it. An un-narrowed
-// receiver reaches only the accessors every variant declares, and with no type
-// there is nothing to ask which those are.
+// Identity is part of the boundary. A module call is this site's only where the
+// module resolved is the one the receiver's name shadows *and* the function is
+// the accessed label; a field call only where the label resolved is the
+// accessed one. Anything else — a span that landed on a neighbouring reference,
+// an alias whose canonical path is not the import string, a regression in the
+// inference — reads as neither, naming what was resolved, rather than as a
+// lookup under a name the site never wrote.
+//
+// Every other absence is the third state too: a definition left out of the
+// build for the other target, a function the inference declined, a span it
+// recorded nothing at, a resolution that is not a call target, and a field on a
+// receiver with no nominal type. Each charges `[Unknown]` and keeps its reason.
 fn shadowed_module_read(
   call: types.FieldCall,
-  registry: SignatureRegistry,
-  context: ImportContext,
-  reading: typeinfo.ModuleReading,
-  cache: LocalCache,
   function: Function,
+  reading: typeinfo.ModuleReading,
 ) -> ShadowedReading {
   case call.shadowed_module {
     None -> ReadsTheField
-    Some(module_path) ->
-      case receiver_shape(call, context, reading, cache, function) {
-        UnknownReceiver ->
-          case call.receiver_narrowing {
-            types.UnnarrowedReceiver -> ReadsNeither(module_path)
-            types.PossiblyNarrowedReceiver -> ReadsTheField
-          }
-        FieldlessReceiver -> ReadsTheModule(module_path)
-        NamedReceiver(module:, type_name:) ->
-          case
-            grants_no_accessor(
-              registry,
-              #(module, type_name),
-              call.label,
-              context,
-              call.receiver_narrowing,
-            )
-          {
-            True -> ReadsTheModule(module_path)
-            False -> ReadsTheField
-          }
+    Some(shadowed) -> {
+      let resolved =
+        classify_typed(call.access_span, function, reading.evidence)
+      case resolved {
+        ProvedModuleCall(module:, name:)
+          if module == shadowed && name == call.label
+        -> ReadsTheModule(QualifiedName(module:, function: name))
+        ProvedFieldCall(label:, ..) if label == call.label -> ReadsTheField
+        ProvedModuleCall(..) | ProvedFieldCall(..) ->
+          ReadsNeither(shadowed, ResolutionMismatch(typed_name(resolved)))
+        Undecided(reason:) -> ReadsNeither(shadowed, reason)
       }
+    }
   }
 }
 
-// The receiver's type, girard first and the written annotation second. girard
-// says nothing for an unresolved type variable and for a span it has no entry
-// at, and both fall through to the annotation.
-fn receiver_shape(
-  call: types.FieldCall,
-  context: ImportContext,
-  reading: typeinfo.ModuleReading,
-  cache: LocalCache,
-  function: Function,
-) -> ReceiverShape {
-  case
-    girard_receiver_shape(
-      reading,
-      call.receiver_span.start,
-      call.receiver_span.end,
-    )
-  {
-    NamedReceiver(..) as shape | FieldlessReceiver as shape -> shape
-    UnknownReceiver ->
-      // The annotation answers only where the receiver's value *is* a
-      // parameter's. The provenance names which one, canonicalized where the
-      // receiver reached it through an alias, so a `let` or a clause pattern
-      // that rebound the name to a value of another type names that value's own
-      // root rather than the shadowed parameter's — a stale annotation would
-      // charge a module call for a field the value really has. A dotted path is
-      // a projection *out of* a parameter, whose type is the field's and not the
-      // parameter's, so only a bare one describes this receiver. All of which
-      // matters most exactly where girard is absent: path-dependency inference
-      // is handed no types at all.
-      case call.provenance {
-        types.ParameterRoot(path:) ->
-          case string.split(path, ".") {
-            [name] ->
-              syntactic_receiver_shape(
-                function,
-                name,
-                context,
-                cache.fn_alias_types,
-              )
-            _ -> UnknownReceiver
-          }
-        _ -> UnknownReceiver
-      }
-  }
-}
-
-// The shape girard's inferred type gives the receiver.
-//
-// A `Named` type is the nominal one the field registry is keyed by. A `Fn` and a
-// `Tuple` carry no record field under any substitution, so both are fieldless
-// wherever girard reaches one — the same reading a written `fn(..)` or tuple
-// annotation gets, which is what keeps a receiver girard typed from being less
-// decided than one a parameter annotation names. A `Var` says nothing: girard
-// emits one both for a real generic and for an inference variable it never
-// resolved, and calling an unresolved one fieldless would undercharge.
-fn girard_receiver_shape(
-  reading: typeinfo.ModuleReading,
-  start: Int,
-  end: Int,
-) -> ReceiverShape {
-  case typeinfo.type_at(reading.expressions, start, end) {
-    Some(girard.Named(module, name, _arguments)) ->
-      NamedReceiver(module:, type_name: name)
-    Some(girard.Fn(..)) | Some(girard.Tuple(..)) -> FieldlessReceiver
-    Some(girard.Var(..)) | None -> UnknownReceiver
-  }
-}
-
-// The shape a written parameter annotation gives the receiver.
-//
-// Separate from `syntactic_param_type`, which answers named types only because
-// rule 3 keys `type`-line lookups by nominal type: here a `fn(..)`, a tuple and
-// a type variable are answers in their own right.
-fn syntactic_receiver_shape(
-  function: Function,
-  object: String,
-  context: ImportContext,
-  alias_map: dict.Dict(String, glance.Type),
-) -> ReceiverShape {
-  case parameter_annotation(function, object) {
-    Some(annotation) -> annotated_receiver_shape(annotation, context, alias_map)
-    None -> UnknownReceiver
+// A proved resolution as the name it proved, for a reader weighing it against
+// the name the site writes.
+fn typed_name(typed: TypedClassification) -> String {
+  case typed {
+    ProvedModuleCall(module:, name:) ->
+      types.dotted_name(QualifiedName(module:, function: name))
+    ProvedFieldCall(receiver: #(module, type_name), label:) ->
+      types.dotted_name(QualifiedName(module:, function: type_name))
+      <> "."
+      <> label
+    Undecided(..) -> ""
   }
 }
 
@@ -9266,113 +9196,6 @@ fn parameter_annotation(
   {
     Ok(glance.FunctionParameter(type_:, ..)) -> type_
     Error(Nil) -> None
-  }
-}
-
-// One annotation's shape, read through the module's type aliases.
-//
-// A variable *written on the parameter* is provably a generic: Gleam has no row
-// polymorphism, so no field call goes through one and the compiler reads the
-// module. A variable the alias map arrives at is a different thing entirely —
-// it is bound by the alias's own parameter list and stands for whatever
-// argument the annotation passed (`type Identity(a) = a`, reached from
-// `Identity(Runner)`, yields a bare `a`), which `resolve_alias` does not
-// substitute. Calling that one fieldless would rewrite a real field call on the
-// argument's type as a pure module call, so it says nothing instead.
-//
-// A `fn(..)` or a tuple carries no fields under any substitution, so both are
-// fieldless wherever they are reached. A hole says nothing, and neither does
-// the alias a cycle closes on — it names a type the index does not hold.
-fn annotated_receiver_shape(
-  annotation: glance.Type,
-  context: ImportContext,
-  alias_map: dict.Dict(String, glance.Type),
-) -> ReceiverShape {
-  case annotation {
-    glance.VariableType(..) -> FieldlessReceiver
-    _ ->
-      case signatures.resolve_alias(annotation, alias_map) {
-        glance.NamedType(name:, module:, ..) ->
-          named_receiver_shape(name, module, context)
-        glance.FunctionType(..) | glance.TupleType(..) -> FieldlessReceiver
-        glance.VariableType(..) | glance.HoleType(..) -> UnknownReceiver
-      }
-  }
-}
-
-// A named annotation read through the module's imports. An alias that stands
-// for no import names nothing, and nothing is what the shape says.
-fn named_receiver_shape(
-  name: String,
-  module: Option(String),
-  context: ImportContext,
-) -> ReceiverShape {
-  case annotated_type_module(name, module, context) {
-    Some(#(type_module, type_name)) ->
-      NamedReceiver(module: type_module, type_name:)
-    None -> UnknownReceiver
-  }
-}
-
-// Whether the receiver's type grants no accessor for `label`, the one reading
-// that makes the call the module's.
-//
-// A type the package never parsed proves nothing. An opaque type read from
-// outside its defining module grants no accessor there, and no `case` there can
-// narrow it either, since its constructors are invisible too.
-//
-// Which labels count as accessors is what the receiver's narrowing decides. A
-// receiver a pattern or a construction fixed to one variant reaches a label
-// that variant alone declares, so any variant's label keeps the field. One that
-// nothing narrowed reaches only the labels every variant declares at one field
-// index and one type — the accessors the compiler compiles — and a label
-// outside that set is the module's, whatever other variants declare. A label
-// leaves that set on proof and not on doubt: two field types a syntax-level
-// read cannot part keep it.
-fn grants_no_accessor(
-  registry: SignatureRegistry,
-  receiver_type: #(String, String),
-  label: String,
-  context: ImportContext,
-  narrowing: types.ReceiverNarrowing,
-) -> Bool {
-  let found =
-    accessor_lookup_keys(receiver_type, context.module_path)
-    |> list.find_map(fn(key) {
-      case signatures.accessor_info(registry, key) {
-        Some(info) -> Ok(#(key.0, info))
-        None -> Error(Nil)
-      }
-    })
-  case found {
-    Error(Nil) -> False
-    Ok(#(defining_module, info)) -> {
-      let granted = case narrowing {
-        types.UnnarrowedReceiver -> info.every_label
-        types.PossiblyNarrowedReceiver -> info.any_label
-      }
-      { info.opaque_ && defining_module != context.module_path }
-      || !set.contains(granted, label)
-    }
-  }
-}
-
-// The keys the accessor index is consulted under — rule 3's key list, plus
-// `#("gleam", name)` for a bare annotation, which is where the prelude's own
-// entries are keyed and which no module-qualified key reaches.
-//
-// Appending it needs no list of prelude names to gate on: a bare name the
-// module itself declares already matched `#(module_path, name)`, and a bare
-// name it does not declare is either the prelude's or absent from the index
-// either way.
-fn accessor_lookup_keys(
-  receiver_type: #(String, String),
-  module_path: String,
-) -> List(#(String, String)) {
-  let keys = declared_type_field_keys(Some(receiver_type), module_path)
-  case receiver_type {
-    #("", name) -> list.append(keys, [#("gleam", name)])
-    _ -> keys
   }
 }
 

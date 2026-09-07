@@ -476,7 +476,7 @@ pub fn classification_checks(
   directory: String,
 ) -> Result(List(types.ClassificationCheck), GradedError) {
   use ctx <- result.map(load_project_context(directory))
-  let ProjectContext(sources:, registry:, type_info:, knowledge_base:, ..) = ctx
+  let ProjectContext(sources:, type_info:, knowledge_base:, ..) = ctx
   use #(gleam_path, module) <- list.flat_map(sources.parsed)
   let module_path =
     config.module_path_for_source(gleam_path, sources.source_directory)
@@ -484,7 +484,6 @@ pub fn classification_checks(
     module,
     module_path,
     knowledge_base,
-    registry,
     typeinfo.reading_for_module(type_info, module_path),
     typeinfo.fn_typed_for_module(type_info, module_path),
     sources.cfg.targets,

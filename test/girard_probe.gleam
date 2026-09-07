@@ -36,7 +36,6 @@ import graded/internal/checker
 import graded/internal/config
 import graded/internal/effects
 import graded/internal/extract
-import graded/internal/signatures
 import graded/internal/typeinfo
 import graded/internal/types.{type ClassificationCheck}
 import simplifile
@@ -47,7 +46,7 @@ pub fn main() -> Nil {
     // sanity anchors are read.
     ["--detail", deps_dir, ..roots] if roots != [] -> {
       let rows = probe_all(deps_dir, roots)
-      list.each(rows, print_row)
+      list.each(rows, fn(row) { io.println(row_line(row)) })
       report_totals(rows)
     }
     [deps_dir, ..roots] if roots != [] ->
@@ -59,26 +58,23 @@ pub fn main() -> Nil {
   }
 }
 
-fn print_row(check: ClassificationCheck) -> Nil {
-  io.println(
-    check.module
-    <> "."
-    <> check.function
-    <> "  "
-    <> checker.format_typed_resolution(check),
-  )
+// One row named by where it sits, with both halves of its reading.
+fn row_line(check: ClassificationCheck) -> String {
+  check.module
+  <> "."
+  <> check.function
+  <> "  "
+  <> checker.format_typed_resolution(check)
 }
 
-// Every root, against one borrowed dependency tree. The borrow is scanned and
-// parsed once here rather than per root: it is the same tree for all of them,
-// and parsing it is hundreds of files.
+// Every root, against one borrowed dependency tree. The borrow is scanned once
+// here rather than per root: it is the same tree for all of them.
 fn probe_all(
   deps_dir: String,
   roots: List(String),
 ) -> List(ClassificationCheck) {
   let borrowed = effects.dependency_module_files(deps_dir)
-  let borrowed_registry = registry_of_files(borrowed)
-  list.flat_map(roots, fn(root) { probe(borrowed, borrowed_registry, root) })
+  list.flat_map(roots, fn(root) { probe(borrowed, root) })
 }
 
 // One package
@@ -88,7 +84,6 @@ fn probe_all(
 
 fn probe(
   borrowed: Dict(String, String),
-  borrowed_registry: signatures.SignatureRegistry,
   root: String,
 ) -> List(ClassificationCheck) {
   let source_dir = root <> "/src"
@@ -122,24 +117,6 @@ fn probe(
   let knowledge_base =
     effects.empty_knowledge_base(root)
     |> effects.with_constructors(cross_constructors)
-  // The dependency modules' signatures as well as the package's own: the
-  // shadowed-receiver split asks the registry whether the receiver's type
-  // declares the label, and a type declared in a dependency answers nothing
-  // from a package-only registry — which reads as "no accessor index at all"
-  // and keeps the field. Production merges the two the same way.
-  let registry =
-    list.fold(
-      entries,
-      signatures.merge(borrowed_registry, registry_of_files(own_deps)),
-      fn(acc, entry) {
-        let #(module_path, module) = entry
-        signatures.merge(
-          acc,
-          signatures.from_glance_module(module_path, module),
-        )
-      },
-    )
-
   let rows =
     list.flat_map(entries, fn(entry) {
       let #(module_path, module) = entry
@@ -147,7 +124,6 @@ fn probe(
         module,
         module_path,
         knowledge_base,
-        registry,
         typeinfo.reading_for_module(type_info, module_path),
         typeinfo.fn_typed_for_module(type_info, module_path),
         package_targets,
@@ -170,25 +146,6 @@ fn type_index(results: Dict(String, girard.ModuleResult)) -> typeinfo.TypeInfo {
       #({ pair.0 }, typeinfo.evidence_of(pair.1, checker.error_bucket))
     }),
   )
-}
-
-// The signatures of every readable module in a `module path -> file` map.
-fn registry_of_files(
-  files: Dict(String, String),
-) -> signatures.SignatureRegistry {
-  use acc, module_path, path <- dict.fold(files, signatures.empty())
-  case simplifile.read(path) {
-    Ok(source) ->
-      case glance.module(source) {
-        Ok(module) ->
-          signatures.merge(
-            acc,
-            signatures.from_glance_module(module_path, module),
-          )
-        Error(_) -> acc
-      }
-    Error(_) -> acc
-  }
 }
 
 // The targets the scanned package declares. A root with no readable
@@ -380,21 +337,13 @@ fn report_totals(rows: List(ClassificationCheck)) -> Nil {
 }
 
 fn report_rows(rows: List(ClassificationCheck)) -> Nil {
-  io.println("")
-  io.println("ambiguous call sites: " <> int.to_string(list.length(rows)))
-  io.println("")
-  io.println("relations:")
-  print_tally(tally(list.map(rows, relation_label)))
-  io.println("")
-  io.println("graded's classification x girard's:")
-  print_tally(
-    tally(
-      list.map(rows, fn(check) {
-        graded_label(check.graded) <> " / " <> typed_label(check.typed)
-      }),
-    ),
-  )
+  list.each(report_lines(rows), io.println)
+}
 
+// The whole per-package (and total) report over a set of rows, as lines. Built
+// rather than printed so a test can pin the wording of a report holding one row
+// of each shape it accounts for.
+pub fn report_lines(rows: List(ClassificationCheck)) -> List(String) {
   let undecided =
     list.filter(rows, fn(check) {
       case checker.relate(check) {
@@ -402,23 +351,54 @@ fn report_rows(rows: List(ClassificationCheck)) -> Nil {
         types.Compared(..) -> False
       }
     })
-  io.println("")
-  io.println(
-    "sites with no typed evidence: " <> int.to_string(list.length(undecided)),
-  )
-  io.println("  rate: " <> percent(list.length(undecided), list.length(rows)))
-  io.println("")
-  io.println("no typed evidence, by reason:")
-  print_tally(tally(list.map(undecided, relation_label)))
-
   let disagree =
     list.filter(rows, fn(check) {
       checker.relate(check) == types.Compared(types.Disagree)
     })
-  io.println("")
-  io.println("disagreements (one read the module, the other the field):")
-  io.println("  " <> int.to_string(list.length(disagree)))
-  list.each(disagree, print_row)
+  list.flatten([
+    ["", "ambiguous call sites: " <> int.to_string(list.length(rows))],
+    ["", "relations:"],
+    tally_lines(tally(list.map(rows, relation_label))),
+    ["", "graded's classification x girard's:"],
+    tally_lines(
+      tally(
+        list.map(rows, fn(check) {
+          graded_label(check.graded) <> " / " <> typed_label(check.typed)
+        }),
+      ),
+    ),
+    [
+      "",
+      "sites with no typed evidence: " <> int.to_string(list.length(undecided)),
+      "  rate: " <> percent(list.length(undecided), list.length(rows)),
+      "",
+      "no typed evidence, by reason:",
+    ],
+    tally_lines(tally(list.map(undecided, relation_label))),
+    // Every undecided shadowed call, whatever its relation. The
+    // no-typed-evidence tally above filters on the relation, which a
+    // resolution mismatch does not have: graded refused what the inference
+    // proved, so the row relates as a disagreement and would go uncounted
+    // there.
+    ["", "undecided shadowed calls, by reason:"],
+    tally_lines(tally(list.filter_map(rows, undecided_shadowed_reason))),
+    [
+      "",
+      "disagreements (one read the module, the other the field):",
+      "  " <> int.to_string(list.length(disagree)),
+    ],
+    list.map(disagree, row_line),
+  ])
+}
+
+// The reason graded left a shadowed call undecided, for the rows that are one.
+fn undecided_shadowed_reason(
+  check: ClassificationCheck,
+) -> Result(String, Nil) {
+  case check.graded {
+    types.UndecidedShadowed(reason:, ..) -> Ok(undecided_label(reason))
+    _ -> Error(Nil)
+  }
 }
 
 fn relation_label(check: ClassificationCheck) -> String {
@@ -426,8 +406,6 @@ fn relation_label(check: ClassificationCheck) -> String {
     types.Compared(types.Agree) -> "agree"
     types.Compared(types.Compatible(types.WiredValueVersusMember)) ->
       "compatible:wired-value-vs-member"
-    types.Compared(types.Compatible(types.UndecidedVersusMember)) ->
-      "compatible:undecided-vs-member"
     types.Compared(types.Disagree) -> "disagree"
     types.NoTypedEvidence(reason:) ->
       "no-typed-evidence:" <> undecided_label(reason)
@@ -442,6 +420,8 @@ fn undecided_label(reason: types.UndecidedReason) -> String {
     types.ReceiverTypeUnknown -> "receiver-type-unknown"
     types.NotACallTarget(kind:) -> "not-a-call-target(" <> kind <> ")"
     types.ReceiverNotNominal -> "receiver-not-nominal"
+    types.ResolutionMismatch(resolved:) ->
+      "resolution-mismatch(" <> resolved <> ")"
   }
 }
 
@@ -451,7 +431,8 @@ fn graded_label(graded: types.GradedClassification) -> String {
     types.TypeSelectedModule(..) -> "module(type-selected)"
     types.Field(None) -> "field"
     types.Field(Some(..)) -> "field(shadowed)"
-    types.UndecidedShadowed(..) -> "undecided(shadowed)"
+    types.UndecidedShadowed(reason:, ..) ->
+      "undecided(shadowed: " <> undecided_label(reason) <> ")"
     types.WiredValue(types.WiredFunction(..)) -> "wired(function)"
     types.WiredValue(types.WiredLocal(..)) -> "wired(local)"
     types.WiredValue(types.WiredConstructor) -> "wired(constructor)"
@@ -480,11 +461,15 @@ fn tally(items: List(String)) -> List(#(String, Int)) {
 }
 
 fn print_tally(counts: List(#(String, Int))) -> Nil {
+  list.each(tally_lines(counts), io.println)
+}
+
+fn tally_lines(counts: List(#(String, Int))) -> List(String) {
   case counts {
-    [] -> io.println("  (none)")
+    [] -> ["  (none)"]
     _ ->
-      list.each(counts, fn(pair) {
-        io.println("  " <> pair.0 <> ": " <> int.to_string(pair.1))
+      list.map(counts, fn(pair) {
+        "  " <> pair.0 <> ": " <> int.to_string(pair.1)
       })
   }
 }

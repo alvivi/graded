@@ -499,7 +499,7 @@ pub fn explains_a_shadowed_receiver_as_a_module_call_test() {
     "  calls gleam/io.println with effects [Stdout] (from gleam_stdlib's catalog entry)",
     "",
     "typed resolutions",
-    "  result.try: typed resolution module gleam/result.try (agrees)",
+    "  result.try: typed resolution module gleam/result.try (decided by the type inference)",
     "  io.println: typed resolution module gleam/io.println (agrees)",
   ])
 }
