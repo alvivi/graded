@@ -7231,7 +7231,7 @@ fn split_shadowed(
   module_path: String,
   registry: signatures.SignatureRegistry,
   types_of: fn(List(types.FieldCall)) -> dict.Dict(#(Int, Int), girard.Type),
-) -> #(List(types.ResolvedCall), List(types.FieldCall)) {
+) -> checker.ShadowedSplit {
   let assert Ok(module) = glance.module(source)
   let context =
     extract.ImportContext(
@@ -7280,19 +7280,93 @@ fn registry_of(
 }
 
 // Assert the one field call stayed one: an empty module-read list alone would
-// also hold if extraction had produced no field call at all.
-fn stays_a_field(
-  split: #(List(types.ResolvedCall), List(types.FieldCall)),
-) -> Nil {
-  split.0 |> should.equal([])
-  list.length(split.1) |> should.equal(1)
+// also hold if extraction had produced no field call at all, or if the split had
+// found the reading undecidable.
+fn stays_a_field(split: checker.ShadowedSplit) -> Nil {
+  split.module_reads |> should.equal([])
+  split.undecided |> should.equal([])
+  list.length(split.field_reads) |> should.equal(1)
+}
+
+// Assert the one field call settled neither way: the receiver shadows a module,
+// nothing narrowed it and nothing typed it, so neither reading is established
+// and the call is charged [Unknown] rather than either target.
+fn settles_nothing(split: checker.ShadowedSplit) -> Nil {
+  split.module_reads |> should.equal([])
+  split.field_reads |> should.equal([])
+  list.length(split.undecided) |> should.equal(1)
+}
+
+pub fn an_undecided_call_charges_unknown_and_says_why_test() {
+  // Shadowed, un-narrowed and untyped: neither reading is established. The call
+  // reads [Unknown], and the message says so in those terms — it names the
+  // parameter the provenance canonicalized to rather than the shadowing name,
+  // and it does not claim the value could not be traced, which it could.
+  let source =
+    "import gleam/list
+
+pub type Client {
+  Live(send: fn(String) -> Nil)
+  Dead(n: Int)
+}
+
+pub fn target(list, c) -> Nil {
+  let list = c
+  list.send(\"hi\")
+}
+"
+  let assert [violation] =
+    check_source(source, [
+      EffectAnnotation(
+        Check,
+        "target",
+        [],
+        effect_term.from_effect_set(Specific(set.new())),
+        returns: None,
+      ),
+    ])
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+  checker.format_call_explanation(violation.explanation)
+  |> should.equal(
+    "calls field `send` on `c`, which also names the module `gleam/list` and whose type nothing here fixes, with unresolved effects [Unknown]",
+  )
+}
+
+pub fn a_field_bound_discharges_an_undecided_call_test() {
+  // The one thing that still answers. Naming `c.send` on the `check` line
+  // declares that this is the field call and what it costs, which is more than
+  // the split could establish — so the bound is honoured, and it is matched on
+  // the canonical parameter path rather than on the shadowing name.
+  let source =
+    "import gleam/list
+
+pub type Client {
+  Live(send: fn(String) -> Nil)
+  Dead(n: Int)
+}
+
+pub fn target(list, c) -> Nil {
+  let list = c
+  list.send(\"hi\")
+}
+"
+  let bound = ParamBound("c.send", types.TLabels(set.from_list(["Net"])))
+  check_source(source, [
+    EffectAnnotation(
+      Check,
+      "target",
+      [bound],
+      effect_term.from_effect_set(Specific(set.from_list(["Net"]))),
+      returns: None,
+    ),
+  ])
+  |> should.equal([])
 }
 
 // One call to `<module>.<label>`, the shape a module reading takes.
-fn module_reads(
-  split: #(List(types.ResolvedCall), List(types.FieldCall)),
-) -> List(types.QualifiedName) {
-  list.map(split.0, fn(call) { call.name })
+fn module_reads(split: checker.ShadowedSplit) -> List(types.QualifiedName) {
+  list.map(split.module_reads, fn(call) { call.name })
 }
 
 const shadowing_body = "import gleam/list
@@ -7315,7 +7389,7 @@ pub fn a_label_on_no_variant_reads_as_the_module_test() {
   let registry = registry_of(shadowing_body, "m")
   let split = split_shadowed(shadowing_body, "m", registry, no_types)
   module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-  split.1 |> should.equal([])
+  split.field_reads |> should.equal([])
 }
 
 pub fn a_label_on_one_variant_of_two_reads_as_the_module_test() {
@@ -7326,7 +7400,7 @@ pub fn a_label_on_one_variant_of_two_reads_as_the_module_test() {
   let registry = registry_of(source, "m")
   let split = split_shadowed(source, "m", registry, no_types)
   module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-  split.1 |> should.equal([])
+  split.field_reads |> should.equal([])
 }
 
 pub fn a_label_on_one_variant_narrowed_to_it_stays_a_field_test() {
@@ -7399,7 +7473,7 @@ pub fn target(list: Reordered) -> String {
 "
   let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
   module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-  split.1 |> should.equal([])
+  split.field_reads |> should.equal([])
 }
 
 pub fn an_un_narrowed_call_result_receiver_reads_as_the_module_test() {
@@ -7431,7 +7505,7 @@ pub fn target() -> String {
       typed_receivers(girard.Named("m", "Partial", [])),
     )
   module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-  split.1 |> should.equal([])
+  split.field_reads |> should.equal([])
 }
 
 pub fn an_un_narrowed_alias_receiver_reads_as_the_module_test() {
@@ -7458,7 +7532,7 @@ pub fn target(r: Partial) -> String {
       typed_receivers(girard.Named("m", "Partial", [])),
     )
   module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-  split.1 |> should.equal([])
+  split.field_reads |> should.equal([])
 }
 
 pub fn a_label_on_every_variant_stays_a_field_test() {
@@ -7564,9 +7638,10 @@ pub fn target(list) -> String {
   module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
 }
 
-pub fn a_girard_var_receiver_stays_a_field_test() {
+pub fn a_girard_var_receiver_settles_nothing_test() {
   // girard emits `Var` both for a real generic and for an inference variable it
-  // never resolved, so a `Var` is a miss, not a proof of fieldlessness.
+  // never resolved, so a `Var` is a miss, not a proof of fieldlessness. With no
+  // other evidence the receiver settles neither reading.
   let source =
     "import gleam/list
 
@@ -7581,7 +7656,7 @@ pub fn target(list) -> String {
       registry_of(shadowing_body, "m"),
       typed_receivers(girard.Var(1)),
     )
-  stays_a_field(split)
+  settles_nothing(split)
 }
 
 pub fn a_fieldless_receiver_annotation_reads_as_the_module_test() {
@@ -7600,7 +7675,9 @@ pub fn target(list: " <> annotation <> ") -> String {
   })
 }
 
-pub fn an_unannotated_receiver_stays_a_field_test() {
+pub fn an_unannotated_receiver_settles_nothing_test() {
+  // Nothing names the receiver's type, so neither the accessor set nor the
+  // narrowing can be established and the call reads as neither.
   let source =
     "import gleam/list
 
@@ -7609,7 +7686,7 @@ pub fn target(list) -> String {
 }
 "
   let split = split_shadowed(source, "m", signatures.empty(), no_types)
-  stays_a_field(split)
+  settles_nothing(split)
 }
 
 pub fn an_unshadowed_field_call_never_enters_the_table_test() {
@@ -7668,7 +7745,7 @@ pub fn target(list: Empty, r) -> String {
 }
 "
   let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
-  stays_a_field(split)
+  settles_nothing(split)
 }
 
 pub fn a_receiver_annotation_follows_a_type_alias_test() {
@@ -7691,12 +7768,13 @@ pub fn target(list: Chained) -> String {
   module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
 }
 
-pub fn an_alias_whose_body_is_a_type_variable_stays_a_field_test() {
+pub fn an_alias_whose_body_is_a_type_variable_settles_nothing_test() {
   // `type Identity(a) = a` resolves to a bare `a`, but that variable is the
   // alias's own parameter standing for `Runner` — not a generic written on the
   // receiver. Read as fieldless it would rewrite an effectful `Runner.map` call
-  // as the pure `gleam/list.map`, which is the undercharge direction. The
-  // written-generic case above must keep reading as the module.
+  // as the pure `gleam/list.map`, which is the undercharge direction, so the
+  // call settles neither way. The written-generic case above, where the
+  // variable really is the receiver's, must keep reading as the module.
   let source =
     "import gleam/list
 
@@ -7712,7 +7790,7 @@ pub fn target(list: Identity(Runner)) -> String {
 }
 "
   let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
-  stays_a_field(split)
+  settles_nothing(split)
 }
 
 pub fn a_type_alias_cycle_terminates_test() {

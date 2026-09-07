@@ -45,7 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   there — the label may be an accessor of the whole type or of one variant, and
   with no type nothing says which — so charging the wired value could report a
   body pure that calls the module. Where the type is known, and it is wherever
-  girard types the enclosing function, nothing changes.
+  girard types the enclosing function, nothing changes. A hand-written field
+  bound (`check f(c.send: [Net])`) still answers for such a call: naming the
+  field declares which reading it is. `graded check` and `graded why` report the
+  call as one whose receiver also names a module and whose type nothing fixes,
+  rather than as one whose value could not be traced.
 - A call through an un-narrowed call result named after an imported module,
   whose label sits on one variant of the receiver's type only, is now charged
   as the module call the compiler emits. Such a body — `let io = make_logger()`

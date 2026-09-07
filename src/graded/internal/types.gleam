@@ -331,6 +331,13 @@ pub type UnknownReason {
   // bound, or wired value decides. The payload names the receiver type; the
   // module is "" for the syntactic fallback, which has none.
   FieldNotAnnotated(module: String, type_name: String)
+  // A call through a receiver whose name shadows an imported module, whose
+  // variant nothing fixed and whose type is unknown. Neither reading is
+  // established there — the label may be an accessor of the whole type or of
+  // one variant, and with no type nothing says which — so the call is charged
+  // neither the module's effects nor the field's. The payload names the
+  // shadowed module, which is half of what the reader has to disambiguate.
+  AmbiguousShadowedReceiver(module: String)
   // A field call whose receiver's construction could not be traced or grounded.
   UntraceableReceiver
   // A field call whose receiver's construction was traced, but the wired
