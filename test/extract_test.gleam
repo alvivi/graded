@@ -1588,6 +1588,46 @@ pub fn target() {
   |> should.equal([QualifiedName("gleam/int", "to_string")])
 }
 
+// Import aliases
+//
+// The name a module is written under here decides which module a qualified call
+// reaches. An import whose alias is discarded binds no module name at all.
+
+pub fn a_discarded_alias_leaves_the_name_to_another_import_test() {
+  // `import gleam/http as _ghttp` is there for its unqualified items alone, so
+  // `http` names the other import — which is what the compiler reads, and what
+  // decides whose `add_default_headers` the call charges.
+  let result =
+    parse_and_extract_function(
+      "import gleam/http.{type Header} as _ghttp
+import app/http
+
+pub fn target(h: Header) -> Nil {
+  http.add_default_headers(h)
+}",
+    )
+  result.resolved
+  |> list.map(fn(call) { call.name })
+  |> should.equal([QualifiedName("app/http", "add_default_headers")])
+}
+
+pub fn a_discarded_alias_alone_binds_no_module_name_test() {
+  // With no other import of the name, the call resolves to no module at all
+  // rather than to the discarded one: the body names a local, not the import.
+  let result =
+    parse_and_extract_function(
+      "import gleam/http.{type Header} as _ghttp
+
+pub fn target(http: Header) -> Nil {
+  http.add_default_headers()
+}",
+    )
+  result.resolved |> should.equal([])
+  let assert [call] = result.field
+  call.label |> should.equal("add_default_headers")
+  call.shadowed_module |> should.equal(None)
+}
+
 // Ambiguous calls
 //
 // Every `name.label(args)` the walk has to decide between a module call and a
