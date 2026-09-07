@@ -67,7 +67,7 @@ pub fn check(
   annotations: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   girard_fn_typed: dict.Dict(String, Set(String)),
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
@@ -95,7 +95,7 @@ pub fn check(
           context,
           knowledge_base,
           registry,
-          module_types,
+          reading,
           cache,
           memo,
         )
@@ -115,7 +115,7 @@ pub fn infer(
   knowledge_base: KnowledgeBase,
   existing_checks: List(EffectAnnotation),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   girard_fn_typed: dict.Dict(String, Set(String)),
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
@@ -128,7 +128,7 @@ pub fn infer(
     knowledge_base,
     existing_checks,
     registry,
-    module_types,
+    reading,
     girard_fn_typed,
     package_targets,
   ).0
@@ -144,7 +144,7 @@ pub fn infer_with_returns(
   knowledge_base: KnowledgeBase,
   existing_checks: List(EffectAnnotation),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   girard_fn_typed: dict.Dict(String, Set(String)),
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
@@ -202,7 +202,7 @@ pub fn infer_with_returns(
           knowledge_base,
           set.new(),
           registry,
-          module_types,
+          reading,
           cache,
           memo,
         )
@@ -272,7 +272,7 @@ pub fn infer_with_returns(
               set.new(),
               effective_bounds,
               registry,
-              module_types,
+              reading,
               dict.new(),
               cache,
               [],
@@ -345,10 +345,8 @@ pub fn explain(
   bounds: List(List(ParamBound)),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   girard_fn_typed: dict.Dict(String, Set(String)),
-  // girard's own reading of this module, for the typed-resolution lines.
-  evidence: typeinfo.ModuleEvidence,
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
@@ -410,7 +408,7 @@ pub fn explain(
               context,
               knowledge_base,
               registry,
-              module_types,
+              reading,
               cache,
               memo,
             )
@@ -457,9 +455,8 @@ pub fn explain(
           module_path,
           registry,
           context,
-          module_types,
+          reading,
           cache,
-          evidence,
         ),
       )
     }
@@ -514,7 +511,7 @@ fn contributors(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(Contribution, Memo) {
@@ -556,7 +553,7 @@ fn contributors(
           set.new(),
           effective,
           registry,
-          module_types,
+          reading,
           dict.new(),
           cache,
           [],
@@ -951,7 +948,7 @@ pub fn fallback_effects(
   module_path: String,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   girard_fn_typed: dict.Dict(String, Set(String)),
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
@@ -967,7 +964,7 @@ pub fn fallback_effects(
     module_path,
     knowledge_base,
     registry,
-    module_types,
+    reading,
     girard_fn_typed,
     package_targets,
   )
@@ -1002,7 +999,7 @@ pub fn dependency_fallback_effects(
     module_path,
     knowledge_base,
     registry,
-    dict.new(),
+    typeinfo.no_reading(),
     dict.new(),
     package_targets,
   )
@@ -1085,7 +1082,7 @@ fn walk_fallbacks(
   module_path: String,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   girard_fn_typed: dict.Dict(String, Set(String)),
   package_targets: types.PackageTargets,
 ) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
@@ -1130,7 +1127,7 @@ fn walk_fallbacks(
             module_path:,
             knowledge_base:,
             registry:,
-            module_types:,
+            reading:,
             package_targets:,
           ),
         )
@@ -1216,7 +1213,7 @@ type FallbackWalk {
     module_path: String,
     knowledge_base: KnowledgeBase,
     registry: SignatureRegistry,
-    module_types: dict.Dict(#(Int, Int), girard.Type),
+    reading: typeinfo.ModuleReading,
     // What decides the targets each member's body runs on, and so the targets
     // every name that body calls is read on.
     package_targets: types.PackageTargets,
@@ -1306,7 +1303,7 @@ fn walk_component(
             set.new(),
             synthetic_bounds,
             walk.registry,
-            walk.module_types,
+            walk.reading,
             dict.new(),
             walk.cache,
             [],
@@ -1401,7 +1398,7 @@ fn module_context(
 // the field call's argument gives `[Stdout]` back); a higher-order field
 // (`run: fn(next) { next() }`) becomes `λnext. [next]` (applying it gives the
 // callback's effect). `resolve_field_effect` applies the operator at the field
-// call. `function_map` resolves same-module calls, and `module_types` is the
+// call. `function_map` resolves same-module calls, and `reading` carries the
 // enclosing module's own type environment, so a field call in the closure body
 // whose receiver only girard can type (`c.inner.run(m)`) resolves here as it
 // does in an ordinary body. A minimal registry is enough for the common case of
@@ -1412,7 +1409,7 @@ fn closure_field_operator(
   context: ImportContext,
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   // The module's SCC ids, built once by the caller (`build_scc_ids`) and reused
   // across every field closure it analyses.
   scc_ids: LocalCache,
@@ -1432,7 +1429,7 @@ fn closure_field_operator(
     knowledge_base,
     set.new(),
     signatures.empty(),
-    module_types,
+    reading,
     dict.new(),
     set.new(),
     scc_ids,
@@ -1448,7 +1445,7 @@ fn closure_field_operator(
 // read from the knowledge base, and a polymorphic summary is bound to the
 // construction-site `args`. `scc_ids` carries Fix A's alias map so an aliased
 // return type resolves; the real `registry` lets a cross-module producer's
-// annotated operator params be detected at bind time; `module_types` is the
+// annotated operator params be detected at bind time; `reading` carries the
 // enclosing module's own type environment, so a field call in the producer's
 // returned closure resolves against girard's types rather than degrading.
 fn call_result_field_operator(
@@ -1458,7 +1455,7 @@ fn call_result_field_operator(
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   scc_ids: LocalCache,
 ) -> Result(EffectTerm, Nil) {
   resolve_returned_operator(
@@ -1469,7 +1466,7 @@ fn call_result_field_operator(
     knowledge_base,
     set.new(),
     registry,
-    module_types,
+    reading,
     [],
     scc_ids,
     new_memo(),
@@ -1493,7 +1490,7 @@ fn call_result_field_operator(
 // does for a direct call. `visited` is the enclosing call stack, so a field
 // wired to a function already under analysis lifts nothing.
 //
-// The lift runs under the module's own `module_types`, the same environment
+// The lift runs under the module's own `reading`, the same environment
 // every other analysis of this module uses. A field call in the lifted body
 // whose receiver only girard can type — `config.inner.run()` against a
 // `type Config.inner`/`type Box.run` pair — then resolves here exactly as it
@@ -1509,7 +1506,7 @@ fn local_function_field_effect(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   scc_ids: LocalCache,
   memo: Memo,
 ) -> #(option.Option(EffectTerm), Memo) {
@@ -1530,7 +1527,7 @@ fn local_function_field_effect(
               knowledge_base,
               visited,
               registry,
-              module_types,
+              reading,
               scc_ids,
               memo,
             )
@@ -3269,7 +3266,7 @@ fn check_annotation(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(#(List(Violation), List(CheckFinding), List(Warning)), Memo) {
@@ -3293,7 +3290,7 @@ fn check_annotation(
           context,
           knowledge_base,
           registry,
-          module_types,
+          reading,
           cache,
           memo,
         )
@@ -3413,7 +3410,7 @@ fn check_annotation(
           context,
           knowledge_base,
           registry,
-          module_types,
+          reading,
           cache,
           memo,
         )
@@ -3481,7 +3478,7 @@ pub fn check_field_sites(
   field_index: types.FieldIndex,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   girard_fn_typed: dict.Dict(String, Set(String)),
   package_targets: types.PackageTargets,
 ) -> FieldSiteReport {
@@ -3526,7 +3523,7 @@ pub fn check_field_sites(
             knowledge_base,
             function_map,
             registry,
-            module_types,
+            reading,
             cache,
             memo,
           )
@@ -3563,7 +3560,7 @@ fn function_field_sites(
   knowledge_base: KnowledgeBase,
   function_map: dict.Dict(String, Definition(Function)),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(FieldSiteReport, Memo) {
@@ -3581,7 +3578,7 @@ fn function_field_sites(
         knowledge_base,
         function_map,
         registry,
-        module_types,
+        reading,
         cache,
         memo,
       )
@@ -3758,7 +3755,7 @@ fn weigh_wired_field(
   knowledge_base: KnowledgeBase,
   function_map: dict.Dict(String, Definition(Function)),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(CheckFinding), List(FieldTemplate), Memo) {
@@ -3802,7 +3799,7 @@ fn weigh_wired_field(
           knowledge_base,
           function_map,
           registry,
-          module_types,
+          reading,
           cache,
           memo,
         )
@@ -3818,7 +3815,7 @@ fn resolved_verdict(
   knowledge_base: KnowledgeBase,
   function_map: dict.Dict(String, Definition(Function)),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(CheckFinding), Memo) {
@@ -3830,7 +3827,7 @@ fn resolved_verdict(
       knowledge_base,
       function_map,
       registry,
-      module_types,
+      reading,
       cache,
       memo,
     )
@@ -4016,7 +4013,7 @@ fn resolve_site_value(
   knowledge_base: KnowledgeBase,
   function_map: dict.Dict(String, Definition(Function)),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(Result(types.TypeFieldEffect, UnprovedCause), Memo) {
@@ -4033,7 +4030,7 @@ fn resolve_site_value(
       function_map,
       set.new(),
       registry,
-      module_types,
+      reading,
       cache,
       memo,
     )
@@ -4331,7 +4328,7 @@ fn check_returns_clause(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(CheckFinding), Memo) {
@@ -4351,7 +4348,7 @@ fn check_returns_clause(
             context,
             knowledge_base,
             registry,
-            module_types,
+            reading,
             cache,
             memo,
           )
@@ -4377,7 +4374,7 @@ fn check_returns_clause(
               knowledge_base,
               set.new(),
               registry,
-              module_types,
+              reading,
               cache,
               memo,
             )
@@ -4444,7 +4441,7 @@ fn foreign_returns_clause(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(CheckFinding), Memo) {
@@ -4497,7 +4494,7 @@ fn foreign_returns_clause(
               knowledge_base,
               set.new(),
               registry,
-              module_types,
+              reading,
               cache,
               memo,
             )
@@ -4636,7 +4633,7 @@ fn collect_effects(
   visited: Set(String),
   param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   // Operator parameters in scope from an *enclosing* function (a producer whose
   // returned closure we're analysing), so a call to one becomes a curried
   // operator application rather than `[Unknown]`. Empty for an ordinary function.
@@ -4668,7 +4665,7 @@ fn collect_effects(
       knowledge_base,
       visited,
       registry,
-      module_types,
+      reading,
       operator_params,
       set.new(),
       cache,
@@ -4683,7 +4680,7 @@ fn collect_effects(
       result.field,
       registry,
       context,
-      module_types,
+      reading,
       cache,
       function,
     )
@@ -4737,7 +4734,7 @@ fn collect_effects(
           caller_param_names,
           caller_field_bindings,
           registry,
-          module_types,
+          reading,
           cache,
           lift_operator_arg,
           memo,
@@ -4795,7 +4792,7 @@ fn collect_effects(
               context,
               knowledge_base,
               registry,
-              module_types,
+              reading,
               cache,
               memo,
             )
@@ -4811,7 +4808,7 @@ fn collect_effects(
             caller_param_names,
             caller_field_bindings,
             registry,
-            module_types,
+            reading,
             cache,
             lift_operator_arg,
             memo,
@@ -4835,7 +4832,7 @@ fn collect_effects(
           knowledge_base,
           function_map,
           visited,
-          module_types,
+          reading,
           result.call_args,
           param_bounds,
           registry,
@@ -4863,7 +4860,7 @@ fn collect_effects(
           knowledge_base,
           visited,
           registry,
-          module_types,
+          reading,
           param_bounds,
           cache,
           memo,
@@ -5343,7 +5340,7 @@ fn substitute_local_call_effects(
   caller_param_names: Set(String),
   caller_field_bindings: dict.Dict(String, EffectTerm),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
@@ -5382,7 +5379,7 @@ fn substitute_local_call_effects(
                   caller_param_names,
                   caller_field_bindings,
                   registry,
-                  module_types,
+                  reading,
                   cache,
                   lift_operator_arg,
                   memo,
@@ -5439,7 +5436,7 @@ fn substitute_local_call_effects(
           context,
           knowledge_base,
           visited,
-          module_types,
+          reading,
           cache,
           memo,
         )
@@ -5508,7 +5505,7 @@ fn substitute_at_call_site(
   caller_param_names: Set(String),
   caller_field_bindings: dict.Dict(String, EffectTerm),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   lift_operator_arg: fn(types.ArgumentValue, List(Int), Memo) ->
     #(Result(EffectTerm, Nil), Memo),
@@ -5556,7 +5553,7 @@ fn substitute_at_call_site(
       context,
       knowledge_base,
       visited,
-      module_types,
+      reading,
       cache,
       memo,
     )
@@ -5666,7 +5663,7 @@ fn field_forwarding_bindings(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   visited: Set(String),
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(FieldBindings, Memo) {
@@ -5687,7 +5684,7 @@ fn field_forwarding_bindings(
         context,
         knowledge_base,
         visited,
-        module_types,
+        reading,
         cache,
         memo,
       )
@@ -5716,7 +5713,7 @@ fn field_forwarding_binding(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   visited: Set(String),
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(option.Option(FieldBinding), Memo) {
@@ -5744,7 +5741,7 @@ fn field_forwarding_binding(
         context,
         knowledge_base,
         visited,
-        module_types,
+        reading,
         cache,
         memo,
       )
@@ -5799,7 +5796,7 @@ fn forwarded_var_binding(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   visited: Set(String),
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(option.Option(FieldBinding), Memo) {
@@ -5866,7 +5863,7 @@ fn forwarded_var_binding(
             function_map,
             visited,
             registry,
-            module_types,
+            reading,
             cache,
             memo,
           )
@@ -5884,7 +5881,7 @@ fn wired_value_binding(
   function_map: dict.Dict(String, Definition(Function)),
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(option.Option(FieldBinding), Memo) {
@@ -5899,7 +5896,7 @@ fn wired_value_binding(
           function_map,
           visited,
           registry,
-          module_types,
+          reading,
           cache,
           memo,
         )
@@ -5931,7 +5928,7 @@ fn concrete_field_effect(
   function_map: dict.Dict(String, Definition(Function)),
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(option.Option(#(EffectTerm, option.Option(LookupOrigin))), Memo) {
@@ -5944,7 +5941,7 @@ fn concrete_field_effect(
       function_map,
       visited,
       registry,
-      module_types,
+      reading,
       cache,
       memo,
     )
@@ -6577,7 +6574,7 @@ fn build_lift_operator_arg(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   ambient_operators: OperatorShapes,
   sentinel_params: Set(String),
   cache: LocalCache,
@@ -6597,7 +6594,7 @@ fn build_lift_operator_arg(
             knowledge_base,
             visited,
             registry,
-            module_types,
+            reading,
             ambient_operators,
             sentinel_params,
             cache,
@@ -6619,7 +6616,7 @@ fn build_lift_operator_arg(
                 knowledge_base,
                 visited,
                 registry,
-                module_types,
+                reading,
                 cache,
                 memo,
               )
@@ -6643,7 +6640,7 @@ fn build_lift_operator_arg(
             knowledge_base,
             visited,
             registry,
-            module_types,
+            reading,
             [],
             cache,
             memo,
@@ -6714,7 +6711,7 @@ fn resolve_returned_operator(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   // The enclosing scope's caller bounds, threaded into `bind_producer_params`
   // for D1 (nested-producer precision). `[]` when resolving a top-level producer.
   caller_param_bounds: List(ParamBound),
@@ -6739,7 +6736,7 @@ fn resolve_returned_operator(
               knowledge_base,
               set.insert(visited, callee.function),
               registry,
-              module_types,
+              reading,
               cache,
               memo,
             )
@@ -6825,7 +6822,7 @@ fn resolve_returned_operator(
               knowledge_base,
               visited,
               registry,
-              module_types,
+              reading,
               caller_param_bounds,
               summary,
               cache,
@@ -6852,7 +6849,7 @@ fn bind_producer_params(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   // The enclosing scope's caller bounds (Fix D / D1): when a producer's returned
   // closure applies a *nested* producer with one of the outer producer's params
   // as an argument, these carry the outer param's sentinel bound (`$op$name`) so
@@ -6948,7 +6945,7 @@ fn bind_producer_params(
       knowledge_base,
       visited,
       registry,
-      module_types,
+      reading,
       dict.new(),
       set.new(),
       cache,
@@ -6988,7 +6985,7 @@ fn compute_returned_operator(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(Result(EffectTerm, ReturnedOperatorReason), Memo) {
@@ -7034,7 +7031,7 @@ fn compute_returned_operator(
           knowledge_base,
           visited,
           registry,
-          module_types,
+          reading,
           producer_operators,
           producer_params,
           cache,
@@ -7135,7 +7132,7 @@ fn analyze_closure(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   ambient_operators: OperatorShapes,
   // Producer parameters seeded as `$op$`-prefixed sentinels (Fix D), so a residual
   // leaked var can never merge with a genuine producer param of the same name.
@@ -7172,7 +7169,7 @@ fn analyze_closure(
           knowledge_base,
           visited,
           registry,
-          module_types,
+          reading,
           ambient_operators,
           sentinel_params,
           cache,
@@ -7196,7 +7193,7 @@ fn analyze_closure_uncached(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   ambient_operators: OperatorShapes,
   sentinel_params: Set(String),
   cache: LocalCache,
@@ -7273,7 +7270,7 @@ fn analyze_closure_uncached(
       visited,
       bounds,
       registry,
-      module_types,
+      reading,
       ambient_operators,
       cache,
       captures,
@@ -7343,7 +7340,7 @@ fn lift_local_function(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
@@ -7401,7 +7398,7 @@ fn lift_local_function(
           context,
           knowledge_base,
           registry,
-          module_types,
+          reading,
           cache,
           memo,
         )
@@ -7427,7 +7424,7 @@ fn lift_local_function(
             knowledge_base,
             visited,
             registry,
-            module_types,
+            reading,
             cache,
             memo,
           )
@@ -7448,7 +7445,7 @@ fn lift_operator_miss(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(EffectTerm, Memo) {
@@ -7467,7 +7464,7 @@ fn lift_operator_miss(
       set.insert(visited, name),
       bounds,
       registry,
-      module_types,
+      reading,
       dict.new(),
       cache,
       [],
@@ -7672,7 +7669,7 @@ fn resolve_unknown_local(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(CollectedCall), Memo) {
@@ -7723,7 +7720,7 @@ fn resolve_unknown_local(
             context,
             knowledge_base,
             registry,
-            module_types,
+            reading,
             cache,
             memo,
           )
@@ -7777,7 +7774,7 @@ fn memoized_local(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(CollectedCall), Memo) {
@@ -7790,7 +7787,7 @@ fn memoized_local(
         context,
         knowledge_base,
         registry,
-        module_types,
+        reading,
         cache,
         memo,
       )
@@ -7818,7 +7815,7 @@ fn memoized_local(
               new_visited,
               nested_bounds,
               registry,
-              module_types,
+              reading,
               dict.new(),
               cache,
               [],
@@ -7843,7 +7840,7 @@ fn collapsed_scc(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(CollectedCall), Memo) {
@@ -7863,7 +7860,7 @@ fn collapsed_scc(
             context,
             knowledge_base,
             registry,
-            module_types,
+            reading,
             cache,
             memo,
           )
@@ -7884,7 +7881,7 @@ fn collapsed_member(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(CollectedCall), Memo) {
@@ -7899,7 +7896,7 @@ fn collapsed_member(
           scc_set,
           [],
           registry,
-          module_types,
+          reading,
           dict.new(),
           cache,
           [],
@@ -7947,7 +7944,7 @@ fn value_field_effect(
   function_map: dict.Dict(String, Definition(Function)),
   visited: Set(String),
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   memo: Memo,
 ) -> #(types.TypeFieldEffect, option.Option(LookupOrigin), Memo) {
@@ -7978,7 +7975,7 @@ fn value_field_effect(
               knowledge_base,
               visited,
               registry,
-              module_types,
+              reading,
               cache,
               memo,
             )
@@ -8017,7 +8014,7 @@ fn value_field_effect(
               context,
               function_map,
               knowledge_base,
-              module_types,
+              reading,
               cache,
             ),
             [],
@@ -8041,7 +8038,7 @@ fn value_field_effect(
               function_map,
               knowledge_base,
               registry,
-              module_types,
+              reading,
               cache,
             )
           {
@@ -8109,7 +8106,7 @@ fn resolve_field_call(
   knowledge_base: KnowledgeBase,
   function_map: dict.Dict(String, Definition(Function)),
   visited: Set(String),
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
@@ -8156,7 +8153,7 @@ fn resolve_field_call(
         knowledge_base,
         function_map,
         visited,
-        module_types,
+        reading,
         caller_param_names,
         call_args,
         caller_param_bounds,
@@ -8182,7 +8179,7 @@ fn resolve_field_call(
         function,
         context,
         knowledge_base,
-        module_types,
+        reading,
         call_args,
         caller_param_bounds,
         registry,
@@ -8229,7 +8226,7 @@ fn resolve_proven_field(
   knowledge_base: KnowledgeBase,
   function_map: dict.Dict(String, Definition(Function)),
   visited: Set(String),
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   caller_param_names: Set(String),
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
@@ -8252,7 +8249,7 @@ fn resolve_proven_field(
       function_map,
       visited,
       registry,
-      module_types,
+      reading,
       scc_ids,
       memo,
     )
@@ -8442,7 +8439,7 @@ fn resolve_unproven_field(
   function: Function,
   context: ImportContext,
   knowledge_base: KnowledgeBase,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   call_args: dict.Dict(#(Int, Int), List(types.CallArgument)),
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
@@ -8459,7 +8456,7 @@ fn resolve_unproven_field(
     None -> {
       let receiver_type =
         typeinfo.receiver_type(
-          module_types,
+          reading.expressions,
           field_call.receiver_span.start,
           field_call.receiver_span.end,
         )
@@ -8899,9 +8896,8 @@ pub fn classify_module(
   module_path: String,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   girard_fn_typed: dict.Dict(String, Set(String)),
-  evidence: typeinfo.ModuleEvidence,
   package_targets: types.PackageTargets,
 ) -> List(ClassificationCheck) {
   let ModuleContext(context:, cache:) =
@@ -8918,9 +8914,8 @@ pub fn classify_module(
       module_path,
       registry,
       context,
-      module_types,
+      reading,
       cache,
-      evidence,
     )
   })
 }
@@ -8934,9 +8929,8 @@ pub fn classify_definition(
   module_path: String,
   registry: SignatureRegistry,
   context: ImportContext,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
-  evidence: typeinfo.ModuleEvidence,
 ) -> List(ClassificationCheck) {
   let result =
     extract.extract_function_calls_with_captures(function, context, [])
@@ -8945,7 +8939,7 @@ pub fn classify_definition(
       result.field,
       registry,
       context,
-      module_types,
+      reading,
       cache,
       function,
     )
@@ -8959,7 +8953,7 @@ pub fn classify_definition(
     })
   list.map(result.ambiguous, fn(row) {
     let graded = graded_classification(row, moved, undecided)
-    let typed = classify_typed(row.site.access_span, function, evidence)
+    let typed = classify_typed(row.site.access_span, function, reading.evidence)
     ClassificationCheck(
       module: module_path,
       function: function.name,
@@ -9100,14 +9094,12 @@ pub fn split_shadowed_field_calls(
   field_calls: List(types.FieldCall),
   registry: SignatureRegistry,
   context: ImportContext,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   function: Function,
 ) -> ShadowedSplit {
   use split, call <- list.fold_right(field_calls, ShadowedSplit([], [], []))
-  case
-    shadowed_module_read(call, registry, context, module_types, cache, function)
-  {
+  case shadowed_module_read(call, registry, context, reading, cache, function) {
     ReadsTheModule(module_path) ->
       ShadowedSplit(..split, module_reads: [
         types.ResolvedCall(
@@ -9140,14 +9132,14 @@ fn shadowed_module_read(
   call: types.FieldCall,
   registry: SignatureRegistry,
   context: ImportContext,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   function: Function,
 ) -> ShadowedReading {
   case call.shadowed_module {
     None -> ReadsTheField
     Some(module_path) ->
-      case receiver_shape(call, context, module_types, cache, function) {
+      case receiver_shape(call, context, reading, cache, function) {
         UnknownReceiver ->
           case call.receiver_narrowing {
             types.UnnarrowedReceiver -> ReadsNeither(module_path)
@@ -9177,13 +9169,13 @@ fn shadowed_module_read(
 fn receiver_shape(
   call: types.FieldCall,
   context: ImportContext,
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   cache: LocalCache,
   function: Function,
 ) -> ReceiverShape {
   case
     girard_receiver_shape(
-      module_types,
+      reading,
       call.receiver_span.start,
       call.receiver_span.end,
     )
@@ -9227,11 +9219,11 @@ fn receiver_shape(
 // emits one both for a real generic and for an inference variable it never
 // resolved, and calling an unresolved one fieldless would undercharge.
 fn girard_receiver_shape(
-  module_types: dict.Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   start: Int,
   end: Int,
 ) -> ReceiverShape {
-  case typeinfo.type_at(module_types, start, end) {
+  case typeinfo.type_at(reading.expressions, start, end) {
     Some(girard.Named(module, name, _arguments)) ->
       NamedReceiver(module:, type_name: name)
     Some(girard.Fn(..)) | Some(girard.Tuple(..)) -> FieldlessReceiver

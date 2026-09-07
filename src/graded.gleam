@@ -485,9 +485,8 @@ pub fn classification_checks(
     module_path,
     knowledge_base,
     registry,
-    typeinfo.for_module(type_info, module_path),
+    typeinfo.reading_for_module(type_info, module_path),
     typeinfo.fn_typed_for_module(type_info, module_path),
-    typeinfo.evidence_for_module(type_info, module_path),
     sources.cfg.targets,
   )
 }
@@ -559,7 +558,7 @@ pub fn check_project(
           module_checks,
           knowledge_base,
           registry,
-          typeinfo.for_module(type_info, module_path),
+          typeinfo.reading_for_module(type_info, module_path),
           typeinfo.fn_typed_for_module(type_info, module_path),
           cfg.targets,
         )
@@ -654,7 +653,7 @@ fn field_check_results(
           ctx.field_index,
           knowledge_base,
           registry,
-          typeinfo.for_module(type_info, module_path),
+          typeinfo.reading_for_module(type_info, module_path),
           typeinfo.fn_typed_for_module(type_info, module_path),
           package_targets,
         ),
@@ -1170,7 +1169,7 @@ fn check_one_file(
   module_checks: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   girard_fn_typed: Dict(String, Set(String)),
   package_targets: types.PackageTargets,
 ) -> CheckResult {
@@ -1181,7 +1180,7 @@ fn check_one_file(
       module_checks,
       knowledge_base,
       registry,
-      module_types,
+      reading,
       girard_fn_typed,
       package_targets,
     )
@@ -2013,9 +2012,8 @@ pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
       list.map(checks, check_bounds),
       ctx.knowledge_base,
       ctx.registry,
-      typeinfo.for_module(ctx.type_info, module_path),
+      typeinfo.reading_for_module(ctx.type_info, module_path),
       typeinfo.fn_typed_for_module(ctx.type_info, module_path),
-      typeinfo.evidence_for_module(ctx.type_info, module_path),
       ctx.sources.cfg.targets,
     )
     |> result.replace_error(FunctionNotFound(name)),
@@ -3002,7 +3000,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
               cfg.cache_dir,
               kb,
               registry,
-              typeinfo.for_module(type_info, module_path),
+              typeinfo.reading_for_module(type_info, module_path),
               typeinfo.fn_typed_for_module(type_info, module_path),
               declared_modules,
               package_targets,
@@ -3047,7 +3045,7 @@ fn infer_one_module(
   cache_dir: String,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   girard_fn_typed: Dict(String, Set(String)),
   declared_modules: Set(String),
   package_targets: types.PackageTargets,
@@ -3058,7 +3056,7 @@ fn infer_one_module(
       module,
       module_path,
       registry,
-      module_types,
+      reading,
       girard_fn_typed,
       package_targets,
     )
@@ -3069,7 +3067,7 @@ fn infer_one_module(
       knowledge_base,
       [],
       registry,
-      module_types,
+      reading,
       girard_fn_typed,
       package_targets,
     )
@@ -3182,7 +3180,7 @@ fn fold_inferred_module(
       module,
       module_path,
       registry,
-      typeinfo.for_module(type_info, module_path),
+      typeinfo.reading_for_module(type_info, module_path),
       typeinfo.fn_typed_for_module(type_info, module_path),
       package_targets,
     )
@@ -3193,7 +3191,7 @@ fn fold_inferred_module(
       kb,
       [],
       registry,
-      typeinfo.for_module(type_info, module_path),
+      typeinfo.reading_for_module(type_info, module_path),
       typeinfo.fn_typed_for_module(type_info, module_path),
       package_targets,
     )
@@ -3229,7 +3227,7 @@ fn with_module_fallback_effects(
   module: glance.Module,
   module_path: String,
   registry: SignatureRegistry,
-  module_types: Dict(#(Int, Int), girard.Type),
+  reading: typeinfo.ModuleReading,
   girard_fn_typed: Dict(String, Set(String)),
   package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
@@ -3241,7 +3239,7 @@ fn with_module_fallback_effects(
       module_path,
       knowledge_base,
       registry,
-      module_types,
+      reading,
       girard_fn_typed,
       package_targets,
     ),
@@ -4386,7 +4384,7 @@ fn infer_path_dep_module(
           kb,
           checks,
           registry,
-          dict.new(),
+          typeinfo.no_reading(),
           dict.new(),
           package_targets,
         )

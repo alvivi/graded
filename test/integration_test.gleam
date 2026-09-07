@@ -17,6 +17,7 @@ import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/extract
 import graded/internal/signatures
+import graded/internal/typeinfo
 import graded/internal/types.{type EffectTerm}
 import simplifile
 import support
@@ -6799,7 +6800,7 @@ fn checker_infer_opaque_field() -> Result(List(types.EffectAnnotation), Nil) {
     effects.empty_knowledge_base("."),
     [],
     signatures.empty(),
-    dict.new(),
+    typeinfo.no_reading(),
     dict.new(),
     types.all_targets(),
   ))
@@ -6996,7 +6997,7 @@ fn checker_infer_factory_forward() -> Result(List(types.EffectAnnotation), Nil) 
     effects.empty_knowledge_base("."),
     [],
     signatures.from_glance_module("factory_forward", module),
-    dict.new(),
+    typeinfo.no_reading(),
     dict.new(),
     types.all_targets(),
   ))
@@ -8852,7 +8853,7 @@ pub fn girard_types_do_not_replace_a_syntax_proved_target_test() {
   let assert Ok(source) =
     simplifile.read("test/fixtures/field_module_collision.gleam")
   let assert Ok(module) = glance.module(source)
-  girard_span_types("field_module_collision", module)
+  girard_reading("field_module_collision", module).expressions
   |> dict.is_empty()
   |> should.be_false()
 
@@ -8991,9 +8992,9 @@ fn infer_fixture(
       annotation.extract_type_fields(spec),
       types.UserAssume,
     )
-  let module_types = case with_types {
-    False -> dict.new()
-    True -> girard_span_types(module_path, module)
+  let reading = case with_types {
+    False -> typeinfo.no_reading()
+    True -> girard_reading(module_path, module)
   }
   checker.infer(
     module,
@@ -9001,7 +9002,7 @@ fn infer_fixture(
     knowledge_base,
     [],
     signatures.from_glance_module(module_path, module),
-    module_types,
+    reading,
     dict.new(),
     types.all_targets(),
   )
@@ -9009,27 +9010,25 @@ fn infer_fixture(
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
 }
 
-// girard's inferred type for every expression in a module, keyed by span — the
-// same fold `build_type_index` does, over one module. `annotate_package` is the
-// entry graded itself calls: it is best-effort, so a module holding functions
-// girard declines still yields the types of the ones it read, where
-// `annotate_module` would return the first error and no types at all.
-fn girard_span_types(
+// girard's whole reading of one module — every expression's inferred type and
+// the resolutions, skips and drops beside them — the same fold
+// `build_type_index` does, over one module. `annotate_package` is the entry
+// graded itself calls: it is best-effort, so a module holding functions girard
+// declines still yields the reading of the ones it read, where
+// `annotate_module` would return the first error and nothing at all.
+fn girard_reading(
   module_path: String,
   module: glance.Module,
-) -> dict.Dict(#(Int, Int), girard.Type) {
+) -> typeinfo.ModuleReading {
   let results =
     girard.annotate_package([#(module_path, module)], girard.default_options())
   case dict.get(results, module_path) {
-    Error(Nil) -> dict.new()
+    Error(Nil) -> typeinfo.no_reading()
     Ok(result) ->
-      list.fold(result.annotated.expressions, dict.new(), fn(acc, annotation) {
-        dict.insert(
-          acc,
-          #(annotation.span.start, annotation.span.end),
-          annotation.type_,
-        )
-      })
+      typeinfo.ModuleReading(
+        expressions: typeinfo.span_types(result),
+        evidence: typeinfo.evidence_of(result, checker.error_bucket),
+      )
   }
 }
 

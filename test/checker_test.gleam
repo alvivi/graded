@@ -45,7 +45,7 @@ fn check_source(
       annotations,
       knowledge_base(),
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -219,7 +219,7 @@ pub fn view(items) { list.map(items, fn(x) { x }) }"
       knowledge_base(),
       [],
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -242,7 +242,7 @@ pub fn greet() { io.println(\"hi\") }"
       knowledge_base(),
       [],
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -264,7 +264,7 @@ fn helper() { io.println(\"x\") }"
       knowledge_base(),
       [],
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -301,7 +301,7 @@ pub fn infer_uses_param_bounds_test() {
       knowledge_base(),
       existing_checks,
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -322,7 +322,7 @@ pub fn infer_without_bounds_gets_unknown_test() {
       knowledge_base(),
       [],
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -375,7 +375,7 @@ pub fn infer_girard_detects_unannotated_fn_typed_param_test() {
       knowledge_base(),
       [],
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       girard_fn_typed_for(module),
       types.all_targets(),
     )
@@ -570,7 +570,7 @@ fn check_source_with_type_fields(
       annotations,
       kb,
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -611,7 +611,7 @@ fn check_source_with_girard(
   type_fields: List(types.FieldAnnotation),
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
-  let module_types = girard_types(module)
+  let reading = girard_reading(module)
   let kb =
     effects.with_type_fields(knowledge_base(), type_fields, types.CommittedSpec)
   let #(violations, _findings, _warnings) =
@@ -621,7 +621,7 @@ fn check_source_with_girard(
       annotations,
       kb,
       signatures.empty(),
-      module_types,
+      reading,
       dict.new(),
       types.all_targets(),
     )
@@ -837,7 +837,7 @@ fn infer_effects_with_girard(
     effects.with_type_fields(knowledge_base(), type_fields, types.CommittedSpec),
     [],
     signatures.from_glance_module("", module),
-    girard_types(module),
+    girard_reading(module),
     dict.new(),
     types.all_targets(),
   )
@@ -1006,9 +1006,9 @@ fn infer_field_annotation_typed(
 ) -> EffectAnnotation {
   let assert Ok(module) = glance.module(source)
   let registry = signatures.from_glance_module("", module)
-  let module_types = case girard {
-    False -> dict.new()
-    True -> girard_types(module)
+  let reading = case girard {
+    False -> typeinfo.no_reading()
+    True -> girard_reading(module)
   }
   let inferred =
     checker.infer(
@@ -1017,7 +1017,7 @@ fn infer_field_annotation_typed(
       knowledge_base(),
       [],
       registry,
-      module_types,
+      reading,
       dict.new(),
       types.all_targets(),
     )
@@ -1035,17 +1035,16 @@ fn infer_field_annotation(
 
 // girard's per-expression inferred types for a module, keyed by span, or empty
 // when the type annotator declines the module.
-fn girard_types(module: glance.Module) -> dict.Dict(#(Int, Int), girard.Type) {
+fn girard_reading(module: glance.Module) -> typeinfo.ModuleReading {
   case girard.annotate_module(module, girard.default_options()) {
-    Ok(annotated) ->
-      list.fold(annotated.expressions, dict.new(), fn(acc, annotation) {
-        dict.insert(
-          acc,
-          #(annotation.span.start, annotation.span.end),
-          annotation.type_,
-        )
-      })
-    Error(_) -> dict.new()
+    Ok(annotated) -> {
+      let result = girard.ModuleResult(annotated:, skipped: [])
+      typeinfo.ModuleReading(
+        expressions: typeinfo.span_types(result),
+        evidence: typeinfo.evidence_of(result, checker.error_bucket),
+      )
+    }
+    Error(_) -> typeinfo.no_reading()
   }
 }
 
@@ -1179,7 +1178,7 @@ pub fn annotate(options: Options) -> Nil {
       [annotation],
       knowledge_base(),
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -1310,7 +1309,7 @@ pub fn caller() -> Nil {
       [annotation],
       knowledge_base(),
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -1337,7 +1336,7 @@ fn check_source_with_assumes(
       annotations,
       kb,
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -1428,7 +1427,7 @@ pub fn run() { mod.each(f: mod.disk) }"
       [annotation],
       kb,
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -1454,7 +1453,7 @@ pub fn read_clock() { now() }"
       kb,
       [],
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -1554,7 +1553,7 @@ fn check_warnings(
       annotations,
       knowledge_base(),
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -1898,7 +1897,7 @@ pub fn check_no_false_positives_test() {
           [ann],
           kb,
           signatures.empty(),
-          dict.new(),
+          typeinfo.no_reading(),
           dict.new(),
           types.all_targets(),
         )
@@ -1931,7 +1930,7 @@ fn provenance_caller_effect(src: String, label: String) -> EffectSet {
       [annotation],
       knowledge_base(),
       signatures.from_glance_module("", module),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -1996,7 +1995,7 @@ pub fn check_wildcard_never_violates_test() {
           [ann],
           kb,
           signatures.empty(),
-          dict.new(),
+          typeinfo.no_reading(),
           dict.new(),
           types.all_targets(),
         )
@@ -2030,7 +2029,7 @@ pub fn check_empty_budget_detects_effects_test() {
               [ann],
               kb,
               signatures.empty(),
-              dict.new(),
+              typeinfo.no_reading(),
               dict.new(),
               types.all_targets(),
             )
@@ -2066,7 +2065,7 @@ pub fn check_violations_iff_not_subset_test() {
           [ann],
           kb,
           signatures.empty(),
-          dict.new(),
+          typeinfo.no_reading(),
           dict.new(),
           types.all_targets(),
         )
@@ -2092,7 +2091,7 @@ pub fn infer_matches_actual_effects_test() {
           kb,
           [],
           signatures.empty(),
-          dict.new(),
+          typeinfo.no_reading(),
           dict.new(),
           types.all_targets(),
         )
@@ -2163,7 +2162,7 @@ pub fn infer_terminates_with_cycles_test() {
           bare_knowledge_base(),
           [],
           signatures.empty(),
-          dict.new(),
+          typeinfo.no_reading(),
           dict.new(),
           types.all_targets(),
         )
@@ -2194,7 +2193,7 @@ pub fn check_terminates_with_cycles_test() {
           [ann],
           bare_knowledge_base(),
           signatures.empty(),
-          dict.new(),
+          typeinfo.no_reading(),
           dict.new(),
           types.all_targets(),
         )
@@ -2217,7 +2216,7 @@ fn infer_single(source: String) -> EffectAnnotation {
       knowledge_base(),
       [],
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -2324,7 +2323,7 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
       knowledge_base(),
       [existing],
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -2406,7 +2405,7 @@ pub fn new() {
       ],
       polymorphic_kb(),
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -2440,7 +2439,7 @@ pub fn new() {
       ],
       polymorphic_kb(),
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -2473,7 +2472,7 @@ pub fn new() {
       ],
       polymorphic_kb(),
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -2498,7 +2497,7 @@ pub fn new() {
       polymorphic_kb(),
       [],
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -2526,7 +2525,7 @@ pub fn new() {
       polymorphic_kb(),
       [],
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -2596,7 +2595,7 @@ pub fn outer() -> MyError {
       knowledge_base(),
       [],
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -2623,7 +2622,7 @@ pub fn run() {
       two_callback_kb(),
       [],
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -2652,7 +2651,7 @@ fn infer_single_with_list(source: String) -> types.EffectAnnotation {
       knowledge_base(),
       [],
       list_registry(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -2741,7 +2740,7 @@ pub fn run(x: Int) {
       ],
       kb,
       reg,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -2866,7 +2865,7 @@ pub fn run(h: fn(Int) -> Int, x: Int) -> Int {
       kb,
       [],
       reg,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -2920,7 +2919,7 @@ pub fn main(msg: String) {
       ],
       knowledge_base(),
       registry,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -3040,7 +3039,7 @@ pub fn caller() -> Nil {
       [pass],
       kb,
       registry,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -3060,7 +3059,7 @@ pub fn caller() -> Nil {
       [fail],
       kb,
       registry,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -3174,7 +3173,7 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       [ann],
       kb,
       reg,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -3204,7 +3203,7 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       [ann],
       kb,
       reg,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -3235,7 +3234,7 @@ pub fn caller() -> Nil { app.with_logger(fn(logger) { logger(\"hi\") }) }"
       [ann],
       kb,
       reg,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -3311,7 +3310,7 @@ pub fn run(action: fn(fn(String) -> Nil, fn(String) -> Nil) -> Nil) -> Nil {
       kb,
       [],
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -3350,7 +3349,7 @@ pub fn run(
       kb,
       [],
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -3496,7 +3495,7 @@ pub fn let_bound_closure_direct_call_satisfies_pure_check_test() {
       [ann],
       knowledge_base(),
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -4128,7 +4127,7 @@ pub fn caller() -> Nil {
       [pass],
       kb,
       registry,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -4148,7 +4147,7 @@ pub fn caller() -> Nil {
       [fail],
       kb,
       registry,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -4207,7 +4206,7 @@ pub fn caller() -> Nil {
       [pass],
       kb,
       registry,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -4233,7 +4232,7 @@ pub fn pick() -> fn(fn(String) -> Nil) -> Nil {
       knowledge_base(),
       [],
       signatures.from_glance_module("app", module),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -4259,7 +4258,7 @@ pub fn make_printer() -> fn() -> Nil {
       knowledge_base(),
       [],
       signatures.from_glance_module("app", module),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -4328,7 +4327,7 @@ pub fn caller() -> Nil {
       [pass],
       kb,
       registry,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -4348,7 +4347,7 @@ pub fn caller() -> Nil {
       [fail],
       kb,
       registry,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -4380,7 +4379,7 @@ pub fn pick(
       knowledge_base(),
       [],
       signatures.from_glance_module("app", module),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -4521,7 +4520,7 @@ fn second_order_violations(
       [ann],
       kb,
       registry,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -4641,7 +4640,7 @@ fn infer_annotation_with(
       knowledge_base,
       [],
       registry,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -6447,7 +6446,7 @@ pub fn run() -> Nil {
       [pure_check("run")],
       kb,
       signatures.from_glance_module("app", module),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -6539,7 +6538,7 @@ pub fn new() {
       [pure_check("new")],
       polymorphic_kb(),
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -6581,7 +6580,7 @@ pub fn new() {
       [pure_check("new")],
       kb,
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -6612,7 +6611,7 @@ pub fn new() {
       [pure_check("new")],
       polymorphic_kb(),
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -6648,7 +6647,7 @@ pub fn run() -> Nil {
       [pure_check("run")],
       knowledge_base(),
       signatures.from_glance_module("app", module),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -6680,9 +6679,8 @@ fn explain_blocks(
     bounds,
     knowledge_base,
     registry,
+    typeinfo.no_reading(),
     dict.new(),
-    dict.new(),
-    typeinfo.no_evidence(),
     types.all_targets(),
   )
   // These tests assert on contributors; the effective bounds and total term
@@ -6742,9 +6740,8 @@ pub fn run() {
       [[]],
       knowledge_base,
       signatures.from_glance_module("app", module),
+      typeinfo.no_reading(),
       dict.new(),
-      dict.new(),
-      typeinfo.no_evidence(),
       types.all_targets(),
     )
   total |> should.equal(effect_term.unknown())
@@ -6776,9 +6773,8 @@ pub fn go(r: Runner) -> Nil {
       [[]],
       effects.empty_knowledge_base("."),
       signatures.from_glance_module("app", module),
+      typeinfo.no_reading(),
       dict.new(),
-      dict.new(),
-      typeinfo.no_evidence(),
       types.all_targets(),
     )
   total |> should.equal(types.TVar("r.run"))
@@ -6807,7 +6803,7 @@ pub fn run(r: Runner) -> Nil {
     "app",
     effects.empty_knowledge_base("."),
     signatures.from_glance_module("app", module),
-    dict.new(),
+    typeinfo.no_reading(),
     dict.new(),
     types.all_targets(),
   )
@@ -6843,7 +6839,7 @@ pub fn run() -> Nil {
     "app",
     knowledge_base,
     signatures.from_glance_module("app", module),
-    dict.new(),
+    typeinfo.no_reading(),
     dict.new(),
     types.all_targets(),
   )
@@ -7001,7 +6997,7 @@ pub fn new() {
       [pure_check("new")],
       polymorphic_kb(),
       signatures.empty(),
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -7085,7 +7081,7 @@ fn noisy() -> Nil {
       [pure_check("caller")],
       kb,
       registry,
-      dict.new(),
+      typeinfo.no_reading(),
       dict.new(),
       types.all_targets(),
     )
@@ -7230,7 +7226,7 @@ fn split_shadowed(
   source: String,
   module_path: String,
   registry: signatures.SignatureRegistry,
-  types_of: fn(List(types.FieldCall)) -> dict.Dict(#(Int, Int), girard.Type),
+  reading_of: fn(List(types.FieldCall)) -> typeinfo.ModuleReading,
 ) -> checker.ShadowedSplit {
   let assert Ok(module) = glance.module(source)
   let context =
@@ -7247,27 +7243,28 @@ fn split_shadowed(
     extracted.field,
     registry,
     context,
-    types_of(extracted.field),
+    reading_of(extracted.field),
     cache,
     function,
   )
 }
 
 // No girard types at all — the syntactic annotation is the only evidence.
-fn no_types(
-  _calls: List(types.FieldCall),
-) -> dict.Dict(#(Int, Int), girard.Type) {
-  dict.new()
+fn no_types(_calls: List(types.FieldCall)) -> typeinfo.ModuleReading {
+  typeinfo.no_reading()
 }
 
 // Give every field call's receiver the same girard type.
 fn typed_receivers(
   type_: girard.Type,
-) -> fn(List(types.FieldCall)) -> dict.Dict(#(Int, Int), girard.Type) {
+) -> fn(List(types.FieldCall)) -> typeinfo.ModuleReading {
   fn(calls: List(types.FieldCall)) {
-    list.fold(calls, dict.new(), fn(acc, call: types.FieldCall) {
-      dict.insert(acc, extract.span_key(call.receiver_span), type_)
-    })
+    typeinfo.ModuleReading(
+      expressions: list.fold(calls, dict.new(), fn(acc, call: types.FieldCall) {
+        dict.insert(acc, extract.span_key(call.receiver_span), type_)
+      }),
+      evidence: typeinfo.no_evidence(),
+    )
   }
 }
 
@@ -8205,9 +8202,8 @@ pub fn target(c) {
       [[]],
       effects.empty_knowledge_base("."),
       signatures.from_glance_module("app", module),
+      typeinfo.no_reading(),
       dict.new(),
-      dict.new(),
-      typeinfo.no_evidence(),
       types.all_targets(),
     )
   explained.classifications
@@ -8241,9 +8237,8 @@ pub fn target(f: fn() -> Nil, g: fn() -> Nil) -> Nil {
       ],
       effects.empty_knowledge_base("."),
       signatures.from_glance_module("app", module),
+      typeinfo.no_reading(),
       dict.new(),
-      dict.new(),
-      typeinfo.no_evidence(),
       types.all_targets(),
     )
   list.length(explained.blocks) |> should.equal(2)
