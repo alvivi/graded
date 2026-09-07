@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A call through a receiver that shadows an imported module is now read as the
+  module or as the field by the type inference's resolution of that site.
+  Where that resolution does not establish the reading, the call charges
+  `[Unknown]` and `graded check` and `graded why` say why: the enclosing
+  function was skipped or the definition is left out of the build for the other
+  target (the two expected causes), no resolution was recorded at the site, the
+  inference marked it unresolved, it resolved to something that is not a module
+  function or a record field, it resolved to a field on a receiver with no
+  nominal type, or it resolved to a different module, function or field than
+  the site names. A written parameter annotation no longer decides it.
 - A path dependency inferred from its source is now typed by the type inference
   the way the project is, resolved from the consuming project's installed
   packages. A receiver whose type only inference knows now resolves inside a

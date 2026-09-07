@@ -7221,11 +7221,12 @@ pub fn run(xs: List(Int)) -> List(Int) {
 // would charge a pure module function for an effectful one, so every row that
 // proves nothing keeps the field.
 
-// Split one function's field calls against a registry and a girard type map.
+// Split one function's field calls against a hand-built reading of the module.
+// `reading_of` is handed the extracted calls, so a reading can be keyed by the
+// very access spans the split will look the sites up under.
 fn split_shadowed(
   source: String,
   module_path: String,
-  registry: signatures.SignatureRegistry,
   reading_of: fn(List(types.FieldCall)) -> typeinfo.ModuleReading,
 ) -> checker.ShadowedSplit {
   let assert Ok(module) = glance.module(source)
@@ -7238,67 +7239,65 @@ fn split_shadowed(
     list.find(module.functions, fn(def) { def.definition.name == "target" })
   let function = definition.definition
   let extracted = extract.extract_function_calls(function, context)
-  let cache = checker.build_scc_ids(module, context, dict.new())
   checker.split_shadowed_field_calls(
     extracted.field,
-    registry,
-    context,
     reading_of(extracted.field),
-    cache,
     function,
   )
 }
 
-// No girard types at all — the syntactic annotation is the only evidence.
-fn no_types(_calls: List(types.FieldCall)) -> typeinfo.ModuleReading {
+// The inference said nothing about this module at all.
+fn unread(_calls: List(types.FieldCall)) -> typeinfo.ModuleReading {
   typeinfo.no_reading()
 }
 
-// Give every field call's receiver the same girard type.
-fn typed_receivers(
-  type_: girard.Type,
+// Resolve every field call's access to `resolution`, and nothing else.
+fn resolved_accesses(
+  resolution: girard.Resolution,
 ) -> fn(List(types.FieldCall)) -> typeinfo.ModuleReading {
   fn(calls: List(types.FieldCall)) {
     typeinfo.ModuleReading(
-      expressions: list.fold(calls, dict.new(), fn(acc, call: types.FieldCall) {
-        dict.insert(acc, extract.span_key(call.receiver_span), type_)
-      }),
-      evidence: typeinfo.no_evidence(),
+      expressions: dict.new(),
+      evidence: typeinfo.ModuleEvidence(
+        resolutions: list.fold(
+          calls,
+          dict.new(),
+          fn(acc, call: types.FieldCall) {
+            dict.insert(acc, extract.span_key(call.access_span), resolution)
+          },
+        ),
+        skipped: dict.new(),
+        dropped: set.new(),
+      ),
     )
   }
 }
 
-fn registry_of(
-  source: String,
-  module_path: String,
-) -> signatures.SignatureRegistry {
-  let assert Ok(module) = glance.module(source)
-  signatures.from_glance_module(module_path, module)
+// A reading that typed nothing in the module and declined `target` outright.
+fn skipped_target(_calls: List(types.FieldCall)) -> typeinfo.ModuleReading {
+  typeinfo.ModuleReading(
+    expressions: dict.new(),
+    evidence: typeinfo.ModuleEvidence(
+      resolutions: dict.new(),
+      skipped: dict.from_list([#("target", "UnknownModule")]),
+      dropped: set.new(),
+    ),
+  )
 }
 
-// Assert the one field call stayed one: an empty module-read list alone would
-// also hold if extraction had produced no field call at all, or if the split had
-// found the reading undecidable.
-fn stays_a_field(split: checker.ShadowedSplit) -> Nil {
-  split.module_reads |> should.equal([])
-  split.undecided |> should.equal([])
-  list.length(split.field_reads) |> should.equal(1)
-}
-
-// Assert the one field call settled neither way: the receiver shadows a module,
-// nothing narrowed it and nothing typed it, so neither reading is established
-// and the call is charged [Unknown] rather than either target.
-fn settles_nothing(split: checker.ShadowedSplit) -> Nil {
-  split.module_reads |> should.equal([])
-  split.field_reads |> should.equal([])
-  list.length(split.undecided) |> should.equal(1)
+// The one reason a shadowed call was left undecided.
+fn undecided_reasons(
+  split: checker.ShadowedSplit,
+) -> List(types.UndecidedReason) {
+  list.map(split.undecided, fn(entry) { entry.reason })
 }
 
 pub fn an_undecided_call_charges_unknown_and_says_why_test() {
-  // Shadowed, un-narrowed and untyped: neither reading is established. The call
-  // reads [Unknown], and the message says so in those terms — it names the
-  // parameter the provenance canonicalized to rather than the shadowing name,
-  // and it does not claim the value could not be traced, which it could.
+  // Shadowed, with no reading of the module to decide it: neither reading is
+  // established. The call reads [Unknown], and the message says so in those
+  // terms — it names the parameter the provenance canonicalized to rather than
+  // the shadowing name, it says which module the name also stands for, and it
+  // says why the reading was not established.
   let source =
     "import gleam/list
 
@@ -7326,7 +7325,7 @@ pub fn target(list, c) -> Nil {
   |> should.equal(Specific(set.from_list(["Unknown"])))
   checker.format_call_explanation(violation.explanation)
   |> should.equal(
-    "calls field `send` on `c`, which also names the module `gleam/list` and whose type nothing here fixes, with unresolved effects [Unknown]",
+    "calls field `send` on `c`, which also names the module `gleam/list`, and for which the type inference did not establish the module-or-field reading (no reference recorded at this span), with unresolved effects [Unknown]",
   )
 }
 
@@ -7361,6 +7360,24 @@ pub fn target(list, c) -> Nil {
   |> should.equal([])
 }
 
+// Assert the one field call stayed one: an empty module-read list alone would
+// also hold if extraction had produced no field call at all, or if the split had
+// found the reading undecidable.
+fn stays_a_field(split: checker.ShadowedSplit) -> Nil {
+  split.module_reads |> should.equal([])
+  split.undecided |> should.equal([])
+  list.length(split.field_reads) |> should.equal(1)
+}
+
+// Assert the one field call settled neither way: the receiver shadows a module
+// and the inference established neither reading at the site, so the call is
+// charged [Unknown] rather than either target.
+fn settles_nothing(split: checker.ShadowedSplit) -> Nil {
+  split.module_reads |> should.equal([])
+  split.field_reads |> should.equal([])
+  list.length(split.undecided) |> should.equal(1)
+}
+
 // One call to `<module>.<label>`, the shape a module reading takes.
 fn module_reads(split: checker.ShadowedSplit) -> List(types.QualifiedName) {
   list.map(split.module_reads, fn(call) { call.name })
@@ -7382,502 +7399,151 @@ pub fn target(list: Bare) -> String {
 }
 "
 
-pub fn a_label_on_no_variant_reads_as_the_module_test() {
-  let registry = registry_of(shadowing_body, "m")
-  let split = split_shadowed(shadowing_body, "m", registry, no_types)
-  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-  split.field_reads |> should.equal([])
-}
-
-pub fn a_label_on_one_variant_of_two_reads_as_the_module_test() {
-  // The receiver is a plain parameter, which nothing narrowed: Gleam grants an
-  // accessor only for a label every variant declares, so the compiler emits the
-  // module call and charging the field would under-report it.
-  let source = string.replace(shadowing_body, "list: Bare", "list: Partial")
-  let registry = registry_of(source, "m")
-  let split = split_shadowed(source, "m", registry, no_types)
-  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-  split.field_reads |> should.equal([])
-}
-
-pub fn a_label_on_one_variant_narrowed_to_it_stays_a_field_test() {
-  // The same type reached through a `case` on the receiver: the clause fixes
-  // which variant it holds, the field is real through it, and the module
-  // reading would charge a pure module function for an effectful field.
-  let source =
-    "import gleam/list
-
-pub type Partial {
-  A(map: fn(String) -> String)
-  B(n: Int)
-}
-
-pub fn target(list: Partial) -> String {
-  case list {
-    A(..) -> list.map(\"hi\")
-    B(..) -> \"\"
-  }
-}
-"
-  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
-  stays_a_field(split)
-}
-
-pub fn a_clause_bound_receiver_of_one_variant_stays_a_field_test() {
-  // `A(..) as list` names the clause's own value, which the pattern already
-  // fixed to the variant declaring the label. The receiver is not the parameter
-  // of its name, so its type reaches the rule through girard.
-  let source =
-    "import gleam/list
-
-pub type Partial {
-  A(map: fn(String) -> String)
-  B(n: Int)
-}
-
-pub fn target(r: Partial) -> String {
-  case r {
-    A(..) as list -> list.map(\"hi\")
-    B(..) -> \"\"
-  }
-}
-"
+pub fn a_module_function_at_the_access_reads_as_the_module_test() {
+  // The inference resolved the site to `gleam/list.map` — the module the
+  // receiver's name shadows, under the label the site accesses — so the call is
+  // that module call, lowered under the pair it named.
   let split =
     split_shadowed(
-      source,
+      shadowing_body,
       "m",
-      registry_of(source, "m"),
-      typed_receivers(girard.Named("m", "Partial", [])),
-    )
-  stays_a_field(split)
-}
-
-pub fn a_label_at_differing_indices_reads_as_the_module_test() {
-  // Every variant declares `map`, but at different field positions, and an
-  // accessor compiles to a fixed one — so the type grants none and the compiler
-  // reads the module through an un-narrowed receiver.
-  let source =
-    "import gleam/list
-
-pub type Reordered {
-  First(map: fn(String) -> String, n: Int)
-  Second(n: Int, map: fn(String) -> String)
-}
-
-pub fn target(list: Reordered) -> String {
-  list.map(\"hi\")
-}
-"
-  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
-  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-  split.field_reads |> should.equal([])
-}
-
-pub fn an_un_narrowed_call_result_receiver_reads_as_the_module_test() {
-  // A call result carries no written annotation, so its type comes from girard
-  // alone — and narrowing does not cross the function boundary it came back
-  // through.
-  let source =
-    "import gleam/list
-
-pub type Partial {
-  A(map: fn(String) -> String)
-  B(n: Int)
-}
-
-pub fn make() -> Partial {
-  A(fn(s) { s })
-}
-
-pub fn target() -> String {
-  let list = make()
-  list.map(\"hi\")
-}
-"
-  let split =
-    split_shadowed(
-      source,
-      "m",
-      registry_of(source, "m"),
-      typed_receivers(girard.Named("m", "Partial", [])),
+      resolved_accesses(girard.ModuleFn("gleam/list", "map")),
     )
   module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
   split.field_reads |> should.equal([])
+  split.undecided |> should.equal([])
 }
 
-pub fn an_un_narrowed_alias_receiver_reads_as_the_module_test() {
-  // An alias roots at the name it aliases, so it too reaches a type only
-  // through girard.
-  let source =
-    "import gleam/list
-
-pub type Partial {
-  A(map: fn(String) -> String)
-  B(n: Int)
-}
-
-pub fn target(r: Partial) -> String {
-  let list = r
-  list.map(\"hi\")
-}
-"
+pub fn a_record_field_at_the_access_stays_a_field_test() {
   let split =
     split_shadowed(
-      source,
+      shadowing_body,
       "m",
-      registry_of(source, "m"),
-      typed_receivers(girard.Named("m", "Partial", [])),
+      resolved_accesses(girard.RecordField(girard.Named("m", "Bare", []), "map")),
     )
-  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-  split.field_reads |> should.equal([])
-}
-
-pub fn a_label_on_every_variant_stays_a_field_test() {
-  let source =
-    "import gleam/list
-
-pub type Both {
-  C(map: fn(String) -> String)
-  D(map: fn(String) -> String)
-}
-
-pub fn target(list: Both) -> String {
-  list.map(\"hi\")
-}
-"
-  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
   stays_a_field(split)
 }
 
-pub fn a_non_callable_label_on_every_variant_stays_a_field_test() {
-  // The compiler selects the accessor and does not backtrack, so this shape is
-  // a type error rather than a module read — it cannot reach graded from a real
-  // package, and the table keeps the field branch regardless of callability.
-  let source =
-    "import gleam/list
-
-pub type Blocker {
-  E(map: String)
-  F(map: String)
-}
-
-pub fn target(list: Blocker) -> String {
-  list.map(\"hi\")
-}
-"
-  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
-  stays_a_field(split)
-}
-
-pub fn a_type_the_package_never_indexed_stays_a_field_test() {
-  // An empty registry proves nothing about `Bare`, which is a different answer
-  // from "the type declares no such label".
-  let split = split_shadowed(shadowing_body, "m", signatures.empty(), no_types)
-  stays_a_field(split)
-}
-
-pub fn an_opaque_type_read_from_another_module_reads_as_the_module_test() {
-  // Outside its defining module an opaque type grants no accessor at all, and
-  // no `case` there can narrow it either — its constructors are invisible too.
-  let source =
-    "import dep/model
-import gleam/list
-
-pub fn target(list: model.Hidden) -> String {
-  list.map(\"hi\")
-}
-"
-  let registry =
-    registry_of(
-      "pub opaque type Hidden {
-  Hidden(map: fn(String) -> String)
-}
-",
-      "dep/model",
-    )
-  let split = split_shadowed(source, "m", registry, no_types)
-  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-}
-
-pub fn an_opaque_type_read_from_its_own_module_stays_a_field_test() {
-  let source =
-    "import gleam/list
-
-pub opaque type Hidden {
-  Hidden(map: fn(String) -> String)
-}
-
-pub fn target(list: Hidden) -> String {
-  list.map(\"hi\")
-}
-"
-  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
-  stays_a_field(split)
-}
-
-pub fn a_girard_named_receiver_decides_the_reading_test() {
-  // girard names the type's defining module, so the index is keyed exactly.
-  let source =
-    "import gleam/list
-
-pub fn target(list) -> String {
-  list.map(\"hi\")
-}
-"
-  let registry = registry_of("pub type Bare { Bare(n: Int) }", "m")
-  let split =
-    split_shadowed(
-      source,
-      "m",
-      registry,
-      typed_receivers(girard.Named("m", "Bare", [])),
-    )
-  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-}
-
-pub fn a_girard_var_receiver_settles_nothing_test() {
-  // girard emits `Var` both for a real generic and for an inference variable it
-  // never resolved, so a `Var` is a miss, not a proof of fieldlessness. With no
-  // other evidence the receiver settles neither reading.
-  let source =
-    "import gleam/list
-
-pub fn target(list) -> String {
-  list.map(\"hi\")
-}
-"
-  let split =
-    split_shadowed(
-      source,
-      "m",
-      registry_of(shadowing_body, "m"),
-      typed_receivers(girard.Var(1)),
-    )
-  settles_nothing(split)
-}
-
-pub fn a_fieldless_receiver_annotation_reads_as_the_module_test() {
-  // Three annotations that carry no fields at all. A written `a` is provably a
-  // generic, and Gleam has no row polymorphism — information girard's `Var` has
-  // already lost, which is why the annotation decides where its type does not.
-  list.each(["fn(Int) -> Int", "#(Int, Int)", "a"], fn(annotation) {
-    let source = "import gleam/list
-
-pub fn target(list: " <> annotation <> ") -> String {
-  list.map(\"hi\")
-}
-"
-    let split = split_shadowed(source, "m", signatures.empty(), no_types)
-    module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-  })
-}
-
-pub fn an_unannotated_receiver_settles_nothing_test() {
-  // Nothing names the receiver's type, so neither the accessor set nor the
-  // narrowing can be established and the call reads as neither.
-  let source =
-    "import gleam/list
-
-pub fn target(list) -> String {
-  list.map(\"hi\")
-}
-"
-  let split = split_shadowed(source, "m", signatures.empty(), no_types)
-  settles_nothing(split)
-}
-
-pub fn an_unshadowed_field_call_never_enters_the_table_test() {
-  // No import of that name, so nothing to decide — it resolves exactly as it
-  // did before, whatever the type says.
+pub fn an_unshadowed_field_call_never_consults_the_reading_test() {
+  // Nothing to decide: the receiver's name shadows no import, so the empty
+  // reading is never asked and the call is the field call it was extracted as.
   let source =
     "pub type Bare {
-  Bare(n: Int)
+  Bare(map: fn(String) -> String)
 }
 
-pub fn target(thing: Bare) -> String {
-  thing.map(\"hi\")
+pub fn target(b: Bare) -> String {
+  b.map(\"hi\")
 }
 "
-  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
-  stays_a_field(split)
+  stays_a_field(split_shadowed(source, "m", unread))
 }
 
-pub fn a_rebound_receiver_name_ignores_the_stale_annotation_test() {
-  // `Runner(..) as list` names the clause's value, not the parameter, so the
-  // parameter's annotation says nothing about the receiver. Read through it,
-  // `map` is on no variant of `Empty` and the effectful field would be charged
-  // as a pure `gleam/list.map`.
-  let source =
-    "import gleam/list
-
-pub type Empty {
-  Empty(n: Int)
-}
-
-pub type Runner {
-  Runner(map: fn(String) -> String)
-}
-
-pub fn target(list: Empty, r: Runner) -> String {
-  case r {
-    Runner(..) as list -> list.map(\"hi\")
-  }
-}
-"
-  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
-  stays_a_field(split)
-}
-
-pub fn a_let_rebound_receiver_name_ignores_the_stale_annotation_test() {
-  let source =
-    "import gleam/list
-
-pub type Empty {
-  Empty(n: Int)
-}
-
-pub fn target(list: Empty, r) -> String {
-  let list = r
-  list.map(\"hi\")
-}
-"
-  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
+pub fn no_resolution_at_the_access_settles_nothing_test() {
+  let split = split_shadowed(shadowing_body, "m", unread)
   settles_nothing(split)
+  undecided_reasons(split) |> should.equal([types.NoResolutionAtSpan])
 }
 
-pub fn a_receiver_annotation_follows_a_type_alias_test() {
-  let source =
-    "import gleam/list
-
-pub type Bare {
-  Bare(n: Int)
-}
-
-pub type Chained = Alias
-
-pub type Alias = Bare
-
-pub fn target(list: Chained) -> String {
-  list.map(\"hi\")
-}
-"
-  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
-  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-}
-
-pub fn an_alias_whose_body_is_a_type_variable_settles_nothing_test() {
-  // `type Identity(a) = a` resolves to a bare `a`, but that variable is the
-  // alias's own parameter standing for `Runner` — not a generic written on the
-  // receiver. Read as fieldless it would rewrite an effectful `Runner.map` call
-  // as the pure `gleam/list.map`, which is the undercharge direction, so the
-  // call settles neither way. The written-generic case above, where the
-  // variable really is the receiver's, must keep reading as the module.
-  let source =
-    "import gleam/list
-
-pub type Identity(a) =
-  a
-
-pub type Runner {
-  Runner(map: fn(String) -> String)
-}
-
-pub fn target(list: Identity(Runner)) -> String {
-  list.map(\"hi\")
-}
-"
-  let split = split_shadowed(source, "m", registry_of(source, "m"), no_types)
+pub fn a_skipped_function_settles_nothing_test() {
+  let split = split_shadowed(shadowing_body, "m", skipped_target)
   settles_nothing(split)
+  undecided_reasons(split)
+  |> should.equal([types.FunctionSkipped("UnknownModule")])
 }
 
-pub fn a_type_alias_cycle_terminates_test() {
-  let source =
-    "import gleam/list
-
-pub type A = B
-
-pub type B = A
-
-pub fn target(list: A) -> String {
-  list.map(\"hi\")
-}
-"
-  let split = split_shadowed(source, "m", signatures.empty(), no_types)
-  stays_a_field(split)
-}
-
-pub fn an_alias_of_a_function_type_reads_as_the_module_test() {
-  let source =
-    "import gleam/list
-
-pub type Handler = fn(String) -> String
-
-pub fn target(list: Handler) -> String {
-  list.map(\"hi\")
-}
-"
-  let split = split_shadowed(source, "m", signatures.empty(), no_types)
-  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
+pub fn a_dropped_definition_settles_nothing_test() {
+  // The definition is left out of the build for the other target, so nothing
+  // inside it was walked and no resolution of the site exists to read.
+  let assert Ok(module) = glance.module(shadowing_body)
+  let assert Ok(definition) =
+    list.find(module.functions, fn(def) { def.definition.name == "target" })
+  let dropped =
+    set.from_list([
+      #(
+        definition.definition.location.start,
+        definition.definition.location.end,
+      ),
+    ])
+  let split =
+    split_shadowed(shadowing_body, "m", fn(_calls) {
+      typeinfo.ModuleReading(
+        expressions: dict.new(),
+        evidence: typeinfo.ModuleEvidence(
+          resolutions: dict.new(),
+          skipped: dict.new(),
+          dropped:,
+        ),
+      )
+    })
+  settles_nothing(split)
+  undecided_reasons(split) |> should.equal([types.DefinitionDropped])
 }
 
-pub fn an_imported_type_annotation_keys_on_its_own_module_test() {
-  // `import dep/model.{type Runner}` writes the type unqualified, but the line
-  // that indexes it is keyed by the module that declares it.
-  let source =
-    "import dep/model.{type Runner}
-import gleam/list
-
-pub fn target(list: Runner) -> String {
-  list.map(\"hi\")
-}
-"
-  let registry = registry_of("pub type Runner { Runner(n: Int) }", "dep/model")
-  let split = split_shadowed(source, "m", registry, no_types)
-  module_reads(split) |> should.equal([QualifiedName("gleam/list", "map")])
-}
-
-pub fn a_prelude_receiver_annotation_reads_as_the_module_test() {
-  // `int.to_string(1)` where `int: Int` is `gleam/int.to_string`: no prelude
-  // type grants an accessor. The annotation keys as `#("", "Int")`, so the
-  // lookup needs the extra `#("gleam", ..)` key to reach the seeded entry.
-  list.each(
-    [
-      "Int", "Float", "String", "Bool", "Nil", "BitArray", "UtfCodepoint",
-      "List", "Result",
-    ],
-    fn(type_name) {
-      let source = "import gleam/int
-
-pub fn target(int: " <> type_name <> ") -> String {
-  int.to_string(1)
-}
-"
-      let split =
-        split_shadowed(source, "m", registry_of(source, "m"), no_types)
-      module_reads(split)
-      |> should.equal([types.QualifiedName("gleam/int", "to_string")])
-    },
-  )
-}
-
-pub fn a_girard_typed_prelude_receiver_reads_as_the_module_test() {
-  // girard names the prelude module directly, so the key is exact.
-  let source =
-    "import gleam/int
-
-pub fn target(int) -> String {
-  int.to_string(1)
-}
-"
+pub fn a_module_constant_at_the_access_settles_nothing_test() {
+  // A constant holding a function is no call target, and the knowledge base has
+  // no entry for one: the module reading would answer nothing anyway.
   let split =
     split_shadowed(
-      source,
+      shadowing_body,
       "m",
-      registry_of(source, "m"),
-      typed_receivers(girard.Named("gleam", "Int", [])),
+      resolved_accesses(girard.ModuleConstant("m", "default")),
     )
-  module_reads(split)
-  |> should.equal([types.QualifiedName("gleam/int", "to_string")])
+  settles_nothing(split)
+  undecided_reasons(split)
+  |> should.equal([types.NotACallTarget("ModuleConstant")])
+}
+
+pub fn a_field_on_a_non_nominal_receiver_settles_nothing_test() {
+  let split =
+    split_shadowed(
+      shadowing_body,
+      "m",
+      resolved_accesses(girard.RecordField(girard.Var(3), "map")),
+    )
+  settles_nothing(split)
+  undecided_reasons(split) |> should.equal([types.ReceiverNotNominal])
+}
+
+pub fn a_module_function_under_another_module_is_a_mismatch_test() {
+  // The site names `list`, which imports `gleam/list`. A resolution under some
+  // other module is not this site's answer, and is never looked up as one.
+  let split =
+    split_shadowed(
+      shadowing_body,
+      "m",
+      resolved_accesses(girard.ModuleFn("gleam/string", "map")),
+    )
+  settles_nothing(split)
+  undecided_reasons(split)
+  |> should.equal([types.ResolutionMismatch("gleam/string.map")])
+}
+
+pub fn a_module_function_under_another_name_is_a_mismatch_test() {
+  let split =
+    split_shadowed(
+      shadowing_body,
+      "m",
+      resolved_accesses(girard.ModuleFn("gleam/list", "each")),
+    )
+  settles_nothing(split)
+  undecided_reasons(split)
+  |> should.equal([types.ResolutionMismatch("gleam/list.each")])
+}
+
+pub fn a_record_field_under_another_label_is_a_mismatch_test() {
+  let split =
+    split_shadowed(
+      shadowing_body,
+      "m",
+      resolved_accesses(girard.RecordField(
+        girard.Named("m", "Bare", []),
+        "each",
+      )),
+    )
+  settles_nothing(split)
+  undecided_reasons(split)
+  |> should.equal([types.ResolutionMismatch("m.Bare.each")])
 }
 
 // girard's reading of an ambiguous call
@@ -8089,6 +7755,168 @@ fn row(
   )
 }
 
+// A mismatch, end to end
+//
+// The same three shapes the split refuses, seen as the rows the probe renders:
+// graded's half carries the refusal and its reason, girard's half carries the
+// target it actually proved, and the pair reads as a disagreement — so a
+// resolution that landed on the wrong reference is visible where the corpus is
+// counted, not silently absorbed.
+
+// The rows `classify_definition` produces for `target`, against a reading that
+// resolves every access to `resolution`.
+fn classified_against(
+  source: String,
+  resolution: girard.Resolution,
+) -> List(types.ClassificationCheck) {
+  let assert Ok(module) = glance.module(source)
+  let context =
+    extract.ImportContext(
+      ..extract.build_import_context(module),
+      module_path: "m",
+    )
+  let assert Ok(definition) =
+    list.find(module.functions, fn(def) { def.definition.name == "target" })
+  let function = definition.definition
+  let extracted = extract.extract_function_calls(function, context)
+  checker.classify_definition(
+    function,
+    "m",
+    context,
+    resolved_accesses(resolution)(extracted.field),
+  )
+}
+
+// The one row, with the three halves a mismatch is read from.
+fn mismatch_row(
+  resolution: girard.Resolution,
+  resolved: String,
+) -> types.ClassificationCheck {
+  let assert [check] = classified_against(shadowing_body, resolution)
+  check.graded
+  |> should.equal(types.UndecidedShadowed(
+    "gleam/list",
+    types.ResolutionMismatch(resolved),
+  ))
+  checker.relate(check) |> should.equal(types.Compared(types.Disagree))
+  check
+}
+
+pub fn a_row_under_another_module_states_what_was_resolved_test() {
+  mismatch_row(girard.ModuleFn("gleam/string", "map"), "gleam/string.map").typed
+  |> should.equal(types.ProvedModuleCall("gleam/string", "map"))
+}
+
+pub fn a_row_under_another_function_states_what_was_resolved_test() {
+  mismatch_row(girard.ModuleFn("gleam/list", "each"), "gleam/list.each").typed
+  |> should.equal(types.ProvedModuleCall("gleam/list", "each"))
+}
+
+pub fn a_row_under_another_label_states_what_was_resolved_test() {
+  mismatch_row(
+    girard.RecordField(girard.Named("m", "Bare", []), "each"),
+    "m.Bare.each",
+  ).typed
+  |> should.equal(types.ProvedFieldCall(#("m", "Bare"), "each"))
+}
+
+// The oracle
+//
+// `relate` is the differential oracle the dual run reads. Agreement is on the
+// whole identity — the module, the function and the label — so a resolution
+// that landed on a neighbouring reference is a disagreement rather than a row
+// that quietly matches on its variant alone.
+
+pub fn a_module_call_agrees_only_on_the_whole_name_test() {
+  row(
+    "io",
+    "println",
+    types.SyntaxModule("gleam/io"),
+    types.ProvedModuleCall("gleam/io", "println"),
+  )
+  |> checker.relate()
+  |> should.equal(types.Compared(types.Agree))
+
+  row(
+    "io",
+    "println",
+    types.SyntaxModule("gleam/io"),
+    types.ProvedModuleCall("gleam/io", "print"),
+  )
+  |> checker.relate()
+  |> should.equal(types.Compared(types.Disagree))
+
+  row(
+    "io",
+    "println",
+    types.TypeSelectedModule("gleam/io"),
+    types.ProvedModuleCall("gleam/erlang", "println"),
+  )
+  |> checker.relate()
+  |> should.equal(types.Compared(types.Disagree))
+}
+
+pub fn a_field_call_agrees_only_on_the_accessed_label_test() {
+  row(
+    "c",
+    "send",
+    types.Field(None),
+    types.ProvedFieldCall(#("app", "Client"), "send"),
+  )
+  |> checker.relate()
+  |> should.equal(types.Compared(types.Agree))
+
+  row(
+    "c",
+    "send",
+    types.Field(None),
+    types.ProvedFieldCall(#("app", "Client"), "receive"),
+  )
+  |> checker.relate()
+  |> should.equal(types.Compared(types.Disagree))
+}
+
+pub fn a_wired_value_stays_compatible_on_the_accessed_label_test() {
+  row(
+    "c",
+    "send",
+    types.WiredValue(types.WiredLocal("quiet")),
+    types.ProvedFieldCall(#("app", "Client"), "send"),
+  )
+  |> checker.relate()
+  |> should.equal(
+    types.Compared(types.Compatible(types.WiredValueVersusMember)),
+  )
+}
+
+pub fn an_undecided_shadowed_call_disagrees_with_a_proved_target_test() {
+  // graded's undecided is derived from the inference's own answer, so an
+  // undecided beside a proved target is graded refusing what it proved. Both
+  // must be seen, so the pair is a disagreement rather than a compatible one.
+  row(
+    "list",
+    "map",
+    types.UndecidedShadowed(
+      "gleam/list",
+      types.ResolutionMismatch("gleam/list.each"),
+    ),
+    types.ProvedModuleCall("gleam/list", "each"),
+  )
+  |> checker.relate()
+  |> should.equal(types.Compared(types.Disagree))
+}
+
+pub fn an_undecided_shadowed_call_beside_no_evidence_states_the_reason_test() {
+  row(
+    "list",
+    "map",
+    types.UndecidedShadowed("gleam/list", types.NoResolutionAtSpan),
+    types.Undecided(types.NoResolutionAtSpan),
+  )
+  |> checker.relate()
+  |> should.equal(types.NoTypedEvidence(types.NoResolutionAtSpan))
+}
+
 pub fn an_agreeing_module_call_line_names_the_module_test() {
   row(
     "io",
@@ -8166,18 +7994,21 @@ pub fn a_dropped_definitions_line_says_so_test() {
 }
 
 pub fn an_undecided_shadowed_line_names_the_unknown_it_charged_test() {
-  // graded established neither reading and charged [Unknown]; girard proved the
-  // field. The [Unknown] covers the member, so the pair is compatible and the
-  // line says which charge it was.
+  // graded's undecided is derived from the inference's own answer, so an
+  // undecided beside a proved field is graded refusing what the inference
+  // proved — a disagreement, and the line names the reason it refused.
   row(
     "c",
     "send",
-    types.UndecidedShadowed("gleam/list"),
-    types.ProvedFieldCall(#("app", "Client"), "send"),
+    types.UndecidedShadowed(
+      "gleam/list",
+      types.ResolutionMismatch("app.Client.receive"),
+    ),
+    types.ProvedFieldCall(#("app", "Client"), "receive"),
   )
   |> checker.format_typed_resolution()
   |> should.equal(
-    "c.send: typed resolution field Client.send (compatible; graded charged [Unknown] where c also names gleam/list)",
+    "c.send: typed resolution field Client.receive (DISAGREES with graded's [Unknown] where c also names gleam/list (resolved to app.Client.receive, which is not this site's target))",
   )
 }
 
@@ -8208,7 +8039,9 @@ pub fn target(c) {
     )
   explained.classifications
   |> list.map(fn(check) { check.graded })
-  |> should.equal([types.UndecidedShadowed("gleam/list")])
+  |> should.equal([
+    types.UndecidedShadowed("gleam/list", types.NoResolutionAtSpan),
+  ])
 }
 
 pub fn explain_states_its_typed_resolutions_once_per_function_test() {
