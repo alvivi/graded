@@ -47,11 +47,9 @@ pub fn let_assert_narrowed(list: Client) -> Nil {
   list.send("hi")
 }
 
-// The three alias shapes below are the ones girard declines to type at all: it
-// carries no narrowing across a binding, so it reads `list.send` as an accessor
-// on the un-narrowed `Client` and reports no such field. The enclosing function
-// is skipped, no type reaches the receiver, and the field reading is all that
-// keeps the call off the pure module.
+// The three alias shapes below reach the field through a binding rather than
+// through the pattern that narrowed it, so the narrowing has to survive the
+// binding for the receiver to be typed at all.
 pub fn simple_alias(c: Client) -> Nil {
   let assert Live(..) = c
   let list = c
