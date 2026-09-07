@@ -8840,14 +8840,15 @@ pub fn a_narrowed_alias_girard_types_stays_a_field_test() {
 
 pub fn girard_types_do_not_replace_a_syntax_proved_target_test() {
   // The collision fixture inferred twice, with girard's types and with none.
-  // Five of its eight functions the syntax path already proves — a qualified
+  // Six of its eight functions the syntax path already proves — a qualified
   // `gleam/list` call, the construction sites' own wiring, and the field calls
   // whose receiver a written parameter annotation names — and the typed run has
   // to charge each of those the same target. Where the two differ, the untyped
   // run must be the one that said [Unknown]: a sharpening, never a swap.
   //
-  // girard declines three of the module's functions, so the guard below is what
-  // keeps the comparison from running on an empty type map.
+  // girard types every one of the module's functions, which the premise test
+  // above pins; the guard below is what keeps the comparison from running on an
+  // empty type map should that ever stop holding.
   let assert Ok(source) =
     simplifile.read("test/fixtures/field_module_collision.gleam")
   let assert Ok(module) = glance.module(source)
