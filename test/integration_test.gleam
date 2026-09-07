@@ -8798,6 +8798,27 @@ pub fn a_narrowed_alias_girard_types_stays_a_field_test() {
   |> list.sort(string.compare)
   |> should.equal([])
 
+  // girard's own answer for every reference in the module, in span order: the
+  // seven `list.send` accesses reach the record's field and `list.length`
+  // reaches the module, which is the collision stated from girard's side rather
+  // than read back out of a charge.
+  let client = girard.Named("field_module_collision", "Client", [])
+  let send = girard.RecordField(client, "send")
+  girard_result.annotated.resolutions
+  |> list.map(fn(reference) { reference.resolution })
+  |> should.equal([
+    girard.ModuleFn("gleam/list", "length"),
+    girard.Constructor("field_module_collision", "Live"),
+    send,
+    send,
+    send,
+    send,
+    send,
+    send,
+    girard.Constructor("field_module_collision", "Live"),
+    send,
+  ])
+
   let assert Ok(checked) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(checked, fn(r) {
