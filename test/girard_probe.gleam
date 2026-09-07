@@ -357,6 +357,8 @@ fn relation_label(check: ClassificationCheck) -> String {
     types.Agree -> "agree"
     types.Compatible(types.WiredValueVersusMember) ->
       "compatible:wired-value-vs-member"
+    types.Compatible(types.UndecidedVersusMember) ->
+      "compatible:undecided-vs-member"
     types.Disagree -> "disagree"
     types.NoTypedEvidence(reason:) ->
       "no-typed-evidence:" <> undecided_label(reason)
@@ -380,6 +382,7 @@ fn graded_label(graded: types.GradedClassification) -> String {
     types.TypeSelectedModule(..) -> "module(type-selected)"
     types.Field(None) -> "field"
     types.Field(Some(..)) -> "field(shadowed)"
+    types.UndecidedShadowed(..) -> "undecided(shadowed)"
     types.WiredValue(types.WiredFunction(..)) -> "wired(function)"
     types.WiredValue(types.WiredLocal(..)) -> "wired(local)"
     types.WiredValue(types.WiredConstructor) -> "wired(constructor)"

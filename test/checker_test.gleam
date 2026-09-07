@@ -8176,6 +8176,54 @@ pub fn a_dropped_definitions_line_says_so_test() {
   )
 }
 
+pub fn an_undecided_shadowed_line_names_the_unknown_it_charged_test() {
+  // graded established neither reading and charged [Unknown]; girard proved the
+  // field. The [Unknown] covers the member, so the pair is compatible and the
+  // line says which charge it was.
+  row(
+    "c",
+    "send",
+    types.UndecidedShadowed("gleam/list"),
+    types.ProvedFieldCall(#("app", "Client"), "send"),
+    types.Compatible(types.UndecidedVersusMember),
+  )
+  |> checker.format_typed_resolution()
+  |> should.equal(
+    "c.send: typed resolution field Client.send (compatible; graded charged [Unknown] where c also names gleam/list)",
+  )
+}
+
+pub fn an_undecided_shadowed_call_is_classified_as_the_unknown_it_charged_test() {
+  // The receiver is an alias of an unannotated parameter, so with no types
+  // neither the module reading nor the field reading is established and the
+  // call is charged [Unknown]. The row states that charge rather than the
+  // field reading the split declined to take.
+  let source =
+    "import gleam/list
+
+pub fn target(c) {
+  let list = c
+  list.send(\"hi\")
+}"
+  let assert Ok(module) = glance.module(source)
+  let assert Ok(explained) =
+    checker.explain(
+      module,
+      "app",
+      "target",
+      [[]],
+      effects.empty_knowledge_base("."),
+      signatures.from_glance_module("app", module),
+      dict.new(),
+      dict.new(),
+      typeinfo.no_evidence(),
+      types.all_targets(),
+    )
+  explained.classifications
+  |> list.map(fn(check) { check.graded })
+  |> should.equal([types.UndecidedShadowed("gleam/list")])
+}
+
 pub fn explain_states_its_typed_resolutions_once_per_function_test() {
   // Two bound sets, so two blocks — but the resolutions are a property of the
   // body, which both blocks explain the same one of, so they are stated once

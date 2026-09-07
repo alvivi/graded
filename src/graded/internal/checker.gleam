@@ -39,10 +39,10 @@ import graded/internal/types.{
   StaleFunctionAssumeWarning, StaleReturnsClauseWarning, SyntaxModule, TUnion,
   TVar, TypeSelectedModule, UnboundAssumeTermVariableWarning, UnbuiltExternal,
   UncalledFactory, UnclosedReturnsClauseWarning, UnconstructedFieldCheckWarning,
-  Undecided, UndeclaredExternal, UndeclaredForeignReturn,
-  UnderivableReturnedOperator, UngroundReturnsClauseWarning,
-  UnkeyedEffectsShapeWarning, UnknownClauseWarning, UnmatchedCheckWarning,
-  UnmatchedFieldAssumeWarning, UnmatchedFieldBoundWarning,
+  Undecided, UndecidedShadowed, UndecidedVersusMember, UndeclaredExternal,
+  UndeclaredForeignReturn, UnderivableReturnedOperator,
+  UngroundReturnsClauseWarning, UnkeyedEffectsShapeWarning, UnknownClauseWarning,
+  UnmatchedCheckWarning, UnmatchedFieldAssumeWarning, UnmatchedFieldBoundWarning,
   UnmatchedFieldCheckWarning, UnmatchedFunctionAssumeWarning,
   UnmatchedModuleAssumeWarning, UnmatchedParamBoundWarning,
   UnmatchedReturnsClauseWarning, UnprovedCheck, UnprovedForeignFallback,
@@ -1977,7 +1977,7 @@ fn resolution_line(
 ) -> String {
   let standing = case check.relation {
     Agree -> "agrees"
-    Compatible(WiredValueVersusMember) ->
+    Compatible(WiredValueVersusMember) | Compatible(UndecidedVersusMember) ->
       "compatible; graded charged " <> graded_target(check)
     Disagree -> "DISAGREES with graded's " <> graded_target(check)
     // Unreachable: a resolved `typed` never relates as no evidence.
@@ -1992,6 +1992,8 @@ fn graded_target(check: ClassificationCheck) -> String {
     SyntaxModule(module:) | TypeSelectedModule(module:) ->
       "module call " <> module <> "." <> check.label
     Field(..) -> "field call " <> check.object <> "." <> check.label
+    UndecidedShadowed(shadowed:) ->
+      "[Unknown] where " <> check.object <> " also names " <> shadowed
     WiredValue(WiredFunction(name:)) -> "the wired " <> types.dotted_name(name)
     WiredValue(WiredLocal(name:)) -> "the wired " <> name
     WiredValue(WiredConstructor) -> "the wired constructor"
@@ -8936,8 +8938,16 @@ pub fn classify_definition(
     list.fold(split.module_reads, dict.new(), fn(acc, call) {
       dict.insert(acc, extract.span_key(call.span), call.name.module)
     })
+  let undecided =
+    list.fold(split.undecided, dict.new(), fn(acc, call) {
+      dict.insert(
+        acc,
+        extract.span_key(call.span),
+        option.unwrap(call.shadowed_module, ""),
+      )
+    })
   list.map(result.ambiguous, fn(row) {
-    let graded = graded_classification(row, moved)
+    let graded = graded_classification(row, moved, undecided)
     let typed = classify_typed(row.site.access_span, function, evidence)
     ClassificationCheck(
       module: module_path,
@@ -8953,21 +8963,27 @@ pub fn classify_definition(
 }
 
 // graded's final answer for one row: the extractor's verdict, with a field call
-// the split moved to the module read as the module instead. `moved` is keyed by
-// call span rather than zipped in list order, since a body calling the same
-// label twice — one receiver narrowed, one not — moves one and keeps the other.
+// the split moved to the module read as the module instead, and one it
+// established neither reading for read as the `[Unknown]` it was charged.
+// `moved` and `undecided` are keyed by call span rather than zipped in list
+// order, since a body calling the same label twice — one receiver narrowed, one
+// not — moves one and keeps the other.
 fn graded_classification(
   row: extract.AmbiguousCall,
   moved: dict.Dict(#(Int, Int), String),
+  undecided: dict.Dict(#(Int, Int), String),
 ) -> GradedClassification {
   case row.verdict {
     extract.AsModule(module:) -> SyntaxModule(module)
     extract.AsWired(value:) -> WiredValue(value)
-    extract.AsField(shadowed:) ->
-      case dict.get(moved, extract.span_key(row.site.call_span)) {
-        Ok(module) -> TypeSelectedModule(module)
-        Error(Nil) -> Field(shadowed)
+    extract.AsField(shadowed:) -> {
+      let span = extract.span_key(row.site.call_span)
+      case dict.get(moved, span), dict.get(undecided, span) {
+        Ok(module), _ -> TypeSelectedModule(module)
+        Error(Nil), Ok(module) -> UndecidedShadowed(module)
+        Error(Nil), Error(Nil) -> Field(shadowed)
       }
+    }
   }
 }
 
@@ -8976,7 +8992,9 @@ fn graded_classification(
 // The wired-value cells are the asymmetric pair: against a proved field the two
 // name different halves of the same site and agree in substance, while against
 // a proved module call graded charged a wired value where the compiler reads
-// the module — the undercharge shape, which the pair must never absorb.
+// the module — the undercharge shape, which the pair must never absorb. The
+// undecided cells are symmetric the other way: `[Unknown]` covers whichever
+// target girard proved, so it contradicts neither.
 fn relate(
   graded: GradedClassification,
   typed: TypedClassification,
@@ -8987,11 +9005,13 @@ fn relate(
       case graded {
         Field(..) -> Agree
         WiredValue(..) -> Compatible(WiredValueVersusMember)
+        UndecidedShadowed(..) -> Compatible(UndecidedVersusMember)
         SyntaxModule(..) | TypeSelectedModule(..) -> Disagree
       }
     ProvedModuleCall(..) ->
       case graded {
         SyntaxModule(..) | TypeSelectedModule(..) -> Agree
+        UndecidedShadowed(..) -> Compatible(UndecidedVersusMember)
         Field(..) | WiredValue(..) -> Disagree
       }
   }
