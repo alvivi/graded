@@ -2630,7 +2630,7 @@ fn build_type_index(
         Error(Nil) -> Error(Nil)
       }
     })
-  typeinfo.from_modules(span_types, fn_typed)
+  typeinfo.from_modules(span_types, fn_typed, [], [], [])
 }
 
 // From girard's inferred top-level signatures, the set of function-typed
