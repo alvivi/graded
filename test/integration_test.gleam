@@ -15,6 +15,7 @@ import graded/internal/cli
 import graded/internal/config
 import graded/internal/effect_term
 import graded/internal/effects
+import graded/internal/extract
 import graded/internal/signatures
 import graded/internal/types.{type EffectTerm}
 import simplifile
@@ -14601,4 +14602,182 @@ pub fn shadowed(int: Int) -> String {
   )
   |> string.contains("effects ext.shadowed : []")
   |> should.be_true()
+}
+
+// The dual run over the fixture corpus
+//
+// Every ambiguous `name.label(args)` in `test/fixtures` is classified twice —
+// by graded's own path and by what girard resolved the reference to — and the
+// pair is compared. The assertion is an allowlist of the rows that are not
+// `Agree`, not a "no disagreement" rule: a girard bug pinned as a fixture stays
+// a `Disagree` row until girard is fixed, and a compatible pair stays a
+// `Compatible` one for good.
+//
+// Adding a rule or a fixture extends the list in the same commit, with the
+// compiler reading that adjudicated it cited here. A row that disappears is a
+// regression to look at, not a free pass, which is why removal fails too.
+
+// One row with its span projected out, so a fixture edit that shifts offsets
+// does not rewrite the expectation while a change of shape still does.
+type ClassificationRow {
+  ClassificationRow(
+    module: String,
+    function: String,
+    object: String,
+    label: String,
+    graded: types.GradedClassification,
+    typed: types.TypedClassification,
+    relation: types.Relation,
+  )
+}
+
+fn classification_row(check: types.ClassificationCheck) -> ClassificationRow {
+  ClassificationRow(
+    module: check.module,
+    function: check.function,
+    object: check.object,
+    label: check.label,
+    graded: check.graded,
+    typed: check.typed,
+    relation: check.relation,
+  )
+}
+
+// The rows sorted by where they sit, so the expectation reads in a fixed order
+// however the module walk happens to run.
+fn non_agree_rows(directory: String) -> List(ClassificationRow) {
+  let assert Ok(checks) = graded.classification_checks(directory)
+  checks
+  |> list.filter(fn(check) { check.relation != types.Agree })
+  |> list.map(classification_row)
+  |> list.sort(fn(left, right) {
+    string.compare(
+      left.module <> "." <> left.function <> " " <> left.object,
+      right.module <> "." <> right.function <> " " <> right.object,
+    )
+  })
+}
+
+pub fn the_fixture_corpus_disagreement_allowlist_test() {
+  // Six rows, all the same shape: graded resolved the field at the receiver's
+  // construction site and charged the value wired in, while girard named the
+  // member the access reaches. Neither is wrong — they name different halves of
+  // one site — which is why the pair is `Compatible` and not `Disagree`.
+  //
+  // No `Disagree` and no `NoTypedEvidence` row exists over these fixtures:
+  // girard types every fixture function, and wherever the two both answer they
+  // answer the same way.
+  let wired_local = fn(name) { types.WiredValue(types.WiredLocal(name)) }
+  let wired_function = fn(module, name) {
+    types.WiredValue(types.WiredFunction(types.QualifiedName(module, name)))
+  }
+  let compatible = types.Compatible(types.WiredValueVersusMember)
+  non_agree_rows("test/fixtures")
+  |> should.equal([
+    ClassificationRow(
+      module: "factory_field",
+      function: "run",
+      object: "v",
+      label: "to_error",
+      graded: wired_function("gleam/io", "println"),
+      typed: types.ProvedFieldCall(#("factory_field", "Validator"), "to_error"),
+      relation: compatible,
+    ),
+    ClassificationRow(
+      module: "field_module_collision",
+      function: "direct_construction",
+      object: "list",
+      label: "send",
+      graded: wired_local("net_send"),
+      typed: types.ProvedFieldCall(
+        #("field_module_collision", "Client"),
+        "send",
+      ),
+      relation: compatible,
+    ),
+    ClassificationRow(
+      module: "field_module_collision",
+      function: "rebound_after_narrowing",
+      object: "list",
+      label: "send",
+      graded: wired_local("net_send"),
+      typed: types.ProvedFieldCall(
+        #("field_module_collision", "Client"),
+        "send",
+      ),
+      relation: compatible,
+    ),
+    ClassificationRow(
+      module: "inline_construction_field",
+      function: "run",
+      object: extract.computed_receiver,
+      label: "to_error",
+      graded: wired_function("gleam/io", "println"),
+      typed: types.ProvedFieldCall(
+        #("inline_construction_field", "Validator"),
+        "to_error",
+      ),
+      relation: compatible,
+    ),
+    ClassificationRow(
+      module: "narrowed_module_collision",
+      function: "direct_construction",
+      object: "io",
+      label: "println",
+      graded: wired_local("net_send"),
+      typed: types.ProvedFieldCall(
+        #("narrowed_module_collision", "Client"),
+        "println",
+      ),
+      relation: compatible,
+    ),
+    ClassificationRow(
+      module: "validator_flow",
+      function: "run",
+      object: "v",
+      label: "to_error",
+      graded: wired_function("gleam/io", "println"),
+      typed: types.ProvedFieldCall(#("validator_flow", "Validator"), "to_error"),
+      relation: compatible,
+    ),
+  ])
+}
+
+pub fn the_collision_fixtures_never_read_the_module_test() {
+  // The soundness invariant stated in the typed classification's own terms:
+  // over both collision fixtures girard proves the record's field at every
+  // receiver call, and graded reads the module at none of them. A row whose
+  // `graded` were `SyntaxModule` or `TypeSelectedModule` against a
+  // `ProvedFieldCall` is exactly the undercharge these fixtures exist to catch.
+  let assert Ok(checks) = graded.classification_checks("test/fixtures")
+  let rows =
+    list.filter(checks, fn(check) {
+      check.module == "field_module_collision"
+      || check.module == "narrowed_module_collision"
+    })
+  rows |> list.is_empty() |> should.be_false()
+  list.each(rows, fn(check) {
+    case check.graded, check.typed {
+      // `count`/`greet` reach the module under its own name, and girard says so.
+      types.SyntaxModule(module), types.ProvedModuleCall(proved, _) ->
+        module |> should.equal(proved)
+      types.Field(_), types.ProvedFieldCall(..) -> Nil
+      types.WiredValue(_), types.ProvedFieldCall(..) -> Nil
+      _, _ -> should.fail()
+    }
+  })
+}
+
+pub fn every_ambiguous_call_is_classified_once_test() {
+  // A function reached from several callers is walked by the classification
+  // pass as itself and nowhere else, so no site is counted twice. Spans are
+  // unique per site within a module, so the row count and the distinct-span
+  // count coincide.
+  let assert Ok(checks) = graded.classification_checks("test/fixtures")
+  let keys =
+    list.map(checks, fn(check) {
+      #(check.module, check.span.start, check.span.end)
+    })
+  list.length(keys)
+  |> should.equal(list.length(list.unique(keys)))
 }

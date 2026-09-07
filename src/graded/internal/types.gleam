@@ -1167,12 +1167,118 @@ pub type Warning {
 
 // Result of checking one file. `violations` and `findings` are two shapes of
 // one reported channel: the run exits on both together, so a caller rendering
-// one renders the other.
+// one renders the other. `classification_checks` rides along beside them and is
+// reported through neither: it is the dual-run comparison, computed for every
+// definition whether or not a `check` line names one.
 pub type CheckResult {
   CheckResult(
     file: String,
     violations: List(Violation),
     findings: List(CheckFinding),
     warnings: List(Warning),
+    classification_checks: List(ClassificationCheck),
   )
+}
+
+// The dual run
+//
+// Every `name.label(args)` is classified twice — once by graded's own path, the
+// extractor's reading as the shadowed-receiver split may have moved it, and once
+// by what girard resolved the reference to — and the pair is recorded here.
+// girard decides nothing: the comparison exists so a disagreement is visible
+// before its answer is ever charged.
+//
+// The comparison is on the *classification*, not the name. graded resolving a
+// field to the value wired into it at a construction site names a different
+// thing from girard's member, and both are right; graded reading the module
+// where girard proved a field, or the reverse, is the real disagreement.
+
+// What girard resolved a reference to. Three states and no fourth: every way
+// typed evidence can be absent or beside the point reads `Undecided`, keeping
+// the reason it got there by.
+pub type TypedClassification {
+  ProvedModuleCall(module: String, name: String)
+  ProvedFieldCall(receiver: #(String, String), label: String)
+  Undecided(reason: UndecidedReason)
+}
+
+// Why girard's answer decides nothing at a site.
+pub type UndecidedReason {
+  // The enclosing definition was left out of the build for the other target, so
+  // nothing inside it was walked.
+  DefinitionDropped
+  // girard declined to type the enclosing definition, under this error bucket.
+  FunctionSkipped(bucket: String)
+  // girard walked the definition and recorded no reference at the span.
+  NoResolutionAtSpan
+  // girard fixed the receiver's type only after the access, so it typed the
+  // field without ever naming the member.
+  ReceiverTypeUnknown
+  // A resolution that is not a call target: a local binding, a constructor, or
+  // a module constant in callee position.
+  NotACallTarget(kind: String)
+  // A field of a type with no nominal identity, which nothing can be keyed by.
+  ReceiverNotNominal
+}
+
+// What graded finally made of the call — the extractor's verdict, with the
+// shadowed-receiver split's answer folded in, since the split is the one
+// checker-side decision on this path and so the classification compared is the
+// one charged.
+pub type GradedClassification {
+  // The extractor settled it: the name is an import alias and no binding.
+  SyntaxModule(module: String)
+  // A field call the shadowed split moved to the module its receiver's name
+  // shadows.
+  TypeSelectedModule(module: String)
+  // A field call the split left alone, carrying the module its name shadows
+  // where it shadows one.
+  Field(shadowed: Option(String))
+  // A field whose receiver's construction site already named the value wired
+  // in, so the call was charged that value rather than the field.
+  WiredValue(value: WiredValue)
+}
+
+// What the construction site wired into the field. Lifted one-to-one from the
+// extraction verdict, so a site that drifts from one kind of value to another
+// changes its row rather than passing under the same one.
+pub type WiredValue {
+  WiredFunction(name: QualifiedName)
+  WiredLocal(name: String)
+  WiredConstructor
+}
+
+// One ambiguous call, classified both ways. Lossless on purpose: `typed` is
+// kept whether or not the two agree, since it names the member an agreeing row
+// reaches, which neither `Field` nor `SyntaxModule` can say on its own.
+// `relation` is the one derived field.
+pub type ClassificationCheck {
+  ClassificationCheck(
+    module: String,
+    function: String,
+    object: String,
+    label: String,
+    // The whole `name.label` access — the span girard keys its resolution by.
+    span: Span,
+    graded: GradedClassification,
+    typed: TypedClassification,
+    relation: Relation,
+  )
+}
+
+// How the two classifications stand to each other.
+pub type Relation {
+  Agree
+  Compatible(pair: CompatiblePair)
+  Disagree
+  NoTypedEvidence(reason: UndecidedReason)
+}
+
+// A pair that names different things without contradicting each other.
+pub type CompatiblePair {
+  // graded named the value wired into the field at its construction site;
+  // girard named the member the access reaches. Keyed on the `WiredValue`
+  // classification and nothing else — a wired value under a girard `ModuleFn`
+  // is the undercharge shape and stays a disagreement.
+  WiredValueVersusMember
 }
