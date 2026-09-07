@@ -148,9 +148,8 @@ fn probe(
         module_path,
         knowledge_base,
         registry,
-        typeinfo.for_module(type_info, module_path),
+        typeinfo.reading_for_module(type_info, module_path),
         typeinfo.fn_typed_for_module(type_info, module_path),
-        typeinfo.evidence_for_module(type_info, module_path),
         package_targets,
       )
     })

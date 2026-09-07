@@ -370,6 +370,42 @@ pub fn an_absent_resolution_span_resolves_to_none_test() {
   |> should.equal(None)
 }
 
+// The whole reading of one module
+//
+// Both halves are sliced for the same module and travel together, so a caller
+// asks once and cannot pair one module's types with another's evidence.
+
+pub fn a_readings_halves_are_the_modules_own_test() {
+  let info =
+    typeinfo.from_modules(
+      [#("app/log", index([#(#(0, 3), Named("app/log", "Logger", []))]))],
+      [],
+      [
+        #(
+          "app/log",
+          typeinfo.ModuleEvidence(
+            resolutions: index([#(#(0, 9), ModuleFn("gleam/io", "println"))]),
+            skipped: dict.from_list([#("render", "ArityMismatch")]),
+            dropped: set.from_list([#(40, 79)]),
+          ),
+        ),
+      ],
+    )
+  let reading = typeinfo.reading_for_module(info, "app/log")
+  typeinfo.receiver_type(reading.expressions, 0, 3)
+  |> should.equal(Some(#("app/log", "Logger")))
+  typeinfo.resolution_at(reading.evidence.resolutions, 0, 9)
+  |> should.equal(Some(ModuleFn("gleam/io", "println")))
+  typeinfo.skip_reason(reading.evidence.skipped, "render")
+  |> should.equal(Some("ArityMismatch"))
+  typeinfo.is_dropped(reading.evidence.dropped, 40, 79) |> should.be_true()
+}
+
+pub fn an_unread_module_yields_the_empty_reading_test() {
+  typeinfo.reading_for_module(typeinfo.none(), "any/module")
+  |> should.equal(typeinfo.no_reading())
+}
+
 // One module's span-keyed slice — of types, or of resolutions.
 fn index(entries: List(#(#(Int, Int), a))) -> Dict(#(Int, Int), a) {
   dict.from_list(entries)

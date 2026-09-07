@@ -149,6 +149,33 @@ pub fn fn_typed_for_module(
   }
 }
 
+// Everything girard said about one module: the type of every expression it
+// annotated, keyed by span, beside the member every reference resolved to, the
+// definitions it declined and the ones it left out for the other target. The
+// checker threads the two halves to the same places and reads them at the same
+// sites, so they travel as one value.
+pub type ModuleReading {
+  ModuleReading(expressions: Dict(#(Int, Int), Type), evidence: ModuleEvidence)
+}
+
+// girard's whole reading of one module. A module girard never saw yields the
+// empty reading, so every site in it reads as "no typed evidence".
+pub fn reading_for_module(
+  info: TypeInfo,
+  module_path: String,
+) -> ModuleReading {
+  ModuleReading(
+    expressions: for_module(info, module_path),
+    evidence: evidence_for_module(info, module_path),
+  )
+}
+
+// The empty reading — girard said nothing about this module. Used where type
+// inference is unavailable, and by every test that drives the checker untyped.
+pub fn no_reading() -> ModuleReading {
+  ModuleReading(dict.new(), no_evidence())
+}
+
 // girard's reading of one module: its resolutions, its skips and its dropped
 // definitions. A module girard never saw yields three empty slices, which read
 // as "no typed evidence" at every site rather than as an answer.
