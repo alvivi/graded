@@ -11,12 +11,11 @@ import gleam/string
 import graded/internal/types.{
   type ArgumentValue, type CallArgument, type DirectClosureCall,
   type DirectOperatorCall, type DirectPipeOp, type FactorySignature,
-  type FieldCall, type LocalCall, type QualifiedName, type ReceiverNarrowing,
-  type ResolvedCall, type UpdateSignature, CallArgument, Constructed,
-  ConstructorRef, DirectClosureCall, DirectPipeOp, FactorySignature, FieldCall,
-  FunctionRef, LocalCall, LocalRef, OtherExpression, ParameterRoot,
-  PossiblyNarrowedReceiver, ProvenValue, QualifiedName, ResolvedCall,
-  UnnarrowedReceiver, Untraceable, UpdateSignature,
+  type FieldCall, type LocalCall, type QualifiedName, type ResolvedCall,
+  type UpdateSignature, CallArgument, Constructed, ConstructorRef,
+  DirectClosureCall, DirectPipeOp, FactorySignature, FieldCall, FunctionRef,
+  LocalCall, LocalRef, OtherExpression, ParameterRoot, ProvenValue,
+  QualifiedName, ResolvedCall, Untraceable, UpdateSignature,
 }
 
 // Lexical bindings
@@ -91,27 +90,17 @@ type FieldCoverage {
 }
 
 // The lexical environment threaded through a body walk: what each in-scope
-// name is bound to, beside the names whose value is statically known to be one
-// variant of its type. Narrowing rides here rather than on `LocalBinding`
-// because it is orthogonal to what a name is bound to — a call result is
-// narrowed by a `case` on it exactly as a parameter is — and because it is
-// flow-sensitive: a clause's env carries the marks the clause's patterns wrote
-// and is discarded with the clause.
+// name is bound to.
 type Env {
-  Env(bindings: Dict(String, LocalBinding), narrowed: Set(String))
+  Env(bindings: Dict(String, LocalBinding))
 }
 
 fn env_new() -> Env {
-  Env(bindings: dict.new(), narrowed: set.new())
+  Env(bindings: dict.new())
 }
 
-// Bind `name`, clearing any narrowing it carried: the mark describes the value
-// the name held, so a rebinding drops it by construction.
 fn env_bind(env: Env, name: String, binding: LocalBinding) -> Env {
-  Env(
-    bindings: dict.insert(env.bindings, name, binding),
-    narrowed: set.delete(env.narrowed, name),
-  )
+  Env(bindings: dict.insert(env.bindings, name, binding))
 }
 
 // What `name` is bound to, `Error(Nil)` where the env does not hold it — which
@@ -123,37 +112,6 @@ fn env_get(env: Env, name: String) -> Result(LocalBinding, Nil) {
 // Whether the env holds `name` at all.
 fn env_has(env: Env, name: String) -> Bool {
   dict.has_key(env.bindings, name)
-}
-
-// Mark `name`'s value as one known variant of its type. Written after the
-// binding it describes, since binding clears the mark.
-fn env_narrow(env: Env, name: String) -> Env {
-  Env(..env, narrowed: set.insert(env.narrowed, name))
-}
-
-// Whether `name` currently holds a value of one known variant.
-fn env_is_narrowed(env: Env, name: String) -> Bool {
-  set.contains(env.narrowed, name)
-}
-
-// The constructor a pattern selects, `None` for a pattern that selects none —
-// a wildcard, a plain variable, a literal. Only a selecting pattern narrows
-// what its subject holds; a wildcard leaves it exactly as it was. An `as`
-// binding is unwrapped to the pattern it names, which is what selects.
-fn selected_variant(pattern: glance.Pattern) -> Option(String) {
-  case pattern {
-    glance.PatternVariant(constructor:, ..) -> Some(constructor)
-    glance.PatternAssignment(pattern:, ..) -> selected_variant(pattern)
-    glance.PatternInt(..)
-    | glance.PatternFloat(..)
-    | glance.PatternString(..)
-    | glance.PatternDiscard(..)
-    | glance.PatternVariable(..)
-    | glance.PatternTuple(..)
-    | glance.PatternList(..)
-    | glance.PatternConcatenate(..)
-    | glance.PatternBitString(..) -> None
-  }
 }
 
 // Import context and module indexes
@@ -854,8 +812,8 @@ fn bind_statements(
 ) -> Env {
   list.fold(statements, env, fn(acc, statement) {
     case statement {
-      glance.Assignment(pattern:, value:, kind:, ..) ->
-        bind_assignment(pattern, kind, value, context, acc)
+      glance.Assignment(pattern:, value:, ..) ->
+        bind_assignment(pattern, value, context, acc)
       glance.Use(patterns:, ..) -> bind_use_patterns(patterns, acc)
       _ -> acc
     }
@@ -1393,49 +1351,6 @@ fn shadowed_receiver_has_field(binding: LocalBinding, label: String) -> Bool {
   }
 }
 
-// Whether the receiver a field call reads is known to hold one variant of its
-// type — the mark the env carries, and what the binding alone says where none
-// was written.
-fn receiver_narrowing(
-  alias: String,
-  binding: LocalBinding,
-  env: Env,
-) -> ReceiverNarrowing {
-  use <- bool.guard(env_is_narrowed(env, alias), PossiblyNarrowedReceiver)
-  binding_narrowing(binding)
-}
-
-// What a binding alone says about narrowing. Every way a value comes to hold a
-// known variant — a pattern, a direct construction, an alias of one — writes
-// the env's mark, so an unmarked binding is un-narrowed exactly where its value
-// crossed a boundary narrowing does not survive, and says nothing anywhere
-// else.
-fn binding_narrowing(binding: LocalBinding) -> ReceiverNarrowing {
-  case binding {
-    // A top-level parameter and a closure parameter: narrowing never crosses a
-    // function boundary, so neither carries the caller's.
-    BoundLocal | BoundParam -> UnnarrowedReceiver
-    // A call result, and a factory result — which binds exactly as a direct
-    // construction does, so only the mark tells the two apart.
-    BoundReturnedOperator(..) | BoundConstructor(..) -> UnnarrowedReceiver
-    // An alias. One taken of a narrowed name is marked, and a projection out of
-    // a narrowed value (`let io = config.logger`) yields an ordinary value of
-    // the field's type, which is not.
-    BoundReceiverPath(..) -> UnnarrowedReceiver
-    // A record update is rejected by the compiler on a base whose variant is
-    // not known, so its own base was narrowed already.
-    BoundUpdated(..) -> PossiblyNarrowedReceiver
-    // A join over branch values, a lowercase imported name that may be a record
-    // constant, and a value — a clause's own pattern name included — nothing
-    // was proved about.
-    BoundChoice(..) | BoundFunctionRef(..) | BoundOpaque ->
-      PossiblyNarrowedReceiver
-    // Unreachable through a shadowed receiver: a `fn` literal has no fields, so
-    // the module reading was taken before this.
-    BoundClosure(..) -> PossiblyNarrowedReceiver
-  }
-}
-
 // The field call a bare-identifier receiver resolves to, by what its binding
 // holds. Reached for an unshadowed receiver, and for a shadowed one the rule
 // above sent here.
@@ -1448,7 +1363,6 @@ fn env_field_call(
   env: Env,
   shadowed_module: Option(String),
 ) -> ExtractResult {
-  let narrowing = receiver_narrowing(site.object, binding, env)
   // Every reading below is the same call under a different provenance, so the
   // call is spelled once and the branches choose what the receiver proved.
   let field_call = fn(provenance) {
@@ -1463,7 +1377,6 @@ fn env_field_call(
           site.access_span,
           provenance,
           shadowed_module,
-          narrowing,
         ),
       ],
       ambiguous: observed(site, AsField(shadowed_module)),
@@ -1471,7 +1384,7 @@ fn env_field_call(
   }
   case binding {
     BoundConstructor(fields:, ..) ->
-      resolve_constructor_field_call(site, fields, shadowed_module, narrowing)
+      resolve_constructor_field_call(site, fields, shadowed_module)
     // A let-bound call result (`let l = make(); l.emit()`): the receiver's
     // whole value is the call, resolved at check time through the callee's
     // return provenance. Carried as `ProvenReceiver` so the field is read per
@@ -1557,7 +1470,6 @@ fn resolve_constructor_field_call(
   site: CallSite,
   fields: Dict(String, ArgumentValue),
   shadowed_module: Option(String),
-  narrowing: ReceiverNarrowing,
 ) -> ExtractResult {
   let untraceable = fn(shadowed) {
     ExtractResult(
@@ -1571,7 +1483,6 @@ fn resolve_constructor_field_call(
           site.access_span,
           Untraceable,
           shadowed,
-          narrowing,
         ),
       ],
       ambiguous: observed(site, AsField(shadowed)),
@@ -1610,7 +1521,6 @@ fn resolve_constructor_field_call(
             site.access_span,
             ProvenValue(value),
             None,
-            narrowing,
           ),
         ],
         ambiguous: observed(site, AsField(None)),
@@ -1661,12 +1571,7 @@ fn resolve_nested_field_call(
       // whether the path is rooted at a live parameter.
       case classify_expression(receiver, context, env) {
         Constructed(fields:) ->
-          resolve_constructor_field_call(
-            site,
-            fields,
-            None,
-            PossiblyNarrowedReceiver,
-          )
+          resolve_constructor_field_call(site, fields, None)
         _ ->
           ExtractResult(
             ..empty(),
@@ -1679,9 +1584,8 @@ fn resolve_nested_field_call(
                 site.access_span,
                 field_receiver_provenance(site.object, env),
                 // A nested receiver is not a bare identifier, so it shadows
-                // nothing, and nothing reads its narrowing.
+                // nothing.
                 None,
-                PossiblyNarrowedReceiver,
               ),
             ],
             ambiguous: observed(site, AsField(None)),
@@ -1751,9 +1655,9 @@ fn extract_from_statement(
       extract_from_expression(expression, context, env),
       env,
     )
-    glance.Assignment(pattern:, value: expression, kind:, ..) -> {
+    glance.Assignment(pattern:, value: expression, ..) -> {
       let result = extract_from_expression(expression, context, env)
-      let next_env = bind_assignment(pattern, kind, expression, context, env)
+      let next_env = bind_assignment(pattern, expression, context, env)
       #(result, next_env)
     }
     glance.Use(patterns:, function: expression, ..) -> {
@@ -1783,78 +1687,14 @@ fn extract_from_statement(
 // tracking values through destructuring is out of scope.
 fn bind_assignment(
   pattern: glance.Pattern,
-  kind: glance.AssignmentKind,
   value: glance.Expression,
   context: ImportContext,
   env: Env,
 ) -> Env {
   case pattern {
-    glance.PatternVariable(name:, ..) -> {
-      let narrows = rhs_narrows(value, context, env)
-      let bound = env_bind(env, name, classify_rhs(value, context, env))
-      case narrows {
-        True -> env_narrow(bound, name)
-        False -> bound
-      }
-    }
-    _ ->
-      fold_pattern_names(
-        pattern,
-        narrow_asserted_subject(pattern, kind, value, env),
-        bind_opaque,
-      )
-  }
-}
-
-// Whether `let name = rhs` leaves `name` holding a known variant: a direct
-// construction does, and a bare-variable alias inherits what its source holds.
-// A factory call does not — it binds like a construction, but its result comes
-// back across a function boundary — and neither does a projection, a block, or
-// any other computed value.
-fn rhs_narrows(
-  expression: glance.Expression,
-  context: ImportContext,
-  env: Env,
-) -> Bool {
-  case expression {
-    glance.Variable(name:, ..) -> env_is_narrowed(env, name)
-    glance.Call(function: glance.Variable(_, name), ..) ->
-      is_constructor_name(name)
-    glance.Call(
-      function: glance.FieldAccess(container: glance.Variable(..), label:, ..),
-      ..,
-    ) -> is_constructor_name(label)
-    // A block hands back its tail, and the compiler narrows through it — a
-    // nested block included. Read the tail in the block's own scope, so a `let`
-    // inside it that rebinds the source clears the mark exactly as one outside
-    // would. A `case` right-hand side narrows nothing, even where every branch
-    // hands back the same narrowed name, so it is not this arm.
-    glance.Block(statements:, ..) ->
-      case block_tail(statements, context, env) {
-        Some(#(tail, inner_env)) -> rhs_narrows(tail, context, inner_env)
-        None -> False
-      }
-    _ -> False
-  }
-}
-
-// `let assert Loud(_) = io` fixes which variant `io` holds for the rest of the
-// scope, which is a `case` of one subject and one alternative — so it narrows
-// through the same rule, and a pattern selecting no variant (`let assert _ =
-// io`) or a computed right-hand side fixes nothing there too.
-//
-// An ordinary `let` over a variant pattern is the one thing specific to an
-// assignment: it is well-typed only on a single-variant type, whose two label
-// sets coincide, so it needs no mark.
-fn narrow_asserted_subject(
-  pattern: glance.Pattern,
-  kind: glance.AssignmentKind,
-  value: glance.Expression,
-  env: Env,
-) -> Env {
-  case kind {
-    glance.Let -> env
-    glance.LetAssert(..) -> narrow_subjects([value], [[pattern]], env)
+    glance.PatternVariable(name:, ..) ->
+      env_bind(env, name, classify_rhs(value, context, env))
+    _ -> fold_pattern_names(pattern, env, bind_opaque)
   }
 }
 
@@ -2402,10 +2242,7 @@ fn extract_from_expression(
       merge(
         fold_expressions(subjects, context, env),
         list.fold(clauses, empty(), fn(accumulated, clause) {
-          merge(
-            accumulated,
-            extract_from_clause(clause, subjects, context, env),
-          )
+          merge(accumulated, extract_from_clause(clause, context, env))
         }),
       )
 
@@ -2876,66 +2713,20 @@ fn extract_expression_call(
 // call against a value it does not name.
 fn extract_from_clause(
   clause: Clause,
-  subjects: List(Expression),
   context: ImportContext,
   env: Env,
 ) -> ExtractResult {
   let clause_env =
-    list.fold(
-      clause.patterns,
-      narrow_subjects(subjects, clause.patterns, env),
-      fn(acc, alternative) {
-        list.fold(alternative, acc, fn(inner, pattern) {
-          fold_pattern_names(pattern, inner, bind_opaque)
-        })
-      },
-    )
+    list.fold(clause.patterns, env, fn(acc, alternative) {
+      list.fold(alternative, acc, fn(inner, pattern) {
+        fold_pattern_names(pattern, inner, bind_opaque)
+      })
+    })
   let body_result = extract_from_expression(clause.body, context, clause_env)
   case clause.guard {
     Some(guard) ->
       merge(body_result, extract_from_expression(guard, context, clause_env))
     None -> body_result
-  }
-}
-
-// Mark the `case` subjects this clause fixed to one variant.
-//
-// A subject narrows without an `as`, and it narrows whatever binding it names —
-// a call result exactly as a parameter — so the mark keys off the subject
-// expression rather than off what the env holds for it. Only a *bare variable*
-// subject narrows: a tuple literal holding the variable (`case #(n, io) { .. }`)
-// matches its own value, and the compiler leaves the variable alone. Written
-// before the clause's own pattern names are bound, so an `as` binding of the
-// same name overwrites both the binding and its mark.
-fn narrow_subjects(
-  subjects: List(Expression),
-  alternatives: List(List(glance.Pattern)),
-  env: Env,
-) -> Env {
-  use env, subject, column <- list.index_fold(subjects, env)
-  case subject, column_narrows(alternatives, column) {
-    glance.Variable(name:, ..), True -> env_narrow(env, name)
-    _, _ -> env
-  }
-}
-
-// Whether every alternative selects the same one variant in a subject's own
-// column. `case io, b { Loud(..), True | Quiet(..), False -> .. }` reaches two
-// variants and fixes neither, and so does a column any alternative leaves
-// unselected.
-fn column_narrows(
-  alternatives: List(List(glance.Pattern)),
-  column: Int,
-) -> Bool {
-  let selected =
-    list.map(alternatives, fn(alternative) {
-      at(alternative, column)
-      |> result.map(selected_variant)
-      |> result.unwrap(None)
-    })
-  case list.unique(selected) {
-    [Some(_)] -> True
-    _ -> False
   }
 }
 
