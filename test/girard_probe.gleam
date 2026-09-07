@@ -46,14 +46,12 @@ pub fn main() -> Nil {
     // `--detail` dumps one line per ambiguous site, which is how the fixture
     // sanity anchors are read.
     ["--detail", deps_dir, ..roots] if roots != [] -> {
-      let rows = list.flat_map(roots, fn(root) { probe(deps_dir, root) })
+      let rows = probe_all(deps_dir, roots)
       list.each(rows, print_row)
       report_totals(rows)
     }
-    [deps_dir, ..roots] if roots != [] -> {
-      let rows = list.flat_map(roots, fn(root) { probe(deps_dir, root) })
-      report_totals(rows)
-    }
+    [deps_dir, ..roots] if roots != [] ->
+      report_totals(probe_all(deps_dir, roots))
     _ ->
       io.println(
         "usage: gleam run -m girard_probe -- [--detail] <deps_dir> <package_root>...",
@@ -71,12 +69,28 @@ fn print_row(check: ClassificationCheck) -> Nil {
   )
 }
 
+// Every root, against one borrowed dependency tree. The borrow is scanned and
+// parsed once here rather than per root: it is the same tree for all of them,
+// and parsing it is hundreds of files.
+fn probe_all(
+  deps_dir: String,
+  roots: List(String),
+) -> List(ClassificationCheck) {
+  let borrowed = effects.dependency_module_files(deps_dir)
+  let borrowed_registry = registry_of_files(borrowed)
+  list.flat_map(roots, fn(root) { probe(borrowed, borrowed_registry, root) })
+}
+
 // One package
 //
 // Parse its `src/`, annotate it with girard against a real dependency tree,
 // then hand each module to graded's own classification pass.
 
-fn probe(deps_dir: String, root: String) -> List(ClassificationCheck) {
+fn probe(
+  borrowed: Dict(String, String),
+  borrowed_registry: signatures.SignatureRegistry,
+  root: String,
+) -> List(ClassificationCheck) {
   let source_dir = root <> "/src"
   let entries = parse_sources(source_dir)
   let index =
@@ -86,7 +100,6 @@ fn probe(deps_dir: String, root: String) -> List(ClassificationCheck) {
     })
 
   let own_deps = effects.dependency_module_files(root <> "/build/packages")
-  let borrowed = effects.dependency_module_files(deps_dir)
   // A package's own tree wins where it has one; the borrowed tree fills gaps.
   let dep_files = dict.merge(borrowed, own_deps)
 
@@ -115,10 +128,17 @@ fn probe(deps_dir: String, root: String) -> List(ClassificationCheck) {
   // from a package-only registry — which reads as "no accessor index at all"
   // and keeps the field. Production merges the two the same way.
   let registry =
-    list.fold(entries, dependency_registry(dep_files), fn(acc, entry) {
-      let #(module_path, module) = entry
-      signatures.merge(acc, signatures.from_glance_module(module_path, module))
-    })
+    list.fold(
+      entries,
+      signatures.merge(borrowed_registry, registry_of_files(own_deps)),
+      fn(acc, entry) {
+        let #(module_path, module) = entry
+        signatures.merge(
+          acc,
+          signatures.from_glance_module(module_path, module),
+        )
+      },
+    )
 
   let rows =
     list.flat_map(entries, fn(entry) {
@@ -139,67 +159,25 @@ fn probe(deps_dir: String, root: String) -> List(ClassificationCheck) {
   rows
 }
 
-// girard's whole answer for the package, folded the way `build_type_index`
-// folds it — so the probe's classification reads the same maps production does.
+// girard's whole answer for the package, folded through the same helpers
+// production folds it with, so the probe's classification reads the maps
+// `graded check` reads.
 fn type_index(results: Dict(String, girard.ModuleResult)) -> typeinfo.TypeInfo {
   let pairs = dict.to_list(results)
   typeinfo.from_modules(
-    list.map(pairs, fn(pair) {
-      let #(module_path, module_result) = pair
-      #(
-        module_path,
-        list.fold(
-          module_result.annotated.expressions,
-          dict.new(),
-          fn(acc, annotation) {
-            dict.insert(
-              acc,
-              #(annotation.span.start, annotation.span.end),
-              annotation.type_,
-            )
-          },
-        ),
-      )
-    }),
+    list.map(pairs, fn(pair) { #({ pair.0 }, typeinfo.span_types(pair.1)) }),
     [],
     list.map(pairs, fn(pair) {
-      let #(module_path, module_result) = pair
-      #(
-        module_path,
-        list.fold(
-          module_result.annotated.resolutions,
-          dict.new(),
-          fn(acc, reference) {
-            dict.insert(
-              acc,
-              #(reference.span.start, reference.span.end),
-              reference.resolution,
-            )
-          },
-        ),
-      )
-    }),
-    list.map(pairs, fn(pair) {
-      let #(module_path, module_result) = pair
-      #(module_path, dict.from_list(module_result.skipped))
-    }),
-    list.map(pairs, fn(pair) {
-      let #(module_path, module_result) = pair
-      #(
-        module_path,
-        list.fold(module_result.annotated.dropped, set.new(), fn(acc, entry) {
-          set.insert(acc, entry.name)
-        }),
-      )
+      #({ pair.0 }, typeinfo.evidence_of(pair.1, checker.error_bucket))
     }),
   )
 }
 
-// Every readable dependency module's signatures, keyed by its module path.
-fn dependency_registry(
-  dep_files: Dict(String, String),
+// The signatures of every readable module in a `module path -> file` map.
+fn registry_of_files(
+  files: Dict(String, String),
 ) -> signatures.SignatureRegistry {
-  use acc, module_path, path <- dict.fold(dep_files, signatures.empty())
+  use acc, module_path, path <- dict.fold(files, signatures.empty())
   case simplifile.read(path) {
     Ok(source) ->
       case glance.module(source) {

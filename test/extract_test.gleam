@@ -2012,10 +2012,10 @@ fn access_span_names_the_access(
   src: String,
   row: extract.AmbiguousCall,
 ) -> Nil {
-  sliced(src, row.access_span)
-  |> should.equal(row.object <> "." <> row.label)
-  row.access_span.start |> should.equal(row.receiver_span.start)
-  sliced(src, row.receiver_span) |> should.equal(row.object)
+  sliced(src, row.site.access_span)
+  |> should.equal(row.site.object <> "." <> row.site.label)
+  row.site.access_span.start |> should.equal(row.site.receiver_span.start)
+  sliced(src, row.site.receiver_span) |> should.equal(row.site.object)
   Nil
 }
 
@@ -2032,7 +2032,7 @@ pub fn target() -> Nil {
     )
   access_span_names_the_access(src, row)
   row.verdict |> should.equal(extract.AsModule("gleam/io"))
-  sliced(src, row.call_span) |> should.equal("io.println(\"hi\")")
+  sliced(src, row.site.call_span) |> should.equal("io.println(\"hi\")")
 }
 
 pub fn a_module_calls_row_carries_the_lowered_calls_span_test() {
@@ -2045,7 +2045,7 @@ pub fn target() -> Nil {
     )
   let assert [row] = result.ambiguous
   let assert [call] = result.resolved
-  row.call_span |> should.equal(call.span)
+  row.site.call_span |> should.equal(call.span)
 }
 
 pub fn a_plain_field_call_is_recorded_test() {
@@ -2100,7 +2100,9 @@ pub fn target() -> Nil {
     )
   access_span_names_the_access(src, row)
   row.verdict
-  |> should.equal(extract.AsWiredFunction(QualifiedName("gleam/io", "println")))
+  |> should.equal(
+    extract.AsWired(types.WiredFunction(QualifiedName("gleam/io", "println"))),
+  )
 }
 
 pub fn a_field_wired_to_a_local_reference_is_recorded_test() {
@@ -2122,7 +2124,7 @@ pub fn target() -> Nil {
 }",
     )
   access_span_names_the_access(src, row)
-  row.verdict |> should.equal(extract.AsWiredLocal("quiet"))
+  row.verdict |> should.equal(extract.AsWired(types.WiredLocal("quiet")))
 }
 
 pub fn a_field_wired_to_a_constructor_is_recorded_test() {
@@ -2143,7 +2145,7 @@ pub fn target() -> Result(String, Nil) {
   result.field |> should.equal([])
   let assert [row] = result.ambiguous
   access_span_names_the_access(src, row)
-  row.verdict |> should.equal(extract.AsWiredConstructor)
+  row.verdict |> should.equal(extract.AsWired(types.WiredConstructor))
 }
 
 pub fn a_nested_inline_construction_receiver_is_recorded_test() {
@@ -2161,13 +2163,15 @@ pub fn target() -> Nil {
 }"
   let result = parse_and_extract_function(src)
   let assert [row] = result.ambiguous
-  row.object |> should.equal(extract.computed_receiver)
-  row.label |> should.equal("shout")
-  sliced(src, row.access_span)
+  row.site.object |> should.equal(extract.computed_receiver)
+  row.site.label |> should.equal("shout")
+  sliced(src, row.site.access_span)
   |> should.equal("Fmt(shout: io.println).shout")
-  row.access_span.start |> should.equal(row.receiver_span.start)
+  row.site.access_span.start |> should.equal(row.site.receiver_span.start)
   row.verdict
-  |> should.equal(extract.AsWiredFunction(QualifiedName("gleam/io", "println")))
+  |> should.equal(
+    extract.AsWired(types.WiredFunction(QualifiedName("gleam/io", "println"))),
+  )
 }
 
 pub fn a_nested_field_call_is_recorded_test() {
@@ -2186,7 +2190,7 @@ pub fn target(o: Outer) -> Nil {
 }",
     )
   access_span_names_the_access(src, row)
-  row.object |> should.equal("o.inner")
+  row.site.object |> should.equal("o.inner")
   row.verdict |> should.equal(extract.AsField(None))
 }
 
@@ -2208,7 +2212,7 @@ pub fn target() -> Nil {
 }",
     )
   access_span_names_the_access(src, row)
-  row.access_span |> should.equal(row.call_span)
+  row.site.access_span |> should.equal(row.site.call_span)
   row.verdict |> should.equal(extract.AsModule("gleam/io"))
 }
 
@@ -2221,7 +2225,7 @@ pub fn target() -> String {
 }",
     )
   access_span_names_the_access(src, row)
-  sliced(src, row.call_span) |> should.equal("string.append(\"!\")")
+  sliced(src, row.site.call_span) |> should.equal("string.append(\"!\")")
   row.verdict |> should.equal(extract.AsModule("gleam/string"))
 }
 
@@ -2286,10 +2290,10 @@ pub fn target(list: Client) -> Nil {
 }"
   let result = parse_and_extract_function(src)
   let assert [first, second] = result.ambiguous
-  first.object |> should.equal("list")
+  first.site.object |> should.equal("list")
   first.verdict |> should.equal(extract.AsField(Some("gleam/list")))
-  second.object |> should.equal("wired")
-  second.verdict |> should.equal(extract.AsWiredLocal("quiet"))
+  second.site.object |> should.equal("wired")
+  second.verdict |> should.equal(extract.AsWired(types.WiredLocal("quiet")))
   access_span_names_the_access(src, first)
   access_span_names_the_access(src, second)
 }

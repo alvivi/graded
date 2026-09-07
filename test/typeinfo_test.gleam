@@ -6,10 +6,7 @@
 // neighbouring expressions or accesses sharing one offset never resolve to
 // each other's answer.
 
-import girard.{
-  type Resolution, type Type, ArityMismatch, Fn, LocalVariable, ModuleFn, Named,
-  RecordField, Tuple, Var,
-}
+import girard.{Fn, LocalVariable, ModuleFn, Named, RecordField, Tuple, Var}
 import gleam/dict.{type Dict}
 import gleam/option.{None, Some}
 import gleam/set
@@ -51,11 +48,9 @@ pub fn from_modules_serves_each_module_its_own_types_test() {
   let info =
     typeinfo.from_modules(
       [
-        #("app/log", spans([#(#(0, 3), Named("app/log", "Logger", []))])),
-        #("app/count", spans([#(#(0, 3), Named("app/count", "Counter", []))])),
+        #("app/log", index([#(#(0, 3), Named("app/log", "Logger", []))])),
+        #("app/count", index([#(#(0, 3), Named("app/count", "Counter", []))])),
       ],
-      [],
-      [],
       [],
       [],
     )
@@ -68,9 +63,7 @@ pub fn from_modules_serves_each_module_its_own_types_test() {
 pub fn a_module_with_types_but_no_fn_typed_entry_reads_empty_test() {
   let info =
     typeinfo.from_modules(
-      [#("app/log", spans([#(#(0, 3), Named("app/log", "Logger", []))]))],
-      [],
-      [],
+      [#("app/log", index([#(#(0, 3), Named("app/log", "Logger", []))]))],
       [],
       [],
     )
@@ -84,8 +77,6 @@ pub fn a_module_with_fn_typed_but_no_types_reads_empty_test() {
     typeinfo.from_modules(
       [],
       [#("app/log", dict.from_list([#("each", set.from_list(["f"]))]))],
-      [],
-      [],
       [],
     )
   typeinfo.fn_typed_params(
@@ -104,9 +95,7 @@ pub fn a_module_with_fn_typed_but_no_types_reads_empty_test() {
 pub fn an_unknown_module_has_no_types_test() {
   let info =
     typeinfo.from_modules(
-      [#("app/log", spans([#(#(0, 3), Named("app/log", "Logger", []))]))],
-      [],
-      [],
+      [#("app/log", index([#(#(0, 3), Named("app/log", "Logger", []))]))],
       [],
       [],
     )
@@ -119,8 +108,6 @@ pub fn an_unknown_module_has_no_fn_typed_params_test() {
       [],
       [#("app/log", dict.from_list([#("each", set.from_list(["f"]))]))],
       [],
-      [],
-      [],
     )
   typeinfo.fn_typed_for_module(info, "app/other") |> should.equal(dict.new())
 }
@@ -130,8 +117,6 @@ pub fn a_function_girard_did_not_type_has_no_fn_typed_params_test() {
     typeinfo.from_modules(
       [],
       [#("app/log", dict.from_list([#("each", set.from_list(["f"]))]))],
-      [],
-      [],
       [],
     )
   typeinfo.fn_typed_params(
@@ -148,7 +133,7 @@ pub fn a_function_girard_did_not_type_has_no_fn_typed_params_test() {
 
 pub fn a_named_type_resolves_to_its_module_and_name_test() {
   typeinfo.receiver_type(
-    spans([#(#(10, 11), Named("app/log", "Logger", []))]),
+    index([#(#(10, 11), Named("app/log", "Logger", []))]),
     10,
     11,
   )
@@ -157,7 +142,7 @@ pub fn a_named_type_resolves_to_its_module_and_name_test() {
 
 pub fn a_named_types_arguments_do_not_change_its_identity_test() {
   typeinfo.receiver_type(
-    spans([
+    index([
       #(#(0, 6), Named("gleam", "List", [Named("gleam", "Int", [])])),
     ]),
     0,
@@ -168,7 +153,7 @@ pub fn a_named_types_arguments_do_not_change_its_identity_test() {
 
 pub fn spans_sharing_a_start_resolve_apart_test() {
   let module_types =
-    spans([
+    index([
       #(#(10, 11), Named("app/log", "Logger", [])),
       #(#(10, 17), Fn([], Named("gleam", "Nil", []))),
       #(#(10, 20), Named("gleam", "Nil", [])),
@@ -182,7 +167,7 @@ pub fn spans_sharing_a_start_resolve_apart_test() {
 
 pub fn spans_sharing_an_end_resolve_apart_test() {
   let module_types =
-    spans([
+    index([
       #(#(0, 8), Named("gleam", "Bool", [])),
       #(#(5, 8), Named("app/log", "Logger", [])),
     ])
@@ -194,7 +179,7 @@ pub fn spans_sharing_an_end_resolve_apart_test() {
 
 pub fn a_span_with_the_wrong_end_does_not_resolve_test() {
   typeinfo.receiver_type(
-    spans([#(#(10, 11), Named("app/log", "Logger", []))]),
+    index([#(#(10, 11), Named("app/log", "Logger", []))]),
     10,
     12,
   )
@@ -203,7 +188,7 @@ pub fn a_span_with_the_wrong_end_does_not_resolve_test() {
 
 pub fn a_span_with_the_wrong_start_does_not_resolve_test() {
   typeinfo.receiver_type(
-    spans([
+    index([
       #(#(0, 8), Named("gleam", "Bool", [])),
       #(#(5, 8), Named("app/log", "Logger", [])),
     ]),
@@ -215,7 +200,7 @@ pub fn a_span_with_the_wrong_start_does_not_resolve_test() {
 
 pub fn an_absent_span_resolves_to_none_test() {
   typeinfo.receiver_type(
-    spans([#(#(10, 11), Named("app/log", "Logger", []))]),
+    index([#(#(10, 11), Named("app/log", "Logger", []))]),
     30,
     34,
   )
@@ -224,7 +209,7 @@ pub fn an_absent_span_resolves_to_none_test() {
 
 pub fn a_function_type_resolves_to_none_test() {
   typeinfo.receiver_type(
-    spans([#(#(0, 4), Fn([], Named("app/log", "Logger", [])))]),
+    index([#(#(0, 4), Fn([], Named("app/log", "Logger", [])))]),
     0,
     4,
   )
@@ -232,13 +217,13 @@ pub fn a_function_type_resolves_to_none_test() {
 }
 
 pub fn a_type_variable_resolves_to_none_test() {
-  typeinfo.receiver_type(spans([#(#(0, 4), Var(0))]), 0, 4)
+  typeinfo.receiver_type(index([#(#(0, 4), Var(0))]), 0, 4)
   |> should.equal(None)
 }
 
 pub fn a_tuple_type_resolves_to_none_test() {
   typeinfo.receiver_type(
-    spans([
+    index([
       #(#(0, 4), Tuple([Named("gleam", "Int", []), Named("gleam", "Int", [])])),
     ]),
     0,
@@ -263,26 +248,31 @@ pub fn none_records_no_evidence_test() {
 
 pub fn from_modules_serves_each_module_its_own_evidence_test() {
   let info =
-    typeinfo.from_modules(
-      [],
-      [],
-      [
-        #("app/log", resolutions([#(#(0, 9), ModuleFn("gleam/io", "println"))])),
-        #(
-          "app/count",
-          resolutions([
+    typeinfo.from_modules([], [], [
+      #(
+        "app/log",
+        typeinfo.ModuleEvidence(
+          resolutions: index([#(#(0, 9), ModuleFn("gleam/io", "println"))]),
+          skipped: dict.from_list([#("render", "ArityMismatch")]),
+          dropped: set.new(),
+        ),
+      ),
+      #(
+        "app/count",
+        typeinfo.ModuleEvidence(
+          resolutions: index([
             #(#(0, 9), RecordField(Named("app/count", "Counter", []), "bump")),
           ]),
+          skipped: dict.new(),
+          dropped: set.from_list(["browser_only"]),
         ),
-      ],
-      [#("app/log", dict.from_list([#("render", ArityMismatch)]))],
-      [#("app/count", set.from_list(["browser_only"]))],
-    )
+      ),
+    ])
   let log = typeinfo.evidence_for_module(info, "app/log")
   typeinfo.resolution_at(log.resolutions, 0, 9)
   |> should.equal(Some(ModuleFn("gleam/io", "println")))
   typeinfo.skip_reason(log.skipped, "render")
-  |> should.equal(Some(ArityMismatch))
+  |> should.equal(Some("ArityMismatch"))
   typeinfo.is_dropped(log.dropped, "browser_only") |> should.be_false()
 
   let count = typeinfo.evidence_for_module(info, "app/count")
@@ -294,13 +284,16 @@ pub fn from_modules_serves_each_module_its_own_evidence_test() {
 
 pub fn an_unknown_module_has_no_evidence_test() {
   let info =
-    typeinfo.from_modules(
-      [],
-      [],
-      [#("app/log", resolutions([#(#(0, 9), ModuleFn("gleam/io", "println"))]))],
-      [#("app/log", dict.from_list([#("render", ArityMismatch)]))],
-      [#("app/log", set.from_list(["browser_only"]))],
-    )
+    typeinfo.from_modules([], [], [
+      #(
+        "app/log",
+        typeinfo.ModuleEvidence(
+          resolutions: index([#(#(0, 9), ModuleFn("gleam/io", "println"))]),
+          skipped: dict.from_list([#("render", "ArityMismatch")]),
+          dropped: set.from_list(["browser_only"]),
+        ),
+      ),
+    ])
   let evidence = typeinfo.evidence_for_module(info, "app/other")
   typeinfo.resolution_at(evidence.resolutions, 0, 9) |> should.equal(None)
   typeinfo.skip_reason(evidence.skipped, "render") |> should.equal(None)
@@ -308,7 +301,7 @@ pub fn an_unknown_module_has_no_evidence_test() {
 }
 
 pub fn a_function_girard_typed_has_no_skip_reason_test() {
-  typeinfo.skip_reason(dict.from_list([#("render", ArityMismatch)]), "draw")
+  typeinfo.skip_reason(dict.from_list([#("render", "ArityMismatch")]), "draw")
   |> should.equal(None)
 }
 
@@ -319,7 +312,7 @@ pub fn a_function_girard_typed_has_no_skip_reason_test() {
 
 pub fn a_resolution_resolves_on_an_exact_span_test() {
   typeinfo.resolution_at(
-    resolutions([#(#(10, 19), ModuleFn("gleam/io", "println"))]),
+    index([#(#(10, 19), ModuleFn("gleam/io", "println"))]),
     10,
     19,
   )
@@ -328,7 +321,7 @@ pub fn a_resolution_resolves_on_an_exact_span_test() {
 
 pub fn resolution_spans_sharing_a_start_resolve_apart_test() {
   let module_resolutions =
-    resolutions([
+    index([
       #(#(10, 19), RecordField(Named("app/log", "Logger", []), "println")),
       #(#(10, 25), ModuleFn("gleam/io", "println")),
     ])
@@ -340,7 +333,7 @@ pub fn resolution_spans_sharing_a_start_resolve_apart_test() {
 
 pub fn resolution_spans_sharing_an_end_resolve_apart_test() {
   let module_resolutions =
-    resolutions([
+    index([
       #(#(0, 19), ModuleFn("gleam/io", "println")),
       #(#(10, 19), LocalVariable("io")),
     ])
@@ -352,7 +345,7 @@ pub fn resolution_spans_sharing_an_end_resolve_apart_test() {
 
 pub fn a_resolution_span_with_the_wrong_end_does_not_resolve_test() {
   typeinfo.resolution_at(
-    resolutions([#(#(10, 19), ModuleFn("gleam/io", "println"))]),
+    index([#(#(10, 19), ModuleFn("gleam/io", "println"))]),
     10,
     20,
   )
@@ -361,7 +354,7 @@ pub fn a_resolution_span_with_the_wrong_end_does_not_resolve_test() {
 
 pub fn a_resolution_span_with_the_wrong_start_does_not_resolve_test() {
   typeinfo.resolution_at(
-    resolutions([#(#(10, 19), ModuleFn("gleam/io", "println"))]),
+    index([#(#(10, 19), ModuleFn("gleam/io", "println"))]),
     11,
     19,
   )
@@ -370,21 +363,14 @@ pub fn a_resolution_span_with_the_wrong_start_does_not_resolve_test() {
 
 pub fn an_absent_resolution_span_resolves_to_none_test() {
   typeinfo.resolution_at(
-    resolutions([#(#(10, 19), ModuleFn("gleam/io", "println"))]),
+    index([#(#(10, 19), ModuleFn("gleam/io", "println"))]),
     30,
     39,
   )
   |> should.equal(None)
 }
 
-// One module's span->type slice.
-fn spans(entries: List(#(#(Int, Int), Type))) -> Dict(#(Int, Int), Type) {
-  dict.from_list(entries)
-}
-
-// One module's access-span->resolution slice.
-fn resolutions(
-  entries: List(#(#(Int, Int), Resolution)),
-) -> Dict(#(Int, Int), Resolution) {
+// One module's span-keyed slice — of types, or of resolutions.
+fn index(entries: List(#(#(Int, Int), a))) -> Dict(#(Int, Int), a) {
   dict.from_list(entries)
 }

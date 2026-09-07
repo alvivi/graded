@@ -70,16 +70,8 @@ pub fn check(
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
-  // girard's own reading of this module: recorded beside graded's for every
-  // ambiguous call, and charged for nothing.
-  evidence: typeinfo.ModuleEvidence,
   package_targets: types.PackageTargets,
-) -> #(
-  List(Violation),
-  List(CheckFinding),
-  List(Warning),
-  List(ClassificationCheck),
-) {
+) -> #(List(Violation), List(CheckFinding), List(Warning)) {
   let function_map = build_function_map(module)
   let ModuleContext(context:, cache:) =
     module_context(
@@ -110,18 +102,7 @@ pub fn check(
   let violations = list.flat_map(results, fn(r) { r.0 })
   let findings = list.flat_map(results, fn(r) { r.1 })
   let warnings = list.flat_map(results, fn(r) { r.2 })
-  let classifications =
-    classify_module(
-      module,
-      module_path,
-      knowledge_base,
-      registry,
-      module_types,
-      girard_fn_typed,
-      evidence,
-      package_targets,
-    )
-  #(violations, findings, warnings, classifications)
+  #(violations, findings, warnings)
 }
 
 // Infer the effect set for every public function in a module.
@@ -1975,37 +1956,33 @@ fn underivable_clause(reason: ReturnedOperatorReason) -> String {
 // than a verdict on it.
 pub fn format_typed_resolution(check: ClassificationCheck) -> String {
   let site = check.object <> "." <> check.label
-  case check.relation {
-    NoTypedEvidence(reason:) ->
+  case check.typed {
+    Undecided(reason:) ->
       site <> ": no typed resolution (" <> undecided_reason_text(reason) <> ")"
-    Agree ->
-      site <> ": typed resolution " <> typed_target(check.typed) <> " (agrees)"
-    Compatible(WiredValueVersusMember) ->
-      site
-      <> ": typed resolution "
-      <> typed_target(check.typed)
-      <> " (compatible; graded charged "
-      <> graded_target(check)
-      <> ")"
-    Disagree ->
-      site
-      <> ": typed resolution "
-      <> typed_target(check.typed)
-      <> " (DISAGREES with graded's "
-      <> graded_target(check)
-      <> ")"
+    ProvedModuleCall(module:, name:) ->
+      resolution_line(site, "module " <> module <> "." <> name, check)
+    ProvedFieldCall(receiver: #(_module, type_name), label:) ->
+      resolution_line(site, "field " <> type_name <> "." <> label, check)
   }
 }
 
-// girard's half of a row. The `Undecided` arm is unreachable from
-// `format_typed_resolution`, which states the reason on its own line instead.
-fn typed_target(typed: TypedClassification) -> String {
-  case typed {
-    ProvedModuleCall(module:, name:) -> "module " <> module <> "." <> name
-    ProvedFieldCall(receiver: #(_module, type_name), label:) ->
-      "field " <> type_name <> "." <> label
-    Undecided(reason:) -> "none (" <> undecided_reason_text(reason) <> ")"
+// One resolved row: girard's target, then how graded's answer stands to it.
+// Both halves are named wherever they differ, so a reader sees the pair rather
+// than a verdict on it.
+fn resolution_line(
+  site: String,
+  target: String,
+  check: ClassificationCheck,
+) -> String {
+  let standing = case check.relation {
+    Agree -> "agrees"
+    Compatible(WiredValueVersusMember) ->
+      "compatible; graded charged " <> graded_target(check)
+    Disagree -> "DISAGREES with graded's " <> graded_target(check)
+    // Unreachable: a resolved `typed` never relates as no evidence.
+    NoTypedEvidence(reason:) -> undecided_reason_text(reason)
   }
+  site <> ": typed resolution " <> target <> " (" <> standing <> ")"
 }
 
 // graded's half of a row, named as the thing it charged.
@@ -2014,8 +1991,7 @@ fn graded_target(check: ClassificationCheck) -> String {
     SyntaxModule(module:) | TypeSelectedModule(module:) ->
       "module call " <> module <> "." <> check.label
     Field(..) -> "field call " <> check.object <> "." <> check.label
-    WiredValue(WiredFunction(name:)) ->
-      "the wired " <> name.module <> "." <> name.function
+    WiredValue(WiredFunction(name:)) -> "the wired " <> types.dotted_name(name)
     WiredValue(WiredLocal(name:)) -> "the wired " <> name
     WiredValue(WiredConstructor) -> "the wired constructor"
   }
@@ -8783,7 +8759,7 @@ pub fn classify_typed(
     Undecided(DefinitionDropped),
   )
   case typeinfo.skip_reason(evidence.skipped, function) {
-    Some(error) -> Undecided(FunctionSkipped(error_bucket(error)))
+    Some(bucket) -> Undecided(FunctionSkipped(bucket))
     None ->
       case
         typeinfo.resolution_at(
@@ -8907,17 +8883,17 @@ pub fn classify_definition(
     )
   let moved =
     list.fold(module_reads, dict.new(), fn(acc, call) {
-      dict.insert(acc, #(call.span.start, call.span.end), call.name.module)
+      dict.insert(acc, extract.span_key(call.span), call.name.module)
     })
   list.map(result.ambiguous, fn(row) {
     let graded = graded_classification(row, moved)
-    let typed = classify_typed(row.access_span, function.name, evidence)
+    let typed = classify_typed(row.site.access_span, function.name, evidence)
     ClassificationCheck(
       module: module_path,
       function: function.name,
-      object: row.object,
-      label: row.label,
-      span: row.access_span,
+      object: row.site.object,
+      label: row.site.label,
+      span: row.site.access_span,
       graded:,
       typed:,
       relation: relate(graded, typed),
@@ -8935,11 +8911,9 @@ fn graded_classification(
 ) -> GradedClassification {
   case row.verdict {
     extract.AsModule(module:) -> SyntaxModule(module)
-    extract.AsWiredFunction(name:) -> WiredValue(WiredFunction(name))
-    extract.AsWiredLocal(name:) -> WiredValue(WiredLocal(name))
-    extract.AsWiredConstructor -> WiredValue(WiredConstructor)
+    extract.AsWired(value:) -> WiredValue(value)
     extract.AsField(shadowed:) ->
-      case dict.get(moved, #(row.call_span.start, row.call_span.end)) {
+      case dict.get(moved, extract.span_key(row.site.call_span)) {
         Ok(module) -> TypeSelectedModule(module)
         Error(Nil) -> Field(shadowed)
       }
@@ -9094,13 +9068,9 @@ fn shadowed_module_read(
   }
 }
 
-// The receiver's type, girard first and the written annotation second.
-//
-// girard only ever answers with a `Named` type, so it can promote an unknown
-// receiver to a named one but never contradicts the annotation. Its `Var` is
-// *not* fieldless — girard emits one both for a real generic and for an
-// inference variable it never resolved, and calling an unresolved one fieldless
-// would undercharge — so it falls through to the annotation like any other miss.
+// The receiver's type, girard first and the written annotation second. girard
+// says nothing for an unresolved type variable and for a span it has no entry
+// at, and both fall through to the annotation.
 fn receiver_shape(
   call: types.FieldCall,
   context: ImportContext,
@@ -9115,8 +9085,8 @@ fn receiver_shape(
       call.receiver_span.end,
     )
   {
-    Some(shape) -> shape
-    None ->
+    NamedReceiver(..) as shape | FieldlessReceiver as shape -> shape
+    UnknownReceiver ->
       // The annotation answers only where the receiver's value *is* a
       // parameter's. The provenance names which one, canonicalized where the
       // receiver reached it through an alias, so a `let` or a clause pattern
@@ -9144,8 +9114,7 @@ fn receiver_shape(
   }
 }
 
-// The shape girard's inferred type gives the receiver, or `None` where it says
-// nothing this can act on.
+// The shape girard's inferred type gives the receiver.
 //
 // A `Named` type is the nominal one the field registry is keyed by. A `Fn` and a
 // `Tuple` carry no record field under any substitution, so both are fieldless
@@ -9158,12 +9127,12 @@ fn girard_receiver_shape(
   module_types: dict.Dict(#(Int, Int), girard.Type),
   start: Int,
   end: Int,
-) -> Option(ReceiverShape) {
+) -> ReceiverShape {
   case typeinfo.type_at(module_types, start, end) {
     Some(girard.Named(module, name, _arguments)) ->
-      Some(NamedReceiver(module:, type_name: name))
-    Some(girard.Fn(..)) | Some(girard.Tuple(..)) -> Some(FieldlessReceiver)
-    Some(girard.Var(..)) | None -> None
+      NamedReceiver(module:, type_name: name)
+    Some(girard.Fn(..)) | Some(girard.Tuple(..)) -> FieldlessReceiver
+    Some(girard.Var(..)) | None -> UnknownReceiver
   }
 }
 

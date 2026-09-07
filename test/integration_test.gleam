@@ -14726,45 +14726,52 @@ pub fn shadowed(int: Int) -> String {
 // compiler reading that adjudicated it cited here. A row that disappears is a
 // regression to look at, not a free pass, which is why removal fails too.
 
-// One row with its span projected out, so a fixture edit that shifts offsets
-// does not rewrite the expectation while a change of shape still does.
-type ClassificationRow {
-  ClassificationRow(
-    module: String,
-    function: String,
-    object: String,
-    label: String,
-    graded: types.GradedClassification,
-    typed: types.TypedClassification,
-    relation: types.Relation,
-  )
+// Every fixture row, computed once — `classification_checks` runs a whole
+// project analysis, and four assertions want the same list.
+fn fixture_classifications() -> List(types.ClassificationCheck) {
+  let assert Ok(checks) = graded.classification_checks("test/fixtures")
+  checks
 }
 
-fn classification_row(check: types.ClassificationCheck) -> ClassificationRow {
-  ClassificationRow(
-    module: check.module,
-    function: check.function,
-    object: check.object,
-    label: check.label,
-    graded: check.graded,
-    typed: check.typed,
-    relation: check.relation,
-  )
-}
-
-// The rows sorted by where they sit, so the expectation reads in a fixed order
-// however the module walk happens to run.
-fn non_agree_rows(directory: String) -> List(ClassificationRow) {
-  let assert Ok(checks) = graded.classification_checks(directory)
+// The non-agreeing rows with their spans zeroed and a fixed order, so a fixture
+// edit that shifts offsets or reorders the walk does not rewrite the
+// expectation while a change of shape still does.
+fn non_agree_rows(
+  checks: List(types.ClassificationCheck),
+) -> List(types.ClassificationCheck) {
   checks
   |> list.filter(fn(check) { check.relation != types.Agree })
-  |> list.map(classification_row)
+  |> list.map(fn(check) {
+    types.ClassificationCheck(..check, span: glance.Span(0, 0))
+  })
   |> list.sort(fn(left, right) {
     string.compare(
       left.module <> "." <> left.function <> " " <> left.object,
       right.module <> "." <> right.function <> " " <> right.object,
     )
   })
+}
+
+// A row of the allowlist, with the span the comparison ignores.
+fn row(
+  module module: String,
+  function function: String,
+  object object: String,
+  label label: String,
+  graded graded: types.GradedClassification,
+  typed typed: types.TypedClassification,
+  relation relation: types.Relation,
+) -> types.ClassificationCheck {
+  types.ClassificationCheck(
+    module:,
+    function:,
+    object:,
+    label:,
+    span: glance.Span(0, 0),
+    graded:,
+    typed:,
+    relation:,
+  )
 }
 
 pub fn the_fixture_corpus_disagreement_allowlist_test() {
@@ -14781,9 +14788,9 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
     types.WiredValue(types.WiredFunction(types.QualifiedName(module, name)))
   }
   let compatible = types.Compatible(types.WiredValueVersusMember)
-  non_agree_rows("test/fixtures")
+  non_agree_rows(fixture_classifications())
   |> should.equal([
-    ClassificationRow(
+    row(
       module: "factory_field",
       function: "run",
       object: "v",
@@ -14792,7 +14799,7 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
       typed: types.ProvedFieldCall(#("factory_field", "Validator"), "to_error"),
       relation: compatible,
     ),
-    ClassificationRow(
+    row(
       module: "field_module_collision",
       function: "direct_construction",
       object: "list",
@@ -14804,7 +14811,7 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
       ),
       relation: compatible,
     ),
-    ClassificationRow(
+    row(
       module: "field_module_collision",
       function: "rebound_after_narrowing",
       object: "list",
@@ -14816,7 +14823,7 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
       ),
       relation: compatible,
     ),
-    ClassificationRow(
+    row(
       module: "inline_construction_field",
       function: "run",
       object: extract.computed_receiver,
@@ -14828,7 +14835,7 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
       ),
       relation: compatible,
     ),
-    ClassificationRow(
+    row(
       module: "narrowed_module_collision",
       function: "direct_construction",
       object: "io",
@@ -14840,7 +14847,7 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
       ),
       relation: compatible,
     ),
-    ClassificationRow(
+    row(
       module: "validator_flow",
       function: "run",
       object: "v",
@@ -14858,9 +14865,8 @@ pub fn the_collision_fixtures_never_read_the_module_test() {
   // receiver call, and graded reads the module at none of them. A row whose
   // `graded` were `SyntaxModule` or `TypeSelectedModule` against a
   // `ProvedFieldCall` is exactly the undercharge these fixtures exist to catch.
-  let assert Ok(checks) = graded.classification_checks("test/fixtures")
   let rows =
-    list.filter(checks, fn(check) {
+    list.filter(fixture_classifications(), fn(check) {
       check.module == "field_module_collision"
       || check.module == "narrowed_module_collision"
     })
@@ -14951,9 +14957,8 @@ pub fn every_ambiguous_call_is_classified_once_test() {
   // pass as itself and nowhere else, so no site is counted twice. Spans are
   // unique per site within a module, so the row count and the distinct-span
   // count coincide.
-  let assert Ok(checks) = graded.classification_checks("test/fixtures")
   let keys =
-    list.map(checks, fn(check) {
+    list.map(fixture_classifications(), fn(check) {
       #(check.module, check.span.start, check.span.end)
     })
   list.length(keys)
