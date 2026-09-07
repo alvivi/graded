@@ -2684,13 +2684,14 @@ fn build_type_index(
 // target, and girard takes one per run, so a package naming both is typed on
 // Erlang and its JavaScript-only definitions come back as `dropped` rather than
 // silently absent. `build_targets` is the reading to take: a package naming no
-// target is compiled for Erlang, exactly as `gleam build` defaults.
+// target is compiled for Erlang, exactly as `gleam build` defaults — and so is
+// one naming neither of the two, which names no target girard runs on.
 @internal
 pub fn girard_target(package_targets: types.PackageTargets) -> girard.Target {
   let targets = types.build_targets(package_targets)
   case set.contains(targets, "erlang"), set.contains(targets, "javascript") {
     False, True -> girard.JavaScript
-    _, _ -> girard.Erlang
+    True, True | True, False | False, False -> girard.Erlang
   }
 }
 
