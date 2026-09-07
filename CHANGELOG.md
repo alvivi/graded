@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inside the branch that narrowed it, now charges the field's own effects
   instead of `[Unknown]`. A `check` line over such a body that could not be
   satisfied before now can be.
+- A receiver that shadows an imported module and whose inferred type is a tuple
+  or a function now resolves to that module, instead of reading `[Unknown]`.
+  Neither carries a record field, so the module is the compiler's reading; a
+  *written* `fn(..)` or tuple annotation already had this effect, and now the
+  inferred type does too — which reaches a closure parameter, where no
+  annotation on the enclosing function is in scope.
 - A receiver that is a bare alias of another parameter (`let list = e`) is now
   read against *that* parameter's type annotation rather than against nothing.
   Where the type declares the label on no variant the call resolves to the

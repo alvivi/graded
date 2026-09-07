@@ -8935,9 +8935,31 @@ pub fn an_untyped_shadowed_call_result_charges_unknown_test() {
   |> should.equal(Ok("effects logger_call_result : [Unknown]"))
 }
 
+pub fn a_girard_typed_fieldless_receiver_reads_as_the_module_test() {
+  // A closure parameter's type reaches the receiver only through girard — the
+  // enclosing function's parameter list does not name it — and neither a tuple
+  // nor a function carries a record field, so both calls are the module's.
+  // Compiling the fixture emits `gleam@pair:first/1` and `gleam_stdlib:println/1`
+  // for the two, which is where these charges come from: `[]` for the pure
+  // module function, `[Stdout]` for the printing one. Reading either as a field
+  // would report `[Unknown]`, and reading the second one as a field would let a
+  // `check ... : []` pass on a body that prints.
+  let lines =
+    infer_fixture(
+      module: "shadow_receiver",
+      spec: shadow_receiver_spec,
+      with_types: True,
+    )
+  list.key_find(lines, "tuple_receiver")
+  |> should.equal(Ok("effects tuple_receiver : []"))
+  list.key_find(lines, "fn_receiver")
+  |> should.equal(Ok("effects fn_receiver : [Stdout]"))
+}
+
 // The declarations `shadow_receiver` needs: the module its receivers are named
 // after, and the field budget the record's own reading would answer with.
 const shadow_receiver_spec = "assume gleam/io.println : [Stdout]
+assume gleam/pair.first : []
 assume shadow_receiver.Logger.println : [Stdout]
 "
 
