@@ -21,6 +21,7 @@
 
 import girard.{type Error, type Resolution, type Type, Named}
 import gleam/dict.{type Dict}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/set.{type Set}
 
@@ -29,55 +30,95 @@ import gleam/set.{type Set}
 // - `fn_typed`: module path -> (function name -> the set of its function-typed
 //   parameter names, inferred from girard's signature — covers params with no
 //   syntactic `fn(...)` annotation).
-// - `resolutions`: module path -> (whole-access `#(start, end)` span -> the
-//   member girard resolved the reference to).
-// - `skipped`: module path -> (definition name -> the error girard declined it
-//   with).
-// - `dropped`: module path -> the definition names girard left out for the
-//   other build target.
+// - `evidence`: module path -> girard's own reading of that module.
 pub type TypeInfo {
   TypeInfo(
     by_module: Dict(String, Dict(#(Int, Int), Type)),
     fn_typed: Dict(String, Dict(String, Set(String))),
-    resolutions: Dict(String, Dict(#(Int, Int), Resolution)),
-    skipped: Dict(String, Dict(String, Error)),
-    dropped: Dict(String, Set(String)),
+    evidence: Dict(String, ModuleEvidence),
   )
 }
 
-// girard's own reading of one module, as three slices taken together: a call
-// site is judged against all three at once — dropped, then skipped, then the
-// resolution at its span — so they travel as one value rather than as three
-// parameters that could be sliced for different modules.
+// girard's own reading of one module: which member every reference resolved to,
+// which definitions it declined and under which error bucket, and which it left
+// out for the other build target. A call site is judged against all three at
+// once — dropped, then skipped, then the resolution at its span — so they are
+// held together rather than as three separately-keyed maps that could be sliced
+// for different modules.
+//
+// A skip keeps only `error_bucket`'s answer rather than the `girard.Error`: the
+// error carries whole inferred type trees, and nothing reads them.
 pub type ModuleEvidence {
   ModuleEvidence(
     resolutions: Dict(#(Int, Int), Resolution),
-    skipped: Dict(String, Error),
+    skipped: Dict(String, String),
     dropped: Set(String),
   )
+}
+
+// The empty reading — girard said nothing about this module, so every site in it
+// reads as "no typed evidence" rather than as an answer. What
+// `evidence_for_module` gives for a module girard never saw.
+pub fn no_evidence() -> ModuleEvidence {
+  ModuleEvidence(dict.new(), dict.new(), set.new())
+}
+
+// girard's reading of one module, folded out of its annotation result.
+// `skip_bucket` reduces an error to the stable bucket the reading keeps.
+pub fn evidence_of(
+  result: girard.ModuleResult,
+  skip_bucket: fn(Error) -> String,
+) -> ModuleEvidence {
+  ModuleEvidence(
+    resolutions: list.fold(
+      result.annotated.resolutions,
+      dict.new(),
+      fn(acc, reference) {
+        dict.insert(
+          acc,
+          #(reference.span.start, reference.span.end),
+          reference.resolution,
+        )
+      },
+    ),
+    skipped: list.fold(result.skipped, dict.new(), fn(acc, entry) {
+      dict.insert(acc, entry.0, skip_bucket(entry.1))
+    }),
+    dropped: list.fold(result.annotated.dropped, set.new(), fn(acc, definition) {
+      set.insert(acc, definition.name)
+    }),
+  )
+}
+
+// The span->type slice of one module's annotation result, keyed the way
+// `receiver_type` and `type_at` read it back.
+pub fn span_types(result: girard.ModuleResult) -> Dict(#(Int, Int), Type) {
+  list.fold(result.annotated.expressions, dict.new(), fn(acc, annotation) {
+    dict.insert(
+      acc,
+      #(annotation.span.start, annotation.span.end),
+      annotation.type_,
+    )
+  })
 }
 
 // The empty type index — every lookup misses, so the checker behaves exactly
 // as it did before girard. Used when type inference is unavailable.
 pub fn none() -> TypeInfo {
-  TypeInfo(dict.new(), dict.new(), dict.new(), dict.new(), dict.new())
+  TypeInfo(dict.new(), dict.new(), dict.new())
 }
 
 // Build a `TypeInfo` from per-module span->type maps, per-module
-// function->fn-typed-params maps, and girard's three per-module readings.
+// function->fn-typed-params maps, and girard's per-module readings.
 pub fn from_modules(
   types_modules: List(#(String, Dict(#(Int, Int), Type))),
   fn_typed_modules: List(#(String, Dict(String, Set(String)))),
-  resolution_modules: List(#(String, Dict(#(Int, Int), Resolution))),
-  skipped_modules: List(#(String, Dict(String, Error))),
-  dropped_modules: List(#(String, Set(String))),
+  evidence_modules: List(#(String, ModuleEvidence)),
 ) -> TypeInfo {
   TypeInfo(
     by_module: dict.from_list(types_modules),
     fn_typed: dict.from_list(fn_typed_modules),
-    resolutions: dict.from_list(resolution_modules),
-    skipped: dict.from_list(skipped_modules),
-    dropped: dict.from_list(dropped_modules),
+    evidence: dict.from_list(evidence_modules),
   )
 }
 
@@ -111,20 +152,10 @@ pub fn evidence_for_module(
   info: TypeInfo,
   module_path: String,
 ) -> ModuleEvidence {
-  ModuleEvidence(
-    resolutions: case dict.get(info.resolutions, module_path) {
-      Ok(module_resolutions) -> module_resolutions
-      Error(Nil) -> dict.new()
-    },
-    skipped: case dict.get(info.skipped, module_path) {
-      Ok(module_skipped) -> module_skipped
-      Error(Nil) -> dict.new()
-    },
-    dropped: case dict.get(info.dropped, module_path) {
-      Ok(module_dropped) -> module_dropped
-      Error(Nil) -> set.new()
-    },
-  )
+  case dict.get(info.evidence, module_path) {
+    Ok(module_evidence) -> module_evidence
+    Error(Nil) -> no_evidence()
+  }
 }
 
 // The fn-typed parameter names girard inferred for a single function, or an
@@ -150,8 +181,8 @@ pub fn receiver_type(
   start: Int,
   end: Int,
 ) -> Option(#(String, String)) {
-  case dict.get(module_types, #(start, end)) {
-    Ok(Named(module, name, _arguments)) -> Some(#(module, name))
+  case type_at(module_types, start, end) {
+    Some(Named(module, name, _arguments)) -> Some(#(module, name))
     _ -> None
   }
 }
@@ -186,11 +217,11 @@ pub fn resolution_at(
   }
 }
 
-// The error girard declined `function` with, or `None` if it typed it.
+// The error bucket girard declined `function` with, or `None` if it typed it.
 pub fn skip_reason(
-  module_skipped: Dict(String, Error),
+  module_skipped: Dict(String, String),
   function: String,
-) -> Option(Error) {
+) -> Option(String) {
   case dict.get(module_skipped, function) {
     Ok(error) -> Some(error)
     Error(Nil) -> None

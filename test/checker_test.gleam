@@ -38,7 +38,7 @@ fn check_source(
   annotations: List(EffectAnnotation),
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
-  let #(violations, _findings, _warnings, _classifications) =
+  let #(violations, _findings, _warnings) =
     checker.check(
       module,
       "",
@@ -47,7 +47,6 @@ fn check_source(
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations
@@ -564,7 +563,7 @@ fn check_source_with_type_fields(
   let assert Ok(module) = glance.module(source)
   let kb =
     effects.with_type_fields(knowledge_base(), type_fields, types.CommittedSpec)
-  let #(violations, _findings, _warnings, _classifications) =
+  let #(violations, _findings, _warnings) =
     checker.check(
       module,
       "",
@@ -573,7 +572,6 @@ fn check_source_with_type_fields(
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations
@@ -616,7 +614,7 @@ fn check_source_with_girard(
   let module_types = girard_types(module)
   let kb =
     effects.with_type_fields(knowledge_base(), type_fields, types.CommittedSpec)
-  let #(violations, _findings, _warnings, _classifications) =
+  let #(violations, _findings, _warnings) =
     checker.check(
       module,
       "",
@@ -625,7 +623,6 @@ fn check_source_with_girard(
       signatures.empty(),
       module_types,
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations
@@ -1175,7 +1172,7 @@ pub fn annotate(options: Options) -> Nil {
       stdout,
       returns: None,
     )
-  let #(violations, _findings, warnings, _classifications) =
+  let #(violations, _findings, warnings) =
     checker.check(
       module,
       "",
@@ -1184,7 +1181,6 @@ pub fn annotate(options: Options) -> Nil {
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -1307,7 +1303,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(Specific(set.new())),
       returns: None,
     )
-  let #(violations, _findings, _warnings, _classifications) =
+  let #(violations, _findings, _warnings) =
     checker.check(
       module,
       "",
@@ -1316,7 +1312,6 @@ pub fn caller() -> Nil {
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   let assert Ok(v) = list.find(violations, fn(v) { v.function == "caller" })
@@ -1335,7 +1330,7 @@ fn check_source_with_assumes(
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
   let kb = effects.with_assumes(knowledge_base(), assumes, types.UserAssume)
-  let #(violations, _findings, _warnings, _classifications) =
+  let #(violations, _findings, _warnings) =
     checker.check(
       module,
       "",
@@ -1344,7 +1339,6 @@ fn check_source_with_assumes(
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations
@@ -1427,7 +1421,7 @@ pub fn run() { mod.each(f: mod.disk) }"
       returns: None,
     )
   let assert Ok(module) = glance.module(source)
-  let #(violations, _findings, _warnings, _classifications) =
+  let #(violations, _findings, _warnings) =
     checker.check(
       module,
       "",
@@ -1436,7 +1430,6 @@ pub fn run() { mod.each(f: mod.disk) }"
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -1554,7 +1547,7 @@ fn check_warnings(
   annotations: List(EffectAnnotation),
 ) -> List(types.Warning) {
   let assert Ok(module) = glance.module(source)
-  let #(_violations, _findings, warnings, _classifications) =
+  let #(_violations, _findings, warnings) =
     checker.check(
       module,
       "",
@@ -1563,7 +1556,6 @@ fn check_warnings(
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   warnings
@@ -1899,7 +1891,7 @@ pub fn check_no_false_positives_test() {
           effect_term.from_effect_set(declared),
           returns: None,
         )
-      let #(violations, _findings, _, _classifications) =
+      let #(violations, _findings, _) =
         checker.check(
           module,
           "",
@@ -1908,7 +1900,6 @@ pub fn check_no_false_positives_test() {
           signatures.empty(),
           dict.new(),
           dict.new(),
-          typeinfo.evidence_for_module(typeinfo.none(), ""),
           types.all_targets(),
         )
       violations |> should.equal([])
@@ -1933,7 +1924,7 @@ fn provenance_caller_effect(src: String, label: String) -> EffectSet {
       effect_term.from_effect_set(Specific(set.new())),
       returns: None,
     )
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -1942,7 +1933,6 @@ fn provenance_caller_effect(src: String, label: String) -> EffectSet {
       signatures.from_glance_module("", module),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   case list.find(violations, fn(v) { v.function == "caller" }) {
@@ -1999,7 +1989,7 @@ pub fn check_wildcard_never_violates_test() {
           effect_term.from_effect_set(Wildcard),
           returns: None,
         )
-      let #(violations, _findings, _, _classifications) =
+      let #(violations, _findings, _) =
         checker.check(
           module,
           "",
@@ -2008,7 +1998,6 @@ pub fn check_wildcard_never_violates_test() {
           signatures.empty(),
           dict.new(),
           dict.new(),
-          typeinfo.evidence_for_module(typeinfo.none(), ""),
           types.all_targets(),
         )
       violations |> should.equal([])
@@ -2034,7 +2023,7 @@ pub fn check_empty_budget_detects_effects_test() {
               effect_term.from_effect_set(types.empty()),
               returns: None,
             )
-          let #(violations, _findings, _, _classifications) =
+          let #(violations, _findings, _) =
             checker.check(
               module,
               "",
@@ -2043,7 +2032,6 @@ pub fn check_empty_budget_detects_effects_test() {
               signatures.empty(),
               dict.new(),
               dict.new(),
-              typeinfo.evidence_for_module(typeinfo.none(), ""),
               types.all_targets(),
             )
           { violations != [] } |> should.be_true()
@@ -2071,7 +2059,7 @@ pub fn check_violations_iff_not_subset_test() {
           effect_term.from_effect_set(declared),
           returns: None,
         )
-      let #(violations, _findings, _, _classifications) =
+      let #(violations, _findings, _) =
         checker.check(
           module,
           "",
@@ -2080,7 +2068,6 @@ pub fn check_violations_iff_not_subset_test() {
           signatures.empty(),
           dict.new(),
           dict.new(),
-          typeinfo.evidence_for_module(typeinfo.none(), ""),
           types.all_targets(),
         )
       let has_violations = violations != []
@@ -2200,7 +2187,7 @@ pub fn check_terminates_with_cycles_test() {
           effect_term.from_effect_set(types.empty()),
           returns: None,
         )
-      let #(violations, _findings, _, _classifications) =
+      let #(violations, _findings, _) =
         checker.check(
           module,
           "",
@@ -2209,7 +2196,6 @@ pub fn check_terminates_with_cycles_test() {
           signatures.empty(),
           dict.new(),
           dict.new(),
-          typeinfo.evidence_for_module(typeinfo.none(), ""),
           types.all_targets(),
         )
       violations |> should.equal([])
@@ -2405,7 +2391,7 @@ pub fn new() {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -2422,7 +2408,6 @@ pub fn new() {
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -2440,7 +2425,7 @@ pub fn new() {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -2457,7 +2442,6 @@ pub fn new() {
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -2474,7 +2458,7 @@ pub fn new() {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -2491,7 +2475,6 @@ pub fn new() {
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   list.length(violations) |> should.equal(1)
@@ -2743,7 +2726,7 @@ pub fn run(x: Int) {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -2760,7 +2743,6 @@ pub fn run(x: Int) {
       reg,
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations
@@ -2923,7 +2905,7 @@ pub fn main(msg: String) {
 "
   let assert Ok(module) = glance.module(source)
   let registry = signatures.from_glance_module("", module)
-  let #(violations, _findings, _warnings, _classifications) =
+  let #(violations, _findings, _warnings) =
     checker.check(
       module,
       "",
@@ -2940,7 +2922,6 @@ pub fn main(msg: String) {
       registry,
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations
@@ -3052,7 +3033,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       returns: None,
     )
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -3061,7 +3042,6 @@ pub fn caller() -> Nil {
       registry,
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -3073,7 +3053,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(types.empty()),
       returns: None,
     )
-  let #(failed, _findings, _, _classifications) =
+  let #(failed, _findings, _) =
     checker.check(
       module,
       "",
@@ -3082,7 +3062,6 @@ pub fn caller() -> Nil {
       registry,
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   { failed != [] } |> should.be_true()
@@ -3188,7 +3167,7 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       returns: None,
     )
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -3197,7 +3176,6 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       reg,
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -3219,7 +3197,7 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       effect_term.from_effect_set(types.empty()),
       returns: None,
     )
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -3228,7 +3206,6 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       reg,
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   { violations != [] } |> should.be_true()
@@ -3251,7 +3228,7 @@ pub fn caller() -> Nil { app.with_logger(fn(logger) { logger(\"hi\") }) }"
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       returns: None,
     )
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -3260,7 +3237,6 @@ pub fn caller() -> Nil { app.with_logger(fn(logger) { logger(\"hi\") }) }"
       reg,
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -3513,7 +3489,7 @@ pub fn let_bound_closure_direct_call_satisfies_pure_check_test() {
   let assert Ok(module) = glance.module(source)
   let ann =
     EffectAnnotation(Check, "direct_let", [], effect_term.pure(), returns: None)
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -3522,7 +3498,6 @@ pub fn let_bound_closure_direct_call_satisfies_pure_check_test() {
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -4146,7 +4121,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       returns: None,
     )
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -4155,7 +4130,6 @@ pub fn caller() -> Nil {
       registry,
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -4167,7 +4141,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(types.empty()),
       returns: None,
     )
-  let #(fail_violations, _findings, _, _classifications) =
+  let #(fail_violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -4176,7 +4150,6 @@ pub fn caller() -> Nil {
       registry,
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   { fail_violations != [] } |> should.be_true()
@@ -4227,7 +4200,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       returns: None,
     )
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -4236,7 +4209,6 @@ pub fn caller() -> Nil {
       registry,
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -4349,7 +4321,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
       returns: None,
     )
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -4358,7 +4330,6 @@ pub fn caller() -> Nil {
       registry,
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -4370,7 +4341,7 @@ pub fn caller() -> Nil {
       effect_term.from_effect_set(types.empty()),
       returns: None,
     )
-  let #(failed, _findings, _, _classifications) =
+  let #(failed, _findings, _) =
     checker.check(
       module,
       "",
@@ -4379,7 +4350,6 @@ pub fn caller() -> Nil {
       registry,
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   { failed != [] } |> should.be_true()
@@ -4544,7 +4514,7 @@ fn second_order_violations(
       effect_term.from_effect_set(Specific(set.from_list(budget))),
       returns: None,
     )
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -4553,7 +4523,6 @@ fn second_order_violations(
       registry,
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations
@@ -6471,7 +6440,7 @@ pub fn run() -> Nil {
       effects.load_spec_returns_from_file(spec),
       types.DependencySpec("dep"),
     )
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -6480,7 +6449,6 @@ pub fn run() -> Nil {
       signatures.from_glance_module("app", module),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -6564,7 +6532,7 @@ pub fn new() {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -6573,7 +6541,6 @@ pub fn new() {
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -6607,7 +6574,7 @@ pub fn new() {
       ]),
       types.CommittedSpec,
     )
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -6616,7 +6583,6 @@ pub fn new() {
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -6639,7 +6605,7 @@ pub fn new() {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -6648,7 +6614,6 @@ pub fn new() {
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -6676,7 +6641,7 @@ pub fn run() -> Nil {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -6685,7 +6650,6 @@ pub fn run() -> Nil {
       signatures.from_glance_module("app", module),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   let assert Ok(violation) =
@@ -6718,7 +6682,7 @@ fn explain_blocks(
     registry,
     dict.new(),
     dict.new(),
-    typeinfo.evidence_for_module(typeinfo.none(), ""),
+    typeinfo.no_evidence(),
     types.all_targets(),
   )
   // These tests assert on contributors; the effective bounds and total term
@@ -6780,7 +6744,7 @@ pub fn run() {
       signatures.from_glance_module("app", module),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
+      typeinfo.no_evidence(),
       types.all_targets(),
     )
   total |> should.equal(effect_term.unknown())
@@ -6814,7 +6778,7 @@ pub fn go(r: Runner) -> Nil {
       signatures.from_glance_module("app", module),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
+      typeinfo.no_evidence(),
       types.all_targets(),
     )
   total |> should.equal(types.TVar("r.run"))
@@ -7030,7 +6994,7 @@ pub fn new() {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -7039,7 +7003,6 @@ pub fn new() {
       signatures.empty(),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -7115,7 +7078,7 @@ fn noisy() -> Nil {
   let assert Ok(module) = glance.module(source)
   let registry =
     signatures.merge(signatures.from_glance_module("app", module), dep_registry)
-  let #(violations, _findings, _, _classifications) =
+  let #(violations, _findings, _) =
     checker.check(
       module,
       "",
@@ -7124,7 +7087,6 @@ fn noisy() -> Nil {
       registry,
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
       types.all_targets(),
     )
   violations
@@ -7854,7 +7816,7 @@ pub fn target(int) -> String {
 // and drops given.
 fn evidence(
   resolution: option.Option(girard.Resolution),
-  skipped: List(#(String, girard.Error)),
+  skipped: List(#(String, String)),
   dropped: List(String),
 ) -> typeinfo.ModuleEvidence {
   typeinfo.ModuleEvidence(
@@ -7959,7 +7921,7 @@ pub fn a_skipped_function_is_undecided_under_its_error_bucket_test() {
     "target",
     evidence(
       Some(girard.ModuleFn("gleam/io", "println")),
-      [#("target", girard.NoSuchField("Logger", "print"))],
+      [#("target", "NoSuchField")],
       [],
     ),
   )
@@ -7972,7 +7934,7 @@ pub fn another_functions_skip_does_not_decide_this_one_test() {
     "target",
     evidence(
       Some(girard.ModuleFn("gleam/io", "println")),
-      [#("other", girard.NoSuchField("Logger", "print"))],
+      [#("other", "NoSuchField")],
       [],
     ),
   )
@@ -7987,7 +7949,7 @@ pub fn a_dropped_definition_is_undecided_before_anything_else_test() {
     "target",
     evidence(
       Some(girard.ModuleFn("gleam/io", "println")),
-      [#("target", girard.ArityMismatch)],
+      [#("target", "ArityMismatch")],
       ["target"],
     ),
   )
@@ -7998,7 +7960,7 @@ pub fn an_unsupported_error_buckets_by_its_feature_test() {
   checker.classify_typed(
     access,
     "target",
-    evidence(None, [#("target", girard.Unsupported("bit arrays"))], []),
+    evidence(None, [#("target", "Unsupported(bit arrays)")], []),
   )
   |> should.equal(
     types.Undecided(types.FunctionSkipped("Unsupported(bit arrays)")),
@@ -8141,7 +8103,7 @@ pub fn target(f: fn() -> Nil, g: fn() -> Nil) -> Nil {
       signatures.from_glance_module("app", module),
       dict.new(),
       dict.new(),
-      typeinfo.evidence_for_module(typeinfo.none(), ""),
+      typeinfo.no_evidence(),
       types.all_targets(),
     )
   list.length(explained.blocks) |> should.equal(2)

@@ -980,36 +980,25 @@ pub type ExtractResult {
 // as an ordinary module call, a wired local as a lexical one, a wired
 // constructor as nothing at all — so the verdict is kept here rather than
 // recovered from the call.
+pub type AmbiguousCall {
+  AmbiguousCall(site: CallSite, verdict: ExtractionVerdict)
+}
+
+// What extraction made of an ambiguous call. `AsModule` and `AsField` are the
+// two readings of `name.label`; `AsWired` is a field call the receiver's
+// construction site already answered, named by the kind of value it wired in.
+pub type ExtractionVerdict {
+  AsModule(module: String)
+  AsField(shadowed: Option(String))
+  AsWired(value: types.WiredValue)
+}
+
+// Where an ambiguous call sits and what it is spelled as, built once at the call
+// shape and carried to whichever builder lowers it.
 //
 // `access_span` is glance's own span for the `name.label` access, which is the
 // span girard keys its resolution by. `call_span` is the whole call, the span
 // the lowered call carries, so a row joins back to the checker's decision on it.
-pub type AmbiguousCall {
-  AmbiguousCall(
-    object: String,
-    label: String,
-    access_span: glance.Span,
-    call_span: glance.Span,
-    receiver_span: glance.Span,
-    verdict: ExtractionVerdict,
-  )
-}
-
-// What extraction made of an ambiguous call. `AsModule` and `AsField` are the
-// two readings of `name.label`; the three `AsWired*` verdicts are a field call
-// the receiver's construction site already answered, named by the kind of value
-// it wired in.
-pub type ExtractionVerdict {
-  AsModule(module: String)
-  AsField(shadowed: Option(String))
-  AsWiredFunction(name: QualifiedName)
-  AsWiredLocal(name: String)
-  AsWiredConstructor
-}
-
-// Where an ambiguous call sits and what it is spelled as: everything an
-// `AmbiguousCall` row needs except the verdict, built once at the call shape and
-// carried to whichever builder lowers it.
 pub type CallSite {
   CallSite(
     object: String,
@@ -1020,19 +1009,10 @@ pub type CallSite {
   )
 }
 
-// The row for `site` under `verdict`, as an otherwise empty result to merge into
-// whatever the site was lowered to.
-fn observed(site: CallSite, verdict: ExtractionVerdict) -> ExtractResult {
-  ExtractResult(..empty(), ambiguous: [
-    AmbiguousCall(
-      site.object,
-      site.label,
-      site.access_span,
-      site.call_span,
-      site.receiver_span,
-      verdict,
-    ),
-  ])
+// The one-row `ambiguous` list for `site` under `verdict`, so each builder sets
+// the field on the record it already returns.
+fn observed(site: CallSite, verdict: ExtractionVerdict) -> List(AmbiguousCall) {
+  [AmbiguousCall(site, verdict)]
 }
 
 // Extract all calls from a list of statements, with an empty lexical scope.
@@ -1372,11 +1352,12 @@ fn qualified_call_lookup(
 }
 
 fn module_call(site: CallSite, module_path: String) -> ExtractResult {
-  merge(
-    ExtractResult(..empty(), resolved: [
+  ExtractResult(
+    ..empty(),
+    resolved: [
       ResolvedCall(QualifiedName(module_path, site.label), site.call_span),
-    ]),
-    observed(site, AsModule(module_path)),
+    ],
+    ambiguous: observed(site, AsModule(module_path)),
   )
 }
 
@@ -1471,8 +1452,9 @@ fn env_field_call(
   // Every reading below is the same call under a different provenance, so the
   // call is spelled once and the branches choose what the receiver proved.
   let field_call = fn(provenance) {
-    merge(
-      ExtractResult(..empty(), field: [
+    ExtractResult(
+      ..empty(),
+      field: [
         FieldCall(
           site.object,
           site.label,
@@ -1482,8 +1464,8 @@ fn env_field_call(
           shadowed_module,
           narrowing,
         ),
-      ]),
-      observed(site, AsField(shadowed_module)),
+      ],
+      ambiguous: observed(site, AsField(shadowed_module)),
     )
   }
   case binding {
@@ -1577,8 +1559,9 @@ fn resolve_constructor_field_call(
   narrowing: ReceiverNarrowing,
 ) -> ExtractResult {
   let untraceable = fn(shadowed) {
-    merge(
-      ExtractResult(..empty(), field: [
+    ExtractResult(
+      ..empty(),
+      field: [
         FieldCall(
           site.object,
           site.label,
@@ -1588,32 +1571,35 @@ fn resolve_constructor_field_call(
           shadowed,
           narrowing,
         ),
-      ]),
-      observed(site, AsField(shadowed)),
+      ],
+      ambiguous: observed(site, AsField(shadowed)),
     )
   }
   case dict.get(fields, site.label) {
     Ok(FunctionRef(name: qualified)) ->
-      merge(
-        ExtractResult(..empty(), resolved: [
-          ResolvedCall(qualified, site.call_span),
-        ]),
-        observed(site, AsWiredFunction(qualified)),
+      ExtractResult(
+        ..empty(),
+        resolved: [ResolvedCall(qualified, site.call_span)],
+        ambiguous: observed(site, AsWired(types.WiredFunction(qualified))),
       )
     Ok(LocalRef(name: local_name)) ->
-      merge(
-        ExtractResult(..empty(), local: [
-          LocalCall(local_name, site.call_span, types.LexicalBinding),
-        ]),
-        observed(site, AsWiredLocal(local_name)),
+      ExtractResult(
+        ..empty(),
+        local: [LocalCall(local_name, site.call_span, types.LexicalBinding)],
+        ambiguous: observed(site, AsWired(types.WiredLocal(local_name))),
       )
-    Ok(ConstructorRef) -> observed(site, AsWiredConstructor)
+    Ok(ConstructorRef) ->
+      ExtractResult(
+        ..empty(),
+        ambiguous: observed(site, AsWired(types.WiredConstructor)),
+      )
     Ok(types.Closure(_, _, _) as value)
     | Ok(types.ReturnedOperator(_, _) as value)
     | Ok(types.CallResult(_, _) as value)
     | Ok(Constructed(_) as value) ->
-      merge(
-        ExtractResult(..empty(), field: [
+      ExtractResult(
+        ..empty(),
+        field: [
           FieldCall(
             site.object,
             site.label,
@@ -1623,8 +1609,8 @@ fn resolve_constructor_field_call(
             None,
             narrowing,
           ),
-        ]),
-        observed(site, AsField(None)),
+        ],
+        ambiguous: observed(site, AsField(None)),
       )
     Ok(types.Choice(_))
     | Ok(types.ReceiverPath(_))
@@ -1679,21 +1665,22 @@ fn resolve_nested_field_call(
             PossiblyNarrowedReceiver,
           )
         _ ->
-          merge(
-            ExtractResult(..empty(), field: [
+          ExtractResult(
+            ..empty(),
+            field: [
               FieldCall(
-                object,
-                label,
-                span,
-                receiver_span,
-                field_receiver_provenance(object, env),
+                site.object,
+                site.label,
+                site.call_span,
+                site.receiver_span,
+                field_receiver_provenance(site.object, env),
                 // A nested receiver is not a bare identifier, so it shadows
                 // nothing, and nothing reads its narrowing.
                 None,
                 PossiblyNarrowedReceiver,
               ),
-            ]),
-            observed(site, AsField(None)),
+            ],
+            ambiguous: observed(site, AsField(None)),
           )
       }
     }

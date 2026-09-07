@@ -475,8 +475,21 @@ fn module_report(result: CheckResult) -> ModuleReport {
 pub fn classification_checks(
   directory: String,
 ) -> Result(List(types.ClassificationCheck), GradedError) {
-  use results <- result.map(check_project(directory))
-  list.flat_map(results, fn(result) { result.classification_checks })
+  use ctx <- result.map(load_project_context(directory))
+  let ProjectContext(sources:, registry:, type_info:, knowledge_base:, ..) = ctx
+  use #(gleam_path, module) <- list.flat_map(sources.parsed)
+  let module_path =
+    config.module_path_for_source(gleam_path, sources.source_directory)
+  checker.classify_module(
+    module,
+    module_path,
+    knowledge_base,
+    registry,
+    typeinfo.for_module(type_info, module_path),
+    typeinfo.fn_typed_for_module(type_info, module_path),
+    typeinfo.evidence_for_module(type_info, module_path),
+    sources.cfg.targets,
+  )
 }
 
 // The same run, keeping the structured results. `why` and graded's own tests
@@ -548,7 +561,6 @@ pub fn check_project(
           registry,
           typeinfo.for_module(type_info, module_path),
           typeinfo.fn_typed_for_module(type_info, module_path),
-          typeinfo.evidence_for_module(type_info, module_path),
           cfg.targets,
         )
       case dict.get(field_report.findings, gleam_path) {
@@ -570,13 +582,7 @@ pub fn check_project(
   let results = case spec_warnings, field_report.spec_findings {
     [], [] -> results
     warnings, findings -> [
-      CheckResult(
-        file: cfg.spec_file,
-        violations: [],
-        findings:,
-        warnings:,
-        classification_checks: [],
-      ),
+      CheckResult(file: cfg.spec_file, violations: [], findings:, warnings:),
       ..results
     ]
   }
@@ -1166,10 +1172,9 @@ fn check_one_file(
   registry: SignatureRegistry,
   module_types: Dict(#(Int, Int), girard.Type),
   girard_fn_typed: Dict(String, Set(String)),
-  evidence: typeinfo.ModuleEvidence,
   package_targets: types.PackageTargets,
 ) -> CheckResult {
-  let #(violations, findings, warnings, classification_checks) =
+  let #(violations, findings, warnings) =
     checker.check(
       module,
       module_path,
@@ -1178,16 +1183,9 @@ fn check_one_file(
       registry,
       module_types,
       girard_fn_typed,
-      evidence,
       package_targets,
     )
-  CheckResult(
-    file: gleam_path,
-    violations:,
-    findings:,
-    warnings:,
-    classification_checks:,
-  )
+  CheckResult(file: gleam_path, violations:, findings:, warnings:)
 }
 
 // Spec lint
@@ -2022,23 +2020,25 @@ pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
     )
     |> result.replace_error(FunctionNotFound(name)),
   )
-  let checker.ExplainResult(blocks: explained, classifications:) = explained
+  let checker.ExplainResult(blocks:, classifications:) = explained
   // One block per bounds set is `explain`'s contract, so a length mismatch is a
   // broken invariant rather than a case to render: `strict_zip` makes it a crash
   // here instead of blocks silently dropped from the output.
   // nolint: assert_ok_pattern -- a broken invariant, not an error to handle
-  let assert Ok(blocks) = list.strict_zip(checks, explained)
+  let assert Ok(zipped) = list.strict_zip(checks, blocks)
     as "explain returns one block per bounds set"
   let rendered =
-    blocks
-    |> list.map(fn(block) {
+    list.map(zipped, fn(pair) {
       let #(check, checker.ExplainedBlock(bounds:, total:, explanations:)) =
-        block
+        pair
       why_block(name, check, bounds, total, explanations)
     })
   // After the blocks and once, not per block: the resolutions are a property of
   // the body, which every block explains the same one of.
-  list.append(rendered, typed_resolution_block(classifications))
+  case classifications {
+    [] -> rendered
+    checks -> list.append(rendered, [typed_resolution_block(checks)])
+  }
   |> string.join("\n\n")
 }
 
@@ -2048,19 +2048,14 @@ pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
 // resolutions belong to its own body.
 fn typed_resolution_block(
   classifications: List(types.ClassificationCheck),
-) -> List(String) {
-  case classifications {
-    [] -> []
-    checks -> [
-      ["typed resolutions"]
-      |> list.append(
-        list.map(checks, fn(check) {
-          "  " <> checker.format_typed_resolution(check)
-        }),
-      )
-      |> string.join("\n"),
-    ]
-  }
+) -> String {
+  [
+    "typed resolutions",
+    ..list.map(classifications, fn(check) {
+      "  " <> checker.format_typed_resolution(check)
+    })
+  ]
+  |> string.join("\n")
 }
 
 // Whether the module defines a function by this name. Publicity is not
@@ -2666,19 +2661,12 @@ fn build_type_index(
   let span_types =
     list.map(results, fn(pair) {
       let #(module_path, module_result) = pair
-      let types =
-        list.fold(
-          module_result.annotated.expressions,
-          dict.new(),
-          fn(acc, annotation) {
-            dict.insert(
-              acc,
-              #(annotation.span.start, annotation.span.end),
-              annotation.type_,
-            )
-          },
-        )
-      #(module_path, types)
+      #(module_path, typeinfo.span_types(module_result))
+    })
+  let evidence =
+    list.map(results, fn(pair) {
+      let #(module_path, module_result) = pair
+      #(module_path, typeinfo.evidence_of(module_result, checker.error_bucket))
     })
   let fn_typed =
     list.filter_map(results, fn(pair) {
@@ -2689,38 +2677,7 @@ fn build_type_index(
         Error(Nil) -> Error(Nil)
       }
     })
-  let resolutions =
-    list.map(results, fn(pair) {
-      let #(module_path, module_result) = pair
-      let by_span =
-        list.fold(
-          module_result.annotated.resolutions,
-          dict.new(),
-          fn(acc, reference) {
-            dict.insert(
-              acc,
-              #(reference.span.start, reference.span.end),
-              reference.resolution,
-            )
-          },
-        )
-      #(module_path, by_span)
-    })
-  let skipped =
-    list.map(results, fn(pair) {
-      let #(module_path, module_result) = pair
-      #(module_path, dict.from_list(module_result.skipped))
-    })
-  let dropped =
-    list.map(results, fn(pair) {
-      let #(module_path, module_result) = pair
-      let names =
-        list.fold(module_result.annotated.dropped, set.new(), fn(acc, entry) {
-          set.insert(acc, entry.name)
-        })
-      #(module_path, names)
-    })
-  typeinfo.from_modules(span_types, fn_typed, resolutions, skipped, dropped)
+  typeinfo.from_modules(span_types, fn_typed, evidence)
 }
 
 // The one target girard is run on. Gleam compiles a whole build for a single

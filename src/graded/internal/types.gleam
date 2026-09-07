@@ -1167,16 +1167,13 @@ pub type Warning {
 
 // Result of checking one file. `violations` and `findings` are two shapes of
 // one reported channel: the run exits on both together, so a caller rendering
-// one renders the other. `classification_checks` rides along beside them and is
-// reported through neither: it is the dual-run comparison, computed for every
-// definition whether or not a `check` line names one.
+// one renders the other.
 pub type CheckResult {
   CheckResult(
     file: String,
     violations: List(Violation),
     findings: List(CheckFinding),
     warnings: List(Warning),
-    classification_checks: List(ClassificationCheck),
   )
 }
 
