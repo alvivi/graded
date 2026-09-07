@@ -8607,11 +8607,11 @@ pub fn a_pure_module_never_answers_for_an_effectful_field_test() {
   // goes out to the network.
   let shapes = [
     #("direct_construction", ["Net"]),
-    #("case_narrowed", ["Unknown"]),
+    #("case_narrowed", ["Net"]),
     #("let_assert_narrowed", ["Net"]),
     #("simple_alias", ["Net"]),
     #("block_alias", ["Net"]),
-    #("alias_in_narrowed_branch", ["Unknown"]),
+    #("alias_in_narrowed_branch", ["Net"]),
     #("rebound_after_narrowing", ["Net"]),
   ]
   let assert Ok(results) = graded.check_project("test/fixtures")
@@ -8773,17 +8773,17 @@ pub fn girard_resolves_the_narrowed_collision_to_the_module_test() {
   |> should.equal([])
 }
 
-pub fn a_call_girard_declined_to_type_stays_a_field_test() {
-  // girard carries no narrowing across a binding, so it reads `list.send` as an
-  // accessor on an un-narrowed `Client`, finds no such field, and declines the
-  // three alias functions outright. No type reaches those receivers — and with
-  // no typed evidence the call must stay the record's own field rather than
-  // resolve to the same-named `gleam/list.send`, which the module-level
-  // `assume gleam/list : []` would answer for with nothing.
+pub fn a_narrowed_alias_girard_types_stays_a_field_test() {
+  // girard carries the narrowing across a binding, so it types every one of the
+  // module's functions and reads `list.send` as the record's own field on each.
+  // The charge has to follow: every receiver shape, alias and narrowed branch
+  // alike, is charged the field's [Net] rather than the same-named
+  // `gleam/list.send`, which the module-level `assume gleam/list : []` would
+  // answer for with nothing.
   //
-  // The skip list is asserted alongside the charge: if girard learns to type
-  // these, the premise is gone and this test should be re-pointed rather than
-  // quietly keep passing for another reason.
+  // The empty skip list is asserted alongside the charge, so a girard that
+  // stops typing one of these shapes fails here rather than quietly routing it
+  // through a different path.
   let assert Ok(source) =
     simplifile.read("test/fixtures/field_module_collision.gleam")
   let assert Ok(module) = glance.module(source)
@@ -8796,17 +8796,24 @@ pub fn a_call_girard_declined_to_type_stays_a_field_test() {
   girard_result.skipped
   |> list.map(fn(entry) { entry.0 })
   |> list.sort(string.compare)
-  |> should.equal(["alias_in_narrowed_branch", "block_alias", "simple_alias"])
+  |> should.equal([])
 
   let assert Ok(checked) = graded.check_project("test/fixtures")
   let assert Ok(r) =
     list.find(checked, fn(r) {
       r.file == "test/fixtures/field_module_collision.gleam"
     })
-  let assert Ok(violation) =
-    list.find(r.violations, fn(v) { v.function == "simple_alias" })
-  violation.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Net"])))
+  [
+    "direct_construction", "case_narrowed", "let_assert_narrowed",
+    "simple_alias", "block_alias", "alias_in_narrowed_branch",
+    "rebound_after_narrowing",
+  ]
+  |> list.each(fn(function) {
+    let assert Ok(violation) =
+      list.find(r.violations, fn(v) { v.function == function })
+    violation.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Net"])))
+  })
 }
 
 pub fn girard_types_do_not_replace_a_syntax_proved_target_test() {

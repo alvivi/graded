@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- girard 3.0.0 or later is required.
+- A field call whose receiver is an alias of a narrowed value, or is bound
+  inside the branch that narrowed it, now charges the field's own effects
+  instead of `[Unknown]`. A `check` line over such a body that could not be
+  satisfied before now can be.
+
+### Fixed
+
+- A call through an un-narrowed call result named after an imported module,
+  whose label sits on one variant of the receiver's type only, is now charged
+  as the module call the compiler emits. Such a body — `let io = make_logger()`
+  followed by `io.println("hi")` — could be reported pure before, and a `check`
+  line over one can start failing.
+
 ## [0.19.0] - 2026-09-01
 
 ### Added
