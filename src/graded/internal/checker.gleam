@@ -26,11 +26,12 @@ import graded/internal/types.{
   type ParamBound, type QualifiedName, type Relation, type ResolvedCall,
   type ReturnedOperatorReason, type TypedClassification, type UndecidedReason,
   type UnknownReason, type UnprovedCause, type Violation, type Warning, Agree,
-  AliasedBoundVariableWarning, CallExplanation, ClassificationCheck, Compatible,
-  DefinitionDropped, Disagree, DotlessReturnsClauseWarning, EffectAnnotation,
-  Effects, Field, FieldArityViolation, FieldAssumeOrigin, FieldBoundList,
-  FieldNotAnnotated, FieldReturnsClause, FieldSiteViolation, FunctionSkipped,
-  NoKnownEffects, NoResolutionAtSpan, NoReturnAnnotation, NoTypedEvidence,
+  AliasedBoundVariableWarning, AmbiguousShadowedReceiver, CallExplanation,
+  ClassificationCheck, Compatible, DefinitionDropped, Disagree,
+  DotlessReturnsClauseWarning, EffectAnnotation, Effects, Field,
+  FieldArityViolation, FieldAssumeOrigin, FieldBoundList, FieldNotAnnotated,
+  FieldReturnsClause, FieldSiteViolation, FunctionSkipped, NoKnownEffects,
+  NoResolutionAtSpan, NoReturnAnnotation, NoTypedEvidence,
   NonCallableFieldCheckWarning, NonCallableReturnViolation, NotACallTarget,
   ParamBound, ProvedFieldCall, ProvedModuleCall, QualifiedName,
   ReceiverNotNominal, ReceiverTypeUnknown, ReceiverTypeUnresolved,
@@ -2080,6 +2081,7 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         UntraceableArgument -> untraceable_argument_clause
         FieldNotAnnotated(..)
         | ReceiverTypeUnresolved
+        | AmbiguousShadowedReceiver(..)
         | UntraceableReceiver
         | UnresolvedFieldValue
         | UntraceableProducer
@@ -2092,6 +2094,13 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
           <> types.dotted_name(QualifiedName(module:, function: type_name))
           <> "`, which has no effect annotation for that field,"
         ReceiverTypeUnresolved -> ", whose type could not be resolved,"
+        // Not "could not be traced": the value may well have been. What is
+        // undecided is whether this is a field call at all, and the module it
+        // would otherwise be is the other half the reader has to weigh.
+        AmbiguousShadowedReceiver(module:) ->
+          ", which also names the module `"
+          <> module
+          <> "` and whose type nothing here fixes,"
         UntraceableReceiver -> ", whose value could not be traced,"
         UnresolvedFieldValue ->
           ", whose wired value's effects could not be resolved,"
@@ -2114,6 +2123,7 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
           " declared only for a target this build does not compile,"
         FieldNotAnnotated(..)
         | ReceiverTypeUnresolved
+        | AmbiguousShadowedReceiver(..)
         | UntraceableReceiver
         | UnresolvedFieldValue
         | UntraceableProducer
@@ -2134,6 +2144,7 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
         | UndeclaredExternal
         | FieldNotAnnotated(..)
         | ReceiverTypeUnresolved
+        | AmbiguousShadowedReceiver(..)
         | UntraceableReceiver
         | UnresolvedFieldValue
         | UntraceableArgument -> ""
@@ -4655,7 +4666,7 @@ fn collect_effects(
   // readings until the receiver's type decides between them. Split before the
   // resolved fold, so a call that reads as the module is folded here like any
   // other qualified call rather than appended to a list already consumed.
-  let #(module_reads, field_reads) =
+  let ShadowedSplit(module_reads:, field_reads:, undecided:) =
     split_shadowed_field_calls(
       result.field,
       registry,
@@ -4665,6 +4676,38 @@ fn collect_effects(
       function,
     )
   let resolved_calls = list.append(result.resolved, module_reads)
+  // A call neither reading is established for. Charged here rather than through
+  // the field resolver, which would answer with the value the receiver was
+  // traced to — the field's reading, which is exactly what is unestablished.
+  //
+  // A hand-written field bound still answers, as it does for every other field
+  // call: naming `c.send` on the `check` line declares that this *is* the field
+  // call and what it costs, which is a stronger statement than anything the
+  // split could establish on its own. Nothing weaker discharges it — the wiring
+  // a `type` line or a construction site would supply is the reading in doubt.
+  let undecided_effects =
+    list.map(undecided, fn(call) {
+      let resolution = case
+        list.find(param_bounds, fn(bound) {
+          bound.name == field_call_target(call)
+        })
+      {
+        Ok(bound) -> plain_resolution(bound.effects)
+        Error(Nil) ->
+          Resolution(
+            term: effect_term.unknown(),
+            reason: Some(
+              AmbiguousShadowedReceiver(option.unwrap(call.shadowed_module, "")),
+            ),
+            origin: None,
+            fallback: types.NoFallback,
+          )
+      }
+      CollectedCall(
+        call: sentinel_call(field_call_kind(call), call.span),
+        resolution:,
+      )
+    })
 
   // Resolved calls: qualified names looked up directly in the knowledge
   // base. If the callee's effects are polymorphic (contain effect
@@ -4956,6 +4999,7 @@ fn collect_effects(
       resolved_effects,
       local_effects,
       field_effects,
+      undecided_effects,
       direct_op_effects,
       direct_pipe_effects,
       unknown_app_effects,
@@ -8872,7 +8916,7 @@ pub fn classify_definition(
 ) -> List(ClassificationCheck) {
   let result =
     extract.extract_function_calls_with_captures(function, context, [])
-  let #(module_reads, _field_reads) =
+  let split =
     split_shadowed_field_calls(
       result.field,
       registry,
@@ -8882,7 +8926,7 @@ pub fn classify_definition(
       function,
     )
   let moved =
-    list.fold(module_reads, dict.new(), fn(acc, call) {
+    list.fold(split.module_reads, dict.new(), fn(acc, call) {
       dict.insert(acc, extract.span_key(call.span), call.name.module)
     })
   list.map(result.ambiguous, fn(row) {
@@ -8980,18 +9024,29 @@ type ShadowedReading {
   ReadsNeither
 }
 
-// Split the field calls into the ones the receiver's type says are calls to the
-// module its name shadows, and the ones that stay field calls.
+// What the shadowed-receiver split makes of a module's field calls: the ones the
+// receiver's type says are calls to the module its name shadows, the ones that
+// stay field calls, and the ones neither reading is established for.
 //
 // The module reads join the *resolved* list, so each takes the whole resolved
 // path — knowledge-base lookup, call-site substitution, origin reporting and
-// `graded why` prose — with no separate code of its own. That is why this runs
-// before the resolved fold rather than inside the field loop, which the fold has
-// already passed.
+// `graded why` prose — with no separate code of its own. That is why the split
+// runs before the resolved fold rather than inside the field loop, which the
+// fold has already passed.
 //
-// A call that reads as neither stays a field call and loses its provenance: it
-// would otherwise resolve through the value its receiver was traced to, and that
-// value is the field's — the reading nothing here established.
+// `undecided` is charged `[Unknown]` on its own, without going through the field
+// resolver: resolving it would answer with the value the receiver was traced to,
+// and that value is the *field's* — the reading nothing here established. The
+// calls keep their provenance, which the bound matching and the receiver
+// canonicalization read for their own purposes and which is not a verdict.
+pub type ShadowedSplit {
+  ShadowedSplit(
+    module_reads: List(ResolvedCall),
+    field_reads: List(types.FieldCall),
+    undecided: List(types.FieldCall),
+  )
+}
+
 pub fn split_shadowed_field_calls(
   field_calls: List(types.FieldCall),
   registry: SignatureRegistry,
@@ -8999,27 +9054,22 @@ pub fn split_shadowed_field_calls(
   module_types: dict.Dict(#(Int, Int), girard.Type),
   cache: LocalCache,
   function: Function,
-) -> #(List(ResolvedCall), List(types.FieldCall)) {
-  use acc, call <- list.fold_right(field_calls, #([], []))
-  let #(module_reads, field_reads) = acc
+) -> ShadowedSplit {
+  use split, call <- list.fold_right(field_calls, ShadowedSplit([], [], []))
   case
     shadowed_module_read(call, registry, context, module_types, cache, function)
   {
-    ReadsTheModule(module_path) -> #(
-      [
+    ReadsTheModule(module_path) ->
+      ShadowedSplit(..split, module_reads: [
         types.ResolvedCall(
           name: QualifiedName(module: module_path, function: call.label),
           span: call.span,
         ),
-        ..module_reads
-      ],
-      field_reads,
-    )
-    ReadsTheField -> #(module_reads, [call, ..field_reads])
-    ReadsNeither -> #(module_reads, [
-      types.FieldCall(..call, provenance: types.Untraceable),
-      ..field_reads
-    ])
+        ..split.module_reads
+      ])
+    ReadsTheField ->
+      ShadowedSplit(..split, field_reads: [call, ..split.field_reads])
+    ReadsNeither -> ShadowedSplit(..split, undecided: [call, ..split.undecided])
   }
 }
 
