@@ -2,6 +2,7 @@
 // so the compiler reads `gleam/result.try` and the call is reported as one — it
 // is not a field call on `result`.
 import gleam/io
+import gleam/pair
 import gleam/result
 
 pub type Thing {
@@ -94,4 +95,26 @@ pub fn typed_narrowed(t: Typed) -> Nil {
     Text(..) as io -> io.println("hi")
     Number(..) -> Nil
   }
+}
+
+// A receiver whose type only girard can supply: it is a *closure* parameter, so
+// the enclosing function's own parameter list does not name it, and no written
+// annotation is in reach. A tuple carries no record field under any
+// substitution, so the compiler reads `gleam/pair.first` — the module emits
+// `gleam@pair:first/1` here — and so does graded.
+pub fn tuple_receiver() -> Int {
+  let normalise = fn(pair: #(Int, String)) { pair.first(pair) }
+  normalise(#(1, "a"))
+}
+
+// The same rule on a function-typed receiver, which carries no field either.
+// The module reading is the effectful one here: compiling this emits
+// `gleam_stdlib:println/1`, so the body prints, and reading it as a field on
+// `io` would report it pure.
+pub fn fn_receiver() -> Nil {
+  let run = fn(io: fn(String) -> Nil) {
+    io("bye")
+    io.println("hi")
+  }
+  run(fn(_s) { Nil })
 }

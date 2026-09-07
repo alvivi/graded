@@ -156,6 +156,21 @@ pub fn receiver_type(
   }
 }
 
+// girard's whole answer for the expression spanning `#(start, end)`, unreduced.
+// `receiver_type` narrows it to the nominal identity the field registry is
+// keyed by, which is what most readers want; this is for the one that has to
+// tell "a type with no fields at all" apart from "no answer here".
+pub fn type_at(
+  module_types: Dict(#(Int, Int), Type),
+  start: Int,
+  end: Int,
+) -> Option(Type) {
+  case dict.get(module_types, #(start, end)) {
+    Ok(type_) -> Some(type_)
+    Error(Nil) -> None
+  }
+}
+
 // The member girard resolved the reference spanning `#(start, end)` to. The key
 // is the whole access — `x.label`, not the receiver and not the label — which
 // is the span girard records the reference under. `None` when no reference was

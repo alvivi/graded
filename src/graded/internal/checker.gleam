@@ -9109,13 +9109,13 @@ fn receiver_shape(
   function: Function,
 ) -> ReceiverShape {
   case
-    typeinfo.receiver_type(
+    girard_receiver_shape(
       module_types,
       call.receiver_span.start,
       call.receiver_span.end,
     )
   {
-    Some(#(module, type_name)) -> NamedReceiver(module:, type_name:)
+    Some(shape) -> shape
     None ->
       // The annotation answers only where the receiver's value *is* a
       // parameter's. The provenance names which one, canonicalized where the
@@ -9141,6 +9141,29 @@ fn receiver_shape(
           }
         _ -> UnknownReceiver
       }
+  }
+}
+
+// The shape girard's inferred type gives the receiver, or `None` where it says
+// nothing this can act on.
+//
+// A `Named` type is the nominal one the field registry is keyed by. A `Fn` and a
+// `Tuple` carry no record field under any substitution, so both are fieldless
+// wherever girard reaches one — the same reading a written `fn(..)` or tuple
+// annotation gets, which is what keeps a receiver girard typed from being less
+// decided than one a parameter annotation names. A `Var` says nothing: girard
+// emits one both for a real generic and for an inference variable it never
+// resolved, and calling an unresolved one fieldless would undercharge.
+fn girard_receiver_shape(
+  module_types: dict.Dict(#(Int, Int), girard.Type),
+  start: Int,
+  end: Int,
+) -> Option(ReceiverShape) {
+  case typeinfo.type_at(module_types, start, end) {
+    Some(girard.Named(module, name, _arguments)) ->
+      Some(NamedReceiver(module:, type_name: name))
+    Some(girard.Fn(..)) | Some(girard.Tuple(..)) -> Some(FieldlessReceiver)
+    Some(girard.Var(..)) | None -> None
   }
 }
 
