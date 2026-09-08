@@ -593,7 +593,7 @@ pub fn resolve_function_type(
 // A type that names no alias is its own answer, and so is the alias a cycle
 // closes on — so every caller reads the chain's end without a `Result` for
 // "went nowhere", which is not a failure.
-pub fn resolve_alias(
+fn resolve_alias(
   type_: glance.Type,
   alias_map: Dict(String, glance.Type),
 ) -> glance.Type {

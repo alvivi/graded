@@ -125,7 +125,6 @@ fn probe(
         module_path,
         knowledge_base,
         typeinfo.reading_for_module(type_info, module_path),
-        typeinfo.fn_typed_for_module(type_info, module_path),
         package_targets,
       )
     })
@@ -404,7 +403,7 @@ fn undecided_shadowed_reason(
 fn relation_label(check: ClassificationCheck) -> String {
   case checker.relate(check) {
     types.Compared(types.Agree) -> "agree"
-    types.Compared(types.Compatible(types.WiredValueVersusMember)) ->
+    types.Compared(types.CompatibleWiredValue) ->
       "compatible:wired-value-vs-member"
     types.Compared(types.Disagree) -> "disagree"
     types.NoTypedEvidence(reason:) ->
