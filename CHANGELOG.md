@@ -12,9 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `graded why` now prints a **typed resolutions** section after the blocks: one
   line per `name.label(args)` in the function's own body, stating what the type
   inference resolved the site to beside what graded charged it as, and whether
-  the two agree, name different halves of one site, or disagree. Nothing about
-  the charge changes — the resolutions are reported beside graded's answer,
-  never in place of it.
+  the two agree, name different halves of one site, or disagree. For most rows
+  the resolution is reported beside graded's answer and changes no charge. The
+  exception is a call whose receiver also names a module and whose reading
+  extraction could not settle lexically: there the resolution shown is what
+  decides whether the call is charged as the module or as the field, and such a
+  row reads `decided by the type inference` rather than `agrees`.
 
 ### Changed
 
