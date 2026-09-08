@@ -14792,6 +14792,64 @@ fn cleanup_nested_path_dep(roots: #(String, String, String)) -> Nil {
   support.cleanup(inner_root)
 }
 
+// One directory two dependencies both declare, each by a route of its own. The
+// declared paths are written so `resolve_path` yields two different spellings
+// of it, which is the shape a real tree of sibling checkouts takes.
+fn diamond_path_dep_fixture() -> List(String) {
+  let shared =
+    support.write_fixture("build/pathdep_diamond_shared", [
+      #("gleam.toml", "name = \"shared\"\n"),
+      #("src/shared.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+    ])
+  let left =
+    support.write_fixture("build/pathdep_diamond_left", [
+      #(
+        "gleam.toml",
+        "name = \"left\"\n\n[dependencies]\nshared = { path = \"../pathdep_diamond_left/../pathdep_diamond_shared\" }\n",
+      ),
+      #("src/left.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+    ])
+  let right =
+    support.write_fixture("build/pathdep_diamond_right", [
+      #(
+        "gleam.toml",
+        "name = \"right\"\n\n[dependencies]\nshared = { path = \"../pathdep_diamond_right/../pathdep_diamond_shared\" }\n",
+      ),
+      #("src/right.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+    ])
+  let root =
+    support.write_fixture("build/pathdep_diamond_root", [
+      #(
+        "gleam.toml",
+        "name = \"root\"\n\n[dependencies]\nleft = { path = \"../pathdep_diamond_left\" }\nright = { path = \"../pathdep_diamond_right\" }\n",
+      ),
+      #("src/root.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+    ])
+  [root, left, right, shared]
+}
+
+pub fn a_shared_path_dependency_is_entered_once_test() {
+  let roots = diamond_path_dep_fixture()
+  let assert [root, ..] = roots
+  let #(files, entered) =
+    graded.path_dep_resolver_files_recording_visits(root, dict.new())
+  // Three directories, each once. Sorted because the order two declarations on
+  // one `gleam.toml` are read in is that file's, not this walk's; a directory
+  // entered twice is two entries here however they are ordered. Keyed by the
+  // path as written, the two routes to `shared` are two spellings of it, and it
+  // was walked and read once for each.
+  list.sort(entered, string.compare)
+  |> should.equal([
+    "build/pathdep_diamond_left",
+    "build/pathdep_diamond_right",
+    "build/pathdep_diamond_shared",
+  ])
+  // And the walk still found what it went for.
+  dict.get(files, "shared")
+  |> should.equal(Ok("build/pathdep_diamond_shared/src/shared.gleam"))
+  list.each(roots, support.cleanup)
+}
+
 pub fn girard_types_a_path_dependencys_own_path_dependency_test() {
   let roots = nested_path_dep_fixture()
   let #(app_root, dep_root, _inner_root) = roots
