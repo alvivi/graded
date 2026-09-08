@@ -8752,16 +8752,19 @@ fn charges_the_field_not_the_module(violation: types.Violation) -> Nil {
   }
 }
 
-pub fn girard_resolves_the_narrowed_collision_to_the_module_test() {
-  // The premise the two tests above guard against, pinned so the authoritative
-  // flip cannot land while it holds. girard declines none of these functions —
-  // a skip would route them to [Unknown] safely — it types them and resolves
-  // the calls to `gleam/io.println`, because `infer_callee` selects a module
-  // export whenever `accessor` grants no label shared by every variant, and
-  // never consults the variant a pattern narrowed the receiver to.
+pub fn girard_resolves_the_narrowed_collision_to_the_field_test() {
+  // The premise the three tests above rest on, read off girard rather than
+  // through a charge. Both readings are live at this fixture's receiver calls —
+  // `Client` declares `println` and `gleam/io` exports it — and girard reads
+  // the receiver's own type at each, which is what the charge follows now that
+  // the resolution decides it. `greet`, whose `io` really is the module, is the
+  // one `ModuleFn` among them.
   //
-  // When girard learns to consult it, this test should be re-pointed at the
-  // resolution it then reports rather than quietly keep passing.
+  // girard declines none of these functions: a skip routes a call to [Unknown],
+  // which is safe but would stop these budgets failing for the stated reason.
+  // A resolver that started reading the module at the other three would make
+  // their [] budgets pass while the call goes out to the network, so the
+  // resolutions are named here rather than left to a budget that changed shape.
   let assert Ok(source) =
     simplifile.read("test/fixtures/narrowed_module_collision.gleam")
   let assert Ok(module) = glance.module(source)
@@ -8773,6 +8776,22 @@ pub fn girard_resolves_the_narrowed_collision_to_the_module_test() {
   let assert Ok(girard_result) = dict.get(results, "narrowed_module_collision")
   girard_result.skipped
   |> should.equal([])
+  girard_result.annotated.resolutions
+  |> list.filter_map(fn(reference) {
+    case reference.resolution {
+      girard.RecordField(girard.Named(module, name, _), "println") ->
+        Ok("field " <> module <> "." <> name)
+      girard.ModuleFn(module, "println") -> Ok("module " <> module)
+      _ -> Error(Nil)
+    }
+  })
+  |> list.sort(string.compare)
+  |> should.equal([
+    "field narrowed_module_collision.Client",
+    "field narrowed_module_collision.Client",
+    "field narrowed_module_collision.Client",
+    "module gleam/io",
+  ])
 }
 
 pub fn a_narrowed_alias_girard_types_stays_a_field_test() {
