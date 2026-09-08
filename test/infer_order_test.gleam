@@ -195,6 +195,43 @@ pub fn chain_resolves_in_one_pass_test() {
   cleanup(directory)
 }
 
+// Discarded import alias
+//
+// An import written `as _b` binds no module name and still brings its
+// unqualified items in, so the importer has to be inferred after the module
+// it imports.
+
+pub fn discarded_alias_import_orders_the_importer_last_test() {
+  let directory =
+    make_fixture("discarded_alias", [
+      #(
+        "app/b.gleam",
+        "import gleam/io
+
+pub fn shout(value: String) -> Nil {
+  io.println(value)
+}
+",
+      ),
+      #(
+        "app/a.gleam",
+        "import app/b.{shout} as _b
+
+pub fn run(value: String) -> Nil {
+  shout(value)
+}
+",
+      ),
+    ])
+
+  let assert Ok(Nil) = graded.run_infer(directory)
+
+  effects_of(read_inferred(directory <> "/build/.graded/app/a.graded"), "run")
+  |> should.equal(with_labels(["Stdout"]))
+
+  cleanup(directory)
+}
+
 // Diamond
 //
 // One effectful leaf reached through two branches; the apex reports the

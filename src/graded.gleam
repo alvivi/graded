@@ -2831,12 +2831,19 @@ fn build_dependency_graph(
 ) -> Dict(String, Set(String)) {
   dict.map_values(index, fn(_module_path, entry) {
     let #(_path, module) = entry
-    let context = extract.build_import_context(module)
-    context.aliases
-    |> dict.values()
-    |> list.filter(fn(imported) { dict.has_key(index, imported) })
-    |> set.from_list()
+    project_imports(module, index)
   })
+}
+
+// The modules `index` holds that `module` imports. Every import is an edge,
+// including one written under a discarded alias, which binds no module name
+// and still brings unqualified items whose calls key the imported module.
+fn project_imports(
+  module: glance.Module,
+  index: Dict(String, #(String, glance.Module)),
+) -> Set(String) {
+  extract.imported_modules(module)
+  |> set.filter(fn(imported) { dict.has_key(index, imported) })
 }
 
 // Inference
@@ -4429,11 +4436,8 @@ pub fn infer_path_dep(
   let graph =
     dict.map_values(index, fn(_module_path, entry) {
       let #(module, _checks) = entry
-      let context = extract.build_import_context(module)
-      context.aliases
-      |> dict.values()
-      |> list.filter(fn(imported) { dict.has_key(index, imported) })
-      |> set.from_list()
+      extract.imported_modules(module)
+      |> set.filter(fn(imported) { dict.has_key(index, imported) })
     })
 
   // A registry covering the dep's own modules, so a cross-module call between

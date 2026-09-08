@@ -244,6 +244,18 @@ pub fn with_fn_typed_fields(
   ImportContext(..context, fn_typed_fields:)
 }
 
+// Every module path the file imports, whatever name each import binds here —
+// the nodes an import graph draws its edges to. Read off the imports rather
+// than off `aliases`, which holds only the imports that bind a module name: a
+// discarded alias (`import app/b.{helper} as _b`) binds none and still keys
+// every unqualified item it brings in, so the importer has to be inferred
+// after `app/b` all the same.
+pub fn imported_modules(module: Module) -> Set(String) {
+  list.fold(module.imports, set.new(), fn(acc, definition) {
+    set.insert(acc, definition.definition.module)
+  })
+}
+
 // Build import context from a parsed module's imports.
 pub fn build_import_context(module: Module) -> ImportContext {
   // Both unqualified lists are folded the same way, over the name each import
