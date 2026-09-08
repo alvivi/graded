@@ -1999,10 +1999,12 @@ fn resolution_line(
   check: ClassificationCheck,
 ) -> String {
   let standing = case comparison, check.graded {
-    // A shadowed call graded read as the module was read there *by* this
-    // resolution, so the row is one answer stated twice and says so rather
-    // than claiming a comparison that did not happen.
-    Agree, TypeSelectedModule(..) -> "decided by the type inference"
+    // A shadowed call — read as the module, or left as the field — was read
+    // *by* this resolution, so the row is one answer stated twice and says so
+    // rather than claiming a comparison that did not happen. A field call whose
+    // receiver shadows nothing was settled lexically and does compare.
+    Agree, TypeSelectedModule(..) | Agree, Field(shadowed: Some(_)) ->
+      "decided by the type inference"
     Agree, _ -> "agrees"
     CompatibleWiredValue, _ ->
       "compatible; graded charged " <> graded_target(check)

@@ -57,7 +57,7 @@ pub fn explains_an_agreeing_field_call_test() {
     "  calls field `send` on `c` with effects [Net] (from a field `assume` in your spec)",
     "",
     "typed resolutions",
-    "  list.send: typed resolution field Client.send (agrees)",
+    "  list.send: typed resolution field Client.send (decided by the type inference)",
   ])
 }
 

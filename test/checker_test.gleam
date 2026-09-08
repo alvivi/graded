@@ -7928,7 +7928,7 @@ pub fn an_agreeing_module_call_line_names_the_module_test() {
   )
 }
 
-pub fn an_agreeing_field_call_line_names_the_member_test() {
+pub fn a_shadowed_field_call_line_names_the_deciding_resolution_test() {
   row(
     "list",
     "send",
@@ -7936,7 +7936,20 @@ pub fn an_agreeing_field_call_line_names_the_member_test() {
     types.ProvedFieldCall(#("app", "Client"), "send"),
   )
   |> checker.format_typed_resolution()
-  |> should.equal("list.send: typed resolution field Client.send (agrees)")
+  |> should.equal(
+    "list.send: typed resolution field Client.send (decided by the type inference)",
+  )
+}
+
+pub fn an_agreeing_field_call_line_names_the_member_test() {
+  row(
+    "client",
+    "send",
+    types.Field(None),
+    types.ProvedFieldCall(#("app", "Client"), "send"),
+  )
+  |> checker.format_typed_resolution()
+  |> should.equal("client.send: typed resolution field Client.send (agrees)")
 }
 
 pub fn a_compatible_line_names_the_value_graded_charged_test() {
