@@ -4445,7 +4445,7 @@ fn fold_inferred_into_kb(
 //
 // The consumer's scan wins a collision, since it holds the copy the build
 // compiles against. A dependency reached twice, or one whose declarations lead
-// back to it, is scanned once.
+// back to it, is entered once.
 //
 // Exposed (pub) so a test can ask what a dep resolves against without going
 // through `gleam.toml` resolution twice.
@@ -4454,29 +4454,81 @@ pub fn path_dep_resolver_files(
   dep_path: String,
   dep_files: Dict(String, String),
 ) -> Dict(String, String) {
-  let #(nested, _seen) =
-    nested_path_dep_files(#(dict.new(), set.new()), dep_path)
-  dict.merge(nested, dep_files)
+  path_dep_resolver_files_recording_visits(dep_path, dep_files).0
 }
 
-fn nested_path_dep_files(
-  state: #(Dict(String, String), Set(String)),
+// The same walk, handing back the dependency directories it entered, in the
+// order it entered them. A directory entered twice appears twice, which is what
+// makes "each is entered once" a property a test can read rather than one it
+// has to infer from timing.
+@internal
+pub fn path_dep_resolver_files_recording_visits(
   dep_path: String,
-) -> #(Dict(String, String), Set(String)) {
-  let #(_files, seen) = state
-  use <- bool.guard(when: set.contains(seen, dep_path), return: state)
-  effects.parse_path_dependencies(filepath.join(dep_path, "gleam.toml"))
-  |> list.fold(#(state.0, set.insert(seen, dep_path)), fn(state, dep) {
-    let #(files, seen) = state
-    let #(_name, nested_path) = dep
-    let nested = resolve_path(dep_path, nested_path)
-    let files =
-      dict.merge(
-        effects.source_dir_module_files(filepath.join(nested, "src")),
-        files,
-      )
-    nested_path_dep_files(#(files, seen), nested)
-  })
+  dep_files: Dict(String, String),
+) -> #(Dict(String, String), List(String)) {
+  // The dependency the walk starts at is entered by the caller, which holds its
+  // modules already — its declarations are all this reads of it.
+  let walk =
+    nested_path_dep_files(
+      PathDepWalk(
+        files: dict.new(),
+        entered: set.from_list([normalized_path(dep_path)]),
+        order: [],
+      ),
+      dep_path,
+    )
+  #(dict.merge(walk.files, dep_files), list.reverse(walk.order))
+}
+
+// What the walk over a dependency's own path dependencies carries: the module
+// files found so far, the directories already entered, and the order they were
+// entered in.
+//
+// `entered` holds normalized paths. `resolve_path` joins a declared `path` onto
+// the directory that declared it and leaves the `..` segments in, so one
+// directory two dependencies reach by different routes arrives under two
+// spellings; keyed raw, each spelling is its own entry and a diamond is walked
+// once per route through it.
+type PathDepWalk {
+  PathDepWalk(
+    files: Dict(String, String),
+    entered: Set(String),
+    order: List(String),
+  )
+}
+
+fn nested_path_dep_files(walk: PathDepWalk, dep_path: String) -> PathDepWalk {
+  use walk, dep <- list.fold(
+    effects.parse_path_dependencies(filepath.join(dep_path, "gleam.toml")),
+    walk,
+  )
+  let #(_name, nested_path) = dep
+  let nested = resolve_path(dep_path, nested_path)
+  let entered = normalized_path(nested)
+  use <- bool.guard(when: set.contains(walk.entered, entered), return: walk)
+  // Read on the way in, past the check rather than before it: a directory
+  // several dependencies name costs one read of its `src/`, not one per edge
+  // that reaches it. Read under the collapsed path, so the file names the
+  // resolver hands girard are the ones any other scan of that tree produces.
+  nested_path_dep_files(
+    PathDepWalk(
+      files: dict.merge(
+        effects.source_dir_module_files(filepath.join(entered, "src")),
+        walk.files,
+      ),
+      entered: set.insert(walk.entered, entered),
+      order: [entered, ..walk.order],
+    ),
+    entered,
+  )
+}
+
+// A path with its `.` and `..` segments collapsed, so two spellings of one
+// directory are one key. A relative path that climbs past its own top collapses
+// to nothing and keys itself, which distinguishes exactly what the raw string
+// did.
+fn normalized_path(path: String) -> String {
+  filepath.expand(path) |> result.unwrap(path)
 }
 
 // Every module of a path dependency's `src/` tree, keyed the way the type index
