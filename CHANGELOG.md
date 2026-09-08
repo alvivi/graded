@@ -33,14 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the site names. A written parameter annotation no longer decides it.
 - A path dependency inferred from its source is now typed by the type inference
   the way the project is, resolved from the consuming project's installed
-  packages and from the path dependencies the dependency declares for itself. A receiver whose type only inference knows now resolves inside a
-  path dependency too, so a call it used to charge `[Unknown]` is charged what
-  the field or the module answers, and the higher-order parameters it now sees
-  sharpen the dependency's own inference. The Gleam fallback body of an
-  `@external` a path dependency declares is walked against that same reading,
-  whether or not the dependency ships a spec file; a package installed from hex
-  is not typed, and a shadowed receiver in its fallback body still reads
-  `[Unknown]`.
+  packages and from the path dependencies the dependency declares for itself. A
+  receiver whose type only inference knows now resolves inside a path dependency
+  too, so a call it used to charge `[Unknown]` is charged what the field or the
+  module answers, and the higher-order parameters it now sees sharpen the
+  dependency's own inference. The Gleam fallback body of an `@external` any
+  dependency declares — a path dependency's, whether or not it ships a spec
+  file, and an installed package's — is walked against a reading of that module
+  too, so a shadowed receiver in one reads as the module or as the field rather
+  than `[Unknown]`.
 - girard 3.0.0 or later is required: the typed resolutions `graded why` prints
   are read from the reference resolutions it reports.
 - A field call whose receiver is an alias of a narrowed value, or is bound

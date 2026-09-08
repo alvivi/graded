@@ -14846,12 +14846,9 @@ pub fn path(request: Request) -> String {
 
 pub fn a_path_dependencys_fallback_body_reads_its_shadowed_receiver_test() {
   // The fallback-body pass re-parses each dependency module and walks it, and
-  // the reading it walks with is what decides a shadowed receiver. A package
-  // installed from hex has none — its own imports are not in a tree the
-  // consumer's resolver stands in — and charges [Unknown] there, which is
-  // sound. A path dependency is a tree the consumer does resolve, so the walk
-  // reads it the way it reads the project and the call is charged what the
-  // module answers.
+  // the reading it walks with is what decides a shadowed receiver. A path
+  // dependency is a tree the consumer resolves, so the walk reads it the way it
+  // reads the project and the call is charged what the module answers.
   //
   // The manifest is load-bearing: without one nothing keys `gleam/io.println`,
   // and the body would read [Unknown] for a reason that has nothing to do with
@@ -14879,6 +14876,40 @@ pub fn a_path_dependencys_fallback_body_reads_its_shadowed_receiver_test() {
   |> should.be_true()
   support.cleanup(app_root)
   support.cleanup(dep_root)
+}
+
+// The same collision in a package installed from hex, whose modules sit under
+// the consumer's own `build/packages` — the tree girard's resolver reads.
+// `Thing` declares no `println`, so the module is the reading and the catalog
+// answers for it.
+const installed_shadow_dep = "import gleam/io
+
+pub type Thing {
+  Thing(n: Int)
+}
+
+@external(javascript, \"./ffi.mjs\", \"handle\")
+pub fn handle(io: Thing) -> Nil {
+  io.println(\"hi\")
+}
+"
+
+pub fn an_installed_dependencys_fallback_body_reads_its_shadowed_receiver_test() {
+  let app_root =
+    support.write_fixture("build/fallback_shadow_installed_app", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #("manifest.toml", stdlib_manifest),
+      #("src/app.gleam", "import dep\n\npub fn caller() -> Nil {\n  Nil\n}\n"),
+      #("build/packages/dep/gleam.toml", "name = \"dep\"\n"),
+      #("build/packages/dep/src/dep.gleam", installed_shadow_dep),
+    ])
+  let assert Ok(answered) = graded.run_effect(app_root, "dep.handle")
+  // The body's own half. The [Unknown] beside it is the declaration's, which no
+  // reading speaks for.
+  answered
+  |> string.contains("declares no implementation for: [Stdout]")
+  |> should.be_true()
+  support.cleanup(app_root)
 }
 
 // A path dependency's own source, inferred through the consumer that declares
