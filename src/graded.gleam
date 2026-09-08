@@ -922,12 +922,22 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // hands back has to be in reach while they are, not only afterwards.
     |> with_spec_declared_returns(spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets, constructors)
-    |> enrich_with_path_deps(
+  // The dependency modules whose `@external` falls back to a running Gleam
+  // body — read once, and handed to both passes that weigh them: the
+  // path-dependency inference below types the ones it owns, and the fallback
+  // walk after it takes those readings rather than typing them again.
+  let retained = retained_fallback_modules(dep_sources)
+  let #(kb_base, typed_dep_modules) =
+    enrich_with_path_deps(
+      kb_base,
       package_root,
       dep_files,
       declared_modules,
       package_targets,
+      retained,
     )
+  let kb_base =
+    kb_base
     // Ahead of the fallback walk below, not merely ahead of the inference pass:
     // the field a dependency's fallback body calls may be declared here rather
     // than in that dependency's own spec, a consumer's line for a dependency's
@@ -944,7 +954,8 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     |> with_dependency_fallback_effects(
       package_root,
       dep_files,
-      dep_sources,
+      retained,
+      typed_dep_modules,
       registry,
       package_targets,
     )
@@ -2994,12 +3005,20 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     // path-dep pass whose own inference reads them too.
     |> with_spec_declared_returns(spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets, constructors)
-    |> enrich_with_path_deps(
+  // As in `project_context`: read once, and handed to both passes that weigh
+  // these modules.
+  let retained = retained_fallback_modules(dep_sources)
+  let #(kb_base, typed_dep_modules) =
+    enrich_with_path_deps(
+      kb_base,
       package_root,
       dep_files,
       declared_modules,
       package_targets,
+      retained,
     )
+  let kb_base =
+    kb_base
     // As in `project_context`: in reach of the fallback walk below, which
     // resolves a dependency body's field calls through these lines.
     |> with_spec_type_fields(spec)
@@ -3008,7 +3027,8 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     |> with_dependency_fallback_effects(
       package_root,
       dep_files,
-      dep_sources,
+      retained,
+      typed_dep_modules,
       registry,
       package_targets,
     )
@@ -3709,14 +3729,21 @@ fn with_dependency_fallback_effects(
   knowledge_base: KnowledgeBase,
   package_root: String,
   dep_files: Dict(String, String),
-  dep_sources: DependencySources,
+  retained: Dict(String, RetainedModule),
+  typed: Dict(String, typeinfo.ModuleReading),
   registry: SignatureRegistry,
   package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
-  let retained = retained_fallback_modules(dep_sources)
   use <- bool.guard(when: dict.is_empty(retained), return: knowledge_base)
+  // A module the path-dependency pass already typed keeps that reading rather
+  // than paying for a second run of its own.
+  let untyped =
+    dict.filter(retained, fn(_module_path, module) {
+      !dict.has_key(typed, module.source_path)
+    })
   let readings =
-    fallback_readings(package_root, dep_files, retained, package_targets)
+    fallback_readings(package_root, dep_files, untyped, package_targets)
+    |> dict.merge(typed)
   let #(ordered, cyclic) = dependency_walk_order(retained)
   // A cycle member's body is never walked, but its callback shape is still
   // recorded beside the `[Unknown]` an unwalked body carries.
@@ -3779,6 +3806,7 @@ fn fallback_readings(
   retained: Dict(String, RetainedModule),
   package_targets: types.PackageTargets,
 ) -> Dict(String, typeinfo.ModuleReading) {
+  use <- bool.guard(when: dict.is_empty(retained), return: dict.new())
   let index =
     dict.fold(retained, dict.new(), fn(acc, module_path, module) {
       case read_and_parse_gleam_or_nil(module.source_path) {
@@ -4286,47 +4314,80 @@ fn enrich_with_path_deps(
   dep_files: Dict(String, String),
   consumer_modules: Set(String),
   package_targets: types.PackageTargets,
-) -> KnowledgeBase {
+  retained: Dict(String, RetainedModule),
+) -> #(KnowledgeBase, Dict(String, typeinfo.ModuleReading)) {
   let path_deps =
     effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
-  list.fold(path_deps, knowledge_base, fn(kb, dep) {
-    let #(name, dep_path) = dep
-    // Path dependency locations are declared relative to the project root,
-    // except an absolute `path`, which `resolve_path` leaves untouched.
-    let resolved_dep_path = resolve_path(package_root, dep_path)
-    let spec_path = config.spec_file_for(resolved_dep_path, name)
-    case simplifile.is_file(spec_path) {
-      Ok(True) ->
-        effects.with_path_dep_spec(
+  use state, dep <- list.fold(path_deps, #(knowledge_base, dict.new()))
+  let #(kb, readings) = state
+  let #(name, dep_path) = dep
+  // Path dependency locations are declared relative to the project root,
+  // except an absolute `path`, which `resolve_path` leaves untouched.
+  let resolved_dep_path = resolve_path(package_root, dep_path)
+  let spec_path = config.spec_file_for(resolved_dep_path, name)
+  case simplifile.is_file(spec_path) {
+    Ok(True) -> #(
+      effects.with_path_dep_spec(
+        kb,
+        effects.load_dep_spec_at(resolved_dep_path, spec_path, name),
+        types.PathDependency(package: name),
+      ),
+      readings,
+    )
+    _ -> {
+      let index = path_dep_index(resolved_dep_path)
+      let type_info =
+        path_dep_type_info(resolved_dep_path, index, dep_files, package_targets)
+      let readings = retained_readings(readings, index, type_info, retained)
+      case
+        infer_typed_path_dep(
+          resolved_dep_path,
+          index,
+          type_info,
           kb,
-          effects.load_dep_spec_at(resolved_dep_path, spec_path, name),
-          types.PathDependency(package: name),
+          consumer_modules,
+          package_targets,
         )
-      _ ->
-        case
-          infer_path_dep(
-            resolved_dep_path,
-            dep_files,
+      {
+        Error(Nil) -> #(kb, readings)
+        // Inference over the dep's source, not a line its author wrote: the
+        // origin says so, so nothing downstream reads it as a declaration.
+        Ok(#(effs, params, returns, provenance)) -> #(
+          fold_inferred_into_kb(
             kb,
-            consumer_modules,
-            package_targets,
+            effs,
+            params,
+            returns,
+            types.PathDependencyInferred(package: name),
           )
-        {
-          Error(Nil) -> kb
-          // Inference over the dep's source, not a line its author wrote: the
-          // origin says so, so nothing downstream reads it as a declaration.
-          Ok(#(effs, params, returns, provenance)) ->
-            fold_inferred_into_kb(
-              kb,
-              effs,
-              params,
-              returns,
-              types.PathDependencyInferred(package: name),
-            )
-            |> effects.with_provenance(provenance)
-        }
+            |> effects.with_provenance(provenance),
+          readings,
+        )
+      }
     }
-  })
+  }
+}
+
+// The readings this dep's typing already holds for the modules the fallback
+// pass has a body to walk in, keyed by source path the way that pass reads
+// them. Only the copies the scan retained: a module the scan settled on another
+// package's copy of is not the one that pass walks.
+fn retained_readings(
+  readings: Dict(String, typeinfo.ModuleReading),
+  index: Dict(String, #(String, glance.Module)),
+  type_info: typeinfo.TypeInfo,
+  retained: Dict(String, RetainedModule),
+) -> Dict(String, typeinfo.ModuleReading) {
+  use acc, module_path, #(source_path, _module) <- dict.fold(index, readings)
+  case dict.get(retained, module_path) {
+    Ok(RetainedModule(source_path: walked, ..)) if walked == source_path ->
+      dict.insert(
+        acc,
+        source_path,
+        typeinfo.reading_for_module(type_info, module_path),
+      )
+    Ok(RetainedModule(..)) | Error(Nil) -> acc
+  }
 }
 
 // Scan the `src/` tree of every path dependency declared in `gleam.toml`. Path
@@ -4466,17 +4527,53 @@ pub fn infer_path_dep(
   ),
   Nil,
 ) {
-  let index_with_paths = path_dep_index(dep_path)
-  // girard's reading of the dep, resolved from the consumer's tree — the one
-  // place a dep's own imports of installed packages can be found — with the
-  // path dependencies the dep declares for itself beside it.
-  let type_info =
-    build_type_index(
-      index_with_paths,
-      path_dep_resolver_files(dep_path, dep_files),
-      package_targets,
-    )
+  let index = path_dep_index(dep_path)
+  infer_typed_path_dep(
+    dep_path,
+    index,
+    path_dep_type_info(dep_path, index, dep_files, package_targets),
+    base_kb,
+    consumer_modules,
+    package_targets,
+  )
+}
 
+// girard's reading of a path dependency, resolved from the consumer's tree —
+// the one place a dep's own imports of installed packages can be found — with
+// the path dependencies the dep declares for itself beside it.
+fn path_dep_type_info(
+  dep_path: String,
+  index: Dict(String, #(String, glance.Module)),
+  dep_files: Dict(String, String),
+  package_targets: types.PackageTargets,
+) -> typeinfo.TypeInfo {
+  build_type_index(
+    index,
+    path_dep_resolver_files(dep_path, dep_files),
+    package_targets,
+  )
+}
+
+// The inference itself, over a dep already indexed and typed. Split from the
+// entry point above so the caller that holds a reading of the dep — the one
+// that hands the same modules to the fallback-body pass — spends one girard run
+// on it rather than two.
+fn infer_typed_path_dep(
+  dep_path: String,
+  index_with_paths: Dict(String, #(String, glance.Module)),
+  type_info: typeinfo.TypeInfo,
+  base_kb: KnowledgeBase,
+  consumer_modules: Set(String),
+  package_targets: types.PackageTargets,
+) -> Result(
+  #(
+    Dict(QualifiedName, types.EffectTerm),
+    Dict(QualifiedName, List(types.ParamBound)),
+    Dict(QualifiedName, types.EffectTerm),
+    Dict(QualifiedName, types.ReturnProvenance),
+  ),
+  Nil,
+) {
   // Path-dep checks come from the dep's spec file (loaded by
   // enrich_with_path_deps), not from per-module files. Inference here only
   // needs the parsed module.
