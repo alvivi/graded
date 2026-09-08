@@ -3788,11 +3788,17 @@ fn path_dep_fallback_readings(
     effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml")),
     dict.new(),
   )
-  let index = path_dep_index(resolve_path(package_root, dep_path))
+  let dep_root = resolve_path(package_root, dep_path)
+  let index = path_dep_index(dep_root)
   let owned =
     dict.filter(index, fn(_module_path, entry) { set.contains(walked, entry.0) })
   use <- bool.guard(when: dict.is_empty(owned), return: acc)
-  let type_info = build_type_index(index, dep_files, package_targets)
+  let type_info =
+    build_type_index(
+      index,
+      path_dep_resolver_files(dep_root, dep_files),
+      package_targets,
+    )
   use inner, module_path, #(source_path, _module) <- dict.fold(owned, acc)
   dict.insert(
     inner,
@@ -4358,6 +4364,52 @@ fn fold_inferred_into_kb(
   |> effects.with_fresh_returned_operators(returns, lookup_origin)
 }
 
+// The module files girard resolves a path dependency's own tree against: the
+// consumer's whole dependency scan, plus the `src/` of every path dependency
+// the *dependency* declares, and theirs in turn.
+//
+// A nested path dependency is named only in the dep's own `gleam.toml`, so the
+// consumer's scan — installed packages and the consumer's own path deps — does
+// not hold it, and a dep module importing one would be typed by nothing: girard
+// declines the whole function, and every shadowed receiver in it reads
+// `[Unknown]`.
+//
+// The consumer's scan wins a collision, since it holds the copy the build
+// compiles against. A dependency reached twice, or one whose declarations lead
+// back to it, is scanned once.
+//
+// Exposed (pub) so a test can ask what a dep resolves against without going
+// through `gleam.toml` resolution twice.
+@internal
+pub fn path_dep_resolver_files(
+  dep_path: String,
+  dep_files: Dict(String, String),
+) -> Dict(String, String) {
+  let #(nested, _seen) =
+    nested_path_dep_files(#(dict.new(), set.new()), dep_path)
+  dict.merge(nested, dep_files)
+}
+
+fn nested_path_dep_files(
+  state: #(Dict(String, String), Set(String)),
+  dep_path: String,
+) -> #(Dict(String, String), Set(String)) {
+  let #(_files, seen) = state
+  use <- bool.guard(when: set.contains(seen, dep_path), return: state)
+  effects.parse_path_dependencies(filepath.join(dep_path, "gleam.toml"))
+  |> list.fold(#(state.0, set.insert(seen, dep_path)), fn(state, dep) {
+    let #(files, seen) = state
+    let #(_name, nested_path) = dep
+    let nested = resolve_path(dep_path, nested_path)
+    let files =
+      dict.merge(
+        effects.source_dir_module_files(filepath.join(nested, "src")),
+        files,
+      )
+    nested_path_dep_files(#(files, seen), nested)
+  })
+}
+
 // Every module of a path dependency's `src/` tree, keyed the way the type index
 // and the effect inference both read it: module path -> #(source file, parsed
 // module). A file that does not parse is left out, as it is for the project.
@@ -4408,8 +4460,14 @@ pub fn infer_path_dep(
 ) {
   let index_with_paths = path_dep_index(dep_path)
   // girard's reading of the dep, resolved from the consumer's tree — the one
-  // place a dep's own imports of installed packages can be found.
-  let type_info = build_type_index(index_with_paths, dep_files, package_targets)
+  // place a dep's own imports of installed packages can be found — with the
+  // path dependencies the dep declares for itself beside it.
+  let type_info =
+    build_type_index(
+      index_with_paths,
+      path_dep_resolver_files(dep_path, dep_files),
+      package_targets,
+    )
 
   // Path-dep checks come from the dep's spec file (loaded by
   // enrich_with_path_deps), not from per-module files. Inference here only
