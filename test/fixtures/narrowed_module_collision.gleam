@@ -11,9 +11,8 @@
 // Compiling this module emits `erlang:element(2, Io)` for all three of the
 // receiver-bound `println` calls, and `gleam_stdlib:println` only for `greet`,
 // where the name really is the module — so the field is the whole charge below.
-// girard resolves them the other way: `infer_callee` selects the module export
-// whenever `accessor` grants no shared label, and never consults the variant a
-// pattern narrowed the receiver to. The charge here has to stay the field's
+// girard reads them the same way: the record's `println` at all three, and
+// `gleam/io.println` at `greet` alone. The charge here has to stay the field's
 // [Net] or [Unknown] whatever the module's own budget says — reading the module
 // reports [Stdout] under this package's spec, and nothing at all under one that
 // declares `gleam/io` pure, and both miss a call that goes out to the network.
