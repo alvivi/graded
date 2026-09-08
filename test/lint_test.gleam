@@ -20,8 +20,9 @@ import graded/internal/types.{QualifiedName, UnmatchedFieldAssumeWarning}
 // Fixture setup
 //
 // A context over modules given as `#(module_path, source)`, with no
-// dependencies and an empty catalog. `dependency_files` panics unless a test
-// supplies one, so a test that does not expect the walk proves it never runs.
+// dependencies and an empty catalog. `dependency_sources_are_complete` panics
+// unless a test supplies one, so a test that does not expect the walk proves
+// it never runs.
 
 fn empty_catalog() -> effects.BundledCatalog {
   effects.BundledCatalog(
@@ -55,8 +56,10 @@ fn context(
     catalog: empty_catalog(),
     registry: signatures.empty(),
     dependency_name: fn(_) { lint.UnreadDependency },
-    dependency_files: fn() { panic as "dependency discovery was forced" },
-    dependency_sources_are_complete: fn() { True },
+    dependency_files: dict.new(),
+    dependency_sources_are_complete: fn() {
+      panic as "dependency completeness was forced"
+    },
   )
 }
 
@@ -65,7 +68,11 @@ fn with_dependencies(
   base: lint.Context,
   files: Dict(String, String),
 ) -> lint.Context {
-  lint.Context(..base, dependency_files: fn() { files })
+  lint.Context(
+    ..base,
+    dependency_files: files,
+    dependency_sources_are_complete: fn() { True },
+  )
 }
 
 // Field `assume` lines
@@ -240,12 +247,13 @@ pub type Handler {
 
 // Laziness of dependency discovery
 //
-// The tree walk behind `dependency_files` is the expensive part of the pass.
-// A spec with no `assume`, declared-returns or field line asks nothing of it,
-// and must not force it.
+// The tree walk behind `dependency_sources_are_complete` is the expensive part
+// of the pass. A spec with no `assume` or declared-returns line asks nothing of
+// it, and must not force it.
 
 pub fn a_spec_with_no_declaring_line_never_walks_the_dependency_tree_test() {
-  // `dependency_files` panics; reaching the end proves it was never called.
+  // `dependency_sources_are_complete` panics; reaching the end proves it was
+  // never called.
   context("check app.go : []\neffects app.go : []\n", [
     #("app", "pub fn go() -> Nil {\n  Nil\n}\n"),
   ])
@@ -279,7 +287,8 @@ pub fn a_dependency_that_defines_the_name_is_not_flagged_test() {
         _ -> lint.AbsentFromDependency
       }
     },
-    dependency_files: fn() { dict.from_list([#("dep/io", "dep/io.gleam")]) },
+    dependency_files: dict.from_list([#("dep/io", "dep/io.gleam")]),
+    dependency_sources_are_complete: fn() { True },
   )
   |> lint.run
   |> should.equal([])
@@ -290,7 +299,8 @@ pub fn a_dependency_that_lacks_the_name_is_flagged_test() {
   lint.Context(
     ..base,
     dependency_name: fn(_) { lint.AbsentFromDependency },
-    dependency_files: fn() { dict.from_list([#("dep/io", "dep/io.gleam")]) },
+    dependency_files: dict.from_list([#("dep/io", "dep/io.gleam")]),
+    dependency_sources_are_complete: fn() { True },
   )
   |> lint.run
   |> should.equal([

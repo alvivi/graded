@@ -1234,7 +1234,7 @@ fn lint_context(context: ProjectContext) -> lint.Context {
     catalog:,
     registry:,
     dependency_name: dependency_name(dependencies, _),
-    dependency_files: fn() { dep_files },
+    dependency_files: dep_files,
     dependency_sources_are_complete: fn() {
       dependency_sources_are_complete(package_root)
     },
