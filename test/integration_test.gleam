@@ -6801,7 +6801,6 @@ fn checker_infer_opaque_field() -> Result(List(types.EffectAnnotation), Nil) {
     [],
     signatures.empty(),
     typeinfo.no_reading(),
-    dict.new(),
     types.all_targets(),
   ))
 }
@@ -6998,7 +6997,6 @@ fn checker_infer_factory_forward() -> Result(List(types.EffectAnnotation), Nil) 
     [],
     signatures.from_glance_module("factory_forward", module),
     typeinfo.no_reading(),
-    dict.new(),
     types.all_targets(),
   ))
 }
@@ -9056,7 +9054,6 @@ pub fn an_untyped_shadowed_call_says_why_it_charged_unknown_test() {
       knowledge_base,
       signatures.from_glance_module("shadow_receiver", module),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -9074,7 +9071,6 @@ pub fn an_untyped_shadowed_call_says_why_it_charged_unknown_test() {
       knowledge_base,
       signatures.from_glance_module("shadow_receiver", module),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   explained.classifications
@@ -9151,33 +9147,28 @@ fn infer_fixture(
     [],
     signatures.from_glance_module(module_path, module),
     reading,
-    dict.new(),
     types.all_targets(),
   )
   |> list.map(fn(a) { #(a.function, annotation.format_annotation(a)) })
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
 }
 
-// girard's whole reading of one module — every expression's inferred type and
-// the resolutions, skips and drops beside them — the same fold
-// `build_type_index` does, over one module. `annotate_package` is the entry
-// graded itself calls: it is best-effort, so a module holding functions girard
-// declines still yields the reading of the ones it read, where
-// `annotate_module` would return the first error and nothing at all.
+// girard's whole reading of one module — every expression's inferred type, the
+// fn-typed parameters it inferred, and the resolutions, skips and drops beside
+// them. Read out of `build_type_index` itself rather than refolded here, so a
+// fixture is typed exactly as a project module is. That entry is best-effort,
+// so a module holding functions girard declines still yields the reading of
+// the ones it read.
 fn girard_reading(
   module_path: String,
   module: glance.Module,
 ) -> typeinfo.ModuleReading {
-  let results =
-    girard.annotate_package([#(module_path, module)], girard.default_options())
-  case dict.get(results, module_path) {
-    Error(Nil) -> typeinfo.no_reading()
-    Ok(result) ->
-      typeinfo.ModuleReading(
-        expressions: typeinfo.span_types(result),
-        evidence: typeinfo.evidence_of(result, checker.error_bucket),
-      )
-  }
+  graded.build_type_index(
+    dict.from_list([#(module_path, #(module_path <> ".gleam", module))]),
+    dict.new(),
+    types.all_targets(),
+  )
+  |> typeinfo.reading_for_module(module_path)
 }
 
 // Infer/check round trip

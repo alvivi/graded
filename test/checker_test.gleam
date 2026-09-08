@@ -46,7 +46,6 @@ fn check_source(
       knowledge_base(),
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations
@@ -220,7 +219,6 @@ pub fn view(items) { list.map(items, fn(x) { x }) }"
       [],
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert [annotation] = inferred
@@ -243,7 +241,6 @@ pub fn greet() { io.println(\"hi\") }"
       [],
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert [annotation] = inferred
@@ -265,7 +262,6 @@ fn helper() { io.println(\"x\") }"
       [],
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert [annotation] = inferred
@@ -302,7 +298,6 @@ pub fn infer_uses_param_bounds_test() {
       existing_checks,
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert [annotation] = inferred
@@ -323,7 +318,6 @@ pub fn infer_without_bounds_gets_unknown_test() {
       [],
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert [annotation] = inferred
@@ -375,8 +369,10 @@ pub fn infer_girard_detects_unannotated_fn_typed_param_test() {
       knowledge_base(),
       [],
       signatures.empty(),
-      typeinfo.no_reading(),
-      girard_fn_typed_for(module),
+      typeinfo.ModuleReading(
+        ..typeinfo.no_reading(),
+        fn_typed: girard_fn_typed_for(module),
+      ),
       types.all_targets(),
     )
   let assert [annotation] = inferred
@@ -571,7 +567,6 @@ fn check_source_with_type_fields(
       kb,
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations
@@ -622,7 +617,6 @@ fn check_source_with_girard(
       kb,
       signatures.empty(),
       reading,
-      dict.new(),
       types.all_targets(),
     )
   violations
@@ -838,7 +832,6 @@ fn infer_effects_with_girard(
     [],
     signatures.from_glance_module("", module),
     girard_reading(module),
-    dict.new(),
     types.all_targets(),
   )
   |> list.fold(dict.new(), fn(acc, a) {
@@ -1018,7 +1011,6 @@ fn infer_field_annotation_typed(
       [],
       registry,
       reading,
-      dict.new(),
       types.all_targets(),
     )
   let assert Ok(annotation) =
@@ -1041,6 +1033,7 @@ fn girard_reading(module: glance.Module) -> typeinfo.ModuleReading {
       let result = girard.ModuleResult(annotated:, skipped: [])
       typeinfo.ModuleReading(
         expressions: typeinfo.span_types(result),
+        fn_typed: girard_fn_typed_for(module),
         evidence: typeinfo.evidence_of(result, checker.error_bucket),
       )
     }
@@ -1179,7 +1172,6 @@ pub fn annotate(options: Options) -> Nil {
       knowledge_base(),
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -1310,7 +1302,6 @@ pub fn caller() -> Nil {
       knowledge_base(),
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert Ok(v) = list.find(violations, fn(v) { v.function == "caller" })
@@ -1337,7 +1328,6 @@ fn check_source_with_assumes(
       kb,
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations
@@ -1428,7 +1418,6 @@ pub fn run() { mod.each(f: mod.disk) }"
       kb,
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -1454,7 +1443,6 @@ pub fn read_clock() { now() }"
       [],
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert Ok(annotation) =
@@ -1554,7 +1542,6 @@ fn check_warnings(
       knowledge_base(),
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   warnings
@@ -1898,7 +1885,6 @@ pub fn check_no_false_positives_test() {
           kb,
           signatures.empty(),
           typeinfo.no_reading(),
-          dict.new(),
           types.all_targets(),
         )
       violations |> should.equal([])
@@ -1931,7 +1917,6 @@ fn provenance_caller_effect(src: String, label: String) -> EffectSet {
       knowledge_base(),
       signatures.from_glance_module("", module),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   case list.find(violations, fn(v) { v.function == "caller" }) {
@@ -1996,7 +1981,6 @@ pub fn check_wildcard_never_violates_test() {
           kb,
           signatures.empty(),
           typeinfo.no_reading(),
-          dict.new(),
           types.all_targets(),
         )
       violations |> should.equal([])
@@ -2030,7 +2014,6 @@ pub fn check_empty_budget_detects_effects_test() {
               kb,
               signatures.empty(),
               typeinfo.no_reading(),
-              dict.new(),
               types.all_targets(),
             )
           { violations != [] } |> should.be_true()
@@ -2066,7 +2049,6 @@ pub fn check_violations_iff_not_subset_test() {
           kb,
           signatures.empty(),
           typeinfo.no_reading(),
-          dict.new(),
           types.all_targets(),
         )
       let has_violations = violations != []
@@ -2092,7 +2074,6 @@ pub fn infer_matches_actual_effects_test() {
           [],
           signatures.empty(),
           typeinfo.no_reading(),
-          dict.new(),
           types.all_targets(),
         )
       let assert [ann] = inferred
@@ -2163,7 +2144,6 @@ pub fn infer_terminates_with_cycles_test() {
           [],
           signatures.empty(),
           typeinfo.no_reading(),
-          dict.new(),
           types.all_targets(),
         )
       let assert [ann] = inferred
@@ -2194,7 +2174,6 @@ pub fn check_terminates_with_cycles_test() {
           bare_knowledge_base(),
           signatures.empty(),
           typeinfo.no_reading(),
-          dict.new(),
           types.all_targets(),
         )
       violations |> should.equal([])
@@ -2217,7 +2196,6 @@ fn infer_single(source: String) -> EffectAnnotation {
       [],
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   ann
@@ -2324,7 +2302,6 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
       [existing],
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   effect_term.to_effect_set(ann.effects)
@@ -2406,7 +2383,6 @@ pub fn new() {
       polymorphic_kb(),
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -2440,7 +2416,6 @@ pub fn new() {
       polymorphic_kb(),
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -2473,7 +2448,6 @@ pub fn new() {
       polymorphic_kb(),
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   list.length(violations) |> should.equal(1)
@@ -2498,7 +2472,6 @@ pub fn new() {
       [],
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   effect_term.to_effect_set(ann.effects) |> should.equal(Specific(set.new()))
@@ -2526,7 +2499,6 @@ pub fn new() {
       [],
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   effect_term.to_effect_set(ann.effects)
@@ -2596,7 +2568,6 @@ pub fn outer() -> MyError {
       [],
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert Ok(outer) = list.find(inferred, fn(a) { a.function == "outer" })
@@ -2623,7 +2594,6 @@ pub fn run() {
       [],
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   effect_term.to_effect_set(ann.effects)
@@ -2652,7 +2622,6 @@ fn infer_single_with_list(source: String) -> types.EffectAnnotation {
       [],
       list_registry(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   ann
@@ -2741,7 +2710,6 @@ pub fn run(x: Int) {
       kb,
       reg,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations
@@ -2866,7 +2834,6 @@ pub fn run(h: fn(Int) -> Int, x: Int) -> Int {
       [],
       reg,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   ann.function |> should.equal("run")
@@ -2920,7 +2887,6 @@ pub fn main(msg: String) {
       knowledge_base(),
       registry,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations
@@ -3040,7 +3006,6 @@ pub fn caller() -> Nil {
       kb,
       registry,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -3060,7 +3025,6 @@ pub fn caller() -> Nil {
       kb,
       registry,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   { failed != [] } |> should.be_true()
@@ -3174,7 +3138,6 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       kb,
       reg,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -3204,7 +3167,6 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
       kb,
       reg,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   { violations != [] } |> should.be_true()
@@ -3235,7 +3197,6 @@ pub fn caller() -> Nil { app.with_logger(fn(logger) { logger(\"hi\") }) }"
       kb,
       reg,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -3311,7 +3272,6 @@ pub fn run(action: fn(fn(String) -> Nil, fn(String) -> Nil) -> Nil) -> Nil {
       [],
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   ann.effects
@@ -3350,7 +3310,6 @@ pub fn run(
       [],
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   ann.effects
@@ -3496,7 +3455,6 @@ pub fn let_bound_closure_direct_call_satisfies_pure_check_test() {
       knowledge_base(),
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -4128,7 +4086,6 @@ pub fn caller() -> Nil {
       kb,
       registry,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -4148,7 +4105,6 @@ pub fn caller() -> Nil {
       kb,
       registry,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   { fail_violations != [] } |> should.be_true()
@@ -4207,7 +4163,6 @@ pub fn caller() -> Nil {
       kb,
       registry,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -4233,7 +4188,6 @@ pub fn pick() -> fn(fn(String) -> Nil) -> Nil {
       [],
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   dict.get(returns, "pick")
@@ -4259,7 +4213,6 @@ pub fn make_printer() -> fn() -> Nil {
       [],
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert Ok(operator) = dict.get(returns, "make_printer")
@@ -4328,7 +4281,6 @@ pub fn caller() -> Nil {
       kb,
       registry,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations |> should.equal([])
@@ -4348,7 +4300,6 @@ pub fn caller() -> Nil {
       kb,
       registry,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   { failed != [] } |> should.be_true()
@@ -4380,7 +4331,6 @@ pub fn pick(
       [],
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert Ok(operator) = dict.get(returns, "pick")
@@ -4521,7 +4471,6 @@ fn second_order_violations(
       kb,
       registry,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations
@@ -4641,7 +4590,6 @@ fn infer_annotation_with(
       [],
       registry,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert Ok(annotation) = list.find(inferred, fn(a) { a.function == name })
@@ -6447,7 +6395,6 @@ pub fn run() -> Nil {
       kb,
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -6539,7 +6486,6 @@ pub fn new() {
       polymorphic_kb(),
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -6581,7 +6527,6 @@ pub fn new() {
       kb,
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -6612,7 +6557,6 @@ pub fn new() {
       polymorphic_kb(),
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -6648,7 +6592,6 @@ pub fn run() -> Nil {
       knowledge_base(),
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert Ok(violation) =
@@ -6680,7 +6623,6 @@ fn explain_blocks(
     knowledge_base,
     registry,
     typeinfo.no_reading(),
-    dict.new(),
     types.all_targets(),
   )
   // These tests assert on contributors; the effective bounds and total term
@@ -6741,7 +6683,6 @@ pub fn run() {
       knowledge_base,
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   total |> should.equal(effect_term.unknown())
@@ -6774,7 +6715,6 @@ pub fn go(r: Runner) -> Nil {
       effects.empty_knowledge_base("."),
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   total |> should.equal(types.TVar("r.run"))
@@ -6804,7 +6744,6 @@ pub fn run(r: Runner) -> Nil {
     effects.empty_knowledge_base("."),
     signatures.from_glance_module("app", module),
     typeinfo.no_reading(),
-    dict.new(),
     types.all_targets(),
   )
   |> dict.get("run")
@@ -6840,7 +6779,6 @@ pub fn run() -> Nil {
     knowledge_base,
     signatures.from_glance_module("app", module),
     typeinfo.no_reading(),
-    dict.new(),
     types.all_targets(),
   )
   |> dict.get("run")
@@ -6998,7 +6936,6 @@ pub fn new() {
       polymorphic_kb(),
       signatures.empty(),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   let assert [violation] = violations
@@ -7082,7 +7019,6 @@ fn noisy() -> Nil {
       kb,
       registry,
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   violations
@@ -7258,6 +7194,7 @@ fn resolved_accesses(
   fn(calls: List(types.FieldCall)) {
     typeinfo.ModuleReading(
       expressions: dict.new(),
+      fn_typed: dict.new(),
       evidence: typeinfo.ModuleEvidence(
         resolutions: list.fold(
           calls,
@@ -7277,6 +7214,7 @@ fn resolved_accesses(
 fn skipped_target(_calls: List(types.FieldCall)) -> typeinfo.ModuleReading {
   typeinfo.ModuleReading(
     expressions: dict.new(),
+    fn_typed: dict.new(),
     evidence: typeinfo.ModuleEvidence(
       resolutions: dict.new(),
       skipped: dict.from_list([#("target", "UnknownModule")]),
@@ -7469,6 +7407,7 @@ pub fn a_dropped_definition_settles_nothing_test() {
     split_shadowed(shadowing_body, "m", fn(_calls) {
       typeinfo.ModuleReading(
         expressions: dict.new(),
+        fn_typed: dict.new(),
         evidence: typeinfo.ModuleEvidence(
           resolutions: dict.new(),
           skipped: dict.new(),
@@ -8045,7 +7984,6 @@ pub fn target(c) {
       effects.empty_knowledge_base("."),
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   explained.classifications
@@ -8082,7 +8020,6 @@ pub fn target(f: fn() -> Nil, g: fn() -> Nil) -> Nil {
       effects.empty_knowledge_base("."),
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
-      dict.new(),
       types.all_targets(),
     )
   list.length(explained.blocks) |> should.equal(2)

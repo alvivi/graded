@@ -157,12 +157,17 @@ pub fn fn_typed_for_module(
 }
 
 // Everything girard said about one module: the type of every expression it
-// annotated, keyed by span, beside the member every reference resolved to, the
+// annotated keyed by span, which of each function's parameters it inferred as
+// function-typed, and the member every reference resolved to beside the
 // definitions it declined and the ones it left out for the other target. The
-// checker threads the two halves to the same places and reads them at the same
-// sites, so they travel as one value.
+// checker threads the three slices to the same places and reads them at the
+// same sites, so they travel as one value.
 pub type ModuleReading {
-  ModuleReading(expressions: Dict(#(Int, Int), Type), evidence: ModuleEvidence)
+  ModuleReading(
+    expressions: Dict(#(Int, Int), Type),
+    fn_typed: Dict(String, Set(String)),
+    evidence: ModuleEvidence,
+  )
 }
 
 // girard's whole reading of one module. A module girard never saw yields the
@@ -173,6 +178,7 @@ pub fn reading_for_module(
 ) -> ModuleReading {
   ModuleReading(
     expressions: for_module(info, module_path),
+    fn_typed: fn_typed_for_module(info, module_path),
     evidence: evidence_for_module(info, module_path),
   )
 }
@@ -180,7 +186,7 @@ pub fn reading_for_module(
 // The empty reading — girard said nothing about this module. Used where type
 // inference is unavailable, and by every test that drives the checker untyped.
 pub fn no_reading() -> ModuleReading {
-  ModuleReading(dict.new(), no_evidence())
+  ModuleReading(dict.new(), dict.new(), no_evidence())
 }
 
 // girard's reading of one module: its resolutions, its skips and its dropped
