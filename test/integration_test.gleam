@@ -14745,6 +14745,81 @@ pub fn a_typed_path_dependencys_module_call_is_charged_test() {
   support.cleanup(dep_root)
 }
 
+// girard over a path dependency's own path dependency
+//
+// A package the *dependency* declares is named in no file the consumer holds,
+// so the consumer's scan cannot answer for it. The fixture below is the one
+// above with that package moved out of `build/packages` and into a path
+// dependency of the dep: nothing else changes, and the dep is typed only if the
+// dep's own `gleam.toml` is read too.
+
+// The consumer, the path dependency it declares, and the path dependency *that*
+// declares, materialised together.
+fn nested_path_dep_fixture() -> #(String, String, String) {
+  let inner_root =
+    support.write_fixture("build/nested_path_dep_inner", [
+      #("gleam.toml", "name = \"graded_only_here\"\n"),
+      #("manifest.toml", stdlib_manifest),
+      #("src/graded_only_here/thing.gleam", consumer_only_package),
+    ])
+  let dep_root =
+    support.write_fixture("build/nested_path_dep_dep", [
+      #(
+        "gleam.toml",
+        "name = \"dep\"\n\n[dependencies]\ngraded_only_here = { path = \"../nested_path_dep_inner\" }\n",
+      ),
+      #("manifest.toml", stdlib_manifest),
+      #("src/dep.gleam", typed_path_dep_source),
+      #("src/dep/request.gleam", typed_path_dep_request),
+    ])
+  let app_root =
+    support.write_fixture("build/nested_path_dep_app", [
+      #(
+        "gleam.toml",
+        "name = \"app\"\n\n[dependencies]\ndep = { path = \"../nested_path_dep_dep\" }\n",
+      ),
+      #("manifest.toml", stdlib_manifest),
+      #("app.gleam", "import dep\n\npub fn caller() -> Nil {\n  Nil\n}\n"),
+      #("app.graded", "assume graded_only_here/thing.suffix : []\n"),
+    ])
+  #(app_root, dep_root, inner_root)
+}
+
+fn cleanup_nested_path_dep(roots: #(String, String, String)) -> Nil {
+  let #(app_root, dep_root, inner_root) = roots
+  support.cleanup(app_root)
+  support.cleanup(dep_root)
+  support.cleanup(inner_root)
+}
+
+pub fn girard_types_a_path_dependencys_own_path_dependency_test() {
+  let roots = nested_path_dep_fixture()
+  let #(app_root, dep_root, _inner_root) = roots
+  let type_info =
+    graded.build_type_index(
+      graded.path_dep_index(dep_root),
+      graded.path_dep_resolver_files(
+        dep_root,
+        graded.dependency_module_files(app_root),
+      ),
+      types.all_targets(),
+    )
+  let reading = typeinfo.reading_for_module(type_info, "dep")
+  // girard declined nothing, which it could not have done without resolving
+  // `graded_only_here/thing` through the dep's own `gleam.toml`.
+  reading.evidence.skipped |> should.equal(dict.new())
+  cleanup_nested_path_dep(roots)
+}
+
+pub fn a_nested_path_dependencys_module_call_is_charged_test() {
+  let roots = nested_path_dep_fixture()
+  let #(app_root, _dep_root, _inner_root) = roots
+  let assert Ok(answered) = graded.run_effect(app_root, "dep.handle")
+  answered |> string.contains("Stdout") |> should.be_true()
+  answered |> string.contains("Unknown") |> should.be_false()
+  cleanup_nested_path_dep(roots)
+}
+
 // The same collision one layer in: a path dependency's `@external` whose Gleam
 // fallback body runs, with the shadowed receiver inside that body. `request`
 // names the parameter and `dep/request` both, and only the type separates them
