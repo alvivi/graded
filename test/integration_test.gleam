@@ -14850,6 +14850,30 @@ pub fn a_shared_path_dependency_is_entered_once_test() {
   list.each(roots, support.cleanup)
 }
 
+// The same diamond named from above: the walk root spelled as a climb out of
+// the working directory and back in, which is how a checkout beside the project
+// (`../dep`) is written. Every path the walk resolves under it keeps a leading
+// `..`, so this is the shape that reads nothing but unnormalized spellings.
+pub fn a_shared_path_dependency_named_from_above_is_entered_once_test() {
+  let roots = diamond_path_dep_fixture()
+  let assert Ok(working_directory) = simplifile.current_directory()
+  let from_above = "../" <> filepath.base_name(working_directory) <> "/build"
+  let #(files, entered) =
+    graded.path_dep_resolver_files_recording_visits(
+      from_above <> "/pathdep_diamond_root",
+      dict.new(),
+    )
+  list.sort(entered, string.compare)
+  |> should.equal([
+    from_above <> "/pathdep_diamond_left",
+    from_above <> "/pathdep_diamond_right",
+    from_above <> "/pathdep_diamond_shared",
+  ])
+  dict.get(files, "shared")
+  |> should.equal(Ok(from_above <> "/pathdep_diamond_shared/src/shared.gleam"))
+  list.each(roots, support.cleanup)
+}
+
 pub fn girard_types_a_path_dependencys_own_path_dependency_test() {
   let roots = nested_path_dep_fixture()
   let #(app_root, dep_root, _inner_root) = roots
