@@ -4524,11 +4524,31 @@ fn nested_path_dep_files(walk: PathDepWalk, dep_path: String) -> PathDepWalk {
 }
 
 // A path with its `.` and `..` segments collapsed, so two spellings of one
-// directory are one key. A relative path that climbs past its own top collapses
-// to nothing and keys itself, which distinguishes exactly what the raw string
-// did.
+// directory are one key. A relative path keeps the `..` segments that climb
+// past its own top, so a tree reached from above — a sibling checkout named
+// `../dep`, and everything its `gleam.toml` names in turn — collapses like any
+// other and a diamond in it is still walked once.
 fn normalized_path(path: String) -> String {
-  filepath.expand(path) |> result.unwrap(path)
+  case string.starts_with(path, "/") {
+    True -> filepath.expand(path) |> result.unwrap(path)
+    False ->
+      string.split(path, "/")
+      |> list.fold([], collapse_segment)
+      |> list.reverse
+      |> string.join("/")
+  }
+}
+
+// One segment onto the collapsed prefix, which is held reversed. A `..` drops
+// the segment before it; with nothing before it to drop, or another `..` there,
+// it is kept and the path goes on climbing.
+fn collapse_segment(collapsed: List(String), segment: String) -> List(String) {
+  case segment, collapsed {
+    "", _ | ".", _ -> collapsed
+    "..", [] | "..", ["..", ..] -> ["..", ..collapsed]
+    "..", [_, ..rest] -> rest
+    _, _ -> [segment, ..collapsed]
+  }
 }
 
 // Every module of a path dependency's `src/` tree, keyed the way the type index
