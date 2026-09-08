@@ -360,6 +360,33 @@ pub fn unknown_module_qualifier_warns_test() {
   |> expect_warning(UnmatchedFieldAssumeWarning(name: "optz.Opts.on_change"))
 }
 
+// A discarded import alias binds no module name, so a type qualifier written
+// beside it names whatever other import does. Reading it as its last segment
+// keys `http` twice, and the copy the fold writes last wins: glance hands back
+// `module.imports` in reverse source order, so that is the import written
+// *first*. Hence the discarded one leads here — written second it loses the
+// race and the bug hides. Resolved through `second/http`, `Handler` is a plain
+// record, the field reads non-callable, and a line naming a perfectly good
+// target is flagged dead.
+pub fn a_discarded_alias_never_binds_a_type_qualifier_test() {
+  lint_warnings("discarded_qualifier", [
+    #("first/http.gleam", "pub type Handler =\n  fn() -> Nil\n"),
+    #("second/http.gleam", "pub type Handler {\n  Handler(name: String)\n}\n"),
+    #(
+      "app_mod.gleam",
+      "import second/http as _unused
+import first/http
+
+pub type Config {
+  Config(handler: http.Handler)
+}
+",
+    ),
+    #("app.graded", "assume app_mod.Config.handler : [Net]\n"),
+  ])
+  |> refute_warning(UnmatchedFieldAssumeWarning(name: "app_mod.Config.handler"))
+}
+
 // A field declared through a module-local function alias (`callback: Handler`
 // with `type Handler = fn(...)`) is callable, so its field `assume` line is a valid
 // target and must not be flagged.

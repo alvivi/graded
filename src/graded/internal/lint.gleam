@@ -24,6 +24,7 @@ import graded/internal/annotation
 import graded/internal/checker
 import graded/internal/effect_term
 import graded/internal/effects
+import graded/internal/extract
 import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/types.{
   type EffectAnnotation, type EffectTerm, type FieldAnnotation, type GradedFile,
@@ -752,10 +753,6 @@ fn module_info_from_glance(module: glance.Module) -> ModuleInfo {
     list.fold(module.imports, #(dict.new(), dict.new()), fn(acc, definition) {
       let #(quals, unquals) = acc
       let import_ = definition.definition
-      let alias = case import_.alias {
-        Some(glance.Named(name)) -> name
-        _ -> last_segment(import_.module)
-      }
       let unquals =
         list.fold(import_.unqualified_types, unquals, fn(u, unqualified) {
           let local = case unqualified.alias {
@@ -764,13 +761,16 @@ fn module_info_from_glance(module: glance.Module) -> ModuleInfo {
           }
           dict.insert(u, local, #(import_.module, unqualified.name))
         })
-      #(dict.insert(quals, alias, import_.module), unquals)
+      // A qualifier resolves the way extraction reads one, discarded alias
+      // included: `import second/http as _x` binds no `http`, so a written
+      // `http.Type` beside it names whatever other import does.
+      let quals = case extract.bound_module_name(import_) {
+        Some(#(name, path)) -> dict.insert(quals, name, path)
+        None -> quals
+      }
+      #(quals, unquals)
     })
   ModuleInfo(aliases:, custom_types:, qualified_imports:, unqualified_types:)
-}
-
-fn last_segment(module_path: String) -> String {
-  module_path |> string.split("/") |> list.last() |> result.unwrap(module_path)
 }
 
 // Resolve a module's introspectable type info: a project module from the index,

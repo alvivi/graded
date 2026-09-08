@@ -66,6 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discarded alias (`import gleam/http as _ghttp`). Such an import binds no
   module name, so a call written `http.f(..)` beside it names whatever other
   import does — which is what the compiler reads, and what graded now charges.
+  The spec lint reads a *type* qualifier the same way, so a field line whose
+  type is written `http.Handler` beside such an import is no longer resolved
+  through the discarded module — which reported a line naming a real callable
+  field as naming nothing, or accepted one that named nothing at all.
 - A call through a receiver that shadows an imported module, whose variant
   nothing fixed and whose type is unknown, now charges `[Unknown]` instead of
   the value its construction site wired in. A hand-written field bound

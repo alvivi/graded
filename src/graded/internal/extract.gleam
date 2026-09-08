@@ -273,26 +273,9 @@ pub fn build_import_context(module: Module) -> ImportContext {
         let import_ = definition.definition
         let module_path = import_.module
 
-        // The name this import is written under here: its alias where it has
-        // one, and its last segment where it has none. A *discarded* alias
-        // (`import gleam/http as _ghttp`) binds no module name at all — the
-        // import is there for its unqualified items — so it must not key the
-        // last segment either: another module of that name may be imported
-        // beside it, and reading a call through it under the discarded one
-        // charges a function the body never reaches.
-        //
-        // Two unaliased imports whose last segments match key the same alias.
-        // The compiler rejects that module, so the key is unique in anything
-        // that compiles.
-        let alias = case import_.alias {
-          Some(glance.Named(name)) -> Some(name)
-          Some(glance.Discarded(_)) -> None
-          None -> Some(last_segment(module_path))
-        }
-
         #(
-          case alias {
-            Some(name) -> dict.insert(state.0, name, module_path)
+          case bound_module_name(import_) {
+            Some(#(name, path)) -> dict.insert(state.0, name, path)
             None -> state.0
           },
           fold_unqualified(state.1, import_.unqualified_values, module_path),
@@ -350,6 +333,26 @@ fn build_constructor_registry(
       dict.insert(acc2, variant.name, labels)
     })
   })
+}
+
+// The module name an import binds in the file that writes it, beside the module
+// path it stands for. Its alias where it has one, its last segment where it has
+// none, and *nothing at all* for a discarded alias
+// (`import gleam/http as _ghttp`), which binds no module name: the import is
+// there for its unqualified items. Keying a discarded import under its last
+// segment names a module the file cannot reach through it, and shadows another
+// import of that name written beside it — so a call reads a function the body
+// never reaches, and a type qualifier resolves through the wrong module.
+//
+// Two unaliased imports whose last segments match bind the same name. The
+// compiler rejects that module, so the name is unique in anything that
+// compiles.
+pub fn bound_module_name(import_: glance.Import) -> Option(#(String, String)) {
+  case import_.alias {
+    Some(glance.Named(name)) -> Some(#(name, import_.module))
+    Some(glance.Discarded(_)) -> None
+    None -> Some(#(last_segment(import_.module), import_.module))
+  }
 }
 
 fn last_segment(module_path: String) -> String {
