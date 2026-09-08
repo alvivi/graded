@@ -979,13 +979,18 @@ pub fn fallback_effects(
 // is only whether a body runs at all: `has_running_fallback`, the same reading
 // `dependency_foreign_functions` records the name under.
 //
-// girard types no consumer holds for a dependency, so the walk takes the
-// syntax-level result — what a module girard cannot type already falls back to.
+// `reading` is girard's reading of this module where the consumer holds one —
+// a path dependency, whose tree the consumer's resolver can reach. A package
+// installed from hex is not typed, and passes `no_reading()`: the walk then
+// takes the syntax-level result, what a module girard cannot type already falls
+// back to. A shadowed receiver is the one site the difference is visible at,
+// since the reading is what decides whether it reads the module or the field.
 pub fn dependency_fallback_effects(
   module: Module,
   module_path: String,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
+  reading: typeinfo.ModuleReading,
   package_targets: types.PackageTargets,
 ) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
   walk_fallbacks(
@@ -997,7 +1002,7 @@ pub fn dependency_fallback_effects(
     module_path,
     knowledge_base,
     registry,
-    typeinfo.no_reading(),
+    reading,
     dict.new(),
     package_targets,
   )
