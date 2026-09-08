@@ -62,6 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A module imported under a discarded alias (`import app/b.{helper} as _b`) is
+  now inferred before the module that imports it. Such an import binds no
+  module name, so it drew no edge in the import graph, and a call to one of the
+  unqualified items it brings in could be charged `[Unknown]` for having been
+  walked first.
 - A qualified call is no longer charged against a module imported under a
   discarded alias (`import gleam/http as _ghttp`). Such an import binds no
   module name, so a call written `http.f(..)` beside it names whatever other
