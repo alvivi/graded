@@ -972,12 +972,13 @@ pub fn fallback_effects(
 // is only whether a body runs at all: `has_running_fallback`, the same reading
 // `dependency_foreign_functions` records the name under.
 //
-// `reading` is girard's reading of this module where the consumer holds one —
-// a path dependency, whose tree the consumer's resolver can reach. A package
-// installed from hex is not typed, and passes `no_reading()`: the walk then
-// takes the syntax-level result, what a module girard cannot type already falls
-// back to. A shadowed receiver is the one site the difference is visible at,
-// since the reading is what decides whether it reads the module or the field.
+// `reading` is girard's reading of this module, taken over the modules the
+// fallback pass has a body to walk in — a path dependency's and an installed
+// package's alike, both resolved off the consumer's tree. A module girard
+// declined passes `no_reading()`, and the walk then takes the syntax-level
+// result, what a module it cannot type already falls back to. A shadowed
+// receiver is the one site the difference is visible at, since the reading is
+// what decides whether it reads the module or the field.
 pub fn dependency_fallback_effects(
   module: Module,
   module_path: String,

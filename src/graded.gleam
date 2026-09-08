@@ -3703,7 +3703,8 @@ fn dependency_foreign(
 //
 // The scan kept a path rather than an AST, so each module is read and parsed
 // again here and dropped before the next: one AST live at a time, as during the
-// scan itself.
+// scan itself. The reading below holds the retained modules together for the
+// length of one girard run and hands back no AST.
 fn with_dependency_fallback_effects(
   knowledge_base: KnowledgeBase,
   package_root: String,
@@ -3715,12 +3716,7 @@ fn with_dependency_fallback_effects(
   let retained = retained_fallback_modules(dep_sources)
   use <- bool.guard(when: dict.is_empty(retained), return: knowledge_base)
   let readings =
-    path_dep_fallback_readings(
-      package_root,
-      dep_files,
-      retained,
-      package_targets,
-    )
+    fallback_readings(package_root, dep_files, retained, package_targets)
   let #(ordered, cyclic) = dependency_walk_order(retained)
   // A cycle member's body is never walked, but its callback shape is still
   // recorded beside the `[Unknown]` an unwalked body carries.
@@ -3762,49 +3758,61 @@ fn with_dependency_fallback_effects(
   }
 }
 
-// girard's reading of the path-dependency modules the fallback pass has a body
-// to walk in, keyed by the source file that pass re-parses. Keyed by path
-// rather than by module path because the retained set merges package ownership
-// away, and two dependencies may name a module the same.
+// girard's reading of the dependency modules the fallback pass has a body to
+// walk in, keyed by the source file that pass re-parses. Keyed by path rather
+// than by module path because the retained set merges package ownership away,
+// and two dependencies may name a module the same.
 //
-// Only a path dependency is typed. A package installed from hex resolves its
-// own imports out of a tree the consumer's resolver does not stand in, so
-// girard would decline most of it; a path dependency is a tree the consumer
-// resolves, which is what `infer_path_dep` already relies on. A dependency that
-// owns no retained module is skipped outright: the reading costs a girard run
-// over the whole dependency, and one whose externals all declare their effects
-// has no body here to spend it on.
-fn path_dep_fallback_readings(
+// The retained modules are what is typed — not the trees they sit in, and not
+// one package at a time. A dependency whose externals all declare their effects
+// contributes nothing here, and one module of a fifty-module package is all the
+// walk reads. Everything those modules import, the rest of their own packages
+// included, is resolved behind girard's resolver off the consumer's tree, which
+// holds every installed package and every path dependency's source; a package
+// installed from hex is read there exactly as a path dependency is.
+//
+// The parsed modules live only as long as the girard run: what comes back is
+// the reading, and the walk re-parses each module in its turn.
+fn fallback_readings(
   package_root: String,
   dep_files: Dict(String, String),
   retained: Dict(String, RetainedModule),
   package_targets: types.PackageTargets,
 ) -> Dict(String, typeinfo.ModuleReading) {
-  let walked =
-    dict.values(retained)
-    |> list.map(fn(module) { module.source_path })
-    |> set.from_list()
-  use acc, #(_name, dep_path) <- list.fold(
-    effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml")),
-    dict.new(),
-  )
-  let dep_root = resolve_path(package_root, dep_path)
-  let index = path_dep_index(dep_root)
-  let owned =
-    dict.filter(index, fn(_module_path, entry) { set.contains(walked, entry.0) })
-  use <- bool.guard(when: dict.is_empty(owned), return: acc)
+  let index =
+    dict.fold(retained, dict.new(), fn(acc, module_path, module) {
+      case read_and_parse_gleam_or_nil(module.source_path) {
+        Error(Nil) -> acc
+        Ok(parsed) ->
+          dict.insert(acc, module_path, #(module.source_path, parsed))
+      }
+    })
   let type_info =
     build_type_index(
       index,
-      path_dep_resolver_files(dep_root, dep_files),
+      fallback_resolver_files(package_root, dep_files),
       package_targets,
     )
-  use inner, module_path, #(source_path, _module) <- dict.fold(owned, acc)
+  use acc, module_path, #(source_path, _module) <- dict.fold(index, dict.new())
   dict.insert(
-    inner,
+    acc,
     source_path,
     typeinfo.reading_for_module(type_info, module_path),
   )
+}
+
+// The tree those readings resolve against: the consumer's own dependency scan,
+// plus what each declared path dependency declares for itself. The consumer's
+// scan wins a collision, as it does for one path dependency alone.
+fn fallback_resolver_files(
+  package_root: String,
+  dep_files: Dict(String, String),
+) -> Dict(String, String) {
+  effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
+  |> list.fold(dep_files, fn(acc, dep) {
+    let #(_name, dep_path) = dep
+    path_dep_resolver_files(resolve_path(package_root, dep_path), acc)
+  })
 }
 
 // The reading recorded for the module re-parsed from `source_path`, or the

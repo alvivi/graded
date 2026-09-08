@@ -544,10 +544,10 @@ would supply is the very reading in doubt.
 
 A path dependency is typed the same way — from the consuming project's installed
 packages, plus the path dependencies the dependency declares for itself — so a
-shadowed receiver inside one reads exactly as it would in the project. That covers the Gleam fallback body of an `@external` the dependency
-declares, whether or not the dependency ships a spec file. A package installed
-from hex is not typed: its own imports are not in a tree the consumer's resolver
-stands in, so a shadowed receiver in *its* fallback body reads `[Unknown]`.
+shadowed receiver inside one reads exactly as it would in the project. The Gleam
+fallback body of an `@external` a dependency declares is typed too, a package
+installed from hex included: its modules sit under the consumer's own
+`build/packages`, which is the tree the resolver reads.
 
 ## 8. A `check` graded could not prove
 
