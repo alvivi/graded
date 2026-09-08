@@ -1284,15 +1284,11 @@ pub type Relation {
 // every reader of a comparison has to answer for.
 pub type Comparison {
   Agree
-  Compatible(pair: CompatiblePair)
-  Disagree
-}
-
-// A pair that names different things without contradicting each other.
-pub type CompatiblePair {
-  // graded named the value wired into the field at its construction site;
-  // girard named the member the access reaches. Keyed on the `WiredValue`
+  // The two name different things without contradicting each other: graded
+  // named the value wired into the field at its construction site, and girard
+  // named the member the access reaches. Keyed on the `WiredValue`
   // classification and nothing else — a wired value under a girard `ModuleFn`
   // is the undercharge shape and stays a disagreement.
-  WiredValueVersusMember
+  CompatibleWiredValue
+  Disagree
 }

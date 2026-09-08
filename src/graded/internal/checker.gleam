@@ -28,8 +28,8 @@ import graded/internal/types.{
   type TypedClassification, type UndecidedReason, type UnknownReason,
   type UnprovedCause, type Violation, type Warning, Agree,
   AliasedBoundVariableWarning, AmbiguousShadowedReceiver, CallExplanation,
-  ClassificationCheck, Compared, Compatible, DefinitionDropped, Disagree,
-  DotlessReturnsClauseWarning, EffectAnnotation, Effects, Field,
+  ClassificationCheck, Compared, CompatibleWiredValue, DefinitionDropped,
+  Disagree, DotlessReturnsClauseWarning, EffectAnnotation, Effects, Field,
   FieldArityViolation, FieldAssumeOrigin, FieldBoundList, FieldNotAnnotated,
   FieldReturnsClause, FieldSiteViolation, FunctionSkipped, NoKnownEffects,
   NoResolutionAtSpan, NoReturnAnnotation, NoTypedEvidence,
@@ -52,7 +52,6 @@ import graded/internal/types.{
   UnsupportedFieldCheckWarning, UntraceableArgument, UntraceableProducer,
   UntraceableReceiver, UntracedFieldValue, UntrackedEffectWarning, Violation,
   WiredConstructor, WiredFunction, WiredLocal, WiredValue,
-  WiredValueVersusMember,
 }
 
 // Entry points
@@ -1363,32 +1362,44 @@ fn module_context(
   package_targets: types.PackageTargets,
 ) -> ModuleContext {
   let context =
-    extract.build_import_context(module)
-    |> extract.with_module_path(module_path)
-    |> extract.with_package_targets(package_targets)
-    |> extract.with_factories(extract.factory_map(
-      module_path,
-      module,
-      types.declaration_targets(package_targets),
-      effects.constructors(knowledge_base),
-    ))
-    |> extract.with_updates(extract.update_map(
-      module_path,
-      module,
-      types.declaration_targets(package_targets),
-      effects.constructors(knowledge_base),
-    ))
-    |> extract.with_cross_factories(effects.factories(knowledge_base))
-    |> extract.with_cross_updates(effects.updates(knowledge_base))
-    |> extract.with_cross_constructors(effects.constructors(knowledge_base))
-    |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(
-      module,
-      signatures.type_alias_map(module.type_aliases),
-    ))
+    module_import_context(module, module_path, knowledge_base, package_targets)
   ModuleContext(
     context:,
     cache: build_scc_ids(module, context, girard_fn_typed),
   )
+}
+
+// The import half of a module's context: the per-module lookup tables a body
+// walk reads, with none of the whole-module call-graph analysis `build_scc_ids`
+// derives. A pass that recurses into no callee needs only this half.
+fn module_import_context(
+  module: Module,
+  module_path: String,
+  knowledge_base: KnowledgeBase,
+  package_targets: types.PackageTargets,
+) -> ImportContext {
+  extract.build_import_context(module)
+  |> extract.with_module_path(module_path)
+  |> extract.with_package_targets(package_targets)
+  |> extract.with_factories(extract.factory_map(
+    module_path,
+    module,
+    types.declaration_targets(package_targets),
+    effects.constructors(knowledge_base),
+  ))
+  |> extract.with_updates(extract.update_map(
+    module_path,
+    module,
+    types.declaration_targets(package_targets),
+    effects.constructors(knowledge_base),
+  ))
+  |> extract.with_cross_factories(effects.factories(knowledge_base))
+  |> extract.with_cross_updates(effects.updates(knowledge_base))
+  |> extract.with_cross_constructors(effects.constructors(knowledge_base))
+  |> extract.with_fn_typed_fields(signatures.fn_typed_fields_from_module(
+    module,
+    signatures.type_alias_map(module.type_aliases),
+  ))
 }
 
 // Lift a record field wired to an inline closure into an effect *operator*,
@@ -1954,23 +1965,22 @@ fn underivable_clause(reason: ReturnedOperatorReason) -> String {
 // than a verdict on it.
 pub fn format_typed_resolution(check: ClassificationCheck) -> String {
   let site = check.object <> "." <> check.label
-  case check.typed {
-    Undecided(reason:) ->
+  case relate(check) {
+    NoTypedEvidence(reason:) ->
       site <> ": no typed resolution (" <> undecided_reason_text(reason) <> ")"
-    ProvedModuleCall(module:, name:) ->
-      resolution_line(
-        site,
-        "module " <> module <> "." <> name,
-        against_module(check.graded, module, name == check.label),
-        check,
-      )
+    Compared(comparison:) ->
+      resolution_line(site, typed_target(check.typed), comparison, check)
+  }
+}
+
+// The target girard proved, as a row names it. `Undecided` names none, and
+// `relate` routes it to the unresolved line before this is ever reached.
+fn typed_target(typed: TypedClassification) -> String {
+  case typed {
+    Undecided(..) -> ""
+    ProvedModuleCall(module:, name:) -> "module " <> module <> "." <> name
     ProvedFieldCall(receiver: #(_module, type_name), label:) ->
-      resolution_line(
-        site,
-        "field " <> type_name <> "." <> label,
-        against_field(check.graded, label == check.label),
-        check,
-      )
+      "field " <> type_name <> "." <> label
   }
 }
 
@@ -1989,7 +1999,7 @@ fn resolution_line(
     // than claiming a comparison that did not happen.
     Agree, TypeSelectedModule(..) -> "decided by the type inference"
     Agree, _ -> "agrees"
-    Compatible(WiredValueVersusMember), _ ->
+    CompatibleWiredValue, _ ->
       "compatible; graded charged " <> graded_target(check)
     Disagree, _ -> "DISAGREES with graded's " <> graded_target(check)
   }
@@ -8902,17 +8912,10 @@ pub fn classify_module(
   module_path: String,
   knowledge_base: KnowledgeBase,
   reading: typeinfo.ModuleReading,
-  girard_fn_typed: dict.Dict(String, Set(String)),
   package_targets: types.PackageTargets,
 ) -> List(ClassificationCheck) {
-  let ModuleContext(context:, cache: _) =
-    module_context(
-      module,
-      module_path,
-      knowledge_base,
-      girard_fn_typed,
-      package_targets,
-    )
+  let context =
+    module_import_context(module, module_path, knowledge_base, package_targets)
   list.flat_map(module.functions, fn(definition) {
     classify_definition(definition.definition, module_path, context, reading)
   })
@@ -9007,7 +9010,7 @@ pub fn relate(check: ClassificationCheck) -> Relation {
 fn against_field(graded: GradedClassification, same_label: Bool) -> Comparison {
   case graded {
     Field(..) if same_label -> Agree
-    WiredValue(..) if same_label -> Compatible(WiredValueVersusMember)
+    WiredValue(..) if same_label -> CompatibleWiredValue
     Field(..)
     | WiredValue(..)
     | UndecidedShadowed(..)
@@ -9156,32 +9159,34 @@ fn shadowed_module_read(
           if module == shadowed && name == call.label
         -> ReadsTheModule(QualifiedName(module:, function: name))
         ProvedFieldCall(label:, ..) if label == call.label -> ReadsTheField
-        ProvedModuleCall(..) | ProvedFieldCall(..) ->
-          ReadsNeither(shadowed, ResolutionMismatch(typed_name(resolved)))
+        // Proved, but not the name the site writes. Rendered here rather than
+        // through a helper the `Undecided` arm below would owe an answer for.
+        ProvedModuleCall(module:, name:) ->
+          ReadsNeither(
+            shadowed,
+            ResolutionMismatch(
+              types.dotted_name(QualifiedName(module:, function: name)),
+            ),
+          )
+        ProvedFieldCall(receiver: #(module, type_name), label:) ->
+          ReadsNeither(
+            shadowed,
+            ResolutionMismatch(
+              types.dotted_name(QualifiedName(module:, function: type_name))
+              <> "."
+              <> label,
+            ),
+          )
         Undecided(reason:) -> ReadsNeither(shadowed, reason)
       }
     }
   }
 }
 
-// A proved resolution as the name it proved, for a reader weighing it against
-// the name the site writes.
-fn typed_name(typed: TypedClassification) -> String {
-  case typed {
-    ProvedModuleCall(module:, name:) ->
-      types.dotted_name(QualifiedName(module:, function: name))
-    ProvedFieldCall(receiver: #(module, type_name), label:) ->
-      types.dotted_name(QualifiedName(module:, function: type_name))
-      <> "."
-      <> label
-    Undecided(..) -> ""
-  }
-}
-
 // The type annotation written on the parameter named `object`, if it carries
-// one. Both readings of a receiver's annotation — the nominal type rule 3 keys
-// by, and the shape the shadowed-receiver split decides from — start here, so
-// how a receiver name is matched against a parameter is stated once.
+// one. The nominal type rule 3 keys by is read from here — the shadowed-receiver
+// split no longer consults an annotation at all — so how a receiver name is
+// matched against a parameter is stated once.
 fn parameter_annotation(
   function: Function,
   object: String,

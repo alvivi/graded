@@ -485,7 +485,6 @@ pub fn classification_checks(
     module_path,
     knowledge_base,
     typeinfo.reading_for_module(type_info, module_path),
-    typeinfo.fn_typed_for_module(type_info, module_path),
     sources.cfg.targets,
   )
 }
@@ -809,6 +808,11 @@ type ProjectContext {
     // a dependency-defined type, so what it measures a site against is
     // gathered package-wide too.
     field_index: types.FieldIndex,
+    // Module path -> source file for the whole dependency tree, walked once
+    // when this context was assembled (girard's resolver reads it) and held so
+    // the spec lint weighs its declaring lines against the same scan rather
+    // than repeating the walk.
+    dep_files: Dict(String, String),
   )
 }
 
@@ -884,7 +888,10 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
       dependency_registry(dep_sources),
       build_project_registry(index),
     )
-  let type_info = build_type_index(index, package_root, package_targets)
+  // Scanned once for the run: girard's resolver reads it here, and every
+  // spec-less path dependency below is typed against the same map.
+  let dep_files = dependency_module_files(package_root)
+  let type_info = build_type_index(index, dep_files, package_targets)
 
   // Read once and kept: the knowledge base is built from it and the spec lint
   // weighs the same entries.
@@ -917,7 +924,12 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     // hands back has to be in reach while they are, not only afterwards.
     |> with_spec_declared_returns(spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets, constructors)
-    |> enrich_with_path_deps(package_root, declared_modules, package_targets)
+    |> enrich_with_path_deps(
+      package_root,
+      dep_files,
+      declared_modules,
+      package_targets,
+    )
     // Ahead of the fallback walk below, not merely ahead of the inference pass:
     // the field a dependency's fallback body calls may be declared here rather
     // than in that dependency's own spec, a consumer's line for a dependency's
@@ -1011,6 +1023,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
       dependency_field_index(dep_sources),
       build_project_field_index(index),
     ),
+    dep_files:,
   )
 }
 
@@ -1204,6 +1217,7 @@ fn lint_context(context: ProjectContext) -> lint.Context {
     catalog:,
     dependencies:,
     registry:,
+    dep_files:,
     ..,
   ) = context
   lint.Context(
@@ -1214,7 +1228,7 @@ fn lint_context(context: ProjectContext) -> lint.Context {
     catalog:,
     registry:,
     dependency_name: dependency_name(dependencies, _),
-    dependency_files: fn() { dependency_module_files(package_root) },
+    dependency_files: fn() { dep_files },
     dependency_sources_are_complete: fn() {
       dependency_sources_are_complete(package_root)
     },
@@ -1251,7 +1265,11 @@ fn dependency_sources_are_complete(package_root: String) -> Bool {
 // `build/packages`) and path dependency (under its declared `path`). Lets the
 // spec lint tell a dependency type from a typo, and parse a dependency module
 // when it needs to resolve a field's declared type.
-fn dependency_module_files(package_root: String) -> Dict(String, String) {
+//
+// Costs a directory walk of the whole tree, so a command scans once and threads
+// the result to everything that resolves against it.
+@internal
+pub fn dependency_module_files(package_root: String) -> Dict(String, String) {
   let installed = effects.dependency_module_files(packages_dir(package_root))
   effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
   |> list.fold(installed, fn(acc, dep) {
@@ -2636,18 +2654,32 @@ fn qualify_by_module(
 // the definitions it declined, and the ones it left out for the other target.
 // girard is best-effort: a function it can't type contributes no expressions,
 // so the checker silently falls back to syntax-level resolution for it.
-fn build_type_index(
+//
+// A path dependency is read exactly the same way, with the resolver seeded from
+// the *consumer's* package root: a dep resolves its own modules from `index`
+// and everything else — the packages it and the consumer share — from the
+// consumer's `build/packages`, which is the one tree Gleam installs for both.
+// Without it girard could not type a dep function whose signature names a
+// dependency type, and every shadowed receiver in the dep would read
+// `[Unknown]`.
+//
+// `dep_files` is the consumer's whole dependency tree, scanned once by the
+// caller: every module the resolver may reach outside `index`. Taking the scan
+// rather than the root keeps it off the per-path-dependency path, which calls
+// this once per dep.
+//
+// Exposed (pub) so a test can ask what girard read of a dep directly, rather
+// than inferring it from a charge.
+@internal
+pub fn build_type_index(
   index: Dict(String, #(String, glance.Module)),
-  package_root: String,
+  dep_files: Dict(String, String),
   package_targets: types.PackageTargets,
 ) -> typeinfo.TypeInfo {
   let options =
     girard.default_options()
     |> girard.with_target(girard_target(package_targets))
-    |> girard.with_resolver(build_girard_resolver(
-      index,
-      dependency_module_files(package_root),
-    ))
+    |> girard.with_resolver(build_girard_resolver(index, dep_files))
   let entries =
     dict.to_list(index)
     |> list.map(fn(pair) {
@@ -2927,7 +2959,9 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       dependency_registry(dep_sources),
       build_project_registry(index),
     )
-  let type_info = build_type_index(index, package_root, package_targets)
+  // As in `project_context`: one dependency scan for the run.
+  let dep_files = dependency_module_files(package_root)
+  let type_info = build_type_index(index, dep_files, package_targets)
   // As in `project_context`: one map for the run, not one per module.
   let constructors = package_constructors(index, dep_sources)
 
@@ -2952,7 +2986,12 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     // path-dep pass whose own inference reads them too.
     |> with_spec_declared_returns(spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets, constructors)
-    |> enrich_with_path_deps(package_root, declared_modules, package_targets)
+    |> enrich_with_path_deps(
+      package_root,
+      dep_files,
+      declared_modules,
+      package_targets,
+    )
     // As in `project_context`: in reach of the fallback walk below, which
     // resolves a dependency body's field calls through these lines.
     |> with_spec_type_fields(spec)
@@ -4163,6 +4202,7 @@ fn read_spec_on_disk(
 fn enrich_with_path_deps(
   knowledge_base: KnowledgeBase,
   package_root: String,
+  dep_files: Dict(String, String),
   consumer_modules: Set(String),
   package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
@@ -4185,7 +4225,7 @@ fn enrich_with_path_deps(
         case
           infer_path_dep(
             resolved_dep_path,
-            package_root,
+            dep_files,
             kb,
             consumer_modules,
             package_targets,
@@ -4258,41 +4298,14 @@ fn fold_inferred_into_kb(
 pub fn path_dep_index(
   dep_path: String,
 ) -> Dict(String, #(String, glance.Module)) {
-  let source_dir = dep_path <> "/src"
-  let gleam_files = case simplifile.get_files(source_dir) {
-    Ok(found) ->
-      list.filter(found, fn(path) { string.ends_with(path, ".gleam") })
-    Error(_) -> []
+  use acc, module_path, gleam_path, parsed <- signatures.fold_source_dir(
+    dep_path <> "/src",
+    dict.new(),
+  )
+  case parsed {
+    Ok(module) -> dict.insert(acc, module_path, #(gleam_path, module))
+    Error(Nil) -> acc
   }
-  list.filter_map(gleam_files, fn(gleam_path) {
-    use module <- result.map(
-      read_and_parse_gleam(gleam_path) |> result.map_error(fn(_) { Nil }),
-    )
-    #(
-      config.module_path_for_source(gleam_path, source_dir),
-      #(gleam_path, module),
-    )
-  })
-  |> dict.from_list()
-}
-
-// girard's reading of a path dependency, built exactly as the project's is.
-// The resolver is seeded with the *consumer's* package root: a dep resolves its
-// own modules from `dep_index` and everything else — the packages it and the
-// consumer share — from the consumer's `build/packages`, which is the one tree
-// Gleam installs for both. Without it girard could not type a dep function
-// whose signature names a dependency type, and every shadowed receiver in the
-// dep would read `[Unknown]`.
-//
-// Exposed (pub) so a test can ask what girard read of a dep directly, rather
-// than inferring it from a charge.
-@internal
-pub fn path_dep_type_info(
-  dep_index: Dict(String, #(String, glance.Module)),
-  package_root: String,
-  package_targets: types.PackageTargets,
-) -> typeinfo.TypeInfo {
-  build_type_index(dep_index, package_root, package_targets)
 }
 
 /// Build the dependency-graph index for a single path dep, topo-sort it,
@@ -4313,7 +4326,7 @@ pub fn path_dep_type_info(
 @internal
 pub fn infer_path_dep(
   dep_path: String,
-  package_root: String,
+  dep_files: Dict(String, String),
   base_kb: KnowledgeBase,
   consumer_modules: Set(String),
   package_targets: types.PackageTargets,
@@ -4329,8 +4342,7 @@ pub fn infer_path_dep(
   let index_with_paths = path_dep_index(dep_path)
   // girard's reading of the dep, resolved from the consumer's tree — the one
   // place a dep's own imports of installed packages can be found.
-  let type_info =
-    path_dep_type_info(index_with_paths, package_root, package_targets)
+  let type_info = build_type_index(index_with_paths, dep_files, package_targets)
 
   // Path-dep checks come from the dep's spec file (loaded by
   // enrich_with_path_deps), not from per-module files. Inference here only

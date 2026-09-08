@@ -1540,6 +1540,10 @@ fn resolve_constructor_field_call(
     | Ok(types.ReceiverPath(_))
     | Ok(types.Updated(_, _))
     | Ok(OtherExpression) -> untraceable(None)
+    // A label the construction did not wire. Under a `shadowed_module` this is
+    // reachable only from `PartialConstruction`: `shadowed_receiver_has_field`
+    // answers a `CompleteConstruction` from this same dict and sends a missing
+    // label to `module_call` instead, so it never arrives here.
     Error(Nil) -> untraceable(shadowed_module)
   }
 }

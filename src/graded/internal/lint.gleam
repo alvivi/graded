@@ -65,8 +65,9 @@ pub type Context {
     dependency_name: fn(QualifiedName) -> DependencyName,
     // Module path -> source file for every installed and path dependency, and
     // whether the tree that yielded them holds every package the manifest
-    // lists. Thunks: each walks the dependency tree, and a spec with no
-    // `assume`, declared-returns or field line asks neither question.
+    // lists. Thunks, so a spec with no `assume`, declared-returns or field line
+    // asks neither question: the completeness check walks the tree, and the
+    // files come from the scan the caller already holds.
     dependency_files: fn() -> Dict(String, String),
     dependency_sources_are_complete: fn() -> Bool,
   )
@@ -166,9 +167,9 @@ pub fn run_recording_lookups(
   let assumes = annotation.extract_assumes(spec)
   let declared_returns = annotation.assume_returns(spec)
   let type_fields = annotation.extract_type_fields(spec)
-  // Every lint here tells a dependency module from a typo, and the scan behind
-  // that is the expensive part: walked once here and shared, and not at all for
-  // a spec holding none of these line kinds.
+  // Every lint here tells a dependency module from a typo, off the caller's own
+  // dependency scan — read once here and shared, and not at all for a spec
+  // holding none of these line kinds.
   let dep_files = case assumes, declared_returns, type_fields {
     [], [], [] -> dict.new()
     _, _, _ -> context.dependency_files()

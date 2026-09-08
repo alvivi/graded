@@ -1144,7 +1144,7 @@ pub fn run(value: String) -> Nil {
   let assert Ok(#(inferred, _params, _returns, _provenance)) =
     graded.infer_path_dep(
       dep_path,
-      dep_path,
+      graded.dependency_module_files(dep_path),
       base_kb,
       set.new(),
       types.all_targets(),

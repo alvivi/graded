@@ -7884,9 +7884,7 @@ pub fn a_wired_value_stays_compatible_on_the_accessed_label_test() {
     types.ProvedFieldCall(#("app", "Client"), "send"),
   )
   |> checker.relate()
-  |> should.equal(
-    types.Compared(types.Compatible(types.WiredValueVersusMember)),
-  )
+  |> should.equal(types.Compared(types.CompatibleWiredValue))
 }
 
 pub fn an_undecided_shadowed_call_disagrees_with_a_proved_target_test() {

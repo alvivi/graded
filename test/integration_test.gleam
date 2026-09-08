@@ -14704,9 +14704,9 @@ fn typed_path_dep_fixture() -> #(String, String) {
 pub fn girard_types_a_path_dependency_from_the_consumers_tree_test() {
   let #(app_root, dep_root) = typed_path_dep_fixture()
   let type_info =
-    graded.path_dep_type_info(
+    graded.build_type_index(
       graded.path_dep_index(dep_root),
-      app_root,
+      graded.dependency_module_files(app_root),
       types.all_targets(),
     )
   let reading = typeinfo.reading_for_module(type_info, "dep")
@@ -14953,7 +14953,7 @@ pub fn shadowed(int: Int) -> String {
 // pair is compared. The assertion is an allowlist of the rows that are not
 // `Agree`, not a "no disagreement" rule: a girard bug pinned as a fixture stays
 // a `Disagree` row until girard is fixed, and a compatible pair stays a
-// `Compatible` one for good.
+// `CompatibleWiredValue` one for good.
 //
 // Adding a rule or a fixture extends the list in the same commit, with the
 // compiler reading that adjudicated it cited here. A row that disappears is a
@@ -15011,8 +15011,8 @@ pub fn the_fixture_corpus_disagreement_allowlist_test() {
   // Six rows, all the same shape: graded resolved the field at the receiver's
   // construction site and charged the value wired in, while girard named the
   // member the access reaches. Neither is wrong — they name different halves of
-  // one site — which is why `relate` reads each pair as `Compatible` and not as
-  // `Disagree`.
+  // one site — which is why `relate` reads each pair as `CompatibleWiredValue`
+  // and not as `Disagree`.
   //
   // No `Disagree` and no `NoTypedEvidence` row exists over these fixtures:
   // girard types every fixture function, and wherever the two both answer they
