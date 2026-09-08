@@ -64,12 +64,12 @@ pub type Context {
     // What a dependency's own source says about one name. The lint's only read
     // of the dependency scan, so the scan's types stay where they are built.
     dependency_name: fn(QualifiedName) -> DependencyName,
-    // Module path -> source file for every installed and path dependency, and
-    // whether the tree that yielded them holds every package the manifest
-    // lists. Thunks, so a spec with no `assume`, declared-returns or field line
-    // asks neither question: the completeness check walks the tree, and the
-    // files come from the scan the caller already holds.
-    dependency_files: fn() -> Dict(String, String),
+    // Module path -> source file for every installed and path dependency, from
+    // the scan the caller already holds.
+    dependency_files: Dict(String, String),
+    // Whether the tree that yielded them holds every package the manifest
+    // lists. A thunk, so a spec with no `assume` or declared-returns line never
+    // pays for the walk that answers it.
     dependency_sources_are_complete: fn() -> Bool,
   )
 }
@@ -169,12 +169,8 @@ pub fn run_recording_lookups(
   let declared_returns = annotation.assume_returns(spec)
   let type_fields = annotation.extract_type_fields(spec)
   // Every lint here tells a dependency module from a typo, off the caller's own
-  // dependency scan — read once here and shared, and not at all for a spec
-  // holding none of these line kinds.
-  let dep_files = case assumes, declared_returns, type_fields {
-    [], [], [] -> dict.new()
-    _, _, _ -> context.dependency_files()
-  }
+  // dependency scan.
+  let dep_files = context.dependency_files
   // The two declaring forms weigh a name by one rule, over one precomputation —
   // which reads the whole dependency tree, so it is built only where a
   // declaring line asks a question of it.
