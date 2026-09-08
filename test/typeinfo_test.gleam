@@ -372,14 +372,14 @@ pub fn an_absent_resolution_span_resolves_to_none_test() {
 
 // The whole reading of one module
 //
-// Both halves are sliced for the same module and travel together, so a caller
-// asks once and cannot pair one module's types with another's evidence.
+// All three slices are taken for the same module and travel together, so a
+// caller asks once and cannot pair one module's types with another's evidence.
 
-pub fn a_readings_halves_are_the_modules_own_test() {
+pub fn a_readings_slices_are_the_modules_own_test() {
   let info =
     typeinfo.from_modules(
       [#("app/log", index([#(#(0, 3), Named("app/log", "Logger", []))]))],
-      [],
+      [#("app/log", dict.from_list([#("render", set.from_list(["format"]))]))],
       [
         #(
           "app/log",
@@ -394,6 +394,8 @@ pub fn a_readings_halves_are_the_modules_own_test() {
   let reading = typeinfo.reading_for_module(info, "app/log")
   typeinfo.receiver_type(reading.expressions, 0, 3)
   |> should.equal(Some(#("app/log", "Logger")))
+  typeinfo.fn_typed_params(reading.fn_typed, "render")
+  |> should.equal(set.from_list(["format"]))
   typeinfo.resolution_at(reading.evidence.resolutions, 0, 9)
   |> should.equal(Some(ModuleFn("gleam/io", "println")))
   typeinfo.skip_reason(reading.evidence.skipped, "render")

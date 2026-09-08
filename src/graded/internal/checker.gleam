@@ -68,7 +68,6 @@ pub fn check(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
-  girard_fn_typed: dict.Dict(String, Set(String)),
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
@@ -80,7 +79,7 @@ pub fn check(
       module,
       module_path,
       knowledge_base,
-      girard_fn_typed,
+      reading.fn_typed,
       package_targets,
     )
 
@@ -116,7 +115,6 @@ pub fn infer(
   existing_checks: List(EffectAnnotation),
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
-  girard_fn_typed: dict.Dict(String, Set(String)),
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
@@ -129,7 +127,6 @@ pub fn infer(
     existing_checks,
     registry,
     reading,
-    girard_fn_typed,
     package_targets,
   ).0
 }
@@ -145,7 +142,6 @@ pub fn infer_with_returns(
   existing_checks: List(EffectAnnotation),
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
-  girard_fn_typed: dict.Dict(String, Set(String)),
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
@@ -161,7 +157,7 @@ pub fn infer_with_returns(
       module,
       module_path,
       knowledge_base,
-      girard_fn_typed,
+      reading.fn_typed,
       package_targets,
     )
 
@@ -346,7 +342,6 @@ pub fn explain(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
-  girard_fn_typed: dict.Dict(String, Set(String)),
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
@@ -389,7 +384,7 @@ pub fn explain(
           module,
           module_path,
           knowledge_base,
-          girard_fn_typed,
+          reading.fn_typed,
           package_targets,
         )
       // One memo across every bound set, as `check` threads one across every
@@ -947,7 +942,6 @@ pub fn fallback_effects(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
-  girard_fn_typed: dict.Dict(String, Set(String)),
   // The targets the package under analysis is compiled for. Decides which
   // `@external` declarations are ever built, and so which functions are foreign
   // code and which are ordinary Gleam whose body is the only implementation.
@@ -963,7 +957,6 @@ pub fn fallback_effects(
     knowledge_base,
     registry,
     reading,
-    girard_fn_typed,
     package_targets,
   )
 }
@@ -1003,7 +996,6 @@ pub fn dependency_fallback_effects(
     knowledge_base,
     registry,
     reading,
-    dict.new(),
     package_targets,
   )
 }
@@ -1019,7 +1011,7 @@ pub fn dependency_fallback_effects(
 // rest.
 pub fn unwalked_fallback_effects(
   module: Module,
-  girard_fn_typed: dict.Dict(String, Set(String)),
+  reading: typeinfo.ModuleReading,
   package_targets: types.PackageTargets,
 ) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
   unwalked_summaries(
@@ -1028,7 +1020,7 @@ pub fn unwalked_fallback_effects(
       && runs_fallback_body(definition, package_targets)
     }),
     signatures.type_alias_map(module.type_aliases),
-    girard_fn_typed,
+    reading.fn_typed,
   )
 }
 
@@ -1086,7 +1078,6 @@ fn walk_fallbacks(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
-  girard_fn_typed: dict.Dict(String, Set(String)),
   package_targets: types.PackageTargets,
 ) -> dict.Dict(String, #(EffectTerm, List(ParamBound))) {
   use <- bool.guard(when: targets == [], return: dict.new())
@@ -1096,7 +1087,7 @@ fn walk_fallbacks(
       module,
       module_path,
       knowledge_base,
-      girard_fn_typed,
+      reading.fn_typed,
       package_targets,
     )
   // One component at a time, callees first. A body reaching another fallback is
@@ -3509,7 +3500,6 @@ pub fn check_field_sites(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
-  girard_fn_typed: dict.Dict(String, Set(String)),
   package_targets: types.PackageTargets,
 ) -> FieldSiteReport {
   let function_map = build_function_map(module)
@@ -3518,7 +3508,7 @@ pub fn check_field_sites(
       module,
       module_path,
       knowledge_base,
-      girard_fn_typed,
+      reading.fn_typed,
       package_targets,
     )
   let module_functions = set.from_list(dict.keys(function_map))

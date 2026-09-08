@@ -557,7 +557,6 @@ pub fn check_project(
           knowledge_base,
           registry,
           typeinfo.reading_for_module(type_info, module_path),
-          typeinfo.fn_typed_for_module(type_info, module_path),
           cfg.targets,
         )
       case dict.get(field_report.findings, gleam_path) {
@@ -652,7 +651,6 @@ fn field_check_results(
           knowledge_base,
           registry,
           typeinfo.reading_for_module(type_info, module_path),
-          typeinfo.fn_typed_for_module(type_info, module_path),
           package_targets,
         ),
       )
@@ -1188,7 +1186,6 @@ fn check_one_file(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
-  girard_fn_typed: Dict(String, Set(String)),
   package_targets: types.PackageTargets,
 ) -> CheckResult {
   let #(violations, findings, warnings) =
@@ -1199,7 +1196,6 @@ fn check_one_file(
       knowledge_base,
       registry,
       reading,
-      girard_fn_typed,
       package_targets,
     )
   CheckResult(file: gleam_path, violations:, findings:, warnings:)
@@ -2036,7 +2032,6 @@ pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
       ctx.knowledge_base,
       ctx.registry,
       typeinfo.reading_for_module(ctx.type_info, module_path),
-      typeinfo.fn_typed_for_module(ctx.type_info, module_path),
       ctx.sources.cfg.targets,
     )
     |> result.replace_error(FunctionNotFound(name)),
@@ -3058,7 +3053,6 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
               kb,
               registry,
               typeinfo.reading_for_module(type_info, module_path),
-              typeinfo.fn_typed_for_module(type_info, module_path),
               declared_modules,
               package_targets,
             )
@@ -3103,7 +3097,6 @@ fn infer_one_module(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
-  girard_fn_typed: Dict(String, Set(String)),
   declared_modules: Set(String),
   package_targets: types.PackageTargets,
 ) -> ModuleInference {
@@ -3114,7 +3107,6 @@ fn infer_one_module(
       module_path,
       registry,
       reading,
-      girard_fn_typed,
       package_targets,
     )
   let #(inferred, returned_operators, provenance) =
@@ -3125,7 +3117,6 @@ fn infer_one_module(
       [],
       registry,
       reading,
-      girard_fn_typed,
       package_targets,
     )
 
@@ -3195,7 +3186,7 @@ fn infer_project_in_memory(
           module_path,
           checker.unwalked_fallback_effects(
             module,
-            typeinfo.fn_typed_for_module(type_info, module_path),
+            typeinfo.reading_for_module(type_info, module_path),
             package_targets,
           ),
         )
@@ -3238,7 +3229,6 @@ fn fold_inferred_module(
       module_path,
       registry,
       typeinfo.reading_for_module(type_info, module_path),
-      typeinfo.fn_typed_for_module(type_info, module_path),
       package_targets,
     )
   let #(inferred, returned_operators, provenance) =
@@ -3249,7 +3239,6 @@ fn fold_inferred_module(
       [],
       registry,
       typeinfo.reading_for_module(type_info, module_path),
-      typeinfo.fn_typed_for_module(type_info, module_path),
       package_targets,
     )
   let threaded_kb =
@@ -3285,7 +3274,6 @@ fn with_module_fallback_effects(
   module_path: String,
   registry: SignatureRegistry,
   reading: typeinfo.ModuleReading,
-  girard_fn_typed: Dict(String, Set(String)),
   package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
   fold_fallback_summaries(
@@ -3297,7 +3285,6 @@ fn with_module_fallback_effects(
       knowledge_base,
       registry,
       reading,
-      girard_fn_typed,
       package_targets,
     ),
   )
@@ -4510,7 +4497,6 @@ fn infer_path_dep_module(
           checks,
           registry,
           typeinfo.reading_for_module(type_info, module_path),
-          typeinfo.fn_typed_for_module(type_info, module_path),
           package_targets,
         )
       // Qualify the module's results once, then both fold them into the dep's
