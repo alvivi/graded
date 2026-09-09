@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { Ok, Error as GError } from "./gleam.mjs";
 
@@ -34,4 +35,33 @@ export function priv_directory() {
 // the install metadata isn't resolved.
 export function version() {
   return "unknown";
+}
+
+// No application metadata exists here, so no loaded package's version is
+// observed. `graded coverage` prints "not observed", which is the honest answer.
+export function loaded_version(_app) {
+  return new GError(undefined);
+}
+
+// The Erlang/OTP release is not applicable off the BEAM.
+export function otp_release() {
+  return new GError(undefined);
+}
+
+// The Gleam compiler on the path, from `gleam --version`. The only subprocess
+// graded runs, and only `graded coverage` runs it.
+export function compiler_version() {
+  try {
+    const output = execSync("gleam --version", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const parts = output.trim().split(/\s+/);
+    if (parts.length >= 2 && parts[0] === "gleam") {
+      return new Ok(parts[1]);
+    }
+    return new GError(undefined);
+  } catch (_error) {
+    return new GError(undefined);
+  }
 }

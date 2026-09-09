@@ -66,7 +66,28 @@ pub type GradedConfig {
     // `target = "erlang"` package) is not visible here, so a named set is what
     // the package *declares*, not proof of what was built.
     targets: types.PackageTargets,
+    // Where those targets came from. Observational: no decision reads it, and
+    // `types.PackageTargets` cannot say it — a named set looks the same
+    // whichever field named it, and `DefaultedTargets` looks the same whether
+    // the file was silent or absent. `graded coverage` states it in a sentence.
+    targets_source: TargetsSource,
   )
+}
+
+// Which reading of `gleam.toml` named the package's targets.
+pub type TargetsSource {
+  // `[tools.graded].targets`, read whole.
+  ToolsGradedTargets
+  // The top-level `target = "…"`, naming a target graded knows.
+  TopLevelTarget
+  // Either key present and not readable whole — an unreadable list, a `target`
+  // that is not a string, or one naming a target graded does not know.
+  UnreadableDeclaration
+  // Neither key. `DefaultedTargets`: the compiler's default stands in.
+  NoTargetDeclared
+  // No `gleam.toml` at all, so no field was absent for a default to stand in
+  // for.
+  NoConfig
 }
 
 pub type ConfigError {
@@ -105,8 +126,15 @@ pub fn read(gleam_toml_path: String) -> Result(GradedConfig, ConfigError) {
     Ok(value) -> Some(value)
     Error(_) -> None
   }
-  let targets = read_targets(toml)
-  Ok(GradedConfig(package_name:, spec_file:, cache_dir:, version:, targets:))
+  let #(targets, targets_source) = read_targets(toml)
+  Ok(GradedConfig(
+    package_name:,
+    spec_file:,
+    cache_dir:,
+    version:,
+    targets:,
+    targets_source:,
+  ))
 }
 
 // Which targets a parsed `gleam.toml` names, and how.
@@ -117,20 +145,25 @@ pub fn read(gleam_toml_path: String) -> Result(GradedConfig, ConfigError) {
 // it says the package is built for something, and a reading that picked one of
 // them would drop the declarations belonging to the others. Only silence in both
 // fields is `DefaultedTargets`.
-fn read_targets(toml: Dict(String, tom.Toml)) -> types.PackageTargets {
+fn read_targets(
+  toml: Dict(String, tom.Toml),
+) -> #(types.PackageTargets, TargetsSource) {
   case declared_targets(toml) {
-    Ok(targets) -> types.NamedTargets(targets)
-    Error(TargetsUnreadable) -> types.all_targets()
+    Ok(targets) -> #(types.NamedTargets(targets), ToolsGradedTargets)
+    Error(TargetsUnreadable) -> #(types.all_targets(), UnreadableDeclaration)
     Error(TargetsAbsent) ->
       case tom.get_string(toml, ["target"]) {
         Ok(name) ->
           case known_target(name) {
-            Ok(target) -> types.NamedTargets(set.from_list([target]))
-            Error(Nil) -> types.all_targets()
+            Ok(target) -> #(
+              types.NamedTargets(set.from_list([target])),
+              TopLevelTarget,
+            )
+            Error(Nil) -> #(types.all_targets(), UnreadableDeclaration)
           }
-        Error(tom.NotFound(..)) -> types.DefaultedTargets
+        Error(tom.NotFound(..)) -> #(types.DefaultedTargets, NoTargetDeclared)
         // Present and not a string.
-        Error(_) -> types.all_targets()
+        Error(_) -> #(types.all_targets(), UnreadableDeclaration)
       }
   }
 }
@@ -196,6 +229,7 @@ pub fn defaults_for(package_name: String) -> GradedConfig {
     cache_dir: default_cache_dir(),
     version: None,
     targets: types.all_targets(),
+    targets_source: NoConfig,
   )
 }
 

@@ -54,6 +54,7 @@ import graded/internal/annotation
 import graded/internal/answer.{type EffectAnswer}
 import graded/internal/checker
 import graded/internal/cli
+import graded/internal/compat
 import graded/internal/config
 import graded/internal/diff
 import graded/internal/effects.{type KnowledgeBase}
@@ -5144,7 +5145,43 @@ fn halt(code: Int) -> Nil
 @external(javascript, "./graded_ffi.mjs", "read_stdin")
 fn read_stdin() -> Result(String, String)
 
+// The versions of what is running: graded itself, the analyzer it loaded, the
+// release under it, and the compiler on the path. Read here rather than in
+// `compat`, which holds no FFI; the coverage report is the only reader.
+//
+// The compiler read is a subprocess, so this is called by `graded coverage`
+// alone — `check`, `infer`, `effect` and `why` never reach it.
+@internal
+pub fn observed_versions() -> compat.Observed {
+  compat.Observed(
+    graded: version(),
+    girard: loaded_version("girard"),
+    glance: loaded_version("glance"),
+    otp: otp_release(),
+    gleam: compiler_version(),
+  )
+}
+
 // graded's own version, from the loaded OTP application's `vsn`.
 @external(erlang, "graded_ffi", "version")
 @external(javascript, "./graded_ffi.mjs", "version")
 fn version() -> String
+
+// Any loaded application's version, read the same way. The applications graded
+// loaded are the analyzer in use whatever directory it points at, which is what
+// the coverage report states.
+@external(erlang, "graded_ffi", "loaded_version")
+@external(javascript, "./graded_ffi.mjs", "loaded_version")
+fn loaded_version(application: String) -> Result(String, Nil)
+
+// The Erlang/OTP release graded runs on. Not applicable on JavaScript.
+@external(erlang, "graded_ffi", "otp_release")
+@external(javascript, "./graded_ffi.mjs", "otp_release")
+fn otp_release() -> Result(String, Nil)
+
+// The Gleam compiler on the path, from `gleam --version`. The only subprocess
+// graded runs, and only `graded coverage` runs it: `check`, `infer`, `effect`
+// and `why` stay subprocess-free.
+@external(erlang, "graded_ffi", "compiler_version")
+@external(javascript, "./graded_ffi.mjs", "compiler_version")
+fn compiler_version() -> Result(String, Nil)

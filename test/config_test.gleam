@@ -140,7 +140,8 @@ pub fn defaults_for_helper_test() {
 //
 // `gleam.toml`'s top-level `target` and `[tools.graded].targets`, which decide
 // which `@external` declarations are ever built, and which of the two readings
-// of them a package gets.
+// of them a package gets. Each case also pins `targets_source`, which states
+// where the set came from and changes no decision.
 
 pub fn no_target_field_is_defaulted_test() {
   // Neither field names a target: the compiler's default stands in for the
@@ -149,6 +150,7 @@ pub fn no_target_field_is_defaulted_test() {
   let path = write_toml("no_target", "name = \"myapp\"\n")
   let assert Ok(cfg) = config.read(path)
   cfg.targets |> should.equal(types.DefaultedTargets)
+  cfg.targets_source |> should.equal(config.NoTargetDeclared)
   types.build_targets(cfg.targets) |> should.equal(types.default_target())
   types.declaration_targets(cfg.targets) |> should.equal(types.every_target())
 }
@@ -163,6 +165,8 @@ pub fn a_declared_target_list_widens_past_the_compilers_one_test() {
     )
   let assert Ok(cfg) = config.read(path)
   cfg.targets |> should.equal(types.NamedTargets(types.every_target()))
+  // Both keys are present; the list wins and the source says which was read.
+  cfg.targets_source |> should.equal(config.ToolsGradedTargets)
 }
 
 pub fn a_declared_target_list_can_narrow_too_test() {
@@ -174,6 +178,7 @@ pub fn a_declared_target_list_can_narrow_too_test() {
   let assert Ok(cfg) = config.read(path)
   cfg.targets
   |> should.equal(types.NamedTargets(set.from_list(["javascript"])))
+  cfg.targets_source |> should.equal(config.ToolsGradedTargets)
 }
 
 pub fn an_unreadable_target_list_reads_as_every_target_test() {
@@ -189,6 +194,7 @@ pub fn an_unreadable_target_list_reads_as_every_target_test() {
     )
   let assert Ok(cfg) = config.read(path)
   cfg.targets |> should.equal(types.NamedTargets(types.every_target()))
+  cfg.targets_source |> should.equal(config.UnreadableDeclaration)
 }
 
 pub fn a_target_list_that_is_not_an_array_reads_as_every_target_test() {
@@ -199,6 +205,7 @@ pub fn a_target_list_that_is_not_an_array_reads_as_every_target_test() {
     )
   let assert Ok(cfg) = config.read(path)
   cfg.targets |> should.equal(types.NamedTargets(types.every_target()))
+  cfg.targets_source |> should.equal(config.UnreadableDeclaration)
 }
 
 pub fn an_empty_target_list_falls_back_to_the_target_field_test() {
@@ -211,6 +218,7 @@ pub fn an_empty_target_list_falls_back_to_the_target_field_test() {
     )
   let assert Ok(cfg) = config.read(path)
   cfg.targets |> should.equal(types.DefaultedTargets)
+  cfg.targets_source |> should.equal(config.NoTargetDeclared)
 }
 
 pub fn an_erlang_target_narrows_to_erlang_test() {
@@ -218,6 +226,7 @@ pub fn an_erlang_target_narrows_to_erlang_test() {
     write_toml("erlang_target", "name = \"myapp\"\ntarget = \"erlang\"\n")
   let assert Ok(cfg) = config.read(path)
   cfg.targets |> should.equal(types.NamedTargets(set.from_list(["erlang"])))
+  cfg.targets_source |> should.equal(config.TopLevelTarget)
 }
 
 pub fn a_javascript_target_narrows_to_javascript_test() {
@@ -226,6 +235,7 @@ pub fn a_javascript_target_narrows_to_javascript_test() {
   let assert Ok(cfg) = config.read(path)
   cfg.targets
   |> should.equal(types.NamedTargets(set.from_list(["javascript"])))
+  cfg.targets_source |> should.equal(config.TopLevelTarget)
 }
 
 pub fn an_unrecognised_target_reads_as_every_target_test() {
@@ -234,6 +244,7 @@ pub fn an_unrecognised_target_reads_as_every_target_test() {
   let path = write_toml("odd_target", "name = \"myapp\"\ntarget = \"llvm\"\n")
   let assert Ok(cfg) = config.read(path)
   cfg.targets |> should.equal(types.NamedTargets(types.every_target()))
+  cfg.targets_source |> should.equal(config.UnreadableDeclaration)
 }
 
 pub fn a_missing_gleam_toml_is_every_target_test() {
@@ -241,6 +252,8 @@ pub fn a_missing_gleam_toml_is_every_target_test() {
   // compiler's default could stand in for, so both readings are every target.
   config.defaults_for("myapp").targets
   |> should.equal(types.NamedTargets(types.every_target()))
+  config.defaults_for("myapp").targets_source
+  |> should.equal(config.NoConfig)
 }
 
 // Module paths
