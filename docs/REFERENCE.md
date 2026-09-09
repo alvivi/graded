@@ -1273,9 +1273,9 @@ targets: erlang — gleam.toml declares none, so bodies are read on erlang and d
 type inference: ran on erlang; no @target function, so no second run
 
 modules: 18 read, 0 unread
-functions: 1112 typed, 0 skipped, 0 left out of every run, 0 unread
+functions: 1114 typed, 0 skipped, 0 left out of every run, 0 unread
 constants: 39 typed, 0 skipped, 0 left out of every run, 0 unread
-ambiguous calls: 3246 — 1 decided by the type inference, 3245 settled lexically with typed evidence, 0 settled lexically with no typed evidence, 0 wired from a construction, 0 undecided; 0 disagreements
+ambiguous calls: 3247 — 1 decided by the type inference, 3246 settled lexically with typed evidence, 0 settled lexically with no typed evidence, 0 wired from a construction, 0 undecided; 0 disagreements
 
 path dependencies: none
 ```
