@@ -69,13 +69,15 @@ pub type DefinitionCounts {
 // Every ambiguous call in exactly one class. There is no separate total: the
 // headline is the sum of the five, so the report cannot print a total its own
 // classes do not add up to. `provenance_class` is exhaustive over
-// `GradedClassification` and the lexical split is by relation, so the five do
-// partition the rows a package holds. `disagreements` cuts across them and is
-// stated beside, not within.
+// `GradedClassification` and the lexical split is by whether the inference
+// answered at all, so the five do partition the rows a package holds. Whether
+// the two *agree* is a further reading of the same rows: `disagreements` cuts
+// across the classes and is stated beside, not within, which is why the
+// lexical halves are named for the evidence and not for the verdict.
 pub type CallCounts {
   CallCounts(
     decided: Int,
-    lexical_agreeing: Int,
+    lexical_with_evidence: Int,
     lexical_no_evidence: Int,
     wired: Int,
     undecided: Int,
@@ -332,8 +334,8 @@ fn call_counts(counts: CallCounts) -> String {
   <> " — "
   <> int.to_string(counts.decided)
   <> " decided by the type inference, "
-  <> int.to_string(counts.lexical_agreeing)
-  <> " settled lexically with the inference agreeing, "
+  <> int.to_string(counts.lexical_with_evidence)
+  <> " settled lexically with typed evidence, "
   <> int.to_string(counts.lexical_no_evidence)
   <> " settled lexically with no typed evidence, "
   <> int.to_string(counts.wired)
@@ -347,7 +349,7 @@ fn call_counts(counts: CallCounts) -> String {
 // The headline count: the classes summed, never a number carried beside them.
 pub fn call_total(counts: CallCounts) -> Int {
   counts.decided
-  + counts.lexical_agreeing
+  + counts.lexical_with_evidence
   + counts.lexical_no_evidence
   + counts.wired
   + counts.undecided

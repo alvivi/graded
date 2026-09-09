@@ -12,6 +12,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
 import graded
+import graded/internal/checker
 import graded/internal/compat
 import graded/internal/config
 import graded/internal/coverage
@@ -32,7 +33,7 @@ type inference: ran on erlang; no @target function, so no second run
 modules: 16 read, 0 unread
 functions: 1060 typed, 0 skipped, 0 left out of every run, 0 unread
 constants: 42 typed, 0 skipped, 0 left out of every run, 0 unread
-ambiguous calls: 3127 — 80 decided by the type inference, 3047 settled lexically with the inference agreeing, 0 settled lexically with no typed evidence, 0 wired from a construction, 0 undecided; 0 disagreements
+ambiguous calls: 3127 — 80 decided by the type inference, 3047 settled lexically with typed evidence, 0 settled lexically with no typed evidence, 0 wired from a construction, 0 undecided; 0 disagreements
 
 path dependencies: none"
 
@@ -299,7 +300,7 @@ pub fn the_headline_total_is_the_classes_summed_test() {
       ..clean(),
       calls: coverage.CallCounts(
         decided: 2,
-        lexical_agreeing: 1,
+        lexical_with_evidence: 1,
         lexical_no_evidence: 1,
         wired: 1,
         undecided: 1,
@@ -308,7 +309,55 @@ pub fn the_headline_total_is_the_classes_summed_test() {
     ),
   )
   |> string.contains(
-    "ambiguous calls: 6 — 2 decided by the type inference, 1 settled lexically with the inference agreeing, 1 settled lexically with no typed evidence, 1 wired from a construction, 1 undecided; 1 disagreements",
+    "ambiguous calls: 6 — 2 decided by the type inference, 1 settled lexically with typed evidence, 1 settled lexically with no typed evidence, 1 wired from a construction, 1 undecided; 1 disagreements",
+  )
+  |> should.be_true()
+}
+
+pub fn a_lexical_disagreement_is_not_counted_as_agreement_test() {
+  // The lexical halves are named for the evidence, not for the verdict. A row
+  // the inference contradicts has typed evidence and is counted there; the
+  // disagreement count beside states the verdict, so the report never says
+  // both that the inference agrees and that it does not.
+  let row =
+    check(
+      types.SyntaxModule("gleam/io"),
+      types.ProvedFieldCall(#("app", "Logger"), "println"),
+    )
+  coverage.provenance_class(row) |> should.equal(coverage.SettledLexically)
+  checker.relate(row) |> should.equal(types.Compared(types.Disagree))
+  let rendered =
+    coverage.render(
+      coverage.CoverageReport(
+        ..clean(),
+        calls: coverage.CallCounts(
+          decided: 0,
+          lexical_with_evidence: 1,
+          lexical_no_evidence: 0,
+          wired: 0,
+          undecided: 0,
+          disagreements: 1,
+        ),
+        disagreements: [
+          coverage.SiteRow(
+            module: "app",
+            function: "go",
+            site: "io.println",
+            location: "src/app.gleam:4:3",
+            detail: checker.typed_resolution_detail(row),
+          ),
+        ],
+      ),
+    )
+  rendered
+  |> string.contains(
+    "ambiguous calls: 1 — 0 decided by the type inference, 1 settled lexically with typed evidence, 0 settled lexically with no typed evidence, 0 wired from a construction, 0 undecided; 1 disagreements",
+  )
+  |> should.be_true()
+  rendered |> string.contains("agreeing") |> should.be_false()
+  rendered
+  |> string.contains(
+    "\ndisagreements\n  app.go `io.println` (src/app.gleam:4:3): ",
   )
   |> should.be_true()
 }
@@ -487,7 +536,7 @@ pub fn broken() -> Nil {
   // moving the row out of `wired from a construction`.
   report
   |> string.contains(
-    "1 settled lexically with the inference agreeing, 0 settled lexically with no typed evidence, 1 wired from a construction",
+    "1 settled lexically with typed evidence, 0 settled lexically with no typed evidence, 1 wired from a construction",
   )
   |> should.be_true()
   support.cleanup(root)
@@ -564,7 +613,7 @@ fn clean() -> coverage.CoverageReport {
     ),
     calls: coverage.CallCounts(
       decided: 80,
-      lexical_agreeing: 3047,
+      lexical_with_evidence: 3047,
       lexical_no_evidence: 0,
       wired: 0,
       undecided: 0,
