@@ -8954,12 +8954,13 @@ pub fn an_untyped_shadowed_call_result_charges_unknown_test() {
   |> should.equal(Ok("effects logger_call_result : [Unknown]"))
 }
 
-// A definition left out of the build for the other target
+// A definition gated to the other build target
 //
-// The inference is run for one target, so a `@target(javascript)` definition in
-// an Erlang package is dropped rather than typed. graded still walks it, and a
-// shadowed receiver inside one is therefore decided by nothing: the call reads
-// [Unknown], and every report says which of the reasons it was. Kept out of
+// girard runs once per target a definition in the package is gated to, so a
+// `@target(javascript)` definition in an Erlang package is typed on the run
+// that builds it and a shadowed receiver inside one reads the module girard
+// resolves it to. The Erlang run alone leaves it dropped, which is the twin
+// each case below asserts beside the merged reading. Kept out of
 // `test/fixtures` so the corpus there stays free of rows with no typed
 // evidence.
 const dropped_definition_source = "import gleam/io
@@ -8983,43 +8984,174 @@ fn dropped_definition_project() -> String {
   ])
 }
 
-pub fn a_dropped_definitions_shadowed_call_charges_unknown_test() {
+pub fn a_gated_definitions_shadowed_call_reads_its_own_targets_module_test() {
+  // `println` sits on one of `Logger`'s two variants, so the compiler emits the
+  // module call and the JavaScript run resolves `gleam/io.println` — a charge
+  // no annotation, no bound and no girard upgrade could have reached while the
+  // definition was left out of every run.
   let root = dropped_definition_project()
   let assert Ok(answered) = graded.run_effect(root, "m.dropped")
   answered
-  |> string.contains("effects m.dropped : [Unknown]")
+  |> string.contains("effects m.dropped : [Stdout]")
   |> should.be_true()
   support.cleanup(root)
 }
 
-pub fn a_dropped_definitions_why_names_the_drop_test() {
+pub fn the_erlang_run_alone_leaves_a_gated_definition_undecided_test() {
+  // The twin, forced with a reading built from the Erlang run alone: the
+  // difference the second run makes is asserted rather than implied.
+  let assert Ok(module) = glance.module(dropped_definition_source)
+  let type_info =
+    graded.annotate_on_targets(
+      [#("m", module)],
+      fn(_module_path) { Error(Nil) },
+      [girard.Erlang],
+    )
+  let assert Ok(definition) =
+    list.find(module.functions, fn(def) { { def.definition }.name == "dropped" })
+  checker.classify_typed(
+    access_span_of(dropped_definition_source, "io.println"),
+    definition.definition,
+    { typeinfo.reading_for_module(type_info, "m") }.evidence,
+  )
+  |> should.equal(types.Undecided(types.DefinitionDropped))
+  let assert Ok(module_path) = list.first(type_info.targets)
+  module_path |> should.equal(girard.Erlang)
+}
+
+pub fn a_gated_definitions_why_names_the_inference_test() {
   let root = dropped_definition_project()
   let assert Ok(why) = graded.run_why(root, "m.dropped")
   why
   |> string.contains(
-    "io.println: no typed resolution (definition dropped for the other build target)",
+    "io.println: typed resolution module gleam/io.println (decided by the type inference)",
   )
   |> should.be_true()
   support.cleanup(root)
 }
 
-pub fn a_dropped_definitions_check_names_the_drop_test() {
+pub fn a_gated_definitions_check_passes_on_its_own_targets_reading_test() {
   let root =
     support.write_fixture("build/dropped_definition_shadow_check", [
       #("gleam.toml", "name = \"app\"\n"),
       #("manifest.toml", stdlib_manifest),
-      #("app.graded", "check m.dropped : []\n"),
+      #("app.graded", "check m.dropped : [Stdout]\n"),
       #("m.gleam", dropped_definition_source),
     ])
   let assert Ok(reports) = graded.run(root)
   reports
   |> list.flat_map(fn(report: graded.ModuleReport) { report.violations })
-  |> list.any(string.contains(
-    _,
-    "which also names the module `gleam/io`, and for which the type inference did not establish the module-or-field reading (definition dropped for the other build target)",
-  ))
+  |> should.equal([])
+  support.cleanup(root)
+}
+
+pub fn a_mirrored_gated_definition_reads_on_the_erlang_run_test() {
+  // The mirror: a JavaScript-target package whose `@target(erlang)` definition
+  // holds the same shadowed call. The primary run is JavaScript and the second
+  // is Erlang, and the charge is the module's either way.
+  let root =
+    support.write_fixture("build/gated_definition_mirror", [
+      #("gleam.toml", "name = \"app\"\ntarget = \"javascript\"\n"),
+      #("manifest.toml", stdlib_manifest),
+      #(
+        "m.gleam",
+        "import gleam/io
+
+pub type Logger {
+  Loud(println: fn(String) -> Nil)
+  Quiet(n: Int)
+}
+
+@target(erlang)
+pub fn gated(io: Logger) -> Nil {
+  io.println(\"hi\")
+}
+",
+      ),
+    ])
+  let assert Ok(answered) = graded.run_effect(root, "m.gated")
+  answered
+  |> string.contains("effects m.gated : [Stdout]")
   |> should.be_true()
   support.cleanup(root)
+}
+
+// Which targets the inference runs on
+//
+// One run per target a *function* in the package is gated to, primary first. A
+// package with no gated function runs once and pays nothing for the shape.
+
+pub fn a_package_with_no_gated_function_runs_once_test() {
+  girard_targets_for(types.DefaultedTargets, "pub fn go() -> Nil { Nil }\n")
+  |> should.equal([girard.Erlang])
+}
+
+pub fn a_javascript_gated_function_adds_the_javascript_run_test() {
+  girard_targets_for(
+    types.DefaultedTargets,
+    "@target(javascript)\npub fn go() -> Nil { Nil }\n",
+  )
+  |> should.equal([girard.Erlang, girard.JavaScript])
+}
+
+pub fn an_erlang_gated_function_adds_the_erlang_run_test() {
+  girard_targets_for(
+    types.NamedTargets(set.from_list(["javascript"])),
+    "@target(erlang)\npub fn go() -> Nil { Nil }\n",
+  )
+  |> should.equal([girard.JavaScript, girard.Erlang])
+}
+
+pub fn a_target_attribute_that_names_nothing_triggers_no_run_test() {
+  // The shape `attribute_targets` declines, matching girard's own partition: a
+  // `@target` argument that is not a plain name gates nothing.
+  girard_targets_for(
+    types.DefaultedTargets,
+    "@target(\"javascript\")\npub fn go() -> Nil { Nil }\n",
+  )
+  |> should.equal([girard.Erlang])
+}
+
+pub fn a_gated_constant_alone_triggers_no_run_test() {
+  // A constant holds no call and can be referenced only from a function gated
+  // the same way, which triggers the run by itself. So the run stays single and
+  // the constant is left out of every run — the one place a drop survives.
+  let source =
+    "@target(javascript)\nconst mode = 1\n\npub fn go() -> Int { 2 }\n"
+  girard_targets_for(types.DefaultedTargets, source)
+  |> should.equal([girard.Erlang])
+
+  let assert Ok(module) = glance.module(source)
+  let type_info =
+    graded.annotate_on_targets(
+      [#("m", module)],
+      fn(_module_path) { Error(Nil) },
+      [girard.Erlang],
+    )
+  let assert Ok(constant) = list.first(module.constants)
+  let location = { constant.definition }.location
+  typeinfo.is_dropped(
+    { typeinfo.reading_for_module(type_info, "m") }.evidence.dropped,
+    location.start,
+    location.end,
+  )
+  |> should.be_true()
+}
+
+// The targets `girard_targets` picks for a one-module package.
+fn girard_targets_for(
+  package_targets: types.PackageTargets,
+  source: String,
+) -> List(girard.Target) {
+  let assert Ok(module) = glance.module(source)
+  graded.girard_targets(package_targets, [#("m", module)])
+}
+
+// The `#(start, end)` span of the first occurrence of `access` in `source`.
+fn access_span_of(source: String, access: String) -> glance.Span {
+  let assert Ok(#(before, _after)) = string.split_once(source, access)
+  let start = string.byte_size(before)
+  glance.Span(start, start + string.byte_size(access))
 }
 
 pub fn an_untyped_shadowed_call_says_why_it_charged_unknown_test() {
@@ -14736,6 +14868,78 @@ pub fn girard_types_a_path_dependency_from_the_consumers_tree_test() {
   support.cleanup(dep_root)
 }
 
+// A path dependency whose call sits inside a `@target(javascript)` function,
+// consumed from an Erlang-target project. The dep goes through the same funnel
+// the project does, so it is typed the way the project is.
+const gated_path_dep_source = "import dep/request.{type Request}
+
+@target(javascript)
+pub fn gated(request: Request) -> String {
+  request.path(request, \"!\")
+}
+"
+
+const gated_path_dep_request = "import gleam/io
+
+pub type Request {
+  Request(body: String)
+}
+
+pub fn path(request: Request, suffix: String) -> String {
+  io.println(request.body)
+  request.body <> suffix
+}
+"
+
+fn gated_path_dep_fixture() -> #(String, String) {
+  let dep_root =
+    support.write_fixture("build/gated_path_dep_dep", [
+      #("gleam.toml", "name = \"dep\"\n"),
+      #("manifest.toml", stdlib_manifest),
+      #("src/dep.gleam", gated_path_dep_source),
+      #("src/dep/request.gleam", gated_path_dep_request),
+    ])
+  let app_root =
+    support.write_fixture("build/gated_path_dep_app", [
+      #(
+        "gleam.toml",
+        "name = \"app\"\n\n[dependencies]\ndep = { path = \"../gated_path_dep_dep\" }\n",
+      ),
+      #("manifest.toml", stdlib_manifest),
+      #("app.gleam", "import dep\n\npub fn caller() -> Nil {\n  Nil\n}\n"),
+    ])
+  #(app_root, dep_root)
+}
+
+pub fn a_path_dependency_is_typed_on_the_targets_its_own_source_gates_test() {
+  let #(app_root, dep_root) = gated_path_dep_fixture()
+  let type_info =
+    graded.build_type_index(
+      graded.path_dep_index(dep_root),
+      graded.dependency_module_files(app_root),
+      types.DefaultedTargets,
+    )
+  type_info.targets |> should.equal([girard.Erlang, girard.JavaScript])
+  let reading = typeinfo.reading_for_module(type_info, "dep")
+  typeinfo.resolution_at(
+    reading.evidence.resolutions,
+    access_span_of(gated_path_dep_source, "request.path").start,
+    access_span_of(gated_path_dep_source, "request.path").end,
+  )
+  |> should.equal(Some(girard.ModuleFn("dep/request", "path")))
+  support.cleanup(app_root)
+  support.cleanup(dep_root)
+}
+
+pub fn a_call_into_a_gated_path_dependency_function_is_charged_test() {
+  let #(app_root, dep_root) = gated_path_dep_fixture()
+  let assert Ok(answered) = graded.run_effect(app_root, "dep.gated")
+  answered |> string.contains("Stdout") |> should.be_true()
+  answered |> string.contains("Unknown") |> should.be_false()
+  support.cleanup(app_root)
+  support.cleanup(dep_root)
+}
+
 pub fn a_typed_path_dependencys_module_call_is_charged_test() {
   let #(app_root, dep_root) = typed_path_dep_fixture()
   let assert Ok(answered) = graded.run_effect(app_root, "dep.handle")
@@ -15369,11 +15573,11 @@ pub fn the_collision_fixtures_never_read_the_module_test() {
   })
 }
 
-pub fn a_definition_dropped_for_the_other_target_has_no_typed_evidence_test() {
-  // Gleam compiles a whole build for one target, and girard takes one per run,
-  // so an Erlang-target package's `@target(javascript)` definitions are left
-  // out — reported as dropped rather than silently absent, which is what tells
-  // "girard never walked this" apart from "girard walked it and said nothing".
+pub fn a_definition_gated_to_the_other_target_is_typed_for_its_own_test() {
+  // girard runs once per target a definition is gated to, so an Erlang-target
+  // package's `@target(javascript)` definition is read on the JavaScript run
+  // and compared like any other. The reading a definition gets is its own
+  // target's: the Erlang run recorded nothing inside it.
   let root = "build/dropped_target_erlang"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"app\"\n"),
@@ -15394,16 +15598,16 @@ pub fn everywhere() -> Nil {
   ])
   let assert Ok(checks) = graded.classification_checks(root)
   relation_of(checks, "browser_only")
-  |> should.equal(Ok(types.NoTypedEvidence(types.DefinitionDropped)))
+  |> should.equal(Ok(types.Compared(types.Agree)))
   relation_of(checks, "everywhere")
   |> should.equal(Ok(types.Compared(types.Agree)))
   support.cleanup(root)
 }
 
-pub fn a_javascript_target_package_types_its_javascript_definitions_test() {
-  // The same module under a package that names JavaScript: girard is run on
-  // that target, so the definition is in the build and typed like any other,
-  // and it is the Erlang-only one that is dropped.
+pub fn a_javascript_target_package_types_both_gated_halves_test() {
+  // The same module under a package that names JavaScript: the primary run is
+  // that target and the second is Erlang, so each half is read on the target
+  // that builds it.
   let root = "build/dropped_target_javascript"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"app\"\ntarget = \"javascript\"\n"),
@@ -15427,15 +15631,14 @@ pub fn beam_only() -> Nil {
   relation_of(checks, "browser_only")
   |> should.equal(Ok(types.Compared(types.Agree)))
   relation_of(checks, "beam_only")
-  |> should.equal(Ok(types.NoTypedEvidence(types.DefinitionDropped)))
+  |> should.equal(Ok(types.Compared(types.Agree)))
   support.cleanup(root)
 }
 
-pub fn a_target_pairs_kept_twin_reads_its_own_resolution_test() {
-  // Both halves of a `@target` pair carry one name, so the drop is read by the
-  // definition's span: the JavaScript twin an Erlang build leaves out has no
-  // typed evidence, and the Erlang twin girard walked reads the resolution
-  // recorded inside it rather than its sibling's absence. The two call
+pub fn a_target_pairs_twins_each_read_their_own_resolution_test() {
+  // Both halves of a `@target` pair carry one name, so every entry is read by
+  // the definition's span: each twin reads the resolution recorded inside it on
+  // the run that builds it, and neither reads its sibling's. The two call
   // different labels, so each row names the twin it came from.
   let root = "build/dropped_target_pair"
   support.write_fixture(root, [
@@ -15462,7 +15665,7 @@ pub fn go() -> Nil {
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
   |> should.equal([
     #("print", types.Compared(types.Agree)),
-    #("println", types.NoTypedEvidence(types.DefinitionDropped)),
+    #("println", types.Compared(types.Agree)),
   ])
   support.cleanup(root)
 }

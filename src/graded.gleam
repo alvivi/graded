@@ -2688,61 +2688,183 @@ pub fn build_type_index(
   dep_files: Dict(String, String),
   package_targets: types.PackageTargets,
 ) -> typeinfo.TypeInfo {
-  let target = girard_target(package_targets)
-  let options =
-    girard.default_options()
-    |> girard.with_target(target)
-    |> girard.with_resolver(build_girard_resolver(index, dep_files))
   let entries =
     dict.to_list(index)
     |> list.map(fn(pair) {
       let #(module_path, #(_gleam_path, module)) = pair
       #(module_path, module)
     })
-  let results = girard.annotate_package(entries, options) |> dict.to_list()
-  let span_types =
-    list.map(results, fn(pair) {
-      let #(module_path, module_result) = pair
-      #(module_path, typeinfo.span_types(module_result))
-    })
-  let evidence =
-    list.filter_map(results, fn(pair) {
-      let #(module_path, module_result) = pair
-      case dict.get(index, module_path) {
-        Ok(#(_gleam_path, module)) ->
-          Ok(#(
-            module_path,
-            typeinfo.evidence_of(
-              module_result,
-              checker.error_bucket,
-              module,
-              target,
-            ),
-          ))
-        Error(Nil) -> Error(Nil)
-      }
-    })
-  let fn_typed =
-    list.filter_map(results, fn(pair) {
-      let #(module_path, module_result) = pair
-      case dict.get(index, module_path) {
-        Ok(#(_gleam_path, module)) ->
-          Ok(#(module_path, fn_typed_params_from_schemes(module_result, module)))
-        Error(Nil) -> Error(Nil)
-      }
-    })
-  let absent =
-    dict.keys(index)
-    |> set.from_list()
-    |> set.drop(list.map(results, fn(pair) { pair.0 }))
-  typeinfo.from_modules(
-    span_types,
-    fn_typed,
-    evidence,
-    [target],
-    absent,
-    set.new(),
+  annotate_on_targets(
+    entries,
+    build_girard_resolver(index, dep_files),
+    girard_targets(package_targets, entries),
   )
+}
+
+// The whole package annotated once per target and merged per module: the
+// primary run's reading whole, and a secondary run's only inside the
+// definitions the primary left out for the other target.
+//
+// A module the primary run returned no result for is `absent` — the largest
+// hole there is, and not a *dropped* one, so nothing fills it and every site in
+// it keeps reading as "no typed evidence". A module a secondary run returned no
+// result for bypasses the merge entirely and keeps the primary's reading whole,
+// drops included: intersecting the primary's drops with an empty set would read
+// the definitions that run never typed as typed ones.
+//
+// Split out from `build_type_index` so the coverage probe measures the merge
+// production runs rather than one of its own.
+@internal
+pub fn annotate_on_targets(
+  entries: List(#(String, glance.Module)),
+  resolver: fn(String) -> Result(String, Nil),
+  targets: List(girard.Target),
+) -> typeinfo.TypeInfo {
+  let modules = dict.from_list(entries)
+  let runs =
+    list.map(targets, fn(target) {
+      let options =
+        girard.default_options()
+        |> girard.with_target(target)
+        |> girard.with_resolver(resolver)
+      #(target, girard.annotate_package(entries, options))
+    })
+  case runs {
+    [] -> typeinfo.none()
+    [#(primary_target, primary_results), ..secondary_runs] -> {
+      let readings =
+        dict.to_list(primary_results)
+        |> list.filter_map(fn(pair) {
+          let #(module_path, module_result) = pair
+          use module <- result.map(dict.get(modules, module_path))
+          #(
+            module_path,
+            merged_reading(
+              target_reading(module_result, module, primary_target),
+              module,
+              module_path,
+              secondary_runs,
+            ),
+          )
+        })
+      typeinfo.from_modules(
+        list.map(readings, fn(pair) { #(pair.0, { pair.1 }.expressions) }),
+        list.map(readings, fn(pair) { #(pair.0, { pair.1 }.fn_typed) }),
+        list.map(readings, fn(pair) { #(pair.0, { pair.1 }.evidence) }),
+        targets,
+        dict.keys(modules)
+          |> set.from_list()
+          |> set.drop(dict.keys(primary_results)),
+        unfilled_modules(dict.keys(primary_results), secondary_runs),
+      )
+    }
+  }
+}
+
+// The primary run's reading of one module with every secondary run's folded
+// into it. A run that returned no result for this module is skipped rather than
+// merged as an empty reading, which would clear the primary's drops.
+fn merged_reading(
+  primary: typeinfo.TargetReading,
+  module: glance.Module,
+  module_path: String,
+  secondary_runs: List(#(girard.Target, Dict(String, girard.ModuleResult))),
+) -> typeinfo.ModuleReading {
+  list.fold(secondary_runs, primary, fn(acc, run) {
+    let #(target, results) = run
+    case dict.get(results, module_path) {
+      Error(Nil) -> acc
+      Ok(module_result) ->
+        typeinfo.TargetReading(
+          ..acc,
+          reading: typeinfo.merge_readings(
+            acc,
+            target_reading(module_result, module, target),
+          ),
+        )
+    }
+  }).reading
+}
+
+// The modules the primary run read that some secondary run did not.
+fn unfilled_modules(
+  read: List(String),
+  secondary_runs: List(#(girard.Target, Dict(String, girard.ModuleResult))),
+) -> Set(String) {
+  list.fold(secondary_runs, set.new(), fn(acc, run) {
+    list.filter(read, fn(module_path) { !dict.has_key({ run.1 }, module_path) })
+    |> list.fold(acc, set.insert)
+  })
+}
+
+// One run's reading of one module, beside the span of every function that run
+// kept — the identity the merge places a name-keyed fn-typed entry by.
+fn target_reading(
+  module_result: girard.ModuleResult,
+  module: glance.Module,
+  target: girard.Target,
+) -> typeinfo.TargetReading {
+  typeinfo.TargetReading(
+    target:,
+    reading: typeinfo.ModuleReading(
+      expressions: typeinfo.span_types(module_result),
+      fn_typed: fn_typed_params_from_schemes(module_result, module),
+      evidence: typeinfo.evidence_of(
+        module_result,
+        checker.error_bucket,
+        module,
+        target,
+      ),
+    ),
+    definitions: list.fold(module.functions, dict.new(), fn(acc, definition) {
+      let function = definition.definition
+      case
+        set.contains(
+          extract.compiled_targets(definition, types.every_target()),
+          typeinfo.target_name(target),
+        )
+      {
+        True ->
+          dict.insert(acc, function.name, #(
+            function.location.start,
+            function.location.end,
+          ))
+        False -> acc
+      }
+    }),
+  )
+}
+
+// The targets girard is run on, primary first: `girard_target`'s choice, then
+// the other target when some *function* in the package is gated to it by
+// `@target`. A package with no such function runs once and pays nothing.
+//
+// A constant does not trigger a run. graded classifies no constant and a
+// constant holds no call, and a constant gated to the other target can be
+// referenced only from a function gated the same way, which triggers the run by
+// itself. A package whose only gated definition is a constant therefore runs
+// once, and that constant stays left out of every run.
+@internal
+pub fn girard_targets(
+  package_targets: types.PackageTargets,
+  entries: List(#(String, glance.Module)),
+) -> List(girard.Target) {
+  let primary = girard_target(package_targets)
+  let other = case primary {
+    girard.Erlang -> girard.JavaScript
+    girard.JavaScript -> girard.Erlang
+  }
+  let gated_to_other =
+    list.any(entries, fn(entry) {
+      list.any({ entry.1 }.functions, fn(definition) {
+        extract.compiled_targets(definition, types.every_target())
+        == set.from_list([typeinfo.target_name(other)])
+      })
+    })
+  case gated_to_other {
+    True -> [primary, other]
+    False -> [primary]
+  }
 }
 
 // The one target girard is run on. Gleam compiles a whole build for a single
