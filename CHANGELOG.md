@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A definition gated to a build target with `@target` is now typed for that
+  target. The type inference runs once per target the package's own source
+  gates a function to, and each definition is read on the target that builds
+  it, so a shadowed receiver inside a `@target(javascript)` function of an
+  Erlang package — and the mirror — now reads the module or the field it
+  resolves to instead of `[Unknown]`, and a `check` over such a body that
+  could not be satisfied before now can be. A package with no gated function
+  runs the inference once, exactly as before.
 - A call through a receiver that shadows an imported module is now read as the
   module call or the field call by the type inference, not by a written
   parameter annotation. Where the inference settles neither, the call charges
