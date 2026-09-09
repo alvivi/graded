@@ -56,9 +56,21 @@ loaded_version(App) ->
         _ -> {error, nil}
     end.
 
-% The Erlang/OTP release running graded.
+% The Erlang/OTP version running graded, as `major.minor.patch`. The release
+% `erlang:system_info/1` answers with is the major alone, which no full version
+% can equal, so the release names the `OTP_VERSION` file under the code root and
+% that file is what is read. A patched installation states its `**` suffix
+% rather than dropping it. The release alone is the fallback when the file is
+% unreadable, which is the coarser answer and never a wrong one.
 otp_release() ->
-    {ok, unicode:characters_to_binary(erlang:system_info(otp_release))}.
+    Release = erlang:system_info(otp_release),
+    File = filename:join([code:root_dir(), "releases", Release, "OTP_VERSION"]),
+    case file:read_file(File) of
+        {ok, Contents} ->
+            {ok, string:trim(unicode:characters_to_binary(Contents))};
+        {error, _} ->
+            {ok, unicode:characters_to_binary(Release)}
+    end.
 
 % What `gleam --version` wrote. The only subprocess graded runs, and only
 % `graded coverage` runs it. `{error, nil}` when the binary is absent or on any

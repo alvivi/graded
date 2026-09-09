@@ -1267,7 +1267,7 @@ command that fails, and none of this is a property of your code.
 ```
 $ gleam run -m graded coverage
 graded 0.20.0
-gleam 1.18.0 (verified), erlang/OTP 28 (verified: 28.4.2), girard 3.0.0 (verified), glance 7.0.0
+gleam 1.18.0 (verified), erlang/OTP 28.4.2 (verified), girard 3.0.0 (verified), glance 7.0.0
 
 targets: erlang — gleam.toml declares none, so bodies are read on erlang and declarations on both
 type inference: ran on erlang; no @target function, so no second run
