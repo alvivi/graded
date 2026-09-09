@@ -41,11 +41,13 @@ pub type Observed {
 }
 
 // How a version graded observed at runtime stands to the ones it was verified
-// on. `Unobserved` is an honest answer, not a failure: a version can be
-// unreadable (the JavaScript target holds no application metadata, a `gleam`
-// binary may not be on the path), and a diagnostic says so rather than guessing.
+// on. Every standing but `Unobserved` carries the version it is the standing
+// of, so a reader states the version off the standing alone. `Unobserved` is an
+// honest answer, not a failure: a version can be unreadable (the JavaScript
+// target holds no application metadata, a `gleam` binary may not be on the
+// path), and a diagnostic says so rather than guessing.
 pub type VersionStanding {
-  Verified
+  Verified(observed: String)
   Unverified(observed: String, verified: List(String))
   Unobserved
 }
@@ -59,7 +61,7 @@ pub fn standing(
     Error(Nil) -> Unobserved
     Ok(version) ->
       case list.contains(verified, version) {
-        True -> Verified
+        True -> Verified(observed: version)
         False -> Unverified(observed: version, verified:)
       }
   }

@@ -198,18 +198,18 @@ fn stated(
   observed: Result(String, Nil),
   verified: List(String),
 ) -> String {
-  case observed, compat.standing(observed, verified) {
-    Error(Nil), _ -> name <> " not observed"
-    Ok(version), _ if verified == [] -> name <> " " <> version
-    Ok(version), compat.Verified -> name <> " " <> version <> " (verified)"
-    Ok(version), compat.Unverified(verified:, ..) ->
+  case compat.standing(observed, verified) {
+    compat.Unobserved -> name <> " not observed"
+    compat.Verified(observed: version) ->
+      name <> " " <> version <> " (verified)"
+    compat.Unverified(observed: version, verified: []) -> name <> " " <> version
+    compat.Unverified(observed: version, verified:) ->
       name
       <> " "
       <> version
       <> " (verified: "
       <> string.join(verified, ", ")
       <> ")"
-    Ok(version), compat.Unobserved -> name <> " " <> version
   }
 }
 
@@ -240,7 +240,7 @@ fn unverified_notice(
         <> string.join(verified, ", ")
         <> ")",
       )
-    compat.Verified | compat.Unobserved -> Error(Nil)
+    compat.Verified(..) | compat.Unobserved -> Error(Nil)
   }
 }
 
