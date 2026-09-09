@@ -9,11 +9,13 @@
 import filepath
 import gleam/dict
 import gleam/list
+import gleam/result
 import gleam/set
 import gleam/string
 import gleeunit/should
 import graded
 import graded/internal/annotation
+import graded/internal/compat
 import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/types.{
@@ -615,4 +617,50 @@ fn collision_message(group: List(effects.CatalogFile)) -> String {
   <> " parse to the same major.minor.patch; version selection cannot order "
   <> "them, so which one wins is filesystem order. Give one a distinct "
   <> "version or drop it."
+}
+
+// The tested pair
+//
+// The constants in `compat` name the versions the suite and the differential
+// corpus were run on. They are data a runtime read cannot replace — the files
+// below do not ship with the package — so a test reads the files instead and
+// fails until a bump to any of them is followed by a bump to the constants.
+
+pub fn the_verified_gleam_pin_is_the_tool_versions_one_test() {
+  // The last element is the pin; the head is the floor `gleam.toml` states.
+  let assert Ok(pinned) = list.last(compat.verified_gleam)
+  tool_version("gleam") |> should.equal(Ok(pinned))
+}
+
+pub fn the_verified_otp_is_the_tool_versions_one_test() {
+  tool_version("erlang") |> should.equal(Ok(compat.verified_otp))
+}
+
+pub fn the_verified_girard_is_the_manifests_one_test() {
+  let assert Ok(manifest) = simplifile.read("manifest.toml")
+  manifest_version(manifest, "girard")
+  |> should.equal(Ok(compat.verified_girard))
+}
+
+// The version `.tool-versions` pins for one tool.
+fn tool_version(tool: String) -> Result(String, Nil) {
+  use content <- result.try(
+    simplifile.read(".tool-versions") |> result.replace_error(Nil),
+  )
+  use line <- result.try(
+    string.split(content, "\n")
+    |> list.find(fn(line) { string.starts_with(line, tool <> " ") }),
+  )
+  string.split_once(line, " ") |> result.map(fn(pair) { string.trim(pair.1) })
+}
+
+// The version `manifest.toml` locks for one package.
+fn manifest_version(manifest: String, package: String) -> Result(String, Nil) {
+  use line <- result.try(
+    string.split(manifest, "\n")
+    |> list.find(string.contains(_, "name = \"" <> package <> "\"")),
+  )
+  use #(_before, after) <- result.try(string.split_once(line, "version = \""))
+  use #(version, _rest) <- result.map(string.split_once(after, "\""))
+  version
 }

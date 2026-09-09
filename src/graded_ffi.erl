@@ -1,5 +1,12 @@
 -module(graded_ffi).
--export([read_stdin/0, priv_directory/0, version/0]).
+-export([
+    read_stdin/0,
+    priv_directory/0,
+    version/0,
+    loaded_version/1,
+    otp_release/0,
+    compiler_version/0
+]).
 
 % Read all of standard input to EOF, as `{ok, Binary}` or `{error, Reason}`.
 % The read is set to UTF-8 explicitly, so the two targets agree on encoding as
@@ -36,6 +43,40 @@ version() ->
         {ok, Vsn} -> unicode:characters_to_binary(Vsn);
         _ -> <<"unknown">>
     end.
+
+% The version of any loaded application, read the same way. The applications
+% graded loaded are the analyzer in use whatever directory it points at, so this
+% answers for girard and glance as it does for graded itself. `{error, nil}`
+% when the application key can't be resolved.
+loaded_version(App) ->
+    Name = binary_to_atom(App, utf8),
+    _ = application:load(Name),
+    case application:get_key(Name, vsn) of
+        {ok, Vsn} -> {ok, unicode:characters_to_binary(Vsn)};
+        _ -> {error, nil}
+    end.
+
+% The Erlang/OTP release running graded.
+otp_release() ->
+    {ok, unicode:characters_to_binary(erlang:system_info(otp_release))}.
+
+% The Gleam compiler on the path, from `gleam --version`. The only subprocess
+% graded runs, and only `graded coverage` runs it. `{error, nil}` when the
+% binary is absent, when the output is not `gleam <version>`, or on any failure.
+compiler_version() ->
+    try os:cmd("gleam --version 2>/dev/null") of
+        Output -> parse_compiler_version(unicode:characters_to_binary(Output))
+    catch
+        _:_ -> {error, nil}
+    end.
+
+parse_compiler_version(Output) when is_binary(Output) ->
+    case string:lexemes(string:trim(binary_to_list(Output)), " ") of
+        ["gleam", Version | _] -> {ok, unicode:characters_to_binary(Version)};
+        _ -> {error, nil}
+    end;
+parse_compiler_version(_) ->
+    {error, nil}.
 
 read_lines(Device) ->
     case io:get_line(Device, "") of
