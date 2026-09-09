@@ -13,9 +13,11 @@
 // one provenance class. Nothing is derived by subtraction from a total, and
 // nothing is "typed" by omission.
 
+import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import graded/internal/compat
 import graded/internal/config
@@ -353,8 +355,8 @@ pub fn call_total(counts: CallCounts) -> Int {
 
 fn skipped_line(skipped: SkippedDefinition) -> String {
   let head = case skipped.location {
-    Some(location) -> "  " <> skipped.path <> " (" <> location <> ")"
-    None -> "  (unlocated) " <> skipped.path
+    Some(location) -> skipped.path <> " (" <> location <> ")"
+    None -> "(unlocated) " <> skipped.path
   }
   head
   <> ": "
@@ -366,8 +368,7 @@ fn skipped_line(skipped: SkippedDefinition) -> String {
 }
 
 fn site_line(row: SiteRow) -> String {
-  "  "
-  <> row.module
+  row.module
   <> "."
   <> row.function
   <> " `"
@@ -407,22 +408,17 @@ fn section(title: String, lines: List(String)) -> List(String) {
   }
 }
 
-// A section's own lines carry their indentation; the plain string lists (module
-// names, notices) get it here.
+// Every section's rows are rendered unindented and get their indentation here,
+// so a renderer added later does not have to know the convention.
 fn indented(lines: List(String)) -> List(String) {
-  list.map(lines, fn(line) {
-    case string.starts_with(line, "  ") {
-      True -> line
-      False -> "  " <> line
-    }
-  })
+  list.map(lines, fn(line) { "  " <> line })
 }
 
 // The `line:column` of a byte offset in `source`, one-based, with the column
 // counted in characters so a line holding a multi-byte character reads the way
 // an editor shows it.
 pub fn coordinates(source: String, offset: Int) -> String {
-  let before = string.slice(source, 0, byte_prefix_length(source, offset))
+  let before = byte_prefix(source, offset)
   let lines = string.split(before, "\n")
   let line = list.length(lines)
   let column = case list.last(lines) {
@@ -432,31 +428,21 @@ pub fn coordinates(source: String, offset: Int) -> String {
   int.to_string(line) <> ":" <> int.to_string(column)
 }
 
-// How many characters of `source` the first `offset` bytes cover. glance spans
-// are byte offsets and `string.slice` counts characters, so the two are bridged
-// here rather than at every call site.
-fn byte_prefix_length(source: String, offset: Int) -> Int {
-  count_characters(string.to_graphemes(source), offset, 0, 0)
-}
-
-fn count_characters(
-  graphemes: List(String),
-  offset: Int,
-  bytes: Int,
-  characters: Int,
-) -> Int {
-  case graphemes {
-    [] -> characters
-    [first, ..rest] ->
-      case bytes >= offset {
-        True -> characters
-        False ->
-          count_characters(
-            rest,
-            offset,
-            bytes + string.byte_size(first),
-            characters + 1,
-          )
+// The first `offset` bytes of `source` as a string. glance spans are byte
+// offsets while `string` counts characters, so the cut is made on the bytes and
+// the result decoded back, rather than walked character by character. An offset
+// landing inside a multi-byte character decodes to nothing, so the cut backs off
+// a byte at a time until it lands on a boundary.
+fn byte_prefix(source: String, offset: Int) -> String {
+  let bytes = bit_array.from_string(source)
+  case offset <= 0 {
+    True -> ""
+    False ->
+      case
+        bit_array.slice(bytes, 0, offset) |> result.try(bit_array.to_string)
+      {
+        Ok(prefix) -> prefix
+        Error(Nil) -> byte_prefix(source, offset - 1)
       }
   }
 }

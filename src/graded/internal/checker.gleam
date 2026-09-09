@@ -1961,12 +1961,18 @@ fn underivable_clause(reason: ReturnedOperatorReason) -> String {
 // halves are both stated whenever they differ, so a reader sees the pair rather
 // than a verdict on it.
 pub fn format_typed_resolution(check: ClassificationCheck) -> String {
-  let site = check.object <> "." <> check.label
+  check.object <> "." <> check.label <> ": " <> typed_resolution_detail(check)
+}
+
+// The same row without the site prefix, for a listing that already names the
+// site. The wording lives here rather than being reconstructed from the
+// formatted line, so `why` and any other surface say one thing about one site.
+pub fn typed_resolution_detail(check: ClassificationCheck) -> String {
   case relate(check) {
     NoTypedEvidence(reason:) ->
-      site <> ": no typed resolution (" <> undecided_reason_text(reason) <> ")"
+      "no typed resolution (" <> undecided_reason_text(reason) <> ")"
     Compared(comparison:) ->
-      resolution_line(site, typed_target(check.typed), comparison, check)
+      resolution_line(typed_target(check.typed), comparison, check)
   }
 }
 
@@ -1985,7 +1991,6 @@ fn typed_target(typed: TypedClassification) -> String {
 // Both halves are named wherever they differ, so a reader sees the pair rather
 // than a verdict on it.
 fn resolution_line(
-  site: String,
   target: String,
   comparison: Comparison,
   check: ClassificationCheck,
@@ -2002,7 +2007,7 @@ fn resolution_line(
       "compatible; graded charged " <> graded_target(check)
     Disagree, _ -> "DISAGREES with graded's " <> graded_target(check)
   }
-  site <> ": typed resolution " <> target <> " (" <> standing <> ")"
+  "typed resolution " <> target <> " (" <> standing <> ")"
 }
 
 // graded's half of a row, named as the thing it charged.

@@ -7230,10 +7230,7 @@ fn skipped_target(_calls: List(types.FieldCall)) -> typeinfo.ModuleReading {
     evidence: typeinfo.ModuleEvidence(
       resolutions: dict.new(),
       skipped: dict.from_list([
-        #(
-          #(location.start, location.end),
-          typeinfo.Skip(typeinfo.FunctionDefinition, "UnknownModule"),
-        ),
+        #(#(location.start, location.end), "UnknownModule"),
       ]),
       unlocated: [],
       dropped: set.new(),
@@ -7524,10 +7521,7 @@ fn evidence(
       Some(one) -> dict.from_list([#(#(10, 19), one)])
       None -> dict.new()
     },
-    skipped: list.map(skipped, fn(entry) {
-      #(entry.0, typeinfo.Skip(typeinfo.FunctionDefinition, entry.1))
-    })
-      |> dict.from_list(),
+    skipped: dict.from_list(skipped),
     unlocated: [],
     dropped: set.from_list(dropped),
   )

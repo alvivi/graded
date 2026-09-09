@@ -5,7 +5,7 @@
     version/0,
     loaded_version/1,
     otp_release/0,
-    compiler_version/0
+    compiler_output/0
 ]).
 
 % Read all of standard input to EOF, as `{ok, Binary}` or `{error, Reason}`.
@@ -60,23 +60,15 @@ loaded_version(App) ->
 otp_release() ->
     {ok, unicode:characters_to_binary(erlang:system_info(otp_release))}.
 
-% The Gleam compiler on the path, from `gleam --version`. The only subprocess
-% graded runs, and only `graded coverage` runs it. `{error, nil}` when the
-% binary is absent, when the output is not `gleam <version>`, or on any failure.
-compiler_version() ->
+% What `gleam --version` wrote. The only subprocess graded runs, and only
+% `graded coverage` runs it. `{error, nil}` when the binary is absent or on any
+% failure; the caller reads the format.
+compiler_output() ->
     try os:cmd("gleam --version 2>/dev/null") of
-        Output -> parse_compiler_version(unicode:characters_to_binary(Output))
+        Output -> {ok, unicode:characters_to_binary(Output)}
     catch
         _:_ -> {error, nil}
     end.
-
-parse_compiler_version(Output) when is_binary(Output) ->
-    case string:lexemes(string:trim(binary_to_list(Output)), " ") of
-        ["gleam", Version | _] -> {ok, unicode:characters_to_binary(Version)};
-        _ -> {error, nil}
-    end;
-parse_compiler_version(_) ->
-    {error, nil}.
 
 read_lines(Device) ->
     case io:get_line(Device, "") of

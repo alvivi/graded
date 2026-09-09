@@ -287,24 +287,19 @@ pub fn coverage(
   )
 }
 
-// One module's definitions of one kind as `#(typed, skip buckets, left out)`.
-// A definition left out of every run was never walked, so it is neither typed
-// nor skipped — the three are exclusive and sum to the definitions declared.
+// One module's definitions of one kind as `#(typed, skip buckets, left out)`,
+// each placed by `typeinfo.standing_of` — the same reading `graded coverage`
+// counts by, so the probe cannot report a different partition than the report.
 fn standing_of(
   locations: List(glance.Span),
   evidence: typeinfo.ModuleEvidence,
 ) -> #(Int, List(String), Int) {
   list.fold(locations, #(0, [], 0), fn(acc, location) {
     let #(typed, skipped, left_out) = acc
-    case typeinfo.is_dropped(evidence.dropped, location.start, location.end) {
-      True -> #(typed, skipped, left_out + 1)
-      False ->
-        case
-          typeinfo.skip_reason(evidence.skipped, location.start, location.end)
-        {
-          Some(bucket) -> #(typed, [bucket, ..skipped], left_out)
-          None -> #(typed + 1, skipped, left_out)
-        }
+    case typeinfo.standing_of(evidence, location) {
+      typeinfo.LeftOut -> #(typed, skipped, left_out + 1)
+      typeinfo.Skipped(bucket:) -> #(typed, [bucket, ..skipped], left_out)
+      typeinfo.Typed -> #(typed + 1, skipped, left_out)
     }
   })
 }

@@ -210,7 +210,7 @@ pub fn main() -> Nil {
 
     ["catalog", ..rest] -> report(cli.parse_catalog_args(rest), run_catalog)
 
-    ["coverage", ..rest] -> report(cli.parse_coverage_args(rest), run_coverage)
+    ["coverage", ..rest] -> report(cli.parse_directory_args(rest), run_coverage)
 
     [first] -> dispatch_unknown(first)
 
@@ -825,9 +825,11 @@ type ProjectContext {
     // than repeating the walk.
     dep_files: Dict(String, String),
     // What the inference read of each path dependency it typed, in declaration
-    // order. Observational, and the coverage report is the only reader: a
-    // dependency installed from hex is not typed and is not here.
-    typed_path_dependencies: List(#(String, typeinfo.TypeInfo)),
+    // order, counted where it was read. Observational, and the coverage report
+    // is the only reader: a dependency installed from hex is not typed and is
+    // not here. The counts are kept rather than the readings they came from,
+    // which every command would otherwise hold for its whole run.
+    typed_path_dependencies: List(coverage.PathDependency),
   )
 }
 
@@ -2204,6 +2206,8 @@ pub fn run_coverage(directory: String) -> Result(String, GradedError) {
   let rows = context_classification_checks(ctx)
   let ProjectContext(sources:, type_info:, typed_path_dependencies:, ..) = ctx
   let package_root = sources.package_root
+  let modules = package_modules(sources)
+  let unread = unread_modules(modules, type_info)
   coverage.render(coverage.CoverageReport(
     versions: coverage.Versions(
       observed: observed_versions(),
@@ -2217,33 +2221,49 @@ pub fn run_coverage(directory: String) -> Result(String, GradedError) {
       |> list.sort(string.compare),
     targets_source: sources.cfg.targets_source,
     ran_on: list.map(type_info.targets, typeinfo.target_name),
-    modules_read: list.length(sources.parsed) - unread_modules(ctx),
-    modules_unread: unread_modules(ctx),
-    functions: definition_counts(ctx, function_locations),
-    constants: definition_counts(ctx, constant_locations),
+    modules_read: list.length(modules) - unread,
+    modules_unread: unread,
+    functions: definition_counts(modules, type_info, function_locations),
+    constants: definition_counts(modules, type_info, constant_locations),
     calls: call_counts(rows),
-    skipped: skipped_definitions(ctx),
-    undecided: listed_sites(ctx, rows, is_undecided),
-    lexical_no_evidence: listed_sites(ctx, rows, is_lexical_without_evidence),
-    disagreements: listed_sites(ctx, rows, is_disagreement),
-    mismatches: listed_sites(ctx, rows, is_identity_mismatch),
+    skipped: skipped_definitions(modules, type_info),
+    undecided: listed_sites(sources.index, rows, is_undecided),
+    lexical_no_evidence: listed_sites(
+      sources.index,
+      rows,
+      is_lexical_without_evidence,
+    ),
+    disagreements: listed_sites(sources.index, rows, is_disagreement),
+    mismatches: listed_sites(sources.index, rows, is_identity_mismatch),
     unfilled_modules: set.to_list(type_info.unfilled)
       |> list.sort(string.compare),
-    path_dependencies: list.map(typed_path_dependencies, path_dependency_row),
+    path_dependencies: typed_path_dependencies,
   ))
+}
+
+// Every module this package declares, in source order, each beside the path the
+// inference keyed it under. The join between glance's files and the type index
+// is made here once and handed to every count and listing below.
+fn package_modules(
+  sources: ProjectSources,
+) -> List(#(String, String, glance.Module)) {
+  list.map(sources.parsed, fn(entry) {
+    let #(gleam_path, module) = entry
+    #(
+      config.module_path_for_source(gleam_path, sources.source_directory),
+      gleam_path,
+      module,
+    )
+  })
 }
 
 // The modules the inference returned no result for, among the ones this package
 // declares.
-fn unread_modules(ctx: ProjectContext) -> Int {
-  list.count(module_paths(ctx), set.contains(ctx.type_info.absent, _))
-}
-
-// Every module this package declares, by the path the inference keyed it under.
-fn module_paths(ctx: ProjectContext) -> List(String) {
-  list.map(ctx.sources.parsed, fn(entry) {
-    config.module_path_for_source(entry.0, ctx.sources.source_directory)
-  })
+fn unread_modules(
+  modules: List(#(String, String, glance.Module)),
+  type_info: typeinfo.TypeInfo,
+) -> Int {
+  list.count(modules, fn(entry) { set.contains(type_info.absent, entry.0) })
 }
 
 fn function_locations(module: glance.Module) -> List(glance.Span) {
@@ -2262,35 +2282,31 @@ fn constant_locations(module: glance.Module) -> List(glance.Span) {
 // inference read, each is exactly one of typed, skipped or left out; an unread
 // module's are unread and in no other count.
 fn definition_counts(
-  ctx: ProjectContext,
+  modules: List(#(String, String, glance.Module)),
+  type_info: typeinfo.TypeInfo,
   locations_of: fn(glance.Module) -> List(glance.Span),
 ) -> coverage.DefinitionCounts {
   use counts, entry <- list.fold(
-    ctx.sources.parsed,
+    modules,
     coverage.DefinitionCounts(typed: 0, skipped: 0, left_out: 0, unread: 0),
   )
-  let #(gleam_path, module) = entry
-  let module_path =
-    config.module_path_for_source(gleam_path, ctx.sources.source_directory)
+  let #(module_path, _gleam_path, module) = entry
   let locations = locations_of(module)
-  case set.contains(ctx.type_info.absent, module_path) {
+  case set.contains(type_info.absent, module_path) {
     True ->
       coverage.DefinitionCounts(
         ..counts,
         unread: counts.unread + list.length(locations),
       )
     False -> {
-      let evidence = typeinfo.evidence_for_module(ctx.type_info, module_path)
+      let evidence = typeinfo.evidence_for_module(type_info, module_path)
       use counts, location <- list.fold(locations, counts)
-      case
-        typeinfo.is_dropped(evidence.dropped, location.start, location.end),
-        typeinfo.skip_reason(evidence.skipped, location.start, location.end)
-      {
-        True, _ ->
+      case typeinfo.standing_of(evidence, location) {
+        typeinfo.LeftOut ->
           coverage.DefinitionCounts(..counts, left_out: counts.left_out + 1)
-        False, Some(_) ->
+        typeinfo.Skipped(..) ->
           coverage.DefinitionCounts(..counts, skipped: counts.skipped + 1)
-        False, None ->
+        typeinfo.Typed ->
           coverage.DefinitionCounts(..counts, typed: counts.typed + 1)
       }
     }
@@ -2350,18 +2366,24 @@ fn is_identity_mismatch(row: types.ClassificationCheck) -> Bool {
 // Every definition the inference declined, with where it sits. A skip naming no
 // definition the module declares keeps its name and its bucket and no location.
 fn skipped_definitions(
-  ctx: ProjectContext,
+  modules: List(#(String, String, glance.Module)),
+  type_info: typeinfo.TypeInfo,
 ) -> List(coverage.SkippedDefinition) {
-  use entry <- list.flat_map(ctx.sources.parsed)
-  let #(gleam_path, module) = entry
-  let module_path =
-    config.module_path_for_source(gleam_path, ctx.sources.source_directory)
-  let evidence = typeinfo.evidence_for_module(ctx.type_info, module_path)
+  use entry <- list.flat_map(modules)
+  let #(module_path, gleam_path, module) = entry
+  let evidence = typeinfo.evidence_for_module(type_info, module_path)
+  // Read only for a module that has a skip to place, and read once for both
+  // kinds rather than once per skip.
+  let source = case dict.is_empty(evidence.skipped) {
+    True -> Error(Nil)
+    False -> simplifile.read(gleam_path) |> result.replace_error(Nil)
+  }
   let placed =
     list.append(
       skipped_of(
         module_path,
         gleam_path,
+        source,
         evidence,
         coverage.Function,
         list.map(module.functions, fn(definition) {
@@ -2371,6 +2393,7 @@ fn skipped_definitions(
       skipped_of(
         module_path,
         gleam_path,
+        source,
         evidence,
         coverage.Constant,
         list.map(module.constants, fn(definition) {
@@ -2394,6 +2417,7 @@ fn skipped_definitions(
 fn skipped_of(
   module_path: String,
   gleam_path: String,
+  source: Result(String, Nil),
   evidence: typeinfo.ModuleEvidence,
   kind: coverage.DefinitionKind,
   definitions: List(#(String, glance.Span)),
@@ -2405,7 +2429,7 @@ fn skipped_of(
   )
   coverage.SkippedDefinition(
     path: module_path <> "." <> name,
-    location: Some(site_location(gleam_path, location.start)),
+    location: Some(site_location(gleam_path, source, location.start)),
     kind:,
     bucket:,
   )
@@ -2414,58 +2438,70 @@ fn skipped_of(
 // The rows one listing shows, each with its source coordinates and the wording
 // `check` and `why` use for the same site.
 fn listed_sites(
-  ctx: ProjectContext,
+  index: Dict(String, #(String, glance.Module)),
   rows: List(types.ClassificationCheck),
   keep: fn(types.ClassificationCheck) -> Bool,
 ) -> List(coverage.SiteRow) {
-  let paths =
-    list.fold(ctx.sources.parsed, dict.new(), fn(acc, entry) {
-      dict.insert(
-        acc,
-        config.module_path_for_source(entry.0, ctx.sources.source_directory),
-        entry.0,
-      )
+  // A listing can hold many rows in one module; the memo keeps each file to a
+  // single read rather than one per row.
+  let #(_sources, listed) =
+    list.fold(list.filter(rows, keep), #(dict.new(), []), fn(acc, row) {
+      let #(sources, listed) = acc
+      case dict.get(index, row.module) {
+        Error(Nil) -> acc
+        Ok(#(gleam_path, _module)) -> {
+          let #(sources, source) = source_text(sources, gleam_path)
+          #(sources, [
+            coverage.SiteRow(
+              module: row.module,
+              function: row.function,
+              site: row.object <> "." <> row.label,
+              location: site_location(gleam_path, source, row.span.start),
+              detail: checker.typed_resolution_detail(row),
+            ),
+            ..listed
+          ])
+        }
+      }
     })
-  use row <- list.filter_map(list.filter(rows, keep))
-  use gleam_path <- result.map(dict.get(paths, row.module))
-  coverage.SiteRow(
-    module: row.module,
-    function: row.function,
-    site: row.object <> "." <> row.label,
-    location: site_location(gleam_path, row.span.start),
-    detail: site_detail(row),
-  )
+  list.reverse(listed)
 }
 
-// What is said about one site, in `checker`'s own words: the row `why` prints
-// with its site prefix removed, since the listing already names the site and
-// its coordinates. Taking the whole line and trimming it, rather than wording a
-// reason here, is what keeps `check`, `why` and this report from describing one
-// site three ways.
-fn site_detail(row: types.ClassificationCheck) -> String {
-  let line = checker.format_typed_resolution(row)
-  let prefix = row.object <> "." <> row.label <> ": "
-  case string.starts_with(line, prefix) {
-    True -> string.drop_start(line, string.length(prefix))
-    False -> line
+// One file's text out of the memo, reading it the first time it is asked for.
+fn source_text(
+  sources: Dict(String, Result(String, Nil)),
+  gleam_path: String,
+) -> #(Dict(String, Result(String, Nil)), Result(String, Nil)) {
+  case dict.get(sources, gleam_path) {
+    Ok(source) -> #(sources, source)
+    Error(Nil) -> {
+      let source = simplifile.read(gleam_path) |> result.replace_error(Nil)
+      #(dict.insert(sources, gleam_path, source), source)
+    }
   }
 }
 
-// `path:line:column` for one byte offset. The file is re-read here, in a
-// read-only command, rather than kept in the context for a listing that is
-// usually empty.
-fn site_location(gleam_path: String, offset: Int) -> String {
-  case simplifile.read(gleam_path) {
+// `path:line:column` for one byte offset. The source is read at the listing, in
+// a read-only command, rather than kept in the context for a listing that is
+// usually empty; an unreadable file leaves the path bare.
+fn site_location(
+  gleam_path: String,
+  source: Result(String, Nil),
+  offset: Int,
+) -> String {
+  case source {
     Ok(source) -> gleam_path <> ":" <> coverage.coordinates(source, offset)
-    Error(_) -> gleam_path
+    Error(Nil) -> gleam_path
   }
 }
 
 // One typed path dependency's own reading, counted the way the package's is.
+// Counted where the reading is made, so the reading itself need not be held for
+// the rest of the run.
 fn path_dependency_row(
-  entry: #(String, typeinfo.TypeInfo),
+  package: String,
+  type_info: typeinfo.TypeInfo,
 ) -> coverage.PathDependency {
-  let #(package, type_info) = entry
   coverage.PathDependency(
     package:,
     ran_on: list.map(type_info.targets, typeinfo.target_name),
@@ -3049,7 +3085,7 @@ pub fn annotate_on_targets(
           #(
             module_path,
             merged_reading(
-              target_reading(module_result, module, primary_target),
+              primary_reading(module_result, module, primary_target),
               module,
               module_path,
               secondary_runs,
@@ -3073,26 +3109,28 @@ pub fn annotate_on_targets(
 // The primary run's reading of one module with every secondary run's folded
 // into it. A run that returned no result for this module is skipped rather than
 // merged as an empty reading, which would clear the primary's drops.
+//
+// A module the primary run left nothing out of has no hole for a secondary run
+// to fill, so the merge over it is the identity and its secondary reading is
+// never built. That is every module but the handful holding a `@target` pair.
 fn merged_reading(
-  primary: typeinfo.TargetReading,
+  primary: typeinfo.ModuleReading,
   module: glance.Module,
   module_path: String,
   secondary_runs: List(#(girard.Target, Dict(String, girard.ModuleResult))),
 ) -> typeinfo.ModuleReading {
+  use <- bool.guard(set.is_empty(primary.evidence.dropped), primary)
   list.fold(secondary_runs, primary, fn(acc, run) {
     let #(target, results) = run
     case dict.get(results, module_path) {
       Error(Nil) -> acc
-      Ok(module_result) ->
-        typeinfo.TargetReading(
-          ..acc,
-          reading: typeinfo.merge_readings(
-            acc,
-            target_reading(module_result, module, target),
-          ),
-        )
+      Ok(module_result) -> {
+        let #(reading, definitions) =
+          secondary_reading(module_result, module, target)
+        typeinfo.merge_readings(acc, reading, definitions)
+      }
     }
-  }).reading
+  })
 }
 
 // The modules the primary run read that some secondary run did not.
@@ -3106,33 +3144,37 @@ fn unfilled_modules(
   })
 }
 
-// One run's reading of one module, beside the span of every function that run
-// kept — the identity the merge places a name-keyed fn-typed entry by.
-fn target_reading(
+// The primary run's reading of one module. Nothing places its fn-typed entries
+// against a hole — the holes are its own — so it carries no definition spans.
+fn primary_reading(
   module_result: girard.ModuleResult,
   module: glance.Module,
   target: girard.Target,
-) -> typeinfo.TargetReading {
-  typeinfo.TargetReading(
-    target:,
-    reading: typeinfo.ModuleReading(
-      expressions: typeinfo.span_types(module_result),
-      fn_typed: fn_typed_params_from_schemes(module_result, module),
-      evidence: typeinfo.evidence_of(
-        module_result,
-        checker.error_bucket,
-        module,
-        target,
-      ),
+) -> typeinfo.ModuleReading {
+  typeinfo.ModuleReading(
+    expressions: typeinfo.span_types(module_result),
+    fn_typed: fn_typed_params_from_schemes(module_result, module),
+    evidence: typeinfo.evidence_of(
+      module_result,
+      checker.error_bucket,
+      module,
+      target,
     ),
-    definitions: list.fold(module.functions, dict.new(), fn(acc, definition) {
+  )
+}
+
+// A secondary run's reading of one module, beside the span of every function
+// that run kept — the identity the merge places a name-keyed fn-typed entry by.
+fn secondary_reading(
+  module_result: girard.ModuleResult,
+  module: glance.Module,
+  target: girard.Target,
+) -> #(typeinfo.ModuleReading, Dict(String, #(Int, Int))) {
+  #(
+    primary_reading(module_result, module, target),
+    list.fold(module.functions, dict.new(), fn(acc, definition) {
       let function = definition.definition
-      case
-        set.contains(
-          extract.compiled_targets(definition, types.every_target()),
-          typeinfo.target_name(target),
-        )
-      {
+      case typeinfo.kept_on_target(definition, target) {
         True ->
           dict.insert(acc, function.name, #(
             function.location.start,
@@ -4773,7 +4815,7 @@ fn enrich_with_path_deps(
 ) -> #(
   KnowledgeBase,
   Dict(String, typeinfo.ModuleReading),
-  List(#(String, typeinfo.TypeInfo)),
+  List(coverage.PathDependency),
 ) {
   let path_deps =
     effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
@@ -4799,9 +4841,9 @@ fn enrich_with_path_deps(
       let type_info =
         path_dep_type_info(resolved_dep_path, index, dep_files, package_targets)
       let readings = retained_readings(readings, index, type_info, retained)
-      // Kept beside the knowledge base for the coverage report: a dependency
-      // installed from hex is not typed and has none of this.
-      let typed = [#(name, type_info), ..typed]
+      // Counted beside the knowledge base for the coverage report: a
+      // dependency installed from hex is not typed and has none of this.
+      let typed = [path_dependency_row(name, type_info), ..typed]
       case
         infer_typed_path_dep(
           resolved_dep_path,
@@ -5496,9 +5538,26 @@ fn loaded_version(application: String) -> Result(String, Nil)
 @external(javascript, "./graded_ffi.mjs", "otp_release")
 fn otp_release() -> Result(String, Nil)
 
-// The Gleam compiler on the path, from `gleam --version`. The only subprocess
-// graded runs, and only `graded coverage` runs it: `check`, `infer`, `effect`
-// and `why` stay subprocess-free.
-@external(erlang, "graded_ffi", "compiler_version")
-@external(javascript, "./graded_ffi.mjs", "compiler_version")
-fn compiler_version() -> Result(String, Nil)
+// The version `gleam --version` reports, or `Error(Nil)` where the binary is
+// absent or answers anything but `gleam <version>`.
+fn compiler_version() -> Result(String, Nil) {
+  compiler_output() |> result.try(parse_compiler_version)
+}
+
+// The version out of `gleam --version`'s output. The FFI runs the subprocess
+// and this reads what it wrote, so one reading of the format serves both
+// targets and one test covers both.
+@internal
+pub fn parse_compiler_version(output: String) -> Result(String, Nil) {
+  case string.split(string.trim(output), " ") {
+    ["gleam", version, ..] -> Ok(version)
+    _ -> Error(Nil)
+  }
+}
+
+// What `gleam --version` wrote. The only subprocess graded runs, and only
+// `graded coverage` runs it: `check`, `infer`, `effect` and `why` stay
+// subprocess-free.
+@external(erlang, "graded_ffi", "compiler_output")
+@external(javascript, "./graded_ffi.mjs", "compiler_output")
+fn compiler_output() -> Result(String, Nil)

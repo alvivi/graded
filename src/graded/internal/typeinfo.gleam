@@ -28,6 +28,7 @@
 
 import girard.{type Error, type Resolution, type Type, Named}
 import glance
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -78,23 +79,10 @@ pub type TypeInfo {
 pub type ModuleEvidence {
   ModuleEvidence(
     resolutions: Dict(#(Int, Int), Resolution),
-    skipped: Dict(#(Int, Int), Skip),
+    skipped: Dict(#(Int, Int), String),
     unlocated: List(#(String, String)),
     dropped: Set(#(Int, Int)),
   )
-}
-
-// One definition girard declined: what kind of definition it was, and the
-// error bucket that declined it. The kind is kept because girard skips
-// functions and constants alike and a reader counts the two apart.
-pub type Skip {
-  Skip(kind: DefinitionKind, bucket: String)
-}
-
-// Which of the two kinds of top-level definition a skip or a drop names.
-pub type DefinitionKind {
-  FunctionDefinition
-  ConstantDefinition
 }
 
 // The empty reading — girard said nothing about this module, so every site in it
@@ -107,7 +95,8 @@ pub fn no_evidence() -> ModuleEvidence {
 // girard's reading of one module, folded out of its annotation result.
 // `skip_bucket` reduces an error to the stable bucket the reading keeps; the
 // glance module and the run's target place each skipped name on the span of the
-// definition of that name the run kept.
+// definition of that name the run kept. girard skips functions and constants
+// alike, and the span alone tells a reader which it was.
 //
 // A skip naming no definition the module declares on this target goes to
 // `unlocated` whole: a span it has not got cannot be invented, and two unplaced
@@ -123,10 +112,7 @@ pub fn evidence_of(
       let #(skipped, unlocated) = acc
       let #(name, error) = entry
       case locate_definition(module, target, name) {
-        Ok(#(span, kind)) -> #(
-          dict.insert(skipped, span, Skip(kind:, bucket: skip_bucket(error))),
-          unlocated,
-        )
+        Ok(span) -> #(dict.insert(skipped, span, skip_bucket(error)), unlocated)
         Error(Nil) -> #(skipped, [#(name, skip_bucket(error)), ..unlocated])
       }
     })
@@ -150,22 +136,21 @@ pub fn evidence_of(
   )
 }
 
-// The span and kind of the definition named `name` that the run's target keeps.
-// Gleam admits one on-target definition per name, so the first match is the
-// only one; a name matching none — girard named a definition this module does
-// not declare — answers `Error(Nil)` and the skip stays unlocated.
+// The span of the definition named `name` that the run's target keeps. Gleam
+// admits one on-target definition per name, so the first match is the only one;
+// a name matching none — girard named a definition this module does not declare
+// — answers `Error(Nil)` and the skip stays unlocated.
 fn locate_definition(
   module: glance.Module,
   target: girard.Target,
   name: String,
-) -> Result(#(#(Int, Int), DefinitionKind), Nil) {
+) -> Result(#(Int, Int), Nil) {
   case
     list.find(module.functions, fn(definition) {
       definition.definition.name == name && kept_on_target(definition, target)
     })
   {
-    Ok(definition) ->
-      Ok(#(span_of(definition.definition.location), FunctionDefinition))
+    Ok(definition) -> Ok(span_of(definition.definition.location))
     Error(Nil) ->
       case
         list.find(module.constants, fn(definition) {
@@ -173,8 +158,7 @@ fn locate_definition(
           && kept_on_target(definition, target)
         })
       {
-        Ok(definition) ->
-          Ok(#(span_of(definition.definition.location), ConstantDefinition))
+        Ok(definition) -> Ok(span_of(definition.definition.location))
         Error(Nil) -> Error(Nil)
       }
   }
@@ -182,7 +166,7 @@ fn locate_definition(
 
 // Whether the run's target compiles this definition — girard's own `@target`
 // partition, read from graded's side of the same attribute.
-fn kept_on_target(
+pub fn kept_on_target(
   definition: glance.Definition(a),
   target: girard.Target,
 ) -> Bool {
@@ -315,43 +299,31 @@ pub fn no_reading() -> ModuleReading {
 // included — a function both runs kept can type on the primary and fail on the
 // secondary, and importing that skip would move a proved charge to `[Unknown]`.
 
-// The reading girard produced on one target, before the merge. `target` is
-// carried for the coverage report and for nothing else; `definitions` holds the
-// span of every function the run kept, by name, which is the identity the merge
-// needs to place a name-keyed `fn_typed` entry inside or outside a hole.
-pub type TargetReading {
-  TargetReading(
-    target: girard.Target,
-    reading: ModuleReading,
-    definitions: Dict(String, #(Int, Int)),
-  )
-}
-
 // `primary` whole, then every entry of `secondary` — expression, resolution,
 // skip, or fn-typed signature — whose definition lies inside a span
-// `primary.reading.evidence.dropped` holds, and no other.
+// `primary.evidence.dropped` holds, and no other. `secondary_definitions` holds
+// the span of every function the secondary run kept, by name, which is the
+// identity the merge needs to place a name-keyed `fn_typed` entry inside or
+// outside a hole.
 //
 // The merged `dropped` is the intersection: a definition both runs left out is
 // still left out, and one the secondary run built is not. `unlocated` is the
 // primary's alone — an unlocated skip names no span, so nothing can place it in
 // a hole.
 pub fn merge_readings(
-  primary: TargetReading,
-  secondary: TargetReading,
+  primary: ModuleReading,
+  secondary: ModuleReading,
+  secondary_definitions: Dict(String, #(Int, Int)),
 ) -> ModuleReading {
-  let holes = set.to_list(primary.reading.evidence.dropped)
-  let primary_evidence = primary.reading.evidence
-  let secondary_evidence = secondary.reading.evidence
+  let holes = set.to_list(primary.evidence.dropped)
+  let primary_evidence = primary.evidence
+  let secondary_evidence = secondary.evidence
   ModuleReading(
-    expressions: fill(
-      primary.reading.expressions,
-      secondary.reading.expressions,
-      holes,
-    ),
+    expressions: fill(primary.expressions, secondary.expressions, holes),
     fn_typed: fill_fn_typed(
-      primary.reading.fn_typed,
-      secondary.reading.fn_typed,
-      secondary.definitions,
+      primary.fn_typed,
+      secondary.fn_typed,
+      secondary_definitions,
       holes,
     ),
     evidence: ModuleEvidence(
@@ -487,19 +459,42 @@ pub fn resolution_at(
   }
 }
 
+// Where one declared definition stands in a run's reading. The three are
+// exclusive and every definition of a module the run read is exactly one of
+// them, so a count built from this cannot double-count or leave a definition
+// out. A definition left out of every run was never walked, which is why it
+// takes precedence over a skip.
+pub type DefinitionStanding {
+  LeftOut
+  Skipped(bucket: String)
+  Typed
+}
+
+// The standing of the definition occupying `location`.
+pub fn standing_of(
+  evidence: ModuleEvidence,
+  location: glance.Span,
+) -> DefinitionStanding {
+  use <- bool.guard(
+    is_dropped(evidence.dropped, location.start, location.end),
+    LeftOut,
+  )
+  case skip_reason(evidence.skipped, location.start, location.end) {
+    Some(bucket) -> Skipped(bucket)
+    None -> Typed
+  }
+}
+
 // The error bucket girard declined the definition spanning `#(start, end)`
 // with, or `None` if it typed it. The span is the definition's own, the same
 // key `is_dropped` reads, so one half of a `@target` pair being declined says
 // nothing about the half beside it.
 pub fn skip_reason(
-  module_skipped: Dict(#(Int, Int), Skip),
+  module_skipped: Dict(#(Int, Int), String),
   start: Int,
   end: Int,
 ) -> Option(String) {
-  case dict.get(module_skipped, #(start, end)) {
-    Ok(skip) -> Some(skip.bucket)
-    Error(Nil) -> None
-  }
+  dict.get(module_skipped, #(start, end)) |> option.from_result()
 }
 
 // Whether girard left the definition spanning `#(start, end)` out of the build

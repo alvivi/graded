@@ -12,6 +12,8 @@
 // against `.tool-versions`, `manifest.toml` and `gleam.toml`, so a bump to any
 // of those fails the suite until the constants follow.
 
+import gleam/list
+
 // Every Gleam compiler the suite and the differential corpus were clean on,
 // lowest first: the floor, then the pin. `gleam.toml`'s `gleam = ">= …"` names
 // the head, and the pin in `.tool-versions` is the last element.
@@ -56,23 +58,9 @@ pub fn standing(
   case observed {
     Error(Nil) -> Unobserved
     Ok(version) ->
-      case contains(verified, version) {
+      case list.contains(verified, version) {
         True -> Verified
         False -> Unverified(observed: version, verified:)
-      }
-  }
-}
-
-// Whether the list holds this version. Spelled out rather than reached for
-// through `list`, which this module would otherwise import for one membership
-// test over a list of at most a handful of strings.
-fn contains(verified: List(String), version: String) -> Bool {
-  case verified {
-    [] -> False
-    [first, ..rest] ->
-      case first == version {
-        True -> True
-        False -> contains(rest, version)
       }
   }
 }
