@@ -824,6 +824,14 @@ a `gleam build --target javascript` against such a package is invisible to it:
 
 Declaring `[tools.graded].targets` replaces both readings with what you wrote.
 
+The type inference follows a `@target` attribute to its own target rather than to
+the package's. It runs once per target some function in your source is gated to —
+`gleam.toml`'s reading picks the first — and each definition is typed on the run
+that builds it, so a call inside a `@target(javascript)` function of an
+Erlang-target package is read as precisely as one outside it. A package with no
+gated function runs the inference once and pays nothing for the shape.
+`graded coverage` states which targets it ran on and why.
+
 That body is weighed *on the targets it runs on*. A name it calls is reached from
 those targets and no others, so a fallback running on Erlang that calls another
 `@external(javascript, …)` reaches the callee's Gleam fallback, never the foreign
@@ -1141,9 +1149,10 @@ one site and neither is wrong — most often, graded resolved the field at its
 construction site and charged the value wired in, where the type inference names
 the member the access reaches. `DISAGREES` means one read the module where the
 other read the field, which is worth reporting. A line reading `no typed
-resolution` names why there was none — the enclosing definition was dropped for
-the other build target, the inference declined the function, nothing was
-recorded at the site, or what was recorded is not this site's target.
+resolution` names why there was none — the inference declined the function,
+nothing was recorded at the site, what was recorded is not this site's target,
+or the enclosing definition was dropped for the other build target. That last
+one is expected at no site: every `@target` function gets a run of its own.
 
 The section covers the named function's own body only. A contributor reached
 through a same-module call is one `why` on that callee away, and its resolutions
@@ -1248,6 +1257,69 @@ form when functions differ. Both forms apply uniformly to hex and path
 dependencies — a module-level external suppresses path-dep source inference for
 that module, so it resolves to the declared set rather than an inferred `[Unknown]`.
 This keeps your effect knowledge in your own spec file, versioned with your project.
+
+## Reporting what the inference read
+
+`graded coverage [dir]` says what the type inference could and could not read of
+one package. It is read-only, decides nothing, and always exits 0: `check` is the
+command that fails, and none of this is a property of your code.
+
+```
+$ gleam run -m graded coverage
+graded 0.20.0
+gleam 1.18.0 (verified), erlang/OTP 28 (verified: 28.4.2), girard 3.0.0 (verified), glance 7.0.0
+
+targets: erlang — gleam.toml declares none, so bodies are read on erlang and declarations on both
+type inference: ran on erlang; no @target function, so no second run
+
+modules: 18 read, 0 unread
+functions: 1109 typed, 0 skipped, 0 left out of every run, 0 unread
+constants: 39 typed, 0 skipped, 0 left out of every run, 0 unread
+ambiguous calls: 3244 — 1 decided by the type inference, 3243 settled lexically with the inference agreeing, 0 settled lexically with no typed evidence, 0 wired from a construction, 0 undecided; 0 disagreements
+
+path dependencies: none
+```
+
+The counts are disjoint. A module is *read* or *unread* — unread means the
+inference returned nothing for it at all, and its definitions are then in no
+other count. Within a read module every function and every constant is exactly
+one of *typed*, *skipped* (the inference declined it) or *left out of every run*
+(gated to a target nothing ran on). Every ambiguous call is in exactly one class,
+and the headline is what the classes sum to.
+
+`left out of every run` is expected at zero for functions. A gated *constant* can
+leave it non-zero: a constant triggers no run of its own, since it holds no call
+and can be referenced only from a function gated the same way.
+
+Where something is worth naming, a section follows the counts, each present only
+when it has a row — skipped definitions with their error bucket, undecided calls
+and lexically settled calls with no typed evidence, disagreements, identity
+mismatches, and modules a second run could not read. Every row carries its
+`file:line:column`, so two calls on one label in one function are two places you
+can open, and the wording is the same `graded check` and `graded why` use for
+that site.
+
+### Supported versions
+
+graded is verified on Gleam **1.15.4, 1.16.0, 1.17.0 and 1.18.0**, on Erlang/OTP
+**28.4.2**, with **girard 3.0.0** and **glance 7.0.0**. `gleam.toml` requires
+`gleam >= 1.15.4`, the head of that list.
+
+A version enters the list only after all four gates were clean on it: graded
+builds warnings-as-errors, its suite passes, girard's compiler differential
+suite — its evidence regenerated *by that compiler*, not merely re-checked
+against another's — reports no divergence, and the coverage probe over the
+corpus is clean. Both oracles are run by hand per release and per version
+claimed; the CI matrix runs the build and the suite on the pinned pair and on
+the floor between those runs.
+
+There is one class of support: verified. "Builds on" is not a claim graded makes,
+so a version without fresh compiler evidence is simply absent from the list. The
+list moves with the pin, and `graded coverage` prints the standing of whatever
+it observes running — `(verified)`, `(verified: …)` naming the whole list, or
+`not observed` where the version could not be read at all. It states the
+Gleam compiler by running `gleam --version`; that is the only subprocess graded
+runs, and no other command runs it.
 
 ## How analysis works
 
