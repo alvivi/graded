@@ -25,7 +25,7 @@ import support
 // to report prints.
 
 const clean_report = "graded 0.20.0
-gleam 1.18.0 (verified), erlang/OTP 28 (verified: 28.4.2), girard 3.0.0 (verified), glance 7.0.0
+gleam 1.18.0 (verified), erlang/OTP 28.4.2 (verified), girard 3.0.0 (verified), glance 7.0.0
 
 targets: erlang — gleam.toml declares none, so bodies are read on erlang and declarations on both
 type inference: ran on erlang; no @target function, so no second run
@@ -51,7 +51,7 @@ pub fn an_unverified_version_is_stated_and_noticed_test() {
         graded: "0.20.0",
         girard: Ok("3.0.0"),
         glance: Ok("7.0.0"),
-        otp: Ok("28"),
+        otp: Ok("28.4.2"),
         gleam: Ok("1.19.0"),
       ),
     )
@@ -589,7 +589,7 @@ fn clean() -> coverage.CoverageReport {
         graded: "0.20.0",
         girard: Ok("3.0.0"),
         glance: Ok("7.0.0"),
-        otp: Ok("28"),
+        otp: Ok("28.4.2"),
         gleam: Ok("1.18.0"),
       ),
       manifest_girard: None,

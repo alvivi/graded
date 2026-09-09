@@ -2,6 +2,8 @@
 // how an observed version stands to them. The standing is the whole of the
 // module's behaviour: everything else there is data the release test pins.
 
+import gleam/result
+import gleam/string
 import gleeunit/should
 import graded
 import graded/internal/compat
@@ -27,6 +29,32 @@ pub fn a_version_that_could_not_be_read_is_unobserved_test() {
 pub fn nothing_is_verified_against_an_empty_list_test() {
   compat.standing(Ok("1.18.0"), [])
   |> should.equal(compat.Unverified("1.18.0", []))
+}
+
+// The observed OTP version
+//
+// The pin is a full `major.minor.patch`, so the observation has to be one too.
+
+pub fn the_observed_otp_stands_against_the_pin_it_is_compared_to_test() {
+  // The release `erlang:system_info/1` answers with is the major alone, which
+  // no full version can equal: the report read "not verified" on the very
+  // machine the suite was verified on. On a machine whose major is the pin's,
+  // the standing is `Verified`; on any other, this asserts nothing.
+  let observed = graded.observed_versions()
+  case major_of(observed.otp), major_of(Ok(compat.verified_otp)) {
+    Ok(observed_major), Ok(pinned_major) if observed_major == pinned_major ->
+      compat.standing(observed.otp, [compat.verified_otp])
+      |> should.equal(compat.Verified)
+    _, _ -> Nil
+  }
+}
+
+fn major_of(version: Result(String, Nil)) -> Result(String, Nil) {
+  use version <- result.try(version)
+  case string.split(version, ".") {
+    [major, ..] -> Ok(major)
+    [] -> Error(Nil)
+  }
 }
 
 // The compiler version read
