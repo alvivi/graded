@@ -52,15 +52,6 @@ pub fn parse_directory_args(
   }
 }
 
-// Decode `coverage`'s arguments: the optional directory and nothing else. Its
-// own decoder rather than `parse_directory_args` directly, so a usage error
-// names the command a reader typed.
-pub fn parse_coverage_args(
-  rest: List(String),
-) -> Result(String, ArgumentError) {
-  parse_directory_args(rest)
-}
-
 // Whether `infer` writes its results or only previews them.
 pub type InferMode {
   Write

@@ -12,7 +12,6 @@ import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
 import graded
-import graded/internal/cli
 import graded/internal/compat
 import graded/internal/config
 import graded/internal/coverage
@@ -481,28 +480,6 @@ pub fn plain() -> Nil {
   |> should.be_true()
   { rows != [] } |> should.be_true()
   support.cleanup(root)
-}
-
-// The decoder
-//
-// `coverage` takes the optional directory and nothing else.
-
-pub fn coverage_args_default_to_src_test() {
-  cli.parse_coverage_args([]) |> should.equal(Ok("src"))
-}
-
-pub fn coverage_args_take_one_directory_test() {
-  cli.parse_coverage_args(["dir"]) |> should.equal(Ok("dir"))
-}
-
-pub fn coverage_args_reject_an_option_test() {
-  cli.parse_coverage_args(["--quiet"])
-  |> should.equal(Error(cli.UnknownOption("--quiet")))
-}
-
-pub fn coverage_args_reject_an_extra_argument_test() {
-  cli.parse_coverage_args(["dir", "extra"])
-  |> should.equal(Error(cli.UnexpectedArgument("extra")))
 }
 
 // A `CoverageReport` with every conditional section empty and counts that

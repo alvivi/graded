@@ -369,12 +369,8 @@ pub fn a_skip_lands_on_its_own_definitions_span_test() {
   evidence.unlocated |> should.equal([])
   dict.size(evidence.skipped) |> should.equal(3)
   dict.values(evidence.skipped)
-  |> list.sort(fn(one, other) { string.compare(one.bucket, other.bucket) })
-  |> should.equal([
-    typeinfo.Skip(typeinfo.FunctionDefinition, "ArityMismatch"),
-    typeinfo.Skip(typeinfo.ConstantDefinition, "NotARecord"),
-    typeinfo.Skip(typeinfo.ConstantDefinition, "NotATuple"),
-  ])
+  |> list.sort(string.compare)
+  |> should.equal(["ArityMismatch", "NotARecord", "NotATuple"])
   typeinfo.skip_reason(
     evidence.skipped,
     span_of(module, "render").0,
@@ -592,7 +588,7 @@ pub fn an_unread_module_yields_the_empty_reading_test() {
 
 pub fn a_secondary_entry_inside_a_hole_is_added_test() {
   let merged =
-    typeinfo.merge_readings(
+    merge(
       reading(
         dropped: [#(100, 200)],
         expressions: [],
@@ -619,7 +615,7 @@ pub fn a_secondary_entry_outside_every_hole_is_discarded_test() {
   // outside a hole is a reading of a definition the primary run built, and the
   // primary's silence there is its own answer.
   let merged =
-    typeinfo.merge_readings(
+    merge(
       reading(
         dropped: [#(100, 200)],
         expressions: [],
@@ -643,7 +639,7 @@ pub fn a_primary_entry_is_never_replaced_test() {
   // The secondary carries a *different* resolution at the same span, inside a
   // hole: the primary's answer stands whatever the secondary says.
   let merged =
-    typeinfo.merge_readings(
+    merge(
       reading(
         dropped: [#(100, 200)],
         expressions: [#(#(110, 113), Named("app/log", "Logger", []))],
@@ -668,7 +664,7 @@ pub fn a_secondary_skip_never_unseats_a_primary_proof_test() {
   // secondary — a helper it calls exists on one target only. Importing that
   // skip would move a proved charge to `[Unknown]`.
   let merged =
-    typeinfo.merge_readings(
+    merge(
       reading(
         dropped: [],
         expressions: [],
@@ -686,7 +682,7 @@ pub fn a_secondary_skip_never_unseats_a_primary_proof_test() {
 
 pub fn a_primary_skip_survives_a_secondary_that_typed_it_test() {
   let merged =
-    typeinfo.merge_readings(
+    merge(
       reading(dropped: [], expressions: [], resolutions: [], skips: [
         #(#(0, 40), "TypeMismatch"),
       ]),
@@ -703,7 +699,7 @@ pub fn a_primary_skip_survives_a_secondary_that_typed_it_test() {
 
 pub fn two_skips_on_one_definition_keep_the_primarys_test() {
   let merged =
-    typeinfo.merge_readings(
+    merge(
       reading(dropped: [#(0, 40)], expressions: [], resolutions: [], skips: [
         #(#(0, 40), "TypeMismatch"),
       ]),
@@ -719,7 +715,7 @@ pub fn the_merged_drops_are_the_intersection_test() {
   // A definition both runs left out is still left out; one the secondary run
   // built is not.
   let merged =
-    typeinfo.merge_readings(
+    merge(
       reading(
         dropped: [#(0, 40), #(100, 200)],
         expressions: [],
@@ -741,7 +737,7 @@ pub fn an_empty_secondary_clears_the_primarys_drops_test() {
   // altogether: intersecting the primary's drops with an empty set would read
   // the definitions the second run never typed as typed ones.
   let merged =
-    typeinfo.merge_readings(
+    merge(
       reading(
         dropped: [#(100, 200)],
         expressions: [],
@@ -760,17 +756,13 @@ pub fn the_secondarys_unlocated_skips_are_discarded_test() {
   let secondary =
     reading(dropped: [], expressions: [], resolutions: [], skips: [])
   let secondary =
-    typeinfo.TargetReading(
+    typeinfo.ModuleReading(
       ..secondary,
-      reading: typeinfo.ModuleReading(
-        ..secondary.reading,
-        evidence: typeinfo.ModuleEvidence(
-          ..{ secondary.reading }.evidence,
-          unlocated: [#("helper", "NoSuchField")],
-        ),
-      ),
+      evidence: typeinfo.ModuleEvidence(..secondary.evidence, unlocated: [
+        #("helper", "NoSuchField"),
+      ]),
     )
-  typeinfo.merge_readings(primary, secondary).evidence.unlocated
+  merge(primary, secondary).evidence.unlocated
   |> should.equal([])
 }
 
@@ -778,22 +770,18 @@ pub fn a_gated_functions_fn_typed_signature_is_imported_test() {
   // The positive `fn_typed` case: a name the primary lacks, whose secondary
   // definition sits inside a hole.
   let merged =
-    typeinfo.merge_readings(
-      with_fn_typed(
-        reading(
-          dropped: [#(100, 200)],
-          expressions: [],
-          resolutions: [],
-          skips: [],
-        ),
-        [],
-        [],
+    merge_definitions(
+      reading(
+        dropped: [#(100, 200)],
+        expressions: [],
+        resolutions: [],
+        skips: [],
       ),
       with_fn_typed(
         reading(dropped: [], expressions: [], resolutions: [], skips: []),
         [#("dropped", set.from_list(["f"]))],
-        [#("dropped", #(100, 200))],
       ),
+      [#("dropped", #(100, 200))],
     )
   typeinfo.fn_typed_params(merged.fn_typed, "dropped")
   |> should.equal(set.from_list(["f"]))
@@ -804,24 +792,15 @@ pub fn an_ungated_functions_fn_typed_signature_is_not_imported_test() {
   // one: an ordinary function the primary *skipped* and the secondary typed.
   // Its definition is outside every hole, so its signature is the wrong run's.
   let merged =
-    typeinfo.merge_readings(
-      with_fn_typed(
-        reading(
-          dropped: [#(100, 200)],
-          expressions: [],
-          resolutions: [],
-          skips: [
-            #(#(0, 40), "TypeMismatch"),
-          ],
-        ),
-        [],
-        [],
-      ),
+    merge_definitions(
+      reading(dropped: [#(100, 200)], expressions: [], resolutions: [], skips: [
+        #(#(0, 40), "TypeMismatch"),
+      ]),
       with_fn_typed(
         reading(dropped: [], expressions: [], resolutions: [], skips: []),
         [#("each", set.from_list(["f"]))],
-        [#("each", #(0, 40))],
       ),
+      [#("each", #(0, 40))],
     )
   typeinfo.fn_typed_params(merged.fn_typed, "each") |> should.equal(set.new())
 }
@@ -833,7 +812,7 @@ pub fn merge_adds_exactly_the_entries_inside_a_hole_test() {
   use scenario <- qcheck.given(merge_scenario_gen())
   let #(holes, primary_spans, secondary_spans) = scenario
   let merged =
-    typeinfo.merge_readings(
+    merge(
       reading(
         dropped: holes,
         expressions: [],
@@ -895,45 +874,51 @@ fn span_gen() -> qcheck.Generator(#(Int, Int)) {
   qcheck.return(#(start, start + length))
 }
 
-// A `TargetReading` on the Erlang run with no fn-typed signatures and no
-// kept-definition spans — what every merge case above starts from.
+// A merge of two readings where no name-keyed fn-typed entry is in play, so the
+// secondary run's kept-definition spans say nothing.
+fn merge(
+  primary: typeinfo.ModuleReading,
+  secondary: typeinfo.ModuleReading,
+) -> typeinfo.ModuleReading {
+  typeinfo.merge_readings(primary, secondary, dict.new())
+}
+
+// The same merge with the secondary run's kept-definition spans, which place
+// its fn-typed names inside or outside a hole.
+fn merge_definitions(
+  primary: typeinfo.ModuleReading,
+  secondary: typeinfo.ModuleReading,
+  definitions: List(#(String, #(Int, Int))),
+) -> typeinfo.ModuleReading {
+  typeinfo.merge_readings(primary, secondary, dict.from_list(definitions))
+}
+
+// A reading with no fn-typed signatures — what every merge case above starts
+// from.
 fn reading(
   dropped dropped: List(#(Int, Int)),
   expressions expressions: List(#(#(Int, Int), girard.Type)),
   resolutions resolutions: List(#(#(Int, Int), girard.Resolution)),
   skips skip_entries: List(#(#(Int, Int), String)),
-) -> typeinfo.TargetReading {
-  typeinfo.TargetReading(
-    target: girard.Erlang,
-    reading: typeinfo.ModuleReading(
-      expressions: dict.from_list(expressions),
-      fn_typed: dict.new(),
-      evidence: typeinfo.ModuleEvidence(
-        resolutions: dict.from_list(resolutions),
-        skipped: skips(skip_entries),
-        unlocated: [],
-        dropped: set.from_list(dropped),
-      ),
+) -> typeinfo.ModuleReading {
+  typeinfo.ModuleReading(
+    expressions: dict.from_list(expressions),
+    fn_typed: dict.new(),
+    evidence: typeinfo.ModuleEvidence(
+      resolutions: dict.from_list(resolutions),
+      skipped: skips(skip_entries),
+      unlocated: [],
+      dropped: set.from_list(dropped),
     ),
-    definitions: dict.new(),
   )
 }
 
-// The same reading with a fn-typed map and the kept-definition spans that place
-// its names.
+// The same reading with a fn-typed map.
 fn with_fn_typed(
-  target_reading: typeinfo.TargetReading,
+  reading: typeinfo.ModuleReading,
   fn_typed: List(#(String, set.Set(String))),
-  definitions: List(#(String, #(Int, Int))),
-) -> typeinfo.TargetReading {
-  typeinfo.TargetReading(
-    ..target_reading,
-    reading: typeinfo.ModuleReading(
-      ..target_reading.reading,
-      fn_typed: dict.from_list(fn_typed),
-    ),
-    definitions: dict.from_list(definitions),
-  )
+) -> typeinfo.ModuleReading {
+  typeinfo.ModuleReading(..reading, fn_typed: dict.from_list(fn_typed))
 }
 
 // One module's span-keyed slice — of types, or of resolutions.
@@ -941,12 +926,7 @@ fn index(entries: List(#(#(Int, Int), a))) -> Dict(#(Int, Int), a) {
   dict.from_list(entries)
 }
 
-// A span-keyed skip map from `#(span, bucket)` pairs, all of them functions.
-fn skips(
-  entries: List(#(#(Int, Int), String)),
-) -> Dict(#(Int, Int), typeinfo.Skip) {
-  list.map(entries, fn(entry) {
-    #(entry.0, typeinfo.Skip(typeinfo.FunctionDefinition, entry.1))
-  })
-  |> dict.from_list()
+// A span-keyed skip map from `#(span, bucket)` pairs.
+fn skips(entries: List(#(#(Int, Int), String))) -> Dict(#(Int, Int), String) {
+  dict.from_list(entries)
 }

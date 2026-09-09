@@ -646,9 +646,40 @@ pub fn the_gleam_requirement_names_the_verified_floor_test() {
 }
 
 pub fn the_verified_girard_is_the_manifests_one_test() {
-  let assert Ok(manifest) = simplifile.read("manifest.toml")
-  manifest_version(manifest, "girard")
+  effects.manifest_versions("manifest.toml")
+  |> dict.get("girard")
   |> should.equal(Ok(compat.verified_girard))
+}
+
+pub fn ci_builds_both_ends_of_the_verified_range_test() {
+  // CI is what produces the verification the constants claim, so it cannot
+  // build a pair the constants do not name: the two matrix rows are the floor
+  // and the pin, and both run the verified OTP.
+  let assert Ok(floor) = list.first(compat.verified_gleam)
+  let assert Ok(pinned) = list.last(compat.verified_gleam)
+  matrix_versions("gleam")
+  |> should.equal([floor, pinned] |> list.sort(string.compare))
+  matrix_versions("erlang")
+  |> should.equal([compat.verified_otp, compat.verified_otp])
+}
+
+// Every version the CI matrix names for one tool, sorted. The workflow is a
+// plain `key: "value"` list, so the entries are read off the lines rather than
+// through a YAML parser the suite does not otherwise need.
+fn matrix_versions(tool: String) -> List(String) {
+  let assert Ok(workflow) = simplifile.read(".github/workflows/ci.yml")
+  string.split(workflow, "\n")
+  |> list.filter_map(fn(line) {
+    case string.starts_with(string.trim(line), tool <> ": \"") {
+      False -> Error(Nil)
+      True -> {
+        use #(_before, after) <- result.try(string.split_once(line, "\""))
+        use #(version, _rest) <- result.map(string.split_once(after, "\""))
+        version
+      }
+    }
+  })
+  |> list.sort(string.compare)
 }
 
 // The version `.tool-versions` pins for one tool.
@@ -661,17 +692,6 @@ fn tool_version(tool: String) -> Result(String, Nil) {
     |> list.find(fn(line) { string.starts_with(line, tool <> " ") }),
   )
   string.split_once(line, " ") |> result.map(fn(pair) { string.trim(pair.1) })
-}
-
-// The version `manifest.toml` locks for one package.
-fn manifest_version(manifest: String, package: String) -> Result(String, Nil) {
-  use line <- result.try(
-    string.split(manifest, "\n")
-    |> list.find(string.contains(_, "name = \"" <> package <> "\"")),
-  )
-  use #(_before, after) <- result.try(string.split_once(line, "version = \""))
-  use #(version, _rest) <- result.map(string.split_once(after, "\""))
-  version
 }
 
 // The `gleam = "…"` requirement `gleam.toml` states.
