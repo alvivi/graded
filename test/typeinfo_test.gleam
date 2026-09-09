@@ -16,6 +16,7 @@ import gleam/string
 import gleeunit/should
 import graded/internal/checker
 import graded/internal/typeinfo
+import qcheck
 
 // The empty index
 //
@@ -57,6 +58,9 @@ pub fn from_modules_serves_each_module_its_own_types_test() {
       ],
       [],
       [],
+      [],
+      set.new(),
+      set.new(),
     )
   typeinfo.receiver_type(typeinfo.for_module(info, "app/log"), 0, 3)
   |> should.equal(Some(#("app/log", "Logger")))
@@ -70,6 +74,9 @@ pub fn a_module_with_types_but_no_fn_typed_entry_reads_empty_test() {
       [#("app/log", index([#(#(0, 3), Named("app/log", "Logger", []))]))],
       [],
       [],
+      [],
+      set.new(),
+      set.new(),
     )
   typeinfo.receiver_type(typeinfo.for_module(info, "app/log"), 0, 3)
   |> should.equal(Some(#("app/log", "Logger")))
@@ -82,6 +89,9 @@ pub fn a_module_with_fn_typed_but_no_types_reads_empty_test() {
       [],
       [#("app/log", dict.from_list([#("each", set.from_list(["f"]))]))],
       [],
+      [],
+      set.new(),
+      set.new(),
     )
   typeinfo.fn_typed_params(
     typeinfo.fn_typed_for_module(info, "app/log"),
@@ -102,6 +112,9 @@ pub fn an_unknown_module_has_no_types_test() {
       [#("app/log", index([#(#(0, 3), Named("app/log", "Logger", []))]))],
       [],
       [],
+      [],
+      set.new(),
+      set.new(),
     )
   typeinfo.for_module(info, "app/other") |> should.equal(dict.new())
 }
@@ -112,6 +125,9 @@ pub fn an_unknown_module_has_no_fn_typed_params_test() {
       [],
       [#("app/log", dict.from_list([#("each", set.from_list(["f"]))]))],
       [],
+      [],
+      set.new(),
+      set.new(),
     )
   typeinfo.fn_typed_for_module(info, "app/other") |> should.equal(dict.new())
 }
@@ -122,6 +138,9 @@ pub fn a_function_girard_did_not_type_has_no_fn_typed_params_test() {
       [],
       [#("app/log", dict.from_list([#("each", set.from_list(["f"]))]))],
       [],
+      [],
+      set.new(),
+      set.new(),
     )
   typeinfo.fn_typed_params(
     typeinfo.fn_typed_for_module(info, "app/log"),
@@ -253,28 +272,35 @@ pub fn none_records_no_evidence_test() {
 
 pub fn from_modules_serves_each_module_its_own_evidence_test() {
   let info =
-    typeinfo.from_modules([], [], [
-      #(
-        "app/log",
-        typeinfo.ModuleEvidence(
-          resolutions: index([#(#(0, 9), ModuleFn("gleam/io", "println"))]),
-          skipped: skips([#(#(10, 39), "ArityMismatch")]),
-          unlocated: [],
-          dropped: set.new(),
+    typeinfo.from_modules(
+      [],
+      [],
+      [
+        #(
+          "app/log",
+          typeinfo.ModuleEvidence(
+            resolutions: index([#(#(0, 9), ModuleFn("gleam/io", "println"))]),
+            skipped: skips([#(#(10, 39), "ArityMismatch")]),
+            unlocated: [],
+            dropped: set.new(),
+          ),
         ),
-      ),
-      #(
-        "app/count",
-        typeinfo.ModuleEvidence(
-          resolutions: index([
-            #(#(0, 9), RecordField(Named("app/count", "Counter", []), "bump")),
-          ]),
-          skipped: dict.new(),
-          unlocated: [],
-          dropped: set.from_list([#(40, 79)]),
+        #(
+          "app/count",
+          typeinfo.ModuleEvidence(
+            resolutions: index([
+              #(#(0, 9), RecordField(Named("app/count", "Counter", []), "bump")),
+            ]),
+            skipped: dict.new(),
+            unlocated: [],
+            dropped: set.from_list([#(40, 79)]),
+          ),
         ),
-      ),
-    ])
+      ],
+      [],
+      set.new(),
+      set.new(),
+    )
   let log = typeinfo.evidence_for_module(info, "app/log")
   typeinfo.resolution_at(log.resolutions, 0, 9)
   |> should.equal(Some(ModuleFn("gleam/io", "println")))
@@ -291,17 +317,24 @@ pub fn from_modules_serves_each_module_its_own_evidence_test() {
 
 pub fn an_unknown_module_has_no_evidence_test() {
   let info =
-    typeinfo.from_modules([], [], [
-      #(
-        "app/log",
-        typeinfo.ModuleEvidence(
-          resolutions: index([#(#(0, 9), ModuleFn("gleam/io", "println"))]),
-          skipped: skips([#(#(10, 39), "ArityMismatch")]),
-          unlocated: [],
-          dropped: set.from_list([#(40, 79)]),
+    typeinfo.from_modules(
+      [],
+      [],
+      [
+        #(
+          "app/log",
+          typeinfo.ModuleEvidence(
+            resolutions: index([#(#(0, 9), ModuleFn("gleam/io", "println"))]),
+            skipped: skips([#(#(10, 39), "ArityMismatch")]),
+            unlocated: [],
+            dropped: set.from_list([#(40, 79)]),
+          ),
         ),
-      ),
-    ])
+      ],
+      [],
+      set.new(),
+      set.new(),
+    )
   let evidence = typeinfo.evidence_for_module(info, "app/other")
   typeinfo.resolution_at(evidence.resolutions, 0, 9) |> should.equal(None)
   typeinfo.skip_reason(evidence.skipped, 10, 39) |> should.equal(None)
@@ -529,6 +562,9 @@ pub fn a_readings_slices_are_the_modules_own_test() {
           ),
         ),
       ],
+      [],
+      set.new(),
+      set.new(),
     )
   let reading = typeinfo.reading_for_module(info, "app/log")
   typeinfo.receiver_type(reading.expressions, 0, 3)
@@ -545,6 +581,359 @@ pub fn a_readings_slices_are_the_modules_own_test() {
 pub fn an_unread_module_yields_the_empty_reading_test() {
   typeinfo.reading_for_module(typeinfo.none(), "any/module")
   |> should.equal(typeinfo.no_reading())
+}
+
+// The merge
+//
+// `merge_readings` takes the primary reading whole and adds, from the
+// secondary, only what lies inside a definition the primary left out. The
+// asymmetry is the point: the primary is the reading, and the secondary exists
+// to fill holes the primary run could not have filled.
+
+pub fn a_secondary_entry_inside_a_hole_is_added_test() {
+  let merged =
+    typeinfo.merge_readings(
+      reading(
+        dropped: [#(100, 200)],
+        expressions: [],
+        resolutions: [],
+        skips: [],
+      ),
+      reading(
+        dropped: [],
+        expressions: [#(#(110, 113), Named("app/log", "Logger", []))],
+        resolutions: [#(#(120, 131), ModuleFn("gleam/io", "println"))],
+        skips: [#(#(140, 150), "ArityMismatch")],
+      ),
+    )
+  typeinfo.type_at(merged.expressions, 110, 113)
+  |> should.equal(Some(Named("app/log", "Logger", [])))
+  typeinfo.resolution_at(merged.evidence.resolutions, 120, 131)
+  |> should.equal(Some(ModuleFn("gleam/io", "println")))
+  typeinfo.skip_reason(merged.evidence.skipped, 140, 150)
+  |> should.equal(Some("ArityMismatch"))
+}
+
+pub fn a_secondary_entry_outside_every_hole_is_discarded_test() {
+  // Discarded even though the primary answers nothing at that span: an entry
+  // outside a hole is a reading of a definition the primary run built, and the
+  // primary's silence there is its own answer.
+  let merged =
+    typeinfo.merge_readings(
+      reading(
+        dropped: [#(100, 200)],
+        expressions: [],
+        resolutions: [],
+        skips: [],
+      ),
+      reading(
+        dropped: [],
+        expressions: [#(#(10, 13), Named("app/log", "Logger", []))],
+        resolutions: [#(#(20, 31), ModuleFn("gleam/io", "println"))],
+        skips: [#(#(40, 50), "ArityMismatch")],
+      ),
+    )
+  typeinfo.type_at(merged.expressions, 10, 13) |> should.equal(None)
+  typeinfo.resolution_at(merged.evidence.resolutions, 20, 31)
+  |> should.equal(None)
+  typeinfo.skip_reason(merged.evidence.skipped, 40, 50) |> should.equal(None)
+}
+
+pub fn a_primary_entry_is_never_replaced_test() {
+  // The secondary carries a *different* resolution at the same span, inside a
+  // hole: the primary's answer stands whatever the secondary says.
+  let merged =
+    typeinfo.merge_readings(
+      reading(
+        dropped: [#(100, 200)],
+        expressions: [#(#(110, 113), Named("app/log", "Logger", []))],
+        resolutions: [#(#(120, 131), ModuleFn("gleam/io", "println"))],
+        skips: [],
+      ),
+      reading(
+        dropped: [],
+        expressions: [#(#(110, 113), Named("app/log", "Silent", []))],
+        resolutions: [#(#(120, 131), ModuleFn("gleam/erlang", "format"))],
+        skips: [],
+      ),
+    )
+  typeinfo.type_at(merged.expressions, 110, 113)
+  |> should.equal(Some(Named("app/log", "Logger", [])))
+  typeinfo.resolution_at(merged.evidence.resolutions, 120, 131)
+  |> should.equal(Some(ModuleFn("gleam/io", "println")))
+}
+
+pub fn a_secondary_skip_never_unseats_a_primary_proof_test() {
+  // A function both runs kept can type on the primary and fail on the
+  // secondary — a helper it calls exists on one target only. Importing that
+  // skip would move a proved charge to `[Unknown]`.
+  let merged =
+    typeinfo.merge_readings(
+      reading(
+        dropped: [],
+        expressions: [],
+        resolutions: [#(#(20, 31), ModuleFn("gleam/io", "println"))],
+        skips: [],
+      ),
+      reading(dropped: [], expressions: [], resolutions: [], skips: [
+        #(#(0, 40), "TypeMismatch"),
+      ]),
+    )
+  typeinfo.skip_reason(merged.evidence.skipped, 0, 40) |> should.equal(None)
+  typeinfo.resolution_at(merged.evidence.resolutions, 20, 31)
+  |> should.equal(Some(ModuleFn("gleam/io", "println")))
+}
+
+pub fn a_primary_skip_survives_a_secondary_that_typed_it_test() {
+  let merged =
+    typeinfo.merge_readings(
+      reading(dropped: [], expressions: [], resolutions: [], skips: [
+        #(#(0, 40), "TypeMismatch"),
+      ]),
+      reading(
+        dropped: [],
+        expressions: [],
+        resolutions: [#(#(20, 31), ModuleFn("gleam/io", "println"))],
+        skips: [],
+      ),
+    )
+  typeinfo.skip_reason(merged.evidence.skipped, 0, 40)
+  |> should.equal(Some("TypeMismatch"))
+}
+
+pub fn two_skips_on_one_definition_keep_the_primarys_test() {
+  let merged =
+    typeinfo.merge_readings(
+      reading(dropped: [#(0, 40)], expressions: [], resolutions: [], skips: [
+        #(#(0, 40), "TypeMismatch"),
+      ]),
+      reading(dropped: [], expressions: [], resolutions: [], skips: [
+        #(#(0, 40), "ArityMismatch"),
+      ]),
+    )
+  typeinfo.skip_reason(merged.evidence.skipped, 0, 40)
+  |> should.equal(Some("TypeMismatch"))
+}
+
+pub fn the_merged_drops_are_the_intersection_test() {
+  // A definition both runs left out is still left out; one the secondary run
+  // built is not.
+  let merged =
+    typeinfo.merge_readings(
+      reading(
+        dropped: [#(0, 40), #(100, 200)],
+        expressions: [],
+        resolutions: [],
+        skips: [],
+      ),
+      reading(
+        dropped: [#(0, 40), #(300, 400)],
+        expressions: [],
+        resolutions: [],
+        skips: [],
+      ),
+    )
+  merged.evidence.dropped |> should.equal(set.from_list([#(0, 40)]))
+}
+
+pub fn an_empty_secondary_clears_the_primarys_drops_test() {
+  // Why a module the second run returned nothing for bypasses the merge
+  // altogether: intersecting the primary's drops with an empty set would read
+  // the definitions the second run never typed as typed ones.
+  let merged =
+    typeinfo.merge_readings(
+      reading(
+        dropped: [#(100, 200)],
+        expressions: [],
+        resolutions: [],
+        skips: [],
+      ),
+      reading(dropped: [], expressions: [], resolutions: [], skips: []),
+    )
+  merged.evidence.dropped |> should.equal(set.new())
+}
+
+pub fn the_secondarys_unlocated_skips_are_discarded_test() {
+  // An unlocated skip names no span, so nothing can place it in a hole.
+  let primary =
+    reading(dropped: [#(100, 200)], expressions: [], resolutions: [], skips: [])
+  let secondary =
+    reading(dropped: [], expressions: [], resolutions: [], skips: [])
+  let secondary =
+    typeinfo.TargetReading(
+      ..secondary,
+      reading: typeinfo.ModuleReading(
+        ..secondary.reading,
+        evidence: typeinfo.ModuleEvidence(
+          ..{ secondary.reading }.evidence,
+          unlocated: [#("helper", "NoSuchField")],
+        ),
+      ),
+    )
+  typeinfo.merge_readings(primary, secondary).evidence.unlocated
+  |> should.equal([])
+}
+
+pub fn a_gated_functions_fn_typed_signature_is_imported_test() {
+  // The positive `fn_typed` case: a name the primary lacks, whose secondary
+  // definition sits inside a hole.
+  let merged =
+    typeinfo.merge_readings(
+      with_fn_typed(
+        reading(
+          dropped: [#(100, 200)],
+          expressions: [],
+          resolutions: [],
+          skips: [],
+        ),
+        [],
+        [],
+      ),
+      with_fn_typed(
+        reading(dropped: [], expressions: [], resolutions: [], skips: []),
+        [#("dropped", set.from_list(["f"]))],
+        [#("dropped", #(100, 200))],
+      ),
+    )
+  typeinfo.fn_typed_params(merged.fn_typed, "dropped")
+  |> should.equal(set.from_list(["f"]))
+}
+
+pub fn an_ungated_functions_fn_typed_signature_is_not_imported_test() {
+  // The negative case the name-keyed map alone cannot tell from the positive
+  // one: an ordinary function the primary *skipped* and the secondary typed.
+  // Its definition is outside every hole, so its signature is the wrong run's.
+  let merged =
+    typeinfo.merge_readings(
+      with_fn_typed(
+        reading(
+          dropped: [#(100, 200)],
+          expressions: [],
+          resolutions: [],
+          skips: [
+            #(#(0, 40), "TypeMismatch"),
+          ],
+        ),
+        [],
+        [],
+      ),
+      with_fn_typed(
+        reading(dropped: [], expressions: [], resolutions: [], skips: []),
+        [#("each", set.from_list(["f"]))],
+        [#("each", #(0, 40))],
+      ),
+    )
+  typeinfo.fn_typed_params(merged.fn_typed, "each") |> should.equal(set.new())
+}
+
+// A secondary entry is added exactly when it lies inside a primary-dropped
+// span and the primary answers nothing there — the claim a handful of chosen
+// spans under-tests.
+pub fn merge_adds_exactly_the_entries_inside_a_hole_test() {
+  use scenario <- qcheck.given(merge_scenario_gen())
+  let #(holes, primary_spans, secondary_spans) = scenario
+  let merged =
+    typeinfo.merge_readings(
+      reading(
+        dropped: holes,
+        expressions: [],
+        resolutions: list.map(primary_spans, fn(span) {
+          #(span, ModuleFn("gleam/io", "println"))
+        }),
+        skips: [],
+      ),
+      reading(
+        dropped: [],
+        expressions: [],
+        resolutions: list.map(secondary_spans, fn(span) {
+          #(span, ModuleFn("gleam/erlang", "format"))
+        }),
+        skips: [],
+      ),
+    )
+  list.each(secondary_spans, fn(span) {
+    let inside =
+      list.any(holes, fn(hole) { span.0 >= hole.0 && span.1 <= hole.1 })
+    let expected = case list.contains(primary_spans, span), inside {
+      True, _ -> Some(ModuleFn("gleam/io", "println"))
+      False, True -> Some(ModuleFn("gleam/erlang", "format"))
+      False, False -> None
+    }
+    typeinfo.resolution_at(merged.evidence.resolutions, span.0, span.1)
+    |> should.equal(expected)
+  })
+  list.each(primary_spans, fn(span) {
+    typeinfo.resolution_at(merged.evidence.resolutions, span.0, span.1)
+    |> should.equal(Some(ModuleFn("gleam/io", "println")))
+  })
+}
+
+// Holes, primary spans and secondary spans drawn from one small offset pool, so
+// generated spans land inside and outside holes and collide across the two
+// runs often enough to matter.
+fn merge_scenario_gen() -> qcheck.Generator(
+  #(List(#(Int, Int)), List(#(Int, Int)), List(#(Int, Int))),
+) {
+  use holes <- qcheck.bind(qcheck.generic_list(
+    span_gen(),
+    qcheck.bounded_int(0, 3),
+  ))
+  use primary_spans <- qcheck.bind(qcheck.generic_list(
+    span_gen(),
+    qcheck.bounded_int(0, 4),
+  ))
+  use secondary_spans <- qcheck.bind(qcheck.generic_list(
+    span_gen(),
+    qcheck.bounded_int(0, 4),
+  ))
+  qcheck.return(#(holes, primary_spans, secondary_spans))
+}
+
+fn span_gen() -> qcheck.Generator(#(Int, Int)) {
+  use start <- qcheck.bind(qcheck.bounded_int(0, 20))
+  use length <- qcheck.bind(qcheck.bounded_int(0, 10))
+  qcheck.return(#(start, start + length))
+}
+
+// A `TargetReading` on the Erlang run with no fn-typed signatures and no
+// kept-definition spans — what every merge case above starts from.
+fn reading(
+  dropped dropped: List(#(Int, Int)),
+  expressions expressions: List(#(#(Int, Int), girard.Type)),
+  resolutions resolutions: List(#(#(Int, Int), girard.Resolution)),
+  skips skip_entries: List(#(#(Int, Int), String)),
+) -> typeinfo.TargetReading {
+  typeinfo.TargetReading(
+    target: girard.Erlang,
+    reading: typeinfo.ModuleReading(
+      expressions: dict.from_list(expressions),
+      fn_typed: dict.new(),
+      evidence: typeinfo.ModuleEvidence(
+        resolutions: dict.from_list(resolutions),
+        skipped: skips(skip_entries),
+        unlocated: [],
+        dropped: set.from_list(dropped),
+      ),
+    ),
+    definitions: dict.new(),
+  )
+}
+
+// The same reading with a fn-typed map and the kept-definition spans that place
+// its names.
+fn with_fn_typed(
+  target_reading: typeinfo.TargetReading,
+  fn_typed: List(#(String, set.Set(String))),
+  definitions: List(#(String, #(Int, Int))),
+) -> typeinfo.TargetReading {
+  typeinfo.TargetReading(
+    ..target_reading,
+    reading: typeinfo.ModuleReading(
+      ..target_reading.reading,
+      fn_typed: dict.from_list(fn_typed),
+    ),
+    definitions: dict.from_list(definitions),
+  )
 }
 
 // One module's span-keyed slice — of types, or of resolutions.
