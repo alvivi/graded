@@ -12,78 +12,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `graded why` now prints a **typed resolutions** section after the blocks: one
   line per `name.label(args)` in the function's own body, stating what the type
   inference resolved the site to beside what graded charged it as, and whether
-  the two agree, name different halves of one site, or disagree. For most rows
-  the resolution is reported beside graded's answer and changes no charge. The
-  exception is a call whose receiver also names a module and whose reading
-  extraction could not settle lexically: there the resolution shown is what
-  decides whether the call is charged as the module or as the field, and such a
-  row reads `decided by the type inference` rather than `agrees`.
+  the two agree, name different halves of one site, or disagree. Most rows
+  report the resolution beside graded's answer and change no charge; a row
+  reading `decided by the type inference` is one where the resolution is what
+  chose between the module call and the field call.
 
 ### Changed
 
 - A call through a receiver that shadows an imported module is now read as the
-  module or as the field by the type inference's resolution of that site.
-  Where that resolution does not establish the reading, the call charges
-  `[Unknown]` and `graded check` and `graded why` say why: the enclosing
-  function was skipped or the definition is left out of the build for the other
-  target (the two expected causes), no resolution was recorded at the site, the
-  inference marked it unresolved, it resolved to something that is not a module
-  function or a record field, it resolved to a field on a receiver with no
-  nominal type, or it resolved to a different module, function or field than
-  the site names. A written parameter annotation no longer decides it.
-- A path dependency inferred from its source is now typed by the type inference
-  the way the project is, resolved from the consuming project's installed
-  packages and from the path dependencies the dependency declares for itself. A
-  receiver whose type only inference knows now resolves inside a path dependency
-  too, so a call it used to charge `[Unknown]` is charged what the field or the
-  module answers, and the higher-order parameters it now sees sharpen the
-  dependency's own inference. The Gleam fallback body of an `@external` any
-  dependency declares — a path dependency's, whether or not it ships a spec
-  file, and an installed package's — is walked against a reading of that module
-  too, so a shadowed receiver in one reads as the module or as the field rather
-  than `[Unknown]`.
+  module call or the field call by the type inference, not by a written
+  parameter annotation. Where the inference settles neither, the call charges
+  `[Unknown]` and `graded check` and `graded why` name the reason — the
+  enclosing function was skipped, the definition belongs to the other build
+  target, or the site resolved to nothing, or to something its name does not
+  match.
+- A path dependency inferred from its source is now typed by the type
+  inference the way the project is, resolved against the consuming project's
+  installed packages and the dependency's own path dependencies. Calls it used
+  to charge `[Unknown]` — a field call on a receiver only the inference types,
+  a receiver that shadows a module — now get the field's or the module's
+  effects, both in the dependency's own modules and in the Gleam fallback body
+  of any dependency's `@external`.
 - girard 3.0.0 or later is required: the typed resolutions `graded why` prints
   are read from the reference resolutions it reports.
 - A field call whose receiver is an alias of a narrowed value, or is bound
   inside the branch that narrowed it, now charges the field's own effects
   instead of `[Unknown]`. A `check` line over such a body that could not be
   satisfied before now can be.
-- A receiver that shadows an imported module and whose inferred type is a tuple
-  or a function now resolves to that module, instead of reading `[Unknown]`. A
-  *written* `fn(..)` or tuple annotation already had this effect; the inferred
-  type now reaches closure parameters too, where no annotation on the enclosing
-  function is in scope.
+- A receiver that shadows an imported module and whose inferred type is a
+  tuple or a function now resolves to that module, instead of reading
+  `[Unknown]`. A written `fn(..)` or tuple annotation already did this; the
+  inferred type now covers closure parameters, which no annotation reaches.
 - A receiver that is a bare alias of another parameter (`let list = e`) is now
   read against *that* parameter's type annotation rather than against nothing.
-  Where the type declares the label on no variant the call resolves to the
-  module the receiver's name shadows, instead of reading `[Unknown]`; where it
-  declares it, the field is kept as before. An alias of a *field* of a
-  parameter is unaffected — its type is the field's, which no annotation on the
-  parameter states.
+  A label the type declares on no variant now resolves to the module the
+  receiver's name shadows, instead of reading `[Unknown]`; a label it declares
+  stays the field. An alias of a *field* of a parameter is unaffected.
 
 ### Fixed
 
 - A module imported under a discarded alias (`import app/b.{helper} as _b`) is
-  now inferred before the module that imports it. Such an import binds no
-  module name, so it drew no edge in the import graph, and a call to one of the
-  unqualified items it brings in could be charged `[Unknown]` for having been
-  walked first.
+  now inferred before the module that imports it. Such an import drew no edge
+  in the import graph, so a call to one of the unqualified items it brings in
+  could be charged `[Unknown]` for having been walked first.
 - A qualified call is no longer charged against a module imported under a
   discarded alias (`import gleam/http as _ghttp`). Such an import binds no
-  module name, so a call written `http.f(..)` beside it names whatever other
-  import does — which is what the compiler reads, and what graded now charges.
-  The spec lint reads a *type* qualifier the same way, so a field line whose
-  type is written `http.Handler` beside such an import is no longer resolved
-  through the discarded module — which reported a line naming a real callable
-  field as naming nothing, or accepted one that named nothing at all.
+  module name, so `http.f(..)` beside it names whatever other import does —
+  what the compiler reads, and now what graded charges. The spec lint reads a
+  *type* qualifier the same way, so a field line written `http.Handler` beside
+  such an import is no longer resolved through the discarded module.
 - A call through a receiver that shadows an imported module, whose variant
   nothing fixed and whose type is unknown, now charges `[Unknown]` instead of
-  the value its construction site wired in. A hand-written field bound
-  (`check f(c.send: [Net])`) still answers for such a call, and where the
-  receiver's type is known — which it is wherever girard types the enclosing
-  function — nothing changes. `graded check` and `graded why` report the call as
-  one whose receiver also names a module and whose type nothing fixes, rather
-  than as one whose value could not be traced.
+  the value its construction site wired in; `graded check` and `graded why`
+  blame the module shadowing rather than an untraceable value. A hand-written
+  field bound (`check f(c.send: [Net])`) still answers, and nothing changes
+  where the receiver's type is known.
 - A call through an un-narrowed call result named after an imported module,
   whose label sits on one variant of the receiver's type only, is now charged
   as the module call the compiler emits. Such a body — `let io = make_logger()`
