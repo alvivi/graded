@@ -1034,7 +1034,12 @@ fn girard_reading(module: glance.Module) -> typeinfo.ModuleReading {
       typeinfo.ModuleReading(
         expressions: typeinfo.span_types(result),
         fn_typed: girard_fn_typed_for(module),
-        evidence: typeinfo.evidence_of(result, checker.error_bucket),
+        evidence: typeinfo.evidence_of(
+          result,
+          checker.error_bucket,
+          module,
+          girard.Erlang,
+        ),
       )
     }
     Error(_) -> typeinfo.no_reading()
@@ -7204,6 +7209,7 @@ fn resolved_accesses(
           },
         ),
         skipped: dict.new(),
+        unlocated: [],
         dropped: set.new(),
       ),
     )
@@ -7211,13 +7217,25 @@ fn resolved_accesses(
 }
 
 // A reading that typed nothing in the module and declined `target` outright.
+// The skip is keyed by `target`'s own definition span, the same key the drop
+// above is keyed by.
 fn skipped_target(_calls: List(types.FieldCall)) -> typeinfo.ModuleReading {
+  let assert Ok(module) = glance.module(shadowing_body)
+  let assert Ok(definition) =
+    list.find(module.functions, fn(def) { def.definition.name == "target" })
+  let location = { definition.definition }.location
   typeinfo.ModuleReading(
     expressions: dict.new(),
     fn_typed: dict.new(),
     evidence: typeinfo.ModuleEvidence(
       resolutions: dict.new(),
-      skipped: dict.from_list([#("target", "UnknownModule")]),
+      skipped: dict.from_list([
+        #(
+          #(location.start, location.end),
+          typeinfo.Skip(typeinfo.FunctionDefinition, "UnknownModule"),
+        ),
+      ]),
+      unlocated: [],
       dropped: set.new(),
     ),
   )
@@ -7411,6 +7429,7 @@ pub fn a_dropped_definition_settles_nothing_test() {
         evidence: typeinfo.ModuleEvidence(
           resolutions: dict.new(),
           skipped: dict.new(),
+          unlocated: [],
           dropped:,
         ),
       )
@@ -7493,11 +7512,11 @@ pub fn a_record_field_under_another_label_is_a_mismatch_test() {
 // answer authoritative can route each reason on its own.
 
 // A `ModuleEvidence` slice with one resolution at spans 10..19, and the skips
-// and drops given. Drops are keyed by definition span, so `target`'s own is
-// `#(0, 40)`.
+// and drops given. Skips and drops are both keyed by definition span, so
+// `target`'s own is `#(0, 40)`.
 fn evidence(
   resolution: option.Option(girard.Resolution),
-  skipped: List(#(String, String)),
+  skipped: List(#(#(Int, Int), String)),
   dropped: List(#(Int, Int)),
 ) -> typeinfo.ModuleEvidence {
   typeinfo.ModuleEvidence(
@@ -7505,7 +7524,11 @@ fn evidence(
       Some(one) -> dict.from_list([#(#(10, 19), one)])
       None -> dict.new()
     },
-    skipped: dict.from_list(skipped),
+    skipped: list.map(skipped, fn(entry) {
+      #(entry.0, typeinfo.Skip(typeinfo.FunctionDefinition, entry.1))
+    })
+      |> dict.from_list(),
+    unlocated: [],
     dropped: set.from_list(dropped),
   )
 }
@@ -7612,7 +7635,7 @@ pub fn a_skipped_function_is_undecided_under_its_error_bucket_test() {
     target,
     evidence(
       Some(girard.ModuleFn("gleam/io", "println")),
-      [#("target", "NoSuchField")],
+      [#(#(0, 40), "NoSuchField")],
       [],
     ),
   )
@@ -7620,16 +7643,30 @@ pub fn a_skipped_function_is_undecided_under_its_error_bucket_test() {
 }
 
 pub fn another_functions_skip_does_not_decide_this_one_test() {
+  // A skip is keyed by the declined definition's own span, so a `@target` pair
+  // sharing one name never lands one half's skip on the other: the half girard
+  // typed reads the resolution recorded inside it.
   checker.classify_typed(
     access,
     target,
     evidence(
       Some(girard.ModuleFn("gleam/io", "println")),
-      [#("other", "NoSuchField")],
+      [#(#(41, 80), "NoSuchField")],
       [],
     ),
   )
   |> should.equal(types.ProvedModuleCall("gleam/io", "println"))
+}
+
+pub fn a_same_named_twins_skip_leaves_this_span_unanswered_test() {
+  // The same pairing with nothing recorded at the site: the twin's skip is not
+  // an answer here either, so the absence at the span is the span's own.
+  checker.classify_typed(
+    access,
+    target,
+    evidence(None, [#(#(41, 80), "NoSuchField")], []),
+  )
+  |> should.equal(types.Undecided(types.NoResolutionAtSpan))
 }
 
 pub fn a_dropped_definition_is_undecided_before_anything_else_test() {
@@ -7640,7 +7677,7 @@ pub fn a_dropped_definition_is_undecided_before_anything_else_test() {
     target,
     evidence(
       Some(girard.ModuleFn("gleam/io", "println")),
-      [#("target", "ArityMismatch")],
+      [#(#(0, 40), "ArityMismatch")],
       [#(0, 40)],
     ),
   )
@@ -7663,7 +7700,7 @@ pub fn an_unsupported_error_buckets_by_its_feature_test() {
   checker.classify_typed(
     access,
     target,
-    evidence(None, [#("target", "Unsupported(bit arrays)")], []),
+    evidence(None, [#(#(0, 40), "Unsupported(bit arrays)")], []),
   )
   |> should.equal(
     types.Undecided(types.FunctionSkipped("Unsupported(bit arrays)")),

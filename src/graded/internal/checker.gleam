@@ -8820,10 +8820,9 @@ fn concretize(term: EffectTerm) -> EffectTerm {
 //
 // The checks run in the order the absences nest: a dropped definition was never
 // walked, a skipped one was walked and abandoned, and only then is the absence
-// of a resolution at the span the span's own. The drop is read by the
-// definition's own span and the skip by its name, which is how each is keyed on
-// girard's side — so one half of a `@target` pair being left out of the build
-// says nothing about the half that is in it.
+// of a resolution at the span the span's own. The drop and the skip are read
+// alike, by the definition's own span — so one half of a `@target` pair being
+// left out of the build, or declined, says nothing about the half beside it.
 pub fn classify_typed(
   access_span: Span,
   definition: Function,
@@ -8837,7 +8836,13 @@ pub fn classify_typed(
     ),
     Undecided(DefinitionDropped),
   )
-  case typeinfo.skip_reason(evidence.skipped, definition.name) {
+  case
+    typeinfo.skip_reason(
+      evidence.skipped,
+      definition.location.start,
+      definition.location.end,
+    )
+  {
     Some(bucket) -> Undecided(FunctionSkipped(bucket))
     None ->
       case

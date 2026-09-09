@@ -478,8 +478,11 @@ fn every_declaration_names_a_readable_target(
 // `@target(javascript)`. `package_targets` is what the package *declares* —
 // a build overriding it with `--target` is invisible to graded, so a package
 // whose `gleam.toml` names the target it is not built for reads wrongly here.
+//
+// Generalized over what the definition defines: only its attributes are read,
+// so a constant is narrowed by its own `@target` exactly as a function is.
 pub fn compiled_targets(
-  definition: glance.Definition(glance.Function),
+  definition: glance.Definition(a),
   package_targets: Set(String),
 ) -> Set(String) {
   case attribute_targets(definition, "target") {
@@ -499,7 +502,7 @@ pub fn declared_targets(
 
 // The target named by the first argument of each `name` attribute.
 fn attribute_targets(
-  definition: glance.Definition(glance.Function),
+  definition: glance.Definition(a),
   name: String,
 ) -> List(String) {
   use attribute <- list.filter_map(definition.attributes)

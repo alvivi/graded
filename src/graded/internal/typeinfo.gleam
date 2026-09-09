@@ -27,10 +27,13 @@
 // compared per site.
 
 import girard.{type Error, type Resolution, type Type, Named}
+import glance
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/set.{type Set}
+import graded/internal/extract
+import graded/internal/types
 
 // Inferred information for a whole package:
 // - `by_module`: module path -> (expression `#(start, end)` span -> type).
@@ -56,30 +59,68 @@ pub type TypeInfo {
 // A skip keeps only `error_bucket`'s answer rather than the `girard.Error`: the
 // error carries whole inferred type trees, and nothing reads them.
 //
-// The drops are keyed by the definition's `#(start, end)` span rather than by
-// its name: a `@target(erlang)` and a `@target(javascript)` definition share one
-// name, and only one of the two is left out of the build.
+// Skips and drops are both keyed by the definition's `#(start, end)` span rather
+// than by its name: a `@target(erlang)` and a `@target(javascript)` definition
+// share one name, and only one of the two is in the build for a given run.
+//
+// `unlocated` holds the skips whose name matched no definition the module
+// declares on the run's target. They are kept whole — name and bucket — rather
+// than folded onto a sentinel span where two would collide. Expected empty.
 pub type ModuleEvidence {
   ModuleEvidence(
     resolutions: Dict(#(Int, Int), Resolution),
-    skipped: Dict(String, String),
+    skipped: Dict(#(Int, Int), Skip),
+    unlocated: List(#(String, String)),
     dropped: Set(#(Int, Int)),
   )
+}
+
+// One definition girard declined: what kind of definition it was, and the
+// error bucket that declined it. The kind is kept because girard skips
+// functions and constants alike and a reader counts the two apart.
+pub type Skip {
+  Skip(kind: DefinitionKind, bucket: String)
+}
+
+// Which of the two kinds of top-level definition a skip or a drop names.
+pub type DefinitionKind {
+  FunctionDefinition
+  ConstantDefinition
 }
 
 // The empty reading — girard said nothing about this module, so every site in it
 // reads as "no typed evidence" rather than as an answer. What
 // `evidence_for_module` gives for a module girard never saw.
 pub fn no_evidence() -> ModuleEvidence {
-  ModuleEvidence(dict.new(), dict.new(), set.new())
+  ModuleEvidence(dict.new(), dict.new(), [], set.new())
 }
 
 // girard's reading of one module, folded out of its annotation result.
-// `skip_bucket` reduces an error to the stable bucket the reading keeps.
+// `skip_bucket` reduces an error to the stable bucket the reading keeps; the
+// glance module and the run's target place each skipped name on the span of the
+// definition of that name the run kept.
+//
+// A skip naming no definition the module declares on this target goes to
+// `unlocated` whole: a span it has not got cannot be invented, and two unplaced
+// skips must stay two entries.
 pub fn evidence_of(
   result: girard.ModuleResult,
   skip_bucket: fn(Error) -> String,
+  module: glance.Module,
+  target: girard.Target,
 ) -> ModuleEvidence {
+  let #(skipped, unlocated) =
+    list.fold(result.skipped, #(dict.new(), []), fn(acc, entry) {
+      let #(skipped, unlocated) = acc
+      let #(name, error) = entry
+      case locate_definition(module, target, name) {
+        Ok(#(span, kind)) -> #(
+          dict.insert(skipped, span, Skip(kind:, bucket: skip_bucket(error))),
+          unlocated,
+        )
+        Error(Nil) -> #(skipped, [#(name, skip_bucket(error)), ..unlocated])
+      }
+    })
   ModuleEvidence(
     resolutions: list.fold(
       result.annotated.resolutions,
@@ -92,13 +133,67 @@ pub fn evidence_of(
         )
       },
     ),
-    skipped: list.fold(result.skipped, dict.new(), fn(acc, entry) {
-      dict.insert(acc, entry.0, skip_bucket(entry.1))
-    }),
+    skipped:,
+    unlocated: list.reverse(unlocated),
     dropped: list.fold(result.annotated.dropped, set.new(), fn(acc, definition) {
       set.insert(acc, #(definition.span.start, definition.span.end))
     }),
   )
+}
+
+// The span and kind of the definition named `name` that the run's target keeps.
+// Gleam admits one on-target definition per name, so the first match is the
+// only one; a name matching none — girard named a definition this module does
+// not declare — answers `Error(Nil)` and the skip stays unlocated.
+fn locate_definition(
+  module: glance.Module,
+  target: girard.Target,
+  name: String,
+) -> Result(#(#(Int, Int), DefinitionKind), Nil) {
+  case
+    list.find(module.functions, fn(definition) {
+      definition.definition.name == name && kept_on_target(definition, target)
+    })
+  {
+    Ok(definition) ->
+      Ok(#(span_of(definition.definition.location), FunctionDefinition))
+    Error(Nil) ->
+      case
+        list.find(module.constants, fn(definition) {
+          definition.definition.name == name
+          && kept_on_target(definition, target)
+        })
+      {
+        Ok(definition) ->
+          Ok(#(span_of(definition.definition.location), ConstantDefinition))
+        Error(Nil) -> Error(Nil)
+      }
+  }
+}
+
+// Whether the run's target compiles this definition — girard's own `@target`
+// partition, read from graded's side of the same attribute.
+fn kept_on_target(
+  definition: glance.Definition(a),
+  target: girard.Target,
+) -> Bool {
+  set.contains(
+    extract.compiled_targets(definition, types.every_target()),
+    target_name(target),
+  )
+}
+
+// girard's target as the name a `@target` attribute writes.
+pub fn target_name(target: girard.Target) -> String {
+  case target {
+    girard.Erlang -> "erlang"
+    girard.JavaScript -> "javascript"
+  }
+}
+
+// A glance span as the `#(start, end)` pair every map here keys on.
+fn span_of(location: glance.Span) -> #(Int, Int) {
+  #(location.start, location.end)
 }
 
 // The span->type slice of one module's annotation result, keyed the way
@@ -261,13 +356,17 @@ pub fn resolution_at(
   }
 }
 
-// The error bucket girard declined `function` with, or `None` if it typed it.
+// The error bucket girard declined the definition spanning `#(start, end)`
+// with, or `None` if it typed it. The span is the definition's own, the same
+// key `is_dropped` reads, so one half of a `@target` pair being declined says
+// nothing about the half beside it.
 pub fn skip_reason(
-  module_skipped: Dict(String, String),
-  function: String,
+  module_skipped: Dict(#(Int, Int), Skip),
+  start: Int,
+  end: Int,
 ) -> Option(String) {
-  case dict.get(module_skipped, function) {
-    Ok(error) -> Some(error)
+  case dict.get(module_skipped, #(start, end)) {
+    Ok(skip) -> Some(skip.bucket)
     Error(Nil) -> None
   }
 }

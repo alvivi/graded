@@ -101,13 +101,14 @@ fn probe(
   // The package's own declared targets, so a JavaScript-target package is typed
   // for JavaScript and its Erlang-only definitions are the dropped ones.
   let package_targets = read_targets(root)
+  let target = graded.girard_target(package_targets)
   let options =
     girard.default_options()
-    |> girard.with_target(graded.girard_target(package_targets))
+    |> girard.with_target(target)
     |> girard.with_resolver(resolver(source_dir, index, dep_files))
 
   let results = girard.annotate_package(entries, options)
-  let type_info = type_index(results)
+  let type_info = type_index(results, index, target)
 
   let cross_constructors =
     list.fold(entries, dict.new(), fn(acc, entry) {
@@ -136,13 +137,30 @@ fn probe(
 // girard's whole answer for the package, folded through the same helpers
 // production folds it with, so the probe's classification reads the maps
 // `graded check` reads.
-fn type_index(results: Dict(String, girard.ModuleResult)) -> typeinfo.TypeInfo {
+fn type_index(
+  results: Dict(String, girard.ModuleResult),
+  index: Dict(String, glance.Module),
+  target: girard.Target,
+) -> typeinfo.TypeInfo {
   let pairs = dict.to_list(results)
   typeinfo.from_modules(
     list.map(pairs, fn(pair) { #({ pair.0 }, typeinfo.span_types(pair.1)) }),
     [],
-    list.map(pairs, fn(pair) {
-      #({ pair.0 }, typeinfo.evidence_of(pair.1, checker.error_bucket))
+    list.filter_map(pairs, fn(pair) {
+      let #(module_path, module_result) = pair
+      case dict.get(index, module_path) {
+        Ok(module) ->
+          Ok(#(
+            module_path,
+            typeinfo.evidence_of(
+              module_result,
+              checker.error_bucket,
+              module,
+              target,
+            ),
+          ))
+        Error(Nil) -> Error(Nil)
+      }
     }),
   )
 }

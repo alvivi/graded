@@ -2688,9 +2688,10 @@ pub fn build_type_index(
   dep_files: Dict(String, String),
   package_targets: types.PackageTargets,
 ) -> typeinfo.TypeInfo {
+  let target = girard_target(package_targets)
   let options =
     girard.default_options()
-    |> girard.with_target(girard_target(package_targets))
+    |> girard.with_target(target)
     |> girard.with_resolver(build_girard_resolver(index, dep_files))
   let entries =
     dict.to_list(index)
@@ -2705,9 +2706,21 @@ pub fn build_type_index(
       #(module_path, typeinfo.span_types(module_result))
     })
   let evidence =
-    list.map(results, fn(pair) {
+    list.filter_map(results, fn(pair) {
       let #(module_path, module_result) = pair
-      #(module_path, typeinfo.evidence_of(module_result, checker.error_bucket))
+      case dict.get(index, module_path) {
+        Ok(#(_gleam_path, module)) ->
+          Ok(#(
+            module_path,
+            typeinfo.evidence_of(
+              module_result,
+              checker.error_bucket,
+              module,
+              target,
+            ),
+          ))
+        Error(Nil) -> Error(Nil)
+      }
     })
   let fn_typed =
     list.filter_map(results, fn(pair) {
