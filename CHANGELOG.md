@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `graded coverage [dir]` reports what the type inference could and could not
+  read of a package: the versions in play beside the ones graded was verified
+  on, the targets it typed on and why, how many modules and definitions it
+  read, declined or left out, every declined definition with its error bucket,
+  and every call charged `[Unknown]` with its reason and its `file:line:column`.
+  It is read-only, decides nothing, and always exits 0.
 - `graded why` now prints a **typed resolutions** section after the blocks: one
   line per `name.label(args)` in the function's own body, stating what the type
   inference resolved the site to beside what graded charged it as, and whether

@@ -102,6 +102,7 @@ gleam run -m graded why <name> [directory]        # Explain a function's effects
 gleam run -m graded catalog                       # List graded's bundled catalog files
 gleam run -m graded catalog <package>             # Print the catalog file selected for <package>
 gleam run -m graded catalog <package>@<version>   # Print exactly that bundled catalog file
+gleam run -m graded coverage [directory]          # Report what the type inference read, writing nothing
 gleam run -m graded format [directory]            # Normalize .graded file formatting
 gleam run -m graded format --check [directory]    # Verify formatting (CI mode)
 gleam run -m graded format --stdin                # Format from stdin (editor integration)
