@@ -1292,12 +1292,12 @@ leave it non-zero: a constant triggers no run of its own, since it holds no call
 and can be referenced only from a function gated the same way.
 
 Where something is worth naming, a section follows the counts, each present only
-when it has a row — skipped definitions with their error bucket, undecided calls
-and lexically settled calls with no typed evidence, disagreements, identity
-mismatches, and modules a second run could not read. Every row carries its
-`file:line:column`, so two calls on one label in one function are two places you
-can open, and the wording is the same `graded check` and `graded why` use for
-that site.
+when it has a row — skipped definitions with their error bucket, undecided calls,
+calls the inference answered nothing for (settled lexically or wired from a
+construction), disagreements, identity mismatches, and modules a second run
+could not read. Every row carries its `file:line:column`, so two calls on one
+label in one function are two places you can open, and the wording is the same
+`graded check` and `graded why` use for that site.
 
 ### Supported versions
 
