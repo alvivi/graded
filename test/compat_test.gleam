@@ -10,7 +10,7 @@ import graded/internal/compat
 
 pub fn an_observed_version_on_the_list_is_verified_test() {
   compat.standing(Ok("1.18.0"), ["1.16.0", "1.18.0"])
-  |> should.equal(compat.Verified)
+  |> should.equal(compat.Verified("1.18.0"))
 }
 
 pub fn an_observed_version_off_the_list_names_every_verified_one_test() {
@@ -44,7 +44,7 @@ pub fn the_observed_otp_stands_against_the_pin_it_is_compared_to_test() {
   case major_of(observed.otp), major_of(Ok(compat.verified_otp)) {
     Ok(observed_major), Ok(pinned_major) if observed_major == pinned_major ->
       compat.standing(observed.otp, [compat.verified_otp])
-      |> should.equal(compat.Verified)
+      |> should.equal(compat.Verified(compat.verified_otp))
     _, _ -> Nil
   }
 }
