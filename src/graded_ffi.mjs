@@ -31,12 +31,6 @@ export function priv_directory() {
   return new GError(undefined);
 }
 
-// The version is read from the OTP application on the BEAM target; on JavaScript
-// the install metadata isn't resolved.
-export function version() {
-  return "unknown";
-}
-
 // No application metadata exists here, so no loaded package's version is
 // observed. `graded coverage` prints "not observed", which is the honest answer.
 export function loaded_version(_app) {

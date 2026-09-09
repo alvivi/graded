@@ -2,7 +2,6 @@
 -export([
     read_stdin/0,
     priv_directory/0,
-    version/0,
     loaded_version/1,
     otp_release/0,
     compiler_output/0
@@ -32,16 +31,6 @@ priv_directory() ->
     case code:priv_dir(graded) of
         {error, _} -> {error, nil};
         Dir -> {ok, unicode:characters_to_binary(Dir)}
-    end.
-
-% graded's own version, read from the loaded application's `vsn` (sourced from
-% `gleam.toml` at build time) rather than hardcoded. `<<"unknown">>` when the
-% application key can't be resolved.
-version() ->
-    _ = application:load(graded),
-    case application:get_key(graded, vsn) of
-        {ok, Vsn} -> unicode:characters_to_binary(Vsn);
-        _ -> <<"unknown">>
     end.
 
 % The version of any loaded application, read the same way. The applications
