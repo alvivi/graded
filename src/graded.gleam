@@ -977,6 +977,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
       typed_dep_modules,
       registry,
       package_targets,
+      type_info.targets,
     )
     |> with_committed_spec(spec, stale_assumes)
     // Recorded before the inference pass below, so an `@external` resolves to
@@ -3048,17 +3049,38 @@ pub fn build_type_index(
   dep_files: Dict(String, String),
   package_targets: types.PackageTargets,
 ) -> typeinfo.TypeInfo {
-  let entries =
-    dict.to_list(index)
-    |> list.map(fn(pair) {
-      let #(module_path, #(_gleam_path, module)) = pair
-      #(module_path, module)
-    })
-  annotate_on_targets(
-    entries,
-    build_girard_resolver(index, dep_files),
-    girard_targets(package_targets, entries),
+  type_index_on_targets(
+    index,
+    dep_files,
+    girard_targets(package_targets, index_entries(index)),
   )
+}
+
+// The same inference over a target list the caller decided, for the modules
+// whose own `@target` gating does not decide it. A dependency's retained
+// fallback bodies are read on the targets the package under analysis is read
+// on: a `@target(javascript)` function anywhere in `gleam/string` is not a
+// reason to type an Erlang project's dependencies twice.
+fn type_index_on_targets(
+  index: Dict(String, #(String, glance.Module)),
+  dep_files: Dict(String, String),
+  targets: List(girard.Target),
+) -> typeinfo.TypeInfo {
+  annotate_on_targets(
+    index_entries(index),
+    build_girard_resolver(index, dep_files),
+    targets,
+  )
+}
+
+fn index_entries(
+  index: Dict(String, #(String, glance.Module)),
+) -> List(#(String, glance.Module)) {
+  dict.to_list(index)
+  |> list.map(fn(pair) {
+    let #(module_path, #(_gleam_path, module)) = pair
+    #(module_path, module)
+  })
 }
 
 // The whole package annotated once per target and merged per module: the
@@ -3543,6 +3565,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       typed_dep_modules,
       registry,
       package_targets,
+      type_info.targets,
     )
     |> effects.with_foreign_functions(project_foreign_functions(
       index,
@@ -4245,6 +4268,7 @@ fn with_dependency_fallback_effects(
   typed: Dict(String, typeinfo.ModuleReading),
   registry: SignatureRegistry,
   package_targets: types.PackageTargets,
+  targets: List(girard.Target),
 ) -> KnowledgeBase {
   use <- bool.guard(when: dict.is_empty(retained), return: knowledge_base)
   // A module the path-dependency pass already typed keeps that reading rather
@@ -4254,7 +4278,7 @@ fn with_dependency_fallback_effects(
       !dict.has_key(typed, module.source_path)
     })
   let readings =
-    fallback_readings(package_root, dep_files, untyped, package_targets)
+    fallback_readings(package_root, dep_files, untyped, targets)
     |> dict.merge(typed)
   let #(ordered, cyclic) = dependency_walk_order(retained)
   // A cycle member's body is never walked, but its callback shape is still
@@ -4316,7 +4340,7 @@ fn fallback_readings(
   package_root: String,
   dep_files: Dict(String, String),
   retained: Dict(String, RetainedModule),
-  package_targets: types.PackageTargets,
+  targets: List(girard.Target),
 ) -> Dict(String, typeinfo.ModuleReading) {
   use <- bool.guard(when: dict.is_empty(retained), return: dict.new())
   let index =
@@ -4328,10 +4352,10 @@ fn fallback_readings(
       }
     })
   let type_info =
-    build_type_index(
+    type_index_on_targets(
       index,
       fallback_resolver_files(package_root, dep_files),
-      package_targets,
+      targets,
     )
   use acc, module_path, #(source_path, _module) <- dict.fold(index, dict.new())
   dict.insert(
