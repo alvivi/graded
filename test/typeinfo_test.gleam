@@ -7,10 +7,14 @@
 // each other's answer.
 
 import girard.{Fn, LocalVariable, ModuleFn, Named, RecordField, Tuple, Var}
+import glance
 import gleam/dict.{type Dict}
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/set
+import gleam/string
 import gleeunit/should
+import graded/internal/checker
 import graded/internal/typeinfo
 
 // The empty index
@@ -243,6 +247,7 @@ pub fn none_records_no_evidence_test() {
   let evidence = typeinfo.evidence_for_module(typeinfo.none(), "any/module")
   evidence.resolutions |> should.equal(dict.new())
   evidence.skipped |> should.equal(dict.new())
+  evidence.unlocated |> should.equal([])
   evidence.dropped |> should.equal(set.new())
 }
 
@@ -253,7 +258,8 @@ pub fn from_modules_serves_each_module_its_own_evidence_test() {
         "app/log",
         typeinfo.ModuleEvidence(
           resolutions: index([#(#(0, 9), ModuleFn("gleam/io", "println"))]),
-          skipped: dict.from_list([#("render", "ArityMismatch")]),
+          skipped: skips([#(#(10, 39), "ArityMismatch")]),
+          unlocated: [],
           dropped: set.new(),
         ),
       ),
@@ -264,6 +270,7 @@ pub fn from_modules_serves_each_module_its_own_evidence_test() {
             #(#(0, 9), RecordField(Named("app/count", "Counter", []), "bump")),
           ]),
           skipped: dict.new(),
+          unlocated: [],
           dropped: set.from_list([#(40, 79)]),
         ),
       ),
@@ -271,14 +278,14 @@ pub fn from_modules_serves_each_module_its_own_evidence_test() {
   let log = typeinfo.evidence_for_module(info, "app/log")
   typeinfo.resolution_at(log.resolutions, 0, 9)
   |> should.equal(Some(ModuleFn("gleam/io", "println")))
-  typeinfo.skip_reason(log.skipped, "render")
+  typeinfo.skip_reason(log.skipped, 10, 39)
   |> should.equal(Some("ArityMismatch"))
   typeinfo.is_dropped(log.dropped, 40, 79) |> should.be_false()
 
   let count = typeinfo.evidence_for_module(info, "app/count")
   typeinfo.resolution_at(count.resolutions, 0, 9)
   |> should.equal(Some(RecordField(Named("app/count", "Counter", []), "bump")))
-  typeinfo.skip_reason(count.skipped, "render") |> should.equal(None)
+  typeinfo.skip_reason(count.skipped, 10, 39) |> should.equal(None)
   typeinfo.is_dropped(count.dropped, 40, 79) |> should.be_true()
 }
 
@@ -289,20 +296,151 @@ pub fn an_unknown_module_has_no_evidence_test() {
         "app/log",
         typeinfo.ModuleEvidence(
           resolutions: index([#(#(0, 9), ModuleFn("gleam/io", "println"))]),
-          skipped: dict.from_list([#("render", "ArityMismatch")]),
+          skipped: skips([#(#(10, 39), "ArityMismatch")]),
+          unlocated: [],
           dropped: set.from_list([#(40, 79)]),
         ),
       ),
     ])
   let evidence = typeinfo.evidence_for_module(info, "app/other")
   typeinfo.resolution_at(evidence.resolutions, 0, 9) |> should.equal(None)
-  typeinfo.skip_reason(evidence.skipped, "render") |> should.equal(None)
+  typeinfo.skip_reason(evidence.skipped, 10, 39) |> should.equal(None)
   typeinfo.is_dropped(evidence.dropped, 40, 79) |> should.be_false()
 }
 
 pub fn a_function_girard_typed_has_no_skip_reason_test() {
-  typeinfo.skip_reason(dict.from_list([#("render", "ArityMismatch")]), "draw")
+  typeinfo.skip_reason(skips([#(#(10, 39), "ArityMismatch")]), 40, 79)
   |> should.equal(None)
+}
+
+// Skips keyed by the definition they name
+//
+// girard names a declined definition by name; the reading keys it by the span
+// of the definition of that name the run kept, so a `@target` pair's two halves
+// never share a skip, and functions and constants are told apart by kind.
+
+pub fn a_skip_lands_on_its_own_definitions_span_test() {
+  let source = "const a = 1\nconst b = 2\npub fn render() -> Int { 3 }\n"
+  let assert Ok(module) = glance.module(source)
+  let evidence =
+    typeinfo.evidence_of(
+      skipped_result([
+        #("render", girard.ArityMismatch),
+        #("a", girard.NotARecord),
+        #("b", girard.NotATuple),
+      ]),
+      checker.error_bucket,
+      module,
+      girard.Erlang,
+    )
+  evidence.unlocated |> should.equal([])
+  dict.size(evidence.skipped) |> should.equal(3)
+  dict.values(evidence.skipped)
+  |> list.sort(fn(one, other) { string.compare(one.bucket, other.bucket) })
+  |> should.equal([
+    typeinfo.Skip(typeinfo.FunctionDefinition, "ArityMismatch"),
+    typeinfo.Skip(typeinfo.ConstantDefinition, "NotARecord"),
+    typeinfo.Skip(typeinfo.ConstantDefinition, "NotATuple"),
+  ])
+  typeinfo.skip_reason(
+    evidence.skipped,
+    span_of(module, "render").0,
+    span_of(module, "render").1,
+  )
+  |> should.equal(Some("ArityMismatch"))
+}
+
+pub fn a_skip_lands_on_the_half_the_run_builds_test() {
+  let source =
+    "@target(erlang)\npub fn render() -> Int { 1 }\n\n@target(javascript)\npub fn render() -> Int { 2 }\n"
+  let assert Ok(module) = glance.module(source)
+  // glance holds definitions in reverse source order, so the halves are told
+  // apart by the target their own attribute names rather than by position.
+  let assert [erlang_half, javascript_half] =
+    list.map(["erlang", "javascript"], fn(target) {
+      let assert Ok(definition) =
+        list.find(module.functions, fn(definition) {
+          list.any(definition.attributes, fn(attribute) {
+            case attribute.name, attribute.arguments {
+              "target", [glance.Variable(name: named, ..)] -> named == target
+              _, _ -> False
+            }
+          })
+        })
+      let location = { definition.definition }.location
+      #(location.start, location.end)
+    })
+  let skip = [#("render", girard.ArityMismatch)]
+  let on_erlang =
+    typeinfo.evidence_of(
+      skipped_result(skip),
+      checker.error_bucket,
+      module,
+      girard.Erlang,
+    )
+  typeinfo.skip_reason(on_erlang.skipped, erlang_half.0, erlang_half.1)
+  |> should.equal(Some("ArityMismatch"))
+  typeinfo.skip_reason(on_erlang.skipped, javascript_half.0, javascript_half.1)
+  |> should.equal(None)
+
+  let on_javascript =
+    typeinfo.evidence_of(
+      skipped_result(skip),
+      checker.error_bucket,
+      module,
+      girard.JavaScript,
+    )
+  typeinfo.skip_reason(
+    on_javascript.skipped,
+    javascript_half.0,
+    javascript_half.1,
+  )
+  |> should.equal(Some("ArityMismatch"))
+  typeinfo.skip_reason(on_javascript.skipped, erlang_half.0, erlang_half.1)
+  |> should.equal(None)
+}
+
+pub fn a_skip_naming_no_definition_is_kept_whole_test() {
+  // Two unplaced skips are two entries: nothing folds them onto one sentinel
+  // span, where the second would overwrite the first.
+  let assert Ok(module) = glance.module("pub fn render() -> Int { 1 }\n")
+  let evidence =
+    typeinfo.evidence_of(
+      skipped_result([
+        #("helper", girard.NotARecord),
+        #("other", girard.NotATuple),
+      ]),
+      checker.error_bucket,
+      module,
+      girard.Erlang,
+    )
+  evidence.skipped |> should.equal(dict.new())
+  evidence.unlocated
+  |> should.equal([#("helper", "NotARecord"), #("other", "NotATuple")])
+}
+
+// A `ModuleResult` that annotated nothing and declined the named definitions.
+fn skipped_result(
+  skipped: List(#(String, girard.Error)),
+) -> girard.ModuleResult {
+  girard.ModuleResult(
+    annotated: girard.AnnotatedModule(
+      functions: [],
+      constants: [],
+      expressions: [],
+      resolutions: [],
+      dropped: [],
+    ),
+    skipped:,
+  )
+}
+
+// The `#(start, end)` span of the named function in a parsed module.
+fn span_of(module: glance.Module, name: String) -> #(Int, Int) {
+  let assert Ok(definition) =
+    list.find(module.functions, fn(def) { { def.definition }.name == name })
+  let location = { definition.definition }.location
+  #(location.start, location.end)
 }
 
 // Resolution spans
@@ -385,7 +523,8 @@ pub fn a_readings_slices_are_the_modules_own_test() {
           "app/log",
           typeinfo.ModuleEvidence(
             resolutions: index([#(#(0, 9), ModuleFn("gleam/io", "println"))]),
-            skipped: dict.from_list([#("render", "ArityMismatch")]),
+            skipped: skips([#(#(10, 39), "ArityMismatch")]),
+            unlocated: [],
             dropped: set.from_list([#(40, 79)]),
           ),
         ),
@@ -398,7 +537,7 @@ pub fn a_readings_slices_are_the_modules_own_test() {
   |> should.equal(set.from_list(["format"]))
   typeinfo.resolution_at(reading.evidence.resolutions, 0, 9)
   |> should.equal(Some(ModuleFn("gleam/io", "println")))
-  typeinfo.skip_reason(reading.evidence.skipped, "render")
+  typeinfo.skip_reason(reading.evidence.skipped, 10, 39)
   |> should.equal(Some("ArityMismatch"))
   typeinfo.is_dropped(reading.evidence.dropped, 40, 79) |> should.be_true()
 }
@@ -411,4 +550,14 @@ pub fn an_unread_module_yields_the_empty_reading_test() {
 // One module's span-keyed slice — of types, or of resolutions.
 fn index(entries: List(#(#(Int, Int), a))) -> Dict(#(Int, Int), a) {
   dict.from_list(entries)
+}
+
+// A span-keyed skip map from `#(span, bucket)` pairs, all of them functions.
+fn skips(
+  entries: List(#(#(Int, Int), String)),
+) -> Dict(#(Int, Int), typeinfo.Skip) {
+  list.map(entries, fn(entry) {
+    #(entry.0, typeinfo.Skip(typeinfo.FunctionDefinition, entry.1))
+  })
+  |> dict.from_list()
 }
