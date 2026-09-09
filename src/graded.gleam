@@ -2320,7 +2320,10 @@ fn call_counts(rows: List(types.ClassificationCheck)) -> coverage.CallCounts {
     decided: list.count(rows, fn(row) {
       coverage.provenance_class(row) == coverage.DecidedByInference
     }),
-    lexical_agreeing: list.count(rows, fn(row) {
+    // The inference answered — agreeing or not. A lexical row it contradicts
+    // is counted here and again under `disagreements`, which is the count that
+    // states the verdict.
+    lexical_with_evidence: list.count(rows, fn(row) {
       coverage.provenance_class(row) == coverage.SettledLexically
       && !without_evidence(row)
     }),
