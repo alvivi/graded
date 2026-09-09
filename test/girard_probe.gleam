@@ -162,6 +162,9 @@ fn type_index(
         Error(Nil) -> Error(Nil)
       }
     }),
+    [],
+    set.new(),
+    set.new(),
   )
 }
 

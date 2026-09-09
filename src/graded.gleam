@@ -2731,7 +2731,18 @@ pub fn build_type_index(
         Error(Nil) -> Error(Nil)
       }
     })
-  typeinfo.from_modules(span_types, fn_typed, evidence)
+  let absent =
+    dict.keys(index)
+    |> set.from_list()
+    |> set.drop(list.map(results, fn(pair) { pair.0 }))
+  typeinfo.from_modules(
+    span_types,
+    fn_typed,
+    evidence,
+    [target],
+    absent,
+    set.new(),
+  )
 }
 
 // The one target girard is run on. Gleam compiles a whole build for a single
