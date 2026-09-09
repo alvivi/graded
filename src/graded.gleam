@@ -56,6 +56,7 @@ import graded/internal/checker
 import graded/internal/cli
 import graded/internal/compat
 import graded/internal/config
+import graded/internal/coverage
 import graded/internal/diff
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
@@ -209,6 +210,8 @@ pub fn main() -> Nil {
 
     ["catalog", ..rest] -> report(cli.parse_catalog_args(rest), run_catalog)
 
+    ["coverage", ..rest] -> report(cli.parse_coverage_args(rest), run_coverage)
+
     [first] -> dispatch_unknown(first)
 
     [first, extra, ..] ->
@@ -295,6 +298,7 @@ Usage:
   graded catalog                List the bundled catalog files (read-only)
   graded catalog <pkg> [dir]    Print the catalog file selected for the installed <pkg>
   graded catalog <pkg>@<ver>    Print that bundled version ([dir] accepted); bundled catalog only
+  graded coverage [dir]         Report what the type inference could and could not read (read-only)
   graded pack [directory]       Inject the spec into the hex tarball for release
   graded format [directory]     Format the spec file
   graded format --check [dir]   Verify formatting without writing (CI mode)
@@ -477,6 +481,14 @@ pub fn classification_checks(
   directory: String,
 ) -> Result(List(types.ClassificationCheck), GradedError) {
   use ctx <- result.map(load_project_context(directory))
+  context_classification_checks(ctx)
+}
+
+// The same rows off a context already assembled, so the coverage report reads
+// what `graded check` computed rather than a second pass over the same source.
+fn context_classification_checks(
+  ctx: ProjectContext,
+) -> List(types.ClassificationCheck) {
   let ProjectContext(sources:, type_info:, knowledge_base:, ..) = ctx
   use #(gleam_path, module) <- list.flat_map(sources.parsed)
   let module_path =
@@ -812,6 +824,10 @@ type ProjectContext {
     // the spec lint weighs its declaring lines against the same scan rather
     // than repeating the walk.
     dep_files: Dict(String, String),
+    // What the inference read of each path dependency it typed, in declaration
+    // order. Observational, and the coverage report is the only reader: a
+    // dependency installed from hex is not typed and is not here.
+    typed_path_dependencies: List(#(String, typeinfo.TypeInfo)),
   )
 }
 
@@ -928,7 +944,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
   // path-dependency inference below types the ones it owns, and the fallback
   // walk after it takes those readings rather than typing them again.
   let retained = retained_fallback_modules(dep_sources)
-  let #(kb_base, typed_dep_modules) =
+  let #(kb_base, typed_dep_modules, typed_path_dependencies) =
     enrich_with_path_deps(
       kb_base,
       package_root,
@@ -1040,6 +1056,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
       build_project_field_index(index),
     ),
     dep_files:,
+    typed_path_dependencies: list.reverse(typed_path_dependencies),
   )
 }
 
@@ -2171,6 +2188,297 @@ pub fn catalog_show(
   run_catalog(cli.ShowCatalog(package:, version:, directory:))
 }
 
+// Coverage
+//
+// What the type inference could and could not read of one package, printed.
+// Read-only, decides nothing and always succeeds with exit code 0: `check` is
+// the command that fails, and a report whose content is not a property of the
+// user's code has no business being a CI gate.
+//
+// Built from the context `check` builds and from the rows `why` prints, so it
+// cannot disagree with either — and `@internal` rather than public, because a
+// diagnostic's output format is the kind of surface a 1.0 should not freeze.
+@internal
+pub fn run_coverage(directory: String) -> Result(String, GradedError) {
+  use ctx <- result.map(load_project_context(directory))
+  let rows = context_classification_checks(ctx)
+  let ProjectContext(sources:, type_info:, typed_path_dependencies:, ..) = ctx
+  let package_root = sources.package_root
+  coverage.render(coverage.CoverageReport(
+    versions: coverage.Versions(
+      observed: observed_versions(),
+      manifest_girard: dict.get(
+        effects.manifest_versions(manifest_path(package_root)),
+        "girard",
+      )
+        |> option.from_result(),
+    ),
+    targets: set.to_list(types.build_targets(sources.cfg.targets))
+      |> list.sort(string.compare),
+    targets_source: sources.cfg.targets_source,
+    ran_on: list.map(type_info.targets, typeinfo.target_name),
+    modules_read: list.length(sources.parsed) - unread_modules(ctx),
+    modules_unread: unread_modules(ctx),
+    functions: definition_counts(ctx, function_locations),
+    constants: definition_counts(ctx, constant_locations),
+    calls: call_counts(rows),
+    skipped: skipped_definitions(ctx),
+    undecided: listed_sites(ctx, rows, is_undecided),
+    lexical_no_evidence: listed_sites(ctx, rows, is_lexical_without_evidence),
+    disagreements: listed_sites(ctx, rows, is_disagreement),
+    mismatches: listed_sites(ctx, rows, is_identity_mismatch),
+    unfilled_modules: set.to_list(type_info.unfilled)
+      |> list.sort(string.compare),
+    path_dependencies: list.map(typed_path_dependencies, path_dependency_row),
+  ))
+}
+
+// The modules the inference returned no result for, among the ones this package
+// declares.
+fn unread_modules(ctx: ProjectContext) -> Int {
+  list.count(module_paths(ctx), set.contains(ctx.type_info.absent, _))
+}
+
+// Every module this package declares, by the path the inference keyed it under.
+fn module_paths(ctx: ProjectContext) -> List(String) {
+  list.map(ctx.sources.parsed, fn(entry) {
+    config.module_path_for_source(entry.0, ctx.sources.source_directory)
+  })
+}
+
+fn function_locations(module: glance.Module) -> List(glance.Span) {
+  list.map(module.functions, fn(definition) {
+    { definition.definition }.location
+  })
+}
+
+fn constant_locations(module: glance.Module) -> List(glance.Span) {
+  list.map(module.constants, fn(definition) {
+    { definition.definition }.location
+  })
+}
+
+// One kind of definition counted across the package: within a module the
+// inference read, each is exactly one of typed, skipped or left out; an unread
+// module's are unread and in no other count.
+fn definition_counts(
+  ctx: ProjectContext,
+  locations_of: fn(glance.Module) -> List(glance.Span),
+) -> coverage.DefinitionCounts {
+  use counts, entry <- list.fold(
+    ctx.sources.parsed,
+    coverage.DefinitionCounts(typed: 0, skipped: 0, left_out: 0, unread: 0),
+  )
+  let #(gleam_path, module) = entry
+  let module_path =
+    config.module_path_for_source(gleam_path, ctx.sources.source_directory)
+  let locations = locations_of(module)
+  case set.contains(ctx.type_info.absent, module_path) {
+    True ->
+      coverage.DefinitionCounts(
+        ..counts,
+        unread: counts.unread + list.length(locations),
+      )
+    False -> {
+      let evidence = typeinfo.evidence_for_module(ctx.type_info, module_path)
+      use counts, location <- list.fold(locations, counts)
+      case
+        typeinfo.is_dropped(evidence.dropped, location.start, location.end),
+        typeinfo.skip_reason(evidence.skipped, location.start, location.end)
+      {
+        True, _ ->
+          coverage.DefinitionCounts(..counts, left_out: counts.left_out + 1)
+        False, Some(_) ->
+          coverage.DefinitionCounts(..counts, skipped: counts.skipped + 1)
+        False, None ->
+          coverage.DefinitionCounts(..counts, typed: counts.typed + 1)
+      }
+    }
+  }
+}
+
+// Every ambiguous call in exactly one provenance class, with the disagreements
+// counted beside rather than within.
+fn call_counts(rows: List(types.ClassificationCheck)) -> coverage.CallCounts {
+  coverage.CallCounts(
+    decided: list.count(rows, fn(row) {
+      coverage.provenance_class(row) == coverage.DecidedByInference
+    }),
+    lexical_agreeing: list.count(rows, fn(row) {
+      coverage.provenance_class(row) == coverage.SettledLexically
+      && !without_evidence(row)
+    }),
+    lexical_no_evidence: list.count(rows, is_lexical_without_evidence),
+    wired: list.count(rows, fn(row) {
+      coverage.provenance_class(row) == coverage.WiredFromConstruction
+    }),
+    undecided: list.count(rows, is_undecided),
+    disagreements: list.count(rows, is_disagreement),
+  )
+}
+
+fn without_evidence(row: types.ClassificationCheck) -> Bool {
+  case checker.relate(row) {
+    types.NoTypedEvidence(..) -> True
+    types.Compared(..) -> False
+  }
+}
+
+fn is_undecided(row: types.ClassificationCheck) -> Bool {
+  coverage.provenance_class(row) == coverage.Undecided
+}
+
+fn is_lexical_without_evidence(row: types.ClassificationCheck) -> Bool {
+  coverage.provenance_class(row) == coverage.SettledLexically
+  && without_evidence(row)
+}
+
+fn is_disagreement(row: types.ClassificationCheck) -> Bool {
+  checker.relate(row) == types.Compared(types.Disagree)
+}
+
+// A row graded refused because the resolution did not name this site. It counts
+// once, under undecided, and is listed again because a mismatch is the finding
+// the listing exists for.
+fn is_identity_mismatch(row: types.ClassificationCheck) -> Bool {
+  case row.graded {
+    types.UndecidedShadowed(reason: types.ResolutionMismatch(..), ..) -> True
+    _ -> False
+  }
+}
+
+// Every definition the inference declined, with where it sits. A skip naming no
+// definition the module declares keeps its name and its bucket and no location.
+fn skipped_definitions(
+  ctx: ProjectContext,
+) -> List(coverage.SkippedDefinition) {
+  use entry <- list.flat_map(ctx.sources.parsed)
+  let #(gleam_path, module) = entry
+  let module_path =
+    config.module_path_for_source(gleam_path, ctx.sources.source_directory)
+  let evidence = typeinfo.evidence_for_module(ctx.type_info, module_path)
+  let placed =
+    list.append(
+      skipped_of(
+        module_path,
+        gleam_path,
+        evidence,
+        coverage.Function,
+        list.map(module.functions, fn(definition) {
+          #({ definition.definition }.name, { definition.definition }.location)
+        }),
+      ),
+      skipped_of(
+        module_path,
+        gleam_path,
+        evidence,
+        coverage.Constant,
+        list.map(module.constants, fn(definition) {
+          #({ definition.definition }.name, { definition.definition }.location)
+        }),
+      ),
+    )
+  list.append(
+    placed,
+    list.map(evidence.unlocated, fn(entry) {
+      coverage.SkippedDefinition(
+        path: module_path <> "." <> entry.0,
+        location: None,
+        kind: coverage.Function,
+        bucket: entry.1,
+      )
+    }),
+  )
+}
+
+fn skipped_of(
+  module_path: String,
+  gleam_path: String,
+  evidence: typeinfo.ModuleEvidence,
+  kind: coverage.DefinitionKind,
+  definitions: List(#(String, glance.Span)),
+) -> List(coverage.SkippedDefinition) {
+  use #(name, location) <- list.filter_map(definitions)
+  use bucket <- result.map(
+    typeinfo.skip_reason(evidence.skipped, location.start, location.end)
+    |> option.to_result(Nil),
+  )
+  coverage.SkippedDefinition(
+    path: module_path <> "." <> name,
+    location: Some(site_location(gleam_path, location.start)),
+    kind:,
+    bucket:,
+  )
+}
+
+// The rows one listing shows, each with its source coordinates and the wording
+// `check` and `why` use for the same site.
+fn listed_sites(
+  ctx: ProjectContext,
+  rows: List(types.ClassificationCheck),
+  keep: fn(types.ClassificationCheck) -> Bool,
+) -> List(coverage.SiteRow) {
+  let paths =
+    list.fold(ctx.sources.parsed, dict.new(), fn(acc, entry) {
+      dict.insert(
+        acc,
+        config.module_path_for_source(entry.0, ctx.sources.source_directory),
+        entry.0,
+      )
+    })
+  use row <- list.filter_map(list.filter(rows, keep))
+  use gleam_path <- result.map(dict.get(paths, row.module))
+  coverage.SiteRow(
+    module: row.module,
+    function: row.function,
+    site: row.object <> "." <> row.label,
+    location: site_location(gleam_path, row.span.start),
+    detail: site_detail(row),
+  )
+}
+
+// What is said about one site, in `checker`'s own words: the row `why` prints
+// with its site prefix removed, since the listing already names the site and
+// its coordinates. Taking the whole line and trimming it, rather than wording a
+// reason here, is what keeps `check`, `why` and this report from describing one
+// site three ways.
+fn site_detail(row: types.ClassificationCheck) -> String {
+  let line = checker.format_typed_resolution(row)
+  let prefix = row.object <> "." <> row.label <> ": "
+  case string.starts_with(line, prefix) {
+    True -> string.drop_start(line, string.length(prefix))
+    False -> line
+  }
+}
+
+// `path:line:column` for one byte offset. The file is re-read here, in a
+// read-only command, rather than kept in the context for a listing that is
+// usually empty.
+fn site_location(gleam_path: String, offset: Int) -> String {
+  case simplifile.read(gleam_path) {
+    Ok(source) -> gleam_path <> ":" <> coverage.coordinates(source, offset)
+    Error(_) -> gleam_path
+  }
+}
+
+// One typed path dependency's own reading, counted the way the package's is.
+fn path_dependency_row(
+  entry: #(String, typeinfo.TypeInfo),
+) -> coverage.PathDependency {
+  let #(package, type_info) = entry
+  coverage.PathDependency(
+    package:,
+    ran_on: list.map(type_info.targets, typeinfo.target_name),
+    unread_modules: set.size(type_info.absent),
+    skipped: dict.fold(type_info.evidence, 0, fn(total, _path, evidence) {
+      total + dict.size(evidence.skipped) + list.length(evidence.unlocated)
+    }),
+    left_out: dict.fold(type_info.evidence, 0, fn(total, _path, evidence) {
+      total + set.size(evidence.dropped)
+    }),
+  )
+}
+
 // The two forms behind `catalog_list` and `catalog_show`, over the CLI's own
 // decoded request so `main` dispatches without rebuilding it.
 @internal
@@ -3155,7 +3463,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   // As in `project_context`: read once, and handed to both passes that weigh
   // these modules.
   let retained = retained_fallback_modules(dep_sources)
-  let #(kb_base, typed_dep_modules) =
+  let #(kb_base, typed_dep_modules, _typed_path_dependencies) =
     enrich_with_path_deps(
       kb_base,
       package_root,
@@ -4462,11 +4770,15 @@ fn enrich_with_path_deps(
   consumer_modules: Set(String),
   package_targets: types.PackageTargets,
   retained: Dict(String, RetainedModule),
-) -> #(KnowledgeBase, Dict(String, typeinfo.ModuleReading)) {
+) -> #(
+  KnowledgeBase,
+  Dict(String, typeinfo.ModuleReading),
+  List(#(String, typeinfo.TypeInfo)),
+) {
   let path_deps =
     effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
-  use state, dep <- list.fold(path_deps, #(knowledge_base, dict.new()))
-  let #(kb, readings) = state
+  use state, dep <- list.fold(path_deps, #(knowledge_base, dict.new(), []))
+  let #(kb, readings, typed) = state
   let #(name, dep_path) = dep
   // Path dependency locations are declared relative to the project root,
   // except an absolute `path`, which `resolve_path` leaves untouched.
@@ -4480,12 +4792,16 @@ fn enrich_with_path_deps(
         types.PathDependency(package: name),
       ),
       readings,
+      typed,
     )
     _ -> {
       let index = path_dep_index(resolved_dep_path)
       let type_info =
         path_dep_type_info(resolved_dep_path, index, dep_files, package_targets)
       let readings = retained_readings(readings, index, type_info, retained)
+      // Kept beside the knowledge base for the coverage report: a dependency
+      // installed from hex is not typed and has none of this.
+      let typed = [#(name, type_info), ..typed]
       case
         infer_typed_path_dep(
           resolved_dep_path,
@@ -4496,7 +4812,7 @@ fn enrich_with_path_deps(
           package_targets,
         )
       {
-        Error(Nil) -> #(kb, readings)
+        Error(Nil) -> #(kb, readings, typed)
         // Inference over the dep's source, not a line its author wrote: the
         // origin says so, so nothing downstream reads it as a declaration.
         Ok(#(effs, params, returns, provenance)) -> #(
@@ -4509,6 +4825,7 @@ fn enrich_with_path_deps(
           )
             |> effects.with_provenance(provenance),
           readings,
+          typed,
         )
       }
     }
