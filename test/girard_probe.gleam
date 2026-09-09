@@ -99,16 +99,15 @@ fn probe(
   let dep_files = dict.merge(borrowed, own_deps)
 
   // The package's own declared targets, so a JavaScript-target package is typed
-  // for JavaScript and its Erlang-only definitions are the dropped ones.
+  // for JavaScript first — and its Erlang-gated definitions on the second run.
   let package_targets = read_targets(root)
-  let target = graded.girard_target(package_targets)
-  let options =
-    girard.default_options()
-    |> girard.with_target(target)
-    |> girard.with_resolver(resolver(source_dir, index, dep_files))
-
-  let results = girard.annotate_package(entries, options)
-  let type_info = type_index(results, index, target)
+  let targets = graded.girard_targets(package_targets, entries)
+  let type_info =
+    graded.annotate_on_targets(
+      entries,
+      resolver(source_dir, index, dep_files),
+      targets,
+    )
 
   let cross_constructors =
     list.fold(entries, dict.new(), fn(acc, entry) {
@@ -130,42 +129,8 @@ fn probe(
       )
     })
 
-  report_package(root, entries, results, rows)
+  report_package(root, entries, type_info, rows)
   rows
-}
-
-// girard's whole answer for the package, folded through the same helpers
-// production folds it with, so the probe's classification reads the maps
-// `graded check` reads.
-fn type_index(
-  results: Dict(String, girard.ModuleResult),
-  index: Dict(String, glance.Module),
-  target: girard.Target,
-) -> typeinfo.TypeInfo {
-  let pairs = dict.to_list(results)
-  typeinfo.from_modules(
-    list.map(pairs, fn(pair) { #({ pair.0 }, typeinfo.span_types(pair.1)) }),
-    [],
-    list.filter_map(pairs, fn(pair) {
-      let #(module_path, module_result) = pair
-      case dict.get(index, module_path) {
-        Ok(module) ->
-          Ok(#(
-            module_path,
-            typeinfo.evidence_of(
-              module_result,
-              checker.error_bucket,
-              module,
-              target,
-            ),
-          ))
-        Error(Nil) -> Error(Nil)
-      }
-    }),
-    [],
-    set.new(),
-    set.new(),
-  )
 }
 
 // The targets the scanned package declares. A root with no readable
@@ -222,131 +187,183 @@ fn resolver(
 
 // Reporting
 
-// What girard covered in one package, counted the way the report states it.
+// What the type inference covered in one package, counted the way the report
+// states it and read off the merged reading rather than off girard directly —
+// so the probe measures what `graded check` sees.
 //
-// A top-level function is typed only if girard walked its module, walked the
-// definition, and did not abandon it — so the typed count subtracts the skips,
-// the definitions left out of the build for the other target, and the functions
-// of any module girard declined outright. `dropped` carries constants beside
-// functions, and a constant is not in the function count to begin with, so the
-// two are counted apart and only the function half is subtracted.
+// The accounting is disjoint. A module is *read* (some run returned a result
+// for it) or *unread*; a read module may be *unfilled*, read by the primary run
+// and omitted by a secondary. Within a read module every function and every
+// constant is exactly one of typed, skipped or left out of every run, and an
+// unread module's definitions are unread, a count of their own. Skips naming no
+// definition are listed apart and counted in none of the three.
 pub type Coverage {
   Coverage(
-    // Top-level functions in the package's sources.
-    functions: Int,
-    // Top-level functions in the modules girard returned a result for.
-    walked_functions: Int,
+    // The targets the inference ran on, primary first.
+    targets: List(girard.Target),
+    modules_read: Int,
+    modules_unread: Int,
+    modules_unfilled: Int,
+    functions_typed: Int,
     // The error bucket of every skipped definition that is a function.
-    skipped: List(String),
-    // Definitions left out of the build for the other target: functions and
-    // constants together, which is what the dropped line reports.
-    dropped_definitions: Int,
-    // The function half of them.
-    dropped_functions: Int,
+    functions_skipped: List(String),
+    functions_left_out: Int,
+    functions_unread: Int,
+    constants_typed: Int,
+    constants_skipped: List(String),
+    constants_left_out: Int,
+    constants_unread: Int,
+    // Skips naming no definition the module declares on its run's target.
+    unlocated: List(#(String, String)),
   )
 }
 
-// The functions girard typed: walked, in the build, and not abandoned.
-pub fn typed_functions(coverage: Coverage) -> Int {
-  coverage.walked_functions
-  - list.length(coverage.skipped)
-  - coverage.dropped_functions
-}
-
-// One package's coverage, from its parsed modules and girard's results.
+// One package's coverage, from its parsed modules and the merged reading.
 pub fn coverage(
   entries: List(#(String, glance.Module)),
-  results: Dict(String, girard.ModuleResult),
+  type_info: typeinfo.TypeInfo,
 ) -> Coverage {
-  let function_names =
-    list.fold(entries, set.new(), fn(acc, entry) {
+  list.fold(
+    entries,
+    Coverage(
+      targets: type_info.targets,
+      modules_read: 0,
+      modules_unread: 0,
+      modules_unfilled: 0,
+      functions_typed: 0,
+      functions_skipped: [],
+      functions_left_out: 0,
+      functions_unread: 0,
+      constants_typed: 0,
+      constants_skipped: [],
+      constants_left_out: 0,
+      constants_unread: 0,
+      unlocated: [],
+    ),
+    fn(acc, entry) {
       let #(module_path, module) = entry
-      list.fold(module.functions, acc, fn(acc, definition) {
-        set.insert(acc, #(module_path, definition.definition.name))
-      })
-    })
-  // Keyed by span, not by name: a `@target` pair shares one name, and only one
-  // half of it is dropped.
-  let function_spans =
-    list.fold(entries, set.new(), fn(acc, entry) {
-      let #(module_path, module) = entry
-      list.fold(module.functions, acc, fn(acc, definition) {
-        let location = { definition.definition }.location
-        set.insert(acc, #(module_path, location.start, location.end))
-      })
-    })
-  Coverage(
-    functions: list.fold(entries, 0, fn(acc, entry) {
-      acc + list.length({ entry.1 }.functions)
-    }),
-    walked_functions: list.fold(entries, 0, fn(acc, entry) {
-      let #(module_path, module) = entry
-      case dict.has_key(results, module_path) {
-        True -> acc + list.length(module.functions)
-        False -> acc
+      case set.contains(type_info.absent, module_path) {
+        True ->
+          Coverage(
+            ..acc,
+            modules_unread: acc.modules_unread + 1,
+            functions_unread: acc.functions_unread
+              + list.length(module.functions),
+            constants_unread: acc.constants_unread
+              + list.length(module.constants),
+          )
+        False -> {
+          let evidence = typeinfo.evidence_for_module(type_info, module_path)
+          let functions =
+            standing_of(
+              list.map(module.functions, fn(d) { { d.definition }.location }),
+              evidence,
+            )
+          let constants =
+            standing_of(
+              list.map(module.constants, fn(d) { { d.definition }.location }),
+              evidence,
+            )
+          Coverage(
+            ..acc,
+            modules_read: acc.modules_read + 1,
+            modules_unfilled: case
+              set.contains(type_info.unfilled, module_path)
+            {
+              True -> acc.modules_unfilled + 1
+              False -> acc.modules_unfilled
+            },
+            functions_typed: acc.functions_typed + functions.0,
+            functions_skipped: list.append(acc.functions_skipped, functions.1),
+            functions_left_out: acc.functions_left_out + functions.2,
+            constants_typed: acc.constants_typed + constants.0,
+            constants_skipped: list.append(acc.constants_skipped, constants.1),
+            constants_left_out: acc.constants_left_out + constants.2,
+            unlocated: list.append(acc.unlocated, evidence.unlocated),
+          )
+        }
       }
-    }),
-    skipped: dict.to_list(results)
-      |> list.flat_map(fn(pair) {
-        let #(module_path, module_result) = pair
-        list.filter_map(module_result.skipped, fn(entry) {
-          case set.contains(function_names, #(module_path, entry.0)) {
-            True -> Ok(checker.error_bucket(entry.1))
-            False -> Error(Nil)
-          }
-        })
-      }),
-    dropped_definitions: dict.to_list(results)
-      |> list.fold(0, fn(acc, pair) {
-        acc + list.length({ pair.1 }.annotated.dropped)
-      }),
-    dropped_functions: dict.to_list(results)
-      |> list.fold(0, fn(acc, pair) {
-        let #(module_path, module_result) = pair
-        acc
-        + list.count(module_result.annotated.dropped, fn(dropped) {
-          set.contains(function_spans, #(
-            module_path,
-            dropped.span.start,
-            dropped.span.end,
-          ))
-        })
-      }),
+    },
   )
+}
+
+// One module's definitions of one kind as `#(typed, skip buckets, left out)`.
+// A definition left out of every run was never walked, so it is neither typed
+// nor skipped — the three are exclusive and sum to the definitions declared.
+fn standing_of(
+  locations: List(glance.Span),
+  evidence: typeinfo.ModuleEvidence,
+) -> #(Int, List(String), Int) {
+  list.fold(locations, #(0, [], 0), fn(acc, location) {
+    let #(typed, skipped, left_out) = acc
+    case typeinfo.is_dropped(evidence.dropped, location.start, location.end) {
+      True -> #(typed, skipped, left_out + 1)
+      False ->
+        case
+          typeinfo.skip_reason(evidence.skipped, location.start, location.end)
+        {
+          Some(bucket) -> #(typed, [bucket, ..skipped], left_out)
+          None -> #(typed + 1, skipped, left_out)
+        }
+    }
+  })
 }
 
 fn report_package(
   root: String,
   entries: List(#(String, glance.Module)),
-  results: Dict(String, girard.ModuleResult),
+  type_info: typeinfo.TypeInfo,
   rows: List(ClassificationCheck),
 ) -> Nil {
-  let counted = coverage(entries, results)
-  let missing_modules =
-    list.length(entries) - list.length(dict.to_list(results))
+  let counted = coverage(entries, type_info)
 
   io.println("")
   io.println("## " <> root)
   io.println("")
+  io.println(
+    "targets the inference ran on: "
+    <> string.join(list.map(counted.targets, typeinfo.target_name), ", "),
+  )
   io.println("modules: " <> int.to_string(list.length(entries)))
-  io.println("modules girard dropped: " <> int.to_string(missing_modules))
-  io.println("top-level functions: " <> int.to_string(counted.functions))
   io.println(
-    "girard-skipped functions: " <> int.to_string(list.length(counted.skipped)),
+    "modules the inference did not read: "
+    <> int.to_string(counted.modules_unread),
   )
   io.println(
-    "girard-typed functions: " <> int.to_string(typed_functions(counted)),
+    "modules the second run could not read: "
+    <> int.to_string(counted.modules_unfilled),
   )
   io.println(
-    "definitions dropped for the other target: "
-    <> int.to_string(counted.dropped_definitions)
-    <> " (functions: "
-    <> int.to_string(counted.dropped_functions)
-    <> ")",
+    "top-level functions: "
+    <> int.to_string(
+      counted.functions_typed
+      + list.length(counted.functions_skipped)
+      + counted.functions_left_out
+      + counted.functions_unread,
+    ),
+  )
+  io.println(
+    "girard-skipped functions: "
+    <> int.to_string(list.length(counted.functions_skipped)),
+  )
+  io.println(
+    "girard-typed functions: " <> int.to_string(counted.functions_typed),
+  )
+  io.println(
+    "functions left out of every run: "
+    <> int.to_string(counted.functions_left_out),
+  )
+  io.println(
+    "constants left out of every run: "
+    <> int.to_string(counted.constants_left_out),
+  )
+  io.println(
+    "skips naming no definition: "
+    <> int.to_string(list.length(counted.unlocated)),
   )
   io.println("")
   io.println("skip reasons:")
-  print_tally(tally(counted.skipped))
+  print_tally(tally(counted.functions_skipped))
   report_rows(rows)
 }
 

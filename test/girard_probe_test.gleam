@@ -1,21 +1,22 @@
 // The probe's coverage accounting
 //
-// What "girard-typed functions" counts. A definition left out of the build for
-// the other target was never walked, so it is neither typed nor skipped, and a
-// module girard declined outright contributes none of its functions either.
-// girard drops constants beside functions, so the typed count subtracts the
-// function half alone — the constants were never in a function count.
+// Disjoint counts read off the merged reading: within a module the inference
+// read, every function and every constant is exactly one of typed, skipped or
+// left out of every run; an unread module's definitions are unread, a count of
+// their own. A gated function triggers the second run, so the only definition
+// left out of every run is one gated with no gated function beside it.
 
 import girard
 import girard_probe
 import glance
-import gleam/dict
+import gleam/set
 import gleeunit/should
+import graded
+import graded/internal/typeinfo
 import graded/internal/types
 
 // One module holding a `@target(javascript)` constant, a `@target(javascript)`
-// function and a function of every build: typed for Erlang, girard drops two
-// definitions of which one is a function.
+// function and a function of every build.
 const target_gated = "@target(javascript)
 pub const mode = \"browser\"
 
@@ -29,30 +30,79 @@ pub fn everywhere() -> Nil {
 }
 "
 
-pub fn a_dropped_function_is_not_counted_as_typed_test() {
-  let assert Ok(module) = glance.module(target_gated)
-  let entries = [#("app", module)]
-  let counted =
-    girard_probe.coverage(
-      entries,
-      girard.annotate_package(entries, girard.default_options()),
-    )
-  counted.functions |> should.equal(2)
-  counted.walked_functions |> should.equal(2)
-  counted.skipped |> should.equal([])
-  counted.dropped_definitions |> should.equal(2)
-  counted.dropped_functions |> should.equal(1)
-  girard_probe.typed_functions(counted) |> should.equal(1)
+// A module whose only gated definition is a constant: nothing triggers a second
+// run, so that constant is left out of every run.
+const constant_gated = "@target(javascript)
+pub const mode = \"browser\"
+
+pub fn everywhere() -> Nil {
+  Nil
+}
+"
+
+pub fn both_gated_halves_are_counted_as_typed_test() {
+  // A gated function triggers the second run, so every definition in the module
+  // is read on the target that builds it and none is left out.
+  let counted = coverage_of(target_gated)
+  counted.targets |> should.equal([girard.Erlang, girard.JavaScript])
+  counted.modules_read |> should.equal(1)
+  counted.modules_unread |> should.equal(0)
+  counted.functions_typed |> should.equal(2)
+  counted.functions_skipped |> should.equal([])
+  counted.functions_left_out |> should.equal(0)
+  counted.constants_typed |> should.equal(1)
+  counted.constants_left_out |> should.equal(0)
+  counted.unlocated |> should.equal([])
 }
 
-pub fn a_module_girard_returned_nothing_for_counts_no_typed_function_test() {
-  // The package's own function total still reports every module's functions;
-  // only the walked count drops the module girard has no result for.
+pub fn a_gated_constant_alone_is_left_out_of_every_run_test() {
+  // The one count expected non-zero on a clean package, and the reason the two
+  // left-out lines are printed apart.
+  let counted = coverage_of(constant_gated)
+  counted.targets |> should.equal([girard.Erlang])
+  counted.functions_typed |> should.equal(1)
+  counted.functions_left_out |> should.equal(0)
+  counted.constants_typed |> should.equal(0)
+  counted.constants_left_out |> should.equal(1)
+}
+
+pub fn a_module_the_inference_did_not_read_counts_its_own_test() {
+  // An unread module's definitions are in no other count: a reader who sees
+  // `unread` non-zero knows to look at the inference, not at graded.
   let assert Ok(module) = glance.module(target_gated)
-  let counted = girard_probe.coverage([#("app", module)], dict.new())
-  counted.functions |> should.equal(2)
-  counted.walked_functions |> should.equal(0)
-  girard_probe.typed_functions(counted) |> should.equal(0)
+  let counted =
+    girard_probe.coverage(
+      [#("app", module)],
+      typeinfo.from_modules(
+        [],
+        [],
+        [],
+        [girard.Erlang],
+        set.from_list(["app"]),
+        set.new(),
+      ),
+    )
+  counted.modules_read |> should.equal(0)
+  counted.modules_unread |> should.equal(1)
+  counted.functions_unread |> should.equal(2)
+  counted.constants_unread |> should.equal(1)
+  counted.functions_typed |> should.equal(0)
+  counted.functions_left_out |> should.equal(0)
+}
+
+// One module's coverage through the funnel production uses, with a resolver
+// that finds nothing outside it.
+fn coverage_of(source: String) -> girard_probe.Coverage {
+  let assert Ok(module) = glance.module(source)
+  let entries = [#("app", module)]
+  girard_probe.coverage(
+    entries,
+    graded.annotate_on_targets(
+      entries,
+      fn(_module_path) { Error(Nil) },
+      graded.girard_targets(types.DefaultedTargets, entries),
+    ),
+  )
 }
 
 // The report over a package's rows
