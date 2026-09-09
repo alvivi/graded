@@ -5536,10 +5536,12 @@ pub fn observed_versions() -> compat.Observed {
   )
 }
 
-// graded's own version, from the loaded OTP application's `vsn`.
-@external(erlang, "graded_ffi", "version")
-@external(javascript, "./graded_ffi.mjs", "version")
-fn version() -> String
+// graded's own version, from the loaded OTP application's `vsn` (sourced from
+// `gleam.toml` at build time). `"unknown"` where no application metadata is
+// resolved, which is every read on JavaScript.
+fn version() -> String {
+  loaded_version("graded") |> result.unwrap("unknown")
+}
 
 // Any loaded application's version, read the same way. The applications graded
 // loaded are the analyzer in use whatever directory it points at, which is what
