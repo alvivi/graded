@@ -56,12 +56,15 @@ pub fn an_unverified_version_is_stated_and_noticed_test() {
       ),
     )
   let rendered = coverage.render(report)
+  let listed = string.join(compat.verified_gleam, ", ")
   rendered
-  |> string.contains("gleam 1.19.0 (verified: 1.18.0)")
+  |> string.contains("gleam 1.19.0 (verified: " <> listed <> ")")
   |> should.be_true()
   rendered
   |> string.contains(
-    "versions\n  gleam 1.19.0 is not a verified version (verified: 1.18.0)",
+    "versions\n  gleam 1.19.0 is not a verified version (verified: "
+    <> listed
+    <> ")",
   )
   |> should.be_true()
 }
@@ -476,7 +479,7 @@ pub fn plain() -> Nil {
     "ambiguous calls: " <> int.to_string(list.length(rows)) <> " — ",
   )
   |> should.be_true()
-  { list.length(rows) > 0 } |> should.be_true()
+  { rows != [] } |> should.be_true()
   support.cleanup(root)
 }
 
