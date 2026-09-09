@@ -23,6 +23,7 @@ gleam run -m graded why <name> [dir]       # explain where a function's effects 
 gleam run -m graded catalog                # list the bundled catalog files
 gleam run -m graded catalog <pkg> [dir]    # print the catalog file selected for <pkg>
 gleam run -m graded catalog <pkg>@<ver>    # print exactly that bundled catalog file
+gleam run -m graded coverage [dir]         # report what the type inference read (read-only)
 gleam run -m graded format [dir]           # format the spec file
 gleam run -m graded format --check [dir]   # CI mode, exits non-zero on diffs
 gleam run -m graded format --stdin         # editor integration: format from stdin
@@ -35,7 +36,7 @@ Tests use **gleeunit** with **qcheck** property generators in `test/generators.g
 
 ## Architecture
 
-Sixteen modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
+Eighteen modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
 
 | File | Responsibility |
 |---|---|
@@ -55,6 +56,8 @@ Sixteen modules, no circular dependencies. Only `src/graded.gleam` is the public
 | `src/graded/internal/lint.gleam` | Spec-file lint: `check`/`assume`/field lines whose target resolves nothing, `effects` lines whose path is not a function's, and `where returns` clauses their own line does not scope |
 | `src/graded/internal/pack.gleam` | Hex tarball patching for `graded pack`: resolve `build/<name>-<version>.tar` and check its `metadata.config` names this project, inject the spec through a temporary file, verify, replace |
 | `src/graded/internal/diff.gleam` | Line diff between two renderings of a spec file, for `infer --dry-run` |
+| `src/graded/internal/compat.gleam` | The Gleam, OTP and girard versions graded was verified on, and how an observed version stands to them |
+| `src/graded/internal/coverage.gleam` | `graded coverage`'s report held as data, and the renderer over it |
 
 ## .graded Annotation Syntax
 
@@ -68,7 +71,7 @@ See [docs/REFERENCE.md](docs/REFERENCE.md) for the full grammar, every annotatio
 - **Agents first.** Annotations are designed to be machine-written and machine-read.
 - **Incremental adoption.** Modules without entries in the spec file are silently skipped at check time; the rest is ignored.
 - **Sound foundations.** Based on graded modal type theory (see docs/THEORY.md).
-- **Type inference as an enhancement layer.** graded parses with glance (syntax-level) and additionally runs [girard](https://hexdocs.pm/girard) — a Hindley-Milner type annotator for Gleam — over the whole package to learn the inferred type of every expression. Types resolve field calls on any receiver (not just directly-annotated parameters) and let field effects be derived from construction sites. girard is best-effort and per-function: a function it can't type contributes no types, so graded silently falls back to the syntax-level path for it — types can only ever sharpen an `[Unknown]`, never change an already-resolved result. The one exception is a call through a name that shadows an imported module: which of the two the compiler reads is *decided* by girard's resolution of that access, and the call reads `[Unknown]` wherever that resolution establishes neither — it recorded nothing, recorded an explicit unresolved, recorded something that is not a module function or a nominal record field, or recorded a target whose identity is not the site's.
+- **Type inference as an enhancement layer.** graded parses with glance (syntax-level) and additionally runs [girard](https://hexdocs.pm/girard) — a Hindley-Milner type annotator for Gleam — over the whole package to learn the inferred type of every expression. Types resolve field calls on any receiver (not just directly-annotated parameters) and let field effects be derived from construction sites. girard runs once per target a definition in the package's own source is gated to by `@target`, and the readings merge per module, so a definition is typed on the target that builds it; a package with no gated function runs it once. girard is best-effort and per-function: a function it can't type contributes no types, so graded silently falls back to the syntax-level path for it — types can only ever sharpen an `[Unknown]`, never change an already-resolved result. The one exception is a call through a name that shadows an imported module: which of the two the compiler reads is *decided* by girard's resolution of that access, and the call reads `[Unknown]` wherever that resolution establishes neither — it recorded nothing, recorded an explicit unresolved, recorded something that is not a module function or a nominal record field, or recorded a target whose identity is not the site's.
 - **`priv/` is for runtime data, not build-time tool state.** graded's own `priv/catalog/` is read at graded's runtime when invoked, which is the textbook use of priv. graded does NOT write to user projects' or dependencies' priv directories.
 
 ## Effect Resolution

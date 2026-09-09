@@ -504,7 +504,7 @@ than guessing, and `graded check` and `graded why` name the reason:
 
 | reason | what happened |
 |---|---|
-| definition dropped for the other build target | The definition is `@target`-gated for the target this package is *not* typed on, so nothing in it was walked. |
+| definition dropped for the other build target | The definition is gated to a target the inference has no run for; every `@target` function gets one, so this is expected nowhere. A gated *constant* with no gated function beside it is the one definition that stays left out, and it holds no call. |
 | function skipped | The inference declined the enclosing function (its error bucket is named). A function it cannot type is one no reading of this site exists for. |
 | no reference recorded at this span | The function was typed, but nothing was recorded at the access. |
 | receiver type not fixed at the access | The receiver's type was settled only after the access, so the member was never named. |
@@ -520,15 +520,18 @@ pub type Logger {
   Quiet(n: Int)
 }
 
-@target(javascript)
-pub fn dropped(io: Logger) -> Nil {
-  io.println("hi")               // [Unknown]: definition dropped for the
-}                                // other build target
+pub fn declined(io: Logger) -> Nil {
+  io.println("hi")               // [Unknown]: function skipped: TypeMismatch
+  let _n: Int = "not an int"     // the error that makes the inference decline
+  Nil                            // the whole function, and every call in it
+}
 ```
 
-The first two are the structural ones — a package naming both targets is typed
-on one of them, and a function the inference declines takes every shadowed call
-in it with it.
+`function skipped` is the structural one: a function the inference declines
+takes every shadowed call in it with it, whatever the call itself looks like.
+
+`graded coverage` lists every site charged this way, with its reason and its
+`file:line:column`, so the whole package's worth can be read at once.
 
 **How to avoid it** — rename the binding, which removes the ambiguity outright
 and is what the compiler's own reading depends on not needing. Failing that, a
@@ -536,7 +539,7 @@ field `check` bound naming the field asserts that this *is* the field call and
 what it costs:
 
 ```
-check m.dropped(io.println: [Stdout]) : [Stdout]
+check m.declined(io.println: [Stdout]) : [Stdout]
 ```
 
 Nothing weaker discharges it: the wiring a `type` line or a construction site
@@ -548,6 +551,13 @@ shadowed receiver inside one reads exactly as it would in the project. The Gleam
 fallback body of an `@external` a dependency declares is typed too, a package
 installed from hex included: its modules sit under the consumer's own
 `build/packages`, which is the tree the resolver reads.
+
+One thing a `@target` pair does not get separately: which of a function's
+parameters are function-typed is recorded by name, so two same-named halves of a
+pair that disagree about that are both read as the half the first run typed. The
+signature registry graded builds from glance has the same key, so this predates
+typing the second target; a call inside either half still resolves on its own
+run.
 
 ## 8. A `check` graded could not prove
 
