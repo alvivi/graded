@@ -444,6 +444,55 @@ pub fn broken(io: Logger) -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_wired_call_with_no_typed_evidence_is_listed_test() {
+  // A wired row reaches "no typed evidence" the same way a lexically settled
+  // one does: the construction named the value, the inference declined the
+  // function, and the site is listed with the reason it was declined. It still
+  // counts once, under `wired from a construction`.
+  let root =
+    support.write_fixture("build/coverage_wired_no_evidence", [
+      #("gleam.toml", "name = \"app\"\n"),
+      #(
+        "m.gleam",
+        "import gleam/io
+
+pub type Logger {
+  Loud(println: fn(String) -> Nil)
+  Quiet(n: Int)
+}
+
+fn shout(message: String) -> Nil {
+  io.println(message)
+}
+
+pub fn broken() -> Nil {
+  let io = Loud(shout)
+  io.println(\"hi\")
+  let mismatched: Int = \"not an int\"
+  case mismatched {
+    _ -> Nil
+  }
+}
+",
+      ),
+    ])
+  let assert Ok(report) = graded.run_coverage(root)
+  report
+  |> string.contains("\nno typed evidence\n  m.broken `io.println` (")
+  |> should.be_true()
+  report
+  |> string.contains("no typed resolution (function skipped: TypeMismatch)")
+  |> should.be_true()
+  // Once, in its own class: the listing cuts across the partition rather than
+  // moving the row out of `wired from a construction`.
+  report
+  |> string.contains(
+    "1 settled lexically with the inference agreeing, 0 settled lexically with no typed evidence, 1 wired from a construction",
+  )
+  |> should.be_true()
+  support.cleanup(root)
+}
+
 pub fn the_reported_call_total_is_every_row_test() {
   // The classes partition the rows only if `provenance_class` is exhaustive
   // over every classification a real package produces — which no hand-built
@@ -523,7 +572,7 @@ fn clean() -> coverage.CoverageReport {
     ),
     skipped: [],
     undecided: [],
-    lexical_no_evidence: [],
+    no_typed_evidence: [],
     disagreements: [],
     mismatches: [],
     unfilled_modules: [],

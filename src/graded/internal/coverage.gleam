@@ -39,7 +39,10 @@ pub type CoverageReport {
     // Present only when non-empty, each in its own section.
     skipped: List(SkippedDefinition),
     undecided: List(SiteRow),
-    lexical_no_evidence: List(SiteRow),
+    // Every row the inference answered nothing for, whatever class it counts
+    // in: a lexically settled and a wired row both reach it, and the reason no
+    // evidence arrived is the same finding either way.
+    no_typed_evidence: List(SiteRow),
     disagreements: List(SiteRow),
     mismatches: List(SiteRow),
     // Modules the primary run read and a second run did not, whose definitions
@@ -159,10 +162,7 @@ pub fn render(report: CoverageReport) -> String {
     section("modules the second run could not read", report.unfilled_modules),
     section("skipped definitions", list.map(report.skipped, skipped_line)),
     section("undecided shadowed calls", list.map(report.undecided, site_line)),
-    section(
-      "settled lexically with no typed evidence",
-      list.map(report.lexical_no_evidence, site_line),
-    ),
+    section("no typed evidence", list.map(report.no_typed_evidence, site_line)),
     section("disagreements", list.map(report.disagreements, site_line)),
     section("identity mismatches", list.map(report.mismatches, site_line)),
     ["", path_dependency_header(report.path_dependencies)],

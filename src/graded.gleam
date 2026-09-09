@@ -2228,10 +2228,10 @@ pub fn run_coverage(directory: String) -> Result(String, GradedError) {
     calls: call_counts(rows),
     skipped: skipped_definitions(modules, type_info),
     undecided: listed_sites(sources.index, rows, is_undecided),
-    lexical_no_evidence: listed_sites(
+    no_typed_evidence: listed_sites(
       sources.index,
       rows,
-      is_lexical_without_evidence,
+      is_without_typed_evidence,
     ),
     disagreements: listed_sites(sources.index, rows, is_disagreement),
     mismatches: listed_sites(sources.index, rows, is_identity_mismatch),
@@ -2347,6 +2347,18 @@ fn is_undecided(row: types.ClassificationCheck) -> Bool {
 fn is_lexical_without_evidence(row: types.ClassificationCheck) -> Bool {
   coverage.provenance_class(row) == coverage.SettledLexically
   && without_evidence(row)
+}
+
+// A row charged with the inference having answered nothing at all. Both the
+// classes a call can be charged from without an answer reach it — settled
+// lexically, and wired from a construction — and each still counts in its own
+// class, so the listing cuts across the partition rather than redrawing it.
+fn is_without_typed_evidence(row: types.ClassificationCheck) -> Bool {
+  case coverage.provenance_class(row) {
+    coverage.SettledLexically | coverage.WiredFromConstruction ->
+      without_evidence(row)
+    coverage.DecidedByInference | coverage.Undecided -> False
+  }
 }
 
 fn is_disagreement(row: types.ClassificationCheck) -> Bool {
