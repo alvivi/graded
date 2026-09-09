@@ -636,6 +636,15 @@ pub fn the_verified_otp_is_the_tool_versions_one_test() {
   tool_version("erlang") |> should.equal(Ok(compat.verified_otp))
 }
 
+pub fn the_gleam_requirement_names_the_verified_floor_test() {
+  // One class of support, verified: the requirement cannot claim a compiler the
+  // corpus was not clean on, so it names the list's head and not girard's own
+  // lower bound.
+  let assert Ok(floor) = list.first(compat.verified_gleam)
+  let assert Ok(gleam_toml) = simplifile.read("gleam.toml")
+  gleam_requirement(gleam_toml) |> should.equal(Ok(">= " <> floor))
+}
+
 pub fn the_verified_girard_is_the_manifests_one_test() {
   let assert Ok(manifest) = simplifile.read("manifest.toml")
   manifest_version(manifest, "girard")
@@ -663,4 +672,15 @@ fn manifest_version(manifest: String, package: String) -> Result(String, Nil) {
   use #(_before, after) <- result.try(string.split_once(line, "version = \""))
   use #(version, _rest) <- result.map(string.split_once(after, "\""))
   version
+}
+
+// The `gleam = "…"` requirement `gleam.toml` states.
+fn gleam_requirement(gleam_toml: String) -> Result(String, Nil) {
+  use line <- result.try(
+    string.split(gleam_toml, "\n")
+    |> list.find(fn(line) { string.starts_with(line, "gleam = \"") }),
+  )
+  use #(_before, after) <- result.try(string.split_once(line, "\""))
+  use #(requirement, _rest) <- result.map(string.split_once(after, "\""))
+  requirement
 }

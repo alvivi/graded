@@ -10,18 +10,40 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The pinned pair, from `.tool-versions`: every gate.
+          - name: pinned
+            gleam: "1.18.0"
+            erlang: "28.4.2"
+            format: true
+          # The oldest compiler graded is verified on — see
+          # `graded/internal/compat`. It skips `gleam format --check`: formatter
+          # output is not stable across Gleam minors, and a format diff on an old
+          # compiler is not a defect.
+          - name: floor
+            gleam: "1.15.4"
+            erlang: "28.4.2"
+            format: false
+
+    name: ${{ matrix.name }} (gleam ${{ matrix.gleam }}, erlang ${{ matrix.erlang }})
+
     steps:
       - uses: actions/checkout@v5
 
       - uses: erlef/setup-beam@v1
         with:
-          version-file: .tool-versions
+          gleam-version: ${{ matrix.gleam }}
+          otp-version: ${{ matrix.erlang }}
           version-type: strict
 
       - name: Download dependencies
         run: gleam deps download
 
       - name: Check formatting
+        if: matrix.format
         run: gleam format --check src/ test/
 
       - name: Build (warnings as errors)

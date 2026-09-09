@@ -15,7 +15,7 @@
 // Every Gleam compiler the suite and the differential corpus were clean on,
 // lowest first: the floor, then the pin. `gleam.toml`'s `gleam = ">= …"` names
 // the head, and the pin in `.tool-versions` is the last element.
-pub const verified_gleam = ["1.18.0"]
+pub const verified_gleam = ["1.15.4", "1.16.0", "1.17.0", "1.18.0"]
 
 // The Erlang/OTP release the suite was run on, as `.tool-versions` pins it.
 pub const verified_otp = "28.4.2"
