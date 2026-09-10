@@ -33,7 +33,13 @@ type inference: ran on erlang; no @target function, so no second run
 modules: 16 read, 0 unread
 functions: 1060 typed, 0 skipped, 0 left out of every run, 0 unread
 constants: 42 typed, 0 skipped, 0 left out of every run, 0 unread
-ambiguous calls: 3127 — 80 decided by the type inference, 3047 settled lexically with typed evidence, 0 settled lexically with no typed evidence, 0 wired from a construction, 0 undecided; 0 disagreements
+ambiguous calls: 3127
+  - 80 decided by the type inference
+  - 3047 settled lexically with typed evidence
+  - 0 settled lexically with no typed evidence
+  - 0 wired from a construction
+  - 0 undecided
+  - 0 disagreements, counted again in the class each falls in
 
 path dependencies: none"
 
@@ -309,7 +315,13 @@ pub fn the_headline_total_is_the_classes_summed_test() {
     ),
   )
   |> string.contains(
-    "ambiguous calls: 6 — 2 decided by the type inference, 1 settled lexically with typed evidence, 1 settled lexically with no typed evidence, 1 wired from a construction, 1 undecided; 1 disagreements",
+    "ambiguous calls: 6
+  - 2 decided by the type inference
+  - 1 settled lexically with typed evidence
+  - 1 settled lexically with no typed evidence
+  - 1 wired from a construction
+  - 1 undecided
+  - 1 disagreements, counted again in the class each falls in",
   )
   |> should.be_true()
 }
@@ -351,7 +363,13 @@ pub fn a_lexical_disagreement_is_not_counted_as_agreement_test() {
     )
   rendered
   |> string.contains(
-    "ambiguous calls: 1 — 0 decided by the type inference, 1 settled lexically with typed evidence, 0 settled lexically with no typed evidence, 0 wired from a construction, 0 undecided; 1 disagreements",
+    "ambiguous calls: 1
+  - 0 decided by the type inference
+  - 1 settled lexically with typed evidence
+  - 0 settled lexically with no typed evidence
+  - 0 wired from a construction
+  - 0 undecided
+  - 1 disagreements, counted again in the class each falls in",
   )
   |> should.be_true()
   rendered |> string.contains("agreeing") |> should.be_false()
@@ -536,7 +554,9 @@ pub fn broken() -> Nil {
   // moving the row out of `wired from a construction`.
   report
   |> string.contains(
-    "1 settled lexically with typed evidence, 0 settled lexically with no typed evidence, 1 wired from a construction",
+    "  - 1 settled lexically with typed evidence
+  - 0 settled lexically with no typed evidence
+  - 1 wired from a construction\n",
   )
   |> should.be_true()
   support.cleanup(root)
@@ -573,7 +593,7 @@ pub fn plain() -> Nil {
   let assert Ok(report) = graded.run_coverage(root)
   report
   |> string.contains(
-    "ambiguous calls: " <> int.to_string(list.length(rows)) <> " — ",
+    "ambiguous calls: " <> int.to_string(list.length(rows)) <> "\n  - ",
   )
   |> should.be_true()
   { rows != [] } |> should.be_true()
