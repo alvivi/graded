@@ -56,7 +56,7 @@ Eighteen modules, no circular dependencies. Only `src/graded.gleam` is the publi
 | `src/graded/internal/lint.gleam` | Spec-file lint: `check`/`assume`/field lines whose target resolves nothing, `effects` lines whose path is not a function's, and `where returns` clauses their own line does not scope |
 | `src/graded/internal/pack.gleam` | Hex tarball patching for `graded pack`: resolve `build/<name>-<version>.tar` and check its `metadata.config` names this project, inject the spec through a temporary file, verify, replace |
 | `src/graded/internal/diff.gleam` | Line diff between two renderings of a spec file, for `infer --dry-run` |
-| `src/graded/internal/compat.gleam` | The Gleam, OTP and girard versions graded was verified on, and how an observed version stands to them |
+| `src/graded/internal/compat.gleam` | The Gleam, OTP, girard and glance versions graded was verified on, and how an observed version stands to them |
 | `src/graded/internal/coverage.gleam` | `graded coverage`'s report held as data, and the renderer over it |
 
 ## .graded Annotation Syntax
