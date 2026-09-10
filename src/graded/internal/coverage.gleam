@@ -303,23 +303,26 @@ const no_target_declared_text = "gleam.toml declares none, so bodies are read on
 
 fn count_lines(report: CoverageReport) -> List(String) {
   [
-    "modules: "
-      <> int.to_string(report.modules_read)
-      <> " read, "
-      <> int.to_string(report.modules_unread)
-      <> " unread",
-    "functions: "
-      <> definition_counts(report.functions)
-      <> ", "
-      <> int.to_string(report.functions.unread)
-      <> " unread",
-    "constants: "
-      <> definition_counts(report.constants)
-      <> ", "
-      <> int.to_string(report.constants.unread)
-      <> " unread",
+    [
+      "modules: "
+        <> int.to_string(report.modules_read)
+        <> " read, "
+        <> int.to_string(report.modules_unread)
+        <> " unread",
+      "functions: "
+        <> definition_counts(report.functions)
+        <> ", "
+        <> int.to_string(report.functions.unread)
+        <> " unread",
+      "constants: "
+        <> definition_counts(report.constants)
+        <> ", "
+        <> int.to_string(report.constants.unread)
+        <> " unread",
+    ],
     call_counts(report.calls),
   ]
+  |> list.flatten()
 }
 
 fn definition_counts(counts: DefinitionCounts) -> String {
@@ -331,22 +334,24 @@ fn definition_counts(counts: DefinitionCounts) -> String {
   <> " left out of every run"
 }
 
-fn call_counts(counts: CallCounts) -> String {
-  "ambiguous calls: "
-  <> int.to_string(call_total(counts))
-  <> " — "
-  <> int.to_string(counts.decided)
-  <> " decided by the type inference, "
-  <> int.to_string(counts.lexical_with_evidence)
-  <> " settled lexically with typed evidence, "
-  <> int.to_string(counts.lexical_no_evidence)
-  <> " settled lexically with no typed evidence, "
-  <> int.to_string(counts.wired)
-  <> " wired from a construction, "
-  <> int.to_string(counts.undecided)
-  <> " undecided; "
-  <> int.to_string(counts.disagreements)
-  <> " disagreements"
+// The headline, then one class per row. The five that partition the rows are
+// bulleted alike and sum to the headline; the disagreement count, which cuts
+// across them, says on its own row that it is counted again.
+fn call_counts(counts: CallCounts) -> List(String) {
+  [
+    "ambiguous calls: " <> int.to_string(call_total(counts)),
+    ..bulleted([
+      int.to_string(counts.decided) <> " decided by the type inference",
+      int.to_string(counts.lexical_with_evidence)
+        <> " settled lexically with typed evidence",
+      int.to_string(counts.lexical_no_evidence)
+        <> " settled lexically with no typed evidence",
+      int.to_string(counts.wired) <> " wired from a construction",
+      int.to_string(counts.undecided) <> " undecided",
+      int.to_string(counts.disagreements)
+        <> " disagreements, counted again in the class each falls in",
+    ])
+  ]
 }
 
 // The headline count: the classes summed, never a number carried beside them.
@@ -417,6 +422,11 @@ fn section(title: String, lines: List(String)) -> List(String) {
 // so a renderer added later does not have to know the convention.
 fn indented(lines: List(String)) -> List(String) {
   list.map(lines, fn(line) { "  " <> line })
+}
+
+// A count row under the line it breaks down.
+fn bulleted(lines: List(String)) -> List(String) {
+  indented(list.map(lines, fn(line) { "- " <> line }))
 }
 
 // The `line:column` of a byte offset in `source`, one-based, with the column

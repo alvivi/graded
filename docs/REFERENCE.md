@@ -1273,9 +1273,15 @@ targets: erlang — gleam.toml declares none, so bodies are read on erlang and d
 type inference: ran on erlang; no @target function, so no second run
 
 modules: 18 read, 0 unread
-functions: 1114 typed, 0 skipped, 0 left out of every run, 0 unread
-constants: 39 typed, 0 skipped, 0 left out of every run, 0 unread
-ambiguous calls: 3247 — 1 decided by the type inference, 3246 settled lexically with typed evidence, 0 settled lexically with no typed evidence, 0 wired from a construction, 0 undecided; 0 disagreements
+functions: 1115 typed, 0 skipped, 0 left out of every run, 0 unread
+constants: 40 typed, 0 skipped, 0 left out of every run, 0 unread
+ambiguous calls: 3249
+  - 1 decided by the type inference
+  - 3248 settled lexically with typed evidence
+  - 0 settled lexically with no typed evidence
+  - 0 wired from a construction
+  - 0 undecided
+  - 0 disagreements, counted again in the class each falls in
 
 path dependencies: none
 ```
@@ -1285,7 +1291,8 @@ inference returned nothing for it at all, and its definitions are then in no
 other count. Within a read module every function and every constant is exactly
 one of *typed*, *skipped* (the inference declined it) or *left out of every run*
 (gated to a target nothing ran on). Every ambiguous call is in exactly one class,
-and the headline is what the classes sum to.
+and the headline is what the classes sum to. The disagreement row is outside that
+sum: it counts rows across the classes, each already counted in its own.
 
 `left out of every run` is expected at zero for functions. A gated *constant* can
 leave it non-zero: a constant triggers no run of its own, since it holds no call
