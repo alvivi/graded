@@ -80,7 +80,7 @@ Function-keyed knowledge base priority: per-function `assume` lines (spec file) 
 
 The extractor sorts calls into three categories — **resolved** (qualified, looked up in the knowledge base), **local** (unqualified: param bounds, then local defs, then Unknown), and **field** (`object.field(args)`, resolved via the receiver's nominal type and the type-field registry, or via value provenance for factory-constructed receivers).
 
-For the resolution order in detail see [docs/REFERENCE.md](docs/REFERENCE.md); for field-call / factory provenance and where tracing falls back to `[Unknown]`, see [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+For the resolution order in detail see [docs/REFERENCE.md](docs/REFERENCE.md); for field-call / factory provenance and where tracing falls back to `[Unknown]`, see [docs/LIMITATIONS.md](docs/LIMITATIONS.md); for what `graded coverage` counts and lists, see [docs/COVERAGE.md](docs/COVERAGE.md).
 
 ## Theoretical Foundations
 

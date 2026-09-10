@@ -11,6 +11,10 @@ hand-written annotation (or a wider budget) to resolve precisely.
 
 Each section shows how the limitation manifests, then how to work around it.
 
+An `[Unknown]` that fits none of them usually means the type layer never read the
+function — a type error in the definition costs it its types, and graded falls
+back to the syntax-level path. [`graded coverage`](./COVERAGE.md) is what says so.
+
 ## 1. A record field reached through an untraceable receiver
 
 graded resolves a function-typed field's effect from where the record is

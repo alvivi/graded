@@ -1262,7 +1262,9 @@ This keeps your effect knowledge in your own spec file, versioned with your proj
 
 `graded coverage [dir]` says what the type inference could and could not read of
 one package. It is read-only, decides nothing, and always exits 0: `check` is the
-command that fails, and none of this is a property of your code.
+command that fails, and none of this is a property of your code. This section is
+the summary; [Coverage](./COVERAGE.md) walks every count and every listing with a
+worked example.
 
 ```
 $ gleam run -m graded coverage
