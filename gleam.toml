@@ -22,6 +22,7 @@ links = [{ title = "Documentation", href = "https://hexdocs.pm/graded" }]
 pages = [
   { title = "Reference", path = "reference.html", source = "./docs/REFERENCE.md" },
   { title = "Limitations", path = "limitations.html", source = "./docs/LIMITATIONS.md" },
+  { title = "Coverage", path = "coverage.html", source = "./docs/COVERAGE.md" },
   { title = "Theory", path = "theory.html", source = "./docs/THEORY.md" },
   { title = "Changelog", path = "changelog.html", source = "./CHANGELOG.md" },
 ]

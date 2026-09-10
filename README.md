@@ -116,6 +116,13 @@ An unknown command or option is a usage error, not a silently-checked directory.
 
 `why` explains one function instead of answering for one name: it re-walks the function's body and prints a line per effect contributor — what the call is, the effects it contributes, and either why they stayed unresolved or which source resolved them, in the same wording violations use. It explains a function whether or not it has a `check` line and whether or not it fits one, so an effect you didn't expect is traced without first writing a budget to make it fail. Its `<name>` is a module-qualified function of one of your own modules (private ones included, unlike `effect`); a dependency function has no body here to walk. A function with two `check` lines gets one block per line, each analysed under that line's own bounds. Nothing is written.
 
+`coverage` reports what graded's type-inference layer read of the package: the
+versions in play beside the ones graded was verified on, the targets it typed on
+and why, how many modules and definitions it read, declined or left out, and
+every call it could not decide, each with its `file:line:column`. It is
+read-only, decides nothing, and always exits 0 — **[Coverage](https://hexdocs.pm/graded/coverage.html)**
+walks every count and every listing with a worked example.
+
 `infer --dry-run` previews the same inference as a line diff of the spec file — the `-`/`+` lines with a couple of lines of context around them, or `graded: no changes` — and writes nothing, neither the spec file nor the cache. It exits 0 either way; `format --check` is the CI gate.
 
 `check` and `infer` scope to the passed directory (default `src/`), recursing into it but never into `build/`. Passing the package root — `graded check .` — scopes to the root's `src/`, so module names come out as they appear in `import` statements (`app`, not `src/app`). A directory *inside* a package's `src/` narrows what is reported, not what is analysed: the whole package is resolved (module paths, imports and `@external` discovery are package-wide facts) and `check` reports only the passed subtree's files, while `infer`, which writes one package-level spec, writes the whole package's. To check another project, run graded from that project's root or point it at its `src/`.
@@ -126,7 +133,7 @@ graded is **sound, not complete**: it combines syntax-level analysis ([glance](h
 
 Idiomatic Gleam — inline callbacks, direct and aliased function references, pipe chains, higher-order functions passing functions by name (including second-order [operator effects](https://github.com/alvivi/graded/blob/main/docs/SECOND_ORDER_EFFECTS.md)), and validator/handler/config records — is handled automatically, including across modules: a fresh checkout resolves transitive chains with no prior `graded infer` (committed `effects` lines always win, and `check` writes nothing to disk).
 
-The handful of patterns that fall back to `[Unknown]` — each with how it shows up and how to work around it — are documented in **[Limitations](https://hexdocs.pm/graded/limitations.html)**.
+The handful of patterns that fall back to `[Unknown]` — each with how it shows up and how to work around it — are documented in **[Limitations](https://hexdocs.pm/graded/limitations.html)**. When an `[Unknown]` turns up where none of those patterns fit, `gleam run -m graded coverage` says whether the type layer read that function at all — see **[Coverage](https://hexdocs.pm/graded/coverage.html)**.
 
 ## License
 
