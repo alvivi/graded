@@ -24,8 +24,8 @@ import support
 // Every conditional section absent, which is the shape a package with nothing
 // to report prints.
 
-const clean_report = "graded 0.20.0
-gleam 1.18.0 (verified), erlang/OTP 28.4.2 (verified), girard 3.0.0 (verified), glance 7.0.0
+const clean_report = "gleam 1.18.0 (verified), erlang/OTP 28.4.2 (verified)
+graded 0.20.0, girard 3.0.0 (verified), glance 7.0.0 (verified)
 
 targets: erlang — gleam.toml declares none, so bodies are read on erlang and declarations on both
 type inference: ran on erlang; no @target function, so no second run
@@ -86,7 +86,7 @@ pub fn a_version_that_could_not_be_read_is_stated_as_unobserved_test() {
   let rendered = coverage.render(report)
   rendered
   |> string.contains(
-    "gleam not observed, erlang/OTP not observed, girard not observed, glance not observed",
+    "gleam not observed, erlang/OTP not observed\ngraded 0.20.0, girard not observed, glance not observed",
   )
   |> should.be_true()
   rendered |> string.contains("versions\n") |> should.be_false()

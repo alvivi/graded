@@ -175,24 +175,27 @@ pub fn render(report: CoverageReport) -> String {
   |> string.join("\n")
 }
 
-// The two version lines: graded's own, then everything else it observed.
+// Two version lines: the toolchain the package is built with, then graded and
+// the libraries it reads the package through.
 fn version_lines(versions: Versions) -> List(String) {
   let compat.Observed(graded:, girard:, glance:, otp:, gleam:) =
     versions.observed
   [
-    "graded " <> graded,
     [
       stated("gleam", gleam, compat.verified_gleam),
       stated("erlang/OTP", otp, [compat.verified_otp]),
+    ],
+    [
+      "graded " <> graded,
       stated("girard", girard, [compat.verified_girard]),
-      stated("glance", glance, []),
-    ]
-      |> string.join(", "),
+      stated("glance", glance, [compat.verified_glance]),
+    ],
   ]
+  |> list.map(string.join(_, ", "))
 }
 
-// One observed version and how it stands. A version verified against an empty
-// list is stated bare: nothing was claimed for it, so nothing is said.
+// One observed version and how it stands. Every version the header names is
+// claimed, so an unverified one always has a list to state itself against.
 fn stated(
   name: String,
   observed: Result(String, Nil),
@@ -202,7 +205,6 @@ fn stated(
     compat.Unobserved -> name <> " not observed"
     compat.Verified(observed: version) ->
       name <> " " <> version <> " (verified)"
-    compat.Unverified(observed: version, verified: []) -> name <> " " <> version
     compat.Unverified(observed: version, verified:) ->
       name
       <> " "
@@ -216,10 +218,11 @@ fn stated(
 // The lines a reader acts on: an unverified compiler or analyzer, and a project
 // whose manifest pins a girard other than the one running.
 fn notices(versions: Versions) -> List(String) {
-  let compat.Observed(girard:, gleam:, ..) = versions.observed
+  let compat.Observed(girard:, glance:, gleam:, ..) = versions.observed
   [
     unverified_notice("gleam", gleam, compat.verified_gleam),
     unverified_notice("girard", girard, [compat.verified_girard]),
+    unverified_notice("glance", glance, [compat.verified_glance]),
     manifest_notice(versions),
   ]
   |> list.filter_map(fn(notice) { notice })

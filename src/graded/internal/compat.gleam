@@ -25,6 +25,11 @@ pub const verified_otp = "28.4.2"
 // The girard the corpus was measured against, as `manifest.toml` pins it.
 pub const verified_girard = "3.0.0"
 
+// The glance the corpus was measured against, as `manifest.toml` pins it. It
+// parses every source graded reads, girard's included, so a bump moves what the
+// report counts the same way a girard bump does and is claimed the same way.
+pub const verified_glance = "7.0.0"
+
 // The versions of what is *running*, not of what is analyzed: graded itself,
 // the girard and glance it loaded, the Erlang/OTP release under it, and the
 // Gleam compiler on the path. Each is `Error(Nil)` where it cannot be read —

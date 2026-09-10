@@ -651,6 +651,12 @@ pub fn the_verified_girard_is_the_manifests_one_test() {
   |> should.equal(Ok(compat.verified_girard))
 }
 
+pub fn the_verified_glance_is_the_manifests_one_test() {
+  effects.manifest_versions("manifest.toml")
+  |> dict.get("glance")
+  |> should.equal(Ok(compat.verified_glance))
+}
+
 pub fn ci_builds_both_ends_of_the_verified_range_test() {
   // CI is what produces the verification the constants claim, so it cannot
   // build a pair the constants do not name: the two matrix rows are the floor
