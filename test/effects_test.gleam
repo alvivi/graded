@@ -800,6 +800,21 @@ pub fn a_dependency_external_beats_its_own_effects_line_test() {
   |> should.equal([])
 }
 
+pub fn a_dependency_spec_loads_without_a_declared_names_effects_line_test() {
+  // The pair is settled as the spec loads, before any tier merges it: the
+  // `effects` line's term is gone, and the bounds are the assume's own.
+  let spec =
+    dep_spec(
+      "build/eff_dep_spec_declared_pair",
+      "dep",
+      "effects dep.run(cb: [cb]) : [cb]\nassume dep.run(f: [f]) : [f]\n",
+    )
+  dict.get(spec.effects, QualifiedName("dep", "run"))
+  |> should.equal(Error(Nil))
+  dict.get(spec.params, QualifiedName("dep", "run"))
+  |> should.equal(Ok([ParamBound("f", types.TVar("f"))]))
+}
+
 pub fn a_user_external_beats_a_dependency_external_test() {
   // The composition `load_project_context` performs: the knowledge base is built
   // from the deps, then the consumer's own externals are applied over it.
@@ -917,6 +932,32 @@ pub fn a_path_dep_external_drops_a_catalog_entrys_bounds_test() {
     Ok(#(Specific(set.from_list(["Time"])), types.PathDependency("dep"))),
   )
   effects.lookup_param_bounds(kb, name)
+  |> should.equal([])
+}
+
+pub fn a_path_dep_external_beats_its_own_effects_line_test() {
+  // The same-file pair on the path side, over a catalog entry the path dep's
+  // spec outranks: the external decides the term, and its empty bounds stand
+  // beside it.
+  let kb =
+    effects.new_knowledge_base()
+    |> effects.with_assumes(
+      [assume("dep", "run", ["Catalogued"])],
+      types.Catalog("dep"),
+    )
+    |> effects.with_path_dep_spec(
+      dep_spec(
+        "build/eff_path_dep_external_clash",
+        "dep",
+        "effects dep.run(cb: [cb]) : [cb]\nassume dep.run : [Time]\n",
+      ),
+      types.PathDependency("dep"),
+    )
+  entry_of(kb, QualifiedName("dep", "run"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Time"])), types.PathDependency("dep"))),
+  )
+  effects.lookup_param_bounds(kb, QualifiedName("dep", "run"))
   |> should.equal([])
 }
 

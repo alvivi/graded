@@ -2617,13 +2617,11 @@ fn sanitize_dep_spec(
 // shipped it: the function-keyed terms for `all_effects` and the module-keyed
 // ones for the `module_effects` fallback tier.
 //
-// A function's `assume` line wins over an `effects` line for the same
-// name. `graded infer` writes no `effects` line for an externally-declared
-// function unless the line carries a `where returns` clause, so a spec carrying
-// both without one has a stale line, and either way only the external's term
-// pairs with the bounds `load_spec_params_from_file` records off that same
-// line: where the `effects` line is kept for a clause, that clause carries its
-// own scoping bounds on the returns channel.
+// The spec's `effects` terms and its per-function `assume` terms key disjoint
+// names: the reader drops the `effects` line for every name a declaring
+// `assume` of the same file keys. Where `infer` kept such a line for its
+// `where returns` clause, that clause carries its own scoping bounds on the
+// returns channel.
 fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> AssumeTiers {
   let #(function_assumes, module_assumes) = split_assumes(dep.assumes, origin)
   #(
