@@ -2949,11 +2949,11 @@ pub fn load_catalog(
     CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new(), dict.new(), [])
   let acc = list.fold(selected, initial, fold_catalog_file)
   // Across files, an `effects` annotation takes precedence over another
-  // package's per-function `assume` marker; within one file the
-  // external already won, in `fold_catalog_file`. Each term carries the package
-  // that wrote it, so the winner of this merge brings its own origin. The
-  // bounds are merged by the same rule and in the same order, so the file whose
-  // term wins a name is the file whose bounds pair with it.
+  // package's per-function `assume` marker; within one file the reader has
+  // already dropped the `effects` line an `assume` keys. Each term carries the
+  // package that wrote it, so the winner of this merge brings its own origin.
+  // The bounds are merged by the same rule and in the same order, so the file
+  // whose term wins a name is the file whose bounds pair with it.
   #(
     dict.merge(acc.assume_effects, acc.poly_effects),
     acc.module_effects,
@@ -2984,16 +2984,8 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
           // are scoped like everyone else's. Merging with the new file second
           // keeps the later file winning on a clash, as folding per-annotation
           // did.
-          // A name this file keys both ways resolves to its `external
-          // effects` line, the rule `decided_entries` applies to a dependency's
-          // own spec: dropped from the polymorphic tier here, it keeps the
-          // external's term and the bounds the external tier records off the
-          // same line.
           let file_poly_effects =
             load_spec_effects_from_file(graded_file)
-            |> dict.filter(fn(name, _term) {
-              !dict.has_key(function_assumes, name)
-            })
             |> with_origin(origin)
           CatalogAcc(
             assume_effects: dict.merge(acc.assume_effects, function_assumes),
@@ -3009,8 +3001,11 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
               acc.poly_params,
               // A catalog entry describes a package graded has no source for,
               // so none of its externals can be stale by the visible-body rule.
-              // Kept only for the names whose term this file supplies, so the
-              // two travel together through both merges.
+              // Kept only for the names this file's `effects` lines supply a
+              // term for: the bounds reader also keys each external's own
+              // bounds, which `assume_params` already holds beside that
+              // external's term. So the two travel together through both
+              // merges.
               load_spec_params_from_file(graded_file)
                 |> dict.filter(fn(name, _bounds) {
                   dict.has_key(file_poly_effects, name)
