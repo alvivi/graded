@@ -1461,13 +1461,14 @@ fn spec_effects(source: String) -> dict.Dict(QualifiedName, types.EffectTerm) {
 }
 
 pub fn a_declared_names_effects_line_is_dropped_test() {
-  let source = "effects m.f : [A]\nassume m.f : [B]\n"
+  // The bounds left for the name are the assume's own.
+  let source = "effects m.f(cb: [cb]) : [cb]\nassume m.f(f: [f]) : [f]\n"
   spec_effects(source)
   |> dict.get(QualifiedName("m", "f"))
   |> should.equal(Error(Nil))
   spec_params(source)
   |> dict.get(QualifiedName("m", "f"))
-  |> should.equal(Ok([]))
+  |> should.equal(Ok([ParamBound("f", types.TVar("f"))]))
 }
 
 pub fn a_clause_carrying_effects_line_beside_an_assume_keeps_only_its_clause_test() {
@@ -1510,10 +1511,11 @@ pub fn the_effects_reader_keys_no_declared_name_test() {
   use #(file, injected) <- qcheck.given(paired_spec_gen())
   let terms = effects.load_spec_effects_from_file(file)
   let bounds = effects.load_spec_params_from_file(file)
-  let declared = declared_function_names(file)
+  let declared = annotation.assume_function_names(file)
   dict.keys(terms)
   |> list.all(fn(name) {
-    dict.has_key(bounds, name) && !set.contains(declared, name)
+    dict.has_key(bounds, name)
+    && !set.contains(declared, types.dotted_name(name))
   })
   |> should.be_true()
   dict.has_key(terms, injected) |> should.be_false()
@@ -1532,11 +1534,8 @@ fn paired_spec_gen() -> qcheck.Generator(#(types.GradedFile, QualifiedName)) {
   let assume_line =
     types.AssumeLine(
       types.AssumeAnnotation(
-        module: "m",
-        target: types.FunctionAssume(line.function),
-        params: [],
+        ..assume("m", line.function, []),
         effects: Some(declared),
-        returns: None,
       ),
       [],
     )
@@ -1562,19 +1561,6 @@ fn paired_spec_gen() -> qcheck.Generator(#(types.GradedFile, QualifiedName)) {
 
 fn in_module_m(ann: types.EffectAnnotation) -> types.EffectAnnotation {
   types.EffectAnnotation(..ann, function: "m." <> ann.function)
-}
-
-// Every name a per-function `assume` stating effects keys in `file`.
-fn declared_function_names(file: types.GradedFile) -> set.Set(QualifiedName) {
-  annotation.extract_assumes(file)
-  |> list.filter_map(fn(assume) {
-    case assume.target, assume.effects {
-      types.FunctionAssume(function), Some(_) ->
-        Ok(QualifiedName(assume.module, function))
-      _, _ -> Error(Nil)
-    }
-  })
-  |> set.from_list
 }
 
 // Catalog directory resolution
