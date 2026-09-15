@@ -1407,6 +1407,135 @@ pub fn dependency_check_line_bounds_stay_out_of_the_knowledge_base_test() {
   Nil
 }
 
+// Committed effect terms
+//
+// A per-function `assume` decides the term for its name, so the reader drops
+// the same file's `effects` line for it. The effects reader and the bounds
+// reader select the declaring lines the same way, so a name's term and bounds
+// come off one annotation.
+
+fn spec_effects(source: String) -> dict.Dict(QualifiedName, types.EffectTerm) {
+  let assert Ok(file) = annotation.parse_file(source)
+  effects.load_spec_effects_from_file(file)
+}
+
+pub fn a_declared_names_effects_line_is_dropped_test() {
+  let source = "effects m.f : [A]\nassume m.f : [B]\n"
+  spec_effects(source)
+  |> dict.get(QualifiedName("m", "f"))
+  |> should.equal(Error(Nil))
+  spec_params(source)
+  |> dict.get(QualifiedName("m", "f"))
+  |> should.equal(Ok([]))
+}
+
+pub fn a_clause_carrying_effects_line_beside_an_assume_keeps_only_its_clause_test() {
+  // The pair `infer` writes: an `effects` line kept beside a live `assume` for
+  // its `where returns` clause alone. The term is the assume's; the clause
+  // still reads, scoped by the line's own bounds.
+  let assert Ok(file) =
+    annotation.parse_file(
+      "effects m.f(cb: [cb]) : [cb] where returns : [X]\nassume m.f : [B]\n",
+    )
+  effects.load_spec_effects_from_file(file)
+  |> dict.get(QualifiedName("m", "f"))
+  |> should.equal(Error(Nil))
+  let assert Ok(clause) =
+    effects.load_spec_returns_from_file(file)
+    |> dict.get(QualifiedName("m", "f"))
+  clause.operator
+  |> effect_term.to_effect_set
+  |> should.equal(Specific(set.from_list(["X"])))
+  clause.bounds |> should.equal([ParamBound("cb", types.TVar("cb"))])
+}
+
+pub fn a_clause_only_assume_keeps_the_effects_line_test() {
+  spec_effects("effects m.f : [A]\nassume m.f where returns : [X]\n")
+  |> dict.get(QualifiedName("m", "f"))
+  |> result.map(effect_term.to_effect_set)
+  |> should.equal(Ok(Specific(set.from_list(["A"]))))
+}
+
+pub fn a_module_assume_keeps_the_effects_line_test() {
+  // The module-level rule is each caller's, applied with the module set it
+  // decided on.
+  spec_effects("effects m.f : [A]\nassume m : [B]\n")
+  |> dict.get(QualifiedName("m", "f"))
+  |> result.map(effect_term.to_effect_set)
+  |> should.equal(Ok(Specific(set.from_list(["A"]))))
+}
+
+pub fn the_effects_reader_keys_no_declared_name_test() {
+  use #(file, injected) <- qcheck.given(paired_spec_gen())
+  let terms = effects.load_spec_effects_from_file(file)
+  let bounds = effects.load_spec_params_from_file(file)
+  let declared = declared_function_names(file)
+  dict.keys(terms)
+  |> list.all(fn(name) {
+    dict.has_key(bounds, name) && !set.contains(declared, name)
+  })
+  |> should.be_true()
+  dict.has_key(terms, injected) |> should.be_false()
+}
+
+// A generated spec with every line under module `m`, holding one `effects`
+// line and a declaring `assume` for the same name, the assume before or after
+// the rest of the file. Returns the pair's name beside the file.
+fn paired_spec_gen() -> qcheck.Generator(#(types.GradedFile, QualifiedName)) {
+  use file <- qcheck.bind(generators.graded_file_gen())
+  use line <- qcheck.bind(generators.annotation_gen())
+  use declared <- qcheck.bind(generators.effect_set_gen())
+  use assume_first <- qcheck.map(qcheck.bool())
+  let paired = types.EffectAnnotation(..line, kind: types.Effects)
+  let paired_line = types.AnnotationLine(in_module_m(paired), [])
+  let assume_line =
+    types.AssumeLine(
+      types.AssumeAnnotation(
+        module: "m",
+        target: types.FunctionAssume(line.function),
+        params: [],
+        effects: Some(declared),
+        returns: None,
+      ),
+      [],
+    )
+  let rest =
+    list.map(file.lines, fn(file_line) {
+      case file_line {
+        types.AnnotationLine(ann, clauses) ->
+          types.AnnotationLine(in_module_m(ann), clauses)
+        types.AssumeLine(assume, clauses) ->
+          types.AssumeLine(
+            types.AssumeAnnotation(..assume, module: "m"),
+            clauses,
+          )
+        other -> other
+      }
+    })
+  let lines = case assume_first {
+    True -> [assume_line, paired_line, ..rest]
+    False -> list.append([paired_line, ..rest], [assume_line])
+  }
+  #(types.GradedFile(lines:), QualifiedName("m", line.function))
+}
+
+fn in_module_m(ann: types.EffectAnnotation) -> types.EffectAnnotation {
+  types.EffectAnnotation(..ann, function: "m." <> ann.function)
+}
+
+// Every name a per-function `assume` stating effects keys in `file`.
+fn declared_function_names(file: types.GradedFile) -> set.Set(QualifiedName) {
+  annotation.extract_assumes(file)
+  |> list.filter_map(fn(assume) {
+    case assume.target, assume.effects {
+      types.FunctionAssume(function), Some(_) ->
+        Ok(QualifiedName(assume.module, function))
+      _, _ -> Error(Nil)
+    }
+  })
+  |> set.from_list
+}
+
 // Catalog directory resolution
 //
 // The catalog directory resolves via graded's own install location (its
