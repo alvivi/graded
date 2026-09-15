@@ -2319,25 +2319,38 @@ pub fn parse_path_dependencies(
 // Reading .graded spec files into effect, param-bound, returned-operator, and
 // type-field maps, for the project spec and for installed dependencies.
 
-// Load inferred effects from a package's spec file. The spec file uses
-// module-qualified function names (e.g. `myapp/router.handle`) so each
-// `effects` annotation maps directly to a `QualifiedName` without needing
-// to know which file it came from. Returns an empty dict when the spec
-// file is missing or unparseable.
+// `load_spec_effects_from_file` over the spec file at `spec_path`. Empty when
+// the file is missing or unparseable.
 pub fn load_spec_effects(spec_path: String) -> Dict(QualifiedName, EffectTerm) {
-  case read_spec_annotations(spec_path) {
+  case read_spec_file(spec_path) {
     Error(_) -> dict.new()
-    Ok(annotations) -> fold_spec_effects(annotations)
+    Ok(file) -> load_spec_effects_from_file(file)
   }
 }
 
-// Same as `load_spec_effects` but takes an already-parsed GradedFile,
-// avoiding a second read+parse when the caller already has the spec file
-// in hand.
+// Load the effect terms a parsed spec file's `effects` lines commit to. The
+// spec file uses module-qualified function names (e.g. `myapp/router.handle`),
+// so each line maps directly to a `QualifiedName`.
+//
+// A per-function `assume <module>.<function> : [...]` decides the term for its
+// name, so the same file's `effects` line for that name is dropped here, for
+// every consumer. The declaring lines are the `declaring_function_assumes`
+// selection `load_spec_params_from_file` keys its bounds off, so the term and
+// the bounds for a name come off one annotation.
+//
+// - a clause-only `assume <module>.<function> where returns : [...]` declares
+//   no term, so the `effects` line beside it stands.
+// - `check` lines are skipped.
+// - module-level assumes drop nothing here; `drop_module_declared` is applied
+//   by each caller.
 pub fn load_spec_effects_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, EffectTerm) {
+  let declared =
+    declaring_function_assumes(annotation.extract_assumes(file))
+    |> list.map(fn(entry) { entry.0 })
   fold_spec_effects(annotation.extract_annotations(file))
+  |> dict.drop(declared)
 }
 
 // Load a package's own committed parameter bounds from its parsed spec file,
@@ -2354,15 +2367,16 @@ pub fn load_spec_effects_from_file(
 // - `check` lines are skipped: their bounds are a budget scoped to that check,
 //   not a global fact about the function, and they don't decide the term.
 // - functions declared `assume <module>.<function>` record the bound list off
-//   the declaring line itself: the external term wins in `all_effects`, and a
-//   polymorphic one (`assume m/ffi.each(f: [f]) : [f]`) answers to the bounds
-//   written beside it. A clause-only bounded line writes no entry here — it
+//   the declaring line itself: `load_spec_effects_from_file` drops the same
+//   name's `effects` line, so the external's term is the only one this file
+//   supplies, and a polymorphic one (`assume m/ffi.each(f: [f]) : [f]`)
+//   answers to the bounds written beside it. A clause-only bounded line writes no entry here — it
 //   decides no term, so a global entry would pair its bounds with a term from
 //   a lower tier; its bounds ride the declared summary instead.
 //
-// Entries for a name a *stale* per-function external also names are the
-// project-spec caller's to drop, with the same filter it applies to the
-// effects map beside this one.
+// A *stale* per-function external still keys its own bounds here. Which
+// externals are stale is the project-spec caller's to decide, and so is
+// dropping those entries.
 pub fn load_spec_params_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, List(ParamBound)) {
@@ -2709,13 +2723,6 @@ fn fold_spec_effects(
       Check -> acc
     }
   })
-}
-
-fn read_spec_annotations(
-  spec_path: String,
-) -> Result(List(EffectAnnotation), Nil) {
-  use file <- result.try(read_spec_file(spec_path) |> result.replace_error(Nil))
-  Ok(annotation.extract_annotations(file))
 }
 
 // Why a spec file yielded no lines: it wasn't there, or it did not parse. The
