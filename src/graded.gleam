@@ -5378,13 +5378,11 @@ fn with_spec_type_fields(
 // `all_effects` misses). `graded infer` no longer writes such lines; this guards
 // a stale or hand-written one.
 //
-// Lines for a name a *stale* per-function external also names are dropped from
-// both too. A healthy spec never holds that pair — `infer` deletes the external
-// and rewrites the `effects` line in one pass — so where they coexist the spec's
-// state for the name is one no `infer` produced, and the committed term must not
-// outrank the fresh walk: the warning promises the body is walked instead, and a
-// committed entry surviving here is exactly what would silence it for every
-// cross-module caller and for the query.
+// A *stale* per-function external is still a declaring line of this spec, so
+// the effects reader has already dropped the committed `effects` line for its
+// name. Its own bounds are dropped here: `with_spec_assumes` has dropped the
+// external, and those bounds would answer to a term no line supplies. With
+// neither line answering, the body is walked, as the stale warning says.
 //
 // Shared by the full project context and the `effect` query's spec-only fast
 // path, which must fold the spec exactly as the full context does for its answer
@@ -5401,8 +5399,7 @@ fn with_committed_spec(
   knowledge_base
   |> effects.with_inferred(
     effects.load_spec_effects_from_file(spec)
-      |> effects.drop_module_declared(declared_modules)
-      |> drop_stale_names(stale_assumes),
+      |> effects.drop_module_declared(declared_modules),
     types.CommittedSpec,
   )
   |> effects.with_inferred_params(
