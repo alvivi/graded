@@ -800,6 +800,21 @@ pub fn a_dependency_external_beats_its_own_effects_line_test() {
   |> should.equal([])
 }
 
+pub fn a_dependency_spec_loads_without_a_declared_names_effects_line_test() {
+  // The pair is settled as the spec loads, before any tier merges it: the
+  // `effects` line's term is gone, and the bounds are the assume's own.
+  let spec =
+    dep_spec(
+      "build/eff_dep_spec_declared_pair",
+      "dep",
+      "effects dep.run(cb: [cb]) : [cb]\nassume dep.run(f: [f]) : [f]\n",
+    )
+  dict.get(spec.effects, QualifiedName("dep", "run"))
+  |> should.equal(Error(Nil))
+  dict.get(spec.params, QualifiedName("dep", "run"))
+  |> should.equal(Ok([ParamBound("f", types.TVar("f"))]))
+}
+
 pub fn a_user_external_beats_a_dependency_external_test() {
   // The composition `load_project_context` performs: the knowledge base is built
   // from the deps, then the consumer's own externals are applied over it.
@@ -917,6 +932,32 @@ pub fn a_path_dep_external_drops_a_catalog_entrys_bounds_test() {
     Ok(#(Specific(set.from_list(["Time"])), types.PathDependency("dep"))),
   )
   effects.lookup_param_bounds(kb, name)
+  |> should.equal([])
+}
+
+pub fn a_path_dep_external_beats_its_own_effects_line_test() {
+  // The same-file pair on the path side, over a catalog entry the path dep's
+  // spec outranks: the external decides the term, and its empty bounds stand
+  // beside it.
+  let kb =
+    effects.new_knowledge_base()
+    |> effects.with_assumes(
+      [assume("dep", "run", ["Catalogued"])],
+      types.Catalog("dep"),
+    )
+    |> effects.with_path_dep_spec(
+      dep_spec(
+        "build/eff_path_dep_external_clash",
+        "dep",
+        "effects dep.run(cb: [cb]) : [cb]\nassume dep.run : [Time]\n",
+      ),
+      types.PathDependency("dep"),
+    )
+  entry_of(kb, QualifiedName("dep", "run"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Time"])), types.PathDependency("dep"))),
+  )
+  effects.lookup_param_bounds(kb, QualifiedName("dep", "run"))
   |> should.equal([])
 }
 
@@ -1405,6 +1446,121 @@ pub fn dependency_check_line_bounds_stay_out_of_the_knowledge_base_test() {
 
   let _ = simplifile.delete("build/eff_dep_checkbounds")
   Nil
+}
+
+// Committed effect terms
+//
+// A per-function `assume` decides the term for its name, so the reader drops
+// the same file's `effects` line for it. The effects reader and the bounds
+// reader select the declaring lines the same way, so a name's term and bounds
+// come off one annotation.
+
+fn spec_effects(source: String) -> dict.Dict(QualifiedName, types.EffectTerm) {
+  let assert Ok(file) = annotation.parse_file(source)
+  effects.load_spec_effects_from_file(file)
+}
+
+pub fn a_declared_names_effects_line_is_dropped_test() {
+  // The bounds left for the name are the assume's own.
+  let source = "effects m.f(cb: [cb]) : [cb]\nassume m.f(f: [f]) : [f]\n"
+  spec_effects(source)
+  |> dict.get(QualifiedName("m", "f"))
+  |> should.equal(Error(Nil))
+  spec_params(source)
+  |> dict.get(QualifiedName("m", "f"))
+  |> should.equal(Ok([ParamBound("f", types.TVar("f"))]))
+}
+
+pub fn a_clause_carrying_effects_line_beside_an_assume_keeps_only_its_clause_test() {
+  // The pair `infer` writes: an `effects` line kept beside a live `assume` for
+  // its `where returns` clause alone. The term is the assume's; the clause
+  // still reads, scoped by the line's own bounds.
+  let assert Ok(file) =
+    annotation.parse_file(
+      "effects m.f(cb: [cb]) : [cb] where returns : [X]\nassume m.f : [B]\n",
+    )
+  effects.load_spec_effects_from_file(file)
+  |> dict.get(QualifiedName("m", "f"))
+  |> should.equal(Error(Nil))
+  let assert Ok(clause) =
+    effects.load_spec_returns_from_file(file)
+    |> dict.get(QualifiedName("m", "f"))
+  clause.operator
+  |> effect_term.to_effect_set
+  |> should.equal(Specific(set.from_list(["X"])))
+  clause.bounds |> should.equal([ParamBound("cb", types.TVar("cb"))])
+}
+
+pub fn a_clause_only_assume_keeps_the_effects_line_test() {
+  spec_effects("effects m.f : [A]\nassume m.f where returns : [X]\n")
+  |> dict.get(QualifiedName("m", "f"))
+  |> result.map(effect_term.to_effect_set)
+  |> should.equal(Ok(Specific(set.from_list(["A"]))))
+}
+
+pub fn a_module_assume_keeps_the_effects_line_test() {
+  // The module-level rule is each caller's, applied with the module set it
+  // decided on.
+  spec_effects("effects m.f : [A]\nassume m : [B]\n")
+  |> dict.get(QualifiedName("m", "f"))
+  |> result.map(effect_term.to_effect_set)
+  |> should.equal(Ok(Specific(set.from_list(["A"]))))
+}
+
+pub fn the_effects_reader_keys_no_declared_name_test() {
+  use #(file, injected) <- qcheck.given(paired_spec_gen())
+  let terms = effects.load_spec_effects_from_file(file)
+  let bounds = effects.load_spec_params_from_file(file)
+  let declared = annotation.assume_function_names(file)
+  dict.keys(terms)
+  |> list.all(fn(name) {
+    dict.has_key(bounds, name)
+    && !set.contains(declared, types.dotted_name(name))
+  })
+  |> should.be_true()
+  dict.has_key(terms, injected) |> should.be_false()
+}
+
+// A generated spec with every line under module `m`, holding one `effects`
+// line and a declaring `assume` for the same name, the assume before or after
+// the rest of the file. Returns the pair's name beside the file.
+fn paired_spec_gen() -> qcheck.Generator(#(types.GradedFile, QualifiedName)) {
+  use file <- qcheck.bind(generators.graded_file_gen())
+  use line <- qcheck.bind(generators.annotation_gen())
+  use declared <- qcheck.bind(generators.effect_set_gen())
+  use assume_first <- qcheck.map(qcheck.bool())
+  let paired = types.EffectAnnotation(..line, kind: types.Effects)
+  let paired_line = types.AnnotationLine(in_module_m(paired), [])
+  let assume_line =
+    types.AssumeLine(
+      types.AssumeAnnotation(
+        ..assume("m", line.function, []),
+        effects: Some(declared),
+      ),
+      [],
+    )
+  let rest =
+    list.map(file.lines, fn(file_line) {
+      case file_line {
+        types.AnnotationLine(ann, clauses) ->
+          types.AnnotationLine(in_module_m(ann), clauses)
+        types.AssumeLine(assume, clauses) ->
+          types.AssumeLine(
+            types.AssumeAnnotation(..assume, module: "m"),
+            clauses,
+          )
+        other -> other
+      }
+    })
+  let lines = case assume_first {
+    True -> [assume_line, paired_line, ..rest]
+    False -> list.append([paired_line, ..rest], [assume_line])
+  }
+  #(types.GradedFile(lines:), QualifiedName("m", line.function))
+}
+
+fn in_module_m(ann: types.EffectAnnotation) -> types.EffectAnnotation {
+  types.EffectAnnotation(..ann, function: "m." <> ann.function)
 }
 
 // Catalog directory resolution

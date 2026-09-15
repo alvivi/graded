@@ -1056,13 +1056,12 @@ pub fn extract_assumes(file: GradedFile) -> List(AssumeAnnotation) {
 // declarations (`assume <module> : [...]`) don't count — they target a whole
 // module, not one function — and neither does a line carrying only a
 // `where returns` clause, which claims nothing about the function's own
-// effect. That line is authoritative for the function it names, so both
-// `merge_inferred` and the committed-bounds load treat an `effects` line for
-// the same name as stale.
+// effect. That line is authoritative for the function it names, so
+// `merge_inferred` treats an `effects` line for the same name as stale.
 //
 // Not every such line is valid. One naming a function of this package's own
 // source that has a visible Gleam body declares nothing — the callers see that
-// body — and its name reaches both readers as `stale`, which restores the
+// body — and its name reaches `merge_inferred` as `stale`, which restores the
 // `effects` line to authority over it.
 pub fn assume_function_names(file: GradedFile) -> set.Set(String) {
   declaring_function_names(file, fn(ext) { option.is_some(ext.effects) })
