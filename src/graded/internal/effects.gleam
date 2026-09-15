@@ -450,6 +450,13 @@ fn declaring_function_assumes(
   })
 }
 
+// The names `declaring_function_assumes` keys.
+fn declared_function_names(
+  assumes: List(AssumeAnnotation),
+) -> List(QualifiedName) {
+  list.map(declaring_function_assumes(assumes), fn(entry) { entry.0 })
+}
+
 // Look up the effect set for a qualified function name, with the source that
 // wrote the entry that answered.
 pub fn lookup(
@@ -2346,11 +2353,8 @@ pub fn load_spec_effects(spec_path: String) -> Dict(QualifiedName, EffectTerm) {
 pub fn load_spec_effects_from_file(
   file: types.GradedFile,
 ) -> Dict(QualifiedName, EffectTerm) {
-  let declared =
-    declaring_function_assumes(annotation.extract_assumes(file))
-    |> list.map(fn(entry) { entry.0 })
   fold_spec_effects(annotation.extract_annotations(file))
-  |> dict.drop(declared)
+  |> dict.drop(declared_function_names(annotation.extract_assumes(file)))
 }
 
 // Load a package's own committed parameter bounds from its parsed spec file,
@@ -2370,9 +2374,10 @@ pub fn load_spec_effects_from_file(
 //   the declaring line itself: `load_spec_effects_from_file` drops the same
 //   name's `effects` line, so the external's term is the only one this file
 //   supplies, and a polymorphic one (`assume m/ffi.each(f: [f]) : [f]`)
-//   answers to the bounds written beside it. A clause-only bounded line writes no entry here — it
-//   decides no term, so a global entry would pair its bounds with a term from
-//   a lower tier; its bounds ride the declared summary instead.
+//   answers to the bounds written beside it. A clause-only bounded line writes
+//   no entry here — it decides no term, so a global entry would pair its
+//   bounds with a term from a lower tier; its bounds ride the declared summary
+//   instead.
 //
 // A *stale* per-function external still keys its own bounds here. Which
 // externals are stale is the project-spec caller's to decide, and so is
@@ -2581,13 +2586,7 @@ fn sanitize_dep_spec(
   // `assume dep/ffi.make where returns : [X]` claims nothing about the
   // function's own effect, so the dep's `effects` line for that name is still
   // inference over an `@external` fallback body and still drops.
-  let declared =
-    list.fold(dep.assumes, set.new(), fn(acc, assume) {
-      case annotation.assume_qualified_name(assume), assume.effects {
-        Ok(qualified), Some(_) -> set.insert(acc, qualified)
-        _, _ -> acc
-      }
-    })
+  let declared = set.from_list(declared_function_names(dep.assumes))
   let inferred_over_foreign = fn(name) {
     dict.has_key(foreign, name) && !set.contains(declared, name)
   }
@@ -2619,9 +2618,7 @@ fn sanitize_dep_spec(
 //
 // The spec's `effects` terms and its per-function `assume` terms key disjoint
 // names: the reader drops the `effects` line for every name a declaring
-// `assume` of the same file keys. Where `infer` kept such a line for its
-// `where returns` clause, that clause carries its own scoping bounds on the
-// returns channel.
+// `assume` of the same file keys.
 fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> AssumeTiers {
   let #(function_assumes, module_assumes) = split_assumes(dep.assumes, origin)
   #(
@@ -3000,10 +2997,8 @@ fn fold_catalog_file(acc: CatalogAcc, entry: #(String, String)) -> CatalogAcc {
               // A catalog entry describes a package graded has no source for,
               // so none of its externals can be stale by the visible-body rule.
               // Kept only for the names this file's `effects` lines supply a
-              // term for: the bounds reader also keys each external's own
-              // bounds, which `assume_params` already holds beside that
-              // external's term. So the two travel together through both
-              // merges.
+              // term for; an external's own bounds are in `assume_params`,
+              // beside its term.
               load_spec_params_from_file(graded_file)
                 |> dict.filter(fn(name, _bounds) {
                   dict.has_key(file_poly_effects, name)
