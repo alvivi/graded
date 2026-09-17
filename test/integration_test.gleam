@@ -12344,9 +12344,10 @@ pub fn an_installed_deps_module_line_silences_the_catalogued_name_test() {
   )
 }
 
-pub fn a_catalog_blanket_against_unresolved_inference_test() {
-  // Row b: nothing keys `justin.hidden` in the function tier, so the walk's
-  // [Unknown] is written there and answers ahead of the catalog's blanket.
+pub fn a_catalog_blanket_answers_over_unresolved_inference_test() {
+  // Row b: the walk could not read `justin.hidden`'s body, so its entry is
+  // declined and the catalog's blanket answers — and the consumer's `[]` budget
+  // holds, where the [Unknown] used to break it.
   let run =
     catalogued_path_dep_run(
       "pd_blanket_vs_inference",
@@ -12358,22 +12359,17 @@ pub fn a_catalog_blanket_against_unresolved_inference_test() {
       justin_caller,
       ["justin.hidden"],
     )
-  charged_by(run, "justin", "hidden")
-  |> should.equal(
-    Ok(#(
-      types.Specific(set.from_list(["Unknown"])),
-      Some(types.PathDependencyInferred("justin")),
-    )),
-  )
+  charged_by(run, "justin", "hidden") |> should.equal(Error(Nil))
+  // The blanket is what answers, named as the module-level line it is.
   run.answers
   |> should.equal([
-    "justin.hidden has effects that could not be determined: [Unknown]\n  source: inference over path dependency justin's source",
+    "justin.hidden is pure — no effects ([])\n  source: module-level `assume` for `justin`\n          used when no per-function entry exists",
   ])
 }
 
-pub fn a_catalog_entry_against_resolved_inference_test() {
-  // Row c: the catalog's per-function entry keeps the name even where the
-  // dependency's own source proves a ground term for it.
+pub fn resolved_inference_answers_over_a_catalog_entry_test() {
+  // Row c: where the dependency's own source proves a ground term, that term
+  // answers over the catalog's per-function line for some other version of it.
   let run =
     catalogued_path_dep_run(
       "pd_entry_vs_resolved",
@@ -12388,8 +12384,8 @@ pub fn a_catalog_entry_against_resolved_inference_test() {
   charged_by(run, "envoy", "get")
   |> should.equal(
     Ok(#(
-      types.Specific(set.from_list(["Environment"])),
-      Some(types.Catalog("envoy")),
+      types.Specific(set.from_list(["Stdout"])),
+      Some(types.PathDependencyInferred("envoy")),
     )),
   )
 }
@@ -12413,7 +12409,7 @@ pub fn a_dependencys_own_pass_reads_a_resolved_sibling_test() {
   charged_by(run, "envoy_wrap", "go")
   |> should.equal(
     Ok(#(
-      types.Specific(set.from_list(["Environment"])),
+      types.Specific(set.from_list(["Stdout"])),
       Some(types.PathDependencyInferred("envoy")),
     )),
   )
@@ -12449,8 +12445,8 @@ pub fn a_dependencys_own_pass_reads_an_unresolved_sibling_test() {
 
 pub fn a_dependencys_own_pass_reads_a_blanketed_sibling_test() {
   // Row b from inside the dependency: `justin_wrap.go` is charged what the
-  // dep's own pass read for `justin.hidden`, which the catalog's blanket does
-  // not reach today.
+  // dep's own pass read for `justin.hidden`, so the blanket has to answer
+  // during that pass and not only at the consumer's lookup.
   let run =
     catalogued_path_dep_run(
       "pd_wrapper_blanket",
@@ -12466,16 +12462,12 @@ pub fn a_dependencys_own_pass_reads_a_blanketed_sibling_test() {
       justin_wrapper_caller,
       ["justin_wrap.go"],
     )
-  charged_by(run, "justin_wrap", "go")
-  |> should.equal(
-    Ok(#(
-      types.Specific(set.from_list(["Unknown"])),
-      Some(types.PathDependencyInferred("justin")),
-    )),
-  )
+  charged_by(run, "justin_wrap", "go") |> should.equal(Error(Nil))
+  // The wrapper's own term, computed during the dependency's pass: it read the
+  // blanket for `justin.hidden`, exactly as the consumer's lookup does.
   run.answers
   |> should.equal([
-    "justin_wrap.go has effects that could not be determined: [Unknown]\n  source: inference over path dependency justin's source",
+    "justin_wrap.go is pure — no effects ([])\n  source: inference over path dependency justin's source",
   ])
 }
 
@@ -12579,11 +12571,13 @@ pub fn a_catalog_blanketed_producers_callback_still_binds_test() {
     )
   returned_call_effects(run.violations)
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  // The blanket answers the producer's own call, plus the callback share a
+  // boundless declaration is silent about.
   charged_by(run, "justin", "make")
   |> should.equal(
     Ok(#(
-      types.Specific(set.from_list(["Unknown"])),
-      Some(types.PathDependencyInferred("justin")),
+      types.Specific(set.from_list(["Stdout"])),
+      Some(types.ModuleAssumeOrigin(types.Catalog("justin"))),
     )),
   )
 }
@@ -12670,7 +12664,7 @@ pub fn a_dependency_sibling_reads_a_blanketed_producer_test() {
   charged_by(run, "justin_wrap", "go")
   |> should.equal(
     Ok(#(
-      types.Specific(set.from_list(["Stdout", "Unknown"])),
+      types.Specific(set.from_list(["Stdout"])),
       Some(types.PathDependencyInferred("justin")),
     )),
   )
@@ -12757,13 +12751,14 @@ pub fn a_catalogued_producer_over_resolved_inference_test() {
     )
   returned_call_effects(run.violations)
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
-  // The catalog's term, plus the callback share a boundless declaration is
-  // silent about and the call site charges from the argument in hand.
+  // The walked body answers, and the callback is charged where it is called
+  // rather than conservatively at the producer: an ordinary Gleam function
+  // resolved from source keeps its direct calls on the registry's own reading.
   charged_by(run, "envoy", "get")
   |> should.equal(
     Ok(#(
-      types.Specific(set.from_list(["Environment", "Stdout"])),
-      Some(types.Catalog("envoy")),
+      types.Specific(set.from_list(["Stdout"])),
+      Some(types.PathDependencyInferred("envoy")),
     )),
   )
 }
