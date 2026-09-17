@@ -383,15 +383,21 @@ order and takes the first hit:
    `[tools.graded]` config). A dependency's own spec outranks the bundled catalog.
    Its `assume` lines count: a per-function one resolves here, and a
    module-level one joins the module-external fallback tier — consulted only for
-   names nothing else keys, so it sits below every per-function entry, the
-   catalog's included.
+   names nothing else keys, so it sits below every per-function entry, **except
+   the catalog's, for a module that package ships**, which it answers over. The
+   author's shipped word on their own module outranks graded's maintainers' word
+   on some other version of it, in both line shapes. A module-level line about
+   code the package does not ship arbitrates nothing.
 4. **Path dependencies** — local deps declared with `path = "..."` in `gleam.toml`.
    graded reads their spec files, `assume` lines and all; if a path dep
-   ships none, it falls back to inferring from that dep's source. The two branches
-   rank differently against the catalog: a *committed* path-dep spec outranks a
-   catalog entry for the same function, while a spec-less path dep's
-   source-inferred effects sit **below** one — inference yields `[Unknown]` for
-   the FFI bodies a catalog entry describes precisely.
+   ships none, it falls back to inferring from that dep's source. A *committed*
+   path-dep spec outranks a catalog entry for the same function, and its
+   module-level lines answer over the catalog for a module the package ships,
+   exactly as an installed dependency's do. For a **spec-less** path dep the
+   split is per function: one graded resolved from that dep's source answers
+   from source, while one it could not resolve — a reading carrying `[Unknown]`,
+   a polymorphic one, or one over an `@external` — answers from the catalog
+   wherever the catalog speaks, per-function line or module-level line alike.
 5. **Bundled catalog** — the versioned catalog files shipped with graded (see
    [Effect catalog](#effect-catalog)).
 6. **Conservative default** — anything still unresolved gets `[Unknown]`.
@@ -693,7 +699,11 @@ the declared set instead of an inferred `[Unknown]`, and `graded infer` writes n
 per-function `effects` lines for it (just as a per-function external suppresses its
 own line). Use the module-level form when one budget fits the module. A
 per-function `assume mod.fn` or a catalog `effects` line for the same
-function takes precedence over a module-level external.
+function takes precedence over a module-level external in *your* spec. A
+module-level line in a **dependency's own** spec reads the other way against the
+catalog: over a module that package ships, it answers for the names the catalog
+keys per-function too (see
+[Effect resolution order](#effect-resolution-order)).
 
 The declared set is what the module's functions cost *on their own*. It says
 nothing about a callback one of them is handed, so a caller that passes an
