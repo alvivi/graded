@@ -1077,6 +1077,195 @@ pub fn a_source_inferred_path_dep_yields_to_the_catalog_test() {
   )
 }
 
+// A dependency and the catalog over one name
+//
+// `lookup` reads `all_effects` before `module_effects` whoever wrote the
+// entries, so between a dependency and the catalog the documented tiers leave
+// three shapes unstated: a shipped module-level line against a catalogued
+// function name, and a spec-less dependency's own inference against each of
+// the catalog's two line shapes. These pin which source answers each.
+
+// A dependency spec whose package also ships the modules it names. A
+// module-level declaration arbitrates only over its own package's code, and
+// that set is read off the `src/` tree, so a test about the rule has to write
+// one.
+fn dep_spec_shipping(
+  root: String,
+  package: String,
+  source: String,
+  modules: List(String),
+) -> effects.DepSpec {
+  let sources =
+    list.map(modules, fn(module) {
+      #("src/" <> module <> ".gleam", "pub fn f() -> Nil {\n  Nil\n}\n")
+    })
+  write_fixture(root, [#(package <> ".graded", source), ..sources])
+  let spec = effects.load_dep_spec(root, package)
+  cleanup(root)
+  spec
+}
+
+// A knowledge base over one installed dependency and a catalog composed for
+// this test, so the installed half of the rule is read through the fold that
+// serves it — `knowledge_base_from_catalog`'s two independent merges, not
+// `with_path_dep_spec`.
+fn installed_dep_under_catalog(
+  root: String,
+  package: String,
+  spec: String,
+  catalog: String,
+  shipped: List(String),
+) -> effects.KnowledgeBase {
+  let sources =
+    list.map(shipped, fn(module) {
+      #(
+        "packages/" <> package <> "/src/" <> module <> ".gleam",
+        "pub fn f() -> Nil {\n  Nil\n}\n",
+      )
+    })
+  let root =
+    write_fixture(root, [
+      #(dep_spec_path(package), spec),
+      #("catalog/" <> package <> "@1.0.0.graded", catalog),
+      #(
+        "manifest.toml",
+        "packages = [\n  { name = \""
+          <> package
+          <> "\", version = \"1.0.0\" },\n]\n",
+      ),
+      ..sources
+    ])
+  let #(functions, modules, param_bounds, type_fields) =
+    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
+  let kb =
+    effects.knowledge_base_from_catalog(
+      root <> "/packages",
+      effects.BundledCatalog(functions:, modules:, param_bounds:, type_fields:),
+      dict.new(),
+    )
+  cleanup(root)
+  kb
+}
+
+pub fn a_shipped_module_line_against_a_catalogued_name_test() {
+  // Row a, the path-dependency half: the fork declares the whole module it
+  // ships, and the catalog keys one of that module's functions per-function.
+  let kb =
+    effects.new_knowledge_base()
+    |> effects.with_assumes(
+      [assume("dep/m", "f", ["Catalogued"])],
+      types.Catalog("dep"),
+    )
+    |> effects.with_path_dep_spec(
+      dep_spec_shipping(
+        "build/eff_path_dep_shipped_module",
+        "dep",
+        "assume dep/m : [Time]\n",
+        ["dep/m"],
+      ),
+      types.PathDependency("dep"),
+    )
+  entry_of(kb, QualifiedName("dep/m", "f"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Catalogued"])), types.Catalog("dep"))),
+  )
+}
+
+pub fn an_installed_module_line_against_a_catalogued_name_test() {
+  // Row a, the installed half. The same two lines one fold over.
+  installed_dep_under_catalog(
+    "build/eff_installed_shipped_module",
+    "dep",
+    "assume dep/m : [Time]\n",
+    "assume dep/m.f : [Catalogued]\n",
+    ["dep/m"],
+  )
+  |> entry_of(QualifiedName("dep/m", "f"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Catalogued"])), types.Catalog("dep"))),
+  )
+}
+
+pub fn a_module_line_for_unshipped_code_leaves_the_catalog_test() {
+  // `other/m` is no module of `dep`'s, so `dep`'s line for it arbitrates
+  // nothing about that package and the catalog's word on it stands.
+  let kb =
+    effects.new_knowledge_base()
+    |> effects.with_assumes(
+      [assume("other/m", "f", ["Catalogued"])],
+      types.Catalog("other"),
+    )
+    |> effects.with_path_dep_spec(
+      dep_spec_shipping(
+        "build/eff_path_dep_unshipped_module",
+        "dep",
+        "assume other/m : [Time]\n",
+        ["dep/m"],
+      ),
+      types.PathDependency("dep"),
+    )
+  entry_of(kb, QualifiedName("other/m", "f"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Catalogued"])), types.Catalog("other"))),
+  )
+}
+
+pub fn a_consumer_module_line_still_yields_to_the_catalog_test() {
+  // The documented floor, pinned beside the rule it is the exception to: the
+  // consumer's own module-level line stays below every per-function entry, the
+  // catalog's included.
+  effects.new_knowledge_base()
+  |> effects.with_assumes(
+    [assume("dep/m", "f", ["Catalogued"])],
+    types.Catalog("dep"),
+  )
+  |> effects.with_assumes(
+    [module_assume("dep/m", ["Mocked"])],
+    types.UserAssume,
+  )
+  |> entry_of(QualifiedName("dep/m", "f"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Catalogued"])), types.Catalog("dep"))),
+  )
+}
+
+pub fn a_source_inferred_path_dep_against_a_catalog_module_line_test() {
+  // Row b: the catalog's blanket is in the module tier and nothing keys the
+  // name in `all_effects`, so the walk's entry is written and answers first —
+  // the blanket the catalog wrote for exactly these bodies never speaks.
+  effects.new_knowledge_base()
+  |> effects.with_assumes([module_assume("dep/pure", [])], types.Catalog("dep"))
+  |> effects.with_inferred(
+    inferred_entry("dep/pure", "f", ["Unknown"]),
+    types.PathDependencyInferred("dep"),
+  )
+  |> entry_of(QualifiedName("dep/pure", "f"))
+  |> should.equal(
+    Ok(#(
+      Specific(set.from_list(["Unknown"])),
+      types.PathDependencyInferred("dep"),
+    )),
+  )
+}
+
+pub fn a_resolved_inferred_path_dep_against_the_catalog_test() {
+  // Row c: the catalog's function entry keeps the name whatever the walk read,
+  // including a fully resolved term the dependency's own source proves.
+  effects.new_knowledge_base()
+  |> effects.with_assumes(
+    [assume("dep/ffi", "now", ["Catalogued"])],
+    types.Catalog("dep"),
+  )
+  |> effects.with_inferred(
+    inferred_entry("dep/ffi", "now", ["Time"]),
+    types.PathDependencyInferred("dep"),
+  )
+  |> entry_of(QualifiedName("dep/ffi", "now"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Catalogued"])), types.Catalog("dep"))),
+  )
+}
+
 // Catalog version selection
 //
 // Reading the bundled `{package}@{version}.graded` names off disk, and picking

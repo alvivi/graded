@@ -12022,6 +12022,428 @@ const unannotated_get = "pub fn get(f) {
 }
 "
 
+// A dependency and the bundled catalog over one name
+//
+// A package graded catalogues and a consumer also has the source of — vendored
+// as a path dependency, or installed with a spec of its own. Both sources key
+// the same names, and `lookup` reads the function tier before the module tier
+// whoever wrote the entries, so which of the two answers is decided by that
+// shape rather than by the documented tiers. These read the answer end to end,
+// through a consumer's `check` and through `graded effect`.
+
+// What one consumer's run reports about a dependency the catalog also covers:
+// the violations its `check` lines raised, and `graded effect`'s answer for
+// each queried name. Both are read before the fixture is deleted, and both are
+// needed — a tier rule that moves an answer to `[]` moves it out of the
+// violation channel entirely.
+type CataloguedRun {
+  CataloguedRun(violations: List(types.Violation), answers: List(String))
+}
+
+// A consumer with one *path* dependency whose package name the bundled catalog
+// keys, and the `manifest.toml` that selects that catalog file — the catalog is
+// chosen per installed package, so the manifest is what puts a catalogued name
+// in play at all. `dep_spec` is `Some` for a fork that ships one, `None` for
+// the spec-less branch graded infers from source.
+fn catalogued_path_dep_run(
+  name: String,
+  package: String,
+  manifest: String,
+  dep_spec: Option(String),
+  dep_sources: List(#(String, String)),
+  consumer_spec: String,
+  consumer_source: String,
+  queries: List(String),
+) -> CataloguedRun {
+  let root = "build/" <> name
+  let shipped_spec = case dep_spec {
+    Some(contents) -> [#("dep/" <> package <> ".graded", contents)]
+    None -> []
+  }
+  support.write_fixture(
+    root,
+    list.flatten([
+      [
+        #(
+          "proj/gleam.toml",
+          "name = \"proj\"\n\n[dependencies]\n"
+            <> package
+            <> " = { path = \"../dep\" }\n",
+        ),
+        #("proj/manifest.toml", manifest),
+        #("proj/proj.graded", consumer_spec),
+        #("proj/proj.gleam", consumer_source),
+        #("dep/gleam.toml", "name = \"" <> package <> "\"\n"),
+      ],
+      shipped_spec,
+      list.map(dep_sources, fn(entry) {
+        let #(path, contents) = entry
+        #("dep/src/" <> path, contents)
+      }),
+    ]),
+  )
+  let run = catalogued_run(root <> "/proj", queries)
+  support.cleanup(root)
+  run
+}
+
+// The same rule one tier over: the dependency is *installed* under
+// `build/packages`, so its spec folds through `knowledge_base_from_catalog`
+// rather than through the path-dependency tier.
+fn catalogued_installed_dep_run(
+  name: String,
+  package: String,
+  manifest: String,
+  dep_spec: String,
+  dep_sources: List(#(String, String)),
+  consumer_spec: String,
+  consumer_source: String,
+  queries: List(String),
+) -> CataloguedRun {
+  let root = "build/" <> name
+  let dep_root = "build/packages/" <> package
+  support.write_fixture(
+    root,
+    list.flatten([
+      [
+        #("gleam.toml", "name = \"proj\"\n"),
+        #("manifest.toml", manifest),
+        #("proj.graded", consumer_spec),
+        #("proj.gleam", consumer_source),
+        #(dep_root <> "/" <> package <> ".graded", dep_spec),
+      ],
+      list.map(dep_sources, fn(entry) {
+        let #(path, contents) = entry
+        #(dep_root <> "/src/" <> path, contents)
+      }),
+    ]),
+  )
+  let run = catalogued_run(root, queries)
+  support.cleanup(root)
+  run
+}
+
+fn catalogued_run(
+  project_root: String,
+  queries: List(String),
+) -> CataloguedRun {
+  let assert Ok(results) = graded.check_project(project_root)
+  let answers =
+    list.map(queries, fn(query) {
+      let assert Ok(answer) =
+        graded.run_effect_formatted(project_root, query, graded.Prose)
+      answer
+    })
+  CataloguedRun(
+    violations: list.flat_map(results, fn(result) { result.violations }),
+    answers:,
+  )
+}
+
+// The charge and the origin one call was reported with, as the pair a tier rule
+// moves together.
+fn charged_by(
+  run: CataloguedRun,
+  module: String,
+  function: String,
+) -> Result(#(types.EffectSet, Option(types.LookupOrigin)), Nil) {
+  run.violations
+  |> list.find(fn(violation) {
+    violation.explanation.call == types.QualifiedName(module:, function:)
+  })
+  |> result.map(fn(violation) {
+    #(violation.explanation.actual, violation.explanation.origin)
+  })
+}
+
+// A vendored `envoy` whose `get` the catalog keys per-function. Gleam-bodied
+// and pure, so nothing but the two competing lines decides what a caller pays.
+const vendored_envoy = "pub fn get(key: String) -> String {
+  key
+}
+"
+
+// The same, with a body the walk resolves to a real effect: `gleam/io` is
+// catalogued too, so the resolved reading needs no installed package.
+const printing_envoy = "import gleam/io
+
+pub fn get(key: String) -> String {
+  io.println(key)
+  key
+}
+"
+
+// The same, with a body the walk cannot resolve. The `@external` is in a
+// *separate* module of the dependency, so no module-level line of the fixture
+// covers it and the walk's answer for `get` really does carry [Unknown].
+const opaque_envoy = "import envoy_ffi
+
+pub fn get(key: String) -> String {
+  envoy_ffi.touch()
+  key
+}
+"
+
+const envoy_ffi = "@external(erlang, \"e\", \"t\")
+pub fn touch() -> Nil
+"
+
+// A dependency module wrapping a sibling's catalogued function. What the
+// consumer is charged through `go` is the answer the *dependency's own pass*
+// read for `envoy.get`, recorded before the consumer ever looks the name up.
+const envoy_wrapper = "import envoy
+
+pub fn go() -> String {
+  envoy.get(\"HOME\")
+}
+"
+
+const envoy_caller = "import envoy
+
+pub fn caller() -> Nil {
+  let _ = envoy.get(\"HOME\")
+  Nil
+}
+"
+
+const envoy_wrapper_caller = "import envoy_wrap
+
+pub fn caller() -> Nil {
+  let _ = envoy_wrap.go()
+  Nil
+}
+"
+
+// `justin`'s bundled catalog file is exactly `assume justin : []` — a
+// module-level blanket and nothing else, which is the shape most catalog files
+// carry. `hidden` is Gleam-bodied and calls a bodyless `@external` in a
+// separate, uncatalogued module of the same package: under the blanket the walk
+// would resolve it and leave `hidden` ground, which is the other branch.
+const opaque_justin = "import justin_ffi
+
+pub fn hidden() -> Nil {
+  justin_ffi.touch()
+}
+"
+
+const justin_ffi = "@external(erlang, \"j\", \"t\")
+pub fn touch() -> Nil
+"
+
+const justin_wrapper = "import justin
+
+pub fn go() -> Nil {
+  justin.hidden()
+}
+"
+
+const justin_caller = "import justin
+
+pub fn caller() -> Nil {
+  justin.hidden()
+}
+"
+
+const justin_wrapper_caller = "import justin_wrap
+
+pub fn caller() -> Nil {
+  justin_wrap.go()
+}
+"
+
+const justin_installed = "packages = [
+  { name = \"justin\", version = \"1.1.0\" },
+]
+"
+
+// `envoy` installed beside the standard library, so a vendored body calling
+// `gleam/io` resolves from the catalog rather than falling to [Unknown].
+const envoy_and_stdlib_installed = "packages = [
+  { name = \"envoy\", version = \"1.0.0\" },
+  { name = \"gleam_stdlib\", version = \"1.0.0\" },
+]
+"
+
+pub fn a_forks_module_line_against_a_catalogued_name_test() {
+  // Row a, path: the fork declares the whole module it ships, and the catalog
+  // keys `get` per-function.
+  let run =
+    catalogued_path_dep_run(
+      "pd_fork_module_line",
+      "envoy",
+      envoy_installed,
+      Some("assume envoy : [Time]\n"),
+      [#("envoy.gleam", vendored_envoy)],
+      "check proj.caller : []\n",
+      envoy_caller,
+      [],
+    )
+  charged_by(run, "envoy", "get")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Environment"])),
+      Some(types.Catalog("envoy")),
+    )),
+  )
+}
+
+pub fn an_installed_deps_module_line_against_a_catalogued_name_test() {
+  // Row a, installed: the same two lines, folded by the installed-package scan.
+  let run =
+    catalogued_installed_dep_run(
+      "installed_module_line",
+      "envoy",
+      envoy_installed,
+      "assume envoy : [Time]\n",
+      [#("envoy.gleam", vendored_envoy)],
+      "check proj.caller : []\n",
+      envoy_caller,
+      [],
+    )
+  charged_by(run, "envoy", "get")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Environment"])),
+      Some(types.Catalog("envoy")),
+    )),
+  )
+}
+
+pub fn a_catalog_blanket_against_unresolved_inference_test() {
+  // Row b: nothing keys `justin.hidden` in the function tier, so the walk's
+  // [Unknown] is written there and answers ahead of the catalog's blanket.
+  let run =
+    catalogued_path_dep_run(
+      "pd_blanket_vs_inference",
+      "justin",
+      justin_installed,
+      None,
+      [#("justin.gleam", opaque_justin), #("justin_ffi.gleam", justin_ffi)],
+      "check proj.caller : []\n",
+      justin_caller,
+      ["justin.hidden"],
+    )
+  charged_by(run, "justin", "hidden")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Unknown"])),
+      Some(types.PathDependencyInferred("justin")),
+    )),
+  )
+  run.answers
+  |> should.equal([
+    "justin.hidden has effects that could not be determined: [Unknown]\n  source: inference over path dependency justin's source",
+  ])
+}
+
+pub fn a_catalog_entry_against_resolved_inference_test() {
+  // Row c: the catalog's per-function entry keeps the name even where the
+  // dependency's own source proves a ground term for it.
+  let run =
+    catalogued_path_dep_run(
+      "pd_entry_vs_resolved",
+      "envoy",
+      envoy_and_stdlib_installed,
+      None,
+      [#("envoy.gleam", printing_envoy)],
+      "check proj.caller : []\n",
+      envoy_caller,
+      [],
+    )
+  charged_by(run, "envoy", "get")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Environment"])),
+      Some(types.Catalog("envoy")),
+    )),
+  )
+}
+
+pub fn a_dependencys_own_pass_reads_a_resolved_sibling_test() {
+  // The same rule read from inside the dependency: `envoy_wrap.go` is inferred
+  // during the dep's own pass, so what the consumer pays through it is the
+  // answer *that* pass read for `envoy.get` — the fold under test, not the
+  // consumer's later lookup.
+  let run =
+    catalogued_path_dep_run(
+      "pd_wrapper_resolved",
+      "envoy",
+      envoy_and_stdlib_installed,
+      None,
+      [#("envoy.gleam", printing_envoy), #("envoy_wrap.gleam", envoy_wrapper)],
+      "check proj.caller : []\n",
+      envoy_wrapper_caller,
+      [],
+    )
+  charged_by(run, "envoy_wrap", "go")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Environment"])),
+      Some(types.PathDependencyInferred("envoy")),
+    )),
+  )
+}
+
+pub fn a_dependencys_own_pass_reads_an_unresolved_sibling_test() {
+  // The negative control beside it: a catalog function entry outranks
+  // unresolved inference before and after any rule about resolved terms, so
+  // this wrapper's charge is the one that must not move.
+  let run =
+    catalogued_path_dep_run(
+      "pd_wrapper_unresolved",
+      "envoy",
+      envoy_installed,
+      None,
+      [
+        #("envoy.gleam", opaque_envoy),
+        #("envoy_ffi.gleam", envoy_ffi),
+        #("envoy_wrap.gleam", envoy_wrapper),
+      ],
+      "check proj.caller : []\n",
+      envoy_wrapper_caller,
+      [],
+    )
+  charged_by(run, "envoy_wrap", "go")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Environment"])),
+      Some(types.PathDependencyInferred("envoy")),
+    )),
+  )
+}
+
+pub fn a_dependencys_own_pass_reads_a_blanketed_sibling_test() {
+  // Row b from inside the dependency: `justin_wrap.go` is charged what the
+  // dep's own pass read for `justin.hidden`, which the catalog's blanket does
+  // not reach today.
+  let run =
+    catalogued_path_dep_run(
+      "pd_wrapper_blanket",
+      "justin",
+      justin_installed,
+      None,
+      [
+        #("justin.gleam", opaque_justin),
+        #("justin_ffi.gleam", justin_ffi),
+        #("justin_wrap.gleam", justin_wrapper),
+      ],
+      "check proj.caller : []\n",
+      justin_wrapper_caller,
+      ["justin_wrap.go"],
+    )
+  charged_by(run, "justin_wrap", "go")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Unknown"])),
+      Some(types.PathDependencyInferred("justin")),
+    )),
+  )
+  run.answers
+  |> should.equal([
+    "justin_wrap.go has effects that could not be determined: [Unknown]\n  source: inference over path dependency justin's source",
+  ])
+}
+
 // A clause is weighed against its own line, not against the params channel
 //
 // The params channel is hand-editable and keyed by function name, so a bound
