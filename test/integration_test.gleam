@@ -12479,6 +12479,295 @@ pub fn a_dependencys_own_pass_reads_a_blanketed_sibling_test() {
   ])
 }
 
+// A producer's returned closure across the dependency boundary
+//
+// Which entry wins a producer's *term* decides which bounds a returned closure
+// is bound against: `lookup_param_bounds` holds inference's own bounds out
+// wherever a module-level `assume` is the winning declaration, and the binding
+// then rests on the completion `bind_producer_params` synthesizes — one
+// self-referential bound per free variable of the operator. These pin that the
+// consumer's callback still reaches the returned call under each declaration
+// that can answer for a path dependency's module, and that the producer's own
+// charge and the closure's move independently.
+
+// A producer whose body also calls a bodyless `@external` in a separate,
+// uncatalogued module of the same package, so the walk's term for it really
+// does carry [Unknown]: under the blanket being tested a sibling `@external`
+// would resolve instead, leaving the producer ground and the test reading the
+// other branch.
+const annotated_producer = "import justin_ffi
+
+pub fn make(f: fn() -> Nil) -> fn() -> Nil {
+  justin_ffi.touch()
+  fn() { f() }
+}
+"
+
+// The same producer with nothing but girard to say `f` is a callback.
+const unannotated_producer = "import justin_ffi
+
+pub fn make(f) {
+  justin_ffi.touch()
+  fn() { f() }
+}
+"
+
+// A sibling of the producer, inside the dependency: it calls the closure
+// itself, so the callback's charge is folded into the wrapper's own term by the
+// dependency's own pass, before the consumer looks anything up.
+const producer_sibling = "import justin
+
+pub fn go(f: fn() -> Nil) -> Nil {
+  let h = justin.make(f)
+  h()
+}
+"
+
+const producer_caller = "import justin
+
+@external(erlang, \"proj_ffi\", \"shout\")
+pub fn shout() -> Nil
+
+pub fn caller() -> Nil {
+  let h = justin.make(shout)
+  h()
+}
+"
+
+const sibling_caller = "import justin_wrap
+
+@external(erlang, \"proj_ffi\", \"shout\")
+pub fn shout() -> Nil
+
+pub fn caller() -> Nil {
+  justin_wrap.go(shout)
+}
+"
+
+const producer_spec = "check proj.caller : []\nassume proj.shout : [Stdout]\n"
+
+const consumer_blanketed_spec = "check proj.caller : []
+assume proj.shout : [Stdout]
+assume justin : []
+"
+
+// One producer fixture's run over the spec-less vendored `justin`, whose
+// catalog file is the bare blanket `assume justin : []`.
+fn producer_run(
+  name: String,
+  producer: String,
+  consumer_spec: String,
+) -> CataloguedRun {
+  catalogued_path_dep_run(
+    name,
+    "justin",
+    justin_installed,
+    None,
+    [#("justin.gleam", producer), #("justin_ffi.gleam", justin_ffi)],
+    consumer_spec,
+    producer_caller,
+    [],
+  )
+}
+
+pub fn a_catalog_blanketed_producers_callback_still_binds_test() {
+  let run =
+    producer_run(
+      "pd_catalog_blanket_producer",
+      annotated_producer,
+      producer_spec,
+    )
+  returned_call_effects(run.violations)
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  charged_by(run, "justin", "make")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Unknown"])),
+      Some(types.PathDependencyInferred("justin")),
+    )),
+  )
+}
+
+pub fn a_consumer_blanketed_producers_callback_still_binds_test() {
+  // The precedent the catalog's blanket is held to: a consumer's
+  // `assume justin : []` already drops the walk's call effect for the module
+  // and keeps its bounds, its summary and its provenance. The producer's own
+  // charge is the callback share the boundless line is silent about, and the
+  // returned closure charges the callback again where it is actually called.
+  let run =
+    producer_run(
+      "pd_consumer_blanket_producer",
+      annotated_producer,
+      consumer_blanketed_spec,
+    )
+  returned_call_effects(run.violations)
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  charged_by(run, "justin", "make")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Stdout"])),
+      Some(types.ModuleAssumeOrigin(types.UserAssume)),
+    )),
+  )
+}
+
+pub fn a_girard_typed_callback_does_not_cross_a_spec_less_dependency_test() {
+  // The gap beside the rule, pinned so it cannot be mistaken for one: where
+  // only girard types the callback, a spec-less path dependency's producer
+  // hands the consumer no summary it can bind, and the returned call reads
+  // [Unknown]. It reads that way under no declaration at all, so no blanket
+  // and no tier decides it — which is what makes it a separate question from
+  // which entry wins the producer's term.
+  producer_run(
+    "pd_girard_only_catalog_blanket",
+    unannotated_producer,
+    producer_spec,
+  ).violations
+  |> returned_call_effects
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+
+  producer_run(
+    "pd_girard_only_consumer_blanket",
+    unannotated_producer,
+    consumer_blanketed_spec,
+  ).violations
+  |> returned_call_effects
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+
+  catalogued_path_dep_run(
+    "pd_girard_only_uncatalogued",
+    "justin",
+    no_installed_packages,
+    None,
+    [#("justin.gleam", unannotated_producer), #("justin_ffi.gleam", justin_ffi)],
+    producer_spec,
+    producer_caller,
+    [],
+  ).violations
+  |> returned_call_effects
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+pub fn a_dependency_sibling_reads_a_blanketed_producer_test() {
+  // The same producer read from inside the dependency: what the consumer pays
+  // through `go` is what the dependency's own pass already charged for the
+  // producer and its closure together.
+  let run =
+    catalogued_path_dep_run(
+      "pd_blanket_producer_sibling",
+      "justin",
+      justin_installed,
+      None,
+      [
+        #("justin.gleam", annotated_producer),
+        #("justin_ffi.gleam", justin_ffi),
+        #("justin_wrap.gleam", producer_sibling),
+      ],
+      producer_spec,
+      sibling_caller,
+      [],
+    )
+  charged_by(run, "justin_wrap", "go")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Stdout", "Unknown"])),
+      Some(types.PathDependencyInferred("justin")),
+    )),
+  )
+}
+
+// The catalogued twin: `envoy.get` is a name the bundled catalog keys
+// per-function, so what competes with the walk's term for it is a function
+// entry rather than a blanket — and that entry's (empty) bound list is what the
+// closure is scoped by while it wins.
+
+const unresolved_envoy_producer = "import envoy_ffi
+
+pub fn get(f: fn() -> Nil) -> fn() -> Nil {
+  envoy_ffi.touch()
+  fn() { f() }
+}
+"
+
+const resolved_envoy_producer = "import gleam/io
+
+pub fn get(f: fn() -> Nil) -> fn() -> Nil {
+  io.println(\"x\")
+  fn() { f() }
+}
+"
+
+const envoy_producer_caller = "import envoy
+
+@external(erlang, \"proj_ffi\", \"shout\")
+pub fn shout() -> Nil
+
+pub fn caller() -> Nil {
+  let h = envoy.get(shout)
+  h()
+}
+"
+
+fn envoy_producer_run(
+  name: String,
+  producer: String,
+  sources: List(#(String, String)),
+) -> CataloguedRun {
+  catalogued_path_dep_run(
+    name,
+    "envoy",
+    envoy_and_stdlib_installed,
+    None,
+    [#("envoy.gleam", producer), ..sources],
+    producer_spec,
+    envoy_producer_caller,
+    [],
+  )
+}
+
+pub fn a_catalogued_producer_over_unresolved_inference_test() {
+  let run =
+    envoy_producer_run(
+      "pd_catalogued_producer_unresolved",
+      unresolved_envoy_producer,
+      [#("envoy_ffi.gleam", envoy_ffi)],
+    )
+  returned_call_effects(run.violations)
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  // The catalog's term, plus the callback share a boundless declaration is
+  // silent about and the call site charges from the argument in hand.
+  charged_by(run, "envoy", "get")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Environment", "Stdout"])),
+      Some(types.Catalog("envoy")),
+    )),
+  )
+}
+
+pub fn a_catalogued_producer_over_resolved_inference_test() {
+  // The same shape with a body the walk resolves, which is the term row c
+  // moves. The returned closure's charge is the half that must not move with
+  // it.
+  let run =
+    envoy_producer_run(
+      "pd_catalogued_producer_resolved",
+      resolved_envoy_producer,
+      [],
+    )
+  returned_call_effects(run.violations)
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  // The catalog's term, plus the callback share a boundless declaration is
+  // silent about and the call site charges from the argument in hand.
+  charged_by(run, "envoy", "get")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Environment", "Stdout"])),
+      Some(types.Catalog("envoy")),
+    )),
+  )
+}
+
 // A clause is weighed against its own line, not against the params channel
 //
 // The params channel is hand-editable and keyed by function name, so a bound
