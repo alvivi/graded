@@ -1058,22 +1058,36 @@ pub fn a_path_dep_function_entry_beats_a_module_external_test() {
 
 pub fn a_source_inferred_path_dep_yields_to_the_catalog_test() {
   // The asymmetry the spec branch does not share: a spec-less path dep is
-  // inferred from source through `with_inferred`, which gap-fills, so a catalog
-  // entry for the same function keeps the term and the origin. Inference yields
-  // [Unknown] for the FFI bodies a catalog entry describes precisely, so
-  // reordering this needs its own design.
+  // inferred from source, and an unresolved reading is no answer to give over a
+  // catalog entry written for exactly the FFI body the walk could not read. The
+  // term and the origin both stay the catalog's.
   effects.new_knowledge_base()
   |> effects.with_assumes(
     [assume("dep/ffi", "now", ["Catalogued"])],
     types.Catalog("dep"),
   )
-  |> effects.with_inferred(
-    inferred_entry("dep/ffi", "now", ["Unknown"]),
-    types.PathDependency("dep"),
-  )
+  |> path_dep_inferred("dep/ffi", "now", ["Unknown"])
   |> entry_of(QualifiedName("dep/ffi", "now"))
   |> should.equal(
     Ok(#(Specific(set.from_list(["Catalogued"])), types.Catalog("dep"))),
+  )
+}
+
+// One inferred entry folded as a spec-less path dependency's own pass folds it,
+// with no bounds beside it.
+fn path_dep_inferred(
+  kb: effects.KnowledgeBase,
+  module: String,
+  function: String,
+  labels: List(String),
+) -> effects.KnowledgeBase {
+  effects.with_path_dep_inferred(
+    kb,
+    inferred_entry(module, function, labels),
+    dict.new(),
+    types.PathDependencyInferred(
+      string.split(module, "/") |> list.first |> result.unwrap(module),
+    ),
   )
 }
 
@@ -1236,16 +1250,40 @@ pub fn a_consumer_module_line_still_yields_to_the_catalog_test() {
   )
 }
 
-pub fn a_source_inferred_path_dep_against_a_catalog_module_line_test() {
-  // Row b: the catalog's blanket is in the module tier and nothing keys the
-  // name in `all_effects`, so the walk's entry is written and answers first —
-  // the blanket the catalog wrote for exactly these bodies never speaks.
+pub fn an_unresolved_inferred_path_dep_yields_to_a_catalog_blanket_test() {
+  // Row b: an unresolved term is no answer to give over a hand-written line, so
+  // the walk's entry is declined and the catalog's blanket — written for
+  // exactly these bodies — answers.
   effects.new_knowledge_base()
   |> effects.with_assumes([module_assume("dep/pure", [])], types.Catalog("dep"))
-  |> effects.with_inferred(
-    inferred_entry("dep/pure", "f", ["Unknown"]),
-    types.PathDependencyInferred("dep"),
+  |> path_dep_inferred("dep/pure", "f", ["Unknown"])
+  |> entry_of(QualifiedName("dep/pure", "f"))
+  |> should.equal(
+    Ok(#(
+      Specific(set.new()),
+      types.ModuleAssumeOrigin(source: types.Catalog("dep")),
+    )),
   )
+}
+
+pub fn a_resolved_inferred_path_dep_beats_a_catalog_blanket_test() {
+  // The other half of the same sentence: a term the dependency's own source
+  // proves answers over the blanket, which says nothing about this body in
+  // particular.
+  effects.new_knowledge_base()
+  |> effects.with_assumes([module_assume("dep/pure", [])], types.Catalog("dep"))
+  |> path_dep_inferred("dep/pure", "f", ["Time"])
+  |> entry_of(QualifiedName("dep/pure", "f"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Time"])), types.PathDependencyInferred("dep"))),
+  )
+}
+
+pub fn an_unresolved_inferred_path_dep_still_writes_under_no_line_test() {
+  // The floor the rule leaves alone: with nothing keyed in either map the walk
+  // is the only answer there is, [Unknown] included.
+  effects.new_knowledge_base()
+  |> path_dep_inferred("dep/pure", "f", ["Unknown"])
   |> entry_of(QualifiedName("dep/pure", "f"))
   |> should.equal(
     Ok(#(
@@ -1255,22 +1293,106 @@ pub fn a_source_inferred_path_dep_against_a_catalog_module_line_test() {
   )
 }
 
-pub fn a_resolved_inferred_path_dep_against_the_catalog_test() {
-  // Row c: the catalog's function entry keeps the name whatever the walk read,
-  // including a fully resolved term the dependency's own source proves.
+pub fn a_resolved_inferred_path_dep_beats_a_catalog_entry_test() {
+  // Row c: a term the dependency's own source proves answers over the catalog's
+  // per-function line for the same name.
   effects.new_knowledge_base()
   |> effects.with_assumes(
     [assume("dep/ffi", "now", ["Catalogued"])],
     types.Catalog("dep"),
   )
-  |> effects.with_inferred(
-    inferred_entry("dep/ffi", "now", ["Time"]),
-    types.PathDependencyInferred("dep"),
+  |> path_dep_inferred("dep/ffi", "now", ["Time"])
+  |> entry_of(QualifiedName("dep/ffi", "now"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Time"])), types.PathDependencyInferred("dep"))),
   )
+}
+
+pub fn an_inferred_path_dep_term_never_beats_a_written_line_test() {
+  // The rule is between the walk and the catalog and nowhere else: a
+  // per-function entry from any other source keeps its name, resolved term or
+  // not.
+  effects.new_knowledge_base()
+  |> effects.with_assumes(
+    [assume("dep/ffi", "now", ["Mocked"])],
+    types.UserAssume,
+  )
+  |> path_dep_inferred("dep/ffi", "now", ["Time"])
+  |> entry_of(QualifiedName("dep/ffi", "now"))
+  |> should.equal(Ok(#(Specific(set.from_list(["Mocked"])), types.UserAssume)))
+}
+
+pub fn a_resolved_inferred_term_over_an_external_still_yields_test() {
+  // A name the dependency's own source declares `@external` is foreign code:
+  // whatever the walk read is a fallback body its FFI needn't match, so the
+  // catalog's line keeps the name however ground that reading is.
+  effects.new_knowledge_base()
+  |> effects.with_dependency_foreign(
+    dict.from_list([
+      #(QualifiedName("dep/ffi", "now"), foreign_declared_everywhere()),
+    ]),
+  )
+  |> effects.with_assumes(
+    [assume("dep/ffi", "now", ["Catalogued"])],
+    types.Catalog("dep"),
+  )
+  |> path_dep_inferred("dep/ffi", "now", ["Time"])
   |> entry_of(QualifiedName("dep/ffi", "now"))
   |> should.equal(
     Ok(#(Specific(set.from_list(["Catalogued"])), types.Catalog("dep"))),
   )
+}
+
+pub fn a_polymorphic_inferred_term_still_yields_test() {
+  // D4's boundary: a term closed over its own bounds is still not ground, and
+  // what admits a polymorphic reading over a hand-checked line is a wider
+  // question than whether its variables look bound.
+  effects.new_knowledge_base()
+  |> effects.with_assumes(
+    [assume("dep/ffi", "each", ["Catalogued"])],
+    types.Catalog("dep"),
+  )
+  |> effects.with_path_dep_inferred(
+    dict.from_list([#(QualifiedName("dep/ffi", "each"), types.TVar("cb"))]),
+    dict.from_list([
+      #(QualifiedName("dep/ffi", "each"), [
+        ParamBound(name: "cb", effects: types.TVar("cb")),
+      ]),
+    ]),
+    types.PathDependencyInferred("dep"),
+  )
+  |> entry_of(QualifiedName("dep/ffi", "each"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Catalogued"])), types.Catalog("dep"))),
+  )
+}
+
+pub fn a_won_name_takes_the_walks_bounds_not_the_catalogs_test() {
+  // A term this fold takes from the catalog brings its own bounds: the pair the
+  // checker substitutes with always comes from one source, so a ground walked
+  // term never pairs with the catalog line's list.
+  let kb =
+    effects.new_knowledge_base()
+    |> effects.with_assumes(
+      [
+        types.AssumeAnnotation(
+          ..assume("dep/ffi", "now", ["Catalogued"]),
+          params: [ParamBound(name: "cb", effects: types.TVar("cb"))],
+        ),
+      ],
+      types.Catalog("dep"),
+    )
+    |> effects.with_path_dep_inferred(
+      inferred_entry("dep/ffi", "now", ["Time"]),
+      dict.from_list([
+        #(QualifiedName("dep/ffi", "now"), [
+          ParamBound(name: "walked", effects: types.TVar("walked")),
+        ]),
+      ]),
+      types.PathDependencyInferred("dep"),
+    )
+  effects.lookup_param_bounds(kb, QualifiedName("dep/ffi", "now"))
+  |> should.equal([ParamBound(name: "walked", effects: types.TVar("walked"))])
 }
 
 // Catalog version selection

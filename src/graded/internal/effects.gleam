@@ -1376,7 +1376,9 @@ pub fn declares_foreign_code(origin: LookupOrigin) -> Bool {
     | PathDependency(_) -> True
     // Inference over a spec-less path dependency's source is not a declaration:
     // it walked an `@external`'s body, which is exactly what no entry may speak
-    // for. It ranks below the catalog for the same reason.
+    // for. Its ranking against the catalog is conditional
+    // (`with_path_dep_inferred`); this reading is not, and an `@external`'s
+    // name is refused by both.
     CommittedSpec
     | ProjectInferred
     | PathDependencyInferred(_)
@@ -1698,6 +1700,115 @@ pub fn with_inferred(
       knowledge_base.all_effects,
     ),
   )
+}
+
+// Fold a spec-less path dependency's own inference into the knowledge base,
+// arbitrated against the bundled catalog.
+//
+// Everything a written line decides is decided before this runs: a per-function
+// entry from any other source keeps its name, as it does under `with_inferred`.
+// What this adds is the catalog's half of the question, which the two-map
+// lookup does not state — a catalog function entry sits in `all_effects` and
+// answers ahead of the walk whatever the walk read, while a catalog
+// module-level blanket sits in `module_effects` and answers behind it, however
+// little the walk resolved.
+//
+// One rule replaces both: a resolved term — ground, `Specific`, free of
+// `Unknown`, and not over an `@external` — answers over the catalog, and
+// anything else yields to it, whichever of the catalog's two line shapes
+// speaks. A resolved term is one where no fallback fired, so it is the
+// dependency's own source and not a gap in reading it.
+//
+// A term this fold takes from the catalog brings its own bounds: the ground
+// term never pairs with the catalog line's list. A name it declines under a
+// blanket keeps everything but the call effect — bounds, summary and
+// provenance are still written, exactly as they are under a *consumer's*
+// blanket. What changes for such a name is the read: once the blanket is the
+// winning declaration `lookup_param_bounds` holds inference's bounds out, and a
+// returned closure's operator is bound by the completion alone — one
+// synthesized self-referential bound per free variable, which is sound because
+// a `Fresh` operator's free variables are a subset of its producer's fn-typed
+// parameters.
+pub fn with_path_dep_inferred(
+  knowledge_base: KnowledgeBase,
+  inferred: Dict(QualifiedName, EffectTerm),
+  params: Dict(QualifiedName, List(ParamBound)),
+  origin: LookupOrigin,
+) -> KnowledgeBase {
+  let winning =
+    dict.filter(inferred, fn(name, term) {
+      answers_over_catalog(knowledge_base, name, term)
+    })
+  // The names this fold took from a catalog entry, whose bounds that entry
+  // wrote. Only they are replaced; everywhere else the inferred bounds merge as
+  // they always have, filling a gap rather than displacing a line.
+  let replaced =
+    dict.filter(winning, fn(name, _term) {
+      dict.has_key(knowledge_base.all_effects, name)
+    })
+  KnowledgeBase(
+    ..knowledge_base,
+    all_effects: dict.merge(
+      knowledge_base.all_effects,
+      with_origin(winning, origin),
+    ),
+    param_bounds: dict.merge(
+      dict.merge(params, knowledge_base.param_bounds),
+      dict.map_values(replaced, fn(name, _term) {
+        dict.get(params, name) |> result.unwrap([])
+      }),
+    ),
+  )
+}
+
+// Whether the walk's term for `name` answers over what the base already holds.
+fn answers_over_catalog(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+  term: EffectTerm,
+) -> Bool {
+  case dict.get(knowledge_base.all_effects, name) {
+    Ok(#(_term, origin)) ->
+      is_catalog_origin(origin)
+      && resolves_over_catalog(knowledge_base, name, term)
+    Error(Nil) ->
+      case dict.get(knowledge_base.module_effects, name.module) {
+        Ok(#(_term, origin)) ->
+          !is_catalog_origin(origin)
+          || resolves_over_catalog(knowledge_base, name, term)
+        Error(Nil) -> True
+      }
+  }
+}
+
+// Whether a walked term is resolved enough to answer over a hand-written
+// catalog line.
+//
+// Ground and free of `Unknown`: every fallback the walk takes mints `Unknown`
+// rather than a silent `[]`, so a term carrying neither is one no fallback
+// fired in. Polymorphic terms yield even when closed over their own bounds —
+// the catalog's polymorphic lines are hand-checked, and what admits a
+// polymorphic summary is a wider question than whether its variables look
+// bound. And a name the dependency's own source declares `@external` is
+// foreign code: an entry over it describes a fallback body its FFI needn't
+// match, which is no answer at all, let alone one over a written line.
+fn resolves_over_catalog(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+  term: EffectTerm,
+) -> Bool {
+  let effect_set = effect_term.to_effect_set(term)
+  effect_term.is_ground(term)
+  && is_specific_set(effect_set)
+  && !types.contains_unknown(effect_set)
+  && !dict.has_key(knowledge_base.dependency_foreign, name)
+}
+
+fn is_specific_set(effect_set: EffectSet) -> Bool {
+  case effect_set {
+    types.Specific(_) -> True
+    types.Wildcard | types.Polymorphic(..) -> False
+  }
 }
 
 // Merge inferred param bounds into a knowledge base. Used so that

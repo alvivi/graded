@@ -4835,7 +4835,10 @@ fn read_spec_on_disk(
 //
 // 2. If the dep has no spec file, fall back to inferring from source via
 //    `infer_path_dep` so path deps without graded set up still work. These
-//    results gap-fill: a catalog entry for the same name still wins.
+//    results gap-fill against every written line, and are arbitrated with the
+//    catalog by `with_path_dep_inferred`: a function graded resolved from the
+//    dependency's source answers from source, and one it could not resolve
+//    yields to whichever of the catalog's two line shapes speaks.
 //    Cross-path-dep imports are not currently merged into a single graph
 //    — each dep is processed sequentially.
 //
@@ -4968,6 +4971,13 @@ fn path_dep_sources(
 // `Fresh` — inferred this run, so they win over a committed clause's entry for
 // the same key. `lookup_origin` names the source of the effect terms,
 // recorded for the keys this merge wins.
+//
+// The origin also selects which effects fold runs: a spec-less path
+// dependency's walk is the one source the catalog arbitrates with, so it goes
+// through `with_path_dep_inferred`. Read off the origin rather than threaded
+// beside it, so the dependency's own pass and the consumer's fold of its
+// results cannot drift apart. The project's own inference is not this rule's
+// subject — its modules are not catalogued.
 fn fold_inferred_into_kb(
   knowledge_base: KnowledgeBase,
   effs: Dict(QualifiedName, types.EffectTerm),
@@ -4975,9 +4985,19 @@ fn fold_inferred_into_kb(
   returns: Dict(QualifiedName, types.EffectTerm),
   lookup_origin: types.LookupOrigin,
 ) -> KnowledgeBase {
-  knowledge_base
-  |> effects.with_inferred(effs, lookup_origin)
-  |> effects.with_inferred_params(params)
+  case lookup_origin {
+    types.PathDependencyInferred(..) ->
+      effects.with_path_dep_inferred(
+        knowledge_base,
+        effs,
+        params,
+        lookup_origin,
+      )
+    _ ->
+      knowledge_base
+      |> effects.with_inferred(effs, lookup_origin)
+      |> effects.with_inferred_params(params)
+  }
   |> effects.with_fresh_returned_operators(returns, lookup_origin)
 }
 
