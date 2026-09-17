@@ -215,13 +215,12 @@ pub fn knowledge_base_from_catalog(
     param_bounds: cat_params,
     type_fields: cat_type_fields,
   ) = catalog
-  // A module a dependency both ships and declares module-level answers for
-  // every name in it, so the catalog's per-function entries for that module are
-  // cleared before either tier is merged — otherwise they would sit in
-  // `all_effects` and answer ahead of the declaration in `module_effects`.
-  // Bounds go with the terms they were recorded beside. `BundledCatalog` itself
-  // is untouched: the spec lint reads it to ask whether any file keys a name,
-  // which is a question about files, not about who wins.
+  // The catalog's per-function entries for a module a dependency both ships and
+  // declares module-level are cleared before either tier merges; left in place
+  // they sit in `all_effects` and answer ahead of the declaration in
+  // `module_effects`. Bounds go with the terms they were recorded beside.
+  // `BundledCatalog` itself is untouched — the spec lint reads it to ask
+  // whether any file keys a name.
   let standing = outside_declared_modules(cat_effects, deps.declared_modules)
   let cat_params = bounds_of_standing_names(cat_params, cat_effects, standing)
   KnowledgeBase(
@@ -1705,30 +1704,19 @@ pub fn with_inferred(
 // Fold a spec-less path dependency's own inference into the knowledge base,
 // arbitrated against the bundled catalog.
 //
-// Everything a written line decides is decided before this runs: a per-function
-// entry from any other source keeps its name, as it does under `with_inferred`.
-// What this adds is the catalog's half of the question, which the two-map
-// lookup does not state — a catalog function entry sits in `all_effects` and
-// answers ahead of the walk whatever the walk read, while a catalog
-// module-level blanket sits in `module_effects` and answers behind it, however
-// little the walk resolved.
+// A per-function entry from any other source keeps its name, as under
+// `with_inferred`. Against the catalog the term's own shape decides: a resolved
+// term — ground, `Specific`, free of `Unknown`, and not over an `@external` —
+// is written over the catalog's, and anything else yields to it, under either
+// of the catalog's two line shapes.
 //
-// One rule replaces both: a resolved term — ground, `Specific`, free of
-// `Unknown`, and not over an `@external` — answers over the catalog, and
-// anything else yields to it, whichever of the catalog's two line shapes
-// speaks. A resolved term is one where no fallback fired, so it is the
-// dependency's own source and not a gap in reading it.
-//
-// A term this fold takes from the catalog brings its own bounds: the ground
-// term never pairs with the catalog line's list. A name it declines under a
-// blanket keeps everything but the call effect — bounds, summary and
-// provenance are still written, exactly as they are under a *consumer's*
-// blanket. What changes for such a name is the read: once the blanket is the
-// winning declaration `lookup_param_bounds` holds inference's bounds out, and a
-// returned closure's operator is bound by the completion alone — one
-// synthesized self-referential bound per free variable, which is sound because
-// a `Fresh` operator's free variables are a subset of its producer's fn-typed
-// parameters.
+// A term written over a catalog entry replaces that name's bounds with the
+// walk's own. A name declined under a blanket loses its call effect alone: its
+// bounds, its returned-operator summary and its provenance are still written,
+// as they are under a *consumer's* blanket. `lookup_param_bounds` then holds
+// those bounds out, leaving a returned closure's operator bound by the
+// completion — one synthesized self-referential bound per free variable, which
+// a `Fresh` operator's free variables are covered by.
 pub fn with_path_dep_inferred(
   knowledge_base: KnowledgeBase,
   inferred: Dict(QualifiedName, EffectTerm),
@@ -1781,17 +1769,14 @@ fn answers_over_catalog(
   }
 }
 
-// Whether a walked term is resolved enough to answer over a hand-written
-// catalog line.
+// Whether a walked term is resolved enough to be written over a catalog line:
+// ground, `Specific`, free of `Unknown`, and not a name the dependency's own
+// source declares `@external`.
 //
-// Ground and free of `Unknown`: every fallback the walk takes mints `Unknown`
-// rather than a silent `[]`, so a term carrying neither is one no fallback
-// fired in. Polymorphic terms yield even when closed over their own bounds —
-// the catalog's polymorphic lines are hand-checked, and what admits a
-// polymorphic summary is a wider question than whether its variables look
-// bound. And a name the dependency's own source declares `@external` is
-// foreign code: an entry over it describes a fallback body its FFI needn't
-// match, which is no answer at all, let alone one over a written line.
+// Every fallback the walk takes mints `Unknown` rather than a silent `[]`, so a
+// term carrying none is one no fallback fired in. A polymorphic term yields
+// even when closed over its own bounds. An entry over an `@external` describes
+// a fallback body its FFI needn't match.
 fn resolves_over_catalog(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
@@ -2763,10 +2748,8 @@ fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> AssumeTiers {
 // The dependency's own module-level lines are not held to it against the
 // catalog: for a module this package both ships and declares, the catalog's
 // per-function entries are cleared first, so the declaration answers for every
-// name in that module. The author's shipped word on their own module outranks
-// graded's maintainers' word on some other version of it, in both line shapes —
-// and the declaration already silences this spec's own `effects` lines for that
-// module, which is the asymmetry it removes.
+// name in that module — as it already does for this spec's own `effects` lines
+// there.
 //
 // The spec's `where returns` declarations fold ahead of its inferred
 // `returns` lines, so a name both key resolves to the declaration. Both merges
@@ -2815,9 +2798,8 @@ pub fn with_path_dep_spec(
 
 // The modules a dependency's winning module-level declarations answer over: the
 // ones that package also ships. A line about another package's code arbitrates
-// nothing here — without the intersection one dependency's `assume gleam/io : []`
-// would erase the catalog's per-function word on the standard library for the
-// whole build.
+// nothing here, so one dependency's `assume gleam/io : []` leaves the catalog's
+// per-function entries for the standard library standing.
 fn declared_over_catalog(
   winning_modules: Dict(String, #(EffectTerm, LookupOrigin)),
   shipped: Set(String),
@@ -2843,10 +2825,9 @@ fn outside_declared_modules(
   })
 }
 
-// The bounds left standing beside the terms: `param_bounds` carries no origin,
-// so the names it loses are exactly the names the term map lost. A term and its
-// bounds are dropped together, or a surviving term pairs with a list from an
-// annotation that no longer answers.
+// The bounds left standing beside the terms. `param_bounds` carries no origin,
+// so the names it loses are exactly the names the term map lost: a term and its
+// bounds are dropped together, never one without the other.
 fn bounds_of_standing_names(
   param_bounds: Dict(QualifiedName, List(ParamBound)),
   before: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),

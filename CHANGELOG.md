@@ -11,18 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A dependency's module-level `assume` over a module that package ships now
   answers for every name in it, including the ones the bundled catalog covers
-  with a per-function line. The author's shipped word on their own module wins
-  over graded's word on some other version of it, for a vendored fork and for an
-  installed package alike, so a `check` over a call into such a module can newly
-  pass or newly fail. A module-level line about code the package does not ship
-  still decides nothing.
-- A path dependency with no spec file of its own now answers from its source for
-  every function graded fully resolved there, over the bundled catalog's line
-  for that name. One graded could not resolve answers from the catalog instead —
-  and now does so under the catalog's module-level lines too, where an
-  unresolved `[Unknown]` used to be charged ahead of a blanket written for
-  exactly that code. Both halves can turn a passing `check` into a failing one
-  or the reverse; `graded effect` and `graded why` name which source answered.
+  with a per-function line. Path dependencies and installed packages alike, so a
+  `check` over a call into such a module can newly pass or newly fail. A
+  module-level line naming a module its package does not ship still changes
+  nothing.
+- A path dependency with no spec file of its own now answers from its own source
+  for every function graded fully resolved there, in place of the bundled
+  catalog's line for that name. One graded could not resolve still answers from
+  the catalog — now from the catalog's module-level lines too, where an
+  unresolved `[Unknown]` used to answer instead. Either half can turn a passing
+  `check` into a failing one or the reverse; `graded effect` and `graded why`
+  name the source that answered.
 
 ## [0.20.0] - 2026-09-12
 
