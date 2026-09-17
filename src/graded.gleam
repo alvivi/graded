@@ -4843,7 +4843,10 @@ fn read_spec_on_disk(
 // `consumer_modules`) is not inferred over during step 2 (see `infer_path_dep`),
 // so the consumer's declaration governs it. The spec-file branch is left
 // untouched: a function-keyed entry from an authoritative dep spec still wins
-// over a module-level external, per-function beating module-level.
+// over the *consumer's* module-level external, per-function beating
+// module-level. Against the catalog the dependency's own module-level line
+// reads the other way — for a module it ships, it answers over the catalog's
+// per-function entries too (`with_path_dep_spec`).
 fn enrich_with_path_deps(
   knowledge_base: KnowledgeBase,
   package_root: String,

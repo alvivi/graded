@@ -215,9 +215,18 @@ pub fn knowledge_base_from_catalog(
     param_bounds: cat_params,
     type_fields: cat_type_fields,
   ) = catalog
+  // A module a dependency both ships and declares module-level answers for
+  // every name in it, so the catalog's per-function entries for that module are
+  // cleared before either tier is merged — otherwise they would sit in
+  // `all_effects` and answer ahead of the declaration in `module_effects`.
+  // Bounds go with the terms they were recorded beside. `BundledCatalog` itself
+  // is untouched: the spec lint reads it to ask whether any file keys a name,
+  // which is a question about files, not about who wins.
+  let standing = outside_declared_modules(cat_effects, deps.declared_modules)
+  let cat_params = bounds_of_standing_names(cat_params, cat_effects, standing)
   KnowledgeBase(
     // Dependency entries win on a clash: dict.merge keeps its second argument.
-    all_effects: dict.merge(cat_effects, deps.effects),
+    all_effects: dict.merge(standing, deps.effects),
     param_bounds: dict.merge(cat_params, deps.params),
     type_fields: dict.new(),
     // Every dependency summary is tagged by `load_dependencies` with the package
@@ -231,7 +240,8 @@ pub fn knowledge_base_from_catalog(
     updates: dict.new(),
     constructors: dict.new(),
     // A dependency's module-level external wins over a catalog one for the same
-    // module, matching `all_effects`.
+    // module, and over the catalog's per-function entries for a module that
+    // package ships, which `standing` has already cleared.
     module_effects: dict.merge(cat_module_effects, deps.module_effects),
     provenance: dict.new(),
     // Scanned from the source under analysis, which no dependency spec carries.
@@ -2636,9 +2646,16 @@ fn decided_entries(dep: DepSpec, origin: LookupOrigin) -> AssumeTiers {
 // decides brings its own bounds entry with it. The summaries merge as `Closed`:
 // a committed clause is read back, not inferred this run.
 //
-// A consumer's *module-level* external stays in the `module_effects` fallback
+// A *consumer's* module-level external stays in the `module_effects` fallback
 // tier, which `lookup` consults only after `all_effects` misses, so these
 // function-keyed entries outrank it — the per-function-beats-module-level rule.
+// The dependency's own module-level lines are not held to it against the
+// catalog: for a module this package both ships and declares, the catalog's
+// per-function entries are cleared first, so the declaration answers for every
+// name in that module. The author's shipped word on their own module outranks
+// graded's maintainers' word on some other version of it, in both line shapes —
+// and the declaration already silences this spec's own `effects` lines for that
+// module, which is the asymmetry it removes.
 //
 // The spec's `where returns` declarations fold ahead of its inferred
 // `returns` lines, so a name both key resolves to the declaration. Both merges
@@ -2654,24 +2671,83 @@ pub fn with_path_dep_spec(
   // carrying a stale line for its own `@external` as an installed one is.
   let dep = sanitize_dep_spec(dep, knowledge_base.dependency_foreign)
   let #(decided, module_assumes) = decided_entries(dep, origin)
-  let winning = over_catalog(knowledge_base.all_effects, decided)
+  let winning_modules =
+    over_catalog(knowledge_base.module_effects, module_assumes)
+  // The modules this fold's declarations arbitrate over: the winners of the
+  // module tier only — a module the consumer already declared is not this
+  // dependency's to clear — intersected with what the package ships. An
+  // unreadable `src/` tree leaves `dep.modules` empty and the catalog standing,
+  // the same reading `sanitize_dep_spec` gives a package that cannot say what
+  // code is its own.
+  let declared = declared_over_catalog(winning_modules, dep.modules)
+  let standing = outside_declared_modules(knowledge_base.all_effects, declared)
+  let winning = over_catalog(standing, decided)
   KnowledgeBase(
     ..knowledge_base,
-    all_effects: dict.merge(knowledge_base.all_effects, winning),
+    all_effects: dict.merge(standing, winning),
     param_bounds: dict.merge(
-      knowledge_base.param_bounds,
+      bounds_of_standing_names(
+        knowledge_base.param_bounds,
+        knowledge_base.all_effects,
+        standing,
+      ),
       dict.map_values(winning, fn(name, _entry) {
         dict.get(dep.params, name) |> result.unwrap([])
       }),
     ),
-    module_effects: dict.merge(
-      knowledge_base.module_effects,
-      over_catalog(knowledge_base.module_effects, module_assumes),
-    ),
+    module_effects: dict.merge(knowledge_base.module_effects, winning_modules),
   )
   |> gap_filling_declared_returns(dep.declared_returns, origin)
   |> with_closed_returned_operators(dep.returns, origin)
   |> with_type_fields(dep.type_fields, origin)
+}
+
+// The modules a dependency's winning module-level declarations answer over: the
+// ones that package also ships. A line about another package's code arbitrates
+// nothing here — without the intersection one dependency's `assume gleam/io : []`
+// would erase the catalog's per-function word on the standard library for the
+// whole build.
+fn declared_over_catalog(
+  winning_modules: Dict(String, #(EffectTerm, LookupOrigin)),
+  shipped: Set(String),
+) -> Set(String) {
+  winning_modules
+  |> dict.keys
+  |> set.from_list
+  |> set.intersection(shipped)
+}
+
+// The catalog-written entries a dependency's module-level declarations leave
+// standing: every one outside the modules that package both ships and declares.
+// Entries from every other source stay whatever module they key — this clears
+// the catalog's word on a module, not anyone else's.
+fn outside_declared_modules(
+  entries: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+  declared: Set(String),
+) -> Dict(QualifiedName, #(EffectTerm, LookupOrigin)) {
+  use <- bool.guard(when: set.is_empty(declared), return: entries)
+  dict.filter(entries, fn(name, entry) {
+    let #(_term, origin) = entry
+    !is_catalog_origin(origin) || !set.contains(declared, name.module)
+  })
+}
+
+// The bounds left standing beside the terms: `param_bounds` carries no origin,
+// so the names it loses are exactly the names the term map lost. A term and its
+// bounds are dropped together, or a surviving term pairs with a list from an
+// annotation that no longer answers.
+fn bounds_of_standing_names(
+  param_bounds: Dict(QualifiedName, List(ParamBound)),
+  before: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+  standing: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+) -> Dict(QualifiedName, List(ParamBound)) {
+  use <- bool.guard(
+    when: dict.size(before) == dict.size(standing),
+    return: param_bounds,
+  )
+  dict.filter(param_bounds, fn(name, _bounds) {
+    !dict.has_key(before, name) || dict.has_key(standing, name)
+  })
 }
 
 // The incoming entries a path dependency's spec may write over a knowledge-base
@@ -2804,6 +2880,10 @@ type Dependencies {
     returns: Dict(QualifiedName, ReturnedOperator),
     type_fields: List(#(FieldAnnotation, LookupOrigin)),
     module_effects: Dict(String, #(EffectTerm, LookupOrigin)),
+    // The modules these specs both declare module-level and ship, accumulated
+    // across every installed package: what the catalog's per-function entries
+    // are cleared for before the two tiers merge.
+    declared_modules: Set(String),
   )
 }
 
@@ -2826,7 +2906,7 @@ fn load_dependencies(
   }
   list.fold(
     entries,
-    Dependencies(dict.new(), dict.new(), dict.new(), [], dict.new()),
+    Dependencies(dict.new(), dict.new(), dict.new(), [], dict.new(), set.new()),
     fn(acc, package_name) {
       let origin = DependencySpec(package: package_name)
       let dep_root = packages_directory <> "/" <> package_name
@@ -2852,6 +2932,10 @@ fn load_dependencies(
           list.map(dep.type_fields, fn(field) { #(field, origin) }),
         ),
         module_effects: dict.merge(acc.module_effects, module_assumes),
+        declared_modules: set.union(
+          acc.declared_modules,
+          declared_over_catalog(module_assumes, dep.modules),
+        ),
       )
     },
   )

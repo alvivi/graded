@@ -1147,9 +1147,10 @@ fn installed_dep_under_catalog(
   kb
 }
 
-pub fn a_shipped_module_line_against_a_catalogued_name_test() {
+pub fn a_shipped_module_line_silences_the_catalogs_name_test() {
   // Row a, the path-dependency half: the fork declares the whole module it
-  // ships, and the catalog keys one of that module's functions per-function.
+  // ships, so its declaration answers for every name in that module the
+  // catalog keys per-function.
   let kb =
     effects.new_knowledge_base()
     |> effects.with_assumes(
@@ -1167,11 +1168,14 @@ pub fn a_shipped_module_line_against_a_catalogued_name_test() {
     )
   entry_of(kb, QualifiedName("dep/m", "f"))
   |> should.equal(
-    Ok(#(Specific(set.from_list(["Catalogued"])), types.Catalog("dep"))),
+    Ok(#(
+      Specific(set.from_list(["Time"])),
+      types.ModuleAssumeOrigin(source: types.PathDependency("dep")),
+    )),
   )
 }
 
-pub fn an_installed_module_line_against_a_catalogued_name_test() {
+pub fn an_installed_module_line_silences_the_catalogs_name_test() {
   // Row a, the installed half. The same two lines one fold over.
   installed_dep_under_catalog(
     "build/eff_installed_shipped_module",
@@ -1182,7 +1186,10 @@ pub fn an_installed_module_line_against_a_catalogued_name_test() {
   )
   |> entry_of(QualifiedName("dep/m", "f"))
   |> should.equal(
-    Ok(#(Specific(set.from_list(["Catalogued"])), types.Catalog("dep"))),
+    Ok(#(
+      Specific(set.from_list(["Time"])),
+      types.ModuleAssumeOrigin(source: types.DependencySpec("dep")),
+    )),
   )
 }
 

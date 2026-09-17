@@ -11932,6 +11932,26 @@ fn path_dep_clause_effects_in(
   dependency_spec: String,
   dep_source: String,
 ) -> types.EffectSet {
+  returned_call_effects(path_dep_clause_violations_in(
+    name,
+    module,
+    producer,
+    manifest,
+    dependency_spec,
+    dep_source,
+  ))
+}
+
+// The whole run behind it: every violation the consumer's `check` raised, so a
+// test can read the producer's own charge beside the returned closure's.
+fn path_dep_clause_violations_in(
+  name: String,
+  module: String,
+  producer: String,
+  manifest: String,
+  dependency_spec: String,
+  dep_source: String,
+) -> List(types.Violation) {
   let assert Ok(qualifier) = list.last(string.split(module, "/"))
   let root = "build/" <> name
   support.write_fixture(root, [
@@ -11959,13 +11979,19 @@ pub fn caller() -> Nil {
     #("dep/src/" <> module <> ".gleam", dep_source),
   ])
   let assert Ok(results) = graded.check_project(root <> "/proj")
+  let violations = list.flat_map(results, fn(result) { result.violations })
+  support.cleanup(root)
+  violations
+}
+
+// The charge of the returned closure's call alone, which is what a clause
+// decides. The producer's own call is a separate violation and moves with the
+// tiers rather than with the clause.
+fn returned_call_effects(violations: List(types.Violation)) -> types.EffectSet {
   let assert Ok(violation) =
-    results
-    |> list.flat_map(fn(result) { result.violations })
-    |> list.find(fn(violation) {
+    list.find(violations, fn(violation) {
       violation.explanation.call.module == "<returned>"
     })
-  support.cleanup(root)
   violation.explanation.actual
 }
 
@@ -11996,16 +12022,25 @@ pub fn a_vendored_forks_clause_binds_over_the_catalogued_name_test() {
   // vendored fork of a catalogued package. The catalog's per-function `assume`
   // lines key the same names the fork's clause does, and the clause is read
   // against its own line either way.
-  path_dep_clause_effects_in(
-    "clause_path_dep_catalog_collision",
-    "envoy",
-    "get",
-    envoy_installed,
-    "assume envoy : []\n"
-      <> "effects envoy.get(f: [f]) : [] where returns : [f]\n",
-    unannotated_get,
-  )
+  let violations =
+    path_dep_clause_violations_in(
+      "clause_path_dep_catalog_collision",
+      "envoy",
+      "get",
+      envoy_installed,
+      "assume envoy : []\n"
+        <> "effects envoy.get(f: [f]) : [] where returns : [f]\n",
+      unannotated_get,
+    )
+  returned_call_effects(violations)
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  // And the producer's own call charges what the fork's blanket says, not the
+  // `[Environment]` the catalog keys `envoy.get` with: an empty charge is
+  // within the consumer's `[]` budget, so it raises no violation at all.
+  list.any(violations, fn(violation) {
+    violation.explanation.call.module == "envoy"
+  })
+  |> should.be_false()
 }
 
 // A manifest naming a package the bundled catalog covers, and one naming none.
@@ -12264,9 +12299,9 @@ const envoy_and_stdlib_installed = "packages = [
 ]
 "
 
-pub fn a_forks_module_line_against_a_catalogued_name_test() {
-  // Row a, path: the fork declares the whole module it ships, and the catalog
-  // keys `get` per-function.
+pub fn a_forks_module_line_silences_the_catalogued_name_test() {
+  // Row a, path: the fork declares the whole module it ships, so its line
+  // answers for `get` too — the name the catalog keys per-function.
   let run =
     catalogued_path_dep_run(
       "pd_fork_module_line",
@@ -12281,13 +12316,13 @@ pub fn a_forks_module_line_against_a_catalogued_name_test() {
   charged_by(run, "envoy", "get")
   |> should.equal(
     Ok(#(
-      types.Specific(set.from_list(["Environment"])),
-      Some(types.Catalog("envoy")),
+      types.Specific(set.from_list(["Time"])),
+      Some(types.ModuleAssumeOrigin(types.PathDependency("envoy"))),
     )),
   )
 }
 
-pub fn an_installed_deps_module_line_against_a_catalogued_name_test() {
+pub fn an_installed_deps_module_line_silences_the_catalogued_name_test() {
   // Row a, installed: the same two lines, folded by the installed-package scan.
   let run =
     catalogued_installed_dep_run(
@@ -12303,8 +12338,8 @@ pub fn an_installed_deps_module_line_against_a_catalogued_name_test() {
   charged_by(run, "envoy", "get")
   |> should.equal(
     Ok(#(
-      types.Specific(set.from_list(["Environment"])),
-      Some(types.Catalog("envoy")),
+      types.Specific(set.from_list(["Time"])),
+      Some(types.ModuleAssumeOrigin(types.DependencySpec("envoy"))),
     )),
   )
 }
