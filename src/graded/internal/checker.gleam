@@ -1360,10 +1360,45 @@ fn module_context(
 ) -> ModuleContext {
   let context =
     module_import_context(module, module_path, knowledge_base, package_targets)
+  let cache = build_scc_ids(module, context, girard_fn_typed)
   ModuleContext(
     context:,
-    cache: build_scc_ids(module, context, girard_fn_typed),
+    cache: LocalCache(
+      ..cache,
+      collapsible: set.filter(cache.collapsible, fn(scc) {
+        !crosses_catalog(scc, context, knowledge_base, cache)
+      }),
+    ),
   )
+}
+
+// Whether the catalog keys any member of a component, which is what takes the
+// component's one shared answer away. Collapsing pools every member's effects
+// and prices them alike, which holds while the members are mutually reachable;
+// a member the catalog answers for is charged that entry instead, cutting its
+// edges out of the component, and the pool then prices its callers for code
+// none of them reaches. Such a component is walked precisely — the collapse
+// only ever bought cost, never an answer.
+fn crosses_catalog(
+  scc: Int,
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  cache: LocalCache,
+) -> Bool {
+  dict.get(cache.members, scc)
+  |> result.unwrap([])
+  |> list.any(fn(member) {
+    case
+      declaration_resolution(
+        knowledge_base,
+        QualifiedName(module: context.module_path, function: member),
+      )
+    {
+      Some(Resolution(origin: Some(origin), ..)) ->
+        effects.is_catalog_origin(origin)
+      Some(Resolution(origin: None, ..)) | None -> False
+    }
+  })
 }
 
 // The import half of a module's context: the per-module lookup tables a body
@@ -7842,11 +7877,18 @@ fn declares_for_callers(
 // Whether the catalog's entry for a native same-module name answers, weighed
 // once and remembered.
 //
-// The term weighed is the name's own reading, walked from no ancestor exactly
-// as the module pass publishes it, so the verdict does not depend on which
-// caller asked first. A name already being weighed answers `True`: a cycle back
-// into it is charged the catalog, which terminates the walk and is the
-// conservative half of the rule.
+// The term weighed is the one the module pass publishes for that name: its own
+// body walked from no ancestor, under its own callback bounds, groomed as the
+// published line is. Not the analysis a *call* into it yields — for a member of
+// a collapsible recursive group that is the group's pooled reachability, which
+// prices every member alike and so cannot see a catalog boundary cutting one
+// edge inside the group. Weighing that pooled term left a caller charged an
+// entry the callee's own published reading had already overtaken.
+//
+// A name already being weighed answers `True`: a cycle back into it is charged
+// the catalog, which terminates the walk on the conservative half. The verdict
+// that settles is read by both this walk and the published one, so the two
+// agree on the callee however the cycle was cut.
 fn catalog_answers_for(
   name: String,
   qualified: QualifiedName,
@@ -7867,25 +7909,33 @@ fn catalog_answers_for(
           ..memo,
           catalog_verdicts: dict.insert(memo.catalog_verdicts, name, True),
         )
-      let #(collected, memo) =
-        memoized_local(
-          name,
+      let fn_typed_params = unbound_fn_typed_params(local_definition, [], cache)
+      let #(body_kb, memo) =
+        body_walk(
+          knowledge_base,
+          memo,
           local_definition,
-          set.new(),
+          context.package_targets,
+        )
+      let #(collected, memo) =
+        collect_effects(
+          without_returned_closure(local_definition.definition),
           function_map,
           context,
-          knowledge_base,
+          body_kb,
+          set.new(),
+          effective_bounds([], fn_typed_params),
           registry,
           reading,
+          dict.new(),
           cache,
+          [],
           memo,
         )
+      let #(published, _field_vars) =
+        groom_published_term(union_of(collected), fn_typed_params)
       let answers =
-        !effects.resolves_over_catalog(
-          knowledge_base,
-          qualified,
-          union_of(collected),
-        )
+        !effects.resolves_over_catalog(knowledge_base, qualified, published)
       #(
         answers,
         Memo(
