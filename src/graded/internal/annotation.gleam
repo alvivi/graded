@@ -65,9 +65,10 @@ pub fn describe_parse_error_line(error: ParseError) -> String {
 // spec.
 //
 // Two gates, and between them no third outcome: a first token that names no
-// declaration — `check`, which proves and never answers, or a word of prose —
-// keys nothing, and a path the shape rule refuses is one no line could have
-// declared for either.
+// declaration of the path's own effects — `check`, which proves and never
+// answers, the retired `returns`, which spoke only of the operator a path hands
+// back, or a word of prose — keys nothing, and a path the shape rule refuses is
+// one no line could have declared for either.
 pub fn blocker_for_rejected(error: ParseError) -> Option(GradedLine) {
   use path <- option.then(rejected_path(error))
   case parse_structured_line("assume " <> path <> " : [_]", error.line_number) {
@@ -90,13 +91,27 @@ fn rejected_path(error: ParseError) -> Option(String) {
   }
 }
 
-// Whether a keyword opens a line that answers for the path it names. A
-// `check` proves and never answers, in every version of the grammar, so no
-// future form of it could have keyed that name.
+// Whether a keyword opens a line that answers for the path's own effects,
+// which is what the blocker's grammar states. A `check` proves and never
+// answers, in every version of the grammar, so no future form of it could have
+// keyed that name.
 fn keyword_declares(keyword: LeadingKeyword) -> Bool {
   case keyword {
-    LeadsEffects | LeadsAssume | LeadsRetired(_) -> True
+    LeadsEffects | LeadsAssume -> True
+    LeadsRetired(retired) -> retired_declares(retired)
     LeadsCheck -> False
+  }
+}
+
+// The same question of a retired spelling. `returns <path> : <operator>` stated
+// the operator the path hands back and never what calling the path costs — its
+// rewrite is a clause on a line some other statement owns — so an effect set is
+// not what stands in for it. `external returns` reads as an `assume` over the
+// path, which answers for the name whatever its body does.
+fn retired_declares(keyword: RetiredKeyword) -> Bool {
+  case keyword {
+    RetiredType | RetiredExternalEffects | RetiredExternalReturns -> True
+    RetiredReturns -> False
   }
 }
 

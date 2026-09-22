@@ -1466,6 +1466,55 @@ pub fn a_retired_spelling_blocks_the_path_it_names_test() {
   spec.effects |> dict.get(QualifiedName("dep", "noop")) |> should.be_error()
 }
 
+pub fn a_retired_returns_line_blocks_nothing_test() {
+  // `returns <path> : <operator>` stated the operator the path hands back and
+  // never what calling it costs, so the `effects` line beside it is the whole
+  // answer for the name and keeps answering.
+  let assert effects.SpecLoaded(spec:, rejected:) =
+    dep_spec_load(
+      "build/eff_dep_retired_returns",
+      "dep",
+      "effects dep.make : []\nreturns dep.make : [Net]\n",
+      ["dep"],
+    )
+  spec.assumes |> should.equal([])
+  spec.effects
+  |> dict.get(QualifiedName("dep", "make"))
+  |> should.equal(Ok(types.TLabels(set.new())))
+  rejected
+  |> should.equal([
+    annotation.RetiredSpelling(
+      2,
+      "returns dep.make : [Net]",
+      annotation.RetiredReturns,
+    ),
+  ])
+}
+
+pub fn a_retired_external_returns_line_blocks_its_path_test() {
+  // Its rewrite is an `assume` over the path, which answers for the name
+  // whatever the body does, so the blocker stands where the plain `returns`
+  // one does not.
+  let assert effects.SpecLoaded(spec:, ..) =
+    dep_spec_load(
+      "build/eff_dep_retired_external_returns",
+      "dep",
+      "effects dep.make : []\nexternal returns dep.make : [Net]\n",
+      ["dep"],
+    )
+  spec.assumes
+  |> should.equal([
+    types.AssumeAnnotation(
+      module: "dep",
+      target: types.FunctionAssume("make"),
+      params: [],
+      effects: Some(types.Wildcard),
+      returns: None,
+    ),
+  ])
+  spec.effects |> dict.get(QualifiedName("dep", "make")) |> should.be_error()
+}
+
 pub fn a_rejected_line_without_a_status_keyword_blocks_nothing_test() {
   let assert effects.SpecLoaded(spec:, ..) =
     dep_spec_load(
