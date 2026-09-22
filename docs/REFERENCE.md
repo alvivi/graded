@@ -339,13 +339,21 @@ a returned operator — a missing clause never means *pure*.
 
 ## Lines the parser rejects
 
-A spec file is read whole or not at all. One line the parser rejects is an error
-naming the file and the line, from every command that reads a spec — `check`,
-`infer`, `format`, `effect`, `why` and `pack` — and nothing is written: `infer`
-leaves the spec file untouched, `pack` leaves the tarball untouched.
-`format --stdin` names the rejected line and prints no formatting. A
-*dependency's* spec that does not parse is a warning naming the package and the
-line, and that package's entries are ignored for the run.
+Your own spec file is read whole or not at all. One line the parser rejects is
+an error naming the file and the line, from every command that reads a spec —
+`check`, `infer`, `format`, `effect`, `why` and `pack` — and nothing is written:
+`infer` leaves the spec file untouched, `pack` leaves the tarball untouched.
+`format --stdin` names the rejected line and prints no formatting.
+
+A *dependency's* spec is read line by line. A line the parser rejects is named
+once in a warning and every other line in the file is used; the name that line
+names is charged the wildcard `[_]` from that dependency, at the tier a written
+`assume` of that path holds, which no budget but `[_]` admits — so a name graded
+could not read a line for is never charged less than the author's spec would
+have charged it. A dependency spec file that is there but whose bytes graded
+cannot read is a warning naming the cause, and the package is read as shipping
+no spec: a path dependency in that state is inferred from its source, exactly as
+a spec-less one is.
 
 Four spellings read before 0.15 are rejected by name, each error carrying its
 rewrite:
@@ -390,7 +398,8 @@ order and takes the first hit:
    code the package does not ship arbitrates nothing.
 4. **Path dependencies** — local deps declared with `path = "..."` in `gleam.toml`.
    graded reads their spec files, `assume` lines and all; if a path dep
-   ships none, it falls back to inferring from that dep's source. A *committed*
+   ships none — or ships one graded cannot read, which is warned about and read
+   as shipping none — it falls back to inferring from that dep's source. A *committed*
    path-dep spec outranks a catalog entry for the same function, and its
    module-level lines answer over the catalog for a module the package ships,
    exactly as an installed dependency's do. For a **spec-less** path dep the
