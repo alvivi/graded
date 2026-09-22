@@ -4993,7 +4993,14 @@ fn fold_inferred_into_kb(
         params,
         lookup_origin,
       )
-    _ ->
+    types.UserAssume
+    | types.CommittedSpec
+    | types.ProjectInferred
+    | types.DependencySpec(..)
+    | types.PathDependency(..)
+    | types.Catalog(..)
+    | types.ModuleAssumeOrigin(..)
+    | types.FieldAssumeOrigin(..) ->
       knowledge_base
       |> effects.with_inferred(effs, lookup_origin)
       |> effects.with_inferred_params(params)
