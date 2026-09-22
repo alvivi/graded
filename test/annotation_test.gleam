@@ -11,8 +11,8 @@ import graded/internal/types.{
   type EffectTerm, AnnotationLine, AssumeAnnotation, AssumeLine, BlankLine,
   Check, CommentLine, EffectAnnotation, Effects, FieldAnnotation,
   FieldAssumeLine, FunctionAssume, ModuleAssume, ParamBound, Polymorphic,
-  RetainedAssumeLine, Specific, TAbs, TApp, TLabels, TUnion, TVar, UnknownClause,
-  Wildcard,
+  RetainedAssumeLine, Specific, TAbs, TApp, TLabels, TTop, TUnion, TVar,
+  UnknownClause, Wildcard,
 }
 import qcheck
 
@@ -2279,6 +2279,224 @@ pub fn a_wrapped_statement_formats_idempotently_test() {
   let once = annotation.format_sorted(file)
   let assert Ok(reparsed) = annotation.parse_file(once)
   annotation.format_sorted(reparsed) |> should.equal(once)
+}
+
+// Reading per statement
+//
+// `parse_file_lenient` reads what it can and reports the rest: a rejected line
+// costs that line alone, and the two readers share one core, so the strict
+// parse's answers are unchanged.
+
+pub fn a_rejected_line_keeps_the_lines_around_it_test() {
+  let #(file, rejected) =
+    annotation.parse_file_lenient(
+      "effects m.f : []\nnot a spec line\neffects m.g : [Stdout]\n",
+    )
+  file.lines
+  |> should.equal([
+    AnnotationLine(pure_line("m.f"), []),
+    AnnotationLine(
+      EffectAnnotation(
+        Effects,
+        "m.g",
+        [],
+        TLabels(set.from_list(["Stdout"])),
+        None,
+      ),
+      [],
+    ),
+    BlankLine,
+  ])
+  rejected |> should.equal([annotation.InvalidLine(2, "not a spec line")])
+}
+
+pub fn a_retired_spelling_is_rejected_on_its_own_line_test() {
+  let #(file, rejected) =
+    annotation.parse_file_lenient(
+      "external effects m.f : [Disk]\neffects m.g : []",
+    )
+  file.lines |> should.equal([AnnotationLine(pure_line("m.g"), [])])
+  rejected
+  |> should.equal([
+    annotation.RetiredSpelling(
+      1,
+      "external effects m.f : [Disk]",
+      annotation.RetiredExternalEffects,
+    ),
+  ])
+}
+
+pub fn a_dangling_clause_is_rejected_at_its_start_line_test() {
+  // The join rejects a statement still waiting for a clause. As an element in
+  // file order rather than an early return, so the statement after it survives.
+  let #(file, rejected) =
+    annotation.parse_file_lenient("effects m.f : [] where\neffects m.g : []")
+  file.lines |> should.equal([AnnotationLine(pure_line("m.g"), [])])
+  rejected
+  |> should.equal([annotation.InvalidLine(1, "effects m.f : [] where")])
+}
+
+pub fn a_file_the_grammar_accepts_has_no_rejections_test() {
+  let input = "// A comment\n\neffects m.f : []\nassume m/ffi.go : [Net]\n"
+  let #(file, rejected) = annotation.parse_file_lenient(input)
+  rejected |> should.equal([])
+  Ok(file) |> should.equal(annotation.parse_file(input))
+}
+
+pub fn an_empty_input_reads_as_the_strict_parse_test() {
+  let #(file, rejected) = annotation.parse_file_lenient("")
+  rejected |> should.equal([])
+  Ok(file) |> should.equal(annotation.parse_file(""))
+}
+
+pub fn the_strict_parse_names_a_dangling_clause_over_a_rejection_test() {
+  // The join runs to completion before any statement is parsed, so the
+  // dangling clause at line 5 is the error even with a line the grammar
+  // refuses above it.
+  annotation.parse_file(
+    "effects m.f : []\nnot a spec line\neffects m.g : []\n\neffects m.h : [] where",
+  )
+  |> should.equal(Error(annotation.InvalidLine(5, "effects m.h : [] where")))
+}
+
+pub fn the_lenient_read_matches_the_strict_one_test() {
+  use file <- qcheck.given(generators.graded_file_gen())
+  let formatted = annotation.format_file(file)
+  annotation.parse_file_lenient(formatted)
+  |> should.equal(#(file, []))
+}
+
+pub fn one_injected_line_costs_that_line_alone_test() {
+  use #(file, pick) <- qcheck.given(
+    qcheck.map2(
+      generators.graded_file_gen(),
+      qcheck.bounded_int(0, 1000),
+      fn(f, p) { #(f, p) },
+    ),
+  )
+  let formatted = annotation.format_file(file)
+  let lines = string.split(formatted, "\n")
+  let boundaries = statement_boundaries(lines)
+  let assert Ok(at) =
+    list.first(list.drop(boundaries, pick % list.length(boundaries)))
+  let injected =
+    list.flatten([list.take(lines, at), [bad_line], list.drop(lines, at)])
+    |> string.join("\n")
+
+  annotation.parse_file(injected) |> should.be_error()
+  annotation.parse_file_lenient(injected)
+  |> should.equal(#(file, [annotation.InvalidLine(at + 1, bad_line)]))
+}
+
+const bad_line = "not a spec line"
+
+// The positions a line may be inserted at without splitting a wrapped
+// statement: immediately before a physical line that is not indented, and the
+// end of the text. The join continues an *indented* line only, so an
+// unindented line inserted at one of these joins neither the statement above
+// it nor the line below it.
+fn statement_boundaries(lines: List(String)) -> List(Int) {
+  list.index_fold(lines, [], fn(acc, line, index) {
+    case string.starts_with(line, " ") || string.starts_with(line, "\t") {
+      True -> acc
+      False -> [index, ..acc]
+    }
+  })
+  |> list.prepend(list.length(lines))
+  |> list.reverse()
+}
+
+// blocker_for_rejected
+//
+// The line a rejected one is replaced by: `assume <path> : [_]` for the path
+// it names, `None` where no line of this grammar could have keyed anything.
+
+pub fn a_rejected_declaration_blocks_the_path_it_names_test() {
+  [
+    #("effects m.f : <bad>", "m.f"),
+    #("assume m.f(f: <bad>) : [Disk]", "m.f"),
+    #("type m.f : <bad>", "m.f"),
+    #("returns m.f : <bad>", "m.f"),
+    #("external effects m.f : <bad>", "m.f"),
+    #("external returns m.f : <bad>", "m.f"),
+  ]
+  |> list.each(fn(entry) {
+    let #(content, module_function) = entry
+    let assert Ok(#(module, function)) =
+      annotation.split_function_name(module_function)
+    annotation.blocker_for_rejected(annotation.InvalidLine(1, content))
+    |> should.equal(
+      Some(
+        AssumeLine(
+          AssumeAnnotation(
+            module:,
+            target: FunctionAssume(function),
+            params: [],
+            effects: Some(Wildcard),
+            returns: None,
+          ),
+          [],
+        ),
+      ),
+    )
+  })
+}
+
+pub fn a_blocker_takes_the_shape_of_the_path_it_names_test() {
+  annotation.blocker_for_rejected(annotation.InvalidLine(1, "assume m : <bad>"))
+  |> should.equal(
+    Some(
+      AssumeLine(
+        AssumeAnnotation(
+          module: "m",
+          target: ModuleAssume,
+          params: [],
+          effects: Some(Wildcard),
+          returns: None,
+        ),
+        [],
+      ),
+    ),
+  )
+
+  annotation.blocker_for_rejected(annotation.InvalidLine(
+    1,
+    "assume m.Config.run(<bad>) : [Disk]",
+  ))
+  |> should.equal(
+    Some(
+      FieldAssumeLine(
+        FieldAnnotation(
+          module: Some("m"),
+          type_name: "Config",
+          field: "run",
+          effects: TTop,
+        ),
+        [],
+      ),
+    ),
+  )
+}
+
+pub fn a_rejection_that_could_key_nothing_blocks_nothing_test() {
+  [
+    // No keyword this grammar starts a declaration with.
+    "not a spec line",
+    // `check` proves and never answers, in every version of the grammar.
+    "check m.f(<bad>) : []",
+    // A keyword with no path after it.
+    "assume",
+    // Paths the shape rule refuses: a three-segment path whose
+    // second-to-last segment is not a type name, and an empty segment at
+    // either end.
+    "assume a.b.c : <bad>",
+    "assume m. : <bad>",
+    "assume .f : <bad>",
+  ]
+  |> list.each(fn(content) {
+    annotation.blocker_for_rejected(annotation.InvalidLine(1, content))
+    |> should.equal(None)
+  })
 }
 
 // An `effects <name> : []` annotation, the shape most of the line-structure
