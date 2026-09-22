@@ -149,7 +149,9 @@ pub fn parse_file(input: String) -> Result(GradedFile, ParseError) {
 
 // The same read, one statement at a time: every statement this version can
 // read, and the rejections in file order. For a reader of a file it does not
-// own and cannot re-emit — one rejected line costs that line and nothing else.
+// own and cannot re-emit — one rejected line costs the path it names and
+// nothing else, which for a module-shaped path is that module, exactly as a
+// blanket this version can read costs it.
 //
 // `GradedFile` carries no rejected-line element: a formatter or extractor that
 // had to answer one would be answering it for a reader that never writes the

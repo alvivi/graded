@@ -11,9 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A dependency's spec with a line graded cannot read now uses every other line
   in the file, where one such line used to cost the package its whole spec. The
-  name the rejected line names is charged the wildcard `[_]` from that
+  path the rejected line names is charged the wildcard `[_]` from that
   dependency rather than from the bundled catalog, so it fails every budget but
-  `[_]`. A name that used to fall to the catalog or `[Unknown]` now answers from
+  `[_]`. A rejected line whose path names a *module* is charged as the blanket
+  its shape states: every name in that module answers `[_]`, and the file's own
+  `effects` lines for it yield, exactly as they yield to a blanket graded can
+  read. A name that used to fall to the catalog or `[Unknown]` now answers from
   the dependency's own line, and a `check` over a call into it can newly pass or
   newly fail. The warning names the first three rejected lines and counts the
   rest.

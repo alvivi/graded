@@ -12820,6 +12820,31 @@ pub fn a_blocked_module_charges_the_wildcard_over_the_catalog_test() {
   charged_by(run, "envoy", "unlisted") |> should.equal(blocked)
 }
 
+pub fn a_blocked_module_outranks_the_files_own_effects_line_test() {
+  // The precise line for a name inside the blocked module yields to the
+  // blocker, exactly as it yields to a blanket graded can read. Reading it
+  // instead would charge the caller less than the module line the author wrote
+  // and graded could not read.
+  let run =
+    catalogued_path_dep_run(
+      "pd_blocked_module_over_effects",
+      "envoy",
+      envoy_installed,
+      Some("assume envoy : <bad>\neffects envoy.get : []\n"),
+      [#("envoy.gleam", vendored_envoy)],
+      "check proj.caller : []\n",
+      envoy_caller,
+      [],
+    )
+  charged_by(run, "envoy", "get")
+  |> should.equal(
+    Ok(#(
+      types.Wildcard,
+      Some(types.ModuleAssumeOrigin(types.PathDependency("envoy"))),
+    )),
+  )
+}
+
 pub fn a_blocked_name_fails_an_unknown_budget_test() {
   // The distinguishing pin: an `[Unknown]` blocker would pass this budget
   // while the author's `[Disk]` fails it. The wildcard fails it as the
