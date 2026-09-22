@@ -12262,11 +12262,50 @@ pub fn set(f: fn() -> Nil) -> Nil {
 }
 "
 
+// A recursive pair the catalog keys inside: `get` and `unset` call each other,
+// and only `unset` reaches the uncatalogued `@external`. `get`'s own reading
+// prints and resolves while `unset`'s carries [Unknown] and yields, so the two
+// no longer cost the same and the component's pooled reachability prices
+// neither. `all` calls `get` from outside the pair.
+const recursive_sibling_envoy = "import gleam/io
+import envoy_ffi
+
+pub fn all() -> Nil {
+  get(0)
+}
+
+pub fn get(n: Int) -> Nil {
+  case n {
+    0 -> Nil
+    _ -> unset(n - 1)
+  }
+  io.println(\"x\")
+}
+
+pub fn unset(n: Int) -> Nil {
+  case n {
+    0 -> envoy_ffi.touch()
+    _ -> get(n - 1)
+  }
+}
+"
+
 const envoy_all_caller = "import envoy
 
 pub fn caller() -> Nil {
   let _ = envoy.all()
   Nil
+}
+"
+
+// Calls the recursive pair's outside entry and both its members, so one run
+// reports what each of the three is charged.
+const envoy_recursive_caller = "import envoy
+
+pub fn caller() -> Nil {
+  envoy.all()
+  envoy.get(1)
+  envoy.unset(1)
 }
 "
 
@@ -12549,6 +12588,43 @@ pub fn a_polymorphic_siblings_catalog_line_still_answers_test() {
     Ok(#(
       types.Specific(set.from_list(["Environment"])),
       Some(types.PathDependencyInferred("envoy")),
+    )),
+  )
+}
+
+pub fn a_recursive_group_answers_per_member_test() {
+  // The catalog keys both members of a recursive pair, and only one of them
+  // resolves. Each is arbitrated on its own published reading rather than on
+  // the component's pooled reachability: `unset` yields to its line, `get`
+  // composes that line with its own print and outranks its own, and `all` —
+  // outside the pair — is charged what `get` costs. Pooling priced all three
+  // alike and left the caller holding an entry `get` had already overtaken.
+  let run =
+    catalogued_path_dep_run(
+      "pd_sibling_recursive",
+      "envoy",
+      envoy_and_stdlib_installed,
+      None,
+      [
+        #("envoy.gleam", recursive_sibling_envoy),
+        #("envoy_ffi.gleam", envoy_ffi),
+      ],
+      "check proj.caller : []\n",
+      envoy_recursive_caller,
+      [],
+    )
+  let resolved =
+    Ok(#(
+      types.Specific(set.from_list(["Environment", "Stdout"])),
+      Some(types.PathDependencyInferred("envoy")),
+    ))
+  charged_by(run, "envoy", "get") |> should.equal(resolved)
+  charged_by(run, "envoy", "all") |> should.equal(resolved)
+  charged_by(run, "envoy", "unset")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Environment"])),
+      Some(types.Catalog("envoy")),
     )),
   )
 }
