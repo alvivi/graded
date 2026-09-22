@@ -9712,9 +9712,9 @@ pub fn a_malformed_path_dep_spec_keeps_the_spec_branch_test() {
   v.explanation.origin |> should.equal(None)
 }
 
-pub fn a_rejected_line_drops_a_path_dependencys_other_lines_test() {
-  // One line the parser rejects costs the file every other line: the `assume`
-  // above it answers nothing and the call falls to [Unknown].
+pub fn a_rejected_line_keeps_a_path_dependencys_other_lines_test() {
+  // One line the parser rejects costs that line alone: the `assume` above it
+  // answers for `dep.touch` from the dependency's own tier.
   let r =
     run_path_dep_spec_fixture(
       "pd_rejected_line",
@@ -9730,11 +9730,11 @@ pub fn a_rejected_line_drops_a_path_dependencys_other_lines_test() {
     )
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
   v.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Unknown"])))
-  v.explanation.origin |> should.equal(None)
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  v.explanation.origin |> should.equal(Some(types.PathDependency("dep")))
 }
 
-pub fn a_rejected_line_drops_an_installed_dependencys_other_lines_test() {
+pub fn a_rejected_line_keeps_an_installed_dependencys_other_lines_test() {
   // The same file one tier over: an *installed* package's spec is read line by
   // line too, through `load_dependencies` rather than `with_path_dep_spec`.
   let root =
@@ -9759,8 +9759,8 @@ pub fn a_rejected_line_drops_an_installed_dependencys_other_lines_test() {
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
   v.explanation.actual
-  |> should.equal(types.Specific(set.from_list(["Unknown"])))
-  v.explanation.origin |> should.equal(None)
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+  v.explanation.origin |> should.equal(Some(types.DependencySpec("dep")))
   support.cleanup(root)
 }
 
@@ -12752,6 +12752,96 @@ pub fn a_recursive_group_answers_per_member_test() {
     )),
   )
 }
+
+// A dependency spec's rejected line, against the bundled catalog
+//
+// The blocker sits at the tier the author's own line would have held, so the
+// name it names answers from the dependency over the catalog's entry for it —
+// and answers the wildcard, which no budget but `[_]` admits.
+
+pub fn a_blocked_name_charges_the_wildcard_over_the_catalog_test() {
+  let run =
+    catalogued_path_dep_run(
+      "pd_blocked_name",
+      "envoy",
+      envoy_installed,
+      Some("effects envoy.get : []\nassume envoy.get(f: <bad>) : [Disk]\n"),
+      [#("envoy.gleam", vendored_envoy)],
+      "check proj.caller : []\n",
+      envoy_caller,
+      [],
+    )
+  charged_by(run, "envoy", "get")
+  |> should.equal(Ok(#(types.Wildcard, Some(types.PathDependency("envoy")))))
+}
+
+pub fn a_blocked_module_charges_the_wildcard_over_the_catalog_test() {
+  let run =
+    catalogued_path_dep_run(
+      "pd_blocked_module",
+      "envoy",
+      envoy_installed,
+      Some("assume envoy : <bad>\n"),
+      [#("envoy.gleam", vendored_envoy <> uncatalogued_envoy_sibling)],
+      "check proj.caller : []\ncheck proj.sibling_caller : []\n",
+      envoy_caller <> envoy_sibling_caller,
+      [],
+    )
+  let blocked =
+    Ok(#(
+      types.Wildcard,
+      Some(types.ModuleAssumeOrigin(types.PathDependency("envoy"))),
+    ))
+  charged_by(run, "envoy", "get") |> should.equal(blocked)
+  charged_by(run, "envoy", "unlisted") |> should.equal(blocked)
+}
+
+pub fn a_blocked_name_fails_an_unknown_budget_test() {
+  // The distinguishing pin: an `[Unknown]` blocker would pass this budget
+  // while the author's `[Disk]` fails it. The wildcard fails it as the
+  // author's line does, and passes only the `[_]` budget.
+  let violating =
+    catalogued_path_dep_run(
+      "pd_blocked_unknown_budget",
+      "envoy",
+      envoy_installed,
+      Some("effects envoy.get : []\nassume envoy.get(f: <bad>) : [Disk]\n"),
+      [#("envoy.gleam", vendored_envoy)],
+      "check proj.caller : [Unknown]\n",
+      envoy_caller,
+      [],
+    )
+  charged_by(violating, "envoy", "get")
+  |> should.equal(Ok(#(types.Wildcard, Some(types.PathDependency("envoy")))))
+
+  let passing =
+    catalogued_path_dep_run(
+      "pd_blocked_wildcard_budget",
+      "envoy",
+      envoy_installed,
+      Some("effects envoy.get : []\nassume envoy.get(f: <bad>) : [Disk]\n"),
+      [#("envoy.gleam", vendored_envoy)],
+      "check proj.caller : [_]\n",
+      envoy_caller,
+      [],
+    )
+  passing.violations |> should.equal([])
+}
+
+// A function of `envoy`'s the bundled catalog does not key, so a blanket over
+// the module is the only thing that can answer for it.
+const uncatalogued_envoy_sibling = "
+pub fn unlisted() -> String {
+  \"\"
+}
+"
+
+const envoy_sibling_caller = "
+pub fn sibling_caller() -> Nil {
+  let _ = envoy.unlisted()
+  Nil
+}
+"
 
 pub fn a_dependencys_own_pass_reads_a_resolved_sibling_test() {
   // The same rule read from inside the dependency: `envoy_wrap.go` is inferred

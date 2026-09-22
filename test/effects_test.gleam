@@ -746,17 +746,19 @@ pub fn a_clause_only_assume_does_not_decide_the_effects_channel_test() {
   )
 }
 
-pub fn a_dependency_spec_that_does_not_parse_is_ignored_test() {
+pub fn a_dependency_spec_line_the_parser_rejects_costs_that_line_test() {
   // A consumer cannot fix a dependency's spec, so a line the parser rejects
-  // costs that package's entries — with a printed warning — rather than the
-  // whole run.
+  // costs that line — with a printed warning — rather than the package's
+  // other entries or the whole run.
   installed_dep(
     "build/eff_dep_unparseable",
     "dep",
     "assume dep/ffi.now : [Time]\nnot a graded line\n",
   )
   |> entry_of(QualifiedName("dep/ffi", "now"))
-  |> should.be_error
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Time"])), types.DependencySpec("dep"))),
+  )
 }
 
 pub fn a_dependency_module_external_resolves_test() {
@@ -1106,14 +1108,27 @@ fn dep_spec_shipping(
   source: String,
   modules: List(String),
 ) -> effects.DepSpec {
+  let assert effects.SpecLoaded(spec:, ..) =
+    dep_spec_load(root, package, source, modules)
+  spec
+}
+
+// The same fixture, read back as the whole load: what the reader states about
+// the file, not only the spec it kept.
+fn dep_spec_load(
+  root: String,
+  package: String,
+  source: String,
+  modules: List(String),
+) -> effects.DepSpecLoad {
   let sources =
     list.map(modules, fn(module) {
       #("src/" <> module <> ".gleam", "pub fn f() -> Nil {\n  Nil\n}\n")
     })
   write_fixture(root, [#(package <> ".graded", source), ..sources])
-  let spec = effects.load_dep_spec(root, package)
+  let load = effects.load_dep_spec(root, package)
   cleanup(root)
-  spec
+  load
 }
 
 // A knowledge base over one installed dependency and a catalog composed for
@@ -1244,6 +1259,338 @@ pub fn a_consumer_module_line_still_yields_to_the_catalog_test() {
   |> entry_of(QualifiedName("dep/m", "f"))
   |> should.equal(
     Ok(#(Specific(set.from_list(["Catalogued"])), types.Catalog("dep"))),
+  )
+}
+
+// A dependency spec read one line at a time
+//
+// A line the parser rejects costs that line and nothing else, and the name it
+// names is charged the wildcard from this dependency's own tier — above the
+// catalog and above any surviving line for that path — so a name graded could
+// not read a line for is never charged less than the author's spec would have
+// charged it.
+
+pub fn a_rejected_line_keeps_the_other_lines_test() {
+  let load =
+    dep_spec_load(
+      "build/eff_dep_rejected_line",
+      "dep",
+      "assume dep.touch : [Disk]\nnot a spec line\n",
+      [],
+    )
+  let assert effects.SpecLoaded(spec:, rejected:) = load
+  spec.assumes |> should.equal([assume("dep", "touch", ["Disk"])])
+  rejected |> should.equal([annotation.InvalidLine(2, "not a spec line")])
+}
+
+pub fn a_rejected_line_beside_its_own_effects_line_test() {
+  // The same-file `assume`-over-`effects` drop is read off the lines that
+  // survived, exactly as it is read off a file with no rejection in it.
+  let assert effects.SpecLoaded(spec:, ..) =
+    dep_spec_load(
+      "build/eff_dep_rejected_beside_effects",
+      "dep",
+      "assume dep.touch : [Disk]\neffects dep.touch : [Stdout]\nnot a spec line\n",
+      [],
+    )
+  spec.effects |> dict.get(QualifiedName("dep", "touch")) |> should.be_error()
+  spec.assumes |> should.equal([assume("dep", "touch", ["Disk"])])
+}
+
+pub fn a_rejected_line_blocks_its_own_name_test() {
+  let assert effects.SpecLoaded(spec:, rejected:) =
+    dep_spec_load(
+      "build/eff_dep_blocked_name",
+      "dep",
+      "assume dep.noop(f: <bad>) : [Disk]\neffects dep.noop : [] where returns : [f]\n",
+      [],
+    )
+  spec.assumes
+  |> should.equal([
+    types.AssumeAnnotation(
+      module: "dep",
+      target: types.FunctionAssume("noop"),
+      params: [],
+      effects: Some(types.Wildcard),
+      returns: None,
+    ),
+  ])
+  let name = QualifiedName("dep", "noop")
+  spec.effects |> dict.get(name) |> should.be_error()
+  spec.returns |> dict.get(name) |> should.be_error()
+  spec.declared_returns |> dict.get(name) |> should.be_error()
+  // The blocker's own bound list, which a boundless `assume` line keys too —
+  // not the rejected line's, which this version could not read.
+  spec.params |> dict.get(name) |> should.equal(Ok([]))
+  list.length(rejected) |> should.equal(1)
+}
+
+pub fn a_rejected_module_line_blocks_its_module_test() {
+  // A module blocker removes the lines whose path *is* the module, and the
+  // module-level reader drops that module's effects and bounds channels —
+  // exactly as a written blanket does, per-function `assume` lines and field
+  // lines surviving above it.
+  let assert effects.SpecLoaded(spec:, ..) =
+    dep_spec_load(
+      "build/eff_dep_blocked_module",
+      "dep",
+      "assume dep : <bad>\n"
+        <> "effects dep.noop : [] where returns : [Stdout]\n"
+        <> "effects dep.other : [Stdout]\n"
+        <> "assume dep.keep : [Net]\n"
+        <> "assume dep.Config.run : [Disk]\n"
+        <> "effects other/mod.f : []\n",
+      ["dep"],
+    )
+  list.contains(
+    spec.assumes,
+    types.AssumeAnnotation(
+      module: "dep",
+      target: types.ModuleAssume,
+      params: [],
+      effects: Some(types.Wildcard),
+      returns: None,
+    ),
+  )
+  |> should.be_true()
+  list.contains(spec.assumes, assume("dep", "keep", ["Net"]))
+  |> should.be_true()
+  spec.type_fields
+  |> should.equal([
+    types.FieldAnnotation(
+      module: Some("dep"),
+      type_name: "Config",
+      field: "run",
+      effects: types.TLabels(set.from_list(["Disk"])),
+    ),
+  ])
+  spec.effects
+  |> dict.keys()
+  |> should.equal([QualifiedName("other/mod", "f")])
+  spec.returns |> dict.get(QualifiedName("dep", "noop")) |> should.be_ok()
+
+  let kb =
+    effects.new_knowledge_base()
+    |> effects.with_path_dep_spec(spec, types.PathDependency("dep"))
+  entry_of(kb, QualifiedName("dep", "keep"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Net"])), types.PathDependency("dep"))),
+  )
+  entry_of(kb, QualifiedName("dep", "other"))
+  |> should.equal(
+    Ok(#(
+      types.Wildcard,
+      types.ModuleAssumeOrigin(source: types.PathDependency("dep")),
+    )),
+  )
+}
+
+pub fn a_rejected_field_line_blocks_its_field_test() {
+  let assert effects.SpecLoaded(spec:, ..) =
+    dep_spec_load(
+      "build/eff_dep_blocked_field",
+      "dep",
+      "assume dep.Config.run(<bad>) : [Disk]\nassume dep.Config.run : []\n",
+      [],
+    )
+  spec.type_fields
+  |> should.equal([
+    types.FieldAnnotation(
+      module: Some("dep"),
+      type_name: "Config",
+      field: "run",
+      effects: types.TTop,
+    ),
+  ])
+}
+
+pub fn a_retired_spelling_blocks_the_path_it_names_test() {
+  let assert effects.SpecLoaded(spec:, ..) =
+    dep_spec_load(
+      "build/eff_dep_blocked_retired",
+      "dep",
+      "external effects dep.noop : [Disk]\neffects dep.noop : []\n",
+      [],
+    )
+  spec.assumes
+  |> should.equal([
+    types.AssumeAnnotation(
+      module: "dep",
+      target: types.FunctionAssume("noop"),
+      params: [],
+      effects: Some(types.Wildcard),
+      returns: None,
+    ),
+  ])
+  spec.effects |> dict.get(QualifiedName("dep", "noop")) |> should.be_error()
+}
+
+pub fn a_rejected_line_without_a_status_keyword_blocks_nothing_test() {
+  let assert effects.SpecLoaded(spec:, ..) =
+    dep_spec_load(
+      "build/eff_dep_no_keyword",
+      "dep",
+      "not a spec line\neffects dep.noop : []\n",
+      [],
+    )
+  spec.assumes |> should.equal([])
+  spec.effects
+  |> dict.get(QualifiedName("dep", "noop"))
+  |> should.equal(Ok(types.TLabels(set.new())))
+}
+
+pub fn a_rejected_check_line_blocks_nothing_test() {
+  // A `check` proves and never answers, in every version of the grammar, so
+  // no future form of it could have keyed the name.
+  let assert effects.SpecLoaded(spec:, ..) =
+    dep_spec_load(
+      "build/eff_dep_rejected_check",
+      "dep",
+      "check dep.noop(<bad>) : []\neffects dep.noop : []\n",
+      [],
+    )
+  spec.assumes |> should.equal([])
+  spec.effects
+  |> dict.get(QualifiedName("dep", "noop"))
+  |> should.equal(Ok(types.TLabels(set.new())))
+}
+
+pub fn a_blocked_name_outranks_its_catalog_entry_test() {
+  // The tier, not the deletion, carries the guarantee: dropping the rejected
+  // line alone would let the catalog's `[]` answer for a name the author's own
+  // line charged.
+  installed_dep_under_catalog(
+    "build/eff_blocked_over_catalog",
+    "dep",
+    "assume dep.noop(f: <bad>) : [Disk]\neffects dep.noop : []\n",
+    "effects dep.noop : []\n",
+    ["dep"],
+  )
+  |> entry_of(QualifiedName("dep", "noop"))
+  |> should.equal(Ok(#(types.Wildcard, types.DependencySpec("dep"))))
+}
+
+pub fn a_blocked_module_silences_its_catalog_entries_test() {
+  installed_dep_under_catalog(
+    "build/eff_blocked_module_over_catalog",
+    "dep",
+    "assume dep : <bad>\n",
+    "effects dep.noop : []\neffects dep.other : [Stdout]\n",
+    ["dep"],
+  )
+  |> fn(kb) {
+    entry_of(kb, QualifiedName("dep", "noop"))
+    |> should.equal(
+      Ok(#(
+        types.Wildcard,
+        types.ModuleAssumeOrigin(source: types.DependencySpec("dep")),
+      )),
+    )
+    entry_of(kb, QualifiedName("dep", "other"))
+    |> should.equal(
+      Ok(#(
+        types.Wildcard,
+        types.ModuleAssumeOrigin(source: types.DependencySpec("dep")),
+      )),
+    )
+  }
+}
+
+pub fn a_blocked_module_for_unshipped_code_leaves_the_catalog_test() {
+  // A blanket reaches exactly as far as a written one: over a module the
+  // package does not ship, the catalog's per-function entries still answer.
+  installed_dep_under_catalog(
+    "build/eff_blocked_module_unshipped",
+    "dep",
+    "assume other/m : <bad>\n",
+    "effects other/m.f : [Stdout]\n",
+    ["dep"],
+  )
+  |> entry_of(QualifiedName("other/m", "f"))
+  |> should.equal(
+    Ok(#(Specific(set.from_list(["Stdout"])), types.Catalog("dep"))),
+  )
+}
+
+// What the reader states about a spec file it could not use
+//
+// A file that is not there reads as absent; one that is there and whose bytes
+// graded cannot read names the cause, so a caller can tell the two apart.
+
+pub fn an_absent_spec_reads_as_absent_test() {
+  let root = write_fixture("build/eff_spec_absent", [#("gleam.toml", "")])
+  let load = effects.load_dep_spec(root, "dep")
+  cleanup(root)
+  load |> should.equal(effects.SpecAbsent)
+}
+
+pub fn a_spec_that_is_not_utf8_reads_as_unreadable_test() {
+  let root = write_fixture("build/eff_spec_not_utf8", [#("gleam.toml", "")])
+  let path = root <> "/dep.graded"
+  let assert Ok(Nil) = simplifile.write_bits(path, <<255, 254, 255>>)
+  let load = effects.load_dep_spec(root, "dep")
+  cleanup(root)
+  load |> should.equal(effects.SpecUnreadable(path, simplifile.NotUtf8))
+}
+
+pub fn a_directory_at_the_spec_path_reads_as_unreadable_test() {
+  let root = write_fixture("build/eff_spec_directory", [#("gleam.toml", "")])
+  let path = root <> "/dep.graded"
+  let assert Ok(Nil) = simplifile.create_directory_all(path)
+  let load = effects.load_dep_spec(root, "dep")
+  cleanup(root)
+  load |> should.equal(effects.SpecUnreadable(path, simplifile.Eisdir))
+}
+
+pub fn a_silent_load_renders_no_warning_test() {
+  effects.describe_dep_spec_load("dep", effects.SpecAbsent)
+  |> should.equal(None)
+  effects.describe_dep_spec_load(
+    "dep",
+    effects.SpecLoaded(effects.empty_dep_spec(), []),
+  )
+  |> should.equal(None)
+}
+
+pub fn a_rejected_line_renders_one_warning_test() {
+  rejection_warning(1)
+  |> should.equal(Some(
+    "graded: warning: dep's spec has 1 line graded could not read "
+    <> "(1: line 1); the rest of the file is used",
+  ))
+  rejection_warning(3)
+  |> should.equal(Some(
+    "graded: warning: dep's spec has 3 lines graded could not read "
+    <> "(1: line 1; 2: line 2; 3: line 3); the rest of the file is used",
+  ))
+  rejection_warning(4)
+  |> should.equal(Some(
+    "graded: warning: dep's spec has 4 lines graded could not read "
+    <> "(1: line 1; 2: line 2; 3: line 3; and 1 more); the rest of the file is used",
+  ))
+}
+
+pub fn an_unreadable_spec_renders_its_cause_test() {
+  effects.describe_dep_spec_load(
+    "dep",
+    effects.SpecUnreadable("build/somewhere/dep.graded", simplifile.Eacces),
+  )
+  |> should.equal(Some(
+    "graded: warning: dep's spec at build/somewhere/dep.graded could not be "
+    <> "read (Permission denied); it is read as shipping none",
+  ))
+}
+
+// The warning `count` rejected lines render, each naming its own line number.
+fn rejection_warning(count: Int) -> option.Option(String) {
+  let rejected =
+    list.repeat(Nil, count)
+    |> list.index_map(fn(_nil, index) {
+      annotation.InvalidLine(index + 1, "line " <> int.to_string(index + 1))
+    })
+  effects.describe_dep_spec_load(
+    "dep",
+    effects.SpecLoaded(effects.empty_dep_spec(), rejected),
   )
 }
 
