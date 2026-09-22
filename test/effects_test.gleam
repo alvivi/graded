@@ -1325,6 +1325,47 @@ pub fn a_rejected_line_blocks_its_own_name_test() {
   list.length(rejected) |> should.equal(1)
 }
 
+pub fn a_rejected_effects_line_yields_to_the_files_blanket_test() {
+  // The blanket answers for the name already: an `effects` line under one is
+  // dropped unread, so a blocker standing in for a rejected one would outrank
+  // the very line that governs it and charge the wildcard where the author's
+  // own blanket charges its labels.
+  let assert effects.SpecLoaded(spec:, ..) =
+    dep_spec_load(
+      "build/eff_dep_blocked_under_blanket",
+      "dep",
+      "assume dep : [Net]\neffects dep.f(<bad>) : []\n",
+      ["dep"],
+    )
+  spec.assumes |> should.equal([module_assume("dep", ["Net"])])
+  effects.new_knowledge_base()
+  |> effects.with_path_dep_spec(spec, types.PathDependency("dep"))
+  |> entry_of(QualifiedName("dep", "f"))
+  |> should.equal(
+    Ok(#(
+      Specific(set.from_list(["Net"])),
+      types.ModuleAssumeOrigin(source: types.PathDependency("dep")),
+    )),
+  )
+}
+
+pub fn a_rejected_assume_line_outranks_the_files_blanket_test() {
+  // The other half of the same rule: a written per-function `assume` outranks
+  // a blanket, so the blocker for a rejected one stands and the name is
+  // charged the wildcard rather than the blanket's labels.
+  let assert effects.SpecLoaded(spec:, ..) =
+    dep_spec_load(
+      "build/eff_dep_blocker_over_blanket",
+      "dep",
+      "assume dep : [Net]\nassume dep.f(<bad>) : [Disk]\n",
+      ["dep"],
+    )
+  effects.new_knowledge_base()
+  |> effects.with_path_dep_spec(spec, types.PathDependency("dep"))
+  |> entry_of(QualifiedName("dep", "f"))
+  |> should.equal(Ok(#(types.Wildcard, types.PathDependency("dep"))))
+}
+
 pub fn a_rejected_module_line_blocks_its_module_test() {
   // A module blocker removes the lines whose path *is* the module, and the
   // module-level reader drops that module's effects and bounds channels —

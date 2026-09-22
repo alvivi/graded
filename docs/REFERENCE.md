@@ -357,7 +357,10 @@ is charged as the blanket that shape states: every name in that module answers
 `[_]`, and the file's own `effects` lines for that module yield to it, exactly
 as they yield to a blanket graded can read. Per-function `assume` lines and
 field lines for the module keep answering above it, again exactly as they do
-under a readable blanket. A dependency spec file that is there but whose bytes graded
+under a readable blanket. A rejected `effects` line for a module the file
+itself declares a blanket over is charged nothing of its own: the blanket
+already answers for that name, and an `effects` line under one is dropped
+unread. A dependency spec file that is there but whose bytes graded
 cannot read is a warning naming the cause, and the package is read as shipping
 no spec: a path dependency in that state is inferred from its source, exactly as
 a spec-less one is.
