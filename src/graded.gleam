@@ -4809,10 +4809,10 @@ fn read_spec(spec_path: String) -> Result(GradedFile, GradedError) {
 fn read_spec_on_disk(
   spec_path: String,
 ) -> Result(#(String, GradedFile), GradedError) {
-  case simplifile.read(spec_path) {
-    Error(simplifile.Enoent) -> Ok(#("", GradedFile(lines: [])))
+  case effects.read_optional_file(spec_path) {
+    Ok(None) -> Ok(#("", GradedFile(lines: [])))
     Error(cause) -> Error(FileReadError(spec_path, cause))
-    Ok(content) ->
+    Ok(Some(content)) ->
       annotation.parse_file(content)
       |> result.map(fn(file) { #(content, file) })
       |> result.map_error(graded_parse_error(spec_path, _))
@@ -4833,7 +4833,9 @@ fn read_spec_on_disk(
 //    This is the fast, intended path: the dep author already ran `graded
 //    infer`, committed the spec file, and the consumer just reads it.
 //
-// 2. If the dep has no spec file, fall back to inferring from source via
+// 2. If the dep has no spec file — or one whose bytes graded cannot read,
+//    which is warned about and read as shipping none — fall back to
+//    inferring from source via
 //    `infer_path_dep` so path deps without graded set up still work. These
 //    results gap-fill against every written line, and are arbitrated with the
 //    catalog by `with_path_dep_inferred`: a function graded resolved from the
@@ -4871,26 +4873,15 @@ fn enrich_with_path_deps(
   // except an absolute `path`, which `resolve_path` leaves untouched.
   let resolved_dep_path = resolve_path(package_root, dep_path)
   let spec_path = config.spec_file_for(resolved_dep_path, name)
-  case simplifile.is_file(spec_path) {
-    Ok(True) -> {
-      let load = effects.load_dep_spec_at(resolved_dep_path, spec_path)
-      effects.warn_dep_spec_load(name, load)
-      let spec = case load {
-        effects.SpecLoaded(spec:, ..) -> spec
-        effects.SpecAbsent | effects.SpecUnreadable(..) ->
-          effects.empty_dep_spec()
-      }
-      #(
-        effects.with_path_dep_spec(
-          kb,
-          spec,
-          types.PathDependency(package: name),
-        ),
-        readings,
-        typed,
-      )
-    }
-    _ -> {
+  let load = effects.load_dep_spec_at(resolved_dep_path, spec_path)
+  effects.warn_dep_spec_load(name, load)
+  case load {
+    effects.SpecLoaded(spec:, ..) -> #(
+      effects.with_path_dep_spec(kb, spec, types.PathDependency(package: name)),
+      readings,
+      typed,
+    )
+    effects.SpecAbsent | effects.SpecUnreadable(..) -> {
       let index = path_dep_index(resolved_dep_path)
       let type_info =
         path_dep_type_info(resolved_dep_path, index, dep_files, package_targets)
