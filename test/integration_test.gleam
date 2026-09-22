@@ -9765,30 +9765,49 @@ pub fn a_rejected_line_keeps_an_installed_dependencys_other_lines_test() {
 }
 
 pub fn an_unreadable_path_dependency_spec_infers_from_source_test() {
-  // A spec file that is there but whose bytes graded cannot read takes the
-  // spec branch, reads as an empty spec, and leaves the dependency answering
-  // nothing — the source sitting right beside it is never walked.
-  unreadable_path_dep_spec_answer("pd_unreadable_spec", DepSpecNotUtf8)
-  |> should.equal(Error(graded.EffectNotFound("dep.noop")))
+  // A spec file that is there but whose bytes graded cannot read is read as
+  // shipping none, so the dependency is inferred from the source sitting
+  // right beside it — where the empty spec branch used to answer nothing at
+  // all.
+  let #(answer, warning) =
+    unreadable_path_dep_spec_answer("pd_unreadable_spec", DepSpecNotUtf8)
+  answer
+  |> should.equal(Ok(
+    "dep.noop is pure — no effects ([])\n  source: inference over path dependency dep's source",
+  ))
+  warning
+  |> should.equal(Some(
+    "graded: warning: dep's spec at build/pd_unreadable_spec_dep/dep.graded"
+    <> " could not be read (File not UTF-8 encoded); it is read as shipping none",
+  ))
 }
 
 pub fn a_directory_at_a_path_dependency_spec_path_infers_from_source_test() {
   // A directory where the spec file should be is the other unreadable shape,
   // and it infers from source exactly as the unreadable bytes do.
-  unreadable_path_dep_spec_answer("pd_directory_spec", DepSpecDirectory)
+  let #(answer, warning) =
+    unreadable_path_dep_spec_answer("pd_directory_spec", DepSpecDirectory)
+  answer
   |> should.equal(Ok(
     "dep.noop is pure — no effects ([])\n  source: inference over path dependency dep's source",
+  ))
+  warning
+  |> should.equal(Some(
+    "graded: warning: dep's spec at build/pd_directory_spec_dep/dep.graded"
+    <> " could not be read (Is a directory); it is read as shipping none",
   ))
 }
 
 // What `graded effect dep.noop` answers for a consumer of a path dependency
-// whose spec path holds `spec`. Read through the lookup rather than through a
+// whose spec path holds `spec`, and the warning that dependency's load
+// renders. The answer is read through the lookup rather than through a
 // `check`: the dependency's function is pure, and a pure charge meets every
-// budget, so the violation channel cannot carry its origin.
+// budget, so the violation channel cannot carry its origin. The warning is
+// read through the reader's own seam, since the suite has no stderr capture.
 fn unreadable_path_dep_spec_answer(
   name: String,
   spec: DepSpecPath,
-) -> Result(String, graded.GradedError) {
+) -> #(Result(String, graded.GradedError), Option(String)) {
   let app_root =
     write_path_dep_project(
       name,
@@ -9797,7 +9816,14 @@ fn unreadable_path_dep_spec_answer(
       "check app.caller : []\n",
       "import dep\n\npub fn caller() -> Nil {\n  dep.noop()\n}\n",
     )
-  graded.run_effect_formatted(app_root, "dep.noop", graded.Prose)
+  let dep_root = "build/" <> name <> "_dep"
+  #(
+    graded.run_effect_formatted(app_root, "dep.noop", graded.Prose),
+    effects.describe_dep_spec_load(
+      "dep",
+      effects.load_dep_spec_at(dep_root, dep_root <> "/dep.graded"),
+    ),
+  )
 }
 
 pub fn path_dep_module_level_external_preserves_effect_test() {
