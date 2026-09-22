@@ -2724,18 +2724,50 @@ fn dep_spec_from_file(file: types.GradedFile, dep_root: String) -> DepSpec {
 // appended, so the ordinary readers below see an `assume <path> : [_]` exactly
 // where the author's own line would have sat. A rejection no blocker can be
 // built from keys nothing and leaves the file as it is.
+//
+// A blocker the file's own module-level `assume` lines already answer for is
+// not written: a per-function blocker outranks a blanket, where the `effects`
+// line it stands in for is dropped under one, so writing it would charge the
+// wildcard for a name the blanket answers.
 fn block_rejected(
   file: types.GradedFile,
   rejected: List(annotation.ParseError),
 ) -> types.GradedFile {
+  let declared = annotation.module_assume_modules(file)
   rejected
   |> list.filter_map(fn(error) {
-    annotation.blocker_for_rejected(error) |> option.to_result(Nil)
+    use blocker <- result.try(
+      annotation.blocker_for_rejected(error) |> option.to_result(Nil),
+    )
+    case
+      annotation.rejected_yields_to_module_assume(error)
+      && blocker_module_declared(blocker, declared)
+    {
+      True -> Error(Nil)
+      False -> Ok(blocker)
+    }
   })
   // Two rejections naming one path build the same line — a blocker carries no
   // line number — so one of them is the whole answer for that path.
   |> list.unique()
   |> annotation.replace_lines_by_path(file, _)
+}
+
+// Whether `modules` holds the module of the function a blocker keys. A blocker
+// whose path is a module keys no function, so it names no module here and a
+// blanket over that very module never blocks it.
+fn blocker_module_declared(
+  blocker: types.GradedLine,
+  modules: Set(String),
+) -> Bool {
+  case annotation.line_path(blocker) {
+    Ok(path) ->
+      case annotation.split_qualified_name(path) {
+        Ok(#(module, _function)) -> set.contains(modules, module)
+        Error(Nil) -> False
+      }
+    Error(Nil) -> False
+  }
 }
 
 // Read a file that may not be there. Only `Enoent` is absence; every other

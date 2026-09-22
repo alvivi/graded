@@ -100,6 +100,20 @@ fn keyword_declares(keyword: LeadingKeyword) -> Bool {
   }
 }
 
+// Whether a module-level `assume` over this rejected line's module answers in
+// its place. An `effects` line under such a blanket is dropped unread, so the
+// blocker for one would answer where the line itself never could; every other
+// keyword opens a line that outranks a blanket, and keeps its blocker.
+pub fn rejected_yields_to_module_assume(error: ParseError) -> Bool {
+  case leading_keyword(string.trim(error.content)) {
+    Some(#(LeadsEffects, _)) -> True
+    Some(#(LeadsAssume, _))
+    | Some(#(LeadsCheck, _))
+    | Some(#(LeadsRetired(_), _))
+    | None -> False
+  }
+}
+
 fn cut_at(token: String, marker: String) -> String {
   case string.split_once(token, marker) {
     Ok(#(before, _after)) -> before
