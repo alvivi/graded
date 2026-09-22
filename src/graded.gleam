@@ -4872,15 +4872,24 @@ fn enrich_with_path_deps(
   let resolved_dep_path = resolve_path(package_root, dep_path)
   let spec_path = config.spec_file_for(resolved_dep_path, name)
   case simplifile.is_file(spec_path) {
-    Ok(True) -> #(
-      effects.with_path_dep_spec(
-        kb,
-        effects.load_dep_spec_at(resolved_dep_path, spec_path, name),
-        types.PathDependency(package: name),
-      ),
-      readings,
-      typed,
-    )
+    Ok(True) -> {
+      let load = effects.load_dep_spec_at(resolved_dep_path, spec_path)
+      effects.warn_dep_spec_load(name, load)
+      let spec = case load {
+        effects.SpecLoaded(spec:, ..) -> spec
+        effects.SpecAbsent | effects.SpecUnreadable(..) ->
+          effects.empty_dep_spec()
+      }
+      #(
+        effects.with_path_dep_spec(
+          kb,
+          spec,
+          types.PathDependency(package: name),
+        ),
+        readings,
+        typed,
+      )
+    }
     _ -> {
       let index = path_dep_index(resolved_dep_path)
       let type_info =

@@ -2436,8 +2436,14 @@ pub fn parse_path_dependencies(
 // `load_spec_effects_from_file` over the spec file at `spec_path`. Empty when
 // the file is missing or unparseable.
 pub fn load_spec_effects(spec_path: String) -> Dict(QualifiedName, EffectTerm) {
-  case read_spec_file(spec_path) {
-    Error(_) -> dict.new()
+  case
+    simplifile.read(spec_path)
+    |> result.replace_error(Nil)
+    |> result.try(fn(content) {
+      annotation.parse_file(content) |> result.replace_error(Nil)
+    })
+  {
+    Error(Nil) -> dict.new()
     Ok(file) -> load_spec_effects_from_file(file)
   }
 }
@@ -2552,52 +2558,121 @@ pub type DepSpec {
   )
 }
 
+// What reading one dependency's spec found. The reader states it rather than
+// printing it: the branch a path dependency takes is decided by whether graded
+// read a spec at all, and a caller that has to tell an absent spec from one it
+// could not read cannot be handed an empty `DepSpec` for both.
+pub type DepSpecLoad {
+  SpecAbsent
+  // The path rides here because the warning names it; a loaded spec's warning
+  // names lines instead.
+  SpecUnreadable(path: String, cause: simplifile.FileError)
+  SpecLoaded(spec: DepSpec, rejected: List(annotation.ParseError))
+}
+
+// The warning one dependency's spec load prints, `None` where the load has
+// nothing to say. The one renderer over a load, so the installed-package
+// caller and the path-dependency caller cannot fork.
+pub fn describe_dep_spec_load(
+  package_name: String,
+  load: DepSpecLoad,
+) -> Option(String) {
+  case load {
+    SpecAbsent | SpecLoaded(_, []) -> None
+    SpecUnreadable(path:, cause:) ->
+      Some(
+        "graded: warning: "
+        <> package_name
+        <> "'s spec at "
+        <> path
+        <> " could not be read ("
+        <> simplifile.describe_error(cause)
+        <> "); it is read as shipping none",
+      )
+    SpecLoaded(_, rejected) ->
+      Some(
+        "graded: warning: "
+        <> package_name
+        <> "'s spec has "
+        <> line_count(list.length(rejected))
+        <> " graded could not read ("
+        <> describe_rejected(rejected)
+        <> "); the rest of the file is used",
+      )
+  }
+}
+
+// Print one dependency spec load's warning, where it has one. Both callers
+// go through this, so a load is reported once per command whichever tier read
+// it.
+pub fn warn_dep_spec_load(package_name: String, load: DepSpecLoad) -> Nil {
+  case describe_dep_spec_load(package_name, load) {
+    None -> Nil
+    Some(warning) -> io.println_error(warning)
+  }
+}
+
+// How many rejected lines a warning names before it stops naming them. A
+// dependency shipping a whole retired grammar would otherwise print its every
+// line on every command.
+const rejected_sample_size = 3
+
+// The rejected lines a warning names: the first few as
+// `<line>: <content>` each, and a count of what the cap left out. Named by the
+// line alone — a dependency's spec is not the consumer's to rewrite, and the
+// rewrite hint a retired spelling carries is a second line, which would leave
+// this sentence's tail dangling after it.
+fn describe_rejected(rejected: List(annotation.ParseError)) -> String {
+  let named =
+    rejected
+    |> list.take(rejected_sample_size)
+    |> list.map(annotation.describe_parse_error_line)
+  case list.length(rejected) - rejected_sample_size {
+    remaining if remaining > 0 ->
+      list.append(named, ["and " <> int.to_string(remaining) <> " more"])
+    _ -> named
+  }
+  |> string.join("; ")
+}
+
+fn line_count(count: Int) -> String {
+  case count {
+    1 -> "1 line"
+    _ -> int.to_string(count) <> " lines"
+  }
+}
+
+// A dependency that states nothing: what a spec graded did not read answers.
+pub fn empty_dep_spec() -> DepSpec {
+  DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [], set.new())
+}
+
 // Load one package's spec. Reads the spec via the package's own `[tools.graded]`
-// config (defaulting to `<package_name>.graded`) at `dep_root`, once. Empty when
-// the spec is missing, and empty with a printed warning when it does not
-// parse — a consumer cannot fix a dependency's spec, so the package falls back
-// to the tiers below it instead of stopping the run. Shared by the `build/packages` dependency
+// config (defaulting to `<package_name>.graded`) at `dep_root`, once. Shared by
+// the `build/packages` dependency
 // scan and path-dependency enrichment so both dep kinds load identical metadata —
 // effects alone would drop the bounds a higher-order callee needs to discharge
 // its callback's effect, the `type` fields a capability record on the dep's own
 // types needs to resolve at a consumer's call site, or the `assume`
 // lines the dep author wrote for its FFI.
-pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpec {
-  load_dep_spec_at(
-    dep_root,
-    config.spec_file_for(dep_root, package_name),
-    package_name,
-  )
+pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpecLoad {
+  load_dep_spec_at(dep_root, config.spec_file_for(dep_root, package_name))
 }
 
 // The same load, over a spec path the caller already resolved. `dep_root` stays
 // beside it: a `DepSpec` also carries the dependency's own module list, which is
 // read off its source tree and which no spec path yields.
-pub fn load_dep_spec_at(
-  dep_root: String,
-  spec_path: String,
-  package_name: String,
-) -> DepSpec {
-  case read_spec_file(spec_path) {
-    Error(reason) -> {
-      case reason {
-        SpecMissing -> Nil
-        SpecMalformed(cause) ->
-          io.println_error(
-            "graded: warning: "
-            <> package_name
-            <> "'s spec did not parse (line "
-            // Named by the line alone. A dependency's spec is not the
-            // consumer's to rewrite, and the rewrite hint a retired spelling
-            // carries is a second line, which would leave this sentence's tail
-            // dangling after it.
-            <> annotation.describe_parse_error_line(cause)
-            <> "); its entries are ignored",
-          )
-      }
-      DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [], set.new())
-    }
-    Ok(file) -> {
+//
+// Read one statement at a time: a line the parser rejects costs that line, and
+// the name it names is charged the wildcard from this dependency's own tier
+// through the blocker that replaces it.
+pub fn load_dep_spec_at(dep_root: String, spec_path: String) -> DepSpecLoad {
+  case read_optional_file(spec_path) {
+    Error(cause) -> SpecUnreadable(path: spec_path, cause:)
+    Ok(None) -> SpecAbsent
+    Ok(Some(content)) -> {
+      let #(parsed, rejected) = annotation.parse_file_lenient(content)
+      let file = block_rejected(parsed, rejected)
       let declared_modules = annotation.module_assume_modules(file)
       // Loaded through the same two readers a package uses for its *own* spec,
       // so a dependency's `check` budgets and externally-declared functions are
@@ -2605,30 +2680,69 @@ pub fn load_dep_spec_at(
       // stay local to that check instead of becoming a global fact about the
       // dependency's function, and every term still travels with the bounds
       // from its own annotation.
-      DepSpec(
-        // The module-level declarations govern their own module's effects
-        // channel, so the spec's `effects` lines for it are dropped rather than
-        // left to outrank the declaration per-function-beats-module-level. Only
-        // that channel: `infer` keeps such a line when it carries a
-        // `where returns` clause, which is the clause's only home, and the
-        // clause is read from `returns` below, carrying its own scoping bounds.
-        effects: load_spec_effects_from_file(file)
-          |> drop_module_declared(declared_modules),
-        // A dependency's per-function external is never stale by this rule: its
-        // own body is the documented case for the line.
-        //
-        // Bounds travel with their term, so both channels drop the same names:
-        // a surviving term paired with bounds from another annotation is a
-        // pairing no annotation wrote.
-        params: load_spec_params_from_file(file)
-          |> drop_module_declared(declared_modules),
-        returns: load_spec_returns_from_file(file),
-        declared_returns: load_spec_assume_returns_from_file(file),
-        type_fields: annotation.extract_type_fields(file),
-        assumes: annotation.extract_assumes(file),
-        modules: package_modules(dep_root),
-      )
+      let spec =
+        DepSpec(
+          // The module-level declarations govern their own module's effects
+          // channel, so the spec's `effects` lines for it are dropped rather than
+          // left to outrank the declaration per-function-beats-module-level. Only
+          // that channel: `infer` keeps such a line when it carries a
+          // `where returns` clause, which is the clause's only home, and the
+          // clause is read from `returns` below, carrying its own scoping bounds.
+          effects: load_spec_effects_from_file(file)
+            |> drop_module_declared(declared_modules),
+          // A dependency's per-function external is never stale by this rule: its
+          // own body is the documented case for the line.
+          //
+          // Bounds travel with their term, so both channels drop the same names:
+          // a surviving term paired with bounds from another annotation is a
+          // pairing no annotation wrote.
+          params: load_spec_params_from_file(file)
+            |> drop_module_declared(declared_modules),
+          returns: load_spec_returns_from_file(file),
+          declared_returns: load_spec_assume_returns_from_file(file),
+          type_fields: annotation.extract_type_fields(file),
+          assumes: annotation.extract_assumes(file),
+          modules: package_modules(dep_root),
+        )
+      SpecLoaded(spec:, rejected:)
     }
+  }
+}
+
+// A parsed spec with each rejected line's blocker standing in for it: every
+// surviving line keyed by the blocker's own path is removed and the blocker
+// appended, so the ordinary readers below see an `assume <path> : [_]` exactly
+// where the author's own line would have sat. A rejection no blocker can be
+// built from keys nothing and leaves the file as it is.
+fn block_rejected(
+  file: types.GradedFile,
+  rejected: List(annotation.ParseError),
+) -> types.GradedFile {
+  use file, error <- list.fold(rejected, file)
+  case annotation.blocker_for_rejected(error) {
+    None -> file
+    Some(blocker) ->
+      types.GradedFile(
+        lines: list.append(
+          list.filter(file.lines, fn(line) {
+            annotation.line_path(line) != annotation.line_path(blocker)
+          }),
+          [blocker],
+        ),
+      )
+  }
+}
+
+// Read a file that may not be there. Only `Enoent` is absence; every other
+// failure is the caller's to report, so a spec graded could not read is never
+// mistaken for one the author never wrote.
+pub fn read_optional_file(
+  path: String,
+) -> Result(Option(String), simplifile.FileError) {
+  case simplifile.read(path) {
+    Ok(content) -> Ok(Some(content))
+    Error(simplifile.Enoent) -> Ok(None)
+    Error(cause) -> Error(cause)
   }
 }
 
@@ -2883,23 +2997,6 @@ fn fold_spec_effects(
   })
 }
 
-// Why a spec file yielded no lines: it wasn't there, or it did not parse. The
-// caller tells a consumer which one happened for a *dependency's* spec, whose
-// lines the consumer cannot fix.
-pub type SpecReadError {
-  SpecMissing
-  SpecMalformed(cause: annotation.ParseError)
-}
-
-fn read_spec_file(
-  spec_path: String,
-) -> Result(types.GradedFile, SpecReadError) {
-  use content <- result.try(
-    simplifile.read(spec_path) |> result.replace_error(SpecMissing),
-  )
-  annotation.parse_file(content) |> result.map_error(SpecMalformed)
-}
-
 // Build a clause map (qualified name → operator and the bounds scoping it) from
 // the `where returns` clauses on a parsed spec's `effects` lines, and those
 // only. A `check` line's clause keys nothing — it asserts what a function
@@ -2983,12 +3080,19 @@ type Dependencies {
 // with no spec file are silently skipped — same fail-soft semantics as the
 // catalog and the old per-module reader. Across packages the later one in the
 // directory fold wins, as effects lines do.
+//
+// Only the directories: `build/packages` also holds `gleam.lock` and
+// `packages.toml`, and a spec path under a name that is not a directory is not
+// a spec graded failed to read.
 fn load_dependencies(
   packages_directory: String,
   foreign: Dict(QualifiedName, types.ForeignFunction),
 ) -> Dependencies {
   let entries = case simplifile.read_directory(packages_directory) {
-    Ok(found) -> found
+    Ok(found) ->
+      list.filter(found, fn(entry) {
+        simplifile.is_directory(packages_directory <> "/" <> entry) == Ok(True)
+      })
     Error(_) -> []
   }
   list.fold(
@@ -2997,8 +3101,12 @@ fn load_dependencies(
     fn(acc, package_name) {
       let origin = DependencySpec(package: package_name)
       let dep_root = packages_directory <> "/" <> package_name
-      let dep =
-        sanitize_dep_spec(load_dep_spec(dep_root, package_name), foreign)
+      let load = load_dep_spec(dep_root, package_name)
+      warn_dep_spec_load(package_name, load)
+      let dep = case load {
+        SpecLoaded(spec:, ..) -> sanitize_dep_spec(spec, foreign)
+        SpecAbsent | SpecUnreadable(..) -> empty_dep_spec()
+      }
       let #(decided, module_assumes) = decided_entries(dep, origin)
       Dependencies(
         effects: dict.merge(acc.effects, decided),
