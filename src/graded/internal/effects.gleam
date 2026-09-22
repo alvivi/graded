@@ -2436,15 +2436,12 @@ pub fn parse_path_dependencies(
 // `load_spec_effects_from_file` over the spec file at `spec_path`. Empty when
 // the file is missing or unparseable.
 pub fn load_spec_effects(spec_path: String) -> Dict(QualifiedName, EffectTerm) {
-  case
-    simplifile.read(spec_path)
-    |> result.replace_error(Nil)
-    |> result.try(fn(content) {
-      annotation.parse_file(content) |> result.replace_error(Nil)
-    })
-  {
-    Error(Nil) -> dict.new()
-    Ok(file) -> load_spec_effects_from_file(file)
+  case read_optional_file(spec_path) {
+    Error(_) | Ok(None) -> dict.new()
+    Ok(Some(content)) ->
+      annotation.parse_file(content)
+      |> result.map(load_spec_effects_from_file)
+      |> result.unwrap(dict.new())
   }
 }
 
@@ -2602,9 +2599,8 @@ pub fn describe_dep_spec_load(
   }
 }
 
-// Print one dependency spec load's warning, where it has one. Both callers
-// go through this, so a load is reported once per command whichever tier read
-// it.
+// Print one dependency spec load's warning, where it has one. Both callers go
+// through this, so the two tiers word a load the same way.
 pub fn warn_dep_spec_load(package_name: String, load: DepSpecLoad) -> Nil {
   case describe_dep_spec_load(package_name, load) {
     None -> Nil
@@ -2623,14 +2619,12 @@ const rejected_sample_size = 3
 // rewrite hint a retired spelling carries is a second line, which would leave
 // this sentence's tail dangling after it.
 fn describe_rejected(rejected: List(annotation.ParseError)) -> String {
-  let named =
-    rejected
-    |> list.take(rejected_sample_size)
-    |> list.map(annotation.describe_parse_error_line)
-  case list.length(rejected) - rejected_sample_size {
-    remaining if remaining > 0 ->
+  let #(sample, past_cap) = list.split(rejected, rejected_sample_size)
+  let named = list.map(sample, annotation.describe_parse_error_line)
+  case list.length(past_cap) {
+    0 -> named
+    remaining ->
       list.append(named, ["and " <> int.to_string(remaining) <> " more"])
-    _ -> named
   }
   |> string.join("; ")
 }
@@ -2645,6 +2639,16 @@ fn line_count(count: Int) -> String {
 // A dependency that states nothing: what a spec graded did not read answers.
 pub fn empty_dep_spec() -> DepSpec {
   DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [], set.new())
+}
+
+// Run `read` over a load's spec, or hand back `absent` unchanged. A load with
+// no spec in it has nothing to fold, so the caller states what it keeps rather
+// than merging an empty one channel at a time.
+fn with_loaded_spec(load: DepSpecLoad, absent: a, read: fn(DepSpec) -> a) -> a {
+  case load {
+    SpecAbsent | SpecUnreadable(..) -> absent
+    SpecLoaded(spec:, ..) -> read(spec)
+  }
 }
 
 // Load one package's spec. Reads the spec via the package's own `[tools.graded]`
@@ -2673,40 +2677,45 @@ pub fn load_dep_spec_at(dep_root: String, spec_path: String) -> DepSpecLoad {
     Ok(Some(content)) -> {
       let #(parsed, rejected) = annotation.parse_file_lenient(content)
       let file = block_rejected(parsed, rejected)
-      let declared_modules = annotation.module_assume_modules(file)
-      // Loaded through the same two readers a package uses for its *own* spec,
-      // so a dependency's `check` budgets and externally-declared functions are
-      // scoped identically one package boundary away: a `check` line's bounds
-      // stay local to that check instead of becoming a global fact about the
-      // dependency's function, and every term still travels with the bounds
-      // from its own annotation.
-      let spec =
-        DepSpec(
-          // The module-level declarations govern their own module's effects
-          // channel, so the spec's `effects` lines for it are dropped rather than
-          // left to outrank the declaration per-function-beats-module-level. Only
-          // that channel: `infer` keeps such a line when it carries a
-          // `where returns` clause, which is the clause's only home, and the
-          // clause is read from `returns` below, carrying its own scoping bounds.
-          effects: load_spec_effects_from_file(file)
-            |> drop_module_declared(declared_modules),
-          // A dependency's per-function external is never stale by this rule: its
-          // own body is the documented case for the line.
-          //
-          // Bounds travel with their term, so both channels drop the same names:
-          // a surviving term paired with bounds from another annotation is a
-          // pairing no annotation wrote.
-          params: load_spec_params_from_file(file)
-            |> drop_module_declared(declared_modules),
-          returns: load_spec_returns_from_file(file),
-          declared_returns: load_spec_assume_returns_from_file(file),
-          type_fields: annotation.extract_type_fields(file),
-          assumes: annotation.extract_assumes(file),
-          modules: package_modules(dep_root),
-        )
-      SpecLoaded(spec:, rejected:)
+      SpecLoaded(spec: dep_spec_from_file(file, dep_root), rejected:)
     }
   }
+}
+
+// Read one dependency's parsed spec into the channels a consumer resolves
+// against.
+//
+// Loaded through the same two readers a package uses for its *own* spec, so a
+// dependency's `check` budgets and externally-declared functions are scoped
+// identically one package boundary away: a `check` line's bounds stay local to
+// that check instead of becoming a global fact about the dependency's
+// function, and every term still travels with the bounds from its own
+// annotation.
+fn dep_spec_from_file(file: types.GradedFile, dep_root: String) -> DepSpec {
+  let declared_modules = annotation.module_assume_modules(file)
+  DepSpec(
+    // The module-level declarations govern their own module's effects
+    // channel, so the spec's `effects` lines for it are dropped rather than
+    // left to outrank the declaration per-function-beats-module-level. Only
+    // that channel: `infer` keeps such a line when it carries a
+    // `where returns` clause, which is the clause's only home, and the
+    // clause is read from `returns` below, carrying its own scoping bounds.
+    effects: load_spec_effects_from_file(file)
+      |> drop_module_declared(declared_modules),
+    // A dependency's per-function external is never stale by this rule: its
+    // own body is the documented case for the line.
+    //
+    // Bounds travel with their term, so both channels drop the same names:
+    // a surviving term paired with bounds from another annotation is a
+    // pairing no annotation wrote.
+    params: load_spec_params_from_file(file)
+      |> drop_module_declared(declared_modules),
+    returns: load_spec_returns_from_file(file),
+    declared_returns: load_spec_assume_returns_from_file(file),
+    type_fields: annotation.extract_type_fields(file),
+    assumes: annotation.extract_assumes(file),
+    modules: package_modules(dep_root),
+  )
 }
 
 // A parsed spec with each rejected line's blocker standing in for it: every
@@ -2718,19 +2727,14 @@ fn block_rejected(
   file: types.GradedFile,
   rejected: List(annotation.ParseError),
 ) -> types.GradedFile {
-  use file, error <- list.fold(rejected, file)
-  case annotation.blocker_for_rejected(error) {
-    None -> file
-    Some(blocker) ->
-      types.GradedFile(
-        lines: list.append(
-          list.filter(file.lines, fn(line) {
-            annotation.line_path(line) != annotation.line_path(blocker)
-          }),
-          [blocker],
-        ),
-      )
-  }
+  rejected
+  |> list.filter_map(fn(error) {
+    annotation.blocker_for_rejected(error) |> option.to_result(Nil)
+  })
+  // Two rejections naming one path build the same line — a blocker carries no
+  // line number — so one of them is the whole answer for that path.
+  |> list.unique()
+  |> annotation.replace_lines_by_path(file, _)
 }
 
 // Read a file that may not be there. Only `Enoent` is absence; every other
@@ -3091,7 +3095,7 @@ fn load_dependencies(
   let entries = case simplifile.read_directory(packages_directory) {
     Ok(found) ->
       list.filter(found, fn(entry) {
-        simplifile.is_directory(packages_directory <> "/" <> entry) == Ok(True)
+        is_existing_directory(packages_directory <> "/" <> entry)
       })
     Error(_) -> []
   }
@@ -3103,10 +3107,8 @@ fn load_dependencies(
       let dep_root = packages_directory <> "/" <> package_name
       let load = load_dep_spec(dep_root, package_name)
       warn_dep_spec_load(package_name, load)
-      let dep = case load {
-        SpecLoaded(spec:, ..) -> sanitize_dep_spec(spec, foreign)
-        SpecAbsent | SpecUnreadable(..) -> empty_dep_spec()
-      }
+      use spec <- with_loaded_spec(load, acc)
+      let dep = sanitize_dep_spec(spec, foreign)
       let #(decided, module_assumes) = decided_entries(dep, origin)
       Dependencies(
         effects: dict.merge(acc.effects, decided),

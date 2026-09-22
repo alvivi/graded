@@ -9539,14 +9539,8 @@ fn write_dep_spec_path(path: String, spec: DepSpecPath) -> Nil {
       let assert Ok(Nil) = simplifile.write(path, contents)
       Nil
     }
-    DepSpecNotUtf8 -> {
-      let assert Ok(Nil) = simplifile.write_bits(path, <<255, 254, 255>>)
-      Nil
-    }
-    DepSpecDirectory -> {
-      let assert Ok(Nil) = simplifile.create_directory_all(path)
-      Nil
-    }
+    DepSpecNotUtf8 -> support.write_not_utf8(path)
+    DepSpecDirectory -> support.write_directory_at(path)
   }
 }
 
@@ -9557,7 +9551,7 @@ fn run_path_dep_project(
   spec: String,
   app_src: String,
 ) -> types.CheckResult {
-  let app_root =
+  let #(app_root, _dep_root) =
     write_path_dep_project(name, dep_files, dep_spec, spec, app_src)
   let assert Ok(results) = graded.check_project(app_root)
   let assert Ok(r) =
@@ -9573,9 +9567,8 @@ fn write_path_dep_project(
   dep_spec: DepSpecPath,
   spec: String,
   app_src: String,
-) -> String {
-  let app_root = "build/" <> name <> "_app"
-  let dep_root = "build/" <> name <> "_dep"
+) -> #(String, String) {
+  let #(app_root, dep_root) = path_dep_roots(name)
   let _ = simplifile.delete(app_root)
   let _ = simplifile.delete(dep_root)
 
@@ -9599,7 +9592,13 @@ fn write_path_dep_project(
     )
   let assert Ok(Nil) = simplifile.write(app_root <> "/app.graded", spec)
   let assert Ok(Nil) = simplifile.write(app_root <> "/app.gleam", app_src)
-  app_root
+  #(app_root, dep_root)
+}
+
+// Where a path-dependency fixture named `name` puts its consumer and its
+// dependency. The one spelling of the convention.
+fn path_dep_roots(name: String) -> #(String, String) {
+  #("build/" <> name <> "_app", "build/" <> name <> "_dep")
 }
 
 pub fn path_dep_module_level_external_marks_pure_test() {
@@ -9808,7 +9807,7 @@ fn unreadable_path_dep_spec_answer(
   name: String,
   spec: DepSpecPath,
 ) -> #(Result(String, graded.GradedError), Option(String)) {
-  let app_root =
+  let #(app_root, dep_root) =
     write_path_dep_project(
       name,
       [#("dep.gleam", "pub fn noop() -> Nil {\n  Nil\n}\n")],
@@ -9816,7 +9815,6 @@ fn unreadable_path_dep_spec_answer(
       "check app.caller : []\n",
       "import dep\n\npub fn caller() -> Nil {\n  dep.noop()\n}\n",
     )
-  let dep_root = "build/" <> name <> "_dep"
   #(
     graded.run_effect_formatted(app_root, "dep.noop", graded.Prose),
     effects.describe_dep_spec_load(
@@ -16425,8 +16423,7 @@ fn path_dep_effect_line(
   dep_source: String,
   function: String,
 ) -> String {
-  let app_root = "build/" <> name <> "_app"
-  let dep_root = "build/" <> name <> "_dep"
+  let #(app_root, dep_root) = path_dep_roots(name)
   support.write_fixture(dep_root, [
     #("gleam.toml", "name = \"dep\"\n"),
     #("src/dep.gleam", dep_source),

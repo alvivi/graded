@@ -1537,7 +1537,7 @@ pub fn an_absent_spec_reads_as_absent_test() {
 pub fn a_spec_that_is_not_utf8_reads_as_unreadable_test() {
   let root = write_fixture("build/eff_spec_not_utf8", [#("gleam.toml", "")])
   let path = root <> "/dep.graded"
-  let assert Ok(Nil) = simplifile.write_bits(path, <<255, 254, 255>>)
+  support.write_not_utf8(path)
   let load = effects.load_dep_spec(root, "dep")
   cleanup(root)
   load |> should.equal(effects.SpecUnreadable(path, simplifile.NotUtf8))
@@ -1546,7 +1546,7 @@ pub fn a_spec_that_is_not_utf8_reads_as_unreadable_test() {
 pub fn a_directory_at_the_spec_path_reads_as_unreadable_test() {
   let root = write_fixture("build/eff_spec_directory", [#("gleam.toml", "")])
   let path = root <> "/dep.graded"
-  let assert Ok(Nil) = simplifile.create_directory_all(path)
+  support.write_directory_at(path)
   let load = effects.load_dep_spec(root, "dep")
   cleanup(root)
   load |> should.equal(effects.SpecUnreadable(path, simplifile.Eisdir))
