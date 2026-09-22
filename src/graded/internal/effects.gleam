@@ -221,8 +221,8 @@ pub fn knowledge_base_from_catalog(
   // `module_effects`. Bounds go with the terms they were recorded beside.
   // `BundledCatalog` itself is untouched — the spec lint reads it to ask
   // whether any file keys a name.
-  let standing = outside_declared_modules(cat_effects, deps.declared_modules)
-  let cat_params = bounds_of_standing_names(cat_params, cat_effects, standing)
+  let #(standing, cat_params) =
+    outside_declared_modules(cat_effects, cat_params, deps.declared_modules)
   KnowledgeBase(
     // Dependency entries win on a clash: dict.merge keeps its second argument.
     all_effects: dict.merge(standing, deps.effects),
@@ -1728,12 +1728,12 @@ pub fn with_path_dep_inferred(
       answers_over_catalog(knowledge_base, name, term)
     })
   // The names this fold took from a catalog entry, whose bounds that entry
-  // wrote. Only they are replaced; everywhere else the inferred bounds merge as
-  // they always have, filling a gap rather than displacing a line.
+  // wrote. Dropping them leaves the walk's own bounds to merge in; everywhere
+  // else the existing entry stands, so the inferred bounds fill a gap rather
+  // than displace a line.
   let replaced =
-    dict.filter(winning, fn(name, _term) {
-      dict.has_key(knowledge_base.all_effects, name)
-    })
+    dict.keys(winning)
+    |> list.filter(fn(name) { dict.has_key(knowledge_base.all_effects, name) })
   KnowledgeBase(
     ..knowledge_base,
     all_effects: dict.merge(
@@ -1741,10 +1741,8 @@ pub fn with_path_dep_inferred(
       with_origin(winning, origin),
     ),
     param_bounds: dict.merge(
-      dict.merge(params, knowledge_base.param_bounds),
-      dict.map_values(replaced, fn(name, _term) {
-        dict.get(params, name) |> result.unwrap([])
-      }),
+      params,
+      dict.drop(knowledge_base.param_bounds, replaced),
     ),
   )
 }
@@ -1774,24 +1772,27 @@ fn answers_over_catalog(
 // source declares `@external`.
 //
 // Every fallback the walk takes mints `Unknown` rather than a silent `[]`, so a
-// term carrying none is one no fallback fired in. A polymorphic term yields
-// even when closed over its own bounds. An entry over an `@external` describes
-// a fallback body its FFI needn't match.
+// term carrying none is one no fallback fired in. `is_ground` is what a
+// polymorphic term yields on, closed over its own bounds or not. An entry over
+// an `@external` describes a fallback body its FFI needn't match.
+//
+// Ordered cheapest first: the `dependency_foreign` membership test decides the
+// `@external` case without normalizing the term.
 fn resolves_over_catalog(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
   term: EffectTerm,
 ) -> Bool {
-  let effect_set = effect_term.to_effect_set(term)
-  effect_term.is_ground(term)
-  && is_specific_set(effect_set)
-  && !types.contains_unknown(effect_set)
-  && !dict.has_key(knowledge_base.dependency_foreign, name)
+  !dict.has_key(knowledge_base.dependency_foreign, name)
+  && effect_term.is_ground(term)
+  && names_only_known_effects(effect_term.to_effect_set(term))
 }
 
-fn is_specific_set(effect_set: EffectSet) -> Bool {
+// Whether a set names effects and nothing else: no wildcard, no variable, no
+// `Unknown` among the labels.
+fn names_only_known_effects(effect_set: EffectSet) -> Bool {
   case effect_set {
-    types.Specific(_) -> True
+    types.Specific(labels) -> !set.contains(labels, types.unknown_label)
     types.Wildcard | types.Polymorphic(..) -> False
   }
 }
@@ -2774,17 +2775,18 @@ pub fn with_path_dep_spec(
   // the same reading `sanitize_dep_spec` gives a package that cannot say what
   // code is its own.
   let declared = declared_over_catalog(winning_modules, dep.modules)
-  let standing = outside_declared_modules(knowledge_base.all_effects, declared)
+  let #(standing, standing_bounds) =
+    outside_declared_modules(
+      knowledge_base.all_effects,
+      knowledge_base.param_bounds,
+      declared,
+    )
   let winning = over_catalog(standing, decided)
   KnowledgeBase(
     ..knowledge_base,
     all_effects: dict.merge(standing, winning),
     param_bounds: dict.merge(
-      bounds_of_standing_names(
-        knowledge_base.param_bounds,
-        knowledge_base.all_effects,
-        standing,
-      ),
+      standing_bounds,
       dict.map_values(winning, fn(name, _entry) {
         dict.get(dep.params, name) |> result.unwrap([])
       }),
@@ -2810,36 +2812,29 @@ fn declared_over_catalog(
   |> set.intersection(shipped)
 }
 
-// The catalog-written entries a dependency's module-level declarations leave
-// standing: every one outside the modules that package both ships and declares.
-// Entries from every other source stay whatever module they key — this clears
-// the catalog's word on a module, not anyone else's.
+// What a dependency's module-level declarations leave standing: the terms and
+// the bounds, each cleared of the catalog's entries for a module that package
+// both ships and declares. Entries from every other source stay whatever module
+// they key — this clears the catalog's word on a module, not anyone else's.
+//
+// Both maps go through one call because `param_bounds` carries no origin of its
+// own: the names it loses are exactly the names the term map lost, so a term
+// and its bounds are dropped together off one key list.
 fn outside_declared_modules(
   entries: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
-  declared: Set(String),
-) -> Dict(QualifiedName, #(EffectTerm, LookupOrigin)) {
-  use <- bool.guard(when: set.is_empty(declared), return: entries)
-  dict.filter(entries, fn(name, entry) {
-    let #(_term, origin) = entry
-    !is_catalog_origin(origin) || !set.contains(declared, name.module)
-  })
-}
-
-// The bounds left standing beside the terms. `param_bounds` carries no origin,
-// so the names it loses are exactly the names the term map lost: a term and its
-// bounds are dropped together, never one without the other.
-fn bounds_of_standing_names(
   param_bounds: Dict(QualifiedName, List(ParamBound)),
-  before: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
-  standing: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
-) -> Dict(QualifiedName, List(ParamBound)) {
-  use <- bool.guard(
-    when: dict.size(before) == dict.size(standing),
-    return: param_bounds,
-  )
-  dict.filter(param_bounds, fn(name, _bounds) {
-    !dict.has_key(before, name) || dict.has_key(standing, name)
-  })
+  declared: Set(String),
+) -> #(
+  Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+  Dict(QualifiedName, List(ParamBound)),
+) {
+  let cleared =
+    dict.filter(entries, fn(name, entry) {
+      let #(_term, origin) = entry
+      is_catalog_origin(origin) && set.contains(declared, name.module)
+    })
+    |> dict.keys
+  #(dict.drop(entries, cleared), dict.drop(param_bounds, cleared))
 }
 
 // The incoming entries a path dependency's spec may write over a knowledge-base

@@ -690,10 +690,7 @@ pub fn a_catalog_clash_resolves_the_same_either_way_round_test() {
 // Build a package's spec on disk and read it back through `load_dep_spec`, so a
 // test states what the dependency ships as spec text rather than as records.
 fn dep_spec(root: String, package: String, source: String) -> effects.DepSpec {
-  write_fixture(root, [#(package <> ".graded", source)])
-  let spec = effects.load_dep_spec(root, package)
-  cleanup(root)
-  spec
+  dep_spec_shipping(root, package, source, [])
 }
 
 // Install a package's spec under a `build/packages`-shaped tree and load the
