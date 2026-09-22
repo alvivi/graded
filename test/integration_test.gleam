@@ -12208,6 +12208,39 @@ pub fn get(key: String) -> String {
 }
 "
 
+// A vendored `envoy` whose `all` calls its catalogued sibling `get`. The
+// catalog keys both names `[Environment]`; only `get`'s body names an effect,
+// so what `all` costs says which of the two the walk read for the sibling.
+const sibling_calling_envoy = "import gleam/io
+
+pub fn all() -> String {
+  get(\"HOME\")
+}
+
+pub fn get(key: String) -> String {
+  io.println(key)
+  key
+}
+"
+
+// The same shape with the sibling `@external`: no body for the walk to read, so
+// the catalog keeps `get` and `all` is charged what that line states.
+const foreign_sibling_envoy = "@external(erlang, \"e\", \"g\")
+pub fn get(key: String) -> String
+
+pub fn all() -> String {
+  get(\"HOME\")
+}
+"
+
+const envoy_all_caller = "import envoy
+
+pub fn caller() -> Nil {
+  let _ = envoy.all()
+  Nil
+}
+"
+
 // The same, with a body the walk cannot resolve. The `@external` is in a
 // *separate* module of the dependency, so no module-level line of the fixture
 // covers it and the walk's answer for `get` really does carry [Unknown].
@@ -12385,6 +12418,55 @@ pub fn resolved_inference_answers_over_a_catalog_entry_test() {
   |> should.equal(
     Ok(#(
       types.Specific(set.from_list(["Stdout"])),
+      Some(types.PathDependencyInferred("envoy")),
+    )),
+  )
+}
+
+pub fn a_sibling_call_reads_the_walk_not_the_catalog_test() {
+  // `all` calls `get`, a name the catalog keys and this walk resolves. The walk
+  // is what outranks that line for `get`, so `all` is charged the body's
+  // [Stdout] rather than the [Environment] the line states, and the two names
+  // answer alike.
+  let run =
+    catalogued_path_dep_run(
+      "pd_sibling_walked",
+      "envoy",
+      envoy_and_stdlib_installed,
+      None,
+      [#("envoy.gleam", sibling_calling_envoy)],
+      "check proj.caller : []\n",
+      envoy_all_caller,
+      [],
+    )
+  charged_by(run, "envoy", "all")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Stdout"])),
+      Some(types.PathDependencyInferred("envoy")),
+    )),
+  )
+}
+
+pub fn a_foreign_siblings_catalog_line_still_answers_test() {
+  // The control beside it: `get` is an `@external`, which no reading may speak
+  // for, so its catalog line stands and `all` is charged that line's
+  // [Environment].
+  let run =
+    catalogued_path_dep_run(
+      "pd_sibling_foreign",
+      "envoy",
+      envoy_and_stdlib_installed,
+      None,
+      [#("envoy.gleam", foreign_sibling_envoy)],
+      "check proj.caller : []\n",
+      envoy_all_caller,
+      [],
+    )
+  charged_by(run, "envoy", "all")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Environment"])),
       Some(types.PathDependencyInferred("envoy")),
     )),
   )
