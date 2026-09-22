@@ -357,13 +357,19 @@ is charged as the blanket that shape states: every name in that module answers
 `[_]`, and the file's own `effects` lines for that module yield to it, exactly
 as they yield to a blanket graded can read. Per-function `assume` lines and
 field lines for the module keep answering above it, again exactly as they do
-under a readable blanket. A rejected `effects` line for a module the file
-itself declares a blanket over is charged nothing of its own: the blanket
-already answers for that name, and an `effects` line under one is dropped
-unread. A dependency spec file that is there but whose bytes graded
-cannot read is a warning naming the cause, and the package is read as shipping
-no spec: a path dependency in that state is inferred from its source, exactly as
-a spec-less one is.
+under a readable blanket.
+
+Three rejected lines are charged nothing at all, because nothing they could have
+said is an effect set for the path they name: a `check`, which proves and never
+answers; the retired `returns <path> : <operator>`, which stated the operator
+the path hands back and never what calling it costs; and an `effects` line for a
+module the same file declares a blanket over, which that blanket already answers
+for. The lines around each of them answer as they stand.
+
+A dependency spec file that is there but whose bytes graded cannot read is a
+warning naming the cause, and the package is read as shipping no spec: a path
+dependency in that state is inferred from its source, exactly as a spec-less one
+is.
 
 Four spellings read before 0.15 are rejected by name, each error carrying its
 rewrite:

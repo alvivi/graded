@@ -2416,7 +2416,6 @@ pub fn a_rejected_declaration_blocks_the_path_it_names_test() {
     #("effects m.f : <bad>", "m.f"),
     #("assume m.f(f: <bad>) : [Disk]", "m.f"),
     #("type m.f : <bad>", "m.f"),
-    #("returns m.f : <bad>", "m.f"),
     #("external effects m.f : <bad>", "m.f"),
     #("external returns m.f : <bad>", "m.f"),
   ]
@@ -2484,6 +2483,9 @@ pub fn a_rejection_that_could_key_nothing_blocks_nothing_test() {
     "not a spec line",
     // `check` proves and never answers, in every version of the grammar.
     "check m.f(<bad>) : []",
+    // The retired `returns` stated the operator a path hands back and never
+    // what calling it costs, which is all the blocker's grammar can state.
+    "returns m.f : <bad>",
     // A keyword with no path after it.
     "assume",
     // Paths the shape rule refuses: a three-segment path whose
