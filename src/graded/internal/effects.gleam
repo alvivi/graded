@@ -2853,7 +2853,7 @@ fn over_catalog(
 
 // Whether an entry was written by the bundled catalog, directly or as the source
 // of a module-level external.
-fn is_catalog_origin(origin: LookupOrigin) -> Bool {
+pub fn is_catalog_origin(origin: LookupOrigin) -> Bool {
   case origin {
     Catalog(..) -> True
     ModuleAssumeOrigin(source:) | FieldAssumeOrigin(source:) ->

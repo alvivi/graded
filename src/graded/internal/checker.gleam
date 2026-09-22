@@ -7757,19 +7757,36 @@ fn resolve_unknown_local(
 // budget and against nothing else. Read here so a sibling and a cross-module
 // caller, which resolves through the knowledge base, pay the same name the same
 // set.
+//
+// A catalog entry is the one declaration that does not answer here, for a
+// native body alone: the walk about to run is what outranks that entry for the
+// name it keys (`effects.with_path_dep_inferred`), so charging a sibling the
+// entry would leave a caller holding a set its callee no longer costs. An
+// `@external` keeps the entry — its body is exactly what no reading may speak
+// for — and so does every written declaration.
 fn declares_for_callers(
   local_definition: Definition(Function),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
 ) -> Bool {
-  foreign_definition(local_definition, context.package_targets)
-  || option.is_some(declaration_resolution(
-    knowledge_base,
-    QualifiedName(
-      module: context.module_path,
-      function: local_definition.definition.name,
-    ),
-  ))
+  use <- bool.guard(
+    when: foreign_definition(local_definition, context.package_targets),
+    return: True,
+  )
+  case
+    declaration_resolution(
+      knowledge_base,
+      QualifiedName(
+        module: context.module_path,
+        function: local_definition.definition.name,
+      ),
+    )
+  {
+    Some(Resolution(origin: Some(origin), ..)) ->
+      !effects.is_catalog_origin(origin)
+    Some(Resolution(origin: None, ..)) -> True
+    None -> False
+  }
 }
 
 // Resolve a same-module non-external call, memoized.
