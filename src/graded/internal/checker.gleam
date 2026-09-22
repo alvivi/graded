@@ -2999,6 +2999,13 @@ type Memo {
     // alone. Sharing the table across the two let whichever ran first answer
     // for both.
     targets: Option(Set(String)),
+    // Whether a same-module name's own reading outranks the catalog's entry for
+    // it, keyed by the name. Settled once because the answer is a property of
+    // the callee: asked per call site, it re-walked that callee's body under
+    // every ancestor set a caller reached it with. A name being weighed is
+    // seeded `True`, so a cycle through it charges the catalog rather than
+    // recurring.
+    catalog_verdicts: dict.Dict(String, Bool),
   )
 }
 
@@ -3009,6 +3016,7 @@ fn new_memo() -> Memo {
     lifts: dict.new(),
     closures: dict.new(),
     targets: option.None,
+    catalog_verdicts: dict.new(),
   )
 }
 
@@ -5379,38 +5387,46 @@ fn substitute_local_call_effects(
       // boundless per-function line does; keeping the declaration's set alone
       // charged its callback to nobody, and let a same-module caller pass an
       // effectful function to a module-assumed helper for free.
-      use <- bool.lazy_guard(
-        when: declares_for_callers(local_definition, context, knowledge_base),
-        return: fn() {
-          let #(memo, calls) =
-            list.map_fold(recursive, memo, fn(memo, one) {
-              let #(concrete, concrete_fallback, memo) =
-                substitute_at_call_site(
-                  one.call,
-                  one.resolution.term,
-                  one.resolution.fallback,
-                  call_args,
-                  function_map,
-                  context,
-                  knowledge_base,
-                  visited,
-                  caller_param_bounds,
-                  caller_param_names,
-                  caller_field_bindings,
-                  registry,
-                  reading,
-                  cache,
-                  lift_operator_arg,
-                  memo,
-                )
-              let resolution =
-                substituted(one.resolution, concrete)
-                |> with_substituted_fallback(concrete_fallback)
-              #(memo, CollectedCall(..one, resolution:))
-            })
-          #(calls, memo)
-        },
-      )
+      let #(declares, memo) =
+        declares_for_callers(
+          local_definition,
+          context,
+          function_map,
+          knowledge_base,
+          registry,
+          reading,
+          cache,
+          memo,
+        )
+      use <- bool.lazy_guard(when: declares, return: fn() {
+        let #(memo, calls) =
+          list.map_fold(recursive, memo, fn(memo, one) {
+            let #(concrete, concrete_fallback, memo) =
+              substitute_at_call_site(
+                one.call,
+                one.resolution.term,
+                one.resolution.fallback,
+                call_args,
+                function_map,
+                context,
+                knowledge_base,
+                visited,
+                caller_param_bounds,
+                caller_param_names,
+                caller_field_bindings,
+                registry,
+                reading,
+                cache,
+                lift_operator_arg,
+                memo,
+              )
+            let resolution =
+              substituted(one.resolution, concrete)
+              |> with_substituted_fallback(concrete_fallback)
+            #(memo, CollectedCall(..one, resolution:))
+          })
+        #(calls, memo)
+      })
       let any_polymorphic =
         list.any(recursive, fn(one) {
           has_vars(collected_term(one))
@@ -7385,25 +7401,33 @@ fn lift_local_function(
   // fallback's girard-typed callback carries no `fn(...)` annotation, and
   // without its binder the term's variable stays free and the application goes
   // stuck.
-  use <- bool.lazy_guard(
-    when: declares_for_callers(definition, context, knowledge_base),
-    return: fn() {
-      let qualified = QualifiedName(module: context.module_path, function: name)
-      let declared = effects.declared_effects(knowledge_base, qualified)
-      let params =
-        signatures.ordered_callback_params(
-          function,
-          cache.fn_alias_types,
-          value_channel_bound_names(knowledge_base, qualified),
-        )
-      #(
-        list.fold_right(params, declared, fn(acc, param) {
-          types.TAbs(param, acc)
-        }),
-        memo,
+  let #(declares, memo) =
+    declares_for_callers(
+      definition,
+      context,
+      function_map,
+      knowledge_base,
+      registry,
+      reading,
+      cache,
+      memo,
+    )
+  use <- bool.lazy_guard(when: declares, return: fn() {
+    let qualified = QualifiedName(module: context.module_path, function: name)
+    let declared = effects.declared_effects(knowledge_base, qualified)
+    let params =
+      signatures.ordered_callback_params(
+        function,
+        cache.fn_alias_types,
+        value_channel_bound_names(knowledge_base, qualified),
       )
-    },
-  )
+    #(
+      list.fold_right(params, declared, fn(acc, param) {
+        types.TAbs(param, acc)
+      }),
+      memo,
+    )
+  })
   let scc = dict.get(cache.scc_id, name) |> result.unwrap(-1)
   case set.contains(cache.collapsible, scc) {
     // A first-order function in a collapsible SCC lifts to a ground term (no
@@ -7711,7 +7735,18 @@ fn resolve_unknown_local(
           module: context.module_path,
           function: local_call.function,
         )
-      case declares_for_callers(local_definition, context, knowledge_base) {
+      let #(declares, memo) =
+        declares_for_callers(
+          local_definition,
+          context,
+          function_map,
+          knowledge_base,
+          registry,
+          reading,
+          cache,
+          memo,
+        )
+      case declares {
         // A call into a name a declaration answers for is charged what that
         // declaration states — qualifying the bare name with the current module.
         // A declaration wins; without one (or when the module is unknown) it
@@ -7732,7 +7767,7 @@ fn resolve_unknown_local(
         // it is reusable verbatim across every caller sharing the key.
         False ->
           memoized_local(
-            local_call,
+            local_call.function,
             local_definition,
             visited,
             function_map,
@@ -7758,34 +7793,107 @@ fn resolve_unknown_local(
 // caller, which resolves through the knowledge base, pay the same name the same
 // set.
 //
-// A catalog entry is the one declaration that does not answer here, for a
-// native body alone: the walk about to run is what outranks that entry for the
-// name it keys (`effects.with_path_dep_inferred`), so charging a sibling the
-// entry would leave a caller holding a set its callee no longer costs. An
-// `@external` keeps the entry — its body is exactly what no reading may speak
-// for — and so does every written declaration.
+// A catalog entry answers only where this walk would not outrank it. The name
+// it keys is arbitrated by `effects.with_path_dep_inferred` on the callee's own
+// unspecialized term — resolved answers from source, unresolved or polymorphic
+// yields to the entry — and the same question is asked here, so a same-module
+// caller and a cross-module one are charged one answer for one callee. An
+// `@external` keeps the entry whatever its body reads, and so does every
+// written declaration.
 fn declares_for_callers(
   local_definition: Definition(Function),
   context: ImportContext,
+  function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
-) -> Bool {
-  use <- bool.guard(
+  registry: SignatureRegistry,
+  reading: typeinfo.ModuleReading,
+  cache: LocalCache,
+  memo: Memo,
+) -> #(Bool, Memo) {
+  let name = local_definition.definition.name
+  let qualified = QualifiedName(module: context.module_path, function: name)
+  use <- bool.lazy_guard(
     when: foreign_definition(local_definition, context.package_targets),
-    return: True,
+    return: fn() { #(True, memo) },
   )
-  case
-    declaration_resolution(
-      knowledge_base,
-      QualifiedName(
-        module: context.module_path,
-        function: local_definition.definition.name,
-      ),
-    )
-  {
+  case declaration_resolution(knowledge_base, qualified) {
+    None -> #(False, memo)
+    Some(Resolution(origin: None, ..)) -> #(True, memo)
     Some(Resolution(origin: Some(origin), ..)) ->
-      !effects.is_catalog_origin(origin)
-    Some(Resolution(origin: None, ..)) -> True
-    None -> False
+      case effects.is_catalog_origin(origin) {
+        False -> #(True, memo)
+        True ->
+          catalog_answers_for(
+            name,
+            qualified,
+            local_definition,
+            function_map,
+            context,
+            knowledge_base,
+            registry,
+            reading,
+            cache,
+            memo,
+          )
+      }
+  }
+}
+
+// Whether the catalog's entry for a native same-module name answers, weighed
+// once and remembered.
+//
+// The term weighed is the name's own reading, walked from no ancestor exactly
+// as the module pass publishes it, so the verdict does not depend on which
+// caller asked first. A name already being weighed answers `True`: a cycle back
+// into it is charged the catalog, which terminates the walk and is the
+// conservative half of the rule.
+fn catalog_answers_for(
+  name: String,
+  qualified: QualifiedName,
+  local_definition: Definition(Function),
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  registry: SignatureRegistry,
+  reading: typeinfo.ModuleReading,
+  cache: LocalCache,
+  memo: Memo,
+) -> #(Bool, Memo) {
+  case dict.get(memo.catalog_verdicts, name) {
+    Ok(settled) -> #(settled, memo)
+    Error(Nil) -> {
+      let memo =
+        Memo(
+          ..memo,
+          catalog_verdicts: dict.insert(memo.catalog_verdicts, name, True),
+        )
+      let #(collected, memo) =
+        memoized_local(
+          name,
+          local_definition,
+          set.new(),
+          function_map,
+          context,
+          knowledge_base,
+          registry,
+          reading,
+          cache,
+          memo,
+        )
+      let answers =
+        !effects.resolves_over_catalog(
+          knowledge_base,
+          qualified,
+          union_of(collected),
+        )
+      #(
+        answers,
+        Memo(
+          ..memo,
+          catalog_verdicts: dict.insert(memo.catalog_verdicts, name, answers),
+        ),
+      )
+    }
   }
 }
 
@@ -7803,7 +7911,7 @@ fn declares_for_callers(
 // ancestors cycle-truncation cut): key by callee + same-SCC ancestors, which is
 // exact, and analyse the body live on a miss.
 fn memoized_local(
-  local_call: LocalCall,
+  function: String,
   local_definition: Definition(Function),
   visited: Set(String),
   function_map: dict.Dict(String, Definition(Function)),
@@ -7814,7 +7922,7 @@ fn memoized_local(
   cache: LocalCache,
   memo: Memo,
 ) -> #(List(CollectedCall), Memo) {
-  let scc = dict.get(cache.scc_id, local_call.function) |> result.unwrap(-1)
+  let scc = dict.get(cache.scc_id, function) |> result.unwrap(-1)
   case set.contains(cache.collapsible, scc) {
     True ->
       collapsed_scc(
@@ -7837,11 +7945,11 @@ fn memoized_local(
           [],
           cache,
         ))
-      let key = memo_key(local_call.function, visited, cache)
+      let key = memo_key(function, visited, cache)
       case dict.get(memo.locals, key) {
         Ok(cached) -> #(cached, memo)
         Error(Nil) -> {
-          let new_visited = set.insert(visited, local_call.function)
+          let new_visited = set.insert(visited, function)
           let #(result, memo) =
             collect_effects(
               without_returned_closure(local_definition.definition),

@@ -1778,7 +1778,7 @@ fn answers_over_catalog(
 //
 // Ordered cheapest first: the `dependency_foreign` membership test decides the
 // `@external` case without normalizing the term.
-fn resolves_over_catalog(
+pub fn resolves_over_catalog(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
   term: EffectTerm,
