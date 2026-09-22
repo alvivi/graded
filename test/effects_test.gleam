@@ -1498,17 +1498,27 @@ pub fn a_blocked_module_silences_its_catalog_entries_test() {
 
 pub fn a_blocked_module_for_unshipped_code_leaves_the_catalog_test() {
   // A blanket reaches exactly as far as a written one: over a module the
-  // package does not ship, the catalog's per-function entries still answer.
-  installed_dep_under_catalog(
-    "build/eff_blocked_module_unshipped",
-    "dep",
-    "assume other/m : <bad>\n",
-    "effects other/m.f : [Stdout]\n",
-    ["dep"],
-  )
-  |> entry_of(QualifiedName("other/m", "f"))
+  // package does not ship, the catalog's per-function entry still answers,
+  // while a name that entry does not key falls to the blanket as it would
+  // under a written line.
+  let kb =
+    installed_dep_under_catalog(
+      "build/eff_blocked_module_unshipped",
+      "dep",
+      "assume other/m : <bad>\n",
+      "effects other/m.f : [Stdout]\n",
+      ["dep"],
+    )
+  entry_of(kb, QualifiedName("other/m", "f"))
   |> should.equal(
     Ok(#(Specific(set.from_list(["Stdout"])), types.Catalog("dep"))),
+  )
+  entry_of(kb, QualifiedName("other/m", "uncatalogued"))
+  |> should.equal(
+    Ok(#(
+      types.Wildcard,
+      types.ModuleAssumeOrigin(source: types.DependencySpec("dep")),
+    )),
   )
 }
 
