@@ -9506,7 +9506,7 @@ fn run_path_dep_fixture(
   spec: String,
   app_src: String,
 ) -> types.CheckResult {
-  run_path_dep_project(name, dep_files, None, spec, app_src)
+  run_path_dep_project(name, dep_files, NoDepSpec, spec, app_src)
 }
 
 // The same fixture with the dependency shipping a committed `dep.graded` of its
@@ -9519,16 +9519,61 @@ fn run_path_dep_spec_fixture(
   spec: String,
   app_src: String,
 ) -> types.CheckResult {
-  run_path_dep_project(name, dep_files, Some(dep_spec), spec, app_src)
+  run_path_dep_project(name, dep_files, DepSpecText(dep_spec), spec, app_src)
+}
+
+// What sits at a path dependency's spec path: nothing, a file of text, bytes
+// that are not UTF-8, or a directory. The last two are the shapes the reader
+// tells apart from absence.
+type DepSpecPath {
+  NoDepSpec
+  DepSpecText(contents: String)
+  DepSpecNotUtf8
+  DepSpecDirectory
+}
+
+fn write_dep_spec_path(path: String, spec: DepSpecPath) -> Nil {
+  case spec {
+    NoDepSpec -> Nil
+    DepSpecText(contents:) -> {
+      let assert Ok(Nil) = simplifile.write(path, contents)
+      Nil
+    }
+    DepSpecNotUtf8 -> {
+      let assert Ok(Nil) = simplifile.write_bits(path, <<255, 254, 255>>)
+      Nil
+    }
+    DepSpecDirectory -> {
+      let assert Ok(Nil) = simplifile.create_directory_all(path)
+      Nil
+    }
+  }
 }
 
 fn run_path_dep_project(
   name: String,
   dep_files: List(#(String, String)),
-  dep_spec: Option(String),
+  dep_spec: DepSpecPath,
   spec: String,
   app_src: String,
 ) -> types.CheckResult {
+  let app_root =
+    write_path_dep_project(name, dep_files, dep_spec, spec, app_src)
+  let assert Ok(results) = graded.check_project(app_root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
+  r
+}
+
+// Materialise the fixture `run_path_dep_project` runs, and return the app's
+// root. Split out for a test that reads the same tree through another command.
+fn write_path_dep_project(
+  name: String,
+  dep_files: List(#(String, String)),
+  dep_spec: DepSpecPath,
+  spec: String,
+  app_src: String,
+) -> String {
   let app_root = "build/" <> name <> "_app"
   let dep_root = "build/" <> name <> "_dep"
   let _ = simplifile.delete(app_root)
@@ -9542,13 +9587,7 @@ fn run_path_dep_project(
     let assert Ok(Nil) = simplifile.write(dep_root <> "/src/" <> path, content)
     Nil
   })
-  case dep_spec {
-    Some(content) -> {
-      let assert Ok(Nil) = simplifile.write(dep_root <> "/dep.graded", content)
-      Nil
-    }
-    None -> Nil
-  }
+  write_dep_spec_path(dep_root <> "/dep.graded", dep_spec)
 
   let assert Ok(Nil) = simplifile.create_directory_all(app_root)
   let assert Ok(Nil) =
@@ -9560,11 +9599,7 @@ fn run_path_dep_project(
     )
   let assert Ok(Nil) = simplifile.write(app_root <> "/app.graded", spec)
   let assert Ok(Nil) = simplifile.write(app_root <> "/app.gleam", app_src)
-
-  let assert Ok(results) = graded.check_project(app_root)
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == app_root <> "/app.gleam" })
-  r
+  app_root
 }
 
 pub fn path_dep_module_level_external_marks_pure_test() {
@@ -9657,11 +9692,12 @@ pub fn a_committed_path_dep_external_still_declares_test() {
 }
 
 pub fn a_malformed_path_dep_spec_keeps_the_spec_branch_test() {
-  // A path dependency shipping a spec file that does not parse stays on the
-  // spec branch: its entries are ignored and the consumer falls back to the
-  // tiers below, rather than inferring over the dependency's source. Source
-  // inference would answer `[]` for the dep's pure function; the empty spec
-  // answers nothing, so the call charges [Unknown].
+  // A path dependency whose spec file has no line graded can read, and no
+  // rejection a blocker can be built from, stays on the spec branch: the
+  // author shipped a spec and graded read it, so the consumer falls back to
+  // the tiers below rather than inferring over the dependency's source.
+  // Source inference would answer `[]` for the dep's pure function; the spec
+  // keys nothing, so the call charges [Unknown].
   let r =
     run_path_dep_spec_fixture(
       "pd_malformed_spec",
@@ -9674,6 +9710,94 @@ pub fn a_malformed_path_dep_spec_keeps_the_spec_branch_test() {
   v.explanation.actual
   |> should.equal(types.Specific(set.from_list(["Unknown"])))
   v.explanation.origin |> should.equal(None)
+}
+
+pub fn a_rejected_line_drops_a_path_dependencys_other_lines_test() {
+  // One line the parser rejects costs the file every other line: the `assume`
+  // above it answers nothing and the call falls to [Unknown].
+  let r =
+    run_path_dep_spec_fixture(
+      "pd_rejected_line",
+      [
+        #(
+          "dep.gleam",
+          "@external(erlang, \"d\", \"t\")\npub fn touch() -> Nil\n",
+        ),
+      ],
+      "assume dep.touch : [Disk]\nnot a spec line\n",
+      "check app.caller : []\n",
+      "import dep\n\npub fn caller() -> Nil {\n  dep.touch()\n}\n",
+    )
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.origin |> should.equal(None)
+}
+
+pub fn a_rejected_line_drops_an_installed_dependencys_other_lines_test() {
+  // The same file one tier over: an *installed* package's spec is read line by
+  // line too, through `load_dependencies` rather than `with_path_dep_spec`.
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/installed_rejected_line",
+      package: "app",
+      spec: "check app.caller : []\n",
+      sources: [
+        #(
+          "app.gleam",
+          "import dep\n\npub fn caller() -> Nil {\n  dep.touch()\n}\n",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: "assume dep.touch : [Disk]\nnot a spec line\n",
+      dependency_sources: [
+        #("dep.gleam", support.foreign_fn("touch", "() -> Nil")),
+      ],
+    )
+  let assert Ok(results) = graded.check_project(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  let assert Ok(v) = list.find(r.violations, fn(v) { v.function == "caller" })
+  v.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  v.explanation.origin |> should.equal(None)
+  support.cleanup(root)
+}
+
+pub fn an_unreadable_path_dependency_spec_infers_from_source_test() {
+  // A spec file that is there but whose bytes graded cannot read takes the
+  // spec branch, reads as an empty spec, and leaves the dependency answering
+  // nothing — the source sitting right beside it is never walked.
+  unreadable_path_dep_spec_answer("pd_unreadable_spec", DepSpecNotUtf8)
+  |> should.equal(Error(graded.EffectNotFound("dep.noop")))
+}
+
+pub fn a_directory_at_a_path_dependency_spec_path_infers_from_source_test() {
+  // A directory where the spec file should be is the other unreadable shape,
+  // and it infers from source exactly as the unreadable bytes do.
+  unreadable_path_dep_spec_answer("pd_directory_spec", DepSpecDirectory)
+  |> should.equal(Ok(
+    "dep.noop is pure — no effects ([])\n  source: inference over path dependency dep's source",
+  ))
+}
+
+// What `graded effect dep.noop` answers for a consumer of a path dependency
+// whose spec path holds `spec`. Read through the lookup rather than through a
+// `check`: the dependency's function is pure, and a pure charge meets every
+// budget, so the violation channel cannot carry its origin.
+fn unreadable_path_dep_spec_answer(
+  name: String,
+  spec: DepSpecPath,
+) -> Result(String, graded.GradedError) {
+  let app_root =
+    write_path_dep_project(
+      name,
+      [#("dep.gleam", "pub fn noop() -> Nil {\n  Nil\n}\n")],
+      spec,
+      "check app.caller : []\n",
+      "import dep\n\npub fn caller() -> Nil {\n  dep.noop()\n}\n",
+    )
+  graded.run_effect_formatted(app_root, "dep.noop", graded.Prose)
 }
 
 pub fn path_dep_module_level_external_preserves_effect_test() {
@@ -11605,7 +11729,7 @@ pub fn use_it() -> Nil {
 ",
         ),
       ],
-      None,
+      NoDepSpec,
       "check app.wrapper : []
 assume ffi.make : []
 assume ffi.make where returns : [Disk]
