@@ -65,6 +65,22 @@ pub fn foreign_fn(name: String, signature: String) -> String {
   <> "\n"
 }
 
+// Write bytes that are not UTF-8 at `path`. One of the two shapes a spec file
+// can take that is there and cannot be read, and the one a test can write
+// portably beside a directory.
+pub fn write_not_utf8(path: String) -> Nil {
+  ensure_parent(path)
+  let assert Ok(Nil) = simplifile.write_bits(path, <<255, 254, 255>>)
+  Nil
+}
+
+// Create a directory at `path` — the other unreadable shape, for a test about
+// a spec path that holds one.
+pub fn write_directory_at(path: String) -> Nil {
+  let assert Ok(Nil) = simplifile.create_directory_all(path)
+  Nil
+}
+
 // Materialise a minimal package whose spec file's second line the parser
 // rejects, for the commands that must refuse it. Returns the directory.
 pub fn write_unparseable_spec_project(directory: String) -> String {

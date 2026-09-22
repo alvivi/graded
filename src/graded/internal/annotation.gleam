@@ -76,27 +76,27 @@ pub fn blocker_for_rejected(error: ParseError) -> Option(GradedLine) {
   }
 }
 
-// The path a rejected line names, read off its leading keyword: `effects` and
-// `assume` put the path second, as do the retired `type` and `returns`, and
-// the retired `external effects` and `external returns` put it third. The
-// token is cut at the `(` opening a bound list and at the `:` opening an
-// effects clause.
+// The path a rejected line names: the first token after the line's keyword,
+// cut at the `(` opening a bound list and at the `:` opening an effects
+// clause. `None` for a line no keyword opens, and for a `check`.
 fn rejected_path(error: ParseError) -> Option(String) {
-  let tokens =
-    error.content
-    |> string.replace("\t", " ")
-    |> string.trim()
-    |> string.split(" ")
-    |> list.filter(fn(token) { token != "" })
-  case tokens {
-    ["effects", path, ..]
-    | ["assume", path, ..]
-    | ["type", path, ..]
-    | ["returns", path, ..]
-    | ["external", "effects", path, ..]
-    | ["external", "returns", path, ..] ->
-      Some(path |> cut_at("(") |> cut_at(":"))
-    _ -> None
+  use #(keyword, rest) <- option.then(
+    leading_keyword(string.trim(error.content)),
+  )
+  use <- bool.guard(when: !keyword_declares(keyword), return: None)
+  case rest |> string.trim() |> cut_at(" ") |> cut_at("(") |> cut_at(":") {
+    "" -> None
+    path -> Some(path)
+  }
+}
+
+// Whether a keyword opens a line that answers for the path it names. A
+// `check` proves and never answers, in every version of the grammar, so no
+// future form of it could have keyed that name.
+fn keyword_declares(keyword: LeadingKeyword) -> Bool {
+  case keyword {
+    LeadsEffects | LeadsAssume | LeadsRetired(_) -> True
+    LeadsCheck -> False
   }
 }
 
@@ -300,6 +300,34 @@ fn is_clause_fragment(trimmed: String) -> Bool {
   parse_clause_entry(trimmed) |> result.is_ok()
 }
 
+// A keyword a statement may open with: one of this version's three statuses,
+// or one it has retired. The single table, read by the parser's dispatch and
+// by the blocker a rejected line is replaced by, so a keyword added or
+// retired later moves in one place.
+type LeadingKeyword {
+  LeadsEffects
+  LeadsCheck
+  LeadsAssume
+  LeadsRetired(keyword: RetiredKeyword)
+}
+
+// The keyword a trimmed statement opens with and the text after it, `None`
+// where it opens with none.
+fn leading_keyword(trimmed: String) -> Option(#(LeadingKeyword, String)) {
+  case trimmed {
+    "effects " <> rest -> Some(#(LeadsEffects, rest))
+    "check " <> rest -> Some(#(LeadsCheck, rest))
+    "assume " <> rest -> Some(#(LeadsAssume, rest))
+    "type " <> rest -> Some(#(LeadsRetired(RetiredType), rest))
+    "external effects " <> rest ->
+      Some(#(LeadsRetired(RetiredExternalEffects), rest))
+    "external returns " <> rest ->
+      Some(#(LeadsRetired(RetiredExternalReturns), rest))
+    "returns " <> rest -> Some(#(LeadsRetired(RetiredReturns), rest))
+    _ -> None
+  }
+}
+
 fn parse_structured_line(
   line: String,
   line_number: Int,
@@ -308,18 +336,17 @@ fn parse_structured_line(
   case trimmed {
     "" -> Ok(BlankLine)
     "//" <> _ -> Ok(CommentLine(line))
-    "effects " <> _ | "check " <> _ ->
-      parse_annotation_line(trimmed, line_number, line)
-    "assume " <> rest ->
-      parse_assume_line(rest)
-      |> result.replace_error(InvalidLine(line_number, line))
-    "type " <> _ -> Error(RetiredSpelling(line_number, line, RetiredType))
-    "external effects " <> _ ->
-      Error(RetiredSpelling(line_number, line, RetiredExternalEffects))
-    "external returns " <> _ ->
-      Error(RetiredSpelling(line_number, line, RetiredExternalReturns))
-    "returns " <> _ -> Error(RetiredSpelling(line_number, line, RetiredReturns))
-    _ -> Error(InvalidLine(line_number, line))
+    _ ->
+      case leading_keyword(trimmed) {
+        None -> Error(InvalidLine(line_number, line))
+        Some(#(LeadsEffects, _)) | Some(#(LeadsCheck, _)) ->
+          parse_annotation_line(trimmed, line_number, line)
+        Some(#(LeadsAssume, rest)) ->
+          parse_assume_line(rest)
+          |> result.replace_error(InvalidLine(line_number, line))
+        Some(#(LeadsRetired(keyword), _)) ->
+          Error(RetiredSpelling(line_number, line, keyword))
+      }
   }
 }
 
@@ -1058,6 +1085,24 @@ pub fn line_path(line: GradedLine) -> Result(String, Nil) {
     RetainedAssumeLine(path:, ..) -> Ok(retained_bare_path(path))
     CommentLine(_) | BlankLine -> Error(Nil)
   }
+}
+
+// A file with every line keyed by one of `replacements`' paths removed, and
+// those lines appended. A comment or a blank keys no path, so it is kept.
+pub fn replace_lines_by_path(
+  file: GradedFile,
+  replacements: List(GradedLine),
+) -> GradedFile {
+  let replaced = replacements |> list.filter_map(line_path) |> set.from_list()
+  GradedFile(lines: list.append(
+    list.filter(file.lines, fn(line) {
+      case line_path(line) {
+        Ok(path) -> !set.contains(replaced, path)
+        Error(Nil) -> True
+      }
+    }),
+    replacements,
+  ))
 }
 
 // A retained line's path with its unparsed bound-list text stripped — the
