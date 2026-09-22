@@ -2667,9 +2667,10 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpecLoad {
 // beside it: a `DepSpec` also carries the dependency's own module list, which is
 // read off its source tree and which no spec path yields.
 //
-// Read one statement at a time: a line the parser rejects costs that line, and
-// the name it names is charged the wildcard from this dependency's own tier
-// through the blocker that replaces it.
+// Read one statement at a time: a line the parser rejects costs the path it
+// names, which is charged the wildcard from this dependency's own tier through
+// the blocker that replaces it — a module-shaped path as the blanket that shape
+// states, over the file's own `effects` lines for that module.
 pub fn load_dep_spec_at(dep_root: String, spec_path: String) -> DepSpecLoad {
   case read_optional_file(spec_path) {
     Error(cause) -> SpecUnreadable(path: spec_path, cause:)

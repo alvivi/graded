@@ -346,11 +346,18 @@ an error naming the file and the line, from every command that reads a spec —
 `format --stdin` names the rejected line and prints no formatting.
 
 A *dependency's* spec is read line by line. A line the parser rejects is named
-once in a warning and every other line in the file is used; the name that line
+once in a warning and every other line in the file is used; the path that line
 names is charged the wildcard `[_]` from that dependency, at the tier a written
-`assume` of that path holds, which no budget but `[_]` admits — so a name graded
+`assume` of that path holds, which no budget but `[_]` admits — so a path graded
 could not read a line for is never charged less than the author's spec would
-have charged it. A dependency spec file that is there but whose bytes graded
+have charged it.
+
+The path is what the line's own shape names, so a rejected line naming a module
+is charged as the blanket that shape states: every name in that module answers
+`[_]`, and the file's own `effects` lines for that module yield to it, exactly
+as they yield to a blanket graded can read. Per-function `assume` lines and
+field lines for the module keep answering above it, again exactly as they do
+under a readable blanket. A dependency spec file that is there but whose bytes graded
 cannot read is a warning naming the cause, and the package is read as shipping
 no spec: a path dependency in that state is inferred from its source, exactly as
 a spec-less one is.
