@@ -12233,6 +12233,35 @@ pub fn all() -> String {
 }
 "
 
+// A native sibling the walk cannot resolve: `get` calls a bodyless `@external`
+// in an uncatalogued module, so its own reading carries [Unknown] and yields to
+// its catalog line. `all` prints beside the call, so what it costs says whether
+// that line reached it and whether its own effect survived.
+const unresolved_sibling_envoy = "import gleam/io
+import envoy_ffi
+
+pub fn all() -> Nil {
+  get()
+  io.println(\"x\")
+}
+
+pub fn get() -> Nil {
+  envoy_ffi.touch()
+}
+"
+
+// A polymorphic sibling: `set`'s reading is its callback's variable, which no
+// bound list closes, so it yields to its catalog line. Instantiating the
+// declined reading at the pure callback instead would leave `all` at [].
+const polymorphic_sibling_envoy = "pub fn all() -> Nil {
+  set(fn() { Nil })
+}
+
+pub fn set(f: fn() -> Nil) -> Nil {
+  f()
+}
+"
+
 const envoy_all_caller = "import envoy
 
 pub fn caller() -> Nil {
@@ -12459,6 +12488,58 @@ pub fn a_foreign_siblings_catalog_line_still_answers_test() {
       envoy_and_stdlib_installed,
       None,
       [#("envoy.gleam", foreign_sibling_envoy)],
+      "check proj.caller : []\n",
+      envoy_all_caller,
+      [],
+    )
+  charged_by(run, "envoy", "all")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Environment"])),
+      Some(types.PathDependencyInferred("envoy")),
+    )),
+  )
+}
+
+pub fn an_unresolved_siblings_catalog_line_still_answers_test() {
+  // `get`'s own reading carries [Unknown], so its catalog line answers the
+  // sibling call exactly as it answers a cross-module one. `all` is charged
+  // that line beside its own print — the caller-side effect a reading inlined
+  // through an unresolved helper would have lost.
+  let run =
+    catalogued_path_dep_run(
+      "pd_sibling_unresolved",
+      "envoy",
+      envoy_and_stdlib_installed,
+      None,
+      [
+        #("envoy.gleam", unresolved_sibling_envoy),
+        #("envoy_ffi.gleam", envoy_ffi),
+      ],
+      "check proj.caller : []\n",
+      envoy_all_caller,
+      [],
+    )
+  charged_by(run, "envoy", "all")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Environment", "Stdout"])),
+      Some(types.PathDependencyInferred("envoy")),
+    )),
+  )
+}
+
+pub fn a_polymorphic_siblings_catalog_line_still_answers_test() {
+  // The same boundary one shape over: `set`'s reading is a free variable, so it
+  // yields to its catalog line and the sibling call is charged that line. A
+  // cross-module caller of `set` pays the same.
+  let run =
+    catalogued_path_dep_run(
+      "pd_sibling_polymorphic",
+      "envoy",
+      envoy_and_stdlib_installed,
+      None,
+      [#("envoy.gleam", polymorphic_sibling_envoy)],
       "check proj.caller : []\n",
       envoy_all_caller,
       [],
