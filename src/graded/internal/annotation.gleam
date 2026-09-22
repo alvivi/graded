@@ -57,6 +57,56 @@ pub fn describe_parse_error_line(error: ParseError) -> String {
   int.to_string(error.line_number) <> ": " <> string.trim(error.content)
 }
 
+// The line that stands in for a rejected one: `assume <path> : [_]` for the
+// path the rejection names, or `None` where no line of this grammar could have
+// keyed anything for it. A reader that keeps the lines around a rejected one
+// charges the wildcard for the name it named, which no budget but `[_]`
+// admits, rather than letting that name fall to a tier below the author's own
+// spec.
+//
+// Two gates, and between them no third outcome: a first token that names no
+// declaration — `check`, which proves and never answers, or a word of prose —
+// keys nothing, and a path the shape rule refuses is one no line could have
+// declared for either.
+pub fn blocker_for_rejected(error: ParseError) -> Option(GradedLine) {
+  use path <- option.then(rejected_path(error))
+  case parse_structured_line("assume " <> path <> " : [_]", error.line_number) {
+    Ok(line) -> Some(line)
+    Error(_) -> None
+  }
+}
+
+// The path a rejected line names, read off its leading keyword: `effects` and
+// `assume` put the path second, as do the retired `type` and `returns`, and
+// the retired `external effects` and `external returns` put it third. The
+// token is cut at the `(` opening a bound list and at the `:` opening an
+// effects clause.
+fn rejected_path(error: ParseError) -> Option(String) {
+  let tokens =
+    error.content
+    |> string.replace("\t", " ")
+    |> string.trim()
+    |> string.split(" ")
+    |> list.filter(fn(token) { token != "" })
+  case tokens {
+    ["effects", path, ..]
+    | ["assume", path, ..]
+    | ["type", path, ..]
+    | ["returns", path, ..]
+    | ["external", "effects", path, ..]
+    | ["external", "returns", path, ..] ->
+      Some(path |> cut_at("(") |> cut_at(":"))
+    _ -> None
+  }
+}
+
+fn cut_at(token: String, marker: String) -> String {
+  case string.split_once(token, marker) {
+    Ok(#(before, _after)) -> before
+    Error(Nil) -> token
+  }
+}
+
 // The rewrite a retired spelling is named with, `None` for any other parse
 // error.
 fn parse_error_hint(error: ParseError) -> Option(String) {
@@ -81,12 +131,13 @@ fn retired_hint(keyword: RetiredKeyword) -> String {
 }
 
 // Parse an .graded file preserving full structure (comments, blanks, annotations).
+//
+// Whole-or-nothing, in two phases: every dangling statement is weighed before
+// any statement is parsed, so a join error anywhere in the file is the error
+// even when a line the grammar refuses sits above it.
 pub fn parse_file(input: String) -> Result(GradedFile, ParseError) {
   use logical <- result.try(
-    input
-    |> string.split("\n")
-    |> list.index_map(fn(line, index) { #(index + 1, line) })
-    |> join_continuations(),
+    input |> physical_lines() |> join_continuations() |> result.all(),
   )
   logical
   |> list.try_map(fn(pair) {
@@ -94,6 +145,34 @@ pub fn parse_file(input: String) -> Result(GradedFile, ParseError) {
     parse_structured_line(line, line_number)
   })
   |> result.map(fn(lines) { GradedFile(lines:) })
+}
+
+// The same read, one statement at a time: every statement this version can
+// read, and the rejections in file order. For a reader of a file it does not
+// own and cannot re-emit — one rejected line costs that line and nothing else.
+//
+// `GradedFile` carries no rejected-line element: a formatter or extractor that
+// had to answer one would be answering it for a reader that never writes the
+// file back.
+pub fn parse_file_lenient(input: String) -> #(GradedFile, List(ParseError)) {
+  let read =
+    input
+    |> physical_lines()
+    |> join_continuations()
+    |> list.map(fn(element) {
+      use #(line_number, line) <- result.try(element)
+      parse_structured_line(line, line_number)
+    })
+  // `result.partition` hands both halves back in reverse.
+  let #(lines, rejected) = result.partition(read)
+  #(GradedFile(lines: list.reverse(lines)), list.reverse(rejected))
+}
+
+// Number the physical lines of a file, from one.
+fn physical_lines(input: String) -> List(#(Int, String)) {
+  input
+  |> string.split("\n")
+  |> list.index_map(fn(line, index) { #(index + 1, line) })
 }
 
 // Parse an .graded file returning only the annotations (discards structure).
@@ -115,30 +194,28 @@ pub fn parse(input: String) -> Result(List(EffectAnnotation), ParseError) {
 
 // Fold physical lines into logical ones, joining each wrapped statement's
 // fragments with a single space. The first physical line's number is the
-// statement's, so an error points at where it starts.
+// statement's, so an error points at where it starts. A statement still
+// waiting for a clause is an `Error` element in file order, not an early
+// return, so a caller reading per statement keeps the ones around it.
 fn join_continuations(
   lines: List(#(Int, String)),
-) -> Result(List(#(Int, String)), ParseError) {
+) -> List(Result(#(Int, String), ParseError)) {
   join_loop(lines, None, [])
 }
 
 fn join_loop(
   rest: List(#(Int, String)),
   pending: Option(#(Int, String)),
-  acc: List(#(Int, String)),
-) -> Result(List(#(Int, String)), ParseError) {
+  acc: List(Result(#(Int, String), ParseError)),
+) -> List(Result(#(Int, String), ParseError)) {
   case rest, pending {
-    [], None -> Ok(list.reverse(acc))
-    [], Some(statement) ->
-      flush_pending(statement, acc) |> result.map(list.reverse)
+    [], None -> list.reverse(acc)
+    [], Some(statement) -> list.reverse(flush_pending(statement, acc))
     [line, ..tail], None -> join_fresh(line, tail, acc)
     [line, ..tail], Some(statement) ->
       case continues_statement(statement.1, line.1) {
         True -> join_loop(tail, Some(joined_statement(statement, line)), acc)
-        False -> {
-          use acc <- result.try(flush_pending(statement, acc))
-          join_fresh(line, tail, acc)
-        }
+        False -> join_fresh(line, tail, flush_pending(statement, acc))
       }
   }
 }
@@ -150,10 +227,10 @@ fn join_loop(
 fn join_fresh(
   line: #(Int, String),
   tail: List(#(Int, String)),
-  acc: List(#(Int, String)),
-) -> Result(List(#(Int, String)), ParseError) {
+  acc: List(Result(#(Int, String), ParseError)),
+) -> List(Result(#(Int, String), ParseError)) {
   case string.trim(line.1) {
-    "" | "//" <> _ -> join_loop(tail, None, [line, ..acc])
+    "" | "//" <> _ -> join_loop(tail, None, [Ok(line), ..acc])
     _ -> join_loop(tail, Some(line), acc)
   }
 }
@@ -174,13 +251,12 @@ fn joined_statement(
 // line it starts on.
 fn flush_pending(
   statement: #(Int, String),
-  acc: List(#(Int, String)),
-) -> Result(List(#(Int, String)), ParseError) {
-  use <- bool.guard(
-    when: awaits_clause(string.trim(statement.1)),
-    return: Error(InvalidLine(statement.0, statement.1)),
-  )
-  Ok([statement, ..acc])
+  acc: List(Result(#(Int, String), ParseError)),
+) -> List(Result(#(Int, String), ParseError)) {
+  case awaits_clause(string.trim(statement.1)) {
+    True -> [Error(InvalidLine(statement.0, statement.1)), ..acc]
+    False -> [Ok(statement), ..acc]
+  }
 }
 
 // Whether an indented physical line continues the statement accumulated above
