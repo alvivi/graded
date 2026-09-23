@@ -4,14 +4,17 @@
 // sources.
 
 import filepath
+import generators
 import glance
 import gleam/dict
 import gleam/list
 import gleam/set
+import gleam/string
 import gleeunit/should
 import graded/internal/config
 import graded/internal/extract
 import graded/internal/types
+import qcheck
 import simplifile
 
 // Fixture setup
@@ -134,6 +137,174 @@ pub fn defaults_for_helper_test() {
   cfg.package_name |> should.equal("hello")
   cfg.spec_file |> should.equal("hello.graded")
   cfg.cache_dir |> should.equal("build/.graded")
+}
+
+// Internal modules
+//
+// The compiler's own `internal_modules` key, read beside `[tools.graded]`: the
+// default rule when it is absent, replaced whole by a list, and disabled by an
+// empty one.
+
+pub fn internal_modules_default_when_absent_test() {
+  let path = write_toml("internal_absent", "name = \"myapp\"\n")
+  let assert Ok(cfg) = config.read(path)
+  cfg.internal_modules
+  |> should.equal(["myapp/internal", "myapp/internal/*"])
+  config.is_internal_module(cfg, "myapp/internal") |> should.be_true()
+  config.is_internal_module(cfg, "myapp/internal/deep/er") |> should.be_true()
+  config.is_internal_module(cfg, "myapp/internallll") |> should.be_false()
+  config.is_internal_module(cfg, "myapp/web/internal") |> should.be_false()
+  config.is_internal_module(cfg, "other/internal") |> should.be_false()
+  config.is_internal_module(cfg, "myapp") |> should.be_false()
+}
+
+pub fn internal_modules_explicit_list_replaces_the_default_test() {
+  let path =
+    write_toml(
+      "internal_explicit",
+      "name = \"myapp\"\ninternal_modules = [\"myapp/hidden/*\"]\n",
+    )
+  let assert Ok(cfg) = config.read(path)
+  cfg.internal_modules |> should.equal(["myapp/hidden/*"])
+  config.is_internal_module(cfg, "myapp/hidden/x") |> should.be_true()
+  config.is_internal_module(cfg, "myapp/internal/x") |> should.be_false()
+}
+
+pub fn internal_modules_empty_list_makes_nothing_internal_test() {
+  let path =
+    write_toml("internal_empty", "name = \"myapp\"\ninternal_modules = []\n")
+  let assert Ok(cfg) = config.read(path)
+  cfg.internal_modules |> should.equal([])
+  config.is_internal_module(cfg, "myapp/internal") |> should.be_false()
+}
+
+pub fn internal_modules_not_strings_reads_as_the_default_test() {
+  let path =
+    write_toml(
+      "internal_not_strings",
+      "name = \"myapp\"\ninternal_modules = [\"myapp/x\", 3]\n",
+    )
+  let assert Ok(cfg) = config.read(path)
+  cfg.internal_modules
+  |> should.equal(["myapp/internal", "myapp/internal/*"])
+  let path =
+    write_toml(
+      "internal_not_array",
+      "name = \"myapp\"\ninternal_modules = \"myapp/x\"\n",
+    )
+  let assert Ok(cfg) = config.read(path)
+  cfg.internal_modules
+  |> should.equal(["myapp/internal", "myapp/internal/*"])
+}
+
+pub fn internal_modules_defaults_for_substitutes_the_rule_test() {
+  config.defaults_for("fixtures").internal_modules
+  |> should.equal(["fixtures/internal", "fixtures/internal/*"])
+}
+
+// The glob dialect
+//
+// Each row of the compiler probe: a pattern list, and which modules of the
+// probe package it hides. Probed on gleam 1.18.0 with `gleam export
+// package-interface`.
+
+const probe_modules = [
+  "probe", "probe/internal", "probe/internal/deep", "probe/internal/deep/deeper",
+  "probe/internallll", "probe/priv_impl", "probe/hidden/x", "probe/secret/y",
+  "probe/helper", "probe/a/helper", "probe/a/b/helper", "other/internal",
+  "other/visible",
+]
+
+fn hidden_by(patterns: List(String)) -> List(String) {
+  let cfg =
+    config.GradedConfig(
+      ..config.defaults_for("probe"),
+      internal_modules: patterns,
+    )
+  list.filter(probe_modules, config.is_internal_module(cfg, _))
+}
+
+pub fn glob_probe_table_test() {
+  [
+    #(config.default_internal_modules("probe"), [
+      "probe/internal", "probe/internal/deep", "probe/internal/deep/deeper",
+    ]),
+    #([], []),
+    #(["probe/internal"], ["probe/internal"]),
+    #(["probe/internal*"], [
+      "probe/internal", "probe/internal/deep", "probe/internal/deep/deeper",
+      "probe/internallll",
+    ]),
+    #(["probe/i?ternal"], ["probe/internal"]),
+    #(["probe/{internal,hidden}/*"], [
+      "probe/internal/deep", "probe/internal/deep/deeper", "probe/hidden/x",
+    ]),
+    #(["probe/{internal,}"], ["probe/internal"]),
+    #(["probe/**/helper"], [
+      "probe/helper",
+      "probe/a/helper",
+      "probe/a/b/helper",
+    ]),
+    #(["probe/*/helper"], ["probe/a/helper", "probe/a/b/helper"]),
+    #(["probe/**"], list.drop(probe_modules, 1) |> list.take(10)),
+    #(["**/internal"], ["probe/internal", "other/internal"]),
+    #(["probe/a**"], ["probe/a/helper", "probe/a/b/helper"]),
+    #(["probe/priv\\_impl"], ["probe/priv_impl"]),
+    #(["probe/[!i]*"], [
+      "probe/priv_impl", "probe/hidden/x", "probe/secret/y", "probe/helper",
+      "probe/a/helper", "probe/a/b/helper",
+    ]),
+    #(["probe/[a-h]*"], [
+      "probe/hidden/x", "probe/helper", "probe/a/helper", "probe/a/b/helper",
+    ]),
+    #(["probe/{internal,{hidden,secret}}/*", "other/[^i]*"], [
+      "probe/internal/deep", "probe/internal/deep/deeper", "probe/hidden/x",
+      "probe/secret/y", "other/visible",
+    ]),
+  ]
+  |> list.each(fn(row) {
+    let #(patterns, hidden) = row
+    #(patterns, hidden_by(patterns)) |> should.equal(#(patterns, hidden))
+  })
+}
+
+pub fn glob_malformed_patterns_match_nothing_test() {
+  // The three shapes the compiler refuses `gleam.toml` over, plus a dangling
+  // escape and a reversed range, which it refuses too.
+  [
+    "probe/{internal", "probe/[abc", "probe/{internal,hidden}}", "probe/\\",
+    "probe/[z-a]*",
+  ]
+  |> list.each(fn(pattern) {
+    #(pattern, hidden_by([pattern])) |> should.equal(#(pattern, []))
+  })
+}
+
+pub fn glob_whole_pattern_double_star_matches_everything_test() {
+  hidden_by(["**"]) |> should.equal(probe_modules)
+}
+
+pub fn glob_class_edge_graphemes_test() {
+  // A `]` or `-` opening a class is itself, and a `-` closing one is too.
+  config.glob_matches("a[]]b", "a]b") |> should.be_true()
+  config.glob_matches("a[-x]b", "a-b") |> should.be_true()
+  config.glob_matches("a[x-]b", "a-b") |> should.be_true()
+  config.glob_matches("a[x-]b", "axb") |> should.be_true()
+  config.glob_matches("a[x-]b", "ayb") |> should.be_false()
+  // `?`, `*` and a negated class all cross `/`.
+  config.glob_matches("a?b", "a/b") |> should.be_true()
+  config.glob_matches("a[!x]b", "a/b") |> should.be_true()
+}
+
+pub fn glob_module_path_property_test() {
+  use path <- qcheck.given(generators.module_path_gen())
+  let assert Ok(last) = string.split(path, "/") |> list.last
+  {
+    config.glob_matches(path, path)
+    && config.glob_matches("*", path)
+    && config.glob_matches("**/" <> last, path)
+  }
+  |> should.be_true()
 }
 
 // Compilation targets

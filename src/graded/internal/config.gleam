@@ -12,12 +12,25 @@
 // defaults apply. The `name` field at the top of `gleam.toml` provides the
 // package name used to derive the default `spec_file`, and the top-level
 // `target` field says which target the package is compiled for.
+//
+// One more top-level key is read, and it is the compiler's own rather than
+// graded's: `internal_modules`, the glob patterns naming the modules a consumer
+// cannot import. Absent, the compiler's default applies — `<name>/internal` and
+// `<name>/internal/*` — and an empty list makes nothing internal. The patterns
+// are matched as the compiler matches them, in the `globset` crate's dialect
+// against the whole module name: `*` any run of characters and `?` any one,
+// both crossing `/`; `[…]` a class with ranges, negated by a leading `!` or `^`;
+// `{a,b}` alternation, nesting allowed, an empty alternate matching nothing;
+// `**` as a whole path component zero or more components; and `\x` the literal
+// `x`. That last is the Unix reading: on Windows the compiler reads a backslash
+// as a character, and a `gleam.toml` relying on that is out of scope here.
 
 import filepath
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
@@ -71,6 +84,11 @@ pub type GradedConfig {
     // whichever field named it, and `DefaultedTargets` looks the same whether
     // the file was silent or absent. `graded coverage` states it in a sentence.
     targets_source: TargetsSource,
+    // The compiler's `internal_modules` glob patterns, with the default rule
+    // (`<name>/internal`, `<name>/internal/*`) substituted when the key is
+    // absent, so no reader has to know there was a default. Read by
+    // `is_internal_module`.
+    internal_modules: List(String),
   )
 }
 
@@ -127,6 +145,7 @@ pub fn read(gleam_toml_path: String) -> Result(GradedConfig, ConfigError) {
     Error(_) -> None
   }
   let #(targets, targets_source) = read_targets(toml)
+  let internal_modules = read_internal_modules(toml, package_name)
   Ok(GradedConfig(
     package_name:,
     spec_file:,
@@ -134,7 +153,29 @@ pub fn read(gleam_toml_path: String) -> Result(GradedConfig, ConfigError) {
     version:,
     targets:,
     targets_source:,
+    internal_modules:,
   ))
+}
+
+// The top-level `internal_modules` list. A value that is there and is not an
+// array of strings reads as the default rule: the compiler refuses such a file,
+// so graded meets one only on a package that does not build.
+fn read_internal_modules(
+  toml: Dict(String, tom.Toml),
+  package_name: String,
+) -> List(String) {
+  let patterns = {
+    use entries <- result.try(
+      tom.get_array(toml, ["internal_modules"]) |> result.replace_error(Nil),
+    )
+    list.try_map(entries, fn(entry) {
+      case entry {
+        tom.String(pattern) -> Ok(pattern)
+        _ -> Error(Nil)
+      }
+    })
+  }
+  result.unwrap(patterns, default_internal_modules(package_name))
 }
 
 // Which targets a parsed `gleam.toml` names, and how.
@@ -230,6 +271,7 @@ pub fn defaults_for(package_name: String) -> GradedConfig {
     version: None,
     targets: types.all_targets(),
     targets_source: NoConfig,
+    internal_modules: default_internal_modules(package_name),
   )
 }
 
@@ -239,6 +281,326 @@ pub fn default_spec_file(package_name: String) -> String {
 
 pub fn default_cache_dir() -> String {
   "build/.graded"
+}
+
+// The compiler's rule when `internal_modules` is absent.
+pub fn default_internal_modules(package_name: String) -> List(String) {
+  [package_name <> "/internal", package_name <> "/internal/*"]
+}
+
+// Internal modules
+//
+// Which modules the compiler treats as internal: the ones a consumer cannot
+// import, which get no `effects` line in the spec file.
+
+// Whether `module_path` is one of the package's internal modules: matched by
+// any of its `internal_modules` patterns.
+pub fn is_internal_module(cfg: GradedConfig, module_path: String) -> Bool {
+  list.any(cfg.internal_modules, glob_matches(_, module_path))
+}
+
+// Whether the glob `pattern` matches the whole of `name`, in the dialect the
+// compiler reads `internal_modules` in (see the module doc). A pattern that
+// cannot be read — an unterminated class or alternation, a stray closing
+// brace, a dangling escape, a reversed range — matches nothing: the compiler
+// refuses a `gleam.toml` holding one.
+pub fn glob_matches(pattern: String, name: String) -> Bool {
+  case tokenise_glob(pattern) {
+    Ok([RecursivePrefix]) -> True
+    Ok(tokens) -> match_glob(tokens, string.to_graphemes(name))
+    Error(Nil) -> False
+  }
+}
+
+// One element of a tokenised glob.
+type GlobToken {
+  // One grapheme, itself.
+  Literal(String)
+  // `?`: any one grapheme.
+  AnyOne
+  // `*`, or a `**` that is not a whole path component: any run.
+  AnyRun
+  // `**/` opening the pattern (or an alternate): nothing, an optional `/`, or
+  // any run ending in `/`.
+  RecursivePrefix
+  // `/**` closing the pattern (or an alternate): `/` and then any run.
+  RecursiveSuffix
+  // `/**/`: `/`, or `/` and any run ending in `/`.
+  RecursiveZeroOrMore
+  // `[…]`: one grapheme in the ranges, or not in them when negated.
+  Class(negated: Bool, ranges: List(#(String, String)))
+  // `{…}`: any one of the alternates. An empty alternate matches nothing and is
+  // dropped, so one left with none matches the empty string.
+  Alternation(List(List(GlobToken)))
+}
+
+// A tokeniser frame: the alternates of the alternation being read (the pattern
+// itself at the bottom), finished ones and the current one, both reversed.
+type GlobFrame {
+  GlobFrame(finished: List(List(GlobToken)), current: List(GlobToken))
+}
+
+fn tokenise_glob(pattern: String) -> Result(List(GlobToken), Nil) {
+  tokenise_loop(string.to_graphemes(pattern), None, GlobFrame([], []), [])
+}
+
+// Read `input`, with `prev` the grapheme read last, `frame` the alternate being
+// built and `outer` the frames it sits inside, innermost first.
+fn tokenise_loop(
+  input: List(String),
+  prev: Option(String),
+  frame: GlobFrame,
+  outer: List(GlobFrame),
+) -> Result(List(GlobToken), Nil) {
+  let push = fn(token) { GlobFrame(..frame, current: [token, ..frame.current]) }
+  case input {
+    [] ->
+      case outer {
+        [] -> Ok(list.reverse(frame.current))
+        [_, ..] -> Error(Nil)
+      }
+    ["?", ..rest] -> tokenise_loop(rest, Some("?"), push(AnyOne), outer)
+    ["*", ..rest] -> {
+      use #(rest, prev, frame) <- result.try(tokenise_star(
+        rest,
+        prev,
+        frame,
+        outer,
+      ))
+      tokenise_loop(rest, prev, frame, outer)
+    }
+    ["[", ..rest] -> {
+      use #(class, rest) <- result.try(tokenise_class(rest))
+      tokenise_loop(rest, Some("]"), push(class), outer)
+    }
+    ["{", ..rest] ->
+      tokenise_loop(rest, Some("{"), GlobFrame([], []), [frame, ..outer])
+    ["}", ..rest] ->
+      case outer {
+        [] -> Error(Nil)
+        [parent, ..outer] -> {
+          let alternates =
+            [list.reverse(frame.current), ..frame.finished]
+            |> list.reverse
+            |> list.filter(fn(alternate) { !vacuous(alternate) })
+          let parent =
+            GlobFrame(..parent, current: [
+              Alternation(alternates),
+              ..parent.current
+            ])
+          tokenise_loop(rest, Some("}"), parent, outer)
+        }
+      }
+    [",", ..rest] ->
+      case outer {
+        [] -> tokenise_loop(rest, Some(","), push(Literal(",")), outer)
+        [_, ..] ->
+          tokenise_loop(
+            rest,
+            Some(","),
+            GlobFrame([list.reverse(frame.current), ..frame.finished], []),
+            outer,
+          )
+      }
+    ["\\"] -> Error(Nil)
+    ["\\", escaped, ..rest] ->
+      tokenise_loop(rest, Some(escaped), push(Literal(escaped)), outer)
+    [grapheme, ..rest] ->
+      tokenise_loop(rest, Some(grapheme), push(Literal(grapheme)), outer)
+  }
+}
+
+// An alternate that renders to nothing: every token in it an alternation left
+// with no alternates.
+fn vacuous(alternate: List(GlobToken)) -> Bool {
+  list.all(alternate, fn(token) { token == Alternation([]) })
+}
+
+// A `*` just read, `input` what follows it and `prev` the grapheme before it.
+// A second `*` makes a `**`, which is a whole-component token only where a path
+// component starts and ends around it; anywhere else it is any run.
+fn tokenise_star(
+  input: List(String),
+  prev: Option(String),
+  frame: GlobFrame,
+  outer: List(GlobFrame),
+) -> Result(#(List(String), Option(String), GlobFrame), Nil) {
+  let push = fn(frame: GlobFrame, token) {
+    GlobFrame(..frame, current: [token, ..frame.current])
+  }
+  case input {
+    ["*", ..rest] ->
+      case frame.current, rest {
+        [], [] -> Ok(#(rest, Some("*"), push(frame, RecursivePrefix)))
+        [], ["/", ..rest] ->
+          Ok(#(rest, Some("/"), push(frame, RecursivePrefix)))
+        [], _ -> Ok(#(rest, Some("*"), push(frame, AnyRun)))
+        [last, ..earlier], _ ->
+          tokenise_later_double_star(rest, prev, frame, last, earlier, outer)
+      }
+    _ -> Ok(#(input, Some("*"), push(frame, AnyRun)))
+  }
+}
+
+// A `**` past the start of its alternate, `input` what follows it and `last`
+// the token before it. A whole path component only between a `/` (or an
+// alternation's opening) and a `/`, the end, or an alternate's end — replacing
+// the `/` before it; any run otherwise.
+fn tokenise_later_double_star(
+  input: List(String),
+  prev: Option(String),
+  frame: GlobFrame,
+  last: GlobToken,
+  earlier: List(GlobToken),
+  outer: List(GlobFrame),
+) -> Result(#(List(String), Option(String), GlobFrame), Nil) {
+  let in_alternation = outer != []
+  let after_separator = prev == Some("/")
+  let opens_alternate =
+    in_alternation && { prev == Some(",") || prev == Some("{") }
+  let suffix = case input {
+    [] -> Ok(#(True, input, Some("*")))
+    [",", ..] | ["}", ..] if in_alternation -> Ok(#(True, input, Some("*")))
+    ["/", ..rest] -> Ok(#(False, rest, Some("/")))
+    _ -> Error(Nil)
+  }
+  case after_separator || opens_alternate, suffix {
+    True, Ok(#(is_suffix, rest, prev)) -> {
+      let token = case last, is_suffix {
+        RecursivePrefix, _ -> RecursivePrefix
+        RecursiveSuffix, _ -> RecursiveSuffix
+        _, True -> RecursiveSuffix
+        _, False -> RecursiveZeroOrMore
+      }
+      Ok(#(rest, prev, GlobFrame(..frame, current: [token, ..earlier])))
+    }
+    _, _ ->
+      Ok(#(
+        input,
+        Some("*"),
+        GlobFrame(..frame, current: [AnyRun, ..frame.current]),
+      ))
+  }
+}
+
+// A class just opened by `[`: its ranges up to the closing `]`, and what
+// follows. A `]` or `-` first is itself; a `-` between two graphemes makes a
+// range, and one last is itself. A backslash is an ordinary grapheme here.
+fn tokenise_class(
+  input: List(String),
+) -> Result(#(GlobToken, List(String)), Nil) {
+  let #(negated, input) = case input {
+    ["!", ..rest] | ["^", ..rest] -> #(True, rest)
+    _ -> #(False, input)
+  }
+  tokenise_class_loop(input, negated, True, False, [])
+}
+
+fn tokenise_class_loop(
+  input: List(String),
+  negated: Bool,
+  first: Bool,
+  in_range: Bool,
+  ranges: List(#(String, String)),
+) -> Result(#(GlobToken, List(String)), Nil) {
+  case input {
+    [] -> Error(Nil)
+    ["]", ..rest] if !first -> {
+      let ranges = case in_range {
+        True -> [#("-", "-"), ..ranges]
+        False -> ranges
+      }
+      Ok(#(Class(negated:, ranges: list.reverse(ranges)), rest))
+    }
+    ["-", ..rest] if !first && !in_range ->
+      tokenise_class_loop(rest, negated, False, True, ranges)
+    [grapheme, ..rest] -> {
+      use ranges <- result.try(add_to_class(ranges, grapheme, in_range))
+      tokenise_class_loop(rest, negated, False, False, ranges)
+    }
+  }
+}
+
+// `ranges` with `grapheme` added: closing the last range when a `-` left one
+// open, which fails when the range runs backwards, and as itself otherwise.
+fn add_to_class(
+  ranges: List(#(String, String)),
+  grapheme: String,
+  in_range: Bool,
+) -> Result(List(#(String, String)), Nil) {
+  case in_range, ranges {
+    True, [#(low, _), ..earlier] ->
+      case string.compare(low, grapheme) {
+        order.Gt -> Error(Nil)
+        _ -> Ok([#(low, grapheme), ..earlier])
+      }
+    _, _ -> Ok([#(grapheme, grapheme), ..ranges])
+  }
+}
+
+// Whether `tokens` match the whole of `input`, backtracking over every choice a
+// run or an alternation leaves open.
+fn match_glob(tokens: List(GlobToken), input: List(String)) -> Bool {
+  case tokens, input {
+    [], [] -> True
+    [], [_, ..] -> False
+    [Literal(expected), ..rest], [grapheme, ..input] if expected == grapheme ->
+      match_glob(rest, input)
+    [Literal(_), ..], _ -> False
+    [AnyOne, ..rest], [_, ..input] -> match_glob(rest, input)
+    [AnyOne, ..], [] -> False
+    [AnyRun, ..rest], _ -> match_any_run(rest, input)
+    [RecursivePrefix, ..rest], _ ->
+      match_glob(rest, input)
+      || case input {
+        ["/", ..after] -> match_glob(rest, after)
+        _ -> False
+      }
+      || match_run_then_separator(rest, input)
+    [RecursiveSuffix, ..rest], ["/", ..input] -> match_any_run(rest, input)
+    [RecursiveSuffix, ..], _ -> False
+    [RecursiveZeroOrMore, ..rest], ["/", ..input] ->
+      match_glob(rest, input) || match_run_then_separator(rest, input)
+    [RecursiveZeroOrMore, ..], _ -> False
+    [Class(negated:, ranges:), ..rest], [grapheme, ..input] ->
+      in_class(ranges, grapheme) != negated && match_glob(rest, input)
+    [Class(..), ..], [] -> False
+    [Alternation([]), ..rest], _ -> match_glob(rest, input)
+    [Alternation(alternates), ..rest], _ ->
+      list.any(alternates, fn(alternate) {
+        match_glob(list.append(alternate, rest), input)
+      })
+  }
+}
+
+// Any run of graphemes, then `rest`.
+fn match_any_run(rest: List(GlobToken), input: List(String)) -> Bool {
+  match_glob(rest, input)
+  || case input {
+    [] -> False
+    [_, ..input] -> match_any_run(rest, input)
+  }
+}
+
+// Any run of graphemes ending in `/`, then `rest`.
+fn match_run_then_separator(
+  rest: List(GlobToken),
+  input: List(String),
+) -> Bool {
+  case input {
+    [] -> False
+    ["/", ..after] ->
+      match_glob(rest, after) || match_run_then_separator(rest, after)
+    [_, ..after] -> match_run_then_separator(rest, after)
+  }
+}
+
+fn in_class(ranges: List(#(String, String)), grapheme: String) -> Bool {
+  list.any(ranges, fn(range) {
+    let #(low, high) = range
+    string.compare(low, grapheme) != order.Gt
+    && string.compare(grapheme, high) != order.Gt
+  })
 }
 
 // Path resolution

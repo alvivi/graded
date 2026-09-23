@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/set
+import gleam/string
 import graded/internal/effect_term
 import graded/internal/types.{
   type EffectSet, type EffectTerm, AnnotationLine, AssumeAnnotation, AssumeLine,
@@ -190,6 +191,17 @@ pub fn effect_set_gen() -> qcheck.Generator(EffectSet) {
     #(4, specific_gen),
     #(2, polymorphic_gen),
   ])
+}
+
+// A module path of one to four `/`-separated segments, drawn from a pool that
+// includes the segment names internal-module patterns care about.
+pub fn module_path_gen() -> qcheck.Generator(String) {
+  let segment_gen =
+    one_of(["app", "internal", "helper", "web", "a", "internallll", "priv_impl"])
+  use n <- qcheck.bind(qcheck.bounded_int(1, 4))
+  qcheck.map(qcheck.fixed_length_list_from(segment_gen, n), fn(segments) {
+    string.join(segments, "/")
+  })
 }
 
 pub fn function_name_gen() -> qcheck.Generator(String) {
