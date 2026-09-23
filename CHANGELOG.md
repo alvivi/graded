@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `graded infer` no longer writes `effects` lines for the modules a consumer
+  cannot import: the ones `internal_modules` in `gleam.toml` names, by default
+  `<name>/internal` and `<name>/internal/*`, matched with the compiler's own
+  glob rules. Existing lines for those modules drop on the next run, except a
+  line carrying a clause this version does not read, which is kept. `check`
+  and `assume` lines on internal modules, and the cache, are unchanged.
+- Once a dependency ships a spec inferred on this version, a consumer's `check`
+  over a call into that dependency's internal module can newly charge
+  `[Unknown]`, and `graded effect` report the name not found, where nothing
+  else — the consumer's own `assume`, a line the dependency wrote by hand, the
+  catalog, a module-level `assume` — knows the name. A dependency's running
+  `@external` fallback body that calls into its own internal module is charged
+  `[Unknown]` for that call in the same way.
+
 ## [0.21.0] - 2026-09-23
 
 ### Changed

@@ -469,6 +469,33 @@ of reach of this build, and a clause variable the bound list does not name is
 dropped. The call names whichever refusal applied; the rules are in
 [Assumptions](./REFERENCE.md#assumptions-foreign-code-and-field-effects).
 
+### A dependency's fallback body reaching its own internal module
+
+A dependency's running Gleam fallback body is charged by resolving its calls the
+way any call into that package resolves. A spec inferred on this version writes
+no `effects` line for the package's internal modules, so a fallback body calling
+into one of them finds no line for the callee and charges `[Unknown]` where a
+spec carrying the line charged what it stated:
+
+```gleam
+// dep/store.gleam
+import dep/internal/impl
+
+@external(javascript, "./store.mjs", "insert")
+pub fn insert() -> Nil {
+  impl.f()
+}
+```
+
+With `effects dep/internal/impl.f : [Disk]` in `dep`'s spec, a consumer on
+Erlang pays `[Disk]` for `store.insert()`; with the spec re-inferred, it pays
+`[Unknown]`. An ordinary public function over the same callee is unaffected —
+its own line already summarises what it calls.
+
+**How to avoid it** — declare what the name does in your own spec
+(`assume dep/internal/impl.f : [Disk]`), or have the dependency's author ship
+a per-function `assume` for the external, which answers alone.
+
 ### Which targets an `@external` is built for
 
 Whether a declaration is foreign code at all depends on the targets the function

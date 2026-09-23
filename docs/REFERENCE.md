@@ -67,8 +67,17 @@ effects myapp.view : []
 effects myapp/router.handle_request : [Http, Stdout]
 ```
 
-Written by `graded infer` for every public function. Regenerated on each run — do
-not edit by hand. (The cache holds the same lines for private functions too.)
+Written by `graded infer` for every public function of a module a consumer can
+import. Regenerated on each run — do not edit by hand. (The cache holds the same
+lines for private functions too.)
+
+A module `internal_modules` in `gleam.toml` names — by default `<name>/internal`
+and `<name>/internal/*`, the compiler's own rule and glob dialect — gets none,
+and an existing `effects` line for one drops on the next `infer` unless it
+carries a clause this version does not read, which keeps its line as it keeps
+every line. A `pub` function marked `@internal` in a public module is still
+written. Your `check` and `assume` lines on an internal module's functions are
+read, verified and kept as on any other module's.
 
 The path is a function: `module.function`. A field path or a bare module path
 parses here and keys nothing — only `assume` takes those — so the line resolves
@@ -1114,6 +1123,11 @@ module of this package that graded parsed, a **private** function and a name the
 module **does not define** both exit non-zero — whatever a hand-written line
 says about them, and whether or not the function is an `@external`. A spec line
 cannot export a name the package doesn't.
+
+A dependency's spec inferred on this version carries no ordinary `effects` line
+for its internal modules, so a name in one answers from whatever else knows it —
+a line the dependency wrote by hand, your own `assume`, the catalog, a
+module-level `assume` — and is reported not found only when nothing does.
 
 One carve-out: a module-level `assume <module> : [...]` answers for
 every name in that module that nothing else keys, so under such a module a name
