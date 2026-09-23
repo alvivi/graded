@@ -14810,6 +14810,157 @@ fn hidden() -> Nil
   |> should.equal([])
 }
 
+// A dependency's internal module
+//
+// A spec inferred on this version carries no ordinary `effects` line for the
+// dependency's internal modules. The consumer's reader is not taught the rule:
+// each pair below reads a spec with the line and one without it, which is what
+// a re-inferred spec looks like, and records what each answers.
+
+// The fallback walk charges an `@external`'s running Gleam body through the
+// knowledge base, so a body reaching the dependency's own internal module
+// answers from the dependency's line for it when there is one, and from the
+// tiers below it when there is not.
+pub fn a_dependency_fallback_into_its_internal_module_with_the_line_test() {
+  let assert [violation] =
+    dependency_fallback_internal_violations(
+      "dep_fallback_internal_line",
+      "assume dep/store : []\neffects dep/internal/impl.f : [Disk]\n",
+    )
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Disk"])))
+}
+
+pub fn a_dependency_fallback_into_its_internal_module_without_the_line_test() {
+  let assert [violation] =
+    dependency_fallback_internal_violations(
+      "dep_fallback_internal_no_line",
+      "assume dep/store : []\n",
+    )
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Unknown"])))
+}
+
+fn dependency_fallback_internal_violations(
+  name: String,
+  dependency_spec: String,
+) -> List(types.Violation) {
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/" <> name,
+      package: "proj",
+      spec: "check proj.caller : []\n",
+      sources: [
+        #(
+          "proj.gleam",
+          "import dep/store
+
+pub fn caller() -> Nil {
+  store.insert()
+}
+",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: dependency_spec,
+      dependency_sources: [
+        #(
+          "dep/store.gleam",
+          "import dep/internal/impl
+
+@external(javascript, \"./store.mjs\", \"insert\")
+pub fn insert() -> Nil {
+  impl.f()
+}
+",
+        ),
+        #("dep/internal/impl.gleam", "pub fn f() -> Nil {\n  Nil\n}\n"),
+      ],
+    )
+  let assert Ok(results) = graded.check_project(root)
+  support.cleanup(root)
+  list.flat_map(results, fn(result) { result.violations })
+}
+
+// An ordinary public function over an internal one, no `@external` anywhere:
+// the public summary answers the same whichever spec the dependency ships, and
+// the internal name answers from whatever tier still knows it.
+fn dependency_internal_answers(
+  name: String,
+  spec: String,
+  dependency_spec: String,
+) -> #(Result(String, graded.GradedError), Result(String, graded.GradedError)) {
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/" <> name,
+      package: "proj",
+      spec: spec,
+      sources: [
+        #(
+          "proj.gleam",
+          "import dep\n\npub fn caller() -> Nil {\n  dep.run()\n}\n",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: dependency_spec,
+      dependency_sources: [
+        #(
+          "dep.gleam",
+          "import dep/internal/impl\n\npub fn run() -> Nil {\n  impl.f()\n}\n",
+        ),
+        #("dep/internal/impl.gleam", "pub fn f() -> Nil {\n  Nil\n}\n"),
+      ],
+    )
+  let internal = graded.run_effect(root, "dep/internal/impl.f")
+  let public = graded.run_effect(root, "dep.run")
+  support.cleanup(root)
+  #(internal, public)
+}
+
+// What `effect dep.run` answers in every setting below.
+fn dependency_public_answer() -> Result(String, graded.GradedError) {
+  Ok("effects dep.run : [Disk]\n// resolved from dep's shipped spec")
+}
+
+pub fn a_dependency_internal_line_answers_while_it_is_shipped_test() {
+  let #(internal, public) =
+    dependency_internal_answers(
+      "dep_internal_shipped",
+      "",
+      "effects dep.run : [Disk]\neffects dep/internal/impl.f : [Disk]\n",
+    )
+  internal
+  |> should.equal(Ok(
+    "effects dep/internal/impl.f : [Disk]\n// resolved from dep's shipped spec",
+  ))
+  public |> should.equal(dependency_public_answer())
+}
+
+pub fn a_dependency_internal_name_without_its_line_is_not_found_test() {
+  let #(internal, public) =
+    dependency_internal_answers(
+      "dep_internal_unshipped",
+      "",
+      "effects dep.run : [Disk]\n",
+    )
+  internal |> should.equal(Error(graded.EffectNotFound("dep/internal/impl.f")))
+  public |> should.equal(dependency_public_answer())
+}
+
+pub fn a_consumer_assume_answers_for_a_dependency_internal_name_test() {
+  let #(internal, public) =
+    dependency_internal_answers(
+      "dep_internal_consumer_assume",
+      "assume dep/internal/impl.f : [Disk]\n",
+      "effects dep.run : [Disk]\n",
+    )
+  internal
+  |> should.equal(Ok(
+    "effects dep/internal/impl.f : [Disk]\n// resolved from your spec's `assume` line",
+  ))
+  public |> should.equal(dependency_public_answer())
+}
+
 // A fallback body calling a function-typed field on an annotated parameter,
 // against an `assume` line for that field. `field_line` is the line, written
 // into whichever spec the caller of this passes it in — the consumer's or the

@@ -531,3 +531,157 @@ pub fn infer_writes_a_clause_with_a_bound_for_every_variable_it_mentions_test() 
   simplifile.read(root <> "/proj.graded") |> should.equal(Ok(written))
   support.cleanup(root)
 }
+
+// Internal modules
+//
+// A module the compiler treats as internal — named by `internal_modules` in
+// `gleam.toml`, by default `<name>/internal` and `<name>/internal/*` — is one a
+// consumer cannot import, so `infer` writes no `effects` line for it. Inside
+// the package nothing else moves: the cache, `check`, `effect` and `why` all
+// read this run's inference, and hand-written lines are not read by the rule.
+
+// A package `app` whose public `run` reaches a printing helper in an internal
+// module. `toml` is appended to the `gleam.toml` beside the name, `spec` is the
+// whole spec file, and `extra` adds modules to the tree.
+fn write_internal_project(
+  root: String,
+  toml: String,
+  spec: String,
+  extra: List(#(String, String)),
+) -> Nil {
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"app\"\n" <> toml),
+    #("app.graded", "assume ffi/console.log : [Stdout]\n" <> spec),
+    #(
+      "app.gleam",
+      "import app/internal/helper\n\npub fn run() -> Nil {\n  helper.shout()\n}\n",
+    ),
+    #(
+      "app/internal/helper.gleam",
+      "import ffi/console\n\npub fn shout() -> Nil {\n  console.log(\"HI\")\n}\n",
+    ),
+    ..extra
+  ])
+  Nil
+}
+
+fn written_spec(root: String) -> String {
+  let assert Ok(written) = simplifile.read(root <> "/app.graded")
+  written
+}
+
+pub fn infer_writes_no_line_for_an_internal_module_test() {
+  let root = "build/infer_internal_default"
+  write_internal_project(root, "", "", [])
+  let assert Ok(_) = graded.run_infer(root)
+  let written = written_spec(root)
+
+  string.contains(written, "effects app/internal/helper.shout : [Stdout]")
+  |> should.be_true()
+  // The public summary still carries what the internal callee does.
+  string.contains(written, "effects app.run : [Stdout]") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn an_internal_function_answers_inside_the_package_test() {
+  // No cache and no `effects` line for the helper: this run's inference is
+  // what answers, for `check`, `effect` and `why` alike.
+  let root = "build/infer_internal_answers"
+  write_internal_project(root, "", "check app.run : [Stdout]\n", [
+    #(
+      "app/user.gleam",
+      "import app/internal/helper\n\npub fn quiet() -> Nil {\n  helper.shout()\n}\n",
+    ),
+  ])
+  let assert Ok(_) =
+    simplifile.append(root <> "/app.graded", "check app/user.quiet : []\n")
+
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([
+    root
+    <> "/app/user.gleam: quiet calls app/internal/helper.shout with effects [Stdout] (from in-memory inference) but declared []",
+  ])
+  graded.run_effect(root, "app/internal/helper.shout")
+  |> should.equal(Ok(
+    "effects app/internal/helper.shout : [Stdout]\n// resolved from in-memory inference",
+  ))
+  let assert Ok(why) = graded.run_why(root, "app/internal/helper.shout")
+  string.contains(why, "[Stdout]") |> should.be_true()
+  simplifile.is_directory(root <> "/build/.graded") |> should.equal(Ok(False))
+  support.cleanup(root)
+}
+
+pub fn a_check_on_an_internal_function_is_still_verified_test() {
+  let root = "build/infer_internal_check"
+  write_internal_project(root, "", "check app/internal/helper.shout : []\n", [])
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> list.length
+  |> should.equal(1)
+  support.cleanup(root)
+}
+
+pub fn a_valid_assume_on_an_internal_path_survives_infer_test() {
+  let root = "build/infer_internal_valid_assume"
+  write_internal_project(
+    root,
+    "",
+    "assume app/internal/ffi.now : [Time]\ncheck app/internal/clock.tick : []\n",
+    [
+      #("app/internal/ffi.gleam", support.foreign_fn("now", "() -> Int")),
+      #(
+        "app/internal/clock.gleam",
+        "import app/internal/ffi\n\npub fn tick() -> Int {\n  ffi.now()\n}\n",
+      ),
+    ],
+  )
+  let assert Ok(_) = graded.run_infer(root)
+  string.contains(written_spec(root), "assume app/internal/ffi.now : [Time]")
+  |> should.be_true()
+  let assert Ok(reports) = graded.run(root)
+  reports
+  |> list.flat_map(fn(r) { r.violations })
+  |> should.equal([
+    root
+    <> "/app/internal/clock.gleam: tick calls app/internal/ffi.now with effects [Time] (from your spec's `assume` line) but declared []",
+  ])
+  support.cleanup(root)
+}
+
+pub fn a_stale_assume_on_an_internal_path_goes_as_a_public_one_does_test() {
+  // The stale-assume rule neither widens nor narrows with module visibility:
+  // both lines name a native function, both draw the same warning, and `infer`
+  // strips both.
+  let root = "build/infer_internal_stale_assume"
+  write_internal_project(
+    root,
+    "",
+    "assume app/internal/helper.shout : []\nassume app.run : []\n",
+    [],
+  )
+  let assert Ok(reports) = graded.run(root)
+  let warnings = list.flat_map(reports, fn(r) { r.warnings })
+  let internal_warning =
+    list.filter(warnings, fn(w) {
+      string.contains(w, "app/internal/helper.shout")
+    })
+  let public_warning =
+    list.filter(warnings, fn(w) { string.contains(w, "app.run") })
+  list.length(internal_warning) |> should.equal(1)
+  list.map(internal_warning, string.replace(
+    _,
+    "app/internal/helper.shout",
+    "app.run",
+  ))
+  |> should.equal(public_warning)
+
+  let assert Ok(_) = graded.run_infer(root)
+  let written = written_spec(root)
+  string.contains(written, "assume app/internal/helper.shout")
+  |> should.be_false()
+  string.contains(written, "assume app.run") |> should.be_false()
+  support.cleanup(root)
+}
