@@ -70,6 +70,16 @@ effects myapp/router.handle_request : [Http, Stdout]
 Written by `graded infer` for every public function. Regenerated on each run — do
 not edit by hand. (The cache holds the same lines for private functions too.)
 
+That includes the public functions of your internal modules — the ones
+`internal_modules` in `gleam.toml` names, by default `<name>/internal` and
+`<name>/internal/*`. A consumer cannot import those modules, but their lines
+still answer for it. When your package declares an `@external` with a Gleam
+fallback body, and the fallback runs on a target the consumer builds, graded
+charges the consumer's call by walking that body. The body's calls into your
+internal modules resolve from these lines. Without them, those calls would be
+charged `[Unknown]`, and a consumer's `check` over a call it can legitimately
+make would get less precise. So `infer` writes them like any other module's.
+
 The path is a function: `module.function`. A field path or a bare module path
 parses here and keys nothing — only `assume` takes those — so the line resolves
 nothing and the next `infer` drops it; `graded check` warns about the shape. A
