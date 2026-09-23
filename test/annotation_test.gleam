@@ -1128,7 +1128,8 @@ pub fn merge_inferred_invariants_test() {
       fn(f, i) { #(f, i) },
     ),
   )
-  let merged = annotation.merge_inferred(file, inferred, set.new(), set.new())
+  let merged =
+    annotation.merge_inferred(file, inferred, set.new(), set.new(), public)
   let merged_effects =
     annotation.extract_annotations(merged)
     |> list.filter(fn(a) { a.kind == Effects })
@@ -1202,7 +1203,7 @@ pub fn merge_inferred_drops_effect_for_external_test() {
     ),
   ]
   let effects_fns =
-    annotation.merge_inferred(file, inferred, set.new(), set.new())
+    annotation.merge_inferred(file, inferred, set.new(), set.new(), public)
     |> annotation.extract_annotations
     |> list.filter(fn(a) { a.kind == Effects })
     |> list.map(fn(a) { a.function })
@@ -1218,6 +1219,99 @@ pub fn merge_inferred_drops_effect_for_external_test() {
 // `effects` line alive under an assumption that would otherwise delete it —
 // and only the clause does: a clause-less line claims nothing the declaration
 // does not.
+
+// No module is internal: the merge as it stood before module visibility.
+fn public(_function: String) -> Bool {
+  False
+}
+
+// Module visibility at the merge
+//
+// A function of an internal module gets no `effects` line, whatever it would
+// carry, except that a line retaining a clause this version does not read keeps
+// its line and has its effects half refreshed.
+
+fn in_internal(function: String) -> Bool {
+  string.starts_with(function, "app/internal/")
+}
+
+pub fn merge_inferred_writes_no_line_for_an_internal_module_test() {
+  annotation.merge_inferred(
+    types.GradedFile(lines: []),
+    [inferred_line("app.run", None), inferred_line("app/internal/h.f", None)],
+    stale_assumes: set.new(),
+    stale_returns_clauses: set.new(),
+    internal: in_internal,
+  )
+  |> annotation.extract_annotations
+  |> list.map(fn(a) { a.function })
+  |> should.equal(["app.run"])
+}
+
+pub fn merge_inferred_drops_an_existing_internal_line_test() {
+  let existing =
+    AnnotationLine(
+      EffectAnnotation(
+        Effects,
+        "app/internal/h.f",
+        [],
+        TLabels(set.new()),
+        None,
+      ),
+      [],
+    )
+  annotation.merge_inferred(
+    types.GradedFile(lines: [existing]),
+    [inferred_line("app/internal/h.f", None)],
+    stale_assumes: set.new(),
+    stale_returns_clauses: set.new(),
+    internal: in_internal,
+  )
+  |> should.equal(types.GradedFile(lines: []))
+}
+
+pub fn merge_inferred_keeps_an_internal_line_retaining_a_clause_test() {
+  let retained = [UnknownClause(key: "hints", payload: "[Z]")]
+  let existing =
+    AnnotationLine(
+      EffectAnnotation(
+        Effects,
+        "app/internal/h.f",
+        [],
+        TLabels(set.new()),
+        None,
+      ),
+      retained,
+    )
+  annotation.merge_inferred(
+    types.GradedFile(lines: [existing]),
+    [inferred_line("app/internal/h.f", None)],
+    stale_assumes: set.new(),
+    stale_returns_clauses: set.new(),
+    internal: in_internal,
+  )
+  |> should.equal(
+    types.GradedFile(lines: [
+      AnnotationLine(inferred_line("app/internal/h.f", None), retained),
+    ]),
+  )
+}
+
+pub fn merge_inferred_an_inferred_clause_keeps_no_internal_line_test() {
+  annotation.merge_inferred(
+    types.GradedFile(lines: []),
+    [
+      inferred_line(
+        "app/internal/h.make",
+        Some(TLabels(set.from_list(["Net"]))),
+      ),
+    ],
+    stale_assumes: set.new(),
+    stale_returns_clauses: set.new(),
+    internal: in_internal,
+  )
+  |> should.equal(types.GradedFile(lines: []))
+}
 
 fn inferred_line(
   name: String,
@@ -1263,7 +1357,7 @@ fn merged_effects(
   file: types.GradedFile,
   inferred: List(types.EffectAnnotation),
 ) -> List(#(String, option.Option(EffectTerm))) {
-  annotation.merge_inferred(file, inferred, set.new(), set.new())
+  annotation.merge_inferred(file, inferred, set.new(), set.new(), public)
   |> annotation.extract_annotations
   |> list.filter(fn(a) { a.kind == Effects })
   |> list.map(fn(a) { #(a.function, a.returns) })
@@ -1328,6 +1422,7 @@ pub fn merge_inferred_over_a_kept_clause_line_is_idempotent_test() {
     [inferred_line("db.make", clause)],
     set.new(),
     set.new(),
+    public,
   )
   |> should.equal(file)
 }
@@ -1363,7 +1458,7 @@ pub fn merge_inferred_keeps_a_declared_returns_clause_test() {
       returns: Some(TLabels(set.new())),
     ),
   ]
-  annotation.merge_inferred(file, inferred, set.new(), set.new())
+  annotation.merge_inferred(file, inferred, set.new(), set.new(), public)
   |> should.equal(
     types.GradedFile(lines: [
       declared,
@@ -1407,7 +1502,7 @@ pub fn merge_inferred_keeps_an_unmatched_returns_clause_test() {
         [],
       ),
     ])
-  annotation.merge_inferred(file, [], set.new(), set.new())
+  annotation.merge_inferred(file, [], set.new(), set.new(), public)
   |> should.equal(file)
 }
 
@@ -1442,6 +1537,7 @@ pub fn merge_inferred_rewrites_a_stale_returns_clause_test() {
     inferred,
     stale_assumes: set.new(),
     stale_returns_clauses: set.from_list(["app.make"]),
+    internal: public,
   )
   |> should.equal(
     types.GradedFile(lines: [
@@ -1500,6 +1596,7 @@ pub fn merge_inferred_keeps_the_two_stale_channels_apart_test() {
     inferred,
     stale_assumes: set.new(),
     stale_returns_clauses: set.from_list(["app.make"]),
+    internal: public,
   )
   |> should.equal(
     types.GradedFile(lines: [
@@ -1539,6 +1636,7 @@ pub fn merge_inferred_keeps_bounds_on_a_stale_conversion_test() {
     [],
     stale_assumes: set.from_list(["app.make"]),
     stale_returns_clauses: set.new(),
+    internal: public,
   )
   |> should.equal(
     types.GradedFile(lines: [
@@ -1573,7 +1671,7 @@ pub fn a_bounded_external_still_suppresses_the_inferred_line_test() {
       returns: None,
     ),
   ]
-  annotation.merge_inferred(file, inferred, set.new(), set.new())
+  annotation.merge_inferred(file, inferred, set.new(), set.new(), public)
   |> should.equal(file)
 }
 
@@ -1604,6 +1702,7 @@ pub fn a_clause_only_bounded_line_does_not_suppress_the_inferred_line_test() {
     [inferred_line],
     set.new(),
     set.new(),
+    public,
   )
   |> should.equal(
     types.GradedFile(lines: [declared, AnnotationLine(inferred_line, [])]),

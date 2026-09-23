@@ -3635,6 +3635,12 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       public_annotations,
       stale_assumes:,
       stale_returns_clauses:,
+      internal: fn(function) {
+        case annotation.split_qualified_name(function) {
+          Ok(#(module_path, _)) -> config.is_internal_module(cfg, module_path)
+          Error(Nil) -> False
+        }
+      },
     ),
     cache_files: list.reverse(cache_files),
   ))

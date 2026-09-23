@@ -576,8 +576,7 @@ pub fn infer_writes_no_line_for_an_internal_module_test() {
   let assert Ok(_) = graded.run_infer(root)
   let written = written_spec(root)
 
-  string.contains(written, "effects app/internal/helper.shout : [Stdout]")
-  |> should.be_true()
+  string.contains(written, "app/internal/helper") |> should.be_false()
   // The public summary still carries what the internal callee does.
   string.contains(written, "effects app.run : [Stdout]") |> should.be_true()
   support.cleanup(root)
@@ -683,5 +682,116 @@ pub fn a_stale_assume_on_an_internal_path_goes_as_a_public_one_does_test() {
   string.contains(written, "assume app/internal/helper.shout")
   |> should.be_false()
   string.contains(written, "assume app.run") |> should.be_false()
+  support.cleanup(root)
+}
+
+pub fn infer_default_rule_matches_the_compilers_test() {
+  // `app/internal/*` is hidden; `app/other/internal` is not under the default,
+  // which names `<name>/internal` and what sits below it and nothing else.
+  let root = "build/infer_internal_default_rule"
+  write_internal_project(root, "", "", [
+    #("app/internal.gleam", "pub fn top() -> Nil {\n  Nil\n}\n"),
+    #("app/other/internal.gleam", "pub fn fine() -> Nil {\n  Nil\n}\n"),
+  ])
+  let assert Ok(_) = graded.run_infer(root)
+  let written = written_spec(root)
+  string.contains(written, "app/internal.top") |> should.be_false()
+  string.contains(written, "app/internal/helper") |> should.be_false()
+  string.contains(written, "effects app/other/internal.fine : []")
+  |> should.be_true()
+  string.contains(written, "effects app.run : [Stdout]") |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn infer_explicit_internal_modules_replace_the_default_test() {
+  let root = "build/infer_internal_explicit"
+  write_internal_project(root, "internal_modules = [\"app/hidden/*\"]\n", "", [
+    #("app/hidden/x.gleam", "pub fn secret() -> Nil {\n  Nil\n}\n"),
+  ])
+  let assert Ok(_) = graded.run_infer(root)
+  let written = written_spec(root)
+  string.contains(written, "app/hidden/x") |> should.be_false()
+  string.contains(written, "effects app/internal/helper.shout : [Stdout]")
+  |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn infer_empty_internal_modules_writes_everything_test() {
+  let root = "build/infer_internal_empty"
+  write_internal_project(root, "internal_modules = []\n", "", [])
+  let assert Ok(_) = graded.run_infer(root)
+  string.contains(
+    written_spec(root),
+    "effects app/internal/helper.shout : [Stdout]",
+  )
+  |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn infer_drops_a_committed_internal_line_test() {
+  let root = "build/infer_internal_committed"
+  write_internal_project(
+    root,
+    "",
+    "effects app.run : [Stdout]\neffects app/internal/helper.shout : [Stdout]\n",
+    [],
+  )
+  let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
+  changed_lines(preview)
+  |> should.equal(["- effects app/internal/helper.shout : [Stdout]"])
+
+  let assert Ok(_) = graded.run_infer(root)
+  string.contains(written_spec(root), "app/internal/helper")
+  |> should.be_false()
+  support.cleanup(root)
+}
+
+pub fn infer_keeps_an_internal_line_retaining_a_clause_test() {
+  // The one exception: a clause this version does not read keeps its line, as
+  // it keeps every line, and the effects half is refreshed.
+  let root = "build/infer_internal_retained"
+  write_internal_project(
+    root,
+    "",
+    "effects app/internal/helper.shout : [] where hints : [Z]\n",
+    [],
+  )
+  let assert Ok(_) = graded.run_infer(root)
+  string.contains(
+    written_spec(root),
+    "effects app/internal/helper.shout : [Stdout] where hints : [Z]",
+  )
+  |> should.be_true()
+  support.cleanup(root)
+}
+
+pub fn infer_an_inferred_clause_keeps_no_internal_line_test() {
+  let root = "build/infer_internal_returns"
+  write_internal_project(root, "", "", [
+    #(
+      "app/internal/make.gleam",
+      "pub fn maker() -> fn() -> Nil {\n  fn() { Nil }\n}\n",
+    ),
+  ])
+  let assert Ok(_) = graded.run_infer(root)
+  string.contains(written_spec(root), "app/internal/make")
+  |> should.be_false()
+  support.cleanup(root)
+}
+
+pub fn infer_still_caches_an_internal_module_test() {
+  // The spec loses the module's lines; its cache file keeps every one.
+  let root = "build/infer_internal_cache"
+  write_internal_project(root, "", "", [])
+  let assert Ok(_) =
+    simplifile.append(
+      root <> "/app/internal/helper.gleam",
+      "\npub fn hush() -> Nil {\n  Nil\n}\n",
+    )
+  let assert Ok(_) = graded.run_infer(root)
+  simplifile.read(root <> "/build/.graded/app/internal/helper.graded")
+  |> should.equal(Ok("effects hush : []\neffects shout : [Stdout]"))
+  string.contains(written_spec(root), "app/internal/helper")
+  |> should.be_false()
   support.cleanup(root)
 }

@@ -1380,11 +1380,18 @@ pub fn split_type_field_name(
 // survives whole — the grammar has no clause-only `effects` line, so the effects
 // half rides along and the loaders read the declaration over it. Only both
 // declarations together take the line out.
+//
+// `internal` answers for a qualified function name whether its module is one a
+// consumer cannot import. Such a function gets no `effects` line, and an
+// existing one drops the way a stale line does — except a line carrying a
+// clause this version does not read, which keeps its line as every such line
+// is kept, its effects half refreshed.
 pub fn merge_inferred(
   file: GradedFile,
   inferred: List(EffectAnnotation),
   stale_assumes stale_assumes: set.Set(String),
   stale_returns_clauses stale_returns_clauses: set.Set(String),
+  internal internal: fn(String) -> Bool,
 ) -> GradedFile {
   // The value channel first, so the two suppressions compose: a name both an
   // effects declaration and a returns declaration cover loses its clause here
@@ -1449,11 +1456,17 @@ pub fn merge_inferred(
       // so: this version can re-derive the operator it wrote, and cannot
       // re-derive a key it does not read. A clause-less line claims nothing the
       // declaration does not, and goes.
-      option.is_some(annotation.returns)
-      || set.contains(retaining_effects, annotation.function)
-      || {
-        !set.contains(assume_functions, annotation.function)
-        && !in_assumed_module(annotation.function, assumed_modules)
+      //
+      // An internal module's line answers nobody, whatever it carries, save the
+      // retained clause nothing here could put back.
+      set.contains(retaining_effects, annotation.function)
+      || !internal(annotation.function)
+      && {
+        option.is_some(annotation.returns)
+        || {
+          !set.contains(assume_functions, annotation.function)
+          && !in_assumed_module(annotation.function, assumed_modules)
+        }
       }
     })
 
