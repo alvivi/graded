@@ -2071,6 +2071,40 @@ pub fn bounds_beside_an_effects_claim_still_parse_test() {
   |> should.equal(Error(annotation.InvalidLine(1, input)))
 }
 
+// The module a line names
+//
+// Read by the casing rule an `assume` line's subject is read by, so a field
+// path's type segment is never taken for part of its module, and a retained
+// line's bound list is cut before its path is read.
+
+// The module the one line `input` parses to names.
+fn module_of(input: String) -> option.Option(String) {
+  let assert Ok(types.GradedFile(lines: [line])) = annotation.parse_file(input)
+  annotation.line_module(line)
+}
+
+pub fn every_line_shape_names_its_module_test() {
+  module_of("effects dep/m.f : []") |> should.equal(Some("dep/m"))
+  module_of("assume dep/m : []") |> should.equal(Some("dep/m"))
+  module_of("assume dep/m.f : []") |> should.equal(Some("dep/m"))
+  module_of("assume dep/m.Handler.run : [Net]") |> should.equal(Some("dep/m"))
+  module_of("assume dep/m where future : [X]") |> should.equal(Some("dep/m"))
+  module_of("assume dep/m.f(cb: [e]) where future : [X]")
+  |> should.equal(Some("dep/m"))
+}
+
+pub fn a_field_path_names_the_module_before_its_type_test() {
+  // A last-dot split would read `dep/m.Handler` as the module of both.
+  module_of("check dep/m.Handler.run : []") |> should.equal(Some("dep/m"))
+  module_of("assume dep/m.Handler.run where future : [X]")
+  |> should.equal(Some("dep/m"))
+}
+
+pub fn a_bare_field_path_names_no_module_test() {
+  module_of("assume Handler.run : [Net]") |> should.equal(None)
+  module_of("// a comment") |> should.equal(None)
+}
+
 // Wrapped statements
 //
 // A statement may be written on one physical line or across several, and the

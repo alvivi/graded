@@ -9373,6 +9373,13 @@ pub fn run_resolves_deps_from_target_dir_test() {
       root <> "/build/packages/dep/dep.graded",
       "effects dep.fetch : [Http]\n",
     )
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(root <> "/build/packages/dep/src")
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/build/packages/dep/src/dep.gleam",
+      "pub fn fetch() -> Nil {\n  Nil\n}\n",
+    )
 
   let assert Ok(results) = graded.check_project(root)
   let assert Ok(r) =
@@ -9775,10 +9782,10 @@ pub fn an_unreadable_path_dependency_spec_infers_from_source_test() {
     "dep.noop is pure — no effects ([])\n  source: inference over path dependency dep's source",
   ))
   warning
-  |> should.equal(Some(
+  |> should.equal([
     "graded: warning: dep's spec at build/pd_unreadable_spec_dep/dep.graded"
     <> " could not be read (File not UTF-8 encoded); it is read as shipping none",
-  ))
+  ])
 }
 
 pub fn a_directory_at_a_path_dependency_spec_path_infers_from_source_test() {
@@ -9791,10 +9798,10 @@ pub fn a_directory_at_a_path_dependency_spec_path_infers_from_source_test() {
     "dep.noop is pure — no effects ([])\n  source: inference over path dependency dep's source",
   ))
   warning
-  |> should.equal(Some(
+  |> should.equal([
     "graded: warning: dep's spec at build/pd_directory_spec_dep/dep.graded"
     <> " could not be read (Is a directory); it is read as shipping none",
-  ))
+  ])
 }
 
 // What `graded effect dep.noop` answers for a consumer of a path dependency
@@ -9806,7 +9813,7 @@ pub fn a_directory_at_a_path_dependency_spec_path_infers_from_source_test() {
 fn unreadable_path_dep_spec_answer(
   name: String,
   spec: DepSpecPath,
-) -> #(Result(String, graded.GradedError), Option(String)) {
+) -> #(Result(String, graded.GradedError), List(String)) {
   let #(app_root, dep_root) =
     write_path_dep_project(
       name,

@@ -2535,10 +2535,8 @@ fn assume_bounds(
 // declaration, and the sanitizing below weighs them by exactly that.
 //
 // `modules` is the package's own module paths, read off the `src/` tree beside
-// the spec: what the sanitizing below measures a line's *subject* against, so a
-// spec cannot state a returned-operator summary about code it does not ship.
-// Empty where that tree could not be read, which the filter reads as "nothing to
-// arbitrate with" rather than as "the package owns nothing".
+// the spec; every line the channels hold names one of them. Empty where that
+// tree holds no Gleam module, and the channels are then empty too.
 pub type DepSpec {
   DepSpec(
     effects: Dict(QualifiedName, EffectTerm),
@@ -2564,75 +2562,124 @@ pub type DepSpecLoad {
   // The path rides here because the warning names it; a loaded spec's warning
   // names lines instead.
   SpecUnreadable(path: String, cause: simplifile.FileError)
-  SpecLoaded(spec: DepSpec, rejected: List(annotation.ParseError))
+  SpecLoaded(
+    spec: DepSpec,
+    rejected: List(annotation.ParseError),
+    // The distinct paths of the lines dropped for naming a module the package
+    // does not ship: the parsed lines' paths in file order, then the paths of
+    // the rejected lines' blockers in rejected-line order.
+    foreign: List(String),
+    // The directory the package's modules were read from, which the warning
+    // names when it held none.
+    source_dir: String,
+  )
 }
 
-// The warning one dependency's spec load prints, `None` where the load has
-// nothing to say. The one renderer over a load, so the installed-package
-// caller and the path-dependency caller cannot fork.
+// The warnings one dependency's spec load prints, rejected lines first; empty
+// where the load has nothing to say. The one renderer over a load, so the
+// installed-package caller and the path-dependency caller cannot fork.
 pub fn describe_dep_spec_load(
   package_name: String,
   load: DepSpecLoad,
-) -> Option(String) {
+) -> List(String) {
   case load {
-    SpecAbsent | SpecLoaded(_, []) -> None
-    SpecUnreadable(path:, cause:) ->
-      Some(
-        "graded: warning: "
-        <> package_name
-        <> "'s spec at "
-        <> path
-        <> " could not be read ("
-        <> simplifile.describe_error(cause)
-        <> "); it is read as shipping none",
-      )
-    SpecLoaded(_, rejected) ->
-      Some(
-        "graded: warning: "
-        <> package_name
-        <> "'s spec has "
-        <> line_count(list.length(rejected))
-        <> " graded could not read ("
-        <> describe_rejected(rejected)
-        <> "); the rest of the file is used",
-      )
+    SpecAbsent -> []
+    SpecUnreadable(path:, cause:) -> [
+      "graded: warning: "
+      <> package_name
+      <> "'s spec at "
+      <> path
+      <> " could not be read ("
+      <> simplifile.describe_error(cause)
+      <> "); it is read as shipping none",
+    ]
+    SpecLoaded(spec:, rejected:, foreign:, source_dir:) ->
+      list.flatten([
+        describe_rejected(package_name, rejected),
+        describe_foreign(package_name, foreign, spec.modules, source_dir),
+      ])
   }
 }
 
-// Print one dependency spec load's warning, where it has one. Both callers go
-// through this, so the two tiers word a load the same way.
+// Print one dependency spec load's warnings. Both callers go through this, so
+// the two tiers word a load the same way.
 pub fn warn_dep_spec_load(package_name: String, load: DepSpecLoad) -> Nil {
-  case describe_dep_spec_load(package_name, load) {
-    None -> Nil
-    Some(warning) -> io.println_error(warning)
+  describe_dep_spec_load(package_name, load)
+  |> list.each(io.println_error)
+}
+
+// How many rejected lines or dropped paths a warning names before it stops
+// naming them.
+const warning_sample_size = 3
+
+// The warning for the lines graded could not read, naming the first few as
+// `<line>: <content>` each. Named by the line alone — a dependency's spec is
+// not the consumer's to rewrite, and the rewrite hint a retired spelling
+// carries is a second line, which would leave this sentence's tail dangling
+// after it.
+fn describe_rejected(
+  package_name: String,
+  rejected: List(annotation.ParseError),
+) -> List(String) {
+  case rejected {
+    [] -> []
+    _ -> [
+      "graded: warning: "
+      <> package_name
+      <> "'s spec has "
+      <> counted(list.length(rejected), "line", "lines")
+      <> " graded could not read ("
+      <> sampled(list.map(rejected, annotation.describe_parse_error_line))
+      <> "); the rest of the file is used",
+    ]
   }
 }
 
-// How many rejected lines a warning names before it stops naming them. A
-// dependency shipping a whole retired grammar would otherwise print its every
-// line on every command.
-const rejected_sample_size = 3
+// The warning for the paths dropped as naming code the package does not ship,
+// each named as its line states it. Where the source directory held no Gleam
+// module, the warning names that directory in place of the remedy.
+fn describe_foreign(
+  package_name: String,
+  foreign: List(String),
+  modules: Set(String),
+  source_dir: String,
+) -> List(String) {
+  case foreign {
+    [] -> []
+    _ -> [
+      "graded: warning: "
+      <> package_name
+      <> "'s spec has "
+      <> counted(list.length(foreign), "path", "paths")
+      <> " about code it does not ship ("
+      <> sampled(foreign)
+      <> "); those lines are ignored — "
+      <> case set.is_empty(modules) {
+        True ->
+          "no Gleam module was found under "
+          <> source_dir
+          <> ", so the package ships no code graded can match them to"
+        False -> "a line you trust belongs in your own spec"
+      },
+    ]
+  }
+}
 
-// The rejected lines a warning names: the first few as
-// `<line>: <content>` each, and a count of what the cap left out. Named by the
-// line alone — a dependency's spec is not the consumer's to rewrite, and the
-// rewrite hint a retired spelling carries is a second line, which would leave
-// this sentence's tail dangling after it.
-fn describe_rejected(rejected: List(annotation.ParseError)) -> String {
-  let #(sample, past_cap) = list.split(rejected, rejected_sample_size)
-  let named = list.map(sample, annotation.describe_parse_error_line)
+// The first few names, and a count of what the cap left out.
+fn sampled(names: List(String)) -> String {
+  let #(sample, past_cap) = list.split(names, warning_sample_size)
   case list.length(past_cap) {
-    0 -> named
+    0 -> sample
     remaining ->
-      list.append(named, ["and " <> int.to_string(remaining) <> " more"])
+      list.append(sample, ["and " <> int.to_string(remaining) <> " more"])
   }
   |> string.join("; ")
 }
 
-fn line_count(count: Int) -> String {
+fn counted(count: Int, singular: String, plural: String) -> String {
   case count {
-    1 -> "1 line"
-    _ -> int.to_string(count) <> " lines"
+    1 -> "1 " <> singular
+    _ -> int.to_string(count) <> " " <> plural
   }
 }
 
@@ -2664,23 +2711,68 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpecLoad {
 }
 
 // The same load, over a spec path the caller already resolved. `dep_root` stays
-// beside it: a `DepSpec` also carries the dependency's own module list, which is
-// read off its source tree and which no spec path yields.
+// beside it: the dependency's own module list is read off its source tree, which
+// no spec path yields.
 //
 // Read one statement at a time: a line the parser rejects costs the path it
 // names, which is charged the wildcard from this dependency's own tier through
 // the blocker that replaces it — a module-shaped path as the blanket that shape
 // states, over the file's own `effects` lines for that module.
+//
+// Read for the package's own code alone. A line whose path names a module the
+// package does not ship — any line shape, on any channel — is dropped before
+// the channels are read, and so is the blocker a rejected line naming one
+// would build; each such path is recorded for the warning. A path that names
+// no module, a bare field path included, is not the package's either.
 pub fn load_dep_spec_at(dep_root: String, spec_path: String) -> DepSpecLoad {
   case read_optional_file(spec_path) {
     Error(cause) -> SpecUnreadable(path: spec_path, cause:)
     Ok(None) -> SpecAbsent
     Ok(Some(content)) -> {
+      let source_dir = filepath.join(dep_root, "src")
+      let modules = package_modules(source_dir)
       let #(parsed, rejected) = annotation.parse_file_lenient(content)
-      let file = block_rejected(parsed, rejected)
-      SpecLoaded(spec: dep_spec_from_file(file, dep_root), rejected:)
+      let #(owned_lines, foreign_lines) = partition_owned(parsed.lines, modules)
+      let owned = types.GradedFile(lines: owned_lines)
+      // Built against the owned lines alone: only an owned blanket shields a
+      // rejected line.
+      let #(blockers, foreign_blockers) =
+        rejected_blockers(owned, rejected) |> partition_owned(modules)
+      SpecLoaded(
+        spec: annotation.replace_lines_by_path(owned, blockers)
+          |> dep_spec_from_file(modules),
+        rejected:,
+        foreign: list.append(foreign_lines, foreign_blockers) |> list.unique,
+        source_dir:,
+      )
     }
   }
+}
+
+// Split lines into the ones a package's spec may state — a comment, a blank,
+// or a line whose path names a module in `modules` — and the paths of the
+// rest, both in order.
+fn partition_owned(
+  lines: List(types.GradedLine),
+  modules: Set(String),
+) -> #(List(types.GradedLine), List(String)) {
+  let #(kept, foreign) =
+    list.fold(lines, #([], []), fn(acc, line) {
+      let #(kept, foreign) = acc
+      case annotation.line_path(line) {
+        Error(Nil) -> #([line, ..kept], foreign)
+        Ok(path) ->
+          case annotation.line_module(line) {
+            Some(module) ->
+              case set.contains(modules, module) {
+                True -> #([line, ..kept], foreign)
+                False -> #(kept, [path, ..foreign])
+              }
+            None -> #(kept, [path, ..foreign])
+          }
+      }
+    })
+  #(list.reverse(kept), list.reverse(foreign))
 }
 
 // Read one dependency's parsed spec into the channels a consumer resolves
@@ -2692,7 +2784,7 @@ pub fn load_dep_spec_at(dep_root: String, spec_path: String) -> DepSpecLoad {
 // that check instead of becoming a global fact about the dependency's
 // function, and every term still travels with the bounds from its own
 // annotation.
-fn dep_spec_from_file(file: types.GradedFile, dep_root: String) -> DepSpec {
+fn dep_spec_from_file(file: types.GradedFile, modules: Set(String)) -> DepSpec {
   let declared_modules = annotation.module_assume_modules(file)
   DepSpec(
     // The module-level declarations govern their own module's effects
@@ -2715,24 +2807,24 @@ fn dep_spec_from_file(file: types.GradedFile, dep_root: String) -> DepSpec {
     declared_returns: load_spec_assume_returns_from_file(file),
     type_fields: annotation.extract_type_fields(file),
     assumes: annotation.extract_assumes(file),
-    modules: package_modules(dep_root),
+    modules:,
   )
 }
 
-// A parsed spec with each rejected line's blocker standing in for it: every
-// surviving line keyed by the blocker's own path is removed and the blocker
-// appended, so the ordinary readers below see an `assume <path> : [_]` exactly
-// where the author's own line would have sat. A rejection no blocker can be
-// built from keys nothing and leaves the file as it is.
+// The line that stands in for each rejected one, in rejected-line order: an
+// `assume <path> : [_]` that replaces every surviving line keyed by its path,
+// so the ordinary readers see the blocker exactly where the author's own line
+// would have sat. A rejection no blocker can be built from keys nothing and
+// stands in for nothing.
 //
 // A blocker the file's own module-level `assume` lines already answer for is
-// not written: a per-function blocker outranks a blanket, where the `effects`
-// line it stands in for is dropped under one, so writing it would charge the
+// not built: a per-function blocker outranks a blanket, where the `effects`
+// line it stands in for is dropped under one, so building it would charge the
 // wildcard for a name the blanket answers.
-fn block_rejected(
+fn rejected_blockers(
   file: types.GradedFile,
   rejected: List(annotation.ParseError),
-) -> types.GradedFile {
+) -> List(types.GradedLine) {
   let declared = annotation.module_assume_modules(file)
   rejected
   |> list.filter_map(fn(error) {
@@ -2750,7 +2842,6 @@ fn block_rejected(
   // Two rejections naming one path build the same line — a blocker carries no
   // line number — so one of them is the whole answer for that path.
   |> list.unique()
-  |> annotation.replace_lines_by_path(file, _)
 }
 
 // Whether `modules` holds the module of the function a blocker keys. A blocker
@@ -2797,9 +2888,10 @@ pub fn drop_module_declared(
   dict.filter(entries, fn(name, _value) { !set.contains(modules, name.module) })
 }
 
-// The module paths a package ships, read off its `src/` tree.
-fn package_modules(dep_root: String) -> Set(String) {
-  source_dir_module_files(filepath.join(dep_root, "src"))
+// The module paths a package ships, read off its `src/` tree. Empty where the
+// tree is missing, unreadable, or holds no `.gleam` file.
+fn package_modules(source_dir: String) -> Set(String) {
+  source_dir_module_files(source_dir)
   |> dict.keys
   |> set.from_list
 }

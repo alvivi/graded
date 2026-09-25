@@ -1118,6 +1118,29 @@ pub fn line_path(line: GradedLine) -> Result(String, Nil) {
   }
 }
 
+// The module a line's path names, split by the casing rule an `assume` line's
+// subject is read by: a field path's module ends before its type segment.
+// `None` for a comment or a blank, for a bare field path (`Handler.run`), and
+// for a path that rule refuses.
+pub fn line_module(line: GradedLine) -> Option(String) {
+  case line {
+    // A function path or a field path: a field `check` is an `AnnotationLine`.
+    AnnotationLine(annotation, _) -> path_module(annotation.function)
+    AssumeLine(assume_annotation, _) -> Some(assume_annotation.module)
+    FieldAssumeLine(tf, _) -> tf.module
+    RetainedAssumeLine(path:, ..) -> path_module(retained_bare_path(path))
+    CommentLine(_) | BlankLine -> None
+  }
+}
+
+fn path_module(path: String) -> Option(String) {
+  case split_assume_path(path) {
+    Ok(AssumeModule(module:)) | Ok(AssumeFunction(module:, ..)) -> Some(module)
+    Ok(AssumeField(module:, ..)) -> module
+    Error(Nil) -> None
+  }
+}
+
 // A file with every line keyed by one of `replacements`' paths removed, and
 // those lines appended. A comment or a blank keys no path, so it is kept.
 pub fn replace_lines_by_path(
