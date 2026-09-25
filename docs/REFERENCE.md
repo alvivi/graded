@@ -385,11 +385,12 @@ the path hands back and never what calling it costs; and an `effects` line for a
 module the same file declares a blanket over, which that blanket already answers
 for. The lines around each of them answer as they stand.
 
-A rejected line naming a path the package does not ship is charged nothing
-either: the wildcard would be a claim about another package's code, which a
-dependency's spec does not make (see
-[Effect resolution order](#effect-resolution-order)). The path is named in the
-warning for such lines.
+A rejected line naming a path the package does not ship builds no blocker: its
+wildcard would be a claim about another package's code, which a dependency's
+spec does not make (see [Effect resolution order](#effect-resolution-order)).
+The path resolves from the next source down, exactly as with no line at all —
+a rejected `assume gleam/io.println : nonsense` leaves `io.println` at the
+catalog's `[Stdout]` — and is named in the warning for such lines.
 
 A dependency spec file that is there but whose bytes graded cannot read is a
 warning naming the cause, and the package is read as shipping no spec: a path
