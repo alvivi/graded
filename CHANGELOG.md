@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- A dependency's spec now answers only for the modules that package ships. A
+  line it writes about anyone else's code — the standard library, another
+  dependency, or your own modules — is ignored and named once in a warning, so
+  a name such a line used to decide now answers from the package that ships
+  it, the bundled catalog, or `[Unknown]`, and a `check` over a call into it can
+  newly pass or newly fail; the same line in your own spec restores the answer.
+  A rejected line naming such a path no longer charges `[_]` for it. A
+  dependency's bare field line (`assume Repo.find : [Disk]`) is ignored too —
+  qualify it with the type's module — while the `effects` lines a dependency's
+  `infer` wrote under an ignored assumption still ship and still answer.
+
 ## [0.21.0] - 2026-09-23
 
 ### Changed

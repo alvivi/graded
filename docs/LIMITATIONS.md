@@ -443,7 +443,10 @@ changes what callers pay, never what the function's own line proves.
 
 For common third-party packages, the [bundled catalog](./REFERENCE.md#effect-catalog)
 already supplies these declarations, so you only need `assume` lines for your
-own FFI and for packages the catalog doesn't cover.
+own FFI and for packages the catalog doesn't cover. A dependency cannot declare
+them on your behalf for a package *it* depends on: its spec answers for its own
+modules alone, so a line it writes about anyone else's code is ignored, and
+you write that line in your own spec.
 
 An `assume` line covers the *call*. The record an FFI producer builds
 and the fields either it or an update builder of it wires stay `[Unknown]` at

@@ -223,7 +223,8 @@ and [Type field effects](#type-field-effects).
 The type in a field `assume` is module-qualified by the module that *defines*
 it. An unqualified or mis-qualified one keys nothing, so the field silently
 resolves to `[Unknown]`; `graded check` warns when a field `assume` matches no
-field of any project type.
+field of any project type. In a dependency's spec an unqualified field line is
+ignored and named in a warning, since it names none of that package's modules.
 
 A [`check` on a field](#check-on-a-function-typed-field) reads its path by the
 same shapes and the same qualification rule, and does the opposite job: the
@@ -378,6 +379,12 @@ the path hands back and never what calling it costs; and an `effects` line for a
 module the same file declares a blanket over, which that blanket already answers
 for. The lines around each of them answer as they stand.
 
+A rejected line naming a path the package does not ship is charged nothing
+either: the wildcard would be a claim about another package's code, which a
+dependency's spec does not make (see
+[Effect resolution order](#effect-resolution-order)). The path is named in the
+warning for such lines.
+
 A dependency spec file that is there but whose bytes graded cannot read is a
 warning naming the cause, and the package is read as shipping no spec: a path
 dependency in that state is inferred from its source, exactly as a spec-less one
@@ -422,10 +429,15 @@ order and takes the first hit:
    names nothing else keys, so it sits below every per-function entry, **except
    the catalog's, for a module that package ships**, which it answers over. The
    author's shipped word on their own module outranks graded's maintainers' word
-   on some other version of it, in both line shapes. A module-level line about
-   code the package does not ship arbitrates nothing.
+   on some other version of it, in both line shapes. A dependency's spec answers
+   for the modules that package ships and for nothing else: a line about anyone
+   else's code — the standard library, another dependency, your own modules — is
+   ignored and named once in a warning, and belongs in your own spec if you want
+   it. So does a bare field line (`assume Repo.find : [Disk]`), which names no
+   module, and every line of a package whose `src/` holds no Gleam module.
 4. **Path dependencies** — local deps declared with `path = "..."` in `gleam.toml`.
-   graded reads their spec files, `assume` lines and all; if a path dep
+   graded reads their spec files, `assume` lines and all, for their own
+   modules; if a path dep
    ships none — or ships one graded cannot read, which is warned about and read
    as shipping none — it falls back to inferring from that dep's source. A *committed*
    path-dep spec outranks a catalog entry for the same function, and its
@@ -686,6 +698,8 @@ dependency can also **ship** its own field `assume` lines in its committed spec 
 consumer picks them up automatically, the same way it inherits a dependency's
 `effects` and `assume` annotations, so the capability-record pattern needs no
 per-consumer re-declaration. A consumer's own field `assume` line still wins on a clash.
+A shipped field line is read for the dependency's own types, qualified by their
+module; a bare one (`assume Repo.find : [Disk]`) is ignored.
 
 ## Assumptions: foreign code and field effects
 
@@ -701,12 +715,22 @@ assume gleam/otp/actor.start : [Process]
 These are merged into the knowledge base before both `infer` and `check`, so
 callers resolve them instead of getting `[Unknown]`.
 
-A library's `assume` lines are part of what its spec ships: a consumer
-of a published or path dependency reads them the same way it reads that
-dependency's `effects` lines, so declaring your FFI once resolves it for everyone
-downstream. Within one spec the `assume` line is authoritative — it
-decides the function's effect (and its bounds) over any `effects` line for the
-same name, which is why `graded infer` writes none.
+A library's `assume` lines are part of what its spec ships, for the library's
+own modules: a consumer of a published or path dependency reads them the same
+way it reads that dependency's `effects` lines, so declaring your FFI once
+resolves it for everyone downstream. Within one spec the `assume` line is
+authoritative — it decides the function's effect (and its bounds) over any
+`effects` line for the same name, which is why `graded infer` writes none.
+
+A line the library writes about a package it depends on — `assume
+gleam/io.println : []`, say — governs the library's own `check` and `infer`.
+The `effects` lines `infer` writes under it ship, and a consumer trusts them as
+the library's word about its own code, but the line itself answers for no
+consumer name: a consumer's own call to `io.println` is charged what the catalog
+says of it, and the line is named in a warning. A consumer who wants it writes
+it in their own spec. A bare field line (`assume Repo.find : [Disk]`, no module)
+is a fallback for every package's types, so a dependency's is ignored too;
+qualify it with the type's module.
 
 **Except where it names one of your own functions with a Gleam body.** The line
 declares code graded cannot see; a function of this package whose body is right
@@ -969,11 +993,11 @@ function that package declares `@external` is refused, while its `assume` line,
 that line's own clause, a module-level `assume`, and the catalog entry underneath
 keep answering. A dependency's declared clause is kept even over one of its own
 Gleam-bodied functions — weighing a spec against the source beside it is that
-package's job at its own `infer` time. What a spec may state a returned-operator
-summary *about* is narrower: the modules that package ships, plus the names a
-scan of dependency source records as `@external`. A clause for anyone else's
-code — your own modules included — is dropped, so no dependency can overrule what
-your own body says it hands back. Where a
+package's job at its own `infer` time. What a spec may state a clause *about*
+is what it may state any line about: the modules that package ships. A clause
+for anyone else's code — another dependency's `@external` or your own modules —
+is dropped with the line it sits on, so no dependency can overrule what your own
+body says it hands back. Where a
 dependency's external carries a fallback body that runs on some target, that body
 is walked — read from the dependency's own source, on the targets your build
 compiles — and its effects are unioned into a catalog or module-level
