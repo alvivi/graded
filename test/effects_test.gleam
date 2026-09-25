@@ -362,6 +362,17 @@ fn module_assume(
   )
 }
 
+// The blocker a rejected per-function line builds.
+fn wildcard_assume(module: String, function: String) -> types.AssumeAnnotation {
+  types.AssumeAnnotation(
+    module:,
+    target: types.FunctionAssume(function),
+    params: [],
+    effects: Some(types.Wildcard),
+    returns: None,
+  )
+}
+
 fn inferred_entry(
   module: String,
   function: String,
@@ -493,20 +504,13 @@ pub fn a_catalog_entry_names_its_package_test() {
 pub fn a_dependency_spec_overriding_the_catalog_reports_both_test() {
   // The term and the origin come out of one merge, so the source named is the
   // one whose term won — not the source the losing merge would have named.
-  let root =
-    write_fixture("build/eff_origin_agreement", [
-      #(dep_spec_path("gleam_stdlib"), "effects gleam/io.println : [Shipped]\n"),
-      #(
-        "manifest.toml",
-        "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
-      ),
-      ..shipped_sources(dep_source_dir("gleam_stdlib"), ["gleam/io"])
-    ])
-
-  effects.load_knowledge_base(
-    root <> "/packages",
-    root <> "/manifest.toml",
-    dict.new(),
+  installed_dep_over_source(
+    "build/eff_origin_agreement",
+    "gleam_stdlib",
+    "effects gleam/io.println : [Shipped]\n",
+    stdlib_manifest,
+    [],
+    ["gleam/io"],
   )
   |> entry_of(QualifiedName("gleam/io", "println"))
   |> should.equal(
@@ -515,10 +519,13 @@ pub fn a_dependency_spec_overriding_the_catalog_reports_both_test() {
       types.DependencySpec("gleam_stdlib"),
     )),
   )
-
-  let _ = simplifile.delete(root)
-  Nil
 }
+
+// The standard library installed at the version one bundled catalog file names.
+const stdlib_manifest = "packages = [
+  { name = \"gleam_stdlib\", version = \"0.70.0\" },
+]
+"
 
 pub fn a_catalog_effects_line_beats_another_packages_external_test() {
   // Two catalog files key the same function: one with an `effects` line, one
@@ -730,18 +737,7 @@ fn installed_dep(
   source: String,
   modules: List(String),
 ) -> effects.KnowledgeBase {
-  write_fixture(root, [
-    #(dep_spec_path(package), source),
-    ..shipped_sources(dep_source_dir(package), modules)
-  ])
-  let kb =
-    effects.load_knowledge_base(
-      root <> "/packages",
-      root <> "/missing_manifest.toml",
-      dict.new(),
-    )
-  cleanup(root)
-  kb
+  installed_dep_over_source(root, package, source, "", [], modules)
 }
 
 // One installed package's spec, at its `build/packages`-shaped location under a
@@ -878,20 +874,13 @@ pub fn a_user_external_beats_a_dependency_external_test() {
 pub fn a_dependency_external_beats_the_catalog_test() {
   // A shipped external is the package author's own word on its FFI, so it
   // outranks graded's bundled description of the same function.
-  let root = "build/eff_dep_external_vs_catalog"
-  write_fixture(root, [
-    #(dep_spec_path("gleam_stdlib"), "assume gleam/io.println : [Shipped]\n"),
-    #(
-      "manifest.toml",
-      "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
-    ),
-    ..shipped_sources(dep_source_dir("gleam_stdlib"), ["gleam/io"])
-  ])
-
-  effects.load_knowledge_base(
-    root <> "/packages",
-    root <> "/manifest.toml",
-    dict.new(),
+  installed_dep_over_source(
+    "build/eff_dep_external_vs_catalog",
+    "gleam_stdlib",
+    "assume gleam/io.println : [Shipped]\n",
+    stdlib_manifest,
+    [],
+    ["gleam/io"],
   )
   |> entry_of(QualifiedName("gleam/io", "println"))
   |> should.equal(
@@ -900,8 +889,6 @@ pub fn a_dependency_external_beats_the_catalog_test() {
       types.DependencySpec("gleam_stdlib"),
     )),
   )
-
-  cleanup(root)
 }
 
 // Path-dependency spec precedence
@@ -1320,13 +1307,7 @@ pub fn a_rejected_line_blocks_its_own_name_test() {
     )
   spec.assumes
   |> should.equal([
-    types.AssumeAnnotation(
-      module: "dep",
-      target: types.FunctionAssume("noop"),
-      params: [],
-      effects: Some(types.Wildcard),
-      returns: None,
-    ),
+    wildcard_assume("dep", "noop"),
   ])
   let name = QualifiedName("dep", "noop")
   spec.effects |> dict.get(name) |> should.be_error()
@@ -1468,13 +1449,7 @@ pub fn a_retired_spelling_blocks_the_path_it_names_test() {
     )
   spec.assumes
   |> should.equal([
-    types.AssumeAnnotation(
-      module: "dep",
-      target: types.FunctionAssume("noop"),
-      params: [],
-      effects: Some(types.Wildcard),
-      returns: None,
-    ),
+    wildcard_assume("dep", "noop"),
   ])
   spec.effects |> dict.get(QualifiedName("dep", "noop")) |> should.be_error()
 }
@@ -1517,13 +1492,7 @@ pub fn a_retired_external_returns_line_blocks_its_path_test() {
     )
   spec.assumes
   |> should.equal([
-    types.AssumeAnnotation(
-      module: "dep",
-      target: types.FunctionAssume("make"),
-      params: [],
-      effects: Some(types.Wildcard),
-      returns: None,
-    ),
+    wildcard_assume("dep", "make"),
   ])
   spec.effects |> dict.get(QualifiedName("dep", "make")) |> should.be_error()
 }
@@ -1653,11 +1622,7 @@ pub fn a_directory_at_the_spec_path_reads_as_unreadable_test() {
 pub fn a_silent_load_renders_no_warning_test() {
   effects.describe_dep_spec_load("dep", effects.SpecAbsent)
   |> should.equal([])
-  effects.describe_dep_spec_load(
-    "dep",
-    effects.SpecLoaded(effects.empty_dep_spec(), [], [], "dep/src"),
-  )
-  |> should.equal([])
+  load_warnings([], []) |> should.equal([])
 }
 
 pub fn a_rejected_line_renders_one_warning_test() {
@@ -1691,14 +1656,27 @@ pub fn an_unreadable_spec_renders_its_cause_test() {
 
 // The warning `count` rejected lines render, each naming its own line number.
 fn rejection_warning(count: Int) -> List(String) {
-  let rejected =
-    list.repeat(Nil, count)
-    |> list.index_map(fn(_nil, index) {
-      annotation.InvalidLine(index + 1, "line " <> int.to_string(index + 1))
-    })
+  list.repeat(Nil, count)
+  |> list.index_map(fn(_nil, index) {
+    annotation.InvalidLine(index + 1, "line " <> int.to_string(index + 1))
+  })
+  |> load_warnings([])
+}
+
+// The warnings a load of a package that ships code renders, for a spec with
+// `rejected` lines that dropped the `foreign` paths.
+fn load_warnings(
+  rejected: List(annotation.ParseError),
+  foreign: List(String),
+) -> List(String) {
   effects.describe_dep_spec_load(
     "dep",
-    effects.SpecLoaded(effects.empty_dep_spec(), rejected, [], "dep/src"),
+    effects.SpecLoaded(
+      effects.empty_dep_spec(),
+      rejected,
+      foreign,
+      effects.ShipsModules,
+    ),
   )
 }
 
@@ -1866,72 +1844,6 @@ fn owned_load(
   #(spec, foreign)
 }
 
-pub fn a_function_assume_about_unshipped_code_is_dropped_test() {
-  let #(spec, foreign) =
-    owned_load("build/eff_own_fn_assume", "assume gleam/io.println : []\n", [
-      "dep",
-    ])
-  spec.assumes |> should.equal([])
-  foreign |> should.equal(["gleam/io.println"])
-}
-
-pub fn a_module_assume_about_unshipped_code_is_dropped_test() {
-  let #(spec, foreign) =
-    owned_load("build/eff_own_module_assume", "assume gleam/io : []\n", ["dep"])
-  spec.assumes |> should.equal([])
-  foreign |> should.equal(["gleam/io"])
-  // Nothing is left to answer for the module's names at the module tier.
-  installed_dep(
-    "build/eff_own_module_assume_kb",
-    "dep",
-    "assume other/x : []\n",
-    [
-      "dep",
-    ],
-  )
-  |> entry_of(QualifiedName("other/x", "f"))
-  |> should.equal(Error(Nil))
-}
-
-pub fn an_effects_line_about_unshipped_code_is_dropped_test() {
-  // The term, its bounds and its clause: every channel the line keys.
-  let #(spec, foreign) =
-    owned_load(
-      "build/eff_own_effects_line",
-      "effects other/m.run(cb: [cb]) : [cb] where returns : [Net]\n",
-      ["dep"],
-    )
-  let name = QualifiedName("other/m", "run")
-  spec.effects |> dict.get(name) |> should.be_error()
-  spec.params |> dict.get(name) |> should.be_error()
-  spec.returns |> dict.get(name) |> should.be_error()
-  foreign |> should.equal(["other/m.run"])
-}
-
-pub fn a_field_assume_about_unshipped_code_is_dropped_test() {
-  let #(spec, foreign) =
-    owned_load(
-      "build/eff_own_field_assume",
-      "assume other/m.Repo.find : [Disk]\n",
-      ["dep"],
-    )
-  spec.type_fields |> should.equal([])
-  foreign |> should.equal(["other/m.Repo.find"])
-}
-
-pub fn a_declared_return_about_unshipped_code_is_dropped_test() {
-  let #(spec, foreign) =
-    owned_load(
-      "build/eff_own_declared_return",
-      "assume other/m.make where returns : [Net]\n",
-      ["dep"],
-    )
-  spec.declared_returns
-  |> dict.get(QualifiedName("other/m", "make"))
-  |> should.be_error()
-  foreign |> should.equal(["other/m.make"])
-}
-
 // One line of every shape over `module`, and a module blanket over
 // `module/blanket`.
 fn every_line_shape(module: String) -> String {
@@ -1996,26 +1908,27 @@ pub fn every_line_about_shipped_code_is_kept_test() {
 }
 
 pub fn every_line_about_unshipped_code_is_dropped_test() {
+  // Every channel empty, and every path named in file order.
   let #(spec, foreign) =
     owned_load(
       "build/eff_own_every_shape_unshipped",
       every_line_shape("other"),
-      [
-        "dep",
-        "dep/blanket",
-      ],
+      ["dep", "dep/blanket"],
     )
-  spec
-  |> should.equal(
-    effects.DepSpec(
-      ..effects.empty_dep_spec(),
-      modules: set.from_list(["dep", "dep/blanket"]),
-    ),
-  )
+  spec |> should.equal(effects.empty_dep_spec())
   foreign
   |> should.equal([
     "other.f", "other/blanket", "other.run", "other.Repo.find", "other.make",
   ])
+}
+
+pub fn a_blanket_about_unshipped_code_answers_nothing_test() {
+  // Nothing is left to answer for the module's names at the module tier.
+  installed_dep("build/eff_own_module_assume", "dep", "assume other/x : []\n", [
+    "dep",
+  ])
+  |> entry_of(QualifiedName("other/x", "f"))
+  |> should.equal(Error(Nil))
 }
 
 // Rejected lines about unshipped code
@@ -2059,70 +1972,32 @@ pub fn a_rejected_line_about_shipped_code_still_blocks_its_name_test() {
 }
 
 // Which module a line is about
-//
-// Each pair loads one line with its module shipped and with it not: the first
-// keeps it, the second names it. The field shapes are the ones a last-dot
-// split would misread, and the retained ones key nothing either way — what
-// they would get wrong is the warning.
 
-// The dropped paths of `line` loaded under `shipped`, and under `unshipped`.
-fn owned_pair(
-  root: String,
-  line: String,
-  shipped: List(String),
-  unshipped: List(String),
-) -> #(List(String), List(String)) {
-  let #(_spec, kept) = owned_load(root <> "_shipped", line, shipped)
-  let #(_spec, dropped) = owned_load(root <> "_unshipped", line, unshipped)
-  #(kept, dropped)
-}
-
-pub fn a_check_on_a_field_path_is_about_the_types_module_test() {
-  owned_pair(
-    "build/eff_own_pair_check_field",
-    "check dep/m.Handler.run : []\n",
-    ["dep/m"],
-    ["dep"],
-  )
-  |> should.equal(#([], ["dep/m.Handler.run"]))
-}
-
-pub fn a_retained_module_line_is_about_its_module_test() {
-  owned_pair(
-    "build/eff_own_pair_retained_module",
-    "assume dep/m where future : [X]\n",
-    ["dep/m"],
-    ["dep"],
-  )
-  |> should.equal(#([], ["dep/m"]))
-}
-
-pub fn a_retained_field_line_is_about_the_types_module_test() {
-  owned_pair(
-    "build/eff_own_pair_retained_field",
-    "assume dep/m.Handler.run where future : [X]\n",
-    ["dep/m"],
-    ["dep"],
-  )
-  |> should.equal(#([], ["dep/m.Handler.run"]))
-}
-
-pub fn a_retained_bounded_line_is_about_its_module_test() {
-  // The bound list is cut before the path is read, and the warning names the
-  // path without it.
-  owned_pair(
-    "build/eff_own_pair_retained_bounded",
-    "assume dep/m.f(cb: [e]) where future : [X]\n",
-    ["dep/m"],
-    ["dep"],
-  )
-  |> should.equal(#([], ["dep/m.f"]))
+pub fn a_line_is_kept_exactly_when_its_module_is_shipped_test() {
+  // Each line is loaded with `dep/m` shipped and with only `dep` shipped: the
+  // first keeps it, the second names it. The field shapes are the ones a
+  // last-dot split would misread; the retained ones key nothing either way,
+  // so what they would get wrong is the warning; a retained line's bound list
+  // is cut from the path it is named by.
+  [
+    #("check dep/m.Handler.run : []", "dep/m.Handler.run"),
+    #("assume dep/m where future : [X]", "dep/m"),
+    #("assume dep/m.Handler.run where future : [X]", "dep/m.Handler.run"),
+    #("assume dep/m.f(cb: [e]) where future : [X]", "dep/m.f"),
+  ]
+  |> list.index_map(fn(entry, index) {
+    let #(line, path) = entry
+    let root = "build/eff_own_pair_" <> int.to_string(index)
+    let #(_spec, kept) = owned_load(root <> "_shipped", line, ["dep/m"])
+    let #(_spec, dropped) = owned_load(root <> "_unshipped", line, ["dep"])
+    #(kept, dropped) |> should.equal(#([], [path]))
+  })
 }
 
 pub fn a_bare_field_line_is_about_no_packages_code_test() {
   // A bare field line is a fallback for every type of that name in every
-  // package, so no package owns it, whatever it ships — and unlike the
-  // retained lines above, it keyed something.
+  // package, so no package owns it, whatever it ships — and unlike a retained
+  // line, it keyed something.
   let #(spec, foreign) =
     owned_load("build/eff_own_bare_field", "assume Handler.run : [Net]\n", [
       "dep",
@@ -2183,17 +2058,6 @@ pub fn parsed_paths_come_before_rejected_ones_test() {
   foreign |> should.equal(["gleam/io.println", "other/x.f"])
 }
 
-// The blocker a rejected per-function line builds.
-fn wildcard_assume(module: String, function: String) -> types.AssumeAnnotation {
-  types.AssumeAnnotation(
-    module:,
-    target: types.FunctionAssume(function),
-    params: [],
-    effects: Some(types.Wildcard),
-    returns: None,
-  )
-}
-
 // A package whose source holds no Gleam module
 
 pub fn a_package_with_no_gleam_module_owns_nothing_test() {
@@ -2205,10 +2069,10 @@ pub fn a_package_with_no_gleam_module_owns_nothing_test() {
       "// the package's own spec\n\nassume dep.f : []\neffects dep.g : []\nassume Handler.run : [Net]\n",
       [],
     )
-  let assert effects.SpecLoaded(spec:, foreign:, source_dir:, ..) = load
+  let assert effects.SpecLoaded(spec:, foreign:, shipped:, ..) = load
   spec |> should.equal(effects.empty_dep_spec())
   foreign |> should.equal(["dep.f", "dep.g", "Handler.run"])
-  source_dir |> should.equal(root <> "/src")
+  shipped |> should.equal(effects.ShipsNoModule(root <> "/src"))
   effects.describe_dep_spec_load("dep", load)
   |> should.equal([
     "graded: warning: dep's spec has 3 paths about code it does not ship "
@@ -2231,11 +2095,16 @@ pub fn a_path_dependencys_source_dir_is_under_its_own_root_test() {
   let dep_root = root <> "/app/../vendor/foo"
   let load = effects.load_dep_spec_at(dep_root, dep_root <> "/foo.graded")
   cleanup(root)
-  let assert effects.SpecLoaded(source_dir:, ..) = load
-  source_dir |> should.equal("build/eff_own_vendor/app/../vendor/foo/src")
+  let assert effects.SpecLoaded(shipped:, ..) = load
+  shipped
+  |> should.equal(effects.ShipsNoModule(
+    "build/eff_own_vendor/app/../vendor/foo/src",
+  ))
 }
 
 pub fn a_moved_spec_file_does_not_move_the_source_dir_test() {
+  // The spec sits under `specs/`, and the directory searched is still the
+  // package's own `src/`.
   let root =
     write_fixture("build/eff_own_moved_spec", [
       #(
@@ -2243,57 +2112,30 @@ pub fn a_moved_spec_file_does_not_move_the_source_dir_test() {
         "name = \"dep\"\n\n[tools.graded]\nspec_file = \"specs/dep.graded\"\n",
       ),
       #("specs/dep.graded", "assume dep.f : [Time]\n"),
-      ..shipped_sources("src", ["dep"])
     ])
   let load = effects.load_dep_spec(root, "dep")
   cleanup(root)
-  let assert effects.SpecLoaded(spec:, source_dir:, ..) = load
-  source_dir |> should.equal("build/eff_own_moved_spec/src")
-  spec.assumes |> should.equal([assume("dep", "f", ["Time"])])
+  let assert effects.SpecLoaded(foreign:, shipped:, ..) = load
+  foreign |> should.equal(["dep.f"])
+  shipped |> should.equal(effects.ShipsNoModule("build/eff_own_moved_spec/src"))
 }
 
 // The warning
 
-// What a load whose spec dropped `foreign` warns, for a package shipping one
-// module.
-fn foreign_warning(
-  rejected: List(annotation.ParseError),
-  foreign: List(String),
-) -> List(String) {
-  effects.describe_dep_spec_load(
-    "dep",
-    effects.SpecLoaded(
-      effects.DepSpec(
-        ..effects.empty_dep_spec(),
-        modules: set.from_list(["dep"]),
-      ),
-      rejected,
-      foreign,
-      "dep/src",
-    ),
-  )
-}
-
 pub fn a_dropped_path_renders_one_warning_test() {
-  foreign_warning([], ["gleam/io.println"])
+  load_warnings([], ["gleam/io.println"])
   |> should.equal([
     "graded: warning: dep's spec has 1 path about code it does not ship "
     <> "(gleam/io.println); those lines are ignored — a line you trust belongs "
     <> "in your own spec",
   ])
-  foreign_warning([], ["gleam/io.println", "gleam/io", "app.helper"])
+  load_warnings([], ["gleam/io.println", "gleam/io", "app.helper"])
   |> should.equal([
     "graded: warning: dep's spec has 3 paths about code it does not ship "
     <> "(gleam/io.println; gleam/io; app.helper); those lines are ignored — a "
     <> "line you trust belongs in your own spec",
   ])
-  foreign_warning([], [
-    "gleam/io.println",
-    "gleam/io",
-    "app.helper",
-    "a.b",
-    "c.d",
-  ])
+  load_warnings([], ["gleam/io.println", "gleam/io", "app.helper", "a.b", "c.d"])
   |> should.equal([
     "graded: warning: dep's spec has 5 paths about code it does not ship "
     <> "(gleam/io.println; gleam/io; app.helper; and 2 more); those lines are "
@@ -2302,7 +2144,7 @@ pub fn a_dropped_path_renders_one_warning_test() {
 }
 
 pub fn a_load_with_rejected_and_dropped_lines_warns_twice_test() {
-  foreign_warning([annotation.InvalidLine(2, "not a line")], ["gleam/io"])
+  load_warnings([annotation.InvalidLine(2, "not a line")], ["gleam/io"])
   |> should.equal([
     "graded: warning: dep's spec has 1 line graded could not read "
       <> "(2: not a line); the rest of the file is used",
@@ -2953,7 +2795,7 @@ pub fn a_stale_dependency_effects_line_does_not_bury_the_catalog_test() {
     "build/eff_dep_over_catalog",
     "gleam_stdlib",
     "effects gleam/io.println : [Shipped]\n",
-    "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
+    stdlib_manifest,
     [
       #(QualifiedName("gleam/io", "println"), foreign_declared_everywhere()),
     ],
@@ -2974,7 +2816,7 @@ pub fn a_dropped_dependency_effects_line_takes_its_bounds_with_it_test() {
       "build/eff_dep_bounds_atomic",
       "gleam_stdlib",
       "effects gleam/io.println(cb: [cb]) : [cb]\n",
-      "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
+      stdlib_manifest,
       [
         #(QualifiedName("gleam/io", "println"), foreign_declared_everywhere()),
       ],

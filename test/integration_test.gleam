@@ -12995,12 +12995,6 @@ type Placement {
 
 const placements = [AsInstalled, AsPathDependency]
 
-// The consumer's installed standard library, which selects its catalog file.
-const stdlib_installed = "packages = [
-  { name = \"gleam_stdlib\", version = \"1.0.0\" },
-]
-"
-
 // What one consumer run over a dependency reports: the `check` violations, the
 // `graded effect` answer to each query, and the warnings the dependency's spec
 // load renders — read through the reader, since the suite has no stderr
@@ -13048,7 +13042,7 @@ fn owned_spec_run(
     list.flatten([
       [
         #(consumer <> "gleam.toml", consumer_toml),
-        #(consumer <> "manifest.toml", stdlib_installed),
+        #(consumer <> "manifest.toml", stdlib_manifest),
         #(consumer <> "proj.graded", consumer_spec),
         #(consumer <> "proj.gleam", consumer_source),
         #(dep <> "gleam.toml", "name = \"dep\"\n"),
@@ -13073,12 +13067,11 @@ fn owned_spec_run(
   OwnedRun(charged:, answers:, warnings:)
 }
 
-// The warning a load dropping `paths` renders, for a package that ships code.
-fn dropped_paths_warning(count: String, paths: String) -> String {
-  "graded: warning: dep's spec has "
-  <> count
-  <> " about code it does not ship ("
-  <> paths
+// The warning a load dropping the one `path` renders, for a package that ships
+// code.
+fn dropped_paths_warning(path: String) -> String {
+  "graded: warning: dep's spec has 1 path about code it does not ship ("
+  <> path
   <> "); those lines are ignored — a line you trust belongs in your own spec"
 }
 
@@ -13092,15 +13085,30 @@ pub fn f() -> Nil {
 }
 "
 
-pub fn a_dependencys_assume_over_the_stdlib_answers_for_no_consumer_test() {
+pub fn a_dependencys_lines_about_the_stdlib_answer_for_no_consumer_test() {
   // The dependency may believe `println` is pure for its own build; the
-  // consumer's call is charged what the catalog says of it.
+  // consumer's call is charged what the catalog says of it, and the line is
+  // named. Under the blanket the catalog's per-function entry answered first
+  // either way, so the warning is the change. The rejected line builds no
+  // blocker, since its wildcard would be a claim about `println` too, and its
+  // own warning prints first.
   use placement <- list.each(placements)
+  use #(name, dep_spec, warnings) <- list.each([
+    #("function", "assume gleam/io.println : []\n", [
+      dropped_paths_warning("gleam/io.println"),
+    ]),
+    #("blanket", "assume gleam/io : []\n", [dropped_paths_warning("gleam/io")]),
+    #("rejected", "assume gleam/io.println : nonsense\n", [
+      "graded: warning: dep's spec has 1 line graded could not read "
+        <> "(1: assume gleam/io.println : nonsense); the rest of the file is used",
+      dropped_paths_warning("gleam/io.println"),
+    ]),
+  ])
   let run =
     owned_spec_run(
-      "own_stdlib_function",
+      "own_stdlib_" <> name,
       placement,
-      "assume gleam/io.println : []\n",
+      dep_spec,
       [dep_module],
       "check proj.f : []\n",
       println_caller,
@@ -13114,33 +13122,7 @@ pub fn a_dependencys_assume_over_the_stdlib_answers_for_no_consumer_test() {
       Some(types.Catalog("gleam_stdlib")),
     )),
   )
-  run.warnings
-  |> should.equal([dropped_paths_warning("1 path", "gleam/io.println")])
-}
-
-pub fn a_dependencys_blanket_over_the_stdlib_is_named_test() {
-  // The catalog's per-function entry answered before the module tier either
-  // way; what changes is that the line is named.
-  use placement <- list.each(placements)
-  let run =
-    owned_spec_run(
-      "own_stdlib_blanket",
-      placement,
-      "assume gleam/io : []\n",
-      [dep_module],
-      "check proj.f : []\n",
-      println_caller,
-      [],
-      [],
-    )
-  charged_by(run.charged, "gleam/io", "println")
-  |> should.equal(
-    Ok(#(
-      types.Specific(set.from_list(["Stdout"])),
-      Some(types.Catalog("gleam_stdlib")),
-    )),
-  )
-  run.warnings |> should.equal([dropped_paths_warning("1 path", "gleam/io")])
+  run.warnings |> should.equal(warnings)
 }
 
 // A third package, installed with no spec of its own and no catalog entry.
@@ -13173,7 +13155,7 @@ pub fn a_dependencys_blanket_over_a_third_package_is_ignored_test() {
     )
   let assert Ok(#(actual, _origin)) = charged_by(run.charged, "other/x", "f")
   actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
-  run.warnings |> should.equal([dropped_paths_warning("1 path", "other/x")])
+  run.warnings |> should.equal([dropped_paths_warning("other/x")])
 }
 
 pub fn a_dependencys_line_about_a_third_package_is_restored_by_the_consumer_test() {
@@ -13263,7 +13245,7 @@ pub fn a_dependencys_assume_about_the_consumers_code_is_ignored_test() {
     charged_by(run.charged, "proj/util", "helper")
   actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
   run.warnings
-  |> should.equal([dropped_paths_warning("1 path", "proj/util.helper")])
+  |> should.equal([dropped_paths_warning("proj/util.helper")])
 }
 
 pub fn a_dependencys_clause_on_another_packages_external_is_ignored_test() {
@@ -13298,37 +13280,7 @@ pub fn f() -> Nil {
   |> list.unique
   |> should.equal([types.Specific(set.from_list(["Unknown"]))])
   run.warnings
-  |> should.equal([dropped_paths_warning("1 path", "alib/mod.make")])
-}
-
-pub fn a_dependencys_rejected_line_about_the_stdlib_blocks_nothing_test() {
-  // The blocker's wildcard would be a claim about `println` too. Both warnings
-  // print, the rejected line first.
-  use placement <- list.each(placements)
-  let run =
-    owned_spec_run(
-      "own_rejected_stdlib",
-      placement,
-      "assume gleam/io.println : nonsense\n",
-      [dep_module],
-      "check proj.f : []\n",
-      println_caller,
-      [],
-      [],
-    )
-  charged_by(run.charged, "gleam/io", "println")
-  |> should.equal(
-    Ok(#(
-      types.Specific(set.from_list(["Stdout"])),
-      Some(types.Catalog("gleam_stdlib")),
-    )),
-  )
-  run.warnings
-  |> should.equal([
-    "graded: warning: dep's spec has 1 line graded could not read "
-      <> "(1: assume gleam/io.println : nonsense); the rest of the file is used",
-    dropped_paths_warning("1 path", "gleam/io.println"),
-  ])
+  |> should.equal([dropped_paths_warning("alib/mod.make")])
 }
 
 pub fn the_consumers_own_assume_over_the_stdlib_still_answers_test() {
@@ -13408,14 +13360,18 @@ pub fn prints() -> Nil {
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
   run.answers |> should.equal([Ok(dep_log_answer(placement))])
   run.warnings
-  |> should.equal([dropped_paths_warning("1 path", "gleam/io.println")])
+  |> should.equal([dropped_paths_warning("gleam/io.println")])
 }
 
 // What `graded effect dep.log` answers when the dependency's `effects` line
 // decides it.
 fn dep_log_answer(placement: Placement) -> String {
-  "dep.log is pure — no effects ([])\n  source: "
-  <> case placement {
+  "dep.log is pure — no effects ([])\n  source: " <> dep_spec_source(placement)
+}
+
+// How an answer names the dependency's spec, per placement.
+fn dep_spec_source(placement: Placement) -> String {
+  case placement {
     AsInstalled -> "dep's shipped spec"
     AsPathDependency -> "path dependency dep"
   }
@@ -13471,7 +13427,7 @@ pub fn a_dependencys_bare_field_line_is_ignored_test() {
     Ok(storage_answer(placement)),
     Error(graded.EffectNotFound("proj.Repo.find")),
   ])
-  run.warnings |> should.equal([dropped_paths_warning("1 path", "Repo.find")])
+  run.warnings |> should.equal([dropped_paths_warning("Repo.find")])
 
   let restored =
     repo_run(
@@ -13492,10 +13448,8 @@ pub fn a_dependencys_bare_field_line_is_ignored_test() {
 // qualified line.
 fn storage_answer(placement: Placement) -> String {
   "field `find` on type `Repo` (dep/repo) has effects [Storage]\n  source: "
-  <> case placement {
-    AsInstalled -> "assumed by a field `assume` in dep's shipped spec"
-    AsPathDependency -> "assumed by a field `assume` in path dependency dep"
-  }
+  <> "assumed by a field `assume` in "
+  <> dep_spec_source(placement)
 }
 
 // A producer's returned closure across the dependency boundary

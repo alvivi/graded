@@ -831,6 +831,17 @@ pub fn is_field_path(path: String) -> Bool {
   }
 }
 
+// The module a path names, by the same shape rule: a field path's module ends
+// before its type segment. `None` for a bare field path (`Handler.run`), which
+// names no module, and for a path the rule refuses.
+pub fn path_module(path: String) -> Option(String) {
+  case split_assume_path(path) {
+    Ok(AssumeModule(module:)) | Ok(AssumeFunction(module:, ..)) -> Some(module)
+    Ok(AssumeField(module:, ..)) -> module
+    Error(Nil) -> None
+  }
+}
+
 // Split an `assume` line's path by segment count and casing:
 //
 //   `gleam/io`                 -> the whole module
@@ -1115,29 +1126,6 @@ pub fn line_path(line: GradedLine) -> Result(String, Nil) {
     AssumeLine(ext, _) -> Ok(assume_sort_key(ext))
     RetainedAssumeLine(path:, ..) -> Ok(retained_bare_path(path))
     CommentLine(_) | BlankLine -> Error(Nil)
-  }
-}
-
-// The module a line's path names, split by the casing rule an `assume` line's
-// subject is read by: a field path's module ends before its type segment.
-// `None` for a comment or a blank, for a bare field path (`Handler.run`), and
-// for a path that rule refuses.
-pub fn line_module(line: GradedLine) -> Option(String) {
-  case line {
-    // A function path or a field path: a field `check` is an `AnnotationLine`.
-    AnnotationLine(annotation, _) -> path_module(annotation.function)
-    AssumeLine(assume_annotation, _) -> Some(assume_annotation.module)
-    FieldAssumeLine(tf, _) -> tf.module
-    RetainedAssumeLine(path:, ..) -> path_module(retained_bare_path(path))
-    CommentLine(_) | BlankLine -> None
-  }
-}
-
-fn path_module(path: String) -> Option(String) {
-  case split_assume_path(path) {
-    Ok(AssumeModule(module:)) | Ok(AssumeFunction(module:, ..)) -> Some(module)
-    Ok(AssumeField(module:, ..)) -> module
-    Error(Nil) -> None
   }
 }
 

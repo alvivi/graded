@@ -2533,10 +2533,6 @@ fn assume_bounds(
 //
 // The two returns maps are held apart because only one of them is a
 // declaration, and the sanitizing below weighs them by exactly that.
-//
-// `modules` is the package's own module paths, read off the `src/` tree beside
-// the spec; every line the channels hold names one of them. Empty where that
-// tree holds no Gleam module, and the channels are then empty too.
 pub type DepSpec {
   DepSpec(
     effects: Dict(QualifiedName, EffectTerm),
@@ -2549,7 +2545,6 @@ pub type DepSpec {
     declared_returns: Dict(QualifiedName, ScopedClause),
     type_fields: List(FieldAnnotation),
     assumes: List(AssumeAnnotation),
-    modules: Set(String),
   )
 }
 
@@ -2569,10 +2564,16 @@ pub type DepSpecLoad {
     // does not ship: the parsed lines' paths in file order, then the paths of
     // the rejected lines' blockers in rejected-line order.
     foreign: List(String),
-    // The directory the package's modules were read from, which the warning
-    // names when it held none.
-    source_dir: String,
+    shipped: ShippedCode,
   )
+}
+
+// Whether the package beside a loaded spec ships any Gleam module, read off its
+// `src/` tree. Where it ships none, every path-bearing line is dropped and the
+// warning names the directory searched.
+pub type ShippedCode {
+  ShipsModules
+  ShipsNoModule(source_dir: String)
 }
 
 // The warnings one dependency's spec load prints, rejected lines first; empty
@@ -2593,10 +2594,31 @@ pub fn describe_dep_spec_load(
       <> simplifile.describe_error(cause)
       <> "); it is read as shipping none",
     ]
-    SpecLoaded(spec:, rejected:, foreign:, source_dir:) ->
+    SpecLoaded(rejected:, foreign:, shipped:, ..) ->
       list.flatten([
-        describe_rejected(package_name, rejected),
-        describe_foreign(package_name, foreign, spec.modules, source_dir),
+        // Named by the line alone: a retired spelling's rewrite hint is a
+        // second line, which would leave the sentence's tail dangling.
+        sampled_warning(
+          package_name,
+          list.map(rejected, annotation.describe_parse_error_line),
+          #("line", "lines"),
+          "graded could not read",
+          "the rest of the file is used",
+        ),
+        sampled_warning(
+          package_name,
+          foreign,
+          #("path", "paths"),
+          "about code it does not ship",
+          "those lines are ignored — "
+            <> case shipped {
+            ShipsModules -> "a line you trust belongs in your own spec"
+            ShipsNoModule(source_dir:) ->
+              "no Gleam module was found under "
+              <> source_dir
+              <> ", so the package ships no code graded can match them to"
+          },
+        ),
       ])
   }
 }
@@ -2612,80 +2634,46 @@ pub fn warn_dep_spec_load(package_name: String, load: DepSpecLoad) -> Nil {
 // naming them.
 const warning_sample_size = 3
 
-// The warning for the lines graded could not read, naming the first few as
-// `<line>: <content>` each. Named by the line alone — a dependency's spec is
-// not the consumer's to rewrite, and the rewrite hint a retired spelling
-// carries is a second line, which would leave this sentence's tail dangling
-// after it.
-fn describe_rejected(
+// `<package>'s spec has <count> <noun> <what> (<names>); <outcome>`, naming
+// the first few of `names` and counting the rest; no warning where `names` is
+// empty.
+fn sampled_warning(
   package_name: String,
-  rejected: List(annotation.ParseError),
+  names: List(String),
+  noun: #(String, String),
+  what: String,
+  outcome: String,
 ) -> List(String) {
-  case rejected {
-    [] -> []
-    _ -> [
-      "graded: warning: "
-      <> package_name
-      <> "'s spec has "
-      <> counted(list.length(rejected), "line", "lines")
-      <> " graded could not read ("
-      <> sampled(list.map(rejected, annotation.describe_parse_error_line))
-      <> "); the rest of the file is used",
-    ]
+  use <- bool.guard(when: names == [], return: [])
+  let count = case list.length(names) {
+    1 -> "1 " <> noun.0
+    count -> int.to_string(count) <> " " <> noun.1
   }
-}
-
-// The warning for the paths dropped as naming code the package does not ship,
-// each named as its line states it. Where the source directory held no Gleam
-// module, the warning names that directory in place of the remedy.
-fn describe_foreign(
-  package_name: String,
-  foreign: List(String),
-  modules: Set(String),
-  source_dir: String,
-) -> List(String) {
-  case foreign {
-    [] -> []
-    _ -> [
-      "graded: warning: "
-      <> package_name
-      <> "'s spec has "
-      <> counted(list.length(foreign), "path", "paths")
-      <> " about code it does not ship ("
-      <> sampled(foreign)
-      <> "); those lines are ignored — "
-      <> case set.is_empty(modules) {
-        True ->
-          "no Gleam module was found under "
-          <> source_dir
-          <> ", so the package ships no code graded can match them to"
-        False -> "a line you trust belongs in your own spec"
-      },
-    ]
-  }
-}
-
-// The first few names, and a count of what the cap left out.
-fn sampled(names: List(String)) -> String {
   let #(sample, past_cap) = list.split(names, warning_sample_size)
-  case list.length(past_cap) {
-    0 -> sample
-    remaining ->
-      list.append(sample, ["and " <> int.to_string(remaining) <> " more"])
-  }
-  |> string.join("; ")
-}
-
-fn counted(count: Int, singular: String, plural: String) -> String {
-  case count {
-    1 -> "1 " <> singular
-    _ -> int.to_string(count) <> " " <> plural
-  }
+  let named =
+    case list.length(past_cap) {
+      0 -> sample
+      remaining ->
+        list.append(sample, ["and " <> int.to_string(remaining) <> " more"])
+    }
+    |> string.join("; ")
+  [
+    "graded: warning: "
+    <> package_name
+    <> "'s spec has "
+    <> count
+    <> " "
+    <> what
+    <> " ("
+    <> named
+    <> "); "
+    <> outcome,
+  ]
 }
 
 // A dependency that states nothing: what a spec graded did not read answers.
 pub fn empty_dep_spec() -> DepSpec {
-  DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [], set.new())
+  DepSpec(dict.new(), dict.new(), dict.new(), dict.new(), [], [])
 }
 
 // Run `read` over a load's spec, or hand back `absent` unchanged. A load with
@@ -2742,10 +2730,13 @@ pub fn load_dep_spec_at(dep_root: String, spec_path: String) -> DepSpecLoad {
         rejected_blockers(owned, rejected) |> partition_owned(modules)
       SpecLoaded(
         spec: annotation.replace_lines_by_path(owned, blockers)
-          |> dep_spec_from_file(modules),
+          |> dep_spec_from_file,
         rejected:,
         foreign: list.append(foreign_lines, foreign_blockers) |> list.unique,
-        source_dir:,
+        shipped: case set.is_empty(modules) {
+          True -> ShipsNoModule(source_dir:)
+          False -> ShipsModules
+        },
       )
     }
   }
@@ -2758,23 +2749,15 @@ fn partition_owned(
   lines: List(types.GradedLine),
   modules: Set(String),
 ) -> #(List(types.GradedLine), List(String)) {
-  let #(kept, foreign) =
-    list.fold(lines, #([], []), fn(acc, line) {
-      let #(kept, foreign) = acc
-      case annotation.line_path(line) {
-        Error(Nil) -> #([line, ..kept], foreign)
-        Ok(path) ->
-          case annotation.line_module(line) {
-            Some(module) ->
-              case set.contains(modules, module) {
-                True -> #([line, ..kept], foreign)
-                False -> #(kept, [path, ..foreign])
-              }
-            None -> #(kept, [path, ..foreign])
-          }
+  let #(kept, dropped) =
+    list.partition(lines, fn(line) {
+      case annotation.line_path(line) |> result.map(annotation.path_module) {
+        Error(Nil) -> True
+        Ok(Some(module)) -> set.contains(modules, module)
+        Ok(None) -> False
       }
     })
-  #(list.reverse(kept), list.reverse(foreign))
+  #(kept, list.filter_map(dropped, annotation.line_path))
 }
 
 // Read one dependency's parsed spec into the channels a consumer resolves
@@ -2786,7 +2769,7 @@ fn partition_owned(
 // that check instead of becoming a global fact about the dependency's
 // function, and every term still travels with the bounds from its own
 // annotation.
-fn dep_spec_from_file(file: types.GradedFile, modules: Set(String)) -> DepSpec {
+fn dep_spec_from_file(file: types.GradedFile) -> DepSpec {
   let declared_modules = annotation.module_assume_modules(file)
   DepSpec(
     // The module-level declarations govern their own module's effects
@@ -2809,7 +2792,6 @@ fn dep_spec_from_file(file: types.GradedFile, modules: Set(String)) -> DepSpec {
     declared_returns: load_spec_assume_returns_from_file(file),
     type_fields: annotation.extract_type_fields(file),
     assumes: annotation.extract_assumes(file),
-    modules:,
   )
 }
 
@@ -2917,8 +2899,8 @@ fn package_modules(source_dir: String) -> Set(String) {
 // their consumer's — the same reading that keeps their `assume` line
 // for a Gleam-bodied function of their own.
 //
-// Whose code a line is about is not asked here: the reader has already scoped
-// the file to the package's own modules.
+// Every line it is handed names one of the package's own modules; the reader
+// dropped the rest.
 //
 // A term and its bounds are dropped together. `load_knowledge_base` merges terms
 // and bounds in two independent passes, so a term dropped without its bounds
@@ -3002,7 +2984,7 @@ pub fn with_path_dep_spec(
   // The modules this fold's declarations arbitrate over: the winners of the
   // module tier only — a module the consumer already declared is not this
   // dependency's to clear.
-  let declared = declared_over_catalog(winning_modules)
+  let declared = set.from_list(dict.keys(winning_modules))
   let #(standing, standing_bounds) =
     outside_declared_modules(
       knowledge_base.all_effects,
@@ -3024,16 +3006,6 @@ pub fn with_path_dep_spec(
   |> gap_filling_declared_returns(dep.declared_returns, origin)
   |> with_closed_returned_operators(dep.returns, origin)
   |> with_type_fields(dep.type_fields, origin)
-}
-
-// The modules a dependency's winning module-level declarations answer over.
-// Each is a module that package ships: the reader dropped every other line.
-fn declared_over_catalog(
-  winning_modules: Dict(String, #(EffectTerm, LookupOrigin)),
-) -> Set(String) {
-  winning_modules
-  |> dict.keys
-  |> set.from_list
 }
 
 // What a dependency's module-level declarations leave standing: the terms and
@@ -3237,7 +3209,7 @@ fn load_dependencies(
         module_effects: dict.merge(acc.module_effects, module_assumes),
         declared_modules: set.union(
           acc.declared_modules,
-          declared_over_catalog(module_assumes),
+          set.from_list(dict.keys(module_assumes)),
         ),
       )
     },
