@@ -2,6 +2,7 @@ import generators
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/set
 import gleam/string
 import gleeunit/should
@@ -2077,10 +2078,12 @@ pub fn bounds_beside_an_effects_claim_still_parse_test() {
 // path's type segment is never taken for part of its module, and a retained
 // line's bound list is cut before its path is read.
 
-// The module the one line `input` parses to names.
+// The module the path of the one line `input` parses to names.
 fn module_of(input: String) -> option.Option(String) {
   let assert Ok(types.GradedFile(lines: [line])) = annotation.parse_file(input)
-  annotation.line_module(line)
+  annotation.line_path(line)
+  |> result.map(annotation.path_module)
+  |> result.unwrap(None)
 }
 
 pub fn every_line_shape_names_its_module_test() {
