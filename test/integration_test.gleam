@@ -11680,8 +11680,8 @@ pub fn a_dependency_cannot_declare_a_return_for_the_consumers_code_test() {
   // The dep's spec names `lib.make` — an ordinary Gleam function of the
   // *consumer*, whose body every caller can already see. Loaded, it would sit in
   // a tier above the summary this run infers from that body and answer [Net] for
-  // a closure that prints. A spec speaks for the modules its package ships and
-  // for the names a foreign scan records; `lib` is neither.
+  // a closure that prints. A spec speaks for the modules its package ships, and
+  // `lib` is not one of them.
   let root = "build/declared_returns_dep_over_consumer"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
@@ -11839,8 +11839,7 @@ pub fn one_packages_returns_line_cannot_bury_anothers_declaration_test() {
   // cross-package keep case — and `zlib`'s spec carries a stray inferred
   // `returns` line for the very same name. Whichever order the two specs are
   // folded in, the declaration is the one that answers: it is not zlib's code to
-  // state a summary about, and declared outranks inferred across specs as it
-  // does within one.
+  // state a summary about, so zlib's line is dropped as its spec loads.
   let root = "build/declared_returns_cross_package_stray"
   support.write_fixture(root, [
     #("gleam.toml", "name = \"proj\"\n"),
@@ -12978,6 +12977,525 @@ pub fn a_dependencys_own_pass_reads_a_blanketed_sibling_test() {
   |> should.equal([
     "justin_wrap.go is pure — no effects ([])\n  source: inference over path dependency justin's source",
   ])
+}
+
+// A dependency's spec speaks for its own code
+//
+// A line in a dependency's spec about a module that package does not ship —
+// the standard library, another dependency, the consumer's own code — answers
+// for no consumer name, and the name falls to the tiers underneath it. Every
+// case runs twice, installed under `build/packages` and as a path dependency:
+// one reader, two folds.
+
+// Where the dependency sits.
+type Placement {
+  AsInstalled
+  AsPathDependency
+}
+
+const placements = [AsInstalled, AsPathDependency]
+
+// The consumer's installed standard library, which selects its catalog file.
+const stdlib_installed = "packages = [
+  { name = \"gleam_stdlib\", version = \"1.0.0\" },
+]
+"
+
+// What one consumer run over a dependency reports: the `check` violations, the
+// `graded effect` answer to each query, and the warnings the dependency's spec
+// load renders — read through the reader, since the suite has no stderr
+// capture.
+type OwnedRun {
+  OwnedRun(
+    charged: CataloguedRun,
+    answers: List(Result(String, graded.GradedError)),
+    warnings: List(String),
+  )
+}
+
+// A consumer `proj` over a dependency `dep` shipping `dep_spec` and the
+// `dep_sources` under its `src/`, placed as `placement`, with `extra` files
+// under the consumer's root — another installed package's source.
+fn owned_spec_run(
+  name: String,
+  placement: Placement,
+  dep_spec: String,
+  dep_sources: List(#(String, String)),
+  consumer_spec: String,
+  consumer_source: String,
+  extra: List(#(String, String)),
+  queries: List(String),
+) -> OwnedRun {
+  let #(root, consumer, dep, consumer_toml) = case placement {
+    AsInstalled -> #(
+      "build/" <> name <> "_installed",
+      "",
+      "build/packages/dep/",
+      "name = \"proj\"\n",
+    )
+    AsPathDependency -> #(
+      "build/" <> name <> "_path",
+      "proj/",
+      "dep/",
+      "name = \"proj\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    )
+  }
+  let under = fn(prefix, files: List(#(String, String))) {
+    list.map(files, fn(entry) { #(prefix <> entry.0, entry.1) })
+  }
+  support.write_fixture(
+    root,
+    list.flatten([
+      [
+        #(consumer <> "gleam.toml", consumer_toml),
+        #(consumer <> "manifest.toml", stdlib_installed),
+        #(consumer <> "proj.graded", consumer_spec),
+        #(consumer <> "proj.gleam", consumer_source),
+        #(dep <> "gleam.toml", "name = \"dep\"\n"),
+        #(dep <> "dep.graded", dep_spec),
+      ],
+      under(dep <> "src/", dep_sources),
+      under(consumer, extra),
+    ]),
+  )
+  let consumer_root = root <> "/" <> consumer
+  let charged = catalogued_run(consumer_root, [])
+  let answers =
+    list.map(queries, fn(query) {
+      graded.run_effect_formatted(consumer_root, query, graded.Prose)
+    })
+  let warnings =
+    effects.describe_dep_spec_load(
+      "dep",
+      effects.load_dep_spec(root <> "/" <> dep, "dep"),
+    )
+  support.cleanup(root)
+  OwnedRun(charged:, answers:, warnings:)
+}
+
+// The warning a load dropping `paths` renders, for a package that ships code.
+fn dropped_paths_warning(count: String, paths: String) -> String {
+  "graded: warning: dep's spec has "
+  <> count
+  <> " about code it does not ship ("
+  <> paths
+  <> "); those lines are ignored — a line you trust belongs in your own spec"
+}
+
+// A module `dep` ships, so its spec is read at all.
+const dep_module = #("dep.gleam", "pub fn noop() -> Nil {\n  Nil\n}\n")
+
+const println_caller = "import gleam/io
+
+pub fn f() -> Nil {
+  io.println(\"hi\")
+}
+"
+
+pub fn a_dependencys_assume_over_the_stdlib_answers_for_no_consumer_test() {
+  // The dependency may believe `println` is pure for its own build; the
+  // consumer's call is charged what the catalog says of it.
+  use placement <- list.each(placements)
+  let run =
+    owned_spec_run(
+      "own_stdlib_function",
+      placement,
+      "assume gleam/io.println : []\n",
+      [dep_module],
+      "check proj.f : []\n",
+      println_caller,
+      [],
+      [],
+    )
+  charged_by(run.charged, "gleam/io", "println")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Stdout"])),
+      Some(types.Catalog("gleam_stdlib")),
+    )),
+  )
+  run.warnings
+  |> should.equal([dropped_paths_warning("1 path", "gleam/io.println")])
+}
+
+pub fn a_dependencys_blanket_over_the_stdlib_is_named_test() {
+  // The catalog's per-function entry answered before the module tier either
+  // way; what changes is that the line is named.
+  use placement <- list.each(placements)
+  let run =
+    owned_spec_run(
+      "own_stdlib_blanket",
+      placement,
+      "assume gleam/io : []\n",
+      [dep_module],
+      "check proj.f : []\n",
+      println_caller,
+      [],
+      [],
+    )
+  charged_by(run.charged, "gleam/io", "println")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Stdout"])),
+      Some(types.Catalog("gleam_stdlib")),
+    )),
+  )
+  run.warnings |> should.equal([dropped_paths_warning("1 path", "gleam/io")])
+}
+
+// A third package, installed with no spec of its own and no catalog entry.
+const other_package = #(
+  "build/packages/other/src/other/x.gleam",
+  "pub fn f() -> Nil {\n  Nil\n}\n",
+)
+
+const other_caller = "import other/x
+
+pub fn f() -> Nil {
+  x.f()
+}
+"
+
+pub fn a_dependencys_blanket_over_a_third_package_is_ignored_test() {
+  // Nothing else speaks for `other/x`, so its name is `[Unknown]` where the
+  // dependency's blanket used to call it pure.
+  use placement <- list.each(placements)
+  let run =
+    owned_spec_run(
+      "own_third_package_blanket",
+      placement,
+      "assume other/x : []\n",
+      [dep_module],
+      "check proj.f : []\n",
+      other_caller,
+      [other_package],
+      [],
+    )
+  let assert Ok(#(actual, _origin)) = charged_by(run.charged, "other/x", "f")
+  actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+  run.warnings |> should.equal([dropped_paths_warning("1 path", "other/x")])
+}
+
+pub fn a_dependencys_line_about_a_third_package_is_restored_by_the_consumer_test() {
+  // The consumer who trusts the line writes it in their own spec, at a tier
+  // that wins anyway.
+  use placement <- list.each(placements)
+  let ignored =
+    owned_spec_run(
+      "own_third_package_function",
+      placement,
+      "assume other/x.f : [Net]\n",
+      [dep_module],
+      "check proj.f : [Net]\n",
+      other_caller,
+      [other_package],
+      [],
+    )
+  let assert Ok(#(actual, _origin)) =
+    charged_by(ignored.charged, "other/x", "f")
+  actual |> should.equal(types.Specific(set.from_list(["Unknown"])))
+
+  let restored =
+    owned_spec_run(
+      "own_third_package_restored",
+      placement,
+      "assume other/x.f : [Net]\n",
+      [dep_module],
+      "assume other/x.f : [Net]\ncheck proj.f : [Net]\n",
+      other_caller,
+      [other_package],
+      [],
+    )
+  restored.charged.violations |> should.equal([])
+}
+
+pub fn a_dependencys_assume_does_not_reach_its_own_fallback_body_test() {
+  // The body runs on Erlang and prints. The dependency's line about `println`
+  // no longer decides what the walk reads for that call.
+  use placement <- list.each(placements)
+  let run =
+    owned_spec_run(
+      "own_walked_body",
+      placement,
+      "assume gleam/io.println : []\n",
+      [
+        #(
+          "dep/log.gleam",
+          "import gleam/io
+
+@external(javascript, \"log_ffi\", \"log\")
+pub fn log() -> Nil {
+  io.println(\"hi\")
+}
+",
+        ),
+      ],
+      "check proj.f : []\n",
+      "import dep/log\n\npub fn f() -> Nil {\n  log.log()\n}\n",
+      [],
+      [],
+    )
+  let assert Ok(#(types.Specific(labels), _origin)) =
+    charged_by(run.charged, "dep/log", "log")
+  set.contains(labels, "Stdout") |> should.be_true()
+}
+
+pub fn a_dependencys_assume_about_the_consumers_code_is_ignored_test() {
+  // `proj/util.helper` prints, and the consumer's own body says so.
+  use placement <- list.each(placements)
+  let run =
+    owned_spec_run(
+      "own_consumer_function",
+      placement,
+      "assume proj/util.helper : []\n",
+      [dep_module],
+      "check proj.f : []\n",
+      "import proj/util\n\npub fn f() -> Nil {\n  util.helper()\n}\n",
+      [
+        #(
+          "proj/util.gleam",
+          "import gleam/io\n\npub fn helper() -> Nil {\n  io.println(\"hi\")\n}\n",
+        ),
+      ],
+      [],
+    )
+  let assert Ok(#(actual, _origin)) =
+    charged_by(run.charged, "proj/util", "helper")
+  actual |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  run.warnings
+  |> should.equal([dropped_paths_warning("1 path", "proj/util.helper")])
+}
+
+pub fn a_dependencys_clause_on_another_packages_external_is_ignored_test() {
+  // `alib` ships `make` as a bodyless external and says nothing about it.
+  // `dep`'s clause about what it hands back is not `dep`'s to state, even
+  // though a scan of `alib`'s source records the name as foreign.
+  use placement <- list.each(placements)
+  let run =
+    owned_spec_run(
+      "own_other_external_clause",
+      placement,
+      "assume alib/mod.make where returns : [Net]\n",
+      [dep_module],
+      "check proj.f : []\n",
+      "import alib/mod
+
+pub fn f() -> Nil {
+  let handle = mod.make()
+  handle()
+}
+",
+      [
+        #(
+          "build/packages/alib/src/alib/mod.gleam",
+          support.foreign_fn("make", "() -> fn() -> Nil"),
+        ),
+      ],
+      [],
+    )
+  run.charged.violations
+  |> list.map(fn(violation) { violation.explanation.actual })
+  |> list.unique
+  |> should.equal([types.Specific(set.from_list(["Unknown"]))])
+  run.warnings
+  |> should.equal([dropped_paths_warning("1 path", "alib/mod.make")])
+}
+
+pub fn a_dependencys_rejected_line_about_the_stdlib_blocks_nothing_test() {
+  // The blocker's wildcard would be a claim about `println` too. Both warnings
+  // print, the rejected line first.
+  use placement <- list.each(placements)
+  let run =
+    owned_spec_run(
+      "own_rejected_stdlib",
+      placement,
+      "assume gleam/io.println : nonsense\n",
+      [dep_module],
+      "check proj.f : []\n",
+      println_caller,
+      [],
+      [],
+    )
+  charged_by(run.charged, "gleam/io", "println")
+  |> should.equal(
+    Ok(#(
+      types.Specific(set.from_list(["Stdout"])),
+      Some(types.Catalog("gleam_stdlib")),
+    )),
+  )
+  run.warnings
+  |> should.equal([
+    "graded: warning: dep's spec has 1 line graded could not read "
+      <> "(1: assume gleam/io.println : nonsense); the rest of the file is used",
+    dropped_paths_warning("1 path", "gleam/io.println"),
+  ])
+}
+
+pub fn the_consumers_own_assume_over_the_stdlib_still_answers_test() {
+  // The asymmetry, stated in one place: the consumer's line is theirs to
+  // write and decides the name, whatever the dependency says of it.
+  use placement <- list.each(placements)
+  let run =
+    owned_spec_run(
+      "own_consumer_stdlib",
+      placement,
+      "assume gleam/io.println : [Net]\n",
+      [dep_module],
+      "assume gleam/io.println : []\ncheck proj.f : []\n",
+      println_caller,
+      [],
+      ["gleam/io.println"],
+    )
+  run.charged.violations |> should.equal([])
+  run.answers
+  |> should.equal([
+    Ok(
+      "gleam/io.println is pure — no effects ([])\n  source: your spec's `assume` line",
+    ),
+  ])
+}
+
+pub fn owned_summaries_inferred_under_a_foreign_assume_stay_trusted_test() {
+  // The dependency inferred `log` and `make` under its own assumption about
+  // `println` and shipped both lines. They are its word about its own code and
+  // still answer; only the assumption itself stops answering.
+  use placement <- list.each(placements)
+  let run =
+    owned_spec_run(
+      "own_boundary",
+      placement,
+      "assume gleam/io.println : []\n"
+        <> "effects dep.log : []\n"
+        <> "effects dep.make : [] where returns : []\n",
+      [
+        #(
+          "dep.gleam",
+          "import gleam/io
+
+pub fn log() -> Nil {
+  io.println(\"hi\")
+}
+
+pub fn make() -> fn() -> Nil {
+  fn() { io.println(\"hi\") }
+}
+",
+        ),
+      ],
+      "check proj.logs : []\ncheck proj.closes : []\ncheck proj.prints : []\n",
+      "import dep
+import gleam/io
+
+pub fn logs() -> Nil {
+  dep.log()
+}
+
+pub fn closes() -> Nil {
+  let handle = dep.make()
+  handle()
+}
+
+pub fn prints() -> Nil {
+  io.println(\"hi\")
+}
+",
+      [],
+      ["dep.log"],
+    )
+  let assert [violation] = run.charged.violations
+  violation.function |> should.equal("prints")
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  run.answers |> should.equal([Ok(dep_log_answer(placement))])
+  run.warnings
+  |> should.equal([dropped_paths_warning("1 path", "gleam/io.println")])
+}
+
+// What `graded effect dep.log` answers when the dependency's `effects` line
+// decides it.
+fn dep_log_answer(placement: Placement) -> String {
+  "dep.log is pure — no effects ([])\n  source: "
+  <> case placement {
+    AsInstalled -> "dep's shipped spec"
+    AsPathDependency -> "path dependency dep"
+  }
+}
+
+const repo_type = "pub type Repo {
+  Repo(find: fn() -> Nil)
+}
+"
+
+const repo_callers = "import dep/repo
+
+pub type Repo {
+  Repo(find: fn() -> Nil)
+}
+
+pub fn theirs(r: repo.Repo) -> Nil {
+  r.find()
+}
+"
+
+// A run over a dependency shipping a bare and a qualified line for `find`,
+// under a consumer spec that adds `consumer_line`, querying both types' field.
+fn repo_run(
+  name: String,
+  placement: Placement,
+  consumer_line: String,
+) -> OwnedRun {
+  owned_spec_run(
+    name,
+    placement,
+    "assume Repo.find : [Disk]\nassume dep/repo.Repo.find : [Storage]\n",
+    [#("dep/repo.gleam", repo_type)],
+    consumer_line <> "check proj.theirs : []\n",
+    repo_callers,
+    [],
+    ["dep/repo.Repo.find", "proj.Repo.find"],
+  )
+}
+
+pub fn a_dependencys_bare_field_line_is_ignored_test() {
+  // A bare field line is a fallback for every type of that name in every
+  // package. The dependency's qualified line for its own type still answers;
+  // its bare one no longer answers for the consumer's `Repo`, and the
+  // consumer's own bare line does.
+  use placement <- list.each(placements)
+  let run = repo_run("own_bare_field", placement, "")
+  let assert [violation] = run.charged.violations
+  violation.explanation.actual
+  |> should.equal(types.Specific(set.from_list(["Storage"])))
+  run.answers
+  |> should.equal([
+    Ok(storage_answer(placement)),
+    Error(graded.EffectNotFound("proj.Repo.find")),
+  ])
+  run.warnings |> should.equal([dropped_paths_warning("1 path", "Repo.find")])
+
+  let restored =
+    repo_run(
+      "own_bare_field_restored",
+      placement,
+      "assume Repo.find : [Disk]\n",
+    )
+  restored.answers
+  |> should.equal([
+    Ok(storage_answer(placement)),
+    Ok(
+      "field `find` on type `Repo` has effects [Disk]\n  source: assumed by a field `assume` in your spec",
+    ),
+  ])
+}
+
+// What `graded effect dep/repo.Repo.find` answers from the dependency's
+// qualified line.
+fn storage_answer(placement: Placement) -> String {
+  "field `find` on type `Repo` (dep/repo) has effects [Storage]\n  source: "
+  <> case placement {
+    AsInstalled -> "assumed by a field `assume` in dep's shipped spec"
+    AsPathDependency -> "assumed by a field `assume` in path dependency dep"
+  }
 }
 
 // A producer's returned closure across the dependency boundary
