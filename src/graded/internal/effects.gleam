@@ -2723,7 +2723,9 @@ pub fn load_dep_spec(dep_root: String, package_name: String) -> DepSpecLoad {
 // package does not ship — any line shape, on any channel — is dropped before
 // the channels are read, and so is the blocker a rejected line naming one
 // would build; each such path is recorded for the warning. A path that names
-// no module, a bare field path included, is not the package's either.
+// no module, a bare field path included, is not the package's either, and a
+// package whose `src/` tree is missing, unreadable or holds no Gleam module
+// ships no module at all.
 pub fn load_dep_spec_at(dep_root: String, spec_path: String) -> DepSpecLoad {
   case read_optional_file(spec_path) {
     Error(cause) -> SpecUnreadable(path: spec_path, cause:)
@@ -2915,14 +2917,8 @@ fn package_modules(source_dir: String) -> Set(String) {
 // their consumer's — the same reading that keeps their `assume` line
 // for a Gleam-bodied function of their own.
 //
-// Both returns maps are weighed against a second question, which the effects
-// channel has no analogue of: whose code the line is *about*. A spec may state a
-// returned-operator summary for a module it ships or for a name the foreign scan
-// records, and for nothing else. Without that, a dependency shipping
-// a clause on `app.helper` — an ordinary Gleam function of the *consumer* —
-// lands a declaration in the tier above the consumer's own body-derived summary,
-// and the consumer's source stops being what its own callers are charged for.
-// A package whose `src/` tree could not be read arbitrates nothing here.
+// Whose code a line is about is not asked here: the reader has already scoped
+// the file to the package's own modules.
 //
 // A term and its bounds are dropped together. `load_knowledge_base` merges terms
 // and bounds in two independent passes, so a term dropped without its bounds
@@ -2940,11 +2936,6 @@ fn sanitize_dep_spec(
   let inferred_over_foreign = fn(name) {
     dict.has_key(foreign, name) && !set.contains(declared, name)
   }
-  let about_other_code = fn(name: QualifiedName) {
-    !set.is_empty(dep.modules)
-    && !set.contains(dep.modules, name.module)
-    && !dict.has_key(foreign, name)
-  }
   DepSpec(
     ..dep,
     effects: dict.filter(dep.effects, fn(name, _term) {
@@ -2954,10 +2945,7 @@ fn sanitize_dep_spec(
       !inferred_over_foreign(name)
     }),
     returns: dict.filter(dep.returns, fn(name, _clause) {
-      !dict.has_key(foreign, name) && !about_other_code(name)
-    }),
-    declared_returns: dict.filter(dep.declared_returns, fn(name, _operator) {
-      !about_other_code(name)
+      !dict.has_key(foreign, name)
     }),
   )
 }
@@ -3013,11 +3001,8 @@ pub fn with_path_dep_spec(
     over_catalog(knowledge_base.module_effects, module_assumes)
   // The modules this fold's declarations arbitrate over: the winners of the
   // module tier only — a module the consumer already declared is not this
-  // dependency's to clear — intersected with what the package ships. An
-  // unreadable `src/` tree leaves `dep.modules` empty and the catalog standing,
-  // the same reading `sanitize_dep_spec` gives a package that cannot say what
-  // code is its own.
-  let declared = declared_over_catalog(winning_modules, dep.modules)
+  // dependency's to clear.
+  let declared = declared_over_catalog(winning_modules)
   let #(standing, standing_bounds) =
     outside_declared_modules(
       knowledge_base.all_effects,
@@ -3041,18 +3026,14 @@ pub fn with_path_dep_spec(
   |> with_type_fields(dep.type_fields, origin)
 }
 
-// The modules a dependency's winning module-level declarations answer over: the
-// ones that package also ships. A line about another package's code arbitrates
-// nothing here, so one dependency's `assume gleam/io : []` leaves the catalog's
-// per-function entries for the standard library standing.
+// The modules a dependency's winning module-level declarations answer over.
+// Each is a module that package ships: the reader dropped every other line.
 fn declared_over_catalog(
   winning_modules: Dict(String, #(EffectTerm, LookupOrigin)),
-  shipped: Set(String),
 ) -> Set(String) {
   winning_modules
   |> dict.keys
   |> set.from_list
-  |> set.intersection(shipped)
 }
 
 // What a dependency's module-level declarations leave standing: the terms and
@@ -3193,9 +3174,9 @@ type Dependencies {
     returns: Dict(QualifiedName, ReturnedOperator),
     type_fields: List(#(FieldAnnotation, LookupOrigin)),
     module_effects: Dict(String, #(EffectTerm, LookupOrigin)),
-    // The modules these specs both declare module-level and ship, accumulated
-    // across every installed package: what the catalog's per-function entries
-    // are cleared for before the two tiers merge.
+    // The modules these specs declare module-level, accumulated across every
+    // installed package: what the catalog's per-function entries are cleared
+    // for before the two tiers merge.
     declared_modules: Set(String),
   )
 }
@@ -3256,7 +3237,7 @@ fn load_dependencies(
         module_effects: dict.merge(acc.module_effects, module_assumes),
         declared_modules: set.union(
           acc.declared_modules,
-          declared_over_catalog(module_assumes, dep.modules),
+          declared_over_catalog(module_assumes),
         ),
       )
     },
