@@ -23,7 +23,7 @@ gleam run -m graded infer
 This scans `src/`, analyses every function, and writes two outputs:
 
 - **`<package_name>.graded`** at the project root — the spec file. Contains the inferred effects of every *public* function plus any hand-written `check` invariants and `assume` declarations. Tracked in git.
-- **`build/.graded/<module>.graded`** — per-module cache files. Contain the inferred effects of *every* function (public and private). Regenerated freely on each `graded infer` run, never shipped (`build/` is gitignored).
+- **`build/.graded/<module>.graded`** — per-module cache files. Each holds the inferred effects of its module's public functions, the same `effects` lines the spec file carries, scoped to one module and written with bare names. Regenerated freely on each `graded infer` run, never shipped (`build/` is gitignored), and read back by nothing.
 
 ### Example
 
