@@ -20,8 +20,9 @@ graded keeps two kinds of `.graded` file:
   (optionally) ship.
 - **The cache** (`build/.graded/<module>.graded`) uses **bare** names because each
   file is implicitly scoped to one module by its location. It holds the inferred
-  effects of *every* function, public and private, and is regenerated freely by
-  `graded infer`. It's gitignored and never ships.
+  effects of that module's public functions — the spec file's `effects` lines
+  for the module, under bare names — and is regenerated freely by
+  `graded infer`. It's gitignored, never ships, and nothing reads it back.
 
 ## Annotation kinds
 
@@ -68,7 +69,8 @@ effects myapp/router.handle_request : [Http, Stdout]
 ```
 
 Written by `graded infer` for every public function. Regenerated on each run — do
-not edit by hand. (The cache holds the same lines for private functions too.)
+not edit by hand. (The cache holds the same lines, module by module, under bare
+names; a private function has no line in either file.)
 
 That includes the public functions of your internal modules — the ones
 `internal_modules` in `gleam.toml` names, by default `<name>/internal` and
