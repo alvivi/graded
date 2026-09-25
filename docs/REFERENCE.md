@@ -221,10 +221,16 @@ See [Assumptions: foreign code and field effects](#assumptions-foreign-code-and-
 and [Type field effects](#type-field-effects).
 
 The type in a field `assume` is module-qualified by the module that *defines*
-it. An unqualified or mis-qualified one keys nothing, so the field silently
-resolves to `[Unknown]`; `graded check` warns when a field `assume` matches no
-field of any project type. In a dependency's spec an unqualified field line is
-ignored and named in a warning, since it names none of that package's modules.
+it. A mis-qualified one keys nothing, so the field silently resolves to
+`[Unknown]`. An unqualified one in your own spec keys a fallback under no
+module: `graded effect` answers a query for that field from it, but a field
+call reaches it only where girard could not type the receiver and the
+receiver's parameter annotation names the type bare, so a qualified line is
+what resolves field calls. `graded check` warns when a field `assume` matches no
+field of any project type, an unqualified one included. In a dependency's spec
+an unqualified field line is ignored and named in a warning, since it names
+none of that package's modules; a consumer who wants that fallback writes the
+line in their own spec.
 
 A [`check` on a field](#check-on-a-function-typed-field) reads its path by the
 same shapes and the same qualification rule, and does the opposite job: the
