@@ -408,6 +408,10 @@ pub fn dependency_type_field_outranks_a_bare_project_line_test() {
       #("gleam.toml", "name = \"probe\"\nversion = \"1.0.0\"\n"),
       #("probe.graded", "assume Repo.find : [Disk]\n"),
       #("build/packages/dep/dep.graded", "assume dep.Repo.find : [Storage]\n"),
+      #(
+        "build/packages/dep/src/dep.gleam",
+        "pub type Repo {\n  Repo(find: fn() -> Nil)\n}\n",
+      ),
       #("src/app.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
     ])
   let expected =
