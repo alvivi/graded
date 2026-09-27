@@ -116,24 +116,6 @@ pub fn fn_typed_param_names(
   }
 }
 
-// Names (label or in-body) of a callee's *operator* parameters — those whose
-// type takes a function. Empty when the callee isn't in the registry.
-pub fn operator_param_names(
-  registry: SignatureRegistry,
-  name: QualifiedName,
-) -> Set(String) {
-  case lookup(registry, name) {
-    None -> set.new()
-    Some(params) ->
-      params
-      |> list.filter(fn(p) { p.is_operator })
-      |> list.filter_map(fn(p) {
-        option.to_result(option.or(p.label, p.name), Nil)
-      })
-      |> set.from_list()
-  }
-}
-
 // In-body parameter names of a callee's fn-typed parameters, **in declaration
 // order** (label preferred, then in-body name). Unlike `fn_typed_param_names`
 // (a `Set`), this preserves order — needed to curry an operator argument's
@@ -223,27 +205,6 @@ pub fn callback_param_names(
 // so two of them cannot come to different orders.
 fn by_position(params: List(ParameterInfo)) -> List(ParameterInfo) {
   list.sort(params, fn(a, b) { int.compare(a.position, b.position) })
-}
-
-// The argument positions of the callbacks of one *operator* parameter — the
-// function-typed argument indices within that parameter's own type, in order.
-// For `action: fn(Config, fn() -> _, fn() -> _) -> _` this is `[1, 2]`. Empty
-// when the callee or parameter isn't a known operator. The registry-backed twin
-// of `operator_param_shapes`, used at the call site to curry a closure
-// argument's abstraction over the right parameters.
-pub fn operator_callback_positions(
-  registry: SignatureRegistry,
-  callee_name: QualifiedName,
-  param_name: String,
-) -> List(Int) {
-  case lookup(registry, callee_name) {
-    None -> []
-    Some(params) ->
-      params
-      |> list.find(fn(p) { option.or(p.label, p.name) == Some(param_name) })
-      |> result.map(fn(p) { p.callback_positions })
-      |> result.unwrap([])
-  }
 }
 
 // Glance AST to SignatureRegistry
