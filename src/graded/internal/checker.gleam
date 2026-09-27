@@ -6194,14 +6194,9 @@ fn reorder_args_by_signature(
     list.sort(params, fn(a, b) { int.compare(a.position, b.position) })
   use values <- result.map(
     list.try_map(sorted, fn(param) {
-      let by_label = param.label |> option.then(find_arg_by_label(args, _))
-      case by_label {
-        Some(arg) -> Ok(arg.value)
-        None ->
-          find_arg_at_position(args, param.position)
-          |> option.to_result(Nil)
-          |> result.map(fn(arg) { arg.value })
-      }
+      argument_for_parameter(param, args)
+      |> option.to_result(Nil)
+      |> result.map(fn(arg) { arg.value })
     }),
   )
   list.index_map(values, fn(value, position) {
@@ -6406,9 +6401,10 @@ fn auto_bounds_from_registry(
   let params = option.unwrap(signatures.lookup(registry, callee_name), [])
   let shares =
     params
-    |> list.filter(fn(param) { param.is_fn_typed })
+    |> list.filter(fn(param) {
+      param.is_fn_typed && option.values([param.label, param.name]) != []
+    })
     |> list.filter_map(fn(param) {
-      use key <- result.try(synthesized_bound_key(params, param))
       case argument_for_parameter(param, args) {
         Some(arg) ->
           case arg.value {
@@ -6419,7 +6415,7 @@ fn auto_bounds_from_registry(
             | types.ReceiverPath(_)
             | types.Constructed(_)
             | types.OtherExpression -> Error(Nil)
-            _ -> Ok(key)
+            _ -> Ok(synthesized_bound_key(params, param))
           }
         None -> Error(Nil)
       }
@@ -6427,41 +6423,30 @@ fn auto_bounds_from_registry(
   case shares {
     [] -> #(existing_effects, [])
     _ -> {
-      let tracked_bounds =
-        list.filter_map(shares, fn(key) {
-          option.to_result(option.map(key, self_referential_bound), Nil)
-        })
       let tracked_terms =
         list.map(shares, fn(key) {
-          case key {
-            Some(name) -> TVar(name)
-            None -> effect_term.unknown()
-          }
+          key |> option.map(TVar) |> option.lazy_unwrap(effect_term.unknown)
         })
       #(
         effect_term.normalize(TUnion([existing_effects, ..tracked_terms])),
-        tracked_bounds,
+        shares |> option.values |> list.map(self_referential_bound),
       )
     }
   }
 }
 
 // The name a bound synthesised for `param` is keyed by: its label, else its
-// in-body name — the first that `parameter_named` resolves back to `param`.
-// `Ok(None)` when the parameter has a name but none resolves back to it;
-// `Error(Nil)` when it has neither a label nor an in-body name.
+// in-body name — the first that `parameter_named` resolves back to `param`;
+// `None` when neither does.
 fn synthesized_bound_key(
   params: List(signatures.ParameterInfo),
   param: signatures.ParameterInfo,
-) -> Result(Option(String), Nil) {
-  case [param.label, param.name] |> list.filter_map(option.to_result(_, Nil)) {
-    [] -> Error(Nil)
-    names ->
-      names
-      |> list.find(fn(name) { parameter_named(params, name) == Some(param) })
-      |> option.from_result
-      |> Ok
-  }
+) -> Option(String) {
+  option.values([param.label, param.name])
+  |> list.find(fn(name) {
+    signatures.parameter_named(params, name) == Some(param)
+  })
+  |> option.from_result
 }
 
 // Match arguments against a callee's param bounds and produce a
@@ -6479,12 +6464,13 @@ fn bind_variables(
     #(Result(EffectTerm, Nil), Memo),
   memo: Memo,
 ) -> #(dict.Dict(String, EffectTerm), Memo) {
+  let signature = signatures.lookup(registry, callee_name)
   list.fold(callee_bounds, #(dict.new(), memo), fn(state, bound) {
     let #(acc, memo) = state
     // Find the argument matching this parameter by label (caller used
     // an explicit label) or by real parameter position from the
     // registry. If neither matches, the variable stays unresolved.
-    let matched = find_matching_arg(callee_name, bound, args, registry)
+    let #(parameter, matched) = match_argument(signature, bound.name, args)
     case matched {
       Some(arg) -> {
         // For an *operator* parameter the argument is lifted to an effect
@@ -6493,9 +6479,7 @@ fn bind_variables(
         // positions come from the operator parameter's own signature so a
         // closure argument is abstracted over exactly the right parameters. A
         // first-order parameter just takes the argument's flat effect.
-        let #(arg_effects, memo) = case
-          param_info(callee_name, bound.name, registry)
-        {
+        let #(arg_effects, memo) = case parameter {
           Some(signatures.ParameterInfo(
             is_operator: True,
             callback_positions:,
@@ -7647,40 +7631,36 @@ fn value_channel_bound_names(
 // Locate the call argument bound to a named callee parameter — by label, then
 // signature position — and resolve an argument value's flat effect.
 
-// Find the argument that matches a given param bound, through the callee
-// signature's parameter of that name: its declared label, then its real
-// position. The bound's own name is read as a call-site label only when no
-// signature is known.
-fn find_matching_arg(
-  callee_name: types.QualifiedName,
-  bound: ParamBound,
-  args: List(types.CallArgument),
-  registry: SignatureRegistry,
-) -> option.Option(types.CallArgument) {
-  find_matching_arg_by_name(callee_name, bound.name, args, registry)
-}
-
 fn find_matching_arg_by_name(
   callee_name: types.QualifiedName,
   name: String,
   args: List(types.CallArgument),
   registry: SignatureRegistry,
 ) -> option.Option(types.CallArgument) {
-  // With a known signature, the argument bound to the parameter `name`
-  // resolves to: an argument carrying the parameter's declared Gleam label (a
-  // labelled call site, `f(with: cb)`), or the argument at the parameter's real
-  // position (a positional call site). A signature with no parameter of that
-  // name or label leaves the bound unresolved. With no signature, an argument
-  // the caller labelled `name` is the only match.
-  //
-  // The bound's index in the bounds list is never a fallback: it is only
-  // correct when every parameter has a bound, and picks the wrong argument
-  // when bounds are sparse.
-  case signatures.lookup(registry, callee_name) {
-    None -> find_arg_by_label(args, name)
-    Some(params) ->
-      parameter_named(params, name)
-      |> option.then(argument_for_parameter(_, args))
+  match_argument(signatures.lookup(registry, callee_name), name, args).1
+}
+
+// The signature parameter a bound's name names and the argument bound to it.
+// With a known signature, that argument is the one carrying the parameter's
+// declared Gleam label (a labelled call site, `f(with: cb)`), or the one at the
+// parameter's real position (a positional call site); a signature with no
+// parameter of that name or label leaves the bound unresolved. With no
+// signature, an argument the caller labelled `name` is the only match.
+//
+// The bound's index in the bounds list is never a fallback: it is only correct
+// when every parameter has a bound, and picks the wrong argument when bounds
+// are sparse.
+fn match_argument(
+  signature: Option(List(signatures.ParameterInfo)),
+  name: String,
+  args: List(types.CallArgument),
+) -> #(Option(signatures.ParameterInfo), Option(types.CallArgument)) {
+  case signature {
+    None -> #(None, find_arg_by_label(args, name))
+    Some(params) -> {
+      let parameter = signatures.parameter_named(params, name)
+      #(parameter, option.then(parameter, argument_for_parameter(_, args)))
+    }
   }
 }
 
@@ -7722,21 +7702,7 @@ fn param_info(
   registry: SignatureRegistry,
 ) -> option.Option(signatures.ParameterInfo) {
   use params <- option.then(signatures.lookup(registry, callee_name))
-  parameter_named(params, param_name)
-}
-
-// The parameter of a known signature a bound's name names: by in-body name,
-// then by label.
-fn parameter_named(
-  params: List(signatures.ParameterInfo),
-  param_name: String,
-) -> option.Option(signatures.ParameterInfo) {
-  let by_name =
-    list.find(params, fn(p) { p.name == Some(param_name) })
-    |> option.from_result
-  use <- option.lazy_or(by_name)
-  list.find(params, fn(p) { p.label == Some(param_name) })
-  |> option.from_result
+  signatures.parameter_named(params, param_name)
 }
 
 // Look up the effects of an argument value. Function references →

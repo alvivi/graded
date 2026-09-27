@@ -1322,6 +1322,7 @@ fn check_source_with_assumes(
   source: String,
   annotations: List(EffectAnnotation),
   assumes: List(types.AssumeAnnotation),
+  registry: signatures.SignatureRegistry,
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
   let kb = effects.with_assumes(knowledge_base(), assumes, types.UserAssume)
@@ -1331,7 +1332,7 @@ fn check_source_with_assumes(
       "",
       annotations,
       kb,
-      signatures.empty(),
+      registry,
       typeinfo.no_reading(),
       types.all_targets(),
     )
@@ -1354,7 +1355,7 @@ pub fn fetch() { httpc.send(request) }"
       effect_term.from_effect_set(Specific(set.from_list(["Http"]))),
       returns: None,
     )
-  check_source_with_assumes(source, [annotation], assumes)
+  check_source_with_assumes(source, [annotation], assumes, signatures.empty())
   |> should.equal([])
 }
 
@@ -1374,7 +1375,7 @@ pub fn fetch() { httpc.send(request) }"
       effect_term.from_effect_set(Specific(set.new())),
       returns: None,
     )
-  check_source_with_assumes(source, [annotation], assumes)
+  check_source_with_assumes(source, [annotation], assumes, signatures.empty())
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
 }
@@ -3234,37 +3235,25 @@ fn declared_second_order_violations(
       "assume app.with_logger(action: [action]) : [action([Stdout])]
 assume app.runner(cb: [cb]) : [cb]",
     )
-  let kb =
-    effects.with_assumes(
-      knowledge_base(),
-      annotation.extract_assumes(spec),
-      types.UserAssume,
-    )
   let #(_, reg) = second_order_kb_and_registry()
-  let assert Ok(module) =
-    glance.module(
-      "import app
+  check_source_with_assumes(
+    "import app
 pub fn caller() -> Nil { app.with_logger(app.runner) }",
-    )
-  let ann =
-    EffectAnnotation(
-      Check,
-      "caller",
-      [],
-      effect_term.from_effect_set(Specific(set.from_list(budget))),
-      returns: None,
-    )
-  let #(violations, _findings, _) =
-    checker.check(
-      module,
-      "",
-      [ann],
-      kb,
-      reg,
-      typeinfo.no_reading(),
-      types.all_targets(),
-    )
-  violations
+    [caller_check(budget)],
+    annotation.extract_assumes(spec),
+    reg,
+  )
+}
+
+// A `check` line holding `caller` to `budget`.
+fn caller_check(budget: List(String)) -> EffectAnnotation {
+  EffectAnnotation(
+    Check,
+    "caller",
+    [],
+    effect_term.from_effect_set(Specific(set.from_list(budget))),
+    returns: None,
+  )
 }
 
 pub fn declared_second_order_call_site_resolves_test() {
@@ -3286,36 +3275,14 @@ fn lifted_declaration_violations(
 ) -> List(types.Violation) {
   let assert Ok(spec) =
     annotation.parse_file("assume m.with_tx(cb: [cb]) : [cb([Db])]")
-  let kb =
-    effects.with_assumes(
-      knowledge_base(),
-      [g_line, ..annotation.extract_assumes(spec)],
-      types.UserAssume,
-    )
   let assert Ok(signature_module) =
     glance.module("pub fn with_tx(cb: fn(fn() -> Nil) -> Nil) -> Nil { Nil }")
-  let registry = signatures.from_glance_module("m", signature_module)
-  let assert Ok(module) =
-    glance.module("import m\npub fn caller() -> Nil { m.with_tx(m.g) }")
-  let ann =
-    EffectAnnotation(
-      Check,
-      "caller",
-      [],
-      effect_term.from_effect_set(Specific(set.from_list(["Db"]))),
-      returns: None,
-    )
-  let #(violations, _findings, _) =
-    checker.check(
-      module,
-      "",
-      [ann],
-      kb,
-      registry,
-      typeinfo.no_reading(),
-      types.all_targets(),
-    )
-  violations
+  check_source_with_assumes(
+    "import m\npub fn caller() -> Nil { m.with_tx(m.g) }",
+    [caller_check(["Db"])],
+    [g_line, ..annotation.extract_assumes(spec)],
+    signatures.from_glance_module("m", signature_module),
+  )
 }
 
 pub fn a_declared_operator_spelling_never_lifts_as_an_operator_test() {

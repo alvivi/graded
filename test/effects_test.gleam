@@ -636,18 +636,23 @@ fn declared_term_across_format(
   let assert Ok(written) = annotation.parse_file(line)
   let assert Ok(reformatted) =
     annotation.parse_file(annotation.format_file(written))
-  let declared = fn(file) {
-    let kb =
-      effects.with_assumes(
-        knowledge_base(),
-        annotation.extract_assumes(file),
-        types.UserAssume,
-      )
-    let assert effects.Known(term, _) =
-      effects.lookup(kb, QualifiedName("m", "f"))
-    term
-  }
-  #(declared(written), declared(reformatted))
+  let f = QualifiedName("m", "f")
+  #(declared_term(written, f), declared_term(reformatted, f))
+}
+
+// The term the knowledge base holds for `name` under `file`'s `assume` lines.
+fn declared_term(
+  file: types.GradedFile,
+  name: QualifiedName,
+) -> types.EffectTerm {
+  let kb =
+    effects.with_assumes(
+      knowledge_base(),
+      annotation.extract_assumes(file),
+      types.UserAssume,
+    )
+  let assert effects.Known(term, _) = effects.lookup(kb, name)
+  term
 }
 
 pub fn an_operator_spelled_declaration_holds_one_term_across_format_test() {
@@ -666,15 +671,8 @@ pub fn a_module_declaration_holds_its_ground_set_test() {
   // A module has no parameters to bind a variable, so a module-level line's
   // term is read as the ground set it reduces to.
   let assert Ok(file) = annotation.parse_file("assume m : [Stdout, cb([Db])]")
-  let kb =
-    effects.with_assumes(
-      knowledge_base(),
-      annotation.extract_assumes(file),
-      types.UserAssume,
-    )
-  let assert effects.Known(term, _) =
-    effects.lookup(kb, QualifiedName("m", "anything"))
-  term |> should.equal(types.TLabels(set.from_list(["Stdout", "Unknown"])))
+  declared_term(file, QualifiedName("m", "anything"))
+  |> should.equal(types.TLabels(set.from_list(["Stdout", "Unknown"])))
 }
 
 pub fn the_bundled_catalog_declares_promise_new_test() {

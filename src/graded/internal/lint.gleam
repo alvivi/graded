@@ -196,7 +196,7 @@ pub fn run_recording_lookups(
   // unmatched. The lints below skip them, so a line whose one warning says to
   // remove it gets no second piece of advice about its bound list. Derived
   // from that channel's own output, so the two gates cannot drift.
-  let dead_assumes = dead_assume_names(assume_warnings)
+  let dead_assumes = dead_function_names(assume_warnings)
 
   // Resolving field `assume` lines needs per-module type info, which the
   // resolver builds on demand and keeps: only the modules a field line names,
@@ -275,10 +275,10 @@ pub fn run_recording_lookups(
       unmatched_bound_parameter_warnings(
         assumes,
         registry,
-        set.union(
-          dead_assumes,
-          dead_returns_clause_names(returns_clause_warnings),
-        ),
+        dead_function_names(list.append(
+          assume_warnings,
+          returns_clause_warnings,
+        )),
       ),
       returns_clause_warnings,
       clause_warnings,
@@ -352,8 +352,8 @@ fn aliased_bound_variable_warnings(
         function,
         assume.params,
         set.union(
-          declared_term_variables(assume.effects),
-          returns_variables(assume.returns),
+          term_variables(assume.effects),
+          term_variables(assume.returns),
         ),
       )
     })
@@ -364,7 +364,7 @@ fn aliased_bound_variable_warnings(
         ann.params,
         set.union(
           effect_term.free_vars(ann.effects),
-          returns_variables(ann.returns),
+          term_variables(ann.returns),
         ),
       )
     })
@@ -399,6 +399,7 @@ fn unmatched_bound_parameter_warnings(
 ) -> List(Warning) {
   list.flat_map(assumes, fn(assume) {
     {
+      use <- bool.guard(when: assume.params == [], return: Error(Nil))
       use qualified <- result.try(annotation.assume_qualified_name(assume))
       let function = types.dotted_name(qualified)
       use <- bool.guard(when: set.contains(dead, function), return: Error(Nil))
@@ -406,13 +407,9 @@ fn unmatched_bound_parameter_warnings(
         signatures.lookup(registry, qualified),
         Nil,
       ))
-      let parameters =
-        params
-        |> list.flat_map(fn(param) { option.values([param.name, param.label]) })
-        |> set.from_list
       assume.params
       |> list.filter(fn(bound) {
-        !set.contains(parameters, bound_receiver(bound.name))
+        signatures.parameter_named(params, bound_receiver(bound.name)) == None
       })
       |> list.map(fn(bound) {
         UnmatchedParamBoundWarning(function:, param: bound.name)
@@ -431,18 +428,10 @@ fn bound_receiver(name: String) -> String {
   }
 }
 
-// A clause's free variables, none where the line carries no clause.
-fn returns_variables(returns: Option(EffectTerm)) -> Set(String) {
-  case returns {
-    Some(operator) -> effect_term.free_vars(operator)
-    None -> set.new()
-  }
-}
-
-// The variables an `assume` line's declared effects half names. A line with no
-// effects half names none.
-fn declared_term_variables(effects: Option(EffectTerm)) -> Set(String) {
-  case effects {
+// A line's optional term's free variables — its `assume` effects half or its
+// clause — none where the line carries no such term.
+fn term_variables(term: Option(EffectTerm)) -> Set(String) {
+  case term {
     Some(term) -> effect_term.free_vars(term)
     None -> set.new()
   }
@@ -622,24 +611,15 @@ fn assume_warnings(
   })
 }
 
-// The function names the existence channel's warnings call dead — a stale
-// declaration over a visible body, or one matching nothing anywhere.
-fn dead_assume_names(warnings: List(Warning)) -> Set(String) {
+// The function names the existence warnings of either channel — the
+// declarations' or the clauses' — call dead: a stale line over a visible body,
+// or one matching nothing anywhere.
+fn dead_function_names(warnings: List(Warning)) -> Set(String) {
   list.filter_map(warnings, fn(warning) {
     case warning {
       StaleFunctionAssumeWarning(function:)
-      | UnmatchedFunctionAssumeWarning(function:) -> Ok(function)
-      _ -> Error(Nil)
-    }
-  })
-  |> set.from_list()
-}
-
-// The function names the clause channel's existence warnings call dead.
-fn dead_returns_clause_names(warnings: List(Warning)) -> Set(String) {
-  list.filter_map(warnings, fn(warning) {
-    case warning {
-      StaleReturnsClauseWarning(function:)
+      | UnmatchedFunctionAssumeWarning(function:)
+      | StaleReturnsClauseWarning(function:)
       | UnmatchedReturnsClauseWarning(function:) -> Ok(function)
       _ -> Error(Nil)
     }

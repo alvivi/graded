@@ -79,21 +79,14 @@ pub fn to_effect_set(term: EffectTerm) -> EffectSet {
 // operator, so this is how both the parser and the formatter read it.
 pub fn ground_root_abstractions(term: EffectTerm) -> EffectTerm {
   case normalize(term) {
+    TUnion(members) -> flatten_union(list.map(members, ground_abstraction))
+    other -> ground_abstraction(other)
+  }
+}
+
+fn ground_abstraction(term: EffectTerm) -> EffectTerm {
+  case term {
     TAbs(_, _) -> unknown()
-    TUnion(members) as union ->
-      case list.any(members, is_abstraction) {
-        False -> union
-        True ->
-          members
-          |> list.map(fn(member) {
-            case member {
-              TAbs(_, _) -> unknown()
-              other -> other
-            }
-          })
-          |> TUnion
-          |> normalize
-      }
     other -> other
   }
 }
