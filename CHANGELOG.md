@@ -20,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   qualify it with the type's module — while the `effects` lines a dependency's
   `infer` wrote under an ignored assumption still ship and still answer.
 
+### Fixed
+
+- A call that labels an argument with a *sibling* parameter's name now binds
+  each argument to the parameter whose label or position it fills. A
+  `fn(first cb: fn() -> Nil, cb other: fn() -> Nil)` called as
+  `f(first: loud, cb: quiet)` charged `quiet`'s effects to `cb`; it now charges
+  `loud`'s. A function a module-level `assume` covers charges such a callback
+  whether it is passed by label or by position, where a positional one went
+  uncharged.
+- A function handed to a labelled parameter that itself takes a callback
+  (`with action: fn(fn() -> Nil) -> Nil`) now charges what it does with that
+  callback, where it used to add `[Unknown]`.
+
 ## [0.21.0] - 2026-09-23
 
 ### Changed

@@ -1403,7 +1403,7 @@ pub fn polymorphic_constructor_resolves_to_pure_test() {
         "validation.gleam",
         "pub fn validate_range(
   value: Int,
-  to_error: fn(Int) -> error,
+  to_error to_error: fn(Int) -> error,
 ) -> List(error) {
   case value < 0 {
     True -> [to_error(value)]

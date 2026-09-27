@@ -2426,6 +2426,52 @@ pub fn new() {
   violations |> should.equal([])
 }
 
+pub fn a_known_signature_without_the_parameter_binds_no_label_test() {
+  // The registry knows `validate_range` and lists no parameter named or
+  // labelled `to_error`, so the call site's `to_error:` label binds nothing and
+  // the variable stays unresolved. With no signature known at all, the label
+  // is the only evidence, and it binds `io.println`'s [Stdout].
+  let source =
+    "
+import gleam/io
+import validation
+pub fn new() {
+  validation.validate_range(42, to_error: io.println)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let assert Ok(signature_module) =
+    glance.module(
+      "pub fn validate_range(value: Int, handler: fn(Int) -> e) -> Nil { Nil }",
+    )
+  let known = signatures.from_glance_module("validation", signature_module)
+  let check_under = fn(registry) {
+    let #(violations, _findings, _) =
+      checker.check(
+        module,
+        "",
+        [
+          EffectAnnotation(
+            Check,
+            "new",
+            [],
+            effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
+            returns: None,
+          ),
+        ],
+        polymorphic_kb(),
+        registry,
+        typeinfo.no_reading(),
+        types.all_targets(),
+      )
+    violations
+  }
+  check_under(signatures.empty()) |> should.equal([])
+  let assert [violation] = check_under(known)
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
 pub fn substitute_effectful_function_ref_violates_pure_budget_test() {
   // io.println → [Stdout] → violates [] budget.
   let source =

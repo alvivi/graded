@@ -55,6 +55,15 @@ check nested_field.unbound : []
 check pipe_field.via_pipe : []
 check named_fn_arg.run : []
 check labeled_callback.run : []
+// Labels that are sibling parameters' in-body names. Each [] budget but
+// `run_reversed`'s must fail with the [Stdout] of the argument handed to the
+// parameter named `cb`.
+check labeled_swap.run_lab : []
+check labeled_swap.run_apply1 : []
+check labeled_swap.run_lab_positional : []
+check labeled_declared.run_named : []
+check labeled_declared.run_reversed : []
+check labeled_declared.run_reordered : []
 check record_update.run : []
 check shadow_param.run(handler: []) : []
 check shadow_receiver.shadowed : [Stdout]
@@ -166,6 +175,9 @@ assume foreign_values.builds : []
 assume foreign_values.with_run : []
 // What the producer above hands back, which no `assume` line states.
 assume foreign_values.declared_returns_operator where returns : [Disk]
+// A foreign producer handing back the callback its parameter *named* `cb`
+// receives — the one labelled `first`.
+assume labeled_declared.labelled(cb: [cb]) : [] where returns : [cb]
 
 // A module-level external over a module that is not a project module and not a
 // dependency: every name under `fake_clock` resolves to [Time], including ones

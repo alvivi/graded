@@ -8404,6 +8404,235 @@ pub fn labeled_callback_resolves_test() {
   |> should.equal(types.Specific(set.from_list(["Stdout"])))
 }
 
+pub fn a_label_naming_a_sibling_parameter_binds_by_signature_test() {
+  // `lab` and `apply1` label each callback with the other's in-body name: the
+  // parameter labelled `first` is named `cb`. `first: loud, cb: quiet` hands
+  // `loud` to the parameter named `cb`, which the returned closure and the
+  // direct call both run, so each consumer charges [Stdout]. The label `cb:`
+  // read as the parameter's name bound `quiet` instead and charged `[]`.
+  let assert Ok(results) = graded.check_project("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/labeled_swap.gleam" })
+  ["run_lab", "run_apply1", "run_lab_positional"]
+  |> list.each(fn(function) {
+    let assert Ok(v) = list.find(r.violations, fn(v) { v.function == function })
+    v.explanation.actual
+    |> should.equal(types.Specific(set.from_list(["Stdout"])))
+  })
+}
+
+pub fn a_declared_clause_binds_a_labelled_argument_by_signature_test() {
+  // The same labels on a foreign producer whose returned operator is declared
+  // as `where returns : [cb]`. The clause's `cb` is the parameter named `cb`,
+  // so the call of what `labelled` returns charges what `first:` is handed —
+  // [Stdout] for `loud` in either label order, and nothing for `quiet`.
+  let assert Ok(results) = graded.check_project("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/labeled_declared.gleam"
+    })
+  r.violations
+  |> list.map(fn(v) { #(v.function, v.explanation.actual) })
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  |> should.equal([
+    #("run_named", types.Specific(set.from_list(["Stdout"]))),
+    #("run_reordered", types.Specific(set.from_list(["Stdout"]))),
+  ])
+}
+
+pub fn a_dependency_declared_clause_binds_a_labelled_argument_by_signature_test() {
+  // The labelled producer and its clause one package boundary away, in the
+  // dependency's own spec: the consumer's call sites bind the clause's `cb`
+  // to the argument its signature places there, exactly as a project line's
+  // do.
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/labelled_clause_dep_spec",
+      package: "proj",
+      spec: "assume app.disk : [Disk]
+check app.run_named : []
+check app.run_reversed : []
+check app.run_reordered : []
+",
+      sources: [
+        #(
+          "app.gleam",
+          "import dep/ffi
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+fn disk() -> Nil
+
+fn quiet() -> Nil {
+  Nil
+}
+
+pub fn run_named() -> Nil {
+  ffi.labelled(first: disk, cb: quiet)()
+}
+
+pub fn run_reversed() -> Nil {
+  ffi.labelled(first: quiet, cb: disk)()
+}
+
+pub fn run_reordered() -> Nil {
+  ffi.labelled(cb: quiet, first: disk)()
+}
+",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: "assume dep/ffi.labelled(cb: [cb]) : [] where returns : [cb]\n",
+      dependency_sources: [
+        #(
+          "dep/ffi.gleam",
+          support.foreign_fn(
+            "labelled",
+            "(first cb: fn() -> Nil, cb other: fn() -> Nil) -> fn() -> Nil",
+          ),
+        ),
+      ],
+    )
+  let assert Ok(results) = graded.check_project(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  r.violations
+  |> list.map(fn(v) { #(v.function, v.explanation.actual) })
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  |> should.equal([
+    #("run_named", types.Specific(set.from_list(["Disk"]))),
+    #("run_reordered", types.Specific(set.from_list(["Disk"]))),
+  ])
+  support.cleanup(root)
+}
+
+pub fn a_callee_without_bounds_charges_each_callback_by_signature_test() {
+  // `lib` is declared pure at module level, so `both` has no bounds and its
+  // callbacks are charged from its signature, each under a name that resolves
+  // back to its own parameter. The label `cb` belongs to the parameter named
+  // `other`, and `disk` is charged whichever way it is passed. Keyed by the
+  // label, the second callback resolved to the parameter *named* `cb` and was
+  // never charged. `calls` handed to an operator parameter is lifted, and
+  // applied to what `both_ops` passes it, which nothing states.
+  let root = "build/labelled_callbacks_without_bounds"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume lib : []
+assume app.disk : [Disk]
+check app.go_labelled : []
+check app.go_positional : []
+check app.go_operator : []
+",
+    ),
+    #(
+      "lib.gleam",
+      "pub fn both(first cb: fn() -> Nil, cb other: fn() -> Nil) -> Nil {
+  cb()
+  other()
+}
+
+pub fn both_ops(
+  first cb: fn(fn() -> Nil) -> Nil,
+  cb other: fn(fn() -> Nil) -> Nil,
+) -> Nil {
+  cb(fn() { Nil })
+  other(fn() { Nil })
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import lib
+
+@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+fn disk() -> Nil
+
+fn pure_cb() -> Nil {
+  Nil
+}
+
+fn calls(f: fn() -> Nil) -> Nil {
+  f()
+}
+
+fn ignores(f: fn() -> Nil) -> Nil {
+  let _ = f
+  Nil
+}
+
+pub fn go_labelled() -> Nil {
+  lib.both(first: pure_cb, cb: disk)
+}
+
+pub fn go_positional() -> Nil {
+  lib.both(pure_cb, disk)
+}
+
+pub fn go_operator() -> Nil {
+  lib.both_ops(ignores, calls)
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.check_project(root)
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == root <> "/app.gleam" })
+  r.violations
+  |> list.map(fn(v) { #(v.function, v.explanation.actual) })
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  |> should.equal([
+    #("go_labelled", types.Specific(set.from_list(["Disk"]))),
+    #("go_operator", types.Specific(set.from_list(["Unknown"]))),
+    #("go_positional", types.Specific(set.from_list(["Disk"]))),
+  ])
+  support.cleanup(root)
+}
+
+pub fn a_labelled_operator_parameter_lifts_its_argument_test() {
+  // `run_with`'s operator parameter is labelled (`with action:`), and its
+  // inferred bound is keyed by the in-body name `action`. The closure handed
+  // to it is lifted to an operator and applied to the `[Disk]` callback, so
+  // the budget `run_with`'s own closure already costs is met exactly. Read as
+  // a first-order argument, the application stayed stuck and charged
+  // `[Disk, Unknown]`.
+  let root = "build/labelled_operator_parameter"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume lib.disk : [Disk]
+check app.go : [Disk]
+",
+    ),
+    #(
+      "lib.gleam",
+      "@external(erlang, \"d\", \"w\")
+@external(javascript, \"d\", \"w\")
+pub fn disk() -> Nil
+
+pub fn run_with(with action: fn(fn() -> Nil) -> Nil) -> Nil {
+  action(fn() { disk() })
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import lib
+
+pub fn go() -> Nil {
+  lib.run_with(with: fn(cb) { cb() })
+}
+",
+    ),
+  ])
+  let assert Ok(results) = graded.check_project(root)
+  results |> list.flat_map(fn(r) { r.violations }) |> should.equal([])
+  support.cleanup(root)
+}
+
 pub fn record_update_field_walked_test() {
   // record_update.run updates a field with an effectful expression (shout :
   // [Stdout]). The call sits inside a record update, so its effect surfaces
