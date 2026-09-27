@@ -477,6 +477,10 @@ pub type AssumeTarget {
 // nothing ever verifies an assumption — so `(f: [Disk]) : []` is
 // documentation, not a constraint.
 //
+// `effects` may apply a bound's variable, exactly as an `effects` line's term
+// may (`assume m/ffi.with_tx(cb: [cb]) : [cb([Db])]`). It is never an operator:
+// the parser grounds a root abstraction to `[Unknown]`.
+//
 // `returns` carries the `where returns` clause, meaningful for a function
 // target; a clause on a module path is a lint.
 pub type AssumeAnnotation {
@@ -484,7 +488,7 @@ pub type AssumeAnnotation {
     module: String,
     target: AssumeTarget,
     params: List(ParamBound),
-    effects: Option(EffectSet),
+    effects: Option(EffectTerm),
     returns: Option(EffectTerm),
   )
 }

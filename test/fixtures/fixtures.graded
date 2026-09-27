@@ -64,6 +64,9 @@ check labeled_swap.run_lab_positional : []
 check labeled_declared.run_named : []
 check labeled_declared.run_reversed : []
 check labeled_declared.run_reordered : []
+// A declared producer that applies its callback operator to a [Db] callback.
+check assume_second_order.quiet3 : [Db]
+check assume_second_order.loud3 : [Db]
 check record_update.run : []
 check shadow_param.run(handler: []) : []
 check shadow_receiver.shadowed : [Stdout]
@@ -178,6 +181,8 @@ assume foreign_values.declared_returns_operator where returns : [Disk]
 // A foreign producer handing back the callback its parameter *named* `cb`
 // receives — the one labelled `first`.
 assume labeled_declared.labelled(cb: [cb]) : [] where returns : [cb]
+// A foreign producer that runs its callback with a [Db] callback of its own.
+assume assume_second_order.with_tx(cb: [cb]) : [cb([Db])]
 
 // A module-level external over a module that is not a project module and not a
 // dependency: every name under `fake_clock` resolves to [Time], including ones

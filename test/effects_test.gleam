@@ -344,7 +344,7 @@ fn assume(
     module:,
     target: types.FunctionAssume(function),
     params: [],
-    effects: Some(Specific(set.from_list(labels))),
+    effects: Some(types.TLabels(set.from_list(labels))),
     returns: None,
   )
 }
@@ -357,7 +357,7 @@ fn module_assume(
     module:,
     target: types.ModuleAssume,
     params: [],
-    effects: Some(Specific(set.from_list(labels))),
+    effects: Some(types.TLabels(set.from_list(labels))),
     returns: None,
   )
 }
@@ -368,7 +368,7 @@ fn wildcard_assume(module: String, function: String) -> types.AssumeAnnotation {
     module:,
     target: types.FunctionAssume(function),
     params: [],
-    effects: Some(types.Wildcard),
+    effects: Some(types.TTop),
     returns: None,
   )
 }
@@ -599,6 +599,82 @@ pub fn a_catalog_bounded_external_records_its_bounds_test() {
   |> should.equal(Ok([ParamBound("f", types.TVar("f"))]))
 
   cleanup(root)
+}
+
+pub fn a_catalog_second_order_external_records_its_term_test() {
+  // A bounded `assume` line whose effects term applies its bound's variable
+  // enters the external tier as that application, with its bounds beside it.
+  let root =
+    write_fixture("build/eff_catalog_second_order_external", [
+      #(
+        "catalog/a_pkg@1.0.0.graded",
+        "assume shared/mod.with_tx(cb: [cb]) : [cb([Db])]\n",
+      ),
+      #("manifest.toml", a_pkg_manifest),
+    ])
+
+  let #(all_effects, _module_effects, params, _type_fields) =
+    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
+  dict.get(all_effects, QualifiedName("shared/mod", "with_tx"))
+  |> should.equal(
+    Ok(#(
+      types.TApp(types.TVar("cb"), types.TLabels(set.from_list(["Db"]))),
+      types.Catalog("a_pkg"),
+    )),
+  )
+  dict.get(params, QualifiedName("shared/mod", "with_tx"))
+  |> should.equal(Ok([ParamBound("cb", types.TVar("cb"))]))
+
+  cleanup(root)
+}
+
+// The term the knowledge base holds for `m.f` loaded from `line`, and again
+// from the same spec after `graded format` rewrote it.
+fn declared_term_across_format(
+  line: String,
+) -> #(types.EffectTerm, types.EffectTerm) {
+  let assert Ok(written) = annotation.parse_file(line)
+  let assert Ok(reformatted) =
+    annotation.parse_file(annotation.format_file(written))
+  let declared = fn(file) {
+    let kb =
+      effects.with_assumes(
+        knowledge_base(),
+        annotation.extract_assumes(file),
+        types.UserAssume,
+      )
+    let assert effects.Known(term, _) =
+      effects.lookup(kb, QualifiedName("m", "f"))
+    term
+  }
+  #(declared(written), declared(reformatted))
+}
+
+pub fn an_operator_spelled_declaration_holds_one_term_across_format_test() {
+  declared_term_across_format("assume m.f : fn(x) -> [x]")
+  |> should.equal(#(effect_term.unknown(), effect_term.unknown()))
+}
+
+pub fn a_second_order_declaration_holds_one_term_across_format_test() {
+  let applied =
+    types.TApp(types.TVar("cb"), types.TLabels(set.from_list(["Db"])))
+  declared_term_across_format("assume m.f(cb: [cb]) : [cb([Db])]")
+  |> should.equal(#(applied, applied))
+}
+
+pub fn a_module_declaration_holds_its_ground_set_test() {
+  // A module has no parameters to bind a variable, so a module-level line's
+  // term is read as the ground set it reduces to.
+  let assert Ok(file) = annotation.parse_file("assume m : [Stdout, cb([Db])]")
+  let kb =
+    effects.with_assumes(
+      knowledge_base(),
+      annotation.extract_assumes(file),
+      types.UserAssume,
+    )
+  let assert effects.Known(term, _) =
+    effects.lookup(kb, QualifiedName("m", "anything"))
+  term |> should.equal(types.TLabels(set.from_list(["Stdout", "Unknown"])))
 }
 
 // The manifest the single-package catalog fixtures install.
@@ -1383,7 +1459,7 @@ pub fn a_rejected_module_line_blocks_its_module_test() {
       module: "dep",
       target: types.ModuleAssume,
       params: [],
-      effects: Some(types.Wildcard),
+      effects: Some(types.TTop),
       returns: None,
     ),
   )
@@ -2590,7 +2666,7 @@ pub fn the_effects_reader_keys_no_declared_name_test() {
 fn paired_spec_gen() -> qcheck.Generator(#(types.GradedFile, QualifiedName)) {
   use file <- qcheck.bind(generators.graded_file_gen())
   use line <- qcheck.bind(generators.annotation_gen())
-  use declared <- qcheck.bind(generators.effect_set_gen())
+  use declared <- qcheck.bind(generators.first_order_term_gen())
   use assume_first <- qcheck.map(qcheck.bool())
   let paired = types.EffectAnnotation(..line, kind: types.Effects)
   let paired_line = types.AnnotationLine(in_module_m(paired), [])

@@ -428,7 +428,7 @@ pub fn parse_external_test() {
   let assert [ext] = annotation.extract_assumes(file)
   ext.module |> should.equal("gleam/http/request")
   ext.target |> should.equal(FunctionAssume("send"))
-  ext.effects |> should.equal(Some(Specific(set.from_list(["Http"]))))
+  ext.effects |> should.equal(Some(TLabels(set.from_list(["Http"]))))
 }
 
 pub fn parse_external_pure_test() {
@@ -437,7 +437,7 @@ pub fn parse_external_pure_test() {
   let assert [ext] = annotation.extract_assumes(file)
   ext.module |> should.equal("gleam/json")
   ext.target |> should.equal(FunctionAssume("decode"))
-  ext.effects |> should.equal(Some(Specific(set.new())))
+  ext.effects |> should.equal(Some(effect_term.pure()))
 }
 
 pub fn format_external_test() {
@@ -446,7 +446,7 @@ pub fn format_external_test() {
       "gleam/httpc",
       FunctionAssume("send"),
       params: [],
-      effects: Some(Specific(set.from_list(["Http"]))),
+      effects: Some(TLabels(set.from_list(["Http"]))),
       returns: None,
     )
   annotation.format_assume(ext)
@@ -463,7 +463,7 @@ pub fn parse_assume_module_test() {
   let assert [ext] = annotation.extract_assumes(file)
   ext.module |> should.equal("gleam/io")
   ext.target |> should.equal(ModuleAssume)
-  ext.effects |> should.equal(Some(Specific(set.from_list(["Stdout"]))))
+  ext.effects |> should.equal(Some(TLabels(set.from_list(["Stdout"]))))
 }
 
 pub fn parse_assume_function_test() {
@@ -472,7 +472,7 @@ pub fn parse_assume_function_test() {
   let assert [ext] = annotation.extract_assumes(file)
   ext.module |> should.equal("gleam/http/request")
   ext.target |> should.equal(FunctionAssume("send"))
-  ext.effects |> should.equal(Some(Specific(set.from_list(["Http"]))))
+  ext.effects |> should.equal(Some(TLabels(set.from_list(["Http"]))))
 }
 
 pub fn parse_assume_qualified_field_test() {
@@ -524,7 +524,7 @@ pub fn parse_assume_function_with_bounds_test() {
   ext.target |> should.equal(FunctionAssume("each"))
   ext.params |> should.equal([ParamBound("f", TVar("f"))])
   ext.effects
-  |> should.equal(Some(Polymorphic(set.new(), set.from_list(["f"]))))
+  |> should.equal(Some(TVar("f")))
 }
 
 pub fn parse_assume_clause_only_bounded_test() {
@@ -545,36 +545,73 @@ pub fn bounded_assume_round_trips_test() {
   annotation.format_file(file) |> should.equal(line)
 }
 
-pub fn assume_second_order_effects_term_collapses_test() {
-  // An `assume` effects term is flat — labels and variables. A second-order
-  // application is a `TApp`, which the effect-set payload collapses to the
-  // conservative `[Unknown]`.
+pub fn assume_second_order_effects_term_is_kept_test() {
+  // An `assume` effects term may apply a variable, exactly as an `effects`
+  // line's may: the application survives the parse as a `TApp`.
   let assert Ok(file) =
     annotation.parse_file("assume m.f(cb: [cb]) : [action([cb])]")
   let assert [ext] = annotation.extract_assumes(file)
-  ext.effects |> should.equal(Some(Specific(set.from_list(["Unknown"]))))
+  ext.effects |> should.equal(Some(TApp(TVar("action"), TVar("cb"))))
+}
+
+pub fn assume_second_order_effects_term_round_trips_test() {
+  let line = "assume m.f(cb: [cb]) : [cb([Db])]"
+  let assert Ok(file) = annotation.parse_file(line)
+  let assert [ext] = annotation.extract_assumes(file)
+  ext.effects
+  |> should.equal(Some(TApp(TVar("cb"), TLabels(set.from_list(["Db"])))))
+  annotation.format_file(file) |> should.equal(line)
 }
 
 pub fn an_operator_spelled_assume_term_collapses_test() {
   // The parens open after the effects separator, so they sit inside the term
-  // — no bound list. `fn(cb) -> [cb]` reads through the term grammar and the
-  // flat reduction collapses it to `[Unknown]`, exactly as the bracketed
-  // application spelling does.
+  // — no bound list. `fn(cb) -> [cb]` reads through the term grammar, and the
+  // parser grounds the abstraction to `[Unknown]`: an effects term is an
+  // effect, never an operator.
   let assert Ok(file) = annotation.parse_file("assume m.f : fn(cb) -> [cb]")
   let assert [ext] = annotation.extract_assumes(file)
-  ext.effects |> should.equal(Some(Specific(set.from_list(["Unknown"]))))
+  ext.effects |> should.equal(Some(effect_term.unknown()))
 }
 
 pub fn a_bounded_operator_spelled_assume_term_collapses_test() {
   // The suffix past a bound list reads the same bound grammar the boundless
-  // head does, so the operator spelling parses on a bounded head too, and the
-  // flat reduction collapses it to `[Unknown]` — never a parse error that
-  // refuses the whole file over the one line.
+  // head does, so the operator spelling parses on a bounded head too, and
+  // grounds to `[Unknown]` — never a parse error that refuses the whole file
+  // over the one line.
   let assert Ok(file) =
     annotation.parse_file("assume m.f(cb: [cb]) : fn(x) -> [x]")
   let assert [ext] = annotation.extract_assumes(file)
-  ext.effects |> should.equal(Some(Specific(set.from_list(["Unknown"]))))
+  ext.effects |> should.equal(Some(effect_term.unknown()))
   ext.params |> should.equal([ParamBound(name: "cb", effects: TVar("cb"))])
+}
+
+pub fn an_operator_spelled_module_assume_term_collapses_test() {
+  let assert Ok(file) = annotation.parse_file("assume m : fn(cb) -> [cb]")
+  let assert [ext] = annotation.extract_assumes(file)
+  ext.effects |> should.equal(Some(effect_term.unknown()))
+}
+
+pub fn an_operator_spelled_effects_term_collapses_test() {
+  // The same grounding on an `effects` line, bounded or not.
+  let assert Ok([boundless]) = annotation.parse("effects m.f : fn(cb) -> [cb]")
+  boundless.effects |> should.equal(effect_term.unknown())
+  let assert Ok([bounded]) =
+    annotation.parse("effects m.f(cb: [cb]) : fn(x) -> [x]")
+  bounded.effects |> should.equal(effect_term.unknown())
+  bounded.params |> should.equal([ParamBound(name: "cb", effects: TVar("cb"))])
+}
+
+pub fn a_second_order_effects_term_is_kept_test() {
+  let assert Ok([ann]) = annotation.parse("effects m.f(cb: [cb]) : [cb([Db])]")
+  ann.effects
+  |> should.equal(TApp(TVar("cb"), TLabels(set.from_list(["Db"]))))
+}
+
+pub fn an_operator_spelled_check_budget_is_kept_test() {
+  // A `check` budget is not an answer, and keeps the operator it was written
+  // as.
+  let assert Ok([ann]) = annotation.parse("check m.f : fn(x) -> [x]")
+  ann.effects |> should.equal(TAbs("x", TVar("x")))
 }
 
 pub fn a_bounded_effects_operator_term_reads_as_the_boundless_one_test() {
@@ -664,7 +701,7 @@ pub fn parse_returns_clause_on_an_assume_line_test() {
   let assert Ok(file) =
     annotation.parse_file("assume m/ffi.make : [Net] where returns : [Net]")
   let assert [ext] = annotation.extract_assumes(file)
-  ext.effects |> should.equal(Some(Specific(set.from_list(["Net"]))))
+  ext.effects |> should.equal(Some(TLabels(set.from_list(["Net"]))))
   ext.returns |> should.equal(Some(TLabels(set.from_list(["Net"]))))
 }
 
@@ -1180,7 +1217,7 @@ pub fn merge_inferred_drops_effect_for_external_test() {
           module: "app",
           target: FunctionAssume("ffi"),
           params: [],
-          effects: Some(types.Specific(set.new())),
+          effects: Some(effect_term.pure()),
           returns: None,
         ),
         [],
@@ -1239,7 +1276,7 @@ fn module_assume(module: String) -> types.GradedLine {
       module:,
       target: ModuleAssume,
       params: [],
-      effects: Some(types.Specific(set.new())),
+      effects: Some(effect_term.pure()),
       returns: None,
     ),
     [],
@@ -1252,7 +1289,7 @@ fn function_assume(module: String, function: String) -> types.GradedLine {
       module:,
       target: FunctionAssume(function),
       params: [],
-      effects: Some(types.Specific(set.new())),
+      effects: Some(effect_term.pure()),
       returns: None,
     ),
     [],
@@ -1529,7 +1566,7 @@ pub fn merge_inferred_keeps_bounds_on_a_stale_conversion_test() {
           module: "app",
           target: FunctionAssume("make"),
           params: [ParamBound("cb", TVar("cb"))],
-          effects: Some(Polymorphic(set.new(), set.from_list(["cb"]))),
+          effects: Some(TVar("cb")),
           returns: None,
         ),
         [UnknownClause(key: "future", payload: "[X]")],
@@ -1559,7 +1596,7 @@ pub fn a_bounded_external_still_suppresses_the_inferred_line_test() {
           module: "m/ffi",
           target: FunctionAssume("each"),
           params: [ParamBound("f", TVar("f"))],
-          effects: Some(Polymorphic(set.new(), set.from_list(["f"]))),
+          effects: Some(TVar("f")),
           returns: None,
         ),
         [],
@@ -2468,7 +2505,7 @@ pub fn a_rejected_declaration_blocks_the_path_it_names_test() {
             module:,
             target: FunctionAssume(function),
             params: [],
-            effects: Some(Wildcard),
+            effects: Some(TTop),
             returns: None,
           ),
           [],
@@ -2487,7 +2524,7 @@ pub fn a_blocker_takes_the_shape_of_the_path_it_names_test() {
           module: "m",
           target: ModuleAssume,
           params: [],
-          effects: Some(Wildcard),
+          effects: Some(TTop),
           returns: None,
         ),
         [],

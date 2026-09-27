@@ -281,20 +281,29 @@ pub fn external_gen() -> qcheck.Generator(types.AssumeAnnotation) {
     qcheck.from_generators(qcheck.return(ModuleAssume), [
       qcheck.map(function_name_gen(), FunctionAssume),
     ])
+  use module <- qcheck.bind(module_name_gen)
+  use target <- qcheck.bind(target_gen)
+  // A function's effects term may apply a variable, as an `effects` line's
+  // may; a module's is a flat set.
+  let term_gen = case target {
+    ModuleAssume -> first_order_term_gen()
+    FunctionAssume(_) ->
+      qcheck.from_generators(first_order_term_gen(), [
+        qcheck.map(serializable_effect_term_gen(), effect_term.normalize),
+      ])
+  }
   // Never both absent: a line carrying neither clause claims nothing and is not
   // a line the parser reads back.
   let clauses_gen =
     qcheck.from_generators(
-      qcheck.map(effect_set_gen(), fn(effects) { #(Some(effects), None) }),
+      qcheck.map(term_gen, fn(effects) { #(Some(effects), None) }),
       [
-        qcheck.map2(effect_set_gen(), operator_gen(), fn(effects, operator) {
+        qcheck.map2(term_gen, operator_gen(), fn(effects, operator) {
           #(Some(effects), Some(operator))
         }),
         qcheck.map(operator_gen(), fn(operator) { #(None, Some(operator)) }),
       ],
     )
-  use module <- qcheck.bind(module_name_gen)
-  use target <- qcheck.bind(target_gen)
   // A bound list rides a function path alone — on a module path it is a parse
   // error, so the generator never pairs the two.
   use params <- qcheck.bind(case target {
