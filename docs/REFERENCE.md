@@ -203,6 +203,10 @@ nothing ever verifies an assumption, its arguments included:
   scoping the line's clause) and through its payload's *free variables* (the
   substitution keys). `assume m.f(cb: [e]) : [e]` is valid and binds even
   though `e` names no bound.
+- A bound's name is one of the function's parameters, by its name or its
+  label, and matches the argument a call passes that parameter, labelled or
+  positional. A name the function's signature does not have matches nothing
+  and is flagged.
 - A ground budget (`assume m/ffi.each(f: [Disk]) : []`) is inert for callers:
   nothing checks the argument against it, so it is documentation. A term
   variable no bound's payload binds is flagged — no call site can ever

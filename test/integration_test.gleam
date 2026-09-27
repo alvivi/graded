@@ -5360,6 +5360,38 @@ assume ffi.fold(g: [g]) : [g]
   support.cleanup(root)
 }
 
+pub fn the_lint_flags_an_assume_bound_naming_no_parameter_test() {
+  // Two foreign functions, each under a line with one bound its signature does
+  // not have. Each line is reported once, whichever half the line carries.
+  let root = "build/unmatched_assume_bound_lint"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ffi.noparam(zz: [zz]) where returns : [zz]
+assume ffi.each(g: [g]) : [g]
+assume ffi.wrap(cb: [cb]) : [cb]
+",
+    ),
+    #(
+      "ffi.gleam",
+      support.foreign_fn("noparam", "(cb: fn() -> Nil) -> fn() -> Nil")
+        <> "\n"
+        <> support.foreign_fn("each", "(f: fn() -> Nil) -> Nil")
+        <> "\n"
+        <> support.foreign_fn("wrap", "(cb: fn() -> Nil) -> Nil"),
+    ),
+  ])
+  let assert Ok(results) = graded.check_project(root)
+  results
+  |> list.flat_map(fn(r) { r.warnings })
+  |> should.equal([
+    types.UnmatchedParamBoundWarning(function: "ffi.noparam", param: "zz"),
+    types.UnmatchedParamBoundWarning(function: "ffi.each", param: "g"),
+  ])
+  support.cleanup(root)
+}
+
 pub fn the_lint_flags_an_aliased_bound_payload_test() {
   // `cb: [e], other: [cb]`: the line's term and clause both spell `cb`, which
   // the payload channel binds to `other`'s argument and the name channel to

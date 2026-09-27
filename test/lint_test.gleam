@@ -344,3 +344,49 @@ assume ffi.with_tx(cb: [cb]) : [cb([Db])]
     ]),
   ])
 }
+
+// `assume` bounds against the signature
+//
+// A bound is matched to its call-site argument through the parameter it names,
+// by in-body name or label; one naming neither binds nothing. Only a function
+// the registry knows is weighed.
+
+const bounded_module = "pub fn noparam(cb: fn() -> Nil) -> fn() -> Nil { cb }
+pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil { cb }
+pub fn labelled(with cb: fn() -> Nil) -> Nil { cb() }
+pub fn two(n: Int) -> Int { n }"
+
+const bounded_spec = "assume ffi.noparam(zz: [zz]) where returns : [zz]
+assume ffi.wrap(cb: [cb]) : [cb]
+assume ffi.labelled(with: [with]) : [with]
+assume ffi.two(n: [n]) : [n]
+"
+
+fn unmatched_bound_warnings(
+  registry: signatures.SignatureRegistry,
+) -> List(types.Warning) {
+  lint.Context(..context(bounded_spec, [#("ffi", bounded_module)]), registry:)
+  |> with_dependencies(dict.new())
+  |> lint.run
+  |> list.filter(fn(warning) {
+    case warning {
+      types.UnmatchedParamBoundWarning(..) -> True
+      _ -> False
+    }
+  })
+}
+
+pub fn a_bound_naming_no_parameter_is_flagged_test() {
+  // `noparam`'s bound names neither a parameter nor a label. `wrap`'s names
+  // its parameter, `labelled`'s its parameter's label, and `two`'s a parameter
+  // that is no callback, which this lint does not weigh.
+  let assert Ok(module) = glance.module(bounded_module)
+  unmatched_bound_warnings(signatures.from_glance_module("ffi", module))
+  |> should.equal([
+    types.UnmatchedParamBoundWarning(function: "ffi.noparam", param: "zz"),
+  ])
+}
+
+pub fn a_bound_on_a_function_no_signature_records_is_not_flagged_test() {
+  unmatched_bound_warnings(signatures.empty()) |> should.equal([])
+}
