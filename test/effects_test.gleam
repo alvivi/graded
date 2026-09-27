@@ -677,6 +677,35 @@ pub fn a_module_declaration_holds_its_ground_set_test() {
   term |> should.equal(types.TLabels(set.from_list(["Stdout", "Unknown"])))
 }
 
+pub fn the_bundled_catalog_declares_promise_new_test() {
+  // `gleam/javascript/promise.new` calls its executor with a pure `resolve`:
+  // its per-function line answers over the module-level `[]`, the line's bounds
+  // travel with it, and the module-level line still answers the rest.
+  let root =
+    write_fixture("build/eff_catalog_promise_new", [
+      #(
+        "manifest.toml",
+        "packages = [\n  { name = \"gleam_javascript\", version = \"1.0.0\" },\n]\n",
+      ),
+    ])
+  let #(all_effects, module_effects, params, _type_fields) =
+    effects.load_catalog(effects.catalog_directory(), root <> "/manifest.toml")
+  let new = QualifiedName("gleam/javascript/promise", "new")
+  dict.get(all_effects, new)
+  |> should.equal(
+    Ok(#(
+      types.TApp(types.TVar("a"), effect_term.pure()),
+      types.Catalog("gleam_javascript"),
+    )),
+  )
+  dict.get(params, new)
+  |> should.equal(Ok([ParamBound("a", types.TVar("a"))]))
+  dict.get(module_effects, "gleam/javascript/promise")
+  |> result.map(fn(entry) { entry.0 })
+  |> should.equal(Ok(effect_term.pure()))
+  cleanup(root)
+}
+
 // The manifest the single-package catalog fixtures install.
 const a_pkg_manifest = "packages = [
   { name = \"a_pkg\", version = \"1.0.0\" },

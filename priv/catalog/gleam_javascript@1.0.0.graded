@@ -3,3 +3,6 @@
 assume gleam/javascript/array : []
 assume gleam/javascript/promise : []
 assume gleam/javascript/symbol : []
+
+// `new` calls its executor once, handing it a pure `resolve`.
+assume gleam/javascript/promise.new(a: [a]) : [a([])]

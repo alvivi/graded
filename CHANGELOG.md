@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   function that calls its callback with a function of its own declares what that
   function does: `assume m/ffi.with_tx(cb: [cb]) : [cb([Db])]`. Such a line used
   to answer `[Unknown]`.
+- The bundled catalog declares that `gleam/javascript/promise.new` calls its
+  callback with a pure `resolve`, so a promise built in your code charges what
+  your callback does instead of `[Unknown]`.
 
 ### Changed
 
