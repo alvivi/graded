@@ -95,6 +95,20 @@ pub fn lookup(
   }
 }
 
+// The parameter of a known signature a bound's name names: by in-body name,
+// then by label.
+pub fn parameter_named(
+  params: List(ParameterInfo),
+  param_name: String,
+) -> Option(ParameterInfo) {
+  let by_name =
+    list.find(params, fn(p) { p.name == Some(param_name) })
+    |> option.from_result
+  use <- option.lazy_or(by_name)
+  list.find(params, fn(p) { p.label == Some(param_name) })
+  |> option.from_result
+}
+
 // Names of a function's fn-typed parameters. Returns an empty set if
 // the function isn't in the registry (conservative: "we don't know").
 // Prefers the argument label (canonical for cross-module calls), falling

@@ -52,7 +52,7 @@ remains the escape hatch meanwhile.
 graded reads expression types from [girard](https://hexdocs.pm/girard), which
 already resolves field calls without explicit parameter annotations and detects
 fn-typed parameters. The one piece not taken: replacing the positional/label
-argument-matching heuristics (`find_matching_arg` / `param_info` in
+argument-matching heuristics (`match_argument` / `param_info` in
 `checker.gleam`). They drive polymorphic call-site
 substitution — a subsystem girard's expression types don't cleanly map onto — so
 they were kept deliberately. Revisit only if a concrete imprecision surfaces.

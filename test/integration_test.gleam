@@ -8442,15 +8442,20 @@ pub fn a_label_naming_a_sibling_parameter_binds_by_signature_test() {
   // `loud` to the parameter named `cb`, which the returned closure and the
   // direct call both run, so each consumer charges [Stdout]. The label `cb:`
   // read as the parameter's name bound `quiet` instead and charged `[]`.
-  let assert Ok(results) = graded.check_project("test/fixtures")
-  let assert Ok(r) =
-    list.find(results, fn(r) { r.file == "test/fixtures/labeled_swap.gleam" })
   ["run_lab", "run_apply1", "run_lab_positional"]
   |> list.each(fn(function) {
-    let assert Ok(v) = list.find(r.violations, fn(v) { v.function == function })
-    v.explanation.actual
+    fixture_actual("labeled_swap.gleam", function)
     |> should.equal(types.Specific(set.from_list(["Stdout"])))
   })
+}
+
+// Each violation's function and the effects it was charged, by function name.
+fn sorted_verdicts(
+  violations: List(types.Violation),
+) -> List(#(String, types.EffectSet)) {
+  violations
+  |> list.map(fn(v) { #(v.function, v.explanation.actual) })
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
 }
 
 pub fn a_declared_clause_binds_a_labelled_argument_by_signature_test() {
@@ -8464,8 +8469,7 @@ pub fn a_declared_clause_binds_a_labelled_argument_by_signature_test() {
       r.file == "test/fixtures/labeled_declared.gleam"
     })
   r.violations
-  |> list.map(fn(v) { #(v.function, v.explanation.actual) })
-  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  |> sorted_verdicts
   |> should.equal([
     #("run_named", types.Specific(set.from_list(["Stdout"]))),
     #("run_reordered", types.Specific(set.from_list(["Stdout"]))),
@@ -8529,8 +8533,7 @@ pub fn run_reordered() -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   r.violations
-  |> list.map(fn(v) { #(v.function, v.explanation.actual) })
-  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  |> sorted_verdicts
   |> should.equal([
     #("run_named", types.Specific(set.from_list(["Disk"]))),
     #("run_reordered", types.Specific(set.from_list(["Disk"]))),
@@ -8613,8 +8616,7 @@ pub fn go_operator() -> Nil {
   let assert Ok(r) =
     list.find(results, fn(r) { r.file == root <> "/app.gleam" })
   r.violations
-  |> list.map(fn(v) { #(v.function, v.explanation.actual) })
-  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  |> sorted_verdicts
   |> should.equal([
     #("go_labelled", types.Specific(set.from_list(["Disk"]))),
     #("go_operator", types.Specific(set.from_list(["Unknown"]))),
@@ -8676,7 +8678,7 @@ pub fn a_declared_second_order_term_charges_what_the_callback_does_test() {
     })
   r.violations
   |> list.filter(fn(v) { v.explanation.call.function == "with_tx" })
-  |> list.map(fn(v) { #(v.function, v.explanation.actual) })
+  |> sorted_verdicts
   |> should.equal([
     #("loud3", types.Specific(set.from_list(["Db", "Stdout"]))),
   ])
@@ -8728,7 +8730,7 @@ pub fn quiet() -> Nil {
     let assert Ok(results) = graded.check_project(root)
     results
     |> list.flat_map(fn(r) { r.violations })
-    |> list.map(fn(v) { #(v.function, v.explanation.actual) })
+    |> sorted_verdicts
   }
   let expected = [#("lifts_g", types.Specific(set.from_list(["Unknown"])))]
   verdicts() |> should.equal(expected)
@@ -8784,7 +8786,7 @@ pub fn g(cb: callbacks.Callback) -> Nil {
   let assert Ok(results) = graded.check_project(root)
   results
   |> list.flat_map(fn(r) { r.violations })
-  |> list.map(fn(v) { #(v.function, v.explanation.actual) })
+  |> sorted_verdicts
   |> should.equal([#("lifts_g", types.Specific(set.from_list(["Unknown"])))])
   support.cleanup(root)
 }
