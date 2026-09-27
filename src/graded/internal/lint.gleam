@@ -34,8 +34,8 @@ import graded/internal/types.{
   UnclosedReturnsClauseWarning, UngroundReturnsClauseWarning,
   UnkeyedEffectsShapeWarning, UnknownClauseWarning, UnmatchedCheckWarning,
   UnmatchedFieldAssumeWarning, UnmatchedFunctionAssumeWarning,
-  UnmatchedModuleAssumeWarning, UnmatchedReturnsClauseWarning,
-  UnsupportedFieldCheckWarning,
+  UnmatchedModuleAssumeWarning, UnmatchedParamBoundWarning,
+  UnmatchedReturnsClauseWarning, UnsupportedFieldCheckWarning,
 }
 import simplifile
 
@@ -272,6 +272,14 @@ pub fn run_recording_lookups(
         list.append(effects_lines, checks),
         dead_assumes,
       ),
+      unmatched_bound_parameter_warnings(
+        assumes,
+        registry,
+        set.union(
+          dead_assumes,
+          dead_returns_clause_names(returns_clause_warnings),
+        ),
+      ),
       returns_clause_warnings,
       clause_warnings,
       unknown_clause_warnings,
@@ -376,6 +384,50 @@ fn aliased_bound_warning(
   case variables {
     [] -> Error(Nil)
     variables -> Ok(AliasedBoundVariableWarning(function:, variables:))
+  }
+}
+
+// A bound on a bounded `assume` line naming neither a parameter nor a parameter
+// label of the function's signature. A call site matches a bound to its
+// argument through that signature, so such a bound binds nothing. A field
+// bound is weighed by its receiver. Scoped to functions the registry knows,
+// and to lines the existence channel has not flagged.
+fn unmatched_bound_parameter_warnings(
+  assumes: List(types.AssumeAnnotation),
+  registry: SignatureRegistry,
+  dead: Set(String),
+) -> List(Warning) {
+  list.flat_map(assumes, fn(assume) {
+    {
+      use qualified <- result.try(annotation.assume_qualified_name(assume))
+      let function = types.dotted_name(qualified)
+      use <- bool.guard(when: set.contains(dead, function), return: Error(Nil))
+      use params <- result.map(option.to_result(
+        signatures.lookup(registry, qualified),
+        Nil,
+      ))
+      let parameters =
+        params
+        |> list.flat_map(fn(param) { option.values([param.name, param.label]) })
+        |> set.from_list
+      assume.params
+      |> list.filter(fn(bound) {
+        !set.contains(parameters, bound_receiver(bound.name))
+      })
+      |> list.map(fn(bound) {
+        UnmatchedParamBoundWarning(function:, param: bound.name)
+      })
+    }
+    |> result.unwrap([])
+  })
+}
+
+// The parameter a bound's name reaches: the name itself, or a field bound's
+// receiver segment.
+fn bound_receiver(name: String) -> String {
+  case string.split_once(name, ".") {
+    Ok(#(receiver, _field)) -> receiver
+    Error(Nil) -> name
   }
 }
 
@@ -577,6 +629,18 @@ fn dead_assume_names(warnings: List(Warning)) -> Set(String) {
     case warning {
       StaleFunctionAssumeWarning(function:)
       | UnmatchedFunctionAssumeWarning(function:) -> Ok(function)
+      _ -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+}
+
+// The function names the clause channel's existence warnings call dead.
+fn dead_returns_clause_names(warnings: List(Warning)) -> Set(String) {
+  list.filter_map(warnings, fn(warning) {
+    case warning {
+      StaleReturnsClauseWarning(function:)
+      | UnmatchedReturnsClauseWarning(function:) -> Ok(function)
       _ -> Error(Nil)
     }
   })

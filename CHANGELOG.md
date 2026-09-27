@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The bundled catalog declares that `gleam/javascript/promise.new` calls its
   callback with a pure `resolve`, so a promise built in your code charges what
   your callback does instead of `[Unknown]`.
+- `graded check` warns when an `assume` line's bound names a parameter the
+  function does not have, so a misspelled bound is caught instead of silently
+  answering `[Unknown]`.
 
 ### Changed
 
