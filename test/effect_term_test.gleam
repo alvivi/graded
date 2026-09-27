@@ -7,8 +7,9 @@ import gleam/list
 import gleam/set.{type Set}
 import gleeunit/should
 import graded/internal/effect_term.{
-  alpha_equivalent, free_vars, from_effect_set, normalize, normalize_bounded,
-  operator_subset, pure, rename_binder, subst, to_effect_set, unknown,
+  alpha_equivalent, free_vars, from_effect_set, ground_root_abstractions,
+  normalize, normalize_bounded, operator_subset, pure, rename_binder, subst,
+  to_effect_set, unknown,
 }
 import graded/internal/types.{
   type EffectSet, type EffectTerm, Polymorphic, Specific, TAbs, TApp, TLabels,
@@ -480,4 +481,34 @@ pub fn rename_binder_leaves_non_operators_alone_unit_test() {
 pub fn rename_binder_renames_bound_occurrences_unit_test() {
   rename_binder(TAbs("cb", TUnion([labels(["Http"]), TVar("cb")])), to: "next")
   |> should.equal(TAbs("next", TUnion([labels(["Http"]), TVar("next")])))
+}
+
+// Root abstractions
+//
+// The effects half of a spec line is an effect, never an operator: a root
+// abstraction, or one that is a direct member of the root union, grounds to
+// `[Unknown]`; an application and an operator argument are kept.
+
+pub fn a_root_abstraction_grounds_unit_test() {
+  ground_root_abstractions(TAbs("x", TVar("x"))) |> should.equal(unknown())
+}
+
+pub fn a_root_union_member_abstraction_grounds_unit_test() {
+  ground_root_abstractions(TUnion([labels(["Stdout"]), TAbs("x", TVar("x"))]))
+  |> should.equal(labels(["Stdout", "Unknown"]))
+}
+
+pub fn an_abstraction_argument_is_kept_unit_test() {
+  let term = TApp(TVar("cb"), TAbs("x", TVar("x")))
+  ground_root_abstractions(term) |> should.equal(term)
+}
+
+pub fn a_root_application_is_kept_unit_test() {
+  let term = TUnion([labels(["Stdout"]), TApp(TVar("cb"), labels(["Db"]))])
+  ground_root_abstractions(term) |> should.equal(normalize(term))
+}
+
+pub fn ground_root_abstractions_leaves_an_abstraction_free_term_normalized_test() {
+  use term <- qcheck.given(generators.serializable_effect_term_gen())
+  ground_root_abstractions(term) |> should.equal(normalize(term))
 }

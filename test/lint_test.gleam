@@ -307,3 +307,40 @@ pub fn a_dependency_that_lacks_the_name_is_flagged_test() {
     types.UnmatchedFunctionAssumeWarning(function: "dep/io.typo"),
   ])
 }
+
+// `assume` effects terms
+//
+// A term variable no bound's payload binds can never be substituted. A
+// second-order term's variables are read off the term itself, the applied
+// operator's included.
+
+fn unbound_term_variable_warnings(spec: String) -> List(types.Warning) {
+  context(spec, [
+    #(
+      "ffi",
+      "pub fn with_tx(cb: fn(fn() -> Nil) -> Nil) -> Nil { Nil }
+pub fn stray(cb: fn(fn() -> Nil) -> Nil) -> Nil { Nil }",
+    ),
+  ])
+  |> with_dependencies(dict.new())
+  |> lint.run
+  |> list.filter(fn(warning) {
+    case warning {
+      types.UnboundAssumeTermVariableWarning(..) -> True
+      _ -> False
+    }
+  })
+}
+
+pub fn a_second_order_term_variable_no_payload_binds_is_flagged_test() {
+  unbound_term_variable_warnings(
+    "assume ffi.stray(cb: [cb]) : [zz([cb])]
+assume ffi.with_tx(cb: [cb]) : [cb([Db])]
+",
+  )
+  |> should.equal([
+    types.UnboundAssumeTermVariableWarning(function: "ffi.stray", free_vars: [
+      "zz",
+    ]),
+  ])
+}

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An `assume` line's effects term can now apply a bound's variable, so a foreign
+  function that calls its callback with a function of its own declares what that
+  function does: `assume m/ffi.with_tx(cb: [cb]) : [cb([Db])]`. Such a line used
+  to answer `[Unknown]`.
+
 ### Changed
 
 - A dependency's spec now answers only for the modules that package ships. A
@@ -32,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A function handed to a labelled parameter that itself takes a callback
   (`with action: fn(fn() -> Nil) -> Nil`) now charges what it does with that
   callback, where it used to add `[Unknown]`.
+- An `effects` line whose effects are an operator spelling
+  (`effects m.f : fn(x) -> [x]`) now reads as `[Unknown]` where the function is
+  passed as a value, as it already did where the function is called. Passed to
+  a function that applies it, it could reduce to an effect the line never
+  stated.
 
 ## [0.21.0] - 2026-09-23
 

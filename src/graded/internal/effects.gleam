@@ -422,18 +422,17 @@ fn split_assumes(
       dict.new(),
       fn(accumulator, entry) {
         let #(name, effects, _bounds) = entry
-        dict.insert(accumulator, name, #(
-          effect_term.from_effect_set(effects),
-          origin,
-        ))
+        dict.insert(accumulator, name, #(effects, origin))
       },
     )
   let module_assumes =
     list.fold(assumes, dict.new(), fn(accumulator, assume) {
       case assume.target, assume.effects {
+        // A module has no parameters to bind a variable, so its term is read
+        // as the ground set it reduces to.
         ModuleAssume, Some(effects) ->
           dict.insert(accumulator, assume.module, #(
-            effect_term.from_effect_set(effects),
+            effect_term.from_effect_set(effect_term.to_effect_set(effects)),
             ModuleAssumeOrigin(source: origin),
           ))
         _, _ -> accumulator
@@ -449,7 +448,7 @@ fn split_assumes(
 // two rules kept in step.
 fn declaring_function_assumes(
   assumes: List(AssumeAnnotation),
-) -> List(#(QualifiedName, EffectSet, List(ParamBound))) {
+) -> List(#(QualifiedName, EffectTerm, List(ParamBound))) {
   list.filter_map(assumes, fn(assume) {
     case assume.target, assume.effects {
       FunctionAssume(function), Some(effects) ->

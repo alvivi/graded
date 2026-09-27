@@ -524,7 +524,7 @@ fn parse_annotation_head(
   // (`m.f : fn(x) -> [x]` as much as `m.f : [action([cb])]`), which reads
   // through the term grammar rather than being cut at an operator's `fn(`.
   let bounded = bounded_spelling(head)
-  case split_call(head) {
+  use annotation <- result.map(case split_call(head) {
     Ok(#(name, params_str, suffix)) if bounded ->
       parse_params_suffix(kind, string.trim(name), params_str, suffix, returns)
     _ ->
@@ -539,6 +539,16 @@ fn parse_annotation_head(
             returns:,
           ))
       }
+  })
+  // An `effects` line's term is an effect, never an operator: its root
+  // abstractions ground to `[Unknown]`. A `check` budget keeps what it says.
+  case kind {
+    Effects ->
+      EffectAnnotation(
+        ..annotation,
+        effects: effect_term.ground_root_abstractions(annotation.effects),
+      )
+    Check -> annotation
   }
 }
 
@@ -618,8 +628,8 @@ fn parse_params_suffix(
 // `where` region carry the line instead. Read through the bound grammar —
 // an operator spelling (`fn(x) -> [x]`) included — exactly as the boundless
 // head reads its term, so the two spellings of one line accept the same
-// language: on an `assume` line the flat reduction reads an operator as
-// `[Unknown]` either way, never as a parse error that refuses the file.
+// language: an operator spelling grounds to `[Unknown]` either way, never a
+// parse error that refuses the file.
 fn parse_effects_suffix(suffix: String) -> Result(Option(EffectTerm), Nil) {
   case string.trim(suffix) {
     "" -> Ok(None)
@@ -639,9 +649,9 @@ type AssumeSubject {
 }
 
 // Parse an `assume <path> : <effects>` line into the annotation its path shape
-// names. A function's or a module's effects reduce to a set — an assumption's
-// effects term is flat, labels and variables, and anything deeper collapses to
-// `[Unknown]` in that reduction; a field's stay a term.
+// names. A function's or a module's effects term has its root abstractions
+// grounded to `[Unknown]` — it is an effect, never an operator; a field's stays
+// as written.
 fn parse_assume_line(rest: String) -> Result(GradedLine, Nil) {
   parse_clause_then(rest, parse_assume_head)
 }
@@ -668,7 +678,7 @@ fn parse_assume_head(
     },
     return: Error(Nil),
   )
-  let effects = option.map(term, effect_term.to_effect_set)
+  let effects = option.map(term, effect_term.ground_root_abstractions)
   case term, returns {
     // Nothing on the line means anything to this version, so there is no
     // semantic record to hang the retained clauses on — and fabricating an
@@ -1832,7 +1842,7 @@ pub fn format_assume(assume_annotation: AssumeAnnotation) -> String {
 
 fn assume_head(assume_annotation: AssumeAnnotation) -> String {
   let effects_clause = case assume_annotation.effects {
-    Some(effects) -> " : " <> format_effect_set(effects)
+    Some(effects) -> " : " <> format_effect_term(effects)
     None -> ""
   }
   "assume " <> assume_path(assume_annotation) <> effects_clause
@@ -1917,7 +1927,7 @@ pub fn format_param_bound(param: ParamBound) -> String {
 // (so labels sort first), a first-order term formats byte-identically to its
 // `EffectSet`.
 pub fn format_effect_term(term: EffectTerm) -> String {
-  case effect_term.normalize(term) {
+  case effect_term.ground_root_abstractions(term) {
     TTop -> "[_]"
     normalized ->
       "["
@@ -1937,11 +1947,11 @@ fn term_atoms(term: EffectTerm) -> List(String) {
     TUnion(members) -> list.flat_map(members, term_atoms)
     // A residual abstraction *inside* an effect set is an under-applied
     // operator, not a resolved effect: an operator bound renders through
-    // `format_param_bound`, whose spine walk consumes every binder, so nothing
-    // legitimately reaches here. The effect-set grammar has no `fn(..) -> ..`
-    // atom, so rendering one would emit a line the parser rejects; ground it to
-    // the conservative collapse instead, keeping every rendered line readable
-    // back in.
+    // `format_param_bound`, whose spine walk consumes every binder, and
+    // `format_effect_term` grounds a root one, so nothing legitimately reaches
+    // here. The effect-set grammar has no `fn(..) -> ..` atom, so rendering one
+    // would emit a line the parser rejects; ground it to the conservative
+    // collapse instead, keeping every rendered line readable back in.
     TAbs(_, _) -> [types.unknown_label]
   }
 }

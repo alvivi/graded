@@ -183,10 +183,15 @@ bounds](#parameter-effect-bounds). A paren group opening before the head's
 first colon *is* a bound list — there is no other reading — so one that does
 not parse as bounds is a parse error, as is a bound list on a module path or
 a field path: a module has no parameters, and a field's callable shape is not
-per-parameter. The declared effects term is **flat**: labels and
-variables (`assume myapp/ffi.each(f: [f]) : [f]`); a second-order application
-such as `[action([cb])]` and an operator spelling such as `fn(x) -> [x]`
-both read as `[Unknown]`.
+per-parameter. The declared effects term is the term an `effects` line
+carries: labels, variables (`assume myapp/ffi.each(f: [f]) : [f]`), and
+operator applications of a bound's variable —
+`assume myapp/ffi.with_tx(cb: [cb]) : [cb([Db])]` declares a function that
+calls its callback, handing it a function with effects `[Db]`. An effects term is an
+effect, never an operator: an operator spelling such as `fn(x) -> [x]` reads as
+`[Unknown]`, on an `effects` line as well. A module-level line's term reads as
+the ground set it reduces to, since a module has no parameters to bind a
+variable.
 
 The bounds are **substitution scaffolding, not caller-side constraints** —
 nothing ever verifies an assumption, its arguments included:

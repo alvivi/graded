@@ -72,6 +72,32 @@ pub fn to_effect_set(term: EffectTerm) -> EffectSet {
   term_to_set(normalize(term))
 }
 
+// Ground a term's root abstractions: a `TAbs` at the root, or one that is a
+// direct member of the root union, becomes `[Unknown]`. An abstraction in an
+// application's argument position is an operator argument and is kept, as is
+// every application. The effects half of a spec line is an effect, never an
+// operator, so this is how both the parser and the formatter read it.
+pub fn ground_root_abstractions(term: EffectTerm) -> EffectTerm {
+  case normalize(term) {
+    TAbs(_, _) -> unknown()
+    TUnion(members) as union ->
+      case list.any(members, is_abstraction) {
+        False -> union
+        True ->
+          members
+          |> list.map(fn(member) {
+            case member {
+              TAbs(_, _) -> unknown()
+              other -> other
+            }
+          })
+          |> TUnion
+          |> normalize
+      }
+    other -> other
+  }
+}
+
 fn term_to_set(normalized: EffectTerm) -> EffectSet {
   case normalized {
     TTop -> Wildcard

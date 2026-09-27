@@ -296,14 +296,14 @@ fn unbound_term_variable_warnings(
   list.filter_map(assumes, fn(assume) {
     use <- bool.guard(when: assume.params == [], return: Error(Nil))
     case annotation.assume_qualified_name(assume), assume.effects {
-      Ok(qualified), Some(effect_set) -> {
+      Ok(qualified), Some(term) -> {
         use <- bool.guard(
           when: set.contains(dead, types.dotted_name(qualified)),
           return: Error(Nil),
         )
         let covered = effects.bound_payload_variables(assume.params)
         let unbound =
-          declared_term_variables(Some(effect_set))
+          effect_term.free_vars(term)
           |> set.filter(fn(variable) { !set.contains(covered, variable) })
           |> set.to_list
           |> list.sort(string.compare)
@@ -387,13 +387,12 @@ fn returns_variables(returns: Option(EffectTerm)) -> Set(String) {
   }
 }
 
-// The variables an `assume` line's declared effects half names. The declared
-// term is a flat set, so they are right on the `Polymorphic` variant — no term
-// round-trip needed. A line with no effects half names none.
-fn declared_term_variables(effects: Option(types.EffectSet)) -> Set(String) {
+// The variables an `assume` line's declared effects half names. A line with no
+// effects half names none.
+fn declared_term_variables(effects: Option(EffectTerm)) -> Set(String) {
   case effects {
-    Some(types.Polymorphic(_labels, variables)) -> variables
-    Some(types.Specific(_)) | Some(types.Wildcard) | None -> set.new()
+    Some(term) -> effect_term.free_vars(term)
+    None -> set.new()
   }
 }
 

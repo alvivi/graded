@@ -8633,6 +8633,130 @@ pub fn go() -> Nil {
   support.cleanup(root)
 }
 
+pub fn a_declared_second_order_term_charges_what_the_callback_does_test() {
+  // `with_tx` is declared as applying its callback operator to a [Db]
+  // callback. `quiet3`'s callback only runs what it is handed, so it costs
+  // the [Db] budget exactly; `loud3`'s prints first and exceeds it.
+  let assert Ok(results) = graded.check_project("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/assume_second_order.gleam"
+    })
+  r.violations
+  |> list.filter(fn(v) { v.explanation.call.function == "with_tx" })
+  |> list.map(fn(v) { #(v.function, v.explanation.actual) })
+  |> should.equal([
+    #("loud3", types.Specific(set.from_list(["Db", "Stdout"]))),
+  ])
+  r.violations
+  |> list.filter(fn(v) { v.function == "quiet3" })
+  |> should.equal([])
+}
+
+pub fn an_operator_spelled_declaration_charges_the_same_once_formatted_test() {
+  // `g`'s callback is typed through an imported alias, so no signature shows
+  // it a binder and `with_tx(g)` lifts `g`'s declared term as the operator
+  // itself. Written `fn(x) -> [x]`, that term is `[Unknown]` — before
+  // `graded format` rewrites the line and after — and never an operator that
+  // `with_tx` applies to `[Db]`.
+  let root = "build/operator_spelled_declaration_format"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume ffi.with_tx(cb: [cb]) : [cb([Db])]
+assume ffi.g : fn(x) -> [x]
+check app.lifts_g : [Db]
+check app.quiet : [Db]
+",
+    ),
+    #("callbacks.gleam", "pub type Callback =\n  fn() -> Nil\n"),
+    #(
+      "ffi.gleam",
+      "import callbacks\n\n"
+        <> support.foreign_fn("with_tx", "(cb: fn(fn() -> Nil) -> Nil) -> Nil")
+        <> "\n"
+        <> support.foreign_fn("g", "(cb: callbacks.Callback) -> Nil"),
+    ),
+    #(
+      "app.gleam",
+      "import ffi
+
+pub fn lifts_g() -> Nil {
+  ffi.with_tx(ffi.g)
+}
+
+pub fn quiet() -> Nil {
+  ffi.with_tx(fn(run) { run() })
+}
+",
+    ),
+  ])
+  let verdicts = fn() {
+    let assert Ok(results) = graded.check_project(root)
+    results
+    |> list.flat_map(fn(r) { r.violations })
+    |> list.map(fn(v) { #(v.function, v.explanation.actual) })
+  }
+  let expected = [#("lifts_g", types.Specific(set.from_list(["Unknown"])))]
+  verdicts() |> should.equal(expected)
+
+  let spec_path = root <> "/proj.graded"
+  let assert Ok(written) = simplifile.read(spec_path)
+  let assert Ok(parsed) = annotation.parse_file(written)
+  let formatted = annotation.format_file(parsed)
+  formatted |> string.contains("assume ffi.g : [Unknown]") |> should.be_true()
+  let assert Ok(Nil) = simplifile.write(spec_path, formatted)
+  verdicts() |> should.equal(expected)
+  support.cleanup(root)
+}
+
+pub fn an_operator_spelled_effects_line_never_lifts_as_an_operator_test() {
+  // The same shape on a dependency's hand-edited `effects` line: `g`'s term,
+  // written `fn(x) -> [x]`, is `[Unknown]` where `g` is passed as a value, and
+  // `with_tx` applying it to `[Db]` stays `[Unknown]`.
+  let root =
+    support.write_project_with_dependency(
+      directory: "build/operator_spelled_effects_line",
+      package: "proj",
+      spec: "check app.lifts_g : [Db]\n",
+      sources: [
+        #(
+          "app.gleam",
+          "import dep/m\n\npub fn lifts_g() -> Nil {\n  m.with_tx(m.g)\n}\n",
+        ),
+      ],
+      dependency: "dep",
+      dependency_spec: "assume dep/m.db : [Db]
+effects dep/m.with_tx(cb: [cb]) : [cb([Db])]
+effects dep/m.g : fn(x) -> [x]
+",
+      dependency_sources: [
+        #("dep/callbacks.gleam", "pub type Callback =\n  fn() -> Nil\n"),
+        #(
+          "dep/m.gleam",
+          "import dep/callbacks\n\n"
+            <> support.foreign_fn("db", "() -> Nil")
+            <> "
+pub fn with_tx(cb: fn(fn() -> Nil) -> Nil) -> Nil {
+  cb(db)
+}
+
+pub fn g(cb: callbacks.Callback) -> Nil {
+  cb()
+}
+",
+        ),
+      ],
+    )
+  let assert Ok(results) = graded.check_project(root)
+  results
+  |> list.flat_map(fn(r) { r.violations })
+  |> list.map(fn(v) { #(v.function, v.explanation.actual) })
+  |> should.equal([#("lifts_g", types.Specific(set.from_list(["Unknown"])))])
+  support.cleanup(root)
+}
+
 pub fn record_update_field_walked_test() {
   // record_update.run updates a field with an effectful expression (shout :
   // [Stdout]). The call sits inside a record update, so its effect surfaces

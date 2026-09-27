@@ -3223,6 +3223,128 @@ pub fn caller() -> Nil { app.with_logger(app.runner) }"
   { violations != [] } |> should.be_true()
 }
 
+// The same second-order callee declared by `assume` lines rather than
+// inferred: `with_logger` applies its operator to a [Stdout] callback, and
+// `runner` runs its callback.
+fn declared_second_order_violations(
+  budget: List(String),
+) -> List(types.Violation) {
+  let assert Ok(spec) =
+    annotation.parse_file(
+      "assume app.with_logger(action: [action]) : [action([Stdout])]
+assume app.runner(cb: [cb]) : [cb]",
+    )
+  let kb =
+    effects.with_assumes(
+      knowledge_base(),
+      annotation.extract_assumes(spec),
+      types.UserAssume,
+    )
+  let #(_, reg) = second_order_kb_and_registry()
+  let assert Ok(module) =
+    glance.module(
+      "import app
+pub fn caller() -> Nil { app.with_logger(app.runner) }",
+    )
+  let ann =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(budget))),
+      returns: None,
+    )
+  let #(violations, _findings, _) =
+    checker.check(
+      module,
+      "",
+      [ann],
+      kb,
+      reg,
+      typeinfo.no_reading(),
+      types.all_targets(),
+    )
+  violations
+}
+
+pub fn declared_second_order_call_site_resolves_test() {
+  declared_second_order_violations(["Stdout"]) |> should.equal([])
+}
+
+pub fn declared_second_order_call_site_detects_violation_test() {
+  let assert [violation] = declared_second_order_violations([])
+  violation.explanation.actual
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// `m.with_tx(m.g)` against a `[Db]` budget, where `with_tx` applies its operator
+// to a `[Db]` callback and `m.g` is declared by `g_line` alone. The registry
+// knows `with_tx` and its operator parameter and omits `m.g`, so `m.g` lifts
+// over no binder: its declared term is the operator itself.
+fn lifted_declaration_violations(
+  g_line: types.AssumeAnnotation,
+) -> List(types.Violation) {
+  let assert Ok(spec) =
+    annotation.parse_file("assume m.with_tx(cb: [cb]) : [cb([Db])]")
+  let kb =
+    effects.with_assumes(
+      knowledge_base(),
+      [g_line, ..annotation.extract_assumes(spec)],
+      types.UserAssume,
+    )
+  let assert Ok(signature_module) =
+    glance.module("pub fn with_tx(cb: fn(fn() -> Nil) -> Nil) -> Nil { Nil }")
+  let registry = signatures.from_glance_module("m", signature_module)
+  let assert Ok(module) =
+    glance.module("import m\npub fn caller() -> Nil { m.with_tx(m.g) }")
+  let ann =
+    EffectAnnotation(
+      Check,
+      "caller",
+      [],
+      effect_term.from_effect_set(Specific(set.from_list(["Db"]))),
+      returns: None,
+    )
+  let #(violations, _findings, _) =
+    checker.check(
+      module,
+      "",
+      [ann],
+      kb,
+      registry,
+      typeinfo.no_reading(),
+      types.all_targets(),
+    )
+  violations
+}
+
+pub fn a_declared_operator_spelling_never_lifts_as_an_operator_test() {
+  // A raw abstraction in `m.g`'s entry would be the lifted operator itself,
+  // and `with_tx`'s application would reduce it to [Db]. Read from the line
+  // `assume m.g : fn(x) -> [x]`, the entry is [Unknown], before and after the
+  // line is formatted and read back.
+  let raw =
+    types.AssumeAnnotation(
+      "m",
+      types.FunctionAssume("g"),
+      params: [],
+      effects: Some(TAbs("x", TVar("x"))),
+      returns: None,
+    )
+  lifted_declaration_violations(raw) |> should.equal([])
+
+  let assert Ok(written) = annotation.parse_file("assume m.g : fn(x) -> [x]")
+  let assert Ok(reformatted) =
+    annotation.parse_file(annotation.format_file(written))
+  [written, reformatted]
+  |> list.each(fn(file) {
+    let assert [g_line] = annotation.extract_assumes(file)
+    let assert [violation] = lifted_declaration_violations(g_line)
+    violation.explanation.actual
+    |> should.equal(Specific(set.from_list(["Unknown"])))
+  })
+}
+
 pub fn second_order_inline_closure_resolves_test() {
   // The operator argument is now an inline closure rather than a named
   // function. It is analysed and lifted to `λlogger. [logger]`, so the
@@ -4485,7 +4607,7 @@ fn simple_assume(
     module,
     types.FunctionAssume(function),
     params: [],
-    effects: Some(Specific(set.from_list(labels))),
+    effects: Some(TLabels(set.from_list(labels))),
     returns: None,
   )
 }
