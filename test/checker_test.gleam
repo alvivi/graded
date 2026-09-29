@@ -8250,16 +8250,14 @@ pub fn make_pick_first() -> fn(fn() -> Nil, fn() -> Nil) -> Nil {
 fn binder_count(term: EffectTerm) -> Int {
   case term {
     TAbs(_, body) -> 1 + binder_count(body)
-    _ -> 0
+    TLabels(_) | types.TTop | TVar(_) | TApp(_, _) | types.TUnion(_) -> 0
   }
 }
 
 // An operator applied to each argument in turn, reduced to its effect set.
 fn applied(operator: EffectTerm, arguments: List(List(String))) -> EffectSet {
   arguments
-  |> list.fold(operator, fn(term, labels) {
-    TApp(term, TLabels(set.from_list(labels)))
-  })
+  |> list.fold(operator, fn(term, labels) { TApp(term, label_term(labels)) })
   |> effect_term.to_effect_set
 }
 

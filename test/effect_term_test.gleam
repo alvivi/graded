@@ -350,7 +350,8 @@ pub fn app_distribution_mixed_union_stays_stuck_unit_test() {
   // A *mixed* union (an operator alongside a bare variable) is ill-kinded as an
   // operator: distributing would push `g` into operator position and drop the
   // `[A]` branch's labels. So the whole application stays stuck → [Unknown],
-  // the conservative (sound) collapse. Only all-abstraction unions distribute.
+  // the conservative (sound) collapse. Only a union of abstractions alone, or
+  // of variable-headed members alone, distributes.
   let const_a = TAbs("x", labels(["A"]))
   to_effect_set(TApp(TUnion([const_a, TVar("g")]), labels(["B"])))
   |> should.equal(Specific(set.from_list(["Unknown"])))
@@ -392,16 +393,6 @@ pub fn app_distributes_over_a_variable_and_a_variable_headed_spine_unit_test() {
   let y = labels(["Stdout"])
   normalize(TApp(TUnion([TVar("a"), TApp(TVar("b"), x)]), y))
   |> should.equal(TUnion([TApp(TApp(TVar("b"), x), y), TApp(TVar("a"), y)]))
-}
-
-pub fn app_over_a_variable_and_an_abstraction_stays_stuck_unit_test() {
-  let x = labels(["Stdout"])
-  let union = TUnion([TVar("a"), TAbs("p", labels(["Db"]))])
-  let applied = normalize(TApp(union, x))
-  applied
-  |> should.equal(TApp(normalize(union), x))
-  to_effect_set(applied)
-  |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
 pub fn app_over_a_variable_and_a_label_set_stays_stuck_unit_test() {
@@ -670,10 +661,9 @@ pub fn an_unspellable_union_member_grounds_beside_the_rest_unit_test() {
   )
 }
 
-pub fn an_unspellable_application_in_an_abstraction_body_grounds_unit_test() {
-  ground_unspellable_applications(TAbs(
-    "cb",
-    TUnion([TVar("cb"), TApp(labels(["Db"]), TVar("cb"))]),
-  ))
-  |> should.equal(TAbs("cb", TUnion([labels(["Unknown"]), TVar("cb")])))
+pub fn an_operator_argument_grounds_unit_test() {
+  // An abstraction has no spelling either, so the operator an application is
+  // handed is written `[Unknown]`.
+  ground_unspellable_applications(TApp(TVar("a"), TAbs("x", TVar("x"))))
+  |> should.equal(TApp(TVar("a"), unknown()))
 }
