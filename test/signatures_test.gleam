@@ -550,25 +550,25 @@ fn slot_rows() -> List(SlotRow) {
   let named = signatures.NamedSlot
   let nameless = signatures.NamelessSlot
   [
-    SlotRow("_f: fn() -> Nil", [nameless], [nameless], []),
-    // The registry names a labelled parameter by its label.
-    SlotRow("with _f: fn() -> Nil", [nameless], [named("with")], []),
+    SlotRow("_f: fn() -> Nil", [nameless(0)], [nameless(0)], []),
+    SlotRow("with _f: fn() -> Nil", [nameless(0)], [named(0, "with")], []),
     SlotRow(
       "_a: fn() -> Nil, b: fn() -> Nil",
-      [nameless, named("b")],
-      [nameless, named("b")],
+      [nameless(0), named(1, "b")],
+      [nameless(0), named(1, "b")],
       ["b"],
     ),
     SlotRow(
       "a: fn() -> Nil, _b: fn() -> Nil",
-      [named("a"), nameless],
-      [named("a"), nameless],
+      [named(0, "a"), nameless(1)],
+      [named(0, "a"), nameless(1)],
       ["a"],
     ),
-    SlotRow("_x: Int, cb: fn() -> Nil", [named("cb")], [named("cb")], ["cb"]),
-    // Nothing says an unannotated discard is a callback.
+    SlotRow("_x: Int, cb: fn() -> Nil", [named(1, "cb")], [named(1, "cb")], [
+      "cb",
+    ]),
     SlotRow("_x", [], [], []),
-    SlotRow("_f: Action", [nameless], [nameless], []),
+    SlotRow("_f: Action", [nameless(0)], [nameless(0)], []),
   ]
 }
 
@@ -602,4 +602,16 @@ pub fn callback_slots_bind_every_callback_position_test() {
       row.ordered_callback_params,
     ))
   })
+}
+
+pub fn a_nameless_slot_is_bound_only_where_it_is_supplied_test() {
+  // `(_a: fn() -> Nil, b: fn() -> Nil)`: a use site supplying only the second
+  // callback binds `b` alone, one supplying both binds both, and one supplying
+  // none still binds the named callback.
+  let slots = [signatures.NamelessSlot(0), signatures.NamedSlot(1, "b")]
+  signatures.supplied_slots(slots, [1])
+  |> should.equal([signatures.NamedSlot(1, "b")])
+  signatures.supplied_slots(slots, [0, 1]) |> should.equal(slots)
+  signatures.supplied_slots(slots, [])
+  |> should.equal([signatures.NamedSlot(1, "b")])
 }

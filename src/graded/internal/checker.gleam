@@ -1560,10 +1560,12 @@ fn local_function_field_effect(
       case foreign_definition(definition, context.package_targets) {
         True -> #(None, memo)
         False -> {
+          // A wired value's call supplies no callback the lift binds.
           let #(term, memo) =
             lift_local_function(
               name.function,
               definition,
+              [],
               context,
               function_map,
               knowledge_base,
@@ -3038,8 +3040,9 @@ type Memo {
     locals: dict.Dict(#(String, List(String)), List(CollectedCall)),
     // Collapsible-SCC full-reachability analyses, keyed by SCC id.
     sccs: dict.Dict(Int, List(CollectedCall)),
-    // Operator-lifts of same-module function references, keyed by name +
-    // same-SCC ancestors.
+    // The walked bodies of same-module function references' operator lifts,
+    // keyed by name + same-SCC ancestors. Each use abstracts one over the
+    // binders its own call supplies.
     lifts: dict.Dict(#(String, List(String)), EffectTerm),
     // Closure analyses, keyed by body position, lifting positions, ambient
     // operator names, visited ancestors, and which ambient operators are
@@ -6551,9 +6554,10 @@ fn operator_term_for_argument(
   case arg.value {
     types.FunctionRef(name) -> {
       let body = effects.declared_effects(knowledge_base, name)
-      // Abstract over `g`'s callback params in declaration order, named or
-      // not. The outermost binder is the first param, matching the left-nested
-      // application spine built at the definition site. The recorded bounds
+      // Abstract over `g`'s callback params in declaration order — a discarded
+      // one where this use site supplies its argument. The outermost binder is
+      // the first param, matching the left-nested application spine built at
+      // the definition site. The recorded bounds
       // count as fn-typed too: a running fallback's girard-typed callback has
       // no `fn(...)` annotation for the registry to see, and without its binder
       // the summary's variable stays free and the application goes stuck.
@@ -6563,6 +6567,7 @@ fn operator_term_for_argument(
           name,
           value_channel_bound_names(knowledge_base, name),
         )
+        |> signatures.supplied_slots(positions)
         |> abstract_over_slots(body)
       #(operator, memo)
     }
@@ -6698,6 +6703,7 @@ fn build_lift_operator_arg(
               lift_local_function(
                 name,
                 definition,
+                positions,
                 context,
                 function_map,
                 knowledge_base,
@@ -7418,10 +7424,13 @@ fn statement_start(statement: Statement) -> Int {
 // module's inference pass, so this transitively analyses the definition (its
 // fn-typed params seeded as self-referential variables) and abstracts over
 // those params in order — the `function_map` analogue of the `FunctionRef`/KB
-// path in `operator_term_for_argument`.
+// path in `operator_term_for_argument`. `positions` are the callback positions
+// the use site supplies, which decide where a discarded callback takes a
+// binder (`signatures.supplied_slots`).
 fn lift_local_function(
   name: String,
   definition: Definition(Function),
+  positions: List(Int),
   context: ImportContext,
   function_map: dict.Dict(String, Definition(Function)),
   knowledge_base: KnowledgeBase,
@@ -7473,9 +7482,12 @@ fn lift_local_function(
         cache.fn_alias_types,
         value_channel_bound_names(knowledge_base, qualified),
       )
+      |> signatures.supplied_slots(positions)
       |> abstract_over_slots(declared)
     #(operator, memo)
   })
+  let slots =
+    signatures.supplied_slots(cached_callback_slots(function, cache), positions)
   let scc = dict.get(cache.scc_id, name) |> result.unwrap(-1)
   case set.contains(cache.collapsible, scc) {
     // A first-order function in a collapsible SCC lifts to its full-reachability
@@ -7494,13 +7506,7 @@ fn lift_local_function(
           cache,
           memo,
         )
-      #(
-        abstract_over_slots(
-          cached_callback_slots(function, cache),
-          union_of(pairs),
-        ),
-        memo,
-      )
+      #(abstract_over_slots(slots, union_of(pairs)), memo)
     }
     // Otherwise memoize like `memoized_local`'s polymorphic path, but for the
     // operator-lifting of a function reference (an encoder passed to a codec
@@ -7510,7 +7516,7 @@ fn lift_local_function(
     False -> {
       let #(_, ancestors) = memo_key(name, visited, cache)
       let key = #(name, ancestors)
-      case dict.get(memo.lifts, key) {
+      let #(body, memo) = case dict.get(memo.lifts, key) {
         Ok(cached) -> #(cached, memo)
         Error(Nil) ->
           lift_operator_miss(
@@ -7527,14 +7533,15 @@ fn lift_local_function(
             memo,
           )
       }
+      #(abstract_over_slots(slots, body), memo)
     }
   }
 }
 
-// Compute (and cache) the operator lift of a same-module function on a `lifts`
-// memo miss: analyse its body with its fn-typed params seeded as self-referential
-// variables, then abstract over every callback position in declaration order —
-// a discarded callback included, under a synthesized binder.
+// Compute (and cache) the body of a same-module function's operator lift on a
+// `lifts` memo miss: analyse its body with its fn-typed params seeded as
+// self-referential variables. The caller abstracts it over the slots its use
+// site supplies.
 fn lift_operator_miss(
   name: String,
   definition: Definition(Function),
@@ -7550,11 +7557,10 @@ fn lift_operator_miss(
 ) -> #(EffectTerm, Memo) {
   let function = definition.definition
   // The canonical callback set, in declaration order: a callback carrying no
-  // `fn(...)` annotation needs its binder here too, or the lifted term's
-  // variable stays free and the application goes stuck. Its named slots are
-  // seeded; every slot is abstracted over.
-  let slots = cached_callback_slots(function, cache)
-  let bounds = list.map(signatures.slot_names(slots), self_referential_bound)
+  // `fn(...)` annotation is seeded here too, or the lifted term's variable
+  // stays free and the application goes stuck.
+  let bounds =
+    list.map(cached_callback_params(function, cache), self_referential_bound)
   let #(body_pairs, memo) =
     collect_effects(
       without_returned_closure(function),
@@ -7570,8 +7576,8 @@ fn lift_operator_miss(
       [],
       memo,
     )
-  let operator = abstract_over_slots(slots, union_of(body_pairs))
-  #(operator, Memo(..memo, lifts: dict.insert(memo.lifts, key, operator)))
+  let body = union_of(body_pairs)
+  #(body, Memo(..memo, lifts: dict.insert(memo.lifts, key, body)))
 }
 
 // Abstract `body` over a function's callback slots, the first slot outermost. A
@@ -7590,8 +7596,8 @@ fn abstract_over_slots(
   let #(_, binders) =
     list.map_fold(slots, avoid, fn(avoid, slot) {
       let binder = case slot {
-        signatures.NamedSlot(name) -> name
-        signatures.NamelessSlot -> effect_term.fresh("_", avoid)
+        signatures.NamedSlot(name:, ..) -> name
+        signatures.NamelessSlot(..) -> effect_term.fresh("_", avoid)
       }
       #(set.insert(avoid, binder), binder)
     })
