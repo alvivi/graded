@@ -17967,3 +17967,69 @@ check app.go_mixed : []
   simplifile.read(spec_path) |> should.equal(Ok(written))
   support.cleanup(root)
 }
+
+// A discarded callback, written and read back
+//
+// A function whose callback parameter no signature names, handed to a function
+// that calls its callback with one, leaves an application with no variable at
+// its head. `infer` writes it `[Unknown]`, the set it charges, in a line every
+// later command reads back.
+
+// The package the section runs over: `run_with` calls its callback with a
+// callback of its own; `ignores` discards a callback annotated `fn() -> Nil`,
+// and `drops` one annotated through an alias imported from another module.
+fn discarded_callback_files() -> List(#(String, String)) {
+  [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", ""),
+    #("callbacks.gleam", "pub type Callback =\n  fn() -> Nil\n"),
+    #(
+      "lib.gleam",
+      "import callbacks
+
+pub fn run_with(action: fn(fn() -> Nil) -> Nil) -> Nil {
+  action(fn() { Nil })
+}
+
+pub fn drops(_cb: callbacks.Callback) -> Nil {
+  Nil
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import lib
+
+fn ignores(_f: fn() -> Nil) -> Nil {
+  Nil
+}
+
+pub fn go() -> Nil {
+  lib.run_with(ignores)
+}
+
+pub fn alias_dropped() -> Nil {
+  lib.run_with(lib.drops)
+}
+",
+    ),
+  ]
+}
+
+pub fn a_discarded_callback_writes_a_line_that_reads_back_test() {
+  let root = "build/discarded_callback_written"
+  support.write_fixture(root, discarded_callback_files())
+  let spec_path = root <> "/proj.graded"
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(spec_path)
+  string.contains(written, "effects app.alias_dropped : [Unknown]\n")
+  |> should.be_true()
+  string.contains(written, "effects app.go : [Unknown]\n")
+  |> should.be_true()
+  // Every command reads the written spec back, `infer` included, and a second
+  // `infer` writes the same bytes.
+  let assert Ok(_) = graded.run(root)
+  let assert Ok(Nil) = graded.run_infer(root)
+  simplifile.read(spec_path) |> should.equal(Ok(written))
+  support.cleanup(root)
+}

@@ -1923,16 +1923,24 @@ pub fn format_param_bound(param: ParamBound) -> String {
 
 // Format an `EffectTerm` as `[...]`. Free variables render as bare lowercase
 // names, operator applications as `name(arg, ...)`, and a wildcard as `[_]`.
-// Atoms are sorted; since labels are upper-initial and variables lower-initial
-// (so labels sort first), a first-order term formats byte-identically to its
-// `EffectSet`.
+// Atoms are sorted and each is written once; since labels are upper-initial and
+// variables lower-initial (so labels sort first), a first-order term formats
+// byte-identically to its `EffectSet`. An application whose head is not a
+// variable has no spelling and is written `[Unknown]`.
 pub fn format_effect_term(term: EffectTerm) -> String {
-  case effect_term.ground_root_abstractions(term) {
+  case
+    term
+    |> effect_term.ground_root_abstractions
+    |> effect_term.ground_unspellable_applications
+  {
     TTop -> "[_]"
     normalized ->
       "["
       <> {
-        term_atoms(normalized) |> list.sort(string.compare) |> string.join(", ")
+        term_atoms(normalized)
+        |> list.sort(string.compare)
+        |> list.unique
+        |> string.join(", ")
       }
       <> "]"
   }
@@ -1943,7 +1951,16 @@ fn term_atoms(term: EffectTerm) -> List(String) {
     TLabels(labels) -> set.to_list(labels)
     TVar(name) -> [name]
     TTop -> ["_"]
-    TApp(_, _) -> [render_application(term)]
+    TApp(_, _) ->
+      case application_spine(term) {
+        #(TVar(name), args) -> [render_application(name, args)]
+        // `format_effect_term` grounds every other head first.
+        #(TLabels(_), _)
+        | #(TTop, _)
+        | #(TApp(_, _), _)
+        | #(TUnion(_), _)
+        | #(TAbs(_, _), _) -> [types.unknown_label]
+      }
     TUnion(members) -> list.flat_map(members, term_atoms)
     // A residual abstraction *inside* an effect set is an under-applied
     // operator, not a resolved effect: an operator bound renders through
@@ -1956,16 +1973,11 @@ fn term_atoms(term: EffectTerm) -> List(String) {
   }
 }
 
-// Render an operator application `head([arg0], [arg1], ...)`. Walks the whole
-// (possibly curried) application spine and renders arguments **in spine order**
-// — currying is positional, so argument order is significant and must not be
+// Render an operator application `head([arg0], [arg1], ...)` from its head
+// variable and its (possibly curried) spine's arguments, **in spine order** —
+// currying is positional, so argument order is significant and must not be
 // sorted (unlike union members). Each argument is a bracketed effect term.
-fn render_application(term: EffectTerm) -> String {
-  let #(head, args) = application_spine(term)
-  let callee = case head {
-    TVar(name) -> name
-    other -> string.join(term_atoms(other) |> list.sort(string.compare), " ")
-  }
+fn render_application(callee: String, args: List(EffectTerm)) -> String {
   callee
   <> "("
   <> { args |> list.map(format_effect_term) |> string.join(", ") }

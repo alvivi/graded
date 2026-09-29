@@ -133,9 +133,9 @@ When a call site cannot resolve an operator application (e.g.
 `TApp` collapses to `[Unknown]` — exactly as unresolved field effects and free
 variables already concretize today. This is **sound** (it never hides a
 violation), predictable, and consistent with existing behavior. `check` always
-applies this collapse before the subset test. (`infer` *may* later choose to
-write the symbolic term to disk for precision; that is pure upside with no
-soundness effect and is out of scope for the initial implementation.)
+applies this collapse before the subset test. `infer` writes a stuck
+application only when its head is a variable (`[action([Stdout])]`); one under
+any other head has no spelling and is written `[Unknown]`, the set it charges.
 
 ## Surface syntax (`annotation.gleam`)
 

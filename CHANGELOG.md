@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `graded infer` no longer writes an `effects` line that graded cannot read
+  back. Passing a function that discards its callback parameter
+  (`fn ignores(_f: fn() -> Nil)`) to a function that calls its own callback with
+  one wrote `effects app.go : [([])]`, after which every command, `infer`
+  included, stopped on a parse error. Such a line is now written as `[Unknown]`,
+  which is what it always charged. A spec already holding a line graded cannot
+  read still needs that line deleted by hand once.
 - A function that picks one of its callbacks with a `case` and passes or calls
   the result (`case flag { True -> a  False -> b }(x)`) wrote an `effects` line
   graded could not read back. It now writes what each callback does with the
