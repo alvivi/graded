@@ -35,6 +35,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A function that discards a callback parameter (`fn ignores(_f: fn() -> Nil)`)
+  now reads as what its body does when it is passed to a function that calls
+  it with a callback, where it read `[Unknown]`. With several callback
+  parameters, each argument now reaches the parameter at its own position:
+  `fn pick(_a: fn() -> Nil, b: fn() -> Nil)` charged `[Unknown]` and now charges
+  what its second argument does. A `check` that failed on such an `[Unknown]`
+  can newly pass, and an inferred line such as `[x([y])]` is rewritten as `[y]`
+  by the next `graded infer`. A function returning such a function writes the
+  discarded position into its `where returns` clause (`fn(_) -> []`, where it
+  wrote `[]`), so a caller of what it returns reads `[]` too.
 - Calling a function picked by a `case` (`let op = case flag { True -> log
   False -> save }` then `op()`, or `case flag { … }(x)`) now charges what each
   picked function does with the arguments, as if the call were written in every

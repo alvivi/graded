@@ -166,6 +166,15 @@ a curried application `((action e1) e2)`, and an operator argument is lifted to 
 curried operator `λp1. λp2. body` over the same callbacks in order. The unary
 `TApp`/`TAbs` need no special case — `reduce` already walks spines.
 
+**Binders follow parameter positions.** A function reference is lifted with one
+binder per callback parameter, in declaration order, whether the parameter is
+named or not: `fn pick(_a: fn() -> Nil, b: fn() -> Nil)` lifts to `λ_. λb. [b]`,
+so the first argument lands on the discarded position and the second on `b`. A
+parameter with no name takes a fresh binder spelled `_` (`_0`, `_1`, … where
+that is taken), never a bound and never a seeded variable; it reaches disk only
+inside a `where returns` operator (`fn(_) -> []`). A discarded parameter counts
+only when its annotation is a function type.
+
 **Operator arguments are lifted from:**
 
 - **Named function references** — cross-module via the knowledge base; same-module

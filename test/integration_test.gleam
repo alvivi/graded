@@ -17970,10 +17970,12 @@ check app.go_mixed : []
 
 // A discarded callback, written and read back
 //
-// A function whose callback parameter no signature names, handed to a function
-// that calls its callback with one, leaves an application with no variable at
-// its head. `infer` writes it `[Unknown]`, the set it charges, in a line every
-// later command reads back.
+// A function discarding a callback parameter, handed to a function that calls
+// its callback with one, is lifted with a binder for the discarded position and
+// reads as what its body does. Where no signature shows the parameter is a
+// callback — an alias imported from another module — the lift has no binder,
+// the application has no variable at its head, and `infer` writes it
+// `[Unknown]`, the set it charges, in a line every later command reads back.
 
 // The package the section runs over: `run_with` calls its callback with a
 // callback of its own; `ignores` discards a callback annotated `fn() -> Nil`,
@@ -18024,7 +18026,7 @@ pub fn a_discarded_callback_writes_a_line_that_reads_back_test() {
   let assert Ok(written) = simplifile.read(spec_path)
   string.contains(written, "effects app.alias_dropped : [Unknown]\n")
   |> should.be_true()
-  string.contains(written, "effects app.go : [Unknown]\n")
+  string.contains(written, "effects app.go : []\n")
   |> should.be_true()
   // Every command reads the written spec back, `infer` included, and a second
   // `infer` writes the same bytes.
@@ -18372,5 +18374,96 @@ pub fn go() -> Nil {
   string.contains(written, "effects shadow.choose(a: [a]) : [a]\n")
   |> should.be_true()
   verdicts() |> should.equal(expected)
+  support.cleanup(root)
+}
+
+// A discarded callback, lifted
+//
+// A function passed where its callback is called with callbacks of its own is
+// lifted with one binder per callback parameter, a discarded one included, so
+// each argument reaches the parameter at its own position.
+
+pub fn a_discarded_callback_binds_each_argument_at_its_position_test() {
+  // Each of `pick` and `pick_first` charges the argument at its own callback's
+  // position and not the other one, whichever way round the pair is passed;
+  // `ignores` passes its `[]` budget. All but `go_both` read `[Unknown]` while
+  // the discarded parameter had no binder.
+  let assert Ok(results) = graded.check_project("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) {
+      r.file == "test/fixtures/discarded_callback.gleam"
+    })
+  sorted_verdicts(r.violations)
+  |> should.equal([
+    #("go_both", types.Specific(set.from_list(["Db", "Stdout"]))),
+    #("go_pick", types.Specific(set.from_list(["Db"]))),
+    #("go_pick_first", types.Specific(set.from_list(["Stdout"]))),
+    #("go_pick_first_swapped", types.Specific(set.from_list(["Db"]))),
+    #("go_pick_swapped", types.Specific(set.from_list(["Stdout"]))),
+  ])
+}
+
+pub fn a_discarded_callback_binds_a_callers_parameter_test() {
+  // `pick` handed the caller's own callbacks charges the second of them, where
+  // it wrote `[x([y])]`, the first applied to the second.
+  let assert Ok(answered) =
+    graded.run_effect("test/fixtures", "discarded_callback.go_pick_poly")
+  answered
+  |> string.contains("effects discarded_callback.go_pick_poly(y: [y]) : [y]")
+  |> should.be_true()
+}
+
+pub fn a_discarded_callback_across_modules_and_producers_test() {
+  // The same lift from another module's function and from the function a
+  // producer returns: both read `[]`, the producer's summary carries the
+  // binder, and the written spec reads back to the same lines.
+  let root = "build/discarded_callback_cross_module"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", ""),
+    #(
+      "lib.gleam",
+      "pub fn run_with(action: fn(fn() -> Nil) -> Nil) -> Nil {
+  action(fn() { Nil })
+}
+
+pub fn ignores(_f: fn() -> Nil) -> Nil {
+  Nil
+}
+
+pub fn make() -> fn(fn() -> Nil) -> Nil {
+  ignores
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import lib
+
+pub fn go_cross() -> Nil {
+  lib.run_with(lib.ignores)
+}
+
+pub fn go_producer() -> Nil {
+  lib.run_with(lib.make())
+}
+",
+    ),
+  ])
+  let spec_path = root <> "/proj.graded"
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(spec_path)
+  [
+    "effects app.go_cross : []",
+    "effects app.go_producer : []",
+    "effects lib.make : [] where returns : fn(_) -> []",
+  ]
+  |> list.each(fn(line) {
+    #(line, string.contains(written, line <> "\n"))
+    |> should.equal(#(line, True))
+  })
+  let assert Ok(_) = graded.run(root)
+  let assert Ok(Nil) = graded.run_infer(root)
+  simplifile.read(spec_path) |> should.equal(Ok(written))
   support.cleanup(root)
 }
