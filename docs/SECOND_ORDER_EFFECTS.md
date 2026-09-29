@@ -208,6 +208,13 @@ serialized as `effects make : [] where returns : [Stdout]`), so
 - A producer that selects an operator parameter through a **branch**
   (`case … { _ -> a  _ -> b }`) resolves too — the union of operators beta-reduces
   by distributing application over the union.
+- A `case` of functions **called** with arguments — in place
+  (`case … { … }(x)`) or through a `let` (`let op = case … { … }` then `op(x)`) —
+  is charged as the same `case` with the call written in every branch. A branch
+  naming a parameter reads the parameter's bound, before a module function of
+  the same name; a branch naming a function binds the arguments through its
+  signature; only a closure branch binds every argument, and a let-bound
+  closure's body is counted once, at the `let`.
 
 **Residuals** collapse soundly to `[Unknown]`:
 

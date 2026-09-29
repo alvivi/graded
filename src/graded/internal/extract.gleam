@@ -62,8 +62,9 @@ type LocalBinding {
     body: List(glance.Statement),
   )
   // A let-bound `case`/`if` over function-like options (`let h = case c { … }`).
-  // A later use of `h` as an operator argument lifts and joins the options.
-  BoundChoice(options: List(ArgumentValue))
+  // A later use of `h` as an operator argument lifts and joins the options; a
+  // later call of `h` makes `calls`, one per option, read where the `case` sits.
+  BoundChoice(options: List(ArgumentValue), calls: List(OptionCall))
   // A let-bound result of calling a function that returns a function
   // (`let h = pick_handler(args)`). A later use of `h` as an operator argument
   // resolves the producer's returned operator, binding `args` to its params.
@@ -73,6 +74,31 @@ type LocalBinding {
   // field-selectively; a later use as a receiver argument forwards through it.
   BoundUpdated(base: ArgumentValue, fields: Dict(String, ArgumentValue))
   BoundOpaque
+}
+
+// How a call through one option of a `case` of functions reads: the call the
+// same option makes with the call written in its branch. Read in the scope of
+// the `case` expression, so a let-bound choice keeps meaning what its options
+// named there, whatever is bound between the `let` and the call.
+type OptionCall {
+  // A caller parameter, or a name no binding covers — a function of the
+  // module — called as a local call.
+  LocalOption(name: String, scope: types.LocalScope)
+  // A qualified or imported function.
+  FunctionOption(name: QualifiedName)
+  // What a producer call returns (`True -> make()`).
+  ProducerOption(callee: QualifiedName, args: List(CallArgument))
+  // An inline closure, whose every parameter binds an argument.
+  ClosureOption(
+    params: List(String),
+    captures: List(#(String, ArgumentValue)),
+    body: List(glance.Statement),
+  )
+  // A closure's own parameter, charged where its closure is applied, or a
+  // record constructor, which is pure: the call charges nothing here.
+  SilentOption
+  // A value no call path reads.
+  UnknownOption
 }
 
 // Whether a `BoundConstructor`'s `fields` is the whole field set of the type
@@ -1049,13 +1075,16 @@ fn names(
 
 // Map a classified argument value back to the lexical binding a bare reference
 // to it would carry — the inverse of `classify_local_binding` for the callable
-// shapes. Non-callable shapes become `BoundOpaque`.
+// shapes. Non-callable shapes become `BoundOpaque`. A captured choice was read
+// where it was bound, so a bare name among its options is one no binding here
+// covers: a call reads it by the bounds the body is walked under.
 fn binding_from_argument_value(value: ArgumentValue) -> LocalBinding {
   case value {
     FunctionRef(name:) -> BoundFunctionRef(name:)
     types.Closure(params, captures, body) ->
       BoundClosure(params, captures, body)
-    types.Choice(options) -> BoundChoice(options)
+    types.Choice(options) ->
+      BoundChoice(options, option_calls(options, env_new()))
     types.ReturnedOperator(callee, args) | types.CallResult(callee, args) ->
       BoundReturnedOperator(callee, args)
     Constructed(fields:) ->
@@ -1233,21 +1262,19 @@ fn resolve_variable_call(
       ExtractResult(..empty(), direct_ops: [
         types.DirectOperatorCall(callee, producer_args, span),
       ])
-    // A let-bound closure (or `case`-of-functions) applied directly: `let h =
-    // fn(x) { ... }; h(a)`. Emit a direct-closure call carrying the lifted
-    // operator source so the checker lifts it and applies this call's arguments
-    // (captured in `call_args` under the call span by `merge_with_args`), rather
-    // than emitting a `LocalCall` the checker can only resolve to `[Unknown]`.
-    // The closure body's first-order/captured effect is already counted at the
-    // binding site, so the checker only adds its invoked parameters' effects.
+    // A let-bound closure applied directly: `let h = fn(x) { ... }; h(a)`. Emit
+    // a direct-closure call carrying the lifted operator source so the checker
+    // lifts it and applies this call's arguments (captured in `call_args` under
+    // the call span by `merge_with_args`), rather than emitting a `LocalCall`
+    // the checker can only resolve to `[Unknown]`. The closure body's
+    // first-order/captured effect is already counted at the binding site, so
+    // the checker only adds its invoked parameters' effects.
     BoundClosure(params, captures, body) ->
-      ExtractResult(..empty(), direct_closure_ops: [
-        DirectClosureCall(types.Closure(params, captures, body), span),
-      ])
-    BoundChoice(options) ->
-      ExtractResult(..empty(), direct_closure_ops: [
-        DirectClosureCall(types.Choice(options), span),
-      ])
+      closure_call(params, captures, body, span, CalledAtLet)
+    // A let-bound `case` of functions applied directly: `let op = case c { … };
+    // op(a)`. Each option makes the call its branch would make, read where the
+    // `case` sits, and every one reads this call's arguments under the span.
+    BoundChoice(calls:, ..) -> called_options(calls, span, CalledAtLet)
     // A called let-bound alias (`let f = uppercase; f(x)`): a local call on the
     // aliased path, so a parameter alias resolves via the parameter's bound and
     // shadows an unqualified import of the same name, rather than the call-site
@@ -1966,7 +1993,7 @@ fn classify_rhs_ref(
       }
     types.Closure(params, captures, body) ->
       BoundClosure(params, captures, body)
-    types.Choice(options) -> BoundChoice(options)
+    types.Choice(options) -> BoundChoice(options, option_calls(options, env))
     // A let-bound call result acts as a returned-operator producer, so
     // `let h = producer(); with(h)` still resolves; a computed receiver bound to
     // a `let` stays opaque for forwarding (Phase 1 forwards inline receivers).
@@ -2643,12 +2670,13 @@ fn pipe_into_block(
   }
 }
 
-// Pipe into an inline closure or `case`-of-functions: classify the target as a
-// function-like value and emit a `DirectPipeOp` so the checker lifts it to an
-// operator and applies the piped value (recorded as argument 0 via
-// `attach_pipe_args`). A target that isn't function-like (a `case` with a
-// non-function branch) has nothing to apply, so it falls back to the normal
-// value walk.
+// Pipe into an inline closure or `case`-of-functions. A closure target emits a
+// `DirectPipeOp` so the checker lifts it to an operator and applies the piped
+// value (recorded as argument 0 via `attach_pipe_args`). A `case` target is
+// walked for its own effects — its subjects, a producer call in a branch — and
+// each option makes the call its branch would make with the piped value. A
+// target that isn't function-like (a `case` with a non-function branch) has
+// nothing to apply, so it falls back to the normal value walk.
 fn pipe_into_operator_value(
   expression: Expression,
   span: glance.Span,
@@ -2656,11 +2684,19 @@ fn pipe_into_operator_value(
   env: Env,
   pipe_args: List(CallArgument),
 ) -> ExtractResult {
-  let value = classify_expression(expression, context, env)
-  case value {
-    types.Closure(..) | types.Choice(..) ->
+  case classify_expression(expression, context, env) {
+    types.Closure(params, captures, body) ->
       attach_pipe_args(
-        ExtractResult(..empty(), direct_pipe_ops: [DirectPipeOp(value, span)]),
+        closure_call(params, captures, body, span, CalledInPlace),
+        span,
+        pipe_args,
+      )
+    types.Choice(options) ->
+      attach_pipe_args(
+        merge(
+          extract_from_expression(expression, context, env),
+          called_options(option_calls(options, env), span, CalledInPlace),
+        ),
         span,
         pipe_args,
       )
@@ -2674,8 +2710,10 @@ fn pipe_into_operator_value(
 // statements, a producer call's body); since effects are sets, any overlap with
 // the lifted application below is idempotent. The application itself is then
 // modelled per the callee's classified shape so it isn't silently dropped:
-//   - an inline closure or `case`/`if` of functions is lifted to an operator
-//     and applied to the call's arguments (`DirectPipeOp`);
+//   - an inline closure is lifted to an operator and applied to the call's
+//     arguments (`DirectPipeOp`);
+//   - a `case`/`if` of functions makes, for each option, the call its branch
+//     would make with the call's arguments;
 //   - a call returning a function resolves the producer's returned operator and
 //     applies it (`DirectOperatorCall`);
 //   - a function/local reference reached through a block (`{ io.println }(x)`)
@@ -2696,10 +2734,17 @@ fn extract_expression_call(
     )
   let call_args = classify_arguments(arguments, context, env, 0)
   case classify_expression(callee, context, env) {
-    types.Closure(..) as value | types.Choice(..) as value ->
+    types.Closure(params, captures, body) ->
       merge_with_args(
         base,
-        ExtractResult(..empty(), direct_pipe_ops: [DirectPipeOp(value, span)]),
+        closure_call(params, captures, body, span, CalledInPlace),
+        span,
+        call_args,
+      )
+    types.Choice(options) ->
+      merge_with_args(
+        base,
+        called_options(option_calls(options, env), span, CalledInPlace),
         span,
         call_args,
       )
@@ -2760,6 +2805,115 @@ fn extract_from_clause(
     Some(guard) ->
       merge(body_result, extract_from_expression(guard, context, clause_env))
     None -> body_result
+  }
+}
+
+// Calling a `case` of functions
+//
+// A `case` whose options are all function-like, called with arguments, makes
+// the call each option would make with the call written in its branch. The
+// options are read in the scope of the `case`; the arguments are recorded once
+// under the call's span, where every option's call reads them.
+
+// Where a called closure's body is counted: at its `let`, so the call adds only
+// what flows through its parameters, or at the call, which lifts it whole.
+type ClosureCallSite {
+  CalledAtLet
+  CalledInPlace
+}
+
+// How calling each option reads, in the scope `env` of the `case` expression. A
+// nested `case` contributes its own options.
+fn option_calls(options: List(ArgumentValue), env: Env) -> List(OptionCall) {
+  list.flat_map(options, fn(option) {
+    case option {
+      LocalRef(name:) -> [local_option(name, env)]
+      FunctionRef(name:) -> [FunctionOption(name)]
+      types.ReturnedOperator(callee, args) | types.CallResult(callee, args) -> [
+        ProducerOption(callee, args),
+      ]
+      types.Closure(params, captures, body) -> [
+        ClosureOption(params, captures, body),
+      ]
+      types.Choice(nested) -> option_calls(nested, env)
+      ConstructorRef -> [SilentOption]
+      types.ReceiverPath(..)
+      | Constructed(..)
+      | types.Updated(..)
+      | OtherExpression -> [UnknownOption]
+    }
+  })
+}
+
+// A bare name in a branch: a caller parameter, a closure's own parameter, or a
+// name no binding covers. A name bound to anything else no longer names what
+// the branch named, so no call path reads it.
+fn local_option(name: String, env: Env) -> OptionCall {
+  case env_get(env, name) {
+    Ok(BoundLocal) -> LocalOption(name, types.LexicalBinding)
+    Ok(BoundParam) -> SilentOption
+    Error(Nil) -> LocalOption(name, types.ModuleDefinition)
+    Ok(BoundFunctionRef(..))
+    | Ok(BoundConstructor(..))
+    | Ok(BoundReceiverPath(..))
+    | Ok(BoundClosure(..))
+    | Ok(BoundChoice(..))
+    | Ok(BoundReturnedOperator(..))
+    | Ok(BoundUpdated(..))
+    | Ok(BoundOpaque) -> UnknownOption
+  }
+}
+
+// The calls a call of a `case` of functions at `span` makes, one per option.
+fn called_options(
+  calls: List(OptionCall),
+  span: glance.Span,
+  site: ClosureCallSite,
+) -> ExtractResult {
+  list.fold(calls, empty(), fn(accumulated, call) {
+    merge(accumulated, called_option(call, span, site))
+  })
+}
+
+fn called_option(
+  call: OptionCall,
+  span: glance.Span,
+  site: ClosureCallSite,
+) -> ExtractResult {
+  case call {
+    LocalOption(name:, scope:) ->
+      ExtractResult(..empty(), local: [LocalCall(name, span, scope)])
+    FunctionOption(name:) ->
+      ExtractResult(..empty(), resolved: [ResolvedCall(name, span)])
+    ProducerOption(callee:, args:) ->
+      ExtractResult(..empty(), direct_ops: [
+        types.DirectOperatorCall(callee, args, span),
+      ])
+    ClosureOption(params:, captures:, body:) ->
+      closure_call(params, captures, body, span, site)
+    SilentOption -> empty()
+    UnknownOption -> ExtractResult(..empty(), unknown_apps: [span])
+  }
+}
+
+// A closure called at `span`: a let-bound one adds what flows through its
+// parameters, one called in place is lifted whole and applied.
+fn closure_call(
+  params: List(String),
+  captures: List(#(String, ArgumentValue)),
+  body: List(glance.Statement),
+  span: glance.Span,
+  site: ClosureCallSite,
+) -> ExtractResult {
+  case site {
+    CalledAtLet ->
+      ExtractResult(..empty(), direct_closure_ops: [
+        DirectClosureCall(params:, captures:, body:, span:),
+      ])
+    CalledInPlace ->
+      ExtractResult(..empty(), direct_pipe_ops: [
+        DirectPipeOp(params:, captures:, body:, span:),
+      ])
   }
 }
 
@@ -2831,7 +2985,7 @@ fn classify_local_binding(
       types.Closure(params, captures, body)
     // A let-bound branch resolves to its options, lifted and joined at the use
     // site.
-    BoundChoice(options) -> types.Choice(options)
+    BoundChoice(options:, ..) -> types.Choice(options)
     // A let-bound producer call resolves to its returned operator at the use
     // site.
     BoundReturnedOperator(callee, args) -> types.ReturnedOperator(callee, args)

@@ -18033,3 +18033,344 @@ pub fn a_discarded_callback_writes_a_line_that_reads_back_test() {
   simplifile.read(spec_path) |> should.equal(Ok(written))
   support.cleanup(root)
 }
+
+// A called `case` of functions
+//
+// A `case` whose options are all functions, called with arguments — in place or
+// through a `let` — is charged what the same `case` is charged with the call
+// written in every branch. `called_choice` checks every function against `[]`,
+// so a violation reports what the function is charged; a function with
+// parameters is read through the line `infer` writes, bounds included.
+
+// What each `called_choice` function is charged: the union of its violations'
+// effects, by function name.
+fn called_choice_charges() -> dict.Dict(String, types.EffectSet) {
+  let assert Ok(results) = graded.check_project("test/fixtures")
+  let assert Ok(r) =
+    list.find(results, fn(r) { r.file == "test/fixtures/called_choice.gleam" })
+  list.fold(r.violations, dict.new(), fn(charges, v) {
+    dict.upsert(charges, v.function, fn(charged) {
+      case charged {
+        Some(charged) -> types.union(charged, v.explanation.actual)
+        None -> v.explanation.actual
+      }
+    })
+  })
+}
+
+// The `effects` lines `infer` writes for `called_choice`. The spec commits none
+// of them, so each is an added line of the preview.
+fn called_choice_lines() -> List(String) {
+  let assert Ok(preview) = graded.run_infer_dry_run("test/fixtures")
+  preview
+  |> string.split("\n")
+  |> list.filter_map(fn(line) {
+    case line {
+      "+ effects called_choice." <> rest -> Ok("effects called_choice." <> rest)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+fn expect_charges(
+  charges: dict.Dict(String, types.EffectSet),
+  expected: List(#(String, List(String))),
+) -> Nil {
+  list.each(expected, fn(row) {
+    #(row.0, dict.get(charges, row.0))
+    |> should.equal(#(row.0, Ok(types.Specific(set.from_list(row.1)))))
+  })
+}
+
+fn expect_lines(lines: List(String), expected: List(String)) -> Nil {
+  list.each(expected, fn(line) {
+    #(line, list.contains(lines, line)) |> should.equal(#(line, True))
+  })
+}
+
+pub fn a_let_bound_case_of_functions_charges_each_branch_test() {
+  // Bound with `let`, a branch naming a function, a call result or a parameter
+  // charged nothing; each now charges what its branch's call does.
+  expect_charges(called_choice_charges(), [
+    #("case_named", ["Db", "Stdout"]),
+    #("case_block", ["Stdout"]),
+    #("case_in_closure", ["Db", "Stdout"]),
+    #("nested", ["Db", "Stdout"]),
+    #("alias_of_choice", ["Db", "Stdout"]),
+    // `make()` costs [Net] where the `case` is walked, and what it hands back
+    // costs [Disk] where `op` is called.
+    #("call_result", ["Db", "Disk", "Net"]),
+  ])
+  expect_lines(called_choice_lines(), [
+    "effects called_choice.choose_mixed(a: [a]) : [Stdout, a]",
+    "effects called_choice.choose_both(a: [a], b: [b]) : [a, b]",
+    "effects called_choice.choose_second(a: [a], b: [b]) : [a([]), b([])]",
+    "effects called_choice.run_or_skip(cb: [cb]) : [cb]",
+  ])
+}
+
+pub fn a_case_of_functions_called_in_place_charges_each_branch_test() {
+  expect_charges(called_choice_charges(), [
+    #("inline_named", ["Db", "Stdout"]),
+    // Piped into, the `case` is walked too: `db()` in its subject, and
+    // `make_int()` in a branch beside what it returns.
+    #("piped_subject", ["Db", "Stdout"]),
+    #("piped_producer", ["Db", "Disk", "Net"]),
+  ])
+  // The same selection with the call written inside each branch writes the
+  // same line.
+  expect_lines(called_choice_lines(), [
+    "effects called_choice.inline_two(a: [a], b: [b], x: [x], y: [y]) : [a([x], [y]), b([x], [y])]",
+    "effects called_choice.branches_two(a: [a], b: [b], x: [x], y: [y]) : [a([x], [y]), b([x], [y])]",
+  ])
+}
+
+pub fn a_called_case_binds_each_argument_at_its_position_test() {
+  // An ordinary argument binds no callback: `log_named(n: Int)` read
+  // `[Unknown]` for the `1` applied to it, and `run_at(n, cb)` bound `1` where
+  // `cb` belongs. A selected function is called positionally, so labels in its
+  // declaration, crossed or not, move nothing; the direct calls are the
+  // labelled form's control.
+  expect_charges(called_choice_charges(), [
+    #("ordinary_inline", ["Db", "Stdout"]),
+    #("ordinary_let", ["Db", "Stdout"]),
+  ])
+  expect_lines(called_choice_lines(), [
+    "effects called_choice.interleaved_inline(cb: [cb]) : [cb]",
+    "effects called_choice.interleaved_let(cb: [cb]) : [cb]",
+    "effects called_choice.labelled_inline(cb: [cb]) : [cb]",
+    "effects called_choice.labelled_let(cb: [cb]) : [cb]",
+    "effects called_choice.crossed_inline(cb: [cb]) : [cb]",
+    "effects called_choice.crossed_let(cb: [cb]) : [cb]",
+    "effects called_choice.labelled_direct(cb: [cb]) : [cb]",
+    "effects called_choice.crossed_direct(cb: [cb]) : [cb]",
+    "effects called_choice.param_ordinary_inline(a: [a]) : [Db, a]",
+    "effects called_choice.param_ordinary_let(a: [a]) : [Db, a]",
+    "effects called_choice.param_interleaved_inline(a: [a], cb: [cb]) : [a([cb]), cb]",
+    "effects called_choice.param_interleaved_let(a: [a], cb: [cb]) : [a([cb]), cb]",
+  ])
+}
+
+pub fn a_called_case_reads_a_parameter_before_a_function_it_shadows_test() {
+  // `a` and `act` are also functions of the module, which read `[]`. The
+  // parameter answers, in place and through a `let`, as it does passed on
+  // (`run_shadowed`) — and a parameter the body rebinds after the `let` is
+  // still the one the branch named.
+  expect_lines(called_choice_lines(), [
+    "effects called_choice.choose(a: [a]) : [a]",
+    "effects called_choice.choose_let(a: [a]) : [a]",
+    "effects called_choice.run_shadowed(a: [a]) : [a]",
+    "effects called_choice.rebound_after_let(a: [a]) : [Db, a]",
+    // What `act` is handed reads as the branch-wise twin reads it.
+    "effects called_choice.choose_op(act: [act]) : [act([Unknown])]",
+    "effects called_choice.choose_op_let(act: [act]) : [act([Unknown])]",
+    "effects called_choice.choose_op_twin(act: [act]) : [act([Unknown])]",
+  ])
+  // Called from a piped closure whose own parameter is named `a`, the branch's
+  // `a` is out of reach: it reads `[Unknown]`, never the closure's `a` — which
+  // is handed `b`, and would have charged `[b]` in its place.
+  expect_charges(called_choice_charges(), [
+    #("shadowed_in_closure", ["Db", "Unknown"]),
+  ])
+}
+
+pub fn a_let_bound_closure_option_is_counted_once_test() {
+  // A closure's body is counted where the closure is bound, under the scope
+  // there — a captured callable included — and not again at the call.
+  expect_charges(called_choice_charges(), [
+    #("closures_only", ["Stdout"]),
+    #("closure_alone", ["Stdout"]),
+    #("closure_and_ref", ["Db", "Stdout"]),
+    #("closure_capture", ["Db", "Stdout"]),
+    // A plain alias is no choice, and stays as it was.
+    #("plain_alias", ["Unknown"]),
+  ])
+}
+
+pub fn a_returned_function_option_reads_as_its_producer_call_does_test() {
+  // A branch calling `make_at()` charges what the call of the function it
+  // returns charges on its own: the declared operator binds one callback, so
+  // the leading `Int` lands on it and the call reads `[Unknown]` beside
+  // `[Disk]`, exactly as `let h = make_at()` then `h(1, cb)` does.
+  expect_lines(called_choice_lines(), [
+    "effects called_choice.returned_inline(cb: [cb]) : [Disk, Net, Unknown, cb]",
+    "effects called_choice.returned_let(cb: [cb]) : [Disk, Net, Unknown, cb]",
+    "effects called_choice.returned_alone : [Disk, Net, Unknown]",
+  ])
+}
+
+pub fn why_names_each_call_a_called_case_makes_test() {
+  let assert Ok(named) =
+    graded.run_why("test/fixtures", "called_choice.case_named")
+  string.contains(named, "calls called_choice.loud with effects [Stdout]")
+  |> should.be_true()
+  string.contains(named, "calls called_choice.db with effects [Db]")
+  |> should.be_true()
+  let assert Ok(shadowed) =
+    graded.run_why("test/fixtures", "called_choice.choose")
+  string.contains(shadowed, "calls parameter `a` with effects [a]")
+  |> should.be_true()
+}
+
+// Options from another module: `lib` defines what the choices select among, and
+// `app` selects among `lib`'s functions or calls a choice `lib` makes.
+const called_choice_lib = "@external(erlang, \"m\", \"loud\")
+@external(javascript, \"m\", \"loud\")
+pub fn loud() -> Nil
+
+@external(erlang, \"m\", \"db\")
+@external(javascript, \"m\", \"db\")
+pub fn db() -> Nil
+
+pub fn log_named(n: Int) -> Nil {
+  let _ = n
+  loud()
+}
+
+pub fn save(n: Int) -> Nil {
+  let _ = n
+  db()
+}
+
+pub fn run_at(n: Int, cb: fn() -> Nil) -> Nil {
+  let _ = n
+  cb()
+}
+
+pub fn skip_at(n: Int, cb: fn() -> Nil) -> Nil {
+  let _ = n
+  let _ = cb
+  Nil
+}
+
+pub fn choose_mixed(flag: Bool, a: fn() -> Nil) -> Nil {
+  let op = case flag {
+    True -> a
+    False -> loud
+  }
+  op()
+}
+"
+
+const called_choice_app = "import lib
+
+pub fn ordinary_inline(flag: Bool) -> Nil {
+  case flag {
+    True -> lib.log_named
+    False -> lib.save
+  }(1)
+}
+
+pub fn ordinary_let(flag: Bool) -> Nil {
+  let op = case flag {
+    True -> lib.log_named
+    False -> lib.save
+  }
+  op(1)
+}
+
+pub fn interleaved_inline(flag: Bool, cb: fn() -> Nil) -> Nil {
+  case flag {
+    True -> lib.run_at
+    False -> lib.skip_at
+  }(1, cb)
+}
+
+pub fn interleaved_let(flag: Bool, cb: fn() -> Nil) -> Nil {
+  let op = case flag {
+    True -> lib.run_at
+    False -> lib.skip_at
+  }
+  op(1, cb)
+}
+
+pub fn go_mixed() -> Nil {
+  lib.choose_mixed(True, lib.db)
+}
+"
+
+pub fn a_called_case_of_another_modules_functions_test() {
+  let root = "build/called_choice_cross_module"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume lib.loud : [Stdout]\nassume lib.db : [Db]\ncheck app.go_mixed : [Db]\n",
+    ),
+    #("lib.gleam", called_choice_lib),
+    #("app.gleam", called_choice_app),
+  ])
+  let assert Ok(results) = graded.check_project(root)
+  // A consumer reads the parameter branch and the function branch alike.
+  results
+  |> list.flat_map(fn(r) { r.violations })
+  |> sorted_verdicts
+  |> should.equal([
+    #("go_mixed", types.Specific(set.from_list(["Db", "Stdout"]))),
+  ])
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  [
+    "effects lib.choose_mixed(a: [a]) : [Stdout, a]",
+    "effects app.go_mixed : [Db, Stdout]",
+    "effects app.ordinary_inline : [Db, Stdout]",
+    "effects app.ordinary_let : [Db, Stdout]",
+    "effects app.interleaved_inline(cb: [cb]) : [cb]",
+    "effects app.interleaved_let(cb: [cb]) : [cb]",
+  ]
+  |> list.each(fn(line) {
+    #(line, string.contains(written, line <> "\n"))
+    |> should.equal(#(line, True))
+  })
+  support.cleanup(root)
+}
+
+pub fn a_parameter_a_function_shadows_is_read_across_modules_test() {
+  // `shadow.choose`'s parameter `a` shadows the module's own `a`, which is
+  // pure. A consumer passing `db` is charged `[Db]`, in memory and from the
+  // bound the written spec carries.
+  let root = "build/called_choice_shadowed_parameter"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("proj.graded", "assume app.db : [Db]\ncheck app.go : []\n"),
+    #(
+      "shadow.gleam",
+      "pub fn a() -> Nil {
+  Nil
+}
+
+pub fn choose(flag: Bool, a: fn() -> Nil) -> Nil {
+  case flag {
+    True -> a
+    False -> fn() { Nil }
+  }()
+}
+",
+    ),
+    #(
+      "app.gleam",
+      "import shadow
+
+@external(erlang, \"m\", \"db\")
+@external(javascript, \"m\", \"db\")
+fn db() -> Nil
+
+pub fn go() -> Nil {
+  shadow.choose(True, db)
+}
+",
+    ),
+  ])
+  let verdicts = fn() {
+    let assert Ok(results) = graded.check_project(root)
+    sorted_verdicts(list.flat_map(results, fn(r) { r.violations }))
+  }
+  let expected = [#("go", types.Specific(set.from_list(["Db"])))]
+  verdicts() |> should.equal(expected)
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  string.contains(written, "effects shadow.choose(a: [a]) : [a]\n")
+  |> should.be_true()
+  verdicts() |> should.equal(expected)
+  support.cleanup(root)
+}

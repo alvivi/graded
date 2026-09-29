@@ -35,6 +35,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Calling a function picked by a `case` (`let op = case flag { True -> log
+  False -> save }` then `op()`, or `case flag { … }(x)`) now charges what each
+  picked function does with the arguments, as if the call were written in every
+  branch. Bound with `let`, a branch naming a function or a parameter charged
+  nothing; called in place, a parameter sharing its name with a function of the
+  module charged that function instead. In both a `check` could pass over code
+  that performs the effect. A `check` that passed on such a function can now
+  fail, and `graded infer` rewrites its `effects` line, and those of its
+  callers, to the larger set. A branch taking ordinary arguments now reads its
+  own effects where it read `[Unknown]`, and a `case` piped into
+  (`x |> case f() { … }`) now charges its own subject and the calls in its
+  branches, which went uncharged.
 - `graded infer` no longer writes an `effects` line that graded cannot read
   back. Passing a function that discards its callback parameter
   (`fn ignores(_f: fn() -> Nil)`) to a function that calls its own callback with
