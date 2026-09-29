@@ -851,24 +851,36 @@ pub type DirectOperatorCall {
   )
 }
 
-// A let-bound function-like value *applied directly by name*: `let h = fn(x) {
-// ... }; h(a, b)`. `value` is the lifted operator source (a `Closure` or
-// `Choice`); the call's own arguments are recorded in `call_args` under
-// `span.start` and applied (curried) over the operator's binders. Lets a
-// let-bound closure that is called — not just passed to an operator parameter —
-// resolve to its body effect rather than collapsing to `[Unknown]`.
+// A let-bound closure *applied directly by name*: `let h = fn(x) { ... }; h(a,
+// b)`, or the closure option of a let-bound `case` of functions called that way.
+// `params`, `captures` and `body` are the closure's, the lifted operator source;
+// the call's own arguments are recorded in `call_args` under `span.start` and
+// applied (curried) over the operator's binders. Lets a let-bound closure that
+// is called — not just passed to an operator parameter — resolve to its body
+// effect rather than collapsing to `[Unknown]`.
 pub type DirectClosureCall {
-  DirectClosureCall(value: ArgumentValue, span: Span)
+  DirectClosureCall(
+    params: List(String),
+    captures: List(#(String, ArgumentValue)),
+    body: List(Statement),
+    span: Span,
+  )
 }
 
-// An inline function-like value used as a *pipe target* and thereby applied to
-// the piped value: `x |> fn(f) { f() }` or `x |> case c { _ -> a  _ -> b }`.
-// `value` is the lifted operator source (a `Closure` or `Choice`); the piped
-// value is recorded in `call_args` under `span.start` as argument 0. Without
-// this the closure/branch body's use of the piped value is dropped — an
+// An inline closure applied where it is written: a *pipe target* applied to the
+// piped value (`x |> fn(f) { f() }`), an immediately-invoked closure, or the
+// closure option of a `case` of functions called in place. `params`, `captures`
+// and `body` are the closure's, the lifted operator source; the arguments are
+// recorded in `call_args` under `span.start`, a piped value as argument 0.
+// Without this the closure body's use of its arguments is dropped — an
 // *understatement*, so resolving it is a soundness fix, not just precision.
 pub type DirectPipeOp {
-  DirectPipeOp(value: ArgumentValue, span: Span)
+  DirectPipeOp(
+    params: List(String),
+    captures: List(#(String, ArgumentValue)),
+    body: List(Statement),
+    span: Span,
+  )
 }
 
 // Check results

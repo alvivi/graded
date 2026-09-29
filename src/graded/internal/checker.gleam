@@ -4976,11 +4976,12 @@ fn collect_effects(
       )
     })
 
-  // An inline closure / `case` of functions applied to arguments — a pipe target
-  // (`x |> fn(f) { f() }`, one argument) or an immediately-invoked closure
-  // (`fn(a, cb) { cb() }(1, io.println)`, several). Lift the value over the
-  // parameter positions the call supplies arguments for, then apply every
-  // argument, so each argument's effect reaches the matching parameter.
+  // An inline closure applied to arguments — a pipe target (`x |> fn(f) { f()
+  // }`, one argument), an immediately-invoked closure (`fn(a, cb) { cb() }(1,
+  // io.println)`, several), or the closure option of a `case` of functions
+  // called in place. Lift the closure over the parameter positions the call
+  // supplies arguments for, then apply every argument, so each argument's
+  // effect reaches the matching parameter.
   let #(memo, direct_pipe_effects) =
     list.map_fold(result.direct_pipe_ops, memo, fn(memo, op) {
       let synthetic_call = sentinel_call(InlineFunctionCall, op.span)
@@ -4988,9 +4989,10 @@ fn collect_effects(
         call_args_for(result.call_args, op.span)
         |> list.map(fn(a) { a.position })
         |> list.sort(int.compare)
+      let closure = types.Closure(op.params, op.captures, op.body)
       let #(operator, memo) =
         operator_term_for_argument(
-          types.CallArgument(position: 0, label: None, value: op.value),
+          types.CallArgument(position: 0, label: None, value: closure),
           positions,
           knowledge_base,
           param_bounds,
@@ -5021,8 +5023,9 @@ fn collect_effects(
       plain_call(sentinel_call(ComputedValueCall, span), effect_term.unknown())
     })
 
-  // Direct applications of a let-bound closure / case-of-functions: `let h =
-  // fn(x) { ... }; h(a)`. The closure body is already walked at its `let`
+  // Direct applications of a let-bound closure, or of the closure option of a
+  // let-bound `case` of functions: `let h = fn(x) { ... }; h(a)`. The closure
+  // body is already walked at its `let`
   // binding site with the lexical environment in scope, so its first-order
   // effect — including any captured callable (`let suffix = string.append; let h
   // = fn(x) { suffix(x) }`) — is already counted there. The only effect that
@@ -5035,10 +5038,11 @@ fn collect_effects(
   let #(memo, direct_closure_effects) =
     list.map_fold(result.direct_closure_ops, memo, fn(memo, op) {
       let synthetic_call = sentinel_call(LetBoundValueCall, op.span)
-      let positions = direct_call_positions(op.value)
+      let positions = positions_up_to(list.length(op.params))
+      let closure = types.Closure(op.params, op.captures, op.body)
       let #(operator, memo) =
         operator_term_for_argument(
-          types.CallArgument(position: 0, label: None, value: op.value),
+          types.CallArgument(position: 0, label: None, value: closure),
           positions,
           knowledge_base,
           param_bounds,
@@ -5228,25 +5232,6 @@ fn peel_abstractions(
   case term {
     types.TAbs(param, body) -> peel_abstractions(body, [param, ..acc])
     other -> #(list.reverse(acc), other)
-  }
-}
-
-// The callback positions to abstract a directly-applied closure over: every one
-// of its parameters, in order. A `case`-of-functions takes the widest arity
-// among its options, so each branch is fully abstracted. A non-function value
-// has no binders.
-fn direct_call_positions(value: types.ArgumentValue) -> List(Int) {
-  positions_up_to(value_arity(value))
-}
-
-fn value_arity(value: types.ArgumentValue) -> Int {
-  case value {
-    types.Closure(params, _, _) -> list.length(params)
-    types.Choice(options) ->
-      list.fold(options, 0, fn(max, option) {
-        int.max(max, value_arity(option))
-      })
-    _ -> 0
   }
 }
 
@@ -7341,6 +7326,10 @@ fn analyze_closure_uncached(
         }
       }),
     )
+  let captures =
+    list.map(captures, fn(capture) {
+      #(capture.0, captured_past_params(capture.1, params))
+    })
   let #(body_pairs, memo) =
     collect_effects(
       synthetic,
@@ -7384,6 +7373,50 @@ fn analyze_closure_uncached(
       types.TAbs(param, acc)
     })
   #(operator, memo)
+}
+
+// A captured value as a closure's body reaches it. A captured `case` of
+// functions was read where it was bound, so a branch naming what one of the
+// closure's `params` shadows names nothing the body can reach: it reads as an
+// untraceable value rather than as the parameter.
+fn captured_past_params(
+  value: types.ArgumentValue,
+  params: List(String),
+) -> types.ArgumentValue {
+  case value {
+    types.Choice(options) ->
+      types.Choice(
+        list.map(options, fn(option) {
+          case option {
+            types.LocalRef(name) ->
+              case list.contains(params, name) {
+                True -> types.OtherExpression
+                False -> option
+              }
+            types.Choice(_) -> captured_past_params(option, params)
+            types.FunctionRef(..)
+            | types.ConstructorRef
+            | types.Closure(..)
+            | types.ReturnedOperator(..)
+            | types.ReceiverPath(..)
+            | types.Constructed(..)
+            | types.CallResult(..)
+            | types.Updated(..)
+            | types.OtherExpression -> option
+          }
+        }),
+      )
+    types.FunctionRef(..)
+    | types.LocalRef(..)
+    | types.ConstructorRef
+    | types.Closure(..)
+    | types.ReturnedOperator(..)
+    | types.ReceiverPath(..)
+    | types.Constructed(..)
+    | types.CallResult(..)
+    | types.Updated(..)
+    | types.OtherExpression -> value
+  }
 }
 
 // The source offset of a closure body's first statement — a stable per-module
