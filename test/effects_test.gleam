@@ -1373,6 +1373,24 @@ pub fn a_consumer_module_line_still_yields_to_the_catalog_test() {
 // not read a line for is never charged less than the author's spec would have
 // charged it.
 
+pub fn a_label_headed_application_loads_as_unknown_test() {
+  // The line an earlier version wrote for a function passed a callback no
+  // signature named. It loads, unwarned, and answers `[Unknown]`.
+  let load =
+    dep_spec_load(
+      "build/eff_dep_label_headed_application",
+      "dep",
+      "effects dep.f : [Unknown([])]\n",
+      ["dep"],
+    )
+  effects.describe_dep_spec_load("dep", load) |> should.equal([])
+  let assert effects.SpecLoaded(spec:, rejected:, ..) = load
+  rejected |> should.equal([])
+  spec.effects
+  |> dict.get(QualifiedName("dep", "f"))
+  |> should.equal(Ok(effect_term.unknown()))
+}
+
 pub fn a_rejected_line_keeps_the_other_lines_test() {
   let load =
     dep_spec_load(

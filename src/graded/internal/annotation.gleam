@@ -976,7 +976,13 @@ fn parse_atom(token: String) -> Result(EffectTerm, Nil) {
       let callee = string.trim(name)
       use <- bool.guard(when: !is_identifier_token(callee), return: Error(Nil))
       use args <- result.try(parse_application_args(string.drop_end(rest, 1)))
-      Ok(list.fold(args, TVar(callee), fn(acc, arg) { TApp(acc, arg) }))
+      // An application under a label (`Unknown([])`, as earlier versions wrote
+      // one) names no operator and reads as `[Unknown]`.
+      case is_label_token(callee) {
+        True -> Ok(effect_term.unknown())
+        False ->
+          Ok(list.fold(args, TVar(callee), fn(acc, arg) { TApp(acc, arg) }))
+      }
     }
     Error(Nil) -> {
       use <- bool.guard(when: !is_identifier_token(token), return: Error(Nil))

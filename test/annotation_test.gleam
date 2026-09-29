@@ -1981,6 +1981,35 @@ pub fn a_union_of_variables_head_keeps_its_reading_once_written_test() {
   |> should.equal(expected)
 }
 
+pub fn an_application_under_a_label_reads_as_unknown_test() {
+  // Earlier versions wrote a label-headed application as the label applied.
+  // It names no operator, so no bound can bind it; it reads as `[Unknown]`.
+  let assert Ok([ann]) = annotation.parse("effects m.f : [Unknown([])]")
+  ann.effects |> should.equal(effect_term.unknown())
+  annotation.format_annotation(ann)
+  |> should.equal("effects m.f : [Unknown]")
+  let assert Ok([ann]) = annotation.parse("effects m.f : [Db([Stdout])]")
+  ann.effects |> should.equal(effect_term.unknown())
+  annotation.format_annotation(ann)
+  |> should.equal("effects m.f : [Unknown]")
+}
+
+pub fn an_application_under_a_label_beside_a_label_test() {
+  let assert Ok([ann]) = annotation.parse("effects m.f : [Stdout, Db([x])]")
+  ann.effects |> should.equal(label_set(["Stdout", "Unknown"]))
+  annotation.format_annotation(ann)
+  |> should.equal("effects m.f : [Stdout, Unknown]")
+}
+
+pub fn an_application_under_a_variable_keeps_its_head_test() {
+  let assert Ok([ann]) = annotation.parse("effects m.f(cb: [cb]) : [cb([Db])]")
+  ann.effects |> should.equal(TApp(TVar("cb"), label_set(["Db"])))
+}
+
+pub fn a_malformed_argument_under_a_label_is_still_rejected_test() {
+  annotation.parse("effects m.f : [Db([)]") |> should.be_error()
+}
+
 pub fn every_written_term_reads_back_property_test() {
   // Over arbitrary terms, stuck applications of every head shape included: the
   // written line parses, reads as the same effect set, and formats to the same
