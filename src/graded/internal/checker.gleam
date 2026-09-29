@@ -2478,7 +2478,17 @@ fn callback_params(
   alias_map: dict.Dict(String, glance.Type),
   girard_fn_typed: dict.Dict(String, Set(String)),
 ) -> List(String) {
-  signatures.ordered_callback_params(
+  signatures.slot_names(callback_slots(function, alias_map, girard_fn_typed))
+}
+
+// Every callback position of a function, named or not, read from the same two
+// sources: `callback_params` is its named part. A lift binds every slot.
+fn callback_slots(
+  function: Function,
+  alias_map: dict.Dict(String, glance.Type),
+  girard_fn_typed: dict.Dict(String, Set(String)),
+) -> List(signatures.CallbackSlot) {
+  signatures.function_callback_slots(
     function,
     alias_map,
     typeinfo.fn_typed_params(girard_fn_typed, function.name),
@@ -2508,27 +2518,22 @@ fn cached_callback_params(
   function: Function,
   cache: LocalCache,
 ) -> List(String) {
-  case dict.get(cache.callback_params, function.name) {
-    Ok(params) -> params
-    // A function the cache was not built over — nothing keys it, so derive it
-    // from the same two sources rather than reporting no callbacks.
-    Error(Nil) ->
-      callback_params(function, cache.fn_alias_types, cache.girard_fn_typed)
-  }
+  signatures.slot_names(cached_callback_slots(function, cache))
 }
 
-// Every callback position of a function of the module, named or not, for the
-// binders a lift abstracts over. Its named slots are `cached_callback_params`,
-// read from the same two sources.
+// The slots `cached_callback_params` names, nameless ones included, for the
+// binders a lift abstracts over.
 fn cached_callback_slots(
   function: Function,
   cache: LocalCache,
 ) -> List(signatures.CallbackSlot) {
-  signatures.function_callback_slots(
-    function,
-    cache.fn_alias_types,
-    typeinfo.fn_typed_params(cache.girard_fn_typed, function.name),
-  )
+  case dict.get(cache.callback_slots, function.name) {
+    Ok(slots) -> slots
+    // A function the cache was not built over — nothing keys it, so derive it
+    // from the same two sources rather than reporting no callbacks.
+    Error(Nil) ->
+      callback_slots(function, cache.fn_alias_types, cache.girard_fn_typed)
+  }
 }
 
 // The bounds a body is walked under: what was declared for it, plus a
@@ -2684,11 +2689,11 @@ pub type LocalCache {
     // annotation is recognised as effect-polymorphic wherever a walk reaches
     // it from inside the module, not only at the module's top level.
     girard_fn_typed: dict.Dict(String, Set(String)),
-    // Each function's callback parameters, in declaration order — the two
-    // sources above already unioned. Derived here because the collapse
-    // decision below needs it for every function anyway, so every later
-    // reader is a lookup rather than a second walk of the signature.
-    callback_params: dict.Dict(String, List(String)),
+    // Each function's callback slots, in declaration order — the two sources
+    // above already unioned. Derived here because the collapse decision below
+    // needs them for every function anyway, so every later reader is a lookup
+    // rather than a second walk of the signature.
+    callback_slots: dict.Dict(String, List(signatures.CallbackSlot)),
   )
 }
 
@@ -2722,13 +2727,16 @@ pub fn build_scc_ids(
       dict.insert(
         acc,
         definition.definition.name,
-        callback_params(definition.definition, fn_alias_types, girard_fn_typed),
+        callback_slots(definition.definition, fn_alias_types, girard_fn_typed),
       )
     })
   let needs_exact =
     list.filter_map(definitions, fn(definition) {
       let name = definition.definition.name
-      let first_order = dict.get(callbacks, name) == Ok([])
+      // Named callbacks only: a callback it discards leaves its effect the
+      // same whatever is passed, so the component still collapses.
+      let first_order =
+        dict.get(callbacks, name) |> result.map(signatures.slot_names) == Ok([])
       case
         first_order && !foreign_definition(definition, context.package_targets)
       {
@@ -2780,7 +2788,7 @@ pub fn build_scc_ids(
         collapsible:,
         fn_alias_types: cache.fn_alias_types,
         girard_fn_typed: cache.girard_fn_typed,
-        callback_params: cache.callback_params,
+        callback_slots: cache.callback_slots,
       )
     },
   )
@@ -5039,10 +5047,10 @@ fn collect_effects(
 
   // Direct applications of a let-bound closure, or of the closure option of a
   // let-bound `case` of functions: `let h = fn(x) { ... }; h(a)`. The closure
-  // body is already walked at its `let`
-  // binding site with the lexical environment in scope, so its first-order
-  // effect — including any captured callable (`let suffix = string.append; let h
-  // = fn(x) { suffix(x) }`) — is already counted there. The only effect that
+  // body is already walked at its `let` binding site with the lexical
+  // environment in scope, so its first-order effect — including any captured
+  // callable (`let suffix = string.append; let h = fn(x) { suffix(x) }`) — is
+  // already counted there. The only effect that
   // walk drops is the closure's own parameters, bound as opaque callbacks. So
   // lift the closure to an operator over all its parameters and add just the
   // effect flowing through the parameters it actually invokes: each argument at
@@ -7340,10 +7348,6 @@ fn analyze_closure_uncached(
         }
       }),
     )
-  let captures =
-    list.map(captures, fn(capture) {
-      #(capture.0, captured_past_params(capture.1, params))
-    })
   let #(body_pairs, memo) =
     collect_effects(
       synthetic,
@@ -7387,50 +7391,6 @@ fn analyze_closure_uncached(
       types.TAbs(param, acc)
     })
   #(operator, memo)
-}
-
-// A captured value as a closure's body reaches it. A captured `case` of
-// functions was read where it was bound, so a branch naming what one of the
-// closure's `params` shadows names nothing the body can reach: it reads as an
-// untraceable value rather than as the parameter.
-fn captured_past_params(
-  value: types.ArgumentValue,
-  params: List(String),
-) -> types.ArgumentValue {
-  case value {
-    types.Choice(options) ->
-      types.Choice(
-        list.map(options, fn(option) {
-          case option {
-            types.LocalRef(name) ->
-              case list.contains(params, name) {
-                True -> types.OtherExpression
-                False -> option
-              }
-            types.Choice(_) -> captured_past_params(option, params)
-            types.FunctionRef(..)
-            | types.ConstructorRef
-            | types.Closure(..)
-            | types.ReturnedOperator(..)
-            | types.ReceiverPath(..)
-            | types.Constructed(..)
-            | types.CallResult(..)
-            | types.Updated(..)
-            | types.OtherExpression -> option
-          }
-        }),
-      )
-    types.FunctionRef(..)
-    | types.LocalRef(..)
-    | types.ConstructorRef
-    | types.Closure(..)
-    | types.ReturnedOperator(..)
-    | types.ReceiverPath(..)
-    | types.Constructed(..)
-    | types.CallResult(..)
-    | types.Updated(..)
-    | types.OtherExpression -> value
-  }
 }
 
 // The source offset of a closure body's first statement — a stable per-module
@@ -7591,9 +7551,10 @@ fn lift_operator_miss(
   let function = definition.definition
   // The canonical callback set, in declaration order: a callback carrying no
   // `fn(...)` annotation needs its binder here too, or the lifted term's
-  // variable stays free and the application goes stuck.
-  let fn_param_names = cached_callback_params(function, cache)
-  let bounds = list.map(fn_param_names, self_referential_bound)
+  // variable stays free and the application goes stuck. Its named slots are
+  // seeded; every slot is abstracted over.
+  let slots = cached_callback_slots(function, cache)
+  let bounds = list.map(signatures.slot_names(slots), self_referential_bound)
   let #(body_pairs, memo) =
     collect_effects(
       without_returned_closure(function),
@@ -7609,9 +7570,7 @@ fn lift_operator_miss(
       [],
       memo,
     )
-  let body_term = union_of(body_pairs)
-  let operator =
-    abstract_over_slots(cached_callback_slots(function, cache), body_term)
+  let operator = abstract_over_slots(slots, union_of(body_pairs))
   #(operator, Memo(..memo, lifts: dict.insert(memo.lifts, key, operator)))
 }
 
@@ -7622,21 +7581,21 @@ fn abstract_over_slots(
   slots: List(signatures.CallbackSlot),
   body: EffectTerm,
 ) -> EffectTerm {
-  let avoid =
-    set.union(
-      effect_term.free_vars(body),
-      set.from_list(signatures.slot_names(slots)),
-    )
-  let #(binders, _) =
-    list.fold(slots, #([], avoid), fn(acc, slot) {
-      let #(binders, avoid) = acc
+  let names = signatures.slot_names(slots)
+  use <- bool.guard(
+    when: list.length(names) == list.length(slots),
+    return: wrap_binders(names, body),
+  )
+  let avoid = set.union(effect_term.free_vars(body), set.from_list(names))
+  let #(_, binders) =
+    list.map_fold(slots, avoid, fn(avoid, slot) {
       let binder = case slot {
         signatures.NamedSlot(name) -> name
         signatures.NamelessSlot -> effect_term.fresh("_", avoid)
       }
-      #([binder, ..binders], set.insert(avoid, binder))
+      #(set.insert(avoid, binder), binder)
     })
-  list.fold(binders, body, fn(acc, binder) { types.TAbs(binder, acc) })
+  wrap_binders(binders, body)
 }
 
 // Whether every free variable of a `where returns` clause is a real callback
@@ -7689,8 +7648,8 @@ pub fn unclosed_clause_variables(
 // shows, and for a declared name they carry its synthesized callback share.
 //
 // The binder has to be the variable the term holds free: where the callback is
-// labeled, `fn_typed_param_names_ordered` prefers the label unless a bound
-// names the parameter, and a binder named after the label leaves the term's
+// labeled, `signatures.callback_slots` prefers the label unless a bound names
+// the parameter, and a binder named after the label leaves the term's
 // variable free, the application stuck, and the result `[Unknown]`.
 fn value_channel_bound_names(
   knowledge_base: KnowledgeBase,

@@ -976,8 +976,8 @@ fn parse_atom(token: String) -> Result(EffectTerm, Nil) {
       let callee = string.trim(name)
       use <- bool.guard(when: !is_identifier_token(callee), return: Error(Nil))
       use args <- result.try(parse_application_args(string.drop_end(rest, 1)))
-      // An application under a label (`Unknown([])`, as earlier versions wrote
-      // one) names no operator and reads as `[Unknown]`.
+      // An application under a label (`Unknown([])`) names no operator and
+      // reads as `[Unknown]`.
       case is_label_token(callee) {
         True -> Ok(effect_term.unknown())
         False ->
@@ -1929,10 +1929,10 @@ pub fn format_param_bound(param: ParamBound) -> String {
 
 // Format an `EffectTerm` as `[...]`. Free variables render as bare lowercase
 // names, operator applications as `name(arg, ...)`, and a wildcard as `[_]`.
-// Atoms are sorted and each is written once; since labels are upper-initial and
-// variables lower-initial (so labels sort first), a first-order term formats
-// byte-identically to its `EffectSet`. An application whose head is not a
-// variable has no spelling and is written `[Unknown]`.
+// Atoms are sorted; since labels are upper-initial and variables lower-initial
+// (so labels sort first), a first-order term formats byte-identically to its
+// `EffectSet`. An application whose head is not a variable, and an operator in
+// argument position, have no spelling and are written `[Unknown]`.
 pub fn format_effect_term(term: EffectTerm) -> String {
   case
     term
@@ -1943,10 +1943,7 @@ pub fn format_effect_term(term: EffectTerm) -> String {
     normalized ->
       "["
       <> {
-        term_atoms(normalized)
-        |> list.sort(string.compare)
-        |> list.unique
-        |> string.join(", ")
+        term_atoms(normalized) |> list.sort(string.compare) |> string.join(", ")
       }
       <> "]"
   }

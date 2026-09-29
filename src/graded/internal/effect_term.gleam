@@ -94,9 +94,11 @@ fn ground_abstraction(term: EffectTerm) -> EffectTerm {
 // Ground every application whose head is not a variable: a spine under a label
 // set, `TTop`, a union or an abstraction becomes `[Unknown]`, wherever it sits.
 // An application under a variable head is kept with its arguments grounded in
-// turn, and union members and abstraction bodies are grounded where they sit.
-// The effect-set grammar spells an application only under a variable head, so
-// this is how the formatter reads a normalized term before rendering it.
+// turn, and union members are grounded where they sit. An abstraction the walk
+// reaches — an operator argument — has no spelling either and becomes
+// `[Unknown]` too. The effect-set grammar spells an application only under a
+// variable head, so this is how the formatter reads a term whose root
+// abstractions are already grounded: the result is the term it writes.
 pub fn ground_unspellable_applications(term: EffectTerm) -> EffectTerm {
   case term {
     TLabels(_) | TTop | TVar(_) -> term
@@ -107,7 +109,7 @@ pub fn ground_unspellable_applications(term: EffectTerm) -> EffectTerm {
       }
     TUnion(members) ->
       flatten_union(list.map(members, ground_unspellable_applications))
-    TAbs(param, body) -> TAbs(param, ground_unspellable_applications(body))
+    TAbs(_, _) -> unknown()
   }
 }
 

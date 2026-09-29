@@ -151,29 +151,17 @@ pub fn slot_names(slots: List(CallbackSlot)) -> List(String) {
   })
 }
 
-// In-body parameter names of a callee's fn-typed parameters, **in declaration
-// order** (label preferred, then in-body name). Unlike `fn_typed_param_names`
-// (a `Set`), this preserves order — needed to curry an operator argument's
-// abstraction so its binders line up with the application spine. A parameter
-// named in `bound_names` counts as fn-typed too — a running fallback's
-// girard-typed callback carries no `fn(...)` annotation for the registry to
-// see, and exists only as the bound recorded beside its settled summary — and
-// any parameter a bound names binds under the matched bound name (in-body name
-// preferred), since that is the variable the recorded term holds free — a
-// labeled fallback callback included, whose label would otherwise name the
-// binder. Empty when the callee isn't in the registry.
-pub fn fn_typed_param_names_ordered(
-  registry: SignatureRegistry,
-  name: QualifiedName,
-  bound_names: Set(String),
-) -> List(String) {
-  slot_names(callback_slots(registry, name, bound_names))
-}
-
-// A callee's callback slots from the registry, in declaration order: every
-// parameter `fn_typed_param_names_ordered` names, under that name, and every
-// fn-typed parameter it passes over for having neither a label nor an in-body
-// name. Empty when the callee isn't in the registry.
+// A callee's callback slots from the registry, **in declaration order** —
+// needed to curry an operator argument's abstraction so its binders line up
+// with the application spine. A fn-typed parameter is named by its label, then
+// its in-body name, and is nameless with neither. A parameter named in
+// `bound_names` counts as fn-typed too — a running fallback's girard-typed
+// callback carries no `fn(...)` annotation for the registry to see, and exists
+// only as the bound recorded beside its settled summary — and any parameter a
+// bound names is named by the matched bound name (in-body name preferred),
+// since that is the variable the recorded term holds free — a labeled fallback
+// callback included, whose label would otherwise name the binder. Empty when
+// the callee isn't in the registry.
 pub fn callback_slots(
   registry: SignatureRegistry,
   name: QualifiedName,
@@ -227,8 +215,8 @@ pub fn callback_slots(
 // Naming the label instead would leave one channel's variable free of the
 // other's binder for every labeled callback.
 //
-// Strictly `is_fn_typed`, where `fn_typed_param_names_ordered` also counts an
-// unannotated parameter its bound list names. That function is *binding* an
+// Strictly `is_fn_typed`, where `callback_slots` also counts an unannotated
+// parameter its bound list names. That function is *binding* an
 // operator whose term already holds the variable; this one is deciding whether
 // to put a variable there at all, and an unannotated parameter is no evidence
 // of a callback — synthesizing one per girard-typed parameter would charge a

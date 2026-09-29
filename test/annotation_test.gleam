@@ -1812,28 +1812,22 @@ fn label_set(labels: List(String)) -> EffectTerm {
   TLabels(set.from_list(labels))
 }
 
-pub fn an_application_under_an_empty_set_is_written_unknown_test() {
-  let line = written_line(TApp(label_set([]), label_set([])))
-  line |> should.equal("effects m.f : [Unknown]")
-  read_back(line) |> should.equal(effect_term.unknown())
-}
-
-pub fn an_application_under_one_label_is_written_unknown_test() {
-  let line = written_line(TApp(label_set(["Unknown"]), label_set([])))
-  line |> should.equal("effects m.f : [Unknown]")
-  read_back(line) |> should.equal(effect_term.unknown())
-}
-
-pub fn an_application_under_several_labels_is_written_unknown_test() {
-  let line = written_line(TApp(label_set(["Db", "Stdout"]), TVar("x")))
-  line |> should.equal("effects m.f : [Unknown]")
-  read_back(line) |> should.equal(effect_term.unknown())
-}
-
-pub fn an_application_under_the_wildcard_is_written_unknown_test() {
-  let line = written_line(TApp(TTop, label_set(["Db"])))
-  line |> should.equal("effects m.f : [Unknown]")
-  read_back(line) |> should.equal(effect_term.unknown())
+pub fn an_application_under_no_variable_is_written_unknown_test() {
+  // Under an empty set, one label, several labels, the wildcard, a union
+  // holding a label set, and along a curried spine.
+  [
+    TApp(label_set([]), label_set([])),
+    TApp(label_set(["Unknown"]), label_set([])),
+    TApp(label_set(["Db", "Stdout"]), TVar("x")),
+    TApp(TTop, label_set(["Db"])),
+    TApp(TUnion([TVar("a"), label_set(["Db"])]), label_set(["Stdout"])),
+    TApp(TApp(label_set([]), TVar("x")), TVar("y")),
+  ]
+  |> list.each(fn(term) {
+    let line = written_line(term)
+    #(term, line) |> should.equal(#(term, "effects m.f : [Unknown]"))
+    read_back(line) |> should.equal(effect_term.unknown())
+  })
 }
 
 pub fn an_application_under_a_union_of_variables_is_written_per_member_test() {
@@ -1843,22 +1837,6 @@ pub fn an_application_under_a_union_of_variables_is_written_per_member_test() {
   |> should.equal(
     TUnion([TApp(TVar("a"), label_set([])), TApp(TVar("b"), label_set([]))]),
   )
-}
-
-pub fn an_application_under_a_mixed_union_is_written_unknown_test() {
-  let line =
-    written_line(TApp(
-      TUnion([TVar("a"), label_set(["Db"])]),
-      label_set(["Stdout"]),
-    ))
-  line |> should.equal("effects m.f : [Unknown]")
-  read_back(line) |> should.equal(effect_term.unknown())
-}
-
-pub fn a_curried_spine_under_an_empty_set_is_written_unknown_test() {
-  let line = written_line(TApp(TApp(label_set([]), TVar("x")), TVar("y")))
-  line |> should.equal("effects m.f : [Unknown]")
-  read_back(line) |> should.equal(effect_term.unknown())
 }
 
 pub fn an_unspellable_application_beside_spellable_atoms_test() {
@@ -1945,10 +1923,9 @@ pub fn an_unspellable_application_in_a_clause_and_a_bound_test() {
 }
 
 pub fn a_mixed_union_head_loses_its_reading_once_written_test() {
-  // The limit that remains: a head mixing a variable with an abstraction stays
-  // stuck and is written `[Unknown]`. Bound afterwards, the term in memory
-  // reduces to `[Db, Net]` and the written one stays `[Unknown]`, which does
-  // not include it.
+  // A head mixing a variable with an abstraction stays stuck and is written
+  // `[Unknown]`. Bound afterwards, the term in memory reduces to `[Db, Net]`
+  // and the written one stays `[Unknown]`, which does not include it.
   let term =
     TApp(TUnion([TVar("a"), TAbs("p", label_set(["Db"]))]), label_set([]))
   let line = written_line(term)
@@ -1963,8 +1940,8 @@ pub fn a_mixed_union_head_loses_its_reading_once_written_test() {
 }
 
 pub fn a_union_of_variables_head_keeps_its_reading_once_written_test() {
-  // The limit that is gone: a head of variables alone distributes, so the
-  // written line binds each member the way the term in memory does.
+  // A head of variables alone distributes, so the written line binds each
+  // member the way the term in memory does.
   let term = TApp(TUnion([TVar("a"), TVar("b")]), label_set([]))
   let binding =
     dict.from_list([
@@ -2037,35 +2014,9 @@ pub fn a_written_term_marks_what_it_loses_property_test() {
   let in_memory =
     effect_term.to_effect_set(effect_term.subst(normalized, bindings))
   let written = effect_term.to_effect_set(effect_term.subst(parsed, bindings))
-  case written {
-    Wildcard -> Nil
-    Specific(labels) | Polymorphic(labels, _) ->
-      case set.contains(labels, types.unknown_label) {
-        True -> Nil
-        False -> {
-          let #(kept_labels, kept_variables) = labels_and_variables(written)
-          case in_memory {
-            // Everything, where the line kept a finite set with no marker.
-            Wildcard -> should.fail()
-            Specific(_) | Polymorphic(_, _) -> {
-              let #(labels, variables) = labels_and_variables(in_memory)
-              set.is_subset(labels, of: kept_labels) |> should.be_true()
-              set.is_subset(variables, of: kept_variables) |> should.be_true()
-            }
-          }
-        }
-      }
-  }
-}
-
-// The labels and the variables of a finite effect set; none for the wildcard.
-fn labels_and_variables(
-  effect_set: types.EffectSet,
-) -> #(set.Set(String), set.Set(String)) {
-  case effect_set {
-    Wildcard -> #(set.new(), set.new())
-    Specific(labels) -> #(labels, set.new())
-    Polymorphic(labels, variables) -> #(labels, variables)
+  case written == Wildcard || types.contains_unknown(written) {
+    True -> Nil
+    False -> types.is_subset(in_memory, written) |> should.be_true()
   }
 }
 

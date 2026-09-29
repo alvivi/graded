@@ -536,14 +536,13 @@ pub fn parse_source_dir_skips_missing_src_test() {
 // part, and keep what they read.
 
 // Each shape's slots from the glance function and from the registry, and what
-// `ordered_callback_params` and `fn_typed_param_names_ordered` read for it.
+// `ordered_callback_params` reads for it.
 type SlotRow {
   SlotRow(
     params: String,
     function_slots: List(signatures.CallbackSlot),
     registry_slots: List(signatures.CallbackSlot),
     ordered_callback_params: List(String),
-    fn_typed_param_names_ordered: List(String),
   )
 }
 
@@ -551,14 +550,13 @@ fn slot_rows() -> List(SlotRow) {
   let named = signatures.NamedSlot
   let nameless = signatures.NamelessSlot
   [
-    SlotRow("_f: fn() -> Nil", [nameless], [nameless], [], []),
+    SlotRow("_f: fn() -> Nil", [nameless], [nameless], []),
     // The registry names a labelled parameter by its label.
-    SlotRow("with _f: fn() -> Nil", [nameless], [named("with")], [], ["with"]),
+    SlotRow("with _f: fn() -> Nil", [nameless], [named("with")], []),
     SlotRow(
       "_a: fn() -> Nil, b: fn() -> Nil",
       [nameless, named("b")],
       [nameless, named("b")],
-      ["b"],
       ["b"],
     ),
     SlotRow(
@@ -566,14 +564,11 @@ fn slot_rows() -> List(SlotRow) {
       [named("a"), nameless],
       [named("a"), nameless],
       ["a"],
-      ["a"],
     ),
-    SlotRow("_x: Int, cb: fn() -> Nil", [named("cb")], [named("cb")], ["cb"], [
-      "cb",
-    ]),
+    SlotRow("_x: Int, cb: fn() -> Nil", [named("cb")], [named("cb")], ["cb"]),
     // Nothing says an unannotated discard is a callback.
-    SlotRow("_x", [], [], [], []),
-    SlotRow("_f: Action", [nameless], [nameless], [], []),
+    SlotRow("_x", [], [], []),
+    SlotRow("_f: Action", [nameless], [nameless], []),
   ]
 }
 
@@ -599,14 +594,12 @@ pub fn callback_slots_bind_every_callback_position_test() {
         alias_map,
         set.new(),
       ),
-      signatures.fn_typed_param_names_ordered(registry, name, set.new()),
     )
     |> should.equal(#(
       row.params,
       row.function_slots,
       row.registry_slots,
       row.ordered_callback_params,
-      row.fn_typed_param_names_ordered,
     ))
   })
 }

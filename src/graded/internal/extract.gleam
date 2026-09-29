@@ -1112,13 +1112,42 @@ fn callable_captures(
     case list.contains(params, name), binding {
       False, BoundFunctionRef(..)
       | False, BoundClosure(..)
-      | False, BoundChoice(..)
       | False, BoundReturnedOperator(..)
       -> Ok(#(name, classify_local_binding(binding, name)))
+      False, BoundChoice(options:, ..) ->
+        Ok(#(name, types.Choice(unshadowed_options(options, params))))
       _, _ -> Error(Nil)
     }
   })
   |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+}
+
+// A captured choice's options as the closure's body reaches them. They were
+// read where the choice was bound, so a bare name one of `params` shadows names
+// nothing the body can reach, and reads as an untraceable value.
+fn unshadowed_options(
+  options: List(ArgumentValue),
+  params: List(String),
+) -> List(ArgumentValue) {
+  list.map(options, fn(option) {
+    case option {
+      LocalRef(name:) ->
+        case list.contains(params, name) {
+          True -> OtherExpression
+          False -> option
+        }
+      types.Choice(nested) -> types.Choice(unshadowed_options(nested, params))
+      FunctionRef(..)
+      | ConstructorRef
+      | types.Closure(..)
+      | types.ReturnedOperator(..)
+      | types.ReceiverPath(..)
+      | Constructed(..)
+      | types.CallResult(..)
+      | types.Updated(..)
+      | OtherExpression -> option
+    }
+  })
 }
 
 // Seed each named top-level parameter as `BoundLocal`. Discarded parameters
