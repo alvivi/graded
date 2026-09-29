@@ -17799,3 +17799,171 @@ pub fn every_ambiguous_call_is_classified_once_test() {
   list.length(keys)
   |> should.equal(list.length(list.unique(keys)))
 }
+
+// A `case` choosing a callback, written and read back
+//
+// A function that picks one of its callbacks with a `case` writes what each
+// callback does, the line it writes with the call inside each branch, and the
+// spec it writes reads back to the same answers.
+
+// A library choosing between two callbacks three ways — called in place,
+// passed on, and passed with two callbacks of its own — and a consumer calling
+// each, whose `pick` and `pick_first` run one of their two arguments.
+const chosen_callback_lib = "pub fn run_with(action: fn(fn() -> Nil) -> Nil) -> Nil {
+  action(fn() { Nil })
+}
+
+pub fn run_pair(
+  action: fn(fn() -> Nil, fn() -> Nil) -> Nil,
+  first: fn() -> Nil,
+  second: fn() -> Nil,
+) -> Nil {
+  action(first, second)
+}
+
+pub fn choose_inline(
+  flag: Bool,
+  a: fn(fn() -> Nil) -> Nil,
+  b: fn(fn() -> Nil) -> Nil,
+) -> Nil {
+  case flag {
+    True -> a
+    False -> b
+  }(fn() { Nil })
+}
+
+pub fn branches(
+  flag: Bool,
+  a: fn(fn() -> Nil) -> Nil,
+  b: fn(fn() -> Nil) -> Nil,
+) -> Nil {
+  case flag {
+    True -> a(fn() { Nil })
+    False -> b(fn() { Nil })
+  }
+}
+
+pub fn passes_choice(
+  flag: Bool,
+  a: fn(fn() -> Nil) -> Nil,
+  b: fn(fn() -> Nil) -> Nil,
+) -> Nil {
+  run_with(case flag {
+    True -> a
+    False -> b
+  })
+}
+
+pub fn passes_choice_two(
+  flag: Bool,
+  a: fn(fn() -> Nil, fn() -> Nil) -> Nil,
+  b: fn(fn() -> Nil, fn() -> Nil) -> Nil,
+  x: fn() -> Nil,
+  y: fn() -> Nil,
+) -> Nil {
+  run_pair(
+    case flag {
+      True -> a
+      False -> b
+    },
+    x,
+    y,
+  )
+}
+"
+
+const chosen_callback_app = "import lib
+
+@external(erlang, \"m\", \"db\")
+@external(javascript, \"m\", \"db\")
+fn db() -> Nil
+
+@external(erlang, \"m\", \"out\")
+@external(javascript, \"m\", \"out\")
+fn out() -> Nil
+
+fn with_db(run: fn() -> Nil) -> Nil {
+  db()
+  run()
+}
+
+fn pick(a: fn() -> Nil, b: fn() -> Nil) -> Nil {
+  let _ = a
+  b()
+}
+
+fn pick_first(a: fn() -> Nil, b: fn() -> Nil) -> Nil {
+  let _ = b
+  a()
+}
+
+pub fn go_inline() -> Nil {
+  lib.choose_inline(True, with_db, with_db)
+}
+
+pub fn go_passes() -> Nil {
+  lib.passes_choice(True, with_db, with_db)
+}
+
+pub fn go_pick() -> Nil {
+  lib.passes_choice_two(True, pick, pick, out, db)
+}
+
+pub fn go_pick_first() -> Nil {
+  lib.passes_choice_two(True, pick_first, pick_first, out, db)
+}
+
+pub fn go_mixed() -> Nil {
+  lib.passes_choice_two(True, pick, pick_first, out, db)
+}
+"
+
+pub fn a_chosen_callback_writes_what_each_branch_does_test() {
+  let root = "build/chosen_callback_written"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #(
+      "proj.graded",
+      "assume app.db : [Db]
+assume app.out : [Stdout]
+check app.go_inline : [Db]
+check app.go_passes : []
+check app.go_pick : []
+check app.go_pick_first : []
+check app.go_mixed : []
+",
+    ),
+    #("lib.gleam", chosen_callback_lib),
+    #("app.gleam", chosen_callback_app),
+  ])
+  let verdicts = fn() {
+    let assert Ok(results) = graded.check_project(root)
+    sorted_verdicts(list.flat_map(results, fn(r) { r.violations }))
+  }
+  let expected = [
+    #("go_mixed", types.Specific(set.from_list(["Db", "Stdout"]))),
+    #("go_passes", types.Specific(set.from_list(["Db"]))),
+    #("go_pick", types.Specific(set.from_list(["Db"]))),
+    #("go_pick_first", types.Specific(set.from_list(["Stdout"]))),
+  ]
+  // In memory, before anything is written.
+  verdicts() |> should.equal(expected)
+
+  let spec_path = root <> "/proj.graded"
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(spec_path)
+  [
+    "effects lib.choose_inline(a: [a], b: [b]) : [a([]), b([])]",
+    "effects lib.branches(a: [a], b: [b]) : [a([]), b([])]",
+    "effects lib.passes_choice(a: [a], b: [b]) : [a([]), b([])]",
+    "effects lib.passes_choice_two(a: [a], b: [b], x: [x], y: [y]) : [a([x], [y]), b([x], [y])]",
+  ]
+  |> list.each(fn(line) {
+    string.contains(written, line <> "\n") |> should.be_true()
+  })
+  // Read back from the written spec, the same answers.
+  verdicts() |> should.equal(expected)
+  let assert Ok(Nil) = graded.run_infer(root)
+  simplifile.read(spec_path) |> should.equal(Ok(written))
+  support.cleanup(root)
+}

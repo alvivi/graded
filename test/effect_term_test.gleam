@@ -262,6 +262,34 @@ pub fn app_distribution_over_approximates_property_test() {
   })
 }
 
+pub fn app_distributes_over_variable_headed_union_property_test() {
+  // P-DIST-3: an application over a union of variable-headed members means
+  // the same whether the heads are bound to operators before it distributes or
+  // after. The heads are named outside the generators' variable pool, so only
+  // the binding reaches them; the binders are pool names, so the bodies use
+  // them. Each operator takes as many arguments as it is applied to.
+  use #(#(a_body, b_body), #(x, y), two_args) <- qcheck.given(qcheck.tuple3(
+    qcheck.tuple2(generators.effect_term_gen(), generators.effect_term_gen()),
+    qcheck.tuple2(generators.effect_term_gen(), generators.effect_term_gen()),
+    qcheck.bool(),
+  ))
+  let #(term, bindings) = case two_args {
+    False -> #(
+      TApp(TUnion([TVar("f"), TVar("g")]), x),
+      dict.from_list([#("f", TAbs("e", a_body)), #("g", TAbs("e", b_body))]),
+    )
+    True -> #(
+      TApp(TApp(TUnion([TVar("f"), TVar("g")]), x), y),
+      dict.from_list([
+        #("f", TAbs("e", TAbs("cb", a_body))),
+        #("g", TAbs("e", TAbs("cb", b_body))),
+      ]),
+    )
+  }
+  normalize(subst(normalize(term), bindings))
+  |> should.equal(normalize(subst(term, bindings)))
+}
+
 // P-TERM: termination
 //
 // Finite terms normalize within a finite reduction budget, agreeing with
@@ -326,6 +354,73 @@ pub fn app_distribution_mixed_union_stays_stuck_unit_test() {
   let const_a = TAbs("x", labels(["A"]))
   to_effect_set(TApp(TUnion([const_a, TVar("g")]), labels(["B"])))
   |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+pub fn app_distributes_over_a_union_of_variables_unit_test() {
+  // (a ⊔ b)(x)  ──►  a(x) ⊔ b(x): a `case` picking one of two callbacks, called.
+  let x = labels(["Db"])
+  normalize(TApp(TUnion([TVar("b"), TVar("a")]), x))
+  |> should.equal(TUnion([TApp(TVar("a"), x), TApp(TVar("b"), x)]))
+}
+
+pub fn app_distributes_over_a_union_of_variables_curried_unit_test() {
+  // ((a ⊔ b)(x))(y)  ──►  a(x)(y) ⊔ b(x)(y), and one argument deeper likewise:
+  // every argument of the spine reaches every member.
+  let x = labels(["Db"])
+  let y = TVar("y")
+  let z = labels(["Stdout"])
+  let union = TUnion([TVar("a"), TVar("b")])
+  normalize(TApp(TApp(union, x), y))
+  |> should.equal(
+    TUnion([
+      TApp(TApp(TVar("a"), x), y),
+      TApp(TApp(TVar("b"), x), y),
+    ]),
+  )
+  normalize(TApp(TApp(TApp(union, x), y), z))
+  |> should.equal(
+    TUnion([
+      TApp(TApp(TApp(TVar("a"), x), y), z),
+      TApp(TApp(TApp(TVar("b"), x), y), z),
+    ]),
+  )
+}
+
+pub fn app_distributes_over_a_variable_and_a_variable_headed_spine_unit_test() {
+  // (a ⊔ b(x))(y)  ──►  a(y) ⊔ b(x)(y).
+  let x = labels(["Db"])
+  let y = labels(["Stdout"])
+  normalize(TApp(TUnion([TVar("a"), TApp(TVar("b"), x)]), y))
+  |> should.equal(TUnion([TApp(TApp(TVar("b"), x), y), TApp(TVar("a"), y)]))
+}
+
+pub fn app_over_a_variable_and_an_abstraction_stays_stuck_unit_test() {
+  let x = labels(["Stdout"])
+  let union = TUnion([TVar("a"), TAbs("p", labels(["Db"]))])
+  let applied = normalize(TApp(union, x))
+  applied
+  |> should.equal(TApp(normalize(union), x))
+  to_effect_set(applied)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+pub fn app_over_a_variable_and_a_label_set_stays_stuck_unit_test() {
+  let x = labels(["Stdout"])
+  let union = TUnion([TVar("a"), labels(["Db"])])
+  let applied = normalize(TApp(union, x))
+  applied
+  |> should.equal(TApp(normalize(union), x))
+  to_effect_set(applied)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+pub fn app_over_a_single_or_repeated_variable_union_unit_test() {
+  // A one-member union is its member, and a repeated member is one member.
+  let x = labels(["Db"])
+  normalize(TApp(TUnion([TVar("a")]), x))
+  |> should.equal(TApp(TVar("a"), x))
+  normalize(TApp(TUnion([TVar("a"), TVar("a")]), x))
+  |> should.equal(TApp(TVar("a"), x))
 }
 
 pub fn free_variable_preserved_unit_test() {

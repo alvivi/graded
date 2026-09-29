@@ -283,8 +283,15 @@ fn reduce_app(
     // This is what lets a producer that returns one of several operators —
     // `case … { _ -> f  _ -> g }` — resolve when its result is applied.
     //
-    // We only distribute when *all* members are abstractions. A mixed union
-    // (a label set or free variable alongside an operator) is ill-kinded as an
+    // It distributes too when every member is variable-headed — a free
+    // variable or a stuck application spine under one: `(a ⊔ b)(x) →
+    // a(x) ⊔ b(x)`. Such a union holds no labels, and each member reduces on
+    // its own once its head is bound. Distributing a curried spine one
+    // argument at a time needs the spine case: `(a ⊔ b)(x)` becomes
+    // `a(x) ⊔ b(x)` before `y` is applied to it.
+    //
+    // We distribute over nothing else. A mixed union (a label set, or an
+    // abstraction beside a variable-headed member) is ill-kinded as an
     // operator; distributing would push the non-operator member into operator
     // position, where it goes stuck and collapses to `[Unknown]` — silently
     // dropping its concrete labels (unsound). So a mixed union stays stuck as a
@@ -292,7 +299,10 @@ fn reduce_app(
     // `TTop` member can't occur: `flatten_union` absorbs the union to `TTop`
     // before we apply it, so `reduced_fn` would be `TTop`, not a union.)
     TUnion(members) ->
-      case list.all(members, is_abstraction) {
+      case
+        list.all(members, is_abstraction)
+        || list.all(members, is_variable_headed)
+      {
         True -> {
           let applied =
             TUnion(list.map(members, fn(m) { TApp(m, reduced_arg) }))
@@ -309,6 +319,15 @@ fn is_abstraction(term: EffectTerm) -> Bool {
   case term {
     TAbs(_, _) -> True
     _ -> False
+  }
+}
+
+// A free variable, or an application spine whose head is one.
+fn is_variable_headed(term: EffectTerm) -> Bool {
+  case term {
+    TVar(_) -> True
+    TApp(operator, _) -> is_variable_headed(operator)
+    TLabels(_) | TTop | TAbs(_, _) | TUnion(_) -> False
   }
 }
 
