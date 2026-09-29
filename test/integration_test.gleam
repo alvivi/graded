@@ -18401,3 +18401,121 @@ pub fn a_discarded_callback_binds_a_callers_parameter_test() {
   |> string.contains("effects discarded_callback.go_pick_poly(y: [y]) : [y]")
   |> should.be_true()
 }
+
+// A discarded callback takes a binder only where its argument is supplied:
+// wired into a record field, which is called with no callback the lift binds,
+// and passed as an operator whose type holds a type variable at the discarded
+// position, so only the named callback is supplied. Each reads the effect of
+// its body.
+pub fn a_discarded_callback_takes_a_binder_only_where_it_is_supplied_test() {
+  let root = "build/discarded_callback_supplied"
+  support.write_fixture(root, [
+    #("gleam.toml", "name = \"proj\"\n"),
+    #("manifest.toml", stdlib_manifest),
+    #("proj.graded", ""),
+    #(
+      "box.gleam",
+      "import gleam/io
+
+pub type Box {
+  Box(run: fn(fn() -> Nil) -> Nil, n: Int)
+}
+
+pub fn ignores(_f: fn() -> Nil) -> Nil {
+  io.println(\"x\")
+}
+
+pub fn make() -> Box {
+  Box(run: ignores, n: 1)
+}
+
+pub fn go() -> Nil {
+  let b = make()
+  b.run(fn() { Nil })
+}
+
+pub fn go_param(b: Box) -> Nil {
+  b.run(fn() { Nil })
+}
+
+pub fn feed() -> Nil {
+  go_param(make())
+}
+
+pub fn feed_direct() -> Nil {
+  go_param(Box(run: ignores, n: 1))
+}
+
+pub fn go_updated() -> Nil {
+  let b = Box(..make(), n: 2)
+  b.run(fn() { Nil })
+}
+
+pub fn go_updated_run() -> Nil {
+  let box = Box(run: fn(_) { Nil }, n: 1)
+  let b = Box(..box, run: ignores)
+  b.run(fn() { Nil })
+}
+
+pub fn go_updated_param(box: Box) -> Nil {
+  let b = Box(..box, run: ignores)
+  b.run(fn() { Nil })
+}
+",
+    ),
+    #(
+      "other.gleam",
+      "pub fn pick(_a: fn() -> Nil, b: fn() -> Nil) -> Nil {
+  b()
+}
+",
+    ),
+    #(
+      "generic.gleam",
+      "import gleam/io
+import other
+
+pub fn quiet() -> Nil {
+  Nil
+}
+
+pub fn out() -> Nil {
+  io.println(\"x\")
+}
+
+pub fn pick(_a: fn() -> Nil, b: fn() -> Nil) -> Nil {
+  b()
+}
+
+pub fn run_generic(
+  action: fn(x, fn() -> Nil) -> Nil,
+  first: x,
+  second: fn() -> Nil,
+) -> Nil {
+  action(first, second)
+}
+
+pub fn go_generic() -> Nil {
+  run_generic(pick, quiet, out)
+}
+
+pub fn go_generic_other() -> Nil {
+  run_generic(other.pick, quiet, out)
+}
+",
+    ),
+  ])
+  let assert Ok(Nil) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  expect_lines(string.split(written, "\n"), [
+    "effects box.go : [Stdout]",
+    "effects box.feed : [Stdout]",
+    "effects box.feed_direct : [Stdout]",
+    "effects box.go_updated : [Stdout]",
+    "effects box.go_updated_run : [Stdout]",
+    "effects box.go_updated_param : [Stdout]",
+    "effects generic.go_generic : [Stdout]",
+    "effects generic.go_generic_other : [Stdout]",
+  ])
+  support.cleanup(root)
+}

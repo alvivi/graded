@@ -131,22 +131,40 @@ pub fn fn_typed_param_names(
 }
 
 // One callback parameter position of a function, as a lifted operator binds it.
+// `position` is the parameter's index in the function's own parameter list.
 pub type CallbackSlot {
   // A callback the canonical readers name; its binder is that name.
-  NamedSlot(name: String)
+  NamedSlot(position: Int, name: String)
   // A callback whose annotation is provably a function but which the canonical
   // readers give no name — a discarded parameter, and on the registry's side an
   // unlabelled one. Only a binder is ever built from it: never a bound, never a
   // seeded variable.
-  NamelessSlot
+  NamelessSlot(position: Int)
+}
+
+// The slots a use site binds when it supplies callback arguments at
+// `positions`: every named slot, and a nameless one only where the use site
+// supplies an argument at its position. The body never reads a nameless
+// binder, so one the use site does not supply would only take the argument
+// meant for the next binder, or stay unapplied.
+pub fn supplied_slots(
+  slots: List(CallbackSlot),
+  positions: List(Int),
+) -> List(CallbackSlot) {
+  list.filter(slots, fn(slot) {
+    case slot {
+      NamedSlot(..) -> True
+      NamelessSlot(position:) -> list.contains(positions, position)
+    }
+  })
 }
 
 // The names of the named slots, in order: the canonical callback set.
 pub fn slot_names(slots: List(CallbackSlot)) -> List(String) {
   list.filter_map(slots, fn(slot) {
     case slot {
-      NamedSlot(name) -> Ok(name)
-      NamelessSlot -> Error(Nil)
+      NamedSlot(name:, ..) -> Ok(name)
+      NamelessSlot(..) -> Error(Nil)
     }
   })
 }
@@ -190,12 +208,12 @@ pub fn callback_slots(
         let could_be_callback = p.is_fn_typed || !p.is_annotated
         let own_name = option.or(p.label, p.name)
         case bound, could_be_callback, p.is_fn_typed {
-          Ok(name), True, _ -> Ok(NamedSlot(name))
+          Ok(name), True, _ -> Ok(NamedSlot(p.position, name))
           Ok(_), False, _ -> Error(Nil)
           Error(Nil), _, True ->
             case own_name {
-              Some(name) -> Ok(NamedSlot(name))
-              None -> Ok(NamelessSlot)
+              Some(name) -> Ok(NamedSlot(p.position, name))
+              None -> Ok(NamelessSlot(p.position))
             }
           Error(Nil), _, False -> Error(Nil)
         }
@@ -514,18 +532,21 @@ pub fn function_callback_slots(
   alias_map: Dict(String, glance.Type),
   extra: Set(String),
 ) -> List(CallbackSlot) {
-  list.filter_map(function.parameters, fn(param) {
+  function.parameters
+  |> list.index_map(fn(param, position) { #(param, position) })
+  |> list.filter_map(fn(pair) {
+    let #(param, position) = pair
     let annotated_function =
       option.unwrap(option.map(param.type_, is_fn_typed(_, alias_map)), False)
     case param.name {
       glance.Named(name) ->
         case annotated_function || set.contains(extra, name) {
-          True -> Ok(NamedSlot(name))
+          True -> Ok(NamedSlot(position, name))
           False -> Error(Nil)
         }
       glance.Discarded(_) ->
         case annotated_function {
-          True -> Ok(NamelessSlot)
+          True -> Ok(NamelessSlot(position))
           False -> Error(Nil)
         }
     }
