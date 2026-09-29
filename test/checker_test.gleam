@@ -16,10 +16,10 @@ import graded/internal/extract
 import graded/internal/signatures
 import graded/internal/typeinfo
 import graded/internal/types.{
-  type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
-  ParamBound, Polymorphic, QualifiedName, Specific, TAbs, TApp, TLabels, TVar,
-  UnmatchedFieldBoundWarning, UnmatchedParamBoundWarning, UntrackedEffectWarning,
-  Wildcard,
+  type EffectAnnotation, type EffectSet, type EffectTerm, Check,
+  EffectAnnotation, Effects, ParamBound, Polymorphic, QualifiedName, Specific,
+  TAbs, TApp, TLabels, TVar, UnmatchedFieldBoundWarning,
+  UnmatchedParamBoundWarning, UntrackedEffectWarning, Wildcard,
 }
 import qcheck
 import support
@@ -8192,4 +8192,112 @@ pub fn target(f: fn() -> Nil, g: fn() -> Nil) -> Nil {
   explained.classifications
   |> list.map(fn(check) { #(check.function, check.object, check.label) })
   |> should.equal([#("target", "io", "println")])
+}
+
+// Lifting a function that discards a callback
+//
+// A function passed as an operator argument is lifted with one binder per
+// callback parameter position, named or not. Read here off a producer's
+// returned-operator summary: a producer returning a function reference records
+// the operator that reference lifts to.
+
+// The operators `app`'s producers return, by producer name.
+fn returned_operators(
+  source: String,
+  knowledge_base: effects.KnowledgeBase,
+) -> dict.Dict(String, EffectTerm) {
+  let assert Ok(module) = glance.module(source)
+  let #(_annotations, returns, _provenance) =
+    checker.infer_with_returns(
+      module,
+      "app",
+      knowledge_base,
+      [],
+      signatures.from_glance_module("app", module),
+      typeinfo.no_reading(),
+      types.all_targets(),
+    )
+  returns
+}
+
+const discarding_producers = "
+pub fn ignores(_f: fn() -> Nil) -> Nil {
+  Nil
+}
+
+pub fn pick(_a: fn() -> Nil, b: fn() -> Nil) -> Nil {
+  b()
+}
+
+pub fn pick_first(a: fn() -> Nil, _b: fn() -> Nil) -> Nil {
+  a()
+}
+
+pub fn make_ignores() -> fn(fn() -> Nil) -> Nil {
+  ignores
+}
+
+pub fn make_pick() -> fn(fn() -> Nil, fn() -> Nil) -> Nil {
+  pick
+}
+
+pub fn make_pick_first() -> fn(fn() -> Nil, fn() -> Nil) -> Nil {
+  pick_first
+}
+"
+
+// How many binders an operator's spine carries.
+fn binder_count(term: EffectTerm) -> Int {
+  case term {
+    TAbs(_, body) -> 1 + binder_count(body)
+    _ -> 0
+  }
+}
+
+// An operator applied to each argument in turn, reduced to its effect set.
+fn applied(operator: EffectTerm, arguments: List(List(String))) -> EffectSet {
+  arguments
+  |> list.fold(operator, fn(term, labels) {
+    TApp(term, TLabels(set.from_list(labels)))
+  })
+  |> effect_term.to_effect_set
+}
+
+pub fn a_discarded_callback_takes_a_binder_when_lifted_test() {
+  let returns = returned_operators(discarding_producers, knowledge_base())
+  let assert Ok(ignores) = dict.get(returns, "make_ignores")
+  binder_count(ignores) |> should.equal(1)
+  applied(ignores, [[]]) |> should.equal(Specific(set.new()))
+}
+
+pub fn each_argument_reaches_the_callback_at_its_position_test() {
+  // Two binders each, and each operator charges the argument at its own
+  // callback's position and not the other one.
+  let returns = returned_operators(discarding_producers, knowledge_base())
+  let assert Ok(pick) = dict.get(returns, "make_pick")
+  let assert Ok(pick_first) = dict.get(returns, "make_pick_first")
+  binder_count(pick) |> should.equal(2)
+  binder_count(pick_first) |> should.equal(2)
+  applied(pick, [["Stdout"], ["Db"]])
+  |> should.equal(Specific(set.from_list(["Db"])))
+  applied(pick_first, [["Stdout"], ["Db"]])
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn a_synthesized_binder_captures_no_declared_variable_test() {
+  // `g`'s declared term holds a variable spelled `_`, which a binder named `_`
+  // would capture. The binder takes the next free name instead, and the summary
+  // grounds the variable it leaves free.
+  let assert Ok(spec) = annotation.parse_file("assume app.g : [Db, _]")
+  let kb =
+    knowledge_base()
+    |> effects.with_assumes(annotation.extract_assumes(spec), types.UserAssume)
+  let source = support.foreign_fn("g", "(_f: fn() -> Nil) -> Nil") <> "
+pub fn make_g() -> fn(fn() -> Nil) -> Nil {
+  g
+}
+"
+  returned_operators(source, kb)
+  |> dict.get("make_g")
+  |> should.equal(Ok(TAbs("_0", TLabels(set.from_list(["Db", "Unknown"])))))
 }

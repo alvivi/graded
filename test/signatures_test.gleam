@@ -528,3 +528,85 @@ pub fn parse_source_dir_skips_missing_src_test() {
   let _ = simplifile.delete(dir)
   Nil
 }
+
+// Callback slots
+//
+// One slot per callback parameter position, named or not, for the binders a
+// lifted operator abstracts over. The two existing readers are the slots' named
+// part, and keep what they read.
+
+// Each shape's slots from the glance function and from the registry, and what
+// `ordered_callback_params` and `fn_typed_param_names_ordered` read for it.
+type SlotRow {
+  SlotRow(
+    params: String,
+    function_slots: List(signatures.CallbackSlot),
+    registry_slots: List(signatures.CallbackSlot),
+    ordered_callback_params: List(String),
+    fn_typed_param_names_ordered: List(String),
+  )
+}
+
+fn slot_rows() -> List(SlotRow) {
+  let named = signatures.NamedSlot
+  let nameless = signatures.NamelessSlot
+  [
+    SlotRow("_f: fn() -> Nil", [nameless], [nameless], [], []),
+    // The registry names a labelled parameter by its label.
+    SlotRow("with _f: fn() -> Nil", [nameless], [named("with")], [], ["with"]),
+    SlotRow(
+      "_a: fn() -> Nil, b: fn() -> Nil",
+      [nameless, named("b")],
+      [nameless, named("b")],
+      ["b"],
+      ["b"],
+    ),
+    SlotRow(
+      "a: fn() -> Nil, _b: fn() -> Nil",
+      [named("a"), nameless],
+      [named("a"), nameless],
+      ["a"],
+      ["a"],
+    ),
+    SlotRow("_x: Int, cb: fn() -> Nil", [named("cb")], [named("cb")], ["cb"], [
+      "cb",
+    ]),
+    // Nothing says an unannotated discard is a callback.
+    SlotRow("_x", [], [], [], []),
+    SlotRow("_f: Action", [nameless], [nameless], [], []),
+  ]
+}
+
+pub fn callback_slots_bind_every_callback_position_test() {
+  list.each(slot_rows(), fn(row) {
+    let source =
+      "pub type Action = fn() -> Nil\npub fn f(" <> row.params <> ") { Nil }\n"
+    let assert Ok(module) = glance.module(source)
+    let assert [definition] = module.functions
+    let alias_map = signatures.type_alias_map(module.type_aliases)
+    let registry = signatures.from_glance_module("m", module)
+    let name = QualifiedName(module: "m", function: "f")
+    #(
+      row.params,
+      signatures.function_callback_slots(
+        definition.definition,
+        alias_map,
+        set.new(),
+      ),
+      signatures.callback_slots(registry, name, set.new()),
+      signatures.ordered_callback_params(
+        definition.definition,
+        alias_map,
+        set.new(),
+      ),
+      signatures.fn_typed_param_names_ordered(registry, name, set.new()),
+    )
+    |> should.equal(#(
+      row.params,
+      row.function_slots,
+      row.registry_slots,
+      row.ordered_callback_params,
+      row.fn_typed_param_names_ordered,
+    ))
+  })
+}

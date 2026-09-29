@@ -183,6 +183,13 @@ check called_choice.choose_op_let : []
 check called_choice.choose_op_twin : []
 check called_choice.rebound_after_let : []
 check called_choice.shadowed_in_closure : []
+// A function discarding a callback, passed where its callback is called.
+check discarded_callback.go_ignores : []
+check discarded_callback.go_pick : []
+check discarded_callback.go_pick_swapped : []
+check discarded_callback.go_pick_first : []
+check discarded_callback.go_pick_first_swapped : []
+check discarded_callback.go_both : []
 // The value channels of foreign code: the operator it returns, the provenance of
 // what it builds, and the fields its factory and update-builder shapes wire. The
 // budget each pair shares is what the ordinary twin costs, so the foreign half
@@ -237,6 +244,10 @@ assume called_choice.db : [Db]
 assume called_choice.make_int : [Net] where returns : [Disk]
 assume called_choice.make : [Net] where returns : [Disk]
 assume called_choice.make_at : [Net] where returns : fn(cb) -> [Disk, cb]
+
+// What `discarded_callback`'s consumers hand their callbacks.
+assume discarded_callback.out : [Stdout]
+assume discarded_callback.db : [Db]
 
 // A module-level external over a module that is not a project module and not a
 // dependency: every name under `fake_clock` resolves to [Time], including ones

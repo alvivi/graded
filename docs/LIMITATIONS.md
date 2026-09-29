@@ -617,6 +617,39 @@ unproved.
 **How to avoid these** — annotate the producer's return type, or declare what a
 foreign producer returns with `assume <name> where returns : <operator>`.
 
+## 9. A callback typed through another module's alias
+
+A function passed where a callback is called with callbacks of its own is lifted
+over its callback parameters, one binder per position, so each argument reaches
+the parameter at its own position — a discarded parameter included. graded reads
+a parameter as a callback from its annotation, following the aliases its own
+module declares. An alias imported from another module is not followed, so a
+parameter typed with one gets no binder, and the call reads `[Unknown]`.
+
+```gleam
+// callbacks.gleam
+pub type Callback =
+  fn() -> Nil
+
+// lib.gleam
+import callbacks
+
+pub fn run_with(action: fn(fn() -> Nil) -> Nil) -> Nil {
+  action(fn() { Nil })
+}
+
+pub fn drops(_cb: callbacks.Callback) -> Nil {
+  Nil
+}
+
+pub fn caller() -> Nil {
+  run_with(drops)          // [Unknown] — `callbacks.Callback` is not followed
+}
+```
+
+**How to avoid it** — spell the parameter's type out (`_cb: fn() -> Nil`), or
+alias it in the module that declares the function.
+
 ---
 
 Every fallback above is the conservative `[Unknown]`, never a silent `[]`: graded

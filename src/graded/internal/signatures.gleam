@@ -130,6 +130,27 @@ pub fn fn_typed_param_names(
   }
 }
 
+// One callback parameter position of a function, as a lifted operator binds it.
+pub type CallbackSlot {
+  // A callback the canonical readers name; its binder is that name.
+  NamedSlot(name: String)
+  // A callback whose annotation is provably a function but which the canonical
+  // readers give no name — a discarded parameter, and on the registry's side an
+  // unlabelled one. Only a binder is ever built from it: never a bound, never a
+  // seeded variable.
+  NamelessSlot
+}
+
+// The names of the named slots, in order: the canonical callback set.
+pub fn slot_names(slots: List(CallbackSlot)) -> List(String) {
+  list.filter_map(slots, fn(slot) {
+    case slot {
+      NamedSlot(name) -> Ok(name)
+      NamelessSlot -> Error(Nil)
+    }
+  })
+}
+
 // In-body parameter names of a callee's fn-typed parameters, **in declaration
 // order** (label preferred, then in-body name). Unlike `fn_typed_param_names`
 // (a `Set`), this preserves order — needed to curry an operator argument's
@@ -146,6 +167,18 @@ pub fn fn_typed_param_names_ordered(
   name: QualifiedName,
   bound_names: Set(String),
 ) -> List(String) {
+  slot_names(callback_slots(registry, name, bound_names))
+}
+
+// A callee's callback slots from the registry, in declaration order: every
+// parameter `fn_typed_param_names_ordered` names, under that name, and every
+// fn-typed parameter it passes over for having neither a label nor an in-body
+// name. Empty when the callee isn't in the registry.
+pub fn callback_slots(
+  registry: SignatureRegistry,
+  name: QualifiedName,
+  bound_names: Set(String),
+) -> List(CallbackSlot) {
   case lookup(registry, name) {
     None -> []
     Some(params) ->
@@ -167,11 +200,15 @@ pub fn fn_typed_param_names_ordered(
         // the operator one binder too many — an arity the application spine
         // cannot match, which goes stuck and collapses to `[Unknown]`.
         let could_be_callback = p.is_fn_typed || !p.is_annotated
-        let own_name = option.to_result(option.or(p.label, p.name), Nil)
+        let own_name = option.or(p.label, p.name)
         case bound, could_be_callback, p.is_fn_typed {
-          Ok(name), True, _ -> Ok(name)
+          Ok(name), True, _ -> Ok(NamedSlot(name))
           Ok(_), False, _ -> Error(Nil)
-          Error(Nil), _, True -> own_name
+          Error(Nil), _, True ->
+            case own_name {
+              Some(name) -> Ok(NamedSlot(name))
+              None -> Ok(NamelessSlot)
+            }
           Error(Nil), _, False -> Error(Nil)
         }
       })
@@ -477,20 +514,32 @@ pub fn ordered_callback_params(
   alias_map: Dict(String, glance.Type),
   extra: Set(String),
 ) -> List(String) {
+  slot_names(function_callback_slots(function, alias_map, extra))
+}
+
+// A function's callback slots, in declaration order: every parameter
+// `ordered_callback_params` names, under that name, and every discarded one
+// whose annotation is provably a function. A discarded parameter with no
+// annotation has no slot, since nothing says it is a callback.
+pub fn function_callback_slots(
+  function: Function,
+  alias_map: Dict(String, glance.Type),
+  extra: Set(String),
+) -> List(CallbackSlot) {
   list.filter_map(function.parameters, fn(param) {
+    let annotated_function =
+      option.unwrap(option.map(param.type_, is_fn_typed(_, alias_map)), False)
     case param.name {
       glance.Named(name) ->
-        case
-          option.unwrap(
-            option.map(param.type_, is_fn_typed(_, alias_map)),
-            False,
-          )
-          || set.contains(extra, name)
-        {
-          True -> Ok(name)
+        case annotated_function || set.contains(extra, name) {
+          True -> Ok(NamedSlot(name))
           False -> Error(Nil)
         }
-      glance.Discarded(_) -> Error(Nil)
+      glance.Discarded(_) ->
+        case annotated_function {
+          True -> Ok(NamelessSlot)
+          False -> Error(Nil)
+        }
     }
   })
 }
