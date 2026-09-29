@@ -5,86 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.22.0] - 2026-09-29
 
 ### Added
 
-- An `assume` line's effects term can now apply a bound's variable, so a foreign
-  function that calls its callback with a function of its own declares what that
-  function does: `assume m/ffi.with_tx(cb: [cb]) : [cb([Db])]`. Such a line used
-  to answer `[Unknown]`.
-- The bundled catalog declares that `gleam/javascript/promise.new` calls its
-  callback with a pure `resolve`, so a promise built in your code charges what
-  your callback does instead of `[Unknown]`.
+- An `assume` line can apply a bound's variable, so a foreign function that
+  hands its callback a function of its own can declare what that function does:
+  `assume m/ffi.with_tx(cb: [cb]) : [cb([Db])]`. Such a line read `[Unknown]`.
+- The catalog covers `gleam/javascript/promise.new`, so a promise built in your
+  code charges what your callback does instead of `[Unknown]`.
 - `graded check` warns when an `assume` line's bound names a parameter the
-  function does not have, so a misspelled bound is caught instead of silently
-  answering `[Unknown]`.
+  function does not have.
 
 ### Changed
 
-- A dependency's spec now answers only for the modules that package ships. A
-  line it writes about anyone else's code — the standard library, another
-  dependency, or your own modules — is ignored and named once in a warning, so
-  a name such a line used to decide now answers from the package that ships
-  it, the bundled catalog, or `[Unknown]`, and a `check` over a call into it can
-  newly pass or newly fail; the same line in your own spec restores the answer.
-  A rejected line naming such a path no longer charges `[_]` for it. A
-  dependency's bare field line (`assume Repo.find : [Disk]`) is ignored too —
-  qualify it with the type's module — while the `effects` lines a dependency's
-  `infer` wrote under an ignored assumption still ship and still answer.
+- A dependency's spec now speaks only for the modules that package ships. Its
+  lines about other code — the standard library, other dependencies, your own
+  modules — and its unqualified field lines (`assume Repo.find : [Disk]`) are
+  ignored with a warning, and those names answer from their own package, the
+  catalog, or `[Unknown]`. A `check` over such a call can change result; the
+  same line in your own spec restores the old answer.
 
 ### Fixed
 
-- A function that discards a callback parameter (`fn ignores(_f: fn() -> Nil)`)
-  now reads as what its body does when it is passed to a function that calls
-  it with a callback, where it read `[Unknown]`. With several callback
-  parameters, each argument now reaches the parameter at its own position:
-  `fn pick(_a: fn() -> Nil, b: fn() -> Nil)` charged `[Unknown]` and now charges
-  what its second argument does. A `check` that failed on such an `[Unknown]`
-  can newly pass, and an inferred line such as `[x([y])]` is rewritten as `[y]`
-  by the next `graded infer`. A function returning such a function writes the
-  discarded position into its `where returns` clause (`fn(_) -> []`, where it
-  wrote `[]`), so a caller of what it returns reads `[]` too.
-- Calling a function picked by a `case` (`let op = case flag { True -> log
-  False -> save }` then `op()`, or `case flag { … }(x)`) now charges what each
-  picked function does with the arguments, as if the call were written in every
-  branch. Bound with `let`, a branch naming a function or a parameter charged
-  nothing; called in place, a parameter sharing its name with a function of the
-  module charged that function instead. In both a `check` could pass over code
-  that performs the effect. A `check` that passed on such a function can now
-  fail, and `graded infer` rewrites its `effects` line, and those of its
-  callers, to the larger set. A branch taking ordinary arguments now reads its
-  own effects where it read `[Unknown]`, and a `case` piped into
-  (`x |> case f() { … }`) now charges its own subject and the calls in its
-  branches, which went uncharged.
-- `graded infer` no longer writes an `effects` line that graded cannot read
-  back. Passing a function that discards its callback parameter
-  (`fn ignores(_f: fn() -> Nil)`) to a function that calls its own callback with
-  one wrote `effects app.go : [([])]`, after which every command, `infer`
-  included, stopped on a parse error. Such a line is now written as `[Unknown]`,
-  which is what it always charged, and a line an earlier version wrote as
-  `[Unknown([])]` reads as `[Unknown]`. A spec already holding a line graded
-  cannot read still needs that line deleted by hand once.
-- A function that picks one of its callbacks with a `case` and passes or calls
-  the result (`case flag { True -> a  False -> b }(x)`) wrote an `effects` line
-  graded could not read back. It now writes what each callback does with the
-  arguments, the same line the function writes when the call sits inside each
-  branch.
-- A call that labels an argument with a *sibling* parameter's name now binds
-  each argument to the parameter whose label or position it fills. A
-  `fn(first cb: fn() -> Nil, cb other: fn() -> Nil)` called as
-  `f(first: loud, cb: quiet)` charged `quiet`'s effects to `cb`; it now charges
-  `loud`'s. A function a module-level `assume` covers charges such a callback
-  whether it is passed by label or by position, where a positional one went
-  uncharged.
+- Calling a function picked by a `case` (`let op = case flag { … }` then
+  `op()`, or `case flag { … }(x)`) now charges what every branch's function
+  does. It could charge nothing or the wrong function, so a `check` could pass
+  over code that performs the effect and can now fail. A `case` piped into
+  (`x |> case … { … }`) now charges its subject and branches too.
+- A call labelling an argument with a sibling parameter's name now binds each
+  argument to the right parameter: `f(first: loud, cb: quiet)` against
+  `fn(first cb: …, cb other: …)` charged `quiet`'s effects and now charges
+  `loud`'s. Under a module-level `assume`, a callback passed by position is now
+  charged too, not only one passed by label.
+- An `effects` line spelled as an operator (`effects m.f : fn(x) -> [x]`) now
+  reads `[Unknown]` when the function is passed as a value, as it already did
+  when called. It could reduce to effects the line never stated.
+- A function that ignores a callback parameter (`fn ignores(_f: fn() -> Nil)`)
+  now charges what its body does when passed to a function that calls it with
+  a callback, instead of `[Unknown]`, and with several callback parameters each
+  argument reaches its own position. `graded infer` rewrites the lines this
+  touches: `[x([y])]` becomes `[y]`, and a function returning such a function
+  writes `where returns : fn(_) -> []`.
 - A function handed to a labelled parameter that itself takes a callback
   (`with action: fn(fn() -> Nil) -> Nil`) now charges what it does with that
-  callback, where it used to add `[Unknown]`.
-- An `effects` line whose effects are an operator spelling
-  (`effects m.f : fn(x) -> [x]`) now reads as `[Unknown]` where the function is
-  passed as a value, as it already did where the function is called. Passed to
-  a function that applies it, it could reduce to an effect the line never
-  stated.
+  callback instead of adding `[Unknown]`.
+- `graded infer` no longer writes `effects` lines it cannot read back, such as
+  `[([])]`, which stopped every later command on a parse error. A callback
+  picked by a `case` and called now writes what each branch does; any other
+  such term is written `[Unknown]`, what it always charged. Lines earlier
+  versions wrote as `[Unknown([])]` read as `[Unknown]`, and an unreadable line
+  already in a spec must be deleted by hand once.
 
 ## [0.21.0] - 2026-09-23
 
@@ -1045,6 +1016,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gleam_yielder`, `gleam_crypto`, `lustre`, `lustre_http`, `simplifile`,
   `filepath`, `tom`.
 
+[0.22.0]: https://github.com/alvivi/graded/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/alvivi/graded/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/alvivi/graded/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/alvivi/graded/compare/v0.18.0...v0.19.0
