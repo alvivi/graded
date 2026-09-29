@@ -1783,6 +1783,263 @@ pub fn second_order_roundtrip_property_test() {
   parsed.effects |> should.equal(normalized)
 }
 
+// Unspellable applications
+//
+// The grammar spells an application only under a variable head. A term holding
+// one under any other head is written `[Unknown]` where that application sits,
+// and every written line parses back and formats to the same bytes.
+
+// The `effects` line `term` is written as.
+fn written_line(term: EffectTerm) -> String {
+  annotation.format_annotation(EffectAnnotation(
+    Effects,
+    "m.f",
+    [],
+    term,
+    returns: None,
+  ))
+}
+
+// Parse `line` back, assert it formats to the same bytes, and return the
+// effects term it read.
+fn read_back(line: String) -> EffectTerm {
+  let assert Ok([parsed]) = annotation.parse(line)
+  annotation.format_annotation(parsed) |> should.equal(line)
+  parsed.effects
+}
+
+fn label_set(labels: List(String)) -> EffectTerm {
+  TLabels(set.from_list(labels))
+}
+
+pub fn an_application_under_an_empty_set_is_written_unknown_test() {
+  let line = written_line(TApp(label_set([]), label_set([])))
+  line |> should.equal("effects m.f : [Unknown]")
+  read_back(line) |> should.equal(effect_term.unknown())
+}
+
+pub fn an_application_under_one_label_is_written_unknown_test() {
+  let line = written_line(TApp(label_set(["Unknown"]), label_set([])))
+  line |> should.equal("effects m.f : [Unknown]")
+  read_back(line) |> should.equal(effect_term.unknown())
+}
+
+pub fn an_application_under_several_labels_is_written_unknown_test() {
+  let line = written_line(TApp(label_set(["Db", "Stdout"]), TVar("x")))
+  line |> should.equal("effects m.f : [Unknown]")
+  read_back(line) |> should.equal(effect_term.unknown())
+}
+
+pub fn an_application_under_the_wildcard_is_written_unknown_test() {
+  let line = written_line(TApp(TTop, label_set(["Db"])))
+  line |> should.equal("effects m.f : [Unknown]")
+  read_back(line) |> should.equal(effect_term.unknown())
+}
+
+pub fn an_application_under_a_union_of_variables_is_written_per_member_test() {
+  let line = written_line(TApp(TUnion([TVar("a"), TVar("b")]), label_set([])))
+  line |> should.equal("effects m.f : [a([]), b([])]")
+  read_back(line)
+  |> should.equal(
+    TUnion([TApp(TVar("a"), label_set([])), TApp(TVar("b"), label_set([]))]),
+  )
+}
+
+pub fn an_application_under_a_mixed_union_is_written_unknown_test() {
+  let line =
+    written_line(TApp(
+      TUnion([TVar("a"), label_set(["Db"])]),
+      label_set(["Stdout"]),
+    ))
+  line |> should.equal("effects m.f : [Unknown]")
+  read_back(line) |> should.equal(effect_term.unknown())
+}
+
+pub fn a_curried_spine_under_an_empty_set_is_written_unknown_test() {
+  let line = written_line(TApp(TApp(label_set([]), TVar("x")), TVar("y")))
+  line |> should.equal("effects m.f : [Unknown]")
+  read_back(line) |> should.equal(effect_term.unknown())
+}
+
+pub fn an_unspellable_application_beside_spellable_atoms_test() {
+  // Only the unspellable member is grounded; the label and the application
+  // under a variable head keep their spelling.
+  let line =
+    written_line(
+      TUnion([
+        label_set(["Stdout"]),
+        TApp(TVar("a"), TVar("x")),
+        TApp(label_set([]), label_set([])),
+      ]),
+    )
+  line |> should.equal("effects m.f : [Stdout, Unknown, a([x])]")
+  read_back(line)
+  |> should.equal(
+    TUnion([label_set(["Stdout", "Unknown"]), TApp(TVar("a"), TVar("x"))]),
+  )
+}
+
+pub fn an_unspellable_application_in_an_argument_test() {
+  let line = written_line(TApp(TVar("a"), TApp(label_set([]), label_set([]))))
+  line |> should.equal("effects m.f : [a([Unknown])]")
+  read_back(line) |> should.equal(TApp(TVar("a"), effect_term.unknown()))
+}
+
+pub fn an_operator_argument_is_written_unknown_and_its_reading_is_lost_test() {
+  // An operator in argument position has no spelling either, and is written
+  // `[Unknown]` as it always was. Bound afterwards to an operator that applies
+  // its argument, the term in memory reduces to `[Db]` and the one read back
+  // holds `Unknown`.
+  let term = TApp(TVar("a"), TAbs("x", TVar("x")))
+  let line = written_line(term)
+  line |> should.equal("effects m.f : [a([Unknown])]")
+  let binding =
+    dict.from_list([#("a", TAbs("f", TApp(TVar("f"), label_set(["Db"]))))])
+  effect_term.to_effect_set(effect_term.subst(term, binding))
+  |> should.equal(Specific(set.from_list(["Db"])))
+  let assert Specific(labels) =
+    effect_term.to_effect_set(effect_term.subst(read_back(line), binding))
+  set.contains(labels, "Unknown") |> should.be_true()
+}
+
+pub fn applications_written_alike_are_written_once_test() {
+  // Two applications differing only in an operator argument are both written
+  // `a([Unknown])`, beside the one whose argument is `[Unknown]` itself; the
+  // line holds the atom once, so it formats back to the same bytes.
+  let line =
+    written_line(
+      TUnion([
+        TApp(TVar("a"), TAbs("x", TVar("x"))),
+        TApp(TVar("a"), TAbs("y", label_set(["Db"]))),
+        TApp(TVar("a"), effect_term.unknown()),
+      ]),
+    )
+  line |> should.equal("effects m.f : [a([Unknown])]")
+  read_back(line) |> should.equal(TApp(TVar("a"), effect_term.unknown()))
+}
+
+pub fn an_unspellable_application_in_a_clause_and_a_bound_test() {
+  // The operator a `where returns` clause carries and a bound's payload are
+  // rendered through the same effect-set writer.
+  let ann =
+    EffectAnnotation(
+      Effects,
+      "m.f",
+      [
+        ParamBound("g", TApp(label_set([]), label_set([]))),
+        ParamBound("h", TAbs("x", TApp(label_set(["Db"]), TVar("x")))),
+      ],
+      label_set([]),
+      returns: Some(TAbs(
+        "cb",
+        TUnion([TVar("cb"), TApp(label_set([]), label_set([]))]),
+      )),
+    )
+  let line = annotation.format_annotation(ann)
+  line
+  |> should.equal(
+    "effects m.f(g: [Unknown], h: fn(x) -> [Unknown]) : [] where returns : fn(cb) -> [Unknown, cb]",
+  )
+  let assert Ok([parsed]) = annotation.parse(line)
+  annotation.format_annotation(parsed) |> should.equal(line)
+}
+
+pub fn a_mixed_union_head_loses_its_reading_once_written_test() {
+  // The limit that remains: a head mixing a variable with an abstraction stays
+  // stuck and is written `[Unknown]`. Bound afterwards, the term in memory
+  // reduces to `[Db, Net]` and the written one stays `[Unknown]`, which does
+  // not include it.
+  let term =
+    TApp(TUnion([TVar("a"), TAbs("p", label_set(["Db"]))]), label_set([]))
+  let line = written_line(term)
+  line |> should.equal("effects m.f : [Unknown]")
+  let binding = dict.from_list([#("a", TAbs("_", label_set(["Net"])))])
+  let in_memory = effect_term.to_effect_set(effect_term.subst(term, binding))
+  let written =
+    effect_term.to_effect_set(effect_term.subst(read_back(line), binding))
+  in_memory |> should.equal(Specific(set.from_list(["Db", "Net"])))
+  written |> should.equal(Specific(set.from_list(["Unknown"])))
+  types.is_subset(in_memory, written) |> should.be_false()
+}
+
+pub fn a_union_of_variables_head_keeps_its_reading_once_written_test() {
+  // The limit that is gone: a head of variables alone distributes, so the
+  // written line binds each member the way the term in memory does.
+  let term = TApp(TUnion([TVar("a"), TVar("b")]), label_set([]))
+  let binding =
+    dict.from_list([
+      #("a", TAbs("_", label_set(["Db"]))),
+      #("b", TAbs("_", label_set(["Db"]))),
+    ])
+  let expected = Specific(set.from_list(["Db"]))
+  effect_term.to_effect_set(effect_term.subst(term, binding))
+  |> should.equal(expected)
+  effect_term.to_effect_set(effect_term.subst(
+    read_back(written_line(term)),
+    binding,
+  ))
+  |> should.equal(expected)
+}
+
+pub fn every_written_term_reads_back_property_test() {
+  // Over arbitrary terms, stuck applications of every head shape included: the
+  // written line parses, reads as the same effect set, and formats to the same
+  // bytes.
+  use term <- qcheck.given(generators.effect_term_gen())
+  let normalized = effect_term.normalize(term)
+  let line = written_line(normalized)
+  let parsed = read_back(line)
+  effect_term.to_effect_set(parsed)
+  |> should.equal(effect_term.to_effect_set(normalized))
+}
+
+pub fn a_written_term_marks_what_it_loses_property_test() {
+  // A diagnostic convention, not subset inclusion and not a soundness proof:
+  // bound after it is read back, a written line keeps every label and variable
+  // the term in memory reduces to, unless it reduces to a set holding the
+  // unresolved marker or to the wildcard. A reading the line cannot carry is
+  // marked unresolved, never dropped silently.
+  use #(term, bindings) <- qcheck.given(qcheck.tuple2(
+    generators.effect_term_gen(),
+    generators.effect_binding_gen(),
+  ))
+  let normalized = effect_term.normalize(term)
+  let parsed = read_back(written_line(normalized))
+  let in_memory =
+    effect_term.to_effect_set(effect_term.subst(normalized, bindings))
+  let written = effect_term.to_effect_set(effect_term.subst(parsed, bindings))
+  case written {
+    Wildcard -> Nil
+    Specific(labels) | Polymorphic(labels, _) ->
+      case set.contains(labels, types.unknown_label) {
+        True -> Nil
+        False -> {
+          let #(kept_labels, kept_variables) = labels_and_variables(written)
+          case in_memory {
+            // Everything, where the line kept a finite set with no marker.
+            Wildcard -> should.fail()
+            Specific(_) | Polymorphic(_, _) -> {
+              let #(labels, variables) = labels_and_variables(in_memory)
+              set.is_subset(labels, of: kept_labels) |> should.be_true()
+              set.is_subset(variables, of: kept_variables) |> should.be_true()
+            }
+          }
+        }
+      }
+  }
+}
+
+// The labels and the variables of a finite effect set; none for the wildcard.
+fn labels_and_variables(
+  effect_set: types.EffectSet,
+) -> #(set.Set(String), set.Set(String)) {
+  case effect_set {
+    Wildcard -> #(set.new(), set.new())
+    Specific(labels) -> #(labels, set.new())
+    Polymorphic(labels, variables) -> #(labels, variables)
+  }
+}
+
 // Field bounds
 //
 // `param.field: [...]` bounds naming a function-typed field of a parameter.

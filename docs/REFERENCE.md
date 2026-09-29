@@ -494,6 +494,8 @@ Higher-order signatures add two more shapes (see
   `fn(a, b) -> [a, b]`.
 - **Operator application** — `[action([Stdout])]` applies an operator variable to a
   callback's effects; it beta-reduces to a concrete set once the operator is known.
+  `graded infer` writes an application only under an operator variable; one under
+  anything else has no spelling and is written `[Unknown]`, the set it charges.
 
 > **Wildcard caveat.** Because `[_]` is lattice top, it absorbs everything in a
 > union. A function whose inferred effects would be `[Stdout, e]` (polymorphic) but

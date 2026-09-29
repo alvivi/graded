@@ -8,8 +8,8 @@ import gleam/set.{type Set}
 import gleeunit/should
 import graded/internal/effect_term.{
   alpha_equivalent, free_vars, from_effect_set, ground_root_abstractions,
-  normalize, normalize_bounded, operator_subset, pure, rename_binder, subst,
-  to_effect_set, unknown,
+  ground_unspellable_applications, normalize, normalize_bounded, operator_subset,
+  pure, rename_binder, subst, to_effect_set, unknown,
 }
 import graded/internal/types.{
   type EffectSet, type EffectTerm, Polymorphic, Specific, TAbs, TApp, TLabels,
@@ -606,4 +606,74 @@ pub fn a_root_application_is_kept_unit_test() {
 pub fn ground_root_abstractions_leaves_an_abstraction_free_term_normalized_test() {
   use term <- qcheck.given(generators.serializable_effect_term_gen())
   ground_root_abstractions(term) |> should.equal(normalize(term))
+}
+
+// Unspellable applications
+//
+// An application is spelled only under a variable head. Every other head —
+// a label set, the wildcard, a union the normalizer left stuck, an
+// abstraction — grounds the whole spine to `[Unknown]` where it sits; the
+// spellable part around it is kept.
+
+pub fn an_application_under_a_label_set_grounds_unit_test() {
+  ground_unspellable_applications(TApp(labels([]), labels([])))
+  |> should.equal(unknown())
+  ground_unspellable_applications(TApp(labels(["Unknown"]), labels([])))
+  |> should.equal(unknown())
+  ground_unspellable_applications(TApp(labels(["Db", "Stdout"]), TVar("x")))
+  |> should.equal(unknown())
+}
+
+pub fn an_application_under_the_wildcard_grounds_unit_test() {
+  ground_unspellable_applications(TApp(TTop, labels(["Db"])))
+  |> should.equal(unknown())
+}
+
+pub fn an_application_under_a_stuck_union_grounds_unit_test() {
+  ground_unspellable_applications(TApp(
+    TUnion([TVar("a"), labels(["Db"])]),
+    labels(["Stdout"]),
+  ))
+  |> should.equal(unknown())
+}
+
+pub fn an_application_under_an_abstraction_grounds_unit_test() {
+  ground_unspellable_applications(TApp(TAbs("x", TVar("x")), labels(["Db"])))
+  |> should.equal(unknown())
+}
+
+pub fn a_curried_spine_under_a_label_set_grounds_whole_unit_test() {
+  ground_unspellable_applications(TApp(TApp(labels([]), TVar("x")), TVar("y")))
+  |> should.equal(unknown())
+}
+
+pub fn a_variable_headed_application_is_kept_unit_test() {
+  let term = TApp(TApp(TVar("a"), labels(["Db"])), TVar("y"))
+  ground_unspellable_applications(term) |> should.equal(term)
+}
+
+pub fn an_unspellable_argument_grounds_where_it_sits_unit_test() {
+  ground_unspellable_applications(TApp(TVar("a"), TApp(labels([]), labels([]))))
+  |> should.equal(TApp(TVar("a"), unknown()))
+}
+
+pub fn an_unspellable_union_member_grounds_beside_the_rest_unit_test() {
+  ground_unspellable_applications(
+    TUnion([
+      labels(["Stdout"]),
+      TApp(TVar("a"), TVar("x")),
+      TApp(labels([]), labels([])),
+    ]),
+  )
+  |> should.equal(
+    TUnion([labels(["Stdout", "Unknown"]), TApp(TVar("a"), TVar("x"))]),
+  )
+}
+
+pub fn an_unspellable_application_in_an_abstraction_body_grounds_unit_test() {
+  ground_unspellable_applications(TAbs(
+    "cb",
+    TUnion([TVar("cb"), TApp(labels(["Db"]), TVar("cb"))]),
+  ))
+  |> should.equal(TAbs("cb", TUnion([labels(["Unknown"]), TVar("cb")])))
 }
