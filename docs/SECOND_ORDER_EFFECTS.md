@@ -117,6 +117,11 @@ Two bridges in `effect_term.gleam`:
 - **Beta:** `TApp(TAbs(p, body), arg) → body[p := arg]`, capture-avoiding.
 - **Stuck:** `TApp(TVar f, arg)` with `f` unbound stays symbolic until a binding
   for `f` arrives at a call site.
+- **Distribution:** `TApp(TUnion(members), arg)` becomes the union of each
+  member applied to `arg` when every member is an abstraction, or when every
+  member is variable-headed (a `TVar`, or a stuck application under one), so
+  `(a ⊔ b)(x)` reads `a(x) ⊔ b(x)`. A union holding a label set, or mixing an
+  abstraction with a variable-headed member, stays stuck as a whole.
 - Substitution `subst : EffectTerm → Dict(String, EffectTerm) → EffectTerm`
   replaces the single-pass `types.substitute`; bindings may themselves be
   `TAbs` (an operator), which is what enables the nested case.

@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A function that picks one of its callbacks with a `case` and passes or calls
+  the result (`case flag { True -> a  False -> b }(x)`) wrote an `effects` line
+  graded could not read back. It now writes what each callback does with the
+  arguments, the same line the function writes when the call sits inside each
+  branch.
 - A call that labels an argument with a *sibling* parameter's name now binds
   each argument to the parameter whose label or position it fills. A
   `fn(first cb: fn() -> Nil, cb other: fn() -> Nil)` called as
