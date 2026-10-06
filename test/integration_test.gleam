@@ -5579,12 +5579,14 @@ pub fn the_fixture_declared_producer_resolves_from_its_line_test() {
 
 // The spec declaring the same-module producer's return, and the spec that
 // leaves it to inference — which writes no summary for an `@external` at all.
-const declared_same_module_spec = "check ffi.caller : [Net]
+const declared_same_module_spec =
+  "check ffi.caller : [Net]
 assume ffi.make_client : [Net]
 assume ffi.make_client where returns : [Net]
 "
 
-const inferred_same_module_spec = "check ffi.caller : [Net]
+const inferred_same_module_spec =
+  "check ffi.caller : [Net]
 assume ffi.make_client : [Net]
 "
 
@@ -5938,7 +5940,8 @@ pub fn every_surface_charges_one_name_one_set_test() {
 // continues the same phrase.
 const undeclared_cause = "an external with no declared effects"
 
-const unbuilt_cause = "an external declared only for a target this build does not compile"
+const unbuilt_cause =
+  "an external declared only for a target this build does not compile"
 
 // The package every configuration of the matrix is written over: one name of
 // each shape a foreign charge takes, each with a caller in another module, a
@@ -9362,7 +9365,8 @@ pub fn an_untyped_shadowed_call_result_charges_unknown_test() {
 // each case below asserts beside the merged reading. Kept out of
 // `test/fixtures` so the corpus there stays free of rows with no typed
 // evidence.
-const dropped_definition_source = "import gleam/io
+const dropped_definition_source =
+  "import gleam/io
 
 pub type Logger {
   Loud(println: fn(String) -> Nil)
@@ -9635,7 +9639,8 @@ pub fn a_girard_typed_fieldless_receiver_reads_as_the_module_test() {
 
 // The declarations `shadow_receiver` needs: the module its receivers are named
 // after, and the field budget the record's own reading would answer with.
-const shadow_receiver_spec = "assume gleam/io.println : [Stdout]
+const shadow_receiver_spec =
+  "assume gleam/io.println : [Stdout]
 assume gleam/pair.first : []
 assume shadow_receiver.Logger.println : [Stdout]
 "
@@ -9643,7 +9648,8 @@ assume shadow_receiver.Logger.println : [Stdout]
 // The declarations `field_module_collision` needs, and nothing else: the pure
 // module its receivers are named after, the effectful function its
 // constructions wire, and the field's own budget.
-const collision_spec = "assume gleam/list : []
+const collision_spec =
+  "assume gleam/list : []
 assume field_module_collision.net_send : [Net]
 assume field_module_collision.Client.send : [Net]
 "
@@ -12419,7 +12425,8 @@ pub fn a_dependencys_open_clause_degrades_to_unknown_test() {
 // An *unannotated* callback the dependency's spec records a bound for. No
 // syntactic signature shows it, so the registry alone would call the clause
 // open; the recorded bound is what admits it.
-const unannotated_wrap = "pub fn wrap(f) {
+const unannotated_wrap =
+  "pub fn wrap(f) {
   fn() { f() }
 }
 "
@@ -12597,7 +12604,8 @@ pub fn a_vendored_forks_clause_binds_over_the_catalogued_name_test() {
 }
 
 // A manifest naming a package the bundled catalog covers, and one naming none.
-const envoy_installed = "packages = [
+const envoy_installed =
+  "packages = [
   { name = \"envoy\", version = \"1.0.0\" },
 ]
 "
@@ -12605,7 +12613,8 @@ const envoy_installed = "packages = [
 const no_installed_packages = "packages = []\n"
 
 // `unannotated_wrap` under the name the catalog's `envoy` entry keys.
-const unannotated_get = "pub fn get(f) {
+const unannotated_get =
+  "pub fn get(f) {
   fn() { f() }
 }
 "
@@ -12746,14 +12755,16 @@ fn charged_by(
 
 // A vendored `envoy` whose `get` the catalog keys per-function. Gleam-bodied
 // and pure, so nothing but the two competing lines decides what a caller pays.
-const vendored_envoy = "pub fn get(key: String) -> String {
+const vendored_envoy =
+  "pub fn get(key: String) -> String {
   key
 }
 "
 
 // The same, with a body the walk resolves to a real effect: `gleam/io` is
 // catalogued too, so the resolved reading needs no installed package.
-const printing_envoy = "import gleam/io
+const printing_envoy =
+  "import gleam/io
 
 pub fn get(key: String) -> String {
   io.println(key)
@@ -12764,7 +12775,8 @@ pub fn get(key: String) -> String {
 // A vendored `envoy` whose `all` calls its catalogued sibling `get`. The
 // catalog keys both names `[Environment]`; only `get`'s body names an effect,
 // so what `all` costs says which of the two the walk read for the sibling.
-const sibling_calling_envoy = "import gleam/io
+const sibling_calling_envoy =
+  "import gleam/io
 
 pub fn all() -> String {
   get(\"HOME\")
@@ -12778,7 +12790,8 @@ pub fn get(key: String) -> String {
 
 // The same shape with the sibling `@external`: no body for the walk to read, so
 // the catalog keeps `get` and `all` is charged what that line states.
-const foreign_sibling_envoy = "@external(erlang, \"e\", \"g\")
+const foreign_sibling_envoy =
+  "@external(erlang, \"e\", \"g\")
 pub fn get(key: String) -> String
 
 pub fn all() -> String {
@@ -12790,7 +12803,8 @@ pub fn all() -> String {
 // in an uncatalogued module, so its own reading carries [Unknown] and yields to
 // its catalog line. `all` prints beside the call, so what it costs says whether
 // that line reached it and whether its own effect survived.
-const unresolved_sibling_envoy = "import gleam/io
+const unresolved_sibling_envoy =
+  "import gleam/io
 import envoy_ffi
 
 pub fn all() -> Nil {
@@ -12806,7 +12820,8 @@ pub fn get() -> Nil {
 // A polymorphic sibling: `set`'s reading is its callback's variable, which no
 // bound list closes, so it yields to its catalog line. Instantiating the
 // declined reading at the pure callback instead would leave `all` at [].
-const polymorphic_sibling_envoy = "pub fn all() -> Nil {
+const polymorphic_sibling_envoy =
+  "pub fn all() -> Nil {
   set(fn() { Nil })
 }
 
@@ -12820,7 +12835,8 @@ pub fn set(f: fn() -> Nil) -> Nil {
 // prints and resolves while `unset`'s carries [Unknown] and yields, so the two
 // no longer cost the same and the component's pooled reachability prices
 // neither. `all` calls `get` from outside the pair.
-const recursive_sibling_envoy = "import gleam/io
+const recursive_sibling_envoy =
+  "import gleam/io
 import envoy_ffi
 
 pub fn all() -> Nil {
@@ -12843,7 +12859,8 @@ pub fn unset(n: Int) -> Nil {
 }
 "
 
-const envoy_all_caller = "import envoy
+const envoy_all_caller =
+  "import envoy
 
 pub fn caller() -> Nil {
   let _ = envoy.all()
@@ -12853,7 +12870,8 @@ pub fn caller() -> Nil {
 
 // Calls the recursive pair's outside entry and both its members, so one run
 // reports what each of the three is charged.
-const envoy_recursive_caller = "import envoy
+const envoy_recursive_caller =
+  "import envoy
 
 pub fn caller() -> Nil {
   envoy.all()
@@ -12865,7 +12883,8 @@ pub fn caller() -> Nil {
 // The same, with a body the walk cannot resolve. The `@external` is in a
 // *separate* module of the dependency, so no module-level line of the fixture
 // covers it and the walk's answer for `get` really does carry [Unknown].
-const opaque_envoy = "import envoy_ffi
+const opaque_envoy =
+  "import envoy_ffi
 
 pub fn get(key: String) -> String {
   envoy_ffi.touch()
@@ -12873,21 +12892,24 @@ pub fn get(key: String) -> String {
 }
 "
 
-const envoy_ffi = "@external(erlang, \"e\", \"t\")
+const envoy_ffi =
+  "@external(erlang, \"e\", \"t\")
 pub fn touch() -> Nil
 "
 
 // A dependency module wrapping a sibling's catalogued function. What the
 // consumer is charged through `go` is the answer the *dependency's own pass*
 // read for `envoy.get`, recorded before the consumer ever looks the name up.
-const envoy_wrapper = "import envoy
+const envoy_wrapper =
+  "import envoy
 
 pub fn go() -> String {
   envoy.get(\"HOME\")
 }
 "
 
-const envoy_caller = "import envoy
+const envoy_caller =
+  "import envoy
 
 pub fn caller() -> Nil {
   let _ = envoy.get(\"HOME\")
@@ -12895,7 +12917,8 @@ pub fn caller() -> Nil {
 }
 "
 
-const envoy_wrapper_caller = "import envoy_wrap
+const envoy_wrapper_caller =
+  "import envoy_wrap
 
 pub fn caller() -> Nil {
   let _ = envoy_wrap.go()
@@ -12908,46 +12931,53 @@ pub fn caller() -> Nil {
 // carry. `hidden` is Gleam-bodied and calls a bodyless `@external` in a
 // separate, uncatalogued module of the same package: under the blanket the walk
 // would resolve it and leave `hidden` ground, which is the other branch.
-const opaque_justin = "import justin_ffi
+const opaque_justin =
+  "import justin_ffi
 
 pub fn hidden() -> Nil {
   justin_ffi.touch()
 }
 "
 
-const justin_ffi = "@external(erlang, \"j\", \"t\")
+const justin_ffi =
+  "@external(erlang, \"j\", \"t\")
 pub fn touch() -> Nil
 "
 
-const justin_wrapper = "import justin
+const justin_wrapper =
+  "import justin
 
 pub fn go() -> Nil {
   justin.hidden()
 }
 "
 
-const justin_caller = "import justin
+const justin_caller =
+  "import justin
 
 pub fn caller() -> Nil {
   justin.hidden()
 }
 "
 
-const justin_wrapper_caller = "import justin_wrap
+const justin_wrapper_caller =
+  "import justin_wrap
 
 pub fn caller() -> Nil {
   justin_wrap.go()
 }
 "
 
-const justin_installed = "packages = [
+const justin_installed =
+  "packages = [
   { name = \"justin\", version = \"1.1.0\" },
 ]
 "
 
 // `envoy` installed beside the standard library, so a vendored body calling
 // `gleam/io` resolves from the catalog rather than falling to [Unknown].
-const envoy_and_stdlib_installed = "packages = [
+const envoy_and_stdlib_installed =
+  "packages = [
   { name = \"envoy\", version = \"1.0.0\" },
   { name = \"gleam_stdlib\", version = \"1.0.0\" },
 ]
@@ -13284,13 +13314,15 @@ pub fn a_blocked_name_fails_an_unknown_budget_test() {
 
 // A function of `envoy`'s the bundled catalog does not key, so a blanket over
 // the module is the only thing that can answer for it.
-const uncatalogued_envoy_sibling = "
+const uncatalogued_envoy_sibling =
+  "
 pub fn unlisted() -> String {
   \"\"
 }
 "
 
-const envoy_sibling_caller = "
+const envoy_sibling_caller =
+  "
 pub fn sibling_caller() -> Nil {
   let _ = envoy.unlisted()
   Nil
@@ -13477,7 +13509,8 @@ fn dropped_paths_warning(path: String) -> String {
 // A module `dep` ships, so its spec is read at all.
 const dep_module = #("dep.gleam", "pub fn noop() -> Nil {\n  Nil\n}\n")
 
-const println_caller = "import gleam/io
+const println_caller =
+  "import gleam/io
 
 pub fn f() -> Nil {
   io.println(\"hi\")
@@ -13530,7 +13563,8 @@ const other_package = #(
   "pub fn f() -> Nil {\n  Nil\n}\n",
 )
 
-const other_caller = "import other/x
+const other_caller =
+  "import other/x
 
 pub fn f() -> Nil {
   x.f()
@@ -13776,12 +13810,14 @@ fn dep_spec_source(placement: Placement) -> String {
   }
 }
 
-const repo_type = "pub type Repo {
+const repo_type =
+  "pub type Repo {
   Repo(find: fn() -> Nil)
 }
 "
 
-const repo_callers = "import dep/repo
+const repo_callers =
+  "import dep/repo
 
 pub type Repo {
   Repo(find: fn() -> Nil)
@@ -13867,7 +13903,8 @@ fn storage_answer(placement: Placement) -> String {
 // does carry [Unknown]: under the blanket being tested a sibling `@external`
 // would resolve instead, leaving the producer ground and the test reading the
 // other branch.
-const annotated_producer = "import justin_ffi
+const annotated_producer =
+  "import justin_ffi
 
 pub fn make(f: fn() -> Nil) -> fn() -> Nil {
   justin_ffi.touch()
@@ -13876,7 +13913,8 @@ pub fn make(f: fn() -> Nil) -> fn() -> Nil {
 "
 
 // The same producer with nothing but girard to say `f` is a callback.
-const unannotated_producer = "import justin_ffi
+const unannotated_producer =
+  "import justin_ffi
 
 pub fn make(f) {
   justin_ffi.touch()
@@ -13887,7 +13925,8 @@ pub fn make(f) {
 // A sibling of the producer, inside the dependency: it calls the closure
 // itself, so the callback's charge is folded into the wrapper's own term by the
 // dependency's own pass, before the consumer looks anything up.
-const producer_sibling = "import justin
+const producer_sibling =
+  "import justin
 
 pub fn go(f: fn() -> Nil) -> Nil {
   let h = justin.make(f)
@@ -13895,7 +13934,8 @@ pub fn go(f: fn() -> Nil) -> Nil {
 }
 "
 
-const producer_caller = "import justin
+const producer_caller =
+  "import justin
 
 @external(erlang, \"proj_ffi\", \"shout\")
 pub fn shout() -> Nil
@@ -13906,7 +13946,8 @@ pub fn caller() -> Nil {
 }
 "
 
-const sibling_caller = "import justin_wrap
+const sibling_caller =
+  "import justin_wrap
 
 @external(erlang, \"proj_ffi\", \"shout\")
 pub fn shout() -> Nil
@@ -13918,7 +13959,8 @@ pub fn caller() -> Nil {
 
 const producer_spec = "check proj.caller : []\nassume proj.shout : [Stdout]\n"
 
-const consumer_blanketed_spec = "check proj.caller : []
+const consumer_blanketed_spec =
+  "check proj.caller : []
 assume proj.shout : [Stdout]
 assume justin : []
 "
@@ -14055,7 +14097,8 @@ pub fn a_dependency_sibling_reads_a_blanketed_producer_test() {
 // entry rather than a blanket — and that entry's (empty) bound list is what the
 // closure is scoped by while it wins.
 
-const unresolved_envoy_producer = "import envoy_ffi
+const unresolved_envoy_producer =
+  "import envoy_ffi
 
 pub fn get(f: fn() -> Nil) -> fn() -> Nil {
   envoy_ffi.touch()
@@ -14063,7 +14106,8 @@ pub fn get(f: fn() -> Nil) -> fn() -> Nil {
 }
 "
 
-const resolved_envoy_producer = "import gleam/io
+const resolved_envoy_producer =
+  "import gleam/io
 
 pub fn get(f: fn() -> Nil) -> fn() -> Nil {
   io.println(\"x\")
@@ -14071,7 +14115,8 @@ pub fn get(f: fn() -> Nil) -> fn() -> Nil {
 }
 "
 
-const envoy_producer_caller = "import envoy
+const envoy_producer_caller =
+  "import envoy
 
 @external(erlang, \"proj_ffi\", \"shout\")
 pub fn shout() -> Nil
@@ -14151,13 +14196,15 @@ pub fn a_catalogued_producer_over_resolved_inference_test() {
 // hand edit leaves behind: the later one decides the bounds, the earlier one
 // carries the clause.
 
-const ghost_lines = "effects dep/wrap.wrap : [] where returns : [ghost]\n"
+const ghost_lines =
+  "effects dep/wrap.wrap : [] where returns : [ghost]\n"
   <> "effects dep/wrap.wrap(ghost: [ghost]) : []\n"
 
 // `ghost` is a real parameter of `wrap`, and a first-order one: passing it a
 // function is what an argument matcher would bind, and being no callback is
 // what the clause may not scope over.
-const generic_wrap = "pub fn wrap(ghost: a) -> fn() -> Nil {
+const generic_wrap =
+  "pub fn wrap(ghost: a) -> fn() -> Nil {
   fn() { Nil }
 }
 "
@@ -14285,7 +14332,8 @@ fn clause_lint_warnings(
 }
 
 // A producer whose callback parameter every syntactic reader can see.
-const annotated_wrap = "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
+const annotated_wrap =
+  "pub fn wrap(f: fn() -> Nil) -> fn() -> Nil {
   fn() { f() }
 }
 "
@@ -14408,7 +14456,8 @@ pub fn a_field_check_carrying_both_is_reported_once_test() {
 }
 
 // A custom type with one callable field, for the field-shaped lints.
-const handler_type = "pub type Handler {
+const handler_type =
+  "pub type Handler {
   Handler(run: fn() -> Nil)
 }
 
@@ -14455,7 +14504,8 @@ type Reported {
 
 const pure_budget = "assume ffi.print : [Stdout]\ncheck proj.Handler.run : []\n"
 
-const handler_sites = "import ffi
+const handler_sites =
+  "import ffi
 
 pub type Handler {
   Handler(run: fn() -> Nil)
@@ -16679,7 +16729,8 @@ pub fn shout() -> Nil {
 
 // The installed stdlib, so `gleam/io` and the shadowed modules resolve through
 // the bundled catalog rather than reading `[Unknown]`.
-const stdlib_manifest = "packages = [
+const stdlib_manifest =
+  "packages = [
   { name = \"gleam_stdlib\", version = \"1.0.3\" },
 ]
 "
@@ -16907,7 +16958,8 @@ pub fn shadowed(result: Thing, r: Result(Int, Nil)) -> Result(Int, Nil) {
 // parameter named after a sibling module, a call through it that is the
 // module's, and a value from a package only the consumer installs flowing into
 // that call.
-const typed_path_dep_source = "import dep/request.{type Request}
+const typed_path_dep_source =
+  "import dep/request.{type Request}
 import graded_only_here/thing
 
 pub fn handle(request: Request) -> String {
@@ -16917,7 +16969,8 @@ pub fn handle(request: Request) -> String {
 
 // The sibling module the receiver's name shadows. `path` is the module
 // function the call resolves to; `Request` declares no such field.
-const typed_path_dep_request = "import gleam/io
+const typed_path_dep_request =
+  "import gleam/io
 
 pub type Request {
   Request(body: String)
@@ -16931,7 +16984,8 @@ pub fn path(request: Request, suffix: String) -> String {
 
 // The package that exists only under the consumer's `build/packages`: not in
 // the dep's index, and nowhere on the process cwd's own tree.
-const consumer_only_package = "pub fn suffix() -> String {
+const consumer_only_package =
+  "pub fn suffix() -> String {
   \"!\"
 }
 "
@@ -16992,7 +17046,8 @@ pub fn girard_types_a_path_dependency_from_the_consumers_tree_test() {
 // A path dependency whose call sits inside a `@target(javascript)` function,
 // consumed from an Erlang-target project. The dep goes through the same funnel
 // the project does, so it is typed the way the project is.
-const gated_path_dep_source = "import dep/request.{type Request}
+const gated_path_dep_source =
+  "import dep/request.{type Request}
 
 @target(javascript)
 pub fn gated(request: Request) -> String {
@@ -17000,7 +17055,8 @@ pub fn gated(request: Request) -> String {
 }
 "
 
-const gated_path_dep_request = "import gleam/io
+const gated_path_dep_request =
+  "import gleam/io
 
 pub type Request {
   Request(body: String)
@@ -17231,7 +17287,8 @@ pub fn a_nested_path_dependencys_module_call_is_charged_test() {
 // fallback body runs, with the shadowed receiver inside that body. `request`
 // names the parameter and `dep/request` both, and only the type separates them
 // — `Request` declares no `path`, so the module is the reading.
-const fallback_shadow_dep = "import dep/request.{type Request}
+const fallback_shadow_dep =
+  "import dep/request.{type Request}
 
 @external(javascript, \"./ffi.mjs\", \"handle\")
 pub fn handle(request: Request) -> String {
@@ -17239,7 +17296,8 @@ pub fn handle(request: Request) -> String {
 }
 "
 
-const fallback_shadow_request = "import gleam/io
+const fallback_shadow_request =
+  "import gleam/io
 
 pub type Request {
   Request(body: String)
@@ -17289,7 +17347,8 @@ pub fn a_path_dependencys_fallback_body_reads_its_shadowed_receiver_test() {
 // the consumer's own `build/packages` — the tree girard's resolver reads.
 // `Thing` declares no `println`, so the module is the reading and the catalog
 // answers for it.
-const installed_shadow_dep = "import gleam/io
+const installed_shadow_dep =
+  "import gleam/io
 
 pub type Thing {
   Thing(n: Int)
@@ -17821,7 +17880,8 @@ pub fn every_ambiguous_call_is_classified_once_test() {
 // A library choosing between two callbacks three ways — called in place,
 // passed on, and passed with two callbacks of its own — and a consumer calling
 // each, whose `pick` and `pick_first` run one of their two arguments.
-const chosen_callback_lib = "pub fn run_with(action: fn(fn() -> Nil) -> Nil) -> Nil {
+const chosen_callback_lib =
+  "pub fn run_with(action: fn(fn() -> Nil) -> Nil) -> Nil {
   action(fn() { Nil })
 }
 
@@ -17884,7 +17944,8 @@ pub fn passes_choice_two(
 }
 "
 
-const chosen_callback_app = "import lib
+const chosen_callback_app =
+  "import lib
 
 @external(erlang, \"m\", \"db\")
 @external(javascript, \"m\", \"db\")
@@ -18261,7 +18322,8 @@ pub fn choose_mixed(flag: Bool, a: fn() -> Nil) -> Nil {
 "
 }
 
-const called_choice_app = "import lib
+const called_choice_app =
+  "import lib
 
 pub fn ordinary_inline(flag: Bool) -> Nil {
   case flag {

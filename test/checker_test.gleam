@@ -625,7 +625,8 @@ fn check_source_with_girard(
 // The canonical 3b gap: the receiver is bound from a function call, so graded's
 // syntax-level path sees it as opaque. girard types it as `Validator`, so the
 // `type Validator.to_error` annotation resolves the field call.
-const opaque_receiver_source = "
+const opaque_receiver_source =
+  "
 import gleam/io
 
 pub type Validator {
@@ -876,7 +877,8 @@ pub fn wired_bodyless_external_stays_unknown_test() {
 // The other two field-value shapes analysed away from their creation site: an
 // inline closure and a producer call. Each body reaches `Box.run` only through
 // girard's type for the closure parameter `c`.
-const wired_operator_source = "
+const wired_operator_source =
+  "
 pub type Box {
   Box(run: fn(String) -> Nil)
 }
@@ -7471,7 +7473,8 @@ fn module_reads(split: checker.ShadowedSplit) -> List(types.QualifiedName) {
   list.map(split.module_reads, fn(call) { call.name })
 }
 
-const shadowing_body = "import gleam/list
+const shadowing_body =
+  "import gleam/list
 
 pub type Partial {
   A(map: fn(String) -> String)
@@ -7663,14 +7666,15 @@ fn evidence(
 }
 
 // The definition every case below classifies inside: `target`, spanning 0..40.
-const target = glance.Function(
-  location: glance.Span(0, 40),
-  name: "target",
-  publicity: glance.Public,
-  parameters: [],
-  return: None,
-  body: [],
-)
+const target =
+  glance.Function(
+    location: glance.Span(0, 40),
+    name: "target",
+    publicity: glance.Public,
+    parameters: [],
+    return: None,
+    body: [],
+  )
 
 // The access span every case below classifies at.
 const access = glance.Span(10, 19)
@@ -8220,7 +8224,8 @@ fn returned_operators(
   returns
 }
 
-const discarding_producers = "
+const discarding_producers =
+  "
 pub fn ignores(_f: fn() -> Nil) -> Nil {
   Nil
 }

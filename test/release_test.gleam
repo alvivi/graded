@@ -161,7 +161,8 @@ fn options() {
 // the project: unqualified or misspelled names are flagged, while targets that
 // resolve — including through dependencies and function-type aliases — are not.
 
-const opts_module = "import gleam/io
+const opts_module =
+  "import gleam/io
 
 pub type Opts {
   Opts(on_change: fn(String) -> Nil)

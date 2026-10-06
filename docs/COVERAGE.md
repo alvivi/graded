@@ -94,7 +94,7 @@ Each version carries its standing:
 | Standing | Means |
 |---|---|
 | `(verified)` | a version graded was verified on |
-| `(verified: 1.15.4, 1.16.0, 1.17.0, 1.18.0)` | this is not one of them; the list is what was verified |
+| `(verified: 1.15.4, 1.16.0, 1.17.0, 1.18.0, 1.19.0)` | this is not one of them; the list is what was verified |
 | `not observed` | the version could not be read at all |
 
 `not observed` is an answer, not a failure: the JavaScript target holds no
@@ -107,7 +107,7 @@ the report:
 
 ```
 versions
-  gleam 1.19.0 is not a verified version (verified: 1.15.4, 1.16.0, 1.17.0, 1.18.0)
+  gleam 1.20.0 is not a verified version (verified: 1.15.4, 1.16.0, 1.17.0, 1.18.0, 1.19.0)
   the project's manifest pins girard 3.1.0; the analyzer running is girard 3.0.0
 ```
 

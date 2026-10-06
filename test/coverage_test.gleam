@@ -24,7 +24,8 @@ import support
 // Every conditional section absent, which is the shape a package with nothing
 // to report prints.
 
-const clean_report = "gleam 1.18.0 (verified), erlang/OTP 28.4.2 (verified)
+const clean_report =
+  "gleam 1.18.0 (verified), erlang/OTP 28.4.2 (verified)
 graded 0.20.0, girard 3.0.0 (verified), glance 7.0.0 (verified)
 
 targets: erlang — gleam.toml declares none, so bodies are read on erlang and declarations on both
@@ -58,17 +59,17 @@ pub fn an_unverified_version_is_stated_and_noticed_test() {
         girard: Ok("3.0.0"),
         glance: Ok("7.0.0"),
         otp: Ok("28.4.2"),
-        gleam: Ok("1.19.0"),
+        gleam: Ok("30.19.8"),
       ),
     )
   let rendered = coverage.render(report)
   let listed = string.join(compat.verified_gleam, ", ")
   rendered
-  |> string.contains("gleam 1.19.0 (verified: " <> listed <> ")")
+  |> string.contains("gleam 30.19.8 (verified: " <> listed <> ")")
   |> should.be_true()
   rendered
   |> string.contains(
-    "versions\n  gleam 1.19.0 is not a verified version (verified: "
+    "versions\n  gleam 30.19.8 is not a verified version (verified: "
     <> listed
     <> ")",
   )

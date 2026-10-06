@@ -1399,9 +1399,9 @@ label in one function are two places you can open, and the wording is the same
 
 ### Supported versions
 
-graded is verified on Gleam **1.15.4, 1.16.0, 1.17.0 and 1.18.0**, on Erlang/OTP
-**28.4.2**, with **girard 3.0.0** and **glance 7.0.0**. `gleam.toml` requires
-`gleam >= 1.15.4`, the head of that list.
+graded is verified on Gleam **1.15.4, 1.16.0, 1.17.0, 1.18.0 and 1.19.0**, on
+Erlang/OTP **28.4.2**, with **girard 3.0.0** and **glance 7.0.0**. `gleam.toml`
+requires `gleam >= 1.15.4`, the head of that list.
 
 A version enters the list only after all four gates were clean on it: graded
 builds warnings-as-errors, its suite passes, girard's compiler differential

@@ -550,14 +550,17 @@ pub fn a_tie_selects_one_file_for_both_paths_test() {
 // whose trailing newlines are none, one and two — the counts the printed-bytes
 // equation has to hold for.
 
-const argv_entry = "assume argv.load : [Args]
+const argv_entry =
+  "assume argv.load : [Args]
 assume argv.raw : [Args]"
 
-const lustre_four = "assume lustre/four.build : []
+const lustre_four =
+  "assume lustre/four.build : []
 assume lustre/four.render : [Dom]
 "
 
-const lustre_five = "assume lustre/five.build : []
+const lustre_five =
+  "assume lustre/five.build : []
 assume lustre/five.render : [Dom]
 
 "

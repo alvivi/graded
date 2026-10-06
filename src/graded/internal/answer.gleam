@@ -323,11 +323,13 @@ pub fn render_prose(answer: EffectAnswer) -> String {
 // The source a name answered by the Gleam body running in its declaration's
 // place names. `why` says the same of a call, stated from the calling body's
 // targets; the query answers for the package, so it names the build's.
-const running_fallback_source = "its Gleam fallback body, which is what runs on the targets this build compiles"
+const running_fallback_source =
+  "its Gleam fallback body, which is what runs on the targets this build compiles"
 
 // What answered for a name whose declaration this build reaches no part of and
 // which no Gleam body runs in the place of.
-const unreached_declaration_source = "an external declared only for a target this build does not compile"
+const unreached_declaration_source =
+  "an external declared only for a target this build does not compile"
 
 // What answered for foreign code nothing declares.
 const undeclared_external_source = "an external with no declared effects"
@@ -413,10 +415,12 @@ fn prose_fallback(
   }
 }
 
-const charged_fallback_clause = "its Gleam fallback body, which runs on the"
+const charged_fallback_clause =
+  "its Gleam fallback body, which runs on the"
   <> " targets its `@external` declares no implementation for: "
 
-const suppressed_fallback_clause = "its Gleam fallback body runs on the targets"
+const suppressed_fallback_clause =
+  "its Gleam fallback body runs on the targets"
   <> " its `@external` declares no implementation for; its charge is suppressed"
   <> " by the `assume` line: "
 

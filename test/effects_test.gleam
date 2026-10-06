@@ -522,7 +522,8 @@ pub fn a_dependency_spec_overriding_the_catalog_reports_both_test() {
 }
 
 // The standard library installed at the version one bundled catalog file names.
-const stdlib_manifest = "packages = [
+const stdlib_manifest =
+  "packages = [
   { name = \"gleam_stdlib\", version = \"0.70.0\" },
 ]
 "
@@ -705,14 +706,16 @@ pub fn the_bundled_catalog_declares_promise_new_test() {
 }
 
 // The manifest the single-package catalog fixtures install.
-const a_pkg_manifest = "packages = [
+const a_pkg_manifest =
+  "packages = [
   { name = \"a_pkg\", version = \"1.0.0\" },
 ]
 "
 
 // The manifest both cross-file clash fixtures install: each of the two catalog
 // files is selected only if its package is installed.
-const two_package_manifest = "packages = [
+const two_package_manifest =
+  "packages = [
   { name = \"a_pkg\", version = \"1.0.0\" },
   { name = \"b_pkg\", version = \"1.0.0\" },
 ]
