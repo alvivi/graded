@@ -17,7 +17,8 @@ import graded/internal/types
 
 // One module holding a `@target(javascript)` constant, a `@target(javascript)`
 // function and a function of every build.
-const target_gated = "@target(javascript)
+const target_gated =
+  "@target(javascript)
 pub const mode = \"browser\"
 
 @target(javascript)
@@ -32,7 +33,8 @@ pub fn everywhere() -> Nil {
 
 // A module whose only gated definition is a constant: nothing triggers a second
 // run, so that constant is left out of every run.
-const constant_gated = "@target(javascript)
+const constant_gated =
+  "@target(javascript)
 pub const mode = \"browser\"
 
 pub fn everywhere() -> Nil {

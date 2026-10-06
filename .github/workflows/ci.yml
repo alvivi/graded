@@ -16,7 +16,7 @@ jobs:
         include:
           # The pinned pair, from `.tool-versions`: every gate.
           - name: pinned
-            gleam: "1.18.0"
+            gleam: "1.19.0"
             erlang: "28.4.2"
             format: true
           # The oldest compiler graded is verified on — see

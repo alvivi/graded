@@ -351,12 +351,14 @@ assume ffi.with_tx(cb: [cb]) : [cb([Db])]
 // by in-body name or label; one naming neither binds nothing. Only a function
 // the registry knows is weighed.
 
-const bounded_module = "pub fn noparam(cb: fn() -> Nil) -> fn() -> Nil { cb }
+const bounded_module =
+  "pub fn noparam(cb: fn() -> Nil) -> fn() -> Nil { cb }
 pub fn wrap(cb: fn() -> Nil) -> fn() -> Nil { cb }
 pub fn labelled(with cb: fn() -> Nil) -> Nil { cb() }
 pub fn two(n: Int) -> Int { n }"
 
-const bounded_spec = "assume ffi.noparam(zz: [zz]) where returns : [zz]
+const bounded_spec =
+  "assume ffi.noparam(zz: [zz]) where returns : [zz]
 assume ffi.wrap(cb: [cb]) : [cb]
 assume ffi.labelled(with: [with]) : [with]
 assume ffi.two(n: [n]) : [n]

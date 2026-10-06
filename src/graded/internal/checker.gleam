@@ -2240,7 +2240,8 @@ fn reason_clause(kind: CallKind, reason: UnknownReason) -> String {
 
 // The clause for an effect the call site's own argument left unresolved. Shared
 // by the kinds that substitute arguments into a resolved term.
-const untraceable_argument_clause = ", whose effects depend on an argument that could not be resolved,"
+const untraceable_argument_clause =
+  ", whose effects depend on an argument that could not be resolved,"
 
 // The source that answered, after the effect set it produced.
 fn origin_suffix(
@@ -2286,7 +2287,8 @@ fn origin_suffix(
 // a body an `assume` line un-charged.
 const charged_body_clause = "unioned with its Gleam fallback body"
 
-const suppressed_body_clause = "its Gleam fallback body's charge suppressed by the `assume` line"
+const suppressed_body_clause =
+  "its Gleam fallback body's charge suppressed by the `assume` line"
 
 // When the actual set still contains effect variables, the substitution
 // couldn't bind them (e.g. caller's own param has no declared bound).

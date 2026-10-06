@@ -526,7 +526,8 @@ pub fn inject_spec_will_not_write_over_an_existing_path_test() {
 
 // A metadata.config good enough to name the package, for the archives whose
 // defect is somewhere other than the metadata.
-const good_metadata = "{<<\"name\">>, <<\"dep\"/utf8>>}.
+const good_metadata =
+  "{<<\"name\">>, <<\"dep\"/utf8>>}.
 {<<\"version\">>, <<\"1.0.0\"/utf8>>}.
 {<<\"files\">>, [
   <<\"src/dep.gleam\"/utf8>>]}.

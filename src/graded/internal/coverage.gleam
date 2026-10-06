@@ -297,9 +297,11 @@ fn inference_line(report: CoverageReport) -> String {
   }
 }
 
-const unreadable_declaration_text = "gleam.toml names a target graded cannot read, so every target stays in reach"
+const unreadable_declaration_text =
+  "gleam.toml names a target graded cannot read, so every target stays in reach"
 
-const no_target_declared_text = "gleam.toml declares none, so bodies are read on erlang and declarations on both"
+const no_target_declared_text =
+  "gleam.toml declares none, so bodies are read on erlang and declarations on both"
 
 fn count_lines(report: CoverageReport) -> List(String) {
   [
