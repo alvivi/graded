@@ -15,11 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   API.
 - The catalog covers modem 2.x: `modem.initial_uri` reads the browser's
   location (`[Dom]`), and `init`, `advanced`, `push`, `replace`, `load`,
-  `forward`, `back` and `simulate` only build values, so they are pure. These
-  calls read `[Unknown]`.
+  `forward`, `back` and `simulate` only build values, so they are pure. Before,
+  these calls read `[Unknown]`.
 
 ### Changed
 
+- **Breaking (library API).** `GradedError` has a new `StaleSpec(path, diff)`
+  variant, which `run_infer_check` returns. A `case` that matches every
+  `GradedError` variant must handle it.
 - graded is verified on Gleam 1.19.0, and `graded coverage` reports it as
   `(verified)`. The verified versions are 1.15.4, 1.16.0, 1.17.0, 1.18.0 and
   1.19.0; the `gleam >= 1.15.4` requirement is unchanged.
