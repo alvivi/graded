@@ -14,21 +14,79 @@ import qcheck
 // Concrete spec inputs run through parse_file and format_sorted, asserting
 // exact output: comment preservation, sorting, and spacing normalization.
 
-pub fn preserves_comments_test() {
+pub fn a_comment_directly_above_a_statement_moves_with_it_test() {
   let input =
-    "// file header
-// another comment
+    "// why view is pure
+// a second line of it
 effects view : []
 check view : []"
   let assert Ok(file) = annotation.parse_file(input)
   annotation.format_sorted(file)
   |> should.equal(
-    "// file header
-// another comment
+    "check view : []
 
-check view : []
-
+// why view is pure
+// a second line of it
 effects view : []
+",
+  )
+}
+
+pub fn comments_travel_with_their_lines_through_the_sort_test() {
+  let input =
+    "// reads the clock
+assume app/ffi.now : [Time]
+// writes the log
+assume app/ffi.log : [Stdout]"
+  let assert Ok(file) = annotation.parse_file(input)
+  annotation.format_sorted(file)
+  |> should.equal(
+    "// writes the log
+assume app/ffi.log : [Stdout]
+// reads the clock
+assume app/ffi.now : [Time]
+",
+  )
+}
+
+pub fn a_comment_block_followed_by_a_blank_line_is_the_header_test() {
+  let input =
+    "// file header
+
+// why b is checked
+check b : []
+check a : []"
+  let assert Ok(file) = annotation.parse_file(input)
+  annotation.format_sorted(file)
+  |> should.equal(
+    "// file header
+
+check a : []
+// why b is checked
+check b : []
+",
+  )
+}
+
+pub fn a_comment_no_statement_directly_follows_goes_to_the_header_test() {
+  // A block ended by a blank line, wherever it sits, and one the file ends
+  // with: neither describes a line, so both lead the file in their own order.
+  let input =
+    "check b : []
+
+// a note on its own
+
+check a : []
+// a trailing note"
+  let assert Ok(file) = annotation.parse_file(input)
+  annotation.format_sorted(file)
+  |> should.equal(
+    "// a note on its own
+
+// a trailing note
+
+check a : []
+check b : []
 ",
   )
 }
@@ -132,18 +190,20 @@ pub fn a_payload_interior_never_moves_test() {
 // in a fixed order, sorts entries alphabetically, and ends with a newline.
 
 pub fn format_sorted_section_order_test() {
+  // Statements only: a comment sits wherever the statement it describes does.
   use file <- qcheck.given(generators.graded_file_gen())
   let sorted = annotation.format_sorted(file)
   let assert Ok(parsed) = annotation.parse_file(sorted)
   let indices =
     parsed.lines
-    |> list.filter(fn(line) { line != BlankLine })
     |> list.map(section_index)
+    |> list.filter(fn(index) { index > 0 })
   check_non_decreasing(indices)
 }
 
 // Externals, type fields and lines retained for their unknown clauses alone
-// share the `assume` section, so they share an index.
+// share the `assume` section, so they share an index. Comments and blank lines
+// belong to no section.
 fn section_index(line: types.GradedLine) -> Int {
   case line {
     CommentLine(_) -> 0
@@ -155,7 +215,7 @@ fn section_index(line: types.GradedLine) -> Int {
         Check -> 2
         Effects -> 3
       }
-    BlankLine -> -1
+    BlankLine -> 0
   }
 }
 

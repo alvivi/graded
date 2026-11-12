@@ -259,6 +259,22 @@ pub fn check_fails_on_a_stale_line_with_the_preview_diff_test() {
   support.cleanup(root)
 }
 
+// A comment above a line stays with it through `infer` and `format`, and the
+// file both leave behind passes both gates.
+pub fn a_comment_stays_beside_its_line_through_infer_and_format_test() {
+  let root = "build/infer_check_commented"
+  let note = "// console.log writes to stdout\n"
+  write_project(root, source(), Spec(note <> spec()))
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(Nil) = graded.run_format(root)
+
+  graded.run_infer_check(root) |> should.equal(Ok(Nil))
+  graded.run_format_check(root) |> should.equal(Ok(Nil))
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  written |> string.starts_with(note <> spec()) |> should.be_true()
+  support.cleanup(root)
+}
+
 // Writing
 //
 // The other half of the mode switch: `cli.Write` still writes both outputs and

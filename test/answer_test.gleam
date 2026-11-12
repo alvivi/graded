@@ -263,7 +263,7 @@ pub fn a_bare_type_field_carries_no_module_test() {
 pub fn the_graded_renderer_writes_spec_syntax_test() {
   function([ParamBound("f", TVar("f"))], TVar("f"))
   |> answer.render(answer.Graded)
-  |> should.equal("effects app.run(f: [f]) : [f]\n// resolved from your spec")
+  |> should.equal("// resolved from your spec\neffects app.run(f: [f]) : [f]")
 }
 
 pub fn the_graded_renderer_comments_the_source_test() {
@@ -272,7 +272,7 @@ pub fn the_graded_renderer_comments_the_source_test() {
   from(UserAssume)
   |> answer.render(answer.Graded)
   |> should.equal(
-    "effects app.run : [Stdout]\n// resolved from your spec's `assume` line",
+    "// resolved from your spec's `assume` line\neffects app.run : [Stdout]",
   )
 }
 
@@ -281,7 +281,7 @@ pub fn the_formats_report_the_same_effects_test() {
   let answer_value = function([], labels(["Stdout", "Time"]))
   answer.render(answer_value, answer.Graded)
   |> should.equal(
-    "effects app.run : [Stdout, Time]\n// resolved from your spec",
+    "// resolved from your spec\neffects app.run : [Stdout, Time]",
   )
   answer.render(answer_value, answer.Prose)
   |> should.equal("app.run has effects [Stdout, Time]\n  source: your spec")
@@ -322,9 +322,9 @@ pub fn a_clause_scoped_by_the_line_rides_it_test() {
   )
   |> graded
   |> should.equal(
-    "effects app.run(f: [f]) : [Stdout] where returns : [f]
-// resolved from your spec
-// returns [f], from the same source",
+    "// resolved from your spec
+// returns [f], from the same source
+effects app.run(f: [f]) : [Stdout] where returns : [f]",
   )
 }
 
@@ -344,9 +344,9 @@ pub fn a_clause_scoped_by_other_bounds_stays_off_the_line_test() {
   )
   |> graded
   |> should.equal(
-    "effects app.run(f: [Stdout]) : [Stdout]
-// resolved from your spec
-// returns [f], from the same source, scoped by bounds this line does not carry",
+    "// resolved from your spec
+// returns [f], from the same source, scoped by bounds this line does not carry
+effects app.run(f: [Stdout]) : [Stdout]",
   )
 }
 
@@ -368,9 +368,9 @@ pub fn a_clause_from_another_tier_names_its_own_source_test() {
   answer_value
   |> graded
   |> should.equal(
-    "effects app.run : [Stdout] where returns : [Net]
-// resolved from gleam_stdlib's catalog entry
-// returns [Net], from your spec's `assume` line",
+    "// resolved from gleam_stdlib's catalog entry
+// returns [Net], from your spec's `assume` line
+effects app.run : [Stdout] where returns : [Net]",
   )
   answer_value
   |> prose
@@ -395,8 +395,8 @@ pub fn a_fresh_clause_is_scoped_by_the_answers_own_bounds_test() {
   )
   |> graded
   |> should.equal(
-    "effects app.run(f: [f]) : [Stdout] where returns : [f]
-// resolved from in-memory inference
-// returns [f], from the same source",
+    "// resolved from in-memory inference
+// returns [f], from the same source
+effects app.run(f: [f]) : [Stdout] where returns : [f]",
   )
 }

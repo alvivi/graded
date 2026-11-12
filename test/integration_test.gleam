@@ -11096,7 +11096,7 @@ pub fn a_scoped_query_answers_for_the_whole_package_test() {
 
   graded.run_effect(scoped, "outside.go")
   |> should.equal(Ok(
-    "effects outside.go : [Unknown]\n// resolved from in-memory inference",
+    "// resolved from in-memory inference\neffects outside.go : [Unknown]",
   ))
   let assert Ok(explanation) = graded.run_why(scoped, "outside.go")
   explanation |> string.contains("calls ffi.now") |> should.be_true()
@@ -11205,11 +11205,11 @@ pub fn a_stale_project_external_is_ignored_everywhere_test() {
   why |> string.contains("calls ffi.write") |> should.be_true()
   graded.run_effect(root, "m.logs")
   |> should.equal(Ok(
-    "effects m.logs : [Disk]\n// resolved from in-memory inference",
+    "// resolved from in-memory inference\neffects m.logs : [Disk]",
   ))
   graded.run_effect_from_project(root, "m.logs")
   |> should.equal(Ok(
-    "effects m.logs : [Disk]\n// resolved from in-memory inference",
+    "// resolved from in-memory inference\neffects m.logs : [Disk]",
   ))
   support.cleanup(root)
 }
@@ -11251,7 +11251,7 @@ pub fn write() -> Nil
   |> should.equal(types.Specific(set.from_list(["Disk"])))
   graded.run_effect(root, "m.logs")
   |> should.equal(Ok(
-    "effects m.logs : [Disk]\n// resolved from in-memory inference",
+    "// resolved from in-memory inference\neffects m.logs : [Disk]",
   ))
   support.cleanup(root)
 }
