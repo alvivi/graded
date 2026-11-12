@@ -1171,16 +1171,33 @@ pub fn merge_inferred_invariants_test() {
     annotation.extract_annotations(merged)
     |> list.filter(fn(a) { a.kind == Effects })
 
-  // Non-effects lines preserved in order
-  let non_effects = fn(f: types.GradedFile) {
+  // Statements other than effects lines preserved in order
+  let other_statements = fn(f: types.GradedFile) {
     list.filter(f.lines, fn(line) {
       case line {
         AnnotationLine(a, _) -> a.kind != Effects
-        _ -> True
+        FieldAssumeLine(..) | AssumeLine(..) | RetainedAssumeLine(..) -> True
+        CommentLine(_) | BlankLine -> False
       }
     })
   }
-  non_effects(merged) |> should.equal(non_effects(file))
+  other_statements(merged) |> should.equal(other_statements(file))
+
+  // Comments preserved in order, minus each block directly above a dropped
+  // effects line
+  let inferred_names =
+    inferred |> list.map(fn(a) { a.function }) |> set.from_list()
+  comment_lines(merged.lines)
+  |> should.equal(surviving_comments(file.lines, inferred_names))
+
+  // Every blank line preserved, plus at most the one that keeps appended lines
+  // apart from a trailing comment
+  let blanks = fn(f: types.GradedFile) {
+    list.count(f.lines, fn(line) { line == BlankLine })
+  }
+  { blanks(merged) - blanks(file) }
+  |> list.contains([0, 1], _)
+  |> should.be_true()
 
   // All inferred functions present
   let merged_names =
@@ -1190,8 +1207,6 @@ pub fn merge_inferred_invariants_test() {
   })
 
   // No stale effects
-  let inferred_names =
-    inferred |> list.map(fn(a) { a.function }) |> set.from_list()
   list.each(merged_effects, fn(a) {
     set.contains(inferred_names, a.function) |> should.be_true()
   })
@@ -1247,6 +1262,90 @@ pub fn merge_inferred_drops_effect_for_external_test() {
     |> set.from_list()
   set.contains(effects_fns, "app.ffi") |> should.be_false()
   set.contains(effects_fns, "app.other") |> should.be_true()
+}
+
+fn comment_lines(lines: List(types.GradedLine)) -> List(types.GradedLine) {
+  list.filter(lines, fn(line) {
+    case line {
+      CommentLine(_) -> True
+      AnnotationLine(..)
+      | FieldAssumeLine(..)
+      | AssumeLine(..)
+      | RetainedAssumeLine(..)
+      | BlankLine -> False
+    }
+  })
+}
+
+// The comment lines of `lines`, minus each block directly above an `effects`
+// line whose function is not in `inferred_names`.
+fn surviving_comments(
+  lines: List(types.GradedLine),
+  inferred_names: set.Set(String),
+) -> List(types.GradedLine) {
+  let #(kept, open_block) =
+    list.fold(lines, #([], []), fn(acc, line) {
+      let #(kept, open_block) = acc
+      case line {
+        CommentLine(_) -> #(kept, [line, ..open_block])
+        AnnotationLine(a, _) if a.kind == Effects ->
+          case set.contains(inferred_names, a.function) {
+            True -> #(list.append(open_block, kept), [])
+            False -> #(kept, [])
+          }
+        AnnotationLine(..)
+        | FieldAssumeLine(..)
+        | AssumeLine(..)
+        | RetainedAssumeLine(..)
+        | BlankLine -> #(list.append(open_block, kept), [])
+      }
+    })
+  list.reverse(list.append(open_block, kept))
+}
+
+// Comments through the merge
+//
+// A comment block directly above a line belongs to it: kept while the line is,
+// dropped with it. A block nothing directly follows is kept as it stands, and
+// an appended line never lands directly below one.
+
+pub fn merge_drops_a_stale_lines_comment_with_it_test() {
+  let assert Ok(file) =
+    annotation.parse_file(
+      "// about a
+check m.a : []
+// about old
+effects m.old : []
+
+// a note on its own
+
+// about b
+effects m.b : [Db]",
+    )
+  annotation.merge_inferred(file, [pure_line("m.b")], set.new(), set.new())
+  |> annotation.format_file
+  |> should.equal(
+    "// about a
+check m.a : []
+
+// a note on its own
+
+// about b
+effects m.b : []",
+  )
+}
+
+pub fn merge_appends_apart_from_a_trailing_comment_test() {
+  let assert Ok(file) =
+    annotation.parse_file("effects m.a : []\n// a trailing note")
+  annotation.merge_inferred(
+    file,
+    [pure_line("m.a"), pure_line("m.new")],
+    set.new(),
+    set.new(),
+  )
+  |> annotation.format_file
+  |> should.equal("effects m.a : []\n// a trailing note\n\neffects m.new : []")
 }
 
 // An assumption suppresses one channel

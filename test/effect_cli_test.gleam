@@ -35,7 +35,7 @@ fn lookup(name: String) -> String {
 pub fn known_function_test() {
   lookup("impure_view.view")
   |> should.equal(
-    "effects impure_view.view : [Stdout]\n// resolved from your spec",
+    "// resolved from your spec\neffects impure_view.view : [Stdout]",
   )
 }
 
@@ -44,7 +44,7 @@ pub fn function_known_as_unknown_is_found_test() {
   // rather than claim the function doesn't exist.
   lookup("shadow_field.go")
   |> should.equal(
-    "effects shadow_field.go : [Unknown]\n// resolved from your spec",
+    "// resolved from your spec\neffects shadow_field.go : [Unknown]",
   )
 }
 
@@ -56,7 +56,7 @@ pub fn a_committed_effects_line_does_not_answer_for_an_external_test() {
   // and credits no source for it.
   lookup("external_budget.stale_inferred")
   |> should.equal(
-    "effects external_budget.stale_inferred : [Unknown]\n// an external with no declared effects",
+    "// an external with no declared effects\neffects external_budget.stale_inferred : [Unknown]",
   )
   let assert Ok(prose) =
     graded.run_effect_formatted(
@@ -72,14 +72,14 @@ pub fn a_committed_effects_line_does_not_answer_for_an_external_test() {
   // the name.
   lookup("external_budget.declared_within_budget")
   |> should.equal(
-    "effects external_budget.declared_within_budget : [Time]\n// resolved from your spec's `assume` line",
+    "// resolved from your spec's `assume` line\neffects external_budget.declared_within_budget : [Time]",
   )
 }
 
 pub fn declared_type_field_test() {
   lookup("opaque_receiver.Validator.to_error")
   |> should.equal(
-    "assume opaque_receiver.Validator.to_error : [Stdout]\n// assumed by a field `assume` in your spec",
+    "// assumed by a field `assume` in your spec\nassume opaque_receiver.Validator.to_error : [Stdout]",
   )
 }
 
@@ -89,14 +89,14 @@ pub fn unspecced_function_resolves_from_memory_test() {
   // `graded infer` needed.
   lookup("external_same_module.read_clock")
   |> should.equal(
-    "effects external_same_module.read_clock : [Time]\n// resolved from in-memory inference",
+    "// resolved from in-memory inference\neffects external_same_module.read_clock : [Time]",
   )
 }
 
 pub fn function_level_external_test() {
   lookup("external_same_module.now")
   |> should.equal(
-    "effects external_same_module.now : [Time]\n// resolved from your spec's `assume` line",
+    "// resolved from your spec's `assume` line\neffects external_same_module.now : [Time]",
   )
 }
 
@@ -105,7 +105,7 @@ pub fn module_level_external_fallback_is_labelled_test() {
   // function name under it resolves through the module-level fallback.
   lookup("fake_clock.now")
   |> should.equal(
-    "effects fake_clock.now : [Time]\n// resolved via module-level `assume` for fake_clock",
+    "// resolved via module-level `assume` for fake_clock\neffects fake_clock.now : [Time]",
   )
 }
 
@@ -158,7 +158,7 @@ pub fn private_external_is_not_found_test() {
   // gate is on publicity and not on the rule that governs foreign code.
   lookup("ffi_external.ffi_op")
   |> should.equal(
-    "effects ffi_external.ffi_op : [Unknown]\n// an external with no declared effects",
+    "// an external with no declared effects\neffects ffi_external.ffi_op : [Unknown]",
   )
 }
 
@@ -190,7 +190,7 @@ pub fn shown() -> Nil {
   // The public caller still resolves it, so nothing about caller resolution moved.
   graded.run_effect(project, "m.shown")
   |> should.equal(Ok(
-    "effects m.shown : [Time]\n// resolved from in-memory inference",
+    "// resolved from in-memory inference\neffects m.shown : [Time]",
   ))
   cleanup(project)
 }
@@ -233,13 +233,13 @@ pub fn run() -> Nil {
     #("m.absent", Error(graded.EffectNotFound("m.absent"))),
     #(
       "m.run",
-      Ok("effects m.run : [Disk]\n// resolved via module-level `assume` for m"),
+      Ok("// resolved via module-level `assume` for m\neffects m.run : [Disk]"),
     ),
     // A module with no source to consult keeps the carve-out whole.
     #(
       "offsite.anything",
       Ok(
-        "effects offsite.anything : [Http]\n// resolved via module-level `assume` for offsite",
+        "// resolved via module-level `assume` for offsite\neffects offsite.anything : [Http]",
       ),
     ),
   ]
@@ -260,7 +260,7 @@ pub fn run() -> Nil {
 pub fn freshly_inferred_bounds_are_rendered_test() {
   lookup("nested_higher_order.apply_twice")
   |> should.equal(
-    "effects nested_higher_order.apply_twice(f: [f]) : [f]\n// resolved from in-memory inference",
+    "// resolved from in-memory inference\neffects nested_higher_order.apply_twice(f: [f]) : [f]",
   )
 }
 
@@ -270,7 +270,7 @@ pub fn committed_bounds_win_as_a_pair_test() {
   // query renders `g` on both sides rather than a mixed pair.
   lookup("nested_higher_order.pure_forward")
   |> should.equal(
-    "effects nested_higher_order.pure_forward(g: [g]) : [g]\n// resolved from your spec",
+    "// resolved from your spec\neffects nested_higher_order.pure_forward(g: [g]) : [g]",
   )
 }
 
@@ -281,7 +281,7 @@ pub fn check_line_bounds_stay_out_of_the_knowledge_base_test() {
   let output = lookup("factory_forward.caller")
   output
   |> should.equal(
-    "effects factory_forward.caller(resolver: [resolver]) : [resolver]\n// resolved from in-memory inference",
+    "// resolved from in-memory inference\neffects factory_forward.caller(resolver: [resolver]) : [resolver]",
   )
   string.contains(output, "[Stdout]") |> should.be_false
 }
@@ -302,7 +302,7 @@ pub fn bound_less_committed_line_suppresses_inferred_bounds_test() {
   let output = lookup("nested_higher_order.log_and_map")
   output
   |> should.equal(
-    "effects nested_higher_order.log_and_map : [Stdout]\n// resolved from your spec",
+    "// resolved from your spec\neffects nested_higher_order.log_and_map : [Stdout]",
   )
   string.contains(output, "f:") |> should.be_false
 }
@@ -337,7 +337,7 @@ pub fn dotted_module_effects_line_does_not_shadow_a_type_line_test() {
   let assert Ok(output) = graded.run_effect(project, "box.Box.run")
   should_parse(output)
   |> should.equal(
-    "assume box.Box.run : [Stdout]\n// assumed by a field `assume` in your spec",
+    "// assumed by a field `assume` in your spec\nassume box.Box.run : [Stdout]",
   )
   cleanup(project)
 }
@@ -348,7 +348,7 @@ pub fn bare_type_line_answers_both_query_forms_test() {
   // form that declared it — the form that parses back to the same line.
   let project = spec_only_project("bare", "assume Box.run : [Disk]\n")
   let bare =
-    "assume Box.run : [Disk]\n// assumed by a field `assume` in your spec"
+    "// assumed by a field `assume` in your spec\nassume Box.run : [Disk]"
   let assert Ok(qualified_query) = graded.run_effect(project, "box.Box.run")
   let assert Ok(bare_query) = graded.run_effect(project, "Box.run")
   should_parse(qualified_query) |> should.equal(bare)
@@ -415,7 +415,7 @@ pub fn dependency_type_field_outranks_a_bare_project_line_test() {
       #("src/app.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
     ])
   let expected =
-    "assume dep.Repo.find : [Storage]\n// assumed by a field `assume` in dep's shipped spec"
+    "// assumed by a field `assume` in dep's shipped spec\nassume dep.Repo.find : [Storage]"
   graded.run_effect(project, "dep.Repo.find")
   |> should.equal(Ok(expected))
   graded.run_effect_from_project(project, "dep.Repo.find")
@@ -450,7 +450,7 @@ pub fn a_path_dependency_answer_names_the_dependency_test() {
 
   graded.run_effect_from_project(app_dir, "dep.shout")
   |> should.equal(Ok(
-    "effects dep.shout : [Stdout]\n// resolved from path dependency dep",
+    "// resolved from path dependency dep\neffects dep.shout : [Stdout]",
   ))
 
   cleanup(dep_dir)
@@ -537,8 +537,8 @@ pub fn prose_names_an_out_of_reach_declaration_test() {
   |> should.equal(#(
     "dep/ffi.run has effects that could not be determined: [Unknown]
   source: an external declared only for a target this build does not compile",
-    "effects dep/ffi.run : [Unknown]
-// an external declared only for a target this build does not compile",
+    "// an external declared only for a target this build does not compile
+effects dep/ffi.run : [Unknown]",
   ))
 }
 
@@ -553,8 +553,8 @@ pub fn prose_names_the_body_running_in_a_declarations_place_test() {
   |> should.equal(#(
     "dep/ffi.run is pure — no effects ([])
   source: its Gleam fallback body, which is what runs on the targets this build compiles",
-    "effects dep/ffi.run : []
-// its Gleam fallback body, which is what runs on the targets this build compiles",
+    "// its Gleam fallback body, which is what runs on the targets this build compiles
+effects dep/ffi.run : []",
   ))
 }
 
@@ -604,9 +604,9 @@ pub fn op() -> Nil {
   graded_output
   |> should_parse
   |> should.equal(
-    "effects raw.op : [Disk, Unknown]
-// an external with no declared effects
-// unioned with its Gleam fallback body, which runs on the targets its `@external` declares no implementation for: [Disk]",
+    "// an external with no declared effects
+// unioned with its Gleam fallback body, which runs on the targets its `@external` declares no implementation for: [Disk]
+effects raw.op : [Disk, Unknown]",
   )
   cleanup(project)
 }
@@ -626,7 +626,7 @@ pub fn graded_format_still_round_trips_test() {
     graded.run_effect_formatted(fixtures, "fake_clock.now", graded.Graded)
   should_parse(output)
   |> should.equal(
-    "effects fake_clock.now : [Time]\n// resolved via module-level `assume` for fake_clock",
+    "// resolved via module-level `assume` for fake_clock\neffects fake_clock.now : [Time]",
   )
 }
 
@@ -864,7 +864,7 @@ pub fn a_module_outside_the_package_still_answers_from_the_spec_test() {
     ])
   let expected =
     Ok(
-      "effects other/mod.bar : [Disk]\n// resolved from your spec's `assume` line",
+      "// resolved from your spec's `assume` line\neffects other/mod.bar : [Disk]",
     )
 
   graded.run_effect(project, "other/mod.bar") |> should.equal(expected)
@@ -921,8 +921,8 @@ pub fn a_bodyless_externals_answer_states_its_callback_bound_test() {
     )
   let expected =
     Ok(
-      "effects ext.run(action: [action]) : [Time, action]
-// resolved from your spec's `assume` line",
+      "// resolved from your spec's `assume` line
+effects ext.run(action: [action]) : [Time, action]",
     )
   graded.run_effect(project, "ext.run") |> should.equal(expected)
   graded.run_effect_from_project(project, "ext.run") |> should.equal(expected)
@@ -940,8 +940,8 @@ pub fn a_module_assumed_externals_answer_states_its_callback_bound_test() {
     )
   let expected =
     Ok(
-      "effects ext.run(action: [action]) : [Time, action]
-// resolved via module-level `assume` for ext",
+      "// resolved via module-level `assume` for ext
+effects ext.run(action: [action]) : [Time, action]",
     )
   graded.run_effect(project, "ext.run") |> should.equal(expected)
   graded.run_effect_from_project(project, "ext.run") |> should.equal(expected)
@@ -967,8 +967,8 @@ pub fn a_dependency_externals_callback_answers_the_same_on_both_paths_test() {
     ])
   let expected =
     Ok(
-      "effects dep/ffi.run(action: [action]) : [Time, action]
-// resolved from your spec's `assume` line",
+      "// resolved from your spec's `assume` line
+effects dep/ffi.run(action: [action]) : [Time, action]",
     )
   graded.run_effect(project, "dep/ffi.run") |> should.equal(expected)
   graded.run_effect_from_project(project, "dep/ffi.run")
@@ -987,9 +987,9 @@ pub fn a_declared_returns_clause_rides_the_line_test() {
   // it renders on the line rather than in the comment channel.
   lookup("foreign_values.declared_returns_operator")
   |> should.equal(
-    "effects foreign_values.declared_returns_operator : [] where returns : [Disk]
-// resolved from your spec's `assume` line
-// returns [Disk], from the same source",
+    "// resolved from your spec's `assume` line
+// returns [Disk], from the same source
+effects foreign_values.declared_returns_operator : [] where returns : [Disk]",
   )
 }
 
@@ -998,9 +998,9 @@ pub fn an_inferred_returns_clause_is_stated_too_test() {
   // made, and it is stated exactly as a declared one is.
   lookup("foreign_values.native_returns_operator")
   |> should.equal(
-    "effects foreign_values.native_returns_operator : [] where returns : [Disk]
-// resolved from in-memory inference
-// returns [Disk], from the same source",
+    "// resolved from in-memory inference
+// returns [Disk], from the same source
+effects foreign_values.native_returns_operator : [] where returns : [Disk]",
   )
 }
 
@@ -1049,9 +1049,9 @@ pub fn a_dependencys_own_returns_clause_reaches_both_paths_test() {
     ])
   let expected =
     Ok(
-      "effects dep/ffi.make : [Net] where returns : [Net]
-// resolved from your spec's `assume` line
-// returns [Net], from dep's shipped spec",
+      "// resolved from your spec's `assume` line
+// returns [Net], from dep's shipped spec
+effects dep/ffi.make : [Net] where returns : [Net]",
     )
   graded.run_effect(project, "dep/ffi.make") |> should.equal(expected)
   graded.run_effect_from_project(project, "dep/ffi.make")
@@ -1079,9 +1079,9 @@ pub fn a_consumers_own_clause_still_answers_on_the_fast_path_test() {
     ])
   let expected =
     Ok(
-      "effects dep/ffi.make : [Net] where returns : [Disk]
-// resolved from your spec's `assume` line
-// returns [Disk], from the same source",
+      "// resolved from your spec's `assume` line
+// returns [Disk], from the same source
+effects dep/ffi.make : [Net] where returns : [Disk]",
     )
   graded.run_effect(project, "dep/ffi.make") |> should.equal(expected)
   graded.run_effect_from_project(project, "dep/ffi.make")
@@ -1103,7 +1103,7 @@ pub fn a_stale_clause_only_assume_reaches_neither_path_test() {
       ),
       #("src/m.gleam", "pub fn make() -> Nil {\n  Nil\n}\n"),
     ])
-  let expected = Ok("effects m.make : []\n// resolved from your spec")
+  let expected = Ok("// resolved from your spec\neffects m.make : []")
   graded.run_effect(project, "m.make") |> should.equal(expected)
   graded.run_effect_from_project(project, "m.make") |> should.equal(expected)
   cleanup(project)

@@ -1392,7 +1392,9 @@ pub fn split_type_field_name(
 //
 // - `check` / `assume` lines, comments, blanks: kept in place
 // - Existing `effects` lines: updated in-place; removed if stale
-// - New functions not yet in file: `effects` lines appended at end
+// - A removed line's comment block, directly above it, is removed with it
+// - New functions not yet in file: `effects` lines appended at end, a blank
+//   line apart from a comment block the file ends with
 //
 // The two stale sets are separate channels and stay separate: an `assume` line
 // that declares no effects suppresses this package's `effects` lines for the
@@ -1514,7 +1516,7 @@ pub fn merge_inferred(
   // understands a key can re-derive it, so a rewrite that dropped one would
   // delete from a committed file something nothing here can put back.
   let new_lines =
-    list.filter_map(file.lines, fn(line) {
+    rewrite_statements(file.lines, fn(line) {
       case line {
         AnnotationLine(a, unknown_clauses) if a.kind == Effects ->
           dict.get(inferred_map, a.function)
@@ -1542,7 +1544,42 @@ pub fn merge_inferred(
     |> list.filter(fn(a) { !set.contains(present_effects, a.function) })
     |> list.map(AnnotationLine(_, []))
 
-  GradedFile(lines: list.flatten([new_lines, remaining_effects]))
+  // Appended directly below a trailing comment, the first new line would take
+  // that comment as its own.
+  let separator = case list.last(new_lines), remaining_effects {
+    Ok(CommentLine(_)), [_, ..] -> [BlankLine]
+    _, _ -> []
+  }
+
+  GradedFile(lines: list.flatten([new_lines, separator, remaining_effects]))
+}
+
+// The file's lines with `rewrite` applied to each statement, comments and blank
+// lines kept as they are. A statement `rewrite` drops takes the comment block
+// directly above it along.
+fn rewrite_statements(
+  lines: List(GradedLine),
+  rewrite: fn(GradedLine) -> Result(GradedLine, Nil),
+) -> List(GradedLine) {
+  // Both lists are held in reverse: `kept` the lines decided so far, `open_block`
+  // the comment lines since the last statement or blank line.
+  let #(kept, open_block) =
+    list.fold(lines, #([], []), fn(acc, line) {
+      let #(kept, open_block) = acc
+      case line {
+        CommentLine(_) -> #(kept, [line, ..open_block])
+        BlankLine -> #([line, ..list.append(open_block, kept)], [])
+        AnnotationLine(..)
+        | FieldAssumeLine(..)
+        | AssumeLine(..)
+        | RetainedAssumeLine(..) ->
+          case rewrite(line) {
+            Ok(rewritten) -> #([rewritten, ..list.append(open_block, kept)], [])
+            Error(Nil) -> #(kept, [])
+          }
+      }
+    })
+  list.reverse(list.append(open_block, kept))
 }
 
 // One `assume` line's annotation after the stale claims are stripped from it,
@@ -1711,14 +1748,24 @@ fn clause_region(clauses: List(String)) -> String {
 
 // Format an GradedFile: normalize spacing, sort annotations, ensure trailing newline.
 //
-// Output order: leading comments, then one section per status — `assume`
-// sorted by path, `check` and `effects` each sorted by function name — blank
-// line separated, with a single trailing newline.
+// Output order: the header, then one section per status — `assume` sorted by
+// path, `check` and `effects` each sorted by function name — blank line
+// separated, with a single trailing newline. A comment block directly above a
+// statement, with no blank line between, moves with that statement; every
+// other comment block goes to the header, in file order, one blank line apart.
 pub fn format_sorted(file: GradedFile) -> String {
-  let comments = collect_comments(file.lines)
+  let #(header_blocks, statements) = attach_comments(file.lines)
+  let header = case header_blocks {
+    [] -> []
+    [_, ..] -> [
+      header_blocks
+      |> list.map(string.join(_, "\n"))
+      |> string.join("\n\n"),
+    ]
+  }
 
   let check_lines =
-    sorted_section(file.lines, fn(line) {
+    sorted_section(statements, fn(line) {
       case line {
         AnnotationLine(a, _) if a.kind == Check -> Ok(a.function)
         _ -> Error(Nil)
@@ -1726,7 +1773,7 @@ pub fn format_sorted(file: GradedFile) -> String {
     })
 
   let effects_lines =
-    sorted_section(file.lines, fn(line) {
+    sorted_section(statements, fn(line) {
       case line {
         AnnotationLine(a, _) if a.kind == Effects -> Ok(a.function)
         _ -> Error(Nil)
@@ -1737,7 +1784,7 @@ pub fn format_sorted(file: GradedFile) -> String {
   // are one `assume` section, ordered by the path each line renders, so the
   // section reads in the order a reader scans it.
   let assume_lines =
-    sorted_section(file.lines, fn(line) {
+    sorted_section(statements, fn(line) {
       case line {
         AssumeLine(..) | FieldAssumeLine(..) | RetainedAssumeLine(..) ->
           line_path(line)
@@ -1745,7 +1792,7 @@ pub fn format_sorted(file: GradedFile) -> String {
       }
     })
 
-  let sections = [comments, assume_lines, check_lines, effects_lines]
+  let sections = [header, assume_lines, check_lines, effects_lines]
 
   sections
   |> list.filter(fn(section) { section != [] })
@@ -1754,18 +1801,63 @@ pub fn format_sorted(file: GradedFile) -> String {
   |> fn(content) { content <> "\n" }
 }
 
-// One section of a sorted file: the lines `key` selects, ordered by the key it
-// gives them, each rendered whole.
-fn sorted_section(
+// A statement and the comment lines directly above it, which move with it.
+type CommentedStatement {
+  CommentedStatement(comments: List(String), line: GradedLine)
+}
+
+// Split a file's lines into its header — every comment block no statement
+// directly follows, in file order — and its statements, each carrying the
+// comment block directly above it. A blank line ends a block, and is dropped.
+fn attach_comments(
   lines: List(GradedLine),
+) -> #(List(List(String)), List(CommentedStatement)) {
+  let #(header, statements, open_block) =
+    list.fold(lines, #([], [], []), fn(acc, line) {
+      let #(header, statements, open_block) = acc
+      case line {
+        CommentLine(text) -> #(header, statements, [text, ..open_block])
+        BlankLine -> #(close_block(header, open_block), statements, [])
+        AnnotationLine(..)
+        | FieldAssumeLine(..)
+        | AssumeLine(..)
+        | RetainedAssumeLine(..) -> #(
+          header,
+          [CommentedStatement(list.reverse(open_block), line), ..statements],
+          [],
+        )
+      }
+    })
+  #(list.reverse(close_block(header, open_block)), list.reverse(statements))
+}
+
+// `header`, held in reverse, with the comment block `open_block` — also held in
+// reverse — closed onto it; unchanged when no block is open.
+fn close_block(
+  header: List(List(String)),
+  open_block: List(String),
+) -> List(List(String)) {
+  case open_block {
+    [] -> header
+    [_, ..] -> [list.reverse(open_block), ..header]
+  }
+}
+
+// One section of a sorted file: the statements `key` selects, ordered by the
+// key it gives them, each rendered whole below its comments.
+fn sorted_section(
+  statements: List(CommentedStatement),
   key: fn(GradedLine) -> Result(String, Nil),
 ) -> List(String) {
-  lines
-  |> list.filter_map(fn(line) {
-    key(line) |> result.map(fn(sort_key) { #(sort_key, line) })
+  statements
+  |> list.filter_map(fn(statement) {
+    key(statement.line) |> result.map(fn(sort_key) { #(sort_key, statement) })
   })
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
-  |> list.map(fn(entry) { format_line(entry.1) })
+  |> list.map(fn(entry) {
+    let CommentedStatement(comments:, line:) = entry.1
+    string.join(list.append(comments, [format_line(line)]), "\n")
+  })
 }
 
 // Render an EffectAnnotation back to its .graded line format, always on one
@@ -1906,15 +1998,6 @@ pub fn format_effect_set(effect_set: EffectSet) -> String {
       <> "]"
     }
   }
-}
-
-fn collect_comments(lines: List(GradedLine)) -> List(String) {
-  list.filter_map(lines, fn(line) {
-    case line {
-      CommentLine(text) -> Ok(text)
-      _ -> Error(Nil)
-    }
-  })
 }
 
 // Format a parameter bound. A first-order bound renders as `name: [effects]`;

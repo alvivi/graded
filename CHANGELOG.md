@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `check`, `infer`, `effect`, `why` and `coverage` stop with an error when
   graded's bundled catalog can't be found or holds no catalog file. They warned
   and carried on, answering `[Unknown]` for every call the catalog covers.
+- `graded format` keeps a comment with the statement directly below it, moving
+  them together as it sorts, instead of moving every comment to the top of the
+  file. A comment block followed by a blank line, or ending the file, still
+  goes to the top. `graded infer` removes a stale `effects` line's comment with
+  it.
+- `graded effect --format=graded` prints its provenance comments above the line
+  instead of below, so a pasted answer keeps them through `graded format`.
 
 ### Fixed
 

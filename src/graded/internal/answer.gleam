@@ -114,7 +114,8 @@ pub fn render(answer: EffectAnswer, format: Format) -> String {
 //
 // Spec syntax, so a consumer that already parses `.graded` needs no second
 // grammar and a line can be pasted into a spec file. Both hold only while
-// provenance stays inside a comment.
+// provenance stays inside a comment, and the comment lines lead so the
+// formatter keeps them with the line they describe.
 
 pub fn render_graded(answer: EffectAnswer) -> String {
   case answer {
@@ -124,21 +125,33 @@ pub fn render_graded(answer: EffectAnswer) -> String {
     // it calls.
     FunctionAnswer(name:, module:, bounds:, term:, returns:, source:) -> {
       let clause = clause_rendering(returns, bounds)
-      effects_line(name, bounds, term, line_clause(clause))
-      <> graded_source(module, source)
-      <> graded_clause(clause, entry_origin(source))
-      <> graded_fallback(source_fallback(source))
+      above_line(
+        [
+          graded_source(module, source),
+          ..list.append(
+            graded_clause(clause, entry_origin(source)),
+            graded_fallback(source_fallback(source)),
+          )
+        ],
+        effects_line(name, bounds, term, line_clause(clause)),
+      )
     }
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
-      annotation.format_type_field(FieldAnnotation(
-        module:,
-        type_name:,
-        field:,
-        effects: term,
-      ))
-      <> "\n// "
-      <> graded_origin(origin)
+      above_line(
+        ["// " <> graded_origin(origin)],
+        annotation.format_type_field(FieldAnnotation(
+          module:,
+          type_name:,
+          field:,
+          effects: term,
+        )),
+      )
   }
+}
+
+// `line` below its comment lines, which a spec file then keeps with it.
+fn above_line(comments: List(String), line: String) -> String {
+  string.join(list.append(comments, [line]), "\n")
 }
 
 fn effects_line(
@@ -212,10 +225,10 @@ fn line_clause(clause: ClauseRendering) -> Option(EffectTerm) {
 fn graded_clause(
   clause: ClauseRendering,
   entry: Result(types.LookupOrigin, Nil),
-) -> String {
+) -> List(String) {
   case clause {
-    NoClause -> ""
-    OnLine(..) | InComment(..) -> "\n// " <> clause_note(clause, entry)
+    NoClause -> []
+    OnLine(..) | InComment(..) -> ["// " <> clause_note(clause, entry)]
   }
 }
 
@@ -263,7 +276,7 @@ fn entry_origin(source: AnswerSource) -> Result(types.LookupOrigin, Nil) {
 // The comment naming what answered: the source that wrote the winning entry,
 // or the standing that settled the term where no entry could.
 fn graded_source(module: String, source: AnswerSource) -> String {
-  "\n// "
+  "// "
   <> case source {
     Entry(entry: types.ModuleAssumeEntry(..), ..) ->
       "resolved via module-level `assume` for " <> module
@@ -357,13 +370,17 @@ fn source_fallback(
 // Both renderers state each half in the one clause below, supplying only their
 // own lead-in, so the two formats cannot drift apart on what they say about
 // the body.
-fn graded_fallback(fallback: types.FallbackDisposition(EffectTerm)) -> String {
+fn graded_fallback(
+  fallback: types.FallbackDisposition(EffectTerm),
+) -> List(String) {
   case fallback {
-    types.NoFallback -> ""
-    types.FallbackCharged(term) ->
-      "\n// unioned with " <> charged_fallback_clause <> formatted_term(term)
-    types.FallbackSuppressed(term) ->
-      "\n// " <> suppressed_fallback_clause <> formatted_term(term)
+    types.NoFallback -> []
+    types.FallbackCharged(term) -> [
+      "// unioned with " <> charged_fallback_clause <> formatted_term(term),
+    ]
+    types.FallbackSuppressed(term) -> [
+      "// " <> suppressed_fallback_clause <> formatted_term(term),
+    ]
   }
 }
 

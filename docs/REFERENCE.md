@@ -58,6 +58,20 @@ comment is still a comment and an indented statement is still its own statement.
 A statement left waiting for a clause that never comes (a trailing comma, or a
 `where` with nothing after it) is a parse error naming the line it starts on.
 
+### Comments
+
+A comment is a line of its own starting with `//`; a statement cannot carry one
+at its end. A comment block directly above a statement, with no blank line
+between, belongs to that statement: `graded format` moves it with the statement
+when it sorts the file, and `graded infer` removes it with a stale `effects`
+line. Every other block — one a blank line ends, or one the file ends with — is
+moved to the top of the file, in the order the blocks appear.
+
+```
+// The FFI reads window.location.
+assume myapp/ffi.current_path : [Dom]
+```
+
 Only the `where` region wraps. A long effect set stays on its line whatever its
 width, and a payload never spans a wrap.
 
@@ -1064,7 +1078,8 @@ check my_app/api.handle_request : [Http, Email]
 
 `graded infer` regenerates the inferred `effects` lines and their clauses while
 preserving your `check` and `assume` lines, comments, and blank lines.
-`graded format` normalizes spacing and sorting.
+`graded format` normalizes spacing and sorting, and keeps each comment with the
+statement directly below it (see [Comments](#comments)).
 
 ## Querying one name
 
@@ -1140,17 +1155,18 @@ continuing the phrase (``calls field `read` on `c`, wired to an external with no
 declared effects, …``).
 
 `--format=graded` prints the same answer as a `.graded` line, with provenance on
-a `//` comment, so the whole output parses back — the format to pipe into a spec
-file or hand to a tool that already reads `.graded`:
+`//` comments above it, so the whole output parses back — the format to pipe
+into a spec file, where the comments stay with the line, or hand to a tool that
+already reads `.graded`:
 
 ```sh
 $ gleam run -m graded effect myapp/repo.Repo.find --format=graded
-assume myapp/repo.Repo.find : [Storage]
 // assumed by a field `assume` in your spec
+assume myapp/repo.Repo.find : [Storage]
 
 $ gleam run -m graded effect myapp.apply --format=graded
-effects myapp.apply(f: [Stdout]) : [Stdout]
 // resolved from your spec
+effects myapp.apply(f: [Stdout]) : [Stdout]
 ```
 
 Both formats render one structured answer, so they differ in wording but never
