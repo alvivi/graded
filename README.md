@@ -96,6 +96,7 @@ The `.graded` spec language and graded's analysis model are documented in full i
 gleam run -m graded check [directory]             # Enforce check annotations (default)
 gleam run -m graded infer [directory]             # Infer and write effects annotations
 gleam run -m graded infer --dry-run [directory]   # Preview the spec changes, writing nothing
+gleam run -m graded infer --check [directory]     # Fail if inference would change the spec (CI mode)
 gleam run -m graded effect <name> [directory]     # Look up one effect, writing nothing
 gleam run -m graded effect <name> --format=graded # ... as a .graded line instead of prose
 gleam run -m graded why <name> [directory]        # Explain a function's effects, writing nothing
@@ -123,7 +124,7 @@ every call it could not decide, each with its `file:line:column`. It is
 read-only, decides nothing, and always exits 0 — **[Coverage](https://hexdocs.pm/graded/coverage.html)**
 walks every count and every listing with a worked example.
 
-`infer --dry-run` previews the same inference as a line diff of the spec file — the `-`/`+` lines with a couple of lines of context around them, or `graded: no changes` — and writes nothing, neither the spec file nor the cache. It exits 0 either way; `format --check` is the CI gate.
+`infer --dry-run` previews the same inference as a line diff of the spec file — the `-`/`+` lines with a couple of lines of context around them, or `graded: no changes` — and writes nothing, neither the spec file nor the cache. It exits 0 either way. `infer --check` is the same comparison as a CI gate: it prints the diff and exits non-zero when the spec file is stale, and prints `graded: spec is up to date` otherwise. Like the preview, it writes nothing.
 
 `check` and `infer` scope to the passed directory (default `src/`), recursing into it but never into `build/`. Passing the package root — `graded check .` — scopes to the root's `src/`, so module names come out as they appear in `import` statements (`app`, not `src/app`). A directory *inside* a package's `src/` narrows what is reported, not what is analysed: the whole package is resolved (module paths, imports and `@external` discovery are package-wide facts) and `check` reports only the passed subtree's files, while `infer`, which writes one package-level spec, writes the whole package's. To check another project, run graded from that project's root or point it at its `src/`.
 
