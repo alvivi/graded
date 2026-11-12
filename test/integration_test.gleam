@@ -6832,7 +6832,7 @@ fn checker_infer_opaque_field() -> Result(List(types.EffectAnnotation), Nil) {
   Ok(checker.infer(
     module,
     "opaque_field",
-    effects.empty_knowledge_base("."),
+    effects.empty_knowledge_base(support.catalog_directory(), "."),
     [],
     signatures.empty(),
     typeinfo.no_reading(),
@@ -7028,7 +7028,7 @@ fn checker_infer_factory_forward() -> Result(List(types.EffectAnnotation), Nil) 
   Ok(checker.infer(
     module,
     "factory_forward",
-    effects.empty_knowledge_base("."),
+    effects.empty_knowledge_base(support.catalog_directory(), "."),
     [],
     signatures.from_glance_module("factory_forward", module),
     typeinfo.no_reading(),
@@ -9567,7 +9567,7 @@ pub fn an_untyped_shadowed_call_says_why_it_charged_unknown_test() {
   let assert Ok(module) = glance.module(source)
   let assert Ok(spec) = annotation.parse_file(shadow_receiver_spec)
   let knowledge_base =
-    effects.empty_knowledge_base(".")
+    effects.empty_knowledge_base(support.catalog_directory(), ".")
     |> effects.with_assumes(annotation.extract_assumes(spec), types.UserAssume)
     |> effects.with_type_fields(
       annotation.extract_type_fields(spec),
@@ -9667,7 +9667,7 @@ fn infer_fixture(
   let assert Ok(module) = glance.module(source)
   let assert Ok(spec) = annotation.parse_file(spec_source)
   let knowledge_base =
-    effects.empty_knowledge_base(".")
+    effects.empty_knowledge_base(support.catalog_directory(), ".")
     |> effects.with_assumes(annotation.extract_assumes(spec), types.UserAssume)
     |> effects.with_type_fields(
       annotation.extract_type_fields(spec),

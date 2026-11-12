@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - graded is verified on Gleam 1.19.0, and `graded coverage` reports it as
   `(verified)`. The verified versions are 1.15.4, 1.16.0, 1.17.0, 1.18.0 and
   1.19.0; the `gleam >= 1.15.4` requirement is unchanged.
+- `check`, `infer`, `effect`, `why` and `coverage` stop with an error when
+  graded's bundled catalog can't be found or holds no catalog file. They warned
+  and carried on, answering `[Unknown]` for every call the catalog covers.
 
 ### Fixed
 

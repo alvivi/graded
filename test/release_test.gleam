@@ -518,7 +518,7 @@ pub fn non_function_field_annotation_warns_test() {
 // rather than on the version it declares.
 
 pub fn every_catalog_file_names_a_package_and_a_version_test() {
-  let assert Ok(paths) = simplifile.get_files(effects.catalog_directory())
+  let assert Ok(paths) = simplifile.get_files(support.catalog_directory())
   paths
   |> list.filter(string.ends_with(_, ".graded"))
   |> list.filter_map(malformed_catalog_name)
@@ -564,7 +564,7 @@ fn malformed_catalog_name(path: String) -> Result(String, Nil) {
 // A bundled file that stops parsing is skipped at runtime, voiding that
 // package's effects with a green suite: only two packages have content tests.
 pub fn every_catalog_file_parses_test() {
-  let assert Ok(paths) = simplifile.get_files(effects.catalog_directory())
+  let assert Ok(paths) = simplifile.get_files(support.catalog_directory())
   paths
   |> list.filter(string.ends_with(_, ".graded"))
   |> list.filter_map(unparseable_catalog_file)
@@ -592,7 +592,7 @@ fn unparseable_catalog_file(path: String) -> Result(String, Nil) {
 
 pub fn no_two_catalog_files_parse_to_one_version_test() {
   let assert Ok(files) =
-    effects.bundled_catalog_files(effects.catalog_directory())
+    effects.bundled_catalog_files(support.catalog_directory())
   colliding_catalog_files(files) |> should.equal([])
 }
 
