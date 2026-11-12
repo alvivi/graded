@@ -25,13 +25,9 @@ import support.{cleanup, write_fixture}
 // Resolving qualified names against the default knowledge base: catalogued
 // effectful functions, pure stdlib modules, and the Unknown fallback.
 
-fn knowledge_base() -> effects.KnowledgeBase {
-  effects.empty_knowledge_base(support.catalog_directory(), ".")
-}
-
 pub fn known_effectful_test() {
   effects.declared_effects(
-    knowledge_base(),
+    support.knowledge_base(),
     QualifiedName("gleam/io", "println"),
   )
   |> effect_term.to_effect_set
@@ -39,14 +35,17 @@ pub fn known_effectful_test() {
 }
 
 pub fn known_pure_module_test() {
-  effects.declared_effects(knowledge_base(), QualifiedName("gleam/list", "map"))
+  effects.declared_effects(
+    support.knowledge_base(),
+    QualifiedName("gleam/list", "map"),
+  )
   |> effect_term.to_effect_set
   |> should.equal(Specific(set.new()))
 }
 
 pub fn unknown_function_test() {
   effects.declared_effects(
-    knowledge_base(),
+    support.knowledge_base(),
     QualifiedName("some/unknown", "thing"),
   )
   |> effect_term.to_effect_set
@@ -54,7 +53,7 @@ pub fn unknown_function_test() {
 }
 
 pub fn lookup_known_variant_test() {
-  effects.lookup(knowledge_base(), QualifiedName("gleam/io", "println"))
+  effects.lookup(support.knowledge_base(), QualifiedName("gleam/io", "println"))
   |> should.equal(effects.Known(
     effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
     types.FunctionEntry(origin: types.Catalog("gleam_stdlib")),
@@ -62,7 +61,10 @@ pub fn lookup_known_variant_test() {
 }
 
 pub fn lookup_unknown_variant_test() {
-  effects.lookup(knowledge_base(), QualifiedName("mystery/module", "foo"))
+  effects.lookup(
+    support.knowledge_base(),
+    QualifiedName("mystery/module", "foo"),
+  )
   |> should.equal(effects.Unknown)
 }
 
@@ -278,7 +280,7 @@ pub fn parse_path_dependencies_missing_file_test() {
 // existing entries keep priority, new entries are added.
 
 pub fn with_inferred_does_not_overwrite_test() {
-  let kb = knowledge_base()
+  let kb = support.knowledge_base()
   let inferred =
     dict.from_list([
       #(
@@ -294,7 +296,7 @@ pub fn with_inferred_does_not_overwrite_test() {
 }
 
 pub fn returned_operators_round_trip_test() {
-  let kb = knowledge_base()
+  let kb = support.knowledge_base()
   let operator = types.TAbs("cb", types.TVar("cb"))
   let enriched =
     effects.with_fresh_returned_operators(
@@ -314,7 +316,7 @@ pub fn returned_operators_round_trip_test() {
 }
 
 pub fn with_inferred_adds_new_entries_test() {
-  let kb = knowledge_base()
+  let kb = support.knowledge_base()
   let inferred =
     dict.from_list([
       #(
@@ -491,7 +493,7 @@ pub fn a_catalog_entry_names_its_package_test() {
 
   effects.load_knowledge_base(
     root <> "/packages",
-    support.catalog_directory(),
+    support.bundled_catalog(),
     root <> "/manifest.toml",
     dict.new(),
   )
@@ -541,7 +543,10 @@ pub fn a_catalog_effects_line_beats_another_packages_external_test() {
     ])
 
   let #(all_effects, _module_effects, _params, _type_fields) =
-    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
+    effects.load_catalog(
+      support.catalog_files(root <> "/catalog"),
+      root <> "/manifest.toml",
+    )
   dict.get(all_effects, QualifiedName("shared/mod", "run"))
   |> result.map(fn(entry) { #(effect_term.to_effect_set(entry.0), entry.1) })
   |> should.equal(
@@ -566,7 +571,10 @@ pub fn a_catalog_external_beats_its_own_files_effects_line_test() {
     ])
 
   let #(all_effects, _module_effects, params, _type_fields) =
-    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
+    effects.load_catalog(
+      support.catalog_files(root <> "/catalog"),
+      root <> "/manifest.toml",
+    )
   dict.get(all_effects, QualifiedName("shared/mod", "run"))
   |> result.map(fn(entry) { #(effect_term.to_effect_set(entry.0), entry.1) })
   |> should.equal(
@@ -588,7 +596,10 @@ pub fn a_catalog_bounded_external_records_its_bounds_test() {
     ])
 
   let #(all_effects, _module_effects, params, _type_fields) =
-    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
+    effects.load_catalog(
+      support.catalog_files(root <> "/catalog"),
+      root <> "/manifest.toml",
+    )
   dict.get(all_effects, QualifiedName("shared/mod", "each"))
   |> result.map(fn(entry) { #(effect_term.to_effect_set(entry.0), entry.1) })
   |> should.equal(
@@ -616,7 +627,10 @@ pub fn a_catalog_second_order_external_records_its_term_test() {
     ])
 
   let #(all_effects, _module_effects, params, _type_fields) =
-    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
+    effects.load_catalog(
+      support.catalog_files(root <> "/catalog"),
+      root <> "/manifest.toml",
+    )
   dict.get(all_effects, QualifiedName("shared/mod", "with_tx"))
   |> should.equal(
     Ok(#(
@@ -649,7 +663,7 @@ fn declared_term(
 ) -> types.EffectTerm {
   let kb =
     effects.with_assumes(
-      knowledge_base(),
+      support.knowledge_base(),
       annotation.extract_assumes(file),
       types.UserAssume,
     )
@@ -689,7 +703,7 @@ pub fn the_bundled_catalog_declares_promise_new_test() {
       ),
     ])
   let #(all_effects, module_effects, params, _type_fields) =
-    effects.load_catalog(support.catalog_directory(), root <> "/manifest.toml")
+    effects.load_catalog(support.bundled_catalog(), root <> "/manifest.toml")
   let new = QualifiedName("gleam/javascript/promise", "new")
   dict.get(all_effects, new)
   |> should.equal(
@@ -746,7 +760,10 @@ fn catalog_clash_entry(
       #("manifest.toml", two_package_manifest),
     ])
   let #(all_effects, _module_effects, params, _type_fields) =
-    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
+    effects.load_catalog(
+      support.catalog_files(root <> "/catalog"),
+      root <> "/manifest.toml",
+    )
   cleanup(root)
   #(
     dict.get(all_effects, QualifiedName("shared/mod", "run")),
@@ -1269,7 +1286,10 @@ fn installed_dep_under_catalog(
       ..sources
     ])
   let #(functions, modules, param_bounds, type_fields) =
-    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
+    effects.load_catalog(
+      support.catalog_files(root <> "/catalog"),
+      root <> "/manifest.toml",
+    )
   let kb =
     effects.knowledge_base_from_catalog(
       root <> "/packages",
@@ -2496,7 +2516,7 @@ pub fn argument_value_effects_resolves_function_ref_test() {
   // to a qualified project function once the spec carries its effects.
   let kb =
     effects.with_inferred(
-      knowledge_base(),
+      support.knowledge_base(),
       dict.from_list([
         #(
           QualifiedName("myapp/log", "emit"),
@@ -2514,13 +2534,13 @@ pub fn argument_value_effects_resolves_function_ref_test() {
 }
 
 pub fn argument_value_effects_constructor_is_pure_test() {
-  effects.argument_value_effects(knowledge_base(), ConstructorRef)
+  effects.argument_value_effects(support.knowledge_base(), ConstructorRef)
   |> effect_term.to_effect_set
   |> should.equal(Specific(set.new()))
 }
 
 pub fn argument_value_effects_other_is_unknown_test() {
-  effects.argument_value_effects(knowledge_base(), OtherExpression)
+  effects.argument_value_effects(support.knowledge_base(), OtherExpression)
   |> effect_term.to_effect_set
   |> should.equal(Specific(set.from_list(["Unknown"])))
 }
@@ -2534,7 +2554,7 @@ pub fn type_fields_distinguish_modules_test() {
   // Two `Validator` types in different modules, same field — must NOT conflate.
   let kb =
     effects.with_type_fields(
-      knowledge_base(),
+      support.knowledge_base(),
       [
         types.FieldAnnotation(
           option.Some("app/a"),
@@ -2824,7 +2844,7 @@ fn installed_dep_over_source(
   let kb =
     effects.load_knowledge_base(
       root <> "/packages",
-      support.catalog_directory(),
+      support.bundled_catalog(),
       root <> "/manifest.toml",
       dict.from_list(foreign),
     )
@@ -3216,7 +3236,7 @@ pub fn one_dep_specs_returns_line_cannot_bury_anothers_declaration_test() {
   let kb =
     effects.load_knowledge_base(
       root <> "/packages",
-      support.catalog_directory(),
+      support.bundled_catalog(),
       root <> "/missing_manifest.toml",
       dict.new(),
     )
@@ -3504,7 +3524,7 @@ pub fn a_duplicate_declaration_wins_term_and_bounds_together_test() {
       "assume m.f(a: [a]) : [a, X]\nassume m.f(b: [b]) : [b, Y]",
     )
   let base =
-    effects.empty_knowledge_base(support.catalog_directory(), ".")
+    support.knowledge_base()
     |> effects.with_assumes(annotation.extract_assumes(file), types.UserAssume)
   let name = QualifiedName("m", "f")
   let assert effects.Known(term, _source) = effects.lookup(base, name)

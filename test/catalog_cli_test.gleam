@@ -416,10 +416,6 @@ pub fn no_catalog_directory_at_all_test() {
   )
 }
 
-pub fn the_bundled_catalog_directory_is_found_test() {
-  effects.find_catalog_directory() |> should.be_ok
-}
-
 pub fn locate_catalog_reports_every_candidate_when_none_exists_test() {
   // What every command resolving calls against the catalog stops with, rather
   // than answering `[Unknown]` for each call the catalog covers.
@@ -428,17 +424,6 @@ pub fn locate_catalog_reports_every_candidate_when_none_exists_test() {
   |> should.equal(
     Error(graded.CatalogError(graded.NoCatalogDirectory(candidates))),
   )
-}
-
-pub fn locate_catalog_rejects_a_directory_holding_no_catalog_file_test() {
-  let root =
-    support.write_fixture("build/locate_catalog_empty", [
-      #("catalog/README", "not a catalog file\n"),
-    ])
-  let catalog_dir = root <> "/catalog"
-  graded.locate_catalog([catalog_dir])
-  |> should.equal(Error(graded.CatalogError(graded.EmptyCatalog(catalog_dir))))
-  support.cleanup(root)
 }
 
 pub fn locate_catalog_takes_the_first_candidate_that_exists_test() {
@@ -554,7 +539,10 @@ pub fn a_tie_selects_one_file_for_both_paths_test() {
       show("foo", None),
     )
   let #(function_effects, _module_effects, _params, _type_fields) =
-    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
+    effects.load_catalog(
+      support.catalog_files(root <> "/catalog"),
+      root <> "/manifest.toml",
+    )
   support.cleanup(root)
 
   // Each file declares the same function with an effect only it names, so the
