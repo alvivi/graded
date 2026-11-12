@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Ok, Error as GError } from "./gleam.mjs";
 
 // Read all of standard input to EOF, as `Ok(string)` or `Error(reason)`. The
@@ -24,11 +25,15 @@ export function halt(code) {
   return undefined;
 }
 
-// graded's bundled catalog is located via the Erlang application on the BEAM
-// target; on JavaScript the install location isn't resolved, so callers fall
-// back to the working-directory layouts.
+// graded's own `priv` directory, beside this module in graded's compiled
+// package, where the build links the package's `priv`. Anchored on the install
+// location rather than the process working directory, as the BEAM half is.
 export function priv_directory() {
-  return new GError(undefined);
+  try {
+    return new Ok(fileURLToPath(new URL("./priv", import.meta.url)));
+  } catch (_error) {
+    return new GError(undefined);
+  }
 }
 
 // No application metadata exists here, so no loaded package's version is
