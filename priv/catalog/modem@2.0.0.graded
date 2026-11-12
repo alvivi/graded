@@ -1,0 +1,13 @@
+// modem — URL and navigation handling for Lustre apps
+
+// modem — reads the browser's location
+assume modem.initial_uri : [Dom]
+
+// modem — Effect constructors (pure data; Lustre's runtime performs them)
+assume modem.advanced : []
+assume modem.back : []
+assume modem.forward : []
+assume modem.init : []
+assume modem.load : []
+assume modem.push : []
+assume modem.replace : []

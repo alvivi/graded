@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file, printing the diff `--dry-run` previews, so CI can fail on stale
   `effects` lines. It writes nothing; `run_infer_check` is the same gate in the
   API.
+- The catalog covers modem 2.x: `modem.initial_uri` reads the browser's
+  location (`[Dom]`), and `init`, `advanced`, `push`, `replace`, `load`,
+  `forward`, `back` and `simulate` only build values, so they are pure. These
+  calls read `[Unknown]`.
 
 ### Changed
 
