@@ -10,6 +10,7 @@
 //// gleam run -m graded check [directory]         # enforce check annotations (default)
 //// gleam run -m graded infer [directory]         # infer and write effect annotations
 //// gleam run -m graded infer --dry-run [dir]     # preview the spec changes, writing nothing
+//// gleam run -m graded infer --check [dir]       # fail if the spec is stale (CI mode)
 //// gleam run -m graded effect <name> [directory] # look up one effect, writing nothing
 //// gleam run -m graded effect <name> --format=graded  # ... as a .graded line
 //// gleam run -m graded why <name> [directory]    # explain a function's effects
@@ -25,7 +26,8 @@
 //// carrying the warning and violation lines graded prints for it. Use
 //// `run_infer` to infer effects and write `.graded` files, or
 //// `run_infer_dry_run` to get back a diff of what that write would change
-//// without performing it. Use `run_effect` to resolve one function or
+//// without performing it, or `run_infer_check` to fail when it would change
+//// anything. Use `run_effect` to resolve one function or
 //// type-field name and get its `.graded` line back, `run_why` to get the
 //// effects of one function explained call by call, or `catalog_list` /
 //// `catalog_show` to read graded's own bundled catalog — none of them
@@ -102,6 +104,10 @@ pub type GradedError {
   InvalidConfig(path: String, message: String)
   /// One or more `.graded` files are not formatted (returned by `run_format_check`).
   FormatCheckFailed(paths: List(String))
+  /// The spec file at `path` is not what `graded infer` would write (returned
+  /// by `run_infer_check`). `diff` is the line diff `run_infer_dry_run` returns
+  /// for the same project.
+  StaleSpec(path: String, diff: String)
   /// The project's import graph contains a cycle. Gleam disallows circular
   /// imports at the language level, so this should be unreachable in
   /// practice — if it ever fires it indicates a bug in the dependency edge
@@ -294,6 +300,7 @@ Usage:
   graded [check] [directory]    Check effect annotations (default: src)
   graded infer [directory]      Infer effects; write the spec file and cache
   graded infer --dry-run [dir]  Preview spec changes without writing
+  graded infer --check [dir]    Fail if inference would change the spec (CI mode)
   graded effect <name> [dir]    Look up a function or type-field effect (read-only)
     --format=prose              Describe the answer in sentences (default)
     --format=graded             Print it as a `.graded` line, provenance in a comment
@@ -3457,17 +3464,36 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
 /// preview too.
 pub fn run_infer_dry_run(directory: String) -> Result(String, GradedError) {
   use outcome <- result.try(compute_infer(directory))
-  diff.contextual(
-    outcome.spec_on_disk,
-    annotation.format_file(outcome.merged_spec),
-  )
+  infer_changes(outcome)
   |> option.unwrap("graded: no changes")
   |> Ok
 }
 
-// Run `infer` in one of its two modes, returning the message to print. The
-// seam `main`'s `infer` branch dispatches through, so both modes are reachable
-// from tests.
+/// Check that the project's spec file is already what `run_infer` would write.
+/// Returns a `StaleSpec` error carrying the diff `run_infer_dry_run` would print
+/// if it isn't. Runs the same inference and writes nothing. Used by CI as
+/// `infer --check`.
+pub fn run_infer_check(directory: String) -> Result(Nil, GradedError) {
+  use outcome <- result.try(compute_infer(directory))
+  case infer_changes(outcome) {
+    None -> Ok(Nil)
+    Some(changes) ->
+      Error(StaleSpec(path: outcome.cfg.spec_file, diff: changes))
+  }
+}
+
+// The line diff from the spec file as it sits on disk to the one the inference
+// would write, or `None` when writing it would change nothing.
+fn infer_changes(outcome: InferOutcome) -> option.Option(String) {
+  diff.contextual(
+    outcome.spec_on_disk,
+    annotation.format_file(outcome.merged_spec),
+  )
+}
+
+// Run `infer` in one of its modes, returning the message to print. The seam
+// `main`'s `infer` branch dispatches through, so every mode is reachable from
+// tests.
 @internal
 pub fn run_infer_command(
   mode: cli.InferMode,
@@ -3478,6 +3504,9 @@ pub fn run_infer_command(
       run_infer(directory)
       |> result.replace("graded: inferred effects written")
     cli.DryRun -> run_infer_dry_run(directory)
+    cli.Check ->
+      run_infer_check(directory)
+      |> result.replace("graded: spec is up to date")
   }
 }
 
@@ -5548,6 +5577,11 @@ fn format_error(error: GradedError) -> String {
     FormatCheckFailed(paths:) ->
       "Unformatted .graded files:\n"
       <> string.join(list.map(paths, fn(path) { "  " <> path }), "\n")
+    StaleSpec(path:, diff:) ->
+      "Stale spec file "
+      <> path
+      <> "; run `graded infer` to update it:\n"
+      <> diff
     CyclicImports(modules:) ->
       "Cyclic project imports detected (this should be unreachable — Gleam disallows circular imports):\n"
       <> string.join(list.map(modules, fn(m) { "  " <> m }), "\n")

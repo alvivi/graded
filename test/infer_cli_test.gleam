@@ -1,7 +1,7 @@
-// Tests for the `infer` command's arguments and its two modes: the decoder
-// that separates `--dry-run` from the directory, and end-to-end runs of both
-// modes over throwaway projects — including the requirement dry-run exists
-// for, that a preview writes nothing at all.
+// Tests for the `infer` command's arguments and its modes: the decoder that
+// separates `--dry-run` and `--check` from the directory, and end-to-end runs of
+// each mode over throwaway projects — including the requirement dry-run and
+// check exist for, that neither writes anything at all.
 
 import gleam/list
 import gleam/option.{Some}
@@ -59,6 +59,20 @@ pub fn infer_args_reject_extra_argument_test() {
 pub fn infer_args_reject_extra_argument_beside_dry_run_test() {
   cli.parse_infer_args(["--dry-run", "lib", "extra"])
   |> should.equal(Error(cli.UnexpectedArgument("extra")))
+}
+
+pub fn infer_args_check_test() {
+  cli.parse_infer_args(["--check"]) |> should.equal(Ok(#("src", cli.Check)))
+  cli.parse_infer_args(["lib", "--check"])
+  |> should.equal(Ok(#("lib", cli.Check)))
+}
+
+pub fn infer_args_reject_dry_run_beside_check_test() {
+  let conflict = cli.ConflictingOptions("--dry-run", "--check")
+  cli.parse_infer_args(["--check", "lib", "--dry-run"])
+  |> should.equal(Error(conflict))
+  cli.format_argument_error(conflict)
+  |> should.equal("`--dry-run` and `--check` cannot be given together")
 }
 
 // Previewing
@@ -190,6 +204,58 @@ pub fn dry_run_predicts_the_write_test() {
   let assert Ok(after) = simplifile.read(root <> "/proj.graded")
 
   diff.contextual(before, after) |> should.equal(Some(preview))
+  support.cleanup(root)
+}
+
+// Checking
+//
+// `run_infer_command(cli.Check, …)`: the dry-run's comparison as a gate. It
+// fails with the preview's diff wherever the preview shows one, and writes
+// nothing either way.
+
+pub fn check_fails_without_a_spec_file_test() {
+  let root = "build/infer_check_fresh"
+  write_project(root, source(), NoSpec)
+  let assert Error(graded.StaleSpec(path:, diff:)) =
+    graded.run_infer_command(cli.Check, root)
+
+  path |> should.equal(root <> "/proj.graded")
+  changed_lines(diff) |> should.not_equal([])
+  simplifile.is_file(root <> "/proj.graded") |> should.equal(Ok(False))
+  simplifile.is_directory(root <> "/build/.graded") |> should.equal(Ok(False))
+  support.cleanup(root)
+}
+
+pub fn check_passes_after_infer_test() {
+  let root = "build/infer_check_unchanged"
+  write_project(root, source(), Spec(spec()))
+  let assert Ok(_) = graded.run_infer(root)
+
+  graded.run_infer_command(cli.Check, root)
+  |> should.equal(Ok("graded: spec is up to date"))
+  graded.run_infer_check(root) |> should.equal(Ok(Nil))
+  support.cleanup(root)
+}
+
+pub fn check_fails_on_a_stale_line_with_the_preview_diff_test() {
+  let root = "build/infer_check_stale"
+  write_project(root, source(), Spec(spec()))
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  let stale =
+    string.replace(
+      written,
+      "effects proj.greet : [Stdout]",
+      "effects proj.greet : [Db]",
+    )
+  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", stale)
+  let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
+
+  graded.run_infer_command(cli.Check, root)
+  |> should.equal(
+    Error(graded.StaleSpec(path: root <> "/proj.graded", diff: preview)),
+  )
+  simplifile.read(root <> "/proj.graded") |> should.equal(Ok(stale))
   support.cleanup(root)
 }
 

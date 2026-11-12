@@ -27,6 +27,8 @@ pub type ArgumentError {
   // A token in the package position that names no package: an empty package or
   // an empty version around the `@`.
   InvalidPackage(argument: String)
+  // Two flags that select different modes of one command, given together.
+  ConflictingOptions(first: String, second: String)
 }
 
 // Decode the optional directory argument shared by check/infer/format/pack
@@ -52,32 +54,41 @@ pub fn parse_directory_args(
   }
 }
 
-// Whether `infer` writes its results or only previews them.
+// What `infer` does with its results: write them, preview them, or fail when
+// they would change the spec file.
 pub type InferMode {
   Write
   DryRun
+  Check
 }
 
-// Decode the arguments of `graded infer [directory] [--dry-run]`. The directory
-// follows the same default and rejection rules as `parse_directory_args`;
-// `--dry-run` may sit anywhere after the command, since it says how the command
-// runs rather than naming one of the positions.
+// Decode the arguments of `graded infer [directory] [--dry-run | --check]`. The
+// directory follows the same default and rejection rules as
+// `parse_directory_args`; a mode flag may sit anywhere after the command, since
+// it says how the command runs rather than naming one of the positions.
 pub fn parse_infer_args(
   rest: List(String),
 ) -> Result(#(String, InferMode), ArgumentError) {
-  let #(mode, positional) = take_dry_run(rest)
+  use #(mode, positional) <- result.try(take_infer_mode(rest))
   use directory <- result.map(parse_directory_args(positional))
   #(directory, mode)
 }
 
-// Pull `--dry-run` out of the argument list, leaving the positional arguments
-// in order. Repeating the flag says nothing more than giving it once.
-fn take_dry_run(arguments: List(String)) -> #(InferMode, List(String)) {
+// Pull `--dry-run` and `--check` out of the argument list, leaving the
+// positional arguments in order. Repeating a flag says nothing more than giving
+// it once; giving both is rejected.
+fn take_infer_mode(
+  arguments: List(String),
+) -> Result(#(InferMode, List(String)), ArgumentError) {
   let #(flags, positional) =
-    list.partition(arguments, fn(argument) { argument == "--dry-run" })
-  case flags {
-    [] -> #(Write, positional)
-    [_, ..] -> #(DryRun, positional)
+    list.partition(arguments, fn(argument) {
+      argument == "--dry-run" || argument == "--check"
+    })
+  case list.contains(flags, "--dry-run"), list.contains(flags, "--check") {
+    False, False -> Ok(#(Write, positional))
+    True, False -> Ok(#(DryRun, positional))
+    False, True -> Ok(#(Check, positional))
+    True, True -> Error(ConflictingOptions("--dry-run", "--check"))
   }
 }
 
@@ -195,6 +206,8 @@ pub fn format_argument_error(error: ArgumentError) -> String {
       "unknown format `" <> value <> "` (expected `prose` or `graded`)"
     InvalidPackage(argument:) ->
       "expected a package or package@version, got `" <> argument <> "`"
+    ConflictingOptions(first:, second:) ->
+      "`" <> first <> "` and `" <> second <> "` cannot be given together"
   }
 }
 

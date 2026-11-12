@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `graded infer --check` exits non-zero when inference would change the spec
+  file, printing the diff `--dry-run` previews, so CI can fail on stale
+  `effects` lines. It writes nothing; `run_infer_check` is the same gate in the
+  API.
+
 ### Changed
 
 - graded is verified on Gleam 1.19.0, and `graded coverage` reports it as
