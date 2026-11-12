@@ -29,10 +29,6 @@ import support
 // Shared check helper plus the core subset checks: pure budgets, declared
 // effects, transitive calls, closures, and unknown locals.
 
-fn knowledge_base() -> effects.KnowledgeBase {
-  effects.empty_knowledge_base(support.catalog_directory(), ".")
-}
-
 fn check_source(
   source: String,
   annotations: List(EffectAnnotation),
@@ -43,7 +39,7 @@ fn check_source(
       module,
       "",
       annotations,
-      knowledge_base(),
+      support.knowledge_base(),
       signatures.empty(),
       typeinfo.no_reading(),
       types.all_targets(),
@@ -215,7 +211,7 @@ pub fn view(items) { list.map(items, fn(x) { x }) }"
     checker.infer(
       module,
       "",
-      knowledge_base(),
+      support.knowledge_base(),
       [],
       signatures.empty(),
       typeinfo.no_reading(),
@@ -237,7 +233,7 @@ pub fn greet() { io.println(\"hi\") }"
     checker.infer(
       module,
       "",
-      knowledge_base(),
+      support.knowledge_base(),
       [],
       signatures.empty(),
       typeinfo.no_reading(),
@@ -258,7 +254,7 @@ fn helper() { io.println(\"x\") }"
     checker.infer(
       module,
       "",
-      knowledge_base(),
+      support.knowledge_base(),
       [],
       signatures.empty(),
       typeinfo.no_reading(),
@@ -294,7 +290,7 @@ pub fn infer_uses_param_bounds_test() {
     checker.infer(
       module,
       "",
-      knowledge_base(),
+      support.knowledge_base(),
       existing_checks,
       signatures.empty(),
       typeinfo.no_reading(),
@@ -314,7 +310,7 @@ pub fn infer_without_bounds_gets_unknown_test() {
     checker.infer(
       module,
       "",
-      knowledge_base(),
+      support.knowledge_base(),
       [],
       signatures.empty(),
       typeinfo.no_reading(),
@@ -366,7 +362,7 @@ pub fn infer_girard_detects_unannotated_fn_typed_param_test() {
     checker.infer(
       module,
       "",
-      knowledge_base(),
+      support.knowledge_base(),
       [],
       signatures.empty(),
       typeinfo.ModuleReading(
@@ -558,7 +554,11 @@ fn check_source_with_type_fields(
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
   let kb =
-    effects.with_type_fields(knowledge_base(), type_fields, types.CommittedSpec)
+    effects.with_type_fields(
+      support.knowledge_base(),
+      type_fields,
+      types.CommittedSpec,
+    )
   let #(violations, _findings, _warnings) =
     checker.check(
       module,
@@ -608,7 +608,11 @@ fn check_source_with_girard(
   let assert Ok(module) = glance.module(source)
   let reading = girard_reading(module)
   let kb =
-    effects.with_type_fields(knowledge_base(), type_fields, types.CommittedSpec)
+    effects.with_type_fields(
+      support.knowledge_base(),
+      type_fields,
+      types.CommittedSpec,
+    )
   let #(violations, _findings, _warnings) =
     checker.check(
       module,
@@ -829,7 +833,11 @@ fn infer_effects_with_girard(
   checker.infer(
     module,
     "",
-    effects.with_type_fields(knowledge_base(), type_fields, types.CommittedSpec),
+    effects.with_type_fields(
+      support.knowledge_base(),
+      type_fields,
+      types.CommittedSpec,
+    ),
     [],
     signatures.from_glance_module("", module),
     girard_reading(module),
@@ -1009,7 +1017,7 @@ fn infer_field_annotation_typed(
     checker.infer(
       module,
       "",
-      knowledge_base(),
+      support.knowledge_base(),
       [],
       registry,
       reading,
@@ -1176,7 +1184,7 @@ pub fn annotate(options: Options) -> Nil {
       module,
       "",
       [annotation],
-      knowledge_base(),
+      support.knowledge_base(),
       signatures.empty(),
       typeinfo.no_reading(),
       types.all_targets(),
@@ -1306,7 +1314,7 @@ pub fn caller() -> Nil {
       module,
       "",
       [annotation],
-      knowledge_base(),
+      support.knowledge_base(),
       signatures.empty(),
       typeinfo.no_reading(),
       types.all_targets(),
@@ -1327,7 +1335,8 @@ fn check_source_with_assumes(
   registry: signatures.SignatureRegistry,
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
-  let kb = effects.with_assumes(knowledge_base(), assumes, types.UserAssume)
+  let kb =
+    effects.with_assumes(support.knowledge_base(), assumes, types.UserAssume)
   let #(violations, _findings, _warnings) =
     checker.check(
       module,
@@ -1399,7 +1408,10 @@ pub fn a_catalog_bounded_externals_bounds_reach_a_call_site_test() {
       ),
     ])
   let #(functions, modules, param_bounds, type_fields) =
-    effects.load_catalog(root <> "/catalog", root <> "/manifest.toml")
+    effects.load_catalog(
+      support.catalog_files(root <> "/catalog"),
+      root <> "/manifest.toml",
+    )
   let kb =
     effects.knowledge_base_from_catalog(
       root <> "/build/packages",
@@ -1467,7 +1479,7 @@ pub fn external_same_module_resolves_declared_effects_test() {
     simple_assume("ffi_mod", "now", ["Time"]),
   ]
   infer_external_wrapper(effects.with_assumes(
-    knowledge_base(),
+    support.knowledge_base(),
     assumes,
     types.UserAssume,
   ))
@@ -1478,7 +1490,7 @@ pub fn external_same_module_resolves_declared_effects_test() {
 // `[Unknown]` — the opaque-FFI default (`module_path` qualifies the lookup, so a
 // wrong/absent entry never silently resolves to `[]`).
 pub fn external_same_module_without_declaration_is_unknown_test() {
-  infer_external_wrapper(knowledge_base())
+  infer_external_wrapper(support.knowledge_base())
   |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
@@ -1547,7 +1559,7 @@ fn check_warnings(
       module,
       "",
       annotations,
-      knowledge_base(),
+      support.knowledge_base(),
       signatures.empty(),
       typeinfo.no_reading(),
       types.all_targets(),
@@ -1922,7 +1934,7 @@ fn provenance_caller_effect(src: String, label: String) -> EffectSet {
       module,
       "",
       [annotation],
-      knowledge_base(),
+      support.knowledge_base(),
       signatures.from_glance_module("", module),
       typeinfo.no_reading(),
       types.all_targets(),
@@ -2200,7 +2212,7 @@ fn infer_single(source: String) -> EffectAnnotation {
     checker.infer(
       module,
       "",
-      knowledge_base(),
+      support.knowledge_base(),
       [],
       signatures.empty(),
       typeinfo.no_reading(),
@@ -2306,7 +2318,7 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
     checker.infer(
       module,
       "",
-      knowledge_base(),
+      support.knowledge_base(),
       [existing],
       signatures.empty(),
       typeinfo.no_reading(),
@@ -2357,7 +2369,7 @@ fn polymorphic_kb() -> effects.KnowledgeBase {
         ),
       ]),
     ])
-  effects.empty_knowledge_base(support.catalog_directory(), ".")
+  support.knowledge_base()
   |> effects.with_inferred(
     dict.map_values(effects_map, fn(_, v) { effect_term.from_effect_set(v) }),
     types.ProjectInferred,
@@ -2588,7 +2600,7 @@ fn two_callback_kb() -> effects.KnowledgeBase {
         ),
       ]),
     ])
-  effects.empty_knowledge_base(support.catalog_directory(), ".")
+  support.knowledge_base()
   |> effects.with_inferred(
     dict.map_values(effects_map, fn(_, v) { effect_term.from_effect_set(v) }),
     types.ProjectInferred,
@@ -2618,7 +2630,7 @@ pub fn outer() -> MyError {
     checker.infer(
       module,
       "",
-      knowledge_base(),
+      support.knowledge_base(),
       [],
       signatures.empty(),
       typeinfo.no_reading(),
@@ -2672,7 +2684,7 @@ fn infer_single_with_list(source: String) -> types.EffectAnnotation {
     checker.infer(
       module,
       "",
-      knowledge_base(),
+      support.knowledge_base(),
       [],
       list_registry(),
       typeinfo.no_reading(),
@@ -2700,7 +2712,7 @@ fn apply_twice_kb_and_registry() -> #(
   signatures.SignatureRegistry,
 ) {
   let kb =
-    effects.empty_knowledge_base(support.catalog_directory(), ".")
+    support.knowledge_base()
     |> effects.with_inferred(
       dict.from_list([
         #(
@@ -2862,7 +2874,7 @@ pub fn mixed_tracked_and_closure_args_test() {
       signatures.from_glance_module("helpers", db_module),
     )
   let kb =
-    effects.empty_knowledge_base(support.catalog_directory(), ".")
+    support.knowledge_base()
     |> effects.with_inferred(
       dict.from_list([
         #(
@@ -2938,7 +2950,7 @@ pub fn main(msg: String) {
           returns: None,
         ),
       ],
-      knowledge_base(),
+      support.knowledge_base(),
       registry,
       typeinfo.no_reading(),
       types.all_targets(),
@@ -3018,7 +3030,7 @@ pub fn caller() -> Nil {
 "
   let assert Ok(module) = glance.module(source)
   let kb =
-    knowledge_base()
+    support.knowledge_base()
     |> effects.with_inferred(
       dict.from_list([
         #(
@@ -3142,7 +3154,7 @@ pub fn runner(cb: fn(String) -> Nil) -> Nil { Nil }"
   let assert Ok(sig_mod) = glance.module(sig_src)
   let reg = signatures.from_glance_module("app", sig_mod)
   let kb =
-    knowledge_base()
+    support.knowledge_base()
     |> effects.with_inferred(
       dict.from_list([
         #(
@@ -3393,7 +3405,7 @@ pub fn infer_operator_param_threads_all_callbacks_test() {
   // dropped (the previous single-callback behaviour lost `fs.read`).
   let kb =
     effects.with_assumes(
-      knowledge_base(),
+      support.knowledge_base(),
       [fs_read_external()],
       types.UserAssume,
     )
@@ -3429,7 +3441,7 @@ pub fn infer_operator_param_non_adjacent_callbacks_test() {
   // thread in order.
   let kb =
     effects.with_assumes(
-      knowledge_base(),
+      support.knowledge_base(),
       [fs_read_external()],
       types.UserAssume,
     )
@@ -3594,7 +3606,7 @@ pub fn let_bound_closure_direct_call_satisfies_pure_check_test() {
       module,
       "",
       [ann],
-      knowledge_base(),
+      support.knowledge_base(),
       signatures.empty(),
       typeinfo.no_reading(),
       types.all_targets(),
@@ -4195,7 +4207,7 @@ pub fn caller() -> Nil {
   // The topological pass folds both the producer's own effect (it's pure — it
   // just returns a function) and its returned operator into the KB.
   let kb =
-    knowledge_base()
+    support.knowledge_base()
     |> effects.with_inferred(
       dict.from_list([
         #(
@@ -4274,7 +4286,7 @@ pub fn caller() -> Nil {
 "
   let assert Ok(module) = glance.module(source)
   let kb =
-    knowledge_base()
+    support.knowledge_base()
     |> effects.with_inferred(
       dict.from_list([
         #(
@@ -4326,7 +4338,7 @@ pub fn pick() -> fn(fn(String) -> Nil) -> Nil {
     checker.infer_with_returns(
       module,
       "",
-      knowledge_base(),
+      support.knowledge_base(),
       [],
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
@@ -4351,7 +4363,7 @@ pub fn make_printer() -> fn() -> Nil {
     checker.infer_with_returns(
       module,
       "",
-      knowledge_base(),
+      support.knowledge_base(),
       [],
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
@@ -4392,7 +4404,7 @@ pub fn caller() -> Nil {
 "
   let assert Ok(module) = glance.module(source)
   let kb =
-    knowledge_base()
+    support.knowledge_base()
     |> effects.with_inferred(
       dict.from_list([
         #(
@@ -4469,7 +4481,7 @@ pub fn pick(
     checker.infer_with_returns(
       module,
       "",
-      knowledge_base(),
+      support.knowledge_base(),
       [],
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
@@ -4592,7 +4604,7 @@ fn second_order_violations(
   let assert Ok(module) = glance.module(source)
   let kb =
     effects.with_assumes(
-      knowledge_base(),
+      support.knowledge_base(),
       [fs_read_external()],
       types.UserAssume,
     )
@@ -4710,7 +4722,7 @@ fn infer_annotation(source: String, name: String) -> EffectAnnotation {
   infer_annotation_with(
     module,
     name,
-    knowledge_base(),
+    support.knowledge_base(),
     signatures.from_glance_module("m", module),
   )
 }
@@ -6515,7 +6527,7 @@ pub fn run() -> Nil {
 "
   let assert Ok(module) = glance.module(source)
   let kb =
-    knowledge_base()
+    support.knowledge_base()
     |> effects.with_inferred(
       dict.from_list([
         #(
@@ -6652,7 +6664,7 @@ pub fn new() {
   let assert Ok(module) = glance.module(source)
   let kb =
     effects.with_inferred(
-      knowledge_base(),
+      support.knowledge_base(),
       dict.from_list([
         #(
           QualifiedName("vault", "query"),
@@ -6731,7 +6743,7 @@ pub fn run() -> Nil {
       module,
       "",
       [pure_check("run")],
-      knowledge_base(),
+      support.knowledge_base(),
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
       types.all_targets(),
@@ -6787,7 +6799,7 @@ fn explain_source(
       module,
       function,
       [bounds],
-      knowledge_base(),
+      support.knowledge_base(),
       signatures.from_glance_module("app", module),
     )
   explanations
@@ -6806,7 +6818,7 @@ pub fn run() {
 }"
   let assert Ok(module) = glance.module(source)
   let knowledge_base =
-    effects.empty_knowledge_base(support.catalog_directory(), ".")
+    support.knowledge_base()
     |> effects.with_inferred(
       dict.from_list([
         #(QualifiedName("helper/lib", "use_op"), types.TVar("cb")),
@@ -6854,7 +6866,7 @@ pub fn go(r: Runner) -> Nil {
       "app",
       "go",
       [[]],
-      effects.empty_knowledge_base(support.catalog_directory(), "."),
+      support.knowledge_base(),
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
       types.all_targets(),
@@ -6883,7 +6895,7 @@ pub fn run(r: Runner) -> Nil {
   checker.fallback_effects(
     module,
     "app",
-    effects.empty_knowledge_base(support.catalog_directory(), "."),
+    support.knowledge_base(),
     signatures.from_glance_module("app", module),
     typeinfo.no_reading(),
     types.all_targets(),
@@ -6908,7 +6920,7 @@ pub fn run() -> Nil {
 }"
   let assert Ok(module) = glance.module(source)
   let knowledge_base =
-    effects.empty_knowledge_base(support.catalog_directory(), ".")
+    support.knowledge_base()
     |> effects.with_inferred(
       dict.from_list([
         #(QualifiedName("helper/lib", "use_op"), types.TVar("cb")),
@@ -6961,7 +6973,7 @@ pub fn explain_shares_one_analysis_across_bound_sets_test() {
       module,
       "run",
       [[ParamBound("f", stdout_term())], [ParamBound("g", stdout_term())]],
-      knowledge_base(),
+      support.knowledge_base(),
       signatures.from_glance_module("app", module),
     )
   // The parameter each set does not name keeps the identity bound inference
@@ -7055,7 +7067,13 @@ pub fn explain_bounds_resolve_a_parameter_call_test() {
 pub fn explain_misses_an_unknown_function_test() {
   let source = "pub fn run() -> Nil { Nil }"
   let assert Ok(module) = glance.module(source)
-  explain_blocks(module, "absent", [[]], knowledge_base(), signatures.empty())
+  explain_blocks(
+    module,
+    "absent",
+    [[]],
+    support.knowledge_base(),
+    signatures.empty(),
+  )
   |> should.equal(Error(Nil))
 }
 
@@ -7119,7 +7137,7 @@ fn closed_clause_setup(
 "
   let assert Ok(dep_module) = glance.module(dep_source)
   let kb =
-    knowledge_base()
+    support.knowledge_base()
     |> effects.with_inferred(
       dict.from_list([
         #(
@@ -7197,7 +7215,7 @@ pub fn an_open_clause_degrades_to_unknown_test() {
 // callback's own effect instead of vanishing.
 
 fn list_value_channel_kb() -> effects.KnowledgeBase {
-  knowledge_base()
+  support.knowledge_base()
   |> effects.with_callback_params(
     signatures.callback_param_names(list_registry()),
   )
@@ -8151,7 +8169,7 @@ pub fn target(c) {
       "app",
       "target",
       [[]],
-      effects.empty_knowledge_base(support.catalog_directory(), "."),
+      support.knowledge_base(),
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
       types.all_targets(),
@@ -8187,7 +8205,7 @@ pub fn target(f: fn() -> Nil, g: fn() -> Nil) -> Nil {
           ParamBound("g", types.TLabels(set.from_list(["Stdout"]))),
         ],
       ],
-      effects.empty_knowledge_base(support.catalog_directory(), "."),
+      support.knowledge_base(),
       signatures.from_glance_module("app", module),
       typeinfo.no_reading(),
       types.all_targets(),
@@ -8267,7 +8285,8 @@ fn applied(operator: EffectTerm, arguments: List(List(String))) -> EffectSet {
 }
 
 pub fn a_discarded_callback_takes_a_binder_when_lifted_test() {
-  let returns = returned_operators(discarding_producers, knowledge_base())
+  let returns =
+    returned_operators(discarding_producers, support.knowledge_base())
   let assert Ok(ignores) = dict.get(returns, "make_ignores")
   binder_count(ignores) |> should.equal(1)
   applied(ignores, [[]]) |> should.equal(Specific(set.new()))
@@ -8276,7 +8295,8 @@ pub fn a_discarded_callback_takes_a_binder_when_lifted_test() {
 pub fn each_argument_reaches_the_callback_at_its_position_test() {
   // Two binders each, and each operator charges the argument at its own
   // callback's position and not the other one.
-  let returns = returned_operators(discarding_producers, knowledge_base())
+  let returns =
+    returned_operators(discarding_producers, support.knowledge_base())
   let assert Ok(pick) = dict.get(returns, "make_pick")
   let assert Ok(pick_first) = dict.get(returns, "make_pick_first")
   binder_count(pick) |> should.equal(2)
@@ -8293,7 +8313,7 @@ pub fn a_synthesized_binder_captures_no_declared_variable_test() {
   // grounds the variable it leaves free.
   let assert Ok(spec) = annotation.parse_file("assume app.g : [Db, _]")
   let kb =
-    knowledge_base()
+    support.knowledge_base()
     |> effects.with_assumes(annotation.extract_assumes(spec), types.UserAssume)
   let source = support.foreign_fn("g", "(_f: fn() -> Nil) -> Nil") <> "
 pub fn make_g() -> fn(fn() -> Nil) -> Nil {

@@ -900,8 +900,10 @@ fn load_project_context(
 fn project_context(
   sources: ProjectSources,
 ) -> Result(ProjectContext, GradedError) {
-  use catalog_dir <- result.try(bundled_catalog_directory())
   let ProjectSources(cfg:, spec:, index:, package_root:, ..) = sources
+  // Read once and kept: the knowledge base is built from it and the spec lint
+  // weighs the same entries.
+  use catalog <- result.try(load_bundled_catalog(package_root))
   let declared_modules = annotation.module_assume_modules(spec)
   // The package's targets under both readings, which together decide whether a
   // function is foreign code or the Gleam body is its only implementation, and
@@ -923,10 +925,6 @@ fn project_context(
   let dep_files = dependency_module_files(package_root)
   let type_info = build_type_index(index, dep_files, package_targets)
 
-  // Read once and kept: the knowledge base is built from it and the spec lint
-  // weighs the same entries.
-  let catalog =
-    effects.load_project_catalog(catalog_dir, manifest_path(package_root))
   // Built once for the whole run: every module's factory scan below routes its
   // constructions through the same labels.
   let constructors = package_constructors(index, dep_sources)
@@ -2558,35 +2556,34 @@ pub fn run_catalog(request: cli.CatalogRequest) -> Result(String, GradedError) {
       catalog_manifest_path(directory)
     }
   })
-  use catalog_dir <- result.try(
-    effects.find_catalog_directory()
-    |> result.map_error(fn(candidates) {
-      CatalogError(NoCatalogDirectory(candidates))
-    }),
-  )
+  use catalog_dir <- result.try(bundled_catalog_directory())
   catalog_report(catalog_dir, manifest, request)
 }
 
-// graded's bundled catalog directory, for a command that resolves calls
-// against it. Every such command stops here when the catalog can't be read:
-// without it each call the catalog covers would answer `[Unknown]`.
+// graded's bundled catalog, selected against the manifest of the package at
+// `package_root`, for a command that resolves calls against it. Every such
+// command stops here when the catalog can't be read: without it each call the
+// catalog covers would answer `[Unknown]`.
+fn load_bundled_catalog(
+  package_root: String,
+) -> Result(effects.BundledCatalog, GradedError) {
+  use catalog_dir <- result.try(bundled_catalog_directory())
+  use files <- result.map(catalog_files(catalog_dir))
+  effects.load_project_catalog(files, manifest_path(package_root))
+}
+
 fn bundled_catalog_directory() -> Result(String, GradedError) {
   locate_catalog(effects.catalog_candidates())
 }
 
-// The first of `candidates` that is a readable directory holding at least one
-// catalog file. Takes the candidates as an argument so a test can point it at
-// paths of its own.
+// The first of `candidates` that is an existing directory. Takes the candidates
+// as an argument so a test can point it at paths of its own.
 @internal
 pub fn locate_catalog(candidates: List(String)) -> Result(String, GradedError) {
-  use catalog_dir <- result.try(
-    effects.first_existing_directory(candidates)
-    |> result.map_error(fn(candidates) {
-      CatalogError(NoCatalogDirectory(candidates))
-    }),
-  )
-  use _files <- result.map(catalog_files(catalog_dir))
-  catalog_dir
+  list.find(candidates, fn(candidate) {
+    simplifile.is_directory(candidate) == Ok(True)
+  })
+  |> result.replace_error(CatalogError(NoCatalogDirectory(candidates)))
 }
 
 // The catalog files under `catalog_dir`. A directory holding no
@@ -3554,8 +3551,8 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   // public surface wrongly rather than partially.
   let directory = source_scope(directory).analysed
   use cfg <- result.try(read_config(directory))
-  use catalog_dir <- result.try(bundled_catalog_directory())
   let package_root = resolve_package_root(directory)
+  use catalog <- result.try(load_bundled_catalog(package_root))
   use #(spec_on_disk, spec) <- result.try(read_spec_on_disk(cfg.spec_file))
   let declared_modules = annotation.module_assume_modules(spec)
 
@@ -3586,10 +3583,9 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   let constructors = package_constructors(index, dep_sources)
 
   let kb_base =
-    effects.load_knowledge_base(
+    effects.knowledge_base_from_catalog(
       packages_dir(package_root),
-      catalog_dir,
-      manifest_path(package_root),
+      catalog,
       dependency_foreign(dep_sources),
     )
     |> effects.with_package_targets(cfg.targets)

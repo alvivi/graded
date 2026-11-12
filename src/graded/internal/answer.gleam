@@ -126,19 +126,17 @@ pub fn render_graded(answer: EffectAnswer) -> String {
     FunctionAnswer(name:, module:, bounds:, term:, returns:, source:) -> {
       let clause = clause_rendering(returns, bounds)
       above_line(
-        [
-          graded_source(module, source),
-          ..list.append(
-            graded_clause(clause, entry_origin(source)),
-            graded_fallback(source_fallback(source)),
-          )
-        ],
+        list.flatten([
+          [graded_source(module, source)],
+          graded_clause(clause, entry_origin(source)),
+          graded_fallback(source_fallback(source)),
+        ]),
         effects_line(name, bounds, term, line_clause(clause)),
       )
     }
     TypeFieldAnswer(module:, type_name:, field:, term:, origin:) ->
       above_line(
-        ["// " <> graded_origin(origin)],
+        [graded_origin(origin)],
         annotation.format_type_field(FieldAnnotation(
           module:,
           type_name:,
@@ -149,9 +147,13 @@ pub fn render_graded(answer: EffectAnswer) -> String {
   }
 }
 
-// `line` below its comment lines, which a spec file then keeps with it.
-fn above_line(comments: List(String), line: String) -> String {
-  string.join(list.append(comments, [line]), "\n")
+// `line` below one `//` comment line per note, which a spec file then keeps
+// with it.
+fn above_line(notes: List(String), line: String) -> String {
+  notes
+  |> list.map(fn(note) { "// " <> note })
+  |> list.append([line])
+  |> string.join("\n")
 }
 
 fn effects_line(
@@ -228,7 +230,7 @@ fn graded_clause(
 ) -> List(String) {
   case clause {
     NoClause -> []
-    OnLine(..) | InComment(..) -> ["// " <> clause_note(clause, entry)]
+    OnLine(..) | InComment(..) -> [clause_note(clause, entry)]
   }
 }
 
@@ -276,8 +278,7 @@ fn entry_origin(source: AnswerSource) -> Result(types.LookupOrigin, Nil) {
 // The comment naming what answered: the source that wrote the winning entry,
 // or the standing that settled the term where no entry could.
 fn graded_source(module: String, source: AnswerSource) -> String {
-  "// "
-  <> case source {
+  case source {
     Entry(entry: types.ModuleAssumeEntry(..), ..) ->
       "resolved via module-level `assume` for " <> module
     Entry(entry: types.FunctionEntry(origin:), ..) ->
@@ -376,10 +377,10 @@ fn graded_fallback(
   case fallback {
     types.NoFallback -> []
     types.FallbackCharged(term) -> [
-      "// unioned with " <> charged_fallback_clause <> formatted_term(term),
+      "unioned with " <> charged_fallback_clause <> formatted_term(term),
     ]
     types.FallbackSuppressed(term) -> [
-      "// " <> suppressed_fallback_clause <> formatted_term(term),
+      suppressed_fallback_clause <> formatted_term(term),
     ]
   }
 }

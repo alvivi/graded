@@ -161,8 +161,8 @@ pub type KnowledgeBase {
 }
 
 // Build a knowledge base by scanning dependency .graded files under
-// `packages_directory` and loading the versioned catalog files under
-// `catalog_dir`, selecting versions from the manifest at `manifest_path`.
+// `packages_directory` and loading the versioned `catalog` files, selecting
+// versions from the manifest at `manifest_path`.
 //
 // `dependency_foreign` is what the dependencies' own sources say is `@external`,
 // scanned before this call. Each dep spec is sanitized against it *as it loads*,
@@ -172,13 +172,13 @@ pub type KnowledgeBase {
 // waiting underneath it.
 pub fn load_knowledge_base(
   packages_directory: String,
-  catalog_dir: String,
+  catalog: List(CatalogFile),
   manifest_path: String,
   dependency_foreign: Dict(QualifiedName, types.ForeignFunction),
 ) -> KnowledgeBase {
   knowledge_base_from_catalog(
     packages_directory,
-    load_project_catalog(catalog_dir, manifest_path),
+    load_project_catalog(catalog, manifest_path),
     dependency_foreign,
   )
 }
@@ -194,14 +194,13 @@ pub type BundledCatalog {
   )
 }
 
-// The catalog under `catalog_dir`, selected against `manifest_path`'s installed
-// versions.
+// The `catalog` files selected against `manifest_path`'s installed versions.
 pub fn load_project_catalog(
-  catalog_dir: String,
+  catalog: List(CatalogFile),
   manifest_path: String,
 ) -> BundledCatalog {
   let #(functions, modules, param_bounds, type_fields) =
-    load_catalog(catalog_dir, manifest_path)
+    load_catalog(catalog, manifest_path)
   BundledCatalog(functions:, modules:, param_bounds:, type_fields:)
 }
 
@@ -284,15 +283,14 @@ pub fn new_knowledge_base() -> KnowledgeBase {
   )
 }
 
-// Build a knowledge base from the catalog under `catalog_dir` only (no
-// dependency scanning), selecting versions from `package_root`'s
-// `manifest.toml`.
+// Build a knowledge base from the `catalog` files only (no dependency
+// scanning), selecting versions from `package_root`'s `manifest.toml`.
 pub fn empty_knowledge_base(
-  catalog_dir: String,
+  catalog: List(CatalogFile),
   package_root: String,
 ) -> KnowledgeBase {
   let #(cat_effects, cat_module_effects, cat_params, cat_type_fields) =
-    load_catalog(catalog_dir, filepath.join(package_root, "manifest.toml"))
+    load_catalog(catalog, filepath.join(package_root, "manifest.toml"))
   KnowledgeBase(
     all_effects: cat_effects,
     param_bounds: cat_params,
@@ -3227,11 +3225,6 @@ fn load_dependencies(
 // directory, selecting the best version per installed package against the
 // manifest, and folding the selected files into effect maps.
 
-// Resolve graded's bundled `priv/catalog`, or return the candidate paths tried.
-pub fn find_catalog_directory() -> Result(String, List(String)) {
-  first_existing_directory(catalog_candidates())
-}
-
 // The paths graded's bundled catalog is looked for under, in order. The install
 // location (graded's own `priv`) comes first, so the catalog is found whatever
 // the process's working directory; the cwd-relative layouts follow as a
@@ -3243,15 +3236,6 @@ pub fn catalog_candidates() -> List(String) {
     Ok(priv) -> [filepath.join(priv, "catalog"), ..cwd_relative]
     Error(Nil) -> cwd_relative
   }
-}
-
-// The first of `candidates` that is an existing directory, or every candidate
-// when none is.
-pub fn first_existing_directory(
-  candidates: List(String),
-) -> Result(String, List(String)) {
-  list.find(candidates, is_existing_directory)
-  |> result.replace_error(candidates)
 }
 
 fn is_existing_directory(path: String) -> Bool {
@@ -3280,12 +3264,13 @@ type CatalogAcc {
   )
 }
 
-// Fold the catalog files selected for `manifest_path`'s installed versions into
-// the function effects, module-level externals, parameter bounds and `type`
-// field annotations they declare. Exposed so a test can compose a catalog of
-// its own; production callers reach it through the knowledge-base builders.
+// Fold the `catalog` files selected for `manifest_path`'s installed versions
+// into the function effects, module-level externals, parameter bounds and
+// `type` field annotations they declare. Exposed so a test can compose a
+// catalog of its own; production callers reach it through the knowledge-base
+// builders.
 pub fn load_catalog(
-  catalog_dir: String,
+  catalog: List(CatalogFile),
   manifest_path: String,
 ) -> #(
   Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
@@ -3294,8 +3279,7 @@ pub fn load_catalog(
   List(#(FieldAnnotation, LookupOrigin)),
 ) {
   let installed_versions = manifest_versions(manifest_path)
-  let catalog_files = bundled_catalog_files(catalog_dir) |> result.unwrap([])
-  let selected = resolve_catalog_files(catalog_files, installed_versions)
+  let selected = resolve_catalog_files(catalog, installed_versions)
   let initial =
     CatalogAcc(dict.new(), dict.new(), dict.new(), dict.new(), dict.new(), [])
   let acc = list.fold(selected, initial, fold_catalog_file)

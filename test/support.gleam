@@ -3,6 +3,7 @@
 
 import filepath
 import gleam/list
+import graded
 import graded/internal/effects
 import simplifile
 
@@ -21,9 +22,26 @@ targets = [\"erlang\", \"javascript\"]
 
 // graded's own bundled catalog directory.
 pub fn catalog_directory() -> String {
-  let assert Ok(directory) = effects.find_catalog_directory()
+  let assert Ok(directory) = graded.locate_catalog(effects.catalog_candidates())
     as "graded's bundled catalog is not found"
   directory
+}
+
+// graded's own bundled catalog files.
+pub fn bundled_catalog() -> List(effects.CatalogFile) {
+  catalog_files(catalog_directory())
+}
+
+// The catalog files under `catalog_dir`.
+pub fn catalog_files(catalog_dir: String) -> List(effects.CatalogFile) {
+  let assert Ok(files) = effects.bundled_catalog_files(catalog_dir)
+  files
+}
+
+// A knowledge base holding graded's bundled catalog alone, its versions
+// selected against the working directory's manifest.
+pub fn knowledge_base() -> effects.KnowledgeBase {
+  effects.empty_knowledge_base(bundled_catalog(), ".")
 }
 
 // Write one file, creating its parent directories first.

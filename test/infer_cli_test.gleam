@@ -111,18 +111,7 @@ pub fn dry_run_after_infer_reports_no_changes_test() {
 
 pub fn dry_run_shows_only_the_stale_line_test() {
   let root = "build/infer_dry_run_stale"
-  write_project(root, source(), Spec(spec()))
-  let assert Ok(_) = graded.run_infer(root)
-  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
-  let assert Ok(Nil) =
-    simplifile.write(
-      root <> "/proj.graded",
-      string.replace(
-        written,
-        "effects proj.greet : [Stdout]",
-        "effects proj.greet : [Db]",
-      ),
-    )
+  write_stale_project(root)
 
   let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
   changed_lines(preview)
@@ -233,22 +222,12 @@ pub fn check_passes_after_infer_test() {
 
   graded.run_infer_command(cli.Check, root)
   |> should.equal(Ok("graded: spec is up to date"))
-  graded.run_infer_check(root) |> should.equal(Ok(Nil))
   support.cleanup(root)
 }
 
 pub fn check_fails_on_a_stale_line_with_the_preview_diff_test() {
   let root = "build/infer_check_stale"
-  write_project(root, source(), Spec(spec()))
-  let assert Ok(_) = graded.run_infer(root)
-  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
-  let stale =
-    string.replace(
-      written,
-      "effects proj.greet : [Stdout]",
-      "effects proj.greet : [Db]",
-    )
-  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", stale)
+  let stale = write_stale_project(root)
   let assert Ok(preview) = graded.run_infer_command(cli.DryRun, root)
 
   graded.run_infer_command(cli.Check, root)
@@ -454,6 +433,22 @@ fn write_project(root: String, module: String, spec_file: SpecFile) -> Nil {
     ..spec_entry
   ])
   Nil
+}
+
+// A project whose spec `infer` wrote, then edited so one `effects` line no
+// longer says what inference does. Returns the edited spec.
+fn write_stale_project(root: String) -> String {
+  write_project(root, source(), Spec(spec()))
+  let assert Ok(_) = graded.run_infer(root)
+  let assert Ok(written) = simplifile.read(root <> "/proj.graded")
+  let stale =
+    string.replace(
+      written,
+      "effects proj.greet : [Stdout]",
+      "effects proj.greet : [Db]",
+    )
+  let assert Ok(Nil) = simplifile.write(root <> "/proj.graded", stale)
+  stale
 }
 
 fn source() -> String {
