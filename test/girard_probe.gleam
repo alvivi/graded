@@ -114,8 +114,10 @@ fn probe(
       let #(module_path, module) = entry
       dict.merge(acc, extract.constructor_registry(module_path, module))
     })
+  let assert Ok(catalog_dir) = effects.find_catalog_directory()
+    as "graded's bundled catalog is not found"
   let knowledge_base =
-    effects.empty_knowledge_base(root)
+    effects.empty_knowledge_base(catalog_dir, root)
     |> effects.with_constructors(cross_constructors)
   let rows =
     list.flat_map(entries, fn(entry) {

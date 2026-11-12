@@ -117,11 +117,14 @@ pub type GradedError {
   /// was missing, its identity didn't match the project, the configured
   /// `spec_file` path was unsafe, or the tarball transform failed.
   PackError(message: String)
-  /// `graded catalog` could not answer: see `CatalogProblem`.
+  /// graded's bundled catalog could not be read, or `graded catalog` could not
+  /// answer: see `CatalogProblem`.
   CatalogError(problem: CatalogProblem)
 }
 
-/// Why `graded catalog` could not answer.
+/// Why graded's bundled catalog could not be read, or why `graded catalog`
+/// could not answer. `EmptyCatalog` and `NoCatalogDirectory` stop every command
+/// that resolves calls against the catalog, not only `graded catalog`.
 pub type CatalogProblem {
   /// No bundled file names this package.
   NoCatalogEntry(package: String)
@@ -806,8 +809,7 @@ type ProjectContext {
     knowledge_base: KnowledgeBase,
     // The bundled catalog this context was assembled against. Held rather than
     // re-read by the spec lint, which weighs the same entries the knowledge
-    // base was built from — and which, reading it a second time, reported a
-    // missing catalog twice.
+    // base was built from.
     catalog: effects.BundledCatalog,
     // The dependency scan this context was assembled from. Held for the spec
     // lint, which decides whether a dependency module defines the name an
@@ -882,12 +884,16 @@ fn load_project_sources(
 fn load_project_context(
   directory: String,
 ) -> Result(ProjectContext, GradedError) {
-  use sources <- result.map(load_project_sources(directory))
+  use sources <- result.try(load_project_sources(directory))
   project_context(sources)
 }
 
 // The expensive half: everything a context holds beyond the parsed sources.
-fn project_context(sources: ProjectSources) -> ProjectContext {
+// Fails before any of it is built when graded's bundled catalog can't be read.
+fn project_context(
+  sources: ProjectSources,
+) -> Result(ProjectContext, GradedError) {
+  use catalog_dir <- result.try(bundled_catalog_directory())
   let ProjectSources(cfg:, spec:, index:, package_root:, ..) = sources
   let declared_modules = annotation.module_assume_modules(spec)
   // The package's targets under both readings, which together decide whether a
@@ -912,7 +918,8 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
 
   // Read once and kept: the knowledge base is built from it and the spec lint
   // weighs the same entries.
-  let catalog = effects.load_project_catalog(manifest_path(package_root))
+  let catalog =
+    effects.load_project_catalog(catalog_dir, manifest_path(package_root))
   // Built once for the whole run: every module's factory scan below routes its
   // constructions through the same labels.
   let constructors = package_constructors(index, dep_sources)
@@ -1045,7 +1052,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
       package_targets,
     )
 
-  ProjectContext(
+  Ok(ProjectContext(
     sources:,
     registry:,
     type_info:,
@@ -1060,7 +1067,7 @@ fn project_context(sources: ProjectSources) -> ProjectContext {
     ),
     dep_files:,
     typed_path_dependencies: list.reverse(typed_path_dependencies),
-  )
+  ))
 }
 
 // Every `@external` this project declares, qualified by its module: the names
@@ -2039,7 +2046,7 @@ pub fn run_why(directory: String, name: String) -> Result(String, GradedError) {
     when: !defines_function(module, function),
     return: Error(FunctionNotFound(name)),
   )
-  let ctx = project_context(sources)
+  use ctx <- result.try(project_context(sources))
   // Straight from the spec's `check` lines rather than the per-module grouping
   // `run` builds, whose lists are prepend-reversed — the blocks are printed in
   // the order the spec declares them. A function with no line still gets one
@@ -2553,6 +2560,45 @@ pub fn run_catalog(request: cli.CatalogRequest) -> Result(String, GradedError) {
   catalog_report(catalog_dir, manifest, request)
 }
 
+// graded's bundled catalog directory, for a command that resolves calls
+// against it. Every such command stops here when the catalog can't be read:
+// without it each call the catalog covers would answer `[Unknown]`.
+fn bundled_catalog_directory() -> Result(String, GradedError) {
+  locate_catalog(effects.catalog_candidates())
+}
+
+// The first of `candidates` that is a readable directory holding at least one
+// catalog file. Takes the candidates as an argument so a test can point it at
+// paths of its own.
+@internal
+pub fn locate_catalog(candidates: List(String)) -> Result(String, GradedError) {
+  use catalog_dir <- result.try(
+    effects.first_existing_directory(candidates)
+    |> result.map_error(fn(candidates) {
+      CatalogError(NoCatalogDirectory(candidates))
+    }),
+  )
+  use _files <- result.map(catalog_files(catalog_dir))
+  catalog_dir
+}
+
+// The catalog files under `catalog_dir`. A directory holding no
+// `{package}@{version}.graded` file is not graded's catalog, whichever way the
+// lookup landed on it.
+fn catalog_files(
+  catalog_dir: String,
+) -> Result(List(effects.CatalogFile), GradedError) {
+  use files <- result.try(
+    effects.bundled_catalog_files(catalog_dir)
+    |> result.map_error(fn(cause) { DirectoryReadError(catalog_dir, cause) }),
+  )
+  use <- bool.guard(
+    when: files == [],
+    return: Error(CatalogError(EmptyCatalog(catalog_dir))),
+  )
+  Ok(files)
+}
+
 // The `manifest.toml` of the package `directory` belongs to, found by walking
 // up from it as every command's knowledge base does. Exposed so a test can walk
 // up from a fixture subdirectory.
@@ -2587,16 +2633,7 @@ pub fn catalog_report(
   manifest_path: String,
   request: cli.CatalogRequest,
 ) -> Result(String, GradedError) {
-  use files <- result.try(
-    effects.bundled_catalog_files(catalog_dir)
-    |> result.map_error(fn(cause) { DirectoryReadError(catalog_dir, cause) }),
-  )
-  // A directory holding no `{package}@{version}.graded` file is not graded's
-  // catalog, whichever way the lookup landed on it.
-  use <- bool.guard(
-    when: files == [],
-    return: Error(CatalogError(EmptyCatalog(catalog_dir))),
-  )
+  use files <- result.try(catalog_files(catalog_dir))
   case request {
     cli.ListCatalog -> Ok(catalog_listing(files, manifest_path))
     cli.ShowCatalog(package:, version:, directory: _) ->
@@ -3488,6 +3525,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   // public surface wrongly rather than partially.
   let directory = source_scope(directory).analysed
   use cfg <- result.try(read_config(directory))
+  use catalog_dir <- result.try(bundled_catalog_directory())
   let package_root = resolve_package_root(directory)
   use #(spec_on_disk, spec) <- result.try(read_spec_on_disk(cfg.spec_file))
   let declared_modules = annotation.module_assume_modules(spec)
@@ -3521,6 +3559,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   let kb_base =
     effects.load_knowledge_base(
       packages_dir(package_root),
+      catalog_dir,
       manifest_path(package_root),
       dependency_foreign(dep_sources),
     )

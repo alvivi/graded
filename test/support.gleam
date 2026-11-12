@@ -3,6 +3,7 @@
 
 import filepath
 import gleam/list
+import graded/internal/effects
 import simplifile
 
 // A `gleam.toml` for a package built for both targets. What a library its
@@ -16,6 +17,13 @@ pub fn dual_target_toml(package_name: String) -> String {
 [tools.graded]
 targets = [\"erlang\", \"javascript\"]
 "
+}
+
+// graded's own bundled catalog directory.
+pub fn catalog_directory() -> String {
+  let assert Ok(directory) = effects.find_catalog_directory()
+    as "graded's bundled catalog is not found"
+  directory
 }
 
 // Write one file, creating its parent directories first.

@@ -420,6 +420,33 @@ pub fn the_bundled_catalog_directory_is_found_test() {
   effects.find_catalog_directory() |> should.be_ok
 }
 
+pub fn locate_catalog_reports_every_candidate_when_none_exists_test() {
+  // What every command resolving calls against the catalog stops with, rather
+  // than answering `[Unknown]` for each call the catalog covers.
+  let candidates = ["build/locate_catalog_a", "build/locate_catalog_b"]
+  graded.locate_catalog(candidates)
+  |> should.equal(
+    Error(graded.CatalogError(graded.NoCatalogDirectory(candidates))),
+  )
+}
+
+pub fn locate_catalog_rejects_a_directory_holding_no_catalog_file_test() {
+  let root =
+    support.write_fixture("build/locate_catalog_empty", [
+      #("catalog/README", "not a catalog file\n"),
+    ])
+  let catalog_dir = root <> "/catalog"
+  graded.locate_catalog([catalog_dir])
+  |> should.equal(Error(graded.CatalogError(graded.EmptyCatalog(catalog_dir))))
+  support.cleanup(root)
+}
+
+pub fn locate_catalog_takes_the_first_candidate_that_exists_test() {
+  let catalog_dir = support.catalog_directory()
+  graded.locate_catalog(["build/locate_catalog_a", catalog_dir])
+  |> should.equal(Ok(catalog_dir))
+}
+
 pub fn a_directory_holding_no_catalog_file_test() {
   // Not graded's catalog, whichever form asked: an empty listing would read as
   // "nothing is bundled".
@@ -449,7 +476,7 @@ pub fn a_directory_holding_no_catalog_file_test() {
 
 pub fn the_seam_prints_the_selected_bundled_file_test() {
   let assert Ok(files) =
-    effects.bundled_catalog_files(effects.catalog_directory())
+    effects.bundled_catalog_files(support.catalog_directory())
   let assert Ok(installed) =
     dict.get(effects.manifest_versions("manifest.toml"), "gleam_stdlib")
   let assert Ok(selection) =

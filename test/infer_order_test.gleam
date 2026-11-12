@@ -1174,6 +1174,7 @@ pub fn run(value: String) -> Nil {
   let base_kb =
     effects.load_knowledge_base(
       "nonexistent_packages_dir",
+      support.catalog_directory(),
       "manifest.toml",
       dict.new(),
     )

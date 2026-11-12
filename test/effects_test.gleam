@@ -26,7 +26,7 @@ import support.{cleanup, write_fixture}
 // effectful functions, pure stdlib modules, and the Unknown fallback.
 
 fn knowledge_base() -> effects.KnowledgeBase {
-  effects.empty_knowledge_base(".")
+  effects.empty_knowledge_base(support.catalog_directory(), ".")
 }
 
 pub fn known_effectful_test() {
@@ -491,6 +491,7 @@ pub fn a_catalog_entry_names_its_package_test() {
 
   effects.load_knowledge_base(
     root <> "/packages",
+    support.catalog_directory(),
     root <> "/manifest.toml",
     dict.new(),
   )
@@ -688,7 +689,7 @@ pub fn the_bundled_catalog_declares_promise_new_test() {
       ),
     ])
   let #(all_effects, module_effects, params, _type_fields) =
-    effects.load_catalog(effects.catalog_directory(), root <> "/manifest.toml")
+    effects.load_catalog(support.catalog_directory(), root <> "/manifest.toml")
   let new = QualifiedName("gleam/javascript/promise", "new")
   dict.get(all_effects, new)
   |> should.equal(
@@ -2758,7 +2759,7 @@ fn in_module_m(ann: types.EffectAnnotation) -> types.EffectAnnotation {
 // [Unknown].
 
 pub fn catalog_directory_anchored_on_install_location_test() {
-  let directory = effects.catalog_directory()
+  let directory = support.catalog_directory()
 
   // The bundled path ends at `priv/catalog` but is prefixed by the install
   // location, so it differs from the bare cwd-relative fallback.
@@ -2823,6 +2824,7 @@ fn installed_dep_over_source(
   let kb =
     effects.load_knowledge_base(
       root <> "/packages",
+      support.catalog_directory(),
       root <> "/manifest.toml",
       dict.from_list(foreign),
     )
@@ -3214,6 +3216,7 @@ pub fn one_dep_specs_returns_line_cannot_bury_anothers_declaration_test() {
   let kb =
     effects.load_knowledge_base(
       root <> "/packages",
+      support.catalog_directory(),
       root <> "/missing_manifest.toml",
       dict.new(),
     )
@@ -3501,7 +3504,7 @@ pub fn a_duplicate_declaration_wins_term_and_bounds_together_test() {
       "assume m.f(a: [a]) : [a, X]\nassume m.f(b: [b]) : [b, Y]",
     )
   let base =
-    effects.empty_knowledge_base(".")
+    effects.empty_knowledge_base(support.catalog_directory(), ".")
     |> effects.with_assumes(annotation.extract_assumes(file), types.UserAssume)
   let name = QualifiedName("m", "f")
   let assert effects.Known(term, _source) = effects.lookup(base, name)
