@@ -275,6 +275,99 @@ pub fn module_path_for_source(
   filepath.strip_extension(relative)
 }
 
+// Source trees
+//
+// The one walk every source tree is read through: the project's own, an
+// installed package's and a path dependency's. It follows symbolic links and
+// does not enter a directory that is already one of its own ancestors, so a
+// link leading back up the tree is skipped where a plain walk fails on it.
+
+// Every file under `directory`, nested ones included, following symbolic
+// links. A directory whose identity is the same as one of its ancestors' — the
+// directories above it on the path it was reached by, up to the filesystem
+// root — is not entered; every other directory is. On a tree without such a
+// loop the result is the files `simplifile.get_files` lists, in its order.
+//
+// A file or directory that cannot be read, a dangling link among them, is an
+// error, as is a path of more links than the system resolves.
+pub fn source_files(
+  directory: String,
+) -> Result(List(String), simplifile.FileError) {
+  walk_source_directory(directory, ancestor_identities(directory))
+}
+
+// What identifies a directory however it is reached: the device it is on and
+// its inode there.
+type DirectoryIdentity {
+  DirectoryIdentity(device: Int, inode: Int)
+}
+
+fn walk_source_directory(
+  directory: String,
+  ancestors: Set(DirectoryIdentity),
+) -> Result(List(String), simplifile.FileError) {
+  use entries <- result.try(simplifile.read_directory(directory))
+  use acc, entry <- list.try_fold(over: entries, from: [])
+  let path = filepath.join(directory, entry)
+  use info <- result.try(simplifile.file_info(path))
+  case simplifile.file_info_type(info) {
+    simplifile.File -> Ok([path, ..acc])
+    simplifile.Directory -> {
+      let identity = directory_identity(info)
+      use <- bool.guard(
+        when: option.map(identity, set.contains(ancestors, _)) == Some(True),
+        return: Ok(acc),
+      )
+      let ancestors = case identity {
+        Some(identity) -> set.insert(ancestors, identity)
+        None -> ancestors
+      }
+      use nested <- result.try(walk_source_directory(path, ancestors))
+      Ok(list.append(acc, nested))
+    }
+    simplifile.Symlink | simplifile.Other -> Ok(acc)
+  }
+}
+
+// The identity `info` describes, or `None` where the platform reports no inode
+// for it, and a directory has nothing to be told apart by.
+fn directory_identity(info: simplifile.FileInfo) -> Option(DirectoryIdentity) {
+  case info.inode {
+    0 -> None
+    inode -> Some(DirectoryIdentity(device: info.dev, inode:))
+  }
+}
+
+// The identities of `directory` and of every directory above it, read by
+// climbing `..` until it leads nowhere new.
+fn ancestor_identities(directory: String) -> Set(DirectoryIdentity) {
+  climb_ancestors(directory, None, set.new())
+}
+
+fn climb_ancestors(
+  path: String,
+  previous: Option(DirectoryIdentity),
+  found: Set(DirectoryIdentity),
+) -> Set(DirectoryIdentity) {
+  case simplifile.file_info(path) |> option.from_result {
+    None -> found
+    Some(info) ->
+      case directory_identity(info) {
+        None -> found
+        Some(identity) ->
+          case previous == Some(identity) {
+            True -> found
+            False ->
+              climb_ancestors(
+                filepath.join(path, ".."),
+                Some(identity),
+                set.insert(found, identity),
+              )
+          }
+      }
+  }
+}
+
 // What went wrong reading a `gleam.toml`, as prose. The one renderer, so the
 // public error a caller reads and the message the CLI prints cannot fork.
 pub fn describe_error(error: ConfigError) -> String {

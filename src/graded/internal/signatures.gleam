@@ -732,7 +732,7 @@ pub fn fold_source_dir(
   initial: acc,
   step: fn(acc, String, String, Result(Module, Nil)) -> acc,
 ) -> acc {
-  case simplifile.get_files(source_dir) {
+  case config.source_files(source_dir) {
     Error(_) -> initial
     Ok(files) ->
       files

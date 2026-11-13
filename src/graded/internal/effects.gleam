@@ -2389,7 +2389,7 @@ pub fn manifest_package_names(manifest_path: String) -> Set(String) {
 // single package's `src/`), keyed the same way the rest of the tool keys
 // modules.
 pub fn source_dir_module_files(source_dir: String) -> Dict(String, String) {
-  case simplifile.get_files(source_dir) {
+  case config.source_files(source_dir) {
     Error(_) -> dict.new()
     Ok(files) ->
       files

@@ -2873,7 +2873,7 @@ fn format_one_spec(
 // registry used for positional argument matching at call sites.
 
 fn find_gleam_files(directory: String) -> Result(List(String), GradedError) {
-  simplifile.get_files(directory)
+  config.source_files(directory)
   |> result.map_error(DirectoryReadError(directory, _))
   |> result.map(
     list.filter(_, fn(path) {

@@ -8,11 +8,13 @@ import glance
 import gleam/dict
 import gleam/list
 import gleam/set
+import gleam/string
 import gleeunit/should
 import graded/internal/config
 import graded/internal/extract
 import graded/internal/types
 import simplifile
+import support
 
 // Fixture setup
 //
@@ -254,6 +256,132 @@ pub fn a_missing_gleam_toml_is_every_target_test() {
   |> should.equal(types.NamedTargets(types.every_target()))
   config.defaults_for("myapp").targets_source
   |> should.equal(config.NoConfig)
+}
+
+// Source trees
+//
+// `config.source_files` follows symbolic links and skips a directory that is
+// one of its own ancestors. Each tree is materialised under `build/`, which the
+// compiler does not read, and compared as a set of paths relative to its root.
+
+fn source_tree(
+  name: String,
+  files: List(String),
+  links: List(#(String, String)),
+) -> String {
+  support.write_linked_fixture(
+    "build/source_walk_" <> name,
+    list.map(files, fn(file) { #(file, "pub fn f() -> Int {\n  1\n}\n") }),
+    links,
+  )
+}
+
+fn walked(root: String, directory: String) -> set.Set(String) {
+  let assert Ok(files) = config.source_files(filepath.join(root, directory))
+  files
+  |> list.map(string.drop_start(_, string.length(root) + 1))
+  |> set.from_list
+}
+
+pub fn a_tree_without_links_reads_as_get_files_does_test() {
+  let root =
+    source_tree(
+      "plain",
+      ["src/a.gleam", "src/b/c.gleam", "src/b/d/e.gleam"],
+      [],
+    )
+  let assert Ok(expected) = simplifile.get_files(filepath.join(root, "src"))
+  let assert Ok(actual) = config.source_files(filepath.join(root, "src"))
+  actual |> should.equal(expected)
+  let _ = simplifile.delete(root)
+}
+
+pub fn a_link_to_a_parent_directory_is_skipped_test() {
+  let root =
+    source_tree("one_link_loop", ["src/app.gleam", "src/viasym/linked.gleam"], [
+      #("src/loop", ".."),
+    ])
+  walked(root, "src")
+  |> should.equal(set.from_list(["src/app.gleam", "src/viasym/linked.gleam"]))
+  let _ = simplifile.delete(root)
+}
+
+pub fn a_two_link_cycle_stops_where_it_closes_test() {
+  let root =
+    source_tree("two_link_cycle", ["src/x/mx.gleam", "src/w/mw.gleam"], [
+      #("src/x/to_w", "../w"),
+      #("src/w/to_x", "../x"),
+    ])
+  walked(root, "src")
+  |> should.equal(
+    set.from_list([
+      "src/x/mx.gleam",
+      "src/w/mw.gleam",
+      // Each alias reached through a link before the cycle closes.
+      "src/x/to_w/mw.gleam",
+      "src/w/to_x/mx.gleam",
+    ]),
+  )
+  let _ = simplifile.delete(root)
+}
+
+pub fn two_branching_loops_finish_test() {
+  let root =
+    source_tree("branching_loops", ["src/p/mp.gleam", "src/q/mq.gleam"], [
+      #("src/p/l1", "../q"),
+      #("src/p/l2", "../q"),
+      #("src/q/back", "../p"),
+    ])
+  walked(root, "src")
+  |> should.equal(
+    set.from_list([
+      "src/p/mp.gleam",
+      "src/p/l1/mq.gleam",
+      "src/p/l2/mq.gleam",
+      "src/q/mq.gleam",
+      "src/q/back/mp.gleam",
+    ]),
+  )
+  let _ = simplifile.delete(root)
+}
+
+pub fn two_links_to_one_directory_are_both_read_test() {
+  let root =
+    source_tree("two_links", ["src/app.gleam", "lib/m.gleam"], [
+      #("src/one", "../lib"),
+      #("src/two", "../lib"),
+    ])
+  walked(root, "src")
+  |> should.equal(
+    set.from_list(["src/app.gleam", "src/one/m.gleam", "src/two/m.gleam"]),
+  )
+  let _ = simplifile.delete(root)
+}
+
+pub fn a_linked_directory_and_a_linked_file_are_read_test() {
+  let root =
+    source_tree(
+      "linked_dir_and_file",
+      ["src/app.gleam", "lib/inner/m.gleam", "other/real.gleam"],
+      [#("src/dir", "../lib"), #("src/file.gleam", "../other/real.gleam")],
+    )
+  walked(root, "src")
+  |> should.equal(
+    set.from_list(["src/app.gleam", "src/dir/inner/m.gleam", "src/file.gleam"]),
+  )
+  let _ = simplifile.delete(root)
+}
+
+pub fn a_dangling_link_is_an_error_test() {
+  let root =
+    source_tree("dangling", ["src/app.gleam"], [#("src/gone", "../nowhere")])
+  config.source_files(filepath.join(root, "src")) |> should.be_error
+  let _ = simplifile.delete(root)
+}
+
+pub fn a_missing_directory_is_an_error_test() {
+  config.source_files("build/source_walk_never_written/src")
+  |> should.be_error
 }
 
 // Module paths
