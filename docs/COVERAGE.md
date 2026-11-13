@@ -497,8 +497,12 @@ section, so one site is never worded three ways.
 
 ## Path dependencies
 
-A `{ path = "..." }` dependency is typed the same way your own package is; a hex
-dependency is not typed and is not listed. Its counts are stated apart, so your
+A `{ path = "..." }` dependency is typed the same way your own package is, and
+so is every other local package your runtime dependencies reach — one another
+path dependency declares, or one an installed package requires that a path
+declaration provides — each listed in the order graded loads them, after every
+package it reaches. A dev-only path dependency is not typed and is not listed,
+and neither is a hex dependency. Its counts are stated apart, so your
 package's own numbers are only ever about your source:
 
 ```gleam

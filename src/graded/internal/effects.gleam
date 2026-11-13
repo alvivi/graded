@@ -157,6 +157,12 @@ pub type KnowledgeBase {
     // body that provably cannot perform it — the two implementations are never
     // built together.
     active_targets: Option(Set(String)),
+    // The structural entries the run held before any newly loaded local
+    // package was scanned, where one was: a call site reading one of the new
+    // entries is resolved against these too, and keeps their answer where the
+    // new ones would leave it `[Unknown]`. `None` where no package is newly
+    // loaded.
+    structural_baseline: Option(StructuralBaseline),
   )
 }
 
@@ -253,6 +259,7 @@ pub fn knowledge_base_from_catalog(
     callback_params: dict.new(),
     package_targets: types.all_targets(),
     active_targets: None,
+    structural_baseline: None,
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
@@ -280,6 +287,7 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     callback_params: dict.new(),
     package_targets: types.all_targets(),
     active_targets: None,
+    structural_baseline: None,
   )
 }
 
@@ -308,6 +316,7 @@ pub fn empty_knowledge_base(
     callback_params: dict.new(),
     package_targets: types.all_targets(),
     active_targets: None,
+    structural_baseline: None,
   )
   |> with_sourced_type_fields(cat_type_fields)
 }
@@ -1786,8 +1795,12 @@ pub fn resolves_over_catalog(
   name: QualifiedName,
   term: EffectTerm,
 ) -> Bool {
-  !dict.has_key(knowledge_base.dependency_foreign, name)
-  && effect_term.is_ground(term)
+  !dict.has_key(knowledge_base.dependency_foreign, name) && ground_shaped(term)
+}
+
+// Whether a term is ground, `Specific` and free of `Unknown`.
+fn ground_shaped(term: EffectTerm) -> Bool {
+  effect_term.is_ground(term)
   && names_only_known_effects(effect_term.to_effect_set(term))
 }
 
@@ -2336,6 +2349,356 @@ pub fn lookup_provenance(
     return: Error(Nil),
   )
   dict.get(knowledge_base.provenance, name)
+}
+
+// The structural baseline
+//
+// The constructors, factories, update builders and provenance a run held
+// before any newly loaded local package was scanned, beside the module paths
+// those packages alone contribute. A call site that reads one of the new
+// entries is resolved against these as well.
+
+pub type StructuralBaseline {
+  StructuralBaseline(
+    constructors: Dict(#(String, String), List(Option(String))),
+    factories: Dict(#(String, String), FactorySignature),
+    updates: Dict(#(String, String), UpdateSignature),
+    provenance: Dict(QualifiedName, ReturnProvenance),
+    // The module paths whose only scanned copy is a newly loaded package's.
+    modules: Set(String),
+  )
+}
+
+// Record the structural entries held before the newly loaded packages were
+// scanned, and the module paths those packages contribute. Nothing is recorded
+// where no module is newly loaded. The baseline's provenance starts as the
+// base's own.
+pub fn with_structural_baseline(
+  knowledge_base: KnowledgeBase,
+  constructors: Dict(#(String, String), List(Option(String))),
+  factories: Dict(#(String, String), FactorySignature),
+  updates: Dict(#(String, String), UpdateSignature),
+  modules: Set(String),
+) -> KnowledgeBase {
+  use <- bool.guard(when: set.is_empty(modules), return: knowledge_base)
+  KnowledgeBase(
+    ..knowledge_base,
+    structural_baseline: Some(StructuralBaseline(
+      constructors:,
+      factories:,
+      updates:,
+      provenance: knowledge_base.provenance,
+      modules:,
+    )),
+  )
+}
+
+// Merge a factory map into the baseline, on the terms `with_factories` merges
+// one into the base.
+pub fn with_baseline_factories(
+  knowledge_base: KnowledgeBase,
+  factories: Dict(#(String, String), FactorySignature),
+) -> KnowledgeBase {
+  map_baseline(knowledge_base, fn(baseline) {
+    StructuralBaseline(
+      ..baseline,
+      factories: dict.merge(baseline.factories, factories),
+    )
+  })
+}
+
+// Merge provenance into the baseline, on the terms `with_provenance` merges it
+// into the base.
+pub fn with_baseline_provenance(
+  knowledge_base: KnowledgeBase,
+  provenance: Dict(QualifiedName, ReturnProvenance),
+) -> KnowledgeBase {
+  map_baseline(knowledge_base, fn(baseline) {
+    StructuralBaseline(
+      ..baseline,
+      provenance: dict.merge(provenance, baseline.provenance),
+    )
+  })
+}
+
+fn map_baseline(
+  knowledge_base: KnowledgeBase,
+  update: fn(StructuralBaseline) -> StructuralBaseline,
+) -> KnowledgeBase {
+  case knowledge_base.structural_baseline {
+    Some(baseline) ->
+      KnowledgeBase(
+        ..knowledge_base,
+        structural_baseline: Some(update(baseline)),
+      )
+    None -> knowledge_base
+  }
+}
+
+// The constructor labels the baseline holds, where there is one.
+pub fn baseline_constructors(
+  knowledge_base: KnowledgeBase,
+) -> Option(Dict(#(String, String), List(Option(String)))) {
+  option.map(knowledge_base.structural_baseline, fn(baseline) {
+    baseline.constructors
+  })
+}
+
+// The base as it reads without the newly loaded packages' structural entries,
+// and the module paths they contribute; `None` where no package is newly
+// loaded. The view carries no baseline of its own.
+pub fn structural_baseline_view(
+  knowledge_base: KnowledgeBase,
+) -> Option(#(KnowledgeBase, Set(String))) {
+  use baseline <- option.map(knowledge_base.structural_baseline)
+  #(
+    KnowledgeBase(
+      ..knowledge_base,
+      constructors: baseline.constructors,
+      factories: baseline.factories,
+      updates: baseline.updates,
+      provenance: baseline.provenance,
+      structural_baseline: None,
+    ),
+    baseline.modules,
+  )
+}
+
+// Newly loaded packages
+//
+// A local package the root does not declare by path is loaded for the first
+// time. What it contributes is weighed name by name against `baseline` — the
+// answer the run gave before the package was loaded, read through the lookups
+// resolution reads — and written only where it takes no written answer away
+// and adds no `[Unknown]` the baseline answer lacked.
+
+// What kind of line a contribution is: inference (an `effects` line, or the
+// walk of the package's source) or a declaration (an `assume` line).
+type ContributionKind {
+  InferredContribution
+  DeclaredContribution
+}
+
+// Fold a newly loaded package's spec into the knowledge base. Its field
+// `assume` lines are not applied.
+pub fn with_newly_loaded_spec(
+  knowledge_base: KnowledgeBase,
+  baseline: KnowledgeBase,
+  dep: DepSpec,
+  origin: LookupOrigin,
+) -> KnowledgeBase {
+  let dep = sanitize_dep_spec(dep, knowledge_base.dependency_foreign)
+  let #(function_assumes, module_assumes) = split_assumes(dep.assumes, origin)
+  let declared =
+    admitted(
+      knowledge_base,
+      baseline,
+      dict.map_values(function_assumes, fn(_name, entry) { entry.0 }),
+      origin,
+      DeclaredContribution,
+    )
+  let inferred =
+    admitted(
+      knowledge_base,
+      baseline,
+      dep.effects,
+      origin,
+      InferredContribution,
+    )
+  knowledge_base
+  |> with_newly_loaded_modules(module_assumes)
+  |> with_admitted_effects(dict.merge(inferred, declared), dep.params)
+  |> gap_filling_declared_returns(
+    unanswered_returns(baseline, dep.declared_returns),
+    origin,
+  )
+  |> with_closed_returned_operators(
+    unanswered_returns(baseline, dep.returns),
+    origin,
+  )
+}
+
+// Fold the walk of a newly loaded package's source into the knowledge base.
+pub fn with_newly_loaded_inferred(
+  knowledge_base: KnowledgeBase,
+  baseline: KnowledgeBase,
+  inferred: Dict(QualifiedName, EffectTerm),
+  params: Dict(QualifiedName, List(ParamBound)),
+  returns: Dict(QualifiedName, EffectTerm),
+  provenance: Dict(QualifiedName, ReturnProvenance),
+  origin: LookupOrigin,
+) -> KnowledgeBase {
+  knowledge_base
+  |> with_admitted_effects(
+    admitted(knowledge_base, baseline, inferred, origin, InferredContribution),
+    params,
+  )
+  |> with_fresh_returned_operators(
+    unanswered_returns(baseline, returns),
+    origin,
+  )
+  |> with_provenance(
+    dict.filter(provenance, fn(name, traced) {
+      lookup_provenance(baseline, name) == Error(Nil) && grounds_fully(traced)
+    }),
+  )
+}
+
+// Whether a newly loaded package's term for `name` answers in place of the
+// baseline's. Where the baseline holds nothing, it does. Otherwise the
+// baseline's answer must be one a direct path dependency's spec displaces —
+// the catalog's, or the consumer's own module-level `assume` — and the term
+// must be resolved, or the baseline's answer exactly `[Unknown]`. Inference
+// never answers under the consumer's module-level `assume`, and inference
+// over an `@external` is never resolved.
+fn admits(
+  knowledge_base: KnowledgeBase,
+  baseline: KnowledgeBase,
+  name: QualifiedName,
+  term: EffectTerm,
+  kind: ContributionKind,
+) -> Bool {
+  case lookup_declared(baseline, name) {
+    Unknown -> True
+    Known(answer, source) -> {
+      let replaces_unknown =
+        types.is_wholly_unknown(effect_term.to_effect_set(answer))
+      displaceable(origin_of(source))
+      && case kind {
+        InferredContribution ->
+          !consumer_declares_module(baseline, name.module)
+          && {
+            replaces_unknown
+            || resolves_over_catalog(knowledge_base, name, term)
+          }
+        DeclaredContribution -> replaces_unknown || ground_shaped(term)
+      }
+    }
+  }
+}
+
+// The entries `admits` lets answer, each paired with `origin`.
+fn admitted(
+  knowledge_base: KnowledgeBase,
+  baseline: KnowledgeBase,
+  entries: Dict(QualifiedName, EffectTerm),
+  origin: LookupOrigin,
+  kind: ContributionKind,
+) -> Dict(QualifiedName, #(EffectTerm, LookupOrigin)) {
+  dict.filter(entries, fn(name, term) {
+    admits(knowledge_base, baseline, name, term, kind)
+  })
+  |> with_origin(origin)
+}
+
+// Whether a baseline answer from `origin` is one a direct path dependency's
+// spec displaces: the catalog's, directly or through a module-level line, or
+// the consumer's own module-level `assume`.
+fn displaceable(origin: LookupOrigin) -> Bool {
+  case origin {
+    ModuleAssumeOrigin(source: UserAssume) -> True
+    Catalog(..) | ModuleAssumeOrigin(..) | FieldAssumeOrigin(..) ->
+      is_catalog_origin(origin)
+    UserAssume
+    | CommittedSpec
+    | ProjectInferred
+    | DependencySpec(..)
+    | PathDependency(..)
+    | PathDependencyInferred(..) -> False
+  }
+}
+
+fn consumer_declares_module(baseline: KnowledgeBase, module: String) -> Bool {
+  case dict.get(baseline.module_effects, module) {
+    Ok(#(_term, ModuleAssumeOrigin(source: UserAssume))) -> True
+    Ok(_) | Error(Nil) -> False
+  }
+}
+
+// Write each admitted entry over whatever the base holds for its name, its
+// bounds with it.
+fn with_admitted_effects(
+  knowledge_base: KnowledgeBase,
+  admitted: Dict(QualifiedName, #(EffectTerm, LookupOrigin)),
+  params: Dict(QualifiedName, List(ParamBound)),
+) -> KnowledgeBase {
+  KnowledgeBase(
+    ..knowledge_base,
+    all_effects: dict.merge(knowledge_base.all_effects, admitted),
+    param_bounds: dict.merge(
+      knowledge_base.param_bounds,
+      dict.map_values(admitted, fn(name, _entry) {
+        dict.get(params, name) |> result.unwrap([])
+      }),
+    ),
+  )
+}
+
+// Fold a newly loaded package's module-level `assume` lines. A resolved one
+// ranks as a direct path dependency's does, clearing the catalog's per-function
+// entries for its module; any other is written only where no module-level
+// line covers the module, and clears nothing.
+fn with_newly_loaded_modules(
+  knowledge_base: KnowledgeBase,
+  module_assumes: Dict(String, #(EffectTerm, LookupOrigin)),
+) -> KnowledgeBase {
+  let #(resolved, unresolved) =
+    dict.to_list(module_assumes)
+    |> list.partition(fn(entry) {
+      let #(_module, #(term, _origin)) = entry
+      names_only_known_effects(effect_term.to_effect_set(term))
+    })
+  let winning =
+    over_catalog(knowledge_base.module_effects, dict.from_list(resolved))
+  let declared = set.from_list(dict.keys(winning))
+  let #(standing, standing_bounds) =
+    outside_declared_modules(
+      knowledge_base.all_effects,
+      knowledge_base.param_bounds,
+      declared,
+    )
+  let filled =
+    list.filter(unresolved, fn(entry) {
+      !dict.has_key(knowledge_base.module_effects, entry.0)
+    })
+    |> dict.from_list
+  KnowledgeBase(
+    ..knowledge_base,
+    all_effects: standing,
+    param_bounds: standing_bounds,
+    module_effects: knowledge_base.module_effects
+      |> dict.merge(winning)
+      |> dict.merge(filled),
+  )
+}
+
+// The entries of a returned-operator map for names the baseline holds no
+// usable summary for.
+fn unanswered_returns(
+  baseline: KnowledgeBase,
+  returns: Dict(QualifiedName, a),
+) -> Dict(QualifiedName, a) {
+  dict.filter(returns, fn(name, _entry) {
+    lookup_returned_operator(baseline, name) == Error(Nil)
+  })
+}
+
+// Whether provenance grounds without any opaque or untraceable component.
+fn grounds_fully(provenance: ReturnProvenance) -> Bool {
+  case provenance {
+    types.Passthrough(..) | types.Path(..) -> True
+    types.Build(fields:) ->
+      list.all(dict.values(fields), fn(field) {
+        case field {
+          types.FieldParam(..) | types.FieldPath(..) -> True
+          types.FieldValue(value: types.OtherExpression) | types.FieldOpaque ->
+            False
+          types.FieldValue(..) -> True
+        }
+      })
+    types.Join(branches:) -> branches != [] && list.all(branches, grounds_fully)
+    types.Opaque -> False
+  }
 }
 
 // Dependency sources

@@ -9,8 +9,10 @@
 import filepath
 import gleam/bool
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
@@ -161,6 +163,8 @@ pub type LocalPackage {
     // Its `[dependencies]`, or `Error(Nil)` where its `gleam.toml` could not
     // be read or parsed.
     dependencies: Result(Dict(String, Declaration), Nil),
+    // Its spec file, relative to its directory, as its `gleam.toml` names it.
+    spec_file: String,
   )
 }
 
@@ -263,6 +267,38 @@ pub fn class_of(local: LocalPackages, name: String) -> PackageClass {
   }
 }
 
+// The local packages the root's runtime dependencies reach, callees first:
+// a package comes after every package it reaches through any path of the
+// graph, installed packages included. Within a cycle, the root's own path
+// dependencies keep the order `path_dependencies` gives them, and the others
+// follow by name. No order is promised between independent packages.
+pub fn runtime_order(local: LocalPackages) -> List(LocalPackage) {
+  let direct_rank =
+    list.index_map(local.direct, fn(entry, rank) { #(entry.0, rank) })
+    |> dict.from_list
+  topo.scc_order(local.edges)
+  |> list.flat_map(fn(component) {
+    component
+    |> list.filter(set.contains(local.runtime, _))
+    |> list.filter_map(dict.get(local.packages, _))
+    |> list.sort(fn(a, b) {
+      case dict.get(direct_rank, a.name), dict.get(direct_rank, b.name) {
+        Ok(a_rank), Ok(b_rank) -> int.compare(a_rank, b_rank)
+        Ok(_), Error(Nil) -> order.Lt
+        Error(Nil), Ok(_) -> order.Gt
+        Error(Nil), Error(Nil) -> string.compare(a.name, b.name)
+      }
+    })
+  })
+}
+
+// The runtime local packages the root does not declare by path, in
+// `runtime_order`.
+pub fn newly_loaded(local: LocalPackages) -> List(LocalPackage) {
+  runtime_order(local)
+  |> list.filter(fn(package) { class_of(local, package.name) == NewlyLoaded })
+}
+
 fn sorted_entries(
   declarations: Dict(String, Declaration),
 ) -> List(#(String, Declaration)) {
@@ -304,11 +340,16 @@ fn locate(
       case dict.has_key(walk.packages, name) {
         True -> #(walk, None)
         False -> {
-          let config_path = filepath.join(directory, "gleam.toml")
+          let toml = config.read_toml(filepath.join(directory, "gleam.toml"))
           let dependencies =
-            config.read_toml(config_path)
-            |> result.try(declarations_at(_, "dependencies", directory))
-          let package = LocalPackage(name:, directory:, dependencies:)
+            result.try(toml, declarations_at(_, "dependencies", directory))
+          let package =
+            LocalPackage(
+              name:,
+              directory:,
+              dependencies:,
+              spec_file: config.spec_file_in(toml, name),
+            )
           let flags = case dependencies {
             Ok(_) -> walk.flags
             Error(Nil) -> [UnreadableConfig(directory), ..walk.flags]

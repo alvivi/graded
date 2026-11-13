@@ -923,12 +923,11 @@ fn project_context(
   let stale_returns_clauses = stale_project_assume_returns(spec, native_of)
   // Walked once for the run, and handed to everything that reads the tree.
   let local = package_tree.discover(package_root)
-  let dep_sources = dependency_sources(package_root, local, package_targets)
+  let scan = dependency_scan(package_root, local, package_targets)
+  let dep_sources = scan.sources
+  let project_registry = build_project_registry(index)
   let registry =
-    signatures.merge(
-      dependency_registry(dep_sources),
-      build_project_registry(index),
-    )
+    signatures.merge(dependency_registry(dep_sources), project_registry)
   // Scanned once for the run: girard's resolver reads it here, and every
   // spec-less path dependency below is typed against the same map.
   let dep_files = tree_module_files(package_root, local)
@@ -938,12 +937,12 @@ fn project_context(
   // constructions through the same labels.
   let constructors = package_constructors(index, dep_sources)
 
+  // Read once: the run's knowledge base starts from it, and so does the
+  // baseline a newly loaded package is weighed against.
+  let catalog_kb = catalog_knowledge_base(package_root, catalog, scan)
   let kb_base =
-    effects.knowledge_base_from_catalog(
-      packages_dir(package_root),
-      catalog,
-      dependency_foreign(dep_sources),
-    )
+    catalog_kb
+    |> effects.with_dependency_foreign(dependency_foreign(dep_sources))
     // Before anything is looked up: every foreign lookup is read on the targets
     // this build compiles, and every command reads them the same way.
     |> effects.with_package_targets(cfg.targets)
@@ -962,6 +961,7 @@ fn project_context(
     // hands back has to be in reach while they are, not only afterwards.
     |> with_spec_declared_returns(spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets, constructors)
+    |> with_tree_baseline(index, scan, package_targets)
   // The dependency modules whose `@external` falls back to a running Gleam
   // body — read once, and handed to both passes that weigh them: the
   // path-dependency inference below types the ones it owns, and the fallback
@@ -976,6 +976,16 @@ fn project_context(
       declared_modules,
       package_targets,
       retained,
+      arbitration_baseline(
+        local,
+        catalog_kb,
+        scan,
+        project_registry,
+        spec,
+        stale_assumes,
+        stale_returns_clauses,
+        package_targets,
+      ),
     )
   let kb_base =
     kb_base
@@ -993,8 +1003,6 @@ fn project_context(
     // against. Before this package's own inference, whose walks read the
     // summaries this leaves behind.
     |> with_dependency_fallback_effects(
-      package_root,
-      local,
       dep_files,
       retained,
       typed_dep_modules,
@@ -1043,16 +1051,7 @@ fn project_context(
     // After `with_builders` folded the dependencies' factories, since this
     // merges rather than replaces and the later fold wins: this package's own
     // modules answer for a path a dependency also claims.
-    |> effects.with_factories(
-      qualify_by_module(index, fn(module_path, module) {
-        extract.factory_map(
-          module_path,
-          module,
-          types.declaration_targets(package_targets),
-          constructors,
-        )
-      }),
-    )
+    |> with_project_factories(index, package_targets, constructors)
   // Fill gaps for project modules not (yet) in the spec by inferring them in
   // memory, so `check` resolves cross-module calls without a prior `graded infer`.
   // Committed effects are never overridden; fresh returns win over committed
@@ -1324,35 +1323,93 @@ pub fn context_placement_files(
   ctx.placement_files
 }
 
-// The same map, over a tree already discovered.
+// The directories whose `gleam.toml` the context assembled for `directory`
+// read, in the order it read them.
+@internal
+pub fn context_tree_visits(
+  directory: String,
+) -> Result(List(String), GradedError) {
+  use ctx <- result.map(load_project_context(directory))
+  ctx.local_packages.visited
+}
+
+// What the run answered for `name` before any newly loaded package was
+// loaded, rendered as `graded effect --format=graded` renders an answer.
+// `EffectNotFound` where nothing answered, as for a project with no newly
+// loaded package.
+@internal
+pub fn arbitration_baseline_answer(
+  directory: String,
+  name: String,
+) -> Result(String, GradedError) {
+  use sources <- result.try(load_project_sources(
+    source_scope(directory).analysed,
+  ))
+  let ProjectSources(cfg:, spec:, index:, package_root:, ..) = sources
+  use catalog <- result.try(load_bundled_catalog(package_root))
+  let native_of = native_functions_of(index, cfg.targets)
+  let local = package_tree.discover(package_root)
+  let scan = dependency_scan(package_root, local, cfg.targets)
+  case
+    arbitration_baseline(
+      local,
+      catalog_knowledge_base(package_root, catalog, scan),
+      scan,
+      build_project_registry(index),
+      spec,
+      stale_project_assumes(spec, native_of),
+      stale_project_assume_returns(spec, native_of),
+      cfg.targets,
+    )
+  {
+    None -> Error(EffectNotFound(name))
+    Some(baseline) ->
+      answer_from(baseline, name)
+      |> result.map(answer.render_graded)
+      |> result.replace_error(EffectNotFound(name))
+  }
+}
+
+// The same map, over a tree already discovered: the installed packages, the
+// root's own path dependencies, whose copy of a module path wins, and every
+// other local package the root's runtime dependencies reach, which fills only
+// the paths neither holds. Dev-only packages are not in it.
 fn tree_module_files(
   package_root: String,
   local: LocalPackages,
 ) -> Dict(String, String) {
   let installed = effects.dependency_module_files(packages_dir(package_root))
-  list.fold(local.direct, installed, fn(acc, dep) {
-    let #(_name, dep_path) = dep
-    let src_dir =
-      filepath.join(config.resolve_path(package_root, dep_path), "src")
-    dict.merge(acc, effects.source_dir_module_files(src_dir))
+  let read_today =
+    list.fold(local.direct, installed, fn(acc, dep) {
+      let #(_name, dep_path) = dep
+      let src_dir =
+        filepath.join(config.resolve_path(package_root, dep_path), "src")
+      dict.merge(acc, effects.source_dir_module_files(src_dir))
+    })
+  package_tree.newly_loaded(local)
+  |> list.fold(read_today, fn(acc, package) {
+    dict.merge(
+      effects.source_dir_module_files(filepath.join(package.directory, "src")),
+      acc,
+    )
   })
 }
 
-// Every module the spec lint may place: the dependency scan, and the `src/` of
-// every local package it does not cover, dev-only ones included. A module the
+// Every module the spec lint may place: the dependency scan, which holds every
+// runtime local package, and the `src/` of every dev-only one. A module the
 // scan holds keeps the file it holds.
 fn placement_files(
   dep_files: Dict(String, String),
   local: LocalPackages,
 ) -> Dict(String, String) {
   use acc, name, package <- dict.fold(local.packages, dep_files)
-  case list.any(local.direct, fn(entry) { entry.0 == name }) {
-    True -> acc
-    False ->
+  case package_tree.class_of(local, name) {
+    package_tree.DevOnly ->
       dict.merge(
         effects.source_dir_module_files(filepath.join(package.directory, "src")),
         acc,
       )
+    package_tree.Direct | package_tree.NewlyLoaded -> acc
   }
 }
 
@@ -3603,24 +3660,22 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   // `index`/`package_root`.
   // As in `project_context`: one walk of the tree for the run.
   let local = package_tree.discover(package_root)
-  let dep_sources = dependency_sources(package_root, local, package_targets)
+  let scan = dependency_scan(package_root, local, package_targets)
+  let dep_sources = scan.sources
+  let project_registry = build_project_registry(index)
   let registry =
-    signatures.merge(
-      dependency_registry(dep_sources),
-      build_project_registry(index),
-    )
+    signatures.merge(dependency_registry(dep_sources), project_registry)
   // As in `project_context`: one dependency scan for the run.
   let dep_files = tree_module_files(package_root, local)
   let type_info = build_type_index(index, dep_files, package_targets)
   // As in `project_context`: one map for the run, not one per module.
   let constructors = package_constructors(index, dep_sources)
 
+  // As in `project_context`: read once, for the run and for the baseline.
+  let catalog_kb = catalog_knowledge_base(package_root, catalog, scan)
   let kb_base =
-    effects.knowledge_base_from_catalog(
-      packages_dir(package_root),
-      catalog,
-      dependency_foreign(dep_sources),
-    )
+    catalog_kb
+    |> effects.with_dependency_foreign(dependency_foreign(dep_sources))
     |> effects.with_package_targets(cfg.targets)
     // As in `project_context`: the callback parameters of every parsed
     // signature, in reach of the walks below.
@@ -3636,6 +3691,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     // path-dep pass whose own inference reads them too.
     |> with_spec_declared_returns(spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets, constructors)
+    |> with_tree_baseline(index, scan, package_targets)
   // As in `project_context`: read once, and handed to both passes that weigh
   // these modules.
   let retained = retained_fallback_modules(dep_sources)
@@ -3648,6 +3704,16 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
       declared_modules,
       package_targets,
       retained,
+      arbitration_baseline(
+        local,
+        catalog_kb,
+        scan,
+        project_registry,
+        spec,
+        stale_assumes,
+        stale_returns_clauses,
+        package_targets,
+      ),
     )
   let kb_base =
     kb_base
@@ -3657,8 +3723,6 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     // As in `project_context`: after every layer that can key a dependency name,
     // and before this package's own inference reads the summaries.
     |> with_dependency_fallback_effects(
-      package_root,
-      local,
       dep_files,
       retained,
       typed_dep_modules,
@@ -3673,16 +3737,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
 
   let base_kb =
     kb_base
-    |> effects.with_factories(
-      qualify_by_module(index, fn(module_path, module) {
-        extract.factory_map(
-          module_path,
-          module,
-          types.declaration_targets(package_targets),
-          constructors,
-        )
-      }),
-    )
+    |> with_project_factories(index, package_targets, constructors)
 
   let graph = build_dependency_graph(index)
   use sorted <- result.try(
@@ -3803,6 +3858,7 @@ fn infer_one_module(
       threaded_kb,
       qualify_bare_names(provenance, module_path),
     )
+    |> with_module_baseline_provenance(module, module_path, package_targets)
 
   let public_names = public_function_names(module)
   let public_annotations =
@@ -3906,6 +3962,27 @@ fn fold_inferred_module(
   effects.with_provenance(
     threaded_kb,
     qualify_bare_names(provenance, module_path),
+  )
+  |> with_module_baseline_provenance(module, module_path, package_targets)
+}
+
+// Fold a module's provenance, as the structural baseline reads it, into the
+// baseline.
+fn with_module_baseline_provenance(
+  knowledge_base: KnowledgeBase,
+  module: glance.Module,
+  module_path: String,
+  package_targets: types.PackageTargets,
+) -> KnowledgeBase {
+  effects.with_baseline_provenance(
+    knowledge_base,
+    checker.baseline_provenance(
+      module,
+      module_path,
+      knowledge_base,
+      package_targets,
+    )
+      |> qualify_bare_names(module_path),
   )
 }
 
@@ -4361,8 +4438,6 @@ fn dependency_foreign(
 // length of one girard run and hands back no AST.
 fn with_dependency_fallback_effects(
   knowledge_base: KnowledgeBase,
-  package_root: String,
-  local: LocalPackages,
   dep_files: Dict(String, String),
   retained: Dict(String, RetainedModule),
   typed: Dict(String, typeinfo.ModuleReading),
@@ -4378,7 +4453,7 @@ fn with_dependency_fallback_effects(
       !dict.has_key(typed, module.source_path)
     })
   let readings =
-    fallback_readings(package_root, local, dep_files, untyped, targets)
+    fallback_readings(dep_files, untyped, targets)
     |> dict.merge(typed)
   let #(ordered, cyclic) = dependency_walk_order(retained)
   // A cycle member's body is never walked, but its callback shape is still
@@ -4431,14 +4506,12 @@ fn with_dependency_fallback_effects(
 // contributes nothing here, and one module of a fifty-module package is all the
 // walk reads. Everything those modules import, the rest of their own packages
 // included, is resolved behind girard's resolver off the consumer's tree, which
-// holds every installed package and every path dependency's source; a package
-// installed from hex is read there exactly as a path dependency is.
+// holds every installed package and every runtime local package's source; a
+// package installed from hex is read there exactly as a local one is.
 //
 // The parsed modules live only as long as the girard run: what comes back is
 // the reading, and the walk re-parses each module in its turn.
 fn fallback_readings(
-  package_root: String,
-  local: LocalPackages,
   dep_files: Dict(String, String),
   retained: Dict(String, RetainedModule),
   targets: List(girard.Target),
@@ -4452,32 +4525,13 @@ fn fallback_readings(
           dict.insert(acc, module_path, #(module.source_path, parsed))
       }
     })
-  let type_info =
-    type_index_on_targets(
-      index,
-      fallback_resolver_files(package_root, local, dep_files),
-      targets,
-    )
+  let type_info = type_index_on_targets(index, dep_files, targets)
   use acc, module_path, #(source_path, _module) <- dict.fold(index, dict.new())
   dict.insert(
     acc,
     source_path,
     typeinfo.reading_for_module(type_info, module_path),
   )
-}
-
-// The tree those readings resolve against: the consumer's own dependency scan,
-// plus what each declared path dependency declares for itself. The consumer's
-// scan wins a collision, as it does for one path dependency alone.
-fn fallback_resolver_files(
-  package_root: String,
-  local: LocalPackages,
-  dep_files: Dict(String, String),
-) -> Dict(String, String) {
-  list.fold(local.direct, dep_files, fn(acc, dep) {
-    let #(_name, dep_path) = dep
-    path_dep_resolver_files(config.resolve_path(package_root, dep_path), acc)
-  })
 }
 
 // The reading recorded for the module re-parsed from `source_path`, or the
@@ -4628,18 +4682,134 @@ fn merge_dependency_sources(
   DependencySources(modules: dict.merge(a.modules, b.modules))
 }
 
-// Every dependency's source-derived entries: installed packages under
-// `build/packages`, then path dependencies, whose copy of a module path wins.
-fn dependency_sources(
+// The dependency scan a command reads, and the same scan as it stood before
+// any local package the root does not declare by path was loaded.
+type TreeScan {
+  TreeScan(
+    // Installed packages and every local package the root's runtime
+    // dependencies reach. An installed or direct copy of a module path wins
+    // over a newly loaded one.
+    sources: DependencySources,
+    // Installed packages and the root's own path dependencies.
+    baseline: DependencySources,
+    // The module paths only a newly loaded package's copy holds.
+    newly_loaded_modules: Set(String),
+  )
+}
+
+fn dependency_scan(
   package_root: String,
   local: LocalPackages,
   package_targets: types.PackageTargets,
-) -> DependencySources {
-  merge_dependency_sources(
-    packages_dir_sources(packages_dir(package_root), package_targets),
-    path_dep_sources(package_root, local, package_targets),
+) -> TreeScan {
+  let baseline =
+    merge_dependency_sources(
+      packages_dir_sources(packages_dir(package_root), package_targets),
+      path_dep_sources(package_root, local, package_targets),
+    )
+  let newly_loaded =
+    package_tree.newly_loaded(local)
+    |> list.fold(empty_dependency_sources(), fn(acc, package) {
+      merge_dependency_sources(
+        acc,
+        source_dir_sources(package.directory <> "/src", package_targets),
+      )
+    })
+  let newly_loaded_modules =
+    dict.keys(newly_loaded.modules)
+    |> list.filter(fn(module_path) {
+      !dict.has_key(baseline.modules, module_path)
+    })
+    |> set.from_list
+  let labelled = with_declared_labels(baseline, package_targets)
+  // With no module of their own, the newly loaded packages add nothing the
+  // installed and direct copies do not already hold.
+  let sources = case set.is_empty(newly_loaded_modules) {
+    True -> labelled
+    False ->
+      merge_dependency_sources(newly_loaded, baseline)
+      |> with_declared_labels(package_targets)
+  }
+  TreeScan(sources:, baseline: labelled, newly_loaded_modules:)
+}
+
+// Record what the knowledge base's constructors, factories and update
+// builders were before the newly loaded packages were scanned, where any was.
+fn with_tree_baseline(
+  knowledge_base: KnowledgeBase,
+  index: Dict(String, #(String, glance.Module)),
+  scan: TreeScan,
+  package_targets: types.PackageTargets,
+) -> KnowledgeBase {
+  use <- bool.guard(
+    when: set.is_empty(scan.newly_loaded_modules),
+    return: knowledge_base,
   )
-  |> with_declared_labels(package_targets)
+  let built =
+    with_builders(
+      effects.new_knowledge_base(),
+      index,
+      scan.baseline,
+      package_targets,
+      package_constructors(index, scan.baseline),
+    )
+  effects.with_structural_baseline(
+    knowledge_base,
+    effects.constructors(built),
+    effects.factories(built),
+    effects.updates(built),
+    scan.newly_loaded_modules,
+  )
+}
+
+// The catalog and the installed packages' specs, as a knowledge base, over the
+// `@external`s of the scan without the newly loaded packages. Their own
+// externals are added to it for the run; a newly loaded package is weighed
+// against it as it stands.
+fn catalog_knowledge_base(
+  package_root: String,
+  catalog: effects.BundledCatalog,
+  scan: TreeScan,
+) -> KnowledgeBase {
+  effects.knowledge_base_from_catalog(
+    packages_dir(package_root),
+    catalog,
+    dependency_foreign(scan.baseline),
+  )
+}
+
+// What the run answered before any newly loaded package was loaded:
+// `catalog_kb` and every line of the consumer's own spec, over the callback
+// parameters of the scan without them. `None` where no package is newly
+// loaded.
+fn arbitration_baseline(
+  local: LocalPackages,
+  catalog_kb: KnowledgeBase,
+  scan: TreeScan,
+  project_registry: SignatureRegistry,
+  spec: GradedFile,
+  stale_assumes: Set(String),
+  stale_returns_clauses: Set(String),
+  package_targets: types.PackageTargets,
+) -> Option(KnowledgeBase) {
+  use <- bool.guard(when: package_tree.newly_loaded(local) == [], return: None)
+  catalog_kb
+  |> effects.with_package_targets(package_targets)
+  |> effects.with_callback_params(
+    signatures.callback_param_names(signatures.merge(
+      dependency_registry(scan.baseline),
+      project_registry,
+    )),
+  )
+  |> with_spec_assumes(spec, stale_assumes)
+  |> with_spec_declared_returns(spec, stale_returns_clauses)
+  |> with_committed_spec(spec, stale_assumes)
+  |> effects.with_closed_returned_operators(
+    effects.load_spec_returns_from_file(spec),
+    types.CommittedSpec,
+  )
+  |> with_spec_type_fields(spec)
+  |> Some
 }
 
 // Derive again the signatures that waited on another module's declared labels.
@@ -4756,6 +4926,34 @@ fn with_builders(
       )
     }),
   )
+}
+
+// Fold the factories this package's own modules define, routed through
+// `constructors` — and into the structural baseline, where there is one,
+// routed through the labels it holds.
+fn with_project_factories(
+  knowledge_base: KnowledgeBase,
+  index: Dict(String, #(String, glance.Module)),
+  package_targets: types.PackageTargets,
+  constructors: Dict(#(String, String), List(Option(String))),
+) -> KnowledgeBase {
+  let factories = fn(constructors) {
+    qualify_by_module(index, fn(module_path, module) {
+      extract.factory_map(
+        module_path,
+        module,
+        types.declaration_targets(package_targets),
+        constructors,
+      )
+    })
+  }
+  let knowledge_base =
+    effects.with_factories(knowledge_base, factories(constructors))
+  case effects.baseline_constructors(knowledge_base) {
+    Some(baseline) ->
+      effects.with_baseline_factories(knowledge_base, factories(baseline))
+    None -> knowledge_base
+  }
 }
 
 // Scan the `src/` tree of every installed dependency under `build/packages`.
@@ -4912,37 +5110,40 @@ fn read_spec_on_disk(
 
 // Path dependencies
 //
-// Fold path dependencies into the knowledge base: read a committed dep spec
-// when present, otherwise infer the dep from source in topological order.
+// Fold every local package the root's runtime dependencies reach into the
+// knowledge base: read a committed spec when present, otherwise infer the
+// package from source.
 
-// For each path dependency declared in `gleam.toml`:
+// Each runtime local package, callees before callers, so a package is folded
+// after every package it reaches:
 //
-// 1. Try to load its spec file (via the dep's own `[tools.graded]`
-//    config, defaulting to `<package_name>.graded`) and fold its
-//    annotations into the knowledge base via `with_path_dep_spec`, which
-//    places them below the consumer's own entries and above the catalog.
-//    This is the fast, intended path: the dep author already ran `graded
-//    infer`, committed the spec file, and the consumer just reads it.
+// 1. Its spec file (named by its own `[tools.graded]`, defaulting to
+//    `<package_name>.graded`), when it ships one. A root path dependency's
+//    spec folds through `with_path_dep_spec`, below the consumer's own entries
+//    and above the catalog.
 //
-// 2. If the dep has no spec file — or one whose bytes graded cannot read,
-//    which is warned about and read as shipping none — fall back to
-//    inferring from source via
-//    `infer_path_dep` so path deps without graded set up still work. These
-//    results gap-fill against every written line, and are arbitrated with the
-//    catalog by `with_path_dep_inferred`: a function graded resolved from the
-//    dependency's source answers from source, and one it could not resolve
-//    yields to whichever of the catalog's two line shapes speaks.
-//    Cross-path-dep imports are not currently merged into a single graph
-//    — each dep is processed sequentially.
+// 2. Otherwise — no spec, or one whose bytes graded cannot read, which is
+//    warned about and read as shipping none — inference over its source. A
+//    root path dependency's results gap-fill against every written line and
+//    are arbitrated with the catalog by `with_path_dep_inferred`.
+//
+// A package the root does not declare by path is weighed instead, name by
+// name, against `baseline` — what the run answered before that package was
+// loaded — through `with_newly_loaded_spec` and `with_newly_loaded_inferred`:
+// its contribution is written only where it takes no written answer away and
+// adds no `[Unknown]` the baseline answer lacked.
 //
 // A module the consumer declared with a module-level external (in
-// `consumer_modules`) is not inferred over during step 2 (see `infer_path_dep`),
-// so the consumer's declaration governs it. The spec-file branch is left
-// untouched: a function-keyed entry from an authoritative dep spec still wins
-// over the *consumer's* module-level external, per-function beating
+// `consumer_modules`) is not inferred over (see `infer_path_dep`), so the
+// consumer's declaration governs it. A root path dependency's spec is left
+// untouched by it: a function-keyed entry from an authoritative dep spec still
+// wins over the *consumer's* module-level external, per-function beating
 // module-level. Against the catalog the dependency's own module-level line
 // reads the other way — for a module it ships, it answers over the catalog's
 // per-function entries too (`with_path_dep_spec`).
+//
+// Every package is typed against `dep_files`, which holds every runtime local
+// package's modules beside the installed ones.
 fn enrich_with_path_deps(
   knowledge_base: KnowledgeBase,
   package_root: String,
@@ -4951,37 +5152,48 @@ fn enrich_with_path_deps(
   consumer_modules: Set(String),
   package_targets: types.PackageTargets,
   retained: Dict(String, RetainedModule),
+  baseline: Option(KnowledgeBase),
 ) -> #(
   KnowledgeBase,
   Dict(String, typeinfo.ModuleReading),
   List(coverage.PathDependency),
 ) {
-  use state, dep <- list.fold(local.direct, #(knowledge_base, dict.new(), []))
+  let direct = dict.from_list(local.direct)
+  use state, package <- list.fold(
+    package_tree.runtime_order(local),
+    #(knowledge_base, dict.new(), []),
+  )
   let #(kb, readings, typed) = state
-  let #(name, dep_path) = dep
-  // Path dependency locations are declared relative to the project root,
-  // except an absolute `path`, which `resolve_path` leaves untouched.
-  let resolved_dep_path = config.resolve_path(package_root, dep_path)
-  let spec_path = config.spec_file_for(resolved_dep_path, name)
-  let load = effects.load_dep_spec_at(resolved_dep_path, spec_path)
+  let name = package.name
+  let #(location, newly_loaded) = case dict.get(direct, name) {
+    // A root path dependency is read where the root's declaration names it,
+    // relative to the project root unless absolute.
+    Ok(dep_path) -> #(config.resolve_path(package_root, dep_path), None)
+    Error(Nil) -> #(package.directory, baseline)
+  }
+  let spec_path = filepath.join(location, package.spec_file)
+  let load = effects.load_dep_spec_at(location, spec_path)
   effects.warn_dep_spec_load(name, load)
   case load {
-    effects.SpecLoaded(spec:, ..) -> #(
-      effects.with_path_dep_spec(kb, spec, types.PathDependency(package: name)),
-      readings,
-      typed,
-    )
+    effects.SpecLoaded(spec:, ..) -> {
+      let origin = types.PathDependency(package: name)
+      let kb = case newly_loaded {
+        Some(baseline) ->
+          effects.with_newly_loaded_spec(kb, baseline, spec, origin)
+        None -> effects.with_path_dep_spec(kb, spec, origin)
+      }
+      #(kb, readings, typed)
+    }
     effects.SpecAbsent | effects.SpecUnreadable(..) -> {
-      let index = path_dep_index(resolved_dep_path)
-      let type_info =
-        path_dep_type_info(resolved_dep_path, index, dep_files, package_targets)
+      let index = path_dep_index(location)
+      let type_info = build_type_index(index, dep_files, package_targets)
       let readings = retained_readings(readings, index, type_info, retained)
       // Counted beside the knowledge base for the coverage report: a
       // dependency installed from hex is not typed and has none of this.
       let typed = [path_dependency_row(name, type_info), ..typed]
       case
         infer_typed_path_dep(
-          resolved_dep_path,
+          location,
           index,
           type_info,
           kb,
@@ -4990,22 +5202,49 @@ fn enrich_with_path_deps(
         )
       {
         Error(Nil) -> #(kb, readings, typed)
-        // Inference over the dep's source, not a line its author wrote: the
-        // origin says so, so nothing downstream reads it as a declaration.
-        Ok(#(effs, params, returns, provenance)) -> #(
-          fold_inferred_into_kb(
-            kb,
-            effs,
-            params,
-            returns,
-            types.PathDependencyInferred(package: name),
-          )
-            |> effects.with_provenance(provenance),
+        Ok(inferred) -> #(
+          fold_path_dep_inference(kb, inferred, name, newly_loaded),
           readings,
           typed,
         )
       }
     }
+  }
+}
+
+// Fold what inferring one path dependency produced into the knowledge base:
+// weighed against `baseline` for a package the root does not declare by path,
+// as a root path dependency's otherwise. Inference over the dep's source, not a
+// line its author wrote: the origin says so, so nothing downstream reads it as
+// a declaration.
+fn fold_path_dep_inference(
+  knowledge_base: KnowledgeBase,
+  inferred: PathDepInference,
+  name: String,
+  baseline: Option(KnowledgeBase),
+) -> KnowledgeBase {
+  let origin = types.PathDependencyInferred(package: name)
+  case baseline {
+    Some(baseline) ->
+      effects.with_newly_loaded_inferred(
+        knowledge_base,
+        baseline,
+        inferred.effects,
+        inferred.params,
+        inferred.returns,
+        inferred.provenance,
+        origin,
+      )
+    None ->
+      fold_inferred_into_kb(
+        knowledge_base,
+        inferred.effects,
+        inferred.params,
+        inferred.returns,
+        origin,
+      )
+      |> effects.with_provenance(inferred.provenance)
+      |> effects.with_baseline_provenance(inferred.baseline_provenance)
   }
 }
 
@@ -5245,6 +5484,23 @@ pub fn infer_path_dep(
     consumer_modules,
     package_targets,
   )
+  |> result.map(fn(inferred) {
+    #(inferred.effects, inferred.params, inferred.returns, inferred.provenance)
+  })
+}
+
+// What inferring one path dependency produced, keyed by `QualifiedName`: its
+// effects, polymorphic parameter bounds, returned-operator summaries and
+// return-value provenance, and the provenance as the structural baseline reads
+// it.
+type PathDepInference {
+  PathDepInference(
+    effects: Dict(QualifiedName, types.EffectTerm),
+    params: Dict(QualifiedName, List(types.ParamBound)),
+    returns: Dict(QualifiedName, types.EffectTerm),
+    provenance: Dict(QualifiedName, types.ReturnProvenance),
+    baseline_provenance: Dict(QualifiedName, types.ReturnProvenance),
+  )
 }
 
 // girard's reading of a path dependency, resolved from the consumer's tree —
@@ -5274,15 +5530,7 @@ fn infer_typed_path_dep(
   base_kb: KnowledgeBase,
   consumer_modules: Set(String),
   package_targets: types.PackageTargets,
-) -> Result(
-  #(
-    Dict(QualifiedName, types.EffectTerm),
-    Dict(QualifiedName, List(types.ParamBound)),
-    Dict(QualifiedName, types.EffectTerm),
-    Dict(QualifiedName, types.ReturnProvenance),
-  ),
-  Nil,
-) {
+) -> Result(PathDepInference, Nil) {
   // Path-dep checks come from the dep's spec file (loaded by
   // enrich_with_path_deps), not from per-module files. Inference here only
   // needs the parsed module.
@@ -5315,10 +5563,19 @@ fn infer_typed_path_dep(
   // what this entry point knows the dep by.
   let origin =
     types.PathDependencyInferred(package: filepath.base_name(dep_path))
-  let #(effs, params, returns, provenance, _final_kb) =
+  let #(inferred, _final_kb) =
     list.fold(
       sorted,
-      #(dict.new(), dict.new(), dict.new(), dict.new(), base_kb),
+      #(
+        PathDepInference(
+          effects: dict.new(),
+          params: dict.new(),
+          returns: dict.new(),
+          provenance: dict.new(),
+          baseline_provenance: dict.new(),
+        ),
+        base_kb,
+      ),
       fn(state, module_path) {
         infer_path_dep_module(
           state,
@@ -5332,17 +5589,11 @@ fn infer_typed_path_dep(
         )
       },
     )
-  Ok(#(effs, params, returns, provenance))
+  Ok(inferred)
 }
 
 fn infer_path_dep_module(
-  state: #(
-    Dict(QualifiedName, types.EffectTerm),
-    Dict(QualifiedName, List(types.ParamBound)),
-    Dict(QualifiedName, types.EffectTerm),
-    Dict(QualifiedName, types.ReturnProvenance),
-    KnowledgeBase,
-  ),
+  state: #(PathDepInference, KnowledgeBase),
   module_path: String,
   index: Dict(String, #(glance.Module, List(types.EffectAnnotation))),
   registry: SignatureRegistry,
@@ -5350,14 +5601,8 @@ fn infer_path_dep_module(
   consumer_modules: Set(String),
   lookup_origin: types.LookupOrigin,
   package_targets: types.PackageTargets,
-) -> #(
-  Dict(QualifiedName, types.EffectTerm),
-  Dict(QualifiedName, List(types.ParamBound)),
-  Dict(QualifiedName, types.EffectTerm),
-  Dict(QualifiedName, types.ReturnProvenance),
-  KnowledgeBase,
-) {
-  let #(eff_acc, param_acc, returns_acc, prov_acc, kb) = state
+) -> #(PathDepInference, KnowledgeBase) {
+  let #(acc, kb) = state
   case dict.get(index, module_path) {
     Error(_) -> state
     Ok(#(module, checks)) -> {
@@ -5386,6 +5631,9 @@ fn infer_path_dep_module(
       let inferred_effs =
         effects.drop_module_declared(inferred_effs, consumer_modules)
       let inferred_provenance = qualify_bare_names(provenance, module_path)
+      let baseline_provenance =
+        checker.baseline_provenance(module, module_path, kb, package_targets)
+        |> qualify_bare_names(module_path)
       let new_kb =
         fold_inferred_into_kb(
           kb,
@@ -5395,11 +5643,18 @@ fn infer_path_dep_module(
           lookup_origin,
         )
         |> effects.with_provenance(inferred_provenance)
+        |> effects.with_baseline_provenance(baseline_provenance)
       #(
-        dict.merge(eff_acc, inferred_effs),
-        dict.merge(param_acc, inferred_params),
-        dict.merge(returns_acc, inferred_returns),
-        dict.merge(prov_acc, inferred_provenance),
+        PathDepInference(
+          effects: dict.merge(acc.effects, inferred_effs),
+          params: dict.merge(acc.params, inferred_params),
+          returns: dict.merge(acc.returns, inferred_returns),
+          provenance: dict.merge(acc.provenance, inferred_provenance),
+          baseline_provenance: dict.merge(
+            acc.baseline_provenance,
+            baseline_provenance,
+          ),
+        ),
         new_kb,
       )
     }
