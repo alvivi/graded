@@ -714,10 +714,10 @@ pub fn a_consumer_blanket_keeps_the_effect_of_a_returning_function_test() {
   // answered for it.
   b_answer([#("src/b.gleam", wrap)], caller, "assume b : []\n", "b.wrap")
   |> should.equal("effects b.wrap : [] where returns : [f]")
-  // The blanket holds the operator's bound out, so its callback binds to
-  // nothing and the caller reads what it read before the package was loaded.
+  // The operator fills, and `a` binds its callback through `wrap`'s
+  // signature: more precise than the `[Unknown]` it read before.
   b_answer([#("src/b.gleam", wrap)], caller, "assume b : []\n", "a.fa")
-  |> should.equal("effects a.fa : [Unknown]")
+  |> should.equal("effects a.fa : []")
 }
 
 const justin_ext =
@@ -1363,4 +1363,147 @@ pub fn a_resolved_line_equal_to_the_catalogs_changes_only_the_source_test() {
   |> string.contains("resolved from path dependency justin")
   |> should.be_true
   support.cleanup(root <> "/..")
+}
+
+// Path dependencies inferred against the run's signatures
+//
+// A path dependency's call into another package binds its callback through
+// that package's signature, as the project's own call does.
+
+const run_apply =
+  "pub fn apply(run f: fn() -> Nil) -> Nil {\n  f()\n}\n\npub fn wrap(f: fn() -> Nil) -> fn() -> Nil {\n  fn() { f() }\n}\n\npub fn g(f: fn() -> Nil) -> Nil {\n  f()\n}\n"
+
+const run_apply_spec =
+  "effects b.apply(f: [f]) : [f]\neffects b.wrap(f: [f]) : [] where returns : [f]\neffects b.g(f: [f]) : [f, Unknown]\n"
+
+// `app → a → b`, `b` shipping a spec, `a` calling it with `a_body` beside a
+// printing external, and the project calling it with `app_body` beside its
+// own.
+fn registry_answer(a_body: String, app_body: String, name: String) -> String {
+  let root =
+    tree_with_sources("transitive_path", [
+      #("app", [
+        #(
+          "src/app.gleam",
+          "import b\nimport justin\n\n" <> say_external <> "\n" <> app_body,
+        ),
+        #(
+          "app.graded",
+          "assume app.say : [Stdout]\nassume a.say : [Stdout]\nassume a.untraced : [Unknown]\n",
+        ),
+        #(
+          "manifest.toml",
+          "packages = [\n  { name = \"justin\", version = \"1.0.0\" },\n]\n",
+        ),
+        #(
+          "build/packages/justin/src/justin.gleam",
+          "pub fn apply(f: fn() -> Nil) -> Nil {\n  f()\n}\n",
+        ),
+      ]),
+      #("a", [
+        #(
+          "src/a.gleam",
+          "import b\nimport justin\n\n"
+            <> say_external
+            <> "\n@external(erlang, \"m\", \"untraced\")\n@external(javascript, \"m\", \"untraced\")\npub fn untraced() -> Nil\n\n"
+            <> a_body,
+        ),
+      ]),
+      #("b", [#("src/b.gleam", run_apply), #("b.graded", run_apply_spec)]),
+    ])
+  let line = agreed_effect_line(root, name)
+  support.cleanup(root <> "/..")
+  line
+}
+
+pub fn a_path_dependency_binds_a_callback_through_the_run_signatures_test() {
+  // Before, both read `[Stdout, Unknown]` from `a`, and `[Stdout]` from the
+  // project.
+  let positional = "pub fn fa() -> Nil {\n  b.apply(fn() { say() })\n}\n"
+  let labelled = "pub fn fa() -> Nil {\n  b.apply(run: fn() { say() })\n}\n"
+  registry_answer(positional, "", "a.fa")
+  |> should.equal("effects a.fa : [Stdout]")
+  registry_answer(labelled, "", "a.fa")
+  |> should.equal("effects a.fa : [Stdout]")
+  registry_answer(
+    positional,
+    "pub fn go() -> Nil {\n  b.apply(fn() { say() })\n}\n",
+    "app.go",
+  )
+  |> should.equal("effects app.go : [Stdout]")
+}
+
+pub fn a_path_dependency_applies_a_returned_operator_test() {
+  registry_answer(
+    "pub fn fa() -> Nil {\n  let h = b.wrap(say)\n  h()\n}\n",
+    "",
+    "a.fa",
+  )
+  |> should.equal("effects a.fa : [Stdout]")
+}
+
+pub fn a_path_dependency_calls_a_callback_field_as_the_project_does_test() {
+  let body = "pub fn f() -> Nil {\n  let r = b.Runner(run: say)\n  r.run()\n}\n"
+  let types = "pub type Runner {\n  Runner(run: fn() -> Nil)\n}\n"
+  let root =
+    tree_with_sources("transitive_path", [
+      #("app", [
+        #(
+          "src/app.gleam",
+          "import b\n\n@external(erlang, \"m\", \"say\")\n@external(javascript, \"m\", \"say\")\npub fn say() -> Nil\n\n"
+            <> body,
+        ),
+        #("app.graded", "assume app.say : [Stdout]\nassume a.say : [Stdout]\n"),
+      ]),
+      #("a", [
+        #(
+          "src/a.gleam",
+          "import b\n\n@external(erlang, \"m\", \"say\")\n@external(javascript, \"m\", \"say\")\npub fn say() -> Nil\n\n"
+            <> body,
+        ),
+      ]),
+      #("b", [#("src/b.gleam", types)]),
+    ])
+  agreed_effect_line(root, "a.f") |> should.equal("effects a.f : [Stdout]")
+  agreed_effect_line(root, "app.f") |> should.equal("effects app.f : [Stdout]")
+  support.cleanup(root <> "/..")
+}
+
+pub fn a_path_dependencys_own_higher_order_calls_are_unchanged_test() {
+  registry_answer(
+    "fn local_apply(f: fn() -> Nil) -> Nil {\n  f()\n}\n\npub fn fa() -> Nil {\n  local_apply(say)\n}\n",
+    "",
+    "a.fa",
+  )
+  |> should.equal("effects a.fa : [Stdout]")
+}
+
+pub fn a_path_dependency_charges_a_boundless_declarations_callback_test() {
+  // `justin` is installed and catalogued `assume justin : []`. Before, `a`
+  // read no signature for `justin.apply` and charged its callback nothing.
+  registry_answer(
+    "pub fn fa() -> Nil {\n  justin.apply(untraced)\n}\n",
+    "",
+    "a.fa",
+  )
+  |> should.equal("effects a.fa : [Unknown]")
+}
+
+pub fn a_path_dependency_agrees_with_its_callees_answer_test() {
+  registry_answer("pub fn fa() -> Nil {\n  b.g(say)\n}\n", "", "a.fa")
+  |> should.equal("effects a.fa : [Stdout, Unknown]")
+  registry_answer("", "pub fn go() -> Nil {\n  b.g(say)\n}\n", "app.go")
+  |> should.equal("effects app.go : [Stdout, Unknown]")
+}
+
+pub fn one_function_gains_a_resolution_and_a_callback_charge_test() {
+  // The first call binds `say` through `b.apply`'s signature (`[Stdout]`);
+  // the second charges `untraced` as the boundless `justin.apply`'s callback
+  // (`[Unknown]`).
+  registry_answer(
+    "pub fn fa() -> Nil {\n  b.apply(say)\n  justin.apply(untraced)\n}\n",
+    "",
+    "a.fa",
+  )
+  |> should.equal("effects a.fa : [Stdout, Unknown]")
 }
