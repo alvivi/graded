@@ -650,6 +650,46 @@ pub fn caller() -> Nil {
 **How to avoid it** — spell the parameter's type out (`_cb: fn() -> Nil`), or
 alias it in the module that declares the function.
 
+## 10. Path dependencies and the local packages they bring
+
+**A path dependency's call into a dependency's running fallback body.** graded
+summarizes your path dependencies before it walks the Gleam fallback bodies of
+your dependencies' `@external`s, so a path dependency calling an external whose
+body runs on your target reads `[Unknown]`, where your own call to the same
+external is charged what the body does.
+
+```gleam
+// ../b/src/b.gleam — built for JavaScript, so the Erlang external's body runs
+@external(erlang, "b_ffi", "ext")
+pub fn ext() -> Nil {
+  say()
+}
+
+// ../a/src/a.gleam
+pub fn fa() -> Nil {
+  b.ext()                  // [Unknown]; the same call in your own module is charged `say`'s effect
+}
+```
+
+**A local package your `gleam.toml` does not declare by path.** Such a package —
+one another path dependency declares, or one an installed package requires
+that a path declaration provides — is loaded, and weighed against what graded
+answered before it was. Its field `assume` lines are not applied: a field call
+on its types reads exactly what it read before the package was loaded.
+
+**An `@external` such a package declares.** Once graded has read the package's
+source, an `@external` in it is foreign code. An `effects` line or a committed
+`where returns` clause in your spec naming it no longer answers — graded cannot
+see the foreign implementation those lines were inferred over — so a name that
+read `[File]` may now read `[Unknown]`. Only a declaration answers: an
+`assume` line in your spec, in that package's own spec, or in the catalog. A
+`where returns` clause on an `assume` line stands while the declaration it
+belongs to is built for your target; on a target where only the Gleam fallback
+body is built, it is refused too.
+
+**How to avoid them** — declare what the call costs with an `assume` line over
+the function, or over its module.
+
 ---
 
 Every fallback above is the conservative `[Unknown]`, never a silent `[]`: graded

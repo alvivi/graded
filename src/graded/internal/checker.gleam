@@ -86,20 +86,30 @@ pub fn check(
   // One memo table threaded across every annotation: same-module callees shared
   // between annotations are analysed once.
   let #(_memo, results) =
-    list.map_fold(annotations, new_memo(), fn(memo, annotation) {
-      let #(result, memo) =
-        check_annotation(
-          annotation,
-          function_map,
-          context,
-          knowledge_base,
-          registry,
-          reading,
-          cache,
-          memo,
-        )
-      #(memo, result)
-    })
+    list.map_fold(
+      annotations,
+      module_memo(
+        module,
+        module_path,
+        knowledge_base,
+        reading.fn_typed,
+        package_targets,
+      ),
+      fn(memo, annotation) {
+        let #(result, memo) =
+          check_annotation(
+            annotation,
+            function_map,
+            context,
+            knowledge_base,
+            registry,
+            reading,
+            cache,
+            memo,
+          )
+        #(memo, result)
+      },
+    )
   let violations = list.flat_map(results, fn(r) { r.0 })
   let findings = list.flat_map(results, fn(r) { r.1 })
   let warnings = list.flat_map(results, fn(r) { r.2 })
@@ -174,56 +184,55 @@ pub fn infer_with_returns(
   // one resolves `[Unknown]`. This is the gate that stops such a line being
   // written into the spec at all.
   let value_channel_functions =
-    list.filter(public_functions, fn(definition) {
-      !foreign_definition(definition, package_targets)
-    })
+    value_channel_definitions(public_functions, package_targets)
 
   // Returned operators of public functions that return a function — recorded so
   // downstream consumers resolve `let h = producer(); with(h)`. One memo table
   // is threaded through this pass and reused for the inference pass below.
   let #(memo, returned_pairs) =
-    list.map_fold(value_channel_functions, new_memo(), fn(memo, definition) {
-      // The operator a producer hands back is what its own body builds, so it
-      // is computed on the targets that body runs on. Read package-wide, a
-      // `@target(erlang)` producer returning a closure over a JavaScript-only
-      // external published that unreachable declaration's effect in its
-      // `returns` line -- and its `effects` line, narrowed, disagreed.
-      let #(knowledge_base, memo) =
-        body_walk(knowledge_base, memo, definition, package_targets)
-      let #(returned, memo) =
-        compute_returned_operator(
-          definition.definition,
-          context,
-          function_map,
-          knowledge_base,
-          set.new(),
-          registry,
-          reading,
-          cache,
+    list.map_fold(
+      value_channel_functions,
+      module_memo(
+        module,
+        module_path,
+        knowledge_base,
+        reading.fn_typed,
+        package_targets,
+      ),
+      fn(memo, definition) {
+        // The operator a producer hands back is what its own body builds, so it
+        // is computed on the targets that body runs on. Read package-wide, a
+        // `@target(erlang)` producer returning a closure over a JavaScript-only
+        // external published that unreachable declaration's effect in its
+        // `returns` line -- and its `effects` line, narrowed, disagreed.
+        let #(knowledge_base, memo) =
+          body_walk(knowledge_base, memo, definition, package_targets)
+        let #(returned, memo) =
+          compute_returned_operator(
+            definition.definition,
+            context,
+            function_map,
+            knowledge_base,
+            set.new(),
+            registry,
+            reading,
+            cache,
+            memo,
+          )
+        #(
           memo,
+          result.map(returned, fn(operator) {
+            #(definition.definition.name, operator)
+          }),
         )
-      #(
-        memo,
-        result.map(returned, fn(operator) {
-          #(definition.definition.name, operator)
-        }),
-      )
-    })
+      },
+    )
   let returned_operators =
     returned_pairs |> list.filter_map(fn(pair) { pair }) |> dict.from_list()
 
   // Return-value provenance of public functions — recorded so a downstream
-  // module's computed receiver resolves the callee's return path. Opaque
-  // provenance is dropped: a lookup miss is treated as opaque anyway.
-  let provenance =
-    value_channel_functions
-    |> list.filter_map(fn(definition) {
-      case extract.return_provenance(definition.definition, context) {
-        types.Opaque -> Error(Nil)
-        traced -> Ok(#(definition.definition.name, traced))
-      }
-    })
-    |> dict.from_list()
+  // module's computed receiver resolves the callee's return path.
+  let provenance = traced_provenance(value_channel_functions, context)
 
   // Seed param bounds from existing `check` annotations only — `effects`
   // annotations don't carry user-declared bounds, so they can't constrain
@@ -315,6 +324,55 @@ pub fn infer_with_returns(
   #(annotations, returned_operators, provenance)
 }
 
+// The return-value provenance of `functions`, read through `context`. Opaque
+// provenance is dropped: a lookup miss is treated as opaque anyway.
+fn traced_provenance(
+  functions: List(Definition(Function)),
+  context: ImportContext,
+) -> dict.Dict(String, types.ReturnProvenance) {
+  functions
+  |> list.filter_map(fn(definition) {
+    case extract.return_provenance(definition.definition, context) {
+      types.Opaque -> Error(Nil)
+      traced -> Ok(#(definition.definition.name, traced))
+    }
+  })
+  |> dict.from_list()
+}
+
+// The return-value provenance `infer_with_returns` records for a module's
+// public functions, read through the knowledge base's structural baseline;
+// empty where it holds none.
+pub fn baseline_provenance(
+  module: Module,
+  module_path: String,
+  knowledge_base: KnowledgeBase,
+  package_targets: types.PackageTargets,
+) -> dict.Dict(String, types.ReturnProvenance) {
+  case effects.structural_baseline_view(knowledge_base) {
+    None -> dict.new()
+    Some(#(baseline, _modules)) ->
+      traced_provenance(
+        module.functions
+          |> list.filter(fn(definition) {
+            definition.definition.publicity == glance.Public
+          })
+          |> value_channel_definitions(package_targets),
+        module_import_context(module, module_path, baseline, package_targets),
+      )
+  }
+}
+
+// The definitions a value channel publishes for: those that are not foreign.
+fn value_channel_definitions(
+  definitions: List(Definition(Function)),
+  package_targets: types.PackageTargets,
+) -> List(Definition(Function)) {
+  list.filter(definitions, fn(definition) {
+    !foreign_definition(definition, package_targets)
+  })
+}
+
 // Explain one function: every effect contributor `check` would subset-check,
 // whether or not it fits a budget. One entry per set of bounds — the parameter
 // and field bounds of one `check` line, or a single empty set for a function
@@ -391,55 +449,65 @@ pub fn explain(
       // annotation: a callee's own analysis is seeded from its signature, so the
       // caller's bounds neither key it nor reach it.
       let #(_memo, explained) =
-        list.map_fold(bounds, new_memo(), fn(memo, bounds) {
-          let fn_typed_params =
-            unbound_fn_typed_params(definition, bounds, cache)
-          let #(contribution, memo) =
-            contributors(
-              definition,
-              bounds,
-              fn_typed_params,
-              function_map,
-              context,
-              knowledge_base,
-              registry,
-              reading,
-              cache,
+        list.map_fold(
+          bounds,
+          module_memo(
+            module,
+            module_path,
+            knowledge_base,
+            reading.fn_typed,
+            package_targets,
+          ),
+          fn(memo, bounds) {
+            let fn_typed_params =
+              unbound_fn_typed_params(definition, bounds, cache)
+            let #(contribution, memo) =
+              contributors(
+                definition,
+                bounds,
+                fn_typed_params,
+                function_map,
+                context,
+                knowledge_base,
+                registry,
+                reading,
+                cache,
+                memo,
+              )
+            // The same grooming inference gives a function's term before the
+            // spec states it, so the block's total is the term `graded effect`
+            // answers with, not the ground projection the per-call lines print.
+            //
+            // Against the same names the contributors were groomed against —
+            // declared bounds included, not the synthesised ones alone. A
+            // variable a `check` line's own bound names is one this function can
+            // bind, so grounding it in the total alone would head a block stating
+            // `[cb]` per call with an `[Unknown]` the projection is not a
+            // subset of, inverting the relationship between the two.
+            let #(total, field_vars) =
+              groom_published_term(
+                contribution.total,
+                effects.bound_name_set(contribution.effective_bounds),
+              )
+            // A field-effect variable surviving in the total gets the identity
+            // bound inference writes beside it, exactly as the fn-typed params
+            // already carry theirs in the effective bounds: a renderer stating
+            // the total over these bounds then reads a bare `r.run` as
+            // forwarding that field's effects — the sentence `graded effect`
+            // answers with — instead of as an effect named after the path.
+            #(
               memo,
-            )
-          // The same grooming inference gives a function's term before the
-          // spec states it, so the block's total is the term `graded effect`
-          // answers with, not the ground projection the per-call lines print.
-          //
-          // Against the same names the contributors were groomed against —
-          // declared bounds included, not the synthesised ones alone. A
-          // variable a `check` line's own bound names is one this function can
-          // bind, so grounding it in the total alone would head a block stating
-          // `[cb]` per call with an `[Unknown]` the projection is not a
-          // subset of, inverting the relationship between the two.
-          let #(total, field_vars) =
-            groom_published_term(
-              contribution.total,
-              effects.bound_name_set(contribution.effective_bounds),
-            )
-          // A field-effect variable surviving in the total gets the identity
-          // bound inference writes beside it, exactly as the fn-typed params
-          // already carry theirs in the effective bounds: a renderer stating
-          // the total over these bounds then reads a bare `r.run` as
-          // forwarding that field's effects — the sentence `graded effect`
-          // answers with — instead of as an effect named after the path.
-          #(
-            memo,
-            ExplainedBlock(
-              bounds: list.append(
-                contribution.effective_bounds,
-                polymorphic_param_bounds(total, field_vars),
+              ExplainedBlock(
+                bounds: list.append(
+                  contribution.effective_bounds,
+                  polymorphic_param_bounds(total, field_vars),
+                ),
+                total:,
+                explanations: contribution.explanations,
               ),
-              total:,
-              explanations: contribution.explanations,
-            ),
-          )
-        })
+            )
+          },
+        )
       // Held outside the per-bounds blocks: the observation is per definition,
       // so a function with three `check` lines states its typed resolutions
       // once rather than once per block.
@@ -1100,6 +1168,15 @@ fn walk_fallbacks(
   // a whole stopped changing, at least twice each and once more for every link
   // in the longest chain.
   let recursive = cache.recursive
+  // Each component's walk starts from this one memo.
+  let memo =
+    module_memo(
+      module,
+      module_path,
+      knowledge_base,
+      reading.fn_typed,
+      package_targets,
+    )
   let #(settled, _knowledge_base) =
     fallback_components(targets, cache)
     |> list.fold(#(dict.new(), knowledge_base), fn(state, entry) {
@@ -1115,6 +1192,7 @@ fn walk_fallbacks(
         settle_component(
           iterates,
           FallbackWalk(
+            memo:,
             targets: component,
             function_map:,
             context:,
@@ -1201,6 +1279,8 @@ fn qualified_summaries(
 // between passes, so the walking apparatus is built once and travels whole.
 type FallbackWalk {
   FallbackWalk(
+    // The memo every group of members starts its walk from.
+    memo: Memo,
     targets: List(Definition(Function)),
     function_map: dict.Dict(String, Definition(Function)),
     context: ImportContext,
@@ -1280,7 +1360,7 @@ fn walk_component(
     let knowledge_base =
       effects.with_active_targets(knowledge_base, option.Some(active))
     let #(_memo, entries) =
-      list.map_fold(definitions, new_memo(), fn(memo, definition) {
+      list.map_fold(definitions, walk.memo, fn(memo, definition) {
         // The same synthetic bounds ordinary inference gives a function-typed
         // parameter, so a fallback that calls one is charged that argument's
         // effects rather than the `[Unknown]` an unbound call collapses to. A
@@ -3068,6 +3148,11 @@ type Memo {
     // seeded `True`, so a cycle through it charges the catalog rather than
     // recurring.
     catalog_verdicts: dict.Dict(String, Bool),
+    // The module under analysis as it reads without the newly loaded
+    // packages' structural entries, where the knowledge base records any.
+    // A call site whose resolution carries `[Unknown]` is resolved through it
+    // too, and takes its answer where that one carries none.
+    baseline: Option(BaselineView),
   )
 }
 
@@ -3079,7 +3164,56 @@ fn new_memo() -> Memo {
     closures: dict.new(),
     targets: option.None,
     catalog_verdicts: dict.new(),
+    baseline: option.None,
   )
+}
+
+// One module read without the newly loaded packages' structural entries: the
+// import context and module cache built from the knowledge base's baseline,
+// the module paths only those packages hold, and a memo of its own. Its memo
+// carries no view, so nothing resolved through it is resolved twice.
+type BaselineView {
+  BaselineView(
+    module_path: String,
+    context: ImportContext,
+    cache: LocalCache,
+    modules: Set(String),
+    memo: Memo,
+  )
+}
+
+// A fresh memo for a walk of `module`, with the module's baseline view where
+// the knowledge base records a structural baseline.
+fn module_memo(
+  module: Module,
+  module_path: String,
+  knowledge_base: KnowledgeBase,
+  girard_fn_typed: dict.Dict(String, Set(String)),
+  package_targets: types.PackageTargets,
+) -> Memo {
+  case effects.structural_baseline_view(knowledge_base) {
+    None -> new_memo()
+    Some(#(baseline, modules)) -> {
+      let ModuleContext(context:, cache:) =
+        module_context(
+          module,
+          module_path,
+          baseline,
+          girard_fn_typed,
+          package_targets,
+        )
+      Memo(
+        ..new_memo(),
+        baseline: Some(BaselineView(
+          module_path:,
+          context:,
+          cache:,
+          modules:,
+          memo: new_memo(),
+        )),
+      )
+    }
+  }
 }
 
 // The memo a body walked on `targets` may read: the one in hand where it was
@@ -3088,7 +3222,13 @@ fn new_memo() -> Memo {
 // entries a change strands would not be read again anyway.
 fn memo_on(memo: Memo, targets: Option(Set(String))) -> Memo {
   use <- bool.guard(when: memo.targets == targets, return: memo)
-  Memo(..new_memo(), targets: targets)
+  Memo(
+    ..new_memo(),
+    targets: targets,
+    baseline: option.map(memo.baseline, fn(view) {
+      BaselineView(..view, memo: memo_on(view.memo, targets))
+    }),
+  )
 }
 
 // The base and the memo one definition's body is walked with: the base narrowed
@@ -3591,7 +3731,16 @@ pub fn check_field_sites(
   let #(report, _memo) =
     list.fold(
       module.functions,
-      #(empty_site_report(), new_memo()),
+      #(
+        empty_site_report(),
+        module_memo(
+          module,
+          module_path,
+          knowledge_base,
+          reading.fn_typed,
+          package_targets,
+        ),
+      ),
       fn(state: #(FieldSiteReport, Memo), definition) {
         let #(report, memo) = state
         // A body no build of this package compiles builds no value: `@target`
@@ -4722,6 +4871,165 @@ type OperatorShapes =
 //   field    — object.method calls, resolved via type field annotations
 // `visited` tracks functions already on the call stack for cycle detection.
 fn collect_effects(
+  function: Function,
+  function_map: dict.Dict(String, Definition(Function)),
+  context: ImportContext,
+  knowledge_base: KnowledgeBase,
+  visited: Set(String),
+  param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
+  reading: typeinfo.ModuleReading,
+  ambient_operators: OperatorShapes,
+  cache: LocalCache,
+  captures: List(#(String, types.ArgumentValue)),
+  memo: Memo,
+) -> #(List(CollectedCall), Memo) {
+  let #(calls, memo) =
+    collect_view_effects(
+      function,
+      function_map,
+      context,
+      knowledge_base,
+      visited,
+      param_bounds,
+      registry,
+      reading,
+      ambient_operators,
+      cache,
+      captures,
+      memo,
+    )
+  use view <- with_view_in_reach(memo, context, #(calls, memo))
+  // What a site's term may leave free and still publish: the variables the
+  // bounds in scope bind, and the enclosing operators' parameters.
+  let in_scope =
+    list.fold(
+      param_bounds,
+      set.from_list(dict.keys(ambient_operators)),
+      fn(acc, bound) {
+        set.union(acc, effect_term.free_vars(bound.effects))
+        |> set.insert(bound.name)
+      },
+    )
+  let unresolved =
+    list.any(calls, fn(call) {
+      unresolved_at_site(call.resolution.term, in_scope)
+    })
+  case unresolved, effects.structural_baseline_view(knowledge_base) {
+    True, Some(#(baseline, _modules)) -> {
+      let #(baseline_calls, baseline_memo) =
+        collect_view_effects(
+          function,
+          function_map,
+          view.context,
+          baseline,
+          visited,
+          param_bounds,
+          signatures.without_modules(registry, view.modules),
+          reading,
+          ambient_operators,
+          view.cache,
+          captures,
+          view.memo,
+        )
+      #(
+        guarded_calls(calls, baseline_calls, in_scope),
+        Memo(..memo, baseline: Some(BaselineView(..view, memo: baseline_memo))),
+      )
+    }
+    False, _ | True, None -> #(calls, memo)
+  }
+}
+
+// `with_view` applied to the memo's baseline view, where it holds one of the
+// module `context` analyses; `otherwise` where it does not.
+fn with_view_in_reach(
+  memo: Memo,
+  context: ImportContext,
+  otherwise: a,
+  with_view: fn(BaselineView) -> a,
+) -> a {
+  case memo.baseline {
+    Some(view) if view.module_path == context.module_path -> with_view(view)
+    Some(_) | None -> otherwise
+  }
+}
+
+// Each site's resolution, or its counterpart's from the baseline view where
+// the site's carries `[Unknown]` and the counterpart's carries none. Sites are
+// paired by span, in the order each list reaches them; a site with no
+// counterpart keeps its own resolution.
+fn guarded_calls(
+  calls: List(CollectedCall),
+  baseline: List(CollectedCall),
+  in_scope: Set(String),
+) -> List(CollectedCall) {
+  let counterparts =
+    list.fold(list.reverse(baseline), dict.new(), fn(acc, call) {
+      dict.upsert(acc, site_key(call), fn(existing) {
+        [call, ..option.unwrap(existing, [])]
+      })
+    })
+  let #(_unpaired, guarded) =
+    list.fold(calls, #(counterparts, []), fn(state, call) {
+      let #(counterparts, guarded) = state
+      let key = site_key(call)
+      case dict.get(counterparts, key) {
+        Ok([counterpart, ..rest]) -> #(dict.insert(counterparts, key, rest), [
+          guarded_call(call, counterpart, in_scope),
+          ..guarded
+        ])
+        Ok([]) | Error(Nil) -> #(counterparts, [call, ..guarded])
+      }
+    })
+  list.reverse(guarded)
+}
+
+fn guarded_call(
+  call: CollectedCall,
+  counterpart: CollectedCall,
+  in_scope: Set(String),
+) -> CollectedCall {
+  use <- bool.guard(
+    when: unresolved_at_site(call.resolution.term, in_scope)
+      && !unresolved_at_site(counterpart.resolution.term, in_scope),
+    return: counterpart,
+  )
+  call
+}
+
+// Whether a site's term carries `[Unknown]` once published: the label itself,
+// or a free variable nothing in scope binds, which publication grounds to it.
+// A field-path variable is a receiver's field, bound at a caller.
+fn unresolved_at_site(term: EffectTerm, in_scope: Set(String)) -> Bool {
+  carries_unknown(groom_published_term(term, in_scope).0)
+}
+
+fn site_key(call: CollectedCall) -> #(Int, Int) {
+  #(call.call.span.start, call.call.span.end)
+}
+
+// Whether a returned operator carries `[Unknown]`: anywhere in it, an
+// operator's body included, or as a free variable none of the producer's own
+// parameters names.
+fn unresolved_operator(operator: EffectTerm, in_scope: Set(String)) -> Bool {
+  states_unknown(operator)
+  || has_top(operator)
+  || !set.is_subset(effect_term.free_vars(operator), in_scope)
+}
+
+// Whether the wildcard appears anywhere in a term.
+fn has_top(term: EffectTerm) -> Bool {
+  case term {
+    types.TTop -> True
+    types.TLabels(_) | TVar(_) -> False
+    types.TApp(operator, argument) -> has_top(operator) || has_top(argument)
+    types.TAbs(_param, body) -> has_top(body)
+    TUnion(terms) -> list.any(terms, has_top)
+  }
+}
+
+fn collect_view_effects(
   function: Function,
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
@@ -6410,7 +6718,8 @@ fn auto_bounds_from_registry(
   args: List(types.CallArgument),
   registry: SignatureRegistry,
 ) -> #(EffectTerm, List(ParamBound)) {
-  let params = option.unwrap(signatures.lookup(registry, callee_name), [])
+  let params =
+    option.unwrap(signatures.lookup_callbacks(registry, callee_name), [])
   let shares =
     params
     |> list.filter(fn(param) {
@@ -7074,6 +7383,71 @@ fn bind_producer_params(
 // result may therefore be **polymorphic** in those parameters — they're bound to
 // the producer call's arguments at `resolve_returned_operator`.
 fn compute_returned_operator(
+  function: Function,
+  context: ImportContext,
+  function_map: dict.Dict(String, Definition(Function)),
+  knowledge_base: KnowledgeBase,
+  visited: Set(String),
+  registry: SignatureRegistry,
+  reading: typeinfo.ModuleReading,
+  cache: LocalCache,
+  memo: Memo,
+) -> #(Result(EffectTerm, ReturnedOperatorReason), Memo) {
+  let #(returned, memo) =
+    compute_view_returned_operator(
+      function,
+      context,
+      function_map,
+      knowledge_base,
+      visited,
+      registry,
+      reading,
+      cache,
+      memo,
+    )
+  use view <- with_view_in_reach(memo, context, #(returned, memo))
+  let in_scope = named_function_params(function)
+  case
+    unresolved_return(returned, in_scope),
+    effects.structural_baseline_view(knowledge_base)
+  {
+    True, Some(#(baseline, _modules)) -> {
+      let #(baseline_returned, baseline_memo) =
+        compute_view_returned_operator(
+          function,
+          view.context,
+          function_map,
+          baseline,
+          visited,
+          signatures.without_modules(registry, view.modules),
+          reading,
+          view.cache,
+          view.memo,
+        )
+      let memo =
+        Memo(..memo, baseline: Some(BaselineView(..view, memo: baseline_memo)))
+      case unresolved_return(baseline_returned, in_scope) {
+        True -> #(returned, memo)
+        False -> #(baseline_returned, memo)
+      }
+    }
+    False, _ | True, None -> #(returned, memo)
+  }
+}
+
+// Whether a producer's returned operator carries `[Unknown]`, a refused or
+// absent one included.
+fn unresolved_return(
+  returned: Result(EffectTerm, ReturnedOperatorReason),
+  in_scope: Set(String),
+) -> Bool {
+  case returned {
+    Ok(operator) -> unresolved_operator(operator, in_scope)
+    Error(_) -> True
+  }
+}
+
+fn compute_view_returned_operator(
   function: Function,
   context: ImportContext,
   function_map: dict.Dict(String, Definition(Function)),

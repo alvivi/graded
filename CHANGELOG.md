@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A local package graded now reads for the first time can change answers that
+  involve it. A catalog line or module-level `assume` with no bounds over one
+  of its functions now charges the callback you pass: a printing callback reads
+  `[Stdout]` where it read `[]`. An `@external` it declares is foreign code: a
+  running Gleam fallback body is charged beside its declaration, an `effects`
+  line or committed `where returns` clause in your spec naming it no longer
+  answers (`[File]` can read `[Unknown]`), and a `where returns` clause on an
+  `assume` line is refused on a target where only the fallback body is built.
+- A path dependency calling another now reads that package's own answer,
+  `[Unknown]` included. When its name sorted after the package it calls, it
+  read the catalog's answer, or `[Unknown]` where the catalog had none.
 - `graded check` no longer reports an `assume` line's module as missing while
   `gleam.toml` declares dependencies and there is no `manifest.toml`, or while
   the manifest disagrees with `gleam.toml` or with the installed packages. Run
@@ -16,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A call into a path dependency that your `gleam.toml` does not declare by path
+  — one another path dependency declares, or one an installed package requires
+  — resolves from that package's spec or source, where it read `[Unknown]`.
+  Its answers only replace catalog lines and your own module-level `assume`
+  lines, never another line of yours. Path dependencies that call each other
+  resolve the same whatever their names. A path dependency's call into a
+  running fallback body still reads `[Unknown]`.
 - `graded check` reports `assume` lines naming no real module in a project
   with a path dev-dependency, or a path dependency declared by another path
   dependency. Before, such a project silenced the check.

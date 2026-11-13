@@ -114,10 +114,7 @@ pub fn read(gleam_toml_path: String) -> Result(GradedConfig, ConfigError) {
     tom.get_string(toml, ["name"])
     |> result.replace_error(MissingPackageName(gleam_toml_path)),
   )
-  let spec_file = case tom.get_string(toml, ["tools", "graded", "spec_file"]) {
-    Ok(value) -> value
-    Error(_) -> default_spec_file(package_name)
-  }
+  let spec_file = spec_file_in(Ok(toml), package_name)
   let cache_dir = case tom.get_string(toml, ["tools", "graded", "cache_dir"]) {
     Ok(value) -> value
     Error(_) -> default_cache_dir()
@@ -251,11 +248,8 @@ pub fn default_cache_dir() -> String {
 // back to `<package_name>.graded` when the config is missing or unreadable.
 // Single source of truth for "where does package X keep its spec file".
 pub fn spec_file_for(package_root: String, package_name: String) -> String {
-  let spec_file = case read(filepath.join(package_root, "gleam.toml")) {
-    Ok(cfg) -> cfg.spec_file
-    Error(_) -> default_spec_file(package_name)
-  }
-  filepath.join(package_root, spec_file)
+  let toml = read_toml(filepath.join(package_root, "gleam.toml"))
+  filepath.join(package_root, spec_file_in(toml, package_name))
 }
 
 // The TOML file at `path`, parsed, or `Error(Nil)` where it cannot be read or
@@ -263,6 +257,28 @@ pub fn spec_file_for(package_root: String, package_name: String) -> String {
 pub fn read_toml(path: String) -> Result(Dict(String, tom.Toml), Nil) {
   use content <- result.try(simplifile.read(path) |> result.replace_error(Nil))
   tom.parse(content) |> result.replace_error(Nil)
+}
+
+// The spec file a package's parsed `gleam.toml` names, relative to the package
+// root: `[tools.graded].spec_file`, or `<name>.graded` after the file's own
+// `name`. A file that did not parse, or names no package, falls back to
+// `package_name`.
+pub fn spec_file_in(
+  toml: Result(Dict(String, tom.Toml), Nil),
+  package_name: String,
+) -> String {
+  case toml {
+    Ok(toml) ->
+      case tom.get_string(toml, ["name"]) {
+        Ok(name) ->
+          case tom.get_string(toml, ["tools", "graded", "spec_file"]) {
+            Ok(value) -> value
+            Error(_) -> default_spec_file(name)
+          }
+        Error(_) -> default_spec_file(package_name)
+      }
+    Error(Nil) -> default_spec_file(package_name)
+  }
 }
 
 // `path` as seen from `root`: joined onto it, unless it is absolute or `root`

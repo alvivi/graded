@@ -477,6 +477,24 @@ order and takes the first hit:
    from source, while one it could not resolve — a reading carrying `[Unknown]`,
    a polymorphic one, or one over an `@external` — answers from the catalog
    wherever the catalog speaks, per-function line or module-level line alike.
+
+   Every local package your runtime dependencies reach is loaded this way: one
+   another path dependency declares, and one an installed package requires that
+   a path declaration provides. Packages are loaded after every package they
+   reach, so a path dependency calling another reads it whatever their names. A
+   dev-only path dependency is not loaded.
+
+   A local package your own `gleam.toml` does not declare by path is weighed
+   name by name against what graded answered before it was loaded. Its line
+   answers only where that answer came from the catalog or from your own
+   module-level `assume`, and only where its term is resolved — ground,
+   `Specific`, free of `Unknown`, and, for inference, not over an `@external` —
+   or the answer it replaces was exactly `[Unknown]`. Under your module-level
+   `assume` its inference never answers. Its returned operators and provenance
+   fill only names nothing answered for, and its field `assume` lines are not
+   applied. A call site reading the signatures, factories, update builders,
+   constructors or provenance it brings keeps the answer it had without them
+   wherever they would leave that site `[Unknown]`.
 5. **Bundled catalog** — the versioned catalog files shipped with graded (see
    [Effect catalog](#effect-catalog)).
 6. **Conservative default** — anything still unresolved gets `[Unknown]`.

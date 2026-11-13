@@ -11,6 +11,7 @@
 // modules are parsed from `build/packages/<dep>/src/` on demand.
 
 import glance.{type Definition, type Function, type Module, FunctionType}
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -69,19 +70,63 @@ pub type ParameterInfo {
 // absent from the registry fall back to glance-AST inspection at the
 // definition site, or are treated as opaque at call sites.
 pub type SignatureRegistry {
-  SignatureRegistry(signatures: Dict(QualifiedName, List(ParameterInfo)))
+  SignatureRegistry(
+    signatures: Dict(QualifiedName, List(ParameterInfo)),
+    // Signatures held only for which of a function's parameters are
+    // callbacks: what a declaration without bounds charges a callback
+    // argument through. No other lookup reads them.
+    callback_signatures: Dict(QualifiedName, List(ParameterInfo)),
+  )
 }
 
 // An empty registry — nothing known about any function's parameters.
 pub fn empty() -> SignatureRegistry {
-  SignatureRegistry(signatures: dict.new())
+  SignatureRegistry(signatures: dict.new(), callback_signatures: dict.new())
+}
+
+// The registry with the signatures of the functions `modules` define held
+// only for their callback parameters.
+pub fn without_modules(
+  registry: SignatureRegistry,
+  modules: Set(String),
+) -> SignatureRegistry {
+  use <- bool.guard(when: set.is_empty(modules), return: registry)
+  let #(held, kept) =
+    dict.to_list(registry.signatures)
+    |> list.partition(fn(entry) { set.contains(modules, { entry.0 }.module) })
+  SignatureRegistry(
+    signatures: dict.from_list(kept),
+    callback_signatures: dict.merge(
+      registry.callback_signatures,
+      dict.from_list(held),
+    ),
+  )
 }
 
 // Merge two registries. On key conflict, `b` wins (so later-loaded
 // interfaces override earlier ones — useful when the project's own
 // interface is loaded after dependency interfaces).
 pub fn merge(a: SignatureRegistry, b: SignatureRegistry) -> SignatureRegistry {
-  SignatureRegistry(signatures: dict.merge(a.signatures, b.signatures))
+  SignatureRegistry(
+    signatures: dict.merge(a.signatures, b.signatures),
+    callback_signatures: dict.merge(
+      a.callback_signatures,
+      b.callback_signatures,
+    ),
+  )
+}
+
+// A function's parameter signatures for the charge a declaration without
+// bounds levies on its callback arguments: those held for that alone
+// included.
+pub fn lookup_callbacks(
+  registry: SignatureRegistry,
+  name: QualifiedName,
+) -> Option(List(ParameterInfo)) {
+  case lookup(registry, name) {
+    Some(params) -> Some(params)
+    None -> option.from_result(dict.get(registry.callback_signatures, name))
+  }
 }
 
 // Look up a function's parameter signatures.
@@ -290,7 +335,7 @@ pub fn from_glance_module(
         parameter_infos(definition.definition, alias_map),
       )
     })
-  SignatureRegistry(signatures:)
+  SignatureRegistry(signatures:, callback_signatures: dict.new())
 }
 
 // A registry holding one function, against an alias map handed in. The
@@ -310,6 +355,7 @@ pub fn from_single_function(
         parameter_infos(definition.definition, alias_map),
       ),
     ]),
+    callback_signatures: dict.new(),
   )
 }
 
