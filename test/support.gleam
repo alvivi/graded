@@ -71,6 +71,24 @@ pub fn write_fixture(
   directory
 }
 
+// Materialise `files` at `directory`, as `write_fixture` does, then create
+// each `#(link, target)` symbolic link, both relative to `directory`. Returns
+// `directory`.
+pub fn write_linked_fixture(
+  directory: String,
+  files: List(#(String, String)),
+  links: List(#(String, String)),
+) -> String {
+  write_fixture(directory, files)
+  list.each(links, fn(link) {
+    let #(at, target) = link
+    let path = directory <> "/" <> at
+    ensure_parent(path)
+    let assert Ok(Nil) = simplifile.create_symlink(to: target, from: path)
+  })
+  directory
+}
+
 // Delete a fixture directory written by `write_fixture`/`write_file`.
 pub fn cleanup(directory: String) -> Nil {
   let _ = simplifile.delete(directory)
