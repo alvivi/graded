@@ -986,6 +986,7 @@ fn project_context(
         stale_returns_clauses,
         package_targets,
       ),
+      registry,
     )
   let kb_base =
     kb_base
@@ -3714,6 +3715,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
         stale_returns_clauses,
         package_targets,
       ),
+      registry,
     )
   let kb_base =
     kb_base
@@ -5153,6 +5155,7 @@ fn enrich_with_path_deps(
   package_targets: types.PackageTargets,
   retained: Dict(String, RetainedModule),
   baseline: Option(KnowledgeBase),
+  registry: SignatureRegistry,
 ) -> #(
   KnowledgeBase,
   Dict(String, typeinfo.ModuleReading),
@@ -5199,6 +5202,7 @@ fn enrich_with_path_deps(
           kb,
           consumer_modules,
           package_targets,
+          registry,
         )
       {
         Error(Nil) -> #(kb, readings, typed)
@@ -5483,6 +5487,7 @@ pub fn infer_path_dep(
     base_kb,
     consumer_modules,
     package_targets,
+    signatures.empty(),
   )
   |> result.map(fn(inferred) {
     #(inferred.effects, inferred.params, inferred.returns, inferred.provenance)
@@ -5530,6 +5535,9 @@ fn infer_typed_path_dep(
   base_kb: KnowledgeBase,
   consumer_modules: Set(String),
   package_targets: types.PackageTargets,
+  // The run's own registry, so a call from the dep into any package the run
+  // parsed matches the callee's parameters as the project's own call does.
+  run_registry: SignatureRegistry,
 ) -> Result(PathDepInference, Nil) {
   // Path-dep checks come from the dep's spec file (loaded by
   // enrich_with_path_deps), not from per-module files. Inference here only
@@ -5547,12 +5555,14 @@ fn infer_typed_path_dep(
       |> set.filter(fn(imported) { dict.has_key(index, imported) })
     })
 
-  // A registry covering the dep's own modules, so a cross-module call between
-  // them (`b.run` calling `a.apply(cb)`) matches the callee's bound by parameter
-  // position during inference — exactly as the project registry does for the
-  // project's own modules. Built from the already-parsed `index`, not re-read.
+  // A registry covering the dep's own modules over the run's, so a call from
+  // the dep (`b.run` calling `a.apply(cb)`, or `other.apply(cb)` in another
+  // package) matches the callee's bound by parameter position during
+  // inference — exactly as the project registry does for the project's own
+  // modules. The dep's own modules win a collision. Built from the
+  // already-parsed `index`, not re-read.
   let registry =
-    dict.fold(index, signatures.empty(), fn(acc, module_path, entry) {
+    dict.fold(index, run_registry, fn(acc, module_path, entry) {
       let #(module, _checks) = entry
       signatures.merge(acc, signatures.from_glance_module(module_path, module))
     })

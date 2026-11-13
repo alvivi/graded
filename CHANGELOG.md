@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line or committed `where returns` clause in your spec naming it no longer
   answers (`[File]` can read `[Unknown]`), and a `where returns` clause on an
   `assume` line is refused on a target where only the fallback body is built.
+- A path dependency's call to a function with no bounds in the catalog or a
+  module-level `assume`, in any package graded read the source of, now charges
+  the callback it passes, as the project's own call does.
 - A path dependency calling another now reads that package's own answer,
   `[Unknown]` included. When its name sorted after the package it calls, it
   read the catalog's answer, or `[Unknown]` where the catalog had none.
@@ -34,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lines, never another line of yours. Path dependencies that call each other
   resolve the same whatever their names. A path dependency's call into a
   running fallback body still reads `[Unknown]`.
+- A path dependency calling another package's higher-order function binds the
+  callback as your own call does: `b.apply(fn() { io.println("x") })` from a
+  path dependency reads `[Stdout]`, where it read `[Stdout, Unknown]`.
 - `graded check` reports `assume` lines naming no real module in a project
   with a path dev-dependency, or a path dependency declared by another path
   dependency. Before, such a project silenced the check.
