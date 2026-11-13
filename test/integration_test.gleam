@@ -3594,22 +3594,20 @@ pub fn a_module_external_resolves_from_catalog_functions_test() {
   // called a real module a typo whenever the dependency's own sources were not
   // installed to say otherwise.
   let root = "build/external_lint_catalog_module"
-  support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
-    #(
-      "manifest.toml",
-      "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n]\n",
-    ),
-    #("proj.graded", "assume gleam/io : []\nassume nowhere/mod : []\n"),
-    // The manifest's one package yields sources, so a module the lint cannot
-    // place really is nowhere. `gleam/io` is not among them: the catalog's
-    // per-function entries are what answer for it.
-    #(
-      "build/packages/gleam_stdlib/src/gleam/list.gleam",
-      "pub fn go() -> Nil {\n  Nil\n}\n",
-    ),
-    #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
-  ])
+  support.write_fixture(
+    root,
+    list.append(support.hex_tree("proj", [#("gleam_stdlib", "0.70.0")]), [
+      #("proj.graded", "assume gleam/io : []\nassume nowhere/mod : []\n"),
+      // The manifest's one package yields sources, so a module the lint cannot
+      // place really is nowhere. `gleam/io` is not among them: the catalog's
+      // per-function entries are what answer for it.
+      #(
+        "build/packages/gleam_stdlib/src/gleam/list.gleam",
+        "pub fn go() -> Nil {\n  Nil\n}\n",
+      ),
+      #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+    ]),
+  )
   let assert Ok(results) = graded.check_project(root)
   // Only the module that really resolves nowhere is flagged.
   results
@@ -11479,35 +11477,36 @@ pub fn an_external_naming_nothing_is_flagged_test() {
   // dependency-resolving lines beside it are left alone, which is the caveat
   // that keeps the lint from flagging what it cannot introspect.
   let root = "build/external_lint"
-  support.write_fixture(root, [
-    #("gleam.toml", "name = \"proj\"\n"),
-    #(
-      "manifest.toml",
-      "packages = [\n  { name = \"gleam_stdlib\", version = \"0.70.0\" },\n  { name = \"dep\", version = \"1.0.0\" },\n]\n",
-    ),
-    #(
-      "proj.graded",
-      "assume m.no_such : []
+  support.write_fixture(
+    root,
+    list.append(
+      support.hex_tree("proj", [#("gleam_stdlib", "0.70.0"), #("dep", "1.0.0")]),
+      [
+        #(
+          "proj.graded",
+          "assume m.no_such : []
 assume nowhere/mod : []
 assume gleam/io.println : [Stdout]
 assume dep/io.writes : [Disk]
 assume dep/io.typo : [Disk]
 assume dep/io : [Disk]
 ",
+        ),
+        #(
+          "build/packages/dep/src/dep/io.gleam",
+          "pub fn writes() -> Nil {\n  Nil\n}\n",
+        ),
+        // Every manifest package yields sources, so a module the lint cannot place
+        // really is nowhere. `gleam/io` itself is not among them — the catalog is
+        // what answers for it.
+        #(
+          "build/packages/gleam_stdlib/src/gleam/list.gleam",
+          "pub fn go() -> Nil {\n  Nil\n}\n",
+        ),
+        #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
+      ],
     ),
-    #(
-      "build/packages/dep/src/dep/io.gleam",
-      "pub fn writes() -> Nil {\n  Nil\n}\n",
-    ),
-    // Every manifest package yields sources, so a module the lint cannot place
-    // really is nowhere. `gleam/io` itself is not among them — the catalog is
-    // what answers for it.
-    #(
-      "build/packages/gleam_stdlib/src/gleam/list.gleam",
-      "pub fn go() -> Nil {\n  Nil\n}\n",
-    ),
-    #("m.gleam", "pub fn go() -> Nil {\n  Nil\n}\n"),
-  ])
+  )
 
   let assert Ok(results) = graded.check_project(root)
   results

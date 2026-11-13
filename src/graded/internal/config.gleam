@@ -258,6 +258,51 @@ pub fn spec_file_for(package_root: String, package_name: String) -> String {
   filepath.join(package_root, spec_file)
 }
 
+// The TOML file at `path`, parsed, or `Error(Nil)` where it cannot be read or
+// parsed.
+pub fn read_toml(path: String) -> Result(Dict(String, tom.Toml), Nil) {
+  use content <- result.try(simplifile.read(path) |> result.replace_error(Nil))
+  tom.parse(content) |> result.replace_error(Nil)
+}
+
+// `path` as seen from `root`: joined onto it, unless it is absolute or `root`
+// is the current directory, where it is already the path to use.
+pub fn resolve_path(root: String, path: String) -> String {
+  use <- bool.guard(
+    when: string.starts_with(path, "/") || root == ".",
+    return: path,
+  )
+  filepath.join(root, path)
+}
+
+// A path with its `.` and `..` segments collapsed, so two spellings of one
+// directory are one key. A relative path keeps the `..` segments that climb
+// past its own top, so a tree reached from above — a sibling checkout named
+// `../dep`, and everything its `gleam.toml` names in turn — collapses like any
+// other.
+pub fn normalized_path(path: String) -> String {
+  case string.starts_with(path, "/") {
+    True -> filepath.expand(path) |> result.unwrap(path)
+    False ->
+      string.split(path, "/")
+      |> list.fold([], collapse_segment)
+      |> list.reverse
+      |> string.join("/")
+  }
+}
+
+// One segment onto the collapsed prefix, which is held reversed. A `..` drops
+// the segment before it; with nothing before it to drop, or another `..` there,
+// it is kept and the path goes on climbing.
+fn collapse_segment(collapsed: List(String), segment: String) -> List(String) {
+  case segment, collapsed {
+    "", _ | ".", _ -> collapsed
+    "..", [] | "..", ["..", ..] -> ["..", ..collapsed]
+    "..", [_, ..rest] -> rest
+    _, _ -> [segment, ..collapsed]
+  }
+}
+
 // Compute the dotted module name (as it appears in `import` statements) for a
 // `.gleam` file under a given source directory. For example,
 // `module_path_for_source("src/app/router.gleam", "src")` returns

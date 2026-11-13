@@ -37,7 +37,7 @@ Tests use **gleeunit** with **qcheck** property generators in `test/generators.g
 
 ## Architecture
 
-Eighteen modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
+Nineteen modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
 
 | File | Responsibility |
 |---|---|
@@ -53,6 +53,7 @@ Eighteen modules, no circular dependencies. Only `src/graded.gleam` is the publi
 | `src/graded/internal/checker.gleam` | Collect effects, check subset inclusion, resolve param bounds and field calls (type-directed via girard) |
 | `src/graded/internal/typeinfo.gleam` | Hold girard's per-expression inferred types, keyed by `#(start, end)` span, for receiver-type lookup |
 | `src/graded/internal/signatures.gleam` | Glance-backed parameter signatures: fn-typed and operator (second-order) parameter detection, positions, for call-site substitution |
+| `src/graded/internal/package_tree.gleam` | The dependency tree: local packages located from path declarations, the requirement graph over every package, and whether the manifest, `gleam.toml` and installed packages agree that the tree read is the whole tree |
 | `src/graded/internal/topo.gleam` | Kahn's-algorithm topological sort over a string-keyed dependency graph |
 | `src/graded/internal/lint.gleam` | Spec-file lint: `check`/`assume`/field lines whose target resolves nothing, `effects` lines whose path is not a function's, and `where returns` clauses their own line does not scope |
 | `src/graded/internal/pack.gleam` | Hex tarball patching for `graded pack`: resolve `build/<name>-<version>.tar` and check its `metadata.config` names this project, inject the spec through a temporary file, verify, replace |

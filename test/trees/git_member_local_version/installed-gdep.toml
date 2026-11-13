@@ -1,0 +1,4 @@
+name = "gdep"
+version = "1.0.0"
+[dependencies]
+gmember = { path = "sub/gmember" }

@@ -1,0 +1,4 @@
+name = "gtop"
+version = "1.0.0"
+[dependencies]
+pka = { path = "packages/pka" }

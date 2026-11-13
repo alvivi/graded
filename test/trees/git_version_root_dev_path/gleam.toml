@@ -1,0 +1,7 @@
+name = "app"
+version = "1.0.0"
+[dependencies]
+gdep = { git = "https://git.example.com/gdep", ref = "main" }
+
+[dev-dependencies]
+b = { path = "../b" }

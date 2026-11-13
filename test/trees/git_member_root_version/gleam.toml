@@ -1,0 +1,5 @@
+name = "app"
+version = "1.0.0"
+[dependencies]
+gdep = { git = "https://git.example.com/gdep", ref = "main" }
+gmember = ">= 1.0.0 and < 2.0.0"

@@ -1,0 +1,4 @@
+name = "app"
+version = "1.0.0"
+[dependencies]
+gtop = { git = "https://git.example.com/gtop", ref = "main" }

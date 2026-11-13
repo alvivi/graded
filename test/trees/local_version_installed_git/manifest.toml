@@ -1,0 +1,17 @@
+# Do not manually edit this file, it is managed by Gleam.
+#
+# This file locks the dependency versions used, to make your build
+# deterministic and to prevent unexpected versions from being included
+# in your application.
+#
+# You should check this file into your source control repository.
+
+packages = [
+  { name = "a", version = "1.0.0", build_tools = ["gleam"], requirements = ["b"], source = "local", path = "../a" },
+  { name = "b", version = "1.0.0", build_tools = ["gleam"], requirements = [], source = "git", repo = "https://git.example.com/b", commit = "83f9436f894ee8c6612e271deb7babbb5c264497" },
+  { name = "h", version = "1.0.0", build_tools = ["gleam"], requirements = ["b"], source = "git", repo = "https://git.example.com/h", commit = "148fa4d6737e27c7e1e57f9f190b0a04acf6101e" },
+]
+
+[requirements]
+a = { path = "../a" }
+h = { git = "https://git.example.com/h", ref = "main" }
