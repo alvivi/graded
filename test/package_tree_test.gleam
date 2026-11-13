@@ -628,3 +628,96 @@ pub fn installed_requirements_supply_edges_without_a_manifest_test() {
   package_tree.is_complete(local) |> should.be_false
   support.cleanup(root <> "/..")
 }
+
+// Packages built without Gleam
+//
+// A rebar3 or mix package may hold no Gleam module and still be the package
+// the manifest lists.
+
+// A project depending on one hex package, `native`, installed with `files` in
+// its `src/` and the manifest's `build_tools` replaced by `tools` — `""` drops
+// the key.
+fn native_package_tree(
+  name: String,
+  tools: String,
+  files: List(String),
+) -> String {
+  let root = "build/pt_native_" <> name
+  support.write_fixture(
+    root,
+    list.append(support.hex_tree("app", [#("native", "1.0.0")]), [
+      #("src/app.gleam", "pub fn f() -> Int {\n  1\n}\n"),
+      ..list.map(files, fn(file) { #("build/packages/native/src/" <> file, "") })
+    ]),
+  )
+  support.edit_file(
+    root <> "/manifest.toml",
+    "build_tools = [\"gleam\"], ",
+    tools,
+  )
+  root
+}
+
+fn native_tree_is_complete(
+  name: String,
+  tools: String,
+  files: List(String),
+) -> Bool {
+  let root = native_package_tree(name, tools, files)
+  let complete = package_tree.discover(root) |> package_tree.is_complete
+  support.cleanup(root)
+  complete
+}
+
+pub fn a_rebar3_package_without_gleam_modules_is_located_test() {
+  native_tree_is_complete("rebar3", "build_tools = [\"rebar3\"], ", [
+    "native.erl",
+  ])
+  |> should.be_true
+}
+
+pub fn a_mix_package_with_mixed_files_is_located_test() {
+  native_tree_is_complete("mix", "build_tools = [\"mix\"], ", [
+    "native.ex",
+    "native/helper.gleam",
+  ])
+  |> should.be_true
+}
+
+pub fn a_package_with_no_directory_is_not_located_test() {
+  let root =
+    native_package_tree("missing", "build_tools = [\"rebar3\"], ", [
+      "native.erl",
+    ])
+  let assert Ok(Nil) = simplifile.delete(root <> "/build/packages/native")
+  package_tree.discover(root) |> package_tree.is_complete |> should.be_false
+  support.cleanup(root)
+}
+
+pub fn a_package_whose_sources_cannot_be_walked_is_not_located_test() {
+  let root =
+    native_package_tree("unwalkable", "build_tools = [\"rebar3\"], ", [
+      "native.erl",
+    ])
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      to: "../nowhere",
+      from: root <> "/build/packages/native/src/gone",
+    )
+  package_tree.discover(root) |> package_tree.is_complete |> should.be_false
+  support.cleanup(root)
+}
+
+pub fn other_build_tools_still_need_a_gleam_module_test() {
+  native_tree_is_complete("no_key", "", ["native.erl"]) |> should.be_false
+  native_tree_is_complete("empty", "build_tools = [], ", ["native.erl"])
+  |> should.be_false
+  native_tree_is_complete("make", "build_tools = [\"make\"], ", ["native.erl"])
+  |> should.be_false
+  native_tree_is_complete(
+    "rebar3_gleam",
+    "build_tools = [\"rebar3\", \"gleam\"], ",
+    ["native.erl"],
+  )
+  |> should.be_false
+}

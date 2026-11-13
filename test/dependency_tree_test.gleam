@@ -280,3 +280,40 @@ pub fn the_lint_places_dev_only_and_transitive_modules_test() {
   |> should.equal([types.UnmatchedModuleAssumeWarning(module: "nosuch_module")])
   support.cleanup(root <> "/..")
 }
+
+// A dependency built by rebar3, with no Gleam module of its own, and one built
+// by mix holding Gleam modules beside its Elixir ones.
+pub fn a_tree_with_rebar3_and_mix_packages_is_linted_test() {
+  let root = "build/dt_lint_native"
+  support.write_fixture(
+    root,
+    list.append(
+      support.hex_tree("app", [#("erlpkg", "1.0.0"), #("expkg", "1.0.0")]),
+      [
+        #("src/app.gleam", "pub fn f() -> Int {\n  1\n}\n"),
+        #("app.graded", "assume nosuch_module : []\n"),
+        #("build/packages/erlpkg/src/erlpkg.erl", ""),
+        #("build/packages/expkg/src/expkg.ex", ""),
+        #(
+          "build/packages/expkg/src/expkg/bridge.gleam",
+          "pub fn f() -> Int {\n  1\n}\n",
+        ),
+      ],
+    ),
+  )
+  support.edit_file(
+    root <> "/manifest.toml",
+    "{ name = \"erlpkg\", version = \"1.0.0\", build_tools = [\"gleam\"]",
+    "{ name = \"erlpkg\", version = \"1.0.0\", build_tools = [\"rebar3\"]",
+  )
+  support.edit_file(
+    root <> "/manifest.toml",
+    "{ name = \"expkg\", version = \"1.0.0\", build_tools = [\"gleam\"]",
+    "{ name = \"expkg\", version = \"1.0.0\", build_tools = [\"mix\"]",
+  )
+  typo_reported(root) |> should.be_true
+  graded.placement_module_files(root)
+  |> dict.has_key("expkg/bridge")
+  |> should.be_true
+  support.cleanup(root)
+}

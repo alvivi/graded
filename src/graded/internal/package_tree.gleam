@@ -800,14 +800,26 @@ fn installed_records_match(package_root: String, manifest: Manifest) -> Bool {
 }
 
 // The entry's package was found: its directory's `src/` walks, and holds a
-// Gleam module.
+// Gleam module, unless the package is built by rebar3 or mix alone and may
+// hold none.
 fn is_located(local: LocalPackages, entry: ManifestEntry) -> Bool {
   let directory = case dict.get(local.packages, entry.name) {
     Ok(package) -> package.directory
     Error(Nil) -> filepath.join(local.root, "build/packages/" <> entry.name)
   }
   case config.source_files(filepath.join(directory, "src")) {
-    Ok(files) -> list.any(files, string.ends_with(_, ".gleam"))
+    Ok(files) ->
+      list.any(files, string.ends_with(_, ".gleam"))
+      || built_without_gleam(entry.build_tools)
     Error(_) -> False
+  }
+}
+
+// A `build_tools` list naming at least one tool, each of them rebar3 or mix.
+fn built_without_gleam(build_tools: Option(List(String))) -> Bool {
+  case build_tools {
+    Some([_, ..] as tools) ->
+      list.all(tools, fn(tool) { tool == "rebar3" || tool == "mix" })
+    Some([]) | None -> False
   }
 }
