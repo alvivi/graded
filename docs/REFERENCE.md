@@ -833,7 +833,12 @@ A per-function line is flagged the same way when its name resolves nowhere — a
 a dependency whose source is installed and parses settles that by what it
 defines, so `assume gleam/list.typo : []` is flagged even though a
 catalog module-level entry for `gleam/list` would answer for any name in it. The
-catalog stands in only where graded holds no readable source. (`graded effect`
+catalog stands in only where graded holds no readable source. A module is only
+called missing when graded read the whole dependency tree: `manifest.toml`
+agrees with `gleam.toml`, with every path dependency's `gleam.toml` and with the
+installed packages, and every package it lists was found. Until `gleam deps
+download` or `gleam build` brings them back in step, such lines are not
+flagged. (`graded effect`
 still answers from a module-level line — see
 [Looking up one effect](#looking-up-one-effect) — it reports what the spec says
 about a name rather than checking that the name exists.)

@@ -1,0 +1,11 @@
+[packages]
+a = "1.0.0"
+gdep = "1.0.0"
+gmember = "1.0.0"
+
+[git.gmember]
+commit = "5e2aaa872197884033a08ce4850e41092ef44148"
+path = "sub/gmember"
+
+[git.gdep]
+commit = "5e2aaa872197884033a08ce4850e41092ef44148"

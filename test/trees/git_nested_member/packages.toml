@@ -1,0 +1,15 @@
+[packages]
+pka = "1.0.0"
+gtop = "1.0.0"
+pkb = "1.0.0"
+
+[git.pka]
+commit = "d960882f0fc9dce5fe4fd57f2299c27ede94ec7c"
+path = "packages/pka"
+
+[git.gtop]
+commit = "d960882f0fc9dce5fe4fd57f2299c27ede94ec7c"
+
+[git.pkb]
+commit = "d960882f0fc9dce5fe4fd57f2299c27ede94ec7c"
+path = "packages/pkb"

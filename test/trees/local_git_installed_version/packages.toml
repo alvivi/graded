@@ -1,0 +1,10 @@
+[packages]
+a = "1.0.0"
+b = "1.0.0"
+h = "1.0.0"
+
+[git.b]
+commit = "83f9436f894ee8c6612e271deb7babbb5c264497"
+
+[git.h]
+commit = "490d04cadc817306800e2ab7e4cf08670f0eb335"

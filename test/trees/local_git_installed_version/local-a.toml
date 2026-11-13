@@ -1,0 +1,4 @@
+name = "a"
+version = "1.0.0"
+[dependencies]
+b = { git = "https://git.example.com/b", ref = "main" }

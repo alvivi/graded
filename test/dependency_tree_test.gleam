@@ -3,8 +3,10 @@
 // compiler does not read, and deleted afterwards.
 
 import gleam/dict
+import gleam/list
 import gleeunit/should
 import graded
+import graded/internal/types
 import support
 
 // Source trees with symbolic links
@@ -192,4 +194,89 @@ pub fn a_dangling_link_fails_the_project_and_empties_a_dependency_test() {
     )
   graded.dependency_module_files(installed) |> should.equal(dict.new())
   support.cleanup(installed)
+}
+
+// The spec lint over a whole tree
+//
+// Every tree below was captured from a real Gleam build, so each is the whole
+// tree Gleam resolved, and the root's spec line naming no module is reported.
+
+fn typo_reported(root: String) -> Bool {
+  let assert Ok(results) = graded.check_project(root)
+  results
+  |> list.flat_map(fn(result) { result.warnings })
+  |> list.contains(types.UnmatchedModuleAssumeWarning(module: "nosuch_module"))
+}
+
+fn assert_typo_reported(shape: String) -> Nil {
+  let root = support.captured_tree(shape, "build/dt_lint_" <> shape)
+  typo_reported(root) |> should.be_true
+  support.cleanup(root <> "/..")
+}
+
+pub fn a_tree_with_a_dev_only_path_dependency_is_linted_test() {
+  assert_typo_reported("direct_dev_only")
+}
+
+pub fn a_tree_with_a_transitive_path_dependency_is_linted_test() {
+  assert_typo_reported("transitive_path")
+  assert_typo_reported("direct_transitive_dev")
+}
+
+pub fn a_path_package_satisfying_a_version_requirement_is_linted_test() {
+  assert_typo_reported("root_path_local_version")
+}
+
+pub fn a_dev_path_package_an_installed_package_requires_is_linted_test() {
+  assert_typo_reported("git_version_root_dev_path")
+}
+
+pub fn a_nested_path_providing_a_root_version_is_linted_test() {
+  assert_typo_reported("root_version_local_path")
+}
+
+pub fn a_tree_with_git_members_is_linted_test() {
+  assert_typo_reported("git_member")
+  assert_typo_reported("git_nested_member")
+  assert_typo_reported("git_member_root_version")
+  assert_typo_reported("git_member_local_version")
+}
+
+pub fn an_installed_git_provider_is_linted_test() {
+  assert_typo_reported("local_version_installed_git")
+}
+
+pub fn a_stale_git_provider_leaves_the_lint_silent_test() {
+  let root =
+    support.captured_tree(
+      "local_git_installed_version",
+      "build/dt_lint_stale_git_provider",
+    )
+  support.edit_file(
+    root <> "/../a/gleam.toml",
+    "b = { git = \"https://git.example.com/b\", ref = \"main\" }",
+    "b = \">= 1.0.0 and < 2.0.0\"",
+  )
+  typo_reported(root) |> should.be_false
+  support.cleanup(root <> "/..")
+}
+
+pub fn the_lint_places_dev_only_and_transitive_modules_test() {
+  let root =
+    support.captured_tree("direct_transitive_dev", "build/dt_lint_placement")
+  let placement = graded.placement_module_files(root)
+  ["a", "b", "d"]
+  |> list.all(dict.has_key(placement, _))
+  |> should.be_true
+  graded.context_placement_files(root) |> should.equal(Ok(placement))
+  // A module-level line over each is placed, and only the typo is reported.
+  support.write_file(
+    root <> "/app.graded",
+    "assume b : []\nassume d : []\nassume nosuch_module : []\n",
+  )
+  let assert Ok(results) = graded.check_project(root)
+  results
+  |> list.flat_map(fn(result) { result.warnings })
+  |> should.equal([types.UnmatchedModuleAssumeWarning(module: "nosuch_module")])
+  support.cleanup(root <> "/..")
 }

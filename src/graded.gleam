@@ -64,6 +64,7 @@ import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
 import graded/internal/lint
 import graded/internal/pack
+import graded/internal/package_tree.{type LocalPackages}
 import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/topo
 import graded/internal/typeinfo
@@ -348,7 +349,7 @@ pub fn pack_project(project_root: String) -> Result(String, GradedError) {
     }),
   )
   let entry_name = raw_cfg.spec_file
-  let resolved_spec = resolve_path(project_root, raw_cfg.spec_file)
+  let resolved_spec = config.resolve_path(project_root, raw_cfg.spec_file)
 
   // A spec_file that is absolute or escapes the package root can't be a safe
   // archive-relative entry.
@@ -833,6 +834,12 @@ type ProjectContext {
     // the spec lint weighs its declaring lines against the same scan rather
     // than repeating the walk.
     dep_files: Dict(String, String),
+    // The packages the dependency tree holds, discovered once when this
+    // context was assembled.
+    local_packages: LocalPackages,
+    // Module path -> source file for every module the spec lint may place: the
+    // dependency scan above, and every other local package's `src/`.
+    placement_files: Dict(String, String),
     // What the inference read of each path dependency it typed, in declaration
     // order, counted where it was read. Observational, and the coverage report
     // is the only reader: a dependency installed from hex is not typed and is
@@ -914,7 +921,9 @@ fn project_context(
   let native_of = native_functions_of(index, package_targets)
   let stale_assumes = stale_project_assumes(spec, native_of)
   let stale_returns_clauses = stale_project_assume_returns(spec, native_of)
-  let dep_sources = dependency_sources(package_root, package_targets)
+  // Walked once for the run, and handed to everything that reads the tree.
+  let local = package_tree.discover(package_root)
+  let dep_sources = dependency_sources(package_root, local, package_targets)
   let registry =
     signatures.merge(
       dependency_registry(dep_sources),
@@ -922,7 +931,7 @@ fn project_context(
     )
   // Scanned once for the run: girard's resolver reads it here, and every
   // spec-less path dependency below is typed against the same map.
-  let dep_files = dependency_module_files(package_root)
+  let dep_files = tree_module_files(package_root, local)
   let type_info = build_type_index(index, dep_files, package_targets)
 
   // Built once for the whole run: every module's factory scan below routes its
@@ -962,6 +971,7 @@ fn project_context(
     enrich_with_path_deps(
       kb_base,
       package_root,
+      local,
       dep_files,
       declared_modules,
       package_targets,
@@ -984,6 +994,7 @@ fn project_context(
     // summaries this leaves behind.
     |> with_dependency_fallback_effects(
       package_root,
+      local,
       dep_files,
       retained,
       typed_dep_modules,
@@ -1071,6 +1082,8 @@ fn project_context(
       build_project_field_index(index),
     ),
     dep_files:,
+    local_packages: local,
+    placement_files: placement_files(dep_files, local),
     typed_path_dependencies: list.reverse(typed_path_dependencies),
   ))
 }
@@ -1257,13 +1270,14 @@ fn check_one_file(
 // name, so a closure over `dependency_name` is what crosses the boundary.
 fn lint_context(context: ProjectContext) -> lint.Context {
   let ProjectContext(
-    sources: ProjectSources(spec:, index:, package_root:, ..),
+    sources: ProjectSources(spec:, index:, ..),
     stale_assumes:,
     stale_returns_clauses:,
     catalog:,
     dependencies:,
     registry:,
-    dep_files:,
+    local_packages:,
+    placement_files:,
     ..,
   ) = context
   lint.Context(
@@ -1274,37 +1288,11 @@ fn lint_context(context: ProjectContext) -> lint.Context {
     catalog:,
     registry:,
     dependency_name: dependency_name(dependencies, _),
-    dependency_files: dep_files,
+    dependency_files: placement_files,
     dependency_sources_are_complete: fn() {
-      dependency_sources_are_complete(package_root)
+      package_tree.is_complete(local_packages)
     },
   )
-}
-
-// Whether every package the manifest lists yielded sources graded could read —
-// installed under `build/packages`, or at a path dependency's own location.
-//
-// The lint proves a name dead by reading source. A tree missing one of the
-// manifest's packages holds source it never read, so a module it cannot place
-// might be that package's: only over a complete tree does "nowhere to be found"
-// mean "not there". A project with no dependencies is trivially complete, and a
-// fresh clone before `gleam deps download` is not.
-fn dependency_sources_are_complete(package_root: String) -> Bool {
-  let manifest = effects.manifest_package_names(manifest_path(package_root))
-  use <- bool.guard(when: set.is_empty(manifest), return: True)
-  let located =
-    effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
-    |> list.filter_map(fn(dep) {
-      let #(name, dep_path) = dep
-      let src_dir = filepath.join(resolve_path(package_root, dep_path), "src")
-      case dict.is_empty(effects.source_dir_module_files(src_dir)) {
-        True -> Error(Nil)
-        False -> Ok(name)
-      }
-    })
-    |> set.from_list
-    |> set.union(effects.packages_with_sources(packages_dir(package_root)))
-  set.difference(manifest, located) |> set.is_empty
 }
 
 // Map of module path -> source file for every installed dependency (under
@@ -1316,13 +1304,56 @@ fn dependency_sources_are_complete(package_root: String) -> Bool {
 // the result to everything that resolves against it.
 @internal
 pub fn dependency_module_files(package_root: String) -> Dict(String, String) {
+  tree_module_files(package_root, package_tree.discover(package_root))
+}
+
+// Every module the spec lint may place, for the tree at `package_root`.
+@internal
+pub fn placement_module_files(package_root: String) -> Dict(String, String) {
+  let local = package_tree.discover(package_root)
+  placement_files(tree_module_files(package_root, local), local)
+}
+
+// The placement map the context assembled for `directory` holds, which is the
+// one `check`'s spec lint reads.
+@internal
+pub fn context_placement_files(
+  directory: String,
+) -> Result(Dict(String, String), GradedError) {
+  use ctx <- result.map(load_project_context(directory))
+  ctx.placement_files
+}
+
+// The same map, over a tree already discovered.
+fn tree_module_files(
+  package_root: String,
+  local: LocalPackages,
+) -> Dict(String, String) {
   let installed = effects.dependency_module_files(packages_dir(package_root))
-  effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
-  |> list.fold(installed, fn(acc, dep) {
+  list.fold(local.direct, installed, fn(acc, dep) {
     let #(_name, dep_path) = dep
-    let src_dir = filepath.join(resolve_path(package_root, dep_path), "src")
+    let src_dir =
+      filepath.join(config.resolve_path(package_root, dep_path), "src")
     dict.merge(acc, effects.source_dir_module_files(src_dir))
   })
+}
+
+// Every module the spec lint may place: the dependency scan, and the `src/` of
+// every local package it does not cover, dev-only ones included. A module the
+// scan holds keeps the file it holds.
+fn placement_files(
+  dep_files: Dict(String, String),
+  local: LocalPackages,
+) -> Dict(String, String) {
+  use acc, name, package <- dict.fold(local.packages, dep_files)
+  case list.any(local.direct, fn(entry) { entry.0 == name }) {
+    True -> acc
+    False ->
+      dict.merge(
+        effects.source_dir_module_files(filepath.join(package.directory, "src")),
+        acc,
+      )
+  }
 }
 
 // Effect queries
@@ -3570,14 +3601,16 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
   // do positional argument matching for cross-module polymorphic calls. Hoisted
   // above `kb_base` because the builders below consume it; it needs only
   // `index`/`package_root`.
-  let dep_sources = dependency_sources(package_root, package_targets)
+  // As in `project_context`: one walk of the tree for the run.
+  let local = package_tree.discover(package_root)
+  let dep_sources = dependency_sources(package_root, local, package_targets)
   let registry =
     signatures.merge(
       dependency_registry(dep_sources),
       build_project_registry(index),
     )
   // As in `project_context`: one dependency scan for the run.
-  let dep_files = dependency_module_files(package_root)
+  let dep_files = tree_module_files(package_root, local)
   let type_info = build_type_index(index, dep_files, package_targets)
   // As in `project_context`: one map for the run, not one per module.
   let constructors = package_constructors(index, dep_sources)
@@ -3610,6 +3643,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     enrich_with_path_deps(
       kb_base,
       package_root,
+      local,
       dep_files,
       declared_modules,
       package_targets,
@@ -3624,6 +3658,7 @@ fn compute_infer(directory: String) -> Result(InferOutcome, GradedError) {
     // and before this package's own inference reads the summaries.
     |> with_dependency_fallback_effects(
       package_root,
+      local,
       dep_files,
       retained,
       typed_dep_modules,
@@ -4081,8 +4116,8 @@ fn read_config(directory: String) -> Result(config.GradedConfig, GradedError) {
   Ok(
     config.GradedConfig(
       ..raw,
-      spec_file: resolve_path(project_root, raw.spec_file),
-      cache_dir: resolve_path(project_root, raw.cache_dir),
+      spec_file: config.resolve_path(project_root, raw.spec_file),
+      cache_dir: config.resolve_path(project_root, raw.cache_dir),
     ),
   )
 }
@@ -4327,6 +4362,7 @@ fn dependency_foreign(
 fn with_dependency_fallback_effects(
   knowledge_base: KnowledgeBase,
   package_root: String,
+  local: LocalPackages,
   dep_files: Dict(String, String),
   retained: Dict(String, RetainedModule),
   typed: Dict(String, typeinfo.ModuleReading),
@@ -4342,7 +4378,7 @@ fn with_dependency_fallback_effects(
       !dict.has_key(typed, module.source_path)
     })
   let readings =
-    fallback_readings(package_root, dep_files, untyped, targets)
+    fallback_readings(package_root, local, dep_files, untyped, targets)
     |> dict.merge(typed)
   let #(ordered, cyclic) = dependency_walk_order(retained)
   // A cycle member's body is never walked, but its callback shape is still
@@ -4402,6 +4438,7 @@ fn with_dependency_fallback_effects(
 // the reading, and the walk re-parses each module in its turn.
 fn fallback_readings(
   package_root: String,
+  local: LocalPackages,
   dep_files: Dict(String, String),
   retained: Dict(String, RetainedModule),
   targets: List(girard.Target),
@@ -4418,7 +4455,7 @@ fn fallback_readings(
   let type_info =
     type_index_on_targets(
       index,
-      fallback_resolver_files(package_root, dep_files),
+      fallback_resolver_files(package_root, local, dep_files),
       targets,
     )
   use acc, module_path, #(source_path, _module) <- dict.fold(index, dict.new())
@@ -4434,12 +4471,12 @@ fn fallback_readings(
 // scan wins a collision, as it does for one path dependency alone.
 fn fallback_resolver_files(
   package_root: String,
+  local: LocalPackages,
   dep_files: Dict(String, String),
 ) -> Dict(String, String) {
-  effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
-  |> list.fold(dep_files, fn(acc, dep) {
+  list.fold(local.direct, dep_files, fn(acc, dep) {
     let #(_name, dep_path) = dep
-    path_dep_resolver_files(resolve_path(package_root, dep_path), acc)
+    path_dep_resolver_files(config.resolve_path(package_root, dep_path), acc)
   })
 }
 
@@ -4595,11 +4632,12 @@ fn merge_dependency_sources(
 // `build/packages`, then path dependencies, whose copy of a module path wins.
 fn dependency_sources(
   package_root: String,
+  local: LocalPackages,
   package_targets: types.PackageTargets,
 ) -> DependencySources {
   merge_dependency_sources(
     packages_dir_sources(packages_dir(package_root), package_targets),
-    path_dep_sources(package_root, package_targets),
+    path_dep_sources(package_root, local, package_targets),
   )
   |> with_declared_labels(package_targets)
 }
@@ -4839,17 +4877,6 @@ fn find_gleam_toml_dir(dir: String, original: String) -> String {
   }
 }
 
-// Join a path against a root, but leave it untouched if it's already
-// absolute (starts with `/`) or if the root is `.` (so production paths
-// stay short and unprefixed).
-fn resolve_path(root: String, path: String) -> String {
-  use <- bool.guard(
-    when: string.starts_with(path, "/") || root == ".",
-    return: path,
-  )
-  filepath.join(root, path)
-}
-
 fn default_package_name(project_root: String) -> String {
   // Used only when no gleam.toml is found: the project root's last path
   // segment, or "graded" when that's empty, "/", or ".".
@@ -4919,6 +4946,7 @@ fn read_spec_on_disk(
 fn enrich_with_path_deps(
   knowledge_base: KnowledgeBase,
   package_root: String,
+  local: LocalPackages,
   dep_files: Dict(String, String),
   consumer_modules: Set(String),
   package_targets: types.PackageTargets,
@@ -4928,14 +4956,12 @@ fn enrich_with_path_deps(
   Dict(String, typeinfo.ModuleReading),
   List(coverage.PathDependency),
 ) {
-  let path_deps =
-    effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
-  use state, dep <- list.fold(path_deps, #(knowledge_base, dict.new(), []))
+  use state, dep <- list.fold(local.direct, #(knowledge_base, dict.new(), []))
   let #(kb, readings, typed) = state
   let #(name, dep_path) = dep
   // Path dependency locations are declared relative to the project root,
   // except an absolute `path`, which `resolve_path` leaves untouched.
-  let resolved_dep_path = resolve_path(package_root, dep_path)
+  let resolved_dep_path = config.resolve_path(package_root, dep_path)
   let spec_path = config.spec_file_for(resolved_dep_path, name)
   let load = effects.load_dep_spec_at(resolved_dep_path, spec_path)
   effects.warn_dep_spec_load(name, load)
@@ -5013,12 +5039,12 @@ fn retained_readings(
 // resolve only from a serialized `update` line.
 fn path_dep_sources(
   package_root: String,
+  local: LocalPackages,
   package_targets: types.PackageTargets,
 ) -> DependencySources {
-  effects.parse_path_dependencies(filepath.join(package_root, "gleam.toml"))
-  |> list.fold(empty_dependency_sources(), fn(acc, dep) {
+  list.fold(local.direct, empty_dependency_sources(), fn(acc, dep) {
     let #(_name, dep_path) = dep
-    let resolved_dep_path = resolve_path(package_root, dep_path)
+    let resolved_dep_path = config.resolve_path(package_root, dep_path)
     merge_dependency_sources(
       acc,
       source_dir_sources(resolved_dep_path <> "/src", package_targets),
@@ -5111,7 +5137,7 @@ pub fn path_dep_resolver_files_recording_visits(
     nested_path_dep_files(
       PathDepWalk(
         files: dict.new(),
-        entered: set.from_list([normalized_path(dep_path)]),
+        entered: set.from_list([config.normalized_path(dep_path)]),
         order: [],
       ),
       dep_path,
@@ -5138,12 +5164,12 @@ type PathDepWalk {
 
 fn nested_path_dep_files(walk: PathDepWalk, dep_path: String) -> PathDepWalk {
   use walk, dep <- list.fold(
-    effects.parse_path_dependencies(filepath.join(dep_path, "gleam.toml")),
+    package_tree.path_dependencies(filepath.join(dep_path, "gleam.toml")),
     walk,
   )
   let #(_name, nested_path) = dep
-  let nested = resolve_path(dep_path, nested_path)
-  let entered = normalized_path(nested)
+  let nested = config.resolve_path(dep_path, nested_path)
+  let entered = config.normalized_path(nested)
   use <- bool.guard(when: set.contains(walk.entered, entered), return: walk)
   // Read on the way in, past the check rather than before it: a directory
   // several dependencies name costs one read of its `src/`, not one per edge
@@ -5160,34 +5186,6 @@ fn nested_path_dep_files(walk: PathDepWalk, dep_path: String) -> PathDepWalk {
     ),
     entered,
   )
-}
-
-// A path with its `.` and `..` segments collapsed, so two spellings of one
-// directory are one key. A relative path keeps the `..` segments that climb
-// past its own top, so a tree reached from above — a sibling checkout named
-// `../dep`, and everything its `gleam.toml` names in turn — collapses like any
-// other and a diamond in it is still walked once.
-fn normalized_path(path: String) -> String {
-  case string.starts_with(path, "/") {
-    True -> filepath.expand(path) |> result.unwrap(path)
-    False ->
-      string.split(path, "/")
-      |> list.fold([], collapse_segment)
-      |> list.reverse
-      |> string.join("/")
-  }
-}
-
-// One segment onto the collapsed prefix, which is held reversed. A `..` drops
-// the segment before it; with nothing before it to drop, or another `..` there,
-// it is kept and the path goes on climbing.
-fn collapse_segment(collapsed: List(String), segment: String) -> List(String) {
-  case segment, collapsed {
-    "", _ | ".", _ -> collapsed
-    "..", [] | "..", ["..", ..] -> ["..", ..collapsed]
-    "..", [_, ..rest] -> rest
-    _, _ -> [segment, ..collapsed]
-  }
 }
 
 // Every module of a path dependency's `src/` tree, keyed the way the type index

@@ -2361,30 +2361,6 @@ pub fn dependency_module_files(
   }
 }
 
-// The installed packages whose `src/` yielded at least one Gleam module — the
-// ones `dependency_module_files` could actually read. Told apart from the
-// packages a manifest lists so a caller can ask whether the tree it read is the
-// whole of what this project depends on, or a partial one whose gaps could hold
-// any module.
-pub fn packages_with_sources(packages_directory: String) -> Set(String) {
-  case simplifile.read_directory(packages_directory) {
-    Error(_) -> set.new()
-    Ok(packages) ->
-      packages
-      |> list.filter(fn(package_name) {
-        let src_dir = packages_directory <> "/" <> package_name <> "/src"
-        !dict.is_empty(source_dir_module_files(src_dir))
-      })
-      |> set.from_list
-  }
-}
-
-// The packages the manifest lists, by name. What an installed tree is measured
-// against.
-pub fn manifest_package_names(manifest_path: String) -> Set(String) {
-  manifest_versions(manifest_path) |> dict.keys |> set.from_list
-}
-
 // Map of module path -> source file for every `.gleam` under `source_dir` (a
 // single package's `src/`), keyed the same way the rest of the tool keys
 // modules.
@@ -2398,37 +2374,6 @@ pub fn source_dir_module_files(source_dir: String) -> Dict(String, String) {
         dict.insert(acc, config.module_path_for_source(file, source_dir), file)
       })
   }
-}
-
-// Parse gleam.toml to find path dependencies.
-// Returns a list of #(package_name, source_directory) pairs.
-pub fn parse_path_dependencies(
-  gleam_toml_path: String,
-) -> List(#(String, String)) {
-  let parsed = {
-    use content <- result.try(
-      simplifile.read(gleam_toml_path) |> result.map_error(fn(_) { Nil }),
-    )
-    use toml <- result.try(
-      tom.parse(content) |> result.map_error(fn(_) { Nil }),
-    )
-    use deps <- result.try(
-      tom.get_table(toml, ["dependencies"]) |> result.map_error(fn(_) { Nil }),
-    )
-    Ok(
-      dict.fold(deps, [], fn(acc, name, value) {
-        case value {
-          tom.InlineTable(table) ->
-            case tom.get_string(table, ["path"]) {
-              Ok(path) -> [#(name, path), ..acc]
-              Error(_) -> acc
-            }
-          _ -> acc
-        }
-      }),
-    )
-  }
-  result.unwrap(parsed, [])
 }
 
 // Spec files

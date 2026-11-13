@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `graded check` no longer reports an `assume` line's module as missing while
+  `gleam.toml` declares dependencies and there is no `manifest.toml`, or while
+  the manifest disagrees with `gleam.toml` or with the installed packages. Run
+  `gleam deps download` or `gleam build` to bring them back in step.
+
 ### Fixed
 
+- `graded check` reports `assume` lines naming no real module in a project
+  with a path dev-dependency, or a path dependency declared by another path
+  dependency. Before, such a project silenced the check.
 - A symbolic link leading back to one of its own parent directories is skipped,
   as the Gleam compiler skips it. graded no longer refuses a project holding
   one, or reads a dependency holding one as having no modules.

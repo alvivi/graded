@@ -1,0 +1,4 @@
+name = "pka"
+version = "1.0.0"
+[dependencies]
+pkb = { path = "../pkb" }

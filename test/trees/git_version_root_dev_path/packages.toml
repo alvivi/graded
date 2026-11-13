@@ -1,0 +1,6 @@
+[packages]
+gdep = "1.0.0"
+b = "1.0.0"
+
+[git.gdep]
+commit = "1fc2c676ac643aaa353fb2022253f83e0f48de08"

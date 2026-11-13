@@ -64,12 +64,12 @@ pub type Context {
     // What a dependency's own source says about one name. The lint's only read
     // of the dependency scan, so the scan's types stay where they are built.
     dependency_name: fn(QualifiedName) -> DependencyName,
-    // Module path -> source file for every installed and path dependency, from
-    // the scan the caller already holds.
+    // Module path -> source file for every installed package and every local
+    // one, dev-only packages included, from the scan the caller already holds.
     dependency_files: Dict(String, String),
-    // Whether the tree that yielded them holds every package the manifest
-    // lists. A thunk, so a spec with no `assume` or declared-returns line never
-    // pays for the walk that answers it.
+    // Whether the tree that yielded them is provably the whole tree Gleam
+    // resolved. A thunk, so a spec with no `assume` or declared-returns line
+    // never pays for the walk that answers it.
     dependency_sources_are_complete: fn() -> Bool,
   )
 }

@@ -239,41 +239,6 @@ pub fn parse_semver_without_numeric_components_test() {
   effects.parse_semver("latest") |> should.equal(#(0, 0, 0))
 }
 
-// Path dependencies
-//
-// Extracting `{ path = ... }` dependencies from gleam.toml, tolerating files
-// with none and missing files.
-
-pub fn parse_path_dependencies_test() {
-  let toml_path = "test/fixtures/gleam_with_path_deps.toml"
-  let content =
-    "name = \"myapp\"\nversion = \"1.0.0\"\n\n[dependencies]\ngleam_stdlib = \">= 0.44.0\"\ndep_a = { path = \"../dep_a\" }\ndep_b = { path = \"../dep_b/gleam_lib\" }\n"
-  let assert Ok(Nil) = simplifile.write(toml_path, content)
-  let deps = effects.parse_path_dependencies(toml_path)
-  let assert Ok(Nil) = simplifile.delete(toml_path)
-  deps
-  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
-  |> should.equal([
-    #("dep_a", "../dep_a"),
-    #("dep_b", "../dep_b/gleam_lib"),
-  ])
-}
-
-pub fn parse_path_dependencies_no_path_deps_test() {
-  let toml_path = "test/fixtures/gleam_no_path_deps.toml"
-  let content =
-    "name = \"myapp\"\nversion = \"1.0.0\"\n\n[dependencies]\ngleam_stdlib = \">= 0.44.0\"\n"
-  let assert Ok(Nil) = simplifile.write(toml_path, content)
-  let deps = effects.parse_path_dependencies(toml_path)
-  let assert Ok(Nil) = simplifile.delete(toml_path)
-  deps |> should.equal([])
-}
-
-pub fn parse_path_dependencies_missing_file_test() {
-  effects.parse_path_dependencies("nonexistent.toml")
-  |> should.equal([])
-}
-
 // Knowledge-base enrichment
 //
 // Merging inferred effects and returned operators into the knowledge base:
