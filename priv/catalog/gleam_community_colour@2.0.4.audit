@@ -1,0 +1,23 @@
+
+covers 2.0.4
+container_result gleam_community/colour.decoder
+container_result gleam_community/colour.encode
+container_result gleam_community/colour.from_hsl
+container_result gleam_community/colour.from_hsla
+container_result gleam_community/colour.from_rgb
+container_result gleam_community/colour.from_rgb255
+container_result gleam_community/colour.from_rgb_hex
+container_result gleam_community/colour.from_rgb_hex_string
+container_result gleam_community/colour.from_rgba
+container_result gleam_community/colour.from_rgba_hex
+container_result gleam_community/colour.from_rgba_hex_string
+container_result gleam_community/colour.to_css_rgba_string
+container_result gleam_community/colour.to_hsla
+container_result gleam_community/colour.to_rgb_hex
+container_result gleam_community/colour.to_rgb_hex_string
+container_result gleam_community/colour.to_rgba
+container_result gleam_community/colour.to_rgba_hex
+container_result gleam_community/colour.to_rgba_hex_string
+container_result gleam_community/colour/accessibility.contrast_ratio
+container_result gleam_community/colour/accessibility.luminance
+container_result gleam_community/colour/accessibility.maximum_contrast

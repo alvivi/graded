@@ -1,0 +1,9 @@
+
+covers 2.4.0, 2.5.0
+container_result glexer.discard_comments
+container_result glexer.discard_whitespace
+container_result glexer.lex
+container_result glexer.new
+container_result glexer.to_source
+container_result glexer.unescape_string
+container_result glexer/token.to_source

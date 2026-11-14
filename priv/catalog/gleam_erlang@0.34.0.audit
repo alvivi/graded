@@ -1,0 +1,26 @@
+// gleam_erlang, reviewed against the source of 0.34.0.
+// A message sent to a process escapes to code graded does not see: sending
+// runs it. A selector holds its handlers and runs them when it receives; what
+// a process receives from its mailbox is undescribed.
+
+covers 0.34.0
+container gleam/erlang.Reference
+container gleam/erlang/atom.Atom
+container gleam/erlang/charlist.Charlist
+container gleam/erlang/node.Node
+container gleam/erlang/port.Port
+container gleam/erlang/process.Pid
+container gleam/erlang/process.Timer
+reviewed gleam/erlang.get_line
+reviewed gleam/erlang.priv_directory
+reviewed gleam/erlang/process.call
+reviewed gleam/erlang/process.link
+reviewed gleam/erlang/process.monitor_process
+reviewed gleam/erlang/process.new_subject
+reviewed gleam/erlang/process.receive
+contract gleam/erlang/process.send(message: [message]) : [Process] where runs : [message]
+reviewed gleam/erlang/process.sleep
+reviewed gleam/erlang/process.sleep_forever
+reviewed gleam/erlang/process.start
+reviewed gleam/erlang/process.try_call
+reviewed gleam/erlang/process.unlink

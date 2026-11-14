@@ -1,0 +1,12 @@
+
+covers 9.0.1
+container glisten/socket.ListenSocket
+container glisten/socket.Socket
+container glisten/socket/options.ErlangTcpOption
+reviewed glisten.get_connection_info
+reviewed glisten.get_server_info
+reviewed glisten.send
+contract glisten.start(builder: [builder]) : [Network, Process] where runs : [builder]
+reviewed glisten.stop
+container_result glisten.supervised
+reviewed glisten.supervised

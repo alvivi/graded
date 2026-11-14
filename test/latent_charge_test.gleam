@@ -14,6 +14,7 @@ import gleam/string
 import gleeunit/should
 import graded
 import graded/internal/annotation
+import graded/internal/audit
 import graded/internal/checker
 import graded/internal/effect_term
 import graded/internal/effects
@@ -490,8 +491,8 @@ fn inspect_kb(
     types.UserAssume,
   )
   |> effects.with_audit(
-    effects.CatalogAudit(
-      ..effects.empty_audit(),
+    audit.CatalogAudit(
+      ..audit.empty(),
       reviewed: set.from_list([types.QualifiedName("fake/str", "inspect")]),
     ),
   )
@@ -1813,8 +1814,8 @@ fn container_answer(targets: List(String)) -> types.EffectSet {
       types.UserAssume,
     )
     |> effects.with_audit(
-      effects.CatalogAudit(
-        ..effects.empty_audit(),
+      audit.CatalogAudit(
+        ..audit.empty(),
         reviewed: set.from_list([name]),
         container_results: set.from_list([name]),
       ),

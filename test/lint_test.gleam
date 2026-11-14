@@ -12,6 +12,7 @@ import gleam/set
 import gleam/string
 import gleeunit/should
 import graded/internal/annotation
+import graded/internal/audit
 import graded/internal/checker
 import graded/internal/effects
 import graded/internal/lint
@@ -27,6 +28,7 @@ import graded/internal/types.{QualifiedName, UnmatchedFieldAssumeWarning}
 
 fn empty_catalog() -> effects.BundledCatalog {
   effects.BundledCatalog(
+    audit: audit.empty(),
     functions: dict.new(),
     modules: dict.new(),
     param_bounds: dict.new(),

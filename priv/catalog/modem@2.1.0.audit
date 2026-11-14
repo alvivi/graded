@@ -1,0 +1,15 @@
+// modem 2.1.0. The navigation builders return an effect that
+// Lustre's runtime performs: it carries the navigation; a handler they take
+// is charged where the builder is called.
+
+covers 2.1.0
+contract modem.advanced : [] where runs : [], carries : [Dom]
+contract modem.back : [] where runs : [], carries : [Dom]
+contract modem.forward : [] where runs : [], carries : [Dom]
+contract modem.init : [] where runs : [], carries : [Dom]
+reviewed modem.initial_uri
+contract modem.load : [] where runs : [], carries : [Dom]
+contract modem.push : [] where runs : [], carries : [Dom]
+contract modem.replace : [] where runs : [], carries : [Dom]
+
+unreviewed modem.simulate : a test helper that drives a simulated application; not reviewed

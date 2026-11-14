@@ -1,0 +1,12 @@
+
+covers 1.5.1, 1.6.0
+container gleam/crypto.Hasher
+container_result gleam/crypto.digest
+container_result gleam/crypto.hash
+container_result gleam/crypto.hash_chunk
+container_result gleam/crypto.hmac
+container_result gleam/crypto.new_hasher
+container_result gleam/crypto.secure_compare
+container_result gleam/crypto.sign_message
+reviewed gleam/crypto.strong_random_bytes
+container_result gleam/crypto.verify_signed_message

@@ -1,0 +1,6 @@
+
+covers 1.4.0
+container_result ranger.create
+contract ranger.create(validate: [validate], negate_step: [negate_step], add: [add], compare: [compare]) : [validate, negate_step, add, compare] where runs : []
+container_result ranger.create_infinite
+contract ranger.create_infinite(validate: [validate], add: [add], compare: [compare]) : [validate, add, compare] where runs : []

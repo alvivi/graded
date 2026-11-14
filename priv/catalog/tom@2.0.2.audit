@@ -1,0 +1,35 @@
+
+covers 2.0.2, 2.1.0
+container_result tom.as_array
+container_result tom.as_bool
+container_result tom.as_calendar_time
+container_result tom.as_date
+container_result tom.as_float
+container_result tom.as_int
+container_result tom.as_number
+container_result tom.as_string
+container_result tom.as_table
+container_result tom.as_time_of_day
+container_result tom.as_timestamp
+container_result tom.get
+container_result tom.get_array
+container_result tom.get_bool
+container_result tom.get_calendar_time
+container_result tom.get_date
+container_result tom.get_float
+container_result tom.get_int
+container_result tom.get_number
+container_result tom.get_string
+container_result tom.get_table
+container_result tom.get_time_of_day
+container_result tom.get_timestamp
+container_result tom.parse
+
+covers 2.1.0
+container_result tom.calendar_date_time_of_day_decoder
+container_result tom.date_decoder
+container_result tom.number_decoder
+container_result tom.parse_to_dynamic
+container_result tom.time_of_day_decoder
+container_result tom.timestamp_decoder
+container_result tom.to_dynamic

@@ -1,0 +1,56 @@
+
+covers 3.0.0, 4.5.0
+container_result gleam/http.method_to_string
+container_result gleam/http.parse_method
+container_result gleam/http.scheme_from_string
+container_result gleam/http.scheme_to_string
+container_result gleam/http/cookie.defaults
+container_result gleam/http/cookie.parse
+container_result gleam/http/cookie.set_header
+container_result gleam/http/request.from_uri
+container_result gleam/http/request.get_cookies
+container_result gleam/http/request.get_header
+container_result gleam/http/request.get_query
+container_result gleam/http/request.map
+contract gleam/http/request.map(request: [request], transform: [transform]) : [transform] where runs : [], relay : transform(request)
+container_result gleam/http/request.new
+container_result gleam/http/request.path_segments
+container_result gleam/http/request.prepend_header
+container_result gleam/http/request.set_body
+container_result gleam/http/request.set_cookie
+container_result gleam/http/request.set_host
+container_result gleam/http/request.set_method
+container_result gleam/http/request.set_path
+container_result gleam/http/request.set_port
+container_result gleam/http/request.set_query
+container_result gleam/http/request.set_scheme
+container_result gleam/http/request.to_uri
+container_result gleam/http/response.expire_cookie
+container_result gleam/http/response.get_cookies
+container_result gleam/http/response.get_header
+container_result gleam/http/response.map
+contract gleam/http/response.map(response: [response], transform: [transform]) : [transform] where runs : [], relay : transform(response)
+container_result gleam/http/response.new
+container_result gleam/http/response.prepend_header
+container_result gleam/http/response.redirect
+container_result gleam/http/response.set_body
+container_result gleam/http/response.set_cookie
+container_result gleam/http/response.try_map
+contract gleam/http/response.try_map(response: [response], transform: [transform]) : [transform] where runs : [], relay : transform(response)
+container_result gleam/http/service.map_response_body
+contract gleam/http/service.map_response_body(mapper: [mapper]) : [mapper] where runs : []
+container_result gleam/http/service.method_override
+container_result gleam/http/service.prepend_response_header
+
+covers 3.0.0
+container_result gleam/http.method_from_dynamic
+
+covers 4.5.0
+container_result gleam/http.parse_content_disposition
+container_result gleam/http.parse_link_header
+container_result gleam/http.parse_multipart_body
+container_result gleam/http.parse_multipart_headers
+container_result gleam/http/request.remove_cookie
+container_result gleam/http/request.set_header
+container_result gleam/http/request.to
+container_result gleam/http/response.set_header

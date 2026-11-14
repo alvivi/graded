@@ -7514,7 +7514,8 @@ fn callee_contract(
     reviewed
     && set.contains(effects.audit(knowledge_base).container_results, name)
   let contract = case container, parameters {
-    True, Some(parameters) -> container_contract(parameters, registry)
+    True, Some(parameters) ->
+      container_contract(parameters, bounds, written, registry)
     True, None | False, _ ->
       latent.CalleeContract(
         parameters: list.map(bounds, contract_parameter(_, parameters, registry)),
@@ -7584,48 +7585,57 @@ fn contract_parameter(
   latent.ContractParameter(bound:, kind:, operator_positions:)
 }
 
-// A container result's contract: a variable per parameter, and a result
-// carrying each of them, a callback's result included.
+// A container result's contract: the line's own bounds and relays, a variable
+// for every parameter the line has no bound for, and a result carrying each
+// of them, a callback's result included, beside what the line says it
+// carries.
 fn container_contract(
   parameters: List(signatures.ParameterInfo),
+  bounds: List(ParamBound),
+  written: types.LatentContract,
   registry: SignatureRegistry,
 ) -> latent.CalleeContract {
-  let named =
-    list.filter_map(parameters, fn(parameter) {
-      option.or(parameter.name, parameter.label)
-      |> option.map(fn(name) { #(name, parameter) })
-      |> option.to_result(Nil)
-    })
-  let variable = fn(name) { "$contained$" <> name }
   let contract_parameters =
-    list.map(named, fn(entry) {
-      let #(name, parameter) = entry
-      contract_parameter(
-        ParamBound(name, TVar(variable(name))),
-        Some(parameters),
-        registry,
+    list.filter_map(parameters, fn(parameter) {
+      use name <- result.map(
+        option.or(parameter.name, parameter.label) |> option.to_result(Nil),
       )
-      |> fn(contract_parameter) {
-        latent.ContractParameter(
-          ..contract_parameter,
-          kind: contract.kind_of_parameter(parameter, registry.kinds),
-        )
-      }
+      let bound =
+        list.find(bounds, fn(bound) {
+          signatures.parameter_named(parameters, bound.name) == Some(parameter)
+        })
+        |> result.unwrap(ParamBound(name, TVar("$contained$" <> name)))
+      latent.ContractParameter(
+        ..contract_parameter(bound, Some(parameters), registry),
+        kind: contract.kind_of_parameter(parameter, registry.kinds),
+      )
     })
   let carried =
     list.flat_map(contract_parameters, fn(parameter) {
-      let name = variable(parameter.bound.name)
-      case parameter.kind {
-        types.CallbackKind -> [TVar(name), TVar(name <> types.returns_suffix)]
-        types.NonCallbackKind | types.UnknownKind -> [TVar(name)]
-      }
+      effect_term.free_vars(parameter.bound.effects)
+      |> set.to_list
+      |> list.flat_map(fn(name) {
+        case parameter.kind {
+          types.CallbackKind -> [
+            TVar(name),
+            TVar(name <> types.returns_suffix),
+          ]
+          types.NonCallbackKind | types.UnknownKind -> [TVar(name)]
+        }
+      })
     })
+  let declared = case written.carries {
+    Some(term) -> [term]
+    None -> []
+  }
   latent.CalleeContract(
     parameters: contract_parameters,
     contract: types.LatentContract(
       runs: Some([]),
-      relays: [],
-      carries: Some(effect_term.normalize(TUnion(carried))),
+      relays: written.relays,
+      carries: Some(
+        effect_term.normalize(TUnion(list.append(carried, declared))),
+      ),
     ),
     reviewed: True,
   )

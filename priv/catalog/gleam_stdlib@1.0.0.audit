@@ -1,0 +1,470 @@
+// gleam_stdlib, reviewed against the source of 1.0.0, 1.0.1, 1.0.2, 1.0.3 and 1.0.5.
+// Every release from 1.0.0 to 1.0.5 is reviewed; 1.0.4 was never published.
+// The pure modules' functions hand their callbacks values drawn from their
+// data arguments only, never run a function nested in one (they cannot, by
+// their types, save the decoder runners), and return data drawn from their
+// arguments and their callbacks' results.
+
+covers 1.0.0 to 1.0.5
+container gleam/dict.Dict
+container gleam/dict.TransientDict
+container gleam/string_tree.StringTree
+constant gleam/dynamic/decode.bit_array : []
+constant gleam/dynamic/decode.bool : []
+constant gleam/dynamic/decode.dynamic : []
+constant gleam/dynamic/decode.float : []
+constant gleam/dynamic/decode.int : []
+constant gleam/dynamic/decode.string : []
+container_result gleam/bit_array.append
+container_result gleam/bit_array.base16_decode
+container_result gleam/bit_array.base16_encode
+container_result gleam/bit_array.base64_decode
+container_result gleam/bit_array.base64_encode
+container_result gleam/bit_array.base64_url_decode
+container_result gleam/bit_array.base64_url_encode
+container_result gleam/bit_array.bit_size
+container_result gleam/bit_array.byte_size
+container_result gleam/bit_array.compare
+container_result gleam/bit_array.concat
+container_result gleam/bit_array.from_string
+container_result gleam/bit_array.inspect
+container_result gleam/bit_array.is_utf8
+container_result gleam/bit_array.pad_to_bytes
+container_result gleam/bit_array.slice
+container_result gleam/bit_array.starts_with
+container_result gleam/bit_array.to_string
+container_result gleam/bit_array.unsafe_to_string
+container_result gleam/bool.and
+container_result gleam/bool.exclusive_nor
+container_result gleam/bool.exclusive_or
+container_result gleam/bool.guard
+contract gleam/bool.guard(alternative: [alternative]) : [alternative] where runs : []
+container_result gleam/bool.lazy_guard
+contract gleam/bool.lazy_guard(consequence: [consequence], alternative: [alternative]) : [consequence, alternative] where runs : []
+container_result gleam/bool.nand
+container_result gleam/bool.negate
+container_result gleam/bool.nor
+container_result gleam/bool.or
+container_result gleam/bool.to_string
+container_result gleam/bytes_tree.append
+container_result gleam/bytes_tree.append_string
+container_result gleam/bytes_tree.append_tree
+container_result gleam/bytes_tree.byte_size
+container_result gleam/bytes_tree.concat
+container_result gleam/bytes_tree.concat_bit_arrays
+container_result gleam/bytes_tree.from_bit_array
+container_result gleam/bytes_tree.from_string
+container_result gleam/bytes_tree.from_string_tree
+container_result gleam/bytes_tree.new
+container_result gleam/bytes_tree.prepend
+container_result gleam/bytes_tree.prepend_string
+container_result gleam/bytes_tree.prepend_tree
+container_result gleam/bytes_tree.to_bit_array
+container_result gleam/bytes_tree.to_list
+container_result gleam/dict.combine
+contract gleam/dict.combine(dict: [d], other: [d], fun: [fun]) : [fun] where runs : [], relay : fun(d, d)
+container_result gleam/dict.delete
+container_result gleam/dict.do_fold
+contract gleam/dict.do_fold(fun: [fun], dict: [dict]) : [fun] where runs : [], relay : fun(dict, dict, _)
+container_result gleam/dict.do_has_key
+container_result gleam/dict.do_insert
+container_result gleam/dict.do_map_values
+contract gleam/dict.do_map_values(f: [f], dict: [dict]) : [f] where runs : [], relay : f(dict, dict)
+container_result gleam/dict.drop
+container_result gleam/dict.each
+contract gleam/dict.each(dict: [dict], fun: [fun]) : [fun] where runs : [], relay : fun(dict, dict)
+container_result gleam/dict.filter
+contract gleam/dict.filter(dict: [dict], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(dict, dict)
+container_result gleam/dict.fold
+contract gleam/dict.fold(dict: [dict], fun: [fun]) : [fun] where runs : [], relay : fun(_, dict, dict)
+container_result gleam/dict.from_list
+container_result gleam/dict.from_list_loop
+container_result gleam/dict.from_transient
+container_result gleam/dict.get
+container_result gleam/dict.group
+contract gleam/dict.group(key: [key], list: [list]) : [key] where runs : [], relay : key(list)
+container_result gleam/dict.has_key
+container_result gleam/dict.insert
+container_result gleam/dict.is_empty
+container_result gleam/dict.keys
+container_result gleam/dict.map_values
+contract gleam/dict.map_values(dict: [dict], fun: [fun]) : [fun] where runs : [], relay : fun(dict, dict)
+container_result gleam/dict.merge
+container_result gleam/dict.new
+container_result gleam/dict.size
+container_result gleam/dict.take
+container_result gleam/dict.to_list
+container_result gleam/dict.to_transient
+container_result gleam/dict.transient_insert
+container_result gleam/dict.upsert
+contract gleam/dict.upsert(dict: [dict], fun: [fun]) : [fun] where runs : [], relay : fun(dict)
+container_result gleam/dict.values
+container_result gleam/dynamic.array
+container_result gleam/dynamic.bit_array
+container_result gleam/dynamic.bool
+reviewed gleam/dynamic.classify
+container_result gleam/dynamic.float
+container_result gleam/dynamic.int
+container_result gleam/dynamic.list
+container_result gleam/dynamic.nil
+container_result gleam/dynamic.properties
+container_result gleam/dynamic.string
+container_result gleam/dynamic/decode.at
+container_result gleam/dynamic/decode.collapse_errors
+reviewed gleam/dynamic/decode.decode_error
+container_result gleam/dynamic/decode.dict
+container_result gleam/dynamic/decode.failure
+contract gleam/dynamic/decode.field(field_decoder: [d], next: [n]) : [] where runs : [], carries : [d, n, n.returns]
+container_result gleam/dynamic/decode.list
+contract gleam/dynamic/decode.map(decoder: [d], transformer: [t]) : [] where runs : [], carries : [d, t, t.returns]
+contract gleam/dynamic/decode.map_errors(decoder: [d], transformer: [t]) : [] where runs : [], carries : [d, t, t.returns]
+contract gleam/dynamic/decode.new_primitive_decoder(decoding_function: [f]) : [] where runs : [], carries : [f, f.returns]
+container_result gleam/dynamic/decode.one_of
+container_result gleam/dynamic/decode.optional
+contract gleam/dynamic/decode.optional_field(default: [v], field_decoder: [d], next: [n]) : [] where runs : [], carries : [v, d, n, n.returns]
+container_result gleam/dynamic/decode.optionally_at
+contract gleam/dynamic/decode.recursive(inner: [i]) : [] where runs : [], carries : [i, i.returns]
+container_result gleam/dynamic/decode.run
+contract gleam/dynamic/decode.run(decoder: [d]) : [] where runs : [d]
+contract gleam/dynamic/decode.subfield(field_decoder: [d], next: [n]) : [] where runs : [], carries : [d, n, n.returns]
+contract gleam/dynamic/decode.success(data: [d]) : [] where runs : [], carries : [d]
+contract gleam/dynamic/decode.then(decoder: [d], next: [n]) : [] where runs : [], carries : [d, n, n.returns]
+container_result gleam/float.absolute_value
+container_result gleam/float.add
+container_result gleam/float.ceiling
+container_result gleam/float.clamp
+container_result gleam/float.compare
+container_result gleam/float.divide
+container_result gleam/float.exponential
+container_result gleam/float.floor
+container_result gleam/float.js_round
+container_result gleam/float.logarithm
+container_result gleam/float.loosely_compare
+container_result gleam/float.loosely_equals
+container_result gleam/float.max
+container_result gleam/float.min
+container_result gleam/float.modulo
+container_result gleam/float.multiply
+container_result gleam/float.negate
+container_result gleam/float.parse
+container_result gleam/float.power
+container_result gleam/float.product
+reviewed gleam/float.random
+container_result gleam/float.round
+container_result gleam/float.square_root
+container_result gleam/float.subtract
+container_result gleam/float.sum
+container_result gleam/float.to_precision
+container_result gleam/float.to_string
+container_result gleam/float.truncate
+container_result gleam/function.identity
+container_result gleam/int.absolute_value
+container_result gleam/int.add
+container_result gleam/int.base_parse
+container_result gleam/int.bitwise_and
+container_result gleam/int.bitwise_exclusive_or
+container_result gleam/int.bitwise_not
+container_result gleam/int.bitwise_or
+container_result gleam/int.bitwise_shift_left
+container_result gleam/int.bitwise_shift_right
+container_result gleam/int.clamp
+container_result gleam/int.compare
+container_result gleam/int.divide
+container_result gleam/int.floor_divide
+container_result gleam/int.is_even
+container_result gleam/int.is_odd
+container_result gleam/int.max
+container_result gleam/int.min
+container_result gleam/int.modulo
+container_result gleam/int.multiply
+container_result gleam/int.negate
+container_result gleam/int.parse
+container_result gleam/int.power
+container_result gleam/int.product
+reviewed gleam/int.random
+container_result gleam/int.range
+contract gleam/int.range(reducer: [reducer]) : [reducer] where runs : []
+container_result gleam/int.remainder
+container_result gleam/int.square_root
+container_result gleam/int.subtract
+container_result gleam/int.sum
+container_result gleam/int.to_base16
+container_result gleam/int.to_base2
+container_result gleam/int.to_base36
+container_result gleam/int.to_base8
+container_result gleam/int.to_base_string
+container_result gleam/int.to_float
+container_result gleam/int.to_string
+reviewed gleam/io.print
+reviewed gleam/io.print_error
+reviewed gleam/io.println
+reviewed gleam/io.println_error
+container_result gleam/list.all
+contract gleam/list.all(list: [list], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(list)
+container_result gleam/list.any
+contract gleam/list.any(list: [list], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(list)
+container_result gleam/list.append
+container_result gleam/list.append_loop
+container_result gleam/list.chunk
+contract gleam/list.chunk(list: [list], f: [f]) : [f] where runs : [], relay : f(list)
+container_result gleam/list.combination_pairs
+container_result gleam/list.combinations
+container_result gleam/list.contains
+container_result gleam/list.count
+contract gleam/list.count(list: [list], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(list)
+container_result gleam/list.drop
+container_result gleam/list.drop_while
+contract gleam/list.drop_while(list: [list], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(list)
+container_result gleam/list.each
+contract gleam/list.each(list: [list], f: [f]) : [f] where runs : [], relay : f(list)
+container_result gleam/list.filter
+contract gleam/list.filter(list: [list], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(list)
+container_result gleam/list.filter_map
+contract gleam/list.filter_map(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(list)
+container_result gleam/list.find
+contract gleam/list.find(list: [list], is_desired: [is_desired]) : [is_desired] where runs : [], relay : is_desired(list)
+container_result gleam/list.find_map
+contract gleam/list.find_map(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(list)
+container_result gleam/list.first
+container_result gleam/list.flat_map
+contract gleam/list.flat_map(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(list)
+container_result gleam/list.flatten
+container_result gleam/list.flatten_loop
+container_result gleam/list.fold
+contract gleam/list.fold(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list)
+container_result gleam/list.fold_right
+contract gleam/list.fold_right(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list)
+container_result gleam/list.fold_until
+contract gleam/list.fold_until(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list)
+container_result gleam/list.group
+contract gleam/list.group(list: [list], key: [key]) : [key] where runs : [], relay : key(list)
+container_result gleam/list.index_fold
+contract gleam/list.index_fold(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list, _)
+container_result gleam/list.index_map
+contract gleam/list.index_map(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(list, _)
+container_result gleam/list.interleave
+container_result gleam/list.intersperse
+container_result gleam/list.is_empty
+container_result gleam/list.key_filter
+container_result gleam/list.key_find
+container_result gleam/list.key_pop
+container_result gleam/list.key_set
+container_result gleam/list.last
+container_result gleam/list.length
+container_result gleam/list.length_loop
+container_result gleam/list.map
+contract gleam/list.map(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(list)
+container_result gleam/list.map2
+contract gleam/list.map2(list1: [list1], list2: [list2], fun: [fun]) : [fun] where runs : [], relay : fun(list1, list2)
+container_result gleam/list.map_fold
+contract gleam/list.map_fold(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list)
+container_result gleam/list.max
+contract gleam/list.max(list: [list], compare: [compare]) : [compare] where runs : [], relay : compare(list, list)
+container_result gleam/list.new
+container_result gleam/list.partition
+contract gleam/list.partition(list: [list], categorise: [categorise]) : [categorise] where runs : [], relay : categorise(list)
+container_result gleam/list.permutations
+container_result gleam/list.prepend
+container_result gleam/list.reduce
+contract gleam/list.reduce(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list)
+container_result gleam/list.repeat
+container_result gleam/list.rest
+container_result gleam/list.reverse
+container_result gleam/list.reverse_and_prepend
+container_result gleam/list.sample
+container_result gleam/list.scan
+contract gleam/list.scan(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list)
+container_result gleam/list.shuffle
+container_result gleam/list.sized_chunk
+container_result gleam/list.sort
+contract gleam/list.sort(list: [list], compare: [compare]) : [compare] where runs : [], relay : compare(list, list)
+container_result gleam/list.split
+container_result gleam/list.split_while
+contract gleam/list.split_while(list: [list], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(list)
+container_result gleam/list.strict_zip
+container_result gleam/list.take
+container_result gleam/list.take_while
+contract gleam/list.take_while(list: [list], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(list)
+container_result gleam/list.transpose
+container_result gleam/list.try_each
+contract gleam/list.try_each(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(list)
+container_result gleam/list.try_fold
+contract gleam/list.try_fold(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(_, list)
+container_result gleam/list.try_map
+contract gleam/list.try_map(list: [list], fun: [fun]) : [fun] where runs : [], relay : fun(list)
+container_result gleam/list.unique
+container_result gleam/list.unzip
+container_result gleam/list.window
+container_result gleam/list.window_by_2
+container_result gleam/list.wrap
+container_result gleam/list.zip
+container_result gleam/option.all
+container_result gleam/option.flatten
+container_result gleam/option.from_result
+container_result gleam/option.is_none
+container_result gleam/option.is_some
+container_result gleam/option.lazy_or
+contract gleam/option.lazy_or(second: [second]) : [second] where runs : []
+container_result gleam/option.lazy_unwrap
+contract gleam/option.lazy_unwrap(default: [default]) : [default] where runs : []
+container_result gleam/option.map
+contract gleam/option.map(option: [option], fun: [fun]) : [fun] where runs : [], relay : fun(option)
+container_result gleam/option.or
+container_result gleam/option.then
+contract gleam/option.then(option: [option], fun: [fun]) : [fun] where runs : [], relay : fun(option)
+container_result gleam/option.to_result
+container_result gleam/option.unwrap
+container_result gleam/option.values
+container_result gleam/order.break_tie
+container_result gleam/order.compare
+container_result gleam/order.lazy_break_tie
+contract gleam/order.lazy_break_tie(comparison: [comparison]) : [comparison] where runs : []
+container_result gleam/order.negate
+container_result gleam/order.reverse
+contract gleam/order.reverse(orderer: [orderer]) : [orderer] where runs : []
+container_result gleam/order.to_int
+container_result gleam/pair.first
+container_result gleam/pair.map_first
+contract gleam/pair.map_first(pair: [pair], fun: [fun]) : [fun] where runs : [], relay : fun(pair)
+container_result gleam/pair.map_second
+contract gleam/pair.map_second(pair: [pair], fun: [fun]) : [fun] where runs : [], relay : fun(pair)
+container_result gleam/pair.new
+container_result gleam/pair.second
+container_result gleam/pair.swap
+container_result gleam/result.all
+container_result gleam/result.flatten
+container_result gleam/result.is_error
+container_result gleam/result.is_ok
+container_result gleam/result.lazy_or
+contract gleam/result.lazy_or(second: [second]) : [second] where runs : []
+container_result gleam/result.lazy_unwrap
+contract gleam/result.lazy_unwrap(default: [default]) : [default] where runs : []
+container_result gleam/result.map
+contract gleam/result.map(result: [result], fun: [fun]) : [fun] where runs : [], relay : fun(result)
+container_result gleam/result.map_error
+contract gleam/result.map_error(result: [result], fun: [fun]) : [fun] where runs : [], relay : fun(result)
+container_result gleam/result.or
+container_result gleam/result.partition
+container_result gleam/result.replace
+container_result gleam/result.replace_error
+container_result gleam/result.try
+contract gleam/result.try(result: [result], fun: [fun]) : [fun] where runs : [], relay : fun(result)
+container_result gleam/result.try_recover
+contract gleam/result.try_recover(result: [result], fun: [fun]) : [fun] where runs : [], relay : fun(result)
+container_result gleam/result.unwrap
+container_result gleam/result.unwrap_error
+container_result gleam/result.values
+container_result gleam/set.contains
+container_result gleam/set.delete
+container_result gleam/set.difference
+container_result gleam/set.drop
+container_result gleam/set.each
+contract gleam/set.each(set: [set], fun: [fun]) : [fun] where runs : [], relay : fun(set)
+container_result gleam/set.filter
+contract gleam/set.filter(set: [set], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(set)
+container_result gleam/set.fold
+contract gleam/set.fold(set: [set], reducer: [reducer]) : [reducer] where runs : [], relay : reducer(_, set)
+container_result gleam/set.from_list
+container_result gleam/set.insert
+container_result gleam/set.intersection
+container_result gleam/set.is_disjoint
+container_result gleam/set.is_empty
+container_result gleam/set.is_subset
+container_result gleam/set.map
+contract gleam/set.map(set: [set], fun: [fun]) : [fun] where runs : [], relay : fun(set)
+container_result gleam/set.new
+container_result gleam/set.size
+container_result gleam/set.symmetric_difference
+container_result gleam/set.take
+container_result gleam/set.to_list
+container_result gleam/set.union
+container_result gleam/string.append
+container_result gleam/string.byte_size
+container_result gleam/string.capitalise
+container_result gleam/string.compare
+container_result gleam/string.concat
+container_result gleam/string.concat_loop
+container_result gleam/string.contains
+container_result gleam/string.crop
+container_result gleam/string.drop_end
+container_result gleam/string.drop_start
+container_result gleam/string.ends_with
+container_result gleam/string.erl_split
+container_result gleam/string.erl_trim
+container_result gleam/string.first
+container_result gleam/string.from_utf_codepoints
+container_result gleam/string.inspect
+container_result gleam/string.is_empty
+container_result gleam/string.join
+container_result gleam/string.last
+container_result gleam/string.length
+container_result gleam/string.lowercase
+container_result gleam/string.pad_end
+container_result gleam/string.pad_start
+container_result gleam/string.pop_grapheme
+container_result gleam/string.remove_prefix
+container_result gleam/string.remove_suffix
+container_result gleam/string.repeat
+container_result gleam/string.replace
+container_result gleam/string.reverse
+container_result gleam/string.slice
+container_result gleam/string.split
+container_result gleam/string.split_once
+container_result gleam/string.starts_with
+container_result gleam/string.to_graphemes
+container_result gleam/string.to_graphemes_loop
+container_result gleam/string.to_option
+container_result gleam/string.to_utf_codepoints
+container_result gleam/string.trim
+container_result gleam/string.trim_end
+container_result gleam/string.trim_start
+container_result gleam/string.uppercase
+container_result gleam/string.utf_codepoint
+container_result gleam/string.utf_codepoint_to_int
+container_result gleam/string_tree.append
+container_result gleam/string_tree.append_tree
+container_result gleam/string_tree.byte_size
+container_result gleam/string_tree.concat
+container_result gleam/string_tree.erl_split
+container_result gleam/string_tree.from_string
+container_result gleam/string_tree.from_strings
+container_result gleam/string_tree.is_empty
+container_result gleam/string_tree.is_equal
+container_result gleam/string_tree.join
+container_result gleam/string_tree.lowercase
+container_result gleam/string_tree.new
+container_result gleam/string_tree.prepend
+container_result gleam/string_tree.prepend_tree
+container_result gleam/string_tree.replace
+container_result gleam/string_tree.reverse
+container_result gleam/string_tree.split
+container_result gleam/string_tree.to_string
+container_result gleam/string_tree.uppercase
+container_result gleam/uri.codeunit_slice
+container_result gleam/uri.is_valid_host_within_brackets_char
+container_result gleam/uri.merge
+container_result gleam/uri.origin
+container_result gleam/uri.parse
+container_result gleam/uri.parse_authority_pieces
+container_result gleam/uri.parse_authority_with_slashes
+container_result gleam/uri.parse_fragment
+container_result gleam/uri.parse_host
+container_result gleam/uri.parse_host_outside_of_brackets
+container_result gleam/uri.parse_host_outside_of_brackets_loop
+container_result gleam/uri.parse_host_within_brackets
+container_result gleam/uri.parse_host_within_brackets_loop
+container_result gleam/uri.parse_path
+container_result gleam/uri.parse_path_loop
+container_result gleam/uri.parse_port
+container_result gleam/uri.parse_port_loop
+container_result gleam/uri.parse_query
+container_result gleam/uri.parse_query_with_question_mark
+container_result gleam/uri.parse_query_with_question_mark_loop
+container_result gleam/uri.parse_scheme_loop
+container_result gleam/uri.parse_userinfo_loop
+container_result gleam/uri.path_segments
+container_result gleam/uri.percent_decode
+container_result gleam/uri.percent_encode
+container_result gleam/uri.pop_codeunit
+container_result gleam/uri.query_to_string
+container_result gleam/uri.to_string

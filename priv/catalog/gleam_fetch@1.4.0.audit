@@ -1,0 +1,16 @@
+
+covers 1.4.0
+container gleam/fetch.BodyReader
+container gleam/fetch.FetchBody
+container gleam/fetch.FetchRequest
+container gleam/fetch.FetchResponse
+container gleam/fetch/form_data.FormData
+reviewed gleam/fetch.raw_send
+reviewed gleam/fetch.read_bytes_body
+reviewed gleam/fetch.read_chunk
+reviewed gleam/fetch.read_json_body
+reviewed gleam/fetch.read_text_body
+reviewed gleam/fetch.send
+reviewed gleam/fetch.send_bits
+reviewed gleam/fetch.send_form_data
+reviewed gleam/fetch.stream_body

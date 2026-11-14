@@ -10,6 +10,7 @@ import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import graded/internal/annotation
+import graded/internal/audit.{type CatalogAudit}
 import graded/internal/config
 import graded/internal/effect_term
 import graded/internal/types.{
@@ -221,30 +222,6 @@ pub type KnowledgeBase {
   )
 }
 
-// What the bundled catalog's audit records, already narrowed to the catalog
-// files and installed versions it covers: the names whose catalog line was
-// reviewed, the foreign types that hold nothing but their type parameters'
-// values, what the reviewed constants carry, and the functions whose result
-// carries everything their arguments carry and their callbacks cost and
-// return.
-pub type CatalogAudit {
-  CatalogAudit(
-    reviewed: Set(QualifiedName),
-    containers: Set(#(String, String)),
-    constants: Dict(QualifiedName, EffectTerm),
-    container_results: Set(QualifiedName),
-  )
-}
-
-pub fn empty_audit() -> CatalogAudit {
-  CatalogAudit(
-    reviewed: set.new(),
-    containers: set.new(),
-    constants: dict.new(),
-    container_results: set.new(),
-  )
-}
-
 pub fn with_audit(
   knowledge_base: KnowledgeBase,
   audit: CatalogAudit,
@@ -291,15 +268,23 @@ pub fn catalog_constant(
 }
 
 // The contract of the written line answering for `name`, with that line's own
-// bound list: `None` where no written line answers.
+// bound list: `None` where no written line answers. A bundled catalog line the
+// audit does not cover for the installed version states no contract: every
+// argument that is not a callback may run, and its result is undescribed.
 pub fn winning_contract(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Option(#(types.LatentContract, List(ParamBound))) {
   case dict.get(knowledge_base.all_effects, name) {
-    Ok(TermEntry(lineage: types.DeclaredLine, contract:, ..)) ->
+    Ok(TermEntry(lineage: types.DeclaredLine, contract:, origin:, ..)) ->
       Some(#(
-        contract,
+        case
+          is_catalog_origin(origin),
+          set.contains(knowledge_base.audit.reviewed, name)
+        {
+          True, False -> types.no_contract
+          True, True | False, _ -> contract
+        },
         dict.get(knowledge_base.param_bounds, name) |> result.unwrap([]),
       ))
     Ok(TermEntry(lineage: types.GeneratedLine, ..))
@@ -385,6 +370,9 @@ pub fn with_lat_mode(
 // — the knowledge base and the spec lint both do — reads the files once.
 pub type BundledCatalog {
   BundledCatalog(
+    // What the selected files' audit records say for the installed versions:
+    // read only under the latent-effect rules, and empty without them.
+    audit: CatalogAudit,
     functions: Dict(QualifiedName, TermEntry),
     modules: Dict(String, #(EffectTerm, LookupOrigin)),
     param_bounds: Dict(QualifiedName, List(ParamBound)),
@@ -412,24 +400,27 @@ pub fn load_project_catalog_with(
   )
 }
 
-// The selected catalog files parsed, each by its package: everything of the
-// catalog that is read before any signature is known.
+// The selected catalog files parsed, each by its package, with what their audit
+// records say: everything of the catalog that is read before any signature is
+// known.
 pub opaque type ParsedCatalog {
-  ParsedCatalog(files: List(#(String, types.GradedFile)))
+  ParsedCatalog(files: List(#(String, types.GradedFile)), audit: CatalogAudit)
 }
 
 // The `catalog` files selected against `manifest_path`'s installed versions,
-// parsed under `mode`. A file that fails to read or parse is left out.
+// parsed under `mode`. A file that fails to read or parse is left out. The
+// audit is read only under the latent-effect rules, and empty without them.
 pub fn parse_project_catalog(
   catalog: List(CatalogFile),
   manifest_path: String,
   mode: types.LatMode,
 ) -> ParsedCatalog {
   let installed_versions = manifest_versions(manifest_path)
-  ParsedCatalog(files: parse_catalog_files(
-    resolve_catalog_files(catalog, installed_versions),
-    mode,
-  ))
+  let selected = resolve_catalog_files(catalog, installed_versions)
+  ParsedCatalog(files: parse_catalog_files(selected, mode), audit: case mode {
+    types.Active -> read_catalog_audit(selected, installed_versions)
+    types.Inactive -> audit.empty()
+  })
 }
 
 // A parsed catalog read under `reading`.
@@ -439,7 +430,13 @@ pub fn read_parsed_catalog(
 ) -> BundledCatalog {
   let #(functions, modules, param_bounds, type_fields) =
     read_catalog_files(parsed.files, reading)
-  BundledCatalog(functions:, modules:, param_bounds:, type_fields:)
+  BundledCatalog(
+    audit: parsed.audit,
+    functions:,
+    modules:,
+    param_bounds:,
+    type_fields:,
+  )
 }
 
 // The same as `load_knowledge_base`, over a catalog the caller already loaded.
@@ -466,6 +463,7 @@ pub fn knowledge_base_from_catalog_with(
 ) -> KnowledgeBase {
   let deps = load_dependencies(packages_directory, dependency_foreign, reading)
   let BundledCatalog(
+    audit: catalog_audit,
     functions: cat_effects,
     modules: cat_module_effects,
     param_bounds: cat_params,
@@ -510,7 +508,7 @@ pub fn knowledge_base_from_catalog_with(
     active_targets: None,
     structural_baseline: None,
     lat_mode: reading.mode,
-    audit: empty_audit(),
+    audit: catalog_audit,
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
@@ -541,7 +539,7 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     active_targets: None,
     structural_baseline: None,
     lat_mode: types.Inactive,
-    audit: empty_audit(),
+    audit: audit.empty(),
   )
 }
 
@@ -573,7 +571,7 @@ pub fn empty_knowledge_base(
     active_targets: None,
     structural_baseline: None,
     lat_mode: types.Inactive,
-    audit: empty_audit(),
+    audit: audit.empty(),
   )
   |> with_sourced_type_fields(cat_type_fields)
 }
@@ -4289,6 +4287,31 @@ fn fold_catalog_file(
       }),
     ),
   )
+}
+
+// What the audit records beside the selected catalog files say, each read for
+// its package's installed version. A file with no record beside it, or one
+// whose record does not read, is unaudited: every line of it follows the
+// written-line default.
+fn read_catalog_audit(
+  selected: List(#(String, String)),
+  installed_versions: Dict(String, String),
+) -> CatalogAudit {
+  list.fold(selected, audit.empty(), fn(acc, entry) {
+    let #(package, path) = entry
+    let installed =
+      dict.get(installed_versions, package)
+      |> result.map(parse_semver)
+      |> result.unwrap(#(0, 0, 0))
+    case
+      simplifile.read(filepath.strip_extension(path) <> ".audit")
+      |> result.replace_error(Nil)
+      |> result.try(fn(text) { audit.parse(text) |> result.replace_error(Nil) })
+    {
+      Error(Nil) -> acc
+      Ok(file) -> audit.merge(acc, audit.applicable(file, installed))
+    }
+  })
 }
 
 // One bundled catalog file, as its `{package}@{version}.graded` name reads. The

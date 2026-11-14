@@ -1,0 +1,10 @@
+
+covers 1.8.0
+reviewed shellout.arguments
+container_result shellout.background
+container_result shellout.color
+reviewed shellout.command
+container_result shellout.display
+reviewed shellout.exit
+container_result shellout.style
+reviewed shellout.which

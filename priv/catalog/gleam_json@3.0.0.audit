@@ -1,0 +1,25 @@
+
+covers 3.0.0 to 3.1.0
+container gleam/json.Json
+container_result gleam/json.array
+contract gleam/json.array(entries: [entries], inner_type: [inner_type]) : [inner_type] where runs : [], relay : inner_type(entries)
+container_result gleam/json.bool
+container_result gleam/json.dict
+contract gleam/json.dict(dict: [dict], keys: [keys], values: [values]) : [keys, values] where runs : [], relay : keys(dict), relay : values(dict)
+container_result gleam/json.float
+container_result gleam/json.int
+container_result gleam/json.null
+container_result gleam/json.nullable
+contract gleam/json.nullable(input: [input], inner_type: [inner_type]) : [inner_type] where runs : [], relay : inner_type(input)
+container_result gleam/json.object
+container_result gleam/json.parse
+contract gleam/json.parse(decoder: [d]) : [] where runs : [d]
+container_result gleam/json.parse_bits
+contract gleam/json.parse_bits(decoder: [d]) : [] where runs : [d]
+container_result gleam/json.preprocessed_array
+container_result gleam/json.string
+container_result gleam/json.to_string
+container_result gleam/json.to_string_tree
+
+covers 3.0.0
+container_result gleam/json.to_string_builder

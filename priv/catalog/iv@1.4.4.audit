@@ -1,0 +1,109 @@
+
+covers 1.4.4
+container iv/internal/vector.Vector
+container_result iv.all
+contract iv.all(array: [array], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(array)
+container_result iv.any
+contract iv.any(array: [array], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(array)
+container_result iv.append
+container_result iv.append_list
+container_result iv.append_reverse_list
+container_result iv.at
+container_result iv.concat
+container_result iv.concat_list
+container_result iv.contains
+container_result iv.delete
+container_result iv.drop_first
+container_result iv.drop_last
+container_result iv.each
+contract iv.each(array: [array], something: [something]) : [something] where runs : [], relay : something(array)
+container_result iv.each_right
+contract iv.each_right(array: [array], something: [something]) : [something] where runs : [], relay : something(array)
+container_result iv.equal
+container_result iv.filter
+contract iv.filter(items: [items], predicate: [predicate]) : [predicate] where runs : [], relay : predicate(items)
+container_result iv.filter_map
+contract iv.filter_map(items: [items], fun: [fun]) : [fun] where runs : [], relay : fun(items)
+container_result iv.find
+contract iv.find(array: [array], is_desired: [is_desired]) : [is_desired] where runs : [], relay : is_desired(array)
+container_result iv.find_index
+contract iv.find_index(array: [array], is_desired: [is_desired]) : [is_desired] where runs : [], relay : is_desired(array)
+container_result iv.find_last_index
+contract iv.find_last_index(array: [array], is_desired: [is_desired]) : [is_desired] where runs : [], relay : is_desired(array)
+container_result iv.find_map
+contract iv.find_map(array: [array], is_desired: [is_desired]) : [is_desired] where runs : [], relay : is_desired(array)
+container_result iv.first
+container_result iv.flat_map
+contract iv.flat_map(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(array)
+container_result iv.flatten
+container_result iv.fold
+contract iv.fold(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(_, array)
+container_result iv.fold_right
+contract iv.fold_right(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(_, array)
+container_result iv.from_list
+container_result iv.from_reverse_list
+container_result iv.from_yielder
+contract iv.from_yielder(source: [source]) : [] where runs : [source]
+container_result iv.get
+container_result iv.get_or_default
+container_result iv.index_fold
+contract iv.index_fold(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(_, array, _)
+container_result iv.index_fold_right
+contract iv.index_fold_right(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(_, array, _)
+container_result iv.index_map
+contract iv.index_map(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(array, _)
+container_result iv.index_of
+container_result iv.initialise
+contract iv.initialise(fun: [fun]) : [fun] where runs : []
+container_result iv.insert
+container_result iv.insert_clamped
+container_result iv.insert_list
+container_result iv.insert_list_clamped
+container_result iv.is_empty
+container_result iv.join
+container_result iv.last
+container_result iv.last_index_of
+container_result iv.leading
+container_result iv.length
+container_result iv.map
+contract iv.map(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(array)
+container_result iv.map2
+contract iv.map2(a: [a], b: [b], fun: [fun]) : [fun] where runs : [], relay : fun(a, b)
+container_result iv.new
+container_result iv.prepend
+container_result iv.prepend_list
+container_result iv.prepend_reverse_list
+container_result iv.range
+container_result iv.repeat
+container_result iv.replace
+container_result iv.rest
+container_result iv.reverse
+container_result iv.set
+container_result iv.size
+container_result iv.sized_chunk
+container_result iv.slice
+container_result iv.slice_clamped
+container_result iv.splice
+contract iv.splice(replacer: [replacer]) : [replacer] where runs : []
+container_result iv.split
+container_result iv.split_n
+container_result iv.swap_delete
+container_result iv.take_first
+container_result iv.take_last
+container_result iv.to_list
+container_result iv.to_yielder
+container_result iv.try_delete
+container_result iv.try_each
+contract iv.try_each(array: [array], something: [something]) : [something] where runs : [], relay : something(array)
+container_result iv.try_fold
+contract iv.try_fold(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(_, array)
+container_result iv.try_map
+contract iv.try_map(array: [array], fun: [fun]) : [fun] where runs : [], relay : fun(array)
+container_result iv.try_set
+container_result iv.try_swap_delete
+container_result iv.try_update
+contract iv.try_update(fun: [fun]) : [fun] where runs : []
+container_result iv.update
+contract iv.update(fun: [fun]) : [fun] where runs : []
+container_result iv.wrap
+container_result iv.zip

@@ -9,6 +9,7 @@ import gleam/set
 import gleam/string
 import gleeunit/should
 import graded/internal/annotation
+import graded/internal/audit
 import graded/internal/checker
 import graded/internal/effect_term
 import graded/internal/effects
@@ -1416,7 +1417,13 @@ pub fn a_catalog_bounded_externals_bounds_reach_a_call_site_test() {
   let kb =
     effects.knowledge_base_from_catalog(
       root <> "/build/packages",
-      effects.BundledCatalog(functions:, modules:, param_bounds:, type_fields:),
+      effects.BundledCatalog(
+        audit: audit.empty(),
+        functions:,
+        modules:,
+        param_bounds:,
+        type_fields:,
+      ),
       dict.new(),
     )
   let source =

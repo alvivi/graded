@@ -1,0 +1,16 @@
+
+covers 6.0.3
+container mist/internal/file.FileDescriptor
+container mist/internal/http2.HpackContext
+reviewed mist.read_body
+container_result mist.read_request_body
+reviewed mist.read_request_body
+reviewed mist.send_binary_frame
+reviewed mist.send_chunk
+reviewed mist.send_event
+reviewed mist.send_file
+reviewed mist.send_text_frame
+contract mist.start(builder: [builder]) : [Network, Process] where runs : [builder]
+reviewed mist.stream
+container_result mist.supervised
+reviewed mist.supervised

@@ -1,0 +1,20 @@
+
+covers 2.0.4
+container_result glam/doc.append
+container_result glam/doc.append_docs
+container_result glam/doc.break
+container_result glam/doc.concat
+container_result glam/doc.concat_join
+container_result glam/doc.debug
+container_result glam/doc.flex_break
+container_result glam/doc.force_break
+container_result glam/doc.from_string
+container_result glam/doc.group
+container_result glam/doc.join
+container_result glam/doc.lines
+container_result glam/doc.nest
+container_result glam/doc.nest_docs
+container_result glam/doc.prepend
+container_result glam/doc.prepend_docs
+container_result glam/doc.to_string
+container_result glam/doc.zero_width_string

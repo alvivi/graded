@@ -1,0 +1,7 @@
+
+covers 1.1.0
+container_result justin.camel_case
+container_result justin.kebab_case
+container_result justin.pascal_case
+container_result justin.sentence_case
+container_result justin.snake_case

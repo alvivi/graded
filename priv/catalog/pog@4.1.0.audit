@@ -1,0 +1,11 @@
+
+covers 4.1.0
+container pog.Message
+container pog.Value
+container_result pog.execute
+contract pog.execute(query: [query]) : [Database] where runs : [query]
+reviewed pog.query
+reviewed pog.start
+container_result pog.supervised
+reviewed pog.supervised
+reviewed pog.transaction

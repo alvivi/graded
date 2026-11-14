@@ -1,0 +1,9 @@
+
+covers 1.0.0, 1.2.1
+container_result houdini.escape
+
+covers 1.2.1
+container_result houdini.do_escape
+container_result houdini.do_escape_normal
+container_result houdini.slice
+container_result houdini.unsafe_bit_array_to_string

@@ -1,0 +1,11 @@
+
+covers 1.2.0, 1.3.0
+container splitter.Splitter
+container_result splitter.new
+container_result splitter.split
+container_result splitter.split_after
+container_result splitter.split_before
+container_result splitter.would_split
+
+covers 1.3.0
+container_result splitter.split_all
