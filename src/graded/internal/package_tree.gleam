@@ -853,17 +853,43 @@ fn installed_entries(manifest: Manifest) -> List(ManifestEntry) {
   list.filter(manifest.entries, fn(entry) { entry.source != "local" })
 }
 
-// The entry's package was found: its directory's `src/` walks, and holds a
-// Gleam module unless Gleam builds the package with rebar3 or mix.
+// The entry's package was found: a package Gleam builds with rebar3 or mix
+// has no `src` or one that walks, and any other package's `src/` walks and
+// holds a Gleam module.
 fn is_located(local: LocalPackages, entry: ManifestEntry) -> Bool {
   let directory = case dict.get(local.packages, entry.name) {
     Ok(package) -> package.directory
     Error(Nil) -> filepath.join(local.root, "build/packages/" <> entry.name)
   }
-  case config.source_files(filepath.join(directory, "src")) {
-    Ok(files) ->
-      list.any(files, string.ends_with(_, ".gleam")) || is_native(entry)
-    Error(_) -> False
+  case package_sources(directory) {
+    NoSources -> is_native(entry)
+    Sources(files:) ->
+      is_native(entry) || list.any(files, string.ends_with(_, ".gleam"))
+    UnreadableSources -> False
+  }
+}
+
+// What a package directory holds at `src`.
+type PackageSources {
+  // No directory entry at all, link or otherwise.
+  NoSources
+  // A `src` that walks, and the files it holds.
+  Sources(files: List(String))
+  // A package directory that is not one, a dangling `src` link, a regular
+  // file named `src`, or any other error looking it up or walking it.
+  UnreadableSources
+}
+
+fn package_sources(directory: String) -> PackageSources {
+  let sources = filepath.join(directory, "src")
+  case simplifile.is_directory(directory), simplifile.link_info(sources) {
+    Ok(True), Error(simplifile.Enoent) -> NoSources
+    Ok(True), Ok(_) ->
+      case config.source_files(sources) {
+        Ok(files) -> Sources(files:)
+        Error(_) -> UnreadableSources
+      }
+    Ok(True), Error(_) | Ok(False), _ | Error(_), _ -> UnreadableSources
   }
 }
 
