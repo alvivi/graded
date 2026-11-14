@@ -61,6 +61,7 @@ import graded/internal/config
 import graded/internal/contract
 import graded/internal/coverage
 import graded/internal/diff
+import graded/internal/effect_term
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
 import graded/internal/lint
@@ -471,7 +472,79 @@ pub type ModuleReport {
 /// declarations, and field annotations, then reports one `ModuleReport` per
 /// source file, plus one for the spec file itself where a spec line is dead.
 pub fn run(directory: String) -> Result(List(ModuleReport), GradedError) {
-  check_project(directory) |> result.map(list.map(_, module_report))
+  use #(spec_file, per_target) <- result.map(check_project_targets(
+    directory,
+    types.Inactive,
+  ))
+  target_reports(spec_file, per_target)
+}
+
+// The `check` results of a run, or of each target's where the package was read
+// on several one at a time, as the reports `check` prints.
+fn target_reports(
+  spec_file: String,
+  per_target: List(#(Option(String), List(CheckResult))),
+) -> List(ModuleReport) {
+  case per_target {
+    [#(None, results)] -> list.map(results, module_report)
+    _ ->
+      joined_reports(
+        spec_file,
+        list.map(per_target, fn(entry) {
+          #(option.unwrap(entry.0, ""), list.map(entry.1, module_report))
+        }),
+      )
+  }
+}
+
+// Each target's rendered reports as one per file: every violation once, with
+// the targets it holds on; a module's warnings from any target; and a spec-file
+// warning only where every target reports it, since a line one target's build
+// leaves without a function names one on another.
+fn joined_reports(
+  spec_file: String,
+  per_target: List(#(String, List(ModuleReport))),
+) -> List(ModuleReport) {
+  let targets = list.length(per_target)
+  let #(order, grouped) =
+    list.fold(per_target, #([], dict.new()), fn(acc, entry) {
+      let #(target, reports) = entry
+      list.fold(reports, acc, fn(acc, report) {
+        let #(order, grouped) = acc
+        let order = case dict.has_key(grouped, report.file) {
+          True -> order
+          False -> [report.file, ..order]
+        }
+        #(
+          order,
+          dict.upsert(grouped, report.file, fn(existing) {
+            list.append(option.unwrap(existing, []), [#(target, report)])
+          }),
+        )
+      })
+    })
+  list.reverse(order)
+  |> list.filter_map(fn(file) {
+    use reports <- result.map(dict.get(grouped, file))
+    let violations =
+      list.map(reports, fn(entry) { #(Some(entry.0), { entry.1 }.violations) })
+      |> joined_by_target
+      |> list.map(fn(entry) {
+        entry.0 <> " (on " <> string.join(entry.1, ", ") <> ")"
+      })
+    // How many targets report each warning.
+    let reported =
+      checker.holding_counts(
+        list.map(reports, fn(entry) { { entry.1 }.warnings }),
+      )
+    let warnings =
+      list.flat_map(reports, fn(entry) { { entry.1 }.warnings })
+      |> list.unique
+      |> list.filter(fn(line) {
+        file != spec_file || dict.get(reported, line) == Ok(targets)
+      })
+    ModuleReport(file:, warnings:, violations:)
+  })
 }
 
 // One file's results, rendered exactly as the CLI prints them.
@@ -499,8 +572,25 @@ pub fn classification_checks(
 }
 
 // The same rows off a context already assembled, so the coverage report reads
-// what `graded check` computed rather than a second pass over the same source.
+// what `graded check` computed rather than a second pass over the same source:
+// each function's rows from the targets that build it.
 fn context_classification_checks(
+  ctx: ProjectContext,
+) -> List(types.ClassificationCheck) {
+  case ctx.per_target {
+    [] -> target_classification_checks(ctx)
+    contexts ->
+      list.flat_map(contexts, fn(entry) {
+        target_classification_checks(entry.1)
+        |> list.filter(fn(row) {
+          reads_on(ctx.builds, row.module <> "." <> row.function, entry.0)
+        })
+      })
+      |> list.unique
+  }
+}
+
+fn target_classification_checks(
   ctx: ProjectContext,
 ) -> List(types.ClassificationCheck) {
   let ProjectContext(sources:, type_info:, knowledge_base:, ..) = ctx
@@ -532,7 +622,492 @@ pub fn check_project_with(
   directory: String,
   mode: types.LatMode,
 ) -> Result(List(CheckResult), GradedError) {
+  use #(spec_file, per_target) <- result.map(check_project_targets(
+    directory,
+    mode,
+  ))
+  case per_target {
+    [#(_, results)] -> results
+    _ ->
+      joined_check_results(
+        spec_file,
+        list.map(per_target, fn(entry) { entry.1 }),
+      )
+  }
+}
+
+// The `check` results of each target the package is read on, where it is read
+// on several one at a time, or of its one reading, beside its spec file.
+fn check_project_targets(
+  directory: String,
+  mode: types.LatMode,
+) -> Result(#(String, List(#(Option(String), List(CheckResult)))), GradedError) {
   use ctx <- result.try(load_project_context(directory, mode))
+  let spec_file = ctx.sources.cfg.spec_file
+  let per_target = case ctx.per_target {
+    [] -> [#(None, context_check_results(ctx, None))]
+    contexts ->
+      list.map(contexts, fn(entry) {
+        #(entry.0, context_check_results(entry.1, Some(entry.0)))
+      })
+      |> warnings_on_builders(spec_file, ctx.builds, _)
+      |> list.map(fn(entry) { #(Some(entry.0), entry.1) })
+  }
+  Ok(#(spec_file, per_target))
+}
+
+// Each target's results with each spec-file warning about one of the package's
+// functions answered by the targets that build it: a target that builds no
+// definition of the function, where another does, reports the warning exactly
+// where one of those does. A warning every target building its function
+// reports is then reported by every target, as the joins keep it.
+fn warnings_on_builders(
+  spec_file: String,
+  builds: PackageBuilds,
+  per_target: List(#(String, List(CheckResult))),
+) -> List(#(String, List(CheckResult))) {
+  use <- bool.guard(when: dict.is_empty(builds.partial), return: per_target)
+  let read_on = fn(warning, target) {
+    case types.warning_function(warning) {
+      Ok(function) -> reads_on(builds, function, target)
+      Error(Nil) -> True
+    }
+  }
+  let spec_warnings = fn(results: List(CheckResult)) {
+    list.flat_map(results, fn(result) {
+      case result.file == spec_file {
+        True -> result.warnings
+        False -> []
+      }
+    })
+  }
+  // What the targets building each warning's function report.
+  let built =
+    list.flat_map(per_target, fn(entry) {
+      list.filter(spec_warnings(entry.1), read_on(_, entry.0))
+    })
+    |> list.unique
+  let built_set = set.from_list(built)
+  list.map(per_target, fn(entry) {
+    let #(target, results) = entry
+    let kept =
+      list.filter(spec_warnings(results), fn(warning) {
+        read_on(warning, target) || set.contains(built_set, warning)
+      })
+    let kept_set = set.from_list(kept)
+    let answered =
+      list.filter(built, fn(warning) {
+        !read_on(warning, target) && !set.contains(kept_set, warning)
+      })
+    let warnings = list.append(kept, answered)
+    #(target, case list.any(results, fn(result) { result.file == spec_file }) {
+      True ->
+        list.map(results, fn(result) {
+          case result.file == spec_file {
+            True -> CheckResult(..result, warnings:)
+            False -> result
+          }
+        })
+      False ->
+        case warnings {
+          [] -> results
+          warnings -> [
+            CheckResult(
+              file: spec_file,
+              violations: [],
+              findings: [],
+              warnings:,
+            ),
+            ..results
+          ]
+        }
+    })
+  })
+}
+
+// `spec` without the `effects` lines over names the package defines once per
+// target.
+fn without_per_target_lines(
+  spec: GradedFile,
+  pairs: PackagePairs,
+) -> GradedFile {
+  GradedFile(
+    lines: list.filter(spec.lines, fn(line) {
+      case line {
+        AnnotationLine(annotation: ann, ..) if ann.kind == types.Effects ->
+          result.is_error(pair_of(pairs, ann.function))
+        _ -> True
+      }
+    }),
+  )
+}
+
+// Each module's functions defined once per target, by module path and by
+// source file, read once for the package's runs on its targets.
+type PackagePairs {
+  PackagePairs(
+    by_module: Dict(
+      String,
+      Dict(String, List(glance.Definition(glance.Function))),
+    ),
+    by_file: Dict(
+      String,
+      Dict(String, List(glance.Definition(glance.Function))),
+    ),
+  )
+}
+
+fn package_pairs(
+  index: Dict(String, #(String, glance.Module)),
+) -> PackagePairs {
+  let by_module =
+    dict.map_values(index, fn(_module_path, entry) {
+      checker.module_pairs(entry.1)
+    })
+  PackagePairs(
+    by_module:,
+    by_file: dict.fold(index, dict.new(), fn(acc, module_path, entry) {
+      case dict.get(by_module, module_path) {
+        Ok(pairs) -> dict.insert(acc, entry.0, pairs)
+        Error(Nil) -> acc
+      }
+    }),
+  )
+}
+
+fn no_package_pairs() -> PackagePairs {
+  PackagePairs(by_module: dict.new(), by_file: dict.new())
+}
+
+// The definitions of the function `name` qualifies, where a module of the
+// package defines it once per target.
+fn pair_of(
+  pairs: PackagePairs,
+  name: String,
+) -> Result(List(glance.Definition(glance.Function)), Nil) {
+  use #(module_path, function) <- result.try(annotation.split_function_name(
+    name,
+  ))
+  use module_pairs <- result.try(dict.get(pairs.by_module, module_path))
+  dict.get(module_pairs, function)
+}
+
+// The targets of a run on several, and which of them build each of the
+// package's own functions, by module path and name: read once for the run, and
+// read by everything that joins a function's results across its targets.
+type PackageBuilds {
+  PackageBuilds(
+    targets: List(String),
+    functions: Dict(String, Dict(String, FunctionBuilds)),
+    // The functions some of the run's targets build and others do not, by
+    // qualified name, beside the targets that build each.
+    partial: Dict(String, List(String)),
+  )
+}
+
+// One function of the package: every definition in source order, and the
+// definition each target of the run that builds one builds.
+type FunctionBuilds {
+  FunctionBuilds(
+    variants: List(glance.Definition(glance.Function)),
+    built: List(#(String, glance.Definition(glance.Function))),
+  )
+}
+
+fn package_builds(
+  index: Dict(String, #(String, glance.Module)),
+  targets: List(String),
+) -> PackageBuilds {
+  let functions =
+    dict.map_values(index, fn(_module_path, entry) {
+      checker.module_definitions(entry.1)
+      |> dict.map_values(fn(_name, variants) {
+        FunctionBuilds(
+          variants:,
+          built: extract.built_variants(variants, targets),
+        )
+      })
+    })
+  let count = list.length(targets)
+  PackageBuilds(
+    targets:,
+    functions:,
+    partial: dict.fold(functions, dict.new(), fn(acc, module_path, by_name) {
+      dict.fold(by_name, acc, fn(acc, name, one) {
+        case partial_readers(one, count) {
+          Ok(readers) -> dict.insert(acc, module_path <> "." <> name, readers)
+          Error(Nil) -> acc
+        }
+      })
+    }),
+  )
+}
+
+// The targets that build `one`, where some of the run's `count` targets build
+// it and others do not.
+fn partial_readers(
+  one: FunctionBuilds,
+  count: Int,
+) -> Result(List(String), Nil) {
+  let readers = list.map(one.built, fn(entry) { entry.0 })
+  case readers != [] && list.length(readers) < count {
+    True -> Ok(readers)
+    False -> Error(Nil)
+  }
+}
+
+fn no_package_builds() -> PackageBuilds {
+  PackageBuilds(targets: [], functions: dict.new(), partial: dict.new())
+}
+
+// The package's own function `name`, as the run's targets build it.
+fn function_builds(
+  builds: PackageBuilds,
+  name: String,
+) -> Result(FunctionBuilds, Nil) {
+  use #(module_path, function) <- result.try(annotation.split_function_name(
+    name,
+  ))
+  use by_name <- result.try(dict.get(builds.functions, module_path))
+  dict.get(by_name, function)
+}
+
+// Whether the run reads the package's function `name` on `target`: where one
+// of its targets builds the function, on those that do; where none does, or
+// `name` is not one of the package's functions, on every target.
+fn reads_on(builds: PackageBuilds, name: String, target: String) -> Bool {
+  case dict.get(builds.partial, name) {
+    Ok(readers) -> list.contains(readers, target)
+    Error(Nil) -> True
+  }
+}
+
+// The targets of the run that read a line over `path`: those that build the
+// function it names, the package's own or a dependency's, where any does;
+// every target otherwise.
+fn line_builders(
+  builds: PackageBuilds,
+  dependencies: DependencySources,
+  path: String,
+) -> List(String) {
+  let built = case function_builds(builds, path) {
+    Ok(one) -> list.map(one.built, fn(entry) { entry.0 })
+    Error(Nil) -> dependency_builders(builds.targets, dependencies, path)
+  }
+  case built {
+    [] -> builds.targets
+    built -> built
+  }
+}
+
+// The `targets` that build the dependency function `path`, where some
+// definition of it is kept on some targets alone; none otherwise.
+fn dependency_builders(
+  targets: List(String),
+  dependencies: DependencySources,
+  path: String,
+) -> List(String) {
+  {
+    use #(module_path, function) <- result.try(annotation.split_function_name(
+      path,
+    ))
+    use scanned <- result.try(dict.get(dependencies.modules, module_path))
+    use variants <- result.map(case scanned {
+      ParsedModule(gated:, ..) -> dict.get(gated, function)
+      UnreadableModule -> Error(Nil)
+    })
+    list.filter(targets, fn(target) {
+      result.is_ok(built_variant(variants, target))
+    })
+  }
+  |> result.unwrap([])
+}
+
+// Whether a run on `package_targets`, one of several, reads a line over
+// `path`.
+fn reads_line_on(
+  builds: PackageBuilds,
+  dependencies: DependencySources,
+  path: String,
+  package_targets: types.PackageTargets,
+) -> Bool {
+  let reading = types.build_targets(package_targets)
+  list.any(line_builders(builds, dependencies, path), set.contains(reading, _))
+}
+
+// One function's lines from several targets as one: each line of a target
+// that builds it, read over the published parameters of its definitions;
+// `first` where no target of the run builds it.
+fn joined_built_line(
+  one: FunctionBuilds,
+  first: EffectAnnotation,
+  lines: List(#(String, EffectAnnotation)),
+) -> EffectAnnotation {
+  list.filter_map(lines, fn(entry) {
+    list.key_find(one.built, entry.0)
+    |> result.map(fn(definition) { #(definition, entry.1) })
+  })
+  |> checker.joined_target_line(one.variants, _)
+  |> result.unwrap(first)
+}
+
+// `spec` as `target` reads it: without the `check` lines over a function it
+// builds no definition of where another target of the run builds one, and with
+// each over a name the package defines once per target read in the parameter
+// names of the definition built on `target`.
+fn spec_on_target(
+  spec: GradedFile,
+  pairs: PackagePairs,
+  builds: PackageBuilds,
+  target: String,
+) -> GradedFile {
+  let lines = case dict.is_empty(builds.partial) {
+    True -> spec.lines
+    False ->
+      list.filter(spec.lines, fn(line) {
+        case line {
+          AnnotationLine(annotation: ann, ..) if ann.kind == types.Check ->
+            reads_on(builds, ann.function, target)
+          _ -> True
+        }
+      })
+  }
+  GradedFile(
+    lines: list.map(lines, fn(line) {
+      case line {
+        AnnotationLine(annotation: ann, ..) if ann.kind == types.Check ->
+          {
+            use #(module_path, function) <- result.try(
+              annotation.split_function_name(ann.function),
+            )
+            use module_pairs <- result.try(dict.get(
+              pairs.by_module,
+              module_path,
+            ))
+            use #(variants, definition) <- result.map(checker.pair_variant(
+              module_pairs,
+              function,
+              target,
+            ))
+            AnnotationLine(
+              ..line,
+              annotation: checker.in_variant_names(variants, definition, ann),
+            )
+          }
+          |> result.unwrap(line)
+        _ -> line
+      }
+    }),
+  )
+}
+
+// What each module's `check` lines found on `target`, about names the package
+// defines once per target, stated in their published parameter names.
+fn in_published_names(
+  results: List(CheckResult),
+  pairs: PackagePairs,
+  target: String,
+) -> List(CheckResult) {
+  list.map(results, fn(result) {
+    case dict.get(pairs.by_file, result.file) {
+      Error(Nil) -> result
+      Ok(pairs) ->
+        CheckResult(
+          ..result,
+          violations: list.map(result.violations, fn(violation) {
+            case checker.pair_variant(pairs, violation.function, target) {
+              Ok(#(variants, definition)) ->
+                checker.violation_in_published_names(
+                  variants,
+                  definition,
+                  violation,
+                )
+              Error(Nil) -> violation
+            }
+          }),
+          findings: list.map(result.findings, finding_in_published_names(
+            pairs,
+            target,
+            _,
+          )),
+        )
+    }
+  })
+}
+
+// A finding about a name a module defines once per target, one of its
+// `pairs`, stated in its published parameter names.
+fn finding_in_published_names(
+  pairs: Dict(String, List(glance.Definition(glance.Function))),
+  target: String,
+  finding: types.CheckFinding,
+) -> types.CheckFinding {
+  {
+    use function <- result.try(case finding {
+      types.ReturnsClauseViolation(function:, ..)
+      | types.NonCallableReturnViolation(function:, ..) -> Ok(function)
+      _ -> Error(Nil)
+    })
+    use #(variants, definition) <- result.map(checker.pair_variant(
+      pairs,
+      function,
+      target,
+    ))
+    checker.finding_in_published_names(variants, definition, finding)
+  }
+  |> result.unwrap(finding)
+}
+
+// Each target's structured results as one per file: every violation and
+// finding any target reports, a module's warnings from any target, and a
+// spec-file warning only where every target reports it.
+fn joined_check_results(
+  spec_file: String,
+  per_target: List(List(CheckResult)),
+) -> List(CheckResult) {
+  let targets = list.length(per_target)
+  let #(order, grouped) =
+    list.fold(list.flatten(per_target), #([], dict.new()), fn(acc, result) {
+      let #(order, grouped) = acc
+      let order = case dict.has_key(grouped, result.file) {
+        True -> order
+        False -> [result.file, ..order]
+      }
+      #(
+        order,
+        dict.upsert(grouped, result.file, fn(existing) {
+          list.append(option.unwrap(existing, []), [result])
+        }),
+      )
+    })
+  list.reverse(order)
+  |> list.filter_map(fn(file) {
+    use results <- result.map(dict.get(grouped, file))
+    // How many targets report each warning.
+    let reported =
+      checker.holding_counts(list.map(results, fn(one) { one.warnings }))
+    CheckResult(
+      file:,
+      violations: list.flat_map(results, fn(one) { one.violations })
+        |> list.unique,
+      findings: list.flat_map(results, fn(one) { one.findings }) |> list.unique,
+      warnings: list.flat_map(results, fn(one) { one.warnings })
+        |> list.unique
+        |> list.filter(fn(warning) {
+          file != spec_file || dict.get(reported, warning) == Ok(targets)
+        }),
+    )
+  })
+}
+
+// `target` is the one target `ctx` reads, where the package is read on several
+// one at a time: each `check` line over a name defined once per target is then
+// read in the parameter names of the definition built there, and what it finds
+// is stated in the published ones.
+fn context_check_results(
+  ctx: ProjectContext,
+  target: Option(String),
+) -> List(CheckResult) {
   let ProjectContext(sources:, registry:, type_info:, knowledge_base:, ..) = ctx
   let ProjectSources(
     source_directory: directory,
@@ -555,7 +1130,11 @@ pub fn check_project_with(
 
   let #(results, field_report) =
     check_modules(
-      spec,
+      case target {
+        Some(target) ->
+          spec_on_target(spec, ctx.package_pairs, ctx.builds, target)
+        None -> spec
+      },
       parsed,
       reported,
       directory,
@@ -570,17 +1149,19 @@ pub fn check_project_with(
   // project module. These silently do nothing (a vacuous check, or a field
   // annotation that resolves to [Unknown]), so they're reported against the
   // spec file itself rather than any source file.
+  let results = case target {
+    Some(target) -> in_published_names(results, ctx.package_pairs, target)
+    None -> results
+  }
   let spec_warnings =
     list.append(lint.run(lint_context(ctx)), field_report.warnings)
-  let results = case spec_warnings, field_report.spec_findings {
+  case spec_warnings, field_report.spec_findings {
     [], [] -> results
     warnings, findings -> [
       CheckResult(file: cfg.spec_file, violations: [], findings:, warnings:),
       ..results
     ]
   }
-
-  Ok(results)
 }
 
 // The `check` results of `modules`, each with the field findings it earned,
@@ -787,48 +1368,49 @@ fn resolve_field_checks(
       #(module, type_name, field)
     })
     |> set.from_list()
-  list.fold(field_checks, #([], []), fn(acc, ann) {
-    let #(checks, warnings) = acc
-    let targets = case annotation.split_type_field_name(ann.function) {
-      Error(Nil) -> []
-      Ok(#(Some(module), type_name, field)) ->
-        case set.contains(field_index.labels, #(module, type_name, field)) {
-          True -> [#(module, type_name, field)]
-          False -> []
-        }
-      Ok(#(None, type_name, field)) ->
-        field_index.labels
-        |> set.to_list()
-        |> list.filter(fn(label) { label.1 == type_name && label.2 == field })
-    }
-    let declared = list.filter(targets, set.contains(callable_labels, _))
-    case targets, declared {
-      [], _ -> #(checks, [
-        types.UnmatchedFieldCheckWarning(name: ann.function),
-        ..warnings
-      ])
-      _, [] -> #(checks, [
-        types.NonCallableFieldCheckWarning(name: ann.function),
-        ..warnings
-      ])
-      _, declared -> #(
-        list.append(
-          checks,
-          list.map(declared, fn(target) {
-            let #(module, type_name, field) = target
-            checker.FieldCheck(
-              path: ann.function,
-              module:,
-              type_name:,
-              field:,
-              declared: ann.effects,
-            )
-          }),
-        ),
-        warnings,
-      )
-    }
-  })
+  // Read once for the lines that name no module.
+  let labelled = checker.labels_by_type_field(field_index.labels)
+  let #(chunks, warnings) =
+    list.fold(field_checks, #([], []), fn(acc, ann) {
+      let #(checks, warnings) = acc
+      let targets = case annotation.split_type_field_name(ann.function) {
+        Error(Nil) -> []
+        Ok(#(Some(module), type_name, field)) ->
+          case set.contains(field_index.labels, #(module, type_name, field)) {
+            True -> [#(module, type_name, field)]
+            False -> []
+          }
+        Ok(#(None, type_name, field)) -> labelled(type_name, field)
+      }
+      let declared = list.filter(targets, set.contains(callable_labels, _))
+      case targets, declared {
+        [], _ -> #(checks, [
+          types.UnmatchedFieldCheckWarning(name: ann.function),
+          ..warnings
+        ])
+        _, [] -> #(checks, [
+          types.NonCallableFieldCheckWarning(name: ann.function),
+          ..warnings
+        ])
+        _, declared -> #(
+          [
+            list.map(declared, fn(target) {
+              let #(module, type_name, field) = target
+              checker.FieldCheck(
+                path: ann.function,
+                module:,
+                type_name:,
+                field:,
+                declared: ann.effects,
+              )
+            }),
+            ..checks
+          ],
+          warnings,
+        )
+      }
+    })
+  #(list.reverse(chunks) |> list.flatten, warnings)
 }
 
 // Everything a read-only command needs about a project: the parsed sources, the
@@ -865,8 +1447,6 @@ type ProjectContext {
     // a dependency-defined type, so what it measures a site against is
     // gathered package-wide too.
     field_index: types.FieldIndex,
-    // Every custom type and alias of the package and its scanned dependencies.
-    type_definitions: typedefs.TypeRegistry,
     // Module path -> source file for the whole dependency tree, walked once
     // when this context was assembled (girard's resolver reads it) and held so
     // the spec lint weighs its declaring lines against the same scan rather
@@ -884,6 +1464,23 @@ type ProjectContext {
     // not here. The counts are kept rather than the readings they came from,
     // which every command would otherwise hold for its whole run.
     typed_path_dependencies: List(coverage.PathDependency),
+    // How a line over a function a dependency defines once per target is read
+    // in this run, built once for it.
+    pair_readings: Dict(#(String, String), PairReading),
+    // The targets each dependency package defining a public function once per
+    // target publishes for, by package root, read once for the run.
+    publishers: Dict(String, types.PackageTargets),
+    // Each of the package's modules' functions defined once per target, read
+    // once for its runs on several targets; empty for a run on one.
+    package_pairs: PackagePairs,
+    // Which of the run's targets build each of the package's functions, read
+    // once for its runs on several targets; empty for a run on one.
+    builds: PackageBuilds,
+    // Each target's own context, where the package was read on several targets
+    // one at a time; empty otherwise.
+    per_target: List(#(String, ProjectContext)),
+    // The girard runs those contexts shared, by target and module.
+    girard_runs: GirardRuns,
   )
 }
 
@@ -948,21 +1545,221 @@ fn load_project_context(
   project_context(sources)
 }
 
-// The expensive half: everything a context holds beyond the parsed sources.
-// Fails before any of it is built when graded's bundled catalog can't be read.
 fn project_context(
   sources: ProjectSources,
 ) -> Result(ProjectContext, GradedError) {
+  let #(targets, shared) =
+    target_split(sources.source_directory, sources.cfg, sources.index)
+  case targets {
+    [] -> {
+      use #(base, _shared) <- result.map(context_base(sources, shared, False))
+      context_on(base, sources.cfg.targets)
+    }
+    [first, ..rest] -> {
+      let on = fn(target, shared) {
+        let sources =
+          ProjectSources(..sources, cfg: on_target(sources.cfg, target))
+        use #(base, shared) <- result.map(context_base(sources, shared, True))
+        #(
+          #(target, context_on(base, sources.cfg.targets)),
+          #(target, base.refused),
+          shared,
+        )
+      }
+      use #(lead, lead_refused, shared) <- result.try(on(first, shared))
+      use #(others, refused, _shared) <- result.try(
+        list.try_fold(rest, #([], [lead_refused], shared), fn(acc, target) {
+          let #(others, refused, shared) = acc
+          use #(context, one, shared) <- result.map(on(target, shared))
+          #([context, ..others], [one, ..refused], shared)
+        }),
+      )
+      use Nil <- result.map(
+        settle_own_refusals(
+          sources.cfg.spec_file,
+          list.reverse(refused),
+          line_builders(shared.builds, { lead.1 }.dependencies, _),
+        ),
+      )
+      ProjectContext(..lead.1, sources:, per_target: [
+        lead,
+        ..list.reverse(others)
+      ])
+    }
+  }
+}
+
+// The targets a run analyses its package on one at a time, each as a run built
+// for that target alone would, beside what those runs share. Every target the
+// package names, where it names more than one and the package or a local
+// package in its tree defines a name once per target, or a dependency it reads
+// defines a public function once per target; none otherwise.
+fn target_split(
+  directory: String,
+  cfg: config.GradedConfig,
+  index: Dict(String, #(String, glance.Module)),
+) -> #(List(String), Shared) {
+  let named = named_targets(cfg)
+  let shared = Shared(..no_sharing(), index: Some(index))
+  use <- bool.guard(when: list.length(named) < 2, return: #([], shared))
+  let package_root = resolve_package_root(directory)
+  let local = package_tree.discover(package_root)
+  let #(parsed, parsed_dirs) = parsed_dependency_sources(package_root, local)
+  // Compared in one spelling: a declaration may name the same directory
+  // relatively or absolutely, through `.` and `..`.
+  let working = working_directory()
+  let local_dirs = package_tree.source_directories(local, working)
+  let split =
+    list.any(dict.values(index), fn(entry) {
+      checker.defines_per_target(entry.1)
+    })
+    || list.any(dict.to_list(parsed), fn(entry) {
+      case entry {
+        #(path, Ok(module)) ->
+          case package_tree.under_source_directory(path, local_dirs, working) {
+            True -> checker.defines_per_target(module)
+            False ->
+              checker.defines_public_function_per_target(module)
+              || defines_function_capable_type_per_target(path, module, named)
+          }
+        #(_path, Error(Nil)) -> False
+      }
+    })
+  let shared = Shared(..shared, parsed:, parsed_dirs:)
+  case split {
+    False -> #([], shared)
+    True -> {
+      let dep_files = tree_module_files(package_root, local)
+      #(
+        named,
+        Shared(
+          ..shared,
+          girard: shared_girard_runs(index, dep_files, named),
+          scanned: target_blind_scan(package_root, local, parsed, parsed_dirs),
+          tree: Some(#(local, dep_files)),
+          builds: package_builds(index, named),
+          split: True,
+        ),
+      )
+    }
+  }
+}
+
+// Whether `module`, keyed `module_path`, defines a type once per target where
+// a definition may hold a function value on one of `targets`, read against the
+// module's own definitions on that target alone. A type no definition of which
+// may hold one carries nothing on any target.
+fn defines_function_capable_type_per_target(
+  module_path: String,
+  module: glance.Module,
+  targets: List(String),
+) -> Bool {
+  let names =
+    list.append(
+      list.map(module.type_aliases, fn(definition) {
+        definition.definition.name
+      }),
+      list.map(module.custom_types, fn(definition) {
+        definition.definition.name
+      }),
+    )
+  let paired = checker.written_more_than_once(names)
+  use <- bool.guard(when: paired == [], return: False)
+  list.any(targets, fn(target) {
+    let registry =
+      typedefs.from_module(module_path, module, set.from_list([target]))
+    let function_free = typedefs.function_free_in(registry)
+    list.any(paired, fn(name) {
+      let key = #(module_path, name)
+      typedefs.defines(registry, key) && !function_free(key)
+    })
+  })
+}
+
+// What a context holds before the walk of the package's own modules, save the
+// layers that read which of its functions are foreign code and what its
+// factories build, which `context_on` adds for the targets it is read on.
+type ContextBase {
+  ContextBase(
+    context: ProjectContext,
+    constructors: Dict(#(String, String), List(Option(String))),
+    declared_modules: Set(String),
+    // The project's own lines this run refused, where it is one of several.
+    refused: List(OwnViolation),
+  )
+}
+
+// `base` read on `package_targets`: the package's own foreign functions and
+// factories, and its modules inferred in memory.
+fn context_on(
+  base: ContextBase,
+  package_targets: types.PackageTargets,
+) -> ProjectContext {
+  let context = base.context
+  let ProjectContext(registry:, type_info:, ..) = context
+  let index = context.sources.index
+  let knowledge_base =
+    context.knowledge_base
+    |> effects.with_package_targets(package_targets)
+    // Recorded before the inference pass below, so an `@external` resolves to
+    // what declares it while this project's own modules are being inferred, not
+    // only when they are later checked.
+    |> effects.with_foreign_functions(project_foreign_functions(
+      index,
+      package_targets,
+    ))
+    // Before the inference pass, not after it, and in the order `infer` folds
+    // them: a body walked during inference resolves its field calls through the
+    // same factory signatures a body walked at check time does — the field
+    // `assume` lines they read beside these fold earlier still, above.
+    // Installed afterwards, the pass ran without them and a function whose
+    // effects it settled — an `@external`'s running fallback, whose callers
+    // read the summary and never the body — kept an answer the two commands
+    // would then disagree about.
+    //
+    // After `with_builders` folded the dependencies' factories, since this
+    // merges rather than replaces and the later fold wins: this package's own
+    // modules answer for a path a dependency also claims.
+    |> with_project_factories(index, package_targets, base.constructors)
+    // Fill gaps for project modules not (yet) in the spec by inferring them in
+    // memory, so `check` resolves cross-module calls without a prior `graded
+    // infer`. Committed effects are never overridden; fresh returns win over
+    // committed clauses. Nothing is written to disk.
+    |> infer_project_in_memory(
+      index,
+      registry,
+      type_info,
+      base.declared_modules,
+      package_targets,
+    )
+  ProjectContext(
+    ..context,
+    sources: ProjectSources(
+      ..context.sources,
+      cfg: config.GradedConfig(..context.sources.cfg, targets: package_targets),
+    ),
+    registry:,
+    type_info:,
+    knowledge_base:,
+    per_target: [],
+  )
+}
+
+// The expensive half: everything a context holds beyond the parsed sources.
+// Fails before any of it is built when graded's bundled catalog can't be read.
+// `per_target` where the context is one of several, each read on one target:
+// a committed `effects` line over a name the package defines once per target
+// is then the join of every target's answer, and each target's walk answers
+// for that name instead.
+fn context_base(
+  sources: ProjectSources,
+  shared: Shared,
+  per_target: Bool,
+) -> Result(#(ContextBase, Shared), GradedError) {
   let ProjectSources(cfg:, spec:, index:, package_root:, mode:, spec_text:, ..) =
     sources
-  use catalog_files <- result.try(locate_bundled_catalog())
   // Parsed first, and read once the signatures can weigh its lines.
-  let parsed_catalog =
-    effects.parse_project_catalog(
-      catalog_files,
-      manifest_path(package_root),
-      mode,
-    )
+  use parsed_catalog <- result.try(shared_catalog(shared, package_root, mode))
   let declared_modules = annotation.module_assume_modules(spec)
   // The package's targets under both readings, which together decide whether a
   // function is foreign code or the Gleam body is its only implementation, and
@@ -970,42 +1767,87 @@ fn project_context(
   // run, this package and its dependencies alike: a dependency is compiled for
   // the consumer's target, not its own.
   let package_targets = cfg.targets
+  // Read once for the package's runs on its targets, which share it.
+  let package_pairs = case per_target, shared.pairs {
+    False, _ -> no_package_pairs()
+    True, Some(pairs) -> pairs
+    True, None -> package_pairs(index)
+  }
+  let committed = case per_target {
+    True -> without_per_target_lines(spec, package_pairs)
+    False -> spec
+  }
   let native_of = native_functions_of(index, package_targets)
   let stale_assumes = stale_project_assumes(spec, native_of)
   let stale_returns_clauses = stale_project_assume_returns(spec, native_of)
-  // Walked once for the run, and handed to everything that reads the tree.
-  let local = package_tree.discover(package_root)
-  let scan = dependency_scan(package_root, local, package_targets)
+  // Walked once for the run, and handed to everything that reads the tree:
+  // girard's resolver reads its module files, and every spec-less path
+  // dependency below is typed against the same map.
+  let #(local, dep_files) = shared_tree(shared, package_root)
+  let scan =
+    dependency_scan(
+      package_root,
+      local,
+      package_targets,
+      ParsedTree(files: shared.parsed, dirs: shared.parsed_dirs),
+      shared.scanned,
+    )
   let dep_sources = scan.sources
-  let project_registry = build_project_registry(index)
+  let project_registry = build_project_registry(index, package_targets)
   let registry =
     signatures.merge(dependency_registry(dep_sources), project_registry)
   let type_definitions =
     build_type_definitions(index, dep_sources, package_targets)
-  use Nil <- result.try(validate_own_contracts(
-    mode,
-    spec,
-    spec_text,
-    cfg.spec_file,
-    registry,
-    type_definitions,
-  ))
-  let reading = spec_reading(mode, registry, type_definitions)
+  let registry = signatures.with_types(registry, type_definitions)
+  // Built once for the run: the specs other packages wrote, the catalog and
+  // the project's own lines are all read through it.
+  let publishers = publisher_configurations(dep_sources, shared.publishers)
+  let readings = pair_readings(dep_sources, package_targets, publishers)
+  // The project's own lines, weighed as the run reads them under the
+  // latent-effect rules. Run alone on its targets, a line the rules forbid is
+  // an error; one of several runs refuses it and leaves the verdict to them
+  // all.
+  let refused = case mode {
+    types.Active ->
+      own_contract_violations(spec, spec_text, readings, registry, !per_target)
+    types.Inactive -> []
+  }
+  use Nil <- result.try(case per_target {
+    False -> own_contract_error(cfg.spec_file, refused)
+    True -> Ok(Nil)
+  })
+  let reported =
+    reported_refusals(refused, shared.builds, dep_sources, cfg.targets)
+  let reading = spec_reading(mode, registry, readings)
   // Read once and kept: the knowledge base is built from it and the spec lint
   // weighs the same entries.
   let catalog = effects.read_parsed_catalog(parsed_catalog, reading)
-  // Scanned once for the run: girard's resolver reads it here, and every
-  // spec-less path dependency below is typed against the same map.
-  let dep_files = tree_module_files(package_root, local)
-  let type_info = build_type_index(index, dep_files, package_targets)
+  let registry = signatures.with_shapes(registry, set.new())
+  let type_info =
+    type_index(
+      index,
+      dep_files,
+      package_targets,
+      dependency_target_variants(index, dep_sources),
+      shared.girard,
+    )
+  let girard_targets =
+    run_targets(
+      package_targets,
+      index_entries(index),
+      dependency_target_variants(index, dep_sources),
+    )
 
   // Built once for the whole run: every module's factory scan below routes its
   // constructions through the same labels.
-  let constructors = package_constructors(index, dep_sources)
+  let constructors = package_constructors(index, dep_sources, package_targets)
 
   // Read once: the run's knowledge base starts from it, and so does the
   // baseline a newly loaded package is weighed against.
   let catalog_kb = catalog_knowledge_base(package_root, catalog, scan, reading)
+  // The project's own lines over a function a dependency defines once per
+  // target, in the variant this run builds.
+  let reading_spec = rebased_consumer_lines(spec, readings, refused)
   let kb_base =
     catalog_kb
     |> effects.with_dependency_foreign(dependency_foreign(dep_sources))
@@ -1020,12 +1862,12 @@ fn project_context(
     // Consumer externals are applied before path-dep inference so a module-level
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
-    |> with_spec_assumes(spec, stale_assumes)
+    |> with_spec_assumes(reading_spec, stale_assumes)
     // Applied before path-dep inference for the same reason the externals above
     // are, one channel over: a spec-less path dependency's bodies are summarized
     // during that pass, and a consumer line declaring what one of its producers
     // hands back has to be in reach while they are, not only afterwards.
-    |> with_spec_declared_returns(spec, stale_returns_clauses)
+    |> with_spec_declared_returns(reading_spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets, constructors)
     |> with_tree_baseline(index, scan, package_targets)
   // The dependency modules whose `@external` falls back to a running Gleam
@@ -1047,15 +1889,16 @@ fn project_context(
         catalog_kb,
         scan,
         project_registry,
-        spec,
+        reading_spec,
         stale_assumes,
         stale_returns_clauses,
         package_targets,
       ),
       registry,
       reading,
+      dep_sources,
     )
-  let kb_base =
+  let #(kb_base, fallback_runs) =
     kb_base
     // Ahead of the fallback walk below, not merely ahead of the inference pass:
     // the field a dependency's fallback body calls may be declared here rather
@@ -1076,16 +1919,12 @@ fn project_context(
       typed_dep_modules,
       registry,
       package_targets,
-      type_info.targets,
+      girard_targets,
+      fallback_typing(shared, dep_sources, retained),
     )
-    |> with_committed_spec(spec, stale_assumes)
-    // Recorded before the inference pass below, so an `@external` resolves to
-    // what declares it while this project's own modules are being inferred, not
-    // only when they are later checked.
-    |> effects.with_foreign_functions(project_foreign_functions(
-      index,
-      package_targets,
-    ))
+  let kb_base =
+    kb_base
+    |> with_committed_spec(committed, stale_assumes)
     // What this package defines, for the query that answers from its public API.
     |> effects.with_project_functions(project_function_visibility(index))
     // Committed project clauses are Closed: read back, not inferred this run.
@@ -1104,52 +1943,46 @@ fn project_context(
     // here, since fresh inference keys no foreign name; it is what holds if any
     // link of that three-file invariant chain ever gives.
     |> effects.with_closed_returned_operators(
-      effects.load_spec_returns_from_file(spec),
+      effects.load_spec_returns_from_file(committed),
       types.CommittedSpec,
     )
-    // Before the inference pass, not after it, and in the order `infer` folds
-    // them: a body walked during inference resolves its field calls through the
-    // same factory signatures a body walked at check time does — the field
-    // `assume` lines they read beside these fold earlier still, above.
-    // Installed afterwards, the pass ran without them and a function whose
-    // effects it settled — an `@external`'s running fallback, whose callers
-    // read the summary and never the body — kept an answer the two commands
-    // would then disagree about.
-    //
-    // After `with_builders` folded the dependencies' factories, since this
-    // merges rather than replaces and the later fold wins: this package's own
-    // modules answer for a path a dependency also claims.
-    |> with_project_factories(index, package_targets, constructors)
-  // Fill gaps for project modules not (yet) in the spec by inferring them in
-  // memory, so `check` resolves cross-module calls without a prior `graded infer`.
-  // Committed effects are never overridden; fresh returns win over committed
-  // clauses. The deltas aren't needed here — the pre-pass already folded them
-  // into `kb_base`. Nothing is written to disk.
-  let knowledge_base =
-    infer_project_in_memory(
-      kb_base,
-      index,
-      registry,
-      type_info,
-      declared_modules,
-      package_targets,
-    )
-
-  Ok(ProjectContext(
-    sources:,
-    registry:,
-    type_info:,
-    stale_assumes:,
-    stale_returns_clauses:,
-    knowledge_base:,
-    catalog:,
-    dependencies: dep_sources,
-    field_index: package_field_index(dep_sources, index),
-    type_definitions:,
-    dep_files:,
-    local_packages: local,
-    placement_files: placement_files(dep_files, local),
-    typed_path_dependencies: list.reverse(typed_path_dependencies),
+  Ok(#(
+    ContextBase(
+      constructors:,
+      declared_modules:,
+      refused: reported,
+      context: ProjectContext(
+        sources:,
+        registry:,
+        type_info:,
+        stale_assumes:,
+        stale_returns_clauses:,
+        knowledge_base: kb_base,
+        catalog:,
+        dependencies: dep_sources,
+        field_index: package_field_index(dep_sources, index),
+        dep_files:,
+        local_packages: local,
+        placement_files: placement_files(dep_files, local),
+        typed_path_dependencies: list.reverse(typed_path_dependencies),
+        pair_readings: readings,
+        publishers:,
+        package_pairs:,
+        builds: case per_target {
+          True -> shared.builds
+          False -> no_package_builds()
+        },
+        per_target: [],
+        girard_runs: shared.girard,
+      ),
+    ),
+    Shared(
+      ..shared,
+      catalog: Some(parsed_catalog),
+      fallback_runs:,
+      publishers:,
+      pairs: Some(package_pairs),
+    ),
   ))
 }
 
@@ -1240,12 +2073,12 @@ fn native_functions_of(
   index: Dict(String, #(String, glance.Module)),
   package_targets: types.PackageTargets,
 ) -> fn(String) -> Result(Set(String), Nil) {
-  fn(module_path) {
-    dict.get(index, module_path)
-    |> result.map(fn(entry) {
+  // Each module's, read once for every line that asks.
+  let natives =
+    dict.map_values(index, fn(_module_path, entry) {
       checker.native_function_names(entry.1, package_targets)
     })
-  }
+  dict.get(natives, _)
 }
 
 // The spec's assume declarations minus the ones that declare nothing.
@@ -1343,7 +2176,6 @@ fn lint_context(context: ProjectContext) -> lint.Context {
     registry:,
     local_packages:,
     placement_files:,
-    type_definitions:,
     ..,
   ) = context
   lint.Context(
@@ -1359,10 +2191,8 @@ fn lint_context(context: ProjectContext) -> lint.Context {
       package_tree.is_complete(local_packages)
     },
     mode:,
-    resolve_bounds: {
-      let kinds = typedefs.kinds(type_definitions)
-      contract.resolve_bounds(_, registry, kinds)
-    },
+    resolve_bounds: contract.resolve_bounds(_, registry),
+    reader_view: consumer_view(context.pair_readings),
   )
 }
 
@@ -1412,7 +2242,7 @@ pub fn context_type_definitions(
   directory: String,
 ) -> Result(typedefs.TypeRegistry, GradedError) {
   use ctx <- result.map(load_project_context(directory, types.Inactive))
-  ctx.type_definitions
+  ctx.registry.types
 }
 
 // The directories whose `gleam.toml` the context assembled for `directory`
@@ -1443,13 +2273,20 @@ pub fn arbitration_baseline_answer(
   use catalog <- result.try(load_bundled_catalog(package_root, reading))
   let native_of = native_functions_of(index, cfg.targets)
   let local = package_tree.discover(package_root)
-  let scan = dependency_scan(package_root, local, cfg.targets)
+  let scan =
+    dependency_scan(
+      package_root,
+      local,
+      cfg.targets,
+      ParsedTree(files: dict.new(), dirs: dict.new()),
+      dict.new(),
+    )
   case
     arbitration_baseline(
       local,
       catalog_knowledge_base(package_root, catalog, scan, reading),
       scan,
-      build_project_registry(index),
+      build_project_registry(index, cfg.targets),
       spec,
       stale_project_assumes(spec, native_of),
       stale_project_assume_returns(spec, native_of),
@@ -1629,8 +2466,428 @@ fn project_answer(
   mode: types.LatMode,
 ) -> Result(EffectAnswer, GradedError) {
   use ctx <- result.try(load_project_context(directory, mode))
-  answer_from(ctx.knowledge_base, name)
+  case ctx.per_target {
+    [] -> {
+      let signature = function_signature(ctx, name)
+      let targets =
+        types.build_targets(ctx.sources.cfg.targets)
+        |> set.to_list
+        |> list.sort(string.compare)
+      case answer_from(ctx.knowledge_base, name) {
+        Ok(found) ->
+          Ok(case targets {
+            [target] ->
+              answer_in_published_names(signature, name, found, target)
+            _ -> found
+          })
+        Error(Nil) -> uncovered_answer(ctx.builds, signature, name, targets)
+      }
+    }
+    contexts -> per_target_answer(ctx, contexts, name)
+  }
   |> result.replace_error(EffectNotFound(name))
+}
+
+// One answer for `name` from each target's analysis. A target that builds a
+// public definition of the function and declares nothing for it reads
+// `[Unknown]`, as a call to it does there; a target that builds none adds
+// nothing. A name no target declares is no answer, unless a dependency's
+// line over it is not read on one of them because its package publishes for
+// other targets.
+fn per_target_answer(
+  ctx: ProjectContext,
+  contexts: List(#(String, ProjectContext)),
+  name: String,
+) -> Result(EffectAnswer, Nil) {
+  let signature = function_signature(ctx, name)
+  let read =
+    list.filter_map(contexts, fn(entry) {
+      let #(target, context) = entry
+      case answer_from(context.knowledge_base, name) {
+        Ok(found) ->
+          Ok(#(
+            target,
+            Some(answer_in_published_names(signature, name, found, target)),
+          ))
+        Error(Nil) ->
+          case builds_on(ctx.builds, signature, name, target) {
+            True -> Ok(#(target, None))
+            False -> Error(Nil)
+          }
+      }
+    })
+  let found =
+    list.filter_map(read, fn(entry) {
+      option.to_result(entry.1, Nil) |> result.map(fn(one) { #(entry.0, one) })
+    })
+  let undeclared =
+    list.filter_map(read, fn(entry) {
+      case entry.1 {
+        Some(_) -> Error(Nil)
+        None -> Ok(entry.0)
+      }
+    })
+  case found, undeclared {
+    [], _ -> uncovered_answer(ctx.builds, signature, name, undeclared)
+    [#(_, lead), ..rest], [] -> {
+      use <- bool.guard(
+        when: list.all(rest, fn(entry) { entry.1 == lead }),
+        return: Ok(lead),
+      )
+      Ok(joined_function_answer(ctx.builds, signature, name, lead, read))
+    }
+    [#(_, lead), ..], _ ->
+      case joined_function_answer(ctx.builds, signature, name, lead, read) {
+        answer.FunctionAnswer(source:, ..) as joined ->
+          Ok(
+            answer.FunctionAnswer(
+              ..joined,
+              source: answer.UndeclaredOn(
+                targets: undeclared,
+                declared: Some(source),
+              ),
+            ),
+          )
+        answer.TypeFieldAnswer(..) -> Error(Nil)
+      }
+  }
+}
+
+// `[Unknown]` for `name` on each of `targets` that builds a definition of the
+// dependency function its package's line is not read on, its package
+// publishing for other targets; no answer where there is none.
+fn uncovered_answer(
+  builds: PackageBuilds,
+  signature: FunctionSignature,
+  name: String,
+  targets: List(String),
+) -> Result(EffectAnswer, Nil) {
+  use #(module, _function) <- result.try(annotation.split_function_name(name))
+  case
+    list.filter(targets, fn(target) {
+      builds_on(builds, signature, name, target)
+      && uncovered_on(signature, target)
+    })
+  {
+    [] -> Error(Nil)
+    uncovered ->
+      Ok(answer.FunctionAnswer(
+        name:,
+        module:,
+        bounds: [],
+        term: effect_term.unknown(),
+        returns: None,
+        source: answer.UndeclaredOn(targets: uncovered, declared: None),
+      ))
+  }
+}
+
+// Whether the line a dependency's package publishes over the signature's
+// function is not read on `target`: a function it defines once per target,
+// published for targets that leave `target` out.
+fn uncovered_on(signature: FunctionSignature, target: String) -> Bool {
+  case signature {
+    DependencySignature(variants: [_, _, ..], publisher:) ->
+      !set.contains(types.build_targets(publisher), target)
+    DependencySignature(..) | ProjectSignature | NoSignature -> False
+  }
+}
+
+// The definitions a function name reads over: a module of this package's, or
+// a dependency's beside the targets its package publishes for.
+type FunctionSignature {
+  ProjectSignature
+  DependencySignature(
+    variants: List(glance.Definition(glance.Function)),
+    publisher: types.PackageTargets,
+  )
+  NoSignature
+}
+
+// The public definitions of `name`'s function, from this package's parse or
+// from the dependency module's source the scan read.
+fn function_signature(ctx: ProjectContext, name: String) -> FunctionSignature {
+  case annotation.split_function_name(name) {
+    Error(Nil) -> NoSignature
+    Ok(#(module_path, function)) ->
+      case dict.get(ctx.sources.index, module_path) {
+        Ok(_) -> ProjectSignature
+        Error(Nil) ->
+          case dict.get(ctx.dependencies.modules, module_path) {
+            Ok(ParsedModule(source_path:, ..)) ->
+              case read_and_parse_gleam_or_nil(source_path) {
+                Ok(module) ->
+                  DependencySignature(
+                    variants: public_variants(module, function),
+                    publisher: dependency_publisher(
+                      ctx,
+                      source_path,
+                      module_path,
+                    ),
+                  )
+                Error(Nil) -> NoSignature
+              }
+            Ok(UnreadableModule) | Error(Nil) -> NoSignature
+          }
+      }
+  }
+}
+
+// The targets the package of the dependency module at `source_path`
+// publishes for, as the run read them.
+fn dependency_publisher(
+  ctx: ProjectContext,
+  source_path: String,
+  module_path: String,
+) -> types.PackageTargets {
+  let root = dependency_root(source_path, module_path)
+  dict.get(ctx.publishers, root)
+  |> result.lazy_unwrap(fn() { publisher_targets(root) })
+}
+
+fn public_variants(
+  module: glance.Module,
+  function: String,
+) -> List(glance.Definition(glance.Function)) {
+  list.filter(module.functions, fn(definition) {
+    definition.definition.name == function
+    && definition.definition.publicity == glance.Public
+  })
+}
+
+// The package root a dependency module's source file sits under.
+fn dependency_root(source_path: String, module_path: String) -> String {
+  string.drop_end(
+    source_path,
+    string.length("/src/" <> module_path <> ".gleam"),
+  )
+}
+
+// The targets the package at `root` publishes its spec for.
+fn publisher_targets(root: String) -> types.PackageTargets {
+  case config.read(filepath.join(root, "gleam.toml")) {
+    Ok(cfg) -> cfg.targets
+    Error(_) -> types.DefaultedTargets
+  }
+}
+
+// Whether `target` builds a definition of the function `name`: one of the
+// package's own as the run's targets build it, a dependency's by its
+// definitions.
+fn builds_on(
+  builds: PackageBuilds,
+  signature: FunctionSignature,
+  name: String,
+  target: String,
+) -> Bool {
+  case signature {
+    ProjectSignature ->
+      case function_builds(builds, name) {
+        Ok(one) -> result.is_ok(list.key_find(one.built, target))
+        Error(Nil) -> False
+      }
+    DependencySignature(variants:, ..) ->
+      result.is_ok(built_variant(variants, target))
+    NoSignature -> False
+  }
+}
+
+// The definition `target` builds among `variants`.
+fn built_variant(
+  variants: List(glance.Definition(glance.Function)),
+  target: String,
+) -> Result(glance.Definition(glance.Function), Nil) {
+  extract.built_functions(variants, set.from_list([target]))
+  |> list.find(fn(definition) {
+    set.contains(
+      extract.compiled_targets(definition, set.from_list([target])),
+      target,
+    )
+  })
+}
+
+// A function answer joined from each target's, `lead` the first a target
+// declared, as `infer` publishes the name: over this package's published
+// parameters, or over those a dependency's package publishes in. A target
+// that builds the function and declares nothing contributes `[Unknown]` and no
+// returned operator. Any other answer is `lead`.
+fn joined_function_answer(
+  builds: PackageBuilds,
+  signature: FunctionSignature,
+  name: String,
+  lead: EffectAnswer,
+  read: List(#(String, Option(EffectAnswer))),
+) -> EffectAnswer {
+  case lead, answer_line(name, lead) {
+    answer.FunctionAnswer(returns:, ..), Ok(first) -> {
+      let joined =
+        list.filter_map(read, target_line(name, _))
+        |> signature_joined_line(builds, signature, name, first, _)
+      answer.FunctionAnswer(
+        ..lead,
+        bounds: joined.params,
+        term: joined.effects,
+        returns: case returns, joined.returns {
+          Some(returned), Some(operator) ->
+            Some(effects.ReturnedOperator(..returned, operator:))
+          _, _ -> None
+        },
+      )
+    }
+    _, _ -> lead
+  }
+}
+
+// One target's answer for `name` as the line stating it: `[Unknown]` and no
+// returned operator where the target declares nothing.
+fn target_line(
+  name: String,
+  entry: #(String, Option(EffectAnswer)),
+) -> Result(#(String, EffectAnnotation), Nil) {
+  case entry.1 {
+    Some(found) -> answer_line(name, found)
+    None ->
+      Ok(EffectAnnotation(
+        kind: types.Effects,
+        function: name,
+        params: [],
+        effects: effect_term.unknown(),
+        returns: None,
+      ))
+  }
+  |> result.map(fn(line) { #(entry.0, line) })
+}
+
+// Each target's line for `name` as one, over the parameters the signature
+// publishes, a function of the package's own read on the targets that build it
+// as `infer` publishes it; `first` where it names no definitions.
+fn signature_joined_line(
+  builds: PackageBuilds,
+  signature: FunctionSignature,
+  name: String,
+  first: EffectAnnotation,
+  lines: List(#(String, EffectAnnotation)),
+) -> EffectAnnotation {
+  case signature {
+    DependencySignature(..) ->
+      list.map(lines, fn(entry) { entry.1 })
+      |> checker.union_of_lines
+      |> result.unwrap(first)
+    ProjectSignature ->
+      case function_builds(builds, name) {
+        Ok(one) -> joined_built_line(one, first, lines)
+        Error(Nil) -> first
+      }
+    NoSignature -> first
+  }
+}
+
+// One target's answer for a dependency's function it defines once per target,
+// read in the parameter names of the definition `target` builds, as stated in
+// the names its package publishes in: its bounds, its term, and its returned
+// operator with the bounds that scope it.
+fn answer_in_published_names(
+  signature: FunctionSignature,
+  name: String,
+  found: EffectAnswer,
+  target: String,
+) -> EffectAnswer {
+  case signature, found {
+    DependencySignature(variants: [_, _, ..] as variants, publisher:),
+      answer.FunctionAnswer(bounds:, term:, returns:, ..)
+    ->
+      {
+        use definition <- result.try(built_variant(variants, target))
+        use to <- result.map(checker.publisher_parameters(variants, publisher))
+        // A line inferred over the dependency's source names its variables
+        // after the parameters of the variant read; a written line keeps its
+        // own. Each channel is read by its own origin: an answer's effects
+        // and the operator it returns can come from different sources.
+        let rebased = fn(inferred, params, term) {
+          case inferred {
+            True -> checker.rebased_inferred_line
+            False -> checker.rebased_line
+          }(
+            definition.definition.parameters,
+            to,
+            EffectAnnotation(
+              kind: types.Effects,
+              function: name,
+              params:,
+              effects: term,
+              returns: None,
+            ),
+          )
+        }
+        let line = rebased(inferred_summary(found), bounds, term)
+        answer.FunctionAnswer(
+          ..found,
+          bounds: line.params,
+          term: line.effects,
+          returns: option.map(returns, fn(returned) {
+            let inferred = case returned.source {
+              types.PathDependencyInferred(_) -> True
+              _ -> False
+            }
+            published_returns(returned, fn(params, term) {
+              rebased(inferred, params, term)
+            })
+          }),
+        )
+      }
+      |> result.unwrap(found)
+    _, _ -> found
+  }
+}
+
+// Whether an answer is inference over a spec-less path dependency's source.
+fn inferred_summary(found: EffectAnswer) -> Bool {
+  case found {
+    answer.FunctionAnswer(
+      source: answer.Entry(
+        entry: types.FunctionEntry(origin: types.PathDependencyInferred(_), ..),
+        ..,
+      ),
+      ..,
+    ) -> True
+    _ -> False
+  }
+}
+
+// A returned operator stated through `rebased`, with the bounds that scope it.
+fn published_returns(
+  returned: effects.ReturnedOperator,
+  rebased: fn(List(types.ParamBound), types.EffectTerm) -> EffectAnnotation,
+) -> effects.ReturnedOperator {
+  let #(scoping, rescoped) = case returned.summary {
+    effects.Declared(bounds:) -> #(bounds, effects.Declared)
+    effects.Closed(bounds:) -> #(bounds, effects.Closed)
+    effects.Fresh -> #([], fn(_) { effects.Fresh })
+  }
+  let clause = rebased(scoping, returned.operator)
+  effects.ReturnedOperator(
+    ..returned,
+    operator: clause.effects,
+    summary: rescoped(clause.params),
+  )
+}
+
+// A function answer as the `effects` line stating it.
+fn answer_line(
+  name: String,
+  found: EffectAnswer,
+) -> Result(EffectAnnotation, Nil) {
+  case found {
+    answer.FunctionAnswer(bounds:, term:, returns:, ..) ->
+      Ok(EffectAnnotation(
+        kind: types.Effects,
+        function: name,
+        params: bounds,
+        effects: term,
+        returns: option.map(returns, fn(returned) { returned.operator }),
+      ))
+    answer.TypeFieldAnswer(..) -> Error(Nil)
+  }
 }
 
 // Resolve `name` against one knowledge base. The function interpretation is
@@ -1894,7 +3151,7 @@ fn dependency_facts_for(
           module,
           package_targets,
         ),
-        callbacks: module_callback_params(module, parsed),
+        callbacks: module_callback_params(module, parsed, package_targets),
       )
     Error(Nil) -> none
   }
@@ -1976,7 +3233,7 @@ fn module_source_facts(
           #(module_path, checker.function_visibility(module)),
         ]),
         native: checker.native_function_names(module, package_targets),
-        callbacks: module_callback_params(module_path, module),
+        callbacks: module_callback_params(module_path, module, package_targets),
         producers: producer_names(module),
       )
     }
@@ -1990,10 +3247,12 @@ fn module_source_facts(
 fn module_callback_params(
   module_path: String,
   module: glance.Module,
+  package_targets: types.PackageTargets,
 ) -> Dict(QualifiedName, List(String)) {
-  signatures.callback_param_names(signatures.from_glance_module(
+  signatures.callback_param_names(built_registry(
     module_path,
     module,
+    package_targets,
   ))
 }
 
@@ -2075,7 +3334,14 @@ fn function_effect(
   // bounds included. A per-function bound from anywhere else was written over
   // a body the foreign implementation needn't match, exactly like the entry
   // beside it, so it is no more an answer here than that entry is.
-  let fallback_bounds = effects.fallback_param_bounds(knowledge_base, qualified)
+  let fallback_bounds =
+    effects.fallback_param_bounds(knowledge_base, qualified)
+    |> list.filter(fn(bound) {
+      !set.is_disjoint(
+        effect_term.free_vars(bound.effects),
+        effect_term.free_vars(charge.term),
+      )
+    })
   // A declaration this build reaches no part of accounts for none of the charge,
   // so the answer names neither it nor its source — the same clearing `check`
   // and `why` make when they charge the name. The lookup still holds the entry
@@ -2274,6 +3540,43 @@ pub fn run_why_with(
     return: Error(FunctionNotFound(name)),
   )
   use ctx <- result.try(project_context(sources))
+  why_in(ctx, module, module_path, function, name)
+}
+
+// `graded why` for each of `names`, against one project context.
+@internal
+pub fn run_why_each(
+  directory: String,
+  names: List(String),
+) -> Result(List(#(String, Result(String, GradedError))), GradedError) {
+  use sources <- result.try(load_project_sources(directory, types.Inactive))
+  use ctx <- result.map(project_context(sources))
+  list.map(names, fn(name) {
+    #(name, {
+      use #(module_path, function) <- result.try(
+        annotation.split_function_name(name)
+        |> result.replace_error(FunctionNotFound(name)),
+      )
+      use #(_gleam_path, module) <- result.try(
+        dict.get(sources.index, module_path)
+        |> result.replace_error(FunctionNotFound(name)),
+      )
+      use <- bool.guard(
+        when: !defines_function(module, function),
+        return: Error(FunctionNotFound(name)),
+      )
+      why_in(ctx, module, module_path, function, name)
+    })
+  })
+}
+
+fn why_in(
+  ctx: ProjectContext,
+  module: glance.Module,
+  module_path: String,
+  function: String,
+  name: String,
+) -> Result(String, GradedError) {
   // Straight from the spec's `check` lines rather than the per-module grouping
   // `run` builds, whose lists are prepend-reversed — the blocks are printed in
   // the order the spec declares them. A function with no line still gets one
@@ -2289,31 +3592,85 @@ pub fn run_why_with(
     [] -> [None]
     checks -> list.map(checks, Some)
   }
-  use explained <- result.map(
-    checker.explain(
-      module,
-      module_path,
-      function,
-      list.map(checks, check_bounds),
-      ctx.knowledge_base,
-      ctx.registry,
-      typeinfo.reading_for_module(ctx.type_info, module_path),
-      ctx.sources.cfg.targets,
-    )
-    |> result.replace_error(FunctionNotFound(name)),
+  // Explained on every target that builds the function, each in its own
+  // context, and stated once: the joined total, each contributor beside the
+  // targets it comes from.
+  let contexts = case ctx.per_target {
+    [] -> [#(None, ctx)]
+    contexts ->
+      list.filter_map(contexts, fn(entry) {
+        case reads_on(ctx.builds, name, entry.0) {
+          True -> Ok(#(Some(entry.0), entry.1))
+          False -> Error(Nil)
+        }
+      })
+  }
+  let explained =
+    list.filter_map(contexts, fn(entry) {
+      let #(target, ctx) = entry
+      // Read in the parameter names of the definition built on that target,
+      // and stated in the published ones.
+      let variant =
+        option.to_result(target, Nil)
+        |> result.try(checker.target_variant(module, function, _))
+      let bounds =
+        list.map(checks, fn(check) {
+          option.map(check, fn(line) {
+            case variant {
+              Ok(#(variants, definition)) ->
+                checker.in_variant_names(variants, definition, line)
+              Error(Nil) -> line
+            }
+          })
+          |> check_bounds
+        })
+      checker.explain(
+        module,
+        module_path,
+        function,
+        bounds,
+        ctx.knowledge_base,
+        ctx.registry,
+        typeinfo.reading_for_module(ctx.type_info, module_path),
+        ctx.sources.cfg.targets,
+      )
+      |> result.map(fn(explained) {
+        case variant {
+          Ok(#(variants, definition)) ->
+            checker.explained_in_published_names(
+              variants,
+              definition,
+              explained,
+            )
+          Error(Nil) -> explained
+        }
+      })
+      |> result.map(fn(result) { #(target, result) })
+    })
+  use <- bool.guard(
+    when: explained == [],
+    return: Error(FunctionNotFound(name)),
   )
-  let checker.ExplainResult(blocks:, classifications:) = explained
-  // One block per bounds set is `explain`'s contract, so a length mismatch is a
-  // broken invariant rather than a case to render: `strict_zip` makes it a crash
-  // here instead of blocks silently dropped from the output.
-  // nolint: assert_ok_pattern -- a broken invariant, not an error to handle
-  let assert Ok(zipped) = list.strict_zip(checks, blocks)
-    as "explain returns one block per bounds set"
+  let classifications =
+    list.flat_map(explained, fn(entry) { { entry.1 }.classifications })
+    |> list.unique
   let rendered =
-    list.map(zipped, fn(pair) {
-      let #(check, checker.ExplainedBlock(bounds:, total:, explanations:)) =
-        pair
-      why_block(name, check, bounds, total, explanations)
+    list.index_map(checks, fn(check, index) {
+      let blocks =
+        list.filter_map(explained, fn(entry) {
+          list.drop({ entry.1 }.blocks, index)
+          |> list.first
+          |> result.map(fn(block) { #(entry.0, block) })
+        })
+      why_block(
+        name,
+        check,
+        list.flat_map(blocks, fn(entry) { { entry.1 }.bounds }) |> list.unique,
+        effect_term.normalize(
+          types.TUnion(list.map(blocks, fn(entry) { { entry.1 }.total })),
+        ),
+        list.map(blocks, fn(entry) { #(entry.0, { entry.1 }.explanations) }),
+      )
     })
   // After the blocks and once, not per block: the resolutions are a property of
   // the body, which every block explains the same one of.
@@ -2322,6 +3679,7 @@ pub fn run_why_with(
     checks -> list.append(rendered, [typed_resolution_block(checks)])
   }
   |> string.join("\n\n")
+  |> Ok
 }
 
 // What girard resolved each ambiguous call in the body to, beside what graded
@@ -2357,6 +3715,35 @@ fn check_bounds(check: Option(EffectAnnotation)) -> List(types.ParamBound) {
   }
 }
 
+// Each target's lines joined in order, each beside the targets that state it:
+// the `n`th time a target states a line is the `n`th time the join does.
+fn joined_by_target(
+  per_target: List(#(Option(String), List(String))),
+) -> List(#(String, List(String))) {
+  let #(order, tags) =
+    list.fold(per_target, #([], dict.new()), fn(acc, entry) {
+      let #(target, lines) = entry
+      let #(acc, _seen) =
+        list.fold(lines, #(acc, dict.new()), fn(state, line) {
+          let #(#(order, tags), seen) = state
+          let nth = dict.get(seen, line) |> result.unwrap(0)
+          let key = #(line, nth)
+          let order = case dict.has_key(tags, key) {
+            True -> order
+            False -> [key, ..order]
+          }
+          let tags =
+            dict.upsert(tags, key, fn(existing) {
+              list.append(option.unwrap(existing, []), option.values([target]))
+            })
+          #(#(order, tags), dict.insert(seen, line, nth + 1))
+        })
+      acc
+    })
+  list.reverse(order)
+  |> list.map(fn(key) { #(key.0, dict.get(tags, key) |> result.unwrap([])) })
+}
+
 // One `check` line's explanation: the function's total effect, the declaration
 // the analysis ran under, and its contributors. `bounds` are the ones the walk
 // actually substituted — declared plus synthesised — as `explain` returned
@@ -2369,7 +3756,7 @@ fn why_block(
   check: Option(EffectAnnotation),
   bounds: List(types.ParamBound),
   total: types.EffectTerm,
-  explanations: List(types.CallExplanation),
+  per_target: List(#(Option(String), List(types.CallExplanation))),
 ) -> String {
   // The sentence `graded effect` states a total in, bounds included, so the two
   // commands describe one function's effects in one wording — a total that is
@@ -2385,11 +3772,22 @@ fn why_block(
   }
   // Not "makes no calls": a caller of a pure local helper does call something —
   // the helper contributes no effects, so nothing of it is reached.
-  let lines = case explanations {
+  // Each target's contributors in order, where the package was read on several
+  // one at a time: a line every target states as often is stated once, beside
+  // the targets it comes from.
+  let joined =
+    list.map(per_target, fn(entry) {
+      #(entry.0, list.map(entry.1, checker.format_call_explanation))
+    })
+    |> joined_by_target
+  let lines = case joined {
     [] -> ["  has no reachable effect contributors"]
-    explanations ->
-      list.map(explanations, fn(explanation) {
-        "  " <> checker.format_call_explanation(explanation)
+    joined ->
+      list.map(joined, fn(entry) {
+        case entry.1 {
+          [] -> "  " <> entry.0
+          on -> "  " <> entry.0 <> " (on " <> string.join(on, ", ") <> ")"
+        }
       })
   }
   list.flatten([[header], declaration, lines])
@@ -2439,7 +3837,20 @@ pub fn catalog_show(
 pub fn run_coverage(directory: String) -> Result(String, GradedError) {
   use ctx <- result.map(load_project_context(directory, types.Inactive))
   let rows = context_classification_checks(ctx)
-  let ProjectContext(sources:, type_info:, typed_path_dependencies:, ..) = ctx
+  let ProjectContext(sources:, typed_path_dependencies:, ..) = ctx
+  // Where the package was read on several targets one at a time, what girard
+  // read of it on all of them, merged from the runs each target shared.
+  let type_info = case ctx.per_target {
+    [] -> ctx.type_info
+    _ ->
+      type_index(
+        sources.index,
+        ctx.dep_files,
+        sources.cfg.targets,
+        dependency_target_variants(sources.index, ctx.dependencies),
+        ctx.girard_runs,
+      )
+  }
   let package_root = sources.package_root
   let modules = package_modules(sources)
   let unread = unread_modules(modules, type_info)
@@ -2811,56 +4222,384 @@ fn read_bundled_catalog(
 }
 
 // How the specs other packages wrote, and the bundled catalog, are read in a
-// run: under its latent-effect rules, refusing a line whose bounds those rules
-// forbid once the run's signatures and types are known.
+// run: a line whose bounds the latent-effect rules forbid, once the run's
+// signatures and types are known, is refused.
 fn spec_reading(
   mode: types.LatMode,
   registry: SignatureRegistry,
-  type_definitions: typedefs.TypeRegistry,
+  readings: Dict(#(String, String), PairReading),
 ) -> effects.SpecReading {
-  let kinds = typedefs.kinds(type_definitions)
-  effects.SpecReading(mode:, refuses: fn(assume) {
-    contract.line_violations(assume, registry, kinds) != []
+  effects.SpecReading(
+    mode:,
+    refuses: fn(assume) { contract.line_violations(assume, registry) != [] },
+    rebase: fn(source, file) { rebased_pair_lines(file, readings, source) },
+  )
+}
+
+// The project's own lines over a function a dependency defines once per
+// target, in the variant the run builds, as the dependency's own lines are;
+// each of `refused` stands in as `assume <path> : [_]`.
+fn rebased_consumer_lines(
+  spec: GradedFile,
+  readings: Dict(#(String, String), PairReading),
+  refused: List(OwnViolation),
+) -> GradedFile {
+  rebased_pair_lines(spec, readings, effects.ConsumerLines)
+  |> annotation.replace_lines_by_path(
+    list.filter_map(refused, fn(violation) {
+      annotation.blocker_for_path(violation.path) |> option.to_result(Nil)
+    }),
+  )
+}
+
+// One of the project's own `assume` lines as the run reads it: in the variant
+// the run builds where it is over a function a dependency defines once per
+// target, as written otherwise.
+fn consumer_view(
+  readings: Dict(#(String, String), PairReading),
+) -> fn(types.AssumeAnnotation) -> checker.ReaderView {
+  fn(assume: types.AssumeAnnotation) {
+    case assume.target {
+      types.FunctionAssume(name:) ->
+        case dict.get(readings, #(assume.module, name)) {
+          Ok(PairReading(parameters: Ok(#(from, to)), ..)) ->
+            checker.rebased_assume_view(from, to, assume)
+          _ -> checker.as_written(assume)
+        }
+      types.ModuleAssume -> checker.as_written(assume)
+    }
+  }
+}
+
+// How a run reads a line over a function a dependency defines once per
+// target: from the parameters the dependency publishes in, those of the
+// variant its own target configuration selects, to those of the variant the
+// run builds, beside whether that configuration covers the run's targets.
+type PairReading {
+  PairReading(
+    covered: Bool,
+    parameters: Result(
+      #(List(glance.FunctionParameter), List(glance.FunctionParameter)),
+      Nil,
+    ),
+  )
+}
+
+// The targets each package holding a module that defines a public function
+// once per target publishes for, by package root, beside `known`: each
+// package's configuration is read once per run.
+fn publisher_configurations(
+  dependencies: DependencySources,
+  known: Dict(String, types.PackageTargets),
+) -> Dict(String, types.PackageTargets) {
+  use acc, module_path, scanned <- dict.fold(dependencies.modules, known)
+  case scanned {
+    ParsedModule(pairs:, source_path:, ..) ->
+      case dict.is_empty(pairs) {
+        True -> acc
+        False -> {
+          let root = dependency_root(source_path, module_path)
+          case dict.has_key(acc, root) {
+            True -> acc
+            False -> dict.insert(acc, root, publisher_targets(root))
+          }
+        }
+      }
+    UnreadableModule -> acc
+  }
+}
+
+// Every public function a dependency module defines once per target, by
+// module path and name, with how a run on `reader` reads a line over it, its
+// package's targets read from `publishers`.
+fn pair_readings(
+  dependencies: DependencySources,
+  reader: types.PackageTargets,
+  publishers: Dict(String, types.PackageTargets),
+) -> Dict(#(String, String), PairReading) {
+  use acc, module_path, scanned <- dict.fold(dependencies.modules, dict.new())
+  case scanned {
+    ParsedModule(pairs:, source_path:, ..) ->
+      case dict.is_empty(pairs) {
+        True -> acc
+        False -> {
+          let root = dependency_root(source_path, module_path)
+          let publisher =
+            dict.get(publishers, root)
+            |> result.lazy_unwrap(fn() { publisher_targets(root) })
+          let covered =
+            set.is_subset(
+              types.build_targets(reader),
+              types.build_targets(publisher),
+            )
+          use acc, name, variants <- dict.fold(pairs, acc)
+          let parameters = {
+            use from <- result.try(checker.publisher_parameters(
+              variants,
+              publisher,
+            ))
+            use to <- result.map(checker.reader_parameters(variants, reader))
+            #(from, to)
+          }
+          dict.insert(
+            acc,
+            #(module_path, name),
+            PairReading(covered:, parameters:),
+          )
+        }
+      }
+    UnreadableModule -> acc
+  }
+}
+
+// The lines `source` wrote over a function a dependency defines once per
+// target, moved from the parameters the dependency publishes in to those of
+// the variant the run builds, each through `checker.rebased_line` or
+// `checker.rebased_assume`. A line the dependency's own spec states describes
+// only the variants that package was read on: a run on a target its
+// configuration does not cover drops it, and the function answers as one
+// nothing declares.
+fn rebased_pair_lines(
+  file: GradedFile,
+  readings: Dict(#(String, String), PairReading),
+  source: effects.LineSource,
+) -> GradedFile {
+  use <- bool.guard(when: dict.is_empty(readings), return: file)
+  let read = fn(line, module_path, name, rebased) {
+    case dict.get(readings, #(module_path, name)), source {
+      Error(Nil), _ -> Ok(line)
+      Ok(PairReading(covered: False, ..)), effects.DependencySpecLines ->
+        Error(Nil)
+      Ok(PairReading(parameters: Ok(#(from, to)), ..)), _ ->
+        Ok(rebased(from, to))
+      Ok(PairReading(parameters: Error(Nil), ..)), _ -> Ok(line)
+    }
+  }
+  GradedFile(
+    lines: list.filter_map(file.lines, fn(line) {
+      case line {
+        AnnotationLine(annotation: ann, ..) ->
+          case annotation.split_function_name(ann.function) {
+            Ok(#(module_path, name)) ->
+              read(line, module_path, name, fn(from, to) {
+                AnnotationLine(
+                  ..line,
+                  annotation: checker.rebased_line(from, to, ann),
+                )
+              })
+            Error(Nil) -> Ok(line)
+          }
+        types.AssumeLine(
+          assume: types.AssumeAnnotation(
+            module:,
+            target: types.FunctionAssume(name:),
+            ..,
+          ) as assume,
+          ..,
+        ) ->
+          read(line, module, name, fn(from, to) {
+            types.AssumeLine(
+              ..line,
+              assume: checker.rebased_assume(from, to, assume),
+            )
+          })
+        _ -> Ok(line)
+      }
+    }),
+  )
+}
+
+// One of the project's own `assume` lines whose bounds the latent-effect rules
+// forbid: its place in the spec, its path, the statement as written and what
+// it breaks, stated in the line's own names.
+type OwnViolation {
+  OwnViolation(line: Int, path: String, statement: String, description: String)
+}
+
+// The project's own `assume` lines whose bounds the latent-effect rules forbid
+// once kinds are known, each read as the run reads it: in the variant the run
+// builds where it is over a function a dependency defines once per target.
+// Only the first where `first_only`: a run alone on its targets stops on it.
+// Each is quoted from its own place in the spec, read once where any is
+// found.
+fn own_contract_violations(
+  spec: GradedFile,
+  spec_text: String,
+  readings: Dict(#(String, String), PairReading),
+  registry: SignatureRegistry,
+  first_only: Bool,
+) -> List(OwnViolation) {
+  let in_reader_variant = consumer_view(readings)
+  let finding = fn(entry: #(types.GradedLine, Int)) {
+    case entry.0 {
+      types.AssumeLine(assume:, ..) -> {
+        let view = in_reader_variant(assume)
+        case contract.line_violations(view.line, registry) {
+          [] -> Error(Nil)
+          [violation, ..] ->
+            Ok(#(
+              entry.1,
+              assume,
+              contract.stated_in(violation, view.parameter, view.variable)
+                |> contract.describe,
+            ))
+        }
+      }
+      _ -> Error(Nil)
+    }
+  }
+  let entries = list.index_map(spec.lines, fn(line, index) { #(line, index) })
+  let found = case first_only {
+    True ->
+      list.find_map(entries, finding)
+      |> result.map(list.wrap)
+      |> result.unwrap([])
+    False -> list.filter_map(entries, finding)
+  }
+  // Each quoted from its own place in the spec, in one pass over it.
+  let statements = case found {
+    [] -> []
+    _ -> annotation.statements_at(spec_text, list.map(found, fn(one) { one.0 }))
+  }
+  list.zip(found, statements)
+  |> list.map(fn(pair) {
+    let #(#(line, assume, description), statement) = pair
+    let statement = case statement {
+      Some(#(line_number, text)) -> int.to_string(line_number) <> ": " <> text
+      None -> annotation.format_assume(assume)
+    }
+    OwnViolation(
+      line:,
+      path: annotation.assume_name(assume),
+      statement:,
+      description:,
+    )
   })
 }
 
-// The project's own spec under the latent-effect rules: a line whose bounds
-// the rules forbid, once kinds are known, is an error naming the line.
-fn validate_own_contracts(
-  mode: types.LatMode,
-  spec: GradedFile,
-  spec_text: String,
+// What one of several runs reports of the lines it refused: those over
+// functions it builds a definition of, or that no target of the run builds. A
+// line over a function only another target builds is refused here, and the
+// verdict on it is the other targets'.
+fn reported_refusals(
+  refused: List(OwnViolation),
+  builds: PackageBuilds,
+  dependencies: DependencySources,
+  package_targets: types.PackageTargets,
+) -> List(OwnViolation) {
+  list.filter(refused, fn(violation) {
+    reads_line_on(builds, dependencies, violation.path, package_targets)
+  })
+}
+
+// The error a run on one target reports for the first of its own lines it
+// cannot read.
+fn own_contract_error(
   spec_path: String,
-  registry: SignatureRegistry,
-  type_definitions: typedefs.TypeRegistry,
+  violations: List(OwnViolation),
 ) -> Result(Nil, GradedError) {
-  use <- bool.guard(when: mode == types.Inactive, return: Ok(Nil))
-  let kinds = typedefs.kinds(type_definitions)
-  let first =
-    annotation.extract_assumes(spec)
-    |> list.find_map(fn(assume) {
-      case contract.line_violations(assume, registry, kinds) {
-        [] -> Error(Nil)
-        [violation, ..] -> Ok(#(assume, violation))
-      }
-    })
-  case first {
-    Error(Nil) -> Ok(Nil)
-    Ok(#(assume, violation)) -> {
-      let statement = case
-        annotation.statement_at(
-          spec_text,
-          "assume",
-          annotation.assume_name(assume),
-        )
-      {
-        Some(#(line_number, text)) -> int.to_string(line_number) <> ": " <> text
-        None -> annotation.format_assume(assume)
-      }
+  case violations {
+    [] -> Ok(Nil)
+    [first, ..] ->
       Error(GradedParseError(
         path: spec_path,
-        message: statement <> "\n  " <> contract.describe(violation),
+        message: first.statement <> "\n  " <> first.description,
       ))
+  }
+}
+
+// What runs on several targets one at a time do with the project's own lines
+// some of them refused, each beside the target that refused it, weighed on the
+// targets that read each line, `readers` of its path: a line every one of them
+// refused is an error naming them, and one only some refused is read on the
+// others, with a warning naming the ones that did not.
+fn settle_own_refusals(
+  spec_path: String,
+  refused: List(#(String, List(OwnViolation))),
+  readers: fn(String) -> List(String),
+) -> Result(Nil, GradedError) {
+  let by_line =
+    list.fold(refused, dict.new(), fn(acc, entry) {
+      let #(target, violations) = entry
+      list.fold(violations, acc, fn(acc, violation) {
+        dict.upsert(acc, violation.line, fn(existing) {
+          list.append(option.unwrap(existing, []), [#(target, violation)])
+        })
+      })
+    })
+  let lines =
+    dict.to_list(by_line)
+    |> list.sort(fn(left, right) { int.compare(left.0, right.0) })
+    |> list.map(fn(entry) { entry.1 })
+  let everywhere =
+    list.find(lines, fn(refusals) {
+      case refusals {
+        [] -> False
+        [#(_, first), ..] ->
+          list.length(
+            list.unique(list.map(refusals, fn(refusal) { refusal.0 })),
+          )
+          == list.length(readers(first.path))
+      }
+    })
+  case everywhere {
+    Ok([#(_, first), ..] as refusals) ->
+      Error(GradedParseError(
+        path: spec_path,
+        message: first.statement <> explained_refusals(refusals),
+      ))
+    _ -> {
+      list.each(lines, fn(refusals) {
+        case refusals {
+          [] -> Nil
+          [#(_, first), ..] ->
+            warn_own_refusal(spec_path, readers(first.path), refusals)
+        }
+      })
+      Ok(Nil)
+    }
+  }
+}
+
+// What each target refusing a line found, once per distinct finding, beside
+// the targets that found it.
+fn explained_refusals(refusals: List(#(String, OwnViolation))) -> String {
+  list.fold(refusals, [], fn(acc: List(#(String, List(String))), refusal) {
+    let #(target, violation) = refusal
+    case list.key_find(acc, violation.description) {
+      Ok(on) ->
+        list.key_set(acc, violation.description, list.append(on, [target]))
+      Error(Nil) -> list.append(acc, [#(violation.description, [target])])
+    }
+  })
+  |> list.map(fn(entry) {
+    "\n  " <> entry.0 <> " (on " <> string.join(entry.1, ", ") <> ")"
+  })
+  |> string.concat
+}
+
+// The warning for one line some of `targets` refused and the others read.
+fn warn_own_refusal(
+  spec_path: String,
+  targets: List(String),
+  refusals: List(#(String, OwnViolation)),
+) -> Nil {
+  case refusals {
+    [] -> Nil
+    [#(_, first), ..] -> {
+      let refusing = list.unique(list.map(refusals, fn(refusal) { refusal.0 }))
+      let reading =
+        list.filter(targets, fn(target) { !list.contains(refusing, target) })
+      io.println_error(
+        spec_path
+        <> ": warning: "
+        <> first.statement
+        <> explained_refusals(refusals)
+        <> "\n  the line is not read on "
+        <> string.join(refusing, ", ")
+        <> ", and is read on "
+        <> string.join(reading, ", "),
+      )
     }
   }
 }
@@ -3388,11 +5127,31 @@ fn build_project_field_index(
 // when the caller passes positional (unlabeled) arguments.
 fn build_project_registry(
   index: Dict(String, #(String, glance.Module)),
+  package_targets: types.PackageTargets,
 ) -> SignatureRegistry {
   dict.fold(index, signatures.empty(), fn(acc, module_path, entry) {
     let #(_gleam_path, module) = entry
-    signatures.merge(acc, signatures.from_glance_module(module_path, module))
+    signatures.merge(acc, built_registry(module_path, module, package_targets))
   })
+}
+
+// `module`'s signatures as its package builds them: a name defined once per
+// target is read off the definitions built on `package_targets`.
+fn built_registry(
+  module_path: String,
+  module: glance.Module,
+  package_targets: types.PackageTargets,
+) -> SignatureRegistry {
+  signatures.from_glance_module(
+    module_path,
+    glance.Module(
+      ..module,
+      functions: extract.built_functions(
+        module.functions,
+        types.declaration_targets(package_targets),
+      ),
+    ),
+  )
 }
 
 // Build a package-wide map keyed by `#(defining module, name)` from a per-module
@@ -3440,28 +5199,25 @@ pub fn build_type_index(
   dep_files: Dict(String, String),
   package_targets: types.PackageTargets,
 ) -> typeinfo.TypeInfo {
-  type_index_on_targets(
-    index,
-    dep_files,
-    girard_targets(package_targets, index_entries(index)),
-  )
+  type_index(index, dep_files, package_targets, set.new(), dict.new())
 }
 
-// The same inference over a target list the caller decided, for the modules
-// whose own `@target` gating does not decide it. A dependency's retained
-// fallback bodies are read on the targets the package under analysis is read
-// on: a `@target(javascript)` function anywhere in `gleam/string` is not a
-// reason to type an Erlang project's dependencies twice.
-fn type_index_on_targets(
+// The same, with the targets the dependency modules the package reaches read
+// differently on.
+fn type_index(
   index: Dict(String, #(String, glance.Module)),
   dep_files: Dict(String, String),
-  targets: List(girard.Target),
+  package_targets: types.PackageTargets,
+  dependency_variants: Set(String),
+  done: GirardRuns,
 ) -> typeinfo.TypeInfo {
-  annotate_on_targets(
+  annotate_with_runs(
     index_entries(index),
     build_girard_resolver(index, dep_files),
-    targets,
+    run_targets(package_targets, index_entries(index), dependency_variants),
+    done,
   )
+  |> typeinfo.on_declared_targets(types.declaration_targets(package_targets))
 }
 
 fn index_entries(
@@ -3472,6 +5228,22 @@ fn index_entries(
     let #(module_path, #(_gleam_path, module)) = pair
     #(module_path, module)
   })
+}
+
+// girard's results for a package, by the target each run was made on.
+type GirardRuns =
+  Dict(String, Dict(String, girard.ModuleResult))
+
+fn girard_run(
+  entries: List(#(String, glance.Module)),
+  resolver: fn(String) -> Result(String, Nil),
+  target: girard.Target,
+) -> Dict(String, girard.ModuleResult) {
+  let options =
+    girard.default_options()
+    |> girard.with_target(target)
+    |> girard.with_resolver(resolver)
+  girard.annotate_package(entries, options)
 }
 
 // The whole package annotated once per target and merged per module: the
@@ -3493,31 +5265,44 @@ pub fn annotate_on_targets(
   resolver: fn(String) -> Result(String, Nil),
   targets: List(girard.Target),
 ) -> typeinfo.TypeInfo {
+  annotate_with_runs(entries, resolver, targets, dict.new())
+}
+
+// The same, reusing any run `done` already holds for a target.
+fn annotate_with_runs(
+  entries: List(#(String, glance.Module)),
+  resolver: fn(String) -> Result(String, Nil),
+  targets: List(girard.Target),
+  done: GirardRuns,
+) -> typeinfo.TypeInfo {
   let modules = dict.from_list(entries)
   let runs =
     list.map(targets, fn(target) {
-      let options =
-        girard.default_options()
-        |> girard.with_target(target)
-        |> girard.with_resolver(resolver)
-      #(target, girard.annotate_package(entries, options))
+      case dict.get(done, typeinfo.target_name(target)) {
+        Ok(results) -> #(target, results)
+        Error(Nil) -> #(target, girard_run(entries, resolver, target))
+      }
     })
   case runs {
     [] -> typeinfo.none()
     [#(primary_target, primary_results), ..secondary_runs] -> {
-      let readings =
+      let primaries =
         dict.to_list(primary_results)
         |> list.filter_map(fn(pair) {
           let #(module_path, module_result) = pair
           use module <- result.map(dict.get(modules, module_path))
           #(
             module_path,
-            merged_reading(
-              primary_reading(module_result, module, primary_target),
-              module,
-              module_path,
-              secondary_runs,
-            ),
+            module,
+            primary_reading(module_result, module, primary_target),
+          )
+        })
+      let readings =
+        list.map(primaries, fn(entry) {
+          let #(module_path, module, primary) = entry
+          #(
+            module_path,
+            merged_reading(primary, module, module_path, secondary_runs),
           )
         })
       typeinfo.from_modules(
@@ -3530,8 +5315,57 @@ pub fn annotate_on_targets(
           |> set.drop(dict.keys(primary_results)),
         unfilled_modules(dict.keys(primary_results), secondary_runs),
       )
+      |> typeinfo.with_target_types(target_types(
+        primaries,
+        primary_target,
+        secondary_runs,
+      ))
     }
   }
+}
+
+// Each run's own reading of every module's expression types, where more than
+// one target was run. A run that returned no result for a module types
+// nothing in it.
+fn target_types(
+  primaries: List(#(String, glance.Module, typeinfo.ModuleReading)),
+  primary_target: girard.Target,
+  secondary_runs: List(#(girard.Target, Dict(String, girard.ModuleResult))),
+) -> Dict(String, List(typeinfo.TargetTypes)) {
+  use <- bool.guard(when: secondary_runs == [], return: dict.new())
+  list.fold(primaries, dict.new(), fn(acc, entry) {
+    let #(module_path, _module, primary) = entry
+    let secondaries =
+      list.map(secondary_runs, fn(run) {
+        let #(target, results) = run
+        case dict.get(results, module_path) {
+          Ok(module_result) ->
+            typeinfo.TargetTypes(
+              target: typeinfo.target_name(target),
+              expressions: typeinfo.span_types(module_result),
+              dropped: typeinfo.holes(
+                list.map(module_result.annotated.dropped, fn(definition) {
+                  #(definition.span.start, definition.span.end)
+                }),
+              ),
+            )
+          Error(Nil) ->
+            typeinfo.TargetTypes(
+              target: typeinfo.target_name(target),
+              expressions: dict.new(),
+              dropped: typeinfo.holes([]),
+            )
+        }
+      })
+    dict.insert(acc, module_path, [
+      typeinfo.TargetTypes(
+        target: typeinfo.target_name(primary_target),
+        expressions: primary.expressions,
+        dropped: typeinfo.holes(set.to_list(primary.evidence.dropped)),
+      ),
+      ..secondaries
+    ])
+  })
 }
 
 // The primary run's reading of one module with every secondary run's folded
@@ -3581,13 +5415,14 @@ fn primary_reading(
 ) -> typeinfo.ModuleReading {
   typeinfo.ModuleReading(
     expressions: typeinfo.span_types(module_result),
-    fn_typed: fn_typed_params_from_schemes(module_result, module),
+    fn_typed: fn_typed_params_from_schemes(module_result, module, target),
     evidence: typeinfo.evidence_of(
       module_result,
       checker.error_bucket,
       module,
       target,
     ),
+    by_target: [],
   )
 }
 
@@ -3616,34 +5451,67 @@ fn secondary_reading(
 
 // The targets girard is run on, primary first: `girard_target`'s choice, then
 // the other target when some *function* in the package is gated to it by
-// `@target`. A package with no such function runs once and pays nothing.
+// `@target`, or when the package is read on the other target too and one name
+// of its own constants, type aliases or custom types, or a definition a
+// dependency module it imports exposes through its public interface, is
+// defined once for each target. A package with none of these runs once and
+// pays nothing.
 //
-// A constant does not trigger a run. graded classifies no constant and a
-// constant holds no call, and a constant gated to the other target can be
-// referenced only from a function gated the same way, which triggers the run by
-// itself. A package whose only gated definition is a constant therefore runs
-// once, and that constant stays left out of every run.
+// A definition gated to the other target alone can be read only from code
+// gated the same way, which triggers the run by itself. A pair can be read from
+// ungated code and types it differently on each target: a constant or alias
+// directly, a custom type through its fields and constructors.
 @internal
 pub fn girard_targets(
   package_targets: types.PackageTargets,
   entries: List(#(String, glance.Module)),
+) -> List(girard.Target) {
+  run_targets(package_targets, entries, set.new())
+}
+
+fn run_targets(
+  package_targets: types.PackageTargets,
+  entries: List(#(String, glance.Module)),
+  dependency_variants: Set(String),
 ) -> List(girard.Target) {
   let primary = girard_target(package_targets)
   let other = case primary {
     girard.Erlang -> girard.JavaScript
     girard.JavaScript -> girard.Erlang
   }
-  let gated_to_other =
+  let other_name = typeinfo.target_name(other)
+  let function_gated =
     list.any(entries, fn(entry) {
-      list.any({ entry.1 }.functions, fn(definition) {
-        extract.compiled_targets(definition, types.every_target())
-        == set.from_list([typeinfo.target_name(other)])
-      })
+      list.any({ entry.1 }.functions, gated_alone_to(_, other_name))
     })
-  case gated_to_other {
+  let read_on_other =
+    set.contains(types.declaration_targets(package_targets), other_name)
+  let pair_gated =
+    read_on_other
+    && {
+      set.contains(dependency_variants, other_name)
+      || list.any(entries, fn(entry) {
+        let module = entry.1
+        list.contains(
+          paired_targets(module.constants, fn(definition) {
+            definition.definition.name
+          }),
+          other_name,
+        )
+        || list.any(paired_type_names(module, read_any, read_any), fn(pair) {
+          pair.0 == other_name
+        })
+      })
+    }
+  case function_gated || pair_gated {
     True -> [primary, other]
     False -> [primary]
   }
+}
+
+fn gated_alone_to(definition: glance.Definition(a), target: String) -> Bool {
+  extract.compiled_targets(definition, types.every_target())
+  == set.from_list([target])
 }
 
 // The one target girard is run on. Gleam compiles a whole build for a single
@@ -3665,13 +5533,19 @@ pub fn girard_target(package_targets: types.PackageTargets) -> girard.Target {
 // parameter names for each function — including parameters with no syntactic
 // `fn(...)` annotation, which the glance-only detection misses. A parameter is
 // function-typed when its inferred type (positional in the function's `Fn`
-// type) is itself a `Fn`.
+// type) is itself a `Fn`. A name defined once per target is read off the
+// definition `target` builds, which is the one girard typed.
 fn fn_typed_params_from_schemes(
   module_result: girard.ModuleResult,
   module: glance.Module,
+  target: girard.Target,
 ) -> Dict(String, Set(String)) {
   let function_map =
-    list.fold(module.functions, dict.new(), fn(acc, definition) {
+    extract.built_functions(
+      module.functions,
+      set.from_list([typeinfo.target_name(target)]),
+    )
+    |> list.fold(dict.new(), fn(acc, definition) {
       dict.insert(acc, definition.definition.name, definition.definition)
     })
   list.fold(module_result.annotated.functions, dict.new(), fn(acc, entry) {
@@ -3961,10 +5835,29 @@ type InferState {
     registry: SignatureRegistry,
     type_info: typeinfo.TypeInfo,
     dependencies: DependencySources,
-    type_definitions: typedefs.TypeRegistry,
     knowledge_base: KnowledgeBase,
     public_annotations: List(EffectAnnotation),
     cache_files: List(CacheFile),
+  )
+}
+
+// What one target's run hands the join of several: its lines and cache files,
+// and the spec lines it found stale.
+type TargetLines {
+  TargetLines(
+    public_annotations: List(EffectAnnotation),
+    cache_files: List(CacheFile),
+    stale_assumes: Set(String),
+    stale_returns_clauses: Set(String),
+  )
+}
+
+fn target_lines(state: InferState) -> TargetLines {
+  TargetLines(
+    public_annotations: state.public_annotations,
+    cache_files: state.cache_files,
+    stale_assumes: state.stale_assumes,
+    stale_returns_clauses: state.stale_returns_clauses,
   )
 }
 
@@ -3974,26 +5867,254 @@ fn infer_state(
   directory: String,
   mode: types.LatMode,
 ) -> Result(InferState, GradedError) {
+  infer_runs(directory, mode, False) |> result.map(fn(runs) { runs.0 })
+}
+
+// The inference run behind `compute_infer`, beside each target's own run where
+// the package was read on several one at a time and `keep` asks for them;
+// none otherwise.
+fn infer_runs(
+  directory: String,
+  mode: types.LatMode,
+  keep: Bool,
+) -> Result(#(InferState, List(#(String, InferState))), GradedError) {
   // A package has one spec file, so a scoped `infer` is a whole-package `infer`:
   // a spec written from a subtree's modules alone would state the package's
   // public surface wrongly rather than partially.
   let directory = source_scope(directory).analysed
   use cfg <- result.try(read_config(directory))
+  use #(targets, shared) <- result.try(case named_targets(cfg) {
+    [_, _, ..] -> {
+      use index <- result.map(project_index(directory))
+      target_split(directory, cfg, index)
+    }
+    _ -> Ok(#([], no_sharing()))
+  })
+  case targets {
+    [] ->
+      infer_state_on(directory, cfg, mode, shared, False)
+      |> result.map(fn(run) { #(run.0, []) })
+    [first, ..rest] -> {
+      use #(state, first_refused, shared) <- result.try(infer_state_on(
+        directory,
+        on_target(cfg, first),
+        mode,
+        shared,
+        True,
+      ))
+      // Unless `keep` asks for every run, only the latest is held whole; each
+      // earlier one keeps what the join reads of it.
+      let kept = fn(target, state) {
+        case keep {
+          True -> [#(target, state)]
+          False -> []
+        }
+      }
+      use #(last, earlier, runs, refused, _shared) <- result.try(
+        list.try_fold(
+          rest,
+          #(
+            #(first, state),
+            [],
+            kept(first, state),
+            [#(first, first_refused)],
+            shared,
+          ),
+          fn(acc, target) {
+            let #(#(previous, state), earlier, runs, refused, shared) = acc
+            use #(next, next_refused, shared) <- result.map(infer_state_on(
+              directory,
+              on_target(cfg, target),
+              mode,
+              shared,
+              True,
+            ))
+            #(
+              #(target, next),
+              [#(previous, target_lines(state)), ..earlier],
+              list.append(runs, kept(target, next)),
+              [#(target, next_refused), ..refused],
+              shared,
+            )
+          },
+        ),
+      )
+      use Nil <- result.map(
+        settle_own_refusals(cfg.spec_file, list.reverse(refused), line_builders(
+          shared.builds,
+          last.1.dependencies,
+          _,
+        )),
+      )
+      #(
+        joined_infer_state(cfg, last, list.reverse(earlier), shared.builds),
+        runs,
+      )
+    }
+  }
+}
+
+// One inference run on `cfg`'s targets as they stand, reusing what `shared`
+// holds and handing on what it adds.
+fn infer_state_on(
+  directory: String,
+  cfg: config.GradedConfig,
+  mode: types.LatMode,
+  shared: Shared,
+  per_target: Bool,
+) -> Result(#(InferState, List(OwnViolation), Shared), GradedError) {
+  use #(base, shared) <- result.try(infer_base(
+    directory,
+    cfg,
+    mode,
+    shared,
+    per_target,
+  ))
+  Ok(#(
+    infer_fold(base, cfg.targets, base.registry, base.type_info),
+    base.refused,
+    shared,
+  ))
+}
+
+// What the runs of one package on its targets, one at a time, compute once:
+// only what is built from inputs that are the same on every target.
+//
+// - `index`: the package's own modules, parsed.
+// - `parsed`: every dependency module, parsed.
+// - `girard`: girard's runs over the package, by girard target.
+// - `catalog`: the bundled catalog, selected and parsed.
+// - `scanned`: what the dependency scan derives from a module that reads no
+//   target, by source path.
+// - `fallback_runs`: girard's runs, by girard target, over every dependency
+//   module whose fallback bodies some target walks.
+// - `publishers`: the targets each dependency package defining a public
+//   function once per target publishes for, by package root.
+// - `pairs`: each of the package's modules' functions defined once per
+//   target.
+// - `tree`: the local packages and the module files of the dependency tree.
+// - `split`: whether runs on other targets share these.
+type Shared {
+  Shared(
+    index: Option(Dict(String, #(String, glance.Module))),
+    tree: Option(#(LocalPackages, Dict(String, String))),
+    parsed: ParsedSources,
+    parsed_dirs: Dict(String, List(String)),
+    girard: GirardRuns,
+    catalog: Option(effects.ParsedCatalog),
+    scanned: Dict(String, ScannedModule),
+    fallback_runs: GirardRuns,
+    publishers: Dict(String, types.PackageTargets),
+    pairs: Option(PackagePairs),
+    builds: PackageBuilds,
+    split: Bool,
+  )
+}
+
+fn no_sharing() -> Shared {
+  Shared(
+    index: None,
+    parsed: dict.new(),
+    parsed_dirs: dict.new(),
+    girard: dict.new(),
+    catalog: None,
+    scanned: dict.new(),
+    fallback_runs: dict.new(),
+    publishers: dict.new(),
+    pairs: None,
+    builds: no_package_builds(),
+    tree: None,
+    split: False,
+  )
+}
+
+// The local packages under `package_root` and its dependency tree's module
+// files, or the ones `shared` already holds.
+fn shared_tree(
+  shared: Shared,
+  package_root: String,
+) -> #(LocalPackages, Dict(String, String)) {
+  case shared.tree {
+    Some(tree) -> tree
+    None -> {
+      let local = package_tree.discover(package_root)
+      #(local, tree_module_files(package_root, local))
+    }
+  }
+}
+
+// The bundled catalog selected for the package under `package_root` and
+// parsed, or the one `shared` already holds.
+fn shared_catalog(
+  shared: Shared,
+  package_root: String,
+  mode: types.LatMode,
+) -> Result(effects.ParsedCatalog, GradedError) {
+  case shared.catalog {
+    Some(catalog) -> Ok(catalog)
+    None -> {
+      use catalog_files <- result.map(locate_bundled_catalog())
+      effects.parse_project_catalog(
+        catalog_files,
+        manifest_path(package_root),
+        mode,
+      )
+    }
+  }
+}
+
+// The targets the package names, sorted, where it names them.
+fn named_targets(cfg: config.GradedConfig) -> List(String) {
+  case cfg.targets {
+    types.NamedTargets(targets:) ->
+      set.to_list(targets) |> list.sort(string.compare)
+    types.DefaultedTargets -> []
+  }
+}
+
+// Everything an inference run builds before it walks the package's modules:
+// the knowledge base every module starts from, save the layers that read which
+// of the package's own functions are foreign code and what its factories build,
+// which `infer_fold` adds for the targets it walks on.
+type InferBase {
+  InferBase(
+    directory: String,
+    cfg: config.GradedConfig,
+    spec_on_disk: String,
+    spec: GradedFile,
+    stale_assumes: Set(String),
+    stale_returns_clauses: Set(String),
+    index: Dict(String, #(String, glance.Module)),
+    registry: SignatureRegistry,
+    type_info: typeinfo.TypeInfo,
+    dependencies: DependencySources,
+    dep_files: Dict(String, String),
+    knowledge_base: KnowledgeBase,
+    constructors: Dict(#(String, String), List(Option(String))),
+    declared_modules: Set(String),
+    sorted: List(String),
+    // The project's own lines this run refused, where it is one of several.
+    refused: List(OwnViolation),
+  )
+}
+
+fn infer_base(
+  directory: String,
+  cfg: config.GradedConfig,
+  mode: types.LatMode,
+  shared: Shared,
+  per_target: Bool,
+) -> Result(#(InferBase, Shared), GradedError) {
   let package_root = resolve_package_root(directory)
-  use catalog_files <- result.try(locate_bundled_catalog())
   // As in `project_context`: parsed first, read once signatures are known.
-  let parsed_catalog =
-    effects.parse_project_catalog(
-      catalog_files,
-      manifest_path(package_root),
-      mode,
-    )
+  use parsed_catalog <- result.try(shared_catalog(shared, package_root, mode))
   use #(spec_on_disk, spec) <- result.try(read_spec_on_disk(cfg.spec_file, mode))
   let declared_modules = annotation.module_assume_modules(spec)
 
-  use gleam_files <- result.try(find_gleam_files(directory))
-  use parsed <- result.try(parse_all_files(gleam_files))
-  let index = build_module_index(parsed, directory)
+  use index <- result.try(case shared.index {
+    Some(index) -> Ok(index)
+    None -> project_index(directory)
+  })
   // As in `project_context`: one target set for the package and every
   // dependency it is built with.
   let package_targets = cfg.targets
@@ -4006,34 +6127,69 @@ fn infer_state(
   // above `kb_base` because the builders below consume it; it needs only
   // `index`/`package_root`.
   // As in `project_context`: one walk of the tree for the run.
-  let local = package_tree.discover(package_root)
-  let scan = dependency_scan(package_root, local, package_targets)
+  let #(local, dep_files) = shared_tree(shared, package_root)
+  let scan =
+    dependency_scan(
+      package_root,
+      local,
+      package_targets,
+      ParsedTree(files: shared.parsed, dirs: shared.parsed_dirs),
+      shared.scanned,
+    )
   let dep_sources = scan.sources
-  let project_registry = build_project_registry(index)
+  let project_registry = build_project_registry(index, package_targets)
   let registry =
     signatures.merge(dependency_registry(dep_sources), project_registry)
   let type_definitions =
     build_type_definitions(index, dep_sources, package_targets)
-  // As in `project_context`: the own spec's contracts are weighed once kinds
-  // are known, and other packages' specs are read under the same rules.
-  use Nil <- result.try(validate_own_contracts(
-    mode,
-    spec,
-    spec_on_disk,
-    cfg.spec_file,
-    registry,
-    type_definitions,
-  ))
-  let reading = spec_reading(mode, registry, type_definitions)
+  let registry = signatures.with_types(registry, type_definitions)
+  // As in `project_context`: one table for the run, the own spec's contracts
+  // weighed as the run reads them once kinds are known, and other packages'
+  // specs read under the same rules.
+  let publishers = publisher_configurations(dep_sources, shared.publishers)
+  let readings = pair_readings(dep_sources, package_targets, publishers)
+  let refused = case mode {
+    types.Active ->
+      own_contract_violations(
+        spec,
+        spec_on_disk,
+        readings,
+        registry,
+        !per_target,
+      )
+    types.Inactive -> []
+  }
+  use Nil <- result.try(case per_target {
+    False -> own_contract_error(cfg.spec_file, refused)
+    True -> Ok(Nil)
+  })
+  let reported =
+    reported_refusals(refused, shared.builds, dep_sources, cfg.targets)
+  let reading = spec_reading(mode, registry, readings)
   let catalog = effects.read_parsed_catalog(parsed_catalog, reading)
-  // As in `project_context`: one dependency scan for the run.
-  let dep_files = tree_module_files(package_root, local)
-  let type_info = build_type_index(index, dep_files, package_targets)
+  let registry = signatures.with_shapes(registry, set.new())
+  let type_info =
+    type_index(
+      index,
+      dep_files,
+      package_targets,
+      dependency_target_variants(index, dep_sources),
+      shared.girard,
+    )
+  let girard_targets =
+    run_targets(
+      package_targets,
+      index_entries(index),
+      dependency_target_variants(index, dep_sources),
+    )
   // As in `project_context`: one map for the run, not one per module.
-  let constructors = package_constructors(index, dep_sources)
+  let constructors = package_constructors(index, dep_sources, package_targets)
 
   // As in `project_context`: read once, for the run and for the baseline.
   let catalog_kb = catalog_knowledge_base(package_root, catalog, scan, reading)
+  // The project's own lines over a function a dependency defines once per
+  // target, in the variant this run builds.
+  let reading_spec = rebased_consumer_lines(spec, readings, refused)
   let kb_base =
     catalog_kb
     |> effects.with_dependency_foreign(dependency_foreign(dep_sources))
@@ -4044,13 +6200,13 @@ fn infer_state(
     // Consumer externals are applied before path-dep inference so a module-level
     // external governs a path dependency's module during that dep's own
     // inference, not only at the final lookup.
-    |> with_spec_assumes(spec, stale_assumes)
+    |> with_spec_assumes(reading_spec, stale_assumes)
     // Declared returns are state no inference pass re-derives. Without them the
     // walk of a caller's body writes `[Unknown]` where `check` scores the same
     // body from the declaration, and the two commands disagree about it — so
     // they are folded here, at the point `check` folds them, ahead of the
     // path-dep pass whose own inference reads them too.
-    |> with_spec_declared_returns(spec, stale_returns_clauses)
+    |> with_spec_declared_returns(reading_spec, stale_returns_clauses)
     |> with_builders(index, dep_sources, package_targets, constructors)
     |> with_tree_baseline(index, scan, package_targets)
   // As in `project_context`: read once, and handed to both passes that weigh
@@ -4070,37 +6226,31 @@ fn infer_state(
         catalog_kb,
         scan,
         project_registry,
-        spec,
+        reading_spec,
         stale_assumes,
         stale_returns_clauses,
         package_targets,
       ),
       registry,
       reading,
+      dep_sources,
     )
-  let kb_base =
+  // As in `project_context`: after every layer that can key a dependency name,
+  // and before this package's own inference reads the summaries; the type
+  // fields first, in reach of the fallback walk, which resolves a dependency
+  // body's field calls through these lines.
+  let #(kb_base, fallback_runs) =
     kb_base
-    // As in `project_context`: in reach of the fallback walk below, which
-    // resolves a dependency body's field calls through these lines.
     |> with_spec_type_fields(spec)
-    // As in `project_context`: after every layer that can key a dependency name,
-    // and before this package's own inference reads the summaries.
     |> with_dependency_fallback_effects(
       dep_files,
       retained,
       typed_dep_modules,
       registry,
       package_targets,
-      type_info.targets,
+      girard_targets,
+      fallback_typing(shared, dep_sources, retained),
     )
-    |> effects.with_foreign_functions(project_foreign_functions(
-      index,
-      package_targets,
-    ))
-
-  let base_kb =
-    kb_base
-    |> with_project_factories(index, package_targets, constructors)
 
   let graph = build_dependency_graph(index)
   use sorted <- result.try(
@@ -4110,7 +6260,66 @@ fn infer_state(
       CyclicImports(modules: nodes)
     }),
   )
+  Ok(#(
+    InferBase(
+      directory:,
+      cfg:,
+      spec_on_disk:,
+      spec:,
+      stale_assumes:,
+      stale_returns_clauses:,
+      index:,
+      registry:,
+      type_info:,
+      dependencies: dep_sources,
+      dep_files:,
+      knowledge_base: kb_base,
+      constructors:,
+      declared_modules:,
+      sorted:,
+      refused: reported,
+    ),
+    Shared(
+      ..shared,
+      index: Some(index),
+      catalog: Some(parsed_catalog),
+      fallback_runs:,
+      publishers:,
+    ),
+  ))
+}
 
+// The package's modules walked on `package_targets`, against `base`'s knowledge
+// base with the package's own foreign functions and factories read on those
+// targets, `registry` and `type_info`.
+fn infer_fold(
+  base: InferBase,
+  package_targets: types.PackageTargets,
+  registry: SignatureRegistry,
+  type_info: typeinfo.TypeInfo,
+) -> InferState {
+  let InferBase(
+    directory:,
+    cfg:,
+    spec_on_disk:,
+    spec:,
+    stale_assumes:,
+    stale_returns_clauses:,
+    index:,
+    dependencies: dep_sources,
+    constructors:,
+    declared_modules:,
+    sorted:,
+    ..,
+  ) = base
+  let base_kb =
+    base.knowledge_base
+    |> effects.with_package_targets(package_targets)
+    |> effects.with_foreign_functions(project_foreign_functions(
+      index,
+      package_targets,
+    ))
+    |> with_project_factories(index, package_targets, constructors)
   let #(knowledge_base, public_annotations, cache_files) =
     list.fold(sorted, #(base_kb, [], []), fn(state, module_path) {
       let #(kb, acc, cache_acc) = state
@@ -4144,7 +6353,7 @@ fn infer_state(
       }
     })
 
-  Ok(InferState(
+  InferState(
     source_directory: directory,
     cfg:,
     spec_on_disk:,
@@ -4155,11 +6364,188 @@ fn infer_state(
     registry:,
     type_info:,
     dependencies: dep_sources,
-    type_definitions:,
     knowledge_base:,
     public_annotations:,
     cache_files: list.reverse(cache_files),
-  ))
+  )
+}
+
+// girard's run of the package on each of `targets`, made once for every
+// target's own analysis to share: each of them reads the same sources and
+// dependencies, so each would make the same runs.
+fn shared_girard_runs(
+  index: Dict(String, #(String, glance.Module)),
+  dep_files: Dict(String, String),
+  targets: List(String),
+) -> GirardRuns {
+  let entries = index_entries(index)
+  let resolver = build_girard_resolver(index, dep_files)
+  list.filter_map(targets, fn(target) {
+    use run_target <- result.map(case target {
+      "erlang" -> Ok(girard.Erlang)
+      "javascript" -> Ok(girard.JavaScript)
+      _ -> Error(Nil)
+    })
+    #(target, girard_run(entries, resolver, run_target))
+  })
+  |> dict.from_list
+}
+
+// Every module of the package under `directory`, parsed, by module path.
+fn project_index(
+  directory: String,
+) -> Result(Dict(String, #(String, glance.Module)), GradedError) {
+  use gleam_files <- result.try(find_gleam_files(directory))
+  use parsed <- result.map(parse_all_files(gleam_files))
+  build_module_index(parsed, directory)
+}
+
+// `cfg` read on `target` alone.
+fn on_target(cfg: config.GradedConfig, target: String) -> config.GradedConfig {
+  config.GradedConfig(
+    ..cfg,
+    targets: types.NamedTargets(set.from_list([target])),
+  )
+}
+
+// Each target's inference joined into one: every public function's line and
+// cache line read over its published parameters and joined; the rest as the
+// first target's run left it, beside every target's own run.
+fn joined_infer_state(
+  cfg: config.GradedConfig,
+  last: #(String, InferState),
+  earlier: List(#(String, TargetLines)),
+  builds: PackageBuilds,
+) -> InferState {
+  let #(last_target, state) = last
+  let lines = list.append(earlier, [#(last_target, target_lines(state))])
+  InferState(
+    ..state,
+    cfg:,
+    stale_assumes: list.fold(earlier, state.stale_assumes, fn(acc, entry) {
+      set.intersection(acc, { entry.1 }.stale_assumes)
+    }),
+    stale_returns_clauses: list.fold(
+      earlier,
+      state.stale_returns_clauses,
+      fn(acc, entry) {
+        set.intersection(acc, { entry.1 }.stale_returns_clauses)
+      },
+    ),
+    public_annotations: joined_lines(
+      builds,
+      list.map(lines, fn(entry) { #(entry.0, { entry.1 }.public_annotations) }),
+      fn(function) { annotation.split_function_name(function) },
+    ),
+    cache_files: joined_cache_files(builds, cfg.cache_dir, lines),
+  )
+}
+
+// One line per function across the targets' lines, in the order the targets
+// first state each function. `locate` splits a line's function into its module
+// path and bare name.
+fn joined_lines(
+  builds: PackageBuilds,
+  per_target: List(#(String, List(EffectAnnotation))),
+  locate: fn(String) -> Result(#(String, String), Nil),
+) -> List(EffectAnnotation) {
+  let #(order, grouped) =
+    list.fold(per_target, #([], dict.new()), fn(acc, entry) {
+      let #(target, lines) = entry
+      list.fold(lines, acc, fn(acc, line) {
+        let #(order, grouped) = acc
+        let order = case dict.has_key(grouped, line.function) {
+          True -> order
+          False -> [line.function, ..order]
+        }
+        #(
+          order,
+          dict.upsert(grouped, line.function, fn(existing) {
+            [#(target, line), ..option.unwrap(existing, [])]
+          }),
+        )
+      })
+    })
+  list.reverse(order)
+  |> list.filter_map(fn(function) {
+    use lines <- result.try(dict.get(grouped, function))
+    let lines = list.reverse(lines)
+    case lines {
+      [] -> Error(Nil)
+      [#(_, single)] -> Ok(single)
+      [#(_, first), ..] ->
+        Ok(joined_line(builds, function, first, lines, locate))
+    }
+  })
+}
+
+// One function's lines from several targets as one line, read on the targets
+// that build it over the published parameters of its definitions.
+fn joined_line(
+  builds: PackageBuilds,
+  function: String,
+  first: EffectAnnotation,
+  lines: List(#(String, EffectAnnotation)),
+  locate: fn(String) -> Result(#(String, String), Nil),
+) -> EffectAnnotation {
+  {
+    use #(module_path, name) <- result.try(locate(function))
+    use by_name <- result.try(dict.get(builds.functions, module_path))
+    use one <- result.map(dict.get(by_name, name))
+    joined_built_line(one, first, lines)
+  }
+  |> result.unwrap(first)
+}
+
+// Each module's cache file joined across the targets, line by line.
+fn joined_cache_files(
+  builds: PackageBuilds,
+  cache_dir: String,
+  states: List(#(String, TargetLines)),
+) -> List(CacheFile) {
+  let #(order, files) =
+    list.fold(states, #([], dict.new()), fn(acc, entry) {
+      let #(target, state) = entry
+      list.fold(state.cache_files, acc, fn(acc, cache) {
+        let #(order, files) = acc
+        let order = case dict.has_key(files, cache.path) {
+          True -> order
+          False -> [cache.path, ..order]
+        }
+        let lines =
+          list.filter_map(cache.file.lines, fn(line) {
+            case line {
+              AnnotationLine(annotation, _) -> Ok(annotation)
+              _ -> Error(Nil)
+            }
+          })
+        #(
+          order,
+          dict.upsert(files, cache.path, fn(existing) {
+            list.append(option.unwrap(existing, []), [#(target, lines)])
+          }),
+        )
+      })
+    })
+  list.reverse(order)
+  |> list.filter_map(fn(path) {
+    use per_target <- result.map(dict.get(files, path))
+    let module_path =
+      path
+      |> string.drop_start(
+        string.length(filepath.join(cache_dir, "_")) - string.length("_"),
+      )
+      |> string.drop_end(string.length(".graded"))
+    CacheFile(
+      path:,
+      file: GradedFile(
+        lines: joined_lines(builds, per_target, fn(name) {
+          Ok(#(module_path, name))
+        })
+        |> list.map(AnnotationLine(_, [])),
+      ),
+    )
+  })
 }
 
 // Infer effects for a single module. Public annotations come back qualified
@@ -4375,16 +6761,31 @@ fn with_module_fallback_effects(
   reading: typeinfo.ModuleReading,
   package_targets: types.PackageTargets,
 ) -> KnowledgeBase {
-  fold_fallback_summaries(
-    knowledge_base,
-    module_path,
-    checker.fallback_effects(
-      module,
-      module_path,
+  let knowledge_base =
+    fold_fallback_summaries(
       knowledge_base,
-      registry,
-      reading,
-      package_targets,
+      module_path,
+      checker.fallback_effects(
+        module,
+        module_path,
+        knowledge_base,
+        registry,
+        reading,
+        package_targets,
+      ),
+    )
+  effects.with_fallback_operators(
+    knowledge_base,
+    qualify_bare_names(
+      checker.fallback_operators(
+        module,
+        module_path,
+        knowledge_base,
+        registry,
+        reading,
+        package_targets,
+      ),
+      module_path,
     ),
   )
 }
@@ -4495,6 +6896,19 @@ fn public_function_names(module: glance.Module) -> set.Set(String) {
 // knowledge base. Nothing is read from the spec's committed `effects` lines and
 // nothing is written.
 
+// Every public function's line as `infer` would write it under the given
+// latent-effect reading, sorted, without writing anything.
+@internal
+pub fn inferred_lines_with(
+  directory: String,
+  mode: types.LatMode,
+) -> Result(List(String), GradedError) {
+  use state <- result.map(infer_state(directory, mode))
+  state.public_annotations
+  |> list.map(annotation.format_annotation)
+  |> list.sort(string.compare)
+}
+
 // One package's census.
 @internal
 pub type CensusRoot {
@@ -4509,9 +6923,44 @@ pub type CensusRoot {
   )
 }
 
+// The verdicts and unknown sources are read on each target's own run, where
+// the package was read on several one at a time, and joined as `check` and
+// `why` join them.
 @internal
 pub fn census_root(directory: String) -> Result(CensusRoot, GradedError) {
-  use state <- result.map(infer_state(directory, types.Inactive))
+  use #(state, runs) <- result.map(infer_runs(directory, types.Inactive, True))
+  let InferState(cfg:, index:, public_annotations:, ..) = state
+  let builds = case runs {
+    [] -> no_package_builds()
+    runs -> package_builds(index, list.map(runs, fn(entry) { entry.0 }))
+  }
+  let runs = case runs {
+    [] -> [#(None, state)]
+    runs -> list.map(runs, fn(entry) { #(Some(entry.0), entry.1) })
+  }
+  CensusRoot(
+    answers: public_annotations,
+    unknown_sources: list.filter_map(public_annotations, fn(ann) {
+      census_unknown_sources(ann, index, runs, builds)
+    }),
+    violations: target_reports(
+      cfg.spec_file,
+      list.map(runs, fn(entry) {
+        #(entry.0, census_check_results(entry.1, entry.0, builds))
+      }),
+    )
+      |> list.flat_map(fn(report) { report.violations }),
+  )
+}
+
+// Every `check` line's verdict against one run's knowledge base, the spec's
+// field findings first; on `target`, each read in the parameter names of the
+// definition built there and stated in the published ones.
+fn census_check_results(
+  state: InferState,
+  target: Option(String),
+  builds: PackageBuilds,
+) -> List(CheckResult) {
   let InferState(
     source_directory:,
     cfg:,
@@ -4521,15 +6970,21 @@ pub fn census_root(directory: String) -> Result(CensusRoot, GradedError) {
     type_info:,
     dependencies:,
     knowledge_base:,
-    public_annotations:,
     ..,
   ) = state
   let parsed =
     dict.values(index)
     |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+  let pairs = case target {
+    Some(_) -> package_pairs(index)
+    None -> no_package_pairs()
+  }
   let #(results, field_report) =
     check_modules(
-      spec,
+      case target {
+        Some(target) -> spec_on_target(spec, pairs, builds, target)
+        None -> spec
+      },
       parsed,
       parsed,
       source_directory,
@@ -4539,48 +6994,74 @@ pub fn census_root(directory: String) -> Result(CensusRoot, GradedError) {
       type_info,
       cfg.targets,
     )
-  let module_violations =
-    list.flat_map(results, fn(result) { module_report(result).violations })
-  let spec_findings =
-    list.map(field_report.spec_findings, checker.format_finding(
-      cfg.spec_file,
-      _,
-    ))
-  CensusRoot(
-    answers: public_annotations,
-    unknown_sources: list.filter_map(public_annotations, fn(ann) {
-      census_unknown_sources(ann, index, state)
-    }),
-    violations: list.append(spec_findings, module_violations),
-  )
+  let results = case target {
+    Some(target) -> in_published_names(results, pairs, target)
+    None -> results
+  }
+  case field_report.spec_findings {
+    [] -> results
+    findings -> [
+      CheckResult(file: cfg.spec_file, violations: [], findings:, warnings: []),
+      ..results
+    ]
+  }
 }
 
 // The contributors to one public answer that `why` lists with an `Unknown` in
-// them, under no bounds; `Error(Nil)` where there are none.
+// them, under no bounds, on every run that builds the function, each stated in
+// the published parameter names; `Error(Nil)` where there are none.
 fn census_unknown_sources(
   ann: EffectAnnotation,
   index: Dict(String, #(String, glance.Module)),
-  state: InferState,
+  runs: List(#(Option(String), InferState)),
+  builds: PackageBuilds,
 ) -> Result(#(String, List(types.CallExplanation)), Nil) {
   use #(module_path, function) <- result.try(annotation.split_function_name(
     ann.function,
   ))
   use #(_gleam_path, module) <- result.try(dict.get(index, module_path))
-  use explained <- result.try(checker.explain(
-    module,
-    module_path,
-    function,
-    [[]],
-    state.knowledge_base,
-    state.registry,
-    typeinfo.reading_for_module(state.type_info, module_path),
-    state.cfg.targets,
-  ))
   let explanations =
-    list.flat_map(explained.blocks, fn(block) { block.explanations })
+    list.filter(runs, fn(entry) {
+      case entry.0 {
+        Some(target) -> reads_on(builds, ann.function, target)
+        None -> True
+      }
+    })
+    |> list.flat_map(fn(entry) {
+      let #(target, state) = entry
+      let variant =
+        option.to_result(target, Nil)
+        |> result.try(checker.target_variant(module, function, _))
+      checker.explain(
+        module,
+        module_path,
+        function,
+        [[]],
+        state.knowledge_base,
+        state.registry,
+        typeinfo.reading_for_module(state.type_info, module_path),
+        state.cfg.targets,
+      )
+      |> result.map(fn(explained) {
+        case variant {
+          Ok(#(variants, definition)) ->
+            checker.explained_in_published_names(
+              variants,
+              definition,
+              explained,
+            )
+          Error(Nil) -> explained
+        }
+      })
+      |> result.map(fn(explained) {
+        list.flat_map(explained.blocks, fn(block) { block.explanations })
+      })
+      |> result.unwrap([])
+    })
     |> list.filter(fn(explanation) {
       types.contains_unknown(explanation.actual)
     })
+    |> list.unique
   use <- bool.guard(when: explanations == [], return: Error(Nil))
   Ok(#(ann.function, explanations))
 }
@@ -4789,6 +7270,16 @@ type ScannedModule {
     // Its custom types and type aliases in full: every variant's fields and
     // generic parameters.
     type_definitions: typedefs.TypeRegistry,
+    // The targets a definition its public interface may read is kept on
+    // alone, so that girard types the interface differently there.
+    target_variants: Set(String),
+    // Each public function it defines once per target, beside all of its
+    // definitions: what a line its package published over the name is read
+    // through.
+    pairs: Dict(String, List(glance.Definition(glance.Function))),
+    // Each public function some definition of which is kept on some targets
+    // alone, beside all of its definitions: which targets build it.
+    gated: Dict(String, List(glance.Definition(glance.Function))),
   )
   // The file would not read or parse. Recorded rather than dropped so it
   // shadows any copy of the path scanned before it, and contributes nothing in
@@ -4852,12 +7343,20 @@ fn dependency_factories(
 fn package_constructors(
   index: Dict(String, #(String, glance.Module)),
   dep_sources: DependencySources,
+  package_targets: types.PackageTargets,
 ) -> Dict(#(String, String), List(Option(String))) {
   dict.merge(
     dependency_constructors(dep_sources),
     dict.fold(index, dict.new(), fn(acc, module_path, entry) {
       let #(_gleam_path, module) = entry
-      dict.merge(acc, extract.constructor_registry(module_path, module))
+      dict.merge(
+        acc,
+        extract.constructor_registry(
+          module_path,
+          module,
+          types.declaration_targets(package_targets),
+        ),
+      )
     }),
   )
 }
@@ -4923,24 +7422,27 @@ fn with_dependency_fallback_effects(
   registry: SignatureRegistry,
   package_targets: types.PackageTargets,
   targets: List(girard.Target),
-) -> KnowledgeBase {
-  use <- bool.guard(when: dict.is_empty(retained), return: knowledge_base)
+  typing: FallbackTyping,
+) -> #(KnowledgeBase, GirardRuns) {
+  use <- bool.guard(when: dict.is_empty(retained), return: #(
+    knowledge_base,
+    typing.runs,
+  ))
   // A module the path-dependency pass already typed keeps that reading rather
   // than paying for a second run of its own.
   let untyped =
     dict.filter(retained, fn(_module_path, module) {
       !dict.has_key(typed, module.source_path)
     })
-  let readings =
-    fallback_readings(dep_files, untyped, targets)
-    |> dict.merge(typed)
+  let #(fresh, runs) = fallback_readings(dep_files, untyped, targets, typing)
+  let readings = dict.merge(fresh, typed)
   let #(ordered, cyclic) = dependency_walk_order(retained)
   // A cycle member's body is never walked, but its callback shape is still
   // recorded beside the `[Unknown]` an unwalked body carries.
   let knowledge_base =
     list.fold(cyclic, knowledge_base, fn(kb, entry) {
       let #(module_path, retained) = entry
-      case read_and_parse_gleam_or_nil(retained.source_path) {
+      case parsed_source(typing.parsed, retained.source_path) {
         Error(Nil) -> kb
         Ok(module) ->
           fold_fallback_summaries(
@@ -4953,11 +7455,12 @@ fn with_dependency_fallback_effects(
           )
       }
     })
+  use <- pair_with(runs)
   use kb, #(module_path, retained) <- list.fold(ordered, knowledge_base)
   // A re-parse that fails is the `UnreadableModule` case one stage later: the
   // module is skipped, and its externals keep the `[Unknown]` an unwalked body
   // carries.
-  case read_and_parse_gleam_or_nil(retained.source_path) {
+  case parsed_source(typing.parsed, retained.source_path) {
     Error(Nil) -> kb
     Ok(module) ->
       fold_fallback_summaries(
@@ -4994,23 +7497,154 @@ fn fallback_readings(
   dep_files: Dict(String, String),
   retained: Dict(String, RetainedModule),
   targets: List(girard.Target),
-) -> Dict(String, typeinfo.ModuleReading) {
-  use <- bool.guard(when: dict.is_empty(retained), return: dict.new())
-  let index =
-    dict.fold(retained, dict.new(), fn(acc, module_path, module) {
-      case read_and_parse_gleam_or_nil(module.source_path) {
-        Error(Nil) -> acc
-        Ok(parsed) ->
-          dict.insert(acc, module_path, #(module.source_path, parsed))
+  typing: FallbackTyping,
+) -> #(Dict(String, typeinfo.ModuleReading), GirardRuns) {
+  use <- bool.guard(when: dict.is_empty(retained), return: #(
+    dict.new(),
+    typing.runs,
+  ))
+  let index = parsed_retained(retained, typing.parsed)
+  // girard's runs, by target, over every module some target walks: a run on
+  // another target reads its own modules' results from the same runs. A run
+  // whose runs no other target shares types its own modules alone.
+  let union = case typing.shared {
+    True -> dict.merge(parsed_retained(typing.union, typing.parsed), index)
+    False -> index
+  }
+  let runs =
+    list.fold(targets, typing.runs, fn(runs, target) {
+      let name = typeinfo.target_name(target)
+      case dict.has_key(runs, name) {
+        True -> runs
+        False -> {
+          dict.insert(
+            runs,
+            name,
+            girard_run(
+              index_entries(union),
+              build_girard_resolver(union, dep_files),
+              target,
+            ),
+          )
+        }
       }
     })
-  let type_info = type_index_on_targets(index, dep_files, targets)
-  use acc, module_path, #(source_path, _module) <- dict.fold(index, dict.new())
-  dict.insert(
-    acc,
-    source_path,
-    typeinfo.reading_for_module(type_info, module_path),
+  let type_info =
+    annotate_with_runs(
+      index_entries(index),
+      build_girard_resolver(index, dep_files),
+      targets,
+      runs,
+    )
+  let readings =
+    dict.fold(index, dict.new(), fn(acc, module_path, entry) {
+      dict.insert(
+        acc,
+        entry.0,
+        typeinfo.reading_for_module(type_info, module_path),
+      )
+    })
+  #(readings, case typing.shared {
+    True -> runs
+    False -> typing.runs
+  })
+}
+
+// How the fallback pass types the modules it walks: `union`, every module some
+// target walks, and the girard runs over it already made, which are kept for
+// other targets' runs where `shared`.
+type FallbackTyping {
+  FallbackTyping(
+    union: Dict(String, RetainedModule),
+    runs: GirardRuns,
+    shared: Bool,
+    // The dependency modules the run already parsed, by source path.
+    parsed: ParsedSources,
   )
+}
+
+// Each of `retained`, parsed, by module path; one that does not read or parse
+// is left out.
+fn parsed_retained(
+  retained: Dict(String, RetainedModule),
+  parsed: ParsedSources,
+) -> Dict(String, #(String, glance.Module)) {
+  dict.fold(retained, dict.new(), fn(acc, module_path, module) {
+    case parsed_source(parsed, module.source_path) {
+      Error(Nil) -> acc
+      Ok(found) -> dict.insert(acc, module_path, #(module.source_path, found))
+    }
+  })
+}
+
+// The module at `source_path`: as `parsed` holds it, else read and parsed.
+fn parsed_source(
+  parsed: ParsedSources,
+  source_path: String,
+) -> Result(glance.Module, Nil) {
+  case dict.get(parsed, source_path) {
+    Ok(found) -> found
+    Error(Nil) -> read_and_parse_gleam_or_nil(source_path)
+  }
+}
+
+// The fallback typing for a run on `shared`'s terms: over `retained` alone, or,
+// where runs on other targets follow, over every dependency module with an
+// `@external` that leaves some target to a Gleam body.
+fn fallback_typing(
+  shared: Shared,
+  dependencies: DependencySources,
+  retained: Dict(String, RetainedModule),
+) -> FallbackTyping {
+  use <- bool.guard(
+    when: !shared.split,
+    return: FallbackTyping(
+      union: retained,
+      runs: dict.new(),
+      shared: False,
+      parsed: shared.parsed,
+    ),
+  )
+  let union =
+    dict.fold(dependencies.modules, retained, fn(acc, module_path, scanned) {
+      case scanned {
+        ParsedModule(source_path:, imports:, ..) ->
+          case runs_a_fallback(shared.parsed, source_path) {
+            True ->
+              dict.insert(
+                acc,
+                module_path,
+                RetainedModule(source_path:, imports:),
+              )
+            False -> acc
+          }
+        UnreadableModule -> acc
+      }
+    })
+  FallbackTyping(
+    union:,
+    runs: shared.fallback_runs,
+    shared: True,
+    parsed: shared.parsed,
+  )
+}
+
+// Whether the module `parsed` holds at `source_path` has an `@external` whose
+// Gleam body runs on some target.
+fn runs_a_fallback(parsed: ParsedSources, source_path: String) -> Bool {
+  case dict.get(parsed, source_path) {
+    Ok(Ok(module)) ->
+      list.any(module.functions, fn(definition) {
+        extract.declares_external(definition)
+        && checker.has_running_fallback(definition, both_targets())
+      })
+    _ -> False
+  }
+}
+
+// `next()` beside `extra`.
+fn pair_with(extra: b, next: fn() -> a) -> #(a, b) {
+  #(next(), extra)
 }
 
 // The reading recorded for the module re-parsed from `source_path`, or the
@@ -5180,18 +7814,30 @@ fn dependency_scan(
   package_root: String,
   local: LocalPackages,
   package_targets: types.PackageTargets,
+  parsed: ParsedTree,
+  scanned: Dict(String, ScannedModule),
 ) -> TreeScan {
   let baseline =
     merge_dependency_sources(
-      packages_dir_sources(packages_dir(package_root), package_targets),
-      path_dep_sources(package_root, local, package_targets),
+      packages_dir_sources(
+        packages_dir(package_root),
+        package_targets,
+        parsed,
+        scanned,
+      ),
+      path_dep_sources(package_root, local, package_targets, parsed, scanned),
     )
   let newly_loaded =
     package_tree.newly_loaded(local)
     |> list.fold(empty_dependency_sources(), fn(acc, package) {
       merge_dependency_sources(
         acc,
-        source_dir_sources(package.directory <> "/src", package_targets),
+        source_dir_sources(
+          package.directory <> "/src",
+          package_targets,
+          parsed,
+          scanned,
+        ),
       )
     })
   let newly_loaded_modules =
@@ -5200,14 +7846,14 @@ fn dependency_scan(
       !dict.has_key(baseline.modules, module_path)
     })
     |> set.from_list
-  let labelled = with_declared_labels(baseline, package_targets)
+  let labelled = with_declared_labels(baseline, package_targets, parsed.files)
   // With no module of their own, the newly loaded packages add nothing the
   // installed and direct copies do not already hold.
   let sources = case set.is_empty(newly_loaded_modules) {
     True -> labelled
     False ->
       merge_dependency_sources(newly_loaded, baseline)
-      |> with_declared_labels(package_targets)
+      |> with_declared_labels(package_targets, parsed.files)
   }
   TreeScan(sources:, baseline: labelled, newly_loaded_modules:)
 }
@@ -5231,7 +7877,7 @@ fn with_tree_baseline(
       index,
       scan.baseline,
       package_targets,
-      package_constructors(index, scan.baseline),
+      package_constructors(index, scan.baseline, package_targets),
     )
   effects.with_structural_baseline(
     knowledge_base,
@@ -5304,6 +7950,7 @@ fn arbitration_baseline(
 fn with_declared_labels(
   sources: DependencySources,
   package_targets: types.PackageTargets,
+  parsed: ParsedSources,
 ) -> DependencySources {
   use <- bool.guard(when: !awaits_labels(sources), return: sources)
   let constructors = dependency_constructors(sources)
@@ -5311,7 +7958,7 @@ fn with_declared_labels(
     modules: dict.map_values(sources.modules, fn(module_path, scanned) {
       case scanned {
         ParsedModule(signatures: SignaturesAwaitLabels, source_path:, ..) ->
-          case read_and_parse_gleam(source_path) {
+          case parsed_source(parsed, source_path) {
             Ok(module) ->
               with_routed_templates(
                 scanned,
@@ -5355,7 +8002,10 @@ fn with_routed_templates(
     UnreadableModule -> scanned
     ParsedModule(..) -> {
       let context =
-        extract.build_import_context(module)
+        extract.build_import_context_on(
+          module,
+          types.declaration_targets(package_targets),
+        )
         |> extract.with_module_path(module_path)
         |> extract.with_cross_constructors(constructors)
       ParsedModule(
@@ -5442,6 +8092,8 @@ fn with_project_factories(
 fn packages_dir_sources(
   packages_directory: String,
   package_targets: types.PackageTargets,
+  parsed: ParsedTree,
+  scanned: Dict(String, ScannedModule),
 ) -> DependencySources {
   case simplifile.read_directory(packages_directory) {
     Error(_) -> empty_dependency_sources()
@@ -5451,33 +8103,176 @@ fn packages_dir_sources(
           filepath.join(filepath.join(packages_directory, dep), "src")
         merge_dependency_sources(
           acc,
-          source_dir_sources(src_dir, package_targets),
+          source_dir_sources(src_dir, package_targets, parsed, scanned),
         )
       })
   }
 }
 
-// Scan one package's `src/` tree, recording what each module derives under its
-// module path. A file that would not read or parse derives nothing, and is
-// recorded as the unreadable copy of its path.
-fn source_dir_sources(
-  source_dir: String,
-  package_targets: types.PackageTargets,
-) -> DependencySources {
-  use acc, module_path, source_path, parsed <- signatures.fold_source_dir(
-    source_dir,
-    empty_dependency_sources(),
+// Every dependency source file a run's scan reads, parsed, by path: shared by
+// the analyses of one package on several targets, which each scan the same
+// files.
+type ParsedSources =
+  Dict(String, Result(glance.Module, Nil))
+
+// The parsed dependency sources beside the files the walk that parsed them
+// found under each `src/` tree, for a scan reading each tree's files without
+// searching every path.
+type ParsedTree {
+  ParsedTree(files: ParsedSources, dirs: Dict(String, List(String)))
+}
+
+fn parsed_dependency_sources(
+  package_root: String,
+  local: LocalPackages,
+) -> #(ParsedSources, Dict(String, List(String))) {
+  dependency_source_dirs(package_root, local)
+  |> list.fold(#(dict.new(), dict.new()), fn(acc, source_dir) {
+    use acc, _module_path, source_path, parsed <- signatures.fold_source_dir(
+      source_dir,
+      acc,
+    )
+    let #(files, dirs) = acc
+    #(
+      dict.insert(files, source_path, parsed),
+      dict.upsert(dirs, source_dir, fn(listed) {
+        [source_path, ..option.unwrap(listed, [])]
+      }),
+    )
+  })
+}
+
+// Every `src/` tree a run's dependency scan reads: each installed package's,
+// each direct path dependency's and each newly loaded local package's.
+fn dependency_source_dirs(
+  package_root: String,
+  local: LocalPackages,
+) -> List(String) {
+  let packages_directory = packages_dir(package_root)
+  let installed = case simplifile.read_directory(packages_directory) {
+    Ok(entries) ->
+      list.map(entries, fn(dep) {
+        filepath.join(filepath.join(packages_directory, dep), "src")
+      })
+    Error(_) -> []
+  }
+  let direct =
+    list.map(local.direct, fn(dep) {
+      config.resolve_path(package_root, dep.1) <> "/src"
+    })
+  let loaded =
+    list.map(package_tree.newly_loaded(local), fn(package) {
+      package.directory <> "/src"
+    })
+  list.flatten([installed, direct, loaded])
+}
+
+// What the scan derives from every dependency module that reads no target,
+// by source path: the same on every target, so built once for all of them.
+fn target_blind_scan(
+  package_root: String,
+  local: LocalPackages,
+  parsed: ParsedSources,
+  parsed_dirs: Dict(String, List(String)),
+) -> Dict(String, ScannedModule) {
+  dependency_source_dirs(package_root, local)
+  |> list.fold(dict.new(), fn(acc, source_dir) {
+    use acc, module_path, source_path, module <- signatures.fold_source_dir_with(
+      source_dir,
+      parsed,
+      parsed_dirs,
+      acc,
+    )
+    case module {
+      Ok(module) ->
+        case checker.reads_targets(module) {
+          True -> acc
+          False ->
+            dict.insert(
+              acc,
+              source_path,
+              scanned_module(
+                module_path,
+                source_path,
+                Ok(module),
+                both_targets(),
+              ),
+            )
+        }
+      Error(Nil) -> acc
+    }
+  })
+}
+
+fn both_targets() -> types.PackageTargets {
+  types.NamedTargets(types.every_target())
+}
+
+// Each public function of `module` some definition of which is kept on some
+// targets alone, beside all of its definitions.
+fn public_gated(
+  module: glance.Module,
+) -> Dict(String, List(glance.Definition(glance.Function))) {
+  use <- bool.guard(
+    when: !list.any(module.functions, extract.gated),
+    return: dict.new(),
   )
-  let scanned = case parsed {
+  checker.module_definitions(module)
+  |> dict.filter(fn(_name, definitions) {
+    list.any(definitions, extract.gated)
+    && list.any(definitions, fn(definition) {
+      definition.definition.publicity == glance.Public
+    })
+  })
+}
+
+// Each public function `module` defines once per target, beside all of its
+// definitions.
+fn public_pairs(
+  module: glance.Module,
+) -> Dict(String, List(glance.Definition(glance.Function))) {
+  use <- bool.guard(
+    when: !checker.defines_public_function_per_target(module),
+    return: dict.new(),
+  )
+  let grouped =
+    list.fold(module.functions, dict.new(), fn(acc, definition) {
+      dict.upsert(acc, definition.definition.name, fn(existing) {
+        list.append(option.unwrap(existing, []), [definition])
+      })
+    })
+  dict.filter(grouped, fn(_name, definitions) {
+    case definitions {
+      [_, _, ..] ->
+        list.any(definitions, fn(definition) {
+          definition.definition.publicity == glance.Public
+        })
+      _ -> False
+    }
+  })
+}
+
+// What the scan derives from one module path's parse, read on
+// `package_targets`.
+fn scanned_module(
+  module_path: String,
+  source_path: String,
+  parsed: Result(glance.Module, Nil),
+  package_targets: types.PackageTargets,
+) -> ScannedModule {
+  case parsed {
     Ok(module) -> {
       // The two template readings below each walk this module's imports and
       // constructors; built once here rather than once per reading.
       let context =
-        extract.build_import_context(module)
+        extract.build_import_context_on(
+          module,
+          types.declaration_targets(package_targets),
+        )
         |> extract.with_module_path(module_path)
       ParsedModule(
         functions: module_function_names(module),
-        registry: signatures.from_glance_module(module_path, module),
+        registry: built_registry(module_path, module, package_targets),
         updates: extract.public_update_signatures(
           module,
           module_path,
@@ -5490,7 +8285,11 @@ fn source_dir_sources(
           context,
           types.declaration_targets(package_targets),
         ),
-        constructors: extract.constructor_registry(module_path, module),
+        constructors: extract.constructor_registry(
+          module_path,
+          module,
+          types.declaration_targets(package_targets),
+        ),
         signatures: case
           extract.awaits_declared_labels(
             module,
@@ -5518,11 +8317,349 @@ fn source_dir_sources(
           module,
           types.declaration_targets(package_targets),
         ),
+        target_variants: interface_target_variants(module),
+        pairs: public_pairs(module),
+        gated: public_gated(module),
       )
     }
     Error(Nil) -> UnreadableModule
   }
+}
+
+// Scan one package's `src/` tree, recording what each module derives under its
+// module path. A file that would not read or parse derives nothing, and is
+// recorded as the unreadable copy of its path.
+fn source_dir_sources(
+  source_dir: String,
+  package_targets: types.PackageTargets,
+  parsed: ParsedTree,
+  scanned: Dict(String, ScannedModule),
+) -> DependencySources {
+  use acc, module_path, source_path, parsed <- signatures.fold_source_dir_with(
+    source_dir,
+    parsed.files,
+    parsed.dirs,
+    empty_dependency_sources(),
+  )
+  // A module that reads no target derives the same on every target, so a scan
+  // on another target may already hold it.
+  let scanned = case dict.get(scanned, source_path) {
+    Ok(scanned) -> scanned
+    Error(Nil) ->
+      scanned_module(module_path, source_path, parsed, package_targets)
+  }
   DependencySources(modules: dict.insert(acc.modules, module_path, scanned))
+}
+
+// The targets on which `module`'s public interface types something
+// differently, because a definition it reaches is kept on that target alone
+// while the module defines its name again for another:
+//
+// - a public function, constant, type alias or non-opaque custom type defined
+//   once per target;
+// - a type a public signature, constant, alias or non-opaque custom type's
+//   fields name, where that type is an alias defined once per target, or one
+//   reaching such an alias through the module's own aliases, private ones
+//   included;
+// - any definition defined once per target, where a public function or
+//   constant states no complete type and girard infers one that may reach it.
+//
+// A name kept on one target and defined nowhere else is read only from code
+// kept on that target too. An opaque type's fields are no part of what another
+// module reads.
+fn interface_target_variants(module: glance.Module) -> Set(String) {
+  use <- bool.guard(
+    when: !list.any(module.functions, gated)
+      && !list.any(module.constants, gated)
+      && !list.any(module.type_aliases, gated)
+      && !list.any(module.custom_types, gated),
+    return: set.new(),
+  )
+  let inferred =
+    list.any(module.functions, fn(definition) {
+      definition.definition.publicity == glance.Public
+      && !fully_annotated(definition.definition)
+    })
+    || list.any(module.constants, fn(definition) {
+      definition.definition.publicity == glance.Public
+      && definition.definition.annotation == None
+    })
+  let read = fn(publicity) { publicity == glance.Public || inferred }
+  let exposed_type = fn(definition: glance.Definition(glance.CustomType)) {
+    definition.definition.publicity == glance.Public
+    && !definition.definition.opaque_
+  }
+  let dependent = target_dependent_types(module)
+  let interface = public_interface_types(module)
+  list.flatten([
+    paired_targets(
+      list.filter(module.functions, fn(definition) {
+        read(definition.definition.publicity)
+      }),
+      fn(definition) { definition.definition.name },
+    ),
+    paired_targets(
+      list.filter(module.constants, fn(definition) {
+        read(definition.definition.publicity)
+      }),
+      fn(definition) { definition.definition.name },
+    ),
+    paired_type_names(
+      module,
+      fn(definition) { read(definition.definition.publicity) },
+      exposed_type,
+    )
+      |> list.map(fn(pair) { pair.0 }),
+    dict.fold(dependent, [], fn(acc, target, names) {
+      case list.any(interface, mentions_any(_, names)) {
+        True -> [target, ..acc]
+        False -> acc
+      }
+    }),
+  ])
+  |> set.from_list
+}
+
+// The module's own alias names whose expansion depends on each target: one
+// defined once per target, and one that names such an alias, through any chain
+// of the module's aliases. A custom type's name types the same on every
+// target, so only aliases carry the dependence on.
+fn target_dependent_types(module: glance.Module) -> Dict(String, Set(String)) {
+  let aliased =
+    list.map(module.type_aliases, fn(definition) { definition.definition.name })
+    |> set.from_list
+  // A name defined once per target where one of its definitions is an alias:
+  // what it expands to differs between the targets, whatever the others are.
+  let seeds =
+    paired_type_entries(module, read_any, read_any)
+    |> list.filter(fn(entry) { set.contains(aliased, entry.1) })
+    |> list.map(fn(entry) { #(entry.0, entry.1) })
+    |> list.fold(dict.new(), fn(acc, pair) {
+      let #(target, name) = pair
+      dict.upsert(acc, target, fn(names) {
+        set.insert(option.unwrap(names, set.new()), name)
+      })
+    })
+  let definitions =
+    list.map(module.type_aliases, fn(definition) {
+      #(definition.definition.name, [definition.definition.aliased])
+    })
+  dict.map_values(seeds, fn(_target, names) {
+    dependent_closure(names, definitions)
+  })
+}
+
+fn dependent_closure(
+  names: Set(String),
+  definitions: List(#(String, List(glance.Type))),
+) -> Set(String) {
+  let grown =
+    list.fold(definitions, names, fn(acc, definition) {
+      let #(name, types) = definition
+      case list.any(types, mentions_any(_, acc)) {
+        True -> set.insert(acc, name)
+        False -> acc
+      }
+    })
+  case set.size(grown) == set.size(names) {
+    True -> names
+    False -> dependent_closure(grown, definitions)
+  }
+}
+
+// Every type another module reads off this one: public signatures, constant
+// annotations, aliases, and a non-opaque custom type's fields.
+fn public_interface_types(module: glance.Module) -> List(glance.Type) {
+  list.flatten([
+    list.flat_map(module.functions, fn(definition) {
+      let function = definition.definition
+      case function.publicity {
+        glance.Public ->
+          option.values([
+            function.return,
+            ..list.map(function.parameters, fn(parameter) { parameter.type_ })
+          ])
+        glance.Private -> []
+      }
+    }),
+    list.filter_map(module.constants, fn(definition) {
+      case definition.definition.publicity {
+        glance.Public -> option.to_result(definition.definition.annotation, Nil)
+        glance.Private -> Error(Nil)
+      }
+    }),
+    list.filter_map(module.type_aliases, fn(definition) {
+      case definition.definition.publicity {
+        glance.Public -> Ok(definition.definition.aliased)
+        glance.Private -> Error(Nil)
+      }
+    }),
+    list.flat_map(module.custom_types, fn(definition) {
+      let custom = definition.definition
+      case custom.publicity, custom.opaque_ {
+        glance.Public, False ->
+          list.flat_map(custom.variants, fn(variant) {
+            list.map(variant.fields, variant_field_type)
+          })
+        _, _ -> []
+      }
+    }),
+  ])
+}
+
+fn variant_field_type(field: glance.VariantField) -> glance.Type {
+  case field {
+    glance.LabelledVariantField(item:, ..) -> item
+    glance.UnlabelledVariantField(item:) -> item
+  }
+}
+
+// Whether a type names, unqualified, one of `names`.
+fn mentions_any(type_: glance.Type, names: Set(String)) -> Bool {
+  case type_ {
+    glance.NamedType(name:, module: None, parameters:, ..) ->
+      set.contains(names, name) || list.any(parameters, mentions_any(_, names))
+    glance.NamedType(parameters:, ..) ->
+      list.any(parameters, mentions_any(_, names))
+    glance.TupleType(elements:, ..) ->
+      list.any(elements, mentions_any(_, names))
+    glance.FunctionType(parameters:, return:, ..) ->
+      mentions_any(return, names)
+      || list.any(parameters, mentions_any(_, names))
+    glance.VariableType(..) | glance.HoleType(..) -> False
+  }
+}
+
+fn gated(definition: glance.Definition(a)) -> Bool {
+  list.any(definition.attributes, fn(attribute) { attribute.name == "target" })
+}
+
+fn fully_annotated(function: glance.Function) -> Bool {
+  function.return != None
+  && list.all(function.parameters, fn(parameter) { parameter.type_ != None })
+}
+
+// For each type `module` defines once per target, counting aliases and custom
+// types as the one namespace they share: the target its definition is kept on
+// and whether `alias_read` or `custom_read` keeps that definition.
+fn paired_type_names(
+  module: glance.Module,
+  alias_read: fn(glance.Definition(glance.TypeAlias)) -> Bool,
+  custom_read: fn(glance.Definition(glance.CustomType)) -> Bool,
+) -> List(#(String, Bool)) {
+  paired_type_entries(module, alias_read, custom_read)
+  |> list.filter_map(fn(entry) {
+    case entry.2 {
+      True -> Ok(#(entry.0, entry.3))
+      False -> Error(Nil)
+    }
+  })
+}
+
+// Each definition of a type name `module` defines once per target: the target
+// it is kept on, its name, whether the matching reader keeps it, and whether
+// it is an alias.
+fn paired_type_entries(
+  module: glance.Module,
+  alias_read: fn(glance.Definition(glance.TypeAlias)) -> Bool,
+  custom_read: fn(glance.Definition(glance.CustomType)) -> Bool,
+) -> List(#(String, String, Bool, Bool)) {
+  let entries =
+    list.append(
+      list.map(module.type_aliases, fn(definition) {
+        #(
+          definition.definition.name,
+          extract.compiled_targets(definition, types.every_target()),
+          alias_read(definition),
+          True,
+        )
+      }),
+      list.map(module.custom_types, fn(definition) {
+        #(
+          definition.definition.name,
+          extract.compiled_targets(definition, types.every_target()),
+          custom_read(definition),
+          False,
+        )
+      }),
+    )
+  let counts =
+    list.fold(entries, dict.new(), fn(acc, entry) {
+      dict.upsert(acc, entry.0, fn(count) { option.unwrap(count, 0) + 1 })
+    })
+  list.filter_map(entries, fn(entry) {
+    let #(name, targets, read, alias) = entry
+    case dict.get(counts, name), set.to_list(targets) {
+      Ok(count), [target] if count > 1 -> Ok(#(target, name, read, alias))
+      _, _ -> Error(Nil)
+    }
+  })
+}
+
+fn read_any(_definition: a) -> Bool {
+  True
+}
+
+// The one target `@target` keeps each definition on, for the definitions
+// whose name another definition of `definitions` shares.
+fn paired_targets(
+  definitions: List(glance.Definition(a)),
+  name: fn(glance.Definition(a)) -> String,
+) -> List(String) {
+  let counts =
+    list.fold(definitions, dict.new(), fn(acc, definition) {
+      dict.upsert(acc, name(definition), fn(count) {
+        option.unwrap(count, 0) + 1
+      })
+    })
+  list.filter_map(definitions, fn(definition) {
+    case
+      dict.get(counts, name(definition)),
+      set.to_list(extract.compiled_targets(definition, types.every_target()))
+    {
+      Ok(count), [target] if count > 1 -> Ok(target)
+      _, _ -> Error(Nil)
+    }
+  })
+}
+
+// The targets some dependency module the package's modules reach, directly or
+// through other dependency modules, reads differently on.
+fn dependency_target_variants(
+  index: Dict(String, #(String, glance.Module)),
+  sources: DependencySources,
+) -> Set(String) {
+  let roots =
+    dict.fold(index, [], fn(acc, _path, entry) {
+      list.append(module_import_paths(entry.1), acc)
+    })
+  reach_variants(roots, sources, set.new(), set.new())
+}
+
+fn reach_variants(
+  pending: List(String),
+  sources: DependencySources,
+  seen: Set(String),
+  variants: Set(String),
+) -> Set(String) {
+  case pending {
+    [] -> variants
+    [module_path, ..rest] ->
+      case
+        set.contains(seen, module_path),
+        dict.get(sources.modules, module_path)
+      {
+        False, Ok(ParsedModule(imports:, target_variants:, ..)) ->
+          reach_variants(
+            list.append(imports, rest),
+            sources,
+            set.insert(seen, module_path),
+            set.union(variants, target_variants),
+          )
+        _, _ ->
+          reach_variants(rest, sources, set.insert(seen, module_path), variants)
+      }
+  }
 }
 
 // The module paths a module imports.
@@ -5646,6 +8783,7 @@ fn enrich_with_path_deps(
   baseline: Option(KnowledgeBase),
   registry: SignatureRegistry,
   reading: effects.SpecReading,
+  dep_sources: DependencySources,
 ) -> #(
   KnowledgeBase,
   Dict(String, typeinfo.ModuleReading),
@@ -5679,7 +8817,14 @@ fn enrich_with_path_deps(
     }
     effects.SpecAbsent | effects.SpecUnreadable(..) -> {
       let index = path_dep_index(location)
-      let type_info = build_type_index(index, dep_files, package_targets)
+      let type_info =
+        type_index(
+          index,
+          dep_files,
+          package_targets,
+          dependency_target_variants(index, dep_sources),
+          dict.new(),
+        )
       let readings = retained_readings(readings, index, type_info, retained)
       // Counted beside the knowledge base for the coverage report: a
       // dependency installed from hex is not typed and has none of this.
@@ -5774,13 +8919,20 @@ fn path_dep_sources(
   package_root: String,
   local: LocalPackages,
   package_targets: types.PackageTargets,
+  parsed: ParsedTree,
+  scanned: Dict(String, ScannedModule),
 ) -> DependencySources {
   list.fold(local.direct, empty_dependency_sources(), fn(acc, dep) {
     let #(_name, dep_path) = dep
     let resolved_dep_path = config.resolve_path(package_root, dep_path)
     merge_dependency_sources(
       acc,
-      source_dir_sources(resolved_dep_path <> "/src", package_targets),
+      source_dir_sources(
+        resolved_dep_path <> "/src",
+        package_targets,
+        parsed,
+        scanned,
+      ),
     )
   })
 }
@@ -6054,7 +9206,10 @@ fn infer_typed_path_dep(
   let registry =
     dict.fold(index, run_registry, fn(acc, module_path, entry) {
       let #(module, _checks) = entry
-      signatures.merge(acc, signatures.from_glance_module(module_path, module))
+      signatures.merge(
+        acc,
+        built_registry(module_path, module, package_targets),
+      )
     })
 
   use sorted <- result.try(topo.sort(graph) |> result.map_error(fn(_) { Nil }))

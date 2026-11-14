@@ -361,11 +361,6 @@ pub type UnknownReason {
   // A direct application of a returned operator whose producer could not be
   // resolved.
   UntraceableProducer
-  // A direct application of a returned operator whose producer's declared
-  // return is in reach beside a Gleam fallback body that also runs. The two can
-  // hand back different closures and there is no union of operators, so the
-  // declaration answers nothing.
-  RefusedDeclaredReturn
   // A call whose own effect resolved, and whose effect variable call-site
   // substitution then bound to `[Unknown]` — an argument this call site passed
   // that nothing resolves.
@@ -690,7 +685,10 @@ pub type ArgumentValue {
   // `config.a.b`). Carries the dotted path so a forwarded field-effect variable
   // can be re-keyed onto it when the root is one of the caller's parameters.
   // Treated as opaque (`[Unknown]`) everywhere except call-site field forwarding.
-  ReceiverPath(path: String)
+  //
+  // `wired` is the value extraction traced the path to, where the root is a
+  // let-bound construction or update whose field the path selects.
+  ReceiverPath(path: String, wired: Option(ArgumentValue))
   // An inline constructor or factory call passed as an argument
   // (`inner(Options(resolver: resolver))` / `inner(make_options(resolver))`).
   // `fields` maps each constructor field label to the argument value wired into
@@ -1032,20 +1030,14 @@ pub type DirectPipeOp {
 // Generic over the term's representation: the half travels as an `EffectTerm`
 // until a report grounds it to an `EffectSet`.
 //
-// One three-state value rather than an `Option` beside a flag, so a renderer
-// cannot print union wording over a term the body is no part of: whether the
-// half was charged is matched, not inferred. `FallbackSuppressed` keeps the
-// body's own term so a diagnostic can quote what was overridden.
+// A value rather than an `Option`, so a renderer cannot print union wording
+// over a term the body is no part of: whether the half was charged is matched,
+// not inferred.
 pub type FallbackDisposition(term) {
   // No Gleam fallback body contributes to the charge.
   NoFallback
   // A running body's own effects, a component of the charged total.
   FallbackCharged(term: term)
-  // A running body whose effects the winning `assume` line drops from the
-  // total: the body still runs, and callers pay the declared term alone.
-  // Minted only where a suppressing declaration is in reach beside the
-  // running body, so it only ever appears beside a charged declaration.
-  FallbackSuppressed(term: term)
 }
 
 // Rewrite the term a disposition carries, keeping the disposition itself:
@@ -1058,7 +1050,6 @@ pub fn map_fallback(
   case fallback {
     NoFallback -> NoFallback
     FallbackCharged(term) -> FallbackCharged(transform(term))
-    FallbackSuppressed(term) -> FallbackSuppressed(transform(term))
   }
 }
 
@@ -1078,8 +1069,7 @@ pub type CallExplanation {
     reason: Option(UnknownReason),
     origin: Option(LookupOrigin),
     // What a running Gleam fallback body contributed to `actual`, when the call
-    // reaches an `@external` that has one — or contributed and had suppressed,
-    // where an `assume` line dropped it from the total. `origin` speaks for the
+    // reaches an `@external` that has one. `origin` speaks for the
     // declaration only, so without this the union would be credited to a
     // declaration that never stated it — `[]` reported as the source of a
     // `[Disk]`.
@@ -1325,6 +1315,34 @@ pub type Warning {
 // Result of checking one file. `violations` and `findings` are two shapes of
 // one reported channel: the run exits on both together, so a caller rendering
 // one renders the other.
+// The function a warning is about, where it is about one.
+pub fn warning_function(warning: Warning) -> Result(String, Nil) {
+  case warning {
+    UnmatchedFieldBoundWarning(function:, ..)
+    | UnmatchedParamBoundWarning(function:, ..)
+    | MeaninglessBoundWarning(function:, ..)
+    | UnmatchedCheckWarning(function:)
+    | StaleFunctionAssumeWarning(function:)
+    | UnmatchedFunctionAssumeWarning(function:)
+    | StaleReturnsClauseWarning(function:)
+    | UnmatchedReturnsClauseWarning(function:)
+    | UnclosedReturnsClauseWarning(function:, ..)
+    | UngroundReturnsClauseWarning(function:, ..)
+    | UnboundAssumeTermVariableWarning(function:, ..)
+    | AliasedBoundVariableWarning(function:, ..)
+    | UntrackedEffectWarning(function:, ..) -> Ok(function)
+    UnmatchedFieldCheckWarning(..)
+    | NonCallableFieldCheckWarning(..)
+    | UnconstructedFieldCheckWarning(..)
+    | UnsupportedFieldCheckWarning(..)
+    | UnkeyedEffectsShapeWarning(..)
+    | UnmatchedFieldAssumeWarning(..)
+    | UnmatchedModuleAssumeWarning(..)
+    | DotlessReturnsClauseWarning(..)
+    | UnknownClauseWarning(..) -> Error(Nil)
+  }
+}
+
 pub type CheckResult {
   CheckResult(
     file: String,

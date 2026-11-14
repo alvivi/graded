@@ -211,7 +211,17 @@ pub type ImportContext {
     // only one of the two readings answers. Every target until a caller narrows
     // it.
     package_targets: types.PackageTargets,
+    // The latent-effect reading of the run the walk belongs to.
+    lat_mode: types.LatMode,
   )
+}
+
+// Record the latent-effect reading of the run the walk belongs to.
+pub fn with_lat_mode(
+  context: ImportContext,
+  mode: types.LatMode,
+) -> ImportContext {
+  ImportContext(..context, lat_mode: mode)
 }
 
 // Record which targets the package under analysis is compiled for.
@@ -352,6 +362,26 @@ pub fn build_import_context(module: Module) -> ImportContext {
     updates: dict.new(),
     cross_updates: dict.new(),
     package_targets: types.all_targets(),
+    lat_mode: types.Inactive,
+  )
+}
+
+// `build_import_context` for a module read on `targets`: its constructors are
+// those of the custom types built on them.
+pub fn build_import_context_on(
+  module: Module,
+  targets: Set(String),
+) -> ImportContext {
+  build_import_context(types_built_on(module, targets))
+}
+
+// `module` without the custom types `@target` keeps off every one of `targets`.
+fn types_built_on(module: Module, targets: Set(String)) -> Module {
+  glance.Module(
+    ..module,
+    custom_types: list.filter(module.custom_types, fn(definition) {
+      !set.is_empty(compiled_targets(definition, targets))
+    }),
   )
 }
 
@@ -361,8 +391,9 @@ pub fn build_import_context(module: Module) -> ImportContext {
 pub fn constructor_registry(
   module_path: String,
   module: Module,
+  targets: Set(String),
 ) -> Dict(#(String, String), List(Option(String))) {
-  build_constructor_registry(module)
+  build_constructor_registry(types_built_on(module, targets))
   |> dict.to_list()
   |> list.map(fn(entry) { #(#(module_path, entry.0), entry.1) })
   |> dict.from_list()
@@ -529,6 +560,53 @@ pub fn compiled_targets(
   }
 }
 
+// `functions` without the definitions `@target` keeps off every one of
+// `package_targets`, for each name another definition built on one of them
+// shares. A name no definition is built for keeps all of its definitions.
+pub fn built_functions(
+  functions: List(glance.Definition(glance.Function)),
+  package_targets: Set(String),
+) -> List(glance.Definition(glance.Function)) {
+  use <- bool.guard(
+    when: !list.any(functions, fn(definition) {
+      attribute_targets(definition, "target") != []
+    }),
+    return: functions,
+  )
+  let built = fn(definition) {
+    !set.is_empty(compiled_targets(definition, package_targets))
+  }
+  let built_names =
+    list.filter_map(functions, fn(definition) {
+      case built(definition) {
+        True -> Ok(definition.definition.name)
+        False -> Error(Nil)
+      }
+    })
+    |> set.from_list
+  list.filter(functions, fn(definition) {
+    built(definition) || !set.contains(built_names, definition.definition.name)
+  })
+}
+
+// The definition each of `targets` builds among `variants`, one name's
+// definitions, beside that target, for the targets that build one: the first
+// definition `@target` keeps on it. Each definition's targets are read once.
+pub fn built_variants(
+  variants: List(glance.Definition(glance.Function)),
+  targets: List(String),
+) -> List(#(String, glance.Definition(glance.Function))) {
+  let reading = set.from_list(targets)
+  let reach =
+    list.map(variants, fn(definition) {
+      #(definition, compiled_targets(definition, reading))
+    })
+  list.filter_map(targets, fn(target) {
+    list.find(reach, fn(one) { set.contains(one.1, target) })
+    |> result.map(fn(one) { #(target, one.0) })
+  })
+}
+
 // The targets the function's `@external` attributes declare an implementation
 // for. A target argument that isn't a plain name states nothing this can read,
 // so it declares no target and the fallback stays covered by the walk.
@@ -539,6 +617,20 @@ pub fn declared_targets(
 }
 
 // The target named by the first argument of each `name` attribute.
+// Whether `definition` carries a `@target` attribute.
+pub fn gated(definition: glance.Definition(a)) -> Bool {
+  list.any(definition.attributes, fn(attribute) { attribute.name == "target" })
+}
+
+// Whether `definition` is a function whose `@external` attributes leave out
+// some target, so what implements it depends on the target.
+pub fn partly_external(definition: glance.Definition(glance.Function)) -> Bool {
+  case attribute_targets(definition, "external") {
+    [] -> False
+    targets -> !set.is_subset(types.every_target(), set.from_list(targets))
+  }
+}
+
 fn attribute_targets(
   definition: glance.Definition(a),
   name: String,
@@ -580,7 +672,7 @@ pub fn factory_map(
 ) -> Dict(String, FactorySignature) {
   signature_map(
     native_functions(module, package_targets),
-    build_import_context(module)
+    build_import_context_on(module, package_targets)
       |> with_module_path(module_path)
       |> with_cross_constructors(cross_constructors),
     factory_signature,
@@ -792,7 +884,7 @@ pub fn update_map(
 ) -> Dict(String, UpdateSignature) {
   signature_map(
     native_functions(module, package_targets),
-    build_import_context(module)
+    build_import_context_on(module, package_targets)
       |> with_module_path(module_path)
       |> with_cross_constructors(cross_constructors),
     update_signature,
@@ -1085,12 +1177,41 @@ pub fn extract_function_calls_with_captures(
   context: ImportContext,
   captures: List(#(String, ArgumentValue)),
 ) -> ExtractResult {
-  let seeded =
-    list.fold(captures, env_new(), fn(env, capture) {
-      env_bind(env, capture.0, binding_from_argument_value(capture.1))
-    })
+  let seeded = seed_captures(captures)
   let env = bind_names(seeded, names(function.parameters), BoundLocal)
   walk_scope(function.body, context, env)
+}
+
+// An inline closure's tail expression as a component: classified with the
+// closure's own parameters and the callables it captured in scope, so a
+// parameter reads as the reference it is. `None` where the body does not end
+// in an expression.
+pub fn closure_tail(
+  params: List(String),
+  captures: List(#(String, ArgumentValue)),
+  body: List(glance.Statement),
+  context: ImportContext,
+) -> Option(types.Component) {
+  let seeded = seed_captures(captures)
+  let env =
+    list.fold(params, seeded, fn(env, param) {
+      case param {
+        "_" -> env
+        name -> env_bind(env, name, BoundParam)
+      }
+    })
+  use #(tail, inner) <- option.map(block_tail(body, context, env))
+  types.Component(
+    span: tail.location,
+    value: classify_expression(tail, context, inner),
+  )
+}
+
+// The callables a closure captured, bound in a fresh scope.
+fn seed_captures(captures: List(#(String, ArgumentValue))) -> Env {
+  list.fold(captures, env_new(), fn(env, capture) {
+    env_bind(env, capture.0, binding_from_argument_value(capture.1))
+  })
 }
 
 // The named parameters of a function, dropping discards.
@@ -1654,7 +1775,7 @@ fn resolve_constructor_field_call(
         ambiguous: observed(site, AsField(None)),
       )
     Ok(types.Choice(_))
-    | Ok(types.ReceiverPath(_))
+    | Ok(types.ReceiverPath(..))
     | Ok(types.Updated(..))
     | Ok(types.Composite(..))
     | Ok(OtherExpression)
@@ -2098,7 +2219,7 @@ fn classify_rhs_ref(
     // A receiver-path alias (`let options = config.options`): capture the
     // canonical path so a forwarded field var re-keys onto `config.options`
     // (fixed now, immune to later rebinds), not the opaque alias.
-    types.ReceiverPath(path) -> bind_receiver_path(path, env)
+    types.ReceiverPath(path:, ..) -> bind_receiver_path(path, env)
     ConstructorRef | OtherExpression | types.Capture(..) -> BoundOpaque
   }
 }
@@ -2175,6 +2296,18 @@ fn classify_constructor(
     }),
     value_coverage: types.WholeValue,
   )
+}
+
+// The argument expressions a capture fixes: a shorthand field names a
+// variable, which evaluating costs nothing.
+fn fixed_expressions(arguments: List(Field(Expression))) -> List(Expression) {
+  list.filter_map(arguments, fn(field) {
+    case field {
+      glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
+        Ok(item)
+      glance.ShorthandField(..) -> Error(Nil)
+    }
+  })
 }
 
 // What one argument of a construction holds. A shorthand field
@@ -3121,6 +3254,23 @@ fn classify_arguments(
   })
 }
 
+// What a capture calls: a binding in scope is code this module cannot name,
+// so it is opaque; anything else classifies as an argument would.
+fn capture_target(
+  function: Expression,
+  context: ImportContext,
+  env: Env,
+) -> types.ArgumentValue {
+  case function {
+    glance.Variable(_, name) ->
+      case env_has(env, name) {
+        True -> OtherExpression
+        False -> classify_expression(function, context, env)
+      }
+    _ -> classify_expression(function, context, env)
+  }
+}
+
 // Classify a bare variable reference by name: a constructor, then a lexical
 // binding (scope wins over an unqualified import of the same name, so a
 // parameter or `let` shadowing an import resolves to the binding), then an
@@ -3172,7 +3322,7 @@ fn classify_local_binding(
     // A receiver-path or parameter alias resolves to its path, so a forwarded
     // field var re-keys onto the caller's receiver (`let o = config.options;
     // inner(o)` re-keys `o.resolver` onto `config.options.resolver`).
-    BoundReceiverPath(path) -> types.ReceiverPath(path)
+    BoundReceiverPath(path) -> types.ReceiverPath(path, None)
     // A parameter: a bare local reference, resolved against the caller's param
     // bounds at the use site.
     BoundLocal | BoundParam -> LocalRef(name:)
@@ -3246,16 +3396,22 @@ fn classify_expression(
       label: function_name,
       ..,
     ) ->
-      case is_constructor_name(function_name) {
-        True -> ConstructorRef
-        False ->
+      case
+        is_constructor_name(function_name),
+        context.lat_mode == types.Active && env_has(env, alias)
+      {
+        True, _ -> ConstructorRef
+        // Under the latent-effect rules a binding in scope shadows the module
+        // alias it shares a name with, as the compiler reads it.
+        False, True -> receiver_path_value(expression, env)
+        False, False ->
           case dict.get(context.aliases, alias) {
             Ok(module_path) ->
               FunctionRef(name: QualifiedName(module_path, function_name))
             // Not a module alias: a receiver path like `config.options`. Carried
             // as a path so the checker can forward field effects through it when
             // its root is a caller parameter.
-            Error(Nil) -> receiver_path_value(expression)
+            Error(Nil) -> receiver_path_value(expression, env)
           }
       }
     glance.Variable(_, name) -> classify_variable(name, context, env)
@@ -3274,6 +3430,36 @@ fn classify_expression(
         })
       types.Closure(params, callable_captures(env, params), body)
     }
+    // A function capture `f(a, _, c)`: its target and the arguments it fixes,
+    // read only under the latent-effect rules.
+    glance.FnCapture(
+      location:,
+      label:,
+      function:,
+      arguments_before:,
+      arguments_after:,
+    ) ->
+      case context.lat_mode {
+        types.Active -> {
+          let hole = list.length(arguments_before)
+          types.Capture(
+            span: location,
+            target: capture_target(function, context, env),
+            hole:,
+            label:,
+            arguments: list.append(
+              classify_arguments(arguments_before, context, env, 0),
+              classify_arguments(arguments_after, context, env, hole + 1),
+            ),
+            evaluated: fixed_expressions(list.append(
+              arguments_before,
+              arguments_after,
+            )),
+            captures: callable_captures(env, []),
+          )
+        }
+        types.Inactive -> OtherExpression
+      }
     // A `case`/`if` whose every clause body is a bare function-like value is a
     // selection among known operators: capture them as a `Choice` so the checker
     // can lift and join them. Any non-function (or block) clause body, or no
@@ -3335,7 +3521,7 @@ fn classify_expression(
     glance.Block(statements:, ..) -> classify_block(statements, context, env)
     // A nested receiver path whose container is itself a field access
     // (`config.a.b`): carried as a path for field-effect forwarding.
-    glance.FieldAccess(..) -> receiver_path_value(expression)
+    glance.FieldAccess(..) -> receiver_path_value(expression, env)
     // A list or tuple literal holds exactly its elements, and a list's spread
     // tail holds whatever that list holds.
     glance.List(elements:, rest:, ..) ->
@@ -3767,10 +3953,45 @@ fn factory_constructed_or_producer(
 // A field-access expression rooted at a bare identifier becomes a
 // `ReceiverPath`; anything else (a computed receiver such as `make().field`)
 // stays opaque, since `receiver_path` only bottoms out at a `Variable`.
-fn receiver_path_value(expression: Expression) -> types.ArgumentValue {
+fn receiver_path_value(
+  expression: Expression,
+  env: Env,
+) -> types.ArgumentValue {
   case receiver_path(expression) {
-    Some(path) -> types.ReceiverPath(path)
+    Some(path) -> types.ReceiverPath(path, traced_field(path, env))
     None -> OtherExpression
+  }
+}
+
+// The value a receiver path selects, where its root is a let-bound
+// construction or update that wired every field on the path.
+fn traced_field(path: String, env: Env) -> Option(ArgumentValue) {
+  case string.split(path, ".") {
+    [root, field, ..rest] ->
+      case env_get(env, root) {
+        Ok(BoundConstructor(fields:, ..)) | Ok(BoundUpdated(fields:, ..)) ->
+          dict.get(fields, field)
+          |> option.from_result
+          |> option.then(select_fields(_, rest))
+        Ok(_) | Error(Nil) -> None
+      }
+    [_] | [] -> None
+  }
+}
+
+fn select_fields(
+  value: ArgumentValue,
+  path: List(String),
+) -> Option(ArgumentValue) {
+  case path, value {
+    [], _ -> Some(value)
+    [field, ..rest], Constructed(fields:, ..)
+    | [field, ..rest], types.Updated(fields:, ..)
+    ->
+      dict.get(fields, field)
+      |> option.from_result
+      |> option.then(select_fields(_, rest))
+    [_, ..], _ -> None
   }
 }
 
@@ -4034,7 +4255,16 @@ fn value_parts(
       )
       each_parts(acc, args, argument_parts)
     }
-    types.ReceiverPath(path:) -> emit_all(acc, [Tag(8), Name(path)])
+    types.ReceiverPath(path:, wired:) -> {
+      use acc <- result.try(emit_all(acc, [Tag(8), Name(path)]))
+      case wired {
+        Some(wired) -> {
+          use acc <- result.try(emit(acc, Tag(1)))
+          value_parts(acc, wired)
+        }
+        None -> emit(acc, Tag(0))
+      }
+    }
     Constructed(fields:, components:, coverage:) -> {
       use acc <- result.try(
         emit_all(acc, [
@@ -4139,17 +4369,18 @@ fn fields_parts(
 // branches — with a fixpoint for direct self-recursion.
 
 // The value a function evaluates to, for returned-operator inference: the tail
-// statement's expression classified with only the import context in scope
-// (parameters and prior `let`s are deliberately not threaded — v1 handles a
-// directly-returned ref/closure/branch/producer-call). `Error` when the body's
-// tail isn't a bare expression.
+// expression classified in the scope in effect at it — the parameters and the
+// body's prior bindings — so a returned closure or capture reaches what its
+// body names. `Error` when the body's tail isn't a bare expression.
 pub fn return_value(
   function: glance.Function,
   context: ImportContext,
 ) -> Result(ArgumentValue, Nil) {
-  case list.last(function.body) {
-    Ok(glance.Expression(expression)) ->
-      Ok(classify_expression(expression, context, env_new()))
+  case list.reverse(function.body) {
+    [glance.Expression(tail), ..init_reversed] -> {
+      let env = pre_tail_env(list.reverse(init_reversed), function, context)
+      Ok(classify_expression(tail, context, env))
+    }
     _ -> Error(Nil)
   }
 }
@@ -4433,8 +4664,9 @@ fn arg_value_at_position(
 // receiver path onto the argument. Any non-path value can't be extended.
 fn extend_path(value: ArgumentValue, tail: String) -> ArgumentValue {
   case value {
-    LocalRef(name) -> types.ReceiverPath(name <> "." <> tail)
-    types.ReceiverPath(path) -> types.ReceiverPath(path <> "." <> tail)
+    LocalRef(name) -> types.ReceiverPath(name <> "." <> tail, None)
+    types.ReceiverPath(path:, ..) ->
+      types.ReceiverPath(path <> "." <> tail, None)
     _ -> OtherExpression
   }
 }
@@ -4451,7 +4683,7 @@ fn param_rooted(
     LocalRef(name) ->
       dict.get(positions, name)
       |> result.map(fn(position) { #(position, None) })
-    types.ReceiverPath(path) -> {
+    types.ReceiverPath(path:, ..) -> {
       let #(root, tail) = split_root(path)
       dict.get(positions, root)
       |> result.map(fn(position) { #(position, tail) })

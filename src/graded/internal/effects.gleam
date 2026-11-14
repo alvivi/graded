@@ -40,7 +40,15 @@ pub type EffectLookup {
 // that was. One value, so every merge that picks a term picks the other two
 // with it.
 pub type TermEntry {
-  TermEntry(term: EffectTerm, origin: LookupOrigin, lineage: types.Lineage)
+  TermEntry(
+    term: EffectTerm,
+    origin: LookupOrigin,
+    lineage: types.Lineage,
+    // What the line states about function values in data: a written
+    // `assume` line's contract rides the term it shares a line with, and
+    // every other entry states none.
+    contract: types.LatentContract,
+  )
 }
 
 // What kind of statement a lookup's source names.
@@ -153,10 +161,8 @@ pub type KnowledgeBase {
     // What the Gleam fallback body of an `@external` does, where that body runs
     // — the targets its declaration leaves uncovered — paired with the
     // parameter bounds the term is stated over. Ordinary Gleam that runs, so
-    // every caller is charged it on top of whatever declares the external —
-    // unless a suppressing declaration answers alone
-    // (`suppresses_running_fallback`) — while the external's own `check` line
-    // always covers both. Held apart from
+    // every caller is charged it on top of whatever declares the external, and
+    // the external's own `check` line covers both. Held apart from
     // `all_effects` because the declaration has to stay reportable on its own:
     // the two are unioned when a name is charged, and told apart when its
     // provenance is explained. The bounds stay beside the term they bind: which
@@ -169,6 +175,13 @@ pub type KnowledgeBase {
     // is one a walk reached, which is what `widens_with_dependency_fallback`
     // reads to tell a walked dependency body from an unwalked one.
     fallback_summaries: Dict(QualifiedName, #(EffectTerm, List(ParamBound))),
+    // What the Gleam fallback body of one of this package's own `@external`s
+    // hands back, where that body runs, stated over the producer's own
+    // parameters: the returns channel's counterpart of `fallback_summaries`,
+    // kept beside a declared `where returns` clause rather than in place of
+    // it. A dependency's body is not walked for what it returns, so none of
+    // its names are here.
+    fallback_operators: Dict(QualifiedName, EffectTerm),
     // The callback parameters of every function whose signature graded parsed,
     // in position order — the signature registry's fn-typed parameters, folded
     // in as plain names so this module stays glance-free. Read only where a
@@ -203,7 +216,100 @@ pub type KnowledgeBase {
     structural_baseline: Option(StructuralBaseline),
     // The latent-effect reading the run chose before it parsed anything.
     lat_mode: types.LatMode,
+    // What the bundled catalog's audit records for the versions installed.
+    audit: CatalogAudit,
   )
+}
+
+// What the bundled catalog's audit records, already narrowed to the catalog
+// files and installed versions it covers: the names whose catalog line was
+// reviewed, the foreign types that hold nothing but their type parameters'
+// values, what the reviewed constants carry, and the functions whose result
+// carries everything their arguments carry and their callbacks cost and
+// return.
+pub type CatalogAudit {
+  CatalogAudit(
+    reviewed: Set(QualifiedName),
+    containers: Set(#(String, String)),
+    constants: Dict(QualifiedName, EffectTerm),
+    container_results: Set(QualifiedName),
+  )
+}
+
+pub fn empty_audit() -> CatalogAudit {
+  CatalogAudit(
+    reviewed: set.new(),
+    containers: set.new(),
+    constants: dict.new(),
+    container_results: set.new(),
+  )
+}
+
+pub fn with_audit(
+  knowledge_base: KnowledgeBase,
+  audit: CatalogAudit,
+) -> KnowledgeBase {
+  KnowledgeBase(..knowledge_base, audit:)
+}
+
+pub fn audit(knowledge_base: KnowledgeBase) -> CatalogAudit {
+  knowledge_base.audit
+}
+
+// Whether the line answering for `name` is a bundled catalog line the audit
+// reviewed. Only then does the catalog's own contract — its no-run default,
+// its constants, its container results — speak for the name: a written line
+// winning over it states its own.
+pub fn audited_catalog_answer(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Bool {
+  set.contains(knowledge_base.audit.reviewed, name)
+  && case raw_lookup(knowledge_base, name) {
+    Some(#(_term, source)) -> is_catalog_origin(origin_of(source))
+    None -> False
+  }
+}
+
+// What the audit records a constant carries, where nothing but the catalog
+// answers for its name.
+pub fn catalog_constant(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Option(EffectTerm) {
+  use carried <- option.then(
+    dict.get(knowledge_base.audit.constants, name) |> option.from_result,
+  )
+  case raw_lookup(knowledge_base, name) {
+    None -> Some(carried)
+    Some(#(_term, source)) ->
+      case is_catalog_origin(origin_of(source)) {
+        True -> Some(carried)
+        False -> None
+      }
+  }
+}
+
+// The contract of the written line answering for `name`, with that line's own
+// bound list: `None` where no written line answers.
+pub fn winning_contract(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Option(#(types.LatentContract, List(ParamBound))) {
+  case dict.get(knowledge_base.all_effects, name) {
+    Ok(TermEntry(lineage: types.DeclaredLine, contract:, ..)) ->
+      Some(#(
+        contract,
+        dict.get(knowledge_base.param_bounds, name) |> result.unwrap([]),
+      ))
+    Ok(TermEntry(lineage: types.GeneratedLine, ..))
+    | Ok(TermEntry(lineage: types.CurrentInference, ..)) -> None
+    Error(Nil) ->
+      case dict.get(knowledge_base.module_effects, name.module) {
+        Ok(_) -> Some(#(types.no_contract, []))
+        Error(Nil) -> None
+      }
+  }
 }
 
 // Build a knowledge base by scanning dependency .graded files under
@@ -238,12 +344,33 @@ pub fn lat_mode(knowledge_base: KnowledgeBase) -> types.LatMode {
 // and which of its `assume` lines those rules refuse once the run's signatures
 // and types are known. A refused line is replaced by `assume <path> : [_]`.
 pub type SpecReading {
-  SpecReading(mode: types.LatMode, refuses: fn(AssumeAnnotation) -> Bool)
+  SpecReading(
+    mode: types.LatMode,
+    refuses: fn(AssumeAnnotation) -> Bool,
+    // Lines over a dependency's functions, from the source given, stated in
+    // the parameter names of the variants this run reads.
+    rebase: fn(LineSource, types.GradedFile) -> types.GradedFile,
+  )
 }
 
-// The reading without the latent-effect rules, which refuses nothing.
+// What wrote a line over a dependency's functions.
+pub type LineSource {
+  // The dependency's own spec, installed or at its path.
+  DependencySpecLines
+  // A bundled catalog file, standing in for the dependency's spec.
+  CatalogLines
+  // The spec of the package the run reads.
+  ConsumerLines
+}
+
+// The reading without the latent-effect rules, which refuses nothing and
+// reads every line as written.
 pub fn inactive_reading() -> SpecReading {
-  SpecReading(mode: types.Inactive, refuses: fn(_) { False })
+  SpecReading(
+    mode: types.Inactive,
+    refuses: fn(_) { False },
+    rebase: fn(_source, file) { file },
+  )
 }
 
 // The same knowledge base, read under `mode`.
@@ -377,11 +504,13 @@ pub fn knowledge_base_from_catalog_with(
     dependency_foreign:,
     project_functions: dict.new(),
     fallback_summaries: dict.new(),
+    fallback_operators: dict.new(),
     callback_params: dict.new(),
     package_targets: types.all_targets(),
     active_targets: None,
     structural_baseline: None,
     lat_mode: reading.mode,
+    audit: empty_audit(),
   )
   // Catalog `type` fields first, then dependency ones (appended last, so they
   // win on a clash) — matching the effect priority (dependency spec > catalog).
@@ -406,11 +535,13 @@ pub fn new_knowledge_base() -> KnowledgeBase {
     dependency_foreign: dict.new(),
     project_functions: dict.new(),
     fallback_summaries: dict.new(),
+    fallback_operators: dict.new(),
     callback_params: dict.new(),
     package_targets: types.all_targets(),
     active_targets: None,
     structural_baseline: None,
     lat_mode: types.Inactive,
+    audit: empty_audit(),
   )
 }
 
@@ -436,11 +567,13 @@ pub fn empty_knowledge_base(
     dependency_foreign: dict.new(),
     project_functions: dict.new(),
     fallback_summaries: dict.new(),
+    fallback_operators: dict.new(),
     callback_params: dict.new(),
     package_targets: types.all_targets(),
     active_targets: None,
     structural_baseline: None,
     lat_mode: types.Inactive,
+    audit: empty_audit(),
   )
   |> with_sourced_type_fields(cat_type_fields)
 }
@@ -555,11 +688,16 @@ fn split_assumes(
       declaring_function_assumes(assumes),
       dict.new(),
       fn(accumulator, entry) {
-        let #(name, effects, _bounds) = entry
+        let #(name, effects, _bounds, contract) = entry
         dict.insert(
           accumulator,
           name,
-          TermEntry(term: effects, origin:, lineage: types.DeclaredLine),
+          TermEntry(
+            term: effects,
+            origin:,
+            lineage: types.DeclaredLine,
+            contract:,
+          ),
         )
       },
     )
@@ -586,11 +724,16 @@ fn split_assumes(
 // two rules kept in step.
 fn declaring_function_assumes(
   assumes: List(AssumeAnnotation),
-) -> List(#(QualifiedName, EffectTerm, List(ParamBound))) {
+) -> List(#(QualifiedName, EffectTerm, List(ParamBound), types.LatentContract)) {
   list.filter_map(assumes, fn(assume) {
     case assume.target, assume.effects {
       FunctionAssume(function), Some(effects) ->
-        Ok(#(QualifiedName(assume.module, function), effects, assume.params))
+        Ok(#(
+          QualifiedName(assume.module, function),
+          effects,
+          assume.params,
+          assume.contract,
+        ))
       _, _ -> Error(Nil)
     }
   })
@@ -625,7 +768,7 @@ fn raw_lookup(
   name: QualifiedName,
 ) -> Option(#(EffectTerm, types.EffectSource)) {
   case dict.get(knowledge_base.all_effects, name) {
-    Ok(TermEntry(term:, origin:, lineage:)) ->
+    Ok(TermEntry(term:, origin:, lineage:, ..)) ->
       Some(#(term, types.FunctionEntry(origin:, lineage:)))
     Error(Nil) ->
       case dict.get(knowledge_base.module_effects, name.module) {
@@ -722,6 +865,27 @@ pub fn with_fallback_summaries(
     ..knowledge_base,
     fallback_summaries: dict.merge(knowledge_base.fallback_summaries, summaries),
   )
+}
+
+// Record what the fallback bodies of this package's own `@external`s hand back,
+// where those bodies run.
+pub fn with_fallback_operators(
+  knowledge_base: KnowledgeBase,
+  operators: Dict(QualifiedName, EffectTerm),
+) -> KnowledgeBase {
+  KnowledgeBase(
+    ..knowledge_base,
+    fallback_operators: dict.merge(knowledge_base.fallback_operators, operators),
+  )
+}
+
+// What a running fallback body charges for `name`, `[Unknown]` for one no walk
+// reached, and `None` where no body runs on a target the walk reads.
+pub fn running_fallback(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Option(EffectTerm) {
+  running_fallback_term(knowledge_base, name)
 }
 
 // Record the callback parameters of the functions whose signatures graded
@@ -854,10 +1018,8 @@ fn line_param_bounds(
 //
 // One value, computed once per lookup, so no two readers assemble the halves
 // themselves and come to different totals: `term` is what a caller pays,
-// `fallback` is where the half a running Gleam body contributed on its own
-// stands — charged into the total, or suppressed out of it by the winning
-// `assume` line — and `declaration` says where what the declaration states
-// stands in the charge.
+// `fallback` is the half a running Gleam body contributed on its own, and
+// `declaration` says where what the declaration states stands in the charge.
 pub type ForeignCharge {
   ForeignCharge(
     term: EffectTerm,
@@ -891,20 +1053,14 @@ pub type DeclarationStanding {
 // The declared half is read raw from the base's own maps rather than taken
 // from a `lookup`: `lookup` widens an unwalked dependency declaration with
 // `[Unknown]` under the declaration's own source, and nothing downstream can
-// tell that half back out — a charge assembled over the widened term would
-// re-union the body a suppressing line dropped. The widening is re-derived on
-// the fallback half instead (`running_fallback_term` backstops with
-// `[Unknown]` off the same question), so every non-suppressed total comes out
-// as `lookup`'s reading does.
+// tell that half back out. The widening is re-derived on the fallback half
+// instead (`running_fallback_term` backstops with `[Unknown]` off the same
+// question), so every total comes out as `lookup`'s reading does.
 //
 // The declaration alone is the whole story only where it covers every target the
 // walking code runs on. Where it doesn't, a Gleam fallback body runs, and that
 // body is ordinary code whose effects the caller pays too — so the charge is the
-// union. Composition is union, so a caller inherits both — unless the winning
-// declaration is one that suppresses the running fallback
-// (`suppresses_running_fallback`): a written `assume` is trusted whole, so the
-// charge is the declared term alone and the body's half rides beside it as
-// `FallbackSuppressed` for the diagnostics that say so.
+// union of what each target charges, whatever wrote the declaration.
 //
 // Both halves only where the walking code reaches both. From inside a fallback
 // body the targets are narrower than the package's, and the two halves answer
@@ -915,17 +1071,15 @@ pub fn declared_charge(
 ) -> ForeignCharge {
   let declaration = raw_declaration(knowledge_base, name)
   let halves = reachable_halves(knowledge_base, name)
-  let suppressed = suppressing_declaration(declaration, halves)
   let raw = case declaration {
     Some(#(term, _origin)) -> term
     None -> effect_term.unknown()
   }
-  // One call-site bound list serves both halves, suppressed or not: the
-  // self-referential rewrite renames each declared payload variable to the
-  // parameter that binds it, so the declared term and the fallback summary —
-  // charged as a union, or held apart as a suppressed share — keep distinct
-  // variables for distinct parameters and each binds exactly its own
-  // argument. `lookup_param_bounds` serves the matching rewritten list.
+  // One call-site bound list serves both halves: the self-referential rewrite
+  // renames each declared payload variable to the parameter that binds it, so
+  // the declared term and the fallback summary keep distinct variables for
+  // distinct parameters and each binds exactly its own argument.
+  // `lookup_param_bounds` serves the matching rewritten list.
   let declared = declared_beside_fallback(knowledge_base, name, raw)
   // What the declaration charges wherever it answers without a running
   // fallback beside it — three of the readings below. One definition, so no two
@@ -938,8 +1092,8 @@ pub fn declared_charge(
   case halves, fallback {
     // Every target this walk runs on has a foreign implementation for `name`, so
     // its Gleam fallback runs only where this walk does not reach. A boundless
-    // declaration — suppressing or not — still keeps the conservative callback
-    // charge on this reading: the foreign implementation may call the callback
+    // declaration keeps the conservative callback charge on this reading: the
+    // foreign implementation may call the callback
     // too, the fallback term that would otherwise carry it is no part of the
     // total, and the recorded summary bounds — or, for a name no summary
     // covers, the parsed signature's callback parameters — stand in for the
@@ -952,8 +1106,7 @@ pub fn declared_charge(
       )
     // No foreign implementation on any target this walk runs on: the fallback
     // body is what it calls, and the declaration answers for targets it never
-    // reaches. Never suppressed — suppression there would charge a build that
-    // didn't happen.
+    // reaches.
     FallbackOnly, Some(fallback) ->
       ForeignCharge(
         term: fallback,
@@ -966,24 +1119,31 @@ pub fn declared_charge(
         fallback: types.NoFallback,
         declaration: NothingImplementsName,
       )
-    // Both halves in reach, each on its own targets: the union — or, under a
-    // suppressing declaration, the declared term alone with the body's half
-    // recorded as suppressed, so a report can still quote what was overridden.
+    // Both halves in reach, each on its own targets: the union of what each
+    // charges there. The declaration answers for the targets the external
+    // covers, as a run on one of them alone charges it, with no fallback body
+    // in reach; on the others the body is what runs.
     DeclarationAndFallback, Some(fallback) ->
-      case suppressed {
-        True ->
-          ForeignCharge(
-            term: alone(),
-            fallback: types.FallbackSuppressed(fallback),
-            declaration: DeclarationCharged,
-          )
-        False ->
-          ForeignCharge(
-            term: effect_term.normalize(types.TUnion([declared, fallback])),
-            fallback: types.FallbackCharged(fallback),
-            declaration: DeclarationCharged,
-          )
-      }
+      ForeignCharge(
+        term: effect_term.normalize(
+          types.TUnion([
+            conservative_callback_charge(
+              KnowledgeBase(
+                ..knowledge_base,
+                fallback_summaries: dict.delete(
+                  knowledge_base.fallback_summaries,
+                  name,
+                ),
+              ),
+              name,
+              declared,
+            ),
+            fallback,
+          ]),
+        ),
+        fallback: types.FallbackCharged(fallback),
+        declaration: DeclarationCharged,
+      )
     // A declaration beside a fallback body nothing runs — a single-target
     // external under defaulted targets, whose Gleam body the declaration's own
     // target never reaches. The declaration is the whole charge, and being
@@ -999,8 +1159,9 @@ pub fn declared_charge(
 }
 
 // The term a declaration charges where the fallback term carries no part of
-// the total — a suppressing line, whose body share is held apart, or a
-// declaration-only reading, whose fallback is out of reach. A bounded line
+// it — a declaration-only reading, whose fallback is out of reach, and the
+// declared half of a union, read as the targets the external covers read it.
+// A bounded line
 // wrote its own answer for the external's callbacks and stays as written. A
 // boundless one says nothing about them, so the charge keeps one variable per
 // recorded callback parameter — the same conservative share a direct call
@@ -1030,10 +1191,14 @@ fn conservative_callback_charge(
   name: QualifiedName,
   declared: EffectTerm,
 ) -> EffectTerm {
-  use <- bool.guard(
-    when: line_param_bounds(knowledge_base, name) != [],
-    return: declared,
-  )
+  // The bounds the declaration itself states: what this run inferred over the
+  // body beside it describes the body, not the foreign implementation.
+  let stated = case raw_declaration(knowledge_base, name) {
+    Some(#(_term, origin)) ->
+      declared_param_bounds(knowledge_base, name, origin)
+    None -> line_param_bounds(knowledge_base, name)
+  }
+  use <- bool.guard(when: stated != [], return: declared)
   let callback_names = case dict.get(knowledge_base.fallback_summaries, name) {
     Ok(#(_term, fallback_bounds)) ->
       fallback_bounds
@@ -1060,30 +1225,6 @@ fn foreign_registry_callbacks(
   }
 }
 
-// Whether a declaring origin's line, in reach beside a running Gleam fallback
-// body, answers alone: the fallback half is dropped from the union on its
-// say-so. Only a *written* per-function line over the author's own body — the
-// consumer's `assume`, or the line a dependency's author shipped in their
-// spec. `assume` means trusted and never verified everywhere else in the
-// tool, and the line's author can see the fallback body too; if they wanted
-// the union they would write the wider term.
-//
-// The catalog does not suppress — it describes a version graded's maintainers
-// annotated, not necessarily the installed body. Neither does a module-level
-// `assume`: a blanket over names nothing keys individually never named the
-// function it would be silencing.
-pub fn suppresses_running_fallback(origin: LookupOrigin) -> Bool {
-  case origin {
-    UserAssume | DependencySpec(_) | PathDependency(_) -> True
-    Catalog(_)
-    | ModuleAssumeOrigin(_)
-    | CommittedSpec
-    | ProjectInferred
-    | PathDependencyInferred(_)
-    | FieldAssumeOrigin(_) -> False
-  }
-}
-
 // The winning declaring entry for `name`, raw: the value `lookup` computes
 // before `with_dependency_fallback` widens it, held to declaring origins as
 // the charge requires. `None` where nothing declares the name — a
@@ -1102,25 +1243,6 @@ fn raw_declaration(
       }
     }
     None -> None
-  }
-}
-
-// Whether a suppressing declaration answers for `name`'s charge, over halves
-// the caller already derived — `declared_charge` decides once off the values
-// its arms match on. False where only the fallback is in reach: there the
-// body answers instead and its bounds must keep binding its term.
-fn suppressing_declaration(
-  declaration: Option(#(EffectTerm, LookupOrigin)),
-  halves: ReachableHalves,
-) -> Bool {
-  case declaration {
-    Some(#(_term, origin)) ->
-      suppresses_running_fallback(origin)
-      && case halves {
-        DeclarationAndFallback | DeclarationOnly -> True
-        FallbackOnly -> False
-      }
-    None -> False
   }
 }
 
@@ -1144,17 +1266,56 @@ fn declared_beside_fallback(
   name: QualifiedName,
   declared: EffectTerm,
 ) -> EffectTerm {
-  use <- bool.guard(
-    when: !dict.has_key(knowledge_base.fallback_summaries, name),
-    return: declared,
-  )
-  case dict.get(knowledge_base.param_bounds, name) {
-    Ok([_, ..] as bounds) -> {
+  case declared_bounds_beside_fallback(knowledge_base, name) {
+    Some(bounds) -> {
       let #(_, rename) = self_referential_declaration(bounds)
       rename(declared)
     }
-    Ok([]) | Error(Nil) -> declared
+    None -> declared
   }
+}
+
+// The bounds of a declaration read in its self-referential form: a bounded
+// line over a name whose fallback body runs.
+fn declared_bounds_beside_fallback(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Option(List(ParamBound)) {
+  use <- bool.guard(
+    when: !dict.has_key(knowledge_base.fallback_summaries, name),
+    return: None,
+  )
+  case dict.get(knowledge_base.param_bounds, name) {
+    Ok([_, ..] as bounds) -> Some(bounds)
+    Ok([]) | Error(Nil) -> None
+  }
+}
+
+// Where `name`'s declared term is read in its self-referential form, the
+// parameters each of the line's variables is renamed to; `None` where the
+// term keeps the line's own variables.
+pub fn declared_renames(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Option(Dict(String, List(String))) {
+  declared_bounds_beside_fallback(knowledge_base, name)
+  |> option.map(bound_renames)
+}
+
+// The parameters whose bound names each variable, in bound order.
+fn bound_renames(bounds: List(ParamBound)) -> Dict(String, List(String)) {
+  list.fold(bounds, dict.new(), fn(acc, bound) {
+    bound.effects
+    |> effect_term.free_vars()
+    |> set.fold(acc, fn(acc, variable) {
+      dict.upsert(acc, variable, fn(existing) {
+        case existing {
+          Some(parameters) -> list.append(parameters, [bound.name])
+          None -> [bound.name]
+        }
+      })
+    })
+  })
 }
 
 // A bounded declaration's self-referential form, both halves off one rename
@@ -1170,14 +1331,7 @@ fn declared_beside_fallback(
 pub fn self_referential_declaration(
   bounds: List(ParamBound),
 ) -> #(List(ParamBound), fn(EffectTerm) -> EffectTerm) {
-  let renames =
-    list.fold(bounds, dict.new(), fn(acc, bound) {
-      bound.effects
-      |> effect_term.free_vars()
-      |> set.fold(acc, fn(acc, variable) {
-        dict.insert(acc, variable, bound.name)
-      })
-    })
+  let renames = bound_renames(bounds)
   let rewritten =
     list.map(bounds, fn(bound) {
       case set.is_empty(effect_term.free_vars(bound.effects)) {
@@ -1191,7 +1345,7 @@ pub fn self_referential_declaration(
       declared
       |> effect_term.free_vars()
       |> set.fold(dict.new(), fn(acc, variable) {
-        case dict.get(renames, variable) {
+        case dict.get(renames, variable) |> result.try(list.last) {
           Ok(parameter) -> dict.insert(acc, variable, types.TVar(parameter))
           Error(Nil) -> dict.insert(acc, variable, effect_term.unknown())
         }
@@ -1340,6 +1494,11 @@ pub fn with_active_targets(
   active: Option(Set(String)),
 ) -> KnowledgeBase {
   KnowledgeBase(..knowledge_base, active_targets: active)
+}
+
+// The targets the code being walked runs on, where a walk narrowed them.
+pub fn active_targets(knowledge_base: KnowledgeBase) -> Option(Set(String)) {
+  knowledge_base.active_targets
 }
 
 // Whether `name` is one of *this package's* `@external`s whose Gleam fallback
@@ -1561,8 +1720,8 @@ pub fn lookup_declared(
     Known(_term, source) ->
       case declares_foreign_code(origin_of(source)) {
         // The term comes off the charge, not off `lookup`'s widened reading:
-        // the charge derives the declared half raw and weighs the fallback —
-        // suppression included — itself.
+        // the charge derives the declared half raw and weighs the fallback
+        // itself.
         True -> Known(declared_charge(knowledge_base, name).term, source)
         // A non-declaring entry — inference over the body — answers no more
         // than no entry at all, and no less either: rejecting it leaves the
@@ -1714,9 +1873,9 @@ pub fn argument_value_effects(
 // over exactly those parameters, including a girard-typed callback no other
 // source names. A per-function bound list — a bounded `assume` line over the
 // fallback-running external — rides *with* them rather than standing down:
-// each half's variables bind only through its own bounds, whether the foreign
-// charge unions the two terms or holds the summary's apart as a suppressed
-// share. The declaring line's list rides in its `self_referential_declaration`
+// each half's variables bind only through its own bounds when the foreign
+// charge unions the two terms. The declaring line's list rides in its
+// `self_referential_declaration`
 // half — the pair of the term rewrite `declared_beside_fallback` applies — so
 // a shared name between the halves is always the same parameter binding the
 // same argument. Exact duplicates are dropped, so the common case stays one
@@ -2010,7 +2169,7 @@ fn with_origin(
   lineage: types.Lineage,
 ) -> Dict(QualifiedName, TermEntry) {
   dict.map_values(entries, fn(_name, term) {
-    TermEntry(term:, origin:, lineage:)
+    TermEntry(term:, origin:, lineage:, contract: types.no_contract)
   })
 }
 
@@ -2186,7 +2345,7 @@ pub fn unscoped_clause_variables(
   operator: EffectTerm,
   bounds: List(ParamBound),
 ) -> List(String) {
-  let names = bound_name_set(bounds)
+  let names = set.union(bound_name_set(bounds), bound_payload_variables(bounds))
   effect_term.free_vars(operator)
   |> set.filter(fn(variable) { !set.contains(names, variable) })
   |> set.to_list()
@@ -2343,25 +2502,110 @@ pub fn constructors(
 //
 // A summary inferred over a body answers only for a name no `@external`
 // declares, as it always has; a **declared** one answers exactly where it
-// stands, which is what a `where returns` clause is written to do.
+// stands, which is what a `where returns` clause is written to do. Where an
+// external's Gleam fallback body runs on a target the walk reads, the answer
+// is what each target hands back, joined: the clause, or `[Unknown]`, where
+// the external covers the target, and the body's returned operator, or
+// `[Unknown]` where it was not walked for values, where it runs.
 pub fn lookup_returned_operator(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
 ) -> Result(ReturnedOperator, Nil) {
-  use found <- result.try(dict.get(knowledge_base.returned_operators, name))
-  case found.summary {
-    Declared(..) ->
-      case charged_standing(knowledge_base, name, found.source) {
+  case dict.get(knowledge_base.returned_operators, name) {
+    Ok(ReturnedOperator(summary: Declared(..), ..) as found) ->
+      case charged_standing(knowledge_base, name) {
         DeclaredReturnAnswers -> Ok(found)
-        DeclaredReturnUnbuilt | DeclaredReturnFallbackRuns | NoDeclaredReturn ->
-          Error(Nil)
+        DeclaredReturnFallbackRuns ->
+          Ok(beside_running_fallback(knowledge_base, name, found))
+        DeclaredReturnUnbuilt | NoDeclaredReturn -> Error(Nil)
       }
-    Fresh | Closed(..) ->
+    Ok(found) ->
       case is_value_opaque(knowledge_base, name) {
-        True -> Error(Nil)
+        True -> running_fallback_operator(knowledge_base, name)
         False -> Ok(found)
       }
+    Error(Nil) -> running_fallback_operator(knowledge_base, name)
   }
+}
+
+// A declared clause beside a Gleam fallback body that runs on another target:
+// the clause joined with the body's returned operator, or with `[Unknown]` of
+// the same arity where the body was not walked for values. The body's operator
+// is stated over the producer's parameters, so each of its variables the
+// clause's own bounds do not scope is scoped by its parameter.
+fn beside_running_fallback(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+  found: ReturnedOperator,
+) -> ReturnedOperator {
+  let body = case dict.get(knowledge_base.fallback_operators, name) {
+    Ok(operator) -> operator
+    Error(Nil) -> unknown_operator(operator_arity(found.operator))
+  }
+  let summary = case found.summary {
+    Declared(bounds:) -> {
+      let scoped =
+        list.fold(bounds, set.new(), fn(acc, bound) {
+          set.union(acc, effect_term.free_vars(bound.effects))
+        })
+      Declared(bounds: list.append(
+        bounds,
+        effect_term.free_vars(body)
+          |> set.difference(scoped)
+          |> set.to_list
+          |> list.sort(string.compare)
+          |> list.map(fn(variable) {
+            types.ParamBound(variable, types.TVar(variable))
+          }),
+      ))
+    }
+    other -> other
+  }
+  ReturnedOperator(
+    ..found,
+    operator: effect_term.normalize(types.TUnion([found.operator, body])),
+    summary:,
+  )
+}
+
+// What an `@external` of this package hands back where nothing declares it and
+// its Gleam fallback body runs on a target the walk reads: `[Unknown]` for the
+// targets the external covers, joined with the body's returned operator.
+fn running_fallback_operator(
+  knowledge_base: KnowledgeBase,
+  name: QualifiedName,
+) -> Result(ReturnedOperator, Nil) {
+  use operator <- result.try(dict.get(knowledge_base.fallback_operators, name))
+  let charge = declared_charge(knowledge_base, name)
+  let operator = case charge.declaration {
+    FallbackAnswersInstead -> operator
+    DeclarationCharged | NothingImplementsName ->
+      effect_term.normalize(
+        types.TUnion([unknown_operator(operator_arity(operator)), operator]),
+      )
+  }
+  Ok(ReturnedOperator(operator:, summary: Fresh, source: ProjectInferred))
+}
+
+// The number of callback arguments an operator takes before it reads as an
+// effect; a union takes the most any member does.
+fn operator_arity(term: EffectTerm) -> Int {
+  case term {
+    types.TAbs(_, body) -> 1 + operator_arity(body)
+    types.TUnion(members) ->
+      list.fold(members, 0, fn(widest, member) {
+        int.max(widest, operator_arity(member))
+      })
+    types.TLabels(_) | types.TTop | types.TVar(_) | types.TApp(_, _) -> 0
+  }
+}
+
+// An operator absorbing `arity` callback arguments and reading `[Unknown]`.
+fn unknown_operator(arity: Int) -> EffectTerm {
+  list.repeat(Nil, arity)
+  |> list.index_fold(effect_term.unknown(), fn(body, _, index) {
+    types.TAbs("_unknown" <> int.to_string(index), body)
+  })
 }
 
 // The `where returns` clause a declaration keys for `name`, read without the
@@ -2391,11 +2635,9 @@ pub type DeclaredReturnStanding {
   // nothing it describes is what runs.
   DeclaredReturnUnbuilt
   // In reach, but a Gleam fallback body runs on some target too, and the
-  // closure that body hands back needn't be the foreign one. Only a clause
-  // from a non-suppressing origin is refused this way — a written spec's
-  // clause is trusted whole (`suppresses_running_fallback` on the clause's
-  // own source). No such origin ships clauses today; the arm is the hook a
-  // catalog returns tier lands on.
+  // closure that body hands back needn't be the foreign one: the clause
+  // answers for the targets the external covers, joined with what the body
+  // hands back where it runs.
   DeclaredReturnFallbackRuns
   // No `where returns` clause keys the name at all.
   NoDeclaredReturn
@@ -2403,12 +2645,9 @@ pub type DeclaredReturnStanding {
 
 // How a declared return for `name` stands against what this build compiles.
 //
-// The effects channel copes with a declaration and a running fallback body by
-// unioning them; there is no union of operators, so where a running body's
-// closure may stand in for the foreign one, the clause answers only on the
-// say-so of a suppressing origin. Standing and fallback are two fields of the
-// one `ForeignCharge`, read through `declared_charge` because the returns
-// channel holds no declared *effects* term of its own to pass down.
+// Standing and fallback are two fields of the one `ForeignCharge`, read through
+// `declared_charge` because the returns channel holds no declared *effects*
+// term of its own to pass down.
 //
 // The permissive default underneath is load-bearing: a name no foreign scan
 // recorded, a walk carrying no targets, and an `@external` whose declared
@@ -2422,8 +2661,8 @@ pub fn declared_return_standing(
     Error(Nil) -> NoDeclaredReturn
     Ok(ReturnedOperator(summary: Fresh, ..))
     | Ok(ReturnedOperator(summary: Closed(..), ..)) -> NoDeclaredReturn
-    Ok(ReturnedOperator(summary: Declared(..), source:, ..)) ->
-      charged_standing(knowledge_base, name, source)
+    Ok(ReturnedOperator(summary: Declared(..), ..)) ->
+      charged_standing(knowledge_base, name)
   }
 }
 
@@ -2431,29 +2670,14 @@ pub fn declared_return_standing(
 // alone, without the triage that established there is one to weigh. The lookup
 // reads it having just fetched the entry; the wrapper above adds the fetch for a
 // caller holding only the name.
-//
-// `clause_source` is the `where returns` clause's own origin, not the effects
-// declaration's: the two channels can be won by different tiers (a clause-only
-// user line beside a catalog effects entry), and the clause is trusted by its
-// own author's line. Where a fallback body runs beside the declaration, a
-// suppressing clause source answers — the refusal existed because there is no
-// union of operators to take, and a trusted line takes none — while any other
-// source keeps the refusal.
 fn charged_standing(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
-  clause_source: LookupOrigin,
 ) -> DeclaredReturnStanding {
   let charge = declared_charge(knowledge_base, name)
   case charge.declaration, charge.fallback {
     DeclarationCharged, types.NoFallback -> DeclaredReturnAnswers
-    DeclarationCharged, types.FallbackCharged(_)
-    | DeclarationCharged, types.FallbackSuppressed(_)
-    ->
-      case suppresses_running_fallback(clause_source) {
-        True -> DeclaredReturnAnswers
-        False -> DeclaredReturnFallbackRuns
-      }
+    DeclarationCharged, types.FallbackCharged(_) -> DeclaredReturnFallbackRuns
     FallbackAnswersInstead, _ | NothingImplementsName, _ ->
       DeclaredReturnUnbuilt
   }
@@ -2621,15 +2845,8 @@ pub fn with_newly_loaded_spec(
 ) -> KnowledgeBase {
   let dep = sanitize_dep_spec(dep, knowledge_base.dependency_foreign)
   let #(function_assumes, module_assumes) = split_assumes(dep.assumes, origin)
-  let declared =
-    admitted(
-      knowledge_base,
-      baseline,
-      dict.map_values(function_assumes, fn(_name, entry) { entry.term }),
-      origin,
-      DeclaredContribution,
-      types.DeclaredLine,
-    )
+  let #(declared, carried) =
+    admitted_declarations(knowledge_base, baseline, function_assumes)
   let inferred =
     admitted(
       knowledge_base,
@@ -2642,6 +2859,7 @@ pub fn with_newly_loaded_spec(
   knowledge_base
   |> with_newly_loaded_modules(module_assumes)
   |> with_admitted_effects(dict.merge(inferred, declared), dep_spec_params(dep))
+  |> with_admitted_carries(carried)
   |> gap_filling_declared_returns(
     unanswered_returns(baseline, dep.declared_returns),
     origin,
@@ -2716,6 +2934,108 @@ fn admits(
       }
     }
   }
+}
+
+// A newly loaded package's declarations: the lines `admits` lets answer, each
+// keeping everything its statement says, and the carried results of the lines
+// it does not, where one may fill another line's answer.
+//
+// What a result carries is admitted apart from the line's effects: only where
+// the baseline declares none. A baseline declaration keeps answering — on an
+// admitted line in its place where it is ground, and by keeping its own line
+// where it names that line's variables. A carried result moves onto a line it
+// was not written on only when it is ground, and only onto a reviewed catalog
+// line that states none.
+fn admitted_declarations(
+  knowledge_base: KnowledgeBase,
+  baseline: KnowledgeBase,
+  entries: Dict(QualifiedName, TermEntry),
+) -> #(Dict(QualifiedName, TermEntry), Dict(QualifiedName, EffectTerm)) {
+  dict.fold(entries, #(dict.new(), dict.new()), fn(acc, name, entry) {
+    let #(declared, carried) = acc
+    let base_carries =
+      winning_contract(baseline, name)
+      |> option.then(fn(found) { { found.0 }.carries })
+    case
+      admits(knowledge_base, baseline, name, entry.term, DeclaredContribution),
+      base_carries
+    {
+      True, None -> #(dict.insert(declared, name, entry), carried)
+      True, Some(base) ->
+        case is_ground(base) {
+          True -> #(
+            dict.insert(
+              declared,
+              name,
+              TermEntry(
+                ..entry,
+                contract: types.LatentContract(
+                  ..entry.contract,
+                  carries: Some(base),
+                ),
+              ),
+            ),
+            carried,
+          )
+          False -> acc
+        }
+      False, None ->
+        case entry.contract.carries {
+          Some(carries) ->
+            case is_ground(carries) {
+              True -> #(declared, dict.insert(carried, name, carries))
+              False -> acc
+            }
+          None -> acc
+        }
+      False, Some(_) -> acc
+    }
+  })
+}
+
+fn is_ground(term: EffectTerm) -> Bool {
+  set.is_empty(effect_term.free_vars(term))
+}
+
+// A ground carried result onto the line answering for its name, where that is
+// a reviewed catalog line stating none.
+fn with_admitted_carries(
+  knowledge_base: KnowledgeBase,
+  carried: Dict(QualifiedName, EffectTerm),
+) -> KnowledgeBase {
+  let all_effects =
+    dict.fold(
+      carried,
+      knowledge_base.all_effects,
+      fn(all_effects, name, carries) {
+        case dict.get(all_effects, name) {
+          Ok(
+            TermEntry(lineage: types.DeclaredLine, origin:, contract:, ..) as entry,
+          ) ->
+            case
+              is_catalog_origin(origin)
+              && set.contains(knowledge_base.audit.reviewed, name),
+              contract.carries
+            {
+              True, None ->
+                dict.insert(
+                  all_effects,
+                  name,
+                  TermEntry(
+                    ..entry,
+                    contract: types.LatentContract(
+                      ..contract,
+                      carries: Some(carries),
+                    ),
+                  ),
+                )
+              True, Some(_) | False, _ -> all_effects
+            }
+          Ok(_) | Error(Nil) -> all_effects
+        }
+      },
+    )
+  KnowledgeBase(..knowledge_base, all_effects:)
 }
 
 // The entries `admits` lets answer, each paired with `origin` and `lineage`.
@@ -2977,7 +3297,7 @@ fn assume_bounds(
   assumes: List(AssumeAnnotation),
 ) -> Dict(QualifiedName, List(ParamBound)) {
   list.fold(declaring_function_assumes(assumes), dict.new(), fn(acc, entry) {
-    let #(name, _effects, bounds) = entry
+    let #(name, _effects, bounds, _contract) = entry
     dict.insert(acc, name, bounds)
   })
 }
@@ -3248,7 +3568,11 @@ pub fn load_dep_spec_at_with(
       let #(parsed, rejected) =
         annotation.parse_file_lenient_with(content, reading.mode)
       let #(owned_lines, foreign_lines) = partition_owned(parsed.lines, modules)
-      let owned = types.GradedFile(lines: owned_lines)
+      let owned =
+        reading.rebase(
+          DependencySpecLines,
+          types.GradedFile(lines: owned_lines),
+        )
       let refused = refused_paths(owned, reading)
       // Built against the owned lines alone: only an owned blanket shields a
       // rejected line.
@@ -3725,42 +4049,57 @@ fn load_dependencies(
       })
     Error(_) -> []
   }
-  list.fold(
-    entries,
-    Dependencies(dict.new(), dict.new(), dict.new(), [], dict.new(), set.new()),
-    fn(acc, package_name) {
-      let origin = DependencySpec(package: package_name)
-      let dep_root = packages_directory <> "/" <> package_name
-      let load = load_dep_spec_with(dep_root, package_name, reading)
-      warn_dep_spec_load(package_name, load)
-      use spec <- with_loaded_spec(load, acc)
-      let dep = sanitize_dep_spec(spec, foreign)
-      let #(decided, module_assumes) = decided_entries(dep, origin)
+  // `type_fields` gathers each package's fields in reverse, and is turned
+  // round once at the end.
+  let dependencies =
+    list.fold(
+      entries,
       Dependencies(
-        effects: dict.merge(acc.effects, decided),
-        params: dict.merge(acc.params, dep_spec_params(dep)),
-        returns: merge_returns(
-          acc.returns,
-          // Within one spec a declared summary answers for a name its own
-          // `returns` line also keys: the incoming argument wins. Across the
-          // specs, the same rule keeps one package's stray `returns` line from
-          // burying another's declaration for the same name.
-          merge_returns(
-            tag_closed_returns(dep.returns, origin),
-            declared_returns(dep.declared_returns, origin),
+        dict.new(),
+        dict.new(),
+        dict.new(),
+        [],
+        dict.new(),
+        set.new(),
+      ),
+      fn(acc, package_name) {
+        let origin = DependencySpec(package: package_name)
+        let dep_root = packages_directory <> "/" <> package_name
+        let load = load_dep_spec_with(dep_root, package_name, reading)
+        warn_dep_spec_load(package_name, load)
+        use spec <- with_loaded_spec(load, acc)
+        let dep = sanitize_dep_spec(spec, foreign)
+        let #(decided, module_assumes) = decided_entries(dep, origin)
+        Dependencies(
+          effects: dict.merge(acc.effects, decided),
+          params: dict.merge(acc.params, dep_spec_params(dep)),
+          returns: merge_returns(
+            acc.returns,
+            // Within one spec a declared summary answers for a name its own
+            // `returns` line also keys: the incoming argument wins. Across the
+            // specs, the same rule keeps one package's stray `returns` line from
+            // burying another's declaration for the same name.
+            merge_returns(
+              tag_closed_returns(dep.returns, origin),
+              declared_returns(dep.declared_returns, origin),
+            ),
           ),
-        ),
-        type_fields: list.append(
-          acc.type_fields,
-          list.map(dep.type_fields, fn(field) { #(field, origin) }),
-        ),
-        module_effects: dict.merge(acc.module_effects, module_assumes),
-        declared_modules: set.union(
-          acc.declared_modules,
-          set.from_list(dict.keys(module_assumes)),
-        ),
-      )
-    },
+          type_fields: list.fold(
+            dep.type_fields,
+            acc.type_fields,
+            fn(acc, field) { [#(field, origin), ..acc] },
+          ),
+          module_effects: dict.merge(acc.module_effects, module_assumes),
+          declared_modules: set.union(
+            acc.declared_modules,
+            set.from_list(dict.keys(module_assumes)),
+          ),
+        )
+      },
+    )
+  Dependencies(
+    ..dependencies,
+    type_fields: list.reverse(dependencies.type_fields),
   )
 }
 
@@ -3903,6 +4242,7 @@ fn fold_catalog_file(
   reading: SpecReading,
 ) -> CatalogAcc {
   let #(package, graded_file) = entry
+  let graded_file = reading.rebase(CatalogLines, graded_file)
   let graded_file =
     annotation.replace_lines_by_path(
       graded_file,

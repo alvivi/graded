@@ -33,7 +33,6 @@ pub type ResolvedBound {
 pub fn resolve_bounds(
   assume: AssumeAnnotation,
   registry: SignatureRegistry,
-  kinds: Kinds,
 ) -> List(ResolvedBound) {
   let parameters = case assume.target {
     FunctionAssume(function) ->
@@ -44,7 +43,7 @@ pub fn resolve_bounds(
     ModuleAssume -> None
   }
   list.map(assume.params, fn(bound) {
-    let #(kind, arity) = bound_kind(bound, parameters, kinds)
+    let #(kind, arity) = parameter_bound_kind(bound, parameters, registry.kinds)
     ResolvedBound(bound:, kind:, arity:)
   })
 }
@@ -54,12 +53,20 @@ pub fn resolve_bounds(
 pub fn line_violations(
   assume: AssumeAnnotation,
   registry: SignatureRegistry,
-  kinds: Kinds,
 ) -> List(ContractViolation) {
-  violations(assume, resolve_bounds(assume, registry, kinds))
+  violations(assume, resolve_bounds(assume, registry))
 }
 
-fn bound_kind(
+// The kind of a parameter read off its signature entry.
+pub fn kind_of_parameter(
+  parameter: signatures.ParameterInfo,
+  kinds: Kinds,
+) -> BoundKind {
+  parameter_kind(parameter, kinds).0
+}
+
+// The kind of one bound's parameter against a signature that may be missing.
+pub fn parameter_bound_kind(
   bound: ParamBound,
   parameters: Option(List(signatures.ParameterInfo)),
   kinds: Kinds,
@@ -244,6 +251,31 @@ fn binders_by_variable(
       })
     })
   })
+}
+
+// `violation` with each parameter it names stated through `parameter` and
+// each variable through `variable`.
+pub fn stated_in(
+  violation: ContractViolation,
+  parameter: fn(String) -> String,
+  variable: fn(String) -> String,
+) -> ContractViolation {
+  case violation {
+    CarriedVariableCharged(variable: v, parameter: p) ->
+      CarriedVariableCharged(variable: variable(v), parameter: parameter(p))
+    ResultOfNonCallback(variable: v, parameter: p) ->
+      ResultOfNonCallback(variable: variable(v), parameter: parameter(p))
+    RelayIntoNonCallback(callback:, parameter: p) ->
+      RelayIntoNonCallback(
+        callback: variable(callback),
+        parameter: parameter(p),
+      )
+    RelayArityMismatch(callback:, arity:, written:) ->
+      RelayArityMismatch(callback: variable(callback), arity:, written:)
+    CallbackCostCarried(variable: v, parameter: p) ->
+      CallbackCostCarried(variable: variable(v), parameter: parameter(p))
+    IncompatibleSharing(variable: v) -> IncompatibleSharing(variable(v))
+  }
 }
 
 pub fn describe(violation: ContractViolation) -> String {

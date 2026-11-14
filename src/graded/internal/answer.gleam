@@ -58,12 +58,10 @@ pub type EffectAnswer {
 // that body's contribution themselves, so no answer can state a fallback half
 // beside a source that already accounts for the whole term.
 pub type AnswerSource {
-  // The entry the lookup returned, and which map it came from, beside where
-  // what a Gleam fallback body running on an uncovered target did stands in
-  // the term — contributed to it, or suppressed out of it by the `assume`
-  // line. The source speaks for the declaration only, so without that half a
-  // union would read as what the declaration said, and a suppressed body
-  // would go unmentioned.
+  // The entry the lookup returned, and which map it came from, beside what a
+  // Gleam fallback body running on an uncovered target contributed to the
+  // term. The source speaks for the declaration only, so without that half a
+  // union would read as what the declaration said.
   Entry(
     entry: types.EffectSource,
     fallback: types.FallbackDisposition(EffectTerm),
@@ -72,8 +70,7 @@ pub type AnswerSource {
   // nothing declares. The entries the knowledge base holds for such a name were
   // inferred over a body the foreign implementation needn't match, so none of
   // them answers, and the effects are the `[Unknown]` `check` and `why` charge
-  // for it, unioned with whatever a running Gleam fallback body does. Nothing
-  // declares the name, so its fallback half is never the suppressed one.
+  // for it, unioned with whatever a running Gleam fallback body does.
   //
   // The bounds beside it bind that fallback's variables: a fallback that calls
   // a function-typed parameter states its effects over the parameter, and
@@ -91,6 +88,11 @@ pub type AnswerSource {
   // its place. That body is the whole of the term, not a half added to a
   // declaration.
   RunningFallbackBody
+  // An answer over the targets a package is read on where `targets` build the
+  // function and nothing declares it there, each contributing `[Unknown]`;
+  // `declared` is the source of the first target that does declare it, if one
+  // does.
+  UndeclaredOn(targets: List(String), declared: Option(AnswerSource))
 }
 
 // Rendering
@@ -127,7 +129,7 @@ pub fn render_graded(answer: EffectAnswer) -> String {
       let clause = clause_rendering(returns, bounds)
       above_line(
         list.flatten([
-          [graded_source(module, source)],
+          graded_sources(module, source),
           graded_clause(clause, entry_origin(source)),
           graded_fallback(source_fallback(source)),
         ]),
@@ -272,11 +274,23 @@ fn entry_origin(source: AnswerSource) -> Result(types.LookupOrigin, Nil) {
     | Entry(entry: types.ModuleAssumeEntry(origin:), ..) -> Ok(origin)
     UndeclaredExternal(..) | UnreachedDeclaration | RunningFallbackBody ->
       Error(Nil)
+    UndeclaredOn(declared: Some(declared), ..) -> entry_origin(declared)
+    UndeclaredOn(declared: None, ..) -> Error(Nil)
   }
 }
 
-// The comment naming what answered: the source that wrote the winning entry,
-// or the standing that settled the term where no entry could.
+// The comments naming what answered: the source that wrote the winning entry,
+// or the standing that settled the term where no entry could, beside the
+// targets nothing declares the function on.
+fn graded_sources(module: String, source: AnswerSource) -> List(String) {
+  case source {
+    UndeclaredOn(targets:, declared: Some(declared)) ->
+      list.append(graded_sources(module, declared), [undeclared_on(targets)])
+    UndeclaredOn(targets:, declared: None) -> [undeclared_on(targets)]
+    _ -> [graded_source(module, source)]
+  }
+}
+
 fn graded_source(module: String, source: AnswerSource) -> String {
   case source {
     Entry(entry: types.ModuleAssumeEntry(..), ..) ->
@@ -286,7 +300,21 @@ fn graded_source(module: String, source: AnswerSource) -> String {
     UndeclaredExternal(..) -> undeclared_external_source
     UnreachedDeclaration -> unreached_declaration_source
     RunningFallbackBody -> running_fallback_source
+    UndeclaredOn(declared: Some(declared), ..) ->
+      graded_source(module, declared)
+    UndeclaredOn(targets:, declared: None) -> undeclared_on(targets)
   }
+}
+
+// The targets that build a function nothing declares there.
+fn undeclared_on(targets: List(String)) -> String {
+  "nothing declares the definition "
+  <> string.join(targets, " and ")
+  <> case targets {
+    [_] -> " builds"
+    _ -> " build"
+  }
+  <> ", read as [Unknown]"
 }
 
 // Only `Declared` entries reach the knowledge base today — `with_type_fields`
@@ -353,24 +381,23 @@ const undeclared_external_source = "an external with no declared effects"
 // term, not a half added to it, and there is nothing to name beside it.
 //
 // The one funnel both renderers read, and the disposition travels through it
-// whole: whether the half was charged or suppressed is matched at each
-// renderer, so neither can print union wording over a term the body is no
-// part of.
+// whole: whether a half was charged is matched at each renderer, so neither
+// can print union wording over a term the body is no part of.
 fn source_fallback(
   source: AnswerSource,
 ) -> types.FallbackDisposition(EffectTerm) {
   case source {
     Entry(fallback:, ..) | UndeclaredExternal(fallback:) -> fallback
     UnreachedDeclaration | RunningFallbackBody -> types.NoFallback
+    UndeclaredOn(declared: Some(declared), ..) -> source_fallback(declared)
+    UndeclaredOn(declared: None, ..) -> types.NoFallback
   }
 }
 
 // The half of the answer the declaration does not account for, named apart from
-// it so neither is credited with the other's effects — or the half the
-// `assume` line dropped, named so a body that runs is not read as absent.
-// Both renderers state each half in the one clause below, supplying only their
-// own lead-in, so the two formats cannot drift apart on what they say about
-// the body.
+// it so neither is credited with the other's effects. Both renderers state it
+// in the one clause below, supplying only their own lead-in, so the two formats
+// cannot drift apart on what they say about the body.
 fn graded_fallback(
   fallback: types.FallbackDisposition(EffectTerm),
 ) -> List(String) {
@@ -378,9 +405,6 @@ fn graded_fallback(
     types.NoFallback -> []
     types.FallbackCharged(term) -> [
       "unioned with " <> charged_fallback_clause <> formatted_term(term),
-    ]
-    types.FallbackSuppressed(term) -> [
-      suppressed_fallback_clause <> formatted_term(term),
     ]
   }
 }
@@ -427,20 +451,12 @@ fn prose_fallback(
     types.FallbackCharged(term) -> [
       "  plus " <> charged_fallback_clause <> formatted_term(term),
     ]
-    types.FallbackSuppressed(term) -> [
-      "  " <> suppressed_fallback_clause <> formatted_term(term),
-    ]
   }
 }
 
 const charged_fallback_clause =
   "its Gleam fallback body, which runs on the"
   <> " targets its `@external` declares no implementation for: "
-
-const suppressed_fallback_clause =
-  "its Gleam fallback body runs on the targets"
-  <> " its `@external` declares no implementation for; its charge is suppressed"
-  <> " by the `assume` line: "
 
 fn formatted_term(term: EffectTerm) -> String {
   annotation.format_effect_term(effect_term.normalize(term))
@@ -548,7 +564,12 @@ fn detail_lines(
   // checker applies to that argument at call sites. They follow either source —
   // a module-level external declares none itself, but a running fallback body
   // under it does, and the assumption holds however the entry was reached.
-  let source_lines = case source {
+  let source_lines = source_lines(module, source)
+  list.append(source_lines, bound_lines(bounds))
+}
+
+fn source_lines(module: String, source: AnswerSource) -> List(String) {
+  case source {
     Entry(entry: types.ModuleAssumeEntry(..), ..) -> [
       "  source: module-level `assume` for `" <> module <> "`",
       "          used when no per-function entry exists",
@@ -559,8 +580,14 @@ fn detail_lines(
     UndeclaredExternal(..) -> ["  source: " <> undeclared_external_source]
     UnreachedDeclaration -> ["  source: " <> unreached_declaration_source]
     RunningFallbackBody -> ["  source: " <> running_fallback_source]
+    UndeclaredOn(targets:, declared: Some(declared)) ->
+      list.append(source_lines(module, declared), [
+        "  " <> undeclared_on(targets),
+      ])
+    UndeclaredOn(targets:, declared: None) -> [
+      "  source: " <> undeclared_on(targets),
+    ]
   }
-  list.append(source_lines, bound_lines(bounds))
 }
 
 fn bound_lines(bounds: List(ParamBound)) -> List(String) {

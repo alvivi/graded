@@ -81,12 +81,52 @@ pub type SignatureRegistry {
     // callbacks: what a declaration without bounds charges a callback
     // argument through. No other lookup reads them.
     callback_signatures: Dict(QualifiedName, List(ParameterInfo)),
+    // Every custom type and alias of the run, for the questions a signature's
+    // declared types are asked: is it a function, can it hold one.
+    types: typedefs.TypeRegistry,
+    // Whether each of those types is a function, solved once for them.
+    kinds: typedefs.Kinds,
+    // What each of those types can hold, solved once for the run's container
+    // policy.
+    shapes: typedefs.Shapes,
+  )
+}
+
+// The registry with the run's type definitions beside its signatures, their
+// shapes not yet solved.
+pub fn with_types(
+  registry: SignatureRegistry,
+  types: typedefs.TypeRegistry,
+) -> SignatureRegistry {
+  SignatureRegistry(
+    ..registry,
+    types:,
+    kinds: typedefs.kinds(types),
+    shapes: typedefs.no_shapes(),
+  )
+}
+
+// The registry with what each of its types can hold, solved once under the
+// run's container policy.
+pub fn with_shapes(
+  registry: SignatureRegistry,
+  containers: typedefs.Containers,
+) -> SignatureRegistry {
+  SignatureRegistry(
+    ..registry,
+    shapes: typedefs.shapes(registry.types, containers),
   )
 }
 
 // An empty registry — nothing known about any function's parameters.
 pub fn empty() -> SignatureRegistry {
-  SignatureRegistry(signatures: dict.new(), callback_signatures: dict.new())
+  SignatureRegistry(
+    signatures: dict.new(),
+    callback_signatures: dict.new(),
+    types: typedefs.empty(),
+    kinds: typedefs.no_kinds(),
+    shapes: typedefs.no_shapes(),
+  )
 }
 
 // The registry with the signatures of the functions `modules` define held
@@ -100,6 +140,7 @@ pub fn without_modules(
     dict.to_list(registry.signatures)
     |> list.partition(fn(entry) { set.contains(modules, { entry.0 }.module) })
   SignatureRegistry(
+    ..registry,
     signatures: dict.from_list(kept),
     callback_signatures: dict.merge(
       registry.callback_signatures,
@@ -112,12 +153,23 @@ pub fn without_modules(
 // interfaces override earlier ones — useful when the project's own
 // interface is loaded after dependency interfaces).
 pub fn merge(a: SignatureRegistry, b: SignatureRegistry) -> SignatureRegistry {
+  let types = typedefs.merge(a.types, b.types)
   SignatureRegistry(
     signatures: dict.merge(a.signatures, b.signatures),
     callback_signatures: dict.merge(
       a.callback_signatures,
       b.callback_signatures,
     ),
+    types:,
+    // Solved for `a`'s types, they still answer when `b` brings none.
+    kinds: case typedefs.is_empty(b.types) {
+      True -> a.kinds
+      False -> typedefs.kinds(types)
+    },
+    shapes: case typedefs.is_empty(b.types) {
+      True -> a.shapes
+      False -> typedefs.no_shapes()
+    },
   )
 }
 
@@ -319,6 +371,15 @@ fn by_position(params: List(ParameterInfo)) -> List(ParameterInfo) {
 // Builds registry entries and the fn-typed field index from parsed modules,
 // so both project and dependency signatures come from one construction path.
 
+// A source file read and parsed.
+pub fn parse_source_file(gleam_path: String) -> Result(Module, Nil) {
+  use source <- result.try(result.replace_error(
+    simplifile.read(gleam_path),
+    Nil,
+  ))
+  result.replace_error(glance.module(source), Nil)
+}
+
 // Build a SignatureRegistry from a parsed project module. Used during
 // `run_infer` / `run` to give the checker position information for
 // every function in the project — which powers positional argument
@@ -348,8 +409,13 @@ pub fn from_glance_module(
         },
       )
     })
-
-  SignatureRegistry(signatures:, callback_signatures: dict.new())
+  SignatureRegistry(
+    signatures:,
+    callback_signatures: dict.new(),
+    types: typedefs.empty(),
+    kinds: typedefs.no_kinds(),
+    shapes: typedefs.no_shapes(),
+  )
 }
 
 // The parameters of two `@target` variants of one function: each one's
@@ -398,6 +464,9 @@ pub fn from_single_function(
       ),
     ]),
     callback_signatures: dict.new(),
+    types: typedefs.empty(),
+    kinds: typedefs.no_kinds(),
+    shapes: typedefs.no_shapes(),
   )
 }
 
@@ -878,18 +947,32 @@ pub fn fold_source_dir(
   initial: acc,
   step: fn(acc, String, String, Result(Module, Nil)) -> acc,
 ) -> acc {
-  case config.source_files(source_dir) {
+  fold_source_dir_with(source_dir, dict.new(), dict.new(), initial, step)
+}
+
+// The same fold, reading a file's parse from `parsed` where it holds one, and
+// the directory's files from `listed`, the files the walk that filled `parsed`
+// found under each directory, where it holds them.
+pub fn fold_source_dir_with(
+  source_dir: String,
+  parsed: Dict(String, Result(Module, Nil)),
+  listed: Dict(String, List(String)),
+  initial: acc,
+  step: fn(acc, String, String, Result(Module, Nil)) -> acc,
+) -> acc {
+  let files = case dict.get(listed, source_dir) {
+    Ok([_, ..] as listed) -> Ok(listed)
+    _ -> config.source_files(source_dir)
+  }
+  case files {
     Error(_) -> initial
     Ok(files) ->
       files
       |> list.filter(fn(path) { string.ends_with(path, ".gleam") })
       |> list.fold(initial, fn(acc, gleam_path) {
-        let parsed = {
-          use source <- result.try(result.replace_error(
-            simplifile.read(gleam_path),
-            Nil,
-          ))
-          result.replace_error(glance.module(source), Nil)
+        let parsed = case dict.get(parsed, gleam_path) {
+          Ok(parsed) -> parsed
+          Error(Nil) -> parse_source_file(gleam_path)
         }
         step(
           acc,

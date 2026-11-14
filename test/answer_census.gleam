@@ -199,7 +199,6 @@ pub fn reason(reason: option.Option(types.UnknownReason)) -> String {
     Some(types.UntraceableReceiver) -> "untraceable-receiver"
     Some(types.UnresolvedFieldValue) -> "unresolved-field-value"
     Some(types.UntraceableProducer) -> "untraceable-producer"
-    Some(types.RefusedDeclaredReturn) -> "refused-declared-return"
     Some(types.UntraceableArgument) -> "untraceable-argument"
   }
 }

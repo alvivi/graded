@@ -100,7 +100,14 @@ pub type ContractParameter {
 
 // What the winning line for a callee says about function values.
 pub type CalleeContract {
-  CalleeContract(parameters: List(ContractParameter), contract: LatentContract)
+  CalleeContract(
+    parameters: List(ContractParameter),
+    contract: LatentContract,
+    // Whether the line is a reviewed catalog line, whose contract the review
+    // vouches for whatever kind its parameters resolve to. A written line
+    // promises nothing for a parameter of unknown kind.
+    reviewed: Bool,
+  )
 }
 
 pub type Resolver(memo) {
@@ -364,7 +371,7 @@ fn evidence(
         Some(latent) -> #(latent, reading)
         None -> function_latent(value, span, scope, resolver, reading, depth)
       }
-    types.Closure(..) | types.Capture(..) | types.ReturnedOperator(..) ->
+    types.Closure(..) | types.Capture(..) ->
       function_latent(value, span, scope, resolver, reading, depth)
     types.LocalRef(name:) ->
       case dict.get(scope, name) {
@@ -378,7 +385,7 @@ fn evidence(
     types.Constructed(coverage: types.PartialValue, ..) -> #(unknown(), reading)
     types.Updated(components:, ..) ->
       read_components(components, read_site, reading)
-    types.CallResult(callee:, args:) -> {
+    types.CallResult(callee:, args:) | types.ReturnedOperator(callee:, args:) -> {
       let #(carried, reading) =
         carries_reading(callee, args, scope, resolver, reading)
       case carried, type_at(resolver, span) {
@@ -888,15 +895,19 @@ fn contract_reading(
   let #(carried, reading) =
     list.fold(contract.parameters, #(dict.new(), reading), fn(acc, parameter) {
       let #(bindings, reading) = acc
-      case parameter.kind, resolver.match(callee, parameter.bound.name, args) {
-        CallbackKind, _ | _, None -> #(bindings, reading)
-        // A parameter of unknown kind gets no promise: what it carries reads
-        // unknown.
-        UnknownKind, Some(_) -> #(
+      case
+        parameter.kind,
+        contract.reviewed,
+        resolver.match(callee, parameter.bound.name, args)
+      {
+        CallbackKind, _, _ | _, _, None -> #(bindings, reading)
+        // A written line's parameter of unknown kind gets no promise: what it
+        // carries reads unknown.
+        UnknownKind, False, Some(_) -> #(
           bind_all(bindings, parameter.bound, effect_term.unknown()),
           reading,
         )
-        NonCallbackKind, Some(arg) -> {
+        NonCallbackKind, _, Some(arg) | UnknownKind, True, Some(arg) -> {
           let #(latent, reading) =
             site_latent(arg.value, arg.span, scope, resolver, reading, 0)
           #(bind_all(bindings, parameter.bound, to_term(latent)), reading)
