@@ -56,7 +56,10 @@ pub fn lookup_known_variant_test() {
   effects.lookup(support.knowledge_base(), QualifiedName("gleam/io", "println"))
   |> should.equal(effects.Known(
     effect_term.from_effect_set(Specific(set.from_list(["Stdout"]))),
-    types.FunctionEntry(origin: types.Catalog("gleam_stdlib")),
+    types.FunctionEntry(
+      origin: types.Catalog("gleam_stdlib"),
+      lineage: types.DeclaredLine,
+    ),
   ))
 }
 
@@ -516,7 +519,9 @@ pub fn a_catalog_effects_line_beats_another_packages_external_test() {
       root <> "/manifest.toml",
     )
   dict.get(all_effects, QualifiedName("shared/mod", "run"))
-  |> result.map(fn(entry) { #(effect_term.to_effect_set(entry.0), entry.1) })
+  |> result.map(fn(entry) {
+    #(effect_term.to_effect_set(entry.term), entry.origin)
+  })
   |> should.equal(
     Ok(#(Specific(set.from_list(["Http"])), types.Catalog("a_pkg"))),
   )
@@ -544,7 +549,9 @@ pub fn a_catalog_external_beats_its_own_files_effects_line_test() {
       root <> "/manifest.toml",
     )
   dict.get(all_effects, QualifiedName("shared/mod", "run"))
-  |> result.map(fn(entry) { #(effect_term.to_effect_set(entry.0), entry.1) })
+  |> result.map(fn(entry) {
+    #(effect_term.to_effect_set(entry.term), entry.origin)
+  })
   |> should.equal(
     Ok(#(Specific(set.from_list(["Disk"])), types.Catalog("a_pkg"))),
   )
@@ -569,7 +576,9 @@ pub fn a_catalog_bounded_external_records_its_bounds_test() {
       root <> "/manifest.toml",
     )
   dict.get(all_effects, QualifiedName("shared/mod", "each"))
-  |> result.map(fn(entry) { #(effect_term.to_effect_set(entry.0), entry.1) })
+  |> result.map(fn(entry) {
+    #(effect_term.to_effect_set(entry.term), entry.origin)
+  })
   |> should.equal(
     Ok(#(
       types.Polymorphic(set.new(), set.from_list(["f"])),
@@ -601,9 +610,10 @@ pub fn a_catalog_second_order_external_records_its_term_test() {
     )
   dict.get(all_effects, QualifiedName("shared/mod", "with_tx"))
   |> should.equal(
-    Ok(#(
-      types.TApp(types.TVar("cb"), types.TLabels(set.from_list(["Db"]))),
-      types.Catalog("a_pkg"),
+    Ok(effects.TermEntry(
+      term: types.TApp(types.TVar("cb"), types.TLabels(set.from_list(["Db"]))),
+      origin: types.Catalog("a_pkg"),
+      lineage: types.DeclaredLine,
     )),
   )
   dict.get(params, QualifiedName("shared/mod", "with_tx"))
@@ -675,9 +685,10 @@ pub fn the_bundled_catalog_declares_promise_new_test() {
   let new = QualifiedName("gleam/javascript/promise", "new")
   dict.get(all_effects, new)
   |> should.equal(
-    Ok(#(
-      types.TApp(types.TVar("a"), effect_term.pure()),
-      types.Catalog("gleam_javascript"),
+    Ok(effects.TermEntry(
+      term: types.TApp(types.TVar("a"), effect_term.pure()),
+      origin: types.Catalog("gleam_javascript"),
+      lineage: types.DeclaredLine,
     )),
   )
   dict.get(params, new)
@@ -711,10 +722,7 @@ fn catalog_clash_entry(
   root: String,
   poly_package: String,
   ext_package: String,
-) -> #(
-  Result(#(types.EffectTerm, types.LookupOrigin), Nil),
-  Result(List(ParamBound), Nil),
-) {
+) -> #(Result(effects.TermEntry, Nil), Result(List(ParamBound), Nil)) {
   let root =
     write_fixture(root, [
       #(
@@ -746,7 +754,11 @@ pub fn a_catalog_effects_lines_bounds_travel_with_its_term_test() {
   // it.
   catalog_clash_entry("build/eff_catalog_bounds_clash", "a_pkg", "b_pkg")
   |> should.equal(#(
-    Ok(#(types.TVar("cb"), types.Catalog("a_pkg"))),
+    Ok(effects.TermEntry(
+      term: types.TVar("cb"),
+      origin: types.Catalog("a_pkg"),
+      lineage: types.DeclaredLine,
+    )),
     Ok([ParamBound("cb", types.TVar("cb"))]),
   ))
 }
@@ -762,7 +774,11 @@ pub fn a_catalog_clash_resolves_the_same_either_way_round_test() {
     "a_pkg",
   )
   |> should.equal(#(
-    Ok(#(types.TVar("cb"), types.Catalog("b_pkg"))),
+    Ok(effects.TermEntry(
+      term: types.TVar("cb"),
+      origin: types.Catalog("b_pkg"),
+      lineage: types.DeclaredLine,
+    )),
     Ok([ParamBound("cb", types.TVar("cb"))]),
   ))
 }
@@ -942,8 +958,10 @@ pub fn a_dependency_spec_loads_without_a_declared_names_effects_line_test() {
     )
   dict.get(spec.effects, QualifiedName("dep", "run"))
   |> should.equal(Error(Nil))
-  dict.get(spec.params, QualifiedName("dep", "run"))
+  dict.get(spec.assumed_params, QualifiedName("dep", "run"))
   |> should.equal(Ok([ParamBound("f", types.TVar("f"))]))
+  dict.get(spec.inferred_params, QualifiedName("dep", "run"))
+  |> should.equal(Error(Nil))
 }
 
 pub fn a_user_external_beats_a_dependency_external_test() {
@@ -1177,7 +1195,10 @@ pub fn a_path_dep_function_entry_beats_a_module_external_test() {
   effects.lookup(kb, QualifiedName("dep/ffi", "now"))
   |> should.equal(effects.Known(
     effect_term.from_effect_set(Specific(set.from_list(["Time"]))),
-    types.FunctionEntry(origin: types.PathDependency("dep")),
+    types.FunctionEntry(
+      origin: types.PathDependency("dep"),
+      lineage: types.DeclaredLine,
+    ),
   ))
   // Every other function in the module still answers from the consumer's line.
   origin_of(kb, QualifiedName("dep/ffi", "later"))
@@ -1428,7 +1449,7 @@ pub fn a_rejected_line_blocks_its_own_name_test() {
   spec.declared_returns |> dict.get(name) |> should.be_error()
   // The blocker's own bound list, which a boundless `assume` line keys too —
   // not the rejected line's, which this version could not read.
-  spec.params |> dict.get(name) |> should.equal(Ok([]))
+  spec.assumed_params |> dict.get(name) |> should.equal(Ok([]))
   list.length(rejected) |> should.equal(1)
 }
 
@@ -2005,7 +2026,7 @@ pub fn every_line_about_shipped_code_is_kept_test() {
   ])
   let run = QualifiedName("dep", "run")
   spec.effects |> dict.get(run) |> should.be_ok()
-  spec.params
+  spec.inferred_params
   |> dict.get(run)
   |> should.equal(Ok([ParamBound("cb", types.TVar("cb"))]))
   spec.returns |> dict.get(run) |> should.be_ok()

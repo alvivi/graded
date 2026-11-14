@@ -1867,9 +1867,10 @@ fn build_kb(calls: List(#(String, String, String))) -> effects.KnowledgeBase {
     |> list.map(fn(c) {
       #(
         types.QualifiedName(module: c.0, function: c.1),
-        #(
-          effect_term.from_effect_set(types.from_labels([c.2])),
-          types.CommittedSpec,
+        effects.TermEntry(
+          term: effect_term.from_effect_set(types.from_labels([c.2])),
+          origin: types.CommittedSpec,
+          lineage: types.GeneratedLine,
         ),
       )
     })

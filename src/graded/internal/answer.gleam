@@ -268,7 +268,7 @@ fn clause_attribution(
 // always attributed to itself.
 fn entry_origin(source: AnswerSource) -> Result(types.LookupOrigin, Nil) {
   case source {
-    Entry(entry: types.FunctionEntry(origin:), ..)
+    Entry(entry: types.FunctionEntry(origin:, ..), ..)
     | Entry(entry: types.ModuleAssumeEntry(origin:), ..) -> Ok(origin)
     UndeclaredExternal(..) | UnreachedDeclaration | RunningFallbackBody ->
       Error(Nil)
@@ -281,7 +281,7 @@ fn graded_source(module: String, source: AnswerSource) -> String {
   case source {
     Entry(entry: types.ModuleAssumeEntry(..), ..) ->
       "resolved via module-level `assume` for " <> module
-    Entry(entry: types.FunctionEntry(origin:), ..) ->
+    Entry(entry: types.FunctionEntry(origin:, ..), ..) ->
       "resolved from " <> effects.describe_origin(origin)
     UndeclaredExternal(..) -> undeclared_external_source
     UnreachedDeclaration -> unreached_declaration_source
@@ -553,7 +553,7 @@ fn detail_lines(
       "  source: module-level `assume` for `" <> module <> "`",
       "          used when no per-function entry exists",
     ]
-    Entry(entry: types.FunctionEntry(origin:), ..) -> [
+    Entry(entry: types.FunctionEntry(origin:, ..), ..) -> [
       "  source: " <> effects.describe_origin(origin),
     ]
     UndeclaredExternal(..) -> ["  source: " <> undeclared_external_source]
