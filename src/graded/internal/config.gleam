@@ -307,6 +307,29 @@ pub fn normalized_path(path: String) -> String {
   }
 }
 
+// `path` as an absolute path with its `.`, `..` and empty segments collapsed,
+// a relative one read from the absolute directory `working`: one spelling for
+// every spelling of a directory, relative or absolute. A `..` at the top stays
+// there.
+pub fn absolute_path(path: String, working: String) -> String {
+  let full = case string.starts_with(path, "/") {
+    True -> path
+    False -> working <> "/" <> path
+  }
+  "/"
+  <> string.split(full, "/")
+  |> list.fold([], fn(collapsed, segment) {
+    case segment, collapsed {
+      "", _ | ".", _ -> collapsed
+      "..", [] -> []
+      "..", [_, ..rest] -> rest
+      _, _ -> [segment, ..collapsed]
+    }
+  })
+  |> list.reverse
+  |> string.join("/")
+}
+
 // One segment onto the collapsed prefix, which is held reversed. A `..` drops
 // the segment before it; with nothing before it to drop, or another `..` there,
 // it is kept and the path goes on climbing.

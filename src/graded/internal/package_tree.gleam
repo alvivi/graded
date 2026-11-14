@@ -299,6 +299,78 @@ pub fn newly_loaded(local: LocalPackages) -> List(LocalPackage) {
   |> list.filter(fn(package) { class_of(local, package.name) == NewlyLoaded })
 }
 
+// Every local package's source directory, as an absolute path ending `/src/`,
+// a relative one read from the absolute directory `working`.
+pub fn source_directories(
+  local: LocalPackages,
+  working: String,
+) -> Set(String) {
+  dict.values(local.packages)
+  |> list.map(fn(package) { package.directory })
+  |> source_directories_of(working)
+}
+
+// The source directories of the packages at `roots`, however spelled, each as
+// an absolute path ending `/src/`, a relative one read from `working`.
+pub fn source_directories_of(
+  roots: List(String),
+  working: String,
+) -> Set(String) {
+  list.map(roots, fn(root) {
+    source_directory(config.absolute_path(root, working))
+  })
+  |> set.from_list
+}
+
+// The source directory of the package at the absolute path `root`, ending
+// `/src/`.
+fn source_directory(root: String) -> String {
+  case root {
+    "/" -> "/src/"
+    root -> root <> "/src/"
+  }
+}
+
+// Whether `path`, however spelled, lies under one of `directories`, each an
+// absolute path ending `/src/`: one of the prefixes ending `/src/` of its
+// absolute spelling, a relative one read from `working`, is one of them.
+pub fn under_source_directory(
+  path: String,
+  directories: Set(String),
+  working: String,
+) -> Bool {
+  config.absolute_path(path, working)
+  |> source_prefixes
+  |> list.any(set.contains(directories, _))
+}
+
+// Every prefix of `path` ending `/src/`: each `src` segment with a segment
+// before it and a slash after it ends one, adjacent `src` segments included.
+fn source_prefixes(path: String) -> List(String) {
+  case string.split(path, "/") {
+    [] -> []
+    [first, ..rest] -> prefixes_ending_src(rest, first, [])
+  }
+}
+
+// The prefixes ending `/src/` among those `segments` extend `prefix` by.
+fn prefixes_ending_src(
+  segments: List(String),
+  prefix: String,
+  found: List(String),
+) -> List(String) {
+  case segments {
+    [] | [_] -> found
+    [segment, ..rest] -> {
+      let prefix = prefix <> "/" <> segment
+      prefixes_ending_src(rest, prefix, case segment {
+        "src" -> [prefix <> "/", ..found]
+        _ -> found
+      })
+    }
+  }
+}
+
 fn sorted_entries(
   declarations: Dict(String, Declaration),
 ) -> List(#(String, Declaration)) {

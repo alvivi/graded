@@ -910,6 +910,7 @@ fn reading(
       unlocated: [],
       dropped: set.from_list(dropped),
     ),
+    by_target: [],
   )
 }
 

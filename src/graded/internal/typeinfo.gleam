@@ -30,8 +30,10 @@ import girard.{type Error, type Resolution, type Type, Named}
 import glance
 import gleam/bool
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/set.{type Set}
 import graded/internal/extract
 import graded/internal/types
@@ -56,6 +58,48 @@ pub type TypeInfo {
     targets: List(girard.Target),
     absent: Set(String),
     unfilled: Set(String),
+    // module path -> each declared target's own reading of its expression
+    // types, where more than one declared target was read. Empty where one
+    // was: the merged types then stand for every target.
+    by_target: Dict(String, List(TargetTypes)),
+  )
+}
+
+// One target's reading of a module's expression types, beside the spans of
+// the definitions it left out for the other target.
+pub type TargetTypes {
+  TargetTypes(
+    target: String,
+    expressions: Dict(#(Int, Int), Type),
+    dropped: Holes,
+  )
+}
+
+// The spans of definitions a run left out, each listed under every stretch of
+// `hole_stretch` bytes of source it covers: a span lies inside one only if it
+// starts in a stretch that hole covers, so asking is a lookup and a scan of a
+// handful of spans rather than of every hole.
+pub opaque type Holes {
+  Holes(by_stretch: Dict(Int, List(#(Int, Int))))
+}
+
+const hole_stretch = 256
+
+// The holes `spans` leave, indexed.
+pub fn holes(spans: List(#(Int, Int))) -> Holes {
+  Holes(
+    list.fold(spans, dict.new(), fn(acc, hole) {
+      int.range(
+        from: hole.0 / hole_stretch,
+        to: hole.1 / hole_stretch + 1,
+        with: acc,
+        run: fn(acc, stretch) {
+          dict.upsert(acc, stretch, fn(existing) {
+            [hole, ..option.unwrap(existing, [])]
+          })
+        },
+      )
+    }),
   )
 }
 
@@ -204,7 +248,15 @@ pub fn span_types(result: girard.ModuleResult) -> Dict(#(Int, Int), Type) {
 // The empty type index — every lookup misses, so the checker behaves exactly
 // as it did before girard. Used when type inference is unavailable.
 pub fn none() -> TypeInfo {
-  TypeInfo(dict.new(), dict.new(), dict.new(), [], set.new(), set.new())
+  TypeInfo(
+    dict.new(),
+    dict.new(),
+    dict.new(),
+    [],
+    set.new(),
+    set.new(),
+    dict.new(),
+  )
 }
 
 // Build a `TypeInfo` from per-module span->type maps, per-module
@@ -225,6 +277,38 @@ pub fn from_modules(
     targets:,
     absent:,
     unfilled:,
+    by_target: dict.new(),
+  )
+}
+
+// The index with each target's own reading of every module's expression types
+// beside the merged one.
+pub fn with_target_types(
+  info: TypeInfo,
+  by_target: Dict(String, List(TargetTypes)),
+) -> TypeInfo {
+  TypeInfo(..info, by_target:)
+}
+
+// The index with only the readings of the targets in `declared`, and none
+// where fewer than two of them were read.
+pub fn on_declared_targets(info: TypeInfo, declared: Set(String)) -> TypeInfo {
+  TypeInfo(
+    ..info,
+    by_target: dict.fold(
+      info.by_target,
+      dict.new(),
+      fn(acc, module_path, readings) {
+        case
+          list.filter(readings, fn(reading) {
+            set.contains(declared, reading.target)
+          })
+        {
+          [_, _, ..] as kept -> dict.insert(acc, module_path, kept)
+          _ -> acc
+        }
+      },
+    ),
   )
 }
 
@@ -262,6 +346,9 @@ pub type ModuleReading {
     expressions: Dict(#(Int, Int), Type),
     fn_typed: Dict(String, Set(String)),
     evidence: ModuleEvidence,
+    // Each declared target's own reading of the expression types, where more
+    // than one was read; empty where `expressions` stands for every target.
+    by_target: List(TargetTypes),
   )
 }
 
@@ -275,13 +362,38 @@ pub fn reading_for_module(
     expressions: for_module(info, module_path),
     fn_typed: fn_typed_for_module(info, module_path),
     evidence: evidence_for_module(info, module_path),
+    by_target: dict.get(info.by_target, module_path) |> result.unwrap([]),
   )
 }
 
 // The empty reading — girard said nothing about this module. Used where type
 // inference is unavailable, and by every test that drives the checker untyped.
 pub fn no_reading() -> ModuleReading {
-  ModuleReading(dict.new(), dict.new(), no_evidence())
+  ModuleReading(dict.new(), dict.new(), no_evidence(), [])
+}
+
+// The type every target that compiles the span gave the expression there, one
+// entry per target: `None` for a target that compiles it and typed nothing
+// there. A target that left the enclosing definition out has no entry.
+pub fn types_at(
+  reading: ModuleReading,
+  start: Int,
+  end: Int,
+) -> List(Option(Type)) {
+  case reading.by_target {
+    [] -> [type_at(reading.expressions, start, end)]
+    readings ->
+      list.filter_map(readings, fn(target) {
+        case dict.get(target.expressions, #(start, end)) {
+          Ok(type_) -> Ok(Some(type_))
+          Error(Nil) ->
+            case inside_a_hole(#(start, end), target.dropped) {
+              True -> Error(Nil)
+              False -> Ok(None)
+            }
+        }
+      })
+  }
 }
 
 // The merge
@@ -315,7 +427,7 @@ pub fn merge_readings(
   secondary: ModuleReading,
   secondary_definitions: Dict(String, #(Int, Int)),
 ) -> ModuleReading {
-  let holes = set.to_list(primary.evidence.dropped)
+  let holes = holes(set.to_list(primary.evidence.dropped))
   let primary_evidence = primary.evidence
   let secondary_evidence = secondary.evidence
   ModuleReading(
@@ -339,17 +451,16 @@ pub fn merge_readings(
         secondary_evidence.dropped,
       ),
     ),
+    by_target: primary.by_target,
   )
 }
 
 // `primary` with every span-keyed entry of `secondary` that lies inside a hole
-// and that `primary` does not already answer. A hole set is tiny — a handful of
-// definitions per package at most — so membership is a scan rather than an
-// index.
+// and that `primary` does not already answer.
 fn fill(
   primary: Dict(#(Int, Int), a),
   secondary: Dict(#(Int, Int), a),
-  holes: List(#(Int, Int)),
+  holes: Holes,
 ) -> Dict(#(Int, Int), a) {
   dict.fold(secondary, primary, fn(acc, span, entry) {
     case dict.has_key(acc, span) || !inside_a_hole(span, holes) {
@@ -368,7 +479,7 @@ fn fill_fn_typed(
   primary: Dict(String, Set(String)),
   secondary: Dict(String, Set(String)),
   definitions: Dict(String, #(Int, Int)),
-  holes: List(#(Int, Int)),
+  holes: Holes,
 ) -> Dict(String, Set(String)) {
   dict.fold(secondary, primary, fn(acc, name, params) {
     case dict.has_key(acc, name), dict.get(definitions, name) {
@@ -383,8 +494,10 @@ fn fill_fn_typed(
 }
 
 // Whether a span lies within one of the primary run's dropped definitions.
-fn inside_a_hole(span: #(Int, Int), holes: List(#(Int, Int))) -> Bool {
-  list.any(holes, fn(hole) { span.0 >= hole.0 && span.1 <= hole.1 })
+pub fn inside_a_hole(span: #(Int, Int), holes: Holes) -> Bool {
+  dict.get(holes.by_stretch, span.0 / hole_stretch)
+  |> result.unwrap([])
+  |> list.any(fn(hole) { span.0 >= hole.0 && span.1 <= hole.1 })
 }
 
 // girard's reading of one module: its resolutions, its skips and its dropped

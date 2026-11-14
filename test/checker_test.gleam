@@ -1050,6 +1050,7 @@ fn girard_reading(module: glance.Module) -> typeinfo.ModuleReading {
           module,
           girard.Erlang,
         ),
+        by_target: [],
       )
     }
     Error(_) -> typeinfo.no_reading()
@@ -1871,6 +1872,7 @@ fn build_kb(calls: List(#(String, String, String))) -> effects.KnowledgeBase {
           term: effect_term.from_effect_set(types.from_labels([c.2])),
           origin: types.CommittedSpec,
           lineage: types.GeneratedLine,
+          contract: types.no_contract,
         ),
       )
     })
@@ -7371,6 +7373,7 @@ fn resolved_accesses(
         unlocated: [],
         dropped: set.new(),
       ),
+      by_target: [],
     )
   }
 }
@@ -7394,6 +7397,7 @@ fn skipped_target(_calls: List(types.FieldCall)) -> typeinfo.ModuleReading {
       unlocated: [],
       dropped: set.new(),
     ),
+    by_target: [],
   )
 }
 
@@ -7589,6 +7593,7 @@ pub fn a_dropped_definition_settles_nothing_test() {
           unlocated: [],
           dropped:,
         ),
+        by_target: [],
       )
     })
   settles_nothing(split)

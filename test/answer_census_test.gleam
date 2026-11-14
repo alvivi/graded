@@ -103,3 +103,74 @@ pub fn census_keeps_an_unloadable_root_in_the_count_test() {
   assert list.contains(lines, "answer broken proj.go : unloaded")
   assert list.any(lines, string.starts_with(_, "root broken load error "))
 }
+
+const pair_root = "/tmp/graded_answer_census_pair"
+
+// A root read on both targets whose helper defines two functions once per
+// target: one prints on one target, the other calls an undeclared external on
+// one target. `erlang_first` says which target each is on.
+fn write_pair_root(erlang_first: Bool) -> Nil {
+  let #(first, second) = case erlang_first {
+    True -> #("erlang", "javascript")
+    False -> #("javascript", "erlang")
+  }
+  let _ =
+    support.write_fixture(pair_root, [
+      #("gleam.toml", support.dual_target_toml("pair_root")),
+      #(
+        "pair_root.graded",
+        "assume pair_root/ffi.shout : [Stdout]\ncheck pair_root.main_print : []\n",
+      ),
+      #(
+        "src/pair_root.gleam",
+        "import pair_root/helper\n\n"
+          <> "pub fn main_print() -> Nil {\n  helper.run_print()\n}\n\n"
+          <> "pub fn main_unknown() -> Nil {\n  helper.run_unknown()\n}\n",
+      ),
+      #(
+        "src/pair_root/helper.gleam",
+        "import pair_root/ffi\n\n"
+          <> "@target("
+          <> first
+          <> ")\npub fn run_print() -> Nil {\n  ffi.shout()\n}\n\n"
+          <> "@target("
+          <> second
+          <> ")\npub fn run_print() -> Nil {\n  Nil\n}\n\n"
+          <> "@target("
+          <> first
+          <> ")\npub fn run_unknown() -> Nil {\n  ffi.mystery()\n}\n\n"
+          <> "@target("
+          <> second
+          <> ")\npub fn run_unknown() -> Nil {\n  Nil\n}\n",
+      ),
+      #(
+        "src/pair_root/ffi.gleam",
+        support.foreign_fn("shout", "() -> Nil")
+          <> support.foreign_fn("mystery", "() -> Nil"),
+      ),
+    ])
+  Nil
+}
+
+// The check verdicts and unknown sources of a root read on both targets are
+// those of every target, whichever the run reads last.
+pub fn census_reads_every_target_of_a_two_target_root_test() {
+  let read = fn(erlang_first) {
+    write_pair_root(erlang_first)
+    let lines = census_lines("pair=" <> pair_root)
+    support.cleanup(pair_root)
+    #(
+      list.contains(lines, "answer pair pair_root.main_print : [Stdout]"),
+      list.any(lines, fn(line) {
+        string.starts_with(line, "violation pair ")
+        && string.contains(line, "main_print")
+      }),
+      list.any(lines, string.starts_with(
+        _,
+        "unknown pair pair_root.main_unknown ",
+      )),
+    )
+  }
+  assert read(True) == #(True, True, True)
+  assert read(False) == #(True, True, True)
+}

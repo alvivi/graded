@@ -1130,9 +1130,10 @@ fn targeted_justin_answer(
 
 pub fn a_consumer_declared_return_stands_while_its_declaration_is_in_reach_test() {
   let declared = "assume justin.make where returns : [Net]\n"
-  // Both halves built: the written line answers, its body suppressed.
+  // Both halves built: the clause answers for Erlang, and the body, which no
+  // walk reads for what it returns, reads `[Unknown]` for JavaScript.
   targeted_justin_answer("dual", make_erlang_with_body, declared, "app.go")
-  |> should.equal("effects app.go : [Net]")
+  |> should.equal("effects app.go : [Net, Unknown]")
   targeted_justin_answer("dual", make_external, declared, "app.go")
   |> should.equal("effects app.go : [Net]")
   // Only the Gleam body is built, so the declaration it belongs to is out of

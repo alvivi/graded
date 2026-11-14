@@ -39,10 +39,10 @@ pub fn returns_operator() -> fn() -> Nil {
 }
 
 // Partially covered: it is compiled for both targets and declares javascript
-// only, so on erlang this body *is* what runs. Its operator is still refused —
-// the JavaScript implementation it stands in for is the one no declaration
-// describes, and there is no declared operator to union a fallback-derived one
-// with. Ungated, since partial coverage is what it is here for: gating it to
+// only, so on erlang this body *is* what runs. Its operator joins the body's
+// closure with the `[Unknown]` of the JavaScript implementation, which no
+// declaration describes, so a caller of the closure pays both halves.
+// Ungated, since partial coverage is what it is here for: gating it to
 // erlang would leave the declaration covering no target it compiles for, which
 // makes the body the sole implementation and the function ordinary Gleam.
 @external(javascript, "some_ffi_module", "make_handler")

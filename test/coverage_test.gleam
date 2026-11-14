@@ -173,7 +173,7 @@ pub fn a_second_run_is_stated_on_the_inference_line_test() {
     coverage.CoverageReport(..clean(), ran_on: ["erlang", "javascript"]),
   )
   |> string.contains(
-    "type inference: ran on erlang, javascript; a @target function gates the second run",
+    "type inference: ran on erlang, javascript; a @target definition gates the second run",
   )
   |> should.be_true()
 }
@@ -460,7 +460,7 @@ pub fn a_gated_function_runs_the_inference_twice_test() {
   let assert Ok(report) = graded.run_coverage(root)
   report
   |> string.contains(
-    "type inference: ran on erlang, javascript; a @target function gates the second run",
+    "type inference: ran on erlang, javascript; a @target definition gates the second run",
   )
   |> should.be_true()
   report

@@ -87,34 +87,38 @@ pub fn blocker_for_path(path: String) -> Option(GradedLine) {
   }
 }
 
-// The physical line number of the statement whose path is `path`, with its
-// text as written: the first statement of `keyword` naming it. For a message
-// that points at a line the parser read but the rules refused once kinds were
-// known.
-pub fn statement_at(
+// The physical line number and written text of the statements at `indices`,
+// ascending: the statement each parsed line at those places in a file came
+// from, one parsed line per statement, read in one pass that stops after the
+// last. `None` for a place past the end.
+pub fn statements_at(
   input: String,
-  keyword: String,
-  path: String,
-) -> Option(#(Int, String)) {
+  indices: List(Int),
+) -> List(Option(#(Int, String))) {
   input
   |> physical_lines()
   |> join_continuations()
-  |> list.find_map(fn(element) {
-    use #(line_number, line) <- result.try(result.replace_error(element, Nil))
-    case string.trim(line) {
-      "" -> Error(Nil)
-      trimmed ->
-        case string.split_once(trimmed, " ") {
-          Ok(#(word, rest)) if word == keyword ->
-            case statement_path(rest) == path {
-              True -> Ok(#(line_number, trimmed))
-              False -> Error(Nil)
-            }
-          _ -> Error(Nil)
-        }
+  |> picked_statements(indices, 0, [])
+}
+
+fn picked_statements(
+  lines: List(Result(#(Int, String), ParseError)),
+  indices: List(Int),
+  at: Int,
+  picked: List(Option(#(Int, String))),
+) -> List(Option(#(Int, String))) {
+  case indices, lines {
+    [], _ -> list.reverse(picked)
+    [_, ..rest], [] -> picked_statements([], rest, at, [None, ..picked])
+    [wanted, ..rest], [line, ..more] if wanted == at -> {
+      let statement = case line {
+        Ok(#(line_number, text)) -> Some(#(line_number, string.trim(text)))
+        Error(_) -> None
+      }
+      picked_statements(more, rest, at + 1, [statement, ..picked])
     }
-  })
-  |> option.from_result
+    _, [_, ..more] -> picked_statements(more, indices, at + 1, picked)
+  }
 }
 
 // The path a rejected line names. `None` for a line no keyword opens, and for

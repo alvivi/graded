@@ -293,7 +293,7 @@ fn inference_line(report: CoverageReport) -> String {
   <> case report.ran_on {
     [] -> "; nothing was typed"
     [_] -> "; no @target function, so no second run"
-    [_, ..] -> "; a @target function gates the second run"
+    [_, ..] -> "; a @target definition gates the second run"
   }
 }
 

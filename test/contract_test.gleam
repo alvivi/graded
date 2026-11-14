@@ -48,12 +48,12 @@ fn module(source: String) -> glance.Module {
   module
 }
 
-fn run_registry() -> #(signatures.SignatureRegistry, typedefs.TypeRegistry) {
+fn run_registry() -> signatures.SignatureRegistry {
   let targets = set.from_list(["erlang"])
   let app = module(app_source)
   let callbacks = module("pub type Callback = fn() -> Nil")
   let config = module("pub type Config { Config(on_item: fn(String) -> Nil) }")
-  #(
+  signatures.with_types(
     signatures.from_glance_module("app/ffi", app),
     typedefs.from_module("app/ffi", app, targets)
       |> typedefs.merge(typedefs.from_module(
@@ -72,20 +72,14 @@ fn assume(line: String) -> types.AssumeAnnotation {
 }
 
 fn kinds(line: String) -> List(#(String, types.BoundKind, option.Option(Int))) {
-  let #(registry, type_registry) = run_registry()
-  contract.resolve_bounds(assume(line), registry, typedefs.kinds(type_registry))
+  contract.resolve_bounds(assume(line), run_registry())
   |> list.map(fn(resolved) {
     #(resolved.bound.name, resolved.kind, resolved.arity)
   })
 }
 
 fn violations(line: String) -> List(contract.ContractViolation) {
-  let #(registry, type_registry) = run_registry()
-  contract.line_violations(
-    assume(line),
-    registry,
-    typedefs.kinds(type_registry),
-  )
+  contract.line_violations(assume(line), run_registry())
 }
 
 // Kinds
@@ -233,10 +227,13 @@ pub fn both(f: fn() -> Nil) -> Nil
 ",
     )
   let targets = set.from_list(["erlang", "javascript"])
-  let registry = signatures.from_glance_module("app/pair", pair)
-  let kinds = typedefs.kinds(typedefs.from_module("app/pair", pair, targets))
+  let registry =
+    signatures.with_types(
+      signatures.from_glance_module("app/pair", pair),
+      typedefs.from_module("app/pair", pair, targets),
+    )
   let kinds_of = fn(line) {
-    contract.resolve_bounds(assume(line), registry, kinds)
+    contract.resolve_bounds(assume(line), registry)
     |> list.map(fn(resolved) { #(resolved.bound.name, resolved.kind) })
   }
   kinds_of("assume app/pair.keep(f: [f], n: [n]) : [] where runs : [n]")
@@ -248,18 +245,14 @@ pub fn both(f: fn() -> Nil) -> Nil
 // Bounds that mean nothing
 
 pub fn a_non_callback_bound_that_is_no_variable_means_nothing_test() {
-  let #(registry, type_registry) = run_registry()
+  let registry = run_registry()
   [
     "assume app/ffi.two(n: []) : []",
     "assume app/ffi.two(n: [Stdout]) : []",
     "assume app/ffi.two(n: [n]) : [] where runs : [n]",
   ]
   |> list.map(fn(line) {
-    contract.resolve_bounds(
-      assume(line),
-      registry,
-      typedefs.kinds(type_registry),
-    )
+    contract.resolve_bounds(assume(line), registry)
     |> contract.meaningless_bounds
   })
   |> should.equal([["n"], ["n"], []])

@@ -479,6 +479,32 @@ pub fn shapes(registry: TypeRegistry, containers: Containers) -> Shapes {
   Shapes(summaries: summarize(graph(registry), containers))
 }
 
+// Whether `registry` holds a definition of `key`.
+pub fn defines(registry: TypeRegistry, key: #(String, String)) -> Bool {
+  dict.has_key(registry.definitions, key)
+}
+
+// Whether `key`'s definitions in `registry` hold no function value whatever
+// they are applied to: no field reaches an arrow, a type parameter, a foreign
+// representation or a type `registry` does not define.
+pub fn function_free(registry: TypeRegistry, key: #(String, String)) -> Bool {
+  function_free_in(registry)(key)
+}
+
+// Whether a type of `registry` is function-free, as `function_free` asks it,
+// with the registry solved once for every type asked about.
+pub fn function_free_in(
+  registry: TypeRegistry,
+) -> fn(#(String, String)) -> Bool {
+  let summaries = summarize(graph(registry), set.new())
+  fn(key) {
+    case dict.get(summaries, key) {
+      Ok(Summary(holds: NoArrows, reaches:)) -> !list.contains(reaches, True)
+      _ -> False
+    }
+  }
+}
+
 // No summaries: every custom type, alias and external type reads
 // `UnknownShape`.
 pub fn no_shapes() -> Shapes {

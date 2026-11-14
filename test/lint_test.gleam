@@ -12,6 +12,7 @@ import gleam/set
 import gleam/string
 import gleeunit/should
 import graded/internal/annotation
+import graded/internal/checker
 import graded/internal/effects
 import graded/internal/lint
 import graded/internal/signatures
@@ -62,6 +63,7 @@ fn context(
     },
     mode: types.Inactive,
     resolve_bounds: fn(_) { [] },
+    reader_view: checker.as_written,
   )
 }
 

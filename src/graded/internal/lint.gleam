@@ -77,6 +77,11 @@ pub type Context {
     // Each bound of an `assume` line with its parameter's kind, read against
     // the run's signatures and types.
     resolve_bounds: fn(types.AssumeAnnotation) -> List(contract.ResolvedBound),
+    // An `assume` line in the variant the run builds, where it is written over
+    // a dependency's function defined once per target: what the two checks
+    // reading a signature read, each naming what it finds as the line writes
+    // it.
+    reader_view: fn(types.AssumeAnnotation) -> checker.ReaderView,
   )
 }
 
@@ -272,7 +277,12 @@ pub fn run_recording_lookups(
   let meaningless_warnings = case context.mode {
     types.Inactive -> []
     types.Active ->
-      meaningless_bound_warnings(assumes, context.resolve_bounds, dead_assumes)
+      meaningless_bound_warnings(
+        assumes,
+        context.reader_view,
+        context.resolve_bounds,
+        dead_assumes,
+      )
   }
 
   #(
@@ -289,6 +299,7 @@ pub fn run_recording_lookups(
       ),
       unmatched_bound_parameter_warnings(
         assumes,
+        context.reader_view,
         registry,
         dead_function_names(list.append(
           assume_warnings,
@@ -306,6 +317,7 @@ pub fn run_recording_lookups(
 
 fn meaningless_bound_warnings(
   assumes: List(types.AssumeAnnotation),
+  reader_view: fn(types.AssumeAnnotation) -> checker.ReaderView,
   resolve_bounds: fn(types.AssumeAnnotation) -> List(contract.ResolvedBound),
   dead_assumes: Set(String),
 ) -> List(Warning) {
@@ -316,13 +328,27 @@ fn meaningless_bound_warnings(
         let function = types.dotted_name(name)
         case set.contains(dead_assumes, function) {
           True -> []
-          False ->
-            resolve_bounds(assume)
-            |> contract.meaningless_bounds
-            |> list.map(types.MeaninglessBoundWarning(function, _))
+          False -> meaningless_in(assume, function, reader_view, resolve_bounds)
         }
       }
     }
+  })
+}
+
+// The bounds of one line that name what a non-callback argument carries with
+// more than one variable, read in the variant the run builds and named as the
+// line writes them.
+fn meaningless_in(
+  assume: types.AssumeAnnotation,
+  function: String,
+  reader_view: fn(types.AssumeAnnotation) -> checker.ReaderView,
+  resolve_bounds: fn(types.AssumeAnnotation) -> List(contract.ResolvedBound),
+) -> List(Warning) {
+  let view = reader_view(assume)
+  resolve_bounds(view.line)
+  |> contract.meaningless_bounds
+  |> list.map(fn(name) {
+    types.MeaninglessBoundWarning(function, view.parameter(name))
   })
 }
 
@@ -431,6 +457,7 @@ fn aliased_bound_warning(
 // and to lines the existence channel has not flagged.
 fn unmatched_bound_parameter_warnings(
   assumes: List(types.AssumeAnnotation),
+  reader_view: fn(types.AssumeAnnotation) -> checker.ReaderView,
   registry: SignatureRegistry,
   dead: Set(String),
 ) -> List(Warning) {
@@ -444,12 +471,13 @@ fn unmatched_bound_parameter_warnings(
         signatures.lookup(registry, qualified),
         Nil,
       ))
-      assume.params
+      let view = reader_view(assume)
+      view.line.params
       |> list.filter(fn(bound) {
         signatures.parameter_named(params, bound_receiver(bound.name)) == None
       })
       |> list.map(fn(bound) {
-        UnmatchedParamBoundWarning(function:, param: bound.name)
+        UnmatchedParamBoundWarning(function:, param: view.parameter(bound.name))
       })
     }
     |> result.unwrap([])

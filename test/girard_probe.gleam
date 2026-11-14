@@ -113,7 +113,14 @@ fn probe(
   let cross_constructors =
     list.fold(entries, dict.new(), fn(acc, entry) {
       let #(module_path, module) = entry
-      dict.merge(acc, extract.constructor_registry(module_path, module))
+      dict.merge(
+        acc,
+        extract.constructor_registry(
+          module_path,
+          module,
+          types.declaration_targets(package_targets),
+        ),
+      )
     })
   let knowledge_base =
     effects.empty_knowledge_base(support.bundled_catalog(), root)

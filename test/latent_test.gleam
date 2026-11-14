@@ -240,6 +240,7 @@ pub fn a_declared_result_carries_what_its_line_says_test() {
           latent.CalleeContract(
             parameters: [],
             contract: types.LatentContract(..types.no_contract, carries:),
+            reviewed: False,
           ),
         ),
       ]),
@@ -378,6 +379,7 @@ pub fn a_relay_through_a_choice_reaches_the_relayed_option_test() {
               relays: [types.Relay(callback: "f", positions: [Some("l")])],
               carries: None,
             ),
+            reviewed: False,
           ),
         ),
       ]),
@@ -423,6 +425,7 @@ fn decoder_tables(continuation: ArgumentValue) -> Tables {
             relays: [],
             carries: Some(TVar("d")),
           ),
+          reviewed: False,
         ),
       ),
       #(
@@ -441,6 +444,7 @@ fn decoder_tables(continuation: ArgumentValue) -> Tables {
               ),
             ),
           ),
+          reviewed: False,
         ),
       ),
     ]),
@@ -507,7 +511,7 @@ pub fn a_function_whose_result_holds_a_function_escapes_unknown_test() {
   // `get_outer()`, `outer`, a choice holding `outer` and a field holding it:
   // each costs `[]` once called, and what that call returns is undescribed.
   let get_outer = types.CallResult(QualifiedName("app", "get_outer"), [])
-  let field = types.ReceiverPath("cfg.run")
+  let field = types.ReceiverPath("cfg.run", None)
   let returning = girard.Fn([], thunk())
   let tables =
     Tables(
@@ -530,6 +534,7 @@ pub fn a_result_is_kept_apart_from_the_cost_by_a_contract_test() {
     latent.CalleeContract(
       parameters: [parameter("f", "n", CallbackKind)],
       contract: types.LatentContract(..types.no_contract, carries:),
+      reviewed: False,
     )
   }
   let tables =
@@ -591,6 +596,7 @@ pub fn a_result_holding_functions_is_unknown_unless_declared_test() {
             ..types.no_contract,
             carries: Some(labels(["Stdout"])),
           ),
+          reviewed: False,
         ),
       ),
     ]),
@@ -614,6 +620,7 @@ pub fn a_shared_variable_takes_the_join_of_every_argument_test() {
         relays: [],
         carries: Some(TVar("e")),
       ),
+      reviewed: False,
     )
   let tables =
     Tables(..tables(), contracts: dict.from_list([#(run_two, contract)]))
@@ -659,6 +666,7 @@ pub fn an_unknown_kind_carries_unknown_test() {
         ..types.no_contract,
         carries: Some(TVar("x")),
       ),
+      reviewed: False,
     )
   let tables =
     Tables(..tables(), contracts: dict.from_list([#(run, contract)]))
@@ -765,6 +773,7 @@ pub fn a_capture_result_is_what_its_target_line_says_it_carries_test() {
               runs: Some([]),
               carries: Some(TVar("x")),
             ),
+            reviewed: False,
           ),
         ),
       ]),
