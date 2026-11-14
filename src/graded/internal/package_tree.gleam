@@ -660,15 +660,15 @@ pub fn is_complete(local: LocalPackages) -> Bool {
   }
 }
 
-// No name listed twice, and every requirement — an entry's, or one of the
-// root's — names a listed package.
+// No name listed twice, and every requirement names a listed package: each of
+// the root's, and each of an entry's, except an entry Gleam builds with
+// rebar3 or mix, which may require a package Gleam left out.
 fn well_formed(manifest: Manifest) -> Bool {
-  let names = list.map(manifest.entries, fn(entry) { entry.name })
-  let listed = set.from_list(names)
-  set.size(listed) == list.length(names)
+  let listed = listed_names(manifest)
+  set.size(listed) == list.length(manifest.entries)
   && list.all(dict.keys(manifest.requirements), set.contains(listed, _))
   && list.all(manifest.entries, fn(entry) {
-    list.all(entry.requirements, set.contains(listed, _))
+    is_native(entry) || list.all(entry.requirements, set.contains(listed, _))
   })
 }
 
@@ -813,30 +813,43 @@ fn within_repository(base: String, path: String) -> Result(String, Nil) {
   }
 }
 
-// `build/packages/packages.toml` records every installed entry at the
+// `build/packages/packages.toml` holds a `[packages]` table naming only
+// packages the manifest lists, and records every installed entry at the
 // manifest's version, and a `git` entry — which must name its commit — at
-// that commit and its path.
+// that commit and its path. A record that does not read matches only a
+// manifest with no installed entry.
 fn installed_records_match(package_root: String, manifest: Manifest) -> Bool {
   let installed = installed_entries(manifest)
-  use <- bool.guard(when: installed == [], return: True)
   case
     config.read_toml(filepath.join(package_root, "build/packages/packages.toml"))
   {
-    Error(Nil) -> False
+    Error(Nil) -> installed == []
     Ok(records) ->
-      list.all(installed, fn(entry) {
-        tom.get_string(records, ["packages", entry.name]) == Ok(entry.version)
-        && case entry.source, entry.commit {
-          "git", Some(commit) ->
-            tom.get_string(records, ["git", entry.name, "commit"]) == Ok(commit)
-            && option.from_result(
-              tom.get_string(records, ["git", entry.name, "path"]),
-            )
-            == entry.path
-          "git", None -> False
-          _, _ -> True
+      case tom.get_table(records, ["packages"]) {
+        Error(tom.NotFound(..)) | Error(tom.WrongType(..)) -> False
+        Ok(recorded) -> {
+          let listed = listed_names(manifest)
+          list.all(dict.keys(recorded), set.contains(listed, _))
+          && list.all(installed, installed_record_matches(records, _))
         }
-      })
+      }
+  }
+}
+
+fn installed_record_matches(
+  records: Dict(String, tom.Toml),
+  entry: ManifestEntry,
+) -> Bool {
+  tom.get_string(records, ["packages", entry.name]) == Ok(entry.version)
+  && case entry.source, entry.commit {
+    "git", Some(commit) ->
+      tom.get_string(records, ["git", entry.name, "commit"]) == Ok(commit)
+      && option.from_result(
+        tom.get_string(records, ["git", entry.name, "path"]),
+      )
+      == entry.path
+    "git", None -> False
+    _, _ -> True
   }
 }
 
@@ -846,6 +859,11 @@ fn installed_packages_listed(package_root: String, manifest: Manifest) -> Bool {
   let packages = filepath.join(package_root, "build/packages")
   installed_entries(manifest) == []
   || result.is_ok(simplifile.read_directory(packages))
+}
+
+// The names the manifest lists.
+fn listed_names(manifest: Manifest) -> Set(String) {
+  set.from_list(list.map(manifest.entries, fn(entry) { entry.name }))
 }
 
 // The entries Gleam installs under `build/packages`: every one not `local`.

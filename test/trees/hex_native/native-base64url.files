@@ -1,0 +1,5 @@
+LICENSE.txt
+README.md
+rebar.config
+src/base64url.app.src
+src/base64url.erl

@@ -1,0 +1,8 @@
+[packages]
+telemetry = "1.4.2"
+ssl_verify_fun = "1.1.9"
+base64url = "0.0.1"
+gleam_stdlib = "1.0.5"
+jason = "1.4.5"
+
+[git]
