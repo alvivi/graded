@@ -67,6 +67,7 @@ import graded/internal/pack
 import graded/internal/package_tree.{type LocalPackages}
 import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/topo
+import graded/internal/typedefs
 import graded/internal/typeinfo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type EffectTerm, type GradedFile,
@@ -863,6 +864,8 @@ type ProjectContext {
     // a dependency-defined type, so what it measures a site against is
     // gathered package-wide too.
     field_index: types.FieldIndex,
+    // Every custom type and alias of the package and its scanned dependencies.
+    type_definitions: typedefs.TypeRegistry,
     // Module path -> source file for the whole dependency tree, walked once
     // when this context was assembled (girard's resolver reads it) and held so
     // the spec lint weighs its declaring lines against the same scan rather
@@ -1117,6 +1120,7 @@ fn project_context(
     catalog:,
     dependencies: dep_sources,
     field_index: package_field_index(dep_sources, index),
+    type_definitions: build_type_definitions(index, dep_sources, cfg.targets),
     dep_files:,
     local_packages: local,
     placement_files: placement_files(dep_files, local),
@@ -1359,6 +1363,15 @@ pub fn context_placement_files(
 ) -> Result(Dict(String, String), GradedError) {
   use ctx <- result.map(load_project_context(directory, types.Inactive))
   ctx.placement_files
+}
+
+// Every custom type and alias the context assembled for `directory` holds.
+@internal
+pub fn context_type_definitions(
+  directory: String,
+) -> Result(typedefs.TypeRegistry, GradedError) {
+  use ctx <- result.map(load_project_context(directory, types.Inactive))
+  ctx.type_definitions
 }
 
 // The directories whose `gleam.toml` the context assembled for `directory`
@@ -3209,6 +3222,23 @@ fn package_field_index(
   )
 }
 
+// Every custom type and alias the package and its scanned dependencies define;
+// the package's own win where both define one name.
+fn build_type_definitions(
+  index: Dict(String, #(String, glance.Module)),
+  dep_sources: DependencySources,
+  package_targets: types.PackageTargets,
+) -> typedefs.TypeRegistry {
+  let targets = types.declaration_targets(package_targets)
+  dict.fold(
+    index,
+    dependency_type_definitions(dep_sources),
+    fn(acc, module_path, entry) {
+      typedefs.merge(acc, typedefs.from_module(module_path, entry.1, targets))
+    },
+  )
+}
+
 // What every project module says about its custom types' record fields, keyed
 // the same way a dependency's is so the two merge into one package-wide index.
 fn build_project_field_index(
@@ -3805,6 +3835,7 @@ type InferState {
     registry: SignatureRegistry,
     type_info: typeinfo.TypeInfo,
     dependencies: DependencySources,
+    type_definitions: typedefs.TypeRegistry,
     knowledge_base: KnowledgeBase,
     public_annotations: List(EffectAnnotation),
     cache_files: List(CacheFile),
@@ -3976,6 +4007,11 @@ fn infer_state(
     registry:,
     type_info:,
     dependencies: dep_sources,
+    type_definitions: build_type_definitions(
+      index,
+      dep_sources,
+      package_targets,
+    ),
     knowledge_base:,
     public_annotations:,
     cache_files: list.reverse(cache_files),
@@ -4606,6 +4642,9 @@ type ScannedModule {
     // What its custom types say about their record fields. Read from the
     // source the consumer compiled against, for the same reason `updates` is.
     field_index: types.FieldIndex,
+    // Its custom types and type aliases in full: every variant's fields and
+    // generic parameters.
+    type_definitions: typedefs.TypeRegistry,
   )
   // The file would not read or parse. Recorded rather than dropped so it
   // shadows any copy of the path scanned before it, and contributes nothing in
@@ -4631,6 +4670,16 @@ fn dependency_registry(sources: DependencySources) -> SignatureRegistry {
 }
 
 // What the scanned copies say about their custom types' record fields.
+fn dependency_type_definitions(
+  sources: DependencySources,
+) -> typedefs.TypeRegistry {
+  use acc, _path, scanned <- dict.fold(sources.modules, typedefs.empty())
+  case scanned {
+    ParsedModule(type_definitions:, ..) -> typedefs.merge(acc, type_definitions)
+    UnreadableModule -> acc
+  }
+}
+
 fn dependency_field_index(sources: DependencySources) -> types.FieldIndex {
   use acc, _path, scanned <- dict.fold(
     sources.modules,
@@ -5319,6 +5368,11 @@ fn source_dir_sources(
           module_path,
           module,
           signatures.type_alias_map(module.type_aliases),
+        ),
+        type_definitions: typedefs.from_module(
+          module_path,
+          module,
+          types.declaration_targets(package_targets),
         ),
       )
     }
