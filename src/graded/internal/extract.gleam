@@ -31,8 +31,14 @@ import graded/internal/types.{
 type LocalBinding {
   BoundFunctionRef(name: QualifiedName)
   // A let-bound record value and the fields a construction wired into it, with
-  // whether that wiring is the type's whole field set.
-  BoundConstructor(fields: Dict(String, ArgumentValue), coverage: FieldCoverage)
+  // whether that wiring is the type's whole field set; every argument the
+  // construction was given, with whether those are the whole value.
+  BoundConstructor(
+    fields: Dict(String, ArgumentValue),
+    coverage: FieldCoverage,
+    components: List(types.Component),
+    value_coverage: types.ValueCoverage,
+  )
   // A let-bound alias of a receiver path or a forwarded parameter (`let options
   // = config.options`, `let forwarded = options`). `path` is the dotted path the
   // alias stands for (single-segment for a bare parameter), so a later use as a
@@ -72,7 +78,13 @@ type LocalBinding {
   // A let-bound record-update overlay (`let o = with_resolver(base, http)` or
   // `let o = Options(..base, resolver:)`). A later field call reads it
   // field-selectively; a later use as a receiver argument forwards through it.
-  BoundUpdated(base: ArgumentValue, fields: Dict(String, ArgumentValue))
+  BoundUpdated(
+    base: ArgumentValue,
+    fields: Dict(String, ArgumentValue),
+    components: List(types.Component),
+  )
+  // A let-bound list or tuple literal, every element with its span.
+  BoundComposite(elements: List(types.Component))
   BoundOpaque
 }
 
@@ -598,13 +610,27 @@ fn factory_signature(
   // Reuse the constructor field-routing: classify the call (empty env, so a
   // bare parameter reference classifies as `LocalRef(name)`), then keep the
   // fields whose value is one of the function's parameters.
-  let fields = case
+  let #(fields, components) = case
     classify_constructor(constructor, module, arguments, context, env_new())
   {
-    BoundConstructor(fields:, ..) -> fields
-    _ -> dict.new()
+    BoundConstructor(fields:, components:, ..) -> #(fields, components)
+    _ -> #(dict.new(), [])
   }
   let param_positions = param_position_map(function)
+  // The record a call builds holds the call's arguments and nothing else only
+  // where every argument of the construction is one of the factory's own
+  // parameters.
+  let coverage = case
+    list.all(components, fn(component) {
+      case component.value {
+        LocalRef(name) -> dict.has_key(param_positions, name)
+        _ -> False
+      }
+    })
+  {
+    True -> types.WholeValue
+    False -> types.PartialValue
+  }
   let field_to_param =
     dict.fold(fields, dict.new(), fn(acc, label, value) {
       case value {
@@ -635,6 +661,7 @@ fn factory_signature(
           module: defining_module,
           variant: constructor,
         ),
+        coverage:,
       ))
   }
 }
@@ -1087,9 +1114,16 @@ fn binding_from_argument_value(value: ArgumentValue) -> LocalBinding {
       BoundChoice(options, option_calls(options, env_new()))
     types.ReturnedOperator(callee, args) | types.CallResult(callee, args) ->
       BoundReturnedOperator(callee, args)
-    Constructed(fields:) ->
-      BoundConstructor(fields:, coverage: PartialConstruction)
-    types.Updated(base:, fields:) -> BoundUpdated(base:, fields:)
+    Constructed(fields:, components:, coverage:) ->
+      BoundConstructor(
+        fields:,
+        coverage: PartialConstruction,
+        components:,
+        value_coverage: coverage,
+      )
+    types.Updated(base:, fields:, components:) ->
+      BoundUpdated(base:, fields:, components:)
+    types.Composite(elements:) -> BoundComposite(elements:)
     LocalRef(..) | ConstructorRef | types.ReceiverPath(..) | OtherExpression ->
       BoundOpaque
   }
@@ -1145,6 +1179,7 @@ fn unshadowed_options(
       | Constructed(..)
       | types.CallResult(..)
       | types.Updated(..)
+      | types.Composite(..)
       | OtherExpression -> option
     }
   })
@@ -1415,7 +1450,7 @@ fn shadowed_receiver_has_field(binding: LocalBinding, label: String) -> Bool {
     BoundClosure(..) -> False
     // Every field the type declares was wired, so an absent label is absent
     // from the type.
-    BoundConstructor(fields:, coverage: CompleteConstruction) ->
+    BoundConstructor(fields:, coverage: CompleteConstruction, ..) ->
       dict.has_key(fields, label)
     // A traced subset: an absent label was untraced, not absent.
     BoundConstructor(coverage: PartialConstruction, ..) -> True
@@ -1432,6 +1467,7 @@ fn shadowed_receiver_has_field(binding: LocalBinding, label: String) -> Bool {
     | BoundReceiverPath(..)
     | BoundParam
     | BoundLocal
+    | BoundComposite(..)
     | BoundOpaque -> True
   }
 }
@@ -1478,8 +1514,10 @@ fn env_field_call(
       field_call(types.ProvenReceiver(types.CallResult(callee, args)))
     // A let-bound record-update overlay: the receiver's whole value is the
     // overlay, read field-selectively at check time.
-    BoundUpdated(base:, fields:) ->
-      field_call(types.ProvenReceiver(types.Updated(base:, fields:)))
+    BoundUpdated(base:, fields:, components:) ->
+      field_call(
+        types.ProvenReceiver(types.Updated(base:, fields:, components:)),
+      )
     // Everything else resolves through the receiver's own provenance: a
     // parameter-rooted path names the parameter, and a shadowed, computed
     // or opaque value is untraceable and reads as `[Unknown]`.
@@ -1489,6 +1527,7 @@ fn env_field_call(
     | BoundReceiverPath(..)
     | BoundParam
     | BoundLocal
+    | BoundComposite(..)
     | BoundOpaque -> field_call(field_receiver_provenance(site.object, env))
   }
 }
@@ -1594,7 +1633,7 @@ fn resolve_constructor_field_call(
     Ok(types.Closure(_, _, _) as value)
     | Ok(types.ReturnedOperator(_, _) as value)
     | Ok(types.CallResult(_, _) as value)
-    | Ok(Constructed(_) as value) ->
+    | Ok(Constructed(..) as value) ->
       ExtractResult(
         ..empty(),
         field: [
@@ -1612,7 +1651,8 @@ fn resolve_constructor_field_call(
       )
     Ok(types.Choice(_))
     | Ok(types.ReceiverPath(_))
-    | Ok(types.Updated(_, _))
+    | Ok(types.Updated(..))
+    | Ok(types.Composite(..))
     | Ok(OtherExpression) -> untraceable(None)
     // A label the construction did not wire. Under a `shadowed_module` this is
     // reachable only from `PartialConstruction`: `shadowed_receiver_has_field`
@@ -1659,7 +1699,7 @@ fn resolve_nested_field_call(
       // a complex value becomes `ProvenValue`. Anything else classifies by
       // whether the path is rooted at a live parameter.
       case classify_expression(receiver, context, env) {
-        Constructed(fields:) ->
+        Constructed(fields:, ..) ->
           resolve_constructor_field_call(site, fields, None)
         _ ->
           ExtractResult(
@@ -1961,18 +2001,30 @@ fn factory_construction(
   context: ImportContext,
   env: Env,
 ) -> Result(LocalBinding, Nil) {
-  let fields =
-    route_factory_fields(
-      signature,
-      classify_arguments(arguments, context, env, 0),
-      env,
-    )
+  let args = classify_arguments(arguments, context, env, 0)
+  let fields = route_factory_fields(signature, args, env)
   case dict.is_empty(fields) {
     True -> Error(Nil)
     // A factory routes only the fields it wires from its own parameters, so
     // what it did not route was never the whole set to begin with.
-    False -> Ok(BoundConstructor(fields:, coverage: PartialConstruction))
+    False ->
+      Ok(BoundConstructor(
+        fields:,
+        coverage: PartialConstruction,
+        components: argument_components(args, env),
+        value_coverage: signature.coverage,
+      ))
   }
+}
+
+// A call's arguments as the components of the value it builds.
+fn argument_components(
+  args: List(CallArgument),
+  env: Env,
+) -> List(types.Component) {
+  list.map(args, fn(arg) {
+    types.Component(span: arg.span, value: field_value(arg.value, env))
+  })
 }
 
 // Route a factory call's arguments to the constructor fields its signature
@@ -2028,9 +2080,16 @@ fn classify_rhs_ref(
     // a `let` stays opaque for forwarding (Phase 1 forwards inline receivers).
     types.ReturnedOperator(callee, args) | types.CallResult(callee, args) ->
       BoundReturnedOperator(callee, args)
-    Constructed(fields:) ->
-      BoundConstructor(fields:, coverage: PartialConstruction)
-    types.Updated(base:, fields:) -> BoundUpdated(base:, fields:)
+    Constructed(fields:, components:, coverage:) ->
+      BoundConstructor(
+        fields:,
+        coverage: PartialConstruction,
+        components:,
+        value_coverage: coverage,
+      )
+    types.Updated(base:, fields:, components:) ->
+      BoundUpdated(base:, fields:, components:)
+    types.Composite(elements:) -> BoundComposite(elements:)
     // A receiver-path alias (`let options = config.options`): capture the
     // canonical path so a forwarded field var re-keys onto `config.options`
     // (fixed now, immune to later rebinds), not the opaque alias.
@@ -2064,36 +2123,25 @@ fn classify_constructor(
   // that this is a direct construction: an argument that reaches no label wires
   // nothing, and every field Gleam required the caller to supply is then a
   // field this binding does not hold.
+  let classified =
+    list.map(arguments, fn(field) {
+      #(field, constructor_argument_value(field, context, env))
+    })
   let #(fields, _remaining, coverage) =
     list.fold(
-      arguments,
+      classified,
       #(dict.new(), declared_labels, CompleteConstruction),
-      fn(acc, field) {
+      fn(acc, argument) {
         let #(fields_acc, remaining, coverage) = acc
+        let #(field, value) = argument
         case field {
-          glance.LabelledField(label:, item:, ..) -> #(
-            dict.insert(
-              fields_acc,
-              label,
-              classify_expression(item, context, env),
-            ),
+          glance.LabelledField(label:, ..)
+          | glance.ShorthandField(label:, ..) -> #(
+            dict.insert(fields_acc, label, value),
             remaining,
             coverage,
           )
-          // A shorthand field (`SelectOptions(on_change:)`) is sugar for
-          // `on_change: on_change`, so its value is the variable named by the
-          // label — matching how `classify_arguments` reads a shorthand argument.
-          glance.ShorthandField(label:, ..) -> #(
-            dict.insert(
-              fields_acc,
-              label,
-              classify_variable(label, context, env),
-            ),
-            remaining,
-            coverage,
-          )
-          glance.UnlabelledField(item:) -> {
-            let value = classify_expression(item, context, env)
+          glance.UnlabelledField(..) -> {
             case remaining {
               [Some(label), ..rest] -> #(
                 dict.insert(fields_acc, label, value),
@@ -2111,7 +2159,53 @@ fn classify_constructor(
         }
       },
     )
-  BoundConstructor(fields: field_values(fields, env), coverage:)
+  BoundConstructor(
+    fields: field_values(fields, env),
+    coverage:,
+    components: list.map(classified, fn(argument) {
+      types.Component(
+        span: constructor_argument_span(argument.0),
+        value: field_value(argument.1, env),
+      )
+    }),
+    value_coverage: types.WholeValue,
+  )
+}
+
+// What one argument of a construction holds. A shorthand field
+// (`SelectOptions(on_change:)`) is sugar for `on_change: on_change`, so its
+// value is the variable named by the label — matching how `classify_arguments`
+// reads a shorthand argument.
+fn constructor_argument_value(
+  field: Field(Expression),
+  context: ImportContext,
+  env: Env,
+) -> ArgumentValue {
+  case field {
+    glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
+      classify_expression(item, context, env)
+    glance.ShorthandField(label:, ..) -> classify_variable(label, context, env)
+  }
+}
+
+// Where one argument of a construction is written.
+fn constructor_argument_span(field: Field(Expression)) -> glance.Span {
+  case field {
+    glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
+      item.location
+    glance.ShorthandField(location:, ..) -> location
+  }
+}
+
+fn expression_component(
+  expression: Expression,
+  context: ImportContext,
+  env: Env,
+) -> types.Component {
+  types.Component(
+    span: expression.location,
+    value: field_value(classify_expression(expression, context, env), env),
+  )
 }
 
 fn resolve_env(name: String, env: Env) -> LocalBinding {
@@ -2303,6 +2397,7 @@ fn extract_from_expression(
           position: 0,
           label: None,
           value: classify_expression(left, context, env),
+          span: left.location,
         )
       merge(
         extract_from_expression(left, context, env),
@@ -2807,6 +2902,7 @@ fn extract_expression_call(
     types.ReceiverPath(..)
     | Constructed(..)
     | types.Updated(..)
+    | types.Composite(..)
     | OtherExpression ->
       merge(base, ExtractResult(..empty(), unknown_apps: [span]))
   }
@@ -2869,6 +2965,7 @@ fn option_calls(options: List(ArgumentValue), env: Env) -> List(OptionCall) {
       types.ReceiverPath(..)
       | Constructed(..)
       | types.Updated(..)
+      | types.Composite(..)
       | OtherExpression -> [UnknownOption]
     }
   })
@@ -2889,6 +2986,7 @@ fn local_option(name: String, env: Env) -> OptionCall {
     | Ok(BoundChoice(..))
     | Ok(BoundReturnedOperator(..))
     | Ok(BoundUpdated(..))
+    | Ok(BoundComposite(..))
     | Ok(BoundOpaque) -> UnknownOption
   }
 }
@@ -2963,21 +3061,24 @@ fn classify_arguments(
   list.index_map(arguments, fn(field, i) {
     // A shorthand field (`f(resolver:)`) is sugar for `f(resolver: resolver)`,
     // so its value is the variable named by the label.
-    let #(label, value) = case field {
+    let #(label, value, span) = case field {
       glance.LabelledField(label:, item:, ..) -> #(
         Some(label),
         classify_expression(item, context, env),
+        item.location,
       )
-      glance.ShorthandField(label:, ..) -> #(
+      glance.ShorthandField(label:, location:) -> #(
         Some(label),
         classify_variable(label, context, env),
+        location,
       )
       glance.UnlabelledField(item:) -> #(
         None,
         classify_expression(item, context, env),
+        item.location,
       )
     }
-    CallArgument(position: i + position_offset, label:, value:)
+    CallArgument(position: i + position_offset, label:, value:, span:)
   })
 }
 
@@ -3021,10 +3122,14 @@ fn classify_local_binding(
     // A let-bound construction/factory result resolves to its field wiring, so a
     // forwarded callee field var re-keys through it (`let o = make_options(r);
     // inner(o)` re-keys `o.resolver` onto `r`).
-    BoundConstructor(fields:, ..) -> Constructed(fields:)
+    BoundConstructor(fields:, components:, value_coverage:, ..) ->
+      Constructed(fields:, components:, coverage: value_coverage)
     // A let-bound record-update overlay resolves to the overlay, so a later field
     // call or forwarding reads it field-selectively.
-    BoundUpdated(base:, fields:) -> types.Updated(base:, fields:)
+    BoundUpdated(base:, fields:, components:) ->
+      types.Updated(base:, fields:, components:)
+    // A let-bound literal resolves to its elements.
+    BoundComposite(elements:) -> types.Composite(elements:)
     // A receiver-path or parameter alias resolves to its path, so a forwarded
     // field var re-keys onto the caller's receiver (`let o = config.options;
     // inner(o)` re-keys `o.resolver` onto `config.options.resolver`).
@@ -3061,6 +3166,7 @@ fn field_value(value: ArgumentValue, env: Env) -> ArgumentValue {
         | Ok(BoundChoice(..))
         | Ok(BoundReturnedOperator(..))
         | Ok(BoundUpdated(..))
+        | Ok(BoundComposite(..))
         | Ok(BoundOpaque)
         | Error(Nil) -> value
       }
@@ -3073,6 +3179,7 @@ fn field_value(value: ArgumentValue, env: Env) -> ArgumentValue {
     | types.ReceiverPath(..)
     | Constructed(..)
     | types.Updated(..)
+    | types.Composite(..)
     | OtherExpression -> value
   }
 }
@@ -3189,6 +3296,20 @@ fn classify_expression(
     // A nested receiver path whose container is itself a field access
     // (`config.a.b`): carried as a path for field-effect forwarding.
     glance.FieldAccess(..) -> receiver_path_value(expression)
+    // A list or tuple literal holds exactly its elements, and a list's spread
+    // tail holds whatever that list holds.
+    glance.List(elements:, rest:, ..) ->
+      types.Composite(
+        list.append(
+          list.map(elements, expression_component(_, context, env)),
+          case rest {
+            Some(tail) -> [expression_component(tail, context, env)]
+            None -> []
+          },
+        ),
+      )
+    glance.Tuple(elements:, ..) ->
+      types.Composite(list.map(elements, expression_component(_, context, env)))
     _ -> OtherExpression
   }
 }
@@ -3248,7 +3369,9 @@ fn update_constructed_or_producer(
   env: Env,
 ) -> types.ArgumentValue {
   let args = classify_arguments(arguments, context, env, 0)
-  let by_position = args_by_position(signature.param_labels, args)
+  let by_argument = arguments_by_position(signature.param_labels, args)
+  let by_position =
+    dict.map_values(by_argument, fn(_position, arg) { arg.value })
   // Route the base and *every* updated field. If any position the signature
   // names doesn't match an argument of this call — an arity mismatch from a
   // signature that has skewed from the callee's source — widen to the plain-call
@@ -3270,7 +3393,20 @@ fn update_constructed_or_producer(
         |> result.map(fn(value) { #(label, field_value(value, env)) })
       }),
     )
-    types.Updated(base:, fields: dict.from_list(fields))
+    let routed_positions = [
+      signature.base_param,
+      ..dict.values(signature.fields)
+    ]
+    types.Updated(
+      base:,
+      fields: dict.from_list(fields),
+      components: by_argument
+        |> dict.filter(fn(position, _arg) {
+          list.contains(routed_positions, position)
+        })
+        |> dict.values
+        |> argument_components(env),
+    )
   }
   case routed {
     Ok(value) -> value
@@ -3285,12 +3421,21 @@ fn args_by_position(
   param_labels: Dict(String, Int),
   args: List(CallArgument),
 ) -> Dict(Int, ArgumentValue) {
+  arguments_by_position(param_labels, args)
+  |> dict.map_values(fn(_position, arg) { arg.value })
+}
+
+// A call's arguments by parameter position, each kept whole.
+fn arguments_by_position(
+  param_labels: Dict(String, Int),
+  args: List(CallArgument),
+) -> Dict(Int, CallArgument) {
   list.fold(args, dict.new(), fn(acc, arg) {
     case arg.label {
-      None -> dict.insert(acc, arg.position, arg.value)
+      None -> dict.insert(acc, arg.position, arg)
       Some(label) ->
         case dict.get(param_labels, label) {
-          Ok(position) -> dict.insert(acc, position, arg.value)
+          Ok(position) -> dict.insert(acc, position, arg)
           Error(Nil) -> acc
         }
     }
@@ -3419,18 +3564,16 @@ fn update_construction(
   case constructor_module(module_alias, variant, context) {
     Error(Nil) -> empty()
     Ok(module) -> {
-      let wired =
-        list.fold(fields, dict.new(), fn(acc, field) {
-          dict.insert(
-            acc,
-            field.label,
-            record_update_field_value(field, context, env),
-          )
-        })
+      let classified = classify_update_fields(fields, context, env)
       construction_result(
         module,
         variant,
-        BoundConstructor(fields: wired, coverage: PartialConstruction),
+        BoundConstructor(
+          fields: update_wiring(classified),
+          coverage: PartialConstruction,
+          components: update_components(classified, env),
+          value_coverage: types.PartialValue,
+        ),
         span,
       )
     }
@@ -3474,18 +3617,56 @@ fn classify_record_update(
   env: Env,
 ) -> types.ArgumentValue {
   let base = classify_expression(record, context, env)
-  let updated =
-    list.fold(fields, dict.new(), fn(acc, field) {
-      dict.insert(
-        acc,
-        field.label,
-        record_update_field_value(field, context, env),
-      )
-    })
+  let classified = classify_update_fields(fields, context, env)
+  let updated = update_wiring(classified)
   case dict.is_empty(updated) {
     True -> base
-    False -> types.Updated(base:, fields: field_values(updated, env))
+    False ->
+      types.Updated(base:, fields: field_values(updated, env), components: [
+        types.Component(span: record.location, value: field_value(base, env)),
+        ..update_components(classified, env)
+      ])
   }
+}
+
+// A span no expression is written at: a type lookup there finds nothing, and
+// no reader takes it for a site — every value given it is a different one.
+pub const no_site = glance.Span(start: -1, end: -1)
+
+// Each field a record update writes, classified once, with where it is
+// written. The shorthand form names a variable, written where the label is;
+// the field carries no span of its own, so it takes `no_site`.
+fn classify_update_fields(
+  fields: List(glance.RecordUpdateField(Expression)),
+  context: ImportContext,
+  env: Env,
+) -> List(#(String, ArgumentValue, glance.Span)) {
+  list.map(fields, fn(field) {
+    let span = case field.item {
+      Some(item) -> item.location
+      None -> no_site
+    }
+    #(field.label, record_update_field_value(field, context, env), span)
+  })
+}
+
+// The fields a record update writes, by label.
+fn update_wiring(
+  classified: List(#(String, ArgumentValue, glance.Span)),
+) -> Dict(String, ArgumentValue) {
+  list.fold(classified, dict.new(), fn(acc, field) {
+    dict.insert(acc, field.0, field.1)
+  })
+}
+
+// The fields a record update writes, as components of the updated value.
+fn update_components(
+  classified: List(#(String, ArgumentValue, glance.Span)),
+  env: Env,
+) -> List(types.Component) {
+  list.map(classified, fn(field) {
+    types.Component(span: field.2, value: field_value(field.1, env))
+  })
 }
 
 // The value a record-update field wires: its expression, or — for the shorthand
@@ -3512,7 +3693,8 @@ fn constructed_value(
   env: Env,
 ) -> types.ArgumentValue {
   case classify_constructor(type_name, module, arguments, context, env) {
-    BoundConstructor(fields:, ..) -> Constructed(fields:)
+    BoundConstructor(fields:, components:, value_coverage:, ..) ->
+      Constructed(fields:, components:, coverage: value_coverage)
     _ -> OtherExpression
   }
 }
@@ -3527,15 +3709,16 @@ fn factory_constructed_or_producer(
   context: ImportContext,
   env: Env,
 ) -> types.ArgumentValue {
-  let fields =
-    route_factory_fields(
-      signature,
-      classify_arguments(arguments, context, env, 0),
-      env,
-    )
+  let args = classify_arguments(arguments, context, env, 0)
+  let fields = route_factory_fields(signature, args, env)
   case dict.is_empty(fields) {
     True -> classify_call_producer(function, arguments, context, env)
-    False -> Constructed(fields:)
+    False ->
+      Constructed(
+        fields:,
+        components: argument_components(args, env),
+        coverage: signature.coverage,
+      )
   }
 }
 
@@ -3585,6 +3768,7 @@ fn classify_call_producer(
     | types.ReceiverPath(..)
     | Constructed(..)
     | types.Updated(..)
+    | types.Composite(..)
     | OtherExpression -> OtherExpression
   }
 }
@@ -3618,6 +3802,7 @@ fn classify_case_options(
         | types.ReceiverPath(..)
         | Constructed(..)
         | types.Updated(..)
+        | types.Composite(..)
         | OtherExpression -> False
       }
     })
@@ -3728,7 +3913,7 @@ fn provenance_of_value(
   scope: ModuleScope,
 ) -> types.ReturnProvenance {
   case value {
-    Constructed(fields) -> build_provenance(fields, positions, scope)
+    Constructed(fields:, ..) -> build_provenance(fields, positions, scope)
     LocalRef(..) | types.ReceiverPath(..) ->
       case param_rooted(value, positions) {
         Ok(#(position, Some(tail))) -> types.Path(position, tail)
@@ -3748,6 +3933,7 @@ fn provenance_of_value(
     | types.ReturnedOperator(..)
     | types.CallResult(..)
     | types.Updated(..)
+    | types.Composite(..)
     | OtherExpression -> types.Opaque
   }
 }
@@ -3957,6 +4143,7 @@ fn param_rooted(
     | types.CallResult(..)
     | Constructed(..)
     | types.Updated(..)
+    | types.Composite(..)
     | OtherExpression -> Error(Nil)
   }
 }
@@ -4021,6 +4208,7 @@ fn field_provenance_of_value(
         | types.Choice(..)
         | types.ReceiverPath(..)
         | types.Updated(..)
+        | types.Composite(..)
         | OtherExpression -> types.FieldOpaque
       }
   }

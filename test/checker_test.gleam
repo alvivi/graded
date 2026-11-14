@@ -3051,6 +3051,7 @@ pub fn caller() -> Nil {
               module: "dep",
               variant: "Validator",
             ),
+            coverage: types.WholeValue,
           ),
         ),
       ]),
