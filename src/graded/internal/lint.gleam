@@ -22,6 +22,7 @@ import gleam/set.{type Set}
 import gleam/string
 import graded/internal/annotation
 import graded/internal/checker
+import graded/internal/contract
 import graded/internal/effect_term
 import graded/internal/effects
 import graded/internal/extract
@@ -73,6 +74,9 @@ pub type Context {
     dependency_sources_are_complete: fn() -> Bool,
     // The latent-effect reading the spec was parsed under.
     mode: types.LatMode,
+    // Each bound of an `assume` line with its parameter's kind, read against
+    // the run's signatures and types.
+    resolve_bounds: fn(types.AssumeAnnotation) -> List(contract.ResolvedBound),
   )
 }
 
@@ -263,11 +267,20 @@ pub fn run_recording_lookups(
       UnknownClauseWarning(path:, keys:)
     })
 
+  // Under the latent-effect rules a bound on a parameter that is not a callback
+  // names what the argument carries, which only a single variable can.
+  let meaningless_warnings = case context.mode {
+    types.Inactive -> []
+    types.Active ->
+      meaningless_bound_warnings(assumes, context.resolve_bounds, dead_assumes)
+  }
+
   #(
     list.flatten([
       check_warnings,
       effects_shape_warnings,
       assume_warnings,
+      meaningless_warnings,
       unbound_term_variable_warnings(assumes, dead_assumes),
       aliased_bound_variable_warnings(
         assumes,
@@ -289,6 +302,28 @@ pub fn run_recording_lookups(
     ]),
     resolver.memo,
   )
+}
+
+fn meaningless_bound_warnings(
+  assumes: List(types.AssumeAnnotation),
+  resolve_bounds: fn(types.AssumeAnnotation) -> List(contract.ResolvedBound),
+  dead_assumes: Set(String),
+) -> List(Warning) {
+  list.flat_map(assumes, fn(assume) {
+    case annotation.assume_qualified_name(assume) {
+      Error(Nil) -> []
+      Ok(name) -> {
+        let function = types.dotted_name(name)
+        case set.contains(dead_assumes, function) {
+          True -> []
+          False ->
+            resolve_bounds(assume)
+            |> contract.meaningless_bounds
+            |> list.map(types.MeaninglessBoundWarning(function, _))
+        }
+      }
+    }
+  })
 }
 
 // The term oracle over explicitly bounded `assume` lines: the declared effects

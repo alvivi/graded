@@ -8,6 +8,7 @@
 
 import girard
 import glance
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{None, Some}
@@ -72,27 +73,7 @@ pub fn from_module(
   module: glance.Module,
   targets: Set(String),
 ) -> TypeRegistry {
-  let context = extract.build_import_context(module)
-  let local =
-    list.append(
-      list.map(module.custom_types, fn(definition) {
-        definition.definition.name
-      }),
-      list.map(module.type_aliases, fn(definition) {
-        definition.definition.name
-      }),
-    )
-    |> set.from_list
-  let scope =
-    Scope(
-      module_path:,
-      local:,
-      aliases: context.aliases,
-      unqualified: dict.map_values(context.unqualified_types, fn(_name, name) {
-        #(name.module, name.function)
-      }),
-      parameters: set.new(),
-    )
+  let ModuleScope(scope) = module_scope(module_path, module)
   let customs =
     module.custom_types
     |> list.filter(fn(definition) { compiled(definition, targets) })
@@ -137,6 +118,40 @@ pub fn from_module(
       },
     ),
   )
+}
+
+// What a type name written anywhere in one module can refer to.
+pub opaque type ModuleScope {
+  ModuleScope(scope: Scope)
+}
+
+pub fn module_scope(module_path: String, module: glance.Module) -> ModuleScope {
+  let context = extract.build_import_context(module)
+  let local =
+    list.append(
+      list.map(module.custom_types, fn(definition) {
+        definition.definition.name
+      }),
+      list.map(module.type_aliases, fn(definition) {
+        definition.definition.name
+      }),
+    )
+    |> set.from_list
+  ModuleScope(Scope(
+    module_path:,
+    local:,
+    aliases: context.aliases,
+    unqualified: dict.map_values(context.unqualified_types, fn(_name, name) {
+      #(name.module, name.function)
+    }),
+    parameters: set.new(),
+  ))
+}
+
+// A type written in a function's signature, resolved in its module's scope. A
+// type variable there is open, and reads as unresolved.
+pub fn resolve_in(scope: ModuleScope, type_: glance.Type) -> TypeExpr {
+  resolve(type_, scope.scope)
 }
 
 fn compiled(definition: glance.Definition(a), targets: Set(String)) -> Bool {
@@ -209,6 +224,211 @@ fn resolve(type_: glance.Type, scope: Scope) -> TypeExpr {
         False -> UnresolvedExpr
       }
     glance.HoleType(..) -> UnresolvedExpr
+  }
+}
+
+// Function kinds
+//
+// Whether a declared type is a function, following aliases however they were
+// imported: what tells a callback's bound from the bound of an argument that
+// only carries functions.
+
+pub type FunctionKind {
+  IsFunction(arity: Int)
+  NotFunction
+  // An open type variable, a name nothing places, an alias applied to a count
+  // of arguments it does not take, or `@target` variants that disagree.
+  UnresolvedFunctionKind
+}
+
+// What every name of a registry is when asked whether it is a function, solved
+// once for the registry. `function_kind` reads a type against it and follows
+// no alias chain.
+pub opaque type Kinds {
+  Kinds(names: Dict(Key, NameKind))
+}
+
+// What one name is, whatever it is applied to.
+type NameKind {
+  // A custom or external type: never a function.
+  Nominal
+  // An alias of `arity` parameters, which is what `reads` says once applied to
+  // that many arguments.
+  Aliased(arity: Int, reads: KindRead)
+  // `@target` variants that disagree, or an alias that reaches itself.
+  Unsettled
+}
+
+type KindRead {
+  // The same kind whatever the arguments.
+  Fixed(kind: FunctionKind)
+  // The kind of the argument at `index`.
+  Argument(index: Int)
+}
+
+// Every name's kind in `registry`, each solved once.
+pub fn kinds(registry: TypeRegistry) -> Kinds {
+  Kinds(
+    names: dict.fold(registry.definitions, dict.new(), fn(solved, key, _) {
+      name_kind(key, registry, solved, set.new()).1
+    }),
+  )
+}
+
+// No names: every custom type and alias reads unresolved.
+pub fn no_kinds() -> Kinds {
+  Kinds(names: dict.new())
+}
+
+pub fn function_kind(type_: TypeExpr, kinds: Kinds) -> FunctionKind {
+  case type_ {
+    FnExpr(parameters:, ..) -> IsFunction(list.length(parameters))
+    TupleExpr(..) -> NotFunction
+    ParamExpr(..) | VarExpr(..) | UnresolvedExpr -> UnresolvedFunctionKind
+    NamedExpr(module: "gleam", ..) -> NotFunction
+    NamedExpr(module:, name:, arguments:) ->
+      case dict.get(kinds.names, #(module, name)) {
+        Error(Nil) | Ok(Unsettled) -> UnresolvedFunctionKind
+        Ok(Nominal) -> NotFunction
+        Ok(Aliased(arity:, reads:)) ->
+          applied_kind(applied_read(arity, reads, arguments), arguments, kinds)
+      }
+  }
+}
+
+fn applied_kind(
+  read: Result(KindRead, Nil),
+  arguments: List(TypeExpr),
+  kinds: Kinds,
+) -> FunctionKind {
+  case read, result.try(read, argument_of(_, arguments)) {
+    Ok(Fixed(kind:)), _ -> kind
+    Ok(Argument(..)), Ok(argument) -> function_kind(argument, kinds)
+    Ok(Argument(..)), Error(Nil) | Error(Nil), _ -> UnresolvedFunctionKind
+  }
+}
+
+// What an alias of `arity` parameters reads applied to `arguments`, where it
+// takes that many.
+fn applied_read(
+  arity: Int,
+  reads: KindRead,
+  arguments: List(TypeExpr),
+) -> Result(KindRead, Nil) {
+  use <- bool.guard(when: list.length(arguments) != arity, return: Error(Nil))
+  Ok(reads)
+}
+
+// One name's kind, from the kinds already solved, solving the names its
+// definitions reach first. `visiting` holds the names being solved, so a name
+// that reaches itself is unsettled rather than read forever.
+fn name_kind(
+  key: Key,
+  registry: TypeRegistry,
+  solved: Dict(Key, NameKind),
+  visiting: Set(Key),
+) -> #(NameKind, Dict(Key, NameKind)) {
+  case dict.get(solved, key), set.contains(visiting, key) {
+    Ok(kind), _ -> #(kind, solved)
+    Error(Nil), True -> #(Unsettled, solved)
+    Error(Nil), False -> {
+      let visiting = set.insert(visiting, key)
+      let #(solved, variants) =
+        dict.get(registry.definitions, key)
+        |> result.unwrap([])
+        |> list.map_fold(solved, fn(solved, definition) {
+          let #(kind, solved) =
+            definition_kind(definition, registry, solved, visiting)
+          #(solved, kind)
+        })
+      let kind = agreed_kind(variants)
+      #(kind, dict.insert(solved, key, kind))
+    }
+  }
+}
+
+// The kind every variant agrees on, or unsettled.
+fn agreed_kind(variants: List(NameKind)) -> NameKind {
+  case variants {
+    [first, ..rest] ->
+      case list.all(rest, fn(kind) { kind == first }) {
+        True -> first
+        False -> Unsettled
+      }
+    [] -> Unsettled
+  }
+}
+
+fn definition_kind(
+  definition: TypeDefinition,
+  registry: TypeRegistry,
+  solved: Dict(Key, NameKind),
+  visiting: Set(Key),
+) -> #(NameKind, Dict(Key, NameKind)) {
+  case definition {
+    CustomDefinition(..) | ExternalDefinition(..) -> #(Nominal, solved)
+    AliasDefinition(parameters:, aliased:) -> {
+      let #(reads, solved) =
+        expression_kind(aliased, parameters, registry, solved, visiting)
+      #(Aliased(arity: list.length(parameters), reads:), solved)
+    }
+  }
+}
+
+// What an alias's right-hand side is, in terms of the alias's `parameters`.
+fn expression_kind(
+  type_: TypeExpr,
+  parameters: List(String),
+  registry: TypeRegistry,
+  solved: Dict(Key, NameKind),
+  visiting: Set(Key),
+) -> #(KindRead, Dict(Key, NameKind)) {
+  case type_ {
+    FnExpr(parameters: taken, ..) -> #(
+      Fixed(IsFunction(list.length(taken))),
+      solved,
+    )
+    TupleExpr(..) -> #(Fixed(NotFunction), solved)
+    VarExpr(..) | UnresolvedExpr -> #(Fixed(UnresolvedFunctionKind), solved)
+    ParamExpr(name:) -> #(position_of(parameters, name, 0), solved)
+    NamedExpr(module: "gleam", ..) -> #(Fixed(NotFunction), solved)
+    NamedExpr(module:, name:, arguments:) -> {
+      let #(kind, solved) =
+        name_kind(#(module, name), registry, solved, visiting)
+      let read = case kind {
+        Unsettled -> Error(Nil)
+        Nominal -> Ok(Fixed(NotFunction))
+        Aliased(arity:, reads:) -> applied_read(arity, reads, arguments)
+      }
+      case read, result.try(read, argument_of(_, arguments)) {
+        Ok(Fixed(..) as fixed), _ -> #(fixed, solved)
+        Ok(Argument(..)), Ok(argument) ->
+          expression_kind(argument, parameters, registry, solved, visiting)
+        Ok(Argument(..)), Error(Nil) | Error(Nil), _ -> #(
+          Fixed(UnresolvedFunctionKind),
+          solved,
+        )
+      }
+    }
+  }
+}
+
+// The argument an argument read names.
+fn argument_of(
+  read: KindRead,
+  arguments: List(TypeExpr),
+) -> Result(TypeExpr, Nil) {
+  case read {
+    Argument(index:) -> list.drop(arguments, index) |> list.first
+    Fixed(..) -> Error(Nil)
+  }
+}
+
+fn position_of(parameters: List(String), name: String, index: Int) -> KindRead {
+  case parameters {
+    [] -> Fixed(UnresolvedFunctionKind)
+    [parameter, ..] if parameter == name -> Argument(index)
+    [_, ..rest] -> position_of(rest, name, index + 1)
   }
 }
 

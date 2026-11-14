@@ -58,6 +58,7 @@ import graded/internal/checker
 import graded/internal/cli
 import graded/internal/compat
 import graded/internal/config
+import graded/internal/contract
 import graded/internal/coverage
 import graded/internal/diff
 import graded/internal/effects.{type KnowledgeBase}
@@ -904,6 +905,8 @@ type ProjectSources {
     package_root: String,
     // The latent-effect reading the run chose before it parsed anything.
     mode: types.LatMode,
+    // The spec file's text as read, for a message pointing at one of its lines.
+    spec_text: String,
   )
 }
 
@@ -916,7 +919,7 @@ fn load_project_sources(
   let SourceScope(analysed: directory, reported:) = source_scope(directory)
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
-  use spec <- result.try(read_spec(cfg.spec_file, mode))
+  use #(spec_text, spec) <- result.try(read_spec_on_disk(cfg.spec_file, mode))
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.map(parse_all_files(gleam_files))
   let index = build_module_index(parsed, directory)
@@ -929,6 +932,7 @@ fn load_project_sources(
     index:,
     package_root:,
     mode:,
+    spec_text:,
   )
 }
 
@@ -949,10 +953,16 @@ fn load_project_context(
 fn project_context(
   sources: ProjectSources,
 ) -> Result(ProjectContext, GradedError) {
-  let ProjectSources(cfg:, spec:, index:, package_root:, mode:, ..) = sources
-  // Read once and kept: the knowledge base is built from it and the spec lint
-  // weighs the same entries.
-  use catalog <- result.try(load_bundled_catalog(package_root, mode))
+  let ProjectSources(cfg:, spec:, index:, package_root:, mode:, spec_text:, ..) =
+    sources
+  use catalog_files <- result.try(locate_bundled_catalog())
+  // Parsed first, and read once the signatures can weigh its lines.
+  let parsed_catalog =
+    effects.parse_project_catalog(
+      catalog_files,
+      manifest_path(package_root),
+      mode,
+    )
   let declared_modules = annotation.module_assume_modules(spec)
   // The package's targets under both readings, which together decide whether a
   // function is foreign code or the Gleam body is its only implementation, and
@@ -970,6 +980,20 @@ fn project_context(
   let project_registry = build_project_registry(index)
   let registry =
     signatures.merge(dependency_registry(dep_sources), project_registry)
+  let type_definitions =
+    build_type_definitions(index, dep_sources, package_targets)
+  use Nil <- result.try(validate_own_contracts(
+    mode,
+    spec,
+    spec_text,
+    cfg.spec_file,
+    registry,
+    type_definitions,
+  ))
+  let reading = spec_reading(mode, registry, type_definitions)
+  // Read once and kept: the knowledge base is built from it and the spec lint
+  // weighs the same entries.
+  let catalog = effects.read_parsed_catalog(parsed_catalog, reading)
   // Scanned once for the run: girard's resolver reads it here, and every
   // spec-less path dependency below is typed against the same map.
   let dep_files = tree_module_files(package_root, local)
@@ -981,7 +1005,7 @@ fn project_context(
 
   // Read once: the run's knowledge base starts from it, and so does the
   // baseline a newly loaded package is weighed against.
-  let catalog_kb = catalog_knowledge_base(package_root, catalog, scan, mode)
+  let catalog_kb = catalog_knowledge_base(package_root, catalog, scan, reading)
   let kb_base =
     catalog_kb
     |> effects.with_dependency_foreign(dependency_foreign(dep_sources))
@@ -1029,6 +1053,7 @@ fn project_context(
         package_targets,
       ),
       registry,
+      reading,
     )
   let kb_base =
     kb_base
@@ -1120,7 +1145,7 @@ fn project_context(
     catalog:,
     dependencies: dep_sources,
     field_index: package_field_index(dep_sources, index),
-    type_definitions: build_type_definitions(index, dep_sources, cfg.targets),
+    type_definitions:,
     dep_files:,
     local_packages: local,
     placement_files: placement_files(dep_files, local),
@@ -1318,6 +1343,7 @@ fn lint_context(context: ProjectContext) -> lint.Context {
     registry:,
     local_packages:,
     placement_files:,
+    type_definitions:,
     ..,
   ) = context
   lint.Context(
@@ -1333,6 +1359,10 @@ fn lint_context(context: ProjectContext) -> lint.Context {
       package_tree.is_complete(local_packages)
     },
     mode:,
+    resolve_bounds: {
+      let kinds = typedefs.kinds(type_definitions)
+      contract.resolve_bounds(_, registry, kinds)
+    },
   )
 }
 
@@ -1397,15 +1427,16 @@ pub fn arbitration_baseline_answer(
     source_scope(directory).analysed,
     types.Inactive,
   ))
-  let ProjectSources(cfg:, spec:, index:, package_root:, mode:, ..) = sources
-  use catalog <- result.try(load_bundled_catalog(package_root, mode))
+  let ProjectSources(cfg:, spec:, index:, package_root:, ..) = sources
+  let reading = effects.inactive_reading()
+  use catalog <- result.try(load_bundled_catalog(package_root, reading))
   let native_of = native_functions_of(index, cfg.targets)
   let local = package_tree.discover(package_root)
   let scan = dependency_scan(package_root, local, cfg.targets)
   case
     arbitration_baseline(
       local,
-      catalog_knowledge_base(package_root, catalog, scan, mode),
+      catalog_knowledge_base(package_root, catalog, scan, reading),
       scan,
       build_project_registry(index),
       spec,
@@ -1542,7 +1573,21 @@ fn effect_answer(
   let directory = source_scope(directory).analysed
   use cfg <- result.try(read_config(directory))
   use spec <- result.try(read_spec(cfg.spec_file, mode))
-  case spec_answer(directory, spec, cfg.targets, name, mode) {
+  // Under the latent-effect rules a bounded `assume` line is weighed against
+  // the run's signatures before anything answers, which only the full context
+  // reads.
+  let fast = case mode {
+    types.Active ->
+      !list.any(annotation.extract_assumes(spec), fn(assume) {
+        assume.params != []
+      })
+    types.Inactive -> True
+  }
+  let found = case fast {
+    True -> spec_answer(directory, spec, cfg.targets, name, mode)
+    False -> Error(Nil)
+  }
+  case found {
     Ok(found) -> Ok(found)
     Error(Nil) -> project_answer(directory, name, mode)
   }
@@ -2732,11 +2777,81 @@ pub fn run_catalog(request: cli.CatalogRequest) -> Result(String, GradedError) {
 // catalog covers would answer `[Unknown]`.
 fn load_bundled_catalog(
   package_root: String,
-  mode: types.LatMode,
+  reading: effects.SpecReading,
 ) -> Result(effects.BundledCatalog, GradedError) {
+  use files <- result.map(locate_bundled_catalog())
+  read_bundled_catalog(files, package_root, reading)
+}
+
+// The bundled catalog's files, read before anything else so a run without a
+// catalog fails before it builds anything.
+fn locate_bundled_catalog() -> Result(List(effects.CatalogFile), GradedError) {
   use catalog_dir <- result.try(bundled_catalog_directory())
-  use files <- result.map(catalog_files(catalog_dir))
-  effects.load_project_catalog_with(files, manifest_path(package_root), mode)
+  catalog_files(catalog_dir)
+}
+
+// The catalog files selected for this package's installed versions, read.
+fn read_bundled_catalog(
+  files: List(effects.CatalogFile),
+  package_root: String,
+  reading: effects.SpecReading,
+) -> effects.BundledCatalog {
+  effects.load_project_catalog_with(files, manifest_path(package_root), reading)
+}
+
+// How the specs other packages wrote, and the bundled catalog, are read in a
+// run: under its latent-effect rules, refusing a line whose bounds those rules
+// forbid once the run's signatures and types are known.
+fn spec_reading(
+  mode: types.LatMode,
+  registry: SignatureRegistry,
+  type_definitions: typedefs.TypeRegistry,
+) -> effects.SpecReading {
+  let kinds = typedefs.kinds(type_definitions)
+  effects.SpecReading(mode:, refuses: fn(assume) {
+    contract.line_violations(assume, registry, kinds) != []
+  })
+}
+
+// The project's own spec under the latent-effect rules: a line whose bounds
+// the rules forbid, once kinds are known, is an error naming the line.
+fn validate_own_contracts(
+  mode: types.LatMode,
+  spec: GradedFile,
+  spec_text: String,
+  spec_path: String,
+  registry: SignatureRegistry,
+  type_definitions: typedefs.TypeRegistry,
+) -> Result(Nil, GradedError) {
+  use <- bool.guard(when: mode == types.Inactive, return: Ok(Nil))
+  let kinds = typedefs.kinds(type_definitions)
+  let first =
+    annotation.extract_assumes(spec)
+    |> list.find_map(fn(assume) {
+      case contract.line_violations(assume, registry, kinds) {
+        [] -> Error(Nil)
+        [violation, ..] -> Ok(#(assume, violation))
+      }
+    })
+  case first {
+    Error(Nil) -> Ok(Nil)
+    Ok(#(assume, violation)) -> {
+      let statement = case
+        annotation.statement_at(
+          spec_text,
+          "assume",
+          annotation.assume_name(assume),
+        )
+      {
+        Some(#(line_number, text)) -> int.to_string(line_number) <> ": " <> text
+        None -> annotation.format_assume(assume)
+      }
+      Error(GradedParseError(
+        path: spec_path,
+        message: statement <> "\n  " <> contract.describe(violation),
+      ))
+    }
+  }
 }
 
 fn bundled_catalog_directory() -> Result(String, GradedError) {
@@ -3854,7 +3969,14 @@ fn infer_state(
   let directory = source_scope(directory).analysed
   use cfg <- result.try(read_config(directory))
   let package_root = resolve_package_root(directory)
-  use catalog <- result.try(load_bundled_catalog(package_root, mode))
+  use catalog_files <- result.try(locate_bundled_catalog())
+  // As in `project_context`: parsed first, read once signatures are known.
+  let parsed_catalog =
+    effects.parse_project_catalog(
+      catalog_files,
+      manifest_path(package_root),
+      mode,
+    )
   use #(spec_on_disk, spec) <- result.try(read_spec_on_disk(cfg.spec_file, mode))
   let declared_modules = annotation.module_assume_modules(spec)
 
@@ -3879,6 +4001,20 @@ fn infer_state(
   let project_registry = build_project_registry(index)
   let registry =
     signatures.merge(dependency_registry(dep_sources), project_registry)
+  let type_definitions =
+    build_type_definitions(index, dep_sources, package_targets)
+  // As in `project_context`: the own spec's contracts are weighed once kinds
+  // are known, and other packages' specs are read under the same rules.
+  use Nil <- result.try(validate_own_contracts(
+    mode,
+    spec,
+    spec_on_disk,
+    cfg.spec_file,
+    registry,
+    type_definitions,
+  ))
+  let reading = spec_reading(mode, registry, type_definitions)
+  let catalog = effects.read_parsed_catalog(parsed_catalog, reading)
   // As in `project_context`: one dependency scan for the run.
   let dep_files = tree_module_files(package_root, local)
   let type_info = build_type_index(index, dep_files, package_targets)
@@ -3886,7 +4022,7 @@ fn infer_state(
   let constructors = package_constructors(index, dep_sources)
 
   // As in `project_context`: read once, for the run and for the baseline.
-  let catalog_kb = catalog_knowledge_base(package_root, catalog, scan, mode)
+  let catalog_kb = catalog_knowledge_base(package_root, catalog, scan, reading)
   let kb_base =
     catalog_kb
     |> effects.with_dependency_foreign(dependency_foreign(dep_sources))
@@ -3929,6 +4065,7 @@ fn infer_state(
         package_targets,
       ),
       registry,
+      reading,
     )
   let kb_base =
     kb_base
@@ -4007,11 +4144,7 @@ fn infer_state(
     registry:,
     type_info:,
     dependencies: dep_sources,
-    type_definitions: build_type_definitions(
-      index,
-      dep_sources,
-      package_targets,
-    ),
+    type_definitions:,
     knowledge_base:,
     public_annotations:,
     cache_files: list.reverse(cache_files),
@@ -5106,13 +5239,13 @@ fn catalog_knowledge_base(
   package_root: String,
   catalog: effects.BundledCatalog,
   scan: TreeScan,
-  mode: types.LatMode,
+  reading: effects.SpecReading,
 ) -> KnowledgeBase {
   effects.knowledge_base_from_catalog_with(
     packages_dir(package_root),
     catalog,
     dependency_foreign(scan.baseline),
-    mode,
+    reading,
   )
 }
 
@@ -5501,6 +5634,7 @@ fn enrich_with_path_deps(
   retained: Dict(String, RetainedModule),
   baseline: Option(KnowledgeBase),
   registry: SignatureRegistry,
+  reading: effects.SpecReading,
 ) -> #(
   KnowledgeBase,
   Dict(String, typeinfo.ModuleReading),
@@ -5520,8 +5654,7 @@ fn enrich_with_path_deps(
     Error(Nil) -> #(package.directory, baseline)
   }
   let spec_path = filepath.join(location, package.spec_file)
-  let load =
-    effects.load_dep_spec_at_with(location, spec_path, effects.lat_mode(kb))
+  let load = effects.load_dep_spec_at_with(location, spec_path, reading)
   effects.warn_dep_spec_load(name, load)
   case load {
     effects.SpecLoaded(spec:, ..) -> {

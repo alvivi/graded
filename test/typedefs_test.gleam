@@ -395,6 +395,52 @@ pub fn variants_taking_different_parameters_are_unknown_test() {
     == UnknownShape
 }
 
+// Function kinds
+
+fn kind(type_: typedefs.TypeExpr, source: String) -> typedefs.FunctionKind {
+  typedefs.function_kind(type_, typedefs.kinds(registry("app/m", source)))
+}
+
+fn alias(
+  name: String,
+  arguments: List(typedefs.TypeExpr),
+) -> typedefs.TypeExpr {
+  typedefs.NamedExpr("app/m", name, arguments)
+}
+
+pub fn an_alias_of_a_function_is_one_through_any_chain_test() {
+  let chain =
+    "pub type A0(a) = fn(a) -> a\n"
+    <> string.concat(
+      list.map(from(1, 101), fn(i) {
+        "pub type A"
+        <> int.to_string(i)
+        <> "(a) = A"
+        <> int.to_string(i - 1)
+        <> "(a)\n"
+      }),
+    )
+  assert kind(alias("A100", [typedefs.NamedExpr("gleam", "Int", [])]), chain)
+    == typedefs.IsFunction(1)
+  assert kind(alias("A100", []), chain) == typedefs.UnresolvedFunctionKind
+}
+
+pub fn an_alias_of_its_parameter_is_what_it_is_applied_to_test() {
+  let source = "pub type Same(a) = a\npub type Box { Box(Int) }"
+  assert kind(alias("Same", [typedefs.FnExpr([], alias("Box", []))]), source)
+    == typedefs.IsFunction(0)
+  assert kind(alias("Same", [alias("Box", [])]), source) == typedefs.NotFunction
+}
+
+pub fn alias_variants_that_disagree_are_unresolved_test() {
+  let source =
+    "pub type Box { Box(fn() -> Nil) }\n@target(erlang)\npub type Act = fn() -> Nil\n@target(javascript)\npub type Act = Box"
+  assert kind(alias("Act", []), source) == typedefs.UnresolvedFunctionKind
+  let agreeing =
+    "@target(erlang)\npub type Act = fn() -> Nil\n@target(javascript)\npub type Act = fn() -> Nil"
+  assert kind(alias("Act", []), agreeing) == typedefs.IsFunction(0)
+}
+
 // The run's registry
 
 pub fn a_dependency_type_comes_from_the_scan_test() {
